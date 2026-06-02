@@ -1,0 +1,34 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from flickr_bio_occurrence.benchmark.live_run import run_live_search_benchmark
+from flickr_bio_occurrence.flickr.client import FlickrSearchResult
+from flickr_bio_occurrence.flickr.work_items import WorkItem
+
+
+def test_live_search_benchmark_writes_report_for_actual_records(tmp_path) -> None:
+    calls: list[str] = []
+
+    def fake_search(work_item: WorkItem) -> FlickrSearchResult:
+        calls.append(work_item.work_item_id)
+        photo_id = str(len(calls))
+        payload = {"stat": "ok", "photos": {"photo": [{"id": photo_id, "title": "Papilio demoleus", "latitude": "-27", "longitude": "153"}]}}
+        raw_path = tmp_path / f"{photo_id}.json"
+        raw_path.write_text(json.dumps(payload), encoding="utf-8")
+        return FlickrSearchResult(payload=payload, raw_response_path=raw_path, photo_ids=[photo_id])
+
+    report_path = run_live_search_benchmark(
+        search_photos=fake_search,
+        output_dir=tmp_path / "run",
+        target_records=3,
+        max_calls=10,
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["target_record_count"] == 3
+    assert report["actual_unique_records"] == 3
+    assert report["work_items_called"] == 3
+    assert report["storage_artifacts"]["bronze_parquet_files"] == 1
+    assert report["storage_artifacts"]["duckdb_path"].endswith(".duckdb")
