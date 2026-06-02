@@ -47,8 +47,17 @@ class FlickrRateLimiter:
     def log_call(self, endpoint: str, work_item_id: str, status: str) -> None:
         with self._lock, self._connect() as conn:
             conn.execute(
-                "INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at) VALUES (?, ?, ?, ?)",
-                (endpoint, work_item_id, status, time.time()),
+                """
+                UPDATE api_call_ledger
+                SET status = ?
+                WHERE id = (
+                    SELECT id FROM api_call_ledger
+                    WHERE endpoint = ? AND work_item_id = ? AND status = 'reserved'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                )
+                """,
+                (status, endpoint, work_item_id),
             )
 
     def log_photo_records(self, photo_ids: list[str], work_item_id: str) -> None:
