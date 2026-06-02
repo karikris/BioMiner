@@ -31,7 +31,7 @@ def test_partitioning_by_species_region_year_month() -> None:
         months=[1, 2],
     )
 
-    assert len(items) == 8
+    assert len(items) == 10
     assert {item.year for item in items} == {2024}
     assert {item.month for item in items} == {1, 2}
     assert {item.region_id for item in items} == {"AU_QLD"}

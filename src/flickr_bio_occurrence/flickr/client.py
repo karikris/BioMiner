@@ -96,5 +96,6 @@ def _query_text(work_item: WorkItem) -> str:
         "lime_butterfly": "lime butterfly",
         "chequered_swallowtail": "chequered swallowtail",
         "citrus_swallowtail": "citrus swallowtail",
+        "swallowtail": "swallowtail",
     }
     return variant_to_term.get(work_item.query_variant, work_item.species_query_terms[0])

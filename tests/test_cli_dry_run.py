@@ -20,10 +20,10 @@ def test_fetch_dry_run_reports_required_fields() -> None:
         model_registry_path="config/model_registry.toml",
     )
 
-    assert summary["planned_api_calls"] == 4
-    assert summary["planned_maximum_photo_records"] == 1000
+    assert summary["planned_api_calls"] == 5
+    assert summary["planned_maximum_photo_records"] == 1250
     assert summary["hourly_limit_status"] == "within_soft_cap"
-    assert summary["work_item_count"] == 4
+    assert summary["work_item_count"] == 5
     assert summary["output_paths"]["raw"] == "data/raw/flickr/photos_search/"
     assert summary["selected_bioclip_model"] == "bioclip2"
 
@@ -36,7 +36,7 @@ def test_fetch_dry_run_cli_outputs_json(capsys) -> None:
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["species"] == "Papilio demoleus"
-    assert payload["planned_maximum_photo_records"] == 1000
+    assert payload["planned_maximum_photo_records"] == 1250
 
 
 def test_cli_module_execution_outputs_dry_run_json() -> None:
@@ -64,4 +64,4 @@ def test_cli_module_execution_outputs_dry_run_json() -> None:
         text=True,
     )
 
-    assert json.loads(result.stdout)["planned_api_calls"] == 4
+    assert json.loads(result.stdout)["planned_api_calls"] == 5

@@ -26,3 +26,9 @@ def test_dwc_schema_lists_required_occurrence_fields() -> None:
 
     for field in ["occurrenceID", "basisOfRecord", "eventDate", "scientificName", "dynamicProperties"]:
         assert f"- {field}" in text
+
+
+def test_regions_include_broad_australia_bbox() -> None:
+    text = Path("config/regions.csv").read_text(encoding="utf-8")
+
+    assert "AU_ALL,Australia" in text
