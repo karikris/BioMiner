@@ -34,6 +34,7 @@ def run_live_search_benchmark(
     years: list[int] | None = None,
     months: range = range(1, 13),
     max_workers: int = 1,
+    query_variants: list[str] | None = None,
 ) -> Path:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -44,6 +45,7 @@ def run_live_search_benchmark(
         regions=regions or [("AU_ALL", "Australia", "112.92,-43.74,153.64,-10.05")],
         years=years or [2024, 2023, 2022, 2021, 2020],
         months=months,
+        query_variants=query_variants,
     )
     payloads: list[tuple[WorkItem, dict[str, object]]] = []
     seen: set[str] = set()

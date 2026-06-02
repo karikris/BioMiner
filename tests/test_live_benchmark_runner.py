@@ -59,3 +59,25 @@ def test_live_search_benchmark_can_run_parallel_and_stop_at_target(tmp_path) -> 
     assert report["actual_unique_records"] == 8
     assert report["work_items_called"] <= 12
     assert report["compute_artifacts"]["worker_count"] == 4
+
+
+def test_live_search_benchmark_can_filter_query_variants(tmp_path) -> None:
+    variants: list[str] = []
+
+    def fake_search(work_item: WorkItem) -> FlickrSearchResult:
+        variants.append(work_item.query_variant)
+        photo_id = str(len(variants))
+        payload = {"stat": "ok", "photos": {"photo": [{"id": photo_id, "title": "swallowtail"}]}}
+        raw_path = tmp_path / f"{photo_id}.json"
+        raw_path.write_text(json.dumps(payload), encoding="utf-8")
+        return FlickrSearchResult(payload=payload, raw_response_path=raw_path, photo_ids=[photo_id])
+
+    run_live_search_benchmark(
+        search_photos=fake_search,
+        output_dir=tmp_path / "variant-run",
+        target_records=3,
+        max_calls=10,
+        query_variants=["swallowtail"],
+    )
+
+    assert variants == ["swallowtail", "swallowtail", "swallowtail"]

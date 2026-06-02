@@ -46,3 +46,17 @@ def test_papilio_demoleus_seed_terms_present() -> None:
     assert "chequered swallowtail" in seed.search_terms
     assert "citrus swallowtail" in seed.search_terms
     assert "swallowtail" in seed.search_terms
+
+
+def test_work_items_can_filter_query_variants() -> None:
+    seed = get_seed_species("Papilio demoleus")
+    items = build_monthly_work_items(
+        species=seed,
+        regions=[("AU_ALL", "Australia", "112.92,-43.74,153.64,-10.05")],
+        years=[2024],
+        months=[1, 2],
+        query_variants=["swallowtail"],
+    )
+
+    assert len(items) == 2
+    assert {item.query_variant for item in items} == {"swallowtail"}

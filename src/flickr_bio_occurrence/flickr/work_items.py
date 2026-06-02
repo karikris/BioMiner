@@ -40,14 +40,16 @@ def build_monthly_work_items(
     regions: Iterable[tuple[str, str, str]],
     years: Iterable[int],
     months: Iterable[int],
+    query_variants: Iterable[str] | None = None,
     page: int = 1,
 ) -> list[WorkItem]:
     items: list[WorkItem] = []
+    variants = tuple(query_variants or QUERY_VARIANTS)
     for region_id, region_name, bbox in regions:
         for year in years:
             for month in months:
                 last_day = monthrange(year, month)[1]
-                for query_variant in QUERY_VARIANTS:
+                for query_variant in variants:
                     items.append(
                         WorkItem(
                             species_name=species.accepted_scientific_name,
