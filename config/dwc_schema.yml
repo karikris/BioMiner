@@ -1,0 +1,25 @@
+occurrence:
+  required_fields:
+    - occurrenceID
+    - basisOfRecord
+    - eventDate
+    - scientificName
+    - verbatimIdentification
+    - identificationVerificationStatus
+    - decimalLatitude
+    - decimalLongitude
+    - coordinateUncertaintyInMeters
+    - verbatimLocality
+    - georeferenceSources
+    - georeferenceRemarks
+    - associatedMedia
+    - associatedReferences
+    - license
+    - rightsHolder
+    - dataGeneralizations
+    - informationWithheld
+    - occurrenceRemarks
+    - dynamicProperties
+  basis_of_record:
+    human: HumanObservation
+    machine_only: MachineObservation

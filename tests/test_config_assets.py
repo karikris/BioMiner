@@ -1,0 +1,28 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def test_required_config_assets_exist() -> None:
+    for path in [
+        ".env.example",
+        "config/species_seed.csv",
+        "config/regions.csv",
+        "config/model_registry.toml",
+        "config/dwc_schema.yml",
+    ]:
+        assert Path(path).exists()
+
+
+def test_env_example_contains_only_variable_names() -> None:
+    text = Path(".env.example").read_text(encoding="utf-8")
+
+    assert "FLICKR_API_KEY=" in text
+    assert "FLICKR_API_KEY=your_flickr_api_key_here" in text
+
+
+def test_dwc_schema_lists_required_occurrence_fields() -> None:
+    text = Path("config/dwc_schema.yml").read_text(encoding="utf-8")
+
+    for field in ["occurrenceID", "basisOfRecord", "eventDate", "scientificName", "dynamicProperties"]:
+        assert f"- {field}" in text

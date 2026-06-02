@@ -1,0 +1,4 @@
+region_id,region_name,bbox,country
+AU_QLD,Queensland,"137.99,-29.18,153.55,-9.14",Australia
+AU_NSW,New South Wales,"140.99,-37.51,153.64,-28.15",Australia
+AU_NT,Northern Territory,"129.00,-26.02,138.00,-10.91",Australia
