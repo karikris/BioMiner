@@ -20,5 +20,9 @@ def test_mock_1000_record_benchmark_writes_metrics_artifact(tmp_path) -> None:
         "artifact_write",
     }
     assert report["storage_artifacts"]["metrics_json"].endswith("mock_1000_record_benchmark.json")
+    assert report["storage_artifacts"]["bronze_parquet_files"] >= 1
+    assert report["storage_artifacts"]["silver_parquet_files"] >= 1
+    assert report["storage_artifacts"]["gold_parquet_files"] >= 1
+    assert report["storage_artifacts"]["duckdb_path"].endswith("mock_1000_record_benchmark.duckdb")
     assert report["memory_artifacts"]["peak_traced_bytes"] > 0
     assert report["compute_artifacts"]["worker_count"] >= 1

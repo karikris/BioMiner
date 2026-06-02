@@ -8,7 +8,12 @@ import time
 import tracemalloc
 from typing import Callable, TypeVar
 
+import polars as pl
+
+from flickr_bio_occurrence.dwc.exporter import export_dwc_records
 from flickr_bio_occurrence.dwc.mapper import map_candidate_to_dwc
+from flickr_bio_occurrence.storage.duckdb_index import create_qa_views
+from flickr_bio_occurrence.storage.parquet_io import write_parquet_dataset
 
 
 T = TypeVar("T")
@@ -24,6 +29,13 @@ def run_mock_1000_record_benchmark(*, output_dir: str | Path, species: str, regi
     bronze = _timed(timings, "bronze_flattening", lambda: [dict(record) for record in records])
     silver = _timed(timings, "silver_candidate_build", lambda: [_to_candidate(record, species) for record in bronze])
     dwc_rows = _timed(timings, "dwc_mapping", lambda: [map_candidate_to_dwc(candidate) for candidate in silver])
+    bronze_paths = write_parquet_dataset(pl.DataFrame(bronze), output_path / "bronze" / "bronze_flickr_photo")
+    silver_paths = write_parquet_dataset(pl.DataFrame(silver), output_path / "silver" / "silver_occurrence_candidate")
+    gold_outputs = export_dwc_records(pl.DataFrame(dwc_rows), output_path / "gold")
+    duckdb_path = create_qa_views(
+        db_path=output_path / "mock_1000_record_benchmark.duckdb",
+        data_root=output_path,
+    )
     report_path = output_path / "mock_1000_record_benchmark.json"
 
     write_start = time.perf_counter()
@@ -34,10 +46,14 @@ def run_mock_1000_record_benchmark(*, output_dir: str | Path, species: str, regi
         "region": region,
         "record_count": len(dwc_rows),
         "step_timings_seconds": timings,
-        "storage_artifacts": {
-            "metrics_json": str(report_path),
-            "mock_dwc_rows_in_memory": len(dwc_rows),
-        },
+            "storage_artifacts": {
+                "metrics_json": str(report_path),
+                "mock_dwc_rows_in_memory": len(dwc_rows),
+                "bronze_parquet_files": len(bronze_paths),
+                "silver_parquet_files": len(silver_paths),
+                "gold_parquet_files": len(gold_outputs.parquet_paths),
+                "duckdb_path": str(duckdb_path),
+            },
         "memory_artifacts": {
             "current_traced_bytes": current,
             "peak_traced_bytes": peak,
