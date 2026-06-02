@@ -1,0 +1,7 @@
+.env
+AGENTS.md
+data/
+*.duckdb
+*.parquet
+__pycache__/
+.pytest_cache/

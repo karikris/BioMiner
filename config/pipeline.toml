@@ -1,0 +1,43 @@
+[flickr]
+api_key_env = "FLICKR_API_KEY"
+base_url = "https://www.flickr.com/services/rest/"
+soft_api_calls_per_hour = 3000
+hard_api_calls_per_hour = 3600
+hard_photo_records_per_hour = 3600
+default_per_page = 250
+max_retries = 5
+timeout_seconds = 30
+
+[search]
+test_species = "Papilio demoleus"
+media = "photos"
+content_types = "0"
+safe_search = 1
+has_geo = 1
+extras = "description,license,date_upload,date_taken,geo,tags,machine_tags,owner_name,url_m,url_l,url_o,o_dims,last_update,media,views"
+
+[partitioning]
+split_by_species = true
+split_by_region = true
+split_by_year = true
+split_by_month = true
+
+[geo]
+large_area_threshold_km2 = 100
+store_exact_internal_coordinates = true
+generalise_on_public_export = false
+
+[vision]
+preferred_model_family = "bioclip"
+preferred_model_version = "bioclip2_or_newest"
+fallback_model_version = "bioclip1"
+top_k = 10
+batch_size = 16
+store_embeddings = true
+auto_accept_requires_text_vision_agreement = false
+text_vision_conflict_routes_to_review = true
+outside_known_range_never_rejects = true
+
+[storage]
+format = "parquet"
+duckdb_path = "data/flickr_bio_occurrence.duckdb"
