@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
-from flickr_bio_occurrence.flickr.rate_limiter import FlickrRateLimiter, RateLimitExceeded
+from flickr_bio_occurrence.flickr.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_PATH, FlickrRateLimiter, RateLimitExceeded
 
 
 def test_rate_limiter_never_exceeds_3600_calls_per_hour(tmp_path) -> None:
@@ -47,3 +47,24 @@ def test_parallel_workers_share_global_limiter(tmp_path) -> None:
 
     assert sum(results) == 25
     assert limiter.api_calls_in_window() == 25
+
+
+def test_default_limiter_uses_global_ledger_path() -> None:
+    limiter = FlickrRateLimiter()
+
+    assert limiter.ledger_path == DEFAULT_RATE_LIMIT_LEDGER_PATH
+
+
+def test_multiple_limiter_instances_share_same_ledger(tmp_path) -> None:
+    ledger = tmp_path / "global.sqlite"
+    limiter_a = FlickrRateLimiter(ledger, hard_api_calls_per_hour=1)
+    limiter_b = FlickrRateLimiter(ledger, hard_api_calls_per_hour=1)
+
+    limiter_a.acquire_api_token("flickr.photos.search", "work-a")
+
+    try:
+        limiter_b.acquire_api_token("flickr.photos.search", "work-b")
+    except RateLimitExceeded:
+        pass
+    else:
+        raise AssertionError("expected second limiter instance to see shared hard cap")

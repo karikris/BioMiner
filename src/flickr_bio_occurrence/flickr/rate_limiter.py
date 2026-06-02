@@ -6,6 +6,9 @@ import time
 from pathlib import Path
 
 
+DEFAULT_RATE_LIMIT_LEDGER_PATH = Path("data/rate_limits/flickr_global.sqlite")
+
+
 class RateLimitExceeded(RuntimeError):
     """Raised when an API or photo-record hard cap would be exceeded."""
 
@@ -13,7 +16,7 @@ class RateLimitExceeded(RuntimeError):
 class FlickrRateLimiter:
     def __init__(
         self,
-        ledger_path: str | Path,
+        ledger_path: str | Path = DEFAULT_RATE_LIMIT_LEDGER_PATH,
         *,
         soft_api_calls_per_hour: int = 3000,
         hard_api_calls_per_hour: int = 3600,

@@ -100,6 +100,7 @@ def run_live_search_benchmark(
             "gpu_used": False,
             "vision_model_loaded": False,
             "http_client": "httpx",
+            "rate_limiter_scope": "caller_supplied_global_limiter_required",
         },
     }
     report_path = output_path / "live_search_benchmark_report.json"
