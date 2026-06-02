@@ -6,6 +6,7 @@ from pathlib import Path
 import resource
 import time
 import tracemalloc
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Callable
 
 import polars as pl
@@ -32,6 +33,7 @@ def run_live_search_benchmark(
     regions: list[tuple[str, str, str]] | None = None,
     years: list[int] | None = None,
     months: range = range(1, 13),
+    max_workers: int = 1,
 ) -> Path:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -46,18 +48,15 @@ def run_live_search_benchmark(
     payloads: list[tuple[WorkItem, dict[str, object]]] = []
     seen: set[str] = set()
     errors: list[dict[str, str]] = []
-    fetch_start = time.perf_counter()
-    for item in work_items[:max_calls]:
-        if len(seen) >= target_records:
-            break
-        try:
-            result = search_photos(item)
-        except Exception as exc:  # noqa: BLE001 - benchmark report must preserve failures and continue.
-            errors.append({"work_item_id": item.work_item_id, "error": type(exc).__name__, "message": str(exc)[:300]})
-            continue
-        payloads.append((item, result.payload))
-        seen.update(result.photo_ids)
-    timings["flickr_fetch"] = time.perf_counter() - fetch_start
+    timings["flickr_fetch"] = _fetch_payloads(
+        search_photos=search_photos,
+        work_items=work_items[:max_calls],
+        target_records=target_records,
+        max_workers=max_workers,
+        payloads=payloads,
+        seen=seen,
+        errors=errors,
+    )
     bronze = _timed(timings, "bronze_flattening_dedup", lambda: _build_bronze(payloads, species_name, target_records))
     silver = _timed(timings, "silver_candidate_build", lambda: build_silver_candidates(bronze))
     gold = _timed(timings, "dwc_mapping", lambda: build_dwc_rows(silver))
@@ -94,7 +93,7 @@ def run_live_search_benchmark(
             "max_rss_kb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         },
         "compute_artifacts": {
-            "worker_count": min(16, os.cpu_count() or 1),
+            "worker_count": max_workers,
             "cpu_count": os.cpu_count() or 1,
             "gpu_used": False,
             "vision_model_loaded": False,
@@ -104,6 +103,74 @@ def run_live_search_benchmark(
     report_path = output_path / "live_search_benchmark_report.json"
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     return report_path
+
+
+def _fetch_payloads(
+    *,
+    search_photos: SearchPhotos,
+    work_items: list[WorkItem],
+    target_records: int,
+    max_workers: int,
+    payloads: list[tuple[WorkItem, dict[str, object]]],
+    seen: set[str],
+    errors: list[dict[str, str]],
+) -> float:
+    start = time.perf_counter()
+    if max_workers <= 1:
+        for item in work_items:
+            if len(seen) >= target_records:
+                break
+            _fetch_one(search_photos, item, payloads, seen, errors)
+        return time.perf_counter() - start
+
+    pending: set[Future[tuple[WorkItem, FlickrSearchResult]]] = set()
+    iterator = iter(work_items)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        while len(pending) < max_workers and len(seen) < target_records:
+            try:
+                item = next(iterator)
+            except StopIteration:
+                break
+            pending.add(executor.submit(_call_search, search_photos, item))
+        while pending and len(seen) < target_records:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                try:
+                    item, result = future.result()
+                except Exception as exc:  # noqa: BLE001 - benchmark report must preserve failures and continue.
+                    errors.append({"work_item_id": "unknown", "error": type(exc).__name__, "message": str(exc)[:300]})
+                    continue
+                payloads.append((item, result.payload))
+                seen.update(result.photo_ids)
+            while len(pending) < max_workers and len(seen) < target_records:
+                try:
+                    item = next(iterator)
+                except StopIteration:
+                    break
+                pending.add(executor.submit(_call_search, search_photos, item))
+        for future in pending:
+            future.cancel()
+    return time.perf_counter() - start
+
+
+def _fetch_one(
+    search_photos: SearchPhotos,
+    item: WorkItem,
+    payloads: list[tuple[WorkItem, dict[str, object]]],
+    seen: set[str],
+    errors: list[dict[str, str]],
+) -> None:
+    try:
+        result = search_photos(item)
+    except Exception as exc:  # noqa: BLE001 - benchmark report must preserve failures and continue.
+        errors.append({"work_item_id": item.work_item_id, "error": type(exc).__name__, "message": str(exc)[:300]})
+        return
+    payloads.append((item, result.payload))
+    seen.update(result.photo_ids)
+
+
+def _call_search(search_photos: SearchPhotos, item: WorkItem) -> tuple[WorkItem, FlickrSearchResult]:
+    return item, search_photos(item)
 
 
 def _build_bronze(payloads: list[tuple[WorkItem, dict[str, object]]], species_name: str, target_records: int) -> pl.DataFrame:
