@@ -25,7 +25,7 @@ def test_fetch_dry_run_reports_required_fields() -> None:
     assert summary["hourly_limit_status"] == "within_soft_cap"
     assert summary["work_item_count"] == 5
     assert summary["output_paths"]["raw"] == "data/raw/flickr/photos_search/"
-    assert summary["selected_bioclip_model"] == "bioclip2"
+    assert summary["selected_bioclip_model"] == "bioclip2_5_huge"
 
 
 def test_fetch_dry_run_can_plan_multiple_pages() -> None:

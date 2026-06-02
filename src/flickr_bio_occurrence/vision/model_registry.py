@@ -12,6 +12,12 @@ class ModelConfig:
     role: str
     status: str
     task: str
+    model_name: str = ""
+    checkpoint: str = ""
+    package_name: str = ""
+    package_version: str = ""
+    model_hash: str = ""
+    source_url: str = ""
     notes: str = ""
 
 
@@ -29,7 +35,7 @@ class ModelRegistry:
         return cls(models)
 
     def resolve_preferred_bioclip(self) -> ModelConfig:
-        for model_id in ("bioclip2", "bioclip_newest", "bioclip1"):
+        for model_id in ("bioclip2_5_huge", "bioclip_newest", "bioclip2", "bioclip1"):
             model = self.models.get(model_id)
             if model is not None and model.status in {"use_if_available", "available", "fallback_only"}:
                 return model

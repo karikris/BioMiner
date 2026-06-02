@@ -1,8 +1,27 @@
-[models.bioclip2]
-display_name = "BioCLIP 2"
+[models.bioclip2_5_huge]
+display_name = "BioCLIP 2.5 Huge"
 role = "preferred"
 status = "use_if_available"
 task = "biology image-text classification and embedding"
+model_name = "imageomics/bioclip-2"
+checkpoint = "BioCLIP 2.5 Huge OpenCLIP ViT-H/14 checkpoint"
+package_name = "open_clip_torch"
+package_version = "pin_when_installed"
+model_hash = "pin_when_installed"
+source_url = "https://github.com/Imageomics/bioclip-2"
+notes = "Newest BioCLIP-family model identified from the official Imageomics BioCLIP 2 repository news: BioCLIP 2.5 Huge released February 2026. Exact checkpoint file/hash must be pinned at install time from the official model release source."
+
+[models.bioclip2]
+display_name = "BioCLIP 2"
+role = "fallback"
+status = "use_if_available"
+task = "biology image-text classification and embedding"
+model_name = "imageomics/bioclip-2"
+checkpoint = "BioCLIP 2 OpenCLIP checkpoint"
+package_name = "open_clip_torch"
+package_version = "pin_when_installed"
+model_hash = "pin_when_installed"
+source_url = "https://huggingface.co/imageomics/bioclip-2"
 notes = "Use BioCLIP 2 or the newest BioCLIP-family checkpoint available from the official project/model release source. Pin the exact checkpoint, package version, and model hash once installed."
 
 [models.bioclip1]
@@ -10,6 +29,12 @@ display_name = "BioCLIP"
 role = "fallback"
 status = "fallback_only"
 task = "biology image-text classification and embedding"
+model_name = "imageomics/bioclip"
+checkpoint = "BioCLIP OpenCLIP checkpoint"
+package_name = "open_clip_torch"
+package_version = "pin_when_installed"
+model_hash = "pin_when_installed"
+source_url = "https://huggingface.co/imageomics/bioclip"
 notes = "Use only if BioCLIP 2 or newer BioCLIP-family model is unavailable."
 
 [models.future_butterfly_classifier]
