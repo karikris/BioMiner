@@ -41,28 +41,31 @@ def build_monthly_work_items(
     years: Iterable[int],
     months: Iterable[int],
     query_variants: Iterable[str] | None = None,
+    pages: Iterable[int] | None = None,
     page: int = 1,
 ) -> list[WorkItem]:
     items: list[WorkItem] = []
     variants = tuple(query_variants or QUERY_VARIANTS)
+    page_values = tuple(pages or [page])
     for region_id, region_name, bbox in regions:
         for year in years:
             for month in months:
                 last_day = monthrange(year, month)[1]
                 for query_variant in variants:
-                    items.append(
-                        WorkItem(
-                            species_name=species.accepted_scientific_name,
-                            species_query_terms=species.search_terms,
-                            region_id=region_id,
-                            region_name=region_name,
-                            bbox=bbox,
-                            year=year,
-                            month=month,
-                            min_taken_date=f"{year}-{month:02d}-01",
-                            max_taken_date=f"{year}-{month:02d}-{last_day:02d}",
-                            page=page,
-                            query_variant=query_variant,
+                    for page_value in page_values:
+                        items.append(
+                            WorkItem(
+                                species_name=species.accepted_scientific_name,
+                                species_query_terms=species.search_terms,
+                                region_id=region_id,
+                                region_name=region_name,
+                                bbox=bbox,
+                                year=year,
+                                month=month,
+                                min_taken_date=f"{year}-{month:02d}-01",
+                                max_taken_date=f"{year}-{month:02d}-{last_day:02d}",
+                                page=page_value,
+                                query_variant=query_variant,
+                            )
                         )
-                    )
     return items

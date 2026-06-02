@@ -10,6 +10,7 @@ from flickr_bio_occurrence.vision.model_registry import ModelRegistry
 
 
 REGIONS = {
+    "AU_ALL": ("AU_ALL", "Australia", "112.92,-43.74,153.64,-10.05"),
     "AU_QLD": ("AU_QLD", "Queensland", "137.99,-29.18,153.55,-9.14"),
 }
 
@@ -22,11 +23,12 @@ def build_dry_run_summary(
     month: int,
     config_path: str | Path,
     model_registry_path: str | Path,
+    pages: range | None = None,
 ) -> dict[str, Any]:
     config = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
     seed = get_seed_species(species)
     region_tuple = REGIONS[region]
-    work_items = build_monthly_work_items(species=seed, regions=[region_tuple], years=[year], months=[month])
+    work_items = build_monthly_work_items(species=seed, regions=[region_tuple], years=[year], months=[month], pages=pages)
     per_page = int(config["flickr"]["default_per_page"])
     planned_max_records = min(
         len(work_items) * per_page,

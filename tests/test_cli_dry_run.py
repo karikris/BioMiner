@@ -28,6 +28,22 @@ def test_fetch_dry_run_reports_required_fields() -> None:
     assert summary["selected_bioclip_model"] == "bioclip2"
 
 
+def test_fetch_dry_run_can_plan_multiple_pages() -> None:
+    summary = build_dry_run_summary(
+        species="Papilio demoleus",
+        region="AU_ALL",
+        year=2024,
+        month=1,
+        config_path="config/pipeline.toml",
+        model_registry_path="config/model_registry.toml",
+        pages=range(1, 4),
+    )
+
+    assert summary["planned_api_calls"] == 15
+    assert summary["planned_maximum_photo_records"] == 3600
+    assert summary["work_item_count"] == 15
+
+
 def test_fetch_dry_run_cli_outputs_json(capsys) -> None:
     parser = build_parser()
     args = parser.parse_args(["fetch", "--species", "Papilio demoleus", "--region", "AU_QLD", "--year", "2024", "--month", "1", "--dry-run"])
