@@ -129,3 +129,46 @@ def test_qa_summary_outputs_benchmark_report_summary(tmp_path, capsys) -> None:
     assert payload["actual_unique_records"] == 16
     assert payload["vision_model_loaded"] is True
     assert payload["total_artifact_bytes"] == 1234
+
+
+def test_benchmark_existing_payloads_cli_runs_offline_benchmark(tmp_path, capsys) -> None:
+    raw_root = tmp_path / "raw"
+    raw_root.mkdir()
+    (raw_root / "payload.json").write_text(
+        json.dumps(
+            {
+                "stat": "ok",
+                "photos": {
+                    "photo": [
+                        {
+                            "id": "1",
+                            "title": "Papilio demoleus",
+                            "latitude": "-27",
+                            "longitude": "153",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "benchmark-existing-payloads",
+            "--raw-root",
+            str(raw_root),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--target-records",
+            "1000",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["api_calls_made"] == 0
+    assert payload["actual_unique_records"] == 1
+    assert payload["target_record_count"] == 1000
+    assert Path(payload["report"]).exists()

@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from flickr_bio_occurrence.benchmark.offline_run import run_existing_payload_benchmark
 from flickr_bio_occurrence.flickr.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_PATH, FlickrRateLimiter
 from flickr_bio_occurrence.pipeline.dry_run import build_dry_run_summary
 
@@ -22,6 +23,12 @@ def build_parser() -> argparse.ArgumentParser:
     qa_rate_limit.add_argument("--ledger-path", default=str(DEFAULT_RATE_LIMIT_LEDGER_PATH))
     qa_summary = subparsers.add_parser("qa-summary")
     qa_summary.add_argument("--report", required=True)
+    offline = subparsers.add_parser("benchmark-existing-payloads")
+    offline.add_argument("--raw-root", required=True)
+    offline.add_argument("--output-dir", required=True)
+    offline.add_argument("--species", default="Papilio demoleus")
+    offline.add_argument("--region-id", default="AU_ALL")
+    offline.add_argument("--target-records", type=int, default=1000)
     return parser
 
 
@@ -55,6 +62,19 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "qa-summary":
         print(json.dumps(_summarize_report(Path(args.report)), indent=2, sort_keys=True))
+        return 0
+    if args.command == "benchmark-existing-payloads":
+        payload_paths = sorted(Path(args.raw_root).rglob("*.json"))
+        report_path = run_existing_payload_benchmark(
+            payload_paths=payload_paths,
+            output_dir=args.output_dir,
+            species_name=args.species,
+            region_id=args.region_id,
+            target_records=args.target_records,
+        )
+        summary = _summarize_report(report_path)
+        summary["raw_payload_files"] = len(payload_paths)
+        print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
     return 2
 
