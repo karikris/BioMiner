@@ -36,7 +36,9 @@ def build_dry_run_summary(
     )
     planned_api_calls = len(work_items)
     soft_cap = int(config["flickr"]["soft_api_calls_per_hour"])
-    model = ModelRegistry.from_config(model_registry_path).resolve_preferred_bioclip()
+    registry = ModelRegistry.from_config(model_registry_path)
+    model = registry.resolve_preferred_bioclip()
+    runtime = registry.resolve_preferred_bioclip_runtime()
     return {
         "species": species,
         "region": region,
@@ -54,4 +56,12 @@ def build_dry_run_summary(
             "review": "data/review/",
         },
         "selected_bioclip_model": model.model_id,
+        "selected_bioclip_runtime": {
+            "available": runtime.available,
+            "home": str(runtime.home) if runtime.home is not None else "",
+            "venv_python": str(runtime.venv_python) if runtime.venv_python is not None else "",
+            "package_name": model.package_name,
+            "package_version": runtime.package_version,
+            "unavailable_reason": runtime.unavailable_reason,
+        },
     }

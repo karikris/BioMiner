@@ -26,6 +26,8 @@ def test_fetch_dry_run_reports_required_fields() -> None:
     assert summary["work_item_count"] == 5
     assert summary["output_paths"]["raw"] == "data/raw/flickr/photos_search/"
     assert summary["selected_bioclip_model"] == "bioclip2_5_huge"
+    assert summary["selected_bioclip_runtime"]["package_name"] == "open_clip_torch"
+    assert "available" in summary["selected_bioclip_runtime"]
 
 
 def test_fetch_dry_run_can_plan_multiple_pages() -> None:
