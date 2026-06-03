@@ -89,7 +89,27 @@ def test_search_photos_returns_only_logged_photo_records(tmp_path) -> None:
     assert limiter.photo_records_in_window() == 2
 
 
-def _work_item() -> WorkItem:
+def test_photos_search_maps_broader_query_variants_to_text(tmp_path) -> None:
+    seen_text: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_text.append(dict(request.url.params)["text"])
+        return httpx.Response(200, json={"stat": "ok", "photos": {"photo": []}})
+
+    client = FlickrClient(
+        api_key="test-key",
+        limiter=FlickrRateLimiter(tmp_path / "limits.sqlite"),
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        raw_output_root=tmp_path / "raw",
+    )
+
+    for variant in ["butterfly", "papilio", "citrusbutterfly", "limebutterfly"]:
+        client.search_photos(_work_item(query_variant=variant))
+
+    assert seen_text == ["butterfly", "Papilio", "citrusbutterfly", "limebutterfly"]
+
+
+def _work_item(query_variant: str = "scientific_name") -> WorkItem:
     return WorkItem(
         species_name="Papilio demoleus",
         species_query_terms=["Papilio demoleus", "lime butterfly"],
@@ -101,5 +121,5 @@ def _work_item() -> WorkItem:
         min_taken_date="2024-01-01",
         max_taken_date="2024-01-31",
         page=1,
-        query_variant="scientific_name",
+        query_variant=query_variant,
     )

@@ -64,6 +64,20 @@ def test_work_items_can_filter_query_variants() -> None:
     assert {item.query_variant for item in items} == {"swallowtail"}
 
 
+def test_work_items_can_plan_broader_query_variants() -> None:
+    seed = get_seed_species("Papilio demoleus")
+    variants = ["butterfly", "papilio", "citrusbutterfly", "limebutterfly"]
+    items = build_monthly_work_items(
+        species=seed,
+        regions=[("AU_ALL", "Australia", "112.92,-43.74,153.64,-10.05")],
+        years=[2024],
+        months=[1],
+        query_variants=variants,
+    )
+
+    assert [item.query_variant for item in items] == variants
+
+
 def test_work_items_can_plan_multiple_pages() -> None:
     seed = get_seed_species("Papilio demoleus")
     items = build_monthly_work_items(

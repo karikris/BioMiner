@@ -9,7 +9,19 @@ from typing import Iterable
 from flickr_bio_occurrence.taxonomy.species_mapper import SpeciesSeed
 
 
-QUERY_VARIANTS = ("scientific_name", "lime_butterfly", "chequered_swallowtail", "citrus_swallowtail", "swallowtail")
+QUERY_VARIANTS = (
+    "scientific_name",
+    "lime_butterfly",
+    "chequered_swallowtail",
+    "citrus_swallowtail",
+    "swallowtail",
+)
+BROAD_QUERY_VARIANTS = QUERY_VARIANTS + (
+    "papilio",
+    "butterfly",
+    "citrusbutterfly",
+    "limebutterfly",
+)
 
 
 @dataclass(frozen=True)
