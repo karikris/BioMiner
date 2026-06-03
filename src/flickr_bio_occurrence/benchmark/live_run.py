@@ -18,10 +18,12 @@ from flickr_bio_occurrence.pipeline.transforms import build_dwc_rows, build_silv
 from flickr_bio_occurrence.storage.duckdb_index import create_qa_views
 from flickr_bio_occurrence.storage.parquet_io import write_parquet_dataset
 from flickr_bio_occurrence.taxonomy.species_mapper import get_seed_species
+from flickr_bio_occurrence.vision.pipeline import build_bioclip_row_classifier
 
 
 SearchPhotos = Callable[[WorkItem], FlickrSearchResult]
 VisionClassifier = Callable[[dict[str, object]], dict[str, object]]
+DEFAULT_LIVE_TEST_API_CALL_CAP = 100
 
 
 def run_live_search_benchmark(
@@ -29,7 +31,7 @@ def run_live_search_benchmark(
     search_photos: SearchPhotos,
     output_dir: str | Path,
     target_records: int = 1000,
-    max_calls: int = 3000,
+    max_calls: int = DEFAULT_LIVE_TEST_API_CALL_CAP,
     species_name: str = "Papilio demoleus",
     regions: list[tuple[str, str, str]] | None = None,
     years: list[int] | None = None,
@@ -38,11 +40,20 @@ def run_live_search_benchmark(
     query_variants: list[str] | None = None,
     pages: range | None = None,
     vision_classifier: VisionClassifier | None = None,
+    use_bioclip_vision: bool = False,
+    model_registry_path: str | Path = "config/model_registry.toml",
+    image_cache_root: str | Path = "data/cache/images",
 ) -> Path:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     timings: dict[str, float] = {}
     tracemalloc.start()
+    effective_vision_classifier = vision_classifier
+    if effective_vision_classifier is None and use_bioclip_vision:
+        effective_vision_classifier = build_bioclip_row_classifier(
+            model_registry_path=model_registry_path,
+            cache_root=image_cache_root,
+        )
     work_items = build_monthly_work_items(
         species=get_seed_species(species_name),
         regions=regions or [("AU_ALL", "Australia", "112.92,-43.74,153.64,-10.05")],
@@ -65,7 +76,7 @@ def run_live_search_benchmark(
     )
     bronze = _timed(timings, "bronze_flattening_dedup", lambda: _build_bronze(payloads, species_name, target_records))
     silver = _timed(timings, "silver_candidate_build", lambda: build_silver_candidates(bronze))
-    vision_predictions = _timed(timings, "vision_classification", lambda: _build_vision_predictions(bronze, vision_classifier))
+    vision_predictions = _timed(timings, "vision_classification", lambda: _build_vision_predictions(bronze, effective_vision_classifier))
     gold = _timed(timings, "dwc_mapping", lambda: build_dwc_rows(silver))
     bronze_paths, silver_paths, vision_paths, gold_paths, duckdb_path = _timed(
         timings,
@@ -104,7 +115,7 @@ def run_live_search_benchmark(
             "worker_count": max_workers,
             "cpu_count": os.cpu_count() or 1,
             "gpu_used": False,
-            "vision_model_loaded": vision_classifier is not None,
+            "vision_model_loaded": effective_vision_classifier is not None,
             "http_client": "httpx",
             "rate_limiter_scope": "caller_supplied_global_limiter_required",
         },

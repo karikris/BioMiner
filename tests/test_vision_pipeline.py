@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from flickr_bio_occurrence.vision.image_cache import CachedImage
-from flickr_bio_occurrence.vision.pipeline import classify_bronze_photo_row
+from flickr_bio_occurrence.vision.pipeline import build_bioclip_row_classifier, classify_bronze_photo_row
 
 
 def test_classify_bronze_photo_row_caches_image_and_runs_classifier(tmp_path) -> None:
@@ -61,3 +61,34 @@ def test_classify_bronze_photo_row_requires_image_url(tmp_path) -> None:
             classifier=object(),
             cache_root=tmp_path,
         )
+
+
+def test_build_bioclip_row_classifier_uses_registry_runtime_and_cache_root(tmp_path) -> None:
+    row_classifier = build_bioclip_row_classifier(
+        model_registry_path="config/model_registry.toml",
+        cache_root=tmp_path,
+        scorer=lambda image_path, labels: {
+            "a photo of Papilio demoleus": 0.99,
+            "a photo of a moth": 0.01,
+        },
+        cache_image=lambda image_url, *, cache_root: CachedImage(
+            source_url=image_url,
+            path=tmp_path / "image.jpg",
+            image_hash="sha256:image",
+            content_type="image/jpeg",
+            byte_size=10,
+        ),
+    )
+
+    record = row_classifier(
+        {
+            "flickr_photo_id": "123",
+            "image_url": "https://live.staticflickr.com/example.jpg",
+            "species_query": "Papilio demoleus",
+            "raw_title": "Papilio demoleus",
+        }
+    )
+
+    assert record["model_version"] == "bioclip2_5_huge"
+    assert record["top1_label"] == "a photo of Papilio demoleus"
+    assert record["species_agreement_status"] == "exact_species_agreement"

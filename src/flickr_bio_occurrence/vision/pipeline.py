@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from flickr_bio_occurrence.vision.bioclip import BioClipClassifier, BioClipScorer
 from flickr_bio_occurrence.vision.image_cache import CachedImage, cache_image_from_url
+from flickr_bio_occurrence.vision.model_registry import ModelRegistry
 
 
 class ImageClassifier(Protocol):
@@ -12,6 +14,28 @@ class ImageClassifier(Protocol):
 
 
 CacheImage = Callable[..., CachedImage]
+RowClassifier = Callable[[dict[str, Any]], dict[str, object]]
+
+
+def build_bioclip_row_classifier(
+    *,
+    model_registry_path: str | Path = "config/model_registry.toml",
+    cache_root: str | Path = "data/cache/images",
+    scorer: BioClipScorer | None = None,
+    cache_image: CacheImage = cache_image_from_url,
+) -> RowClassifier:
+    runtime = ModelRegistry.from_config(model_registry_path).require_preferred_bioclip_runtime()
+    classifier = BioClipClassifier(runtime=runtime, scorer=scorer)
+
+    def classify_row(row: dict[str, Any]) -> dict[str, object]:
+        return classify_bronze_photo_row(
+            row,
+            classifier=classifier,
+            cache_root=cache_root,
+            cache_image=cache_image,
+        )
+
+    return classify_row
 
 
 def classify_bronze_photo_row(
