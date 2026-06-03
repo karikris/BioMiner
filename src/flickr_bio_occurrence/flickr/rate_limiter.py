@@ -69,12 +69,15 @@ class FlickrRateLimiter:
         with self._lock, self._connect() as conn:
             remaining = self.hard_photo_records_per_hour - self._photo_records_in_window(conn, time.time())
             accepted = photo_ids[: max(0, min(len(photo_ids), remaining))]
-            rows = [(photo_id, work_item_id, time.time()) for photo_id in accepted]
-            conn.executemany(
-                "INSERT OR IGNORE INTO photo_record_ledger(photo_id, work_item_id, created_at) VALUES (?, ?, ?)",
-                rows,
-            )
-            return accepted
+            logged: list[str] = []
+            for photo_id in accepted:
+                result = conn.execute(
+                    "INSERT OR IGNORE INTO photo_record_ledger(photo_id, work_item_id, created_at) VALUES (?, ?, ?)",
+                    (photo_id, work_item_id, time.time()),
+                )
+                if result.rowcount:
+                    logged.append(photo_id)
+            return logged
 
     def api_calls_in_window(self) -> int:
         with self._lock, self._connect() as conn:

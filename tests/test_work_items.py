@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from flickr_bio_occurrence.flickr.work_items import WorkItem, build_monthly_work_items
 from flickr_bio_occurrence.taxonomy.species_mapper import get_seed_species
 
@@ -75,3 +77,32 @@ def test_work_items_can_plan_multiple_pages() -> None:
 
     assert [item.page for item in items] == [1, 2, 3]
     assert len({item.work_item_id for item in items}) == 3
+
+
+def test_work_items_skip_months_after_end_date() -> None:
+    seed = get_seed_species("Papilio demoleus")
+    items = build_monthly_work_items(
+        species=seed,
+        regions=[("AU_ALL", "Australia", "112.92,-43.74,153.64,-10.05")],
+        years=[2026],
+        months=range(1, 13),
+        query_variants=["swallowtail"],
+        end_date=date(2026, 6, 3),
+    )
+
+    assert {item.month for item in items} == {1, 2, 3, 4, 5, 6}
+
+
+def test_work_items_cap_current_month_max_taken_date_to_end_date() -> None:
+    seed = get_seed_species("Papilio demoleus")
+    items = build_monthly_work_items(
+        species=seed,
+        regions=[("AU_ALL", "Australia", "112.92,-43.74,153.64,-10.05")],
+        years=[2026],
+        months=[6],
+        query_variants=["swallowtail"],
+        end_date=date(2026, 6, 3),
+    )
+
+    assert items[0].min_taken_date == "2026-06-01"
+    assert items[0].max_taken_date == "2026-06-03"

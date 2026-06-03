@@ -56,6 +56,14 @@ def test_log_photo_records_returns_only_actually_logged_ids(tmp_path) -> None:
     assert limiter.photo_records_in_window() == 2
 
 
+def test_log_photo_records_returns_only_new_photo_ids(tmp_path) -> None:
+    limiter = FlickrRateLimiter(tmp_path / "limits.sqlite", hard_photo_records_per_hour=5)
+
+    assert limiter.log_photo_records(["1", "2"], "work-a") == ["1", "2"]
+    assert limiter.log_photo_records(["2", "3"], "work-b") == ["3"]
+    assert limiter.photo_records_in_window() == 3
+
+
 def test_parallel_workers_share_global_limiter(tmp_path) -> None:
     limiter = FlickrRateLimiter(tmp_path / "limits.sqlite", soft_api_calls_per_hour=3200, hard_api_calls_per_hour=25)
 

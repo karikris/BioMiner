@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from calendar import monthrange
 from dataclasses import dataclass, field
+from datetime import date
 from hashlib import sha256
 from typing import Iterable
 
@@ -43,6 +44,7 @@ def build_monthly_work_items(
     query_variants: Iterable[str] | None = None,
     pages: Iterable[int] | None = None,
     page: int = 1,
+    end_date: date | None = None,
 ) -> list[WorkItem]:
     items: list[WorkItem] = []
     variants = tuple(query_variants or QUERY_VARIANTS)
@@ -50,7 +52,12 @@ def build_monthly_work_items(
     for region_id, region_name, bbox in regions:
         for year in years:
             for month in months:
+                if end_date and (year, month) > (end_date.year, end_date.month):
+                    continue
                 last_day = monthrange(year, month)[1]
+                max_taken_date = f"{year}-{month:02d}-{last_day:02d}"
+                if end_date and (year, month) == (end_date.year, end_date.month):
+                    max_taken_date = end_date.isoformat()
                 for query_variant in variants:
                     for page_value in page_values:
                         items.append(
@@ -63,7 +70,7 @@ def build_monthly_work_items(
                                 year=year,
                                 month=month,
                                 min_taken_date=f"{year}-{month:02d}-01",
-                                max_taken_date=f"{year}-{month:02d}-{last_day:02d}",
+                                max_taken_date=max_taken_date,
                                 page=page_value,
                                 query_variant=query_variant,
                             )

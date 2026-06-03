@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import time
+from datetime import date
 
 import pytest
 
@@ -269,3 +270,27 @@ def test_live_search_benchmark_can_plan_pages(tmp_path) -> None:
     )
 
     assert pages == [1, 2, 3]
+
+
+def test_live_search_benchmark_can_skip_future_months(tmp_path) -> None:
+    months: list[int] = []
+
+    def fake_search(work_item: WorkItem) -> FlickrSearchResult:
+        months.append(work_item.month)
+        payload = {"stat": "ok", "photos": {"photo": []}}
+        raw_path = tmp_path / f"{work_item.month}.json"
+        raw_path.write_text(json.dumps(payload), encoding="utf-8")
+        return FlickrSearchResult(payload=payload, raw_response_path=raw_path, photo_ids=[])
+
+    run_live_search_benchmark(
+        search_photos=fake_search,
+        output_dir=tmp_path / "date-capped-run",
+        target_records=1000,
+        max_calls=20,
+        years=[2026],
+        months=range(1, 13),
+        query_variants=["swallowtail"],
+        end_date=date(2026, 6, 3),
+    )
+
+    assert months == [1, 2, 3, 4, 5, 6]

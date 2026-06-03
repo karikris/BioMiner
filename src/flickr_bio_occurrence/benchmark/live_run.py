@@ -7,6 +7,7 @@ import resource
 import time
 import tracemalloc
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from datetime import date
 from typing import Callable
 
 import polars as pl
@@ -42,6 +43,7 @@ def run_live_search_benchmark(
     max_workers: int = 1,
     query_variants: list[str] | None = None,
     pages: range | None = None,
+    end_date: date | None = None,
     vision_classifier: VisionClassifier | None = None,
     use_bioclip_vision: bool = False,
     model_registry_path: str | Path = "config/model_registry.toml",
@@ -64,6 +66,7 @@ def run_live_search_benchmark(
         months=months,
         query_variants=query_variants,
         pages=pages,
+        end_date=end_date,
     )
     payloads: list[tuple[WorkItem, dict[str, object]]] = []
     seen: set[str] = set()
@@ -103,6 +106,7 @@ def run_live_search_benchmark(
             "hard_api_calls_per_hour": DEFAULT_HARD_API_CALLS_PER_HOUR,
             "hard_photo_records_per_hour": DEFAULT_HARD_PHOTO_RECORDS_PER_HOUR,
             "effective_max_calls_for_run": max_calls,
+            "end_date": end_date.isoformat() if end_date else None,
         },
         "errors": errors[:20],
         "step_timings_seconds": timings,
