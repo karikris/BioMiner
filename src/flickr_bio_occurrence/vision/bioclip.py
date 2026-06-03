@@ -100,10 +100,12 @@ class ExternalBioClipScorer:
         *,
         runtime: BioClipRuntime,
         worker_script: str | Path | None = None,
+        hf_cache_dir: str | Path = "data/cache/huggingface",
         runner: SubprocessRunner = subprocess.run,
     ) -> None:
         self.runtime = runtime
         self.worker_script = Path(worker_script) if worker_script is not None else _default_worker_script()
+        self.hf_cache_dir = Path(hf_cache_dir)
         self.runner = runner
 
     def __call__(self, image_path: Path, labels: Sequence[str]) -> Mapping[str, float]:
@@ -114,6 +116,7 @@ class ExternalBioClipScorer:
             "labels": list(labels),
             "model_name": self.runtime.model.model_name,
             "checkpoint": self.runtime.model.checkpoint,
+            "hf_cache_dir": str(self.hf_cache_dir),
         }
         result = self.runner(
             [str(self.runtime.venv_python), str(self.worker_script)],

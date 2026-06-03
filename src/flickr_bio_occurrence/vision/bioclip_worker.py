@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -8,6 +9,7 @@ from typing import Sequence
 
 def main() -> None:
     request = json.loads(sys.stdin.read())
+    configure_hf_cache_env(Path(request.get("hf_cache_dir") or "data/cache/huggingface"))
     scores = score_image(
         image_path=Path(request["image_path"]),
         labels=request["labels"],
@@ -15,6 +17,15 @@ def main() -> None:
         checkpoint=request["checkpoint"],
     )
     print(json.dumps({"scores": scores}, sort_keys=True))
+
+
+def configure_hf_cache_env(cache_dir: str | Path) -> Path:
+    cache_path = Path(cache_dir).resolve()
+    hub_path = cache_path / "hub"
+    hub_path.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("HF_HOME", str(cache_path))
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(hub_path))
+    return cache_path
 
 
 def score_image(*, image_path: Path, labels: Sequence[str], model_name: str, checkpoint: str) -> dict[str, float]:

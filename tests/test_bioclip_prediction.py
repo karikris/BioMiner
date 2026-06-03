@@ -167,6 +167,7 @@ def test_external_bioclip_scorer_invokes_runtime_python_with_json() -> None:
     assert scores["a photo of Papilio demoleus"] == 0.97
     assert calls[0]["cmd"][0] == "/home/toffe/bioclip25/.venv/bin/python"
     assert "imageomics/bioclip-2" in calls[0]["input"]
+    assert "data/cache/huggingface" in calls[0]["input"]
 
 
 def test_external_bioclip_scorer_raises_with_worker_stderr() -> None:
