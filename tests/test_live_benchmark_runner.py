@@ -38,6 +38,33 @@ def test_live_search_benchmark_writes_report_for_actual_records(tmp_path) -> Non
     assert report["storage_artifacts"]["duckdb_path"].endswith(".duckdb")
 
 
+def test_live_search_benchmark_processes_only_reserved_photo_ids(tmp_path) -> None:
+    payload = {
+        "stat": "ok",
+        "photos": {
+            "photo": [
+                {"id": "allowed", "title": "Papilio demoleus"},
+                {"id": "not-reserved", "title": "Papilio demoleus"},
+            ]
+        },
+    }
+
+    def fake_search(work_item: WorkItem) -> FlickrSearchResult:
+        raw_path = tmp_path / "raw.json"
+        raw_path.write_text(json.dumps(payload), encoding="utf-8")
+        return FlickrSearchResult(payload=payload, raw_response_path=raw_path, photo_ids=["allowed"])
+
+    report_path = run_live_search_benchmark(
+        search_photos=fake_search,
+        output_dir=tmp_path / "reserved-run",
+        target_records=10,
+        max_calls=1,
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["actual_unique_records"] == 1
+
+
 def test_live_search_benchmark_defaults_to_100_api_calls_per_test(tmp_path) -> None:
     calls: list[str] = []
 

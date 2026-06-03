@@ -170,7 +170,7 @@ def _fetch_payloads(
                 except Exception as exc:  # noqa: BLE001 - benchmark report must preserve failures and continue.
                     errors.append({"work_item_id": "unknown", "error": type(exc).__name__, "message": str(exc)[:300]})
                     continue
-                payloads.append((item, result.payload))
+                payloads.append((item, _payload_for_reserved_photo_ids(result.payload, result.photo_ids)))
                 seen.update(result.photo_ids)
             while len(pending) < max_workers and len(seen) < target_records:
                 try:
@@ -195,7 +195,7 @@ def _fetch_one(
     except Exception as exc:  # noqa: BLE001 - benchmark report must preserve failures and continue.
         errors.append({"work_item_id": item.work_item_id, "error": type(exc).__name__, "message": str(exc)[:300]})
         return
-    payloads.append((item, result.payload))
+    payloads.append((item, _payload_for_reserved_photo_ids(result.payload, result.photo_ids)))
     seen.update(result.photo_ids)
 
 
@@ -211,6 +211,28 @@ def _build_bronze(payloads: list[tuple[WorkItem, dict[str, object]]], species_na
     if not frames:
         return pl.DataFrame()
     return pl.concat(frames, how="diagonal_relaxed").unique(subset=["flickr_photo_id"], keep="first").head(target_records)
+
+
+def _payload_for_reserved_photo_ids(payload: dict[str, object], photo_ids: list[str]) -> dict[str, object]:
+    allowed = set(photo_ids)
+    photos = payload.get("photos")
+    if not isinstance(photos, dict):
+        return payload
+    photo_rows = photos.get("photo")
+    if not isinstance(photo_rows, list):
+        return payload
+    filtered_photos = [
+        photo
+        for photo in photo_rows
+        if isinstance(photo, dict) and str(photo.get("id", "")) in allowed
+    ]
+    return {
+        **payload,
+        "photos": {
+            **photos,
+            "photo": filtered_photos,
+        },
+    }
 
 
 def _build_vision_predictions(bronze: pl.DataFrame, vision_classifier: VisionClassifier | None) -> pl.DataFrame:
