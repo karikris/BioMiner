@@ -24,7 +24,7 @@ from flickr_bio_occurrence.vision.pipeline import build_bioclip_row_classifier
 SearchPhotos = Callable[[WorkItem], FlickrSearchResult]
 VisionClassifier = Callable[[dict[str, object]], dict[str, object]]
 DEFAULT_LIVE_TEST_API_CALL_CAP = 100
-DEFAULT_SOFT_API_CALLS_PER_HOUR = 3000
+DEFAULT_SOFT_API_CALLS_PER_HOUR = 3200
 DEFAULT_HARD_API_CALLS_PER_HOUR = 3600
 DEFAULT_HARD_PHOTO_RECORDS_PER_HOUR = 3600
 

@@ -1,7 +1,7 @@
 [flickr]
 api_key_env = "FLICKR_API_KEY"
 base_url = "https://www.flickr.com/services/rest/"
-soft_api_calls_per_hour = 3000
+soft_api_calls_per_hour = 3200
 hard_api_calls_per_hour = 3600
 hard_photo_records_per_hour = 3600
 default_per_page = 250

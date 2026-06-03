@@ -99,7 +99,7 @@ def test_qa_rate_limit_outputs_limiter_status_json(tmp_path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["api_calls_in_window"] == 1
     assert payload["photo_records_in_window"] == 2
-    assert payload["soft_api_calls_per_hour"] == 3000
+    assert payload["soft_api_calls_per_hour"] == 3200
     assert payload["hard_api_calls_per_hour"] == 3600
 
 

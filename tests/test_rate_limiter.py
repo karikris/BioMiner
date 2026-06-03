@@ -6,7 +6,7 @@ from flickr_bio_occurrence.flickr.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_
 
 
 def test_rate_limiter_never_exceeds_3600_calls_per_hour(tmp_path) -> None:
-    limiter = FlickrRateLimiter(tmp_path / "limits.sqlite", soft_api_calls_per_hour=3000, hard_api_calls_per_hour=3)
+    limiter = FlickrRateLimiter(tmp_path / "limits.sqlite", soft_api_calls_per_hour=3200, hard_api_calls_per_hour=3)
 
     for _ in range(3):
         limiter.acquire_api_token("flickr.photos.search", "work")
@@ -17,6 +17,22 @@ def test_rate_limiter_never_exceeds_3600_calls_per_hour(tmp_path) -> None:
         pass
     else:
         raise AssertionError("expected hard API call cap to fail closed")
+
+    assert limiter.api_calls_in_window() == 3
+
+
+def test_rate_limiter_stops_at_configured_soft_api_calls_per_hour(tmp_path) -> None:
+    limiter = FlickrRateLimiter(tmp_path / "limits.sqlite", soft_api_calls_per_hour=3, hard_api_calls_per_hour=3600)
+
+    for _ in range(3):
+        limiter.acquire_api_token("flickr.photos.search", "work")
+
+    try:
+        limiter.acquire_api_token("flickr.photos.search", "work")
+    except RateLimitExceeded as exc:
+        assert "soft API call cap reached" in str(exc)
+    else:
+        raise AssertionError("expected soft API call cap to stop scheduling")
 
     assert limiter.api_calls_in_window() == 3
 
@@ -33,7 +49,7 @@ def test_rate_limiter_never_exceeds_3600_photo_records_per_hour(tmp_path) -> Non
 
 
 def test_parallel_workers_share_global_limiter(tmp_path) -> None:
-    limiter = FlickrRateLimiter(tmp_path / "limits.sqlite", soft_api_calls_per_hour=3000, hard_api_calls_per_hour=25)
+    limiter = FlickrRateLimiter(tmp_path / "limits.sqlite", soft_api_calls_per_hour=3200, hard_api_calls_per_hour=25)
 
     def acquire_once(index: int) -> bool:
         try:

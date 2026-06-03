@@ -18,7 +18,7 @@ class FlickrRateLimiter:
         self,
         ledger_path: str | Path = DEFAULT_RATE_LIMIT_LEDGER_PATH,
         *,
-        soft_api_calls_per_hour: int = 3000,
+        soft_api_calls_per_hour: int = 3200,
         hard_api_calls_per_hour: int = 3600,
         hard_photo_records_per_hour: int = 3600,
         window_seconds: int = 3600,
@@ -35,6 +35,8 @@ class FlickrRateLimiter:
         with self._lock, self._connect() as conn:
             now = time.time()
             count = self._api_calls_in_window(conn, now)
+            if count >= self.soft_api_calls_per_hour:
+                raise RateLimitExceeded("soft API call cap reached")
             if count >= self.hard_api_calls_per_hour:
                 raise RateLimitExceeded("hard API call cap reached")
             conn.execute(
