@@ -59,6 +59,9 @@ def test_live_search_benchmark_defaults_to_100_api_calls_per_test(tmp_path) -> N
     assert DEFAULT_LIVE_TEST_API_CALL_CAP == 100
     assert report["max_calls"] == 100
     assert report["work_items_called"] == 100
+    assert report["api_policy"]["per_test_api_call_cap"] == 100
+    assert report["api_policy"]["soft_api_calls_per_hour"] == 3000
+    assert report["api_policy"]["hard_api_calls_per_hour"] == 3600
 
 
 def test_live_search_benchmark_writes_optional_vision_predictions(tmp_path) -> None:
