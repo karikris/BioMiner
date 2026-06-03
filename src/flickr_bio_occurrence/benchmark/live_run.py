@@ -21,6 +21,7 @@ from flickr_bio_occurrence.taxonomy.species_mapper import get_seed_species
 
 
 SearchPhotos = Callable[[WorkItem], FlickrSearchResult]
+VisionClassifier = Callable[[dict[str, object]], dict[str, object]]
 
 
 def run_live_search_benchmark(
@@ -36,6 +37,7 @@ def run_live_search_benchmark(
     max_workers: int = 1,
     query_variants: list[str] | None = None,
     pages: range | None = None,
+    vision_classifier: VisionClassifier | None = None,
 ) -> Path:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -63,11 +65,12 @@ def run_live_search_benchmark(
     )
     bronze = _timed(timings, "bronze_flattening_dedup", lambda: _build_bronze(payloads, species_name, target_records))
     silver = _timed(timings, "silver_candidate_build", lambda: build_silver_candidates(bronze))
+    vision_predictions = _timed(timings, "vision_classification", lambda: _build_vision_predictions(bronze, vision_classifier))
     gold = _timed(timings, "dwc_mapping", lambda: build_dwc_rows(silver))
-    bronze_paths, silver_paths, gold_paths, duckdb_path = _timed(
+    bronze_paths, silver_paths, vision_paths, gold_paths, duckdb_path = _timed(
         timings,
         "artifact_write",
-        lambda: _write_outputs(output_path, bronze, silver, gold),
+        lambda: _write_outputs(output_path, bronze, silver, vision_predictions, gold),
     )
     current, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
@@ -86,6 +89,7 @@ def run_live_search_benchmark(
             "root": str(output_path),
             "bronze_parquet_files": len(bronze_paths),
             "silver_parquet_files": len(silver_paths),
+            "silver_vision_prediction_parquet_files": len(vision_paths),
             "gold_parquet_files": len(gold_paths),
             "duckdb_path": str(duckdb_path) if duckdb_path else None,
             "total_artifact_bytes": sum(path.stat().st_size for path in files),
@@ -100,7 +104,7 @@ def run_live_search_benchmark(
             "worker_count": max_workers,
             "cpu_count": os.cpu_count() or 1,
             "gpu_used": False,
-            "vision_model_loaded": False,
+            "vision_model_loaded": vision_classifier is not None,
             "http_client": "httpx",
             "rate_limiter_scope": "caller_supplied_global_limiter_required",
         },
@@ -188,14 +192,36 @@ def _build_bronze(payloads: list[tuple[WorkItem, dict[str, object]]], species_na
     return pl.concat(frames, how="diagonal_relaxed").unique(subset=["flickr_photo_id"], keep="first").head(target_records)
 
 
-def _write_outputs(output_path: Path, bronze: pl.DataFrame, silver: pl.DataFrame, gold: pl.DataFrame) -> tuple[list[Path], list[Path], list[Path], Path | None]:
+def _build_vision_predictions(bronze: pl.DataFrame, vision_classifier: VisionClassifier | None) -> pl.DataFrame:
+    if vision_classifier is None or not bronze.height:
+        return pl.DataFrame()
+    rows = [
+        vision_classifier(row)
+        for row in bronze.to_dicts()
+        if row.get("image_url")
+    ]
+    return pl.DataFrame(rows) if rows else pl.DataFrame()
+
+
+def _write_outputs(
+    output_path: Path,
+    bronze: pl.DataFrame,
+    silver: pl.DataFrame,
+    vision_predictions: pl.DataFrame,
+    gold: pl.DataFrame,
+) -> tuple[list[Path], list[Path], list[Path], list[Path], Path | None]:
     if not bronze.height:
-        return [], [], [], None
+        return [], [], [], [], None
     bronze_paths = write_parquet_dataset(bronze, output_path / "bronze" / "bronze_flickr_photo")
     silver_paths = write_parquet_dataset(silver, output_path / "silver" / "silver_occurrence_candidate")
+    vision_paths = (
+        write_parquet_dataset(vision_predictions, output_path / "silver" / "silver_vision_prediction")
+        if vision_predictions.height
+        else []
+    )
     gold_outputs = export_dwc_records(gold, output_path / "gold")
     duckdb_path = create_qa_views(db_path=output_path / "live_search_benchmark.duckdb", data_root=output_path)
-    return bronze_paths, silver_paths, gold_outputs.parquet_paths, duckdb_path
+    return bronze_paths, silver_paths, vision_paths, gold_outputs.parquet_paths, duckdb_path
 
 
 def _timed[T](timings: dict[str, float], name: str, fn: Callable[[], T]) -> T:

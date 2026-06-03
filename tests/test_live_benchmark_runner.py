@@ -35,6 +35,61 @@ def test_live_search_benchmark_writes_report_for_actual_records(tmp_path) -> Non
     assert report["storage_artifacts"]["duckdb_path"].endswith(".duckdb")
 
 
+def test_live_search_benchmark_writes_optional_vision_predictions(tmp_path) -> None:
+    calls: list[str] = []
+
+    def fake_search(work_item: WorkItem) -> FlickrSearchResult:
+        calls.append(work_item.work_item_id)
+        photo_id = str(len(calls))
+        payload = {
+            "stat": "ok",
+            "photos": {
+                "photo": [
+                    {
+                        "id": photo_id,
+                        "title": "Papilio demoleus",
+                        "url_m": "https://live.staticflickr.com/example.jpg",
+                    }
+                ]
+            },
+        }
+        raw_path = tmp_path / f"{photo_id}.json"
+        raw_path.write_text(json.dumps(payload), encoding="utf-8")
+        return FlickrSearchResult(payload=payload, raw_response_path=raw_path, photo_ids=[photo_id])
+
+    def fake_classifier(row: dict[str, object]) -> dict[str, object]:
+        return {
+            "flickr_photo_id": row["flickr_photo_id"],
+            "model_family": "bioclip",
+            "model_name": "imageomics/bioclip-2",
+            "model_version": "bioclip2_5_huge",
+            "model_checkpoint": "checkpoint",
+            "model_hash": "sha256:test",
+            "image_hash": "sha256:image",
+            "image_url_used": row["image_url"],
+            "top1_label": "a photo of Papilio demoleus",
+            "top1_score": 0.9,
+            "topk_json": [{"label": "a photo of Papilio demoleus", "score": 0.9}],
+            "species_agreement_status": "exact_species_agreement",
+            "vision_review_required": False,
+            "created_at": "2026-06-03T00:00:00+00:00",
+        }
+
+    report_path = run_live_search_benchmark(
+        search_photos=fake_search,
+        output_dir=tmp_path / "vision-run",
+        target_records=2,
+        max_calls=5,
+        vision_classifier=fake_classifier,
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["storage_artifacts"]["silver_vision_prediction_parquet_files"] == 1
+    assert report["compute_artifacts"]["vision_model_loaded"] is True
+    assert "vision_classification" in report["step_timings_seconds"]
+    assert list((tmp_path / "vision-run" / "silver" / "silver_vision_prediction").rglob("*.parquet"))
+
+
 def test_live_search_benchmark_can_run_parallel_and_stop_at_target(tmp_path) -> None:
     calls: list[str] = []
 
