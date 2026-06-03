@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
+from flickr_bio_occurrence.flickr.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_PATH, FlickrRateLimiter
 from flickr_bio_occurrence.pipeline.dry_run import build_dry_run_summary
 
 
@@ -16,6 +18,10 @@ def build_parser() -> argparse.ArgumentParser:
     fetch.add_argument("--year", type=int, required=True)
     fetch.add_argument("--month", type=int, required=True)
     fetch.add_argument("--dry-run", action="store_true")
+    qa_rate_limit = subparsers.add_parser("qa-rate-limit")
+    qa_rate_limit.add_argument("--ledger-path", default=str(DEFAULT_RATE_LIMIT_LEDGER_PATH))
+    qa_summary = subparsers.add_parser("qa-summary")
+    qa_summary.add_argument("--report", required=True)
     return parser
 
 
@@ -34,7 +40,43 @@ def run(args: argparse.Namespace) -> int:
         )
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
+    if args.command == "qa-rate-limit":
+        limiter = FlickrRateLimiter(args.ledger_path)
+        payload = {
+            "ledger_path": str(limiter.ledger_path),
+            "api_calls_in_window": limiter.api_calls_in_window(),
+            "photo_records_in_window": limiter.photo_records_in_window(),
+            "soft_api_calls_per_hour": limiter.soft_api_calls_per_hour,
+            "hard_api_calls_per_hour": limiter.hard_api_calls_per_hour,
+            "hard_photo_records_per_hour": limiter.hard_photo_records_per_hour,
+            "window_seconds": limiter.window_seconds,
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if args.command == "qa-summary":
+        print(json.dumps(_summarize_report(Path(args.report)), indent=2, sort_keys=True))
+        return 0
     return 2
+
+
+def _summarize_report(report_path: Path) -> dict[str, object]:
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    storage = report.get("storage_artifacts", {})
+    memory = report.get("memory_artifacts", {})
+    compute = report.get("compute_artifacts", {})
+    return {
+        "report": str(report_path),
+        "species": report.get("species"),
+        "region": report.get("region"),
+        "target_record_count": report.get("target_record_count"),
+        "actual_unique_records": report.get("actual_unique_records"),
+        "api_calls_made": report.get("api_calls_made", report.get("work_items_called")),
+        "step_timings_seconds": report.get("step_timings_seconds", {}),
+        "total_artifact_bytes": storage.get("total_artifact_bytes"),
+        "peak_traced_bytes": memory.get("peak_traced_bytes"),
+        "max_rss_kb": memory.get("max_rss_kb"),
+        "vision_model_loaded": compute.get("vision_model_loaded"),
+    }
 
 
 def main() -> None:
