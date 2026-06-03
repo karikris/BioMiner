@@ -35,6 +35,7 @@ def run_live_search_benchmark(
     months: range = range(1, 13),
     max_workers: int = 1,
     query_variants: list[str] | None = None,
+    pages: range | None = None,
 ) -> Path:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -46,6 +47,7 @@ def run_live_search_benchmark(
         years=years or [2024, 2023, 2022, 2021, 2020],
         months=months,
         query_variants=query_variants,
+        pages=pages,
     )
     payloads: list[tuple[WorkItem, dict[str, object]]] = []
     seen: set[str] = set()

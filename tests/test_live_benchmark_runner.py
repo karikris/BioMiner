@@ -81,3 +81,26 @@ def test_live_search_benchmark_can_filter_query_variants(tmp_path) -> None:
     )
 
     assert variants == ["swallowtail", "swallowtail", "swallowtail"]
+
+
+def test_live_search_benchmark_can_plan_pages(tmp_path) -> None:
+    pages: list[int] = []
+
+    def fake_search(work_item: WorkItem) -> FlickrSearchResult:
+        pages.append(work_item.page)
+        photo_id = str(len(pages))
+        payload = {"stat": "ok", "photos": {"photo": [{"id": photo_id, "title": "swallowtail"}]}}
+        raw_path = tmp_path / f"{photo_id}.json"
+        raw_path.write_text(json.dumps(payload), encoding="utf-8")
+        return FlickrSearchResult(payload=payload, raw_response_path=raw_path, photo_ids=[photo_id])
+
+    run_live_search_benchmark(
+        search_photos=fake_search,
+        output_dir=tmp_path / "page-run",
+        target_records=3,
+        max_calls=10,
+        query_variants=["swallowtail"],
+        pages=range(1, 4),
+    )
+
+    assert pages == [1, 2, 3]
