@@ -44,6 +44,7 @@ def run_live_search_benchmark(
     query_variants: list[str] | None = None,
     pages: range | None = None,
     end_date: date | None = None,
+    excluded_work_item_ids: set[str] | None = None,
     vision_classifier: VisionClassifier | None = None,
     use_bioclip_vision: bool = False,
     model_registry_path: str | Path = "config/model_registry.toml",
@@ -68,12 +69,18 @@ def run_live_search_benchmark(
         pages=pages,
         end_date=end_date,
     )
+    excluded_ids = excluded_work_item_ids or set()
+    scheduled_work_items = [
+        item
+        for item in work_items
+        if item.work_item_id not in excluded_ids
+    ]
     payloads: list[tuple[WorkItem, dict[str, object]]] = []
     seen: set[str] = set()
     errors: list[dict[str, str]] = []
     timings["flickr_fetch"] = _fetch_payloads(
         search_photos=search_photos,
-        work_items=work_items[:max_calls],
+        work_items=scheduled_work_items[:max_calls],
         target_records=target_records,
         max_workers=max_workers,
         payloads=payloads,
@@ -98,6 +105,7 @@ def run_live_search_benchmark(
         "target_record_count": target_records,
         "actual_unique_records": bronze.height,
         "work_items_planned": len(work_items),
+        "work_items_skipped_as_existing": len(work_items) - len(scheduled_work_items),
         "work_items_called": len(payloads) + len(errors),
         "max_calls": max_calls,
         "api_policy": {

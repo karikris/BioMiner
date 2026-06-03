@@ -294,3 +294,32 @@ def test_live_search_benchmark_can_skip_future_months(tmp_path) -> None:
     )
 
     assert months == [1, 2, 3, 4, 5, 6]
+
+
+def test_live_search_benchmark_can_skip_excluded_work_item_ids(tmp_path) -> None:
+    called_ids: list[str] = []
+    excluded_id = (
+        "c0d1b203a0a4207fdc3199ddec28be1544f6a3356f5c9c62903bbe99ccae83aa"
+    )
+
+    def fake_search(work_item: WorkItem) -> FlickrSearchResult:
+        called_ids.append(work_item.work_item_id)
+        payload = {"stat": "ok", "photos": {"photo": []}}
+        raw_path = tmp_path / f"{work_item.work_item_id}.json"
+        raw_path.write_text(json.dumps(payload), encoding="utf-8")
+        return FlickrSearchResult(payload=payload, raw_response_path=raw_path, photo_ids=[])
+
+    run_live_search_benchmark(
+        search_photos=fake_search,
+        output_dir=tmp_path / "excluded-run",
+        target_records=1000,
+        max_calls=2,
+        years=[2022],
+        months=[2],
+        query_variants=["swallowtail", "citrus_swallowtail"],
+        pages=range(1, 2),
+        excluded_work_item_ids={excluded_id},
+    )
+
+    assert called_ids
+    assert excluded_id not in called_ids
