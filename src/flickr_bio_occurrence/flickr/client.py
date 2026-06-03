@@ -58,9 +58,7 @@ class FlickrClient:
             for photo in payload.get("photos", {}).get("photo", [])
             if "id" in photo
         ]
-        allowed = self.limiter.reserve_photo_record_slots(len(photo_ids))
-        photo_ids = photo_ids[:allowed]
-        self.limiter.log_photo_records(photo_ids, work_item.work_item_id)
+        photo_ids = self.limiter.log_photo_records(photo_ids, work_item.work_item_id)
         return FlickrSearchResult(payload=payload, raw_response_path=raw_path, photo_ids=photo_ids)
 
     def _search_params(self, work_item: WorkItem) -> dict[str, str | int]:

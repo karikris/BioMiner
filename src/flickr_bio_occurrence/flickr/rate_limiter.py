@@ -65,14 +65,16 @@ class FlickrRateLimiter:
                 (status, endpoint, work_item_id),
             )
 
-    def log_photo_records(self, photo_ids: list[str], work_item_id: str) -> None:
+    def log_photo_records(self, photo_ids: list[str], work_item_id: str) -> list[str]:
         with self._lock, self._connect() as conn:
-            allowed = self.reserve_photo_record_slots(len(photo_ids))
-            rows = [(photo_id, work_item_id, time.time()) for photo_id in photo_ids[:allowed]]
+            remaining = self.hard_photo_records_per_hour - self._photo_records_in_window(conn, time.time())
+            accepted = photo_ids[: max(0, min(len(photo_ids), remaining))]
+            rows = [(photo_id, work_item_id, time.time()) for photo_id in accepted]
             conn.executemany(
                 "INSERT OR IGNORE INTO photo_record_ledger(photo_id, work_item_id, created_at) VALUES (?, ?, ?)",
                 rows,
             )
+            return accepted
 
     def api_calls_in_window(self) -> int:
         with self._lock, self._connect() as conn:

@@ -73,6 +73,22 @@ def test_search_photos_counts_api_call_and_new_photo_records(tmp_path) -> None:
     assert limiter.photo_records_in_window() == 2
 
 
+def test_search_photos_returns_only_logged_photo_records(tmp_path) -> None:
+    payload = {"stat": "ok", "photos": {"photo": [{"id": "1"}, {"id": "2"}, {"id": "3"}]}}
+    limiter = FlickrRateLimiter(tmp_path / "limits.sqlite", hard_api_calls_per_hour=5, hard_photo_records_per_hour=2)
+    client = FlickrClient(
+        api_key="test-key",
+        limiter=limiter,
+        http_client=httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload))),
+        raw_output_root=tmp_path / "raw",
+    )
+
+    result = client.search_photos(_work_item())
+
+    assert result.photo_ids == ["1", "2"]
+    assert limiter.photo_records_in_window() == 2
+
+
 def _work_item() -> WorkItem:
     return WorkItem(
         species_name="Papilio demoleus",

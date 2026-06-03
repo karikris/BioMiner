@@ -41,11 +41,19 @@ def test_rate_limiter_never_exceeds_3600_photo_records_per_hour(tmp_path) -> Non
     limiter = FlickrRateLimiter(tmp_path / "limits.sqlite", hard_photo_records_per_hour=5)
 
     assert limiter.reserve_photo_record_slots(3) == 3
-    limiter.log_photo_records(["1", "2", "3"], "work")
+    assert limiter.log_photo_records(["1", "2", "3"], "work") == ["1", "2", "3"]
     assert limiter.reserve_photo_record_slots(3) == 2
-    limiter.log_photo_records(["4", "5"], "work")
+    assert limiter.log_photo_records(["4", "5", "6"], "work") == ["4", "5"]
     assert limiter.reserve_photo_record_slots(1) == 0
     assert limiter.photo_records_in_window() == 5
+
+
+def test_log_photo_records_returns_only_actually_logged_ids(tmp_path) -> None:
+    limiter = FlickrRateLimiter(tmp_path / "limits.sqlite", hard_photo_records_per_hour=2)
+
+    assert limiter.log_photo_records(["1", "2", "3"], "work") == ["1", "2"]
+    assert limiter.log_photo_records(["4"], "work") == []
+    assert limiter.photo_records_in_window() == 2
 
 
 def test_parallel_workers_share_global_limiter(tmp_path) -> None:
