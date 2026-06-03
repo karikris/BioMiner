@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from flickr_bio_occurrence.vision.bioclip import BioClipClassifier, BioClipScorer
+from flickr_bio_occurrence.vision.bioclip import BioClipClassifier, BioClipScorer, PersistentBioClipScorer
 from flickr_bio_occurrence.vision.image_cache import CachedImage, cache_image_from_url
 from flickr_bio_occurrence.vision.model_registry import ModelRegistry
 
@@ -25,7 +25,8 @@ def build_bioclip_row_classifier(
     cache_image: CacheImage = cache_image_from_url,
 ) -> RowClassifier:
     runtime = ModelRegistry.from_config(model_registry_path).require_preferred_bioclip_runtime()
-    classifier = BioClipClassifier(runtime=runtime, scorer=scorer)
+    effective_scorer = scorer or PersistentBioClipScorer(runtime=runtime)
+    classifier = BioClipClassifier(runtime=runtime, scorer=effective_scorer)
 
     def classify_row(row: dict[str, Any]) -> dict[str, object]:
         return classify_bronze_photo_row(
@@ -35,6 +36,10 @@ def build_bioclip_row_classifier(
             cache_image=cache_image,
         )
 
+    close = getattr(effective_scorer, "close", None)
+    if callable(close):
+        setattr(classify_row, "close", close)
+    setattr(classify_row, "scorer", effective_scorer)
     return classify_row
 
 

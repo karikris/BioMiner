@@ -4,12 +4,13 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 import subprocess
-from typing import Any, Callable, Mapping, Sequence
+from typing import IO, Any, Callable, Mapping, Sequence
 
 from flickr_bio_occurrence.vision.model_registry import BioClipRuntime
 
 BioClipScorer = Callable[[Path, Sequence[str]], Mapping[str, float]]
 SubprocessRunner = Callable[..., subprocess.CompletedProcess[str]]
+PopenFactory = Callable[..., subprocess.Popen[str]]
 
 
 DEFAULT_BIOCLIP_LABELS = (
@@ -117,6 +118,7 @@ class ExternalBioClipScorer:
             "model_name": self.runtime.model.model_name,
             "checkpoint": self.runtime.model.checkpoint,
             "hf_cache_dir": str(self.hf_cache_dir),
+            "require_cuda": True,
         }
         result = self.runner(
             [str(self.runtime.venv_python), str(self.worker_script)],
@@ -140,7 +142,7 @@ def classify_species_agreement(
     if not topk_labels:
         return "text_only" if text_evidence_present else "uncertain"
 
-    normalized_labels = {_normalize_label(label) for label in topk_labels}
+    normalized_labels = {_normalize_label(topk_labels[0])}
     species_label = _normalize_label(f"a photo of {resolved_scientific_name}")
     if species_label in normalized_labels:
         return "exact_species_agreement" if text_evidence_present else "vision_only"
@@ -205,8 +207,102 @@ def _normalize_label(value: str) -> str:
 
 
 def _score_with_open_clip(image_path: Path, labels: Sequence[str], runtime: BioClipRuntime) -> Mapping[str, float]:
-    return ExternalBioClipScorer(runtime=runtime)(image_path, labels)
+    with PersistentBioClipScorer(runtime=runtime) as scorer:
+        return scorer(image_path, labels)
 
 
 def _default_worker_script() -> Path:
     return Path(__file__).with_name("bioclip_worker.py")
+
+
+class PersistentBioClipScorer:
+    def __init__(
+        self,
+        *,
+        runtime: BioClipRuntime,
+        worker_script: str | Path | None = None,
+        hf_cache_dir: str | Path = "data/cache/huggingface",
+        popen: PopenFactory = subprocess.Popen,
+        require_cuda: bool = True,
+    ) -> None:
+        self.runtime = runtime
+        self.worker_script = Path(worker_script) if worker_script is not None else _default_worker_script()
+        self.hf_cache_dir = Path(hf_cache_dir)
+        self.popen = popen
+        self.require_cuda = require_cuda
+        self._process: subprocess.Popen[str] | None = None
+        self._stdin: IO[str] | None = None
+        self._stdout: IO[str] | None = None
+        self.device: str | None = None
+        self.gpu_name: str | None = None
+
+    def __enter__(self) -> "PersistentBioClipScorer":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:  # noqa: ANN001 - context manager protocol.
+        self.close()
+
+    def __call__(self, image_path: Path, labels: Sequence[str]) -> Mapping[str, float]:
+        process = self._ensure_process()
+        if process.poll() is not None:
+            raise RuntimeError(f"BioCLIP persistent worker exited early with code {process.returncode}")
+        request = {
+            "image_path": str(image_path),
+            "labels": list(labels),
+            "model_name": self.runtime.model.model_name,
+            "checkpoint": self.runtime.model.checkpoint,
+            "hf_cache_dir": str(self.hf_cache_dir),
+            "require_cuda": self.require_cuda,
+        }
+        assert self._stdin is not None
+        assert self._stdout is not None
+        self._stdin.write(json.dumps(request, sort_keys=True) + "\n")
+        self._stdin.flush()
+        while True:
+            line = self._stdout.readline()
+            if not line:
+                raise RuntimeError("BioCLIP persistent worker closed stdout before returning scores")
+            payload = json.loads(line)
+            if "error" in payload:
+                raise RuntimeError(f"BioCLIP worker failed: {payload['error']}")
+            if payload.get("ready"):
+                self.device = str(payload.get("device") or "")
+                self.gpu_name = str(payload.get("gpu_name") or "")
+                continue
+            return {str(label): float(score) for label, score in payload["scores"].items()}
+
+    def close(self) -> None:
+        process = self._process
+        if process is None:
+            return
+        if process.poll() is None and self._stdin is not None:
+            try:
+                self._stdin.write(json.dumps({"shutdown": True}, sort_keys=True) + "\n")
+                self._stdin.flush()
+                process.wait(timeout=10)
+            except Exception:  # noqa: BLE001 - shutdown must not mask caller errors.
+                process.terminate()
+                process.wait(timeout=10)
+        self._process = None
+        self._stdin = None
+        self._stdout = None
+
+    def _ensure_process(self) -> subprocess.Popen[str]:
+        if self.runtime.venv_python is None:
+            raise RuntimeError("BioCLIP runtime does not define a Python executable")
+        if self._process is None:
+            process = self.popen(
+                [str(self.runtime.venv_python), str(self.worker_script), "--persistent"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+            if process.stdin is None or process.stdout is None:
+                process.terminate()
+                raise RuntimeError("BioCLIP persistent worker did not expose stdin/stdout pipes")
+            self._process = process
+            self._stdin = process.stdin
+            self._stdout = process.stdout
+        return self._process

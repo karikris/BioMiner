@@ -12,6 +12,7 @@ from typing import Callable
 
 import polars as pl
 
+from flickr_bio_occurrence.benchmark.vision_checkpoint import VisionCheckpointResult, build_checkpointed_vision_predictions
 from flickr_bio_occurrence.dwc.exporter import export_dwc_records
 from flickr_bio_occurrence.flickr.client import FlickrSearchResult
 from flickr_bio_occurrence.flickr.work_items import WorkItem, build_monthly_work_items
@@ -89,12 +90,20 @@ def run_live_search_benchmark(
     )
     bronze = _timed(timings, "bronze_flattening_dedup", lambda: _build_bronze(payloads, species_name, target_records))
     silver = _timed(timings, "silver_candidate_build", lambda: build_silver_candidates(bronze))
-    vision_predictions = _timed(timings, "vision_classification", lambda: _build_vision_predictions(bronze, effective_vision_classifier))
+    vision_result = _timed(
+        timings,
+        "vision_classification",
+        lambda: build_checkpointed_vision_predictions(
+            bronze,
+            effective_vision_classifier,
+            output_path / "silver" / "silver_vision_prediction",
+        ),
+    )
     gold = _timed(timings, "dwc_mapping", lambda: build_dwc_rows(silver))
     bronze_paths, silver_paths, vision_paths, gold_paths, duckdb_path = _timed(
         timings,
         "artifact_write",
-        lambda: _write_outputs(output_path, bronze, silver, vision_predictions, gold),
+        lambda: _write_outputs(output_path, bronze, silver, vision_result, gold),
     )
     current, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
@@ -136,8 +145,12 @@ def run_live_search_benchmark(
         "compute_artifacts": {
             "worker_count": max_workers,
             "cpu_count": os.cpu_count() or 1,
-            "gpu_used": False,
+            "gpu_used": vision_result.gpu_used,
+            "gpu_name": vision_result.gpu_name,
             "vision_model_loaded": effective_vision_classifier is not None,
+            "vision_predictions_completed": vision_result.completed,
+            "vision_predictions_newly_completed": vision_result.newly_completed,
+            "vision_predictions_skipped_existing": vision_result.skipped_existing,
             "http_client": "httpx",
             "rate_limiter_scope": "caller_supplied_global_limiter_required",
         },
@@ -247,33 +260,18 @@ def _payload_for_reserved_photo_ids(payload: dict[str, object], photo_ids: list[
     }
 
 
-def _build_vision_predictions(bronze: pl.DataFrame, vision_classifier: VisionClassifier | None) -> pl.DataFrame:
-    if vision_classifier is None or not bronze.height:
-        return pl.DataFrame()
-    rows = [
-        vision_classifier(row)
-        for row in bronze.to_dicts()
-        if row.get("image_url")
-    ]
-    return pl.DataFrame(rows) if rows else pl.DataFrame()
-
-
 def _write_outputs(
     output_path: Path,
     bronze: pl.DataFrame,
     silver: pl.DataFrame,
-    vision_predictions: pl.DataFrame,
+    vision_result: VisionCheckpointResult,
     gold: pl.DataFrame,
 ) -> tuple[list[Path], list[Path], list[Path], list[Path], Path | None]:
     if not bronze.height:
         return [], [], [], [], None
     bronze_paths = write_parquet_dataset(bronze, output_path / "bronze" / "bronze_flickr_photo")
     silver_paths = write_parquet_dataset(silver, output_path / "silver" / "silver_occurrence_candidate")
-    vision_paths = (
-        write_parquet_dataset(vision_predictions, output_path / "silver" / "silver_vision_prediction")
-        if vision_predictions.height
-        else []
-    )
+    vision_paths = vision_result.paths
     gold_outputs = export_dwc_records(gold, output_path / "gold")
     duckdb_path = create_qa_views(db_path=output_path / "live_search_benchmark.duckdb", data_root=output_path)
     return bronze_paths, silver_paths, vision_paths, gold_outputs.parquet_paths, duckdb_path

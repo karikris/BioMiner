@@ -141,7 +141,7 @@ def test_live_search_benchmark_writes_optional_vision_predictions(tmp_path) -> N
     )
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["storage_artifacts"]["silver_vision_prediction_parquet_files"] == 1
+    assert report["storage_artifacts"]["silver_vision_prediction_parquet_files"] == 2
     assert report["compute_artifacts"]["vision_model_loaded"] is True
     assert "vision_classification" in report["step_timings_seconds"]
     assert list((tmp_path / "vision-run" / "silver" / "silver_vision_prediction").rglob("*.parquet"))

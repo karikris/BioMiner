@@ -7,6 +7,7 @@ from flickr_bio_occurrence.vision.bioclip import (
     BioClipClassifier,
     DEFAULT_BIOCLIP_LABELS,
     ExternalBioClipScorer,
+    PersistentBioClipScorer,
     build_vision_prediction_record,
     classify_species_agreement,
 )
@@ -58,6 +59,16 @@ def test_classify_species_agreement_routes_conflicting_text_and_vision_to_review
     status = classify_species_agreement(
         resolved_scientific_name="Papilio demoleus",
         topk_labels=["a photo of a moth", "a photo of artwork or illustration"],
+        text_evidence_present=True,
+    )
+
+    assert status == "text_vision_conflict"
+
+
+def test_classify_species_agreement_uses_top_prediction_not_any_lower_topk_match() -> None:
+    status = classify_species_agreement(
+        resolved_scientific_name="Papilio demoleus",
+        topk_labels=["a photo of a moth", "a photo of Papilio demoleus"],
         text_evidence_present=True,
     )
 
@@ -183,3 +194,71 @@ def test_external_bioclip_scorer_raises_with_worker_stderr() -> None:
         assert "model missing" in str(exc)
     else:
         raise AssertionError("expected worker failure to raise")
+
+
+def test_persistent_bioclip_scorer_reuses_worker_and_requires_cuda() -> None:
+    writes: list[str] = []
+
+    class FakeStdin:
+        def write(self, value: str) -> None:
+            writes.append(value)
+
+        def flush(self) -> None:
+            return None
+
+    class FakeStdout:
+        def __init__(self) -> None:
+            self.lines = iter(
+                [
+                    '{"ready":true,"device":"cuda","gpu_name":"NVIDIA GeForce RTX 3060"}\n',
+                    '{"scores":{"a photo of Papilio demoleus":0.97}}\n',
+                    '{"scores":{"a photo of Papilio demoleus":0.98}}\n',
+                ]
+            )
+
+        def readline(self) -> str:
+            return next(self.lines)
+
+    class FakeProcess:
+        def __init__(self, cmd) -> None:  # noqa: ANN001 - mirrors subprocess.Popen.
+            self.cmd = cmd
+            self.stdin = FakeStdin()
+            self.stdout = FakeStdout()
+            self.stderr = None
+            self.returncode = None
+            self.terminated = False
+            self.waited = False
+
+        def poll(self):  # noqa: ANN202 - mirrors subprocess.Popen.
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, timeout=None):  # noqa: ANN001, ANN202 - mirrors subprocess.Popen.
+            self.waited = True
+            self.returncode = 0
+            return 0
+
+    processes: list[FakeProcess] = []
+
+    def fake_popen(cmd, **kwargs):  # noqa: ANN001, ANN202 - mirrors subprocess.Popen.
+        process = FakeProcess(cmd)
+        processes.append(process)
+        return process
+
+    scorer = PersistentBioClipScorer(runtime=_runtime(), popen=fake_popen)
+    try:
+        first = scorer(Path("/tmp/1.jpg"), ["a photo of Papilio demoleus"])
+        second = scorer(Path("/tmp/2.jpg"), ["a photo of Papilio demoleus"])
+    finally:
+        scorer.close()
+
+    assert first["a photo of Papilio demoleus"] == 0.97
+    assert second["a photo of Papilio demoleus"] == 0.98
+    assert len(processes) == 1
+    assert "--persistent" in processes[0].cmd
+    assert '"require_cuda": true' in writes[0]
+    assert '"require_cuda": true' in writes[1]
+    assert '"shutdown": true' in writes[-1]
+    assert processes[0].waited is True
