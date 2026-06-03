@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from flickr_bio_occurrence.benchmark.estimates import estimate_production_from_report
 from flickr_bio_occurrence.benchmark.offline_run import run_existing_payload_benchmark
 from flickr_bio_occurrence.flickr.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_PATH, FlickrRateLimiter
 from flickr_bio_occurrence.pipeline.dry_run import build_dry_run_summary
@@ -23,6 +24,11 @@ def build_parser() -> argparse.ArgumentParser:
     qa_rate_limit.add_argument("--ledger-path", default=str(DEFAULT_RATE_LIMIT_LEDGER_PATH))
     qa_summary = subparsers.add_parser("qa-summary")
     qa_summary.add_argument("--report", required=True)
+    qa_estimate = subparsers.add_parser("qa-estimate")
+    qa_estimate.add_argument("--report", required=True)
+    qa_estimate.add_argument("--target-records", type=int, default=3200)
+    qa_estimate.add_argument("--api-call-target", type=int, default=3200)
+    qa_estimate.add_argument("--soft-api-calls-per-hour", type=int, default=3200)
     offline = subparsers.add_parser("benchmark-existing-payloads")
     offline.add_argument("--raw-root", required=True)
     offline.add_argument("--output-dir", required=True)
@@ -62,6 +68,16 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "qa-summary":
         print(json.dumps(_summarize_report(Path(args.report)), indent=2, sort_keys=True))
+        return 0
+    if args.command == "qa-estimate":
+        report = json.loads(Path(args.report).read_text(encoding="utf-8"))
+        estimate = estimate_production_from_report(
+            report,
+            target_records_with_images=args.target_records,
+            api_call_target=args.api_call_target,
+            soft_api_calls_per_hour=args.soft_api_calls_per_hour,
+        )
+        print(json.dumps(estimate, indent=2, sort_keys=True))
         return 0
     if args.command == "benchmark-existing-payloads":
         payload_paths = sorted(Path(args.raw_root).rglob("*.json"))
