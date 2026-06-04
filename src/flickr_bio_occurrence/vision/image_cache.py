@@ -30,8 +30,13 @@ def cache_image_from_url(
     if parsed.scheme not in {"http", "https"}:
         raise ValueError("Only http and https image URLs can be cached")
 
+    owns_client = http_client is None
     client = http_client or httpx.Client(timeout=30)
-    response = _get_with_retries(client, image_url, max_retries=max_retries, retry_sleep_seconds=retry_sleep_seconds)
+    try:
+        response = _get_with_retries(client, image_url, max_retries=max_retries, retry_sleep_seconds=retry_sleep_seconds)
+    finally:
+        if owns_client:
+            client.close()
     response.raise_for_status()
     content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
     if not content_type.startswith("image/"):
