@@ -109,11 +109,14 @@ def run_fetch(config: FetchConfig, terms: list[ButterflySearchTerm], api_key: st
     )
     with httpx.Client(timeout=30) as client:
         for term in terms:
+            if state.term_is_exhausted(term.term):
+                continue
             for page in range(1, config.max_pages_per_term + 1):
                 work_item_id = f"{safe_query_variant(term.term)}:{page}"
                 if state.is_done(work_item_id):
                     continue
-                payload = fetch_one_page(config, client, limiter, api_key, term, page, work_item_id)
+                per_page = wait_for_photo_record_capacity(limiter, config.per_page)
+                payload = fetch_one_page(config, client, limiter, api_key, term, page, work_item_id, per_page)
                 photo_rows = payload.get("photos", {}).get("photo", [])
                 photo_ids = [str(photo["id"]) for photo in photo_rows if isinstance(photo, dict) and "id" in photo]
                 new_photo_ids = limiter.log_photo_records(photo_ids, work_item_id)
@@ -133,6 +136,14 @@ def run_fetch(config: FetchConfig, terms: list[ButterflySearchTerm], api_key: st
                     break
 
 
+def wait_for_photo_record_capacity(limiter: FlickrRateLimiter, requested: int) -> int:
+    while True:
+        allowed = limiter.reserve_photo_record_slots(requested)
+        if allowed > 0:
+            return allowed
+        time.sleep(60)
+
+
 def fetch_one_page(
     config: FetchConfig,
     client: httpx.Client,
@@ -141,6 +152,7 @@ def fetch_one_page(
     term: ButterflySearchTerm,
     page: int,
     work_item_id: str,
+    per_page: int,
 ) -> dict[str, Any]:
     while True:
         try:
@@ -162,7 +174,7 @@ def fetch_one_page(
             "content_types": "0",
             "safe_search": 1,
             "extras": DEFAULT_EXTRAS,
-            "per_page": config.per_page,
+            "per_page": per_page,
             "page": page,
             "format": "json",
             "nojsoncallback": 1,
@@ -215,6 +227,21 @@ class FetchState:
                 "SELECT 1 FROM completed_work_items WHERE work_item_id = ?",
                 (work_item_id,),
             ).fetchone() is not None
+
+    def term_is_exhausted(self, term: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT max(page), max(flickr_pages), min(returned_records)
+                FROM completed_work_items
+                WHERE term = ?
+                """,
+                (term,),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return False
+        max_page, flickr_pages, min_returned = int(row[0]), int(row[1]), int(row[2])
+        return max_page >= flickr_pages or min_returned == 0
 
     def mark_done(
         self,
