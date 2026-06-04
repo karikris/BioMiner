@@ -43,3 +43,26 @@ def test_cache_image_from_url_rejects_non_image_response(tmp_path) -> None:
             cache_root=tmp_path,
             http_client=httpx.Client(transport=httpx.MockTransport(handler)),
         )
+
+
+def test_cache_image_from_url_retries_transient_request_errors(tmp_path) -> None:
+    image_bytes = b"\xff\xd8retry-jpeg\xff\xd9"
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ConnectError("temporary dns failure", request=request)
+        return httpx.Response(200, content=image_bytes, headers={"Content-Type": "image/jpeg"})
+
+    cached = cache_image_from_url(
+        "https://live.staticflickr.com/example.jpg",
+        cache_root=tmp_path,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        max_retries=2,
+        retry_sleep_seconds=0,
+    )
+
+    assert attempts == 2
+    assert cached.path.exists()

@@ -232,16 +232,18 @@ class FetchState:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT max(page), max(flickr_pages), min(returned_records)
+                SELECT page, flickr_pages, returned_records
                 FROM completed_work_items
                 WHERE term = ?
+                ORDER BY page DESC
+                LIMIT 1
                 """,
                 (term,),
             ).fetchone()
         if row is None or row[0] is None:
             return False
-        max_page, flickr_pages, min_returned = int(row[0]), int(row[1]), int(row[2])
-        return max_page >= flickr_pages or min_returned == 0
+        latest_page, latest_flickr_pages, latest_returned = int(row[0]), int(row[1]), int(row[2])
+        return latest_page >= latest_flickr_pages or latest_returned == 0
 
     def mark_done(
         self,

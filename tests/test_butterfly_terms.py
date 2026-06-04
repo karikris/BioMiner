@@ -105,3 +105,31 @@ def test_fetch_state_knows_empty_page_exhausts_term(tmp_path) -> None:
     )
 
     assert state.term_is_exhausted("rare") is True
+
+
+def test_fetch_state_uses_latest_flickr_page_count_for_exhaustion(tmp_path) -> None:
+    module = _load_fetch_script()
+    state = module.FetchState(tmp_path / "state.sqlite")
+
+    state.mark_done(
+        work_item_id="butterfly:1",
+        term="butterfly",
+        term_source="common_word",
+        page=1,
+        raw_path=tmp_path / "page1.json",
+        returned_records=250,
+        new_records=250,
+        flickr_pages=40,
+    )
+    state.mark_done(
+        work_item_id="butterfly:37",
+        term="butterfly",
+        term_source="common_word",
+        page=37,
+        raw_path=tmp_path / "page37.json",
+        returned_records=250,
+        new_records=0,
+        flickr_pages=37,
+    )
+
+    assert state.term_is_exhausted("butterfly") is True

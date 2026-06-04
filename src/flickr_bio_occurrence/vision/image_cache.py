@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
+import time
 from urllib.parse import urlparse
 
 import httpx
@@ -22,13 +23,15 @@ def cache_image_from_url(
     *,
     cache_root: str | Path = "data/cache/images",
     http_client: httpx.Client | None = None,
+    max_retries: int = 5,
+    retry_sleep_seconds: float = 2.0,
 ) -> CachedImage:
     parsed = urlparse(image_url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError("Only http and https image URLs can be cached")
 
     client = http_client or httpx.Client(timeout=30)
-    response = client.get(image_url)
+    response = _get_with_retries(client, image_url, max_retries=max_retries, retry_sleep_seconds=retry_sleep_seconds)
     response.raise_for_status()
     content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
     if not content_type.startswith("image/"):
@@ -50,6 +53,27 @@ def cache_image_from_url(
         content_type=content_type,
         byte_size=len(content),
     )
+
+
+def _get_with_retries(
+    client: httpx.Client,
+    image_url: str,
+    *,
+    max_retries: int,
+    retry_sleep_seconds: float,
+) -> httpx.Response:
+    attempts = max(1, max_retries)
+    last_error: httpx.HTTPError | None = None
+    for attempt in range(attempts):
+        try:
+            return client.get(image_url)
+        except httpx.HTTPError as exc:
+            last_error = exc
+            if attempt + 1 >= attempts:
+                break
+            time.sleep(retry_sleep_seconds)
+    assert last_error is not None
+    raise last_error
 
 
 def _extension_for_content_type(content_type: str, path: str) -> str:
