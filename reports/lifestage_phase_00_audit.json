@@ -1,0 +1,262 @@
+{
+  "audit_phase": "Phase 0: audit current state",
+  "basis": "current working tree audit; no network, CUDA, real Flickr downloads, real BioCLIP weights, caches, parquet outputs, DuckDB files, or model weights inspected",
+  "python_target": ">=3.14",
+  "working_tree_note": "The audit was performed with pre-existing uncommitted Phase 8 edits in scripts/generate_report_pack.py, src/flickr_bio_occurrence/evidence/rules.py, tests/test_evidence_rules.py, and tests/test_report_pack.py. Those implementation/test edits are not part of this Phase 0 report commit.",
+  "current_publication_state_logic": {
+    "file": "src/flickr_bio_occurrence/evidence/rules.py",
+    "functions": [
+      "classify_evidence_row",
+      "review_reasons_for_evidence",
+      "target_signal_is_positive",
+      "_negative_material_reason"
+    ],
+    "states": [
+      "gold",
+      "silver",
+      "bronze",
+      "in_review"
+    ],
+    "current_working_tree_semantics": {
+      "gold": "BioCLIP target-positive score >= 0.50",
+      "silver": "BioCLIP target-positive score < 0.50",
+      "bronze": "negative visual material detected from evidence fields or non-butterfly-like BioCLIP label",
+      "in_review": "missing image, API error, missing BioCLIP, low confidence non-target, or ambiguous classification"
+    },
+    "columns_added": [
+      "publication_state",
+      "publication_state_reason",
+      "review_reason"
+    ],
+    "risk": "This file has uncommitted Phase 8 implementation changes, so committed main may differ until that work is completed."
+  },
+  "current_image_triage_logic": {
+    "file": "src/flickr_bio_occurrence/vision/triage.py",
+    "functions": [
+      "process_image_triage_records",
+      "classify_bioclip_triage",
+      "_base_row",
+      "_negative_reason"
+    ],
+    "columns": [
+      "source",
+      "source_record_id",
+      "flickr_photo_id",
+      "photo_page_url",
+      "image_url",
+      "image_url_kind",
+      "latitude",
+      "longitude",
+      "date_taken",
+      "date_upload",
+      "captured_at",
+      "year",
+      "month",
+      "source_record_hash",
+      "image_hash",
+      "image_downloaded",
+      "image_deleted_after_classification",
+      "classification_status",
+      "classification_error",
+      "retry_eligible",
+      "model_id",
+      "model_version",
+      "model_checkpoint",
+      "classified_at",
+      "bioclip_top1_label",
+      "bioclip_top1_score",
+      "bioclip_topk_json",
+      "triage_bin",
+      "triage_reason",
+      "is_target_positive",
+      "is_negative_material"
+    ],
+    "triage_bins": [
+      "gold",
+      "silver",
+      "bronze",
+      "in_review"
+    ],
+    "classification_statuses": [
+      "success",
+      "skipped_existing",
+      "failed_download",
+      "failed_bioclip",
+      "invalid_record"
+    ],
+    "dedupe_key": [
+      "source",
+      "flickr_photo_id",
+      "image_url",
+      "model_id",
+      "model_version",
+      "model_checkpoint"
+    ]
+  },
+  "category_and_lifestage_columns": {
+    "image_category_exists": false,
+    "life_stage_exists": false,
+    "notes": "No stored image_category or life_stage column was found in the inspected active source/test paths. Life-stage labels and text terms exist, but they are mapped into triage/review reasons rather than stored as normalized category columns."
+  },
+  "life_stage_handling": {
+    "vision_labels_file": "src/flickr_bio_occurrence/vision/triage.py",
+    "bioclip_labels_file": "src/flickr_bio_occurrence/vision/bioclip.py",
+    "review_terms_file": "src/flickr_bio_occurrence/evidence/review_flags.py",
+    "caterpillar": {
+      "present": true,
+      "current_handling": "BioCLIP caterpillar labels are negative material unless human_verification_detected and species_text_match make them verified life-stage evidence in classify_bioclip_triage. Text term caterpillar is currently in NON_TARGET_ORDER_TERMS."
+    },
+    "pupa_chrysalis": {
+      "present": true,
+      "current_handling": "BioCLIP pupa/chrysalis labels are negative material unless human_verification_detected and species_text_match make them verified life-stage evidence in classify_bioclip_triage. Text terms pupa/chrysalis are currently in NON_TARGET_ORDER_TERMS."
+    },
+    "egg": {
+      "present": false,
+      "current_handling": "absent from inspected BioCLIP labels, negative-label maps, and review text terms"
+    }
+  },
+  "bronze_logic": {
+    "image_triage": {
+      "file": "src/flickr_bio_occurrence/vision/triage.py",
+      "function": "classify_bioclip_triage",
+      "meaning": "negative/non-occurrence visual material such as specimen, artwork, moth, caterpillar, pupa/chrysalis, other insect, not butterfly, object/background, or AI generated"
+    },
+    "publication_state": {
+      "file": "src/flickr_bio_occurrence/evidence/rules.py",
+      "function": "classify_evidence_row",
+      "meaning": "working-tree Phase 8 WIP maps negative material to bronze"
+    },
+    "legacy_storage_names": [
+      "src/flickr_bio_occurrence/pipeline/transforms.py uses bronze_flickr_photo for flattened raw search rows",
+      "src/flickr_bio_occurrence/pipeline/dry_run.py reports data/bronze, data/silver, and data/gold paths",
+      "src/flickr_bio_occurrence/storage/duckdb_index.py creates views from bronze/silver/gold parquet paths"
+    ]
+  },
+  "image_deletion_logic": {
+    "files": [
+      "src/flickr_bio_occurrence/vision/temp_image_store.py",
+      "src/flickr_bio_occurrence/vision/pipeline.py",
+      "src/flickr_bio_occurrence/vision/triage.py"
+    ],
+    "functions": [
+      "cleanup_cached_image",
+      "classify_bronze_photo_row",
+      "process_image_triage_records"
+    ],
+    "behavior": "Successful image files are deleted by default after classification. Failed image files are deleted by default in classify_bronze_photo_row unless keep_failed_images=True. cleanup_cached_image refuses to delete paths outside cache_root or under protected cache path parts such as huggingface, .hf-cache, model, or models."
+  },
+  "flickr_query_lanes": {
+    "work_items_file": "src/flickr_bio_occurrence/flickr/work_items.py",
+    "default_query_variants": [
+      "scientific_name",
+      "lime_butterfly",
+      "chequered_swallowtail",
+      "citrus_swallowtail",
+      "swallowtail"
+    ],
+    "broad_query_variants": [
+      "scientific_name",
+      "lime_butterfly",
+      "chequered_swallowtail",
+      "citrus_swallowtail",
+      "swallowtail",
+      "papilio",
+      "butterfly",
+      "citrusbutterfly",
+      "limebutterfly"
+    ],
+    "client_file": "src/flickr_bio_occurrence/flickr/client.py",
+    "search_method": "flickr.photos.search",
+    "default_extras": "description,license,date_upload,date_taken,geo,tags,machine_tags,owner_name,url_m,url_l,url_o,o_dims,last_update,media,views",
+    "default_filters": {
+      "has_geo": 1,
+      "media": "photos",
+      "content_types": "0",
+      "safe_search": 1,
+      "per_page_max": 250
+    },
+    "image_selection_file": "src/flickr_bio_occurrence/vision/image_selection.py",
+    "default_image_preference": [
+      "url_l",
+      "url_m"
+    ],
+    "original_mode": "url_o only when ImageSelectionPolicy(mode='original_diagnostic') is used, with original pixel guardrail"
+  },
+  "comment_fetch_logic": {
+    "allowlist_file": "src/flickr_bio_occurrence/flickr/endpoints.py",
+    "comments_endpoint_allowlisted": true,
+    "cli_file": "src/flickr_bio_occurrence/cli.py",
+    "cli_command": "fetch-comments",
+    "current_behavior": "Command returns implemented=false; no real comments API fetch is implemented. Existing comments embedded in raw payloads can be parsed by src/flickr_bio_occurrence/evidence/extractor.py."
+  },
+  "report_files_currently_present": [
+    "agents_update_recommendations.json",
+    "bioclip_run_summary.json",
+    "bioclip_run_summary.md",
+    "cache_profile.json",
+    "code_cleanup_report.md",
+    "gpu_profile.json",
+    "idempotency_profile.json",
+    "image_triage_profile.json"
+  ],
+  "files_to_modify_by_phase": {
+    "phase_1_lifestage_columns": [
+      "src/flickr_bio_occurrence/vision/triage.py",
+      "src/flickr_bio_occurrence/vision/bioclip.py",
+      "tests/test_image_triage.py"
+    ],
+    "phase_2_evidence_terms": [
+      "src/flickr_bio_occurrence/evidence/review_flags.py",
+      "src/flickr_bio_occurrence/evidence/extractor.py",
+      "src/flickr_bio_occurrence/evidence/rules.py",
+      "tests/test_evidence_rules.py",
+      "tests/test_evidence_extractor.py"
+    ],
+    "phase_3_reports": [
+      "scripts/generate_report_pack.py",
+      "reports/",
+      "tests/test_report_pack.py"
+    ],
+    "phase_4_cli_docs": [
+      "src/flickr_bio_occurrence/cli.py",
+      "README.md",
+      "tests/test_cli_dry_run.py"
+    ],
+    "phase_5_storage_cleanup": [
+      "src/flickr_bio_occurrence/pipeline/transforms.py",
+      "src/flickr_bio_occurrence/pipeline/dry_run.py",
+      "src/flickr_bio_occurrence/storage/duckdb_index.py",
+      "tests/test_pipeline_transforms.py",
+      "tests/test_storage_outputs.py"
+    ]
+  },
+  "redundant_code_candidates": [
+    {
+      "file": "src/flickr_bio_occurrence/pipeline/transforms.py",
+      "candidate": "bronze/silver/gold ETL naming",
+      "reason": "Superseded by lean image triage output, but still covered by existing compatibility tests."
+    },
+    {
+      "file": "src/flickr_bio_occurrence/storage/duckdb_index.py",
+      "candidate": "bronze/silver/gold DuckDB views",
+      "reason": "Legacy storage view names are inconsistent with image-triage table semantics."
+    },
+    {
+      "file": "src/flickr_bio_occurrence/pipeline/dry_run.py",
+      "candidate": "bronze/silver/gold output path labels",
+      "reason": "Dry-run output paths still describe occurrence-publication tiers."
+    },
+    {
+      "file": "src/flickr_bio_occurrence/vision/pipeline.py",
+      "candidate": "classify_bronze_photo_row name",
+      "reason": "Function name carries old Bronze tier wording although behavior is temporary image classification."
+    }
+  ],
+  "acceptance_findings": {
+    "exact_files_and_functions_identified": true,
+    "image_category_exists": false,
+    "life_stage_exists": false,
+    "caterpillar_pupa_egg_status_reported": true,
+    "implementation_changes_made_in_phase_0": false
+  }
+}
