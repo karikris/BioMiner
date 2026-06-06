@@ -12,6 +12,7 @@ from flickr_bio_occurrence.benchmark.offline_run import run_existing_payload_ben
 from flickr_bio_occurrence.evidence.extractor import write_staging_evidence
 from flickr_bio_occurrence.evidence.rules import classify_evidence_frame
 from flickr_bio_occurrence.flickr.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_PATH, FlickrRateLimiter
+from flickr_bio_occurrence.pipeline.comments_enrichment import CommentsEnrichmentState, fetch_flickr_comments
 from flickr_bio_occurrence.pipeline.job_queue import ClassificationJobQueue
 from flickr_bio_occurrence.pipeline.dry_run import build_dry_run_summary
 from flickr_bio_occurrence.pipeline.metadata_poller import SOFT_API_CALLS_PER_HOUR, poll_once
@@ -36,6 +37,13 @@ def build_parser() -> argparse.ArgumentParser:
     fetch_live.add_argument("--dry-run", action="store_true")
     fetch_comments = subparsers.add_parser("fetch-comments")
     fetch_comments.add_argument("--photo-id", action="append", default=[])
+    fetch_comments.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
+    fetch_comments.add_argument("--limit", type=int, default=0)
+    fetch_comments.add_argument("--dry-run", action="store_true")
+    fetch_comments.add_argument("--selected-for-qa", action="store_true")
+    fetch_comments.add_argument("--api-key-env", default="FLICKR_API_KEY")
+    fetch_comments.add_argument("--min-photos", type=int, default=2)
+    fetch_comments.add_argument("--min-users", type=int, default=2)
     poll_once_parser = subparsers.add_parser("poll-once")
     poll_once_parser.add_argument("--max-api-calls", type=int, default=SOFT_API_CALLS_PER_HOUR)
     poll_once_parser.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
@@ -105,10 +113,42 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
     if args.command == "fetch-comments":
+        state = CommentsEnrichmentState(args.state_db)
+        queued = state.queue_candidates(
+            (
+                {
+                    "source": "flickr",
+                    "flickr_photo_id": photo_id,
+                    "triage_bin": "in_review",
+                    "triage_reason": "selected_candidate",
+                }
+                for photo_id in args.photo_id
+            ),
+            selected_for_qa=args.selected_for_qa,
+        )
+        processed = {"comment_records_processed": 0, "comment_records_failed": 0, "term_observations_inserted": 0}
+        if args.limit > 0 and not args.dry_run:
+            api_key = os.environ.get(args.api_key_env)
+            if not api_key:
+                print(
+                    json.dumps(
+                        {"error": f"{args.api_key_env} is required unless --dry-run or --limit 0 is used"},
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+                return 2
+            processed = state.process_pending(fetch_comments=fetch_flickr_comments(api_key=api_key), limit=args.limit)
+        promoted = state.promote_supported_terms(min_photos=args.min_photos, min_users=args.min_users)
         payload = {
-            "implemented": False,
-            "reason": "flickr.photos.comments.getList is allow-listed but comment fetching is explicitly reported unavailable.",
+            "implemented": True,
+            "comment_fetch_scope": "selected_candidate_records_only",
             "photo_ids_requested": args.photo_id,
+            "queued_comment_candidates_added": queued,
+            **processed,
+            "promoted_terms_added": len(promoted),
+            "promoted_terms": [term.__dict__ for term in promoted],
+            **state.summary(),
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0

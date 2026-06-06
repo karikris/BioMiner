@@ -261,7 +261,7 @@ def test_evidence_first_cli_commands_build_classify_apply_and_compact(tmp_path, 
     assert compacted_path.exists()
 
 
-def test_fetch_live_dry_run_and_comments_audit_cli(capsys) -> None:
+def test_fetch_live_dry_run_and_comments_enrichment_cli(tmp_path, capsys) -> None:
     parser = build_parser()
     args = parser.parse_args(
         [
@@ -281,11 +281,13 @@ def test_fetch_live_dry_run_and_comments_audit_cli(capsys) -> None:
     assert run(args) == 0
     assert json.loads(capsys.readouterr().out)["planned_api_calls"] == 5
 
-    args = parser.parse_args(["fetch-comments", "--photo-id", "1"])
+    args = parser.parse_args(["fetch-comments", "--photo-id", "1", "--state-db", str(tmp_path / "comments.sqlite"), "--dry-run"])
     assert run(args) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["implemented"] is False
+    assert payload["implemented"] is True
+    assert payload["comment_fetch_scope"] == "selected_candidate_records_only"
     assert payload["photo_ids_requested"] == ["1"]
+    assert payload["queued_comment_candidates_added"] == 1
 
 
 def test_classify_watch_skips_completed_jobs_and_gc_cache_reports(tmp_path, capsys) -> None:
