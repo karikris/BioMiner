@@ -33,10 +33,9 @@ def build_reports() -> dict[str, Any]:
     return {
         "bioclip_run_summary.json": summary,
         "bioclip_run_summary.md": build_bioclip_run_summary_markdown(summary),
-        "storage_profile.json": build_storage_profile(),
+        "image_triage_profile.json": build_image_triage_profile(),
         "cache_profile.json": build_cache_profile(),
         "gpu_profile.json": build_gpu_profile(),
-        "quality_profile.json": build_quality_profile(),
         "idempotency_profile.json": build_idempotency_profile(),
         "code_cleanup_report.md": build_code_cleanup_report_markdown(),
         "agents_update_recommendations.json": build_agents_update_recommendations(),
@@ -46,7 +45,7 @@ def build_reports() -> dict[str, Any]:
 def base_payload() -> dict[str, Any]:
     return {
         "generated_at": GENERATED_AT,
-        "phase": "Phase 6: CLI cleanup and final integration",
+        "phase": "Lean image triage pipeline",
         "source": "static code audit; no network, CUDA, model weights, Flickr downloads, or large data files required",
     }
 
@@ -106,30 +105,14 @@ def build_bioclip_run_summary() -> dict[str, Any]:
                 "symbol": "select_flickr_image_url",
                 "notes": "Original url_o is requested in Flickr extras but not selected by default.",
             },
-            "cli_commands": {
-                "file": "src/flickr_bio_occurrence/cli.py",
-                "commands": [
-                    "fetch-live",
-                    "fetch-comments",
-                    "build-evidence",
-                    "classify-once",
-                    "classify-watch",
-                    "apply-rules",
-                    "gc-cache",
-                    "compact-parquet",
-                    "qa-summary",
-                ],
-                "existing_compatibility_preserved": ["fetch", "qa-rate-limit", "qa-estimate", "qa-estimate-combined", "benchmark-existing-payloads"],
-            },
-            "evidence_first_pipeline": {
-                "evidence_extractor": "src/flickr_bio_occurrence/evidence/extractor.py",
-                "rule_engine": "src/flickr_bio_occurrence/evidence/rules.py",
-                "job_queue": "src/flickr_bio_occurrence/pipeline/job_queue.py",
-                "sharded_fetch": "src/flickr_bio_occurrence/pipeline/sharded_fetch.py",
-                "vision_service": "src/flickr_bio_occurrence/vision/service.py",
-                "one_evidence_row_per_photo_record": True,
-                "one_publication_state_per_record": True,
-                "in_review_requires_review_reason": True,
+            "image_triage_pipeline": {
+                "module": "src/flickr_bio_occurrence/vision/triage.py",
+                "output": "image_triage.parquet",
+                "stores_downloaded_images": False,
+                "keeps_metadata_urls_hashes_scores": True,
+                "geo_time_fields": ["latitude", "longitude", "date_taken", "date_upload", "captured_at", "year", "month"],
+                "triage_bins": ["gold", "silver", "bronze", "in_review"],
+                "classification_statuses": ["success", "skipped_existing", "failed_download", "failed_bioclip", "invalid_record"],
             },
             "bioclip_labels_and_agreement_rules": {
                 "labels_file": "src/flickr_bio_occurrence/vision/bioclip.py",
@@ -144,32 +127,10 @@ def build_bioclip_run_summary() -> dict[str, Any]:
                 "screening_evidence_only": True,
                 "auto_validates_dwc": False,
             },
-            "bronze_silver_gold_semantics": {
-                "currently_implied_by_storage_layout": False,
-                "files_and_symbols": [
-                    {
-                        "file": "src/flickr_bio_occurrence/pipeline/transforms.py",
-                        "symbols": ["flatten_search_payloads", "build_silver_candidates", "build_dwc_rows"],
-                    },
-                    {
-                        "file": "src/flickr_bio_occurrence/benchmark/offline_run.py",
-                        "symbols": ["_write_outputs"],
-                    },
-                    {
-                        "file": "src/flickr_bio_occurrence/storage/duckdb_index.py",
-                        "symbols": ["create_qa_views"],
-                    },
-                ],
-                "publication_state_field_present": True,
-                "review_reason_field_present": True,
-                "review_status_present": True,
-                "notes": "Gold/Silver/Bronze/In Review are represented as explicit publication_state values by the evidence rules.",
-            },
-            "prediction_checkpoints": {
-                "file": "src/flickr_bio_occurrence/benchmark/vision_checkpoint.py",
-                "symbols": ["build_checkpointed_vision_predictions"],
-                "layout": "silver/silver_vision_prediction/model_version=<model_id>/run_id=<run_id>/shard_id=<shard_id>/part-00000.parquet",
-                "idempotency": "Existing predictions are skipped by flickr_photo_id, image_hash, model_version, and model_checkpoint.",
+            "darwin_core_scope": {
+                "active_image_triage_dependency": False,
+                "compatibility_only": True,
+                "notes": "Darwin Core export and occurrence publication logic are retained only for existing compatibility tests.",
             },
             "cache_cleanup": {
                 "handled": True,
@@ -181,38 +142,66 @@ def build_bioclip_run_summary() -> dict[str, Any]:
                 "network_required": False,
                 "cuda_required": False,
                 "model_weights_required": False,
-                "phase_6_focused_tests": "tests/test_cli_dry_run.py, tests/test_report_pack.py, tests/test_streaming_jobs.py, evidence and BioCLIP focused tests",
+                "lean_triage_tests": "tests/test_image_triage.py and tests/test_report_pack.py",
             },
         }
     )
     return payload
 
 
-def build_storage_profile() -> dict[str, Any]:
+def build_image_triage_profile() -> dict[str, Any]:
     payload = base_payload()
     payload.update(
         {
-            "raw_flickr_payloads": {
-                "photos_search_path": "data/raw/flickr/photos_search/",
-                "comments_path": None,
-                "comments_stored": False,
-            },
-            "parquet_outputs": {
-                "evidence": "staging/evidence/",
-                "bronze": "bronze/bronze_flickr_photo",
-                "silver_occurrence_candidate": "silver/silver_occurrence_candidate",
-                "silver_vision_prediction": "silver/silver_vision_prediction",
-                "gold_dwc_occurrence": "gold/dwc_occurrence",
-            },
-            "duckdb": {
-                "offline_benchmark_path": "existing_payload_benchmark.duckdb",
-                "views_file": "src/flickr_bio_occurrence/storage/duckdb_index.py",
-            },
-            "classification_queue": {
-                "default_path": "classification_jobs.sqlite",
-                "fields": ["job_id", "evidence_parquet_path", "status", "model_version", "created_at", "claimed_at", "completed_at", "attempts", "error"],
-            },
-            "measured_bytes": "not_instrumented",
+            "output_dataset": "image_triage.parquet",
+            "required_fields": [
+                "source",
+                "source_record_id",
+                "flickr_photo_id",
+                "photo_page_url",
+                "image_url",
+                "image_url_kind",
+                "latitude",
+                "longitude",
+                "date_taken",
+                "date_upload",
+                "captured_at",
+                "year",
+                "month",
+                "source_record_hash",
+                "image_hash",
+                "image_downloaded",
+                "image_deleted_after_classification",
+                "classification_status",
+                "classification_error",
+                "model_id",
+                "model_version",
+                "model_checkpoint",
+                "classified_at",
+                "bioclip_top1_label",
+                "bioclip_top1_score",
+                "bioclip_topk_json",
+                "triage_bin",
+                "triage_reason",
+                "is_target_positive",
+                "is_negative_material",
+            ],
+            "records_seen": None,
+            "records_classified": None,
+            "records_skipped_existing": None,
+            "download_failures": None,
+            "bioclip_failures": None,
+            "gold_count": None,
+            "silver_count": None,
+            "bronze_count": None,
+            "in_review_count": None,
+            "bronze_reason_counts": "not_instrumented",
+            "image_cache_bytes_before": "not_instrumented",
+            "image_cache_bytes_after": "not_instrumented",
+            "images_deleted_after_classification": None,
+            "duplicate_skipped_count": None,
+            "model_load_count": "not_instrumented",
+            "images_per_second": None,
         }
     )
     return payload
@@ -230,6 +219,8 @@ def build_cache_profile() -> dict[str, Any]:
                 "cleanup": "not_instrumented",
                 "successful_images_deleted_by_default": True,
                 "keep_failed_images_default": False,
+                "image_cache_bytes_before": "not_instrumented",
+                "image_cache_bytes_after": "not_instrumented",
             },
             "huggingface_cache": {
                 "default_root": "data/cache/huggingface",
@@ -253,10 +244,11 @@ def build_gpu_profile() -> dict[str, Any]:
                 "device_expression": "requires CUDA by default; CPU fallback is not used when require_cuda is true",
             },
             "long_lived_service": {
-                "file": "src/flickr_bio_occurrence/vision/service.py",
-                "symbol": "BioClipJobService",
-                "model_lifecycle": "externally owned classifier can process multiple claimed jobs without reinitialization",
+                "file": "src/flickr_bio_occurrence/vision/triage.py",
+                "symbol": "process_image_triage_records",
+                "model_lifecycle": "classifier is externally supplied; model_load_count is not instrumented by this report pack",
             },
+            "model_load_count": "not_instrumented",
             "benchmark_reporting": {
                 "file": "src/flickr_bio_occurrence/benchmark/vision_checkpoint.py",
                 "symbol": "build_checkpointed_vision_predictions",
@@ -265,27 +257,6 @@ def build_gpu_profile() -> dict[str, Any]:
             },
             "measured_gpu_name": "not_instrumented",
             "measured_cuda_available": "not_instrumented",
-        }
-    )
-    return payload
-
-
-def build_quality_profile() -> dict[str, Any]:
-    payload = base_payload()
-    payload.update(
-        {
-            "bioclip_role": "screening_evidence",
-            "taxonomic_proof": False,
-            "auto_validates_dwc_records": False,
-            "agreement_rules_file": "src/flickr_bio_occurrence/vision/bioclip.py",
-            "agreement_function": "classify_species_agreement",
-            "default_review_status": {
-                "file": "src/flickr_bio_occurrence/evidence/rules.py",
-                "symbol": "classify_evidence_row",
-                "value": "publication_state plus review_reason",
-            },
-            "manual_ground_truth_accuracy": None,
-            "quality_metrics": "not_instrumented",
         }
     )
     return payload
@@ -307,15 +278,10 @@ def build_idempotency_profile() -> dict[str, Any]:
                 "api_call_table": "api_call_ledger",
                 "photo_record_table": "photo_record_ledger",
             },
-            "vision_checkpoints": {
-                "file": "src/flickr_bio_occurrence/benchmark/vision_checkpoint.py",
-                "symbol": "build_checkpointed_vision_predictions",
-                "behavior": "existing prediction keys are skipped and new predictions are written in partitioned shards",
-            },
-            "classification_jobs": {
-                "file": "src/flickr_bio_occurrence/pipeline/job_queue.py",
-                "symbol": "ClassificationJobQueue",
-                "behavior": "completed jobs are skipped on rerun; stale claimed jobs can be retried or failed",
+            "image_triage_deduplication": {
+                "file": "src/flickr_bio_occurrence/vision/triage.py",
+                "symbol": "process_image_triage_records",
+                "behavior": "successful source/photo/image_url/model combinations are skipped on rerun",
             },
         }
     )
@@ -333,15 +299,15 @@ def build_agents_update_recommendations() -> dict[str, Any]:
                 },
                 {
                     "topic": "publication_state",
-                    "recommendation": "Keep publication_state and review_reason as explicit evidence-rule outputs; avoid reintroducing directory-only state semantics.",
+                    "recommendation": "Do not expand occurrence publication logic in the image-triage phase; use triage_bin only.",
                 },
                 {
                     "topic": "review_reason",
-                    "recommendation": "Maintain tests that every in_review row has at least one review_reason.",
+                    "recommendation": "Use triage_reason for image triage; keep review_reason only in legacy compatibility paths.",
                 },
                 {
                     "topic": "BioCLIP runtime",
-                    "recommendation": "Use BioClipJobService or PersistentBioClipScorer for production classification so the model remains loaded across jobs.",
+                    "recommendation": "Use an externally owned BioCLIP 2.5 classifier with process_image_triage_records; do not restart the model per image.",
                 },
                 {
                     "topic": "cache cleanup",
@@ -350,6 +316,7 @@ def build_agents_update_recommendations() -> dict[str, Any]:
             ],
             "remaining_unavailable_features": [
                 "dedicated Flickr comments API fetching",
+                "validated Darwin Core occurrence publication",
                 "multi-GPU classification",
                 "dashboard",
             ],
@@ -374,16 +341,15 @@ def build_bioclip_run_summary_markdown(summary: dict[str, Any]) -> str:
             f"- Comments transformed to parquet: `{comments['comments_transformed_to_parquet']['value']}`.",
             f"- Comments searched for scientific names/verification phrases: `{comments['comments_scanned_for_scientific_names_or_verification_phrases']['value']}`.",
             f"- Image selection order: `{summary['image_selection']['order']}`.",
-            f"- CLI commands: `{summary['cli_commands']['commands']}`.",
-            f"- Evidence-first pipeline present: `{bool(summary['evidence_first_pipeline'])}`.",
-            f"- One publication_state per record: `{summary['evidence_first_pipeline']['one_publication_state_per_record']}`.",
-            f"- Prediction checkpoint layout: `{summary['prediction_checkpoints']['layout']}`.",
+            f"- Image triage output: `{summary['image_triage_pipeline']['output']}`.",
+            f"- Triage bins: `{summary['image_triage_pipeline']['triage_bins']}`.",
+            f"- Geo/time fields retained: `{summary['image_triage_pipeline']['geo_time_fields']}`.",
             f"- Cache cleanup handled: `{summary['cache_cleanup']['handled']}`.",
             "",
             "## Notes",
             "",
             "- BioCLIP output is screening evidence only, not taxonomic proof.",
-            "- Dedicated comments API fetching remains explicitly unavailable.",
+            "- Dedicated comments API fetching and validated Darwin Core publication remain explicitly unavailable in this phase.",
             "- No network, CUDA, real BioCLIP weights, or real Flickr downloads are required to generate this report pack.",
         ]
     ) + "\n"
@@ -398,17 +364,16 @@ def build_code_cleanup_report_markdown() -> str:
             "",
             "## Final Integration Findings",
             "",
-            "- Evidence extraction, evidence rules, streaming job queue, and long-lived classification service are present.",
-            "- CLI commands expose fetch-live, fetch-comments audit, build-evidence, classify-once/watch, apply-rules, gc-cache, compact-parquet, and qa-summary.",
+            "- The active flow is now a lean image-triage pipeline centered on `image_triage.parquet`.",
             "- Image selection defaults to `url_l -> url_m`; originals are not selected by default.",
-            "- BioCLIP batching and persistent worker paths avoid model restart per image/job.",
-            "- Prediction outputs use partitioned batch parquet instead of one file per photo.",
+            "- BioCLIP output is stored as model evidence only, not taxonomic validation.",
             "- Successful cached images are deleted by default after prediction writes.",
+            "- Darwin Core export remains compatibility-only and is not expanded in the active triage flow.",
             "",
             "## Remaining Explicit Gaps",
             "",
             "- Dedicated Flickr comment API fetching remains unavailable and reported through `fetch-comments`.",
-            "- Multi-GPU and dashboard workflows remain out of scope.",
+            "- Validated Darwin Core occurrence publication, multi-GPU, and dashboard workflows remain out of scope.",
         ]
     ) + "\n"
 

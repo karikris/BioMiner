@@ -1,6 +1,6 @@
 # BioCLIP Run Summary
 
-Generated: 2026-06-06T15:34:36.597146+00:00
+Generated: 2026-06-06T16:34:13.636500+00:00
 
 ## Final Integration Findings
 
@@ -10,14 +10,13 @@ Generated: 2026-06-06T15:34:36.597146+00:00
 - Comments transformed to parquet: `False`.
 - Comments searched for scientific names/verification phrases: `False`.
 - Image selection order: `['url_l', 'url_m']`.
-- CLI commands: `['fetch-live', 'fetch-comments', 'build-evidence', 'classify-once', 'classify-watch', 'apply-rules', 'gc-cache', 'compact-parquet', 'qa-summary']`.
-- Evidence-first pipeline present: `True`.
-- One publication_state per record: `True`.
-- Prediction checkpoint layout: `silver/silver_vision_prediction/model_version=<model_id>/run_id=<run_id>/shard_id=<shard_id>/part-00000.parquet`.
+- Image triage output: `image_triage.parquet`.
+- Triage bins: `['gold', 'silver', 'bronze', 'in_review']`.
+- Geo/time fields retained: `['latitude', 'longitude', 'date_taken', 'date_upload', 'captured_at', 'year', 'month']`.
 - Cache cleanup handled: `True`.
 
 ## Notes
 
 - BioCLIP output is screening evidence only, not taxonomic proof.
-- Dedicated comments API fetching remains explicitly unavailable.
+- Dedicated comments API fetching and validated Darwin Core publication remain explicitly unavailable in this phase.
 - No network, CUDA, real BioCLIP weights, or real Flickr downloads are required to generate this report pack.

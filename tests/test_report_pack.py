@@ -21,10 +21,9 @@ write_report_pack = _load_write_report_pack()
 REQUIRED_REPORTS = {
     "bioclip_run_summary.json",
     "bioclip_run_summary.md",
-    "storage_profile.json",
+    "image_triage_profile.json",
     "cache_profile.json",
     "gpu_profile.json",
-    "quality_profile.json",
     "idempotency_profile.json",
     "code_cleanup_report.md",
     "agents_update_recommendations.json",
@@ -46,31 +45,30 @@ def test_report_pack_records_comment_and_image_selection_status(tmp_path) -> Non
     assert summary["comment_handling"]["comments_stored_in_raw_payloads"]["value"] is False
     assert summary["comment_handling"]["comments_transformed_to_parquet"]["value"] is False
     assert summary["image_selection"]["order"] == ["url_l", "url_m"]
-    assert summary["cli_commands"]["commands"] == [
-        "fetch-live",
-        "fetch-comments",
-        "build-evidence",
-        "classify-once",
-        "classify-watch",
-        "apply-rules",
-        "gc-cache",
-        "compact-parquet",
-        "qa-summary",
-    ]
-    assert summary["evidence_first_pipeline"]["one_evidence_row_per_photo_record"] is True
-    assert summary["evidence_first_pipeline"]["one_publication_state_per_record"] is True
-    assert summary["evidence_first_pipeline"]["in_review_requires_review_reason"] is True
-    assert summary["prediction_checkpoints"]["layout"] == (
-        "silver/silver_vision_prediction/model_version=<model_id>/run_id=<run_id>/shard_id=<shard_id>/part-00000.parquet"
-    )
+    assert summary["image_triage_pipeline"]["output"] == "image_triage.parquet"
+    assert summary["image_triage_pipeline"]["stores_downloaded_images"] is False
+    assert summary["image_triage_pipeline"]["geo_time_fields"] == ["latitude", "longitude", "date_taken", "date_upload", "captured_at", "year", "month"]
+    assert summary["darwin_core_scope"]["active_image_triage_dependency"] is False
 
 
 def test_report_pack_marks_uninstrumented_metrics_explicitly(tmp_path) -> None:
     write_report_pack(tmp_path)
 
     gpu_profile = json.loads((tmp_path / "gpu_profile.json").read_text(encoding="utf-8"))
-    quality_profile = json.loads((tmp_path / "quality_profile.json").read_text(encoding="utf-8"))
+    triage_profile = json.loads((tmp_path / "image_triage_profile.json").read_text(encoding="utf-8"))
 
     assert gpu_profile["measured_gpu_name"] == "not_instrumented"
-    assert gpu_profile["long_lived_service"]["symbol"] == "BioClipJobService"
-    assert quality_profile["manual_ground_truth_accuracy"] is None
+    assert gpu_profile["model_load_count"] == "not_instrumented"
+    assert triage_profile["records_seen"] is None
+    assert triage_profile["bronze_reason_counts"] == "not_instrumented"
+
+
+def test_reports_focus_on_image_triage_not_darwin_core(tmp_path) -> None:
+    write_report_pack(tmp_path)
+
+    summary = json.loads((tmp_path / "bioclip_run_summary.json").read_text(encoding="utf-8"))
+    triage_profile = json.loads((tmp_path / "image_triage_profile.json").read_text(encoding="utf-8"))
+
+    assert "gold_dwc_occurrence" not in json.dumps(triage_profile)
+    assert summary["darwin_core_scope"]["compatibility_only"] is True
+    assert "triage_bin" in triage_profile["required_fields"]

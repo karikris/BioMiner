@@ -21,61 +21,11 @@
     "notes": "Local BioCLIPMiner is minimal: requirements plus a smoke script that loads local BioCLIP 2.5 weights.",
     "path": "/mnt/c/WSL-Shared/Projects/BioCLIPMiner"
   },
-  "bronze_silver_gold_semantics": {
-    "currently_implied_by_storage_layout": false,
-    "files_and_symbols": [
-      {
-        "file": "src/flickr_bio_occurrence/pipeline/transforms.py",
-        "symbols": [
-          "flatten_search_payloads",
-          "build_silver_candidates",
-          "build_dwc_rows"
-        ]
-      },
-      {
-        "file": "src/flickr_bio_occurrence/benchmark/offline_run.py",
-        "symbols": [
-          "_write_outputs"
-        ]
-      },
-      {
-        "file": "src/flickr_bio_occurrence/storage/duckdb_index.py",
-        "symbols": [
-          "create_qa_views"
-        ]
-      }
-    ],
-    "notes": "Gold/Silver/Bronze/In Review are represented as explicit publication_state values by the evidence rules.",
-    "publication_state_field_present": true,
-    "review_reason_field_present": true,
-    "review_status_present": true
-  },
   "cache_cleanup": {
     "handled": true,
     "image_cache_file": "src/flickr_bio_occurrence/vision/pipeline.py",
     "image_cache_symbol": "classify_bronze_photo_row",
     "notes": "Successful images are deleted by default after prediction; failed images are deleted by default unless keep_failed_images is enabled."
-  },
-  "cli_commands": {
-    "commands": [
-      "fetch-live",
-      "fetch-comments",
-      "build-evidence",
-      "classify-once",
-      "classify-watch",
-      "apply-rules",
-      "gc-cache",
-      "compact-parquet",
-      "qa-summary"
-    ],
-    "existing_compatibility_preserved": [
-      "fetch",
-      "qa-rate-limit",
-      "qa-estimate",
-      "qa-estimate-combined",
-      "benchmark-existing-payloads"
-    ],
-    "file": "src/flickr_bio_occurrence/cli.py"
   },
   "comment_handling": {
     "comments_currently_fetched": {
@@ -111,17 +61,12 @@
       "value": false
     }
   },
-  "evidence_first_pipeline": {
-    "evidence_extractor": "src/flickr_bio_occurrence/evidence/extractor.py",
-    "in_review_requires_review_reason": true,
-    "job_queue": "src/flickr_bio_occurrence/pipeline/job_queue.py",
-    "one_evidence_row_per_photo_record": true,
-    "one_publication_state_per_record": true,
-    "rule_engine": "src/flickr_bio_occurrence/evidence/rules.py",
-    "sharded_fetch": "src/flickr_bio_occurrence/pipeline/sharded_fetch.py",
-    "vision_service": "src/flickr_bio_occurrence/vision/service.py"
+  "darwin_core_scope": {
+    "active_image_triage_dependency": false,
+    "compatibility_only": true,
+    "notes": "Darwin Core export and occurrence publication logic are retained only for existing compatibility tests."
   },
-  "generated_at": "2026-06-06T15:34:36.597146+00:00",
+  "generated_at": "2026-06-06T16:34:13.636500+00:00",
   "image_selection": {
     "default": "large-first, medium fallback only",
     "file": "src/flickr_bio_occurrence/vision/image_selection.py",
@@ -132,21 +77,41 @@
     ],
     "symbol": "select_flickr_image_url"
   },
-  "phase": "Phase 6: CLI cleanup and final integration",
-  "prediction_checkpoints": {
-    "file": "src/flickr_bio_occurrence/benchmark/vision_checkpoint.py",
-    "idempotency": "Existing predictions are skipped by flickr_photo_id, image_hash, model_version, and model_checkpoint.",
-    "layout": "silver/silver_vision_prediction/model_version=<model_id>/run_id=<run_id>/shard_id=<shard_id>/part-00000.parquet",
-    "symbols": [
-      "build_checkpointed_vision_predictions"
+  "image_triage_pipeline": {
+    "classification_statuses": [
+      "success",
+      "skipped_existing",
+      "failed_download",
+      "failed_bioclip",
+      "invalid_record"
+    ],
+    "geo_time_fields": [
+      "latitude",
+      "longitude",
+      "date_taken",
+      "date_upload",
+      "captured_at",
+      "year",
+      "month"
+    ],
+    "keeps_metadata_urls_hashes_scores": true,
+    "module": "src/flickr_bio_occurrence/vision/triage.py",
+    "output": "image_triage.parquet",
+    "stores_downloaded_images": false,
+    "triage_bins": [
+      "gold",
+      "silver",
+      "bronze",
+      "in_review"
     ]
   },
+  "phase": "Lean image triage pipeline",
   "python_target": ">=3.14",
   "source": "static code audit; no network, CUDA, model weights, Flickr downloads, or large data files required",
   "tests": {
     "cuda_required": false,
+    "lean_triage_tests": "tests/test_image_triage.py and tests/test_report_pack.py",
     "model_weights_required": false,
-    "network_required": false,
-    "phase_6_focused_tests": "tests/test_cli_dry_run.py, tests/test_report_pack.py, tests/test_streaming_jobs.py, evidence and BioCLIP focused tests"
+    "network_required": false
   }
 }

@@ -1,21 +1,21 @@
 {
-  "generated_at": "2026-06-06T15:34:36.597146+00:00",
-  "phase": "Phase 6: CLI cleanup and final integration",
+  "generated_at": "2026-06-06T16:34:13.636500+00:00",
+  "phase": "Lean image triage pipeline",
   "recommendations": [
     {
       "recommendation": "Dedicated Flickr comment fetching remains unavailable; keep the CLI audit explicit until API-backed comment tests are added.",
       "topic": "comments"
     },
     {
-      "recommendation": "Keep publication_state and review_reason as explicit evidence-rule outputs; avoid reintroducing directory-only state semantics.",
+      "recommendation": "Do not expand occurrence publication logic in the image-triage phase; use triage_bin only.",
       "topic": "publication_state"
     },
     {
-      "recommendation": "Maintain tests that every in_review row has at least one review_reason.",
+      "recommendation": "Use triage_reason for image triage; keep review_reason only in legacy compatibility paths.",
       "topic": "review_reason"
     },
     {
-      "recommendation": "Use BioClipJobService or PersistentBioClipScorer for production classification so the model remains loaded across jobs.",
+      "recommendation": "Use an externally owned BioCLIP 2.5 classifier with process_image_triage_records; do not restart the model per image.",
       "topic": "BioCLIP runtime"
     },
     {
@@ -25,6 +25,7 @@
   ],
   "remaining_unavailable_features": [
     "dedicated Flickr comments API fetching",
+    "validated Darwin Core occurrence publication",
     "multi-GPU classification",
     "dashboard"
   ],

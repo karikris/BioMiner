@@ -1,7 +1,7 @@
 [project]
 name = "flickr-bio-occurrence"
 version = "0.1.0"
-description = "Flickr biodiversity occurrence pipeline with Darwin Core exports."
+description = "Flickr image triage pipeline with BioCLIP visual evidence."
 requires-python = ">=3.14"
 dependencies = [
   "duckdb>=1.2",
