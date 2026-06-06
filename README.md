@@ -1,7 +1,9 @@
 # BioMiner
 
-BioMiner is a Python 3.14-oriented Flickr image-triage pipeline for BioCLIP-based visual evidence.
+BioMiner is a Python 3.14-oriented Flickr image-triage pipeline for Lepidoptera life-stage occurrence screening.
 
-The active workflow stores source metadata, image URLs, geolocation/time fields, hashes, model outputs, and triage bins. Downloaded image files are temporary and are deleted after classification.
+The active workflow stores source metadata, image URLs, geolocation/time fields, hashes, model outputs, life-stage/category fields, and triage bins. Downloaded image files are temporary and are deleted after classification. BioCLIP/BioCLIP 2.5 output is screening evidence only and is not taxonomic validation.
+
+The current report pack focuses on query terms, bbox coverage, occurrence bins, life stages, no-geo records, comment expansion, API budget, and code cleanup. Darwin Core mapper/exporter code is retained only for compatibility tests and is not the active occurrence-publication path.
 
 BioCLIP, BioCLIP 2, BioCLIP 2.5 Huge, PyTorch image classification, and image embedding workflows have moved to `karikris/BioCLIPMiner`, which targets Python 3.12 for the BioCLIP/OpenCLIP/PyTorch runtime.

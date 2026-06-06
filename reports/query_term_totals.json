@@ -1,0 +1,33 @@
+{
+  "adult_butterfly_count": null,
+  "ai_generated_count": null,
+  "api_calls_used": null,
+  "artwork_count": null,
+  "bronze_count": null,
+  "caterpillar_count": null,
+  "chrysalis_count": null,
+  "comments_promoted_term_counts": "not_instrumented",
+  "downloaded_images_deleted_count": null,
+  "duplicate_skipped_count": null,
+  "egg_count": null,
+  "files": [
+    "src/flickr_bio_occurrence/flickr/query_planner.py",
+    "src/flickr_bio_occurrence/pipeline/comments_enrichment.py"
+  ],
+  "generated_at": "2026-06-06T19:54:20.758470+00:00",
+  "gold_count": null,
+  "in_review_no_geo_count": null,
+  "larva_count": null,
+  "museum_specimen_count": null,
+  "other_insect_count": null,
+  "phase": "Phase 7 reports, cleanup, and docs",
+  "pupa_count": null,
+  "query_source": "Flickr search terms plus thresholded comments-derived terms",
+  "query_term_counts": "not_instrumented",
+  "report": "query_term_totals",
+  "silver_count": null,
+  "source": "static code audit; no network, CUDA, model weights, Flickr downloads, parquet, or DuckDB files required",
+  "state_table": "flickr_work_items",
+  "tattoo_count": null,
+  "unsupported_metrics_policy": "Unsupported metrics are null or not_instrumented, never guessed."
+}

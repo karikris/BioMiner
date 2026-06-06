@@ -1,32 +1,27 @@
 # Code Cleanup Report
 
-Generated: 2026-06-06T19:24:11.376784+00:00
+Generated: 2026-06-06T19:54:20.758470+00:00
 
-## Final Integration Findings
+## Phase 7 Scope
 
-- The active flow is now a lean image-triage pipeline centered on `image_triage.parquet`.
-- Image selection defaults to `url_l -> url_m`; originals are not selected by default.
-- BioCLIP output is stored as model evidence only, not taxonomic validation.
-- Removed the legacy human-verification gate from the active evidence rule engine.
-- Removed legacy publication reasons: `human_verified_bioclip_positive`, `human_verified_bioclip_missing`, `human_verified_bioclip_low_confidence`, `human_verified_bioclip_conflict`, and `bioclip_positive_without_human_verification`.
-- Successful cached images are deleted by default after prediction writes.
-- Darwin Core export remains compatibility-only and is not expanded in the active triage flow.
+- Updated the report pack away from old publication/Darwin Core language and toward image triage, life-stage, comments, no-geo, bbox, and API-budget profiles.
+- Retained BioCLIP as screening evidence only; no report claims taxonomic validation.
+- Required metrics are present in JSON reports as null or `not_instrumented` when no bounded run data is available.
 
-## Retained Compatibility Shims
+## Removed Or Superseded Report Paths
 
-- `src/flickr_bio_occurrence/dwc/mapper.py` is retained for existing tested public API behavior; remove when Darwin Core compatibility tests are retired.
-- `human_verification_detected` extraction fields remain as metadata from source text; they no longer gate Gold/Silver/Bronze classification.
+- Superseded `bioclip_run_summary.*`, `quality_profile.json`, `image_triage_profile.json`, `cache_profile.json`, `gpu_profile.json`, and `idempotency_profile.json` in the active report pack.
+- Removed stale report text that described dedicated comments fetching as unavailable; comments enrichment now exists for selected candidates.
 
-## Tests Added Or Updated
+## Compatibility-Only Code
 
-- `test_gold_score_gte_050_target_positive`
-- `test_silver_score_lt_050_target_positive`
-- `test_bronze_negative_material_museum_art_ai_other_insect`
-- `test_cli_help_does_not_describe_old_gold_silver_bronze_logic`
-- `test_no_legacy_human_verification_gold_gate_remains`
-- `test_code_cleanup_report_lists_removed_legacy_rule_paths`
+- `src/flickr_bio_occurrence/dwc/mapper.py` and `src/flickr_bio_occurrence/dwc/exporter.py` are retained only for existing tested public API compatibility.
+- Darwin Core compatibility code must not be used as the active image-triage or occurrence-publication path in this phase.
+- Removal condition: retire these shims when `tests/test_dwc_mapper.py` and any downstream public API expectations are removed or replaced.
 
-## Remaining Explicit Gaps
+## Still Out Of Scope
 
-- Dedicated Flickr comment API fetching remains unavailable and reported through `fetch-comments`.
-- Validated Darwin Core occurrence publication, multi-GPU, and dashboard workflows remain out of scope.
+- Validated Darwin Core occurrence publication.
+- `identificationVerificationStatus` expansion.
+- Human verification as a gate for Gold/Silver.
+- Network/CUDA/BioCLIP/Flickr-dependent tests.

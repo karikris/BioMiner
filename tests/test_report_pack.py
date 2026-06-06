@@ -19,90 +19,93 @@ write_report_pack = _load_write_report_pack()
 
 
 REQUIRED_REPORTS = {
-    "bioclip_run_summary.json",
-    "bioclip_run_summary.md",
-    "quality_profile.json",
-    "image_triage_profile.json",
-    "cache_profile.json",
-    "gpu_profile.json",
-    "idempotency_profile.json",
+    "query_term_totals.json",
+    "query_term_totals.md",
+    "bbox_coverage_profile.json",
+    "bbox_coverage_profile.md",
+    "occurrence_bin_profile.json",
+    "occurrence_bin_profile.md",
+    "life_stage_profile.json",
+    "no_geo_profile.json",
+    "comment_expansion_profile.json",
+    "api_budget_profile.json",
     "code_cleanup_report.md",
     "agents_update_recommendations.json",
 }
 
+REQUIRED_METRICS = {
+    "gold_count",
+    "silver_count",
+    "bronze_count",
+    "in_review_no_geo_count",
+    "adult_butterfly_count",
+    "egg_count",
+    "caterpillar_count",
+    "larva_count",
+    "pupa_count",
+    "chrysalis_count",
+    "museum_specimen_count",
+    "artwork_count",
+    "tattoo_count",
+    "ai_generated_count",
+    "other_insect_count",
+    "downloaded_images_deleted_count",
+    "duplicate_skipped_count",
+    "api_calls_used",
+}
 
-def test_report_pack_generator_writes_required_reports(tmp_path) -> None:
+
+def test_report_pack_generator_writes_phase_7_required_reports(tmp_path) -> None:
     write_report_pack(tmp_path)
 
     assert {path.name for path in tmp_path.iterdir()} == REQUIRED_REPORTS
 
 
-def test_report_pack_records_comment_and_image_selection_status(tmp_path) -> None:
+def test_json_reports_include_required_metrics_without_guessing(tmp_path) -> None:
     write_report_pack(tmp_path)
 
-    summary = json.loads((tmp_path / "bioclip_run_summary.json").read_text(encoding="utf-8"))
-
-    assert summary["comment_handling"]["comments_currently_fetched"]["value"] is False
-    assert summary["comment_handling"]["comments_stored_in_raw_payloads"]["value"] is False
-    assert summary["comment_handling"]["comments_transformed_to_parquet"]["value"] is False
-    assert summary["image_selection"]["order"] == ["url_l", "url_m"]
-    assert summary["image_triage_pipeline"]["output"] == "image_triage.parquet"
-    assert summary["image_triage_pipeline"]["stores_downloaded_images"] is False
-    assert summary["image_triage_pipeline"]["geo_time_fields"] == ["latitude", "longitude", "date_taken", "date_upload", "captured_at", "year", "month"]
-    assert summary["darwin_core_scope"]["active_image_triage_dependency"] is False
+    for path in tmp_path.glob("*.json"):
+        report = json.loads(path.read_text(encoding="utf-8"))
+        assert REQUIRED_METRICS.issubset(report)
+        assert report["unsupported_metrics_policy"] == "Unsupported metrics are null or not_instrumented, never guessed."
 
 
-def test_report_pack_marks_uninstrumented_metrics_explicitly(tmp_path) -> None:
+def test_life_stage_report_includes_life_stage_counts(tmp_path) -> None:
     write_report_pack(tmp_path)
 
-    gpu_profile = json.loads((tmp_path / "gpu_profile.json").read_text(encoding="utf-8"))
-    triage_profile = json.loads((tmp_path / "image_triage_profile.json").read_text(encoding="utf-8"))
+    profile = json.loads((tmp_path / "life_stage_profile.json").read_text(encoding="utf-8"))
 
-    assert gpu_profile["measured_gpu_name"] == "not_instrumented"
-    assert gpu_profile["model_load_count"] == "not_instrumented"
-    assert triage_profile["records_seen"] is None
-    assert triage_profile["bronze_reason_counts"] == "not_instrumented"
+    assert profile["adult_butterfly_count"] is None
+    assert profile["egg_count"] is None
+    assert profile["caterpillar_count"] is None
+    assert profile["larva_count"] is None
+    assert profile["pupa_count"] is None
+    assert profile["chrysalis_count"] is None
+    assert profile["life_stage_values"] == ["adult_butterfly", "egg", "caterpillar", "larva", "pupa", "chrysalis", "unknown"]
 
 
-def test_reports_focus_on_image_triage_not_darwin_core(tmp_path) -> None:
+def test_reports_focus_on_triage_comments_no_geo_and_api_budget(tmp_path) -> None:
     write_report_pack(tmp_path)
 
-    summary = json.loads((tmp_path / "bioclip_run_summary.json").read_text(encoding="utf-8"))
-    triage_profile = json.loads((tmp_path / "image_triage_profile.json").read_text(encoding="utf-8"))
+    occurrence = json.loads((tmp_path / "occurrence_bin_profile.json").read_text(encoding="utf-8"))
+    comments = json.loads((tmp_path / "comment_expansion_profile.json").read_text(encoding="utf-8"))
+    no_geo = json.loads((tmp_path / "no_geo_profile.json").read_text(encoding="utf-8"))
+    api_budget = json.loads((tmp_path / "api_budget_profile.json").read_text(encoding="utf-8"))
 
-    assert "gold_dwc_occurrence" not in json.dumps(triage_profile)
-    assert summary["darwin_core_scope"]["compatibility_only"] is True
-    assert "triage_bin" in triage_profile["required_fields"]
-    assert "occurrence_bin" in triage_profile["required_fields"]
-    assert "image_category" in triage_profile["required_fields"]
-    assert "life_stage" in triage_profile["required_fields"]
-
-
-def test_reports_include_publication_state_counts(tmp_path) -> None:
-    write_report_pack(tmp_path)
-
-    summary = json.loads((tmp_path / "bioclip_run_summary.json").read_text(encoding="utf-8"))
-    quality = json.loads((tmp_path / "quality_profile.json").read_text(encoding="utf-8"))
-
-    assert summary["classification_metrics"]["publication_state_counts"] == "not_instrumented"
-    assert quality["publication_state_counts"] == "not_instrumented"
-    assert quality["review_reason_counts"] == "not_instrumented"
+    assert occurrence["screening_evidence_only"] is True
+    assert occurrence["darwin_core_dependency"] is False
+    assert comments["comments_fetch_scope"] == "selected candidate records only"
+    assert comments["comments_do_not_override_triage"] is True
+    assert no_geo["no_geo_bin"] == "in_review/no_geo"
+    assert api_budget["api_calls_used"] is None
+    assert api_budget["api_calls_in_window"] == "not_instrumented"
 
 
-def test_reports_include_bronze_reason_counts(tmp_path) -> None:
-    write_report_pack(tmp_path)
-
-    quality = json.loads((tmp_path / "quality_profile.json").read_text(encoding="utf-8"))
-
-    assert quality["bronze_reason_counts"] == "not_instrumented"
-    assert quality["semantics"]["bronze"] == "negative/non-occurrence visual material"
-
-
-def test_code_cleanup_report_lists_removed_legacy_rule_paths(tmp_path) -> None:
+def test_code_cleanup_report_marks_darwin_core_compatibility_only(tmp_path) -> None:
     write_report_pack(tmp_path)
 
     report = (tmp_path / "code_cleanup_report.md").read_text(encoding="utf-8")
 
-    assert "Removed the legacy human-verification gate" in report
-    assert "human_verified_bioclip_positive" in report
-    assert "bioclip_positive_without_human_verification" in report
+    assert "Darwin Core compatibility code must not be used as the active image-triage" in report
+    assert "Removal condition" in report
+    assert "bioclip_run_summary" in report

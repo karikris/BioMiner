@@ -23,6 +23,12 @@ def export_dwc_records(
     *,
     output_csv: bool = EXPORT_CSV_BY_DEFAULT,
 ) -> DwcExportOutputs:
+    """Export retained compatibility Darwin Core rows.
+
+    Removal condition: delete this shim when Darwin Core compatibility tests
+    and downstream public API expectations are retired. The active Phase 7
+    image-triage pipeline does not publish validated Darwin Core records.
+    """
     parquet_paths = write_parquet_dataset(frame, Path(output_dir) / "dwc_occurrence")
     csv_path = None
     if output_csv:

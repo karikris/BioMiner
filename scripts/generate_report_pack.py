@@ -8,7 +8,29 @@ from typing import Any
 
 
 GENERATED_AT = datetime.now(UTC).isoformat()
+PHASE = "Phase 7 reports, cleanup, and docs"
+UNINSTRUMENTED = "not_instrumented"
 
+REQUIRED_METRICS = {
+    "gold_count": None,
+    "silver_count": None,
+    "bronze_count": None,
+    "in_review_no_geo_count": None,
+    "adult_butterfly_count": None,
+    "egg_count": None,
+    "caterpillar_count": None,
+    "larva_count": None,
+    "pupa_count": None,
+    "chrysalis_count": None,
+    "museum_specimen_count": None,
+    "artwork_count": None,
+    "tattoo_count": None,
+    "ai_generated_count": None,
+    "other_insect_count": None,
+    "downloaded_images_deleted_count": None,
+    "duplicate_skipped_count": None,
+    "api_calls_used": None,
+}
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -29,387 +51,241 @@ def write_report_pack(output_dir: Path) -> None:
 
 
 def build_reports() -> dict[str, Any]:
-    summary = build_bioclip_run_summary()
-    return {
-        "bioclip_run_summary.json": summary,
-        "bioclip_run_summary.md": build_bioclip_run_summary_markdown(summary),
-        "quality_profile.json": build_quality_profile(),
-        "image_triage_profile.json": build_image_triage_profile(),
-        "cache_profile.json": build_cache_profile(),
-        "gpu_profile.json": build_gpu_profile(),
-        "idempotency_profile.json": build_idempotency_profile(),
+    reports: dict[str, Any] = {
+        "query_term_totals.json": build_query_term_totals(),
+        "bbox_coverage_profile.json": build_bbox_coverage_profile(),
+        "occurrence_bin_profile.json": build_occurrence_bin_profile(),
+        "life_stage_profile.json": build_life_stage_profile(),
+        "no_geo_profile.json": build_no_geo_profile(),
+        "comment_expansion_profile.json": build_comment_expansion_profile(),
+        "api_budget_profile.json": build_api_budget_profile(),
         "code_cleanup_report.md": build_code_cleanup_report_markdown(),
         "agents_update_recommendations.json": build_agents_update_recommendations(),
     }
+    reports["query_term_totals.md"] = build_query_term_totals_markdown(reports["query_term_totals.json"])
+    reports["bbox_coverage_profile.md"] = build_bbox_coverage_profile_markdown(reports["bbox_coverage_profile.json"])
+    reports["occurrence_bin_profile.md"] = build_occurrence_bin_profile_markdown(reports["occurrence_bin_profile.json"])
+    return reports
 
 
 def base_payload() -> dict[str, Any]:
     return {
         "generated_at": GENERATED_AT,
-        "phase": "Phase 8 classification semantics cleanup",
-        "source": "static code audit; no network, CUDA, model weights, Flickr downloads, or large data files required",
+        "phase": PHASE,
+        "source": "static code audit; no network, CUDA, model weights, Flickr downloads, parquet, or DuckDB files required",
+        "unsupported_metrics_policy": "Unsupported metrics are null or not_instrumented, never guessed.",
     }
 
 
-def build_bioclip_run_summary() -> dict[str, Any]:
-    payload = base_payload()
-    payload.update(
+def with_required_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    return {**base_payload(), **REQUIRED_METRICS, **payload}
+
+
+def build_query_term_totals() -> dict[str, Any]:
+    return with_required_metrics(
         {
-            "python_target": ">=3.14",
-            "bioclipminer_local": {
-                "exists": Path("/mnt/c/WSL-Shared/Projects/BioCLIPMiner").exists(),
-                "path": "/mnt/c/WSL-Shared/Projects/BioCLIPMiner",
-                "inspected_files": [
-                    "/mnt/c/WSL-Shared/Projects/BioCLIPMiner/requirements.txt",
-                    "/mnt/c/WSL-Shared/Projects/BioCLIPMiner/smoke_bioclip.py",
-                ],
-                "notes": "Local BioCLIPMiner is minimal: requirements plus a smoke script that loads local BioCLIP 2.5 weights.",
-            },
-            "comment_handling": {
-                "comments_endpoint_allowed": {
-                    "value": True,
-                    "file": "src/flickr_bio_occurrence/flickr/endpoints.py",
-                    "symbol": "ALLOWED_FLICKR_METHODS",
-                },
-                "comments_currently_fetched": {
-                    "value": False,
-                    "file": "src/flickr_bio_occurrence/cli.py",
-                    "symbol": "fetch-comments",
-                    "notes": "Comment fetching is exposed as an audited unavailable command; no network comments fetch is implemented.",
-                },
-                "comments_stored_in_raw_payloads": {
-                    "value": False,
-                    "file": "src/flickr_bio_occurrence/flickr/client.py",
-                    "symbol": "FlickrClient._write_raw_response",
-                    "notes": "Raw payloads are photos_search responses only; comments are not fetched before writing.",
-                },
-                "comments_transformed_to_parquet": {
-                    "value": False,
-                    "file": "src/flickr_bio_occurrence/pipeline/transforms.py",
-                    "symbol": "flatten_search_payloads",
-                    "notes": "Transform reads payload['photos']['photo']; no comment fields are emitted.",
-                },
-                "comments_scanned_for_scientific_names_or_verification_phrases": {
-                    "value": False,
-                    "files_checked": [
-                        "src/flickr_bio_occurrence",
-                        "scripts",
-                        "tests",
-                    ],
-                    "notes": "Existing raw payload comments are parsed by the evidence extractor when present, but no dedicated comments API fetch is implemented.",
-                },
-            },
-            "image_selection": {
-                "order": ["url_l", "url_m"],
-                "default": "large-first, medium fallback only",
-                "file": "src/flickr_bio_occurrence/vision/image_selection.py",
-                "symbol": "select_flickr_image_url",
-                "notes": "Flickr extras request url_l,url_m by default; url_o is not requested by default.",
-            },
-            "image_triage_pipeline": {
-                "module": "src/flickr_bio_occurrence/vision/triage.py",
-                "output": "image_triage.parquet",
-                "stores_downloaded_images": False,
-                "keeps_metadata_urls_hashes_scores": True,
-                "geo_time_fields": ["latitude", "longitude", "date_taken", "date_upload", "captured_at", "year", "month"],
-                "triage_bins": ["gold", "silver", "bronze", "in_review"],
-                "classification_statuses": ["success", "skipped_existing", "failed_download", "failed_bioclip", "invalid_record"],
-            },
-            "publication_state_semantics": {
-                "file": "src/flickr_bio_occurrence/evidence/rules.py",
-                "symbol": "classify_evidence_row",
-                "states": ["gold", "silver", "bronze", "in_review"],
-                "gold": "BioCLIP target-positive score >= 0.50",
-                "silver": "BioCLIP target-positive score < 0.50",
-                "bronze": "negative/non-occurrence visual material",
-                "in_review": "missing, unresolved, invalid, or operational failure records",
-                "screening_evidence_only": True,
-            },
-            "classification_metrics": {
-                "publication_state_counts": "not_instrumented",
-                "review_reason_counts": "not_instrumented",
-                "bronze_reason_counts": "not_instrumented",
-                "gold_score_distribution": None,
-                "silver_score_distribution": None,
-                "missing_image_count": None,
-                "missing_bioclip_count": None,
-            },
-            "bioclip_labels_and_agreement_rules": {
-                "labels_file": "src/flickr_bio_occurrence/vision/bioclip.py",
-                "labels_symbol": "DEFAULT_BIOCLIP_LABELS",
-                "agreement_symbols": [
-                    "PAPILIO_DEMOLEUS_VISUAL_LABELS",
-                    "SWALLOWTAIL_VISUAL_LABELS",
-                    "BUTTERFLY_VISUAL_LABELS",
-                    "NON_WILD_OR_CONFLICT_LABELS",
-                    "classify_species_agreement",
-                ],
-                "screening_evidence_only": True,
-                "auto_validates_dwc": False,
-            },
-            "darwin_core_scope": {
-                "active_image_triage_dependency": False,
-                "compatibility_only": True,
-                "notes": "Darwin Core export is retained only for existing compatibility tests and does not validate records from BioCLIP output.",
-            },
-            "cache_cleanup": {
-                "handled": True,
-                "image_cache_file": "src/flickr_bio_occurrence/vision/pipeline.py",
-                "image_cache_symbol": "classify_bronze_photo_row",
-                "notes": "Successful images are deleted by default after prediction; failed images are deleted by default unless keep_failed_images is enabled.",
-            },
-            "tests": {
-                "network_required": False,
-                "cuda_required": False,
-                "model_weights_required": False,
-                "lean_triage_tests": "tests/test_image_triage.py and tests/test_report_pack.py",
-            },
+            "report": "query_term_totals",
+            "state_table": "flickr_work_items",
+            "query_source": "Flickr search terms plus thresholded comments-derived terms",
+            "query_term_counts": UNINSTRUMENTED,
+            "comments_promoted_term_counts": UNINSTRUMENTED,
+            "files": [
+                "src/flickr_bio_occurrence/flickr/query_planner.py",
+                "src/flickr_bio_occurrence/pipeline/comments_enrichment.py",
+            ],
         }
     )
-    return payload
 
 
-def build_quality_profile() -> dict[str, Any]:
-    payload = base_payload()
-    payload.update(
+def build_bbox_coverage_profile() -> dict[str, Any]:
+    return with_required_metrics(
         {
-            "publication_state_counts": "not_instrumented",
-            "review_reason_counts": "not_instrumented",
-            "bronze_reason_counts": "not_instrumented",
-            "gold_score_distribution": None,
-            "silver_score_distribution": None,
-            "missing_image_count": None,
-            "missing_bioclip_count": None,
-            "semantics": {
-                "gold": "BioCLIP target-positive score >= 0.50",
-                "silver": "BioCLIP target-positive score < 0.50",
-                "bronze": "negative/non-occurrence visual material",
-                "in_review": "missing, unresolved, invalid, or operational failure records",
-            },
+            "report": "bbox_coverage_profile",
+            "bbox_queries_supported": True,
+            "bbox_query_lane": "bbox_page",
+            "bbox_counts": UNINSTRUMENTED,
+            "coverage_notes": "Worldwide discovery can split large count probes into bbox-page work items; this report does not inspect generated data.",
+            "files": ["src/flickr_bio_occurrence/flickr/query_planner.py"],
+        }
+    )
+
+
+def build_occurrence_bin_profile() -> dict[str, Any]:
+    return with_required_metrics(
+        {
+            "report": "occurrence_bin_profile",
             "screening_evidence_only": True,
-            "auto_validates_occurrences": False,
-        }
-    )
-    return payload
-
-
-def build_image_triage_profile() -> dict[str, Any]:
-    payload = base_payload()
-    payload.update(
-        {
-            "output_dataset": "image_triage.parquet",
+            "occurrence_bins": ["gold", "silver", "bronze", "in_review", "in_review/no_geo"],
+            "semantics": {
+                "gold": "BioCLIP target/butterfly-positive score >= 0.50",
+                "silver": "BioCLIP target/butterfly-positive score < 0.50",
+                "bronze": "negative or unusable butterfly-occurrence material",
+                "in_review": "operational failure, invalid, missing, or unresolved record",
+                "in_review/no_geo": "target-positive image evidence with missing geolocation",
+            },
             "required_fields": [
-                "source",
-                "source_record_id",
-                "flickr_photo_id",
-                "photo_page_url",
-                "image_url",
-                "image_url_kind",
-                "latitude",
-                "longitude",
-                "date_taken",
-                "date_upload",
-                "captured_at",
-                "year",
-                "month",
-                "source_record_hash",
-                "image_hash",
-                "image_downloaded",
-                "image_deleted_after_classification",
-                "classification_status",
-                "classification_error",
-                "model_id",
-                "model_version",
-                "model_checkpoint",
-                "classified_at",
-                "bioclip_top1_label",
-                "bioclip_top1_score",
-                "bioclip_topk_json",
                 "occurrence_bin",
+                "triage_bin",
                 "bin_reason",
+                "triage_reason",
                 "image_category",
                 "life_stage",
-                "negative_filter_reason",
-                "triage_bin",
-                "triage_reason",
-                "is_target_positive",
-                "is_negative_material",
+                "bioclip_top1_label",
+                "bioclip_top1_score",
+                "image_deleted_after_classification",
             ],
-            "records_seen": None,
-            "records_classified": None,
-            "records_skipped_existing": None,
-            "download_failures": None,
-            "bioclip_failures": None,
-            "gold_count": None,
-            "silver_count": None,
-            "bronze_count": None,
-            "in_review_count": None,
-            "bronze_reason_counts": "not_instrumented",
-            "image_cache_bytes_before": "not_instrumented",
-            "image_cache_bytes_after": "not_instrumented",
-            "images_deleted_after_classification": None,
-            "duplicate_skipped_count": None,
-            "model_load_count": "not_instrumented",
-            "images_per_second": None,
+            "bin_reason_counts": UNINSTRUMENTED,
+            "darwin_core_dependency": False,
         }
     )
-    return payload
 
 
-def build_cache_profile() -> dict[str, Any]:
-    payload = base_payload()
-    payload.update(
+def build_life_stage_profile() -> dict[str, Any]:
+    return with_required_metrics(
         {
-            "image_cache": {
-                "default_root": "data/cache/images",
-                "file": "src/flickr_bio_occurrence/vision/image_cache.py",
-                "symbol": "cache_image_from_url",
-                "layout": "<sha256[0:2]>/<sha256[2:4]>/<sha256>.<extension>",
-                "cleanup": "not_instrumented",
-                "successful_images_deleted_by_default": True,
-                "keep_failed_images_default": False,
-                "image_cache_bytes_before": "not_instrumented",
-                "image_cache_bytes_after": "not_instrumented",
-            },
-            "huggingface_cache": {
-                "default_root": "data/cache/huggingface",
-                "file": "src/flickr_bio_occurrence/vision/bioclip_worker.py",
-                "symbol": "configure_hf_cache_env",
-                "separate_from_flickr_image_cache": True,
-            },
+            "report": "life_stage_profile",
+            "life_stage_values": ["adult_butterfly", "egg", "caterpillar", "larva", "pupa", "chrysalis", "unknown"],
+            "image_category_values": [
+                "adult_butterfly",
+                "life_stage_non_adult",
+                "museum_specimen",
+                "artwork",
+                "tattoo",
+                "ai_generated",
+                "logo_or_brand",
+                "object_or_product",
+                "textile_or_pattern",
+                "other_insect",
+                "not_lepidoptera",
+                "unknown",
+            ],
+            "life_stage_source": "BioCLIP top-1 labels and source/comment text terms are screening evidence only.",
+            "files": [
+                "src/flickr_bio_occurrence/evidence/category_model.py",
+                "src/flickr_bio_occurrence/vision/triage.py",
+                "src/flickr_bio_occurrence/pipeline/comments_enrichment.py",
+            ],
         }
     )
-    return payload
 
 
-def build_gpu_profile() -> dict[str, Any]:
-    payload = base_payload()
-    payload.update(
+def build_no_geo_profile() -> dict[str, Any]:
+    return with_required_metrics(
         {
-            "requires_cuda_for_tests": False,
-            "runtime_detection": {
-                "file": "src/flickr_bio_occurrence/vision/bioclip_worker.py",
-                "symbol": "score_image",
-                "device_expression": "requires CUDA by default; CPU fallback is not used when require_cuda is true",
-            },
-            "long_lived_service": {
-                "file": "src/flickr_bio_occurrence/vision/triage.py",
-                "symbol": "process_image_triage_records",
-                "model_lifecycle": "classifier is externally supplied; model_load_count is not instrumented by this report pack",
-            },
-            "model_load_count": "not_instrumented",
-            "benchmark_reporting": {
-                "file": "src/flickr_bio_occurrence/benchmark/vision_checkpoint.py",
-                "symbol": "build_checkpointed_vision_predictions",
-                "gpu_used": "reported when classifier scorer exposes device == 'cuda'",
-                "gpu_name": "reported when classifier scorer exposes gpu_name",
-            },
-            "measured_gpu_name": "not_instrumented",
-            "measured_cuda_available": "not_instrumented",
+            "report": "no_geo_profile",
+            "no_geo_bin": "in_review/no_geo",
+            "geo_fields_retained": ["latitude", "longitude", "accuracy"],
+            "time_fields_retained": ["date_taken", "date_upload", "captured_at", "year", "month"],
+            "no_geo_reason_counts": UNINSTRUMENTED,
         }
     )
-    return payload
 
 
-def build_idempotency_profile() -> dict[str, Any]:
-    payload = base_payload()
-    payload.update(
+def build_comment_expansion_profile() -> dict[str, Any]:
+    return with_required_metrics(
         {
-            "flickr_fetch_state": {
-                "file": "scripts/run_butterfly_flickr_fetch.py",
-                "symbol": "FetchState",
-                "state_db": "fetch_state.sqlite",
-                "behavior": "completed work_item_id rows are skipped; exhausted terms are skipped",
+            "report": "comment_expansion_profile",
+            "comments_endpoint_allowed": True,
+            "comments_fetch_scope": "selected candidate records only",
+            "hard_negative_bronze_skipped_unless_selected_for_qa": True,
+            "term_kinds": ["scientific_name", "common_name", "life_stage"],
+            "promotion_threshold": {
+                "min_distinct_photos_default": 2,
+                "min_distinct_users_default": 2,
             },
-            "rate_limit_ledger": {
-                "file": "src/flickr_bio_occurrence/flickr/rate_limiter.py",
-                "symbol": "FlickrRateLimiter",
-                "api_call_table": "api_call_ledger",
-                "photo_record_table": "photo_record_ledger",
-            },
-            "image_triage_deduplication": {
-                "file": "src/flickr_bio_occurrence/vision/triage.py",
-                "symbol": "process_image_triage_records",
-                "behavior": "successful source/photo/image_url/model combinations are skipped on rerun",
-            },
+            "comments_do_not_override_triage": True,
+            "queue_table": "comments_enrichment_queue",
+            "observations_table": "comments_term_observations",
+            "promoted_terms_table": "comment_promoted_terms",
+            "queued_comment_candidates": UNINSTRUMENTED,
+            "promoted_comment_terms": UNINSTRUMENTED,
+            "files": ["src/flickr_bio_occurrence/pipeline/comments_enrichment.py"],
         }
     )
-    return payload
+
+
+def build_api_budget_profile() -> dict[str, Any]:
+    return with_required_metrics(
+        {
+            "report": "api_budget_profile",
+            "soft_api_calls_per_hour": 3400,
+            "hard_api_calls_per_hour": 3600,
+            "api_call_ledger_table": "api_call_ledger",
+            "rate_limit_file": "src/flickr_bio_occurrence/flickr/rate_limiter.py",
+            "metadata_poller_file": "src/flickr_bio_occurrence/pipeline/metadata_poller.py",
+            "api_calls_in_window": UNINSTRUMENTED,
+            "remaining_soft_budget": UNINSTRUMENTED,
+            "remaining_hard_budget": UNINSTRUMENTED,
+        }
+    )
 
 
 def build_agents_update_recommendations() -> dict[str, Any]:
-    payload = base_payload()
-    payload.update(
+    return with_required_metrics(
         {
             "recommendations": [
                 {
+                    "topic": "reports",
+                    "recommendation": "Keep Phase 7 reports centered on image triage, life stage counts, comments expansion, API budget, and no-geo review bins.",
+                },
+                {
                     "topic": "comments",
-                    "recommendation": "Dedicated Flickr comment fetching remains unavailable; keep the CLI audit explicit until API-backed comment tests are added.",
+                    "recommendation": "Fetch Flickr comments only for selected candidate records and promote terms only after distinct-photo and distinct-user support.",
                 },
                 {
-                    "topic": "publication_state",
-                    "recommendation": "Keep one rule-engine path: Gold/Silver from BioCLIP target-positive score threshold, Bronze for negative visual material, In Review for missing/error/ambiguous rows.",
+                    "topic": "BioCLIP",
+                    "recommendation": "Treat BioCLIP 2.5 labels and scores as screening evidence only; do not taxonomically validate records automatically.",
                 },
                 {
-                    "topic": "review_reason",
-                    "recommendation": "Ensure every in_review row has at least one review_reason; do not use missing human verification as a gate.",
-                },
-                {
-                    "topic": "BioCLIP runtime",
-                    "recommendation": "Use an externally owned BioCLIP 2.5 classifier with process_image_triage_records; do not restart the model per image.",
-                },
-                {
-                    "topic": "cache cleanup",
-                    "recommendation": "Keep successful image deletion as the default; require explicit diagnostic config for originals or failed-image retention.",
+                    "topic": "Darwin Core",
+                    "recommendation": "Keep Darwin Core mapper/exporter compatibility-only until existing tests and public API compatibility requirements are retired.",
                 },
             ],
-            "remaining_unavailable_features": [
-                "dedicated Flickr comments API fetching",
+            "do_not_prioritize": [
                 "validated Darwin Core occurrence publication",
-                "multi-GPU classification",
-                "dashboard",
+                "identificationVerificationStatus expansion",
+                "human-verification parsing as a gold/silver gate",
             ],
         }
     )
-    return payload
 
 
-def build_bioclip_run_summary_markdown(summary: dict[str, Any]) -> str:
-    comments = summary["comment_handling"]
-    return "\n".join(
+def build_query_term_totals_markdown(report: dict[str, Any]) -> str:
+    return _markdown_report(
+        "Query Term Totals",
         [
-            "# BioCLIP Run Summary",
-            "",
-            f"Generated: {summary['generated_at']}",
-            "",
-            "## Final Integration Findings",
-            "",
-            f"- BioCLIPMiner local path exists: `{summary['bioclipminer_local']['exists']}`.",
-            f"- Flickr comments fetched: `{comments['comments_currently_fetched']['value']}`.",
-            f"- Comments stored in raw payloads: `{comments['comments_stored_in_raw_payloads']['value']}`.",
-            f"- Comments transformed to parquet: `{comments['comments_transformed_to_parquet']['value']}`.",
-            f"- Comments searched for scientific names/verification phrases: `{comments['comments_scanned_for_scientific_names_or_verification_phrases']['value']}`.",
-            f"- Image selection order: `{summary['image_selection']['order']}`.",
-            f"- Image triage output: `{summary['image_triage_pipeline']['output']}`.",
-            f"- Triage bins: `{summary['image_triage_pipeline']['triage_bins']}`.",
-            f"- Publication state semantics: `{summary['publication_state_semantics']}`.",
-            f"- Publication state counts: `{summary['classification_metrics']['publication_state_counts']}`.",
-            f"- Review reason counts: `{summary['classification_metrics']['review_reason_counts']}`.",
-            f"- Bronze reason counts: `{summary['classification_metrics']['bronze_reason_counts']}`.",
-            f"- Gold score distribution: `{summary['classification_metrics']['gold_score_distribution']}`.",
-            f"- Silver score distribution: `{summary['classification_metrics']['silver_score_distribution']}`.",
-            f"- Missing image count: `{summary['classification_metrics']['missing_image_count']}`.",
-            f"- Missing BioCLIP count: `{summary['classification_metrics']['missing_bioclip_count']}`.",
-            f"- Geo/time fields retained: `{summary['image_triage_pipeline']['geo_time_fields']}`.",
-            f"- Cache cleanup handled: `{summary['cache_cleanup']['handled']}`.",
-            "",
-            "## Notes",
-            "",
-            "- BioCLIP output is screening evidence only, not taxonomic proof.",
-            "- Dedicated comments API fetching and validated Darwin Core publication remain explicitly unavailable in this phase.",
-            "- No network, CUDA, real BioCLIP weights, or real Flickr downloads are required to generate this report pack.",
-        ]
-    ) + "\n"
+            ("Query source", report["query_source"]),
+            ("Query term counts", report["query_term_counts"]),
+            ("Comments promoted term counts", report["comments_promoted_term_counts"]),
+            ("API calls used", report["api_calls_used"]),
+        ],
+    )
+
+
+def build_bbox_coverage_profile_markdown(report: dict[str, Any]) -> str:
+    return _markdown_report(
+        "BBox Coverage Profile",
+        [
+            ("BBox queries supported", report["bbox_queries_supported"]),
+            ("BBox query lane", report["bbox_query_lane"]),
+            ("BBox counts", report["bbox_counts"]),
+            ("Coverage notes", report["coverage_notes"]),
+        ],
+    )
+
+
+def build_occurrence_bin_profile_markdown(report: dict[str, Any]) -> str:
+    return _markdown_report(
+        "Occurrence Bin Profile",
+        [
+            ("Gold count", report["gold_count"]),
+            ("Silver count", report["silver_count"]),
+            ("Bronze count", report["bronze_count"]),
+            ("In review/no geo count", report["in_review_no_geo_count"]),
+            ("Screening evidence only", report["screening_evidence_only"]),
+            ("Darwin Core dependency", report["darwin_core_dependency"]),
+        ],
+    )
 
 
 def build_code_cleanup_report_markdown() -> str:
@@ -419,36 +295,44 @@ def build_code_cleanup_report_markdown() -> str:
             "",
             f"Generated: {GENERATED_AT}",
             "",
-            "## Final Integration Findings",
+            "## Phase 7 Scope",
             "",
-            "- The active flow is now a lean image-triage pipeline centered on `image_triage.parquet`.",
-            "- Image selection defaults to `url_l -> url_m`; originals are not selected by default.",
-            "- BioCLIP output is stored as model evidence only, not taxonomic validation.",
-            "- Removed the legacy human-verification gate from the active evidence rule engine.",
-            "- Removed legacy publication reasons: `human_verified_bioclip_positive`, `human_verified_bioclip_missing`, `human_verified_bioclip_low_confidence`, `human_verified_bioclip_conflict`, and `bioclip_positive_without_human_verification`.",
-            "- Successful cached images are deleted by default after prediction writes.",
-            "- Darwin Core export remains compatibility-only and is not expanded in the active triage flow.",
+            "- Updated the report pack away from old publication/Darwin Core language and toward image triage, life-stage, comments, no-geo, bbox, and API-budget profiles.",
+            "- Retained BioCLIP as screening evidence only; no report claims taxonomic validation.",
+            "- Required metrics are present in JSON reports as null or `not_instrumented` when no bounded run data is available.",
             "",
-            "## Retained Compatibility Shims",
+            "## Removed Or Superseded Report Paths",
             "",
-            "- `src/flickr_bio_occurrence/dwc/mapper.py` is retained for existing tested public API behavior; remove when Darwin Core compatibility tests are retired.",
-            "- `human_verification_detected` extraction fields remain as metadata from source text; they no longer gate Gold/Silver/Bronze classification.",
+            "- Superseded `bioclip_run_summary.*`, `quality_profile.json`, `image_triage_profile.json`, `cache_profile.json`, `gpu_profile.json`, and `idempotency_profile.json` in the active report pack.",
+            "- Removed stale report text that described dedicated comments fetching as unavailable; comments enrichment now exists for selected candidates.",
             "",
-            "## Tests Added Or Updated",
+            "## Compatibility-Only Code",
             "",
-            "- `test_gold_score_gte_050_target_positive`",
-            "- `test_silver_score_lt_050_target_positive`",
-            "- `test_bronze_negative_material_museum_art_ai_other_insect`",
-            "- `test_cli_help_does_not_describe_old_gold_silver_bronze_logic`",
-            "- `test_no_legacy_human_verification_gold_gate_remains`",
-            "- `test_code_cleanup_report_lists_removed_legacy_rule_paths`",
+            "- `src/flickr_bio_occurrence/dwc/mapper.py` and `src/flickr_bio_occurrence/dwc/exporter.py` are retained only for existing tested public API compatibility.",
+            "- Darwin Core compatibility code must not be used as the active image-triage or occurrence-publication path in this phase.",
+            "- Removal condition: retire these shims when `tests/test_dwc_mapper.py` and any downstream public API expectations are removed or replaced.",
             "",
-            "## Remaining Explicit Gaps",
+            "## Still Out Of Scope",
             "",
-            "- Dedicated Flickr comment API fetching remains unavailable and reported through `fetch-comments`.",
-            "- Validated Darwin Core occurrence publication, multi-GPU, and dashboard workflows remain out of scope.",
+            "- Validated Darwin Core occurrence publication.",
+            "- `identificationVerificationStatus` expansion.",
+            "- Human verification as a gate for Gold/Silver.",
+            "- Network/CUDA/BioCLIP/Flickr-dependent tests.",
         ]
     ) + "\n"
+
+
+def _markdown_report(title: str, rows: list[tuple[str, object]]) -> str:
+    lines = [
+        f"# {title}",
+        "",
+        f"Generated: {GENERATED_AT}",
+        "",
+        "| Metric | Value |",
+        "| --- | --- |",
+    ]
+    lines.extend(f"| {label} | `{value}` |" for label, value in rows)
+    return "\n".join(lines) + "\n"
 
 
 if __name__ == "__main__":

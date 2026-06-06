@@ -30,6 +30,12 @@ REQUIRED_DWC_FIELDS = [
 
 
 def map_candidate_to_dwc(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Map a candidate into the retained compatibility Darwin Core shape.
+
+    Removal condition: delete this shim when Darwin Core compatibility tests
+    and downstream public API expectations are retired. The active Phase 7
+    pipeline does not use this function for image triage or validation.
+    """
     scientific_name = candidate["resolved_scientific_name"]
     event_date = candidate["eventDate"]
     latitude = candidate.get("decimalLatitude")

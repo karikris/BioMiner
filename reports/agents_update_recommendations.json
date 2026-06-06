@@ -1,33 +1,47 @@
 {
-  "generated_at": "2026-06-06T19:24:11.376784+00:00",
-  "phase": "Phase 8 classification semantics cleanup",
+  "adult_butterfly_count": null,
+  "ai_generated_count": null,
+  "api_calls_used": null,
+  "artwork_count": null,
+  "bronze_count": null,
+  "caterpillar_count": null,
+  "chrysalis_count": null,
+  "do_not_prioritize": [
+    "validated Darwin Core occurrence publication",
+    "identificationVerificationStatus expansion",
+    "human-verification parsing as a gold/silver gate"
+  ],
+  "downloaded_images_deleted_count": null,
+  "duplicate_skipped_count": null,
+  "egg_count": null,
+  "generated_at": "2026-06-06T19:54:20.758470+00:00",
+  "gold_count": null,
+  "in_review_no_geo_count": null,
+  "larva_count": null,
+  "museum_specimen_count": null,
+  "other_insect_count": null,
+  "phase": "Phase 7 reports, cleanup, and docs",
+  "pupa_count": null,
   "recommendations": [
     {
-      "recommendation": "Dedicated Flickr comment fetching remains unavailable; keep the CLI audit explicit until API-backed comment tests are added.",
+      "recommendation": "Keep Phase 7 reports centered on image triage, life stage counts, comments expansion, API budget, and no-geo review bins.",
+      "topic": "reports"
+    },
+    {
+      "recommendation": "Fetch Flickr comments only for selected candidate records and promote terms only after distinct-photo and distinct-user support.",
       "topic": "comments"
     },
     {
-      "recommendation": "Keep one rule-engine path: Gold/Silver from BioCLIP target-positive score threshold, Bronze for negative visual material, In Review for missing/error/ambiguous rows.",
-      "topic": "publication_state"
+      "recommendation": "Treat BioCLIP 2.5 labels and scores as screening evidence only; do not taxonomically validate records automatically.",
+      "topic": "BioCLIP"
     },
     {
-      "recommendation": "Ensure every in_review row has at least one review_reason; do not use missing human verification as a gate.",
-      "topic": "review_reason"
-    },
-    {
-      "recommendation": "Use an externally owned BioCLIP 2.5 classifier with process_image_triage_records; do not restart the model per image.",
-      "topic": "BioCLIP runtime"
-    },
-    {
-      "recommendation": "Keep successful image deletion as the default; require explicit diagnostic config for originals or failed-image retention.",
-      "topic": "cache cleanup"
+      "recommendation": "Keep Darwin Core mapper/exporter compatibility-only until existing tests and public API compatibility requirements are retired.",
+      "topic": "Darwin Core"
     }
   ],
-  "remaining_unavailable_features": [
-    "dedicated Flickr comments API fetching",
-    "validated Darwin Core occurrence publication",
-    "multi-GPU classification",
-    "dashboard"
-  ],
-  "source": "static code audit; no network, CUDA, model weights, Flickr downloads, or large data files required"
+  "silver_count": null,
+  "source": "static code audit; no network, CUDA, model weights, Flickr downloads, parquet, or DuckDB files required",
+  "tattoo_count": null,
+  "unsupported_metrics_policy": "Unsupported metrics are null or not_instrumented, never guessed."
 }

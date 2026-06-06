@@ -1,0 +1,53 @@
+{
+  "adult_butterfly_count": null,
+  "ai_generated_count": null,
+  "api_calls_used": null,
+  "artwork_count": null,
+  "bin_reason_counts": "not_instrumented",
+  "bronze_count": null,
+  "caterpillar_count": null,
+  "chrysalis_count": null,
+  "darwin_core_dependency": false,
+  "downloaded_images_deleted_count": null,
+  "duplicate_skipped_count": null,
+  "egg_count": null,
+  "generated_at": "2026-06-06T19:54:20.758470+00:00",
+  "gold_count": null,
+  "in_review_no_geo_count": null,
+  "larva_count": null,
+  "museum_specimen_count": null,
+  "occurrence_bins": [
+    "gold",
+    "silver",
+    "bronze",
+    "in_review",
+    "in_review/no_geo"
+  ],
+  "other_insect_count": null,
+  "phase": "Phase 7 reports, cleanup, and docs",
+  "pupa_count": null,
+  "report": "occurrence_bin_profile",
+  "required_fields": [
+    "occurrence_bin",
+    "triage_bin",
+    "bin_reason",
+    "triage_reason",
+    "image_category",
+    "life_stage",
+    "bioclip_top1_label",
+    "bioclip_top1_score",
+    "image_deleted_after_classification"
+  ],
+  "screening_evidence_only": true,
+  "semantics": {
+    "bronze": "negative or unusable butterfly-occurrence material",
+    "gold": "BioCLIP target/butterfly-positive score >= 0.50",
+    "in_review": "operational failure, invalid, missing, or unresolved record",
+    "in_review/no_geo": "target-positive image evidence with missing geolocation",
+    "silver": "BioCLIP target/butterfly-positive score < 0.50"
+  },
+  "silver_count": null,
+  "source": "static code audit; no network, CUDA, model weights, Flickr downloads, parquet, or DuckDB files required",
+  "tattoo_count": null,
+  "unsupported_metrics_policy": "Unsupported metrics are null or not_instrumented, never guessed."
+}

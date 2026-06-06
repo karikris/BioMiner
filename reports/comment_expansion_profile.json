@@ -1,0 +1,46 @@
+{
+  "adult_butterfly_count": null,
+  "ai_generated_count": null,
+  "api_calls_used": null,
+  "artwork_count": null,
+  "bronze_count": null,
+  "caterpillar_count": null,
+  "chrysalis_count": null,
+  "comments_do_not_override_triage": true,
+  "comments_endpoint_allowed": true,
+  "comments_fetch_scope": "selected candidate records only",
+  "downloaded_images_deleted_count": null,
+  "duplicate_skipped_count": null,
+  "egg_count": null,
+  "files": [
+    "src/flickr_bio_occurrence/pipeline/comments_enrichment.py"
+  ],
+  "generated_at": "2026-06-06T19:54:20.758470+00:00",
+  "gold_count": null,
+  "hard_negative_bronze_skipped_unless_selected_for_qa": true,
+  "in_review_no_geo_count": null,
+  "larva_count": null,
+  "museum_specimen_count": null,
+  "observations_table": "comments_term_observations",
+  "other_insect_count": null,
+  "phase": "Phase 7 reports, cleanup, and docs",
+  "promoted_comment_terms": "not_instrumented",
+  "promoted_terms_table": "comment_promoted_terms",
+  "promotion_threshold": {
+    "min_distinct_photos_default": 2,
+    "min_distinct_users_default": 2
+  },
+  "pupa_count": null,
+  "queue_table": "comments_enrichment_queue",
+  "queued_comment_candidates": "not_instrumented",
+  "report": "comment_expansion_profile",
+  "silver_count": null,
+  "source": "static code audit; no network, CUDA, model weights, Flickr downloads, parquet, or DuckDB files required",
+  "tattoo_count": null,
+  "term_kinds": [
+    "scientific_name",
+    "common_name",
+    "life_stage"
+  ],
+  "unsupported_metrics_policy": "Unsupported metrics are null or not_instrumented, never guessed."
+}
