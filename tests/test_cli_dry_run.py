@@ -54,6 +54,14 @@ def test_fetch_dry_run_cli_outputs_json(capsys) -> None:
     assert payload["planned_maximum_photo_records"] == 1250
 
 
+def test_poll_once_cli_accepts_bounded_cycle_arguments() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["poll-once", "--max-api-calls", "3400"])
+
+    assert args.command == "poll-once"
+    assert args.max_api_calls == 3400
+
+
 def test_cli_help_does_not_describe_old_gold_silver_bronze_logic(capsys) -> None:
     parser = build_parser()
 

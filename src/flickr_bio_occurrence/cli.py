@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import polars as pl
@@ -13,6 +14,7 @@ from flickr_bio_occurrence.evidence.rules import classify_evidence_frame
 from flickr_bio_occurrence.flickr.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_PATH, FlickrRateLimiter
 from flickr_bio_occurrence.pipeline.job_queue import ClassificationJobQueue
 from flickr_bio_occurrence.pipeline.dry_run import build_dry_run_summary
+from flickr_bio_occurrence.pipeline.metadata_poller import SOFT_API_CALLS_PER_HOUR, poll_once
 from flickr_bio_occurrence.vision.service import BioClipJobService
 
 
@@ -34,6 +36,12 @@ def build_parser() -> argparse.ArgumentParser:
     fetch_live.add_argument("--dry-run", action="store_true")
     fetch_comments = subparsers.add_parser("fetch-comments")
     fetch_comments.add_argument("--photo-id", action="append", default=[])
+    poll_once_parser = subparsers.add_parser("poll-once")
+    poll_once_parser.add_argument("--max-api-calls", type=int, default=SOFT_API_CALLS_PER_HOUR)
+    poll_once_parser.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
+    poll_once_parser.add_argument("--raw-root", default="data/raw")
+    poll_once_parser.add_argument("--evidence-output", default="staging/evidence/poll_once_evidence.parquet")
+    poll_once_parser.add_argument("--api-key-env", default="FLICKR_API_KEY")
     build_evidence = subparsers.add_parser("build-evidence")
     build_evidence.add_argument("--raw-root", required=True)
     build_evidence.add_argument("--output", required=True)
@@ -103,6 +111,16 @@ def run(args: argparse.Namespace) -> int:
             "photo_ids_requested": args.photo_id,
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if args.command == "poll-once":
+        result = poll_once(
+            state_db=args.state_db,
+            raw_root=args.raw_root,
+            evidence_output=args.evidence_output,
+            max_api_calls=args.max_api_calls,
+            api_key=os.environ.get(args.api_key_env),
+        )
+        print(json.dumps({**result.__dict__, "state_db": str(result.state_db)}, indent=2, sort_keys=True))
         return 0
     if args.command == "build-evidence":
         payloads = _read_json_payloads(Path(args.raw_root))

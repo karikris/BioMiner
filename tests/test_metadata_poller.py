@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from flickr_bio_occurrence.flickr.query_planner import FlickrQuery
+from flickr_bio_occurrence.pipeline.metadata_poller import MetadataPollState, poll_once
+
+
+def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+
+    with sqlite3.connect(state.path) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+
+    assert {"api_call_ledger", "flickr_work_items", "source_records", "image_triage_queue"}.issubset(tables)
+
+
+def test_poll_once_fetches_metadata_only_dedupes_and_queues_image_urls(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    query = FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=500)
+    state.enqueue_work_item(query)
+    calls: list[FlickrQuery] = []
+
+    def fake_fetch(item: FlickrQuery) -> dict[str, object]:
+        calls.append(item)
+        return {
+            "photos": {
+                "total": "2",
+                "photo": [
+                    {"id": "1", "title": "butterfly", "url_l": "https://live.staticflickr.com/1_l.jpg"},
+                    {"id": "1", "title": "duplicate", "url_l": "https://live.staticflickr.com/1_l.jpg"},
+                    {"id": "2", "title": "butterfly", "url_m": "https://live.staticflickr.com/2_m.jpg"},
+                ],
+            }
+        }
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence" / "poll.parquet",
+        max_api_calls=3400,
+        fetch_metadata=fake_fetch,
+    )
+
+    assert len(calls) == 1
+    assert result.api_calls_made == 1
+    assert result.raw_responses_written == 1
+    assert result.source_records_inserted == 2
+    assert result.duplicate_records_skipped == 1
+    assert result.image_urls_queued == 2
+    assert result.evidence_rows_written == 3
+    assert list((tmp_path / "raw").rglob("*.json"))
+    assert not list(tmp_path.rglob("*.jpg"))
+    with sqlite3.connect(state.path) as conn:
+        assert conn.execute("SELECT count(*) FROM source_records").fetchone()[0] == 2
+        assert conn.execute("SELECT count(*) FROM image_triage_queue").fetchone()[0] == 2
+
+
+def test_poll_once_records_count_probes_and_enqueues_pages(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="papillon", language="fr", search_field="tags", lane="count_probe", per_page=1))
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=1,
+        fetch_metadata=lambda query: {"photos": {"total": "501", "photo": []}},
+    )
+
+    assert result.api_calls_made == 1
+    with sqlite3.connect(state.path) as conn:
+        rows = conn.execute("SELECT lane, per_page FROM flickr_work_items WHERE status = 'pending' ORDER BY page").fetchall()
+
+    assert rows == [("normal_page", 500), ("normal_page", 500)]
+
+
+def test_poll_once_splits_high_volume_count_probe(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", per_page=1))
+
+    poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=1,
+        fetch_metadata=lambda query: {"photos": {"total": "3501", "photo": []}},
+    )
+
+    with sqlite3.connect(state.path) as conn:
+        pending = conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'pending'").fetchone()[0]
+
+    assert pending == 0
+
+
+def test_poll_once_respects_soft_budget_without_fetching(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", per_page=500))
+    with sqlite3.connect(state.path) as conn:
+        for index in range(3400):
+            conn.execute(
+                "INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at) VALUES (?, ?, ?, strftime('%s','now'))",
+                ("flickr.photos.search", f"work-{index}", "ok"),
+            )
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=3400,
+        fetch_metadata=lambda query: (_ for _ in ()).throw(AssertionError("fetch should not be called")),
+    )
+
+    assert result.work_items_claimed == 0
+    assert result.remaining_soft_budget == 0
