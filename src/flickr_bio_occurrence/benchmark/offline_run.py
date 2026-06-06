@@ -67,6 +67,7 @@ def run_existing_payload_benchmark(
             "bronze_parquet_files": len(bronze_paths),
             "silver_parquet_files": len(silver_paths),
             "silver_vision_prediction_parquet_files": len(vision_paths),
+            "silver_vision_prediction_rows_per_file": vision_result.rows_per_file or {},
             "gold_parquet_files": len(gold_paths),
             "duckdb_path": str(duckdb_path) if duckdb_path else None,
             "total_artifact_bytes": sum(path.stat().st_size for path in files),

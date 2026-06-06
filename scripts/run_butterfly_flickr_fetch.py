@@ -21,6 +21,8 @@ from flickr_bio_occurrence.flickr.butterfly_terms import (
     load_butterfly_dashboard_terms,
     safe_query_variant,
 )
+from flickr_bio_occurrence.pipeline.job_queue import ClassificationJobQueue
+from flickr_bio_occurrence.pipeline.sharded_fetch import write_evidence_shard_and_enqueue
 
 
 AUSTRALIA_BBOX = "112.92,-43.74,153.64,-10.05"
@@ -32,6 +34,9 @@ class FetchConfig:
     output_root: Path
     dashboard_data_dir: Path
     api_key_env: str
+    evidence_root: Path
+    classification_queue_path: Path
+    bioclip_model_version: str
     max_pages_per_term: int
     per_page: int
     soft_api_calls_per_hour: int
@@ -45,6 +50,9 @@ def main() -> None:
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--dashboard-data-dir", default="/home/toffe/butterfly-dashboard/data")
     parser.add_argument("--api-key-env", default="FLICKR_API_KEY")
+    parser.add_argument("--evidence-root", default=None)
+    parser.add_argument("--classification-queue-path", default=None)
+    parser.add_argument("--bioclip-model-version", default="bioclip2_5_huge")
     parser.add_argument("--max-pages-per-term", type=int, default=16)
     parser.add_argument("--per-page", type=int, default=250)
     parser.add_argument("--soft-api-calls-per-hour", type=int, default=3200)
@@ -57,6 +65,9 @@ def main() -> None:
         output_root=Path(args.output_root),
         dashboard_data_dir=Path(args.dashboard_data_dir),
         api_key_env=args.api_key_env,
+        evidence_root=Path(args.evidence_root) if args.evidence_root else Path(args.output_root) / "staging" / "evidence",
+        classification_queue_path=Path(args.classification_queue_path) if args.classification_queue_path else Path(args.output_root) / "classification_jobs.sqlite",
+        bioclip_model_version=args.bioclip_model_version,
         max_pages_per_term=args.max_pages_per_term,
         per_page=min(args.per_page, 250),
         soft_api_calls_per_hour=args.soft_api_calls_per_hour,
@@ -82,6 +93,9 @@ def build_plan(config: FetchConfig, terms: list[ButterflySearchTerm]) -> dict[st
         "official_api_method": SEARCH_METHOD,
         "dashboard_data_dir": str(config.dashboard_data_dir),
         "output_root": str(config.output_root),
+        "evidence_root": str(config.evidence_root),
+        "classification_queue_path": str(config.classification_queue_path),
+        "bioclip_model_version": config.bioclip_model_version,
         "terms": len(terms),
         "max_pages_per_term": config.max_pages_per_term,
         "planned_upper_bound_api_calls": planned_calls,
@@ -107,6 +121,7 @@ def run_fetch(config: FetchConfig, terms: list[ButterflySearchTerm], api_key: st
         hard_api_calls_per_hour=config.hard_api_calls_per_hour,
         hard_photo_records_per_hour=3600,
     )
+    queue = ClassificationJobQueue(config.classification_queue_path)
     with httpx.Client(timeout=30) as client:
         for term in terms:
             if state.term_is_exhausted(term.term):
@@ -121,6 +136,13 @@ def run_fetch(config: FetchConfig, terms: list[ButterflySearchTerm], api_key: st
                 photo_ids = [str(photo["id"]) for photo in photo_rows if isinstance(photo, dict) and "id" in photo]
                 new_photo_ids = limiter.log_photo_records(photo_ids, work_item_id)
                 raw_path = write_raw_payload(config.output_root, term, page, payload)
+                write_page_evidence_shard_and_enqueue(
+                    config=config,
+                    queue=queue,
+                    term=term,
+                    page=page,
+                    payload=payload,
+                )
                 pages = int(payload.get("photos", {}).get("pages") or page)
                 state.mark_done(
                     work_item_id=work_item_id,
@@ -193,6 +215,30 @@ def write_raw_payload(output_root: Path, term: ButterflySearchTerm, page: int, p
     target = target_dir / f"page={page:05d}.json"
     target.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     return target
+
+
+def write_page_evidence_shard_and_enqueue(
+    *,
+    config: FetchConfig,
+    queue: ClassificationJobQueue,
+    term: ButterflySearchTerm,
+    page: int,
+    payload: dict[str, Any],
+) -> Path:
+    target = page_evidence_shard_path(config.evidence_root, term, page)
+    result = write_evidence_shard_and_enqueue(
+        [payload],
+        species_query=term.term,
+        evidence_parquet_path=target,
+        queue=queue,
+        model_version=config.bioclip_model_version,
+    )
+    return result.evidence_parquet_path
+
+
+def page_evidence_shard_path(evidence_root: Path, term: ButterflySearchTerm, page: int) -> Path:
+    term_slug = safe_query_variant(term.term)
+    return evidence_root / "flickr" / "photos_search" / term.source / term_slug / f"page={page:05d}.parquet"
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:

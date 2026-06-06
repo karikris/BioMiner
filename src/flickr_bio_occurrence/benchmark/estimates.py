@@ -29,11 +29,11 @@ def estimate_production_from_report(
     api_calls_needed = target_records_with_images / records_per_api_call
     records_expected = effective_api_call_target * records_per_api_call
     fetch_seconds_per_call = fetch_seconds / measured_api_calls
-    bioclip_seconds_per_image = vision_seconds / measured_records if vision_seconds else 0.0
+    vision_seconds_per_image = vision_seconds / measured_records if vision_seconds else 0.0
     end_to_end_seconds = (
         fetch_seconds_per_call * api_calls_needed
         + nonvision_record_seconds * target_records_with_images
-        + bioclip_seconds_per_image * target_records_with_images
+        + vision_seconds_per_image * target_records_with_images
     )
 
     return {
@@ -46,8 +46,8 @@ def estimate_production_from_report(
         "measured_records_with_images": measured_records,
         "observed_records_per_api_call": records_per_api_call,
         "fetch_seconds_for_measured_api_calls": fetch_seconds,
-        "bioclip_seconds_per_image": bioclip_seconds_per_image,
-        "estimated_bioclip_seconds_for_100_images": bioclip_seconds_per_image * 100,
+        "vision_seconds_per_image": vision_seconds_per_image,
+        "estimated_vision_seconds_for_100_images": vision_seconds_per_image * 100,
         "estimated_metadata_seconds_for_api_call_target": fetch_seconds_per_call * effective_api_call_target,
         "estimated_nonvision_pipeline_seconds_for_target_records": nonvision_record_seconds * target_records_with_images,
         "estimated_end_to_end_seconds_for_target_records_with_images": end_to_end_seconds,
@@ -84,11 +84,11 @@ def estimate_combined_production(
     api_calls_needed = target_records_with_images / records_per_api_call
     fetch_seconds_per_call = float(metadata_timings.get("flickr_fetch", 0.0)) / metadata_api_calls
     nonvision_record_seconds = _nonvision_record_seconds(metadata_timings, metadata_records)
-    bioclip_seconds_per_image = float(vision_timings.get("vision_classification", 0.0)) / vision_images
+    vision_seconds_per_image = float(vision_timings.get("vision_classification", 0.0)) / vision_images
     end_to_end_seconds = (
         fetch_seconds_per_call * api_calls_needed
         + nonvision_record_seconds * target_records_with_images
-        + bioclip_seconds_per_image * target_records_with_images
+        + vision_seconds_per_image * target_records_with_images
     )
 
     return {
@@ -100,8 +100,8 @@ def estimate_combined_production(
         "vision_images_measured": vision_images,
         "observed_records_per_api_call": records_per_api_call,
         "metadata_fetch_seconds_per_api_call": fetch_seconds_per_call,
-        "bioclip_seconds_per_image": bioclip_seconds_per_image,
-        "estimated_bioclip_seconds_for_100_images": bioclip_seconds_per_image * 100,
+        "vision_seconds_per_image": vision_seconds_per_image,
+        "estimated_vision_seconds_for_100_images": vision_seconds_per_image * 100,
         "estimated_metadata_seconds_for_api_call_target": fetch_seconds_per_call * effective_api_call_target,
         "estimated_nonvision_pipeline_seconds_for_target_records": nonvision_record_seconds * target_records_with_images,
         "estimated_end_to_end_seconds_for_target_records_with_images": end_to_end_seconds,

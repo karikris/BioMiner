@@ -1,13 +1,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import time
 from datetime import date
 
-import pytest
-
-import flickr_bio_occurrence.benchmark.live_run as live_run
 from flickr_bio_occurrence.benchmark.live_run import DEFAULT_LIVE_TEST_API_CALL_CAP, run_live_search_benchmark
 from flickr_bio_occurrence.flickr.client import FlickrSearchResult
 from flickr_bio_occurrence.flickr.work_items import WorkItem
@@ -141,64 +137,11 @@ def test_live_search_benchmark_writes_optional_vision_predictions(tmp_path) -> N
     )
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["storage_artifacts"]["silver_vision_prediction_parquet_files"] == 2
+    assert report["storage_artifacts"]["silver_vision_prediction_parquet_files"] == 1
+    assert sum(report["storage_artifacts"]["silver_vision_prediction_rows_per_file"].values()) == 2
     assert report["compute_artifacts"]["vision_model_loaded"] is True
     assert "vision_classification" in report["step_timings_seconds"]
-    assert list((tmp_path / "vision-run" / "silver" / "silver_vision_prediction").rglob("*.parquet"))
-
-
-def test_live_search_benchmark_can_build_bioclip_vision_classifier(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[dict[str, object]] = []
-
-    def fake_search(work_item: WorkItem) -> FlickrSearchResult:
-        photo_id = "1"
-        payload = {
-            "stat": "ok",
-            "photos": {"photo": [{"id": photo_id, "title": "Papilio demoleus", "url_m": "https://live.staticflickr.com/example.jpg"}]},
-        }
-        raw_path = tmp_path / "1.json"
-        raw_path.write_text(json.dumps(payload), encoding="utf-8")
-        return FlickrSearchResult(payload=payload, raw_response_path=raw_path, photo_ids=[photo_id])
-
-    def fake_factory(*, model_registry_path: str | Path, cache_root: str | Path):
-        calls.append({"model_registry_path": model_registry_path, "cache_root": cache_root})
-
-        def classify(row: dict[str, object]) -> dict[str, object]:
-            return {
-                "flickr_photo_id": row["flickr_photo_id"],
-                "model_family": "bioclip",
-                "model_name": "imageomics/bioclip-2",
-                "model_version": "bioclip2_5_huge",
-                "model_checkpoint": "checkpoint",
-                "model_hash": "sha256:test",
-                "image_hash": "sha256:image",
-                "image_url_used": row["image_url"],
-                "top1_label": "a photo of Papilio demoleus",
-                "top1_score": 0.9,
-                "topk_json": [{"label": "a photo of Papilio demoleus", "score": 0.9}],
-                "species_agreement_status": "exact_species_agreement",
-                "vision_review_required": False,
-                "created_at": "2026-06-03T00:00:00+00:00",
-            }
-
-        return classify
-
-    monkeypatch.setattr(live_run, "build_bioclip_row_classifier", fake_factory)
-
-    report_path = run_live_search_benchmark(
-        search_photos=fake_search,
-        output_dir=tmp_path / "bioclip-run",
-        target_records=1,
-        max_calls=1,
-        use_bioclip_vision=True,
-        model_registry_path="config/model_registry.toml",
-        image_cache_root=tmp_path / "cache",
-    )
-
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert calls == [{"model_registry_path": "config/model_registry.toml", "cache_root": tmp_path / "cache"}]
-    assert report["compute_artifacts"]["vision_model_loaded"] is True
-    assert report["storage_artifacts"]["silver_vision_prediction_parquet_files"] == 1
+    assert list((tmp_path / "vision-run" / "silver" / "silver_vision_prediction").rglob("part-*.parquet"))
 
 
 def test_live_search_benchmark_can_run_parallel_and_stop_at_target(tmp_path) -> None:

@@ -1,0 +1,32 @@
+{
+  "generated_at": "2026-06-06T15:34:36.597146+00:00",
+  "phase": "Phase 6: CLI cleanup and final integration",
+  "recommendations": [
+    {
+      "recommendation": "Dedicated Flickr comment fetching remains unavailable; keep the CLI audit explicit until API-backed comment tests are added.",
+      "topic": "comments"
+    },
+    {
+      "recommendation": "Keep publication_state and review_reason as explicit evidence-rule outputs; avoid reintroducing directory-only state semantics.",
+      "topic": "publication_state"
+    },
+    {
+      "recommendation": "Maintain tests that every in_review row has at least one review_reason.",
+      "topic": "review_reason"
+    },
+    {
+      "recommendation": "Use BioClipJobService or PersistentBioClipScorer for production classification so the model remains loaded across jobs.",
+      "topic": "BioCLIP runtime"
+    },
+    {
+      "recommendation": "Keep successful image deletion as the default; require explicit diagnostic config for originals or failed-image retention.",
+      "topic": "cache cleanup"
+    }
+  ],
+  "remaining_unavailable_features": [
+    "dedicated Flickr comments API fetching",
+    "multi-GPU classification",
+    "dashboard"
+  ],
+  "source": "static code audit; no network, CUDA, model weights, Flickr downloads, or large data files required"
+}

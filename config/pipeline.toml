@@ -28,12 +28,9 @@ store_exact_internal_coordinates = true
 generalise_on_public_export = false
 
 [vision]
-preferred_model_family = "bioclip"
-preferred_model_version = "bioclip2_or_newest"
-fallback_model_version = "bioclip1"
 top_k = 10
 batch_size = 16
-store_embeddings = true
+external_package = "karikris/BioCLIPMiner"
 auto_accept_requires_text_vision_agreement = false
 text_vision_conflict_routes_to_review = true
 outside_known_range_never_rejects = true

@@ -1,0 +1,152 @@
+{
+  "bioclip_labels_and_agreement_rules": {
+    "agreement_symbols": [
+      "PAPILIO_DEMOLEUS_VISUAL_LABELS",
+      "SWALLOWTAIL_VISUAL_LABELS",
+      "BUTTERFLY_VISUAL_LABELS",
+      "NON_WILD_OR_CONFLICT_LABELS",
+      "classify_species_agreement"
+    ],
+    "auto_validates_dwc": false,
+    "labels_file": "src/flickr_bio_occurrence/vision/bioclip.py",
+    "labels_symbol": "DEFAULT_BIOCLIP_LABELS",
+    "screening_evidence_only": true
+  },
+  "bioclipminer_local": {
+    "exists": true,
+    "inspected_files": [
+      "/mnt/c/WSL-Shared/Projects/BioCLIPMiner/requirements.txt",
+      "/mnt/c/WSL-Shared/Projects/BioCLIPMiner/smoke_bioclip.py"
+    ],
+    "notes": "Local BioCLIPMiner is minimal: requirements plus a smoke script that loads local BioCLIP 2.5 weights.",
+    "path": "/mnt/c/WSL-Shared/Projects/BioCLIPMiner"
+  },
+  "bronze_silver_gold_semantics": {
+    "currently_implied_by_storage_layout": false,
+    "files_and_symbols": [
+      {
+        "file": "src/flickr_bio_occurrence/pipeline/transforms.py",
+        "symbols": [
+          "flatten_search_payloads",
+          "build_silver_candidates",
+          "build_dwc_rows"
+        ]
+      },
+      {
+        "file": "src/flickr_bio_occurrence/benchmark/offline_run.py",
+        "symbols": [
+          "_write_outputs"
+        ]
+      },
+      {
+        "file": "src/flickr_bio_occurrence/storage/duckdb_index.py",
+        "symbols": [
+          "create_qa_views"
+        ]
+      }
+    ],
+    "notes": "Gold/Silver/Bronze/In Review are represented as explicit publication_state values by the evidence rules.",
+    "publication_state_field_present": true,
+    "review_reason_field_present": true,
+    "review_status_present": true
+  },
+  "cache_cleanup": {
+    "handled": true,
+    "image_cache_file": "src/flickr_bio_occurrence/vision/pipeline.py",
+    "image_cache_symbol": "classify_bronze_photo_row",
+    "notes": "Successful images are deleted by default after prediction; failed images are deleted by default unless keep_failed_images is enabled."
+  },
+  "cli_commands": {
+    "commands": [
+      "fetch-live",
+      "fetch-comments",
+      "build-evidence",
+      "classify-once",
+      "classify-watch",
+      "apply-rules",
+      "gc-cache",
+      "compact-parquet",
+      "qa-summary"
+    ],
+    "existing_compatibility_preserved": [
+      "fetch",
+      "qa-rate-limit",
+      "qa-estimate",
+      "qa-estimate-combined",
+      "benchmark-existing-payloads"
+    ],
+    "file": "src/flickr_bio_occurrence/cli.py"
+  },
+  "comment_handling": {
+    "comments_currently_fetched": {
+      "file": "src/flickr_bio_occurrence/cli.py",
+      "notes": "Comment fetching is exposed as an audited unavailable command; no network comments fetch is implemented.",
+      "symbol": "fetch-comments",
+      "value": false
+    },
+    "comments_endpoint_allowed": {
+      "file": "src/flickr_bio_occurrence/flickr/endpoints.py",
+      "symbol": "ALLOWED_FLICKR_METHODS",
+      "value": true
+    },
+    "comments_scanned_for_scientific_names_or_verification_phrases": {
+      "files_checked": [
+        "src/flickr_bio_occurrence",
+        "scripts",
+        "tests"
+      ],
+      "notes": "Existing raw payload comments are parsed by the evidence extractor when present, but no dedicated comments API fetch is implemented.",
+      "value": false
+    },
+    "comments_stored_in_raw_payloads": {
+      "file": "src/flickr_bio_occurrence/flickr/client.py",
+      "notes": "Raw payloads are photos_search responses only; comments are not fetched before writing.",
+      "symbol": "FlickrClient._write_raw_response",
+      "value": false
+    },
+    "comments_transformed_to_parquet": {
+      "file": "src/flickr_bio_occurrence/pipeline/transforms.py",
+      "notes": "Transform reads payload['photos']['photo']; no comment fields are emitted.",
+      "symbol": "flatten_search_payloads",
+      "value": false
+    }
+  },
+  "evidence_first_pipeline": {
+    "evidence_extractor": "src/flickr_bio_occurrence/evidence/extractor.py",
+    "in_review_requires_review_reason": true,
+    "job_queue": "src/flickr_bio_occurrence/pipeline/job_queue.py",
+    "one_evidence_row_per_photo_record": true,
+    "one_publication_state_per_record": true,
+    "rule_engine": "src/flickr_bio_occurrence/evidence/rules.py",
+    "sharded_fetch": "src/flickr_bio_occurrence/pipeline/sharded_fetch.py",
+    "vision_service": "src/flickr_bio_occurrence/vision/service.py"
+  },
+  "generated_at": "2026-06-06T15:34:36.597146+00:00",
+  "image_selection": {
+    "default": "large-first, medium fallback only",
+    "file": "src/flickr_bio_occurrence/vision/image_selection.py",
+    "notes": "Original url_o is requested in Flickr extras but not selected by default.",
+    "order": [
+      "url_l",
+      "url_m"
+    ],
+    "symbol": "select_flickr_image_url"
+  },
+  "phase": "Phase 6: CLI cleanup and final integration",
+  "prediction_checkpoints": {
+    "file": "src/flickr_bio_occurrence/benchmark/vision_checkpoint.py",
+    "idempotency": "Existing predictions are skipped by flickr_photo_id, image_hash, model_version, and model_checkpoint.",
+    "layout": "silver/silver_vision_prediction/model_version=<model_id>/run_id=<run_id>/shard_id=<shard_id>/part-00000.parquet",
+    "symbols": [
+      "build_checkpointed_vision_predictions"
+    ]
+  },
+  "python_target": ">=3.14",
+  "source": "static code audit; no network, CUDA, model weights, Flickr downloads, or large data files required",
+  "tests": {
+    "cuda_required": false,
+    "model_weights_required": false,
+    "network_required": false,
+    "phase_6_focused_tests": "tests/test_cli_dry_run.py, tests/test_report_pack.py, tests/test_streaming_jobs.py, evidence and BioCLIP focused tests"
+  }
+}

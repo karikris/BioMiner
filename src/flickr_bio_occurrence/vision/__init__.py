@@ -1,1 +1,1 @@
-"""Vision model registry and BioCLIP adapters."""
+"""Generic image caching and vision prediction adapters."""

@@ -20,7 +20,6 @@ from flickr_bio_occurrence.pipeline.transforms import build_dwc_rows, build_silv
 from flickr_bio_occurrence.storage.duckdb_index import create_qa_views
 from flickr_bio_occurrence.storage.parquet_io import write_parquet_dataset
 from flickr_bio_occurrence.taxonomy.species_mapper import get_seed_species
-from flickr_bio_occurrence.vision.pipeline import build_bioclip_row_classifier
 
 
 SearchPhotos = Callable[[WorkItem], FlickrSearchResult]
@@ -47,8 +46,6 @@ def run_live_search_benchmark(
     end_date: date | None = None,
     excluded_work_item_ids: set[str] | None = None,
     vision_classifier: VisionClassifier | None = None,
-    use_bioclip_vision: bool = False,
-    model_registry_path: str | Path = "config/model_registry.toml",
     image_cache_root: str | Path = "data/cache/images",
 ) -> Path:
     output_path = Path(output_dir)
@@ -56,11 +53,6 @@ def run_live_search_benchmark(
     timings: dict[str, float] = {}
     tracemalloc.start()
     effective_vision_classifier = vision_classifier
-    if effective_vision_classifier is None and use_bioclip_vision:
-        effective_vision_classifier = build_bioclip_row_classifier(
-            model_registry_path=model_registry_path,
-            cache_root=image_cache_root,
-        )
     work_items = build_monthly_work_items(
         species=get_seed_species(species_name),
         regions=regions or [("AU_ALL", "Australia", "112.92,-43.74,153.64,-10.05")],
@@ -132,6 +124,7 @@ def run_live_search_benchmark(
             "bronze_parquet_files": len(bronze_paths),
             "silver_parquet_files": len(silver_paths),
             "silver_vision_prediction_parquet_files": len(vision_paths),
+            "silver_vision_prediction_rows_per_file": vision_result.rows_per_file or {},
             "gold_parquet_files": len(gold_paths),
             "duckdb_path": str(duckdb_path) if duckdb_path else None,
             "total_artifact_bytes": sum(path.stat().st_size for path in files),

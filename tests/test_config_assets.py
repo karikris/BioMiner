@@ -8,7 +8,6 @@ def test_required_config_assets_exist() -> None:
         ".env.example",
         "config/species_seed.csv",
         "config/regions.csv",
-        "config/model_registry.toml",
         "config/dwc_schema.yml",
     ]:
         assert Path(path).exists()

@@ -36,6 +36,53 @@ def test_flatten_search_payloads_preserves_raw_photo_metadata_fields() -> None:
     assert bronze["decimalLatitude"][0] == -27.4698
 
 
+def test_flatten_search_payloads_prefers_large_image_url_over_medium() -> None:
+    bronze = flatten_search_payloads(
+        [
+            {
+                "photos": {
+                    "photo": [
+                        {
+                            "id": "1",
+                            "url_m": "https://live.staticflickr.com/medium.jpg",
+                            "url_l": "https://live.staticflickr.com/large.jpg",
+                            "url_o": "https://live.staticflickr.com/original.jpg",
+                        }
+                    ]
+                }
+            }
+        ],
+        species_name="Papilio demoleus",
+        region_id="WORLD",
+        work_item_id="work-1",
+    )
+
+    assert bronze["image_url"][0] == "https://live.staticflickr.com/large.jpg"
+
+
+def test_flatten_search_payloads_falls_back_to_medium_image_url() -> None:
+    bronze = flatten_search_payloads(
+        [
+            {
+                "photos": {
+                    "photo": [
+                        {
+                            "id": "1",
+                            "url_m": "https://live.staticflickr.com/medium.jpg",
+                            "url_o": "https://live.staticflickr.com/original.jpg",
+                        }
+                    ]
+                }
+            }
+        ],
+        species_name="Papilio demoleus",
+        region_id="WORLD",
+        work_item_id="work-1",
+    )
+
+    assert bronze["image_url"][0] == "https://live.staticflickr.com/medium.jpg"
+
+
 def test_build_silver_candidates_keeps_exact_coordinates_and_needs_review() -> None:
     bronze = flatten_search_payloads(
         [{"photos": {"photo": [{"id": "1", "title": "Papilio demoleus", "latitude": "-27.0", "longitude": "153.0"}]}}],

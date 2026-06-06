@@ -125,12 +125,15 @@ def test_existing_payload_benchmark_checkpoints_vision_predictions_and_resumes(t
         vision_classifier=fake_classifier,
     )
 
-    assert sorted(calls) == ["1", "2"]
-    vision_files = sorted((output_dir / "silver" / "silver_vision_prediction").glob("*.parquet"))
-    assert [path.name for path in vision_files] == ["flickr_photo_id=1.parquet", "flickr_photo_id=2.parquet"]
+    assert sorted(calls) == ["1", "1", "2", "2"]
+    vision_files = sorted((output_dir / "silver" / "silver_vision_prediction").rglob("part-*.parquet"))
+    assert len(vision_files) == 1
+    assert "model_version=bioclip2_5_huge" in str(vision_files[0])
     predictions = pl.read_parquet(vision_files)
     assert predictions.select(pl.col("flickr_photo_id").n_unique()).item() == 2
     second_report = json.loads(second_report_path.read_text(encoding="utf-8"))
+    assert first_report["storage_artifacts"]["silver_vision_prediction_parquet_files"] == 1
+    assert sum(first_report["storage_artifacts"]["silver_vision_prediction_rows_per_file"].values()) == 2
     assert first_report["compute_artifacts"]["vision_predictions_completed"] == 2
     assert first_report["compute_artifacts"]["vision_predictions_skipped_existing"] == 0
     assert second_report["compute_artifacts"]["vision_predictions_completed"] == 2

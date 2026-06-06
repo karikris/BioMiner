@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 from flickr_bio_occurrence.flickr.butterfly_terms import (
+    ButterflySearchTerm,
     estimate_minimum_fetch_hours,
     load_butterfly_dashboard_terms,
     safe_query_variant,
@@ -133,3 +134,49 @@ def test_fetch_state_uses_latest_flickr_page_count_for_exhaustion(tmp_path) -> N
     )
 
     assert state.term_is_exhausted("butterfly") is True
+
+
+def test_fetch_script_writes_page_evidence_shard_and_enqueues_job(tmp_path) -> None:
+    module = _load_fetch_script()
+    term = ButterflySearchTerm(term="Papilio demoleus", source="scientificName")
+    config = module.FetchConfig(
+        output_root=tmp_path / "fetch",
+        dashboard_data_dir=tmp_path / "dashboard",
+        api_key_env="FLICKR_API_KEY",
+        evidence_root=tmp_path / "evidence",
+        classification_queue_path=tmp_path / "queue.sqlite",
+        bioclip_model_version="bioclip2_5_huge",
+        max_pages_per_term=1,
+        per_page=250,
+        soft_api_calls_per_hour=3200,
+        hard_api_calls_per_hour=3600,
+        start_taken_date="1950-01-01",
+        end_taken_date="2026-06-07",
+    )
+    queue = module.ClassificationJobQueue(config.classification_queue_path)
+    payload = {
+        "photos": {
+            "photo": [
+                {
+                    "id": "1",
+                    "title": "Papilio demoleus",
+                    "url_l": "https://live.staticflickr.com/large.jpg",
+                }
+            ]
+        }
+    }
+
+    path = module.write_page_evidence_shard_and_enqueue(
+        config=config,
+        queue=queue,
+        term=term,
+        page=1,
+        payload=payload,
+    )
+
+    assert path == tmp_path / "evidence" / "flickr" / "photos_search" / "scientificName" / "papilio_demoleus" / "page=00001.parquet"
+    assert pl.read_parquet(path)["flickr_photo_id"][0] == "1"
+    jobs = queue.list_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].evidence_parquet_path == path
+    assert jobs[0].model_version == "bioclip2_5_huge"

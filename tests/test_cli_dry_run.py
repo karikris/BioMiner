@@ -18,7 +18,6 @@ def test_fetch_dry_run_reports_required_fields() -> None:
         year=2024,
         month=1,
         config_path="config/pipeline.toml",
-        model_registry_path="config/model_registry.toml",
     )
 
     assert summary["planned_api_calls"] == 5
@@ -26,9 +25,7 @@ def test_fetch_dry_run_reports_required_fields() -> None:
     assert summary["hourly_limit_status"] == "within_soft_cap"
     assert summary["work_item_count"] == 5
     assert summary["output_paths"]["raw"] == "data/raw/flickr/photos_search/"
-    assert summary["selected_bioclip_model"] == "bioclip2_5_huge"
-    assert summary["selected_bioclip_runtime"]["package_name"] == "open_clip_torch"
-    assert "available" in summary["selected_bioclip_runtime"]
+    assert summary["vision_package"] == "BioCLIP functionality now lives in karikris/BioCLIPMiner"
 
 
 def test_fetch_dry_run_can_plan_multiple_pages() -> None:
@@ -38,7 +35,6 @@ def test_fetch_dry_run_can_plan_multiple_pages() -> None:
         year=2024,
         month=1,
         config_path="config/pipeline.toml",
-        model_registry_path="config/model_registry.toml",
         pages=range(1, 4),
     )
 
@@ -172,3 +168,154 @@ def test_benchmark_existing_payloads_cli_runs_offline_benchmark(tmp_path, capsys
     assert payload["actual_unique_records"] == 1
     assert payload["target_record_count"] == 1000
     assert Path(payload["report"]).exists()
+
+
+def test_evidence_first_cli_commands_build_classify_apply_and_compact(tmp_path, capsys) -> None:
+    raw_root = tmp_path / "raw"
+    raw_root.mkdir()
+    (raw_root / "payload.json").write_text(
+        json.dumps(
+            {
+                "photos": {
+                    "photo": [
+                        {
+                            "id": "1",
+                            "title": "Papilio demoleus verified by expert",
+                            "url_l": "https://live.staticflickr.com/large.jpg",
+                            "comments": {"comment": [{"_content": "confirmed by reviewer"}]},
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    parser = build_parser()
+    evidence_path = tmp_path / "evidence.parquet"
+    queue_path = tmp_path / "queue.sqlite"
+    args = parser.parse_args(
+        [
+            "build-evidence",
+            "--raw-root",
+            str(raw_root),
+            "--output",
+            str(evidence_path),
+            "--queue-path",
+            str(queue_path),
+        ]
+    )
+
+    assert run(args) == 0
+    build_payload = json.loads(capsys.readouterr().out)
+    assert build_payload["evidence_rows"] == 1
+    assert build_payload["classification_job_id"]
+
+    args = parser.parse_args(
+        [
+            "classify-once",
+            "--queue-path",
+            str(queue_path),
+            "--prediction-output-dir",
+            str(tmp_path / "predictions"),
+            "--fake-classifier",
+        ]
+    )
+    assert run(args) == 0
+    classify_payload = json.loads(capsys.readouterr().out)
+    assert classify_payload["processed_jobs"] == 1
+    assert classify_payload["prediction_rows"] == 1
+
+    classified_path = tmp_path / "classified.parquet"
+    args = parser.parse_args(["apply-rules", "--evidence", str(evidence_path), "--output", str(classified_path)])
+    assert run(args) == 0
+    rules_payload = json.loads(capsys.readouterr().out)
+    assert rules_payload["rows"] == 1
+    assert sum(rules_payload["publication_state_counts"].values()) == 1
+    assert rules_payload["in_review_without_reason"] == 0
+
+    compacted_path = tmp_path / "compacted.parquet"
+    args = parser.parse_args(["compact-parquet", "--input-root", str(tmp_path / "predictions"), "--output", str(compacted_path)])
+    assert run(args) == 0
+    compact_payload = json.loads(capsys.readouterr().out)
+    assert compact_payload["input_parquet_files"] == 1
+    assert compact_payload["rows"] == 1
+    assert compacted_path.exists()
+
+
+def test_fetch_live_dry_run_and_comments_audit_cli(capsys) -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "fetch-live",
+            "--species",
+            "Papilio demoleus",
+            "--region",
+            "AU_QLD",
+            "--year",
+            "2024",
+            "--month",
+            "1",
+            "--dry-run",
+        ]
+    )
+
+    assert run(args) == 0
+    assert json.loads(capsys.readouterr().out)["planned_api_calls"] == 5
+
+    args = parser.parse_args(["fetch-comments", "--photo-id", "1"])
+    assert run(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["implemented"] is False
+    assert payload["photo_ids_requested"] == ["1"]
+
+
+def test_classify_watch_skips_completed_jobs_and_gc_cache_reports(tmp_path, capsys) -> None:
+    parser = build_parser()
+    raw_root = tmp_path / "raw"
+    raw_root.mkdir()
+    (raw_root / "payload.json").write_text(
+        json.dumps({"photos": {"photo": [{"id": "1", "title": "Papilio demoleus", "url_l": "https://live.staticflickr.com/large.jpg"}]}}),
+        encoding="utf-8",
+    )
+    queue_path = tmp_path / "queue.sqlite"
+    run(
+        parser.parse_args(
+            [
+                "build-evidence",
+                "--raw-root",
+                str(raw_root),
+                "--output",
+                str(tmp_path / "evidence.parquet"),
+                "--queue-path",
+                str(queue_path),
+            ]
+        )
+    )
+    capsys.readouterr()
+    args = parser.parse_args(
+        [
+            "classify-watch",
+            "--queue-path",
+            str(queue_path),
+            "--prediction-output-dir",
+            str(tmp_path / "predictions"),
+            "--limit",
+            "10",
+            "--fake-classifier",
+        ]
+    )
+    assert run(args) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert first["processed_jobs"] == 1
+    assert run(args) == 0
+    second = json.loads(capsys.readouterr().out)
+    assert second["processed_jobs"] == 0
+
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    (cache_root / "image.jpg").write_bytes(b"abc")
+    args = parser.parse_args(["gc-cache", "--cache-root", str(cache_root), "--delete"])
+    assert run(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["files_seen"] == 1
+    assert payload["deleted_files"] == 1

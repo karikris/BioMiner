@@ -1,0 +1,27 @@
+{
+  "classification_jobs": {
+    "behavior": "completed jobs are skipped on rerun; stale claimed jobs can be retried or failed",
+    "file": "src/flickr_bio_occurrence/pipeline/job_queue.py",
+    "symbol": "ClassificationJobQueue"
+  },
+  "flickr_fetch_state": {
+    "behavior": "completed work_item_id rows are skipped; exhausted terms are skipped",
+    "file": "scripts/run_butterfly_flickr_fetch.py",
+    "state_db": "fetch_state.sqlite",
+    "symbol": "FetchState"
+  },
+  "generated_at": "2026-06-06T15:34:36.597146+00:00",
+  "phase": "Phase 6: CLI cleanup and final integration",
+  "rate_limit_ledger": {
+    "api_call_table": "api_call_ledger",
+    "file": "src/flickr_bio_occurrence/flickr/rate_limiter.py",
+    "photo_record_table": "photo_record_ledger",
+    "symbol": "FlickrRateLimiter"
+  },
+  "source": "static code audit; no network, CUDA, model weights, Flickr downloads, or large data files required",
+  "vision_checkpoints": {
+    "behavior": "existing prediction keys are skipped and new predictions are written in partitioned shards",
+    "file": "src/flickr_bio_occurrence/benchmark/vision_checkpoint.py",
+    "symbol": "build_checkpointed_vision_predictions"
+  }
+}

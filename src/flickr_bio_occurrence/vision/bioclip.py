@@ -9,6 +9,7 @@ from typing import IO, Any, Callable, Mapping, Sequence
 from flickr_bio_occurrence.vision.model_registry import BioClipRuntime
 
 BioClipScorer = Callable[[Path, Sequence[str]], Mapping[str, float]]
+BioClipBatchScorer = Callable[[Sequence[Path], Sequence[str]], Sequence[Mapping[str, float]]]
 SubprocessRunner = Callable[..., subprocess.CompletedProcess[str]]
 PopenFactory = Callable[..., subprocess.Popen[str]]
 
@@ -89,10 +90,49 @@ class BioClipClassifier:
             topk=topk,
         )
 
+    def classify_images(
+        self,
+        images: Sequence[dict[str, object]],
+        *,
+        labels: Sequence[str] = DEFAULT_BIOCLIP_LABELS,
+        top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        if not self.runtime.available:
+            raise RuntimeError(f"BioCLIP runtime is not available: {self.runtime.unavailable_reason}")
+        image_paths = [Path(str(image["image_path"])) for image in images]
+        scores_by_image = self._score_batch(image_paths, labels)
+        records: list[dict[str, Any]] = []
+        for image, scores in zip(images, scores_by_image, strict=True):
+            topk = sorted(
+                ((label, float(scores.get(label, 0.0))) for label in labels),
+                key=lambda item: item[1],
+                reverse=True,
+            )[:top_k]
+            records.append(
+                build_vision_prediction_record(
+                    flickr_photo_id=str(image["flickr_photo_id"]),
+                    runtime=self.runtime,
+                    image_hash=str(image["image_hash"]),
+                    image_url_used=str(image["image_url_used"]),
+                    resolved_scientific_name=str(image.get("resolved_scientific_name") or ""),
+                    text_evidence_present=bool(image.get("text_evidence_present")),
+                    topk=topk,
+                )
+            )
+        return records
+
     def _score(self, image_path: Path, labels: Sequence[str]) -> Mapping[str, float]:
         if self._scorer is not None:
             return self._scorer(image_path, labels)
         return _score_with_open_clip(image_path, labels, self.runtime)
+
+    def _score_batch(self, image_paths: Sequence[Path], labels: Sequence[str]) -> Sequence[Mapping[str, float]]:
+        if self._scorer is not None and hasattr(self._scorer, "score_batch"):
+            return self._scorer.score_batch(image_paths, labels)  # type: ignore[attr-defined]
+        if self._scorer is None:
+            with PersistentBioClipScorer(runtime=self.runtime) as scorer:
+                return scorer.score_batch(image_paths, labels)
+        return [self._score(image_path, labels) for image_path in image_paths]
 
 
 class ExternalBioClipScorer:
@@ -103,22 +143,27 @@ class ExternalBioClipScorer:
         worker_script: str | Path | None = None,
         hf_cache_dir: str | Path = "data/cache/huggingface",
         runner: SubprocessRunner = subprocess.run,
+        require_cuda: bool = True,
     ) -> None:
         self.runtime = runtime
         self.worker_script = Path(worker_script) if worker_script is not None else _default_worker_script()
         self.hf_cache_dir = Path(hf_cache_dir)
         self.runner = runner
+        self.require_cuda = require_cuda
 
     def __call__(self, image_path: Path, labels: Sequence[str]) -> Mapping[str, float]:
+        return self.score_batch([image_path], labels)[0]
+
+    def score_batch(self, image_paths: Sequence[Path], labels: Sequence[str]) -> list[Mapping[str, float]]:
         if self.runtime.venv_python is None:
             raise RuntimeError("BioCLIP runtime does not define a Python executable")
         request = {
-            "image_path": str(image_path),
+            "image_paths": [str(image_path) for image_path in image_paths],
             "labels": list(labels),
             "model_name": self.runtime.model.model_name,
             "checkpoint": self.runtime.model.checkpoint,
             "hf_cache_dir": str(self.hf_cache_dir),
-            "require_cuda": True,
+            "require_cuda": self.require_cuda,
         }
         result = self.runner(
             [str(self.runtime.venv_python), str(self.worker_script)],
@@ -130,7 +175,12 @@ class ExternalBioClipScorer:
         if result.returncode != 0:
             raise RuntimeError(f"BioCLIP worker failed: {result.stderr.strip()}")
         payload = json.loads(result.stdout)
-        return {str(label): float(score) for label, score in payload["scores"].items()}
+        if "scores_by_image" in payload:
+            return [
+                {str(label): float(score) for label, score in scores.items()}
+                for scores in payload["scores_by_image"]
+            ]
+        return [{str(label): float(score) for label, score in payload["scores"].items()}]
 
 
 def classify_species_agreement(
@@ -142,7 +192,7 @@ def classify_species_agreement(
     if not topk_labels:
         return "text_only" if text_evidence_present else "uncertain"
 
-    normalized_labels = {_normalize_label(topk_labels[0])}
+    normalized_labels = {_normalize_label(label) for label in topk_labels}
     species_label = _normalize_label(f"a photo of {resolved_scientific_name}")
     if species_label in normalized_labels:
         return "exact_species_agreement" if text_evidence_present else "vision_only"
@@ -243,11 +293,14 @@ class PersistentBioClipScorer:
         self.close()
 
     def __call__(self, image_path: Path, labels: Sequence[str]) -> Mapping[str, float]:
+        return self.score_batch([image_path], labels)[0]
+
+    def score_batch(self, image_paths: Sequence[Path], labels: Sequence[str]) -> list[Mapping[str, float]]:
         process = self._ensure_process()
         if process.poll() is not None:
             raise RuntimeError(f"BioCLIP persistent worker exited early with code {process.returncode}")
         request = {
-            "image_path": str(image_path),
+            "image_paths": [str(image_path) for image_path in image_paths],
             "labels": list(labels),
             "model_name": self.runtime.model.model_name,
             "checkpoint": self.runtime.model.checkpoint,
@@ -269,7 +322,15 @@ class PersistentBioClipScorer:
                 self.device = str(payload.get("device") or "")
                 self.gpu_name = str(payload.get("gpu_name") or "")
                 continue
-            return {str(label): float(score) for label, score in payload["scores"].items()}
+            if "device" in payload:
+                self.device = str(payload.get("device") or "")
+                self.gpu_name = str(payload.get("gpu_name") or "")
+            if "scores_by_image" in payload:
+                return [
+                    {str(label): float(score) for label, score in scores.items()}
+                    for scores in payload["scores_by_image"]
+                ]
+            return [{str(label): float(score) for label, score in payload["scores"].items()}]
 
     def close(self) -> None:
         process = self._process

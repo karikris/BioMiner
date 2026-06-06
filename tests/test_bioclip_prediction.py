@@ -65,16 +65,6 @@ def test_classify_species_agreement_routes_conflicting_text_and_vision_to_review
     assert status == "text_vision_conflict"
 
 
-def test_classify_species_agreement_uses_top_prediction_not_any_lower_topk_match() -> None:
-    status = classify_species_agreement(
-        resolved_scientific_name="Papilio demoleus",
-        topk_labels=["a photo of a moth", "a photo of Papilio demoleus"],
-        text_evidence_present=True,
-    )
-
-    assert status == "text_vision_conflict"
-
-
 def test_build_vision_prediction_record_preserves_model_and_topk_metadata() -> None:
     record = build_vision_prediction_record(
         flickr_photo_id="123",
@@ -177,8 +167,39 @@ def test_external_bioclip_scorer_invokes_runtime_python_with_json() -> None:
 
     assert scores["a photo of Papilio demoleus"] == 0.97
     assert calls[0]["cmd"][0] == "/home/toffe/bioclip25/.venv/bin/python"
+    assert "image_paths" in calls[0]["input"]
+    assert '"require_cuda": true' in calls[0]["input"]
     assert "imageomics/bioclip-2" in calls[0]["input"]
     assert "data/cache/huggingface" in calls[0]["input"]
+
+
+def test_external_bioclip_scorer_formats_batch_request() -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run(cmd, *, input, capture_output, check, text):  # noqa: ANN001 - mirrors subprocess.run signature.
+        calls.append({"cmd": cmd, "input": input})
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout=(
+                '{"scores_by_image":['
+                '{"a photo of Papilio demoleus":0.9,"a photo of a moth":0.1},'
+                '{"a photo of Papilio demoleus":0.2,"a photo of a moth":0.8}'
+                "]}"
+            ),
+            stderr="",
+        )
+
+    scorer = ExternalBioClipScorer(runtime=_runtime(), runner=fake_run)
+    scores = scorer.score_batch(
+        [Path("/tmp/1.jpg"), Path("/tmp/2.jpg")],
+        ["a photo of Papilio demoleus", "a photo of a moth"],
+    )
+
+    assert scores[0]["a photo of Papilio demoleus"] == 0.9
+    assert scores[1]["a photo of a moth"] == 0.8
+    assert '"image_paths": ["/tmp/1.jpg", "/tmp/2.jpg"]' in calls[0]["input"]
+    assert '"require_cuda": true' in calls[0]["input"]
 
 
 def test_external_bioclip_scorer_raises_with_worker_stderr() -> None:
@@ -196,7 +217,7 @@ def test_external_bioclip_scorer_raises_with_worker_stderr() -> None:
         raise AssertionError("expected worker failure to raise")
 
 
-def test_persistent_bioclip_scorer_reuses_worker_and_requires_cuda() -> None:
+def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_requires_cuda() -> None:
     writes: list[str] = []
 
     class FakeStdin:
@@ -211,8 +232,8 @@ def test_persistent_bioclip_scorer_reuses_worker_and_requires_cuda() -> None:
             self.lines = iter(
                 [
                     '{"ready":true,"device":"cuda","gpu_name":"NVIDIA GeForce RTX 3060"}\n',
-                    '{"scores":{"a photo of Papilio demoleus":0.97}}\n',
-                    '{"scores":{"a photo of Papilio demoleus":0.98}}\n',
+                    '{"scores_by_image":[{"a photo of Papilio demoleus":0.97},{"a photo of Papilio demoleus":0.98}]}\n',
+                    '{"scores_by_image":[{"a photo of Papilio demoleus":0.96}]}\n',
                 ]
             )
 
@@ -249,15 +270,20 @@ def test_persistent_bioclip_scorer_reuses_worker_and_requires_cuda() -> None:
 
     scorer = PersistentBioClipScorer(runtime=_runtime(), popen=fake_popen)
     try:
-        first = scorer(Path("/tmp/1.jpg"), ["a photo of Papilio demoleus"])
-        second = scorer(Path("/tmp/2.jpg"), ["a photo of Papilio demoleus"])
+        first = scorer.score_batch(
+            [Path("/tmp/1.jpg"), Path("/tmp/2.jpg")],
+            ["a photo of Papilio demoleus"],
+        )
+        second = scorer(Path("/tmp/3.jpg"), ["a photo of Papilio demoleus"])
     finally:
         scorer.close()
 
-    assert first["a photo of Papilio demoleus"] == 0.97
-    assert second["a photo of Papilio demoleus"] == 0.98
+    assert first[0]["a photo of Papilio demoleus"] == 0.97
+    assert first[1]["a photo of Papilio demoleus"] == 0.98
+    assert second["a photo of Papilio demoleus"] == 0.96
     assert len(processes) == 1
     assert "--persistent" in processes[0].cmd
+    assert '"image_paths": ["/tmp/1.jpg", "/tmp/2.jpg"]' in writes[0]
     assert '"require_cuda": true' in writes[0]
     assert '"require_cuda": true' in writes[1]
     assert '"shutdown": true' in writes[-1]

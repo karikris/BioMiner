@@ -6,6 +6,7 @@ from typing import Any
 import polars as pl
 
 from flickr_bio_occurrence.dwc.mapper import map_candidate_to_dwc
+from flickr_bio_occurrence.vision.image_selection import select_flickr_image_url
 
 
 def flatten_search_payloads(
@@ -34,7 +35,7 @@ def flatten_search_payloads(
                     "last_update": photo.get("lastupdate"),
                     "views": _optional_int(photo.get("views")),
                     "media": photo.get("media"),
-                    "image_url": photo.get("url_m") or photo.get("url_l") or photo.get("url_o"),
+                    "image_url": _preferred_flickr_image_url(photo),
                     "photo_page_url": f"https://www.flickr.com/photos/{photo.get('owner', '')}/{photo.get('id', '')}",
                     "decimalLatitude": _optional_float(photo.get("latitude")),
                     "decimalLongitude": _optional_float(photo.get("longitude")),
@@ -98,6 +99,10 @@ def _description_text(value: Any) -> str | None:
     if isinstance(value, dict):
         return value.get("_content")
     return value
+
+
+def _preferred_flickr_image_url(photo: dict[str, Any]) -> Any:
+    return select_flickr_image_url(photo).url
 
 
 def _optional_float(value: Any) -> float | None:

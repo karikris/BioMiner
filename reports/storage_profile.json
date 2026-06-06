@@ -1,0 +1,36 @@
+{
+  "classification_queue": {
+    "default_path": "classification_jobs.sqlite",
+    "fields": [
+      "job_id",
+      "evidence_parquet_path",
+      "status",
+      "model_version",
+      "created_at",
+      "claimed_at",
+      "completed_at",
+      "attempts",
+      "error"
+    ]
+  },
+  "duckdb": {
+    "offline_benchmark_path": "existing_payload_benchmark.duckdb",
+    "views_file": "src/flickr_bio_occurrence/storage/duckdb_index.py"
+  },
+  "generated_at": "2026-06-06T15:34:36.597146+00:00",
+  "measured_bytes": "not_instrumented",
+  "parquet_outputs": {
+    "bronze": "bronze/bronze_flickr_photo",
+    "evidence": "staging/evidence/",
+    "gold_dwc_occurrence": "gold/dwc_occurrence",
+    "silver_occurrence_candidate": "silver/silver_occurrence_candidate",
+    "silver_vision_prediction": "silver/silver_vision_prediction"
+  },
+  "phase": "Phase 6: CLI cleanup and final integration",
+  "raw_flickr_payloads": {
+    "comments_path": null,
+    "comments_stored": false,
+    "photos_search_path": "data/raw/flickr/photos_search/"
+  },
+  "source": "static code audit; no network, CUDA, model weights, Flickr downloads, or large data files required"
+}
