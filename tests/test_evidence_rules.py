@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from flickr_bio_occurrence.evidence.rules import REVIEW_REASON_PRECEDENCE, classify_evidence_frame, classify_evidence_row
+from flickr_bio_occurrence.evidence.rules import classify_evidence_frame, classify_evidence_row
 
 
 def _row(**overrides: object) -> dict[str, object]:
@@ -29,46 +29,51 @@ def _row(**overrides: object) -> dict[str, object]:
     return row
 
 
-def test_gold_requires_human_verification_and_positive_bioclip_agreement() -> None:
-    result = classify_evidence_row(_row(human_verification_detected=True))
+def test_gold_score_gte_050_target_positive() -> None:
+    result = classify_evidence_row(_row(human_verification_detected=False, bioclip_top1_score=0.50))
 
     assert result["publication_state"] == "gold"
-    assert result["publication_state_reason"] == "human_verified_bioclip_positive"
+    assert result["publication_state_reason"] == "target_positive_score_gte_050"
     assert result["review_reason"] == []
 
 
-def test_silver_allows_human_verification_with_missing_or_weak_or_conflicting_bioclip() -> None:
-    missing = classify_evidence_row(_row(human_verification_detected=True, bioclip_top1_score=None, bioclip_species_agreement_status=""))
-    weak = classify_evidence_row(_row(human_verification_detected=True, bioclip_top1_score=0.25))
-    conflict = classify_evidence_row(
-        _row(
-            human_verification_detected=True,
-            bioclip_top1_label="a photo of a moth",
-            bioclip_species_agreement_status="text_vision_conflict",
-        )
-    )
+def test_silver_score_lt_050_target_positive() -> None:
+    result = classify_evidence_row(_row(human_verification_detected=False, bioclip_top1_score=0.49))
 
-    assert missing["publication_state"] == "silver"
-    assert missing["publication_state_reason"] == "human_verified_bioclip_missing"
-    assert weak["publication_state"] == "silver"
-    assert weak["publication_state_reason"] == "human_verified_bioclip_low_confidence"
-    assert conflict["publication_state"] == "silver"
-    assert conflict["publication_state_reason"] == "human_verified_bioclip_conflict"
+    assert result["publication_state"] == "silver"
+    assert result["publication_state_reason"] == "target_positive_score_lt_050"
+    assert result["review_reason"] == []
 
 
-def test_bronze_is_bioclip_positive_without_human_verification() -> None:
-    result = classify_evidence_row(_row(human_verification_detected=False))
+def test_bronze_negative_material_museum_art_ai_other_insect() -> None:
+    cases = [
+        (_row(museum_detected=True), "negative_material_museum_specimen"),
+        (_row(artwork_detected=True), "negative_material_artwork"),
+        (_row(ai_generated_detected=True), "negative_material_ai_generated"),
+        (_row(non_target_order_detected=True), "negative_material_non_target_order"),
+        (_row(bioclip_top1_label="a photo of a moth", bioclip_species_agreement_status="text_vision_conflict"), "negative_material_non_butterfly"),
+    ]
+
+    for row, reason in cases:
+        result = classify_evidence_row(row)
+        assert result["publication_state"] == "bronze"
+        assert result["publication_state_reason"] == reason
+        assert result["review_reason"] == []
+
+
+def test_bronze_is_not_bioclip_positive_without_negative_material() -> None:
+    result = classify_evidence_row(_row())
+
+    assert result["publication_state"] == "gold"
+    assert result["publication_state_reason"] == "target_positive_score_gte_050"
+
+
+def test_hard_exclusion_flags_force_bronze_even_when_otherwise_gold() -> None:
+    result = classify_evidence_row(_row(artwork_detected=True))
 
     assert result["publication_state"] == "bronze"
-    assert result["publication_state_reason"] == "bioclip_positive_without_human_verification"
+    assert result["publication_state_reason"] == "negative_material_artwork"
     assert result["review_reason"] == []
-
-
-def test_hard_exclusion_flags_force_in_review_even_when_otherwise_gold() -> None:
-    result = classify_evidence_row(_row(human_verification_detected=True, artwork_detected=True))
-
-    assert result["publication_state"] == "in_review"
-    assert result["review_reason"] == ["artwork"]
 
 
 def test_in_review_rows_get_precedent_review_reasons() -> None:
@@ -91,7 +96,17 @@ def test_in_review_rows_get_precedent_review_reasons() -> None:
     )
 
     assert result["publication_state"] == "in_review"
-    assert result["review_reason"] == list(REVIEW_REASON_PRECEDENCE)
+    assert result["review_reason"] == [
+        "missing_image",
+        "artwork",
+        "museum_specimen",
+        "non_target_order",
+        "species_conflict",
+        "multiple_species",
+        "captivity_suspected",
+        "low_confidence",
+        "api_error",
+    ]
 
 
 def test_missing_image_prevents_bronze_and_provides_review_reason() -> None:
@@ -105,9 +120,9 @@ def test_classify_evidence_frame_adds_exactly_one_state_per_row() -> None:
     frame = classify_evidence_frame(
         pl.DataFrame(
             [
-                _row(flickr_photo_id="gold", human_verification_detected=True),
-                _row(flickr_photo_id="silver", human_verification_detected=True, bioclip_top1_score=None),
-                _row(flickr_photo_id="bronze"),
+                _row(flickr_photo_id="gold"),
+                _row(flickr_photo_id="silver", bioclip_top1_score=0.25),
+                _row(flickr_photo_id="bronze", artwork_detected=True),
                 _row(flickr_photo_id="review", image_url=None),
             ]
         )
@@ -118,3 +133,10 @@ def test_classify_evidence_frame_adds_exactly_one_state_per_row() -> None:
     assert all(state in {"gold", "silver", "bronze", "in_review"} for state in states)
     review_rows = frame.filter(pl.col("publication_state") == "in_review")
     assert review_rows.to_dicts()[0]["review_reason"]
+
+
+def test_no_legacy_human_verification_gold_gate_remains() -> None:
+    result = classify_evidence_row(_row(human_verification_detected=False))
+
+    assert result["publication_state"] == "gold"
+    assert "human_verified" not in result["publication_state_reason"]

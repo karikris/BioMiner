@@ -1,17 +1,17 @@
 {
-  "generated_at": "2026-06-06T16:34:13.636500+00:00",
-  "phase": "Lean image triage pipeline",
+  "generated_at": "2026-06-06T19:14:08.750095+00:00",
+  "phase": "Phase 8 classification semantics cleanup",
   "recommendations": [
     {
       "recommendation": "Dedicated Flickr comment fetching remains unavailable; keep the CLI audit explicit until API-backed comment tests are added.",
       "topic": "comments"
     },
     {
-      "recommendation": "Do not expand occurrence publication logic in the image-triage phase; use triage_bin only.",
+      "recommendation": "Keep one rule-engine path: Gold/Silver from BioCLIP target-positive score threshold, Bronze for negative visual material, In Review for missing/error/ambiguous rows.",
       "topic": "publication_state"
     },
     {
-      "recommendation": "Use triage_reason for image triage; keep review_reason only in legacy compatibility paths.",
+      "recommendation": "Ensure every in_review row has at least one review_reason; do not use missing human verification as a gate.",
       "topic": "review_reason"
     },
     {

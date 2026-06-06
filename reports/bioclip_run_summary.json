@@ -27,6 +27,15 @@
     "image_cache_symbol": "classify_bronze_photo_row",
     "notes": "Successful images are deleted by default after prediction; failed images are deleted by default unless keep_failed_images is enabled."
   },
+  "classification_metrics": {
+    "bronze_reason_counts": "not_instrumented",
+    "gold_score_distribution": null,
+    "missing_bioclip_count": null,
+    "missing_image_count": null,
+    "publication_state_counts": "not_instrumented",
+    "review_reason_counts": "not_instrumented",
+    "silver_score_distribution": null
+  },
   "comment_handling": {
     "comments_currently_fetched": {
       "file": "src/flickr_bio_occurrence/cli.py",
@@ -64,9 +73,9 @@
   "darwin_core_scope": {
     "active_image_triage_dependency": false,
     "compatibility_only": true,
-    "notes": "Darwin Core export and occurrence publication logic are retained only for existing compatibility tests."
+    "notes": "Darwin Core export is retained only for existing compatibility tests and does not validate records from BioCLIP output."
   },
-  "generated_at": "2026-06-06T16:34:13.636500+00:00",
+  "generated_at": "2026-06-06T19:14:08.750095+00:00",
   "image_selection": {
     "default": "large-first, medium fallback only",
     "file": "src/flickr_bio_occurrence/vision/image_selection.py",
@@ -105,7 +114,22 @@
       "in_review"
     ]
   },
-  "phase": "Lean image triage pipeline",
+  "phase": "Phase 8 classification semantics cleanup",
+  "publication_state_semantics": {
+    "bronze": "negative/non-occurrence visual material",
+    "file": "src/flickr_bio_occurrence/evidence/rules.py",
+    "gold": "BioCLIP target-positive score >= 0.50",
+    "in_review": "missing, unresolved, invalid, or operational failure records",
+    "screening_evidence_only": true,
+    "silver": "BioCLIP target-positive score < 0.50",
+    "states": [
+      "gold",
+      "silver",
+      "bronze",
+      "in_review"
+    ],
+    "symbol": "classify_evidence_row"
+  },
   "python_target": ">=3.14",
   "source": "static code audit; no network, CUDA, model weights, Flickr downloads, or large data files required",
   "tests": {

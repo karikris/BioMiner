@@ -33,6 +33,7 @@ def build_reports() -> dict[str, Any]:
     return {
         "bioclip_run_summary.json": summary,
         "bioclip_run_summary.md": build_bioclip_run_summary_markdown(summary),
+        "quality_profile.json": build_quality_profile(),
         "image_triage_profile.json": build_image_triage_profile(),
         "cache_profile.json": build_cache_profile(),
         "gpu_profile.json": build_gpu_profile(),
@@ -45,7 +46,7 @@ def build_reports() -> dict[str, Any]:
 def base_payload() -> dict[str, Any]:
     return {
         "generated_at": GENERATED_AT,
-        "phase": "Lean image triage pipeline",
+        "phase": "Phase 8 classification semantics cleanup",
         "source": "static code audit; no network, CUDA, model weights, Flickr downloads, or large data files required",
     }
 
@@ -114,6 +115,25 @@ def build_bioclip_run_summary() -> dict[str, Any]:
                 "triage_bins": ["gold", "silver", "bronze", "in_review"],
                 "classification_statuses": ["success", "skipped_existing", "failed_download", "failed_bioclip", "invalid_record"],
             },
+            "publication_state_semantics": {
+                "file": "src/flickr_bio_occurrence/evidence/rules.py",
+                "symbol": "classify_evidence_row",
+                "states": ["gold", "silver", "bronze", "in_review"],
+                "gold": "BioCLIP target-positive score >= 0.50",
+                "silver": "BioCLIP target-positive score < 0.50",
+                "bronze": "negative/non-occurrence visual material",
+                "in_review": "missing, unresolved, invalid, or operational failure records",
+                "screening_evidence_only": True,
+            },
+            "classification_metrics": {
+                "publication_state_counts": "not_instrumented",
+                "review_reason_counts": "not_instrumented",
+                "bronze_reason_counts": "not_instrumented",
+                "gold_score_distribution": None,
+                "silver_score_distribution": None,
+                "missing_image_count": None,
+                "missing_bioclip_count": None,
+            },
             "bioclip_labels_and_agreement_rules": {
                 "labels_file": "src/flickr_bio_occurrence/vision/bioclip.py",
                 "labels_symbol": "DEFAULT_BIOCLIP_LABELS",
@@ -130,7 +150,7 @@ def build_bioclip_run_summary() -> dict[str, Any]:
             "darwin_core_scope": {
                 "active_image_triage_dependency": False,
                 "compatibility_only": True,
-                "notes": "Darwin Core export and occurrence publication logic are retained only for existing compatibility tests.",
+                "notes": "Darwin Core export is retained only for existing compatibility tests and does not validate records from BioCLIP output.",
             },
             "cache_cleanup": {
                 "handled": True,
@@ -144,6 +164,30 @@ def build_bioclip_run_summary() -> dict[str, Any]:
                 "model_weights_required": False,
                 "lean_triage_tests": "tests/test_image_triage.py and tests/test_report_pack.py",
             },
+        }
+    )
+    return payload
+
+
+def build_quality_profile() -> dict[str, Any]:
+    payload = base_payload()
+    payload.update(
+        {
+            "publication_state_counts": "not_instrumented",
+            "review_reason_counts": "not_instrumented",
+            "bronze_reason_counts": "not_instrumented",
+            "gold_score_distribution": None,
+            "silver_score_distribution": None,
+            "missing_image_count": None,
+            "missing_bioclip_count": None,
+            "semantics": {
+                "gold": "BioCLIP target-positive score >= 0.50",
+                "silver": "BioCLIP target-positive score < 0.50",
+                "bronze": "negative/non-occurrence visual material",
+                "in_review": "missing, unresolved, invalid, or operational failure records",
+            },
+            "screening_evidence_only": True,
+            "auto_validates_occurrences": False,
         }
     )
     return payload
@@ -299,11 +343,11 @@ def build_agents_update_recommendations() -> dict[str, Any]:
                 },
                 {
                     "topic": "publication_state",
-                    "recommendation": "Do not expand occurrence publication logic in the image-triage phase; use triage_bin only.",
+                    "recommendation": "Keep one rule-engine path: Gold/Silver from BioCLIP target-positive score threshold, Bronze for negative visual material, In Review for missing/error/ambiguous rows.",
                 },
                 {
                     "topic": "review_reason",
-                    "recommendation": "Use triage_reason for image triage; keep review_reason only in legacy compatibility paths.",
+                    "recommendation": "Ensure every in_review row has at least one review_reason; do not use missing human verification as a gate.",
                 },
                 {
                     "topic": "BioCLIP runtime",
@@ -343,6 +387,14 @@ def build_bioclip_run_summary_markdown(summary: dict[str, Any]) -> str:
             f"- Image selection order: `{summary['image_selection']['order']}`.",
             f"- Image triage output: `{summary['image_triage_pipeline']['output']}`.",
             f"- Triage bins: `{summary['image_triage_pipeline']['triage_bins']}`.",
+            f"- Publication state semantics: `{summary['publication_state_semantics']}`.",
+            f"- Publication state counts: `{summary['classification_metrics']['publication_state_counts']}`.",
+            f"- Review reason counts: `{summary['classification_metrics']['review_reason_counts']}`.",
+            f"- Bronze reason counts: `{summary['classification_metrics']['bronze_reason_counts']}`.",
+            f"- Gold score distribution: `{summary['classification_metrics']['gold_score_distribution']}`.",
+            f"- Silver score distribution: `{summary['classification_metrics']['silver_score_distribution']}`.",
+            f"- Missing image count: `{summary['classification_metrics']['missing_image_count']}`.",
+            f"- Missing BioCLIP count: `{summary['classification_metrics']['missing_bioclip_count']}`.",
             f"- Geo/time fields retained: `{summary['image_triage_pipeline']['geo_time_fields']}`.",
             f"- Cache cleanup handled: `{summary['cache_cleanup']['handled']}`.",
             "",
@@ -367,8 +419,24 @@ def build_code_cleanup_report_markdown() -> str:
             "- The active flow is now a lean image-triage pipeline centered on `image_triage.parquet`.",
             "- Image selection defaults to `url_l -> url_m`; originals are not selected by default.",
             "- BioCLIP output is stored as model evidence only, not taxonomic validation.",
+            "- Removed the legacy human-verification gate from the active evidence rule engine.",
+            "- Removed legacy publication reasons: `human_verified_bioclip_positive`, `human_verified_bioclip_missing`, `human_verified_bioclip_low_confidence`, `human_verified_bioclip_conflict`, and `bioclip_positive_without_human_verification`.",
             "- Successful cached images are deleted by default after prediction writes.",
             "- Darwin Core export remains compatibility-only and is not expanded in the active triage flow.",
+            "",
+            "## Retained Compatibility Shims",
+            "",
+            "- `src/flickr_bio_occurrence/dwc/mapper.py` is retained for existing tested public API behavior; remove when Darwin Core compatibility tests are retired.",
+            "- `human_verification_detected` extraction fields remain as metadata from source text; they no longer gate Gold/Silver/Bronze classification.",
+            "",
+            "## Tests Added Or Updated",
+            "",
+            "- `test_gold_score_gte_050_target_positive`",
+            "- `test_silver_score_lt_050_target_positive`",
+            "- `test_bronze_negative_material_museum_art_ai_other_insect`",
+            "- `test_cli_help_does_not_describe_old_gold_silver_bronze_logic`",
+            "- `test_no_legacy_human_verification_gold_gate_remains`",
+            "- `test_code_cleanup_report_lists_removed_legacy_rule_paths`",
             "",
             "## Remaining Explicit Gaps",
             "",

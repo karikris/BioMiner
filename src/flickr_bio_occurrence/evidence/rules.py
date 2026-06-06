@@ -9,15 +9,16 @@ import polars as pl
 PUBLICATION_STATES = ("gold", "silver", "bronze", "in_review")
 REVIEW_REASON_PRECEDENCE = (
     "missing_image",
+    "missing_bioclip",
     "artwork",
     "museum_specimen",
+    "ai_generated",
     "non_target_order",
     "species_conflict",
     "multiple_species",
     "captivity_suspected",
     "low_confidence",
-    "no_human_verification",
-    "missing_comments",
+    "ambiguous_classification",
     "api_error",
 )
 POSITIVE_SPECIES_AGREEMENT = {"exact_species_agreement", "same_genus_agreement", "same_family_agreement", "vision_only"}
@@ -31,13 +32,12 @@ TARGET_BUTTERFLY_LABELS = {
     "a photo of a butterfly",
 }
 HARD_EXCLUSION_REASONS = {
-    "missing_image",
     "artwork",
     "museum_specimen",
+    "ai_generated",
     "non_target_order",
     "multiple_species",
     "captivity_suspected",
-    "api_error",
 }
 BIOCLIP_CONFIDENCE_THRESHOLD = 0.50
 
@@ -53,30 +53,29 @@ def classify_evidence_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any
 
 def classify_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
     reasons = review_reasons_for_evidence(row)
-    hard_exclusion = bool(set(reasons) & HARD_EXCLUSION_REASONS)
-    human_verified = bool(row.get("human_verification_detected"))
+    negative_reason = _negative_material_reason(row, reasons)
     score = _bioclip_top1_score(row)
-    has_bioclip = score is not None
-    high_confidence = bool(score is not None and score >= BIOCLIP_CONFIDENCE_THRESHOLD)
-    positive_agreement = species_agreement_is_positive(row)
-    species_conflict = "species_conflict" in reasons
+    target_positive = bool(score is not None and target_signal_is_positive(row))
 
-    if human_verified and high_confidence and positive_agreement and not hard_exclusion:
-        state = "gold"
-        state_reason = "human_verified_bioclip_positive"
-    elif human_verified and (not has_bioclip or not high_confidence or species_conflict) and not hard_exclusion:
-        state = "silver"
-        state_reason = _silver_reason(has_bioclip=has_bioclip, high_confidence=high_confidence, species_conflict=species_conflict)
-    elif high_confidence and target_signal_is_positive(row) and not human_verified and not hard_exclusion:
+    if "missing_image" in reasons or "api_error" in reasons:
+        state = "in_review"
+        state_reason = "operational_failure"
+    elif negative_reason:
         state = "bronze"
-        state_reason = "bioclip_positive_without_human_verification"
+        state_reason = negative_reason
+    elif target_positive and score is not None and score >= BIOCLIP_CONFIDENCE_THRESHOLD:
+        state = "gold"
+        state_reason = "target_positive_score_gte_050"
+    elif target_positive and score is not None and score < BIOCLIP_CONFIDENCE_THRESHOLD:
+        state = "silver"
+        state_reason = "target_positive_score_lt_050"
     else:
         state = "in_review"
-        state_reason = "requires_review"
+        state_reason = "missing_bioclip" if score is None else "ambiguous_classification"
 
     review_reason = reasons if state == "in_review" else []
     if state == "in_review" and not review_reason:
-        review_reason = ["low_confidence"]
+        review_reason = [state_reason]
     return {
         **row,
         "publication_state": state,
@@ -93,6 +92,8 @@ def review_reasons_for_evidence(row: dict[str, Any]) -> list[str]:
         candidates.append("artwork")
     if bool(row.get("museum_detected")) or bool(row.get("specimen_detected")) or _has_any_review_flag(row, {"museum_context", "specimen_context"}):
         candidates.append("museum_specimen")
+    if bool(row.get("ai_generated_detected")) or _has_any_review_flag(row, {"ai_generated_context", "generated_image_context"}):
+        candidates.append("ai_generated")
     if bool(row.get("non_target_order_detected")) or _has_review_flag(row, "non_target_order_context"):
         candidates.append("non_target_order")
     if species_agreement_is_conflict(row):
@@ -101,12 +102,10 @@ def review_reasons_for_evidence(row: dict[str, Any]) -> list[str]:
         candidates.append("multiple_species")
     if bool(row.get("captive_detected")) or _has_review_flag(row, "captive_context"):
         candidates.append("captivity_suspected")
-    if _is_low_confidence(row):
+    if _bioclip_top1_score(row) is None:
+        candidates.append("missing_bioclip")
+    elif _is_low_confidence(row) and not target_signal_is_positive(row):
         candidates.append("low_confidence")
-    if not bool(row.get("human_verification_detected")):
-        candidates.append("no_human_verification")
-    if _comments_missing(row):
-        candidates.append("missing_comments")
     if _has_review_flag(row, "api_error") or bool(row.get("api_error")):
         candidates.append("api_error")
     return _ordered_unique_reasons(candidates)
@@ -134,27 +133,12 @@ def species_agreement_is_conflict(row: dict[str, Any]) -> bool:
 
 
 def target_signal_is_positive(row: dict[str, Any]) -> bool:
-    return bool(row.get("species_text_match")) or species_agreement_is_positive(row)
-
-
-def _silver_reason(*, has_bioclip: bool, high_confidence: bool, species_conflict: bool) -> str:
-    if not has_bioclip:
-        return "human_verified_bioclip_missing"
-    if species_conflict:
-        return "human_verified_bioclip_conflict"
-    if not high_confidence:
-        return "human_verified_bioclip_low_confidence"
-    return "human_verified_bioclip_weak"
+    return species_agreement_is_positive(row)
 
 
 def _is_low_confidence(row: dict[str, Any]) -> bool:
     score = _bioclip_top1_score(row)
     return score is None or score < BIOCLIP_CONFIDENCE_THRESHOLD
-
-
-def _comments_missing(row: dict[str, Any]) -> bool:
-    count = row.get("comments_count")
-    return count in (None, 0)
 
 
 def _multiple_species_detected(row: dict[str, Any]) -> bool:
@@ -179,6 +163,16 @@ def _has_review_flag(row: dict[str, Any], flag: str) -> bool:
 
 def _has_any_review_flag(row: dict[str, Any], flags: set[str]) -> bool:
     return bool(set(row.get("review_flags") or []) & flags)
+
+
+def _negative_material_reason(row: dict[str, Any], reasons: list[str]) -> str | None:
+    for reason in REVIEW_REASON_PRECEDENCE:
+        if reason in HARD_EXCLUSION_REASONS and reason in reasons:
+            return f"negative_material_{reason}"
+    label = _normalize_label(_bioclip_top1_label(row))
+    if label and any(token in label for token in ("moth", "beetle", "fly", "wasp", "object", "background")):
+        return "negative_material_non_butterfly"
+    return None
 
 
 def _bioclip_top1_score(row: dict[str, Any]) -> float | None:

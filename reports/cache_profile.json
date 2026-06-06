@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-06T16:34:13.636500+00:00",
+  "generated_at": "2026-06-06T19:14:08.750095+00:00",
   "huggingface_cache": {
     "default_root": "data/cache/huggingface",
     "file": "src/flickr_bio_occurrence/vision/bioclip_worker.py",
@@ -17,6 +17,6 @@
     "successful_images_deleted_by_default": true,
     "symbol": "cache_image_from_url"
   },
-  "phase": "Lean image triage pipeline",
+  "phase": "Phase 8 classification semantics cleanup",
   "source": "static code audit; no network, CUDA, model weights, Flickr downloads, or large data files required"
 }

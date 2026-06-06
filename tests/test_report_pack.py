@@ -21,6 +21,7 @@ write_report_pack = _load_write_report_pack()
 REQUIRED_REPORTS = {
     "bioclip_run_summary.json",
     "bioclip_run_summary.md",
+    "quality_profile.json",
     "image_triage_profile.json",
     "cache_profile.json",
     "gpu_profile.json",
@@ -72,3 +73,33 @@ def test_reports_focus_on_image_triage_not_darwin_core(tmp_path) -> None:
     assert "gold_dwc_occurrence" not in json.dumps(triage_profile)
     assert summary["darwin_core_scope"]["compatibility_only"] is True
     assert "triage_bin" in triage_profile["required_fields"]
+
+
+def test_reports_include_publication_state_counts(tmp_path) -> None:
+    write_report_pack(tmp_path)
+
+    summary = json.loads((tmp_path / "bioclip_run_summary.json").read_text(encoding="utf-8"))
+    quality = json.loads((tmp_path / "quality_profile.json").read_text(encoding="utf-8"))
+
+    assert summary["classification_metrics"]["publication_state_counts"] == "not_instrumented"
+    assert quality["publication_state_counts"] == "not_instrumented"
+    assert quality["review_reason_counts"] == "not_instrumented"
+
+
+def test_reports_include_bronze_reason_counts(tmp_path) -> None:
+    write_report_pack(tmp_path)
+
+    quality = json.loads((tmp_path / "quality_profile.json").read_text(encoding="utf-8"))
+
+    assert quality["bronze_reason_counts"] == "not_instrumented"
+    assert quality["semantics"]["bronze"] == "negative/non-occurrence visual material"
+
+
+def test_code_cleanup_report_lists_removed_legacy_rule_paths(tmp_path) -> None:
+    write_report_pack(tmp_path)
+
+    report = (tmp_path / "code_cleanup_report.md").read_text(encoding="utf-8")
+
+    assert "Removed the legacy human-verification gate" in report
+    assert "human_verified_bioclip_positive" in report
+    assert "bioclip_positive_without_human_verification" in report

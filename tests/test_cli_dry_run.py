@@ -54,6 +54,17 @@ def test_fetch_dry_run_cli_outputs_json(capsys) -> None:
     assert payload["planned_maximum_photo_records"] == 1250
 
 
+def test_cli_help_does_not_describe_old_gold_silver_bronze_logic(capsys) -> None:
+    parser = build_parser()
+
+    parser.print_help()
+    help_text = capsys.readouterr().out
+
+    assert "human_verified_bioclip_positive" not in help_text
+    assert "human verification" not in help_text.casefold()
+    assert "bioclip_positive_without_human_verification" not in help_text
+
+
 def test_cli_module_execution_outputs_dry_run_json() -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path.cwd() / "src")

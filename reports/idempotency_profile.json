@@ -5,13 +5,13 @@
     "state_db": "fetch_state.sqlite",
     "symbol": "FetchState"
   },
-  "generated_at": "2026-06-06T16:34:13.636500+00:00",
+  "generated_at": "2026-06-06T19:14:08.750095+00:00",
   "image_triage_deduplication": {
     "behavior": "successful source/photo/image_url/model combinations are skipped on rerun",
     "file": "src/flickr_bio_occurrence/vision/triage.py",
     "symbol": "process_image_triage_records"
   },
-  "phase": "Lean image triage pipeline",
+  "phase": "Phase 8 classification semantics cleanup",
   "rate_limit_ledger": {
     "api_call_table": "api_call_ledger",
     "file": "src/flickr_bio_occurrence/flickr/rate_limiter.py",

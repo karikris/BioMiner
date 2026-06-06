@@ -45,7 +45,7 @@ def test_dwc_dynamic_properties_include_evidence_provenance() -> None:
             "decimalLatitude": -27.4698,
             "decimalLongitude": 153.0251,
             "publication_state": "gold",
-            "publication_state_reason": "human_verified_bioclip_positive",
+            "publication_state_reason": "target_positive_score_gte_050",
             "review_reason": [],
             "human_verification_detected": True,
             "human_verification_terms": ["verified by"],

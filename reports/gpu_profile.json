@@ -5,7 +5,7 @@
     "gpu_used": "reported when classifier scorer exposes device == 'cuda'",
     "symbol": "build_checkpointed_vision_predictions"
   },
-  "generated_at": "2026-06-06T16:34:13.636500+00:00",
+  "generated_at": "2026-06-06T19:14:08.750095+00:00",
   "long_lived_service": {
     "file": "src/flickr_bio_occurrence/vision/triage.py",
     "model_lifecycle": "classifier is externally supplied; model_load_count is not instrumented by this report pack",
@@ -14,7 +14,7 @@
   "measured_cuda_available": "not_instrumented",
   "measured_gpu_name": "not_instrumented",
   "model_load_count": "not_instrumented",
-  "phase": "Lean image triage pipeline",
+  "phase": "Phase 8 classification semantics cleanup",
   "requires_cuda_for_tests": false,
   "runtime_detection": {
     "device_expression": "requires CUDA by default; CPU fallback is not used when require_cuda is true",
