@@ -15,7 +15,7 @@ from flickr_bio_occurrence.vision.image_cache import CachedImage, cache_image_fr
 from flickr_bio_occurrence.vision.temp_image_store import cleanup_cached_image
 
 
-TRIAGE_BINS = {"gold", "silver", "bronze", "in_review"}
+TRIAGE_BINS = {"gold", "silver", "bronze", "in_review", "in_review/no_geo"}
 CLASSIFICATION_STATUSES = {"success", "skipped_existing", "failed_download", "failed_bioclip", "invalid_record"}
 TARGET_LABELS = {
     "a photo of Papilio demoleus",
@@ -25,16 +25,16 @@ TARGET_LABELS = {
     "a photo of a swallowtail butterfly",
     "a photo of a butterfly",
 }
-VERIFIED_LIFE_STAGE_LABELS = {
-    "a photo of a caterpillar",
-    "a photo of a pupa or chrysalis",
-}
 NEGATIVE_LABEL_REASONS = {
     "a photo of a pinned museum specimen": "pinned_specimen",
     "a photo of artwork or illustration": "artwork",
+    "a photo of a tattoo": "tattoo",
     "a photo of a moth": "moth",
+    "a photo of an egg": "egg",
     "a photo of a caterpillar": "caterpillar",
-    "a photo of a pupa or chrysalis": "pupa_or_chrysalis",
+    "a photo of a larva": "larva",
+    "a photo of a pupa": "pupa",
+    "a photo of a chrysalis": "chrysalis",
     "a photo of an insect": "other_insect",
     "a photo of a beetle": "other_insect",
     "a photo of a fly": "other_insect",
@@ -49,6 +49,7 @@ NEGATIVE_RECORD_FIELDS = (
     ("museum_detected", "museum_specimen"),
     ("specimen_detected", "pinned_specimen"),
     ("artwork_detected", "artwork"),
+    ("tattoo_detected", "tattoo"),
     ("ai_generated_detected", "AI_generated"),
     ("other_insect_detected", "other_insect"),
     ("non_target_order_detected", "other_order"),
@@ -191,18 +192,21 @@ def classify_bioclip_triage(*, record: dict[str, Any], prediction: dict[str, obj
     labels = {_normalize(top1_label)}
     if isinstance(topk, list):
         labels.update(_normalize(str(item.get("label") or "")) for item in topk if isinstance(item, dict))
-    verified_life_stage = bool(record.get("human_verification_detected") and record.get("species_text_match") and labels & {_normalize(label) for label in VERIFIED_LIFE_STAGE_LABELS})
-    is_target_positive = bool(labels & {_normalize(label) for label in TARGET_LABELS}) or verified_life_stage
-    negative_reason = _negative_reason(record, top1_label, ignore_life_stage=verified_life_stage)
-    category = _category_for_prediction(top1_label=top1_label, negative_reason=negative_reason, verified_life_stage=verified_life_stage)
+    is_target_positive = bool(labels & {_normalize(label) for label in TARGET_LABELS})
+    negative_reason = _negative_reason(record, top1_label)
+    category = _category_for_prediction(top1_label=top1_label, negative_reason=negative_reason)
     if negative_reason:
         return {**category, "occurrence_bin": "bronze", "bin_reason": negative_reason, "triage_bin": "bronze", "triage_reason": negative_reason, "is_target_positive": is_target_positive, "is_negative_material": True}
     if top1_score is None:
         return {**category, "occurrence_bin": "in_review", "bin_reason": "missing_bioclip", "triage_bin": "in_review", "triage_reason": "missing_bioclip", "is_target_positive": False, "is_negative_material": False}
-    if is_target_positive and top1_score >= 0.50:
-        return {**category, "occurrence_bin": "gold", "bin_reason": "target_positive_score_gte_050", "triage_bin": "gold", "triage_reason": "target_positive_score_gte_050", "is_target_positive": True, "is_negative_material": False}
-    if is_target_positive and top1_score < 0.50:
-        return {**category, "occurrence_bin": "silver", "bin_reason": "target_positive_score_lt_050", "triage_bin": "silver", "triage_reason": "target_positive_score_lt_050", "is_target_positive": True, "is_negative_material": False}
+    if is_target_positive and category["image_category"] == "adult_butterfly":
+        if not _has_image_url(record):
+            return {**category, "occurrence_bin": "in_review", "bin_reason": "missing_image_url", "triage_bin": "in_review", "triage_reason": "missing_image_url", "is_target_positive": True, "is_negative_material": False}
+        if not _has_geo(record):
+            return {**category, "occurrence_bin": "in_review/no_geo", "bin_reason": "no_geo", "triage_bin": "in_review/no_geo", "triage_reason": "no_geo", "is_target_positive": True, "is_negative_material": False}
+        if not _has_event_date(record):
+            return {**category, "occurrence_bin": "silver", "bin_reason": "missing_event_date", "triage_bin": "silver", "triage_reason": "missing_event_date", "is_target_positive": True, "is_negative_material": False}
+        return {**category, "occurrence_bin": "gold", "bin_reason": "adult_lepidoptera_with_date_geo", "triage_bin": "gold", "triage_reason": "adult_lepidoptera_with_date_geo", "is_target_positive": True, "is_negative_material": False}
     return {**category, "occurrence_bin": "in_review", "bin_reason": "ambiguous_classification", "triage_bin": "in_review", "triage_reason": "ambiguous_classification", "is_target_positive": False, "is_negative_material": False}
 
 
@@ -298,26 +302,17 @@ def _failure_row(
     }
 
 
-def _category_for_prediction(*, top1_label: str, negative_reason: str | None, verified_life_stage: bool) -> dict[str, str | None]:
+def _category_for_prediction(*, top1_label: str, negative_reason: str | None) -> dict[str, str | None]:
     if negative_reason:
         return category_from_negative_reason(negative_reason)
-    if verified_life_stage:
-        life_stage = infer_life_stage_from_text(top1_label)
-        return {
-            "image_category": "life_stage_non_adult",
-            "life_stage": life_stage,
-            "negative_filter_reason": None,
-        }
     return category_defaults()
 
 
-def _negative_reason(record: dict[str, Any], top1_label: str, *, ignore_life_stage: bool) -> str | None:
+def _negative_reason(record: dict[str, Any], top1_label: str) -> str | None:
     for field, reason in NEGATIVE_RECORD_FIELDS:
         if bool(record.get(field)):
             return reason
     normalized = _normalize(top1_label)
-    if ignore_life_stage and normalized in {_normalize(label) for label in VERIFIED_LIFE_STAGE_LABELS}:
-        return None
     if normalized in {_normalize(label) for label in NEGATIVE_LABEL_REASONS}:
         return NEGATIVE_LABEL_REASONS[next(label for label in NEGATIVE_LABEL_REASONS if _normalize(label) == normalized)]
     if "museum" in normalized and "specimen" in normalized:
@@ -326,13 +321,32 @@ def _negative_reason(record: dict[str, Any], top1_label: str, *, ignore_life_sta
         return "pinned_specimen"
     if "artwork" in normalized or "illustration" in normalized:
         return "artwork"
+    if "tattoo" in normalized:
+        return "tattoo"
     if "ai generated" in normalized or "ai-generated" in normalized:
         return "AI_generated"
     if "moth" in normalized:
         return "moth"
     if "not butterfly" in normalized or "non-butterfly" in normalized:
         return "not_butterfly"
+    life_stage = infer_life_stage_from_text(top1_label)
+    if life_stage != "adult_butterfly":
+        return life_stage
     return None
+
+
+def _has_image_url(record: dict[str, Any]) -> bool:
+    return bool(record.get("image_url") or record.get("image_url_used"))
+
+
+def _has_event_date(record: dict[str, Any]) -> bool:
+    return bool(record.get("captured_at") or record.get("date_taken") or record.get("datetaken") or record.get("eventDate"))
+
+
+def _has_geo(record: dict[str, Any]) -> bool:
+    latitude = record.get("latitude", record.get("decimalLatitude"))
+    longitude = record.get("longitude", record.get("decimalLongitude"))
+    return latitude not in (None, "") and longitude not in (None, "")
 
 
 def _successful_keys(frame: pl.DataFrame) -> set[tuple[object, ...]]:

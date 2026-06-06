@@ -22,10 +22,14 @@ DEFAULT_BIOCLIP_LABELS = (
     "a photo of a swallowtail butterfly",
     "a photo of a butterfly",
     "a photo of a moth",
+    "a photo of an egg",
     "a photo of a caterpillar",
-    "a photo of a pupa or chrysalis",
+    "a photo of a larva",
+    "a photo of a pupa",
+    "a photo of a chrysalis",
     "a photo of a pinned museum specimen",
     "a photo of artwork or illustration",
+    "a photo of a tattoo",
 )
 
 
@@ -48,10 +52,14 @@ BUTTERFLY_VISUAL_LABELS = {
 
 NON_WILD_OR_CONFLICT_LABELS = {
     "a photo of a moth",
+    "a photo of an egg",
     "a photo of a caterpillar",
-    "a photo of a pupa or chrysalis",
+    "a photo of a larva",
+    "a photo of a pupa",
+    "a photo of a chrysalis",
     "a photo of a pinned museum specimen",
     "a photo of artwork or illustration",
+    "a photo of a tattoo",
 }
 
 

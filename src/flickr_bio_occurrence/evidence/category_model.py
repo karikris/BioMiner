@@ -127,7 +127,7 @@ def category_from_negative_reason(reason: str | None) -> dict[str, str | None]:
         return _category("life_stage_non_adult", "larva", reason)
     if "egg" in normalized:
         return _category("life_stage_non_adult", "egg", reason)
-    if "moth" in normalized or "not_lepidoptera" in normalized or "non_target_order" in normalized:
+    if "moth" in normalized or "not_lepidoptera" in normalized or "not_butterfly" in normalized or "non_target_order" in normalized or "other_order" in normalized:
         return _category("not_lepidoptera", "adult_butterfly", reason)
     if "other_insect" in normalized or "beetle" in normalized or "fly" in normalized or "wasp" in normalized:
         return _category("other_insect", "adult_butterfly", reason)
