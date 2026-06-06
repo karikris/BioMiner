@@ -14,8 +14,9 @@ from flickr_bio_occurrence.flickr.work_items import WorkItem
 
 DEFAULT_EXTRAS = (
     "description,license,date_upload,date_taken,geo,tags,machine_tags,owner_name,"
-    "url_m,url_l,url_o,o_dims,last_update,media,views"
+    "url_l,url_m,last_update,media,views"
 )
+MAX_PER_PAGE = 500
 
 
 @dataclass(frozen=True)
@@ -34,7 +35,7 @@ class FlickrClient:
         http_client: httpx.Client | None = None,
         raw_output_root: str | Path = "data/raw/flickr",
         base_url: str = FLICKR_REST_BASE_URL,
-        per_page: int = 250,
+        per_page: int = MAX_PER_PAGE,
         extras: str = DEFAULT_EXTRAS,
     ) -> None:
         self.api_key = api_key
@@ -42,7 +43,7 @@ class FlickrClient:
         self.http_client = http_client or httpx.Client(timeout=30)
         self.raw_output_root = Path(raw_output_root)
         self.base_url = base_url
-        self.per_page = min(per_page, 250)
+        self.per_page = min(per_page, MAX_PER_PAGE)
         self.extras = extras
 
     def search_photos(self, work_item: WorkItem) -> FlickrSearchResult:

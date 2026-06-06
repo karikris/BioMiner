@@ -75,11 +75,11 @@
     "compatibility_only": true,
     "notes": "Darwin Core export is retained only for existing compatibility tests and does not validate records from BioCLIP output."
   },
-  "generated_at": "2026-06-06T19:20:03.680062+00:00",
+  "generated_at": "2026-06-06T19:24:11.376784+00:00",
   "image_selection": {
     "default": "large-first, medium fallback only",
     "file": "src/flickr_bio_occurrence/vision/image_selection.py",
-    "notes": "Original url_o is requested in Flickr extras but not selected by default.",
+    "notes": "Flickr extras request url_l,url_m by default; url_o is not requested by default.",
     "order": [
       "url_l",
       "url_m"

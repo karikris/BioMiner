@@ -5,7 +5,7 @@
     "state_db": "fetch_state.sqlite",
     "symbol": "FetchState"
   },
-  "generated_at": "2026-06-06T19:20:03.680062+00:00",
+  "generated_at": "2026-06-06T19:24:11.376784+00:00",
   "image_triage_deduplication": {
     "behavior": "successful source/photo/image_url/model combinations are skipped on rerun",
     "file": "src/flickr_bio_occurrence/vision/triage.py",

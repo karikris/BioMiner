@@ -37,7 +37,10 @@ def test_photos_search_uses_required_official_api_params(tmp_path) -> None:
     assert params["safe_search"] == "1"
     assert params["format"] == "json"
     assert params["nojsoncallback"] == "1"
-    assert int(params["per_page"]) <= 250
+    assert int(params["per_page"]) <= 500
+    assert params["extras"].split(",").count("url_l") == 1
+    assert params["extras"].split(",").count("url_m") == 1
+    assert "url_o" not in params["extras"]
 
 
 def test_search_photos_writes_raw_response_unchanged(tmp_path) -> None:

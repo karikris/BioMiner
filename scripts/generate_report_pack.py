@@ -104,7 +104,7 @@ def build_bioclip_run_summary() -> dict[str, Any]:
                 "default": "large-first, medium fallback only",
                 "file": "src/flickr_bio_occurrence/vision/image_selection.py",
                 "symbol": "select_flickr_image_url",
-                "notes": "Original url_o is requested in Flickr extras but not selected by default.",
+                "notes": "Flickr extras request url_l,url_m by default; url_o is not requested by default.",
             },
             "image_triage_pipeline": {
                 "module": "src/flickr_bio_occurrence/vision/triage.py",

@@ -5,7 +5,7 @@
     "gpu_used": "reported when classifier scorer exposes device == 'cuda'",
     "symbol": "build_checkpointed_vision_predictions"
   },
-  "generated_at": "2026-06-06T19:20:03.680062+00:00",
+  "generated_at": "2026-06-06T19:24:11.376784+00:00",
   "long_lived_service": {
     "file": "src/flickr_bio_occurrence/vision/triage.py",
     "model_lifecycle": "classifier is externally supplied; model_load_count is not instrumented by this report pack",
