@@ -21,9 +21,10 @@ HUMAN_VERIFICATION_TERMS = (
 MUSEUM_TERMS = ("museum",)
 ARTWORK_TERMS = ("artwork", "illustration", "drawing", "painting", "plate")
 SPECIMEN_TERMS = ("specimen", "pinned", "voucher")
+TATTOO_TERMS = ("tattoo",)
 COLLECTION_TERMS = ("collection", "collected", "collector")
 CAPTIVE_TERMS = ("captive", "captivity", "zoo", "butterfly house", "butterfly farm", "enclosure")
-NON_TARGET_ORDER_TERMS = ("moth", "lepidoptera larva", "caterpillar", "pupa", "chrysalis")
+NON_TARGET_ORDER_TERMS = ("moth", "lepidoptera larva", "caterpillar", "larva", "pupa", "chrysalis", "egg")
 
 
 def detected_terms(text: str, terms: Iterable[str]) -> list[str]:

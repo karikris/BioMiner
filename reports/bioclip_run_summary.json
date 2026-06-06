@@ -75,7 +75,7 @@
     "compatibility_only": true,
     "notes": "Darwin Core export is retained only for existing compatibility tests and does not validate records from BioCLIP output."
   },
-  "generated_at": "2026-06-06T19:14:08.750095+00:00",
+  "generated_at": "2026-06-06T19:20:03.680062+00:00",
   "image_selection": {
     "default": "large-first, medium fallback only",
     "file": "src/flickr_bio_occurrence/vision/image_selection.py",

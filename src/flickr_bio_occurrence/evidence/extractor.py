@@ -7,6 +7,7 @@ from typing import Any
 
 import polars as pl
 
+from flickr_bio_occurrence.evidence.category_model import infer_category_from_text
 from flickr_bio_occurrence.evidence.review_flags import (
     ARTWORK_TERMS,
     CAPTIVE_TERMS,
@@ -15,6 +16,7 @@ from flickr_bio_occurrence.evidence.review_flags import (
     MUSEUM_TERMS,
     NON_TARGET_ORDER_TERMS,
     SPECIMEN_TERMS,
+    TATTOO_TERMS,
     contains_any_term,
     detected_terms,
 )
@@ -77,9 +79,19 @@ def extract_photo_evidence(photo: dict[str, Any], *, species_query: str) -> dict
     museum_detected = contains_any_term(combined_text, MUSEUM_TERMS)
     artwork_detected = contains_any_term(combined_text, ARTWORK_TERMS)
     specimen_detected = contains_any_term(combined_text, SPECIMEN_TERMS)
+    tattoo_detected = contains_any_term(combined_text, TATTOO_TERMS)
     collection_detected = contains_any_term(combined_text, COLLECTION_TERMS)
     captive_detected = contains_any_term(combined_text, CAPTIVE_TERMS)
     non_target_order_detected = contains_any_term(combined_text, NON_TARGET_ORDER_TERMS)
+    museum_category_detected = specimen_detected or _contains_museum_specimen_context(combined_text)
+    category = infer_category_from_text(
+        combined_text,
+        museum_detected=museum_category_detected,
+        specimen_detected=specimen_detected,
+        artwork_detected=artwork_detected,
+        tattoo_detected=tattoo_detected,
+        non_target_order_detected=non_target_order_detected,
+    )
     review_flags = _review_flags(
         image_url=image_url,
         species_text_match=bool(species_sources),
@@ -87,6 +99,7 @@ def extract_photo_evidence(photo: dict[str, Any], *, species_query: str) -> dict
         museum_detected=museum_detected,
         artwork_detected=artwork_detected,
         specimen_detected=specimen_detected,
+        tattoo_detected=tattoo_detected,
         collection_detected=collection_detected,
         captive_detected=captive_detected,
         non_target_order_detected=non_target_order_detected,
@@ -122,9 +135,13 @@ def extract_photo_evidence(photo: dict[str, Any], *, species_query: str) -> dict
         "museum_detected": museum_detected,
         "artwork_detected": artwork_detected,
         "specimen_detected": specimen_detected,
+        "tattoo_detected": tattoo_detected,
         "collection_detected": collection_detected,
         "captive_detected": captive_detected,
         "non_target_order_detected": non_target_order_detected,
+        "occurrence_bin": "in_review",
+        "bin_reason": "unclassified_evidence",
+        **category,
         "review_flags": review_flags,
     }
 
@@ -199,6 +216,7 @@ def _review_flags(
     museum_detected: bool,
     artwork_detected: bool,
     specimen_detected: bool,
+    tattoo_detected: bool,
     collection_detected: bool,
     captive_detected: bool,
     non_target_order_detected: bool,
@@ -214,6 +232,7 @@ def _review_flags(
         (museum_detected, "museum_context"),
         (artwork_detected, "artwork_context"),
         (specimen_detected, "specimen_context"),
+        (tattoo_detected, "tattoo_context"),
         (collection_detected, "collection_context"),
         (captive_detected, "captive_context"),
         (non_target_order_detected, "non_target_order_context"),
@@ -244,6 +263,11 @@ def _optional_string(value: Any) -> str | None:
 def _join_text(values: Iterable[str | None]) -> str | None:
     text = "\n".join(value for value in values if value)
     return text or None
+
+
+def _contains_museum_specimen_context(text: str) -> bool:
+    normalized = " ".join(text.casefold().split())
+    return any(term in normalized for term in ("museum specimen", "museum collection", "museum plate"))
 
 
 def _empty_evidence_frame() -> pl.DataFrame:
@@ -278,9 +302,15 @@ def _empty_evidence_frame() -> pl.DataFrame:
             "museum_detected": pl.Boolean,
             "artwork_detected": pl.Boolean,
             "specimen_detected": pl.Boolean,
+            "tattoo_detected": pl.Boolean,
             "collection_detected": pl.Boolean,
             "captive_detected": pl.Boolean,
             "non_target_order_detected": pl.Boolean,
+            "occurrence_bin": pl.String,
+            "bin_reason": pl.String,
+            "image_category": pl.String,
+            "life_stage": pl.String,
+            "negative_filter_reason": pl.String,
             "review_flags": pl.List(pl.String),
         }
     )

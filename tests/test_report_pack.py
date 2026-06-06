@@ -73,6 +73,9 @@ def test_reports_focus_on_image_triage_not_darwin_core(tmp_path) -> None:
     assert "gold_dwc_occurrence" not in json.dumps(triage_profile)
     assert summary["darwin_core_scope"]["compatibility_only"] is True
     assert "triage_bin" in triage_profile["required_fields"]
+    assert "occurrence_bin" in triage_profile["required_fields"]
+    assert "image_category" in triage_profile["required_fields"]
+    assert "life_stage" in triage_profile["required_fields"]
 
 
 def test_reports_include_publication_state_counts(tmp_path) -> None:

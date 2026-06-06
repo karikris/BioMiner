@@ -56,6 +56,11 @@ def test_extracts_text_comment_verification_and_species_evidence() -> None:
     )
     assert row["human_verification_confidence"] == 1.0
     assert "human_verification_phrase" in row["review_flags"]
+    assert row["occurrence_bin"] == "in_review"
+    assert row["bin_reason"] == "unclassified_evidence"
+    assert row["image_category"] == "adult_butterfly"
+    assert row["life_stage"] == "adult_butterfly"
+    assert row["negative_filter_reason"] is None
 
 
 def test_extracts_museum_artwork_specimen_collection_captive_and_non_target_indicators() -> None:
@@ -82,6 +87,9 @@ def test_extracts_museum_artwork_specimen_collection_captive_and_non_target_indi
     assert row["museum_detected"] is True
     assert row["artwork_detected"] is True
     assert row["specimen_detected"] is True
+    assert row["image_category"] == "museum_specimen"
+    assert row["life_stage"] == "adult_butterfly"
+    assert row["negative_filter_reason"] == "museum_specimen"
     assert row["collection_detected"] is True
     assert row["captive_detected"] is True
     assert row["non_target_order_detected"] is True
@@ -108,6 +116,35 @@ def test_missing_image_url_and_comments_are_represented_explicitly() -> None:
     assert row["comments_text"] is None
     assert row["comments_count"] == 0
     assert "missing_image_url" in row["review_flags"]
+
+
+def test_evidence_schema_defaults_to_adult_butterfly_category() -> None:
+    frame = build_evidence_frame(
+        [{"photos": {"photo": [{"id": "5", "title": "Papilio demoleus", "url_l": "https://live.staticflickr.com/large.jpg"}]}}],
+        species_query="Papilio demoleus",
+    )
+    row = frame.to_dicts()[0]
+
+    assert row["image_category"] == "adult_butterfly"
+    assert row["life_stage"] == "adult_butterfly"
+    assert row["negative_filter_reason"] is None
+
+
+def test_evidence_schema_maps_tattoo_and_life_stage_to_image_category() -> None:
+    tattoo = build_evidence_frame(
+        [{"photos": {"photo": [{"id": "6", "title": "Papilio demoleus tattoo", "url_l": "https://live.staticflickr.com/large.jpg"}]}}],
+        species_query="Papilio demoleus",
+    ).to_dicts()[0]
+    caterpillar = build_evidence_frame(
+        [{"photos": {"photo": [{"id": "7", "title": "Papilio demoleus caterpillar", "url_l": "https://live.staticflickr.com/large.jpg"}]}}],
+        species_query="Papilio demoleus",
+    ).to_dicts()[0]
+
+    assert tattoo["tattoo_detected"] is True
+    assert tattoo["image_category"] == "tattoo"
+    assert tattoo["life_stage"] == "adult_butterfly"
+    assert caterpillar["image_category"] == "life_stage_non_adult"
+    assert caterpillar["life_stage"] == "caterpillar"
 
 
 def test_write_staging_evidence_writes_parquet(tmp_path) -> None:

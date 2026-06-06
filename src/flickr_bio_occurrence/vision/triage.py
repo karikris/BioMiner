@@ -10,6 +10,7 @@ from typing import Any, Callable, Protocol
 
 import polars as pl
 
+from flickr_bio_occurrence.evidence.category_model import category_defaults, category_from_negative_reason, infer_life_stage_from_text
 from flickr_bio_occurrence.vision.image_cache import CachedImage, cache_image_from_url
 from flickr_bio_occurrence.vision.temp_image_store import cleanup_cached_image
 
@@ -116,7 +117,7 @@ def process_image_triage_records(
         dedupe_key = _dedupe_key(base)
         if dedupe_key in processed_keys:
             skipped += 1
-            rows.append({**base, **_empty_result_fields(), "classification_status": "skipped_existing", "triage_bin": "in_review", "triage_reason": "duplicate_successful_record"})
+            rows.append({**base, **_empty_result_fields(), "classification_status": "skipped_existing", "occurrence_bin": "in_review", "bin_reason": "duplicate_successful_record", "triage_bin": "in_review", "triage_reason": "duplicate_successful_record"})
             continue
         try:
             cached = cache_image(str(base["image_url"]), cache_root=cache_root)
@@ -193,15 +194,16 @@ def classify_bioclip_triage(*, record: dict[str, Any], prediction: dict[str, obj
     verified_life_stage = bool(record.get("human_verification_detected") and record.get("species_text_match") and labels & {_normalize(label) for label in VERIFIED_LIFE_STAGE_LABELS})
     is_target_positive = bool(labels & {_normalize(label) for label in TARGET_LABELS}) or verified_life_stage
     negative_reason = _negative_reason(record, top1_label, ignore_life_stage=verified_life_stage)
+    category = _category_for_prediction(top1_label=top1_label, negative_reason=negative_reason, verified_life_stage=verified_life_stage)
     if negative_reason:
-        return {"triage_bin": "bronze", "triage_reason": negative_reason, "is_target_positive": is_target_positive, "is_negative_material": True}
+        return {**category, "occurrence_bin": "bronze", "bin_reason": negative_reason, "triage_bin": "bronze", "triage_reason": negative_reason, "is_target_positive": is_target_positive, "is_negative_material": True}
     if top1_score is None:
-        return {"triage_bin": "in_review", "triage_reason": "missing_bioclip", "is_target_positive": False, "is_negative_material": False}
+        return {**category, "occurrence_bin": "in_review", "bin_reason": "missing_bioclip", "triage_bin": "in_review", "triage_reason": "missing_bioclip", "is_target_positive": False, "is_negative_material": False}
     if is_target_positive and top1_score >= 0.50:
-        return {"triage_bin": "gold", "triage_reason": "target_positive_score_gte_050", "is_target_positive": True, "is_negative_material": False}
+        return {**category, "occurrence_bin": "gold", "bin_reason": "target_positive_score_gte_050", "triage_bin": "gold", "triage_reason": "target_positive_score_gte_050", "is_target_positive": True, "is_negative_material": False}
     if is_target_positive and top1_score < 0.50:
-        return {"triage_bin": "silver", "triage_reason": "target_positive_score_lt_050", "is_target_positive": True, "is_negative_material": False}
-    return {"triage_bin": "in_review", "triage_reason": "ambiguous_classification", "is_target_positive": False, "is_negative_material": False}
+        return {**category, "occurrence_bin": "silver", "bin_reason": "target_positive_score_lt_050", "triage_bin": "silver", "triage_reason": "target_positive_score_lt_050", "is_target_positive": True, "is_negative_material": False}
+    return {**category, "occurrence_bin": "in_review", "bin_reason": "ambiguous_classification", "triage_bin": "in_review", "triage_reason": "ambiguous_classification", "is_target_positive": False, "is_negative_material": False}
 
 
 def _base_row(
@@ -261,6 +263,9 @@ def _empty_result_fields() -> dict[str, object]:
         "bioclip_top1_label": None,
         "bioclip_top1_score": None,
         "bioclip_topk_json": [],
+        "occurrence_bin": None,
+        "bin_reason": None,
+        **category_defaults(),
         "triage_reason": None,
         "is_target_positive": False,
         "is_negative_material": False,
@@ -286,9 +291,24 @@ def _failure_row(
         "classification_status": status,
         "classification_error": error,
         "retry_eligible": retry_eligible,
+        "occurrence_bin": "in_review",
+        "bin_reason": status,
         "triage_bin": "in_review",
         "triage_reason": status,
     }
+
+
+def _category_for_prediction(*, top1_label: str, negative_reason: str | None, verified_life_stage: bool) -> dict[str, str | None]:
+    if negative_reason:
+        return category_from_negative_reason(negative_reason)
+    if verified_life_stage:
+        life_stage = infer_life_stage_from_text(top1_label)
+        return {
+            "image_category": "life_stage_non_adult",
+            "life_stage": life_stage,
+            "negative_filter_reason": None,
+        }
+    return category_defaults()
 
 
 def _negative_reason(record: dict[str, Any], top1_label: str, *, ignore_life_stage: bool) -> str | None:

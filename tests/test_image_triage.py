@@ -33,6 +33,10 @@ def test_gold_score_gte_050_target_positive() -> None:
 
     assert result["triage_bin"] == "gold"
     assert result["triage_reason"] == "target_positive_score_gte_050"
+    assert result["occurrence_bin"] == "gold"
+    assert result["bin_reason"] == "target_positive_score_gte_050"
+    assert result["image_category"] == "adult_butterfly"
+    assert result["life_stage"] == "adult_butterfly"
     assert result["is_target_positive"] is True
 
 
@@ -60,7 +64,21 @@ def test_bronze_negative_material_museum_art_ai_other_insect() -> None:
         result = classify_bioclip_triage(record=record, prediction=prediction)
         assert result["triage_bin"] == "bronze"
         assert result["triage_reason"] == reason
+        assert result["occurrence_bin"] == "bronze"
+        assert result["bin_reason"] == reason
+        assert result["negative_filter_reason"] == reason
         assert result["is_negative_material"] is True
+
+
+def test_life_stage_label_sets_shared_category_columns() -> None:
+    result = classify_bioclip_triage(
+        record=_record(),
+        prediction={"top1_label": "a photo of a caterpillar", "top1_score": 0.88, "topk_json": []},
+    )
+
+    assert result["triage_bin"] == "bronze"
+    assert result["image_category"] == "life_stage_non_adult"
+    assert result["life_stage"] == "caterpillar"
 
 
 def test_in_review_missing_image_url(tmp_path) -> None:

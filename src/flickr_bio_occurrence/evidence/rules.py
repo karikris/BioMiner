@@ -5,12 +5,15 @@ from typing import Any
 
 import polars as pl
 
+from flickr_bio_occurrence.evidence.category_model import infer_category_from_record
+
 
 PUBLICATION_STATES = ("gold", "silver", "bronze", "in_review")
 REVIEW_REASON_PRECEDENCE = (
     "missing_image",
     "missing_bioclip",
     "artwork",
+    "tattoo",
     "museum_specimen",
     "ai_generated",
     "non_target_order",
@@ -33,6 +36,7 @@ TARGET_BUTTERFLY_LABELS = {
 }
 HARD_EXCLUSION_REASONS = {
     "artwork",
+    "tattoo",
     "museum_specimen",
     "ai_generated",
     "non_target_order",
@@ -52,8 +56,11 @@ def classify_evidence_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any
 
 
 def classify_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
+    category = infer_category_from_record(row)
     reasons = review_reasons_for_evidence(row)
-    negative_reason = _negative_material_reason(row, reasons)
+    negative_reason = _negative_material_reason(row, reasons, category)
+    if negative_reason and not category.get("negative_filter_reason"):
+        category = {**category, "negative_filter_reason": negative_reason.removeprefix("negative_material_")}
     score = _bioclip_top1_score(row)
     target_positive = bool(score is not None and target_signal_is_positive(row))
 
@@ -78,6 +85,9 @@ def classify_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
         review_reason = [state_reason]
     return {
         **row,
+        **category,
+        "occurrence_bin": state,
+        "bin_reason": state_reason,
         "publication_state": state,
         "publication_state_reason": state_reason,
         "review_reason": review_reason,
@@ -86,15 +96,19 @@ def classify_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
 
 def review_reasons_for_evidence(row: dict[str, Any]) -> list[str]:
     candidates: list[str] = []
+    category = infer_category_from_record(row)
+    image_category = category["image_category"]
     if not row.get("image_url"):
         candidates.append("missing_image")
-    if bool(row.get("artwork_detected")) or _has_review_flag(row, "artwork_context"):
+    if image_category == "artwork" or bool(row.get("artwork_detected")) or _has_review_flag(row, "artwork_context"):
         candidates.append("artwork")
-    if bool(row.get("museum_detected")) or bool(row.get("specimen_detected")) or _has_any_review_flag(row, {"museum_context", "specimen_context"}):
+    if image_category == "tattoo" or bool(row.get("tattoo_detected")) or _has_review_flag(row, "tattoo_context"):
+        candidates.append("tattoo")
+    if image_category == "museum_specimen" or bool(row.get("museum_detected")) or bool(row.get("specimen_detected")) or _has_any_review_flag(row, {"museum_context", "specimen_context"}):
         candidates.append("museum_specimen")
-    if bool(row.get("ai_generated_detected")) or _has_any_review_flag(row, {"ai_generated_context", "generated_image_context"}):
+    if image_category == "ai_generated" or bool(row.get("ai_generated_detected")) or _has_any_review_flag(row, {"ai_generated_context", "generated_image_context"}):
         candidates.append("ai_generated")
-    if bool(row.get("non_target_order_detected")) or _has_review_flag(row, "non_target_order_context"):
+    if image_category in {"not_lepidoptera", "other_insect"} or bool(row.get("non_target_order_detected")) or _has_review_flag(row, "non_target_order_context"):
         candidates.append("non_target_order")
     if species_agreement_is_conflict(row):
         candidates.append("species_conflict")
@@ -165,7 +179,12 @@ def _has_any_review_flag(row: dict[str, Any], flags: set[str]) -> bool:
     return bool(set(row.get("review_flags") or []) & flags)
 
 
-def _negative_material_reason(row: dict[str, Any], reasons: list[str]) -> str | None:
+def _negative_material_reason(row: dict[str, Any], reasons: list[str], category: dict[str, str | None]) -> str | None:
+    image_category = category["image_category"]
+    if image_category in {"artwork", "tattoo", "museum_specimen", "ai_generated"}:
+        return f"negative_material_{image_category}"
+    if image_category in {"not_lepidoptera", "other_insect"}:
+        return "negative_material_non_target_order"
     for reason in REVIEW_REASON_PRECEDENCE:
         if reason in HARD_EXCLUSION_REASONS and reason in reasons:
             return f"negative_material_{reason}"
@@ -196,6 +215,11 @@ def _normalize_label(value: str) -> str:
 
 def _empty_classified_evidence_frame(evidence: pl.DataFrame) -> pl.DataFrame:
     return evidence.with_columns(
+        pl.Series("occurrence_bin", [], dtype=pl.String),
+        pl.Series("bin_reason", [], dtype=pl.String),
+        pl.Series("image_category", [], dtype=pl.String),
+        pl.Series("life_stage", [], dtype=pl.String),
+        pl.Series("negative_filter_reason", [], dtype=pl.String),
         pl.Series("publication_state", [], dtype=pl.String),
         pl.Series("publication_state_reason", [], dtype=pl.String),
         pl.Series("review_reason", [], dtype=pl.List(pl.String)),

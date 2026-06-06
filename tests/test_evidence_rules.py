@@ -34,6 +34,10 @@ def test_gold_score_gte_050_target_positive() -> None:
 
     assert result["publication_state"] == "gold"
     assert result["publication_state_reason"] == "target_positive_score_gte_050"
+    assert result["occurrence_bin"] == "gold"
+    assert result["bin_reason"] == "target_positive_score_gte_050"
+    assert result["image_category"] == "adult_butterfly"
+    assert result["life_stage"] == "adult_butterfly"
     assert result["review_reason"] == []
 
 
@@ -58,7 +62,23 @@ def test_bronze_negative_material_museum_art_ai_other_insect() -> None:
         result = classify_evidence_row(row)
         assert result["publication_state"] == "bronze"
         assert result["publication_state_reason"] == reason
+        assert result["occurrence_bin"] == "bronze"
+        assert result["bin_reason"] == reason
+        assert result["negative_filter_reason"] is not None
         assert result["review_reason"] == []
+
+
+def test_existing_art_tattoo_museum_logic_uses_image_category() -> None:
+    artwork = classify_evidence_row(_row(artwork_detected=True))
+    tattoo = classify_evidence_row(_row(tattoo_detected=True))
+    museum = classify_evidence_row(_row(museum_detected=True))
+
+    assert artwork["image_category"] == "artwork"
+    assert artwork["publication_state_reason"] == "negative_material_artwork"
+    assert tattoo["image_category"] == "tattoo"
+    assert tattoo["publication_state_reason"] == "negative_material_tattoo"
+    assert museum["image_category"] == "museum_specimen"
+    assert museum["publication_state_reason"] == "negative_material_museum_specimen"
 
 
 def test_bronze_is_not_bioclip_positive_without_negative_material() -> None:
