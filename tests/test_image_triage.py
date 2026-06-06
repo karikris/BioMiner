@@ -188,6 +188,74 @@ def test_successfully_processed_record_skipped_on_rerun(tmp_path) -> None:
     assert second.frame.filter(pl.col("classification_status") == "skipped_existing").to_dicts()[0]["triage_reason"] == "duplicate_successful_record"
 
 
+def test_same_image_with_different_model_checkpoint_is_reprocessed(tmp_path) -> None:
+    output = tmp_path / "image_triage.parquet"
+    image_path = tmp_path / "cache" / "image.jpg"
+    first_classifier = FakeClassifier()
+    second_classifier = FakeClassifier()
+
+    first = process_image_triage_records(
+        [_record()],
+        classifier=first_classifier,
+        output_path=output,
+        cache_root=tmp_path / "cache",
+        cache_image=fake_cache(image_path),
+        model_checkpoint="checkpoint-a",
+    )
+    second = process_image_triage_records(
+        [_record()],
+        classifier=second_classifier,
+        output_path=output,
+        cache_root=tmp_path / "cache",
+        cache_image=fake_cache(image_path),
+        model_checkpoint="checkpoint-b",
+    )
+
+    assert first.records_classified == 1
+    assert second.records_classified == 1
+    assert second.records_skipped_existing == 0
+    assert second_classifier.calls == 1
+
+
+def test_failed_download_is_recorded_without_image_file(tmp_path) -> None:
+    def failing_cache(*args, **kwargs):  # noqa: ANN002, ANN003 - test fake.
+        raise RuntimeError("download failed")
+
+    run = process_image_triage_records(
+        [_record()],
+        classifier=FakeClassifier(),
+        output_path=tmp_path / "image_triage.parquet",
+        cache_root=tmp_path / "cache",
+        cache_image=failing_cache,
+    )
+    row = run.frame.to_dicts()[0]
+
+    assert run.download_failures == 1
+    assert row["classification_status"] == "failed_download"
+    assert row["classification_error"] == "download failed"
+    assert row["image_downloaded"] is False
+    assert row["image_deleted_after_classification"] is False
+
+
+def test_failed_bioclip_deletes_downloaded_image_and_records_failure(tmp_path) -> None:
+    image_path = tmp_path / "cache" / "failed.jpg"
+
+    run = process_image_triage_records(
+        [_record()],
+        classifier=FailingClassifier(),
+        output_path=tmp_path / "image_triage.parquet",
+        cache_root=tmp_path / "cache",
+        cache_image=fake_cache(image_path),
+    )
+    row = run.frame.to_dicts()[0]
+
+    assert run.bioclip_failures == 1
+    assert row["classification_status"] == "failed_bioclip"
+    assert row["image_downloaded"] is True
+    assert row["image_deleted_after_classification"] is True
+    assert not image_path.exists()
+
+
 def test_no_new_darwin_core_logic_added() -> None:
     triage_source = Path("src/flickr_bio_occurrence/vision/triage.py").read_text(encoding="utf-8")
 
@@ -207,6 +275,11 @@ class FakeClassifier:
             "top1_score": 0.91,
             "topk_json": [{"label": "a photo of Papilio demoleus", "score": 0.91}],
         }
+
+
+class FailingClassifier:
+    def classify_image(self, **kwargs: object) -> dict[str, object]:
+        raise RuntimeError("bioclip failed")
 
 
 def fake_cache(image_path: Path):
