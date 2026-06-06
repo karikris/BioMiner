@@ -7,14 +7,21 @@
   "bronze_count": null,
   "caterpillar_count": null,
   "chrysalis_count": null,
+  "comment_calls_used": null,
+  "comment_derived_terms_created": null,
+  "comment_review_failures": null,
+  "comment_review_queue_created": null,
+  "comments_fetched": null,
   "darwin_core_dependency": false,
   "downloaded_images_deleted_count": null,
   "duplicate_skipped_count": null,
   "egg_count": null,
-  "generated_at": "2026-06-06T19:54:20.758470+00:00",
+  "generated_at": "2026-06-06T20:02:48.575407+00:00",
   "gold_count": null,
   "in_review_no_geo_count": null,
   "larva_count": null,
+  "missing_date_requests_created": null,
+  "missing_geo_requests_created": null,
   "museum_specimen_count": null,
   "occurrence_bins": [
     "gold",
@@ -24,8 +31,10 @@
     "in_review/no_geo"
   ],
   "other_insect_count": null,
-  "phase": "Phase 7 reports, cleanup, and docs",
+  "phase": "Comment review for mismatches and missing-data recovery",
   "pupa_count": null,
+  "records_kept_in_review_no_geo": null,
+  "records_moved_to_gold": null,
   "report": "occurrence_bin_profile",
   "required_fields": [
     "occurrence_bin",
@@ -48,6 +57,8 @@
   },
   "silver_count": null,
   "source": "static code audit; no network, CUDA, model weights, Flickr downloads, parquet, or DuckDB files required",
+  "species_conflicts_resolved": null,
+  "species_conflicts_reviewed": null,
   "tattoo_count": null,
   "unsupported_metrics_policy": "Unsupported metrics are null or not_instrumented, never guessed."
 }

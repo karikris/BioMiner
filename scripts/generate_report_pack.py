@@ -8,7 +8,7 @@ from typing import Any
 
 
 GENERATED_AT = datetime.now(UTC).isoformat()
-PHASE = "Phase 7 reports, cleanup, and docs"
+PHASE = "Comment review for mismatches and missing-data recovery"
 UNINSTRUMENTED = "not_instrumented"
 
 REQUIRED_METRICS = {
@@ -30,6 +30,19 @@ REQUIRED_METRICS = {
     "downloaded_images_deleted_count": None,
     "duplicate_skipped_count": None,
     "api_calls_used": None,
+}
+COMMENT_REVIEW_METRICS = {
+    "comment_review_queue_created": None,
+    "comment_calls_used": None,
+    "comments_fetched": None,
+    "species_conflicts_reviewed": None,
+    "species_conflicts_resolved": None,
+    "records_moved_to_gold": None,
+    "records_kept_in_review_no_geo": None,
+    "missing_geo_requests_created": None,
+    "missing_date_requests_created": None,
+    "comment_derived_terms_created": None,
+    "comment_review_failures": None,
 }
 
 def main() -> None:
@@ -58,6 +71,9 @@ def build_reports() -> dict[str, Any]:
         "life_stage_profile.json": build_life_stage_profile(),
         "no_geo_profile.json": build_no_geo_profile(),
         "comment_expansion_profile.json": build_comment_expansion_profile(),
+        "comment_review_profile.json": build_comment_review_profile(),
+        "missing_data_requests.json": build_missing_data_requests_profile(),
+        "comment_species_resolution.json": build_comment_species_resolution_profile(),
         "api_budget_profile.json": build_api_budget_profile(),
         "code_cleanup_report.md": build_code_cleanup_report_markdown(),
         "agents_update_recommendations.json": build_agents_update_recommendations(),
@@ -65,6 +81,7 @@ def build_reports() -> dict[str, Any]:
     reports["query_term_totals.md"] = build_query_term_totals_markdown(reports["query_term_totals.json"])
     reports["bbox_coverage_profile.md"] = build_bbox_coverage_profile_markdown(reports["bbox_coverage_profile.json"])
     reports["occurrence_bin_profile.md"] = build_occurrence_bin_profile_markdown(reports["occurrence_bin_profile.json"])
+    reports["comment_review_profile.md"] = build_comment_review_profile_markdown(reports["comment_review_profile.json"])
     return reports
 
 
@@ -78,7 +95,7 @@ def base_payload() -> dict[str, Any]:
 
 
 def with_required_metrics(payload: dict[str, Any]) -> dict[str, Any]:
-    return {**base_payload(), **REQUIRED_METRICS, **payload}
+    return {**base_payload(), **REQUIRED_METRICS, **COMMENT_REVIEW_METRICS, **payload}
 
 
 def build_query_term_totals() -> dict[str, Any]:
@@ -204,6 +221,83 @@ def build_comment_expansion_profile() -> dict[str, Any]:
     )
 
 
+def build_comment_review_profile() -> dict[str, Any]:
+    return with_required_metrics(
+        {
+            "report": "comment_review_profile",
+            "review_scope": "targeted post-BioCLIP review only; comments are not fetched for every record",
+            "default_max_comment_calls_per_hour": 300,
+            "queue_table": "comment_review_queue",
+            "results_table": "comment_review_results",
+            "derived_terms_table": "comment_derived_terms",
+            "missing_data_requests_table": "missing_data_requests",
+            "eligible_reasons": [
+                "species_conflict",
+                "in_review_no_geo",
+                "missing_event_date",
+                "missing_geo",
+                "unknown_image_category",
+                "unknown_life_stage",
+                "low_bioclip_score",
+            ],
+            "allowed_decisions": [
+                "move_to_gold",
+                "keep_silver",
+                "keep_bronze",
+                "keep_in_review_no_geo",
+                "request_missing_geo",
+                "request_missing_date",
+                "request_species_review",
+                "request_life_stage_review",
+                "no_action",
+            ],
+            "gold_promotion_rules": [
+                "BioCLIP Lepidoptera-positive",
+                "image_url present",
+                "event date present or normalized from comments",
+                "geo present or structured coordinates recovered from comments",
+                "comments support species/life-stage or resolve mismatch",
+                "no hard-negative visual flag",
+            ],
+            "flickr_comments_are_separate_api_calls": True,
+            "files": ["src/flickr_bio_occurrence/pipeline/comment_review.py"],
+        }
+    )
+
+
+def build_missing_data_requests_profile() -> dict[str, Any]:
+    return with_required_metrics(
+        {
+            "report": "missing_data_requests",
+            "request_table": "missing_data_requests",
+            "allowed_request_types": ["missing_geo", "missing_date", "ambiguous_species", "ambiguous_life_stage"],
+            "free_text_location_policy": "Place names from comments create missing_geo requests unless structured geo is safely available.",
+            "vague_date_policy": "Vague date text creates missing_date requests unless it can be normalized safely.",
+            "pending_requests": UNINSTRUMENTED,
+            "files": ["src/flickr_bio_occurrence/pipeline/comment_review.py"],
+        }
+    )
+
+
+def build_comment_species_resolution_profile() -> dict[str, Any]:
+    return with_required_metrics(
+        {
+            "report": "comment_species_resolution",
+            "explicit_fields": [
+                "flickr_text_species_candidate",
+                "bioclip_species_candidate",
+                "bioclip_tag_conflict",
+                "comment_species_candidate",
+                "comment_resolves_conflict",
+            ],
+            "comments_as_evidence_layer": True,
+            "comments_do_not_replace_bioclip_output": True,
+            "species_resolution_counts": UNINSTRUMENTED,
+            "files": ["src/flickr_bio_occurrence/pipeline/comment_review.py"],
+        }
+    )
+
+
 def build_api_budget_profile() -> dict[str, Any]:
     return with_required_metrics(
         {
@@ -230,7 +324,11 @@ def build_agents_update_recommendations() -> dict[str, Any]:
                 },
                 {
                     "topic": "comments",
-                    "recommendation": "Fetch Flickr comments only for selected candidate records and promote terms only after distinct-photo and distinct-user support.",
+                    "recommendation": "Keep term expansion and comment review as separate targeted phases; do not fetch comments for every Flickr search record.",
+                },
+                {
+                    "topic": "comment review",
+                    "recommendation": "Use comment review for BioCLIP/Flickr mismatches, no-geo rows, missing dates, low scores, and unknown category/life-stage records.",
                 },
                 {
                     "topic": "BioCLIP",
@@ -288,6 +386,21 @@ def build_occurrence_bin_profile_markdown(report: dict[str, Any]) -> str:
     )
 
 
+def build_comment_review_profile_markdown(report: dict[str, Any]) -> str:
+    return _markdown_report(
+        "Comment Review Profile",
+        [
+            ("Review scope", report["review_scope"]),
+            ("Default max comment calls per hour", report["default_max_comment_calls_per_hour"]),
+            ("Queue created", report["comment_review_queue_created"]),
+            ("Comment calls used", report["comment_calls_used"]),
+            ("Records moved to Gold", report["records_moved_to_gold"]),
+            ("Missing geo requests", report["missing_geo_requests_created"]),
+            ("Missing date requests", report["missing_date_requests_created"]),
+        ],
+    )
+
+
 def build_code_cleanup_report_markdown() -> str:
     return "\n".join(
         [
@@ -295,9 +408,11 @@ def build_code_cleanup_report_markdown() -> str:
             "",
             f"Generated: {GENERATED_AT}",
             "",
-            "## Phase 7 Scope",
+            "## Comment Review Scope",
             "",
-            "- Updated the report pack away from old publication/Darwin Core language and toward image triage, life-stage, comments, no-geo, bbox, and API-budget profiles.",
+            "- Added a separate targeted comment-review phase after BioCLIP triage.",
+            "- Comment review creates its own queue, results table, derived terms, and missing-data request table.",
+            "- Comment review is not part of initial Flickr `photos.search` and must not run for every record by default.",
             "- Retained BioCLIP as screening evidence only; no report claims taxonomic validation.",
             "- Required metrics are present in JSON reports as null or `not_instrumented` when no bounded run data is available.",
             "",

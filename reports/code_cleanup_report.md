@@ -1,10 +1,12 @@
 # Code Cleanup Report
 
-Generated: 2026-06-06T19:54:20.758470+00:00
+Generated: 2026-06-06T20:02:48.575407+00:00
 
-## Phase 7 Scope
+## Comment Review Scope
 
-- Updated the report pack away from old publication/Darwin Core language and toward image triage, life-stage, comments, no-geo, bbox, and API-budget profiles.
+- Added a separate targeted comment-review phase after BioCLIP triage.
+- Comment review creates its own queue, results table, derived terms, and missing-data request table.
+- Comment review is not part of initial Flickr `photos.search` and must not run for every record by default.
 - Retained BioCLIP as screening evidence only; no report claims taxonomic validation.
 - Required metrics are present in JSON reports as null or `not_instrumented` when no bounded run data is available.
 

@@ -1,6 +1,12 @@
 {
   "adult_butterfly_count": null,
   "ai_generated_count": null,
+  "allowed_request_types": [
+    "missing_geo",
+    "missing_date",
+    "ambiguous_species",
+    "ambiguous_life_stage"
+  ],
   "api_calls_used": null,
   "artwork_count": null,
   "bronze_count": null,
@@ -15,51 +21,29 @@
   "duplicate_skipped_count": null,
   "egg_count": null,
   "files": [
-    "src/flickr_bio_occurrence/evidence/category_model.py",
-    "src/flickr_bio_occurrence/vision/triage.py",
-    "src/flickr_bio_occurrence/pipeline/comments_enrichment.py"
+    "src/flickr_bio_occurrence/pipeline/comment_review.py"
   ],
+  "free_text_location_policy": "Place names from comments create missing_geo requests unless structured geo is safely available.",
   "generated_at": "2026-06-06T20:02:48.575407+00:00",
   "gold_count": null,
-  "image_category_values": [
-    "adult_butterfly",
-    "life_stage_non_adult",
-    "museum_specimen",
-    "artwork",
-    "tattoo",
-    "ai_generated",
-    "logo_or_brand",
-    "object_or_product",
-    "textile_or_pattern",
-    "other_insect",
-    "not_lepidoptera",
-    "unknown"
-  ],
   "in_review_no_geo_count": null,
   "larva_count": null,
-  "life_stage_source": "BioCLIP top-1 labels and source/comment text terms are screening evidence only.",
-  "life_stage_values": [
-    "adult_butterfly",
-    "egg",
-    "caterpillar",
-    "larva",
-    "pupa",
-    "chrysalis",
-    "unknown"
-  ],
   "missing_date_requests_created": null,
   "missing_geo_requests_created": null,
   "museum_specimen_count": null,
   "other_insect_count": null,
+  "pending_requests": "not_instrumented",
   "phase": "Comment review for mismatches and missing-data recovery",
   "pupa_count": null,
   "records_kept_in_review_no_geo": null,
   "records_moved_to_gold": null,
-  "report": "life_stage_profile",
+  "report": "missing_data_requests",
+  "request_table": "missing_data_requests",
   "silver_count": null,
   "source": "static code audit; no network, CUDA, model weights, Flickr downloads, parquet, or DuckDB files required",
   "species_conflicts_resolved": null,
   "species_conflicts_reviewed": null,
   "tattoo_count": null,
-  "unsupported_metrics_policy": "Unsupported metrics are null or not_instrumented, never guessed."
+  "unsupported_metrics_policy": "Unsupported metrics are null or not_instrumented, never guessed.",
+  "vague_date_policy": "Vague date text creates missing_date requests unless it can be normalized safely."
 }

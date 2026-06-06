@@ -12,6 +12,11 @@ from flickr_bio_occurrence.benchmark.offline_run import run_existing_payload_ben
 from flickr_bio_occurrence.evidence.extractor import write_staging_evidence
 from flickr_bio_occurrence.evidence.rules import classify_evidence_frame
 from flickr_bio_occurrence.flickr.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_PATH, FlickrRateLimiter
+from flickr_bio_occurrence.pipeline.comment_review import (
+    apply_comment_review_decisions_to_parquet,
+    build_comment_review_queue_from_parquet,
+    review_comments_once,
+)
 from flickr_bio_occurrence.pipeline.comments_enrichment import CommentsEnrichmentState, fetch_flickr_comments
 from flickr_bio_occurrence.pipeline.job_queue import ClassificationJobQueue
 from flickr_bio_occurrence.pipeline.dry_run import build_dry_run_summary
@@ -44,6 +49,17 @@ def build_parser() -> argparse.ArgumentParser:
     fetch_comments.add_argument("--api-key-env", default="FLICKR_API_KEY")
     fetch_comments.add_argument("--min-photos", type=int, default=2)
     fetch_comments.add_argument("--min-users", type=int, default=2)
+    build_comment_queue = subparsers.add_parser("build-comment-review-queue")
+    build_comment_queue.add_argument("--input", required=True)
+    build_comment_queue.add_argument("--state-db", default="data/state/comment_review.sqlite")
+    review_comments = subparsers.add_parser("review-comments-once")
+    review_comments.add_argument("--state-db", default="data/state/comment_review.sqlite")
+    review_comments.add_argument("--max-api-calls", type=int, default=300)
+    review_comments.add_argument("--api-key-env", default="FLICKR_API_KEY")
+    apply_comment_decisions = subparsers.add_parser("apply-comment-review-decisions")
+    apply_comment_decisions.add_argument("--input", required=True)
+    apply_comment_decisions.add_argument("--output", required=True)
+    apply_comment_decisions.add_argument("--state-db", default="data/state/comment_review.sqlite")
     poll_once_parser = subparsers.add_parser("poll-once")
     poll_once_parser.add_argument("--max-api-calls", type=int, default=SOFT_API_CALLS_PER_HOUR)
     poll_once_parser.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
@@ -150,6 +166,26 @@ def run(args: argparse.Namespace) -> int:
             "promoted_terms": [term.__dict__ for term in promoted],
             **state.summary(),
         }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if args.command == "build-comment-review-queue":
+        payload = build_comment_review_queue_from_parquet(input_path=args.input, state_db=args.state_db)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if args.command == "review-comments-once":
+        try:
+            payload = review_comments_once(
+                state_db=args.state_db,
+                max_api_calls=args.max_api_calls,
+                api_key=os.environ.get(args.api_key_env),
+            )
+        except RuntimeError as exc:
+            print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+            return 2
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if args.command == "apply-comment-review-decisions":
+        payload = apply_comment_review_decisions_to_parquet(input_path=args.input, output_path=args.output, state_db=args.state_db)
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     if args.command == "poll-once":
