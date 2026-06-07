@@ -12,18 +12,16 @@ import httpx
 from flickr_bio_occurrence.evidence.extractor import build_evidence_frame
 from flickr_bio_occurrence.flickr.endpoints import FLICKR_REST_BASE_URL, SEARCH_METHOD
 from flickr_bio_occurrence.flickr.query_planner import (
-    COUNT_PROBE_PAGE_SIZE,
     FlickrQuery,
     build_count_probes,
     deduplicate_photo_records,
     flickr_search_params,
-    plan_pages_from_count,
-    split_high_volume_query,
+    plan_queries_from_count,
 )
 from flickr_bio_occurrence.flickr.butterfly_terms import safe_query_variant
 
 
-SOFT_API_CALLS_PER_HOUR = 3400
+SOFT_API_CALLS_PER_HOUR = 3450
 HARD_API_CALLS_PER_HOUR = 3600
 PENDING = "pending"
 CLAIMED = "claimed"
@@ -302,7 +300,7 @@ def poll_once(
             _write_raw_response(raw_root=Path(raw_root), work_item_id=work_item_id, query=query, payload=payload)
             total = _payload_total(payload)
             if query.lane == "count_probe":
-                for next_query in split_high_volume_query(query, total=total) if total > 3500 else plan_pages_from_count(query, total=total):
+                for next_query in plan_queries_from_count(query, total=total):
                     state.enqueue_work_item(next_query)
             else:
                 records = _payload_photo_records(payload)

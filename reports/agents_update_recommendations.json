@@ -19,7 +19,7 @@
   "downloaded_images_deleted_count": null,
   "duplicate_skipped_count": null,
   "egg_count": null,
-  "generated_at": "2026-06-06T20:02:48.575407+00:00",
+  "generated_at": "2026-06-07T11:11:00.135875+00:00",
   "gold_count": null,
   "in_review_no_geo_count": null,
   "larva_count": null,
@@ -31,8 +31,12 @@
   "pupa_count": null,
   "recommendations": [
     {
-      "recommendation": "Keep Phase 7 reports centered on image triage, life stage counts, comments expansion, API budget, and no-geo review bins.",
+      "recommendation": "Keep reports centered on image triage, life stages, comments, API budget, no-geo bins, and outside-known-region discovery candidates.",
       "topic": "reports"
+    },
+    {
+      "recommendation": "Preserve global high-confidence Papilio demoleus searches and flag geotagged hits outside configured known regions for researcher review, never automatic rejection.",
+      "topic": "range discovery"
     },
     {
       "recommendation": "Keep term expansion and comment review as separate targeted phases; do not fetch comments for every Flickr search record.",

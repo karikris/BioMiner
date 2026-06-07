@@ -12,6 +12,7 @@ from flickr_bio_occurrence.benchmark.offline_run import run_existing_payload_ben
 from flickr_bio_occurrence.evidence.extractor import write_staging_evidence
 from flickr_bio_occurrence.evidence.rules import classify_evidence_frame
 from flickr_bio_occurrence.flickr.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_PATH, FlickrRateLimiter
+from flickr_bio_occurrence.flickr.query_planner import build_papilio_demoleus_count_probes_from_json
 from flickr_bio_occurrence.pipeline.comment_review import (
     apply_comment_review_decisions_to_parquet,
     build_comment_review_queue_from_parquet,
@@ -20,7 +21,7 @@ from flickr_bio_occurrence.pipeline.comment_review import (
 from flickr_bio_occurrence.pipeline.comments_enrichment import CommentsEnrichmentState, fetch_flickr_comments
 from flickr_bio_occurrence.pipeline.job_queue import ClassificationJobQueue
 from flickr_bio_occurrence.pipeline.dry_run import build_dry_run_summary
-from flickr_bio_occurrence.pipeline.metadata_poller import SOFT_API_CALLS_PER_HOUR, poll_once
+from flickr_bio_occurrence.pipeline.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from flickr_bio_occurrence.vision.service import BioClipJobService
 
 
@@ -49,6 +50,9 @@ def build_parser() -> argparse.ArgumentParser:
     fetch_comments.add_argument("--api-key-env", default="FLICKR_API_KEY")
     fetch_comments.add_argument("--min-photos", type=int, default=2)
     fetch_comments.add_argument("--min-users", type=int, default=2)
+    papilio_plan = subparsers.add_parser("build-papilio-demoleus-query-plan")
+    papilio_plan.add_argument("--keywords-json", required=True)
+    papilio_plan.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
     build_comment_queue = subparsers.add_parser("build-comment-review-queue")
     build_comment_queue.add_argument("--input", required=True)
     build_comment_queue.add_argument("--state-db", default="data/state/comment_review.sqlite")
@@ -98,13 +102,13 @@ def build_parser() -> argparse.ArgumentParser:
     qa_estimate.add_argument("--report", required=True)
     qa_estimate.add_argument("--target-records", type=int, default=3200)
     qa_estimate.add_argument("--api-call-target", type=int, default=3200)
-    qa_estimate.add_argument("--soft-api-calls-per-hour", type=int, default=3200)
+    qa_estimate.add_argument("--soft-api-calls-per-hour", type=int, default=3450)
     qa_estimate_combined = subparsers.add_parser("qa-estimate-combined")
     qa_estimate_combined.add_argument("--metadata-report", required=True)
     qa_estimate_combined.add_argument("--vision-report", required=True)
     qa_estimate_combined.add_argument("--target-records", type=int, default=3200)
     qa_estimate_combined.add_argument("--api-call-target", type=int, default=3200)
-    qa_estimate_combined.add_argument("--soft-api-calls-per-hour", type=int, default=3200)
+    qa_estimate_combined.add_argument("--soft-api-calls-per-hour", type=int, default=3450)
     offline = subparsers.add_parser("benchmark-existing-payloads")
     offline.add_argument("--raw-root", required=True)
     offline.add_argument("--output-dir", required=True)
@@ -167,6 +171,26 @@ def run(args: argparse.Namespace) -> int:
             **state.summary(),
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if args.command == "build-papilio-demoleus-query-plan":
+        queries = build_papilio_demoleus_count_probes_from_json(args.keywords_json)
+        state = MetadataPollState(args.state_db)
+        inserted = sum(state.enqueue_work_item(query) for query in queries)
+        print(
+            json.dumps(
+                {
+                    "state_db": args.state_db,
+                    "keywords_json": args.keywords_json,
+                    "count_probes_seen": len(queries),
+                    "count_probes_inserted": inserted,
+                    "soft_api_calls_per_hour": SOFT_API_CALLS_PER_HOUR,
+                    "per_page_for_final_fetches": 500,
+                    "max_result_pages_per_query": 3999,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
     if args.command == "build-comment-review-queue":
         payload = build_comment_review_queue_from_parquet(input_path=args.input, state_db=args.state_db)

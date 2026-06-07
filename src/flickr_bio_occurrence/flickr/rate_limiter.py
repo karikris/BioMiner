@@ -18,7 +18,7 @@ class FlickrRateLimiter:
         self,
         ledger_path: str | Path = DEFAULT_RATE_LIMIT_LEDGER_PATH,
         *,
-        soft_api_calls_per_hour: int = 3200,
+        soft_api_calls_per_hour: int = 3450,
         hard_api_calls_per_hour: int = 3600,
         hard_photo_records_per_hour: int = 3600,
         window_seconds: int = 3600,

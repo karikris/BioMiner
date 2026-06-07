@@ -19,7 +19,7 @@
     "src/flickr_bio_occurrence/vision/triage.py",
     "src/flickr_bio_occurrence/pipeline/comments_enrichment.py"
   ],
-  "generated_at": "2026-06-06T20:02:48.575407+00:00",
+  "generated_at": "2026-06-07T11:11:00.135875+00:00",
   "gold_count": null,
   "image_category_values": [
     "adult_butterfly",

@@ -40,7 +40,7 @@
     "src/flickr_bio_occurrence/pipeline/comment_review.py"
   ],
   "flickr_comments_are_separate_api_calls": true,
-  "generated_at": "2026-06-06T20:02:48.575407+00:00",
+  "generated_at": "2026-06-07T11:11:00.135875+00:00",
   "gold_count": null,
   "gold_promotion_rules": [
     "BioCLIP Lepidoptera-positive",

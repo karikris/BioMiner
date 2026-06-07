@@ -121,7 +121,7 @@ def build_bbox_coverage_profile() -> dict[str, Any]:
             "bbox_queries_supported": True,
             "bbox_query_lane": "bbox_page",
             "bbox_counts": UNINSTRUMENTED,
-            "coverage_notes": "Worldwide discovery can split large count probes into bbox-page work items; this report does not inspect generated data.",
+            "coverage_notes": "Worldwide high-confidence queries are retained for discovery; broad queries can split into known-region bbox work items, and geotagged records outside configured regions are retained as review candidates.",
             "files": ["src/flickr_bio_occurrence/flickr/query_planner.py"],
         }
     )
@@ -302,7 +302,7 @@ def build_api_budget_profile() -> dict[str, Any]:
     return with_required_metrics(
         {
             "report": "api_budget_profile",
-            "soft_api_calls_per_hour": 3400,
+            "soft_api_calls_per_hour": 3450,
             "hard_api_calls_per_hour": 3600,
             "api_call_ledger_table": "api_call_ledger",
             "rate_limit_file": "src/flickr_bio_occurrence/flickr/rate_limiter.py",
@@ -320,7 +320,11 @@ def build_agents_update_recommendations() -> dict[str, Any]:
             "recommendations": [
                 {
                     "topic": "reports",
-                    "recommendation": "Keep Phase 7 reports centered on image triage, life stage counts, comments expansion, API budget, and no-geo review bins.",
+                    "recommendation": "Keep reports centered on image triage, life stages, comments, API budget, no-geo bins, and outside-known-region discovery candidates.",
+                },
+                {
+                    "topic": "range discovery",
+                    "recommendation": "Preserve global high-confidence Papilio demoleus searches and flag geotagged hits outside configured known regions for researcher review, never automatic rejection.",
                 },
                 {
                     "topic": "comments",

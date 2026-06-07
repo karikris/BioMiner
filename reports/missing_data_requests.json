@@ -24,7 +24,7 @@
     "src/flickr_bio_occurrence/pipeline/comment_review.py"
   ],
   "free_text_location_policy": "Place names from comments create missing_geo requests unless structured geo is safely available.",
-  "generated_at": "2026-06-06T20:02:48.575407+00:00",
+  "generated_at": "2026-06-07T11:11:00.135875+00:00",
   "gold_count": null,
   "in_review_no_geo_count": null,
   "larva_count": null,

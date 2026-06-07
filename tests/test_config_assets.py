@@ -38,3 +38,10 @@ def test_regions_include_all_australian_states_and_territories() -> None:
 
     for region_id in ["AU_ACT", "AU_NSW", "AU_NT", "AU_QLD", "AU_SA", "AU_TAS", "AU_VIC", "AU_WA"]:
         assert f"{region_id}," in text
+
+
+def test_local_papilio_demoleus_config_files_are_ignored() -> None:
+    text = Path(".gitignore").read_text(encoding="utf-8")
+
+    assert "config/papilio_demoleus_flickr_estimator.sh2" in text
+    assert "config/papilio_demoleus_multilingual_keywords.json" in text

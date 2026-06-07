@@ -55,7 +55,7 @@ def main() -> None:
     parser.add_argument("--bioclip-model-version", default="bioclip2_5_huge")
     parser.add_argument("--max-pages-per-term", type=int, default=16)
     parser.add_argument("--per-page", type=int, default=250)
-    parser.add_argument("--soft-api-calls-per-hour", type=int, default=3200)
+    parser.add_argument("--soft-api-calls-per-hour", type=int, default=3450)
     parser.add_argument("--hard-api-calls-per-hour", type=int, default=3600)
     parser.add_argument("--start-taken-date", default="1950-01-01")
     parser.add_argument("--end-taken-date", default=date.today().isoformat())

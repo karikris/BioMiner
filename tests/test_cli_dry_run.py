@@ -21,7 +21,7 @@ def test_fetch_dry_run_reports_required_fields() -> None:
     )
 
     assert summary["planned_api_calls"] == 5
-    assert summary["planned_maximum_photo_records"] == 1250
+    assert summary["planned_maximum_photo_records"] == 2500
     assert summary["hourly_limit_status"] == "within_soft_cap"
     assert summary["work_item_count"] == 5
     assert summary["output_paths"]["raw"] == "data/raw/flickr/photos_search/"
@@ -51,15 +51,66 @@ def test_fetch_dry_run_cli_outputs_json(capsys) -> None:
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["species"] == "Papilio demoleus"
-    assert payload["planned_maximum_photo_records"] == 1250
+    assert payload["planned_maximum_photo_records"] == 2500
 
 
 def test_poll_once_cli_accepts_bounded_cycle_arguments() -> None:
     parser = build_parser()
-    args = parser.parse_args(["poll-once", "--max-api-calls", "3400"])
+    args = parser.parse_args(["poll-once", "--max-api-calls", "3450"])
 
     assert args.command == "poll-once"
-    assert args.max_api_calls == 3400
+    assert args.max_api_calls == 3450
+
+
+def test_build_papilio_demoleus_query_plan_cli_reads_keyword_json(tmp_path, capsys) -> None:
+    keywords = tmp_path / "keywords.json"
+    keywords.write_text(
+        json.dumps(
+            {
+                "dictionary_groups": {
+                    "scientific_taxonomic": [
+                        {
+                            "term": "Papilio demoleus",
+                            "language": "la",
+                            "term_type": "scientific_name",
+                            "confidence": "high",
+                            "use_for_flickr": True,
+                            "precision_tier": "high",
+                        }
+                    ],
+                    "multilingual_common_name_expansion": [
+                        {
+                            "term": "butterfly",
+                            "language": "en",
+                            "term_type": "broad_butterfly",
+                            "confidence": "medium",
+                            "use_for_flickr": True,
+                            "precision_tier": "low",
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "build-papilio-demoleus-query-plan",
+            "--keywords-json",
+            str(keywords),
+            "--state-db",
+            str(tmp_path / "poller.sqlite"),
+        ]
+    )
+
+    assert run(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["count_probes_seen"] == 4
+    assert payload["count_probes_inserted"] == 4
+    assert payload["soft_api_calls_per_hour"] == 3450
+    assert payload["per_page_for_final_fetches"] == 500
+    assert payload["max_result_pages_per_query"] == 3999
 
 
 def test_cli_help_does_not_describe_old_gold_silver_bronze_logic(capsys) -> None:
@@ -114,7 +165,7 @@ def test_qa_rate_limit_outputs_limiter_status_json(tmp_path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["api_calls_in_window"] == 1
     assert payload["photo_records_in_window"] == 2
-    assert payload["soft_api_calls_per_hour"] == 3200
+    assert payload["soft_api_calls_per_hour"] == 3450
     assert payload["hard_api_calls_per_hour"] == 3600
 
 
