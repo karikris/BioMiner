@@ -56,6 +56,15 @@ Generated: 2026-06-07T11:11:00.135875+00:00
 - Generated artifacts excluded: no generated artifacts created.
 - Remaining cleanup recommendation: keep this as a lightweight guard against accidental per-image encoding regressions.
 
+## BioCLIP Register Runner
+
+- Files changed: `src/flickr_bio_occurrence/vision/register_runner.py` and this cleanup report.
+- Tests added or updated: existing register-runner test was run before commit; the test itself is committed in the next phase.
+- Redundant code removed: removed redundant final cleanup pass from the draft runner and replaced ambiguous staged-image accounting with an explicit counter.
+- Compatibility shims retained: the older `process_image_triage_records` path remains available for existing callers and tests.
+- Generated artifacts excluded: no generated parquet, images, model cache, or reports were committed.
+- Remaining cleanup recommendation: add a public CLI wrapper once the register runner is ready for routine operation.
+
 ## Comment Review Scope
 
 - Added a separate targeted comment-review phase after BioCLIP triage.
