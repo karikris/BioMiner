@@ -83,6 +83,15 @@ Generated: 2026-06-07T11:11:00.135875+00:00
 - Generated artifacts excluded: no generated artifacts were created.
 - Remaining cleanup recommendation: inspect report fixture files for stale references to removed benchmark/DWC concepts.
 
+## Phase 3 Codebase Minimization
+
+- Files changed: this cleanup report.
+- Tests added or updated: removed tests for deleted image-selection and prefetch helpers.
+- Redundant code removed: deleted unused `vision/image_selection.py`, `vision/prefetch.py`, and empty review package files.
+- Compatibility shims retained: none.
+- Generated artifacts excluded: no generated artifacts were created.
+- Remaining cleanup recommendation: keep URL choice in metadata/evidence input and avoid adding a second image-selection layer.
+
 ## BioCLIP Register Runner Tests
 
 - Files changed: `tests/test_register_runner.py` and this cleanup report.
