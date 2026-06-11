@@ -38,6 +38,15 @@ Generated: 2026-06-07T11:11:00.135875+00:00
 - Generated artifacts excluded: the generated visual report outputs under `data/live_runs/.../visual_report*/` are run artifacts and should not be committed as source.
 - Remaining cleanup recommendation: if this report becomes part of routine operations, add a CLI entry point and document optional plotting dependencies in a report/dev extras group.
 
+## Species Candidate Loader
+
+- Files changed: `src/flickr_bio_occurrence/vision/species_candidates.py`, `tests/test_species_candidates.py`, and this cleanup report.
+- Tests added or updated: local CSV/parquet candidate-loading tests covering target-species pinning, species-only filtering, dedupe, and BioCLIP label generation.
+- Redundant code removed: none; no tracked equivalent species-candidate loader existed.
+- Compatibility shims retained: none.
+- Generated artifacts excluded: candidate parquet inputs remain data artifacts and are not committed as source.
+- Remaining cleanup recommendation: wire the loader into a CLI or runner entry point once the register runner is committed.
+
 ## Comment Review Scope
 
 - Added a separate targeted comment-review phase after BioCLIP triage.
