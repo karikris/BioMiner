@@ -28,12 +28,8 @@ POSITIVE_SPECIES_AGREEMENT = {"exact_species_agreement", "same_genus_agreement",
 CONFLICT_SPECIES_AGREEMENT = {"text_vision_conflict", "non_butterfly"}
 TARGET_BUTTERFLY_LABELS = {
     "a photo of Papilio demoleus",
-    "a photo of lime butterfly",
-    "a photo of chequered swallowtail",
-    "a photo of citrus swallowtail",
-    "a photo of a swallowtail butterfly",
-    "a photo of a butterfly",
 }
+TARGET_SPECIES = "Papilio demoleus"
 HARD_EXCLUSION_REASONS = {
     "artwork",
     "tattoo",
@@ -76,6 +72,9 @@ def classify_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
     elif target_positive and score is not None and score < BIOCLIP_CONFIDENCE_THRESHOLD:
         state = "silver"
         state_reason = "target_positive_score_lt_050"
+    elif score is not None:
+        state = "bronze"
+        state_reason = "below_50"
     else:
         state = "in_review"
         state_reason = "missing_bioclip" if score is None else "ambiguous_classification"
@@ -126,9 +125,10 @@ def review_reasons_for_evidence(row: dict[str, Any]) -> list[str]:
 
 
 def species_agreement_is_positive(row: dict[str, Any]) -> bool:
+    species_name = str(row.get("species_top1_scientific_name") or "")
+    if species_name:
+        return _normalize_label(species_name) == _normalize_label(TARGET_SPECIES)
     status = _species_agreement_status(row)
-    if status in POSITIVE_SPECIES_AGREEMENT:
-        return True
     if status in CONFLICT_SPECIES_AGREEMENT:
         return False
     label = _normalize_label(_bioclip_top1_label(row))
@@ -189,7 +189,8 @@ def _negative_material_reason(row: dict[str, Any], reasons: list[str], category:
         if reason in HARD_EXCLUSION_REASONS and reason in reasons:
             return f"negative_material_{reason}"
     label = _normalize_label(_bioclip_top1_label(row))
-    if label and any(token in label for token in ("moth", "beetle", "fly", "wasp", "object", "background")):
+    label_tokens = set(label.split())
+    if label_tokens & {"moth", "beetle", "fly", "wasp", "object", "background"}:
         return "negative_material_non_butterfly"
     return None
 

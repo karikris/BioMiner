@@ -19,12 +19,9 @@ TRIAGE_BINS = {"gold", "silver", "bronze", "in_review", "in_review/no_geo"}
 CLASSIFICATION_STATUSES = {"success", "skipped_existing", "failed_download", "failed_bioclip", "invalid_record"}
 TARGET_LABELS = {
     "a photo of Papilio demoleus",
-    "a photo of lime butterfly",
-    "a photo of chequered swallowtail",
-    "a photo of citrus swallowtail",
-    "a photo of a swallowtail butterfly",
-    "a photo of a butterfly",
 }
+TARGET_SPECIES = "Papilio demoleus"
+BIOCLIP_SPECIES_CONFIDENCE_THRESHOLD = 0.50
 NEGATIVE_LABEL_REASONS = {
     "a photo of a pinned museum specimen": "pinned_specimen",
     "a photo of artwork or illustration": "artwork",
@@ -186,18 +183,20 @@ def process_image_triage_records(
 
 
 def classify_bioclip_triage(*, record: dict[str, Any], prediction: dict[str, object]) -> dict[str, object]:
-    top1_label = str(prediction.get("bioclip_top1_label", prediction.get("top1_label", "")) or "")
-    top1_score = _optional_float(prediction.get("bioclip_top1_score", prediction.get("top1_score")))
-    topk = prediction.get("bioclip_topk_json", prediction.get("topk_json", [])) or []
-    labels = {_normalize(top1_label)}
-    if isinstance(topk, list):
-        labels.update(_normalize(str(item.get("label") or "")) for item in topk if isinstance(item, dict))
-    is_target_positive = bool(labels & {_normalize(label) for label in TARGET_LABELS})
-    negative_reason = _negative_reason(record, top1_label)
-    category = _category_for_prediction(top1_label=top1_label, negative_reason=negative_reason)
+    species_top1_label = str(prediction.get("species_top1_label", prediction.get("bioclip_top1_label", prediction.get("top1_label", ""))) or "")
+    species_top1_score = _optional_float(prediction.get("species_top1_score", prediction.get("bioclip_top1_score", prediction.get("top1_score"))))
+    species_top1_name = str(prediction.get("species_top1_scientific_name") or _species_name_from_label(species_top1_label) or "")
+    triage_top1_label = str(prediction.get("triage_top1_label", prediction.get("bioclip_top1_label", prediction.get("top1_label", ""))) or "")
+    negative_reason = _negative_reason(record, triage_top1_label)
+    category = _category_for_prediction(top1_label=triage_top1_label, negative_reason=negative_reason)
+    is_target_positive = (
+        _normalize(species_top1_name) == _normalize(TARGET_SPECIES)
+        and species_top1_score is not None
+        and species_top1_score >= BIOCLIP_SPECIES_CONFIDENCE_THRESHOLD
+    )
     if negative_reason:
         return {**category, "occurrence_bin": "bronze", "bin_reason": negative_reason, "triage_bin": "bronze", "triage_reason": negative_reason, "is_target_positive": is_target_positive, "is_negative_material": True}
-    if top1_score is None:
+    if species_top1_score is None:
         return {**category, "occurrence_bin": "in_review", "bin_reason": "missing_bioclip", "triage_bin": "in_review", "triage_reason": "missing_bioclip", "is_target_positive": False, "is_negative_material": False}
     if is_target_positive and category["image_category"] == "adult_butterfly":
         if not _has_image_url(record):
@@ -207,7 +206,7 @@ def classify_bioclip_triage(*, record: dict[str, Any], prediction: dict[str, obj
         if not _has_event_date(record):
             return {**category, "occurrence_bin": "silver", "bin_reason": "missing_event_date", "triage_bin": "silver", "triage_reason": "missing_event_date", "is_target_positive": True, "is_negative_material": False}
         return {**category, "occurrence_bin": "gold", "bin_reason": "adult_lepidoptera_with_date_geo", "triage_bin": "gold", "triage_reason": "adult_lepidoptera_with_date_geo", "is_target_positive": True, "is_negative_material": False}
-    return {**category, "occurrence_bin": "in_review", "bin_reason": "ambiguous_classification", "triage_bin": "in_review", "triage_reason": "ambiguous_classification", "is_target_positive": False, "is_negative_material": False}
+    return {**category, "occurrence_bin": "bronze", "bin_reason": "below_50", "triage_bin": "bronze", "triage_reason": "below_50", "is_target_positive": False, "is_negative_material": False}
 
 
 def _base_row(
@@ -254,6 +253,13 @@ def _prediction_fields(prediction: dict[str, object]) -> dict[str, object]:
         "bioclip_top1_label": prediction.get("bioclip_top1_label", prediction.get("top1_label")),
         "bioclip_top1_score": _optional_float(prediction.get("bioclip_top1_score", prediction.get("top1_score"))),
         "bioclip_topk_json": topk if isinstance(topk, list) else [],
+        "species_top1_label": prediction.get("species_top1_label"),
+        "species_top1_scientific_name": prediction.get("species_top1_scientific_name"),
+        "species_top1_score": _optional_float(prediction.get("species_top1_score")),
+        "species_topk_json": prediction.get("species_topk_json", []),
+        "triage_top1_label": prediction.get("triage_top1_label"),
+        "triage_top1_score": _optional_float(prediction.get("triage_top1_score")),
+        "triage_topk_json": prediction.get("triage_topk_json", []),
     }
 
 
@@ -267,6 +273,13 @@ def _empty_result_fields() -> dict[str, object]:
         "bioclip_top1_label": None,
         "bioclip_top1_score": None,
         "bioclip_topk_json": [],
+        "species_top1_label": None,
+        "species_top1_scientific_name": None,
+        "species_top1_score": None,
+        "species_topk_json": [],
+        "triage_top1_label": None,
+        "triage_top1_score": None,
+        "triage_topk_json": [],
         "occurrence_bin": None,
         "bin_reason": None,
         **category_defaults(),
@@ -410,6 +423,14 @@ def _timestamp(now: datetime | None) -> str:
 
 def _normalize(value: str) -> str:
     return " ".join(value.casefold().split())
+
+
+def _species_name_from_label(label: str) -> str | None:
+    normalized = label.strip()
+    prefix = "a photo of "
+    if normalized.casefold().startswith(prefix):
+        return normalized[len(prefix):].strip()
+    return None
 
 
 def _empty_triage_frame() -> pl.DataFrame:

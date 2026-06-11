@@ -88,6 +88,19 @@ def test_bronze_is_not_bioclip_positive_without_negative_material() -> None:
     assert result["publication_state_reason"] == "target_positive_score_gte_050"
 
 
+def test_generic_butterfly_label_goes_to_bronze_not_gold() -> None:
+    result = classify_evidence_row(
+        _row(
+            bioclip_top1_label="a photo of a butterfly",
+            bioclip_species_agreement_status="same_family_agreement",
+            bioclip_top1_score=0.95,
+        )
+    )
+
+    assert result["publication_state"] == "bronze"
+    assert result["publication_state_reason"] == "below_50"
+
+
 def test_hard_exclusion_flags_force_bronze_even_when_otherwise_gold() -> None:
     result = classify_evidence_row(_row(artwork_detected=True))
 
