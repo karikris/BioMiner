@@ -12,6 +12,7 @@ BioClipScorer = Callable[[Path, Sequence[str]], Mapping[str, float]]
 BioClipBatchScorer = Callable[[Sequence[Path], Sequence[str]], Sequence[Mapping[str, float]]]
 SubprocessRunner = Callable[..., subprocess.CompletedProcess[str]]
 PopenFactory = Callable[..., subprocess.Popen[str]]
+LabelSets = Mapping[str, Sequence[str]]
 
 
 DEFAULT_BIOCLIP_LABELS = (
@@ -30,6 +31,27 @@ DEFAULT_BIOCLIP_LABELS = (
     "a photo of a pinned museum specimen",
     "a photo of artwork or illustration",
     "a photo of a tattoo",
+)
+
+DEFAULT_TRIAGE_LABELS = (
+    "a photo of an adult butterfly",
+    "a photo of a swallowtail butterfly",
+    "a photo of a butterfly",
+    "a photo of a moth",
+    "a photo of an egg",
+    "a photo of a caterpillar",
+    "a photo of a larva",
+    "a photo of a pupa",
+    "a photo of a chrysalis",
+    "a photo of a pinned museum specimen",
+    "a photo of artwork or illustration",
+    "a photo of a tattoo",
+    "an ai generated image",
+    "a photo of a logo or brand",
+    "a photo of an object",
+    "a photo of a textile or pattern",
+    "a photo of an insect that is not a butterfly or moth",
+    "a photo that is not a lepidoptera",
 )
 
 
@@ -129,6 +151,40 @@ class BioClipClassifier:
             )
         return records
 
+    def classify_images_with_label_sets(
+        self,
+        images: Sequence[dict[str, object]],
+        *,
+        label_sets: LabelSets,
+        top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        if not self.runtime.available:
+            raise RuntimeError(f"BioCLIP runtime is not available: {self.runtime.unavailable_reason}")
+        image_paths = [Path(str(image["image_path"])) for image in images]
+        scores_by_label_set = self._score_label_sets_batch(image_paths, label_sets)
+        records: list[dict[str, Any]] = []
+        for index, image in enumerate(images):
+            topk_by_label_set: dict[str, list[tuple[str, float]]] = {}
+            for label_set_name, labels in label_sets.items():
+                scores = scores_by_label_set[label_set_name][index]
+                topk_by_label_set[label_set_name] = sorted(
+                    ((label, float(scores.get(label, 0.0))) for label in labels),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )[:top_k]
+            records.append(
+                build_label_set_prediction_record(
+                    flickr_photo_id=str(image["flickr_photo_id"]),
+                    runtime=self.runtime,
+                    image_hash=str(image["image_hash"]),
+                    image_url_used=str(image["image_url_used"]),
+                    resolved_scientific_name=str(image.get("resolved_scientific_name") or ""),
+                    text_evidence_present=bool(image.get("text_evidence_present")),
+                    topk_by_label_set=topk_by_label_set,
+                )
+            )
+        return records
+
     def _score(self, image_path: Path, labels: Sequence[str]) -> Mapping[str, float]:
         if self._scorer is not None:
             return self._scorer(image_path, labels)
@@ -141,6 +197,21 @@ class BioClipClassifier:
             with PersistentBioClipScorer(runtime=self.runtime) as scorer:
                 return scorer.score_batch(image_paths, labels)
         return [self._score(image_path, labels) for image_path in image_paths]
+
+    def _score_label_sets_batch(
+        self,
+        image_paths: Sequence[Path],
+        label_sets: LabelSets,
+    ) -> dict[str, list[Mapping[str, float]]]:
+        if self._scorer is not None and hasattr(self._scorer, "score_label_sets_batch"):
+            return self._scorer.score_label_sets_batch(image_paths, label_sets)  # type: ignore[attr-defined]
+        if self._scorer is None:
+            with PersistentBioClipScorer(runtime=self.runtime) as scorer:
+                return scorer.score_label_sets_batch(image_paths, label_sets)
+        return {
+            name: [self._score(image_path, labels) for image_path in image_paths]
+            for name, labels in label_sets.items()
+        }
 
 
 class ExternalBioClipScorer:
@@ -189,6 +260,33 @@ class ExternalBioClipScorer:
                 for scores in payload["scores_by_image"]
             ]
         return [{str(label): float(score) for label, score in payload["scores"].items()}]
+
+    def score_label_sets_batch(
+        self,
+        image_paths: Sequence[Path],
+        label_sets: LabelSets,
+    ) -> dict[str, list[Mapping[str, float]]]:
+        if self.runtime.venv_python is None:
+            raise RuntimeError("BioCLIP runtime does not define a Python executable")
+        request = {
+            "image_paths": [str(image_path) for image_path in image_paths],
+            "label_sets": {name: list(labels) for name, labels in label_sets.items()},
+            "model_name": self.runtime.model.model_name,
+            "checkpoint": self.runtime.model.checkpoint,
+            "hf_cache_dir": str(self.hf_cache_dir),
+            "require_cuda": self.require_cuda,
+        }
+        result = self.runner(
+            [str(self.runtime.venv_python), str(self.worker_script)],
+            input=json.dumps(request),
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"BioCLIP worker failed: {result.stderr.strip()}")
+        payload = json.loads(result.stdout)
+        return _coerce_label_set_scores(payload["scores_by_image_by_label_set"])
 
 
 def classify_species_agreement(
@@ -254,6 +352,53 @@ def build_vision_prediction_record(
         "vision_review_required": _vision_review_required(agreement_status),
         "created_at": datetime.now(UTC).isoformat(),
     }
+
+
+def build_label_set_prediction_record(
+    *,
+    flickr_photo_id: str,
+    runtime: BioClipRuntime,
+    image_hash: str,
+    image_url_used: str,
+    resolved_scientific_name: str,
+    text_evidence_present: bool,
+    topk_by_label_set: Mapping[str, list[tuple[str, float]]],
+) -> dict[str, Any]:
+    species_topk = _topk_json(topk_by_label_set.get("species", []))
+    triage_topk = _topk_json(topk_by_label_set.get("triage", []))
+    compatibility_topk = species_topk or triage_topk
+    agreement_status = classify_species_agreement(
+        resolved_scientific_name=resolved_scientific_name,
+        topk_labels=[str(item["label"]) for item in species_topk],
+        text_evidence_present=text_evidence_present,
+    )
+    return {
+        "flickr_photo_id": flickr_photo_id,
+        "model_family": "bioclip",
+        "model_name": runtime.model.model_name,
+        "model_version": runtime.model.model_id,
+        "model_checkpoint": runtime.model.checkpoint,
+        "model_hash": runtime.model.model_hash,
+        "runtime_package_version": runtime.package_version,
+        "image_hash": image_hash,
+        "image_url_used": image_url_used,
+        "species_top1_label": species_topk[0]["label"] if species_topk else None,
+        "species_top1_score": species_topk[0]["score"] if species_topk else None,
+        "species_topk_json": species_topk,
+        "triage_top1_label": triage_topk[0]["label"] if triage_topk else None,
+        "triage_top1_score": triage_topk[0]["score"] if triage_topk else None,
+        "triage_topk_json": triage_topk,
+        "top1_label": compatibility_topk[0]["label"] if compatibility_topk else None,
+        "top1_score": compatibility_topk[0]["score"] if compatibility_topk else None,
+        "topk_json": compatibility_topk,
+        "species_agreement_status": agreement_status,
+        "vision_review_required": _vision_review_required(agreement_status),
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _topk_json(topk: Sequence[tuple[str, float]]) -> list[dict[str, float | str]]:
+    return [{"label": label, "score": float(score)} for label, score in topk]
 
 
 def _vision_review_required(agreement_status: str) -> bool:
@@ -340,6 +485,44 @@ class PersistentBioClipScorer:
                 ]
             return [{str(label): float(score) for label, score in payload["scores"].items()}]
 
+    def score_label_sets_batch(
+        self,
+        image_paths: Sequence[Path],
+        label_sets: LabelSets,
+    ) -> dict[str, list[Mapping[str, float]]]:
+        process = self._ensure_process()
+        if process.poll() is not None:
+            raise RuntimeError(f"BioCLIP persistent worker exited early with code {process.returncode}")
+        request = {
+            "image_paths": [str(image_path) for image_path in image_paths],
+            "label_sets": {name: list(labels) for name, labels in label_sets.items()},
+            "model_name": self.runtime.model.model_name,
+            "checkpoint": self.runtime.model.checkpoint,
+            "hf_cache_dir": str(self.hf_cache_dir),
+            "require_cuda": self.require_cuda,
+        }
+        assert self._stdin is not None
+        assert self._stdout is not None
+        self._stdin.write(json.dumps(request, sort_keys=True) + "\n")
+        self._stdin.flush()
+        while True:
+            line = self._stdout.readline()
+            if not line:
+                raise RuntimeError("BioCLIP persistent worker closed stdout before returning scores")
+            payload = json.loads(line)
+            if "error" in payload:
+                raise RuntimeError(f"BioCLIP worker failed: {payload['error']}")
+            if payload.get("ready"):
+                self.device = str(payload.get("device") or "")
+                self.gpu_name = str(payload.get("gpu_name") or "")
+                continue
+            if "device" in payload:
+                self.device = str(payload.get("device") or "")
+                self.gpu_name = str(payload.get("gpu_name") or "")
+            if "scores_by_image_by_label_set" in payload:
+                return _coerce_label_set_scores(payload["scores_by_image_by_label_set"])
+            raise RuntimeError("BioCLIP worker response did not include label-set scores")
+
     def close(self) -> None:
         process = self._process
         if process is None:
@@ -375,3 +558,13 @@ class PersistentBioClipScorer:
             self._stdin = process.stdin
             self._stdout = process.stdout
         return self._process
+
+
+def _coerce_label_set_scores(payload: Mapping[str, Sequence[Mapping[str, object]]]) -> dict[str, list[Mapping[str, float]]]:
+    return {
+        str(label_set_name): [
+            {str(label): float(score) for label, score in scores.items()}
+            for scores in scores_by_image
+        ]
+        for label_set_name, scores_by_image in payload.items()
+    }

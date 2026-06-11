@@ -11,11 +11,13 @@ SearchField = Literal["text", "tags"]
 QueryLane = Literal["count_probe", "normal_page", "bbox_page"]
 
 NORMAL_PAGE_SIZE = 500
-BBOX_PAGE_SIZE = 500
+GEO_PAGE_SIZE = 250
+BBOX_PAGE_SIZE = GEO_PAGE_SIZE
 COUNT_PROBE_PAGE_SIZE = 1
 MAX_RESULT_PAGES_PER_QUERY = 3999
-MAX_RESULTS_PER_QUERY = MAX_RESULT_PAGES_PER_QUERY * NORMAL_PAGE_SIZE
+MAX_RESULTS_PER_QUERY = MAX_RESULT_PAGES_PER_QUERY * GEO_PAGE_SIZE
 SPLIT_TOTAL_THRESHOLD = MAX_RESULTS_PER_QUERY
+DEFAULT_EXTRAS = "description,license,date_upload,date_taken,geo,tags,machine_tags,owner_name,o_dims,url_l,url_m,last_update,media,views"
 PAPILIO_DEMOLEUS_ANCHOR_TERMS = (
     "Papilio demoleus",
     "demoleus",
@@ -213,7 +215,7 @@ def build_count_probes(
 def plan_pages_from_count(probe: FlickrQuery, *, total: int) -> tuple[FlickrQuery, ...]:
     if total <= 0:
         return ()
-    per_page = BBOX_PAGE_SIZE if probe.bbox else NORMAL_PAGE_SIZE
+    per_page = page_size_for_query(probe)
     lane: QueryLane = "bbox_page" if probe.bbox else "normal_page"
     return tuple(
         _page_query(probe, page=page, per_page=per_page, lane=lane)
@@ -231,6 +233,12 @@ def query_fits_page_limit(total: int, *, per_page: int = NORMAL_PAGE_SIZE, max_p
     return result_pages_for_total(total, per_page=per_page) <= max_pages
 
 
+def page_size_for_query(query: FlickrQuery) -> int:
+    if query.has_geo or query.bbox:
+        return GEO_PAGE_SIZE
+    return NORMAL_PAGE_SIZE
+
+
 def plan_queries_from_count(
     probe: FlickrQuery,
     *,
@@ -241,7 +249,7 @@ def plan_queries_from_count(
     narrower_terms: Iterable[str] = (),
     max_pages: int = MAX_RESULT_PAGES_PER_QUERY,
 ) -> tuple[FlickrQuery, ...]:
-    if query_fits_page_limit(total, per_page=NORMAL_PAGE_SIZE, max_pages=max_pages):
+    if query_fits_page_limit(total, per_page=page_size_for_query(probe), max_pages=max_pages):
         return plan_pages_from_count(probe, total=total)
     split_bboxes = tuple(bboxes)
     split_upload_ranges = tuple(upload_date_ranges)
@@ -357,7 +365,7 @@ def flickr_search_params(query: FlickrQuery) -> dict[str, str | int]:
         "media": "photos",
         "content_types": "0",
         "safe_search": 1,
-        "extras": "url_l,url_m",
+        "extras": DEFAULT_EXTRAS,
         "per_page": query.per_page,
         "page": query.page,
     }
@@ -388,6 +396,7 @@ def _page_query(probe: FlickrQuery, *, page: int, per_page: int, lane: QueryLane
         lane=lane,
         page=page,
         per_page=per_page,
+        has_geo=probe.has_geo,
         bbox=probe.bbox,
         min_taken_date=probe.min_taken_date,
         max_taken_date=probe.max_taken_date,
@@ -421,6 +430,7 @@ def _split_probe(
         search_field=probe.search_field,
         lane="count_probe",
         per_page=COUNT_PROBE_PAGE_SIZE,
+        has_geo=probe.has_geo,
         bbox=bbox or probe.bbox,
         min_taken_date=min_taken_date or probe.min_taken_date,
         max_taken_date=max_taken_date or probe.max_taken_date,

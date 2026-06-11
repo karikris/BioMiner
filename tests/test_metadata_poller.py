@@ -21,7 +21,7 @@ def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
 
 def test_poll_once_fetches_metadata_only_dedupes_and_queues_image_urls(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
-    query = FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=500)
+    query = FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=250)
     state.enqueue_work_item(query)
     calls: list[FlickrQuery] = []
 
@@ -76,7 +76,7 @@ def test_poll_once_records_count_probes_and_enqueues_pages(tmp_path) -> None:
     with sqlite3.connect(state.path) as conn:
         rows = conn.execute("SELECT lane, per_page FROM flickr_work_items WHERE status = 'pending' ORDER BY page").fetchall()
 
-    assert rows == [("normal_page", 500), ("normal_page", 500)]
+    assert rows == [("normal_page", 250), ("normal_page", 250), ("normal_page", 250)]
 
 
 def test_poll_once_enqueues_pages_for_count_probe_under_page_limit(tmp_path) -> None:
@@ -94,7 +94,7 @@ def test_poll_once_enqueues_pages_for_count_probe_under_page_limit(tmp_path) -> 
     with sqlite3.connect(state.path) as conn:
         pending = conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'pending'").fetchone()[0]
 
-    assert pending == 8
+    assert pending == 15
 
 
 def test_poll_once_splits_count_probe_over_page_limit(tmp_path) -> None:
@@ -106,7 +106,7 @@ def test_poll_once_splits_count_probe_over_page_limit(tmp_path) -> None:
         raw_root=tmp_path / "raw",
         evidence_output=tmp_path / "evidence.parquet",
         max_api_calls=1,
-        fetch_metadata=lambda query: {"photos": {"total": str(4000 * 500), "photo": []}},
+        fetch_metadata=lambda query: {"photos": {"total": str(4000 * 250), "photo": []}},
     )
 
     with sqlite3.connect(state.path) as conn:
@@ -120,7 +120,7 @@ def test_poll_once_splits_count_probe_over_page_limit(tmp_path) -> None:
 
 def test_poll_once_respects_soft_budget_without_fetching(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
-    state.enqueue_work_item(FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", per_page=500))
+    state.enqueue_work_item(FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", per_page=250))
     with sqlite3.connect(state.path) as conn:
         for index in range(3450):
             conn.execute(

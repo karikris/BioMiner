@@ -15,6 +15,17 @@ def main() -> None:
     configure_hf_cache_env(Path(request.get("hf_cache_dir") or "data/cache/huggingface"))
     image_paths = request.get("image_paths")
     require_cuda = bool(request.get("require_cuda", True))
+    label_sets = request.get("label_sets")
+    if label_sets is not None:
+        scores_by_image_by_label_set = score_image_label_sets(
+            image_paths=[Path(path) for path in image_paths],
+            label_sets={str(name): list(labels) for name, labels in label_sets.items()},
+            model_name=request["model_name"],
+            checkpoint=request["checkpoint"],
+            require_cuda=require_cuda,
+        )
+        print(json.dumps({"scores_by_image_by_label_set": scores_by_image_by_label_set}, sort_keys=True))
+        return
     if image_paths is None:
         scores = score_image(
             image_path=Path(request["image_path"]),
@@ -64,6 +75,24 @@ def run_persistent_worker() -> None:
                 loaded_key = key
                 print(json.dumps({"ready": True, "device": loaded.device, "gpu_name": loaded.gpu_name}, sort_keys=True), flush=True)
             image_paths = request.get("image_paths")
+            label_sets = request.get("label_sets")
+            if label_sets is not None:
+                scores_by_image_by_label_set = loaded.score_image_label_sets(
+                    [Path(path) for path in image_paths],
+                    {str(name): list(labels) for name, labels in label_sets.items()},
+                )
+                print(
+                    json.dumps(
+                        {
+                            "scores_by_image_by_label_set": scores_by_image_by_label_set,
+                            "device": loaded.device,
+                            "gpu_name": loaded.gpu_name,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+                continue
             if image_paths is None:
                 scores = loaded.score_images([Path(request["image_path"])], request["labels"])[0]
                 print(json.dumps({"scores": scores, "device": loaded.device, "gpu_name": loaded.gpu_name}, sort_keys=True), flush=True)
@@ -109,6 +138,18 @@ def score_images(
     return model.score_images(image_paths, labels)
 
 
+def score_image_label_sets(
+    *,
+    image_paths: Sequence[Path],
+    label_sets: dict[str, Sequence[str]],
+    model_name: str,
+    checkpoint: str,
+    require_cuda: bool = True,
+) -> dict[str, list[dict[str, float]]]:
+    model = _LoadedBioClipModel.load(model_name=model_name, checkpoint=checkpoint, require_cuda=require_cuda)
+    return model.score_image_label_sets(image_paths, label_sets)
+
+
 class _LoadedBioClipModel:
     def __init__(self, *, model, preprocess, tokenizer, torch, device: str, gpu_name: str) -> None:  # noqa: ANN001 - external runtime objects.
         self.model = model
@@ -147,13 +188,44 @@ class _LoadedBioClipModel:
         text_features = self._text_features(labels)
         with self.torch.no_grad():
             scores_by_image: list[dict[str, float]] = []
-            for image_path in image_paths:
-                image = self.preprocess(Image.open(image_path).convert("RGB")).unsqueeze(0).to(self.device)
-                image_features = self.model.encode_image(image)
-                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-                probabilities = (100.0 * image_features @ text_features.T).softmax(dim=-1)[0]
+            image_batch = self._image_batch(image_paths, Image)
+            image_features = self.model.encode_image(image_batch)
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            probabilities_by_image = (100.0 * image_features @ text_features.T).softmax(dim=-1)
+            for probabilities in probabilities_by_image:
                 scores_by_image.append({label: float(probabilities[index].detach().cpu()) for index, label in enumerate(labels)})
         return scores_by_image
+
+    def score_image_label_sets(
+        self,
+        image_paths: Sequence[Path],
+        label_sets: dict[str, Sequence[str]],
+    ) -> dict[str, list[dict[str, float]]]:
+        try:
+            from PIL import Image
+        except Exception as exc:  # noqa: BLE001 - executed in the external model runtime.
+            raise RuntimeError(f"BioCLIP dependencies are unavailable: {exc}") from exc
+
+        text_features_by_set = {name: self._text_features(labels) for name, labels in label_sets.items()}
+        scores_by_label_set: dict[str, list[dict[str, float]]] = {name: [] for name in label_sets}
+        with self.torch.no_grad():
+            image_batch = self._image_batch(image_paths, Image)
+            image_features = self.model.encode_image(image_batch)
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            for label_set_name, labels in label_sets.items():
+                probabilities_by_image = (100.0 * image_features @ text_features_by_set[label_set_name].T).softmax(dim=-1)
+                for probabilities in probabilities_by_image:
+                    scores_by_label_set[label_set_name].append(
+                        {label: float(probabilities[index].detach().cpu()) for index, label in enumerate(labels)}
+                    )
+        return scores_by_label_set
+
+    def _image_batch(self, image_paths: Sequence[Path], image_module):  # noqa: ANN001 - PIL module.
+        images = [
+            self.preprocess(image_module.open(image_path).convert("RGB"))
+            for image_path in image_paths
+        ]
+        return self.torch.stack(images).to(self.device)
 
     def _text_features(self, labels: Sequence[str]):
         label_key = tuple(labels)

@@ -12,7 +12,7 @@ from flickr_bio_occurrence.benchmark.offline_run import run_existing_payload_ben
 from flickr_bio_occurrence.evidence.extractor import write_staging_evidence
 from flickr_bio_occurrence.evidence.rules import classify_evidence_frame
 from flickr_bio_occurrence.flickr.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_PATH, FlickrRateLimiter
-from flickr_bio_occurrence.flickr.query_planner import build_papilio_demoleus_count_probes_from_json
+from flickr_bio_occurrence.flickr.query_planner import GEO_PAGE_SIZE, NORMAL_PAGE_SIZE, build_papilio_demoleus_count_probes_from_json
 from flickr_bio_occurrence.pipeline.comment_review import (
     apply_comment_review_decisions_to_parquet,
     build_comment_review_queue_from_parquet,
@@ -184,7 +184,8 @@ def run(args: argparse.Namespace) -> int:
                     "count_probes_seen": len(queries),
                     "count_probes_inserted": inserted,
                     "soft_api_calls_per_hour": SOFT_API_CALLS_PER_HOUR,
-                    "per_page_for_final_fetches": 500,
+                    "per_page_for_final_fetches": GEO_PAGE_SIZE,
+                    "per_page_for_non_geo_fetches": NORMAL_PAGE_SIZE,
                     "max_result_pages_per_query": 3999,
                 },
                 indent=2,

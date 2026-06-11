@@ -6,6 +6,7 @@ import subprocess
 from flickr_bio_occurrence.vision.bioclip import (
     BioClipClassifier,
     DEFAULT_BIOCLIP_LABELS,
+    DEFAULT_TRIAGE_LABELS,
     ExternalBioClipScorer,
     PersistentBioClipScorer,
     build_vision_prediction_record,
@@ -202,6 +203,37 @@ def test_external_bioclip_scorer_formats_batch_request() -> None:
     assert '"require_cuda": true' in calls[0]["input"]
 
 
+def test_external_bioclip_scorer_formats_label_set_request() -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run(cmd, *, input, capture_output, check, text):  # noqa: ANN001 - mirrors subprocess.run signature.
+        calls.append({"cmd": cmd, "input": input})
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout=(
+                '{"scores_by_image_by_label_set":{'
+                '"species":[{"a photo of Papilio demoleus":0.8}],'
+                '"triage":[{"a photo of an adult butterfly":0.9}]'
+                "}}"
+            ),
+            stderr="",
+        )
+
+    scorer = ExternalBioClipScorer(runtime=_runtime(), runner=fake_run)
+    scores = scorer.score_label_sets_batch(
+        [Path("/tmp/1.jpg")],
+        {
+            "species": ["a photo of Papilio demoleus"],
+            "triage": ["a photo of an adult butterfly"],
+        },
+    )
+
+    assert scores["species"][0]["a photo of Papilio demoleus"] == 0.8
+    assert scores["triage"][0]["a photo of an adult butterfly"] == 0.9
+    assert '"label_sets": {"species": ["a photo of Papilio demoleus"], "triage": ["a photo of an adult butterfly"]}' in calls[0]["input"]
+
+
 def test_external_bioclip_scorer_raises_with_worker_stderr() -> None:
     def fake_run(cmd, *, input, capture_output, check, text):  # noqa: ANN001 - mirrors subprocess.run signature.
         return subprocess.CompletedProcess(args=cmd, returncode=2, stdout="", stderr="model missing")
@@ -288,3 +320,103 @@ def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_requires_cuda()
     assert '"require_cuda": true' in writes[1]
     assert '"shutdown": true' in writes[-1]
     assert processes[0].waited is True
+
+
+def test_persistent_bioclip_scorer_reuses_worker_for_label_sets() -> None:
+    writes: list[str] = []
+
+    class FakeStdin:
+        def write(self, value: str) -> None:
+            writes.append(value)
+
+        def flush(self) -> None:
+            return None
+
+    class FakeStdout:
+        def __init__(self) -> None:
+            self.lines = iter(
+                [
+                    '{"ready":true,"device":"cuda","gpu_name":"NVIDIA GeForce RTX 3060"}\n',
+                    '{"scores_by_image_by_label_set":{"species":[{"a photo of Papilio demoleus":0.97}],"triage":[{"a photo of an adult butterfly":0.98}]}}\n',
+                ]
+            )
+
+        def readline(self) -> str:
+            return next(self.lines)
+
+    class FakeProcess:
+        def __init__(self, cmd) -> None:  # noqa: ANN001 - mirrors subprocess.Popen.
+            self.cmd = cmd
+            self.stdin = FakeStdin()
+            self.stdout = FakeStdout()
+            self.stderr = None
+            self.returncode = None
+
+        def poll(self):  # noqa: ANN202 - mirrors subprocess.Popen.
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.returncode = 0
+
+        def wait(self, timeout=None):  # noqa: ANN001, ANN202 - mirrors subprocess.Popen.
+            self.returncode = 0
+            return 0
+
+    processes: list[FakeProcess] = []
+
+    def fake_popen(cmd, **kwargs):  # noqa: ANN001, ANN202 - mirrors subprocess.Popen.
+        process = FakeProcess(cmd)
+        processes.append(process)
+        return process
+
+    scorer = PersistentBioClipScorer(runtime=_runtime(), popen=fake_popen)
+    try:
+        scores = scorer.score_label_sets_batch(
+            [Path("/tmp/1.jpg")],
+            {
+                "species": ["a photo of Papilio demoleus"],
+                "triage": ["a photo of an adult butterfly"],
+            },
+        )
+    finally:
+        scorer.close()
+
+    assert scores["species"][0]["a photo of Papilio demoleus"] == 0.97
+    assert scores["triage"][0]["a photo of an adult butterfly"] == 0.98
+    assert len(processes) == 1
+    assert '"label_sets": {"species": ["a photo of Papilio demoleus"], "triage": ["a photo of an adult butterfly"]}' in writes[0]
+
+
+def test_bioclip_classifier_builds_species_and_triage_prediction_with_label_sets() -> None:
+    class FakeScorer:
+        def score_label_sets_batch(self, image_paths, label_sets):  # noqa: ANN001 - test fake.
+            assert label_sets["triage"] == ["a photo of an adult butterfly"]
+            return {
+                "species": [{"a photo of Papilio demoleus": 0.91, "a photo of Papilio machaon": 0.09}],
+                "triage": [{"a photo of an adult butterfly": 0.88}],
+            }
+
+    classifier = BioClipClassifier(runtime=_runtime(), scorer=FakeScorer())
+    records = classifier.classify_images_with_label_sets(
+        [
+            {
+                "flickr_photo_id": "1",
+                "image_path": "/tmp/1.jpg",
+                "image_hash": "sha256:image",
+                "image_url_used": "https://live.staticflickr.com/1.jpg",
+                "resolved_scientific_name": "Papilio demoleus",
+                "text_evidence_present": True,
+            }
+        ],
+        label_sets={
+            "species": ["a photo of Papilio demoleus", "a photo of Papilio machaon"],
+            "triage": ["a photo of an adult butterfly"],
+        },
+    )
+
+    record = records[0]
+    assert record["species_top1_label"] == "a photo of Papilio demoleus"
+    assert record["species_top1_score"] == 0.91
+    assert record["triage_top1_label"] == "a photo of an adult butterfly"
+    assert record["triage_top1_score"] == 0.88
+    assert "a photo of an adult butterfly" in DEFAULT_TRIAGE_LABELS

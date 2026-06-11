@@ -5,6 +5,7 @@ import json
 from flickr_bio_occurrence.flickr.query_planner import (
     BBOX_PAGE_SIZE,
     COUNT_PROBE_PAGE_SIZE,
+    GEO_PAGE_SIZE,
     MAX_RESULT_PAGES_PER_QUERY,
     NORMAL_PAGE_SIZE,
     FlickrQuery,
@@ -17,6 +18,7 @@ from flickr_bio_occurrence.flickr.query_planner import (
     multilingual_seed_terms,
     outside_known_papilio_demoleus_regions,
     papilio_demoleus_known_region_for_coordinate,
+    page_size_for_query,
     plan_queries_from_count,
     plan_pages_from_count,
 )
@@ -41,17 +43,23 @@ def test_count_probes_are_recorded_for_text_and_tags() -> None:
     assert all(probe.lane == "count_probe" for probe in plan.count_probes)
 
 
-def test_normal_and_bbox_pages_use_500_records() -> None:
-    normal_probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe")
+def test_geo_pages_use_250_and_non_geo_pages_use_500_records() -> None:
+    geo_probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe")
+    non_geo_probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)
     bbox_probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", bbox="0,0,10,10")
 
-    normal_pages = plan_pages_from_count(normal_probe, total=501)
+    geo_pages = plan_pages_from_count(geo_probe, total=501)
+    non_geo_pages = plan_pages_from_count(non_geo_probe, total=501)
     bbox_pages = plan_pages_from_count(bbox_probe, total=501)
 
-    assert [page.per_page for page in normal_pages] == [NORMAL_PAGE_SIZE, NORMAL_PAGE_SIZE]
-    assert [page.lane for page in normal_pages] == ["normal_page", "normal_page"]
-    assert [page.per_page for page in bbox_pages] == [BBOX_PAGE_SIZE, BBOX_PAGE_SIZE]
-    assert [page.lane for page in bbox_pages] == ["bbox_page", "bbox_page"]
+    assert page_size_for_query(geo_probe) == GEO_PAGE_SIZE
+    assert page_size_for_query(non_geo_probe) == NORMAL_PAGE_SIZE
+    assert [page.per_page for page in geo_pages] == [GEO_PAGE_SIZE, GEO_PAGE_SIZE, GEO_PAGE_SIZE]
+    assert [page.lane for page in geo_pages] == ["normal_page", "normal_page", "normal_page"]
+    assert [page.per_page for page in non_geo_pages] == [NORMAL_PAGE_SIZE, NORMAL_PAGE_SIZE]
+    assert [page.has_geo for page in non_geo_pages] == [0, 0]
+    assert [page.per_page for page in bbox_pages] == [BBOX_PAGE_SIZE, BBOX_PAGE_SIZE, BBOX_PAGE_SIZE]
+    assert [page.lane for page in bbox_pages] == ["bbox_page", "bbox_page", "bbox_page"]
 
 
 def test_high_volume_queries_split_before_pages() -> None:
@@ -72,20 +80,20 @@ def test_high_volume_queries_split_before_pages() -> None:
     assert split[0].parent_total == (MAX_RESULT_PAGES_PER_QUERY + 1) * NORMAL_PAGE_SIZE
 
 
-def test_query_under_page_limit_creates_500_record_pages() -> None:
+def test_query_under_page_limit_creates_250_record_geo_pages() -> None:
     probe = FlickrQuery(term="Papilio demoleus", language="la", search_field="text", lane="count_probe")
 
     pages = plan_queries_from_count(probe, total=501)
 
-    assert [page.page for page in pages] == [1, 2]
-    assert [page.per_page for page in pages] == [500, 500]
+    assert [page.page for page in pages] == [1, 2, 3]
+    assert [page.per_page for page in pages] == [250, 250, 250]
     assert all(page.page < 4000 for page in pages)
 
 
 def test_query_over_page_limit_splits_to_count_probes_not_oversized_pages() -> None:
     probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe")
 
-    split = plan_queries_from_count(probe, total=MAX_RESULT_PAGES_PER_QUERY * NORMAL_PAGE_SIZE + 1)
+    split = plan_queries_from_count(probe, total=MAX_RESULT_PAGES_PER_QUERY * GEO_PAGE_SIZE + 1)
 
     assert split
     assert {query.lane for query in split} == {"count_probe"}
@@ -104,7 +112,10 @@ def test_flickr_search_params_use_text_or_tags_and_url_l_url_m_only() -> None:
     assert params["has_geo"] == 1
     assert params["bbox"] == "0,0,10,10"
     assert params["per_page"] == 1
-    assert params["extras"] == "url_l,url_m"
+    assert "geo" in str(params["extras"])
+    assert "date_taken" in str(params["extras"])
+    assert "url_l" in str(params["extras"])
+    assert "url_m" in str(params["extras"])
     assert "url_o" not in str(params["extras"])
 
 

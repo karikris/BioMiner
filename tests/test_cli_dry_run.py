@@ -21,7 +21,7 @@ def test_fetch_dry_run_reports_required_fields() -> None:
     )
 
     assert summary["planned_api_calls"] == 5
-    assert summary["planned_maximum_photo_records"] == 2500
+    assert summary["planned_maximum_photo_records"] == 1250
     assert summary["hourly_limit_status"] == "within_soft_cap"
     assert summary["work_item_count"] == 5
     assert summary["output_paths"]["raw"] == "data/raw/flickr/photos_search/"
@@ -51,7 +51,7 @@ def test_fetch_dry_run_cli_outputs_json(capsys) -> None:
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["species"] == "Papilio demoleus"
-    assert payload["planned_maximum_photo_records"] == 2500
+    assert payload["planned_maximum_photo_records"] == 1250
 
 
 def test_poll_once_cli_accepts_bounded_cycle_arguments() -> None:
@@ -109,7 +109,8 @@ def test_build_papilio_demoleus_query_plan_cli_reads_keyword_json(tmp_path, caps
     assert payload["count_probes_seen"] == 4
     assert payload["count_probes_inserted"] == 4
     assert payload["soft_api_calls_per_hour"] == 3450
-    assert payload["per_page_for_final_fetches"] == 500
+    assert payload["per_page_for_final_fetches"] == 250
+    assert payload["per_page_for_non_geo_fetches"] == 500
     assert payload["max_result_pages_per_query"] == 3999
 
 
