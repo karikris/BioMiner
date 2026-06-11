@@ -92,6 +92,15 @@ Generated: 2026-06-07T11:11:00.135875+00:00
 - Generated artifacts excluded: no generated artifacts were created.
 - Remaining cleanup recommendation: keep URL choice in metadata/evidence input and avoid adding a second image-selection layer.
 
+## Phase 4 Codebase Minimization
+
+- Files changed: config asset tests and this cleanup report.
+- Tests added or updated: config tests now require only `.env.example` and ignore rules for local operator inputs.
+- Redundant code removed: deleted unused tracked config fixtures and static generated report JSON/Markdown artifacts.
+- Compatibility shims retained: none.
+- Generated artifacts excluded: only `reports/code_cleanup_report.md` remains tracked under reports.
+- Remaining cleanup recommendation: generate operational reports from current runs rather than committing placeholder report artifacts.
+
 ## BioCLIP Register Runner Tests
 
 - Files changed: `tests/test_register_runner.py` and this cleanup report.
