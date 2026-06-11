@@ -16,7 +16,6 @@ from flickr_bio_occurrence.pipeline.comment_review import (
     review_comments_once,
 )
 from flickr_bio_occurrence.pipeline.comments_enrichment import CommentsEnrichmentState, fetch_flickr_comments
-from flickr_bio_occurrence.pipeline.dry_run import build_dry_run_summary
 from flickr_bio_occurrence.pipeline.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 
 
@@ -24,18 +23,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="flickr-bio")
     parser.add_argument("--version", action="store_true")
     subparsers = parser.add_subparsers(dest="command")
-    fetch = subparsers.add_parser("fetch")
-    fetch.add_argument("--species", required=True)
-    fetch.add_argument("--region", required=True)
-    fetch.add_argument("--year", type=int, required=True)
-    fetch.add_argument("--month", type=int, required=True)
-    fetch.add_argument("--dry-run", action="store_true")
-    fetch_live = subparsers.add_parser("fetch-live")
-    fetch_live.add_argument("--species", required=True)
-    fetch_live.add_argument("--region", required=True)
-    fetch_live.add_argument("--year", type=int, required=True)
-    fetch_live.add_argument("--month", type=int, required=True)
-    fetch_live.add_argument("--dry-run", action="store_true")
     fetch_comments = subparsers.add_parser("fetch-comments")
     fetch_comments.add_argument("--photo-id", action="append", default=[])
     fetch_comments.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
@@ -84,16 +71,6 @@ def build_parser() -> argparse.ArgumentParser:
 def run(args: argparse.Namespace) -> int:
     if args.version:
         print("flickr-bio-occurrence 0.1.0")
-        return 0
-    if args.command in {"fetch", "fetch-live"} and args.dry_run:
-        summary = build_dry_run_summary(
-            species=args.species,
-            region=args.region,
-            year=args.year,
-            month=args.month,
-            config_path="config/pipeline.toml",
-        )
-        print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
     if args.command == "fetch-comments":
         state = CommentsEnrichmentState(args.state_db)

@@ -18,7 +18,6 @@ from flickr_bio_occurrence.flickr.query_planner import (
     flickr_search_params,
     plan_queries_from_count,
 )
-from flickr_bio_occurrence.flickr.butterfly_terms import safe_query_variant
 
 
 SOFT_API_CALLS_PER_HOUR = 3450
@@ -350,11 +349,15 @@ def _http_fetcher(*, api_key: str | None) -> FetchMetadata:
 
 
 def _write_raw_response(*, raw_root: Path, work_item_id: str, query: FlickrQuery, payload: dict[str, Any]) -> Path:
-    target_dir = raw_root / "flickr" / "photos_search" / query.search_field / safe_query_variant(query.term)
+    target_dir = raw_root / "flickr" / "photos_search" / query.search_field / _safe_query_variant(query.term)
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"{query.lane}-{query.page:05d}-{work_item_id[:12]}.json"
     target.write_text(json.dumps(payload, sort_keys=True, ensure_ascii=False), encoding="utf-8")
     return target
+
+
+def _safe_query_variant(term: str) -> str:
+    return "".join(char if char.isalnum() else "_" for char in term.casefold()).strip("_")
 
 
 def _write_evidence(evidence_output: str | Path, payloads: list[dict[str, Any]]) -> int:

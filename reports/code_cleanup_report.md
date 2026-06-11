@@ -74,6 +74,15 @@ Generated: 2026-06-07T11:11:00.135875+00:00
 - Generated artifacts excluded: no generated data, cache, image, parquet, DuckDB, or model files were added.
 - Remaining cleanup recommendation: run a follow-up import audit after the full suite passes and remove any now-unused report JSON fixtures if they are not consumed.
 
+## Phase 2 Codebase Minimization
+
+- Files changed: CLI, `src/flickr_bio_occurrence/pipeline/metadata_poller.py`, CLI tests, and this cleanup report.
+- Tests added or updated: CLI command-surface test now asserts removed `fetch`, `fetch-live`, and benchmark commands are absent.
+- Redundant code removed: deleted old monthly dry-run planning, dashboard butterfly-term loading, `FlickrClient`, and `WorkItem` helpers that duplicated the active metadata poller/query planner path.
+- Compatibility shims retained: none; raw-response slugging is local to the metadata poller.
+- Generated artifacts excluded: no generated artifacts were created.
+- Remaining cleanup recommendation: inspect report fixture files for stale references to removed benchmark/DWC concepts.
+
 ## BioCLIP Register Runner Tests
 
 - Files changed: `tests/test_register_runner.py` and this cleanup report.

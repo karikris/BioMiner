@@ -1,60 +1,23 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import polars as pl
 
 from flickr_bio_occurrence.cli import build_parser, run
 from flickr_bio_occurrence.flickr.rate_limiter import FlickrRateLimiter
-from flickr_bio_occurrence.pipeline.dry_run import build_dry_run_summary
 
 
-def test_fetch_dry_run_reports_required_fields() -> None:
-    summary = build_dry_run_summary(
-        species="Papilio demoleus",
-        region="AU_QLD",
-        year=2024,
-        month=1,
-        config_path="config/pipeline.toml",
-    )
-
-    assert summary["planned_api_calls"] == 5
-    assert summary["planned_maximum_photo_records"] == 1250
-    assert summary["hourly_limit_status"] == "within_soft_cap"
-    assert summary["work_item_count"] == 5
-    assert summary["output_paths"]["raw"] == "data/raw/flickr/photos_search/"
-    assert summary["vision_package"] == "BioCLIP 2.5 register runner"
-
-
-def test_fetch_dry_run_can_plan_multiple_pages() -> None:
-    summary = build_dry_run_summary(
-        species="Papilio demoleus",
-        region="AU_ALL",
-        year=2024,
-        month=1,
-        config_path="config/pipeline.toml",
-        pages=range(1, 4),
-    )
-
-    assert summary["planned_api_calls"] == 15
-    assert summary["planned_maximum_photo_records"] == 3600
-    assert summary["work_item_count"] == 15
-
-
-def test_fetch_dry_run_cli_outputs_json(capsys) -> None:
+def test_cli_exposes_only_lean_pipeline_commands() -> None:
     parser = build_parser()
-    args = parser.parse_args(["fetch", "--species", "Papilio demoleus", "--region", "AU_QLD", "--year", "2024", "--month", "1", "--dry-run"])
+    commands = parser._subparsers._group_actions[0].choices  # noqa: SLF001 - parser surface regression test.
 
-    assert run(args) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["species"] == "Papilio demoleus"
-    assert payload["planned_maximum_photo_records"] == 1250
-
+    assert "poll-once" in commands
+    assert "build-papilio-demoleus-query-plan" in commands
+    assert "fetch" not in commands
+    assert "fetch-live" not in commands
+    assert "benchmark-existing-payloads" not in commands
 
 def test_poll_once_cli_accepts_bounded_cycle_arguments() -> None:
     parser = build_parser()
@@ -127,34 +90,6 @@ def test_cli_help_does_not_describe_old_gold_silver_bronze_logic(capsys) -> None
     assert "bioclip_positive_without_human_verification" not in help_text
 
 
-def test_cli_module_execution_outputs_dry_run_json() -> None:
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(Path.cwd() / "src")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "flickr_bio_occurrence.cli",
-            "fetch",
-            "--species",
-            "Papilio demoleus",
-            "--region",
-            "AU_QLD",
-            "--year",
-            "2024",
-            "--month",
-            "1",
-            "--dry-run",
-        ],
-        check=True,
-        capture_output=True,
-        env=env,
-        text=True,
-    )
-
-    assert json.loads(result.stdout)["planned_api_calls"] == 5
-
-
 def test_qa_rate_limit_outputs_limiter_status_json(tmp_path, capsys) -> None:
     limiter = FlickrRateLimiter(tmp_path / "limits.sqlite")
     limiter.acquire_api_token("flickr.photos.search", "work-1")
@@ -199,6 +134,7 @@ def test_qa_summary_outputs_report_summary(tmp_path, capsys) -> None:
     assert payload["vision_model_loaded"] is True
     assert payload["total_artifact_bytes"] == 1234
 
+
 def test_apply_rules_compact_and_gc_cache_cli(tmp_path, capsys) -> None:
     parser = build_parser()
     evidence_path = tmp_path / "evidence.parquet"
@@ -232,26 +168,8 @@ def test_apply_rules_compact_and_gc_cache_cli(tmp_path, capsys) -> None:
     assert compacted_path.exists()
 
 
-def test_fetch_live_dry_run_and_comments_enrichment_cli(tmp_path, capsys) -> None:
+def test_comments_enrichment_cli(tmp_path, capsys) -> None:
     parser = build_parser()
-    args = parser.parse_args(
-        [
-            "fetch-live",
-            "--species",
-            "Papilio demoleus",
-            "--region",
-            "AU_QLD",
-            "--year",
-            "2024",
-            "--month",
-            "1",
-            "--dry-run",
-        ]
-    )
-
-    assert run(args) == 0
-    assert json.loads(capsys.readouterr().out)["planned_api_calls"] == 5
-
     args = parser.parse_args(["fetch-comments", "--photo-id", "1", "--state-db", str(tmp_path / "comments.sqlite"), "--dry-run"])
     assert run(args) == 0
     payload = json.loads(capsys.readouterr().out)
