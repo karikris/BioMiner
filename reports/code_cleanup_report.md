@@ -47,6 +47,15 @@ Generated: 2026-06-07T11:11:00.135875+00:00
 - Generated artifacts excluded: candidate parquet inputs remain data artifacts and are not committed as source.
 - Remaining cleanup recommendation: wire the loader into a CLI or runner entry point once the register runner is committed.
 
+## BioCLIP Worker Label-Set Batching Test
+
+- Files changed: `tests/test_bioclip_worker_batching.py` and this cleanup report.
+- Tests added or updated: fake-model worker test proving label-set scoring stacks multiple images and calls `encode_image` once for the batch.
+- Redundant code removed: none; this adds coverage for the existing batched worker path.
+- Compatibility shims retained: none.
+- Generated artifacts excluded: no generated artifacts created.
+- Remaining cleanup recommendation: keep this as a lightweight guard against accidental per-image encoding regressions.
+
 ## Comment Review Scope
 
 - Added a separate targeted comment-review phase after BioCLIP triage.
