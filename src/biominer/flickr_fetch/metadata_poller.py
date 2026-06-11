@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 import json
@@ -18,14 +19,16 @@ from biominer.flickr_fetch.query_planner import (
     flickr_search_params,
     plan_queries_from_count,
 )
+from biominer.storage.parquet import write_parquet
 
 
-SOFT_API_CALLS_PER_HOUR = 3450
+SOFT_API_CALLS_PER_HOUR = 3500
 HARD_API_CALLS_PER_HOUR = 3600
 PENDING = "pending"
 CLAIMED = "claimed"
 COMPLETED = "completed"
 FAILED = "failed"
+DEFAULT_STALE_CLAIM_SECONDS = 3600
 
 FetchMetadata = Callable[[FlickrQuery], dict[str, Any]]
 
@@ -42,6 +45,7 @@ class PollOnceResult:
     api_calls_made: int
     remaining_soft_budget: int
     remaining_hard_budget: int
+    stale_claims_requeued: int
 
 
 class MetadataPollState:
@@ -82,6 +86,21 @@ class MetadataPollState:
                     query.per_page,
                     _timestamp(),
                 ),
+            )
+        return int(result.rowcount)
+
+    def requeue_stale_claims(self, *, stale_after_seconds: int = DEFAULT_STALE_CLAIM_SECONDS, now: datetime | None = None) -> int:
+        cutoff = datetime.fromtimestamp((now or datetime.now(UTC)).timestamp() - stale_after_seconds, UTC).isoformat()
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE flickr_work_items
+                SET status = ?, claimed_at = NULL, error = NULL
+                WHERE status = ?
+                  AND claimed_at IS NOT NULL
+                  AND claimed_at < ?
+                """,
+                (PENDING, CLAIMED, cutoff),
             )
         return int(result.rowcount)
 
@@ -277,8 +296,11 @@ def poll_once(
     max_api_calls: int = SOFT_API_CALLS_PER_HOUR,
     api_key: str | None = None,
     fetch_metadata: FetchMetadata | None = None,
+    workers: int = 1,
+    stale_claim_seconds: int = DEFAULT_STALE_CLAIM_SECONDS,
 ) -> PollOnceResult:
     state = MetadataPollState(state_db)
+    stale_requeued = state.requeue_stale_claims(stale_after_seconds=stale_claim_seconds)
     state.ensure_seed_work_items()
     soft_remaining, hard_remaining = state.remaining_api_budget(max_api_calls=max_api_calls)
     claim_limit = min(soft_remaining, hard_remaining)
@@ -290,27 +312,35 @@ def poll_once(
     payloads: list[dict[str, Any]] = []
     fetcher = fetch_metadata or _http_fetcher(api_key=api_key)
 
-    for work_item_id, query in claimed:
-        try:
-            payload = fetcher(query)
-            state.log_api_call(work_item_id=work_item_id, endpoint=SEARCH_METHOD, status="ok")
-            raw_written += 1
-            payloads.append(payload)
-            _write_raw_response(raw_root=Path(raw_root), work_item_id=work_item_id, query=query, payload=payload)
-            total = _payload_total(payload)
-            if query.lane == "count_probe":
-                for next_query in plan_queries_from_count(query, total=total):
-                    state.enqueue_work_item(next_query)
-            else:
-                records = _payload_photo_records(payload)
-                inserted, skipped, queued_count = state.insert_source_records(records, source_query=query)
-                records_inserted += inserted
-                duplicates += skipped
-                queued += queued_count
-            state.complete_work_item(work_item_id)
-        except Exception as exc:  # noqa: BLE001 - poller records failure and exits bounded cycle.
-            state.log_api_call(work_item_id=work_item_id, endpoint=SEARCH_METHOD, status="failed")
-            state.fail_work_item(work_item_id, str(exc))
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        pending: dict[Future[dict[str, Any]], tuple[str, FlickrQuery]] = {
+            pool.submit(fetcher, query): (work_item_id, query)
+            for work_item_id, query in claimed
+        }
+        while pending:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                work_item_id, query = pending.pop(future)
+                try:
+                    payload = future.result()
+                    state.log_api_call(work_item_id=work_item_id, endpoint=SEARCH_METHOD, status="ok")
+                    raw_written += 1
+                    payloads.append(payload)
+                    _write_raw_response(raw_root=Path(raw_root), work_item_id=work_item_id, query=query, payload=payload)
+                    total = _payload_total(payload)
+                    if query.lane == "count_probe":
+                        for next_query in plan_queries_from_count(query, total=total):
+                            state.enqueue_work_item(next_query)
+                    else:
+                        records = _payload_photo_records(payload)
+                        inserted, skipped, queued_count = state.insert_source_records(records, source_query=query)
+                        records_inserted += inserted
+                        duplicates += skipped
+                        queued += queued_count
+                    state.complete_work_item(work_item_id)
+                except Exception as exc:  # noqa: BLE001 - poller records failure and exits bounded cycle.
+                    state.log_api_call(work_item_id=work_item_id, endpoint=SEARCH_METHOD, status="failed")
+                    state.fail_work_item(work_item_id, str(exc))
 
     evidence_rows = _write_evidence(evidence_output, payloads)
     soft_after, hard_after = state.remaining_api_budget(max_api_calls=max_api_calls)
@@ -325,6 +355,7 @@ def poll_once(
         api_calls_made=len(claimed),
         remaining_soft_budget=soft_after,
         remaining_hard_budget=hard_after,
+        stale_claims_requeued=stale_requeued,
     )
 
 
@@ -375,7 +406,7 @@ def _write_evidence(evidence_output: str | Path, payloads: list[dict[str, Any]])
             frame = pl.concat([existing, frame], how="diagonal_relaxed")
         except Exception:
             pass
-    frame.write_parquet(output)
+    write_parquet(frame, output)
     return frame.height
 
 

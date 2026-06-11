@@ -2,6 +2,15 @@
 
 Generated: 2026-06-07T11:11:00.135875+00:00
 
+## Phase 1: Flickr Fetch Restructure
+
+- Files changed: `src/biominer/flickr_fetch/`, `src/biominer/cli.py`, fetch/rate-limit/CLI tests, README, and this cleanup report.
+- Tests added or updated: added coverage for stale claimed-work recovery and parallel `poll_once` workers; updated the Flickr API soft cap to 3,500.
+- Redundant code removed: replaced serial fetch-only execution with one bounded worker-pool path and routed evidence parquet writes through shared storage.
+- Compatibility shims retained: none.
+- Generated artifacts excluded: no raw Flickr payloads, parquet outputs, caches, images, model weights, or virtual environments were added.
+- Remaining cleanup recommendation: move the standalone `FlickrRateLimiter` to `biominer.common` if non-Flickr API stages begin sharing it.
+
 ## Phase 0: BioMiner Identity And Namespace
 
 - Files changed: `pyproject.toml`, `README.md`, `src/biominer/`, tests, and this cleanup report.

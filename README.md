@@ -70,7 +70,7 @@ Run one bounded metadata polling cycle:
 
 ```bash
 biominer poll-once \
-  --max-api-calls 3450 \
+  --max-api-calls 3500 \
   --state-db data/state/flickr_poller.sqlite \
   --raw-root data/raw \
   --evidence-output staging/evidence/poll_once_evidence.parquet
@@ -132,7 +132,7 @@ Metadata polling is designed as a bounded one-shot command:
 check API budget -> claim work items -> fetch pages -> write staging/evidence -> queue image triage -> write reports -> exit
 ```
 
-The active limits are a 3,450-call soft hourly target and a 3,600-call hard hourly stop. Normal pages use `per_page=500`; geotagged/bbox pages use `per_page=250`; count probes use `per_page=1`. Oversized result sets are split instead of paging blindly past Flickr's accessible search window.
+The active limits are a 3,500-call soft hourly target and a 3,600-call hard hourly stop. Normal pages use `per_page=500`; geotagged/bbox pages use `per_page=250`; count probes use `per_page=1`. Oversized result sets are split instead of paging blindly past Flickr's accessible search window.
 
 ## Triage Rules
 

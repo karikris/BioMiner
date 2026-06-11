@@ -21,10 +21,10 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
 
 def test_poll_once_cli_accepts_bounded_cycle_arguments() -> None:
     parser = build_parser()
-    args = parser.parse_args(["poll-once", "--max-api-calls", "3450"])
+    args = parser.parse_args(["poll-once", "--max-api-calls", "3500"])
 
     assert args.command == "poll-once"
-    assert args.max_api_calls == 3450
+    assert args.max_api_calls == 3500
 
 
 def test_build_papilio_demoleus_query_plan_cli_reads_keyword_json(tmp_path, capsys) -> None:
@@ -73,7 +73,7 @@ def test_build_papilio_demoleus_query_plan_cli_reads_keyword_json(tmp_path, caps
     payload = json.loads(capsys.readouterr().out)
     assert payload["count_probes_seen"] == 4
     assert payload["count_probes_inserted"] == 4
-    assert payload["soft_api_calls_per_hour"] == 3450
+    assert payload["soft_api_calls_per_hour"] == 3500
     assert payload["per_page_for_final_fetches"] == 250
     assert payload["per_page_for_non_geo_fetches"] == 500
     assert payload["max_result_pages_per_query"] == 3999
@@ -103,7 +103,7 @@ def test_qa_rate_limit_outputs_limiter_status_json(tmp_path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["api_calls_in_window"] == 1
     assert payload["photo_records_in_window"] == 2
-    assert payload["soft_api_calls_per_hour"] == 3450
+    assert payload["soft_api_calls_per_hour"] == 3500
     assert payload["hard_api_calls_per_hour"] == 3600
 
 

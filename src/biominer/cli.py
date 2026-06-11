@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
     apply_comment_decisions.add_argument("--state-db", default="data/state/comment_review.sqlite")
     poll_once_parser = subparsers.add_parser("poll-once")
     poll_once_parser.add_argument("--max-api-calls", type=int, default=SOFT_API_CALLS_PER_HOUR)
+    poll_once_parser.add_argument("--workers", type=int, default=1)
+    poll_once_parser.add_argument("--stale-claim-seconds", type=int, default=3600)
     poll_once_parser.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
     poll_once_parser.add_argument("--raw-root", default="data/raw")
     poll_once_parser.add_argument("--evidence-output", default="staging/evidence/poll_once_evidence.parquet")
@@ -160,6 +162,8 @@ def run(args: argparse.Namespace) -> int:
             evidence_output=args.evidence_output,
             max_api_calls=args.max_api_calls,
             api_key=os.environ.get(args.api_key_env),
+            workers=args.workers,
+            stale_claim_seconds=args.stale_claim_seconds,
         )
         print(json.dumps({**result.__dict__, "state_db": str(result.state_db)}, indent=2, sort_keys=True))
         return 0

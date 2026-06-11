@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 import sqlite3
+import threading
 from pathlib import Path
 
 from biominer.flickr_fetch.query_planner import FlickrQuery
@@ -42,7 +44,7 @@ def test_poll_once_fetches_metadata_only_dedupes_and_queues_image_urls(tmp_path)
         state_db=state.path,
         raw_root=tmp_path / "raw",
         evidence_output=tmp_path / "evidence" / "poll.parquet",
-        max_api_calls=3450,
+        max_api_calls=3500,
         fetch_metadata=fake_fetch,
     )
 
@@ -118,11 +120,11 @@ def test_poll_once_splits_count_probe_over_page_limit(tmp_path) -> None:
     assert {row[2] for row in rows} == {"bbox"}
 
 
-def test_poll_once_respects_soft_budget_without_fetching(tmp_path) -> None:
+def test_poll_once_respects_3500_soft_budget_without_fetching(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     state.enqueue_work_item(FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", per_page=250))
     with sqlite3.connect(state.path) as conn:
-        for index in range(3450):
+        for index in range(3500):
             conn.execute(
                 "INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at) VALUES (?, ?, ?, strftime('%s','now'))",
                 ("flickr.photos.search", f"work-{index}", "ok"),
@@ -132,9 +134,55 @@ def test_poll_once_respects_soft_budget_without_fetching(tmp_path) -> None:
         state_db=state.path,
         raw_root=tmp_path / "raw",
         evidence_output=tmp_path / "evidence.parquet",
-        max_api_calls=3450,
+        max_api_calls=3500,
         fetch_metadata=lambda query: (_ for _ in ()).throw(AssertionError("fetch should not be called")),
     )
 
     assert result.work_items_claimed == 0
     assert result.remaining_soft_budget == 0
+
+
+def test_poll_once_requeues_stale_claimed_work(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    query = FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=250)
+    state.enqueue_work_item(query)
+    claimed = state.claim_pending(limit=1)
+    stale_time = datetime.now(UTC) - timedelta(hours=2)
+    with sqlite3.connect(state.path) as conn:
+        conn.execute("UPDATE flickr_work_items SET claimed_at = ? WHERE work_item_id = ?", (stale_time.isoformat(), claimed[0][0]))
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=1,
+        fetch_metadata=lambda item: {"photos": {"total": "0", "photo": []}},
+        stale_claim_seconds=60,
+    )
+
+    assert result.stale_claims_requeued == 1
+    assert result.work_items_claimed == 1
+
+
+def test_poll_once_uses_parallel_workers_for_claimed_pages(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    for index in range(4):
+        state.enqueue_work_item(FlickrQuery(term=f"butterfly-{index}", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+    thread_names: set[str] = set()
+
+    def fake_fetch(item: FlickrQuery) -> dict[str, object]:
+        thread_names.add(threading.current_thread().name)
+        return {"photos": {"total": "0", "photo": []}}
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=4,
+        fetch_metadata=fake_fetch,
+        workers=4,
+    )
+
+    assert result.work_items_claimed == 4
+    assert result.api_calls_made == 4
+    assert thread_names
