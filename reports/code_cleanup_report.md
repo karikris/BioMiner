@@ -2,6 +2,15 @@
 
 Generated: 2026-06-07T11:11:00.135875+00:00
 
+## Phase 4: Bronze Comment Review And Bucket Reports
+
+- Files changed: `src/biominer/flickr_comments/`, `src/biominer/reports/`, `src/biominer/cli.py`, comment/CLI tests, and this cleanup report.
+- Tests added or updated: updated comment-review tests for Bronze-only queueing, species-match Gold/Silver promotion, missing-geo requests, and derived bucket-view export.
+- Redundant code removed: removed the hard-coded Papilio-only promotion decision path from comment review; comments now compare mined comment species against the BioCLIP species candidate.
+- Compatibility shims retained: `triage_bin` is still updated alongside `occurrence_bin` when comment decisions are applied.
+- Generated artifacts excluded: no comment API payloads, bucket parquet outputs, live-run data, caches, images, model weights, or virtual environments were added.
+- Remaining cleanup recommendation: merge `comments_enrichment` into `comment_review` if promoted-search-term discovery is no longer needed as a separate operator workflow.
+
 ## Phase 3: BioCLIP Bucketing And Bucket Views
 
 - Files changed: `src/biominer/bioclip/`, `src/biominer/storage/`, register/triage tests, README, and this cleanup report.

@@ -18,6 +18,7 @@ from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState
 from biominer.filter.anti_keywords import filter_biodiversity_parquet
 from biominer.filter.rules import classify_evidence_frame
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
+from biominer.reports.buckets import export_bucket_views
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,6 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
     qa_rate_limit.add_argument("--ledger-path", default=str(DEFAULT_RATE_LIMIT_LEDGER_PATH))
     qa_summary = subparsers.add_parser("qa-summary")
     qa_summary.add_argument("--report", required=True)
+    export_views = subparsers.add_parser("export-bucket-views")
+    export_views.add_argument("--input", required=True)
+    export_views.add_argument("--output-dir", required=True)
     return parser
 
 
@@ -225,6 +229,9 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "qa-summary":
         print(json.dumps(_summarize_report(Path(args.report)), indent=2, sort_keys=True))
+        return 0
+    if args.command == "export-bucket-views":
+        print(json.dumps(export_bucket_views(args.input, args.output_dir), indent=2, sort_keys=True))
         return 0
     return 2
 

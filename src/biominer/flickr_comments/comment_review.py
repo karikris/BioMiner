@@ -26,6 +26,7 @@ COMMENT_REVIEW_METRICS = (
     "species_conflicts_reviewed",
     "species_conflicts_resolved",
     "records_moved_to_gold",
+    "records_moved_to_silver",
     "records_kept_in_review_no_geo",
     "missing_geo_requests_created",
     "missing_date_requests_created",
@@ -33,8 +34,8 @@ COMMENT_REVIEW_METRICS = (
     "comment_review_failures",
 )
 
-TARGET_SPECIES = "Papilio demoleus"
-BIOCLIP_CONFIDENCE_THRESHOLD = 0.50
+GOLD_SPECIES_CONFIDENCE_THRESHOLD = 0.70
+SILVER_SPECIES_CONFIDENCE_THRESHOLD = 0.35
 MAX_COMMENT_CALLS_PER_HOUR = 300
 TARGET_TERMS = (
     "papilio demoleus",
@@ -44,7 +45,7 @@ TARGET_TERMS = (
     "citrus swallowtail",
 )
 GENERIC_LEPIDOPTERA_TERMS = ("butterfly", "swallowtail")
-HARD_NEGATIVE_CATEGORIES = {"museum_specimen", "artwork", "tattoo", "ai_generated", "other_insect", "not_lepidoptera", "object_or_product"}
+HARD_NEGATIVE_CATEGORIES = {"museum_specimen", "artwork", "tattoo", "ai_generated", "other_insect", "not_lepidoptera", "object_or_product", "logo_or_brand", "textile_or_pattern"}
 
 
 @dataclass(frozen=True)
@@ -139,6 +140,8 @@ class CommentReviewState:
                     summary["species_conflicts_resolved"] += 1
                 if result.comment_review_decision == "move_to_gold":
                     summary["records_moved_to_gold"] += 1
+                if result.comment_review_decision == "move_to_silver":
+                    summary["records_moved_to_silver"] += 1
                 if result.comment_review_decision == "keep_in_review_no_geo":
                     summary["records_kept_in_review_no_geo"] += 1
                 if result.comment_review_decision == "request_missing_geo":
@@ -242,6 +245,19 @@ class CommentReviewState:
                         "comment_species_candidate": review["comment_species_candidate"],
                     }
                 )
+            elif str(review["comment_review_decision"]) == "move_to_silver":
+                updated.append(
+                    {
+                        **record,
+                        "occurrence_bin": "silver",
+                        "triage_bin": "silver",
+                        "bin_reason": "comment_review_species_support",
+                        "triage_reason": "comment_review_species_support",
+                        "comment_review_decision": "move_to_silver",
+                        "comment_review_reason": review["comment_review_reason"],
+                        "comment_species_candidate": review["comment_species_candidate"],
+                    }
+                )
             else:
                 updated.append(
                     {
@@ -262,6 +278,7 @@ class CommentReviewState:
                 "species_conflicts_reviewed": int(conn.execute("SELECT count(*) FROM comment_review_results WHERE bioclip_tag_conflict = 1").fetchone()[0]),
                 "species_conflicts_resolved": int(conn.execute("SELECT count(*) FROM comment_review_results WHERE comment_resolves_conflict = 1").fetchone()[0]),
                 "records_moved_to_gold": int(conn.execute("SELECT count(*) FROM comment_review_results WHERE comment_review_decision = 'move_to_gold'").fetchone()[0]),
+                "records_moved_to_silver": int(conn.execute("SELECT count(*) FROM comment_review_results WHERE comment_review_decision = 'move_to_silver'").fetchone()[0]),
                 "records_kept_in_review_no_geo": int(conn.execute("SELECT count(*) FROM comment_review_results WHERE comment_review_decision = 'keep_in_review_no_geo'").fetchone()[0]),
                 "missing_geo_requests_created": int(conn.execute("SELECT count(*) FROM missing_data_requests WHERE request_type = 'missing_geo'").fetchone()[0]),
                 "missing_date_requests_created": int(conn.execute("SELECT count(*) FROM missing_data_requests WHERE request_type = 'missing_date'").fetchone()[0]),
@@ -464,6 +481,9 @@ def apply_comment_review_decisions_to_parquet(*, input_path: str | Path, output_
 
 def comment_review_reasons(record: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
+    if str(record.get("occurrence_bin") or record.get("triage_bin") or "") != "bronze":
+        return reasons
+    reasons.append("bronze_comment_review")
     flickr_candidate = flickr_text_species_candidate(record)
     bioclip_candidate = bioclip_species_candidate(record)
     conflict = _truthy(record.get("bioclip_tag_conflict")) or _truthy(record.get("bioclip_species_conflict")) or _species_conflict(
@@ -483,7 +503,7 @@ def comment_review_reasons(record: dict[str, Any]) -> list[str]:
     if str(record.get("life_stage") or "") == "unknown":
         reasons.append("unknown_life_stage")
     score = _optional_float(record.get("bioclip_top1_score", record.get("top1_score")))
-    if score is not None and score < BIOCLIP_CONFIDENCE_THRESHOLD:
+    if score is not None and score < SILVER_SPECIES_CONFIDENCE_THRESHOLD:
         reasons.append("low_bioclip_score")
     return _ordered_unique(reasons)
 
@@ -504,8 +524,8 @@ def review_comments_for_record(record: dict[str, Any], comments: Iterable[dict[s
         flickr_candidate=flickr_candidate,
         bioclip_candidate=bioclip_candidate,
     )
-    species_match = bool(comment_candidate == TARGET_SPECIES)
-    resolves_conflict = bool(conflict and comment_candidate and comment_candidate == flickr_candidate)
+    species_match = bool(comment_candidate and bioclip_candidate and _normalize(comment_candidate) == _normalize(bioclip_candidate))
+    resolves_conflict = bool(conflict and comment_candidate and bioclip_candidate and _normalize(comment_candidate) == _normalize(bioclip_candidate))
     decision, reason = _comment_review_decision(
         record=record,
         species_match=species_match,
@@ -578,6 +598,8 @@ def _comment_review_decision(
         return "request_missing_geo", "comments_contain_place_name_without_structured_geo"
     if missing_date and not date_evidence:
         return "request_missing_date", "comments_do_not_contain_normalized_event_date"
+    if _silver_eligible(record=record, species_match=species_match, date_recovered=bool(date_evidence), structured_geo_recovered=bool(geo_evidence)):
+        return "move_to_silver", "comments_support_bioclip_species_but_gold_rules_not_met"
     if conflict and not resolves_conflict:
         return "request_species_review", "comments_do_not_resolve_bioclip_flickr_species_conflict"
     if str(record.get("life_stage") or "") == "unknown" and not life_stage:
@@ -602,19 +624,34 @@ def _gold_eligible(
     resolves_conflict: bool,
 ) -> bool:
     return bool(
-        _is_bioclip_lepidoptera_positive(record)
+        _bioclip_score(record) > GOLD_SPECIES_CONFIDENCE_THRESHOLD
         and _has_image_url(record)
         and (_has_event_date(record) or date_recovered)
         and (_has_geo(record) or structured_geo_recovered)
-        and (species_match or life_stage or (conflict and resolves_conflict))
+        and (species_match or (conflict and resolves_conflict))
         and not _has_hard_negative_flag(record)
     )
+
+
+def _silver_eligible(
+    *,
+    record: dict[str, Any],
+    species_match: bool,
+    date_recovered: bool,
+    structured_geo_recovered: bool,
+) -> bool:
+    if _has_hard_negative_flag(record) or not species_match or not _has_image_url(record):
+        return False
+    score = _bioclip_score(record)
+    if score < SILVER_SPECIES_CONFIDENCE_THRESHOLD:
+        return False
+    return not (_has_event_date(record) or date_recovered) or not (_has_geo(record) or structured_geo_recovered) or score <= GOLD_SPECIES_CONFIDENCE_THRESHOLD
 
 
 def _species_candidate_from_text(text: str) -> str | None:
     normalized = _normalize(text)
     if any(term in normalized for term in TARGET_TERMS):
-        return TARGET_SPECIES
+        return "Papilio demoleus"
     names = SCIENTIFIC_NAME_PATTERN.findall(text)
     if names:
         return names[0]
@@ -627,8 +664,6 @@ def _species_candidate_from_text(text: str) -> str | None:
 
 def _species_name_from_text(text: str) -> str | None:
     for name in SCIENTIFIC_NAME_PATTERN.findall(text):
-        if _normalize(name) == _normalize(TARGET_SPECIES):
-            return TARGET_SPECIES
         return name
     return None
 
@@ -642,7 +677,7 @@ def _common_name_from_text(text: str) -> str | None:
 
 
 def _target_species_from_common_name(common_name: str | None) -> str | None:
-    return TARGET_SPECIES if common_name else None
+    return "Papilio demoleus" if common_name else None
 
 
 def _life_stage_from_text(text: str) -> str | None:
@@ -687,7 +722,12 @@ def _is_bioclip_lepidoptera_positive(record: dict[str, Any]) -> bool:
     if _truthy(record.get("is_target_positive")):
         return True
     candidate = bioclip_species_candidate(record)
-    return candidate in {TARGET_SPECIES, "butterfly"}
+    return bool(candidate and candidate not in {"non_target_insect"})
+
+
+def _bioclip_score(record: dict[str, Any]) -> float:
+    value = _optional_float(record.get("species_top1_score", record.get("bioclip_top1_score", record.get("top1_score"))))
+    return -1.0 if value is None else value
 
 
 def _has_hard_negative_flag(record: dict[str, Any]) -> bool:

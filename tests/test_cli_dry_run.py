@@ -189,3 +189,25 @@ def test_gc_cache_reports_deleted_files(tmp_path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["files_seen"] == 1
     assert payload["deleted_files"] == 1
+
+
+def test_export_bucket_views_cli_writes_derived_parquet_files(tmp_path, capsys) -> None:
+    input_path = tmp_path / "bucketed_records.parquet"
+    output_dir = tmp_path / "views"
+    pl.DataFrame(
+        [
+            {"flickr_photo_id": "1", "occurrence_bin": "gold"},
+            {"flickr_photo_id": "2", "occurrence_bin": "silver"},
+            {"flickr_photo_id": "3", "occurrence_bin": "bronze"},
+            {"flickr_photo_id": "4", "occurrence_bin": "bin"},
+        ]
+    ).write_parquet(input_path)
+
+    assert run(build_parser().parse_args(["export-bucket-views", "--input", str(input_path), "--output-dir", str(output_dir)])) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert set(payload) == {"gold", "silver", "bronze", "bin"}
+    assert (output_dir / "gold_records.parquet").exists()
+    assert (output_dir / "silver_records.parquet").exists()
+    assert (output_dir / "bronze_records.parquet").exists()
+    assert (output_dir / "bin_records.parquet").exists()

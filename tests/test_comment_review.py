@@ -22,11 +22,12 @@ def _base_record(**overrides: object) -> dict[str, object]:
         "image_url": "https://live.staticflickr.com/1_l.jpg",
         "raw_title": "Papilio demoleus",
         "raw_tags": "Papilio demoleus",
-        "bioclip_top1_label": "a photo of a butterfly",
+        "bioclip_top1_label": "a photo of Papilio demoleus",
+        "species_top1_score": 0.92,
         "bioclip_top1_score": 0.92,
         "is_target_positive": True,
-        "occurrence_bin": "in_review/no_geo",
-        "triage_bin": "in_review/no_geo",
+        "occurrence_bin": "bronze",
+        "triage_bin": "bronze",
         "image_category": "adult_butterfly",
         "life_stage": "adult_butterfly",
         "date_taken": "2024-01-15",
@@ -76,6 +77,7 @@ def test_comment_review_reasons_include_conflict_missing_data_unknown_and_low_sc
     assert "missing_event_date" in reasons
     assert "unknown_image_category" in reasons
     assert "unknown_life_stage" in reasons
+    assert "bronze_comment_review" in reasons
     assert "low_bioclip_score" in reasons
 
 
@@ -113,16 +115,26 @@ def test_structured_comment_geo_and_species_support_can_move_to_gold(tmp_path) -
     assert review == ("move_to_gold", "-27.4698,153.0251")
 
 
-def test_comment_review_decision_keeps_original_bioclip_result_as_extra_layer() -> None:
+def test_comment_review_decision_promotes_comment_match_to_gold() -> None:
     result = review_comments_for_record(
-        _base_record(raw_tags="Papilio demoleus", bioclip_top1_label="a photo of a moth", bioclip_tag_conflict=True, latitude=-27.0, longitude=153.0),
+        _base_record(raw_tags="Papilio machaon", bioclip_top1_label="a photo of Papilio machaon", bioclip_tag_conflict=True, latitude=-27.0, longitude=153.0),
+        [{"author": "u1", "_content": "confirmed Papilio machaon"}],
+    )
+
+    assert result.bioclip_species_candidate == "Papilio machaon"
+    assert result.comment_species_candidate == "Papilio machaon"
+    assert result.comment_resolves_conflict is True
+    assert result.comment_review_decision == "move_to_gold"
+
+
+def test_comment_review_decision_promotes_comment_match_to_silver_when_geo_missing() -> None:
+    result = review_comments_for_record(
+        _base_record(raw_tags="Papilio demoleus", bioclip_top1_label="a photo of Papilio demoleus", latitude=None, longitude=None),
         [{"author": "u1", "_content": "confirmed Papilio demoleus"}],
     )
 
-    assert result.bioclip_species_candidate == "non_target_insect"
     assert result.comment_species_candidate == "Papilio demoleus"
-    assert result.comment_resolves_conflict is True
-    assert result.comment_review_decision == "move_to_gold"
+    assert result.comment_review_decision == "move_to_silver"
 
 
 def test_apply_comment_review_decisions_updates_only_move_to_gold_records(tmp_path) -> None:
