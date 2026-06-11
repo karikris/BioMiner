@@ -25,6 +25,7 @@ from biominer.bioclip.triage import (
     _timestamp,
     classify_bioclip_triage,
 )
+from biominer.storage.parquet import write_bucket_views, write_parquet
 
 
 CacheImage = Callable[..., CachedImage]
@@ -88,6 +89,7 @@ def process_records_with_registers(
     model_version: str = "bioclip2_5_huge",
     model_checkpoint: str = "unknown",
     now: datetime | None = None,
+    bucket_views_dir: str | Path | None = None,
 ) -> RegisterRunnerResult:
     output = Path(output_path)
     existing = _read_existing(output)
@@ -179,8 +181,8 @@ def process_records_with_registers(
 
     new_frame = pl.DataFrame(rows) if rows else _empty_triage_frame()
     combined = pl.concat([existing, new_frame], how="diagonal_relaxed") if existing.height else new_frame
-    output.parent.mkdir(parents=True, exist_ok=True)
-    combined.write_parquet(output)
+    write_parquet(combined, output)
+    write_bucket_views(combined, bucket_views_dir or output.parent)
     return RegisterRunnerResult(
         frame=combined,
         output_path=output,

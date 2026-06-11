@@ -142,17 +142,17 @@ Occurrence bins:
 gold
 silver
 bronze
-in_review/no_geo
-in_review/error
+bin
+in_review
 ```
 
-Gold is an adult butterfly-like Lepidoptera occurrence candidate with BioCLIP support, an image URL, an event date, latitude, longitude, `image_category = adult_butterfly`, and no hard-negative category.
+Gold is an adult butterfly occurrence candidate with BioCLIP species score greater than `0.70`, matching species evidence in Flickr title/tags/description/machine tags, an image URL, event date, latitude, longitude, `image_category = adult_butterfly`, and no hard-negative category.
 
-Silver is a likely Lepidoptera candidate with an image URL but a missing event date.
+Silver is a species-supported butterfly candidate with BioCLIP species score from `0.35` through `0.70`, or an otherwise Gold-strength species match that is missing date or geo metadata.
 
-`in_review/no_geo` is used for likely Lepidoptera records with an image URL but missing latitude or longitude. Missing geo must not be forced into Gold.
+Bronze is retained butterfly material that is not an adult occurrence candidate, including adult butterflies without enough species agreement and non-adult life stages.
 
-Bronze is retained non-occurrence-candidate material, including non-adult life stages, museum specimens, artwork, tattoos, generated images, logos, products, textile/pattern imagery, other insects, and non-Lepidoptera records. Eggs, caterpillars, larvae, pupae, and chrysalides are useful Lepidoptera records, but they are Bronze in this workflow.
+Bin is material with no butterfly in any life stage, including museum specimens, artwork, tattoos, generated images, logos, products, textile/pattern imagery, other insects, and non-Lepidoptera records. Eggs, caterpillars, larvae, pupae, and chrysalides are useful Lepidoptera records and stay Bronze in this workflow.
 
 Operational failures such as missing image URLs, missing BioCLIP output, failed downloads, and runtime failures stay in review/error handling paths and remain retryable where appropriate.
 

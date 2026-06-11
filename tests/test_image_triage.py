@@ -16,21 +16,22 @@ def _record(**overrides: object) -> dict[str, object]:
         "longitude": "153.0",
         "date_taken": "2024-05-06 10:30:00",
         "date_upload": "1715000000",
+        "title": "Papilio demoleus",
     }
     row.update(overrides)
     return row
 
 
-def test_gold_score_gte_050_target_positive() -> None:
+def test_gold_score_gt_070_with_text_species_match() -> None:
     result = classify_bioclip_triage(
         record=_record(),
-        prediction={"top1_label": "a photo of Papilio demoleus", "top1_score": 0.50, "topk_json": []},
+        prediction={"top1_label": "a photo of Papilio demoleus", "top1_score": 0.71, "topk_json": []},
     )
 
     assert result["triage_bin"] == "gold"
-    assert result["triage_reason"] == "adult_lepidoptera_with_date_geo"
+    assert result["triage_reason"] == "adult_butterfly_species_match_score_gt_070"
     assert result["occurrence_bin"] == "gold"
-    assert result["bin_reason"] == "adult_lepidoptera_with_date_geo"
+    assert result["bin_reason"] == "adult_butterfly_species_match_score_gt_070"
     assert result["image_category"] == "adult_butterfly"
     assert result["life_stage"] == "adult_butterfly"
     assert result["is_target_positive"] is True
@@ -64,13 +65,13 @@ def test_other_species_label_goes_to_bronze_not_gold() -> None:
     assert result["image_category"] == "adult_butterfly"
 
 
-def test_target_species_below_threshold_goes_to_bronze() -> None:
+def test_target_species_below_silver_threshold_goes_to_bronze() -> None:
     result = classify_bioclip_triage(
         record=_record(),
         prediction={
             "species_top1_label": "a photo of Papilio demoleus",
             "species_top1_scientific_name": "Papilio demoleus",
-            "species_top1_score": 0.49,
+            "species_top1_score": 0.34,
             "triage_top1_label": "a photo of an adult butterfly",
             "triage_top1_score": 0.88,
         },
@@ -96,9 +97,9 @@ def test_missing_geo_goes_to_in_review_no_geo() -> None:
         prediction={"top1_label": "a photo of Papilio demoleus", "top1_score": 0.99, "topk_json": []},
     )
 
-    assert result["occurrence_bin"] == "in_review/no_geo"
-    assert result["triage_bin"] == "in_review/no_geo"
-    assert result["bin_reason"] == "no_geo"
+    assert result["occurrence_bin"] == "silver"
+    assert result["triage_bin"] == "silver"
+    assert result["bin_reason"] == "missing_geo"
 
 
 def test_bronze_negative_material_museum_art_ai_other_insect() -> None:
@@ -106,7 +107,7 @@ def test_bronze_negative_material_museum_art_ai_other_insect() -> None:
         (_record(museum_detected=True), "museum_specimen"),
         (_record(), "artwork", {"top1_label": "a photo of artwork or illustration"}),
         (_record(tattoo_detected=True), "tattoo"),
-        (_record(ai_generated_detected=True), "AI_generated"),
+        (_record(ai_generated_detected=True), "ai_generated"),
         (_record(other_insect_detected=True), "other_insect"),
     ]
 
@@ -114,9 +115,9 @@ def test_bronze_negative_material_museum_art_ai_other_insect() -> None:
         prediction = {"top1_label": "a photo of Papilio demoleus", "top1_score": 0.99, "topk_json": []}
         prediction.update(prediction_override[0] if prediction_override else {})
         result = classify_bioclip_triage(record=record, prediction=prediction)
-        assert result["triage_bin"] == "bronze"
+        assert result["triage_bin"] == "bin"
         assert result["triage_reason"] == reason
-        assert result["occurrence_bin"] == "bronze"
+        assert result["occurrence_bin"] == "bin"
         assert result["bin_reason"] == reason
         assert result["negative_filter_reason"] == reason
         assert result["is_negative_material"] is True
@@ -143,7 +144,7 @@ def test_life_stage_labels_go_to_bronze_with_specific_stage() -> None:
 
 
 def test_no_new_darwin_core_logic_added() -> None:
-    triage_source = Path("src/biominer/vision/triage.py").read_text(encoding="utf-8")
+    triage_source = Path("src/biominer/bioclip/triage.py").read_text(encoding="utf-8")
 
     assert "Darwin" not in triage_source
     assert "identificationVerificationStatus" not in triage_source

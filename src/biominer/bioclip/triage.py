@@ -9,15 +9,24 @@ from typing import Any
 import polars as pl
 
 from biominer.filter.category_model import category_defaults, category_from_negative_reason, infer_life_stage_from_text
+from biominer.common.species import species_text_matches
 
 
-TRIAGE_BINS = {"gold", "silver", "bronze", "in_review", "in_review/no_geo"}
+TRIAGE_BINS = {"gold", "silver", "bronze", "bin", "in_review"}
 CLASSIFICATION_STATUSES = {"success", "skipped_existing", "failed_download", "failed_bioclip", "invalid_record"}
-TARGET_LABELS = {
-    "a photo of Papilio demoleus",
+GOLD_SPECIES_CONFIDENCE_THRESHOLD = 0.70
+SILVER_SPECIES_CONFIDENCE_THRESHOLD = 0.35
+BIN_CATEGORIES = {
+    "museum_specimen",
+    "artwork",
+    "tattoo",
+    "ai_generated",
+    "logo_or_brand",
+    "object_or_product",
+    "textile_or_pattern",
+    "other_insect",
+    "not_lepidoptera",
 }
-TARGET_SPECIES = "Papilio demoleus"
-BIOCLIP_SPECIES_CONFIDENCE_THRESHOLD = 0.50
 NEGATIVE_LABEL_REASONS = {
     "a photo of a pinned museum specimen": "pinned_specimen",
     "a photo of artwork or illustration": "artwork",
@@ -36,14 +45,14 @@ NEGATIVE_LABEL_REASONS = {
     "a photo of a background": "object_background_non_organism",
     "a photo of an object": "object_background_non_organism",
     "a blank image": "object_background_non_organism",
-    "an ai generated image": "AI_generated",
+    "an ai generated image": "ai_generated",
 }
 NEGATIVE_RECORD_FIELDS = (
     ("museum_detected", "museum_specimen"),
     ("specimen_detected", "pinned_specimen"),
     ("artwork_detected", "artwork"),
     ("tattoo_detected", "tattoo"),
-    ("ai_generated_detected", "AI_generated"),
+    ("ai_generated_detected", "ai_generated"),
     ("other_insect_detected", "other_insect"),
     ("non_target_order_detected", "other_order"),
     ("not_butterfly_detected", "not_butterfly"),
@@ -57,24 +66,49 @@ def classify_bioclip_triage(*, record: dict[str, Any], prediction: dict[str, obj
     triage_top1_label = str(prediction.get("triage_top1_label", prediction.get("bioclip_top1_label", prediction.get("top1_label", ""))) or "")
     negative_reason = _negative_reason(record, triage_top1_label)
     category = _category_for_prediction(top1_label=triage_top1_label, negative_reason=negative_reason)
-    is_target_positive = (
-        _normalize(species_top1_name) == _normalize(TARGET_SPECIES)
-        and species_top1_score is not None
-        and species_top1_score >= BIOCLIP_SPECIES_CONFIDENCE_THRESHOLD
-    )
-    if negative_reason:
-        return {**category, "occurrence_bin": "bronze", "bin_reason": negative_reason, "triage_bin": "bronze", "triage_reason": negative_reason, "is_target_positive": is_target_positive, "is_negative_material": True}
+    text_species_match = _text_species_match(record, species_top1_name)
+    is_species_supported = bool(text_species_match and species_top1_score is not None and species_top1_score >= SILVER_SPECIES_CONFIDENCE_THRESHOLD)
+    if category["image_category"] in BIN_CATEGORIES:
+        reason = str(category["negative_filter_reason"] or negative_reason or category["image_category"])
+        return _bucket_result(category, bucket="bin", reason=reason, text_species_match=text_species_match, is_target_positive=False, is_negative_material=True)
     if species_top1_score is None:
-        return {**category, "occurrence_bin": "in_review", "bin_reason": "missing_bioclip", "triage_bin": "in_review", "triage_reason": "missing_bioclip", "is_target_positive": False, "is_negative_material": False}
-    if is_target_positive and category["image_category"] == "adult_butterfly":
+        return _bucket_result(category, bucket="in_review", reason="missing_bioclip", text_species_match=text_species_match, is_target_positive=False, is_negative_material=False)
+    if category["image_category"] == "life_stage_non_adult":
+        return _bucket_result(category, bucket="bronze", reason=str(category["life_stage"]), text_species_match=text_species_match, is_target_positive=is_species_supported, is_negative_material=False)
+    if category["image_category"] == "adult_butterfly" and text_species_match:
         if not _has_image_url(record):
-            return {**category, "occurrence_bin": "in_review", "bin_reason": "missing_image_url", "triage_bin": "in_review", "triage_reason": "missing_image_url", "is_target_positive": True, "is_negative_material": False}
-        if not _has_geo(record):
-            return {**category, "occurrence_bin": "in_review/no_geo", "bin_reason": "no_geo", "triage_bin": "in_review/no_geo", "triage_reason": "no_geo", "is_target_positive": True, "is_negative_material": False}
-        if not _has_event_date(record):
-            return {**category, "occurrence_bin": "silver", "bin_reason": "missing_event_date", "triage_bin": "silver", "triage_reason": "missing_event_date", "is_target_positive": True, "is_negative_material": False}
-        return {**category, "occurrence_bin": "gold", "bin_reason": "adult_lepidoptera_with_date_geo", "triage_bin": "gold", "triage_reason": "adult_lepidoptera_with_date_geo", "is_target_positive": True, "is_negative_material": False}
-    return {**category, "occurrence_bin": "bronze", "bin_reason": "below_50", "triage_bin": "bronze", "triage_reason": "below_50", "is_target_positive": False, "is_negative_material": False}
+            return _bucket_result(category, bucket="in_review", reason="missing_image_url", text_species_match=text_species_match, is_target_positive=is_species_supported, is_negative_material=False)
+        if species_top1_score > GOLD_SPECIES_CONFIDENCE_THRESHOLD:
+            if not _has_geo(record):
+                return _bucket_result(category, bucket="silver", reason="missing_geo", text_species_match=True, is_target_positive=True, is_negative_material=False)
+            if not _has_event_date(record):
+                return _bucket_result(category, bucket="silver", reason="missing_event_date", text_species_match=True, is_target_positive=True, is_negative_material=False)
+            return _bucket_result(category, bucket="gold", reason="adult_butterfly_species_match_score_gt_070", text_species_match=True, is_target_positive=True, is_negative_material=False)
+        if species_top1_score >= SILVER_SPECIES_CONFIDENCE_THRESHOLD:
+            return _bucket_result(category, bucket="silver", reason="species_match_score_035_to_070", text_species_match=True, is_target_positive=True, is_negative_material=False)
+    return _bucket_result(category, bucket="bronze", reason="below_50", text_species_match=text_species_match, is_target_positive=False, is_negative_material=False)
+
+
+def _bucket_result(
+    category: dict[str, str | None],
+    *,
+    bucket: str,
+    reason: str,
+    text_species_match: bool,
+    is_target_positive: bool,
+    is_negative_material: bool,
+) -> dict[str, object]:
+    return {
+        **category,
+        "occurrence_bin": bucket,
+        "bin_reason": reason,
+        "triage_bin": bucket,
+        "triage_reason": reason,
+        "text_species_match": text_species_match,
+        "is_butterfly_life_stage": category["image_category"] in {"adult_butterfly", "life_stage_non_adult"},
+        "is_target_positive": is_target_positive,
+        "is_negative_material": is_negative_material,
+    }
 
 
 def _base_row(
@@ -152,6 +186,8 @@ def _empty_result_fields() -> dict[str, object]:
         "bin_reason": None,
         **category_defaults(),
         "triage_reason": None,
+        "text_species_match": False,
+        "is_butterfly_life_stage": False,
         "is_target_positive": False,
         "is_negative_material": False,
     }
@@ -180,6 +216,8 @@ def _failure_row(
         "bin_reason": status,
         "triage_bin": "in_review",
         "triage_reason": status,
+        "text_species_match": False,
+        "is_butterfly_life_stage": False,
     }
 
 
@@ -228,6 +266,23 @@ def _has_geo(record: dict[str, Any]) -> bool:
     latitude = record.get("latitude", record.get("decimalLatitude"))
     longitude = record.get("longitude", record.get("decimalLongitude"))
     return latitude not in (None, "") and longitude not in (None, "")
+
+
+def _text_species_match(record: dict[str, Any], species_name: str) -> bool:
+    if bool(record.get("text_species_match") or record.get("species_text_match")):
+        return True
+    return species_text_matches(
+        species_name,
+        (
+            record.get("raw_title"),
+            record.get("title"),
+            record.get("raw_description"),
+            record.get("description"),
+            record.get("raw_tags"),
+            record.get("tags"),
+            record.get("machine_tags"),
+        ),
+    )
 
 
 def _successful_keys(frame: pl.DataFrame) -> set[tuple[object, ...]]:

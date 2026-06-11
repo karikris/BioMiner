@@ -2,6 +2,15 @@
 
 Generated: 2026-06-07T11:11:00.135875+00:00
 
+## Phase 3: BioCLIP Bucketing And Bucket Views
+
+- Files changed: `src/biominer/bioclip/`, `src/biominer/storage/`, register/triage tests, README, and this cleanup report.
+- Tests added or updated: updated triage tests for the hybrid `>0.70` Gold, `0.35..0.70` Silver, Bronze life-stage, and Bin hard-negative rules; added register-runner assertions for derived bucket parquet views.
+- Redundant code removed: replaced the Papilio-only `0.50` target-positive bucket branch with species/text-agreement bucket logic that works for all candidate species.
+- Compatibility shims retained: legacy `triage_bin` fields are still written as aliases of `occurrence_bin` for existing downstream readers.
+- Generated artifacts excluded: no bucket parquet outputs, live-run data, caches, images, model weights, or virtual environments were added.
+- Remaining cleanup recommendation: add a model-backed CLI wrapper once BioCLIP runtime dependencies are available in the target environment.
+
 ## Phase 2: Metadata Anti-Keyword Filter
 
 - Files changed: `src/biominer/filter/`, `src/biominer/cli.py`, filter/evidence tests, and this cleanup report.

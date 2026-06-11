@@ -72,6 +72,10 @@ def test_register_runner_uses_four_twenty_image_registers_and_deletes_images(tmp
     assert {path.parent.name for path in cache_calls} <= {"register_0", "register_1", "register_2", "register_3"}
     assert not any(path.exists() for path in cache_calls)
     assert result.frame.filter(result.frame["occurrence_bin"] == "gold").height == 85
+    assert (tmp_path / "gold_records.parquet").exists()
+    assert (tmp_path / "silver_records.parquet").exists()
+    assert (tmp_path / "bronze_records.parquet").exists()
+    assert (tmp_path / "bin_records.parquet").exists()
 
 
 def test_register_runner_routes_other_species_to_bronze(tmp_path) -> None:
