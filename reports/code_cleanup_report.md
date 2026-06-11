@@ -2,6 +2,24 @@
 
 Generated: 2026-06-07T11:11:00.135875+00:00
 
+## Phase 0: BioMiner Identity And Namespace
+
+- Files changed: `pyproject.toml`, `README.md`, `src/biominer/`, tests, and this cleanup report.
+- Tests added or updated: added `tests/test_project_identity.py`; updated imports and CLI expectations for the `biominer` namespace.
+- Redundant code removed: removed the tracked `src/flickr_bio_occurrence` package files after moving active modules under `src/biominer`.
+- Compatibility shims retained: none; the active package and CLI identity are now BioMiner-specific.
+- Generated artifacts excluded: no live-run data, parquet outputs, caches, images, model weights, or virtual environments were added.
+- Remaining cleanup recommendation: remove stale local egg-info/cache directories if they appear as untracked artifacts after editable installs.
+
+## README Repository Rewrite
+
+- Files changed: `README.md` and this cleanup report.
+- Tests added or updated: none; this was a documentation-only change.
+- Redundant code removed: none; no code paths were changed.
+- Compatibility shims retained: existing compatibility-only code remains documented as out of scope for the active workflow.
+- Generated artifacts excluded: no generated data, cache, image, parquet, DuckDB, report output, or model files were added.
+- Remaining cleanup recommendation: keep README command examples aligned with the public CLI when a register-runner CLI wrapper is added.
+
 ## Geo-First Flickr Pagination
 
 - Files changed: `config/pipeline.toml`, `src/flickr_bio_occurrence/flickr/query_planner.py`, `src/flickr_bio_occurrence/cli.py`, and focused planner/poller/CLI tests.

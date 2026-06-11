@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from flickr_bio_occurrence.flickr.endpoints import ALLOWED_FLICKR_METHODS, FLICKR_REST_BASE_URL
+from biominer.flickr_fetch.endpoints import ALLOWED_FLICKR_METHODS, FLICKR_REST_BASE_URL
 
 
 def test_no_private_or_scraping_endpoints_exist() -> None:

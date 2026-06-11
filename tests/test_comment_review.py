@@ -5,7 +5,7 @@ import sqlite3
 
 import polars as pl
 
-from flickr_bio_occurrence.pipeline.comment_review import (
+from biominer.flickr_comments.comment_review import (
     CommentReviewState,
     comment_review_reasons,
     review_comments_for_record,
@@ -142,7 +142,7 @@ def test_apply_comment_review_decisions_updates_only_move_to_gold_records(tmp_pa
 
 
 def test_comment_review_cli_commands_run_once_without_network(tmp_path, capsys) -> None:
-    from flickr_bio_occurrence.cli import build_parser, run
+    from biominer.cli import build_parser, run
 
     input_path = tmp_path / "triage.parquet"
     output_path = tmp_path / "reviewed.parquet"

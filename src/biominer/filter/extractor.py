@@ -7,8 +7,8 @@ from typing import Any
 
 import polars as pl
 
-from flickr_bio_occurrence.evidence.category_model import infer_category_from_text
-from flickr_bio_occurrence.evidence.review_flags import (
+from biominer.filter.category_model import infer_category_from_text
+from biominer.filter.review_flags import (
     ARTWORK_TERMS,
     CAPTIVE_TERMS,
     COLLECTION_TERMS,

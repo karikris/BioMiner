@@ -5,7 +5,7 @@ from typing import Any
 
 import polars as pl
 
-from flickr_bio_occurrence.evidence.category_model import infer_category_from_record
+from biominer.filter.category_model import infer_category_from_record
 
 
 PUBLICATION_STATES = ("gold", "silver", "bronze", "in_review")

@@ -11,10 +11,10 @@ from typing import Any, Callable, Iterable
 
 import polars as pl
 
-from flickr_bio_occurrence.evidence.category_model import infer_life_stage_from_text
-from flickr_bio_occurrence.evidence.extractor import SCIENTIFIC_NAME_PATTERN
-from flickr_bio_occurrence.pipeline.comments_enrichment import fetch_flickr_comments, mine_comment_terms
-from flickr_bio_occurrence.pipeline.metadata_poller import PENDING
+from biominer.filter.category_model import infer_life_stage_from_text
+from biominer.filter.extractor import SCIENTIFIC_NAME_PATTERN
+from biominer.flickr_comments.comments_enrichment import fetch_flickr_comments, mine_comment_terms
+from biominer.flickr_fetch.metadata_poller import PENDING
 
 
 FetchComments = Callable[[str], list[dict[str, Any]]]

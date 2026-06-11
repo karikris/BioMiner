@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from flickr_bio_occurrence.evidence.extractor import build_evidence_frame, write_staging_evidence
+from biominer.filter.extractor import build_evidence_frame, write_staging_evidence
 
 
 def test_extracts_text_comment_verification_and_species_evidence() -> None:

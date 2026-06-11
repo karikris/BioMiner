@@ -4,8 +4,8 @@ import io
 import json
 from pathlib import Path
 
-from flickr_bio_occurrence.vision import bioclip_worker
-from flickr_bio_occurrence.vision.bioclip_worker import configure_hf_cache_env, open_clip_model_args
+from biominer.bioclip import bioclip_worker
+from biominer.bioclip.bioclip_worker import configure_hf_cache_env, open_clip_model_args
 
 
 def test_open_clip_model_args_use_hf_hub_prefix_for_model_ids() -> None:

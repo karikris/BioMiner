@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
-from flickr_bio_occurrence.flickr.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_PATH, FlickrRateLimiter, RateLimitExceeded
+from biominer.flickr_fetch.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_PATH, FlickrRateLimiter, RateLimitExceeded
 
 
 def test_rate_limiter_never_exceeds_3600_calls_per_hour(tmp_path) -> None:

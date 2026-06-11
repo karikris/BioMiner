@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 from typing import IO, Any, Callable, Mapping, Sequence
 
-from flickr_bio_occurrence.vision.model_registry import BioClipRuntime
+from biominer.bioclip.model_registry import BioClipRuntime
 
 BioClipScorer = Callable[[Path, Sequence[str]], Mapping[str, float]]
 BioClipBatchScorer = Callable[[Sequence[Path], Sequence[str]], Sequence[Mapping[str, float]]]

@@ -9,11 +9,11 @@ from typing import Any, Callable, Iterable
 
 import httpx
 
-from flickr_bio_occurrence.evidence.category_model import infer_life_stage_from_text
-from flickr_bio_occurrence.evidence.extractor import SCIENTIFIC_NAME_PATTERN
-from flickr_bio_occurrence.flickr.endpoints import FLICKR_REST_BASE_URL
-from flickr_bio_occurrence.flickr.query_planner import COUNT_PROBE_PAGE_SIZE, FlickrQuery
-from flickr_bio_occurrence.pipeline.metadata_poller import PENDING, MetadataPollState
+from biominer.filter.category_model import infer_life_stage_from_text
+from biominer.filter.extractor import SCIENTIFIC_NAME_PATTERN
+from biominer.flickr_fetch.endpoints import FLICKR_REST_BASE_URL
+from biominer.flickr_fetch.query_planner import COUNT_PROBE_PAGE_SIZE, FlickrQuery
+from biominer.flickr_fetch.metadata_poller import PENDING, MetadataPollState
 
 
 COMMENTS_METHOD = "flickr.photos.comments.getList"

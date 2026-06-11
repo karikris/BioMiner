@@ -7,20 +7,20 @@ from pathlib import Path
 
 import polars as pl
 
-from flickr_bio_occurrence.evidence.rules import classify_evidence_frame
-from flickr_bio_occurrence.flickr.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_PATH, FlickrRateLimiter
-from flickr_bio_occurrence.flickr.query_planner import GEO_PAGE_SIZE, NORMAL_PAGE_SIZE, build_papilio_demoleus_count_probes_from_json
-from flickr_bio_occurrence.pipeline.comment_review import (
+from biominer.flickr_fetch.query_planner import GEO_PAGE_SIZE, NORMAL_PAGE_SIZE, build_papilio_demoleus_count_probes_from_json
+from biominer.flickr_fetch.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_PATH, FlickrRateLimiter
+from biominer.flickr_comments.comment_review import (
     apply_comment_review_decisions_to_parquet,
     build_comment_review_queue_from_parquet,
     review_comments_once,
 )
-from flickr_bio_occurrence.pipeline.comments_enrichment import CommentsEnrichmentState, fetch_flickr_comments
-from flickr_bio_occurrence.pipeline.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
+from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState, fetch_flickr_comments
+from biominer.filter.rules import classify_evidence_frame
+from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="flickr-bio")
+    parser = argparse.ArgumentParser(prog="biominer")
     parser.add_argument("--version", action="store_true")
     subparsers = parser.add_subparsers(dest="command")
     fetch_comments = subparsers.add_parser("fetch-comments")
@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def run(args: argparse.Namespace) -> int:
     if args.version:
-        print("flickr-bio-occurrence 0.1.0")
+        print("biominer 0.1.0")
         return 0
     if args.command == "fetch-comments":
         state = CommentsEnrichmentState(args.state_db)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flickr_bio_occurrence.vision.image_cache import CachedImage
+from biominer.bioclip.image_cache import CachedImage
 
 
 PROTECTED_CACHE_PARTS = {"huggingface", ".hf-cache", "model", "models"}

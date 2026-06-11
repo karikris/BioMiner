@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import types
 
-from flickr_bio_occurrence.vision import bioclip_worker
+from biominer.bioclip import bioclip_worker
 
 
 def test_loaded_model_encodes_image_batch_once_for_label_sets(monkeypatch) -> None:  # noqa: ANN001 - pytest fixture.

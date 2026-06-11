@@ -10,11 +10,11 @@ from typing import Any, Callable, Protocol
 
 import polars as pl
 
-from flickr_bio_occurrence.vision.bioclip import DEFAULT_TRIAGE_LABELS
-from flickr_bio_occurrence.vision.image_cache import CachedImage, cache_image_from_url
-from flickr_bio_occurrence.vision.species_candidates import SpeciesCandidate, label_to_scientific_name, species_labels
-from flickr_bio_occurrence.vision.temp_image_store import cleanup_cached_image
-from flickr_bio_occurrence.vision.triage import (
+from biominer.bioclip.bioclip import DEFAULT_TRIAGE_LABELS
+from biominer.bioclip.image_cache import CachedImage, cache_image_from_url
+from biominer.bioclip.species_candidates import SpeciesCandidate, label_to_scientific_name, species_labels
+from biominer.bioclip.temp_image_store import cleanup_cached_image
+from biominer.bioclip.triage import (
     _base_row,
     _dedupe_key,
     _empty_triage_frame,

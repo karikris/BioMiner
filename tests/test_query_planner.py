@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from flickr_bio_occurrence.flickr.query_planner import (
+from biominer.flickr_fetch.query_planner import (
     BBOX_PAGE_SIZE,
     COUNT_PROBE_PAGE_SIZE,
     GEO_PAGE_SIZE,

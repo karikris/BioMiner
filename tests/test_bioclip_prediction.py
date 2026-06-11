@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 
-from flickr_bio_occurrence.vision.bioclip import (
+from biominer.bioclip.bioclip import (
     BioClipClassifier,
     DEFAULT_BIOCLIP_LABELS,
     DEFAULT_TRIAGE_LABELS,
@@ -12,7 +12,7 @@ from flickr_bio_occurrence.vision.bioclip import (
     build_vision_prediction_record,
     classify_species_agreement,
 )
-from flickr_bio_occurrence.vision.model_registry import BioClipRuntime, ModelConfig
+from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
 
 
 def _runtime() -> BioClipRuntime:

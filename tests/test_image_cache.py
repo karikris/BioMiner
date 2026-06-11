@@ -5,7 +5,7 @@ import hashlib
 import httpx
 import pytest
 
-from flickr_bio_occurrence.vision.image_cache import cache_image_from_url
+from biominer.bioclip.image_cache import cache_image_from_url
 
 
 def test_cache_image_from_url_writes_content_addressed_file(tmp_path) -> None:

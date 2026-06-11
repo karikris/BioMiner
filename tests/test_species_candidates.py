@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from flickr_bio_occurrence.vision.species_candidates import load_species_candidates, species_labels
+from biominer.bioclip.species_candidates import load_species_candidates, species_labels
 
 
 def test_load_species_candidates_pins_target_and_limits_species_rows(tmp_path) -> None:

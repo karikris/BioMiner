@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from flickr_bio_occurrence.pipeline.comments_enrichment import CommentsEnrichmentState, mine_comment_terms
+from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState, mine_comment_terms
 
 
 def test_comments_enrichment_queue_exists(tmp_path) -> None:

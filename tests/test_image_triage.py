@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flickr_bio_occurrence.vision.triage import classify_bioclip_triage
+from biominer.bioclip.triage import classify_bioclip_triage
 
 
 def _record(**overrides: object) -> dict[str, object]:
@@ -143,7 +143,7 @@ def test_life_stage_labels_go_to_bronze_with_specific_stage() -> None:
 
 
 def test_no_new_darwin_core_logic_added() -> None:
-    triage_source = Path("src/flickr_bio_occurrence/vision/triage.py").read_text(encoding="utf-8")
+    triage_source = Path("src/biominer/vision/triage.py").read_text(encoding="utf-8")
 
     assert "Darwin" not in triage_source
     assert "identificationVerificationStatus" not in triage_source

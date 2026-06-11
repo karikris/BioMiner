@@ -9,9 +9,9 @@ from typing import Any, Callable
 
 import httpx
 
-from flickr_bio_occurrence.evidence.extractor import build_evidence_frame
-from flickr_bio_occurrence.flickr.endpoints import FLICKR_REST_BASE_URL, SEARCH_METHOD
-from flickr_bio_occurrence.flickr.query_planner import (
+from biominer.filter.extractor import build_evidence_frame
+from biominer.flickr_fetch.endpoints import FLICKR_REST_BASE_URL, SEARCH_METHOD
+from biominer.flickr_fetch.query_planner import (
     FlickrQuery,
     build_count_probes,
     deduplicate_photo_records,

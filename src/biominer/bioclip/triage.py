@@ -8,7 +8,7 @@ from typing import Any
 
 import polars as pl
 
-from flickr_bio_occurrence.evidence.category_model import category_defaults, category_from_negative_reason, infer_life_stage_from_text
+from biominer.filter.category_model import category_defaults, category_from_negative_reason, infer_life_stage_from_text
 
 
 TRIAGE_BINS = {"gold", "silver", "bronze", "in_review", "in_review/no_geo"}

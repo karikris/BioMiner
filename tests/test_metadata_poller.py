@@ -3,8 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from flickr_bio_occurrence.flickr.query_planner import FlickrQuery
-from flickr_bio_occurrence.pipeline.metadata_poller import MetadataPollState, poll_once
+from biominer.flickr_fetch.query_planner import FlickrQuery
+from biominer.flickr_fetch.metadata_poller import MetadataPollState, poll_once
 
 
 def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:

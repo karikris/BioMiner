@@ -5,8 +5,8 @@ from pathlib import Path
 
 import polars as pl
 
-from flickr_bio_occurrence.cli import build_parser, run
-from flickr_bio_occurrence.flickr.rate_limiter import FlickrRateLimiter
+from biominer.cli import build_parser, run
+from biominer.flickr_fetch.rate_limiter import FlickrRateLimiter
 
 
 def test_cli_exposes_only_lean_pipeline_commands() -> None:

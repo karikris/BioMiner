@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from flickr_bio_occurrence.evidence.rules import classify_evidence_frame, classify_evidence_row
+from biominer.filter.rules import classify_evidence_frame, classify_evidence_row
 
 
 def _row(**overrides: object) -> dict[str, object]:

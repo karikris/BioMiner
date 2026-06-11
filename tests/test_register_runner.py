@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flickr_bio_occurrence.vision.image_cache import CachedImage
-from flickr_bio_occurrence.vision.register_runner import process_records_with_registers
-from flickr_bio_occurrence.vision.species_candidates import SpeciesCandidate
+from biominer.bioclip.image_cache import CachedImage
+from biominer.bioclip.register_runner import process_records_with_registers
+from biominer.bioclip.species_candidates import SpeciesCandidate
 
 
 def _record(index: int) -> dict[str, object]:
