@@ -2,6 +2,15 @@
 
 Generated: 2026-06-07T11:11:00.135875+00:00
 
+## Phase 2: Metadata Anti-Keyword Filter
+
+- Files changed: `src/biominer/filter/`, `src/biominer/cli.py`, filter/evidence tests, and this cleanup report.
+- Tests added or updated: added anti-keyword tests for dropping non-biodiversity records, keeping butterfly life stages, grouped JSON loading, and kept/dropped parquet outputs.
+- Redundant code removed: none; this phase adds the previously missing explicit filter stage.
+- Compatibility shims retained: none.
+- Generated artifacts excluded: no operator keyword lists, live-run data, parquet outputs, caches, images, model weights, or virtual environments were added.
+- Remaining cleanup recommendation: replace any future hard-coded anti terms with operator-provided JSON fixtures or config files.
+
 ## Phase 1: Flickr Fetch Restructure
 
 - Files changed: `src/biominer/flickr_fetch/`, `src/biominer/cli.py`, fetch/rate-limit/CLI tests, README, and this cleanup report.

@@ -15,6 +15,7 @@ from biominer.flickr_comments.comment_review import (
     review_comments_once,
 )
 from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState, fetch_flickr_comments
+from biominer.filter.anti_keywords import filter_biodiversity_parquet
 from biominer.filter.rules import classify_evidence_frame
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 
@@ -57,6 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
     apply_rules = subparsers.add_parser("apply-rules")
     apply_rules.add_argument("--evidence", required=True)
     apply_rules.add_argument("--output", required=True)
+    filter_parser = subparsers.add_parser("filter")
+    filter_parser.add_argument("--input", required=True)
+    filter_parser.add_argument("--anti-keywords-json", required=True)
+    filter_parser.add_argument("--output", required=True)
+    filter_parser.add_argument("--dropped-output", required=True)
     gc_cache = subparsers.add_parser("gc-cache")
     gc_cache.add_argument("--cache-root", required=True)
     gc_cache.add_argument("--delete", action="store_true")
@@ -173,6 +179,15 @@ def run(args: argparse.Namespace) -> int:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         classified.write_parquet(output_path)
         print(json.dumps(_publication_state_summary(classified, output_path), indent=2, sort_keys=True))
+        return 0
+    if args.command == "filter":
+        payload = filter_biodiversity_parquet(
+            input_path=args.input,
+            anti_keywords_json=args.anti_keywords_json,
+            output_path=args.output,
+            dropped_output_path=args.dropped_output,
+        )
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     if args.command == "gc-cache":
         print(json.dumps(_cache_gc_summary(Path(args.cache_root), delete=args.delete), indent=2, sort_keys=True))
