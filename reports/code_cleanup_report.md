@@ -65,6 +65,15 @@ Generated: 2026-06-07T11:11:00.135875+00:00
 - Generated artifacts excluded: no generated parquet, images, model cache, or reports were committed.
 - Remaining cleanup recommendation: add a public CLI wrapper once the register runner is ready for routine operation.
 
+## BioCLIP Register Runner Tests
+
+- Files changed: `tests/test_register_runner.py` and this cleanup report.
+- Tests added or updated: local fake-cache/fake-classifier tests for register sizing, temporary image deletion, Gold routing, other-species Bronze routing, and staged-image bounds.
+- Redundant code removed: none.
+- Compatibility shims retained: none.
+- Generated artifacts excluded: test parquet and cached images are created under pytest temporary directories only.
+- Remaining cleanup recommendation: add an end-to-end CLI-level dry-run test if a public register-runner command is introduced.
+
 ## Comment Review Scope
 
 - Added a separate targeted comment-review phase after BioCLIP triage.
