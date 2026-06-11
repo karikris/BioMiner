@@ -6,8 +6,6 @@ from datetime import date
 from hashlib import sha256
 from typing import Iterable
 
-from flickr_bio_occurrence.taxonomy.species_mapper import SpeciesSeed
-
 
 QUERY_VARIANTS = (
     "scientific_name",
@@ -49,7 +47,8 @@ class WorkItem:
 
 def build_monthly_work_items(
     *,
-    species: SpeciesSeed,
+    species_name: str,
+    species_query_terms: list[str],
     regions: Iterable[tuple[str, str, str]],
     years: Iterable[int],
     months: Iterable[int],
@@ -74,8 +73,8 @@ def build_monthly_work_items(
                     for page_value in page_values:
                         items.append(
                             WorkItem(
-                                species_name=species.accepted_scientific_name,
-                                species_query_terms=species.search_terms,
+                                species_name=species_name,
+                                species_query_terms=species_query_terms,
                                 region_id=region_id,
                                 region_name=region_name,
                                 bbox=bbox,

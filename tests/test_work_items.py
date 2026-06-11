@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import date
 
 from flickr_bio_occurrence.flickr.work_items import WorkItem, build_monthly_work_items
-from flickr_bio_occurrence.taxonomy.species_mapper import get_seed_species
+
+
+PAPILIO_TERMS = ["Papilio demoleus", "lime butterfly", "chequered swallowtail", "citrus swallowtail", "swallowtail"]
 
 
 def test_work_item_ids_are_deterministic() -> None:
@@ -25,9 +27,9 @@ def test_work_item_ids_are_deterministic() -> None:
 
 
 def test_partitioning_by_species_region_year_month() -> None:
-    seed = get_seed_species("Papilio demoleus")
     items = build_monthly_work_items(
-        species=seed,
+        species_name="Papilio demoleus",
+        species_query_terms=PAPILIO_TERMS,
         regions=[("AU_QLD", "Queensland", "137.99,-29.18,153.55,-9.14")],
         years=[2024],
         months=[1, 2],
@@ -41,19 +43,21 @@ def test_partitioning_by_species_region_year_month() -> None:
 
 
 def test_papilio_demoleus_seed_terms_present() -> None:
-    seed = get_seed_species("Papilio demoleus")
+    item = build_monthly_work_items(
+        species_name="Papilio demoleus",
+        species_query_terms=PAPILIO_TERMS,
+        regions=[("AU_QLD", "Queensland", "137.99,-29.18,153.55,-9.14")],
+        years=[2024],
+        months=[1],
+    )[0]
 
-    assert "Papilio demoleus" in seed.search_terms
-    assert "lime butterfly" in seed.search_terms
-    assert "chequered swallowtail" in seed.search_terms
-    assert "citrus swallowtail" in seed.search_terms
-    assert "swallowtail" in seed.search_terms
+    assert item.species_query_terms == PAPILIO_TERMS
 
 
 def test_work_items_can_filter_query_variants() -> None:
-    seed = get_seed_species("Papilio demoleus")
     items = build_monthly_work_items(
-        species=seed,
+        species_name="Papilio demoleus",
+        species_query_terms=PAPILIO_TERMS,
         regions=[("AU_ALL", "Australia", "112.92,-43.74,153.64,-10.05")],
         years=[2024],
         months=[1, 2],
@@ -65,10 +69,10 @@ def test_work_items_can_filter_query_variants() -> None:
 
 
 def test_work_items_can_plan_broader_query_variants() -> None:
-    seed = get_seed_species("Papilio demoleus")
     variants = ["butterfly", "papilio", "citrusbutterfly", "limebutterfly"]
     items = build_monthly_work_items(
-        species=seed,
+        species_name="Papilio demoleus",
+        species_query_terms=PAPILIO_TERMS,
         regions=[("AU_ALL", "Australia", "112.92,-43.74,153.64,-10.05")],
         years=[2024],
         months=[1],
@@ -79,9 +83,9 @@ def test_work_items_can_plan_broader_query_variants() -> None:
 
 
 def test_work_items_can_plan_multiple_pages() -> None:
-    seed = get_seed_species("Papilio demoleus")
     items = build_monthly_work_items(
-        species=seed,
+        species_name="Papilio demoleus",
+        species_query_terms=PAPILIO_TERMS,
         regions=[("AU_ALL", "Australia", "112.92,-43.74,153.64,-10.05")],
         years=[2024],
         months=[1],
@@ -94,9 +98,9 @@ def test_work_items_can_plan_multiple_pages() -> None:
 
 
 def test_work_items_skip_months_after_end_date() -> None:
-    seed = get_seed_species("Papilio demoleus")
     items = build_monthly_work_items(
-        species=seed,
+        species_name="Papilio demoleus",
+        species_query_terms=PAPILIO_TERMS,
         regions=[("AU_ALL", "Australia", "112.92,-43.74,153.64,-10.05")],
         years=[2026],
         months=range(1, 13),
@@ -108,9 +112,9 @@ def test_work_items_skip_months_after_end_date() -> None:
 
 
 def test_work_items_cap_current_month_max_taken_date_to_end_date() -> None:
-    seed = get_seed_species("Papilio demoleus")
     items = build_monthly_work_items(
-        species=seed,
+        species_name="Papilio demoleus",
+        species_query_terms=PAPILIO_TERMS,
         regions=[("AU_ALL", "Australia", "112.92,-43.74,153.64,-10.05")],
         years=[2026],
         months=[6],

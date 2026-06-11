@@ -1,1 +1,0 @@
-"""Georeferencing and uncertainty utilities."""

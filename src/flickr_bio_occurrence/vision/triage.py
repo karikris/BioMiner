@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 import hashlib
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any
 
 import polars as pl
 
 from flickr_bio_occurrence.evidence.category_model import category_defaults, category_from_negative_reason, infer_life_stage_from_text
-from flickr_bio_occurrence.vision.image_cache import CachedImage, cache_image_from_url
-from flickr_bio_occurrence.vision.temp_image_store import cleanup_cached_image
 
 
 TRIAGE_BINS = {"gold", "silver", "bronze", "in_review", "in_review/no_geo"}
@@ -52,134 +48,6 @@ NEGATIVE_RECORD_FIELDS = (
     ("non_target_order_detected", "other_order"),
     ("not_butterfly_detected", "not_butterfly"),
 )
-
-
-class ImageClassifier(Protocol):
-    def classify_image(self, **kwargs: object) -> dict[str, object]:
-        ...
-
-
-CacheImage = Callable[..., CachedImage]
-
-
-@dataclass(frozen=True)
-class ImageTriageRun:
-    frame: pl.DataFrame
-    output_path: Path
-    records_seen: int
-    records_classified: int
-    records_skipped_existing: int
-    download_failures: int
-    bioclip_failures: int
-    images_deleted_after_classification: int
-
-
-def process_image_triage_records(
-    records: Iterable[dict[str, Any]],
-    *,
-    classifier: ImageClassifier,
-    output_path: str | Path,
-    cache_root: str | Path = "data/cache/images",
-    cache_image: CacheImage = cache_image_from_url,
-    source: str = "flickr",
-    model_id: str = "bioclip2_5",
-    model_version: str = "bioclip2_5_huge",
-    model_checkpoint: str = "unknown",
-    now: datetime | None = None,
-) -> ImageTriageRun:
-    output = Path(output_path)
-    existing = _read_existing(output)
-    processed_keys = _successful_keys(existing)
-    classified_at = _timestamp(now)
-    rows: list[dict[str, Any]] = []
-    records_seen = 0
-    classified = 0
-    skipped = 0
-    download_failures = 0
-    bioclip_failures = 0
-    deleted = 0
-
-    for record in records:
-        records_seen += 1
-        base = _base_row(
-            record,
-            source=source,
-            model_id=model_id,
-            model_version=model_version,
-            model_checkpoint=model_checkpoint,
-            classified_at=classified_at,
-        )
-        if not base["flickr_photo_id"] or not base["image_url"]:
-            rows.append(_failure_row(base, status="invalid_record", error="missing image URL or source record ID"))
-            continue
-        dedupe_key = _dedupe_key(base)
-        if dedupe_key in processed_keys:
-            skipped += 1
-            rows.append({**base, **_empty_result_fields(), "classification_status": "skipped_existing", "occurrence_bin": "in_review", "bin_reason": "duplicate_successful_record", "triage_bin": "in_review", "triage_reason": "duplicate_successful_record"})
-            continue
-        try:
-            cached = cache_image(str(base["image_url"]), cache_root=cache_root)
-        except Exception as exc:  # noqa: BLE001 - failures are recorded for retry.
-            download_failures += 1
-            rows.append(_failure_row(base, status="failed_download", error=str(exc), retry_eligible=True))
-            continue
-
-        image_deleted = False
-        try:
-            prediction = classifier.classify_image(
-                flickr_photo_id=str(base["flickr_photo_id"]),
-                image_path=cached.path,
-                image_hash=cached.image_hash,
-                image_url_used=cached.source_url,
-            )
-            triage = classify_bioclip_triage(record={**record, **base}, prediction=prediction)
-            rows.append(
-                {
-                    **base,
-                    "image_hash": cached.image_hash,
-                    "image_downloaded": True,
-                    "classification_status": "success",
-                    "classification_error": None,
-                    "retry_eligible": False,
-                    **_prediction_fields(prediction),
-                    **triage,
-                    "image_deleted_after_classification": cleanup_cached_image(cached, cache_root=cache_root, delete_after_success=True),
-                }
-            )
-            image_deleted = bool(rows[-1]["image_deleted_after_classification"])
-            classified += 1
-            processed_keys.add(dedupe_key)
-        except Exception as exc:  # noqa: BLE001 - model failures are recorded for retry.
-            bioclip_failures += 1
-            image_deleted = cleanup_cached_image(cached, cache_root=cache_root, delete_after_success=True)
-            rows.append(
-                _failure_row(
-                    base,
-                    status="failed_bioclip",
-                    error=str(exc),
-                    retry_eligible=True,
-                    image_hash=cached.image_hash,
-                    image_downloaded=True,
-                    image_deleted_after_classification=image_deleted,
-                )
-            )
-        if image_deleted:
-            deleted += 1
-
-    new_frame = pl.DataFrame(rows) if rows else _empty_triage_frame()
-    combined = pl.concat([existing, new_frame], how="diagonal_relaxed") if existing.height else new_frame
-    output.parent.mkdir(parents=True, exist_ok=True)
-    combined.write_parquet(output)
-    return ImageTriageRun(
-        frame=combined,
-        output_path=output,
-        records_seen=records_seen,
-        records_classified=classified,
-        records_skipped_existing=skipped,
-        download_failures=download_failures,
-        bioclip_failures=bioclip_failures,
-        images_deleted_after_classification=deleted,
-    )
 
 
 def classify_bioclip_triage(*, record: dict[str, Any], prediction: dict[str, object]) -> dict[str, object]:

@@ -5,13 +5,19 @@ import tomllib
 from typing import Any
 
 from flickr_bio_occurrence.flickr.work_items import build_monthly_work_items
-from flickr_bio_occurrence.taxonomy.species_mapper import get_seed_species
 
 
 REGIONS = {
     "AU_ALL": ("AU_ALL", "Australia", "112.92,-43.74,153.64,-10.05"),
     "AU_QLD": ("AU_QLD", "Queensland", "137.99,-29.18,153.55,-9.14"),
 }
+PAPILIO_DEMOLEUS_TERMS = [
+    "Papilio demoleus",
+    "lime butterfly",
+    "chequered swallowtail",
+    "citrus swallowtail",
+    "swallowtail",
+]
 
 
 def build_dry_run_summary(
@@ -24,9 +30,15 @@ def build_dry_run_summary(
     pages: range | None = None,
 ) -> dict[str, Any]:
     config = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
-    seed = get_seed_species(species)
     region_tuple = REGIONS[region]
-    work_items = build_monthly_work_items(species=seed, regions=[region_tuple], years=[year], months=[month], pages=pages)
+    work_items = build_monthly_work_items(
+        species_name=species,
+        species_query_terms=PAPILIO_DEMOLEUS_TERMS,
+        regions=[region_tuple],
+        years=[year],
+        months=[month],
+        pages=pages,
+    )
     per_page = int(config["flickr"]["default_per_page"])
     planned_max_records = min(
         len(work_items) * per_page,
@@ -45,10 +57,8 @@ def build_dry_run_summary(
         "work_item_count": len(work_items),
         "output_paths": {
             "raw": "data/raw/flickr/photos_search/",
-            "bronze": "data/bronze/bronze_flickr_photo/",
-            "silver": "data/silver/silver_occurrence_candidate/",
-            "gold": "data/gold/dwc_occurrence/",
+            "triage": "data/image_triage/",
             "review": "data/review/",
         },
-        "vision_package": "BioCLIP functionality now lives in karikris/BioCLIPMiner",
+        "vision_package": "BioCLIP 2.5 register runner",
     }
