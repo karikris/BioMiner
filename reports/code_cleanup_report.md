@@ -2,6 +2,15 @@
 
 Generated: 2026-06-07T11:11:00.135875+00:00
 
+## README Name-Evidence Command Documentation
+
+- Files changed: `README.md` and this cleanup report.
+- Tests added or updated: none; this was a documentation-only update after tested CLI/report changes.
+- Redundant code removed: none; no code paths were changed.
+- Compatibility shims retained: none changed.
+- Generated artifacts excluded: no generated data, cache, image, parquet, DuckDB, report output, or model files were added.
+- Remaining cleanup recommendation: keep the README command example aligned if the metadata/bioclip output file names become first-class pipeline defaults.
+
 ## Name-Evidence Reporting
 
 - Files changed: `src/biominer/reports/name_evidence.py`, `src/biominer/cli.py`, focused name-evidence/CLI tests, and this cleanup report.

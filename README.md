@@ -70,7 +70,8 @@ Run one bounded metadata polling cycle:
 
 ```bash
 biominer poll-once \
-  --max-api-calls 3500 \
+  --max-api-calls 3400 \
+  --workers 1 \
   --state-db data/state/flickr_poller.sqlite \
   --raw-root data/raw \
   --evidence-output staging/evidence/poll_once_evidence.parquet
@@ -82,6 +83,16 @@ Apply the compact evidence rules to a parquet evidence file:
 biominer apply-rules \
   --evidence staging/evidence/poll_once_evidence.parquet \
   --output staging/evidence/classified.parquet
+```
+
+Drop hard-negative text matches before downstream review when using a reviewed anti-keyword config:
+
+```bash
+biominer filter \
+  --input staging/evidence/classified.parquet \
+  --anti-keywords-json config/anti_keywords.json \
+  --output staging/evidence/filtered.parquet \
+  --dropped-output staging/evidence/dropped.parquet
 ```
 
 Build and process the targeted comment-review queue:
@@ -108,6 +119,30 @@ biominer qa-rate-limit
 biominer qa-summary --report reports/some_run_summary.json
 ```
 
+Compact parquet shards or export bucket-specific parquet views:
+
+```bash
+biominer compact-parquet \
+  --input-root staging/evidence/shards \
+  --output staging/evidence/compacted.parquet
+
+biominer export-bucket-views \
+  --input staging/evidence/classified_with_comments.parquet \
+  --output-dir reports/bucket_views
+```
+
+Report accepted scientific/common-name evidence after BioCLIP classification:
+
+```bash
+biominer report-name-evidence \
+  --metadata-output staging/evidence/poll_once_evidence.parquet \
+  --bioclip-output staging/evidence/bioclip_classified.parquet \
+  --keywords-json config/papilio_demoleus_multilingual_keywords.json \
+  --target-species "Papilio demoleus" \
+  --score-threshold 0.9 \
+  --output reports/name_evidence_profile.json
+```
+
 Clean a temporary image cache explicitly when needed:
 
 ```bash
@@ -132,7 +167,7 @@ Metadata polling is designed as a bounded one-shot command:
 check API budget -> claim work items -> fetch pages -> write staging/evidence -> queue image triage -> write reports -> exit
 ```
 
-The active limits are a 3,500-call soft hourly target and a 3,600-call hard hourly stop. Normal pages use `per_page=500`; geotagged/bbox pages use `per_page=250`; count probes use `per_page=1`. Oversized result sets are split instead of paging blindly past Flickr's accessible search window.
+The operational soft target is 3,400 calls per hour and the hard stop is 3,600 calls per hour. Normal pages use `per_page=500`; geotagged/bbox pages use `per_page=250`; count probes use `per_page=1`. Oversized result sets are split instead of paging blindly past Flickr's accessible search window.
 
 ## Triage Rules
 
@@ -142,17 +177,17 @@ Occurrence bins:
 gold
 silver
 bronze
-bin
-in_review
+in_review/no_geo
+in_review/error
 ```
 
-Gold is an adult butterfly occurrence candidate with BioCLIP species score greater than `0.70`, matching species evidence in Flickr title/tags/description/machine tags, an image URL, event date, latitude, longitude, `image_category = adult_butterfly`, and no hard-negative category.
+Gold is an adult butterfly-like Lepidoptera occurrence candidate with BioCLIP support, an image URL, event date, latitude, longitude, `image_category = adult_butterfly`, and no hard-negative category.
 
-Silver is a species-supported butterfly candidate with BioCLIP species score from `0.35` through `0.70`, or an otherwise Gold-strength species match that is missing date or geo metadata.
+Silver is a likely Lepidoptera candidate with an image URL and missing event date.
 
-Bronze is retained butterfly material that is not an adult occurrence candidate, including adult butterflies without enough species agreement and non-adult life stages.
+`in_review/no_geo` is used for likely Lepidoptera records with an image URL but missing latitude or longitude. Missing geo must not be forced into Gold.
 
-Bin is material with no butterfly in any life stage, including museum specimens, artwork, tattoos, generated images, logos, products, textile/pattern imagery, other insects, and non-Lepidoptera records. Eggs, caterpillars, larvae, pupae, and chrysalides are useful Lepidoptera records and stay Bronze in this workflow.
+Bronze is retained material that is not an adult butterfly occurrence candidate, including non-adult life stages, museum specimens, artwork, tattoos, generated images, logos, products, textile/pattern imagery, other insects, and non-Lepidoptera records. Eggs, caterpillars, larvae, pupae, and chrysalides are useful Lepidoptera records and stay Bronze in this workflow.
 
 Operational failures such as missing image URLs, missing BioCLIP output, failed downloads, and runtime failures stay in review/error handling paths and remain retryable where appropriate.
 
