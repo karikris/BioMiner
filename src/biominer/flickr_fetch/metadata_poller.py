@@ -9,6 +9,7 @@ import sqlite3
 from typing import Any, Callable
 
 import httpx
+import polars as pl
 
 from biominer.filter.extractor import build_evidence_frame
 from biominer.flickr_fetch.endpoints import FLICKR_REST_BASE_URL, SEARCH_METHOD
@@ -40,6 +41,8 @@ class PollOnceResult:
     evidence_rows_written: int
     source_records_inserted: int
     duplicate_records_skipped: int
+    query_hits_inserted: int
+    duplicate_query_hits_skipped: int
     image_urls_queued: int
     work_items_claimed: int
     api_calls_made: int
@@ -160,11 +163,13 @@ class MetadataPollState:
                 (FAILED, _timestamp(), error, work_item_id),
             )
 
-    def insert_source_records(self, records: list[dict[str, Any]], *, source_query: FlickrQuery) -> tuple[int, int, int]:
+    def insert_source_records(self, records: list[dict[str, Any]], *, source_query: FlickrQuery) -> tuple[int, int, int, int, int]:
         inserted = 0
         unique_records = deduplicate_photo_records(records)
         skipped = len(records) - len(unique_records)
         queued = 0
+        query_hits_inserted = 0
+        duplicate_query_hits = 0
         with self._connect() as conn:
             for record in unique_records:
                 photo_id = str(record.get("id") or "")
@@ -173,6 +178,7 @@ class MetadataPollState:
                     skipped += 1
                     continue
                 source_record_hash = _source_record_hash(record)
+                image_url_kind = "url_l" if record.get("url_l") else "url_m"
                 result = conn.execute(
                     """
                     INSERT OR IGNORE INTO source_records (
@@ -186,7 +192,7 @@ class MetadataPollState:
                         "flickr",
                         photo_id,
                         image_url,
-                        "url_l" if record.get("url_l") else "url_m",
+                        image_url_kind,
                         source_record_hash,
                         source_query.term,
                         source_query.language,
@@ -195,6 +201,31 @@ class MetadataPollState:
                         _timestamp(),
                     ),
                 )
+                query_result = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO source_record_query_hits (
+                        source, flickr_photo_id, image_url, query_field,
+                        query_term, query_language, query_lane, query_page,
+                        first_seen_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "flickr",
+                        photo_id,
+                        image_url,
+                        source_query.search_field,
+                        source_query.term,
+                        source_query.language,
+                        source_query.lane,
+                        source_query.page,
+                        _timestamp(),
+                    ),
+                )
+                if query_result.rowcount:
+                    query_hits_inserted += 1
+                else:
+                    duplicate_query_hits += 1
                 if result.rowcount:
                     inserted += 1
                     queue_result = conn.execute(
@@ -218,7 +249,56 @@ class MetadataPollState:
                     queued += int(queue_result.rowcount)
                 else:
                     skipped += 1
-        return inserted, skipped, queued
+        return inserted, skipped, queued, query_hits_inserted, duplicate_query_hits
+
+    def source_records_with_query_provenance(self) -> pl.DataFrame:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    source_records.source,
+                    source_records.flickr_photo_id,
+                    source_records.image_url,
+                    source_records.image_url_kind,
+                    source_records.query_field AS first_query_field,
+                    source_records.query_term AS first_query_term,
+                    source_records.query_language AS first_query_language,
+                    source_record_query_hits.query_field,
+                    source_record_query_hits.query_term
+                FROM source_records
+                LEFT JOIN source_record_query_hits
+                  ON source_record_query_hits.source = source_records.source
+                 AND source_record_query_hits.flickr_photo_id = source_records.flickr_photo_id
+                 AND source_record_query_hits.image_url = source_records.image_url
+                ORDER BY source_records.flickr_photo_id, source_record_query_hits.query_field, source_record_query_hits.query_term
+                """
+            ).fetchall()
+        grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for row in rows:
+            key = (str(row["source"]), str(row["flickr_photo_id"]), str(row["image_url"]))
+            item = grouped.setdefault(
+                key,
+                {
+                    "source": row["source"],
+                    "flickr_photo_id": row["flickr_photo_id"],
+                    "image_url": row["image_url"],
+                    "image_url_kind": row["image_url_kind"],
+                    "first_query_field": row["first_query_field"],
+                    "first_query_term": row["first_query_term"],
+                    "first_query_language": row["first_query_language"],
+                    "first_query_label": f"{row['first_query_field']}:{row['first_query_term']}",
+                    "all_query_labels": [],
+                    "all_query_terms": [],
+                    "all_query_fields": [],
+                    "query_hit_count": 0,
+                },
+            )
+            if row["query_field"] and row["query_term"]:
+                item["all_query_labels"].append(f"{row['query_field']}:{row['query_term']}")
+                item["all_query_terms"].append(row["query_term"])
+                item["all_query_fields"].append(row["query_field"])
+                item["query_hit_count"] += 1
+        return pl.DataFrame(list(grouped.values())) if grouped else pl.DataFrame()
 
     def _init_db(self) -> None:
         with self._connect() as conn:
@@ -268,6 +348,25 @@ class MetadataPollState:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS source_record_query_hits (
+                    source TEXT NOT NULL,
+                    flickr_photo_id TEXT NOT NULL,
+                    image_url TEXT NOT NULL,
+                    query_field TEXT NOT NULL,
+                    query_term TEXT NOT NULL,
+                    query_language TEXT NOT NULL,
+                    query_lane TEXT NOT NULL,
+                    query_page INTEGER NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    PRIMARY KEY (
+                        source, flickr_photo_id, image_url,
+                        query_field, query_term, query_language
+                    )
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS image_triage_queue (
                     source TEXT NOT NULL,
                     flickr_photo_id TEXT NOT NULL,
@@ -308,6 +407,8 @@ def poll_once(
     raw_written = 0
     records_inserted = 0
     duplicates = 0
+    query_hits_inserted = 0
+    duplicate_query_hits = 0
     queued = 0
     payloads: list[dict[str, Any]] = []
     fetcher = fetch_metadata or _http_fetcher(api_key=api_key)
@@ -333,9 +434,11 @@ def poll_once(
                             state.enqueue_work_item(next_query)
                     else:
                         records = _payload_photo_records(payload)
-                        inserted, skipped, queued_count = state.insert_source_records(records, source_query=query)
+                        inserted, skipped, queued_count, query_hits, duplicate_hits = state.insert_source_records(records, source_query=query)
                         records_inserted += inserted
                         duplicates += skipped
+                        query_hits_inserted += query_hits
+                        duplicate_query_hits += duplicate_hits
                         queued += queued_count
                     state.complete_work_item(work_item_id)
                 except Exception as exc:  # noqa: BLE001 - poller records failure and exits bounded cycle.
@@ -350,6 +453,8 @@ def poll_once(
         evidence_rows_written=evidence_rows,
         source_records_inserted=records_inserted,
         duplicate_records_skipped=duplicates,
+        query_hits_inserted=query_hits_inserted,
+        duplicate_query_hits_skipped=duplicate_query_hits,
         image_urls_queued=queued,
         work_items_claimed=len(claimed),
         api_calls_made=len(claimed),

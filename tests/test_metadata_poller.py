@@ -18,7 +18,7 @@ def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
         }
 
-    assert {"api_call_ledger", "flickr_work_items", "source_records", "image_triage_queue"}.issubset(tables)
+    assert {"api_call_ledger", "flickr_work_items", "source_records", "source_record_query_hits", "image_triage_queue"}.issubset(tables)
 
 
 def test_poll_once_fetches_metadata_only_dedupes_and_queues_image_urls(tmp_path) -> None:
@@ -60,6 +60,75 @@ def test_poll_once_fetches_metadata_only_dedupes_and_queues_image_urls(tmp_path)
     with sqlite3.connect(state.path) as conn:
         assert conn.execute("SELECT count(*) FROM source_records").fetchone()[0] == 2
         assert conn.execute("SELECT count(*) FROM image_triage_queue").fetchone()[0] == 2
+
+
+def test_poll_once_preserves_duplicate_query_hits_for_source_record(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="Papilio", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+    state.enqueue_work_item(FlickrQuery(term="Papilionidae", language="en", search_field="tags", lane="normal_page", page=1, per_page=250))
+
+    def fake_fetch(item: FlickrQuery) -> dict[str, object]:
+        return {
+            "photos": {
+                "total": "1",
+                "photo": [
+                    {
+                        "id": "1",
+                        "title": "swallowtail",
+                        "url_l": "https://live.staticflickr.com/1_l.jpg",
+                    }
+                ],
+            }
+        }
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence" / "poll.parquet",
+        max_api_calls=2,
+        fetch_metadata=fake_fetch,
+    )
+
+    assert result.source_records_inserted == 1
+    assert result.duplicate_records_skipped == 1
+    assert result.query_hits_inserted == 2
+    with sqlite3.connect(state.path) as conn:
+        source_rows = conn.execute("SELECT query_field, query_term FROM source_records").fetchall()
+        query_hits = conn.execute(
+            "SELECT query_field, query_term FROM source_record_query_hits ORDER BY query_field, query_term"
+        ).fetchall()
+    assert source_rows == [("text", "Papilio")]
+    assert query_hits == [("tags", "Papilionidae"), ("text", "Papilio")]
+
+
+def test_export_source_records_with_query_provenance_lists_all_keywords(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="Papilio", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+    state.enqueue_work_item(FlickrQuery(term="Papilionidae", language="en", search_field="tags", lane="normal_page", page=1, per_page=250))
+
+    poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence" / "poll.parquet",
+        max_api_calls=2,
+        fetch_metadata=lambda item: {
+            "photos": {
+                "total": "1",
+                "photo": [{"id": "1", "title": "swallowtail", "url_l": "https://live.staticflickr.com/1_l.jpg"}],
+            }
+        },
+    )
+
+    frame = state.source_records_with_query_provenance()
+    row = frame.to_dicts()[0]
+
+    assert row["first_query_label"] == "text:Papilio"
+    assert row["first_query_field"] == "text"
+    assert row["first_query_term"] == "Papilio"
+    assert row["all_query_labels"] == ["tags:Papilionidae", "text:Papilio"]
+    assert row["all_query_terms"] == ["Papilionidae", "Papilio"]
+    assert row["all_query_fields"] == ["tags", "text"]
+    assert row["query_hit_count"] == 2
 
 
 def test_poll_once_records_count_probes_and_enqueues_pages(tmp_path) -> None:

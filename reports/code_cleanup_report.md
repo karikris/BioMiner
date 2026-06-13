@@ -2,6 +2,24 @@
 
 Generated: 2026-06-07T11:11:00.135875+00:00
 
+## Step 1 Flickr Text/Tag Search Run Reporting
+
+- Files changed: `src/biominer/reports/flickr_fetch.py`, `scripts/run_flickr_text_search.py`, focused report/poller/CLI tests, and this cleanup report.
+- Tests added or updated: added local tests for Step 1 background-run manifest content, completed fetch report metrics, and tag-search page enqueueing.
+- Redundant code removed: none; this adds the previously missing first-step long-run report/manifest path.
+- Compatibility shims retained: none.
+- Generated artifacts excluded: no raw Flickr payloads, parquet outputs, live-run state DBs, logs, caches, images, model weights, or virtual environments were added.
+- Remaining cleanup recommendation: consider promoting the runner script into a first-class `biominer` CLI command after the live run validates the report shape.
+
+## README Current Repo Alignment
+
+- Files changed: `README.md` and this cleanup report.
+- Tests added or updated: none; this was a documentation-only alignment pass.
+- Redundant code removed: none; no code paths were changed.
+- Compatibility shims retained: none changed.
+- Generated artifacts excluded: no generated data, cache, image, parquet, DuckDB, report output, or model files were added.
+- Remaining cleanup recommendation: align the code-level default API soft limit with the documented 3,400-call operational target in a separate tested change.
+
 ## Phase 4: Bronze Comment Review And Bucket Reports
 
 - Files changed: `src/biominer/flickr_comments/`, `src/biominer/reports/`, `src/biominer/cli.py`, comment/CLI tests, and this cleanup report.
