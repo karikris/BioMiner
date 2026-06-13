@@ -2,6 +2,15 @@
 
 Generated: 2026-06-07T11:11:00.135875+00:00
 
+## Name-Evidence Reporting
+
+- Files changed: `src/biominer/reports/name_evidence.py`, `src/biominer/cli.py`, focused name-evidence/CLI tests, and this cleanup report.
+- Tests added or updated: added local tests for accepted-name term loading, Gold target-species score-threshold reporting, broad-query no-name gap reporting, legacy single-query metadata fallback, and CLI JSON output.
+- Redundant code removed: none; this adds a new reusable report path.
+- Compatibility shims retained: the report accepts both future provenance columns (`all_query_terms`, `all_query_labels`) and legacy single-hit metadata columns (`query_field`, `query_term`).
+- Generated artifacts excluded: no live-run report output, raw Flickr payloads, parquet outputs, caches, images, model weights, or virtual environments were added.
+- Remaining cleanup recommendation: wire this report into the routine BioCLIP run wrapper once a first-class model-backed CLI exists.
+
 ## Step 1 Flickr Text/Tag Search Run Reporting
 
 - Files changed: `src/biominer/reports/flickr_fetch.py`, `scripts/run_flickr_text_search.py`, focused report/poller/CLI tests, and this cleanup report.

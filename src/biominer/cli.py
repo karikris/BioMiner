@@ -19,6 +19,7 @@ from biominer.filter.anti_keywords import filter_biodiversity_parquet
 from biominer.filter.rules import classify_evidence_frame
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.reports.buckets import export_bucket_views
+from biominer.reports.name_evidence import build_name_evidence_report, write_name_evidence_report
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -77,6 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
     export_views = subparsers.add_parser("export-bucket-views")
     export_views.add_argument("--input", required=True)
     export_views.add_argument("--output-dir", required=True)
+    name_evidence = subparsers.add_parser("report-name-evidence")
+    name_evidence.add_argument("--metadata-output", required=True)
+    name_evidence.add_argument("--bioclip-output", required=True)
+    name_evidence.add_argument("--keywords-json", required=True)
+    name_evidence.add_argument("--target-species", required=True)
+    name_evidence.add_argument("--score-threshold", type=float, default=0.9)
+    name_evidence.add_argument("--output", required=True)
     return parser
 
 
@@ -232,6 +240,17 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "export-bucket-views":
         print(json.dumps(export_bucket_views(args.input, args.output_dir), indent=2, sort_keys=True))
+        return 0
+    if args.command == "report-name-evidence":
+        report = build_name_evidence_report(
+            metadata_path=args.metadata_output,
+            bioclip_output_path=args.bioclip_output,
+            keywords_json=args.keywords_json,
+            target_species=args.target_species,
+            score_threshold=args.score_threshold,
+        )
+        write_name_evidence_report(args.output, report)
+        print(json.dumps({"output": args.output, **report}, indent=2, sort_keys=True))
         return 0
     return 2
 
