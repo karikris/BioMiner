@@ -158,3 +158,37 @@ def test_write_staging_evidence_writes_parquet(tmp_path) -> None:
     assert output_path.name == "staging_evidence.parquet"
     assert frame["flickr_photo_id"][0] == "4"
     assert frame["species_text_match"][0] is True
+
+
+def test_build_evidence_frame_uses_stable_schema_for_mixed_flickr_values() -> None:
+    photos = [
+        {
+            "id": str(index),
+            "title": "butterfly",
+            "machine_tags": None,
+            "url_l": f"https://live.staticflickr.com/{index}.jpg",
+        }
+        for index in range(101)
+    ]
+    photos.append(
+        {
+            "id": "late",
+            "title": "butterfly",
+            "machine_tags": "snookr:md5=ec04e341d29f4fa7dce25d6ed0b358d3",
+            "url_l": "https://live.staticflickr.com/late.jpg",
+        }
+    )
+    frame = build_evidence_frame(
+        [
+            {
+                "photos": {
+                    "photo": photos
+                }
+            }
+        ],
+        species_query="Papilio demoleus",
+    )
+
+    assert frame.height == 102
+    assert frame.schema["machine_tags"] == pl.String
+    assert frame["machine_tags"][-1] == "snookr:md5=ec04e341d29f4fa7dce25d6ed0b358d3"

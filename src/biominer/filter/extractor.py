@@ -32,7 +32,8 @@ def build_evidence_frame(
     species_query: str,
 ) -> pl.DataFrame:
     rows = extract_evidence_rows(payloads, species_query=species_query)
-    return pl.DataFrame(rows) if rows else _empty_evidence_frame()
+    empty = _empty_evidence_frame()
+    return pl.DataFrame(rows, schema=empty.schema) if rows else empty
 
 
 def extract_evidence_rows(
