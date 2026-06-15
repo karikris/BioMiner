@@ -149,6 +149,26 @@ class MetadataPollState:
                 (endpoint, work_item_id, status, _unix_timestamp()),
             )
 
+    def reserve_api_call(self, *, work_item_id: str, endpoint: str) -> None:
+        self.log_api_call(work_item_id=work_item_id, endpoint=endpoint, status="reserved")
+
+    def update_api_call_status(self, *, work_item_id: str, status: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE api_call_ledger
+                SET status = ?
+                WHERE id = (
+                    SELECT id
+                    FROM api_call_ledger
+                    WHERE work_item_id = ? AND status = 'reserved'
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                )
+                """,
+                (status, work_item_id),
+            )
+
     def complete_work_item(self, work_item_id: str) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -414,6 +434,8 @@ def poll_once(
     fetcher = fetch_metadata or _http_fetcher(api_key=api_key)
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for work_item_id, _query in claimed:
+            state.reserve_api_call(work_item_id=work_item_id, endpoint=SEARCH_METHOD)
         pending: dict[Future[dict[str, Any]], tuple[str, FlickrQuery]] = {
             pool.submit(fetcher, query): (work_item_id, query)
             for work_item_id, query in claimed
@@ -424,7 +446,7 @@ def poll_once(
                 work_item_id, query = pending.pop(future)
                 try:
                     payload = future.result()
-                    state.log_api_call(work_item_id=work_item_id, endpoint=SEARCH_METHOD, status="ok")
+                    state.update_api_call_status(work_item_id=work_item_id, status="ok")
                     raw_written += 1
                     payloads.append(payload)
                     _write_raw_response(raw_root=Path(raw_root), work_item_id=work_item_id, query=query, payload=payload)
@@ -442,7 +464,7 @@ def poll_once(
                         queued += queued_count
                     state.complete_work_item(work_item_id)
                 except Exception as exc:  # noqa: BLE001 - poller records failure and exits bounded cycle.
-                    state.log_api_call(work_item_id=work_item_id, endpoint=SEARCH_METHOD, status="failed")
+                    state.update_api_call_status(work_item_id=work_item_id, status="failed")
                     state.fail_work_item(work_item_id, str(exc))
 
     evidence_rows = _write_evidence(evidence_output, payloads)
