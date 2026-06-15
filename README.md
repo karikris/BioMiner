@@ -195,8 +195,7 @@ Planning logic:
 
 ```text
 start at 2004-02-10 and advance to today
-use 10-day upload-date slices through 2015-12-31
-use 5-day upload-date slices from 2016-01-01 through today
+use 5-day upload-date slices for the full range
 enqueue pages 1..8 for each slice at per_page=500
 ```
 
@@ -229,12 +228,12 @@ media=photos
 safe_search=1
 content_types=0
 min_upload_date=2004-02-10
-max_upload_date=2004-02-19
+max_upload_date=2004-02-14
 per_page=500
 page=1..8
 ```
 
-The next slice is `2004-02-20..2004-02-29`, also pages 1..8. From 2016 onward, slices are 5 days wide. With the 3,500-call hourly budget, a bounded run stops after the current poll-once claim set and resumes remaining pending slices in deterministic SQLite order.
+The next slice is `2004-02-15..2004-02-19`, also pages 1..8. With the 3,500-call hourly budget, a bounded run stops after the current poll-once claim set and resumes remaining pending slices in deterministic SQLite order.
 
 Recommended output layout:
 

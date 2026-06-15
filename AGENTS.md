@@ -54,8 +54,7 @@ Separate these:
 Invariant:
 - broad butterfly discovery uses fixed upload-date slices, not recursive count-probe splitting;
 - start at `2004-02-10` and advance to today;
-- use 10-day upload-date slices through `2015-12-31`;
-- use 5-day upload-date slices from `2016-01-01` through today;
+- use 5-day upload-date slices for the full range;
 - enqueue pages 1..8 for each slice at `per_page=500`;
 - report a slice as saturated when page 8 returns 500 records;
 - if budget ends, stop cleanly; next run resumes pending work in deterministic DB order.
@@ -66,7 +65,7 @@ Page sizes:
 - geo/bbox page `per_page=250`;
 - image URL preference `url_l -> url_m`; no default `url_o`.
 
-Example: `text=butterfly` starts with upload-date slice `2004-02-10..2004-02-19`, pages 1..8, then resumes with the next pending deterministic date slice.
+Example: `text=butterfly` starts with upload-date slice `2004-02-10..2004-02-14`, pages 1..8, then resumes with the next pending deterministic date slice.
 
 ## Step rules
 Step 1 fetch:

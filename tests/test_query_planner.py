@@ -82,7 +82,7 @@ def test_high_volume_queries_use_fixed_upload_slice_pages() -> None:
     assert {item.per_page for item in pages} == {NORMAL_PAGE_SIZE}
     assert not any(item.lane == "count_probe" for item in pages)
     assert pages[0].min_upload_date == "2004-02-10"
-    assert pages[0].max_upload_date == "2004-02-19"
+    assert pages[0].max_upload_date == "2004-02-14"
 
 
 def test_stable_threshold_matches_flickr_result_window() -> None:
@@ -150,7 +150,7 @@ def test_fixed_slice_metadata_carries_upload_dates_depth_and_index() -> None:
         ("upload_date", 1, 0),
     ]
     assert pages[0].min_upload_date == "2004-02-10"
-    assert pages[0].max_upload_date == "2004-02-19"
+    assert pages[0].max_upload_date == "2004-02-14"
 
 
 def test_over_threshold_probe_with_upload_bounds_uses_fixed_slices_within_bounds() -> None:
@@ -178,16 +178,16 @@ def test_planned_work_is_sorted_deterministically() -> None:
     pages = plan_queries_from_count(probe, total=4001)
 
     assert [(query.slice_index, query.min_upload_date, query.max_upload_date, query.page) for query in pages[:10]] == [
-        (0, "2004-02-10", "2004-02-19", 1),
-        (0, "2004-02-10", "2004-02-19", 2),
-        (0, "2004-02-10", "2004-02-19", 3),
-        (0, "2004-02-10", "2004-02-19", 4),
-        (0, "2004-02-10", "2004-02-19", 5),
-        (0, "2004-02-10", "2004-02-19", 6),
-        (0, "2004-02-10", "2004-02-19", 7),
-        (0, "2004-02-10", "2004-02-19", 8),
-        (1, "2004-02-20", "2004-02-29", 1),
-        (1, "2004-02-20", "2004-02-29", 2),
+        (0, "2004-02-10", "2004-02-14", 1),
+        (0, "2004-02-10", "2004-02-14", 2),
+        (0, "2004-02-10", "2004-02-14", 3),
+        (0, "2004-02-10", "2004-02-14", 4),
+        (0, "2004-02-10", "2004-02-14", 5),
+        (0, "2004-02-10", "2004-02-14", 6),
+        (0, "2004-02-10", "2004-02-14", 7),
+        (0, "2004-02-10", "2004-02-14", 8),
+        (1, "2004-02-15", "2004-02-19", 1),
+        (1, "2004-02-15", "2004-02-19", 2),
     ]
 
 

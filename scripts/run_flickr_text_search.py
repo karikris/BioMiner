@@ -91,13 +91,13 @@ def main() -> None:
         args.end_date,
         "--slice-days",
         str(args.slice_days),
-        "--coarse-end-date",
-        args.coarse_end_date,
-        "--coarse-slice-days",
-        str(args.coarse_slice_days),
         "--pages-per-slice",
         str(args.pages_per_slice),
     ]
+    if args.coarse_end_date:
+        command.extend(["--coarse-end-date", args.coarse_end_date])
+    if args.coarse_slice_days:
+        command.extend(["--coarse-slice-days", str(args.coarse_slice_days)])
     if args.pages is not None:
         command.extend(["--pages", str(args.pages)])
     if args.allow_direct_pages:

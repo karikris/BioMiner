@@ -3,9 +3,9 @@
 ## Step 1 Fixed Flickr Upload-Date Slices
 
 - Files changed: `src/biominer/flickr_fetch/query_planner.py`, `src/biominer/flickr_fetch/metadata_poller.py`, `src/biominer/reports/flickr_fetch.py`, `scripts/run_flickr_text_search.py`, `README.md`, `AGENTS.md`, focused tests, and this cleanup report.
-- Tests added or updated: added fixed upload-date slice planning, deterministic slice/page resume, full-page saturation reporting, and fixed-slice runner enqueue coverage.
+- Tests added or updated: added fixed upload-date slice planning, deterministic slice/page resume, full-page saturation reporting, fixed-slice runner enqueue coverage, and all-5-day default coverage.
 - Redundant code removed: broad runner defaults no longer seed count-probe recursion; fixed upload-date page work is now the authoritative broad-search path.
-- Compatibility shims retained: explicit guarded direct-page mode remains for debug use; count-probe helpers remain for narrow and existing CLI workflows.
+- Compatibility shims retained: explicit guarded direct-page mode remains for debug use; count-probe helpers and optional coarse-slice arguments remain for narrow and existing CLI workflows, but default broad runs use 5-day slices only.
 - Generated artifacts excluded: raw Flickr payloads, logs, PID/manifest outputs, parquet files, state DBs, caches, images, model weights, and virtual environments were not staged.
 - Remaining cleanup recommendation: promote fixed-slice runner flags into the main `biominer` CLI if this script becomes the standard operator entry point.
 

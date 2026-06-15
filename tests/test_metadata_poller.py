@@ -207,8 +207,8 @@ def test_poll_once_plans_fixed_slice_pages_over_stable_result_threshold(tmp_path
         start_date="2004-02-10",
         end_date=datetime.now(UTC).date().isoformat(),
         slice_days=5,
-        coarse_end_date="2015-12-31",
-        coarse_slice_days=10,
+        coarse_end_date=None,
+        coarse_slice_days=None,
     )
     assert pending_count == len(expected_slices) * 8
     assert {row[0] for row in rows} == {"normal_page"}
