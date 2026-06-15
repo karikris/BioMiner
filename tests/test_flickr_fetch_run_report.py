@@ -10,6 +10,7 @@ import polars as pl
 from biominer.flickr_fetch.metadata_poller import PollOnceResult
 from biominer.reports.flickr_fetch import build_step1_fetch_report, write_step1_manifest
 from biominer.flickr_fetch.metadata_poller import MetadataPollState
+from biominer.flickr_fetch.query_planner import FlickrQuery
 
 
 def _load_fetch_script():
@@ -118,6 +119,82 @@ def test_build_step1_fetch_report_includes_required_metrics(tmp_path) -> None:
     assert report["query_provenance"]["unique_query_labels_with_records"] == 3
     assert report["query_provenance"]["duplicate_records_with_additional_query_hits"] == 1
     assert report["query_provenance"]["top_query_labels_by_records"][0] == {"query_label": "tags:Papilio", "records": 1}
+
+
+def test_build_step1_fetch_report_includes_split_progress_metrics(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "state.sqlite")
+    completed = FlickrQuery(
+        term="butterfly",
+        language="en",
+        search_field="text",
+        lane="count_probe",
+        min_upload_date="2020-01-01",
+        max_upload_date="2020-12-31",
+        split_reason="upload_date",
+        split_depth=1,
+    )
+    pending = FlickrQuery(
+        term="butterfly",
+        language="en",
+        search_field="text",
+        lane="count_probe",
+        min_upload_date="2021-01-01",
+        max_upload_date="2021-12-31",
+        split_reason="upload_date",
+        split_depth=1,
+    )
+    page = FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=500, has_geo=0)
+    completed_id = next_id = page_id = None
+    state.enqueue_work_item(completed)
+    state.enqueue_work_item(pending)
+    state.enqueue_work_item(page)
+    with sqlite3.connect(state.path) as conn:
+        completed_id = conn.execute("SELECT work_item_id FROM flickr_work_items WHERE min_date = '2020-01-01'").fetchone()[0]
+        page_id = conn.execute("SELECT work_item_id FROM flickr_work_items WHERE lane = 'normal_page'").fetchone()[0]
+    state.complete_work_item(completed_id)
+    state.complete_work_item(page_id)
+    result = PollOnceResult(
+        state_db=state.path,
+        raw_responses_written=1,
+        evidence_rows_written=500,
+        source_records_inserted=450,
+        duplicate_records_skipped=50,
+        query_hits_inserted=450,
+        duplicate_query_hits_skipped=0,
+        image_urls_queued=450,
+        work_items_claimed=1,
+        api_calls_made=1,
+        remaining_soft_budget=0,
+        remaining_hard_budget=100,
+        stale_claims_requeued=0,
+    )
+
+    report = build_step1_fetch_report(
+        run_id="run",
+        command=["biominer", "poll-once"],
+        result=result,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        started_at=datetime(2026, 6, 12, tzinfo=UTC),
+        ended_at=datetime(2026, 6, 12, 0, 0, 10, tzinfo=UTC),
+        workers=1,
+        expected_pages=1,
+        status="completed",
+    )
+
+    assert report["api_budget"]["budget_limited_exit"] is True
+    assert report["work"]["count_probes_completed"] == 1
+    assert report["work"]["page_fetches_completed"] == 1
+    assert report["work"]["split_probes_enqueued_by_reason"] == {"upload_date": 2}
+    assert report["work"]["pending_count_probes"] == 1
+    assert report["work"]["pending_page_fetches"] == 0
+    assert report["work"]["completed_date_slices"] == 1
+    assert report["work"]["pending_date_slices"] == 1
+    assert report["work"]["last_completed_date_range"] == {"date_kind": "upload_date", "min_date": "2020-01-01", "max_date": "2020-12-31"}
+    assert report["work"]["next_pending_date_range"] == {"date_kind": "upload_date", "min_date": "2021-01-01", "max_date": "2021-12-31"}
+    assert report["rows"]["records_fetched"] == 500
+    assert report["rows"]["records_inserted"] == 450
+    assert report["throughput"]["records_per_page"] == 500
 
 
 def test_enqueue_count_probe_supports_tag_search(tmp_path) -> None:

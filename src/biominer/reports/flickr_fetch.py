@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import platform
 import resource
+import sqlite3
 import subprocess
 from typing import Any
 
@@ -62,6 +63,7 @@ def build_step1_fetch_report(
     raw_bytes = _tree_bytes(Path(raw_root))
     evidence_bytes = _file_bytes(Path(evidence_output))
     state_bytes = _file_bytes(result.state_db)
+    state_work = _state_work_summary(result.state_db)
     return {
         "run_id": run_id,
         "command": command,
@@ -83,16 +85,19 @@ def build_step1_fetch_report(
             "remaining_soft_budget": result.remaining_soft_budget,
             "remaining_hard_budget": result.remaining_hard_budget,
             "calls_per_hour": (result.api_calls_made / total_sec * 3600) if total_sec else None,
+            "budget_limited_exit": result.remaining_soft_budget == 0 and bool(state_work.get("has_pending_work")),
         },
         "work": {
             "pages_claimed": result.work_items_claimed,
             "raw_responses_written": result.raw_responses_written,
             "stale_claims_requeued": result.stale_claims_requeued,
             "pages_or_probes": result.work_items_claimed,
-            "splits": "not_instrumented",
+            "splits": state_work["split_probes_enqueued_by_reason"],
+            **state_work,
         },
         "rows": {
             "records_fetched": result.evidence_rows_written,
+            "records_inserted": result.source_records_inserted,
             "source_records_inserted": result.source_records_inserted,
             "duplicate_records_skipped": result.duplicate_records_skipped,
             "query_hits_inserted": result.query_hits_inserted,
@@ -103,6 +108,7 @@ def build_step1_fetch_report(
         "query_provenance": _query_provenance_summary(query_provenance),
         "throughput": {
             "records_per_call": (result.evidence_rows_written / result.api_calls_made) if result.api_calls_made else None,
+            "records_per_page": (result.evidence_rows_written / result.raw_responses_written) if result.raw_responses_written else None,
         },
         "storage_bytes": {
             "raw_json_bytes": raw_bytes,
@@ -119,6 +125,7 @@ def build_step1_fetch_report(
             "rss_kb": _max_rss_kb(),
             "max_rss_kb": _max_rss_kb(),
             "peak_memory": "not_instrumented",
+            "peak_traced_bytes": "not_instrumented",
         },
         "gpu_memory": "not_instrumented",
         "failures": {
@@ -160,6 +167,77 @@ def _query_provenance_summary(frame: pl.DataFrame | None) -> dict[str, Any]:
         "query_hit_count_distribution": distribution,
         "top_query_labels_by_records": top_labels[:20],
     }
+
+
+def _state_work_summary(path: Path) -> dict[str, Any]:
+    fallback = {
+        "count_probes_completed": "not_instrumented",
+        "page_fetches_completed": "not_instrumented",
+        "split_probes_enqueued_by_reason": "not_instrumented",
+        "pending_count_probes": "not_instrumented",
+        "pending_page_fetches": "not_instrumented",
+        "completed_date_slices": "not_instrumented",
+        "pending_date_slices": "not_instrumented",
+        "last_completed_date_range": None,
+        "next_pending_date_range": None,
+        "has_pending_work": None,
+    }
+    if not path.exists():
+        return fallback
+    try:
+        with sqlite3.connect(path) as conn:
+            conn.row_factory = sqlite3.Row
+            tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+            if "flickr_work_items" not in tables:
+                return fallback
+            return {
+                "count_probes_completed": _one(conn, "SELECT count(*) FROM flickr_work_items WHERE lane = 'count_probe' AND status = 'completed'"),
+                "page_fetches_completed": _one(conn, "SELECT count(*) FROM flickr_work_items WHERE lane IN ('normal_page', 'bbox_page') AND status = 'completed'"),
+                "split_probes_enqueued_by_reason": _split_counts(conn),
+                "pending_count_probes": _one(conn, "SELECT count(*) FROM flickr_work_items WHERE lane = 'count_probe' AND status = 'pending'"),
+                "pending_page_fetches": _one(conn, "SELECT count(*) FROM flickr_work_items WHERE lane IN ('normal_page', 'bbox_page') AND status = 'pending'"),
+                "completed_date_slices": _one(conn, "SELECT count(*) FROM flickr_work_items WHERE status = 'completed' AND COALESCE(date_kind, '') != ''"),
+                "pending_date_slices": _one(conn, "SELECT count(*) FROM flickr_work_items WHERE status = 'pending' AND COALESCE(date_kind, '') != ''"),
+                "last_completed_date_range": _date_range(conn, status="completed", descending=True),
+                "next_pending_date_range": _date_range(conn, status="pending", descending=False),
+                "has_pending_work": bool(_one(conn, "SELECT count(*) FROM flickr_work_items WHERE status = 'pending'")),
+            }
+    except sqlite3.DatabaseError:
+        return fallback
+
+
+def _one(conn: sqlite3.Connection, sql: str) -> int:
+    return int(conn.execute(sql).fetchone()[0])
+
+
+def _split_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    rows = conn.execute(
+        """
+        SELECT split_reason, count(*)
+        FROM flickr_work_items
+        WHERE lane = 'count_probe' AND split_reason IS NOT NULL
+        GROUP BY split_reason
+        ORDER BY split_reason
+        """
+    ).fetchall()
+    return {str(row[0]): int(row[1]) for row in rows}
+
+
+def _date_range(conn: sqlite3.Connection, *, status: str, descending: bool) -> dict[str, str] | None:
+    order = "DESC" if descending else "ASC"
+    row = conn.execute(
+        f"""
+        SELECT date_kind, min_date, max_date
+        FROM flickr_work_items
+        WHERE status = ? AND COALESCE(date_kind, '') != ''
+        ORDER BY min_date {order}, max_date {order}
+        LIMIT 1
+        """,
+        (status,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {"date_kind": str(row["date_kind"]), "min_date": str(row["min_date"]), "max_date": str(row["max_date"])}
 
 
 def environment_summary() -> dict[str, str | None]:
