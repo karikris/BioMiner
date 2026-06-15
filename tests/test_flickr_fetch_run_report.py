@@ -120,16 +120,28 @@ def test_build_step1_fetch_report_includes_required_metrics(tmp_path) -> None:
     assert report["query_provenance"]["top_query_labels_by_records"][0] == {"query_label": "tags:Papilio", "records": 1}
 
 
-def test_enqueue_pages_supports_tag_search(tmp_path) -> None:
+def test_enqueue_count_probe_supports_tag_search(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "state.sqlite")
     script = _load_fetch_script()
 
-    inserted = script._enqueue_pages(state, term="butterfly", pages=3, search_field="tags")
+    inserted = script._enqueue_count_probe(state, term="butterfly", search_field="tags")
 
-    assert inserted == 3
+    assert inserted == 1
     with sqlite3.connect(state.path) as conn:
         rows = conn.execute(
             "SELECT json_extract(query_json, '$.search_field'), page, per_page, json_extract(query_json, '$.has_geo') "
             "FROM flickr_work_items ORDER BY page"
         ).fetchall()
-    assert rows == [("tags", 1, 250, 1), ("tags", 2, 250, 1), ("tags", 3, 250, 1)]
+    assert rows == [("tags", 1, 1, 0)]
+
+
+def test_direct_page_enqueue_rejects_unsafe_ranges(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "state.sqlite")
+    script = _load_fetch_script()
+
+    try:
+        script._enqueue_direct_pages(state, term="butterfly", pages=9, search_field="text", has_geo=0, unsafe=False)
+    except ValueError as exc:
+        assert "4000" in str(exc)
+    else:  # pragma: no cover - test should fail before this branch.
+        raise AssertionError("unsafe direct page range should be rejected")

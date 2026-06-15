@@ -7,7 +7,13 @@ from pathlib import Path
 
 import polars as pl
 
-from biominer.flickr_fetch.query_planner import GEO_PAGE_SIZE, NORMAL_PAGE_SIZE, build_papilio_demoleus_count_probes_from_json
+from biominer.flickr_fetch.query_planner import (
+    FLICKR_SEARCH_RESULT_WINDOW,
+    GEO_PAGE_SIZE,
+    NORMAL_PAGE_SIZE,
+    STABLE_RESULT_THRESHOLD,
+    build_papilio_demoleus_count_probes_from_json,
+)
 from biominer.flickr_fetch.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_PATH, FlickrRateLimiter
 from biominer.flickr_comments.comment_review import (
     apply_comment_review_decisions_to_parquet,
@@ -146,7 +152,8 @@ def run(args: argparse.Namespace) -> int:
                     "soft_api_calls_per_hour": SOFT_API_CALLS_PER_HOUR,
                     "per_page_for_final_fetches": GEO_PAGE_SIZE,
                     "per_page_for_non_geo_fetches": NORMAL_PAGE_SIZE,
-                    "max_result_pages_per_query": 3999,
+                    "flickr_search_result_window": FLICKR_SEARCH_RESULT_WINDOW,
+                    "stable_result_threshold": STABLE_RESULT_THRESHOLD,
                 },
                 indent=2,
                 sort_keys=True,

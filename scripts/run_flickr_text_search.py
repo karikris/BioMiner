@@ -7,7 +7,14 @@ import os
 from pathlib import Path
 
 from biominer.flickr_fetch.metadata_poller import MetadataPollState, poll_once
-from biominer.flickr_fetch.query_planner import FlickrQuery, GEO_PAGE_SIZE, SearchField
+from biominer.flickr_fetch.query_planner import (
+    COUNT_PROBE_PAGE_SIZE,
+    GEO_PAGE_SIZE,
+    NORMAL_PAGE_SIZE,
+    STABLE_RESULT_THRESHOLD,
+    FlickrQuery,
+    SearchField,
+)
 from biominer.reports.flickr_fetch import (
     build_step1_fetch_report,
     current_git_sha,
@@ -17,10 +24,12 @@ from biominer.reports.flickr_fetch import (
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run a bounded Flickr text or tag search page fetch.")
+    parser = argparse.ArgumentParser(description="Run a bounded Flickr text or tag search from a count probe.")
     parser.add_argument("--term", required=True)
     parser.add_argument("--search-field", choices=("text", "tags"), default="text")
-    parser.add_argument("--pages", type=int, required=True)
+    parser.add_argument("--pages", type=int)
+    parser.add_argument("--allow-direct-pages", action="store_true")
+    parser.add_argument("--unsafe-direct-pages", action="store_true")
     parser.add_argument("--state-db", required=True)
     parser.add_argument("--raw-root", required=True)
     parser.add_argument("--evidence-output", required=True)
@@ -45,8 +54,6 @@ def main() -> None:
         args.term,
         "--search-field",
         args.search_field,
-        "--pages",
-        str(args.pages),
         "--state-db",
         args.state_db,
         "--raw-root",
@@ -63,7 +70,15 @@ def main() -> None:
         str(args.max_api_calls),
         "--workers",
         str(args.workers),
+        "--run-id",
+        args.run_id,
     ]
+    if args.pages is not None:
+        command.extend(["--pages", str(args.pages)])
+    if args.allow_direct_pages:
+        command.append("--allow-direct-pages")
+    if args.unsafe_direct_pages:
+        command.append("--unsafe-direct-pages")
     expected_outputs = {
         "state_db": args.state_db,
         "raw_root": args.raw_root,
@@ -79,14 +94,28 @@ def main() -> None:
         run_id=args.run_id,
         command=command,
         expected_outputs=expected_outputs,
-        expected_pages=args.pages,
+        expected_pages=args.pages or 1,
         status="running",
         started_at=started.isoformat(),
         git_sha=git_sha,
     )
     state = MetadataPollState(args.state_db)
-    inserted = _enqueue_pages(state, term=args.term, pages=args.pages, search_field=args.search_field)
-    print(json.dumps({"event": "work_enqueued", "inserted": inserted, "pages": args.pages, "search_field": args.search_field}, sort_keys=True), flush=True)
+    if args.allow_direct_pages:
+        if args.pages is None:
+            raise ValueError("--pages is required with --allow-direct-pages")
+        inserted = _enqueue_direct_pages(
+            state,
+            term=args.term,
+            pages=args.pages,
+            search_field=args.search_field,
+            has_geo=1,
+            unsafe=args.unsafe_direct_pages,
+        )
+        event = {"event": "work_enqueued", "inserted": inserted, "pages": args.pages, "search_field": args.search_field, "mode": "direct_pages"}
+    else:
+        inserted = _enqueue_count_probe(state, term=args.term, search_field=args.search_field)
+        event = {"event": "work_enqueued", "inserted": inserted, "pages": 1, "search_field": args.search_field, "mode": "count_probe"}
+    print(json.dumps(event, sort_keys=True), flush=True)
     result = poll_once(
         state_db=args.state_db,
         raw_root=args.raw_root,
@@ -106,7 +135,7 @@ def main() -> None:
         started_at=started,
         ended_at=ended,
         workers=args.workers,
-        expected_pages=args.pages,
+        expected_pages=args.pages or 1,
         status="completed",
         git_sha=git_sha,
     )
@@ -118,7 +147,24 @@ def main() -> None:
     print(json.dumps({"event": "run_completed", **result.__dict__, "state_db": str(result.state_db)}, default=str, sort_keys=True), flush=True)
 
 
-def _enqueue_pages(state: MetadataPollState, *, term: str, pages: int, search_field: SearchField) -> int:
+def _enqueue_count_probe(state: MetadataPollState, *, term: str, search_field: SearchField) -> int:
+    return state.enqueue_work_item(
+        FlickrQuery(
+            term=term,
+            language="en",
+            search_field=search_field,
+            lane="count_probe",
+            page=1,
+            per_page=COUNT_PROBE_PAGE_SIZE,
+            has_geo=0,
+        )
+    )
+
+
+def _enqueue_direct_pages(state: MetadataPollState, *, term: str, pages: int, search_field: SearchField, has_geo: int, unsafe: bool) -> int:
+    per_page = GEO_PAGE_SIZE if has_geo else NORMAL_PAGE_SIZE
+    if not unsafe and pages * per_page > STABLE_RESULT_THRESHOLD:
+        raise ValueError(f"Direct page mode is limited to {STABLE_RESULT_THRESHOLD} estimated records; use count-probe mode for broader searches.")
     return sum(
         state.enqueue_work_item(
             FlickrQuery(
@@ -127,8 +173,8 @@ def _enqueue_pages(state: MetadataPollState, *, term: str, pages: int, search_fi
                 search_field=search_field,
                 lane="normal_page",
                 page=page,
-                per_page=GEO_PAGE_SIZE,
-                has_geo=1,
+                per_page=per_page,
+                has_geo=has_geo,
             )
         )
         for page in range(1, pages + 1)

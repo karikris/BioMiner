@@ -76,7 +76,8 @@ def test_build_papilio_demoleus_query_plan_cli_reads_keyword_json(tmp_path, caps
     assert payload["soft_api_calls_per_hour"] == 3500
     assert payload["per_page_for_final_fetches"] == 250
     assert payload["per_page_for_non_geo_fetches"] == 500
-    assert payload["max_result_pages_per_query"] == 3999
+    assert payload["flickr_search_result_window"] == 4000
+    assert payload["stable_result_threshold"] == 4000
 
 
 def test_cli_help_does_not_describe_old_gold_silver_bronze_logic(capsys) -> None:

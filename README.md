@@ -130,14 +130,14 @@ Flickr `flickr.photos.search` documents that it returns at most the first **4,00
 BioMiner uses:
 
 ```text
-STABLE_RESULT_THRESHOLD = 3500
+STABLE_RESULT_THRESHOLD = 4000
 ```
 
-This is an internal safety threshold below Flickr's 4,000-result window. It is not an official Flickr limit.
+This matches Flickr's documented 4,000-result accessible search window.
 
-If a count probe reports `total <= 3500`, BioMiner may enqueue normal page fetches for that exact query.
+If a count probe reports `total <= 4000`, BioMiner may enqueue normal page fetches for that exact query.
 
-If a count probe reports `total > 3500`, BioMiner must not enqueue normal page or bbox page work for that query. It must split the query into smaller deterministic count-probed slices.
+If a count probe reports `total > 4000`, BioMiner must not enqueue normal page or bbox page work for that query. It must split the query into smaller deterministic count-probed slices.
 
 ### 3. BioMiner hourly API-call budget
 
@@ -148,7 +148,7 @@ SOFT_API_CALLS_PER_HOUR = 3500
 HARD_API_CALLS_PER_HOUR = 3600
 ```
 
-The hourly budget controls how many API calls the poller may make in a bounded run. It is separate from the 3,500 result threshold.
+The hourly budget controls how many API calls the poller may make in a bounded run. It is separate from the 4,000 result threshold.
 
 If the budget runs out, `poll-once` stops cleanly, leaves remaining work pending, and the next run resumes in deterministic database order.
 
@@ -188,14 +188,14 @@ BioMiner must use count-probed search-space coverage, not blind deep paging.
 Core invariant:
 
 ```text
-Never enqueue normal_page or bbox_page work for a query whose latest count probe reported total > 3500.
+Never enqueue normal_page or bbox_page work for a query whose latest count probe reported total > 4000.
 ```
 
 Planning logic:
 
 ```text
 count_probe(query)
-if total <= 3500:
+if total <= 4000:
     enqueue all pages for that exact query
 else:
     enqueue smaller count_probe slices
@@ -240,7 +240,7 @@ page=1
 
 If the count probe reports about 3,300 matching records, that does **not** mean BioMiner should fetch 3,300 pages. It means the probe used `per_page=1`.
 
-Because `3300 <= 3500`, this is a stable leaf query. BioMiner should enqueue normal page fetches with `per_page=500`:
+Because `3300 <= 4000`, this is a stable leaf query. BioMiner should enqueue normal page fetches with `per_page=500`:
 
 ```text
 ceil(3300 / 500) = 7 page fetches
@@ -267,7 +267,7 @@ reports/text_butterfly_fetch_manifest.json
 reports/text_butterfly_fetch_profile.json
 ```
 
-If `text=butterfly` returns more than 3,500 records, BioMiner must recursively split it before page fetching.
+If `text=butterfly` returns more than 4,000 records, BioMiner must recursively split it before page fetching.
 
 ## Step 1: Metadata Fetch
 
