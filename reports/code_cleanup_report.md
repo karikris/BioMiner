@@ -1,5 +1,14 @@
 # Code Cleanup Report
 
+## Step 1 50-Call Flickr Butterfly Text Search Test
+
+- Files changed: `src/biominer/filter/extractor.py`, `tests/test_evidence_extractor.py`, and this cleanup report.
+- Tests added or updated: added a local regression test for mixed Flickr evidence values beyond Polars' default schema inference window.
+- Redundant code removed: none; this is a narrow schema-stability fix for the existing evidence extractor.
+- Compatibility shims retained: none.
+- Generated artifacts excluded: the live test raw JSON, evidence parquet, SQLite state DB, logs, manifests, and reports remain generated artifacts and were not staged.
+- Remaining cleanup recommendation: add a first-class offline report rebuild command if live runs need report regeneration after local writer failures.
+
 ## Step 1 Flickr 4000-Result Search-Space Coverage
 
 - Files changed: `src/biominer/flickr_fetch/query_planner.py`, `src/biominer/flickr_fetch/metadata_poller.py`, `src/biominer/reports/flickr_fetch.py`, `src/biominer/cli.py`, `scripts/run_flickr_text_search.py`, README, focused tests, and this cleanup report.
