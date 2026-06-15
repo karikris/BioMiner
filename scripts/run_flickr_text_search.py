@@ -9,11 +9,18 @@ from pathlib import Path
 from biominer.flickr_fetch.metadata_poller import MetadataPollState, poll_once
 from biominer.flickr_fetch.query_planner import (
     COUNT_PROBE_PAGE_SIZE,
+    DEFAULT_COARSE_SLICE_DAYS,
+    DEFAULT_COARSE_SLICE_END_DATE,
+    DEFAULT_FIXED_SLICE_DAYS,
+    DEFAULT_FIXED_SLICE_END_DATE,
+    DEFAULT_FIXED_SLICE_PAGES,
+    DEFAULT_FIXED_SLICE_START_DATE,
     GEO_PAGE_SIZE,
     NORMAL_PAGE_SIZE,
     STABLE_RESULT_THRESHOLD,
     FlickrQuery,
     SearchField,
+    plan_fixed_upload_slice_pages,
 )
 from biominer.reports.flickr_fetch import (
     build_step1_fetch_report,
@@ -24,7 +31,7 @@ from biominer.reports.flickr_fetch import (
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run a bounded Flickr text or tag search from a count probe.")
+    parser = argparse.ArgumentParser(description="Run a bounded Flickr text or tag search over fixed upload-date slices.")
     parser.add_argument("--term", required=True)
     parser.add_argument("--search-field", choices=("text", "tags"), default="text")
     parser.add_argument("--pages", type=int)
@@ -40,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--api-key-env", default="FLICKR_API_KEY")
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--start-date", default=DEFAULT_FIXED_SLICE_START_DATE)
+    parser.add_argument("--end-date", default=DEFAULT_FIXED_SLICE_END_DATE)
+    parser.add_argument("--slice-days", type=int, default=DEFAULT_FIXED_SLICE_DAYS)
+    parser.add_argument("--coarse-end-date", default=DEFAULT_COARSE_SLICE_END_DATE)
+    parser.add_argument("--coarse-slice-days", type=int, default=DEFAULT_COARSE_SLICE_DAYS)
+    parser.add_argument("--pages-per-slice", type=int, default=DEFAULT_FIXED_SLICE_PAGES)
     return parser
 
 
@@ -72,6 +85,18 @@ def main() -> None:
         str(args.workers),
         "--run-id",
         args.run_id,
+        "--start-date",
+        args.start_date,
+        "--end-date",
+        args.end_date,
+        "--slice-days",
+        str(args.slice_days),
+        "--coarse-end-date",
+        args.coarse_end_date,
+        "--coarse-slice-days",
+        str(args.coarse_slice_days),
+        "--pages-per-slice",
+        str(args.pages_per_slice),
     ]
     if args.pages is not None:
         command.extend(["--pages", str(args.pages)])
@@ -113,8 +138,26 @@ def main() -> None:
         )
         event = {"event": "work_enqueued", "inserted": inserted, "pages": args.pages, "search_field": args.search_field, "mode": "direct_pages"}
     else:
-        inserted = _enqueue_count_probe(state, term=args.term, search_field=args.search_field)
-        event = {"event": "work_enqueued", "inserted": inserted, "pages": 1, "search_field": args.search_field, "mode": "count_probe"}
+        inserted = _enqueue_fixed_upload_slice_pages(
+            state,
+            term=args.term,
+            search_field=args.search_field,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            slice_days=args.slice_days,
+            coarse_end_date=args.coarse_end_date,
+            coarse_slice_days=args.coarse_slice_days,
+            pages_per_slice=args.pages_per_slice,
+        )
+        event = {
+            "event": "work_enqueued",
+            "inserted": inserted,
+            "search_field": args.search_field,
+            "mode": "fixed_upload_slices",
+            "start_date": args.start_date,
+            "end_date": args.end_date,
+            "pages_per_slice": args.pages_per_slice,
+        }
     print(json.dumps(event, sort_keys=True), flush=True)
     result = poll_once(
         state_db=args.state_db,
@@ -157,6 +200,33 @@ def _enqueue_count_probe(state: MetadataPollState, *, term: str, search_field: S
             page=1,
             per_page=COUNT_PROBE_PAGE_SIZE,
             has_geo=0,
+        )
+    )
+
+
+def _enqueue_fixed_upload_slice_pages(
+    state: MetadataPollState,
+    *,
+    term: str,
+    search_field: SearchField,
+    start_date: str,
+    end_date: str,
+    slice_days: int,
+    coarse_end_date: str | None,
+    coarse_slice_days: int | None,
+    pages_per_slice: int,
+) -> int:
+    return sum(
+        state.enqueue_work_item(query)
+        for query in plan_fixed_upload_slice_pages(
+            term=term,
+            search_field=search_field,
+            start_date=start_date,
+            end_date=end_date,
+            slice_days=slice_days,
+            coarse_end_date=coarse_end_date,
+            coarse_slice_days=coarse_slice_days,
+            pages_per_slice=pages_per_slice,
         )
     )
 

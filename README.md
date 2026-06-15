@@ -25,8 +25,8 @@ The active package is `biominer` under `src/`. The CLI entry point is `biominer`
 This repository is focused on Flickr Lepidoptera triage. The current active path is:
 
 - bounded Flickr metadata polling;
-- deterministic Flickr query planning with count probes;
-- recursive splitting of broad searches into stable leaf queries;
+- deterministic Flickr query planning with fixed upload-date slices;
+- bounded broad-search coverage from 2004-02-10 through today;
 - anti-keyword filtering of obvious non-biodiversity material;
 - temporary image caching and cleanup after classification;
 - BioCLIP 2.5 register-based batch classification helpers;
@@ -135,9 +135,9 @@ STABLE_RESULT_THRESHOLD = 4000
 
 This matches Flickr's documented 4,000-result accessible search window.
 
-If a count probe reports `total <= 4000`, BioMiner may enqueue normal page fetches for that exact query.
+If a count probe is used for a narrow query and reports `total <= 4000`, BioMiner may enqueue normal page fetches for that exact query.
 
-If a count probe reports `total > 4000`, BioMiner must not enqueue normal page or bbox page work for that query. It must split the query into smaller deterministic count-probed slices.
+For broad butterfly discovery, BioMiner now avoids recursive count-probe expansion and seeds fixed upload-date slices directly.
 
 ### 3. BioMiner hourly API-call budget
 
@@ -183,32 +183,24 @@ Flickr's `per_page` maximum for normal searches is 500, while geo/bbox queries r
 
 ## Stable Search-Space Coverage
 
-BioMiner must use count-probed search-space coverage, not blind deep paging.
+BioMiner covers broad Flickr searches with deterministic upload-date slices, not blind deep paging.
 
 Core invariant:
 
 ```text
-Never enqueue normal_page or bbox_page work for a query whose latest count probe reported total > 4000.
+Never page beyond Flickr's 4,000-result accessible window for any single query slice.
 ```
 
 Planning logic:
 
 ```text
-count_probe(query)
-if total <= 4000:
-    enqueue all pages for that exact query
-else:
-    enqueue smaller count_probe slices
+start at 2004-02-10 and advance to today
+use 10-day upload-date slices through 2015-12-31
+use 5-day upload-date slices from 2016-01-01 through today
+enqueue pages 1..8 for each slice at per_page=500
 ```
 
-Recursive split order should be deterministic:
-
-```text
-1. taken date range
-2. upload date range
-3. bbox/geographic slice
-4. narrower term variant
-```
+If page 8 returns 500 records, report that upload-date slice as saturated at Flickr's result window. The slice is retained for downstream review, and future planning can split only those saturated windows more narrowly if needed.
 
 Work-item ordering should be stable across reruns:
 
@@ -216,6 +208,8 @@ Work-item ordering should be stable across reruns:
 split_depth
 split_priority
 date range start
+date range end
+slice index
 bbox or region order
 term
 page number
@@ -226,7 +220,7 @@ All work items must have stable IDs derived from canonical query JSON. The datab
 
 ## Example: Querying `text=butterfly`
 
-The correct way to query all text-search hits for `butterfly` is to start with one count probe:
+For broad `butterfly` discovery, the active runner seeds fixed upload-date slices instead of recursively probing the full query.
 
 ```text
 method=flickr.photos.search
@@ -234,29 +228,18 @@ text=butterfly
 media=photos
 safe_search=1
 content_types=0
-per_page=1
-page=1
+min_upload_date=2004-02-10
+max_upload_date=2004-02-19
+per_page=500
+page=1..8
 ```
 
-If the count probe reports about 3,300 matching records, that does **not** mean BioMiner should fetch 3,300 pages. It means the probe used `per_page=1`.
-
-Because `3300 <= 4000`, this is a stable leaf query. BioMiner should enqueue normal page fetches with `per_page=500`:
-
-```text
-ceil(3300 / 500) = 7 page fetches
-```
-
-Expected API-call cost:
-
-```text
-1 count probe + 7 page fetches = about 8 API calls
-```
+The next slice is `2004-02-20..2004-02-29`, also pages 1..8. From 2016 onward, slices are 5 days wide. With the 3,500-call hourly budget, a bounded run stops after the current poll-once claim set and resumes remaining pending slices in deterministic SQLite order.
 
 Recommended output layout:
 
 ```text
 data/raw/flickr/photos_search/text/butterfly/
-  count_probe-00001-<work_id>.json
   normal_page-00001-<work_id>.json
   normal_page-00002-<work_id>.json
   ...
@@ -267,7 +250,7 @@ reports/text_butterfly_fetch_manifest.json
 reports/text_butterfly_fetch_profile.json
 ```
 
-If `text=butterfly` returns more than 4,000 records, BioMiner must recursively split it before page fetching.
+If a slice's eighth page is full, BioMiner reports that slice as saturated at Flickr's accessible window.
 
 ## Step 1: Metadata Fetch
 
@@ -705,7 +688,7 @@ Focused tests should cover:
 CLI surface
 Flickr endpoint constraints
 API-budget enforcement
-count-probe splitting
+fixed upload-date slicing
 stable leaf-query threshold
 deterministic resume order
 metadata filter rules

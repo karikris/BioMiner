@@ -83,10 +83,10 @@ class MetadataPollState:
                     work_item_id, status, query_json, lane, page, per_page,
                     split_depth, split_priority, split_reason, parent_query_hash,
                     parent_total, date_kind, min_date, max_date, bbox_index,
-                    bbox_label, term, query_hash, claimed_at, completed_at,
-                    error, created_at
+                    slice_index, bbox_label, term, query_hash, claimed_at,
+                    completed_at, error, records_returned, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
                 """,
                 (
                     work_item_id,
@@ -104,6 +104,7 @@ class MetadataPollState:
                     query_min_date(query),
                     query_max_date(query),
                     query.bbox_index,
+                    query.slice_index,
                     query.region or query.bbox,
                     query.term,
                     query_hash(query),
@@ -154,6 +155,7 @@ class MetadataPollState:
                     COALESCE(date_kind, ''),
                     COALESCE(min_date, ''),
                     COALESCE(max_date, ''),
+                    COALESCE(slice_index, 999999),
                     COALESCE(bbox_index, 999999),
                     COALESCE(bbox_label, ''),
                     COALESCE(term, ''),
@@ -200,11 +202,15 @@ class MetadataPollState:
                 (status, work_item_id),
             )
 
-    def complete_work_item(self, work_item_id: str) -> None:
+    def complete_work_item(self, work_item_id: str, *, records_returned: int | None = None) -> None:
         with self._connect() as conn:
             conn.execute(
-                "UPDATE flickr_work_items SET status = ?, completed_at = ?, error = NULL WHERE work_item_id = ?",
-                (COMPLETED, _timestamp(), work_item_id),
+                """
+                UPDATE flickr_work_items
+                SET status = ?, completed_at = ?, error = NULL, records_returned = ?
+                WHERE work_item_id = ?
+                """,
+                (COMPLETED, _timestamp(), records_returned, work_item_id),
             )
 
     def fail_work_item(self, work_item_id: str, error: str) -> None:
@@ -382,12 +388,14 @@ class MetadataPollState:
                     min_date TEXT,
                     max_date TEXT,
                     bbox_index INTEGER,
+                    slice_index INTEGER,
                     bbox_label TEXT,
                     term TEXT,
                     query_hash TEXT,
                     claimed_at TEXT,
                     completed_at TEXT,
                     error TEXT,
+                    records_returned INTEGER,
                     created_at TEXT NOT NULL
                 )
                 """
@@ -456,9 +464,11 @@ class MetadataPollState:
             "min_date": "TEXT",
             "max_date": "TEXT",
             "bbox_index": "INTEGER",
+            "slice_index": "INTEGER",
             "bbox_label": "TEXT",
             "term": "TEXT",
             "query_hash": "TEXT",
+            "records_returned": "INTEGER",
         }
         for name, sql_type in columns.items():
             if name not in existing:
@@ -518,15 +528,17 @@ def poll_once(
                     if query.lane == "count_probe":
                         for next_query in plan_queries_from_count(query, total=total):
                             state.enqueue_work_item(next_query)
+                        records_returned = None
                     else:
                         records = _payload_photo_records(payload)
                         inserted, skipped, queued_count, query_hits, duplicate_hits = state.insert_source_records(records, source_query=query)
+                        records_returned = len(records)
                         records_inserted += inserted
                         duplicates += skipped
                         query_hits_inserted += query_hits
                         duplicate_query_hits += duplicate_hits
                         queued += queued_count
-                    state.complete_work_item(work_item_id)
+                    state.complete_work_item(work_item_id, records_returned=records_returned)
                 except Exception as exc:  # noqa: BLE001 - poller records failure and exits bounded cycle.
                     state.update_api_call_status(work_item_id=work_item_id, status="failed")
                     state.fail_work_item(work_item_id, str(exc))

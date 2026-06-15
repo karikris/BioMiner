@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 import json
 from math import ceil
 from pathlib import Path
@@ -40,6 +41,12 @@ DEFAULT_UPLOAD_DATE_RANGES: tuple[tuple[str, str], ...] = (
     ("2015-01-01", "2019-12-31"),
     ("2020-01-01", "2026-12-31"),
 )
+DEFAULT_FIXED_SLICE_START_DATE = "2004-02-10"
+DEFAULT_FIXED_SLICE_END_DATE = date.today().isoformat()
+DEFAULT_COARSE_SLICE_END_DATE = "2015-12-31"
+DEFAULT_COARSE_SLICE_DAYS = 10
+DEFAULT_FIXED_SLICE_DAYS = 5
+DEFAULT_FIXED_SLICE_PAGES = FLICKR_SEARCH_RESULT_WINDOW // NORMAL_PAGE_SIZE
 PAPILIO_DEMOLEUS_REGION_BBOXES: dict[str, str] = {
     "India": "68.11,6.55,97.40,35.67",
     "Pakistan": "60.87,23.63,77.84,37.08",
@@ -181,6 +188,7 @@ class FlickrQuery:
     parent_query_hash: str | None = None
     split_depth: int = 0
     bbox_index: int | None = None
+    slice_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -235,6 +243,81 @@ def plan_pages_from_count(probe: FlickrQuery, *, total: int) -> tuple[FlickrQuer
     )
 
 
+def fixed_upload_date_slices(
+    *,
+    start_date: str,
+    end_date: str,
+    slice_days: int = DEFAULT_FIXED_SLICE_DAYS,
+    coarse_end_date: str | None = None,
+    coarse_slice_days: int | None = None,
+) -> tuple[tuple[str, str], ...]:
+    if slice_days <= 0:
+        raise ValueError("slice_days must be positive")
+    end = date.fromisoformat(end_date)
+    current = date.fromisoformat(start_date)
+    if coarse_end_date and coarse_slice_days:
+        if coarse_slice_days <= 0:
+            raise ValueError("coarse_slice_days must be positive")
+        coarse_end = min(date.fromisoformat(coarse_end_date), end)
+        slices = _date_slices(current=current, end=coarse_end, slice_days=coarse_slice_days) if current <= coarse_end else ()
+        current = max(current, coarse_end + timedelta(days=1))
+        if current > end:
+            return slices
+        return (*slices, *_date_slices(current=current, end=end, slice_days=slice_days))
+    return _date_slices(current=current, end=end, slice_days=slice_days)
+
+
+def _date_slices(*, current: date, end: date, slice_days: int) -> tuple[tuple[str, str], ...]:
+    slices: list[tuple[str, str]] = []
+    while current <= end:
+        slice_end = min(current + timedelta(days=slice_days - 1), end)
+        slices.append((current.isoformat(), slice_end.isoformat()))
+        current = slice_end + timedelta(days=1)
+    return tuple(slices)
+
+
+def plan_fixed_upload_slice_pages(
+    *,
+    term: str,
+    search_field: SearchField,
+    start_date: str = DEFAULT_FIXED_SLICE_START_DATE,
+    end_date: str = DEFAULT_FIXED_SLICE_END_DATE,
+    slice_days: int = DEFAULT_FIXED_SLICE_DAYS,
+    coarse_end_date: str | None = DEFAULT_COARSE_SLICE_END_DATE,
+    coarse_slice_days: int | None = DEFAULT_COARSE_SLICE_DAYS,
+    pages_per_slice: int = DEFAULT_FIXED_SLICE_PAGES,
+    language: str = "en",
+) -> tuple[FlickrQuery, ...]:
+    pages: list[FlickrQuery] = []
+    for slice_index, (start, end) in enumerate(
+        fixed_upload_date_slices(
+            start_date=start_date,
+            end_date=end_date,
+            slice_days=slice_days,
+            coarse_end_date=coarse_end_date,
+            coarse_slice_days=coarse_slice_days,
+        )
+    ):
+        for page in range(1, pages_per_slice + 1):
+            pages.append(
+                FlickrQuery(
+                    term=term,
+                    language=language,
+                    search_field=search_field,
+                    lane="normal_page",
+                    page=page,
+                    per_page=NORMAL_PAGE_SIZE,
+                    has_geo=0,
+                    min_upload_date=start,
+                    max_upload_date=end,
+                    split_reason="upload_date",
+                    split_depth=1,
+                    slice_index=slice_index,
+                )
+            )
+    return _sort_queries(pages)
+
+
 def result_pages_for_total(total: int, *, per_page: int = NORMAL_PAGE_SIZE) -> int:
     if total <= 0:
         return 0
@@ -263,23 +346,12 @@ def plan_queries_from_count(
 ) -> tuple[FlickrQuery, ...]:
     if total <= STABLE_RESULT_THRESHOLD and query_fits_page_limit(total, per_page=page_size_for_query(probe), max_pages=max_pages):
         return plan_pages_from_count(probe, total=total)
-    split_bboxes = tuple(bboxes)
-    split_upload_ranges = tuple(upload_date_ranges)
-    if not split_upload_ranges and probe.min_upload_date is None and probe.max_upload_date is None:
-        split_upload_ranges = DEFAULT_UPLOAD_DATE_RANGES
-    if not split_upload_ranges and probe.min_upload_date and probe.max_upload_date:
-        split_upload_ranges = _year_ranges(probe.min_upload_date, probe.max_upload_date)
-    if not split_bboxes and probe.bbox is None:
-        split_bboxes = tuple(PAPILIO_DEMOLEUS_REGION_BBOXES.values())
-    return _sort_queries(
-        split_high_volume_query(
-            probe,
-            total=total,
-            taken_date_ranges=taken_date_ranges,
-            upload_date_ranges=split_upload_ranges,
-            bboxes=split_bboxes,
-            narrower_terms=narrower_terms,
-        )
+    return plan_fixed_upload_slice_pages(
+        term=probe.term,
+        search_field=probe.search_field,
+        start_date=probe.min_upload_date or DEFAULT_FIXED_SLICE_START_DATE,
+        end_date=probe.max_upload_date or DEFAULT_FIXED_SLICE_END_DATE,
+        language=probe.language,
     )
 
 
@@ -331,6 +403,7 @@ def _query_sort_key(query: FlickrQuery) -> tuple[object, ...]:
         query_min_date(query),
         query_max_date(query),
         query.bbox_index if query.bbox_index is not None else 999999,
+        query.slice_index if query.slice_index is not None else 999999,
         query.region or "",
         query.term.casefold(),
         lane_priority(query),
@@ -497,6 +570,7 @@ def _page_query(probe: FlickrQuery, *, page: int, per_page: int, lane: QueryLane
         parent_query_hash=probe.parent_query_hash,
         split_depth=probe.split_depth,
         bbox_index=probe.bbox_index,
+        slice_index=probe.slice_index,
     )
 
 
@@ -534,6 +608,7 @@ def _split_probe(
         parent_query_hash=probe.parent_query_hash or _query_hash(probe),
         split_depth=probe.split_depth + 1,
         bbox_index=bbox_index if bbox_index is not None else probe.bbox_index,
+        slice_index=probe.slice_index,
     )
 
 

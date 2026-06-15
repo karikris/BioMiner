@@ -181,6 +181,8 @@ def _state_work_summary(path: Path) -> dict[str, Any]:
         "last_completed_date_range": None,
         "next_pending_date_range": None,
         "has_pending_work": None,
+        "saturated_slices": "not_instrumented",
+        "saturated_slice_count": "not_instrumented",
     }
     if not path.exists():
         return fallback
@@ -190,6 +192,7 @@ def _state_work_summary(path: Path) -> dict[str, Any]:
             tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
             if "flickr_work_items" not in tables:
                 return fallback
+            saturated_slices = _saturated_slices(conn)
             return {
                 "count_probes_completed": _one(conn, "SELECT count(*) FROM flickr_work_items WHERE lane = 'count_probe' AND status = 'completed'"),
                 "page_fetches_completed": _one(conn, "SELECT count(*) FROM flickr_work_items WHERE lane IN ('normal_page', 'bbox_page') AND status = 'completed'"),
@@ -201,6 +204,8 @@ def _state_work_summary(path: Path) -> dict[str, Any]:
                 "last_completed_date_range": _date_range(conn, status="completed", descending=True),
                 "next_pending_date_range": _date_range(conn, status="pending", descending=False),
                 "has_pending_work": bool(_one(conn, "SELECT count(*) FROM flickr_work_items WHERE status = 'pending'")),
+                "saturated_slices": saturated_slices,
+                "saturated_slice_count": len(saturated_slices),
             }
     except sqlite3.DatabaseError:
         return fallback
@@ -238,6 +243,35 @@ def _date_range(conn: sqlite3.Connection, *, status: str, descending: bool) -> d
     if row is None:
         return None
     return {"date_kind": str(row["date_kind"]), "min_date": str(row["min_date"]), "max_date": str(row["max_date"])}
+
+
+def _saturated_slices(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(flickr_work_items)").fetchall()}
+    if "records_returned" not in existing:
+        return []
+    rows = conn.execute(
+        """
+        SELECT date_kind, min_date, max_date, page, records_returned
+        FROM flickr_work_items
+        WHERE status = 'completed'
+          AND lane = 'normal_page'
+          AND page = 8
+          AND per_page = 500
+          AND records_returned = 500
+          AND COALESCE(date_kind, '') != ''
+        ORDER BY min_date, max_date, page
+        """
+    ).fetchall()
+    return [
+        {
+            "date_kind": str(row["date_kind"]),
+            "min_date": str(row["min_date"]),
+            "max_date": str(row["max_date"]),
+            "page": int(row["page"]),
+            "records_returned": int(row["records_returned"]),
+        }
+        for row in rows
+    ]
 
 
 def environment_summary() -> dict[str, str | None]:

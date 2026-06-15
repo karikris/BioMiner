@@ -15,12 +15,14 @@ from biominer.flickr_fetch.query_planner import (
     build_count_probes,
     build_worldwide_discovery_plan,
     deduplicate_photo_records,
+    fixed_upload_date_slices,
     flickr_search_params,
     load_papilio_demoleus_terms_from_json,
     multilingual_seed_terms,
     outside_known_papilio_demoleus_regions,
     papilio_demoleus_known_region_for_coordinate,
     page_size_for_query,
+    plan_fixed_upload_slice_pages,
     plan_queries_from_count,
     plan_pages_from_count,
 )
@@ -64,10 +66,10 @@ def test_geo_pages_use_250_and_non_geo_pages_use_500_records() -> None:
     assert [page.lane for page in bbox_pages] == ["bbox_page", "bbox_page", "bbox_page"]
 
 
-def test_high_volume_queries_split_before_pages() -> None:
+def test_high_volume_queries_use_fixed_upload_slice_pages() -> None:
     probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe")
 
-    split = plan_queries_from_count(
+    pages = plan_queries_from_count(
         probe,
         total=(MAX_RESULT_PAGES_PER_QUERY + 1) * NORMAL_PAGE_SIZE,
         taken_date_ranges=[("2024-01-01", "2024-06-30"), ("2024-07-01", "2024-12-31")],
@@ -76,10 +78,11 @@ def test_high_volume_queries_split_before_pages() -> None:
         narrower_terms=["swallowtail"],
     )
 
-    assert [item.split_reason for item in split] == ["taken_date", "taken_date"]
-    assert [item.per_page for item in split] == [COUNT_PROBE_PAGE_SIZE, COUNT_PROBE_PAGE_SIZE]
-    assert split[0].min_taken_date == "2024-01-01"
-    assert split[0].parent_total == (MAX_RESULT_PAGES_PER_QUERY + 1) * NORMAL_PAGE_SIZE
+    assert {item.lane for item in pages} == {"normal_page"}
+    assert {item.per_page for item in pages} == {NORMAL_PAGE_SIZE}
+    assert not any(item.lane == "count_probe" for item in pages)
+    assert pages[0].min_upload_date == "2004-02-10"
+    assert pages[0].max_upload_date == "2004-02-19"
 
 
 def test_stable_threshold_matches_flickr_result_window() -> None:
@@ -117,64 +120,74 @@ def test_total_4000_creates_bbox_pages_for_geo_leaf() -> None:
     assert {page.per_page for page in pages} == {BBOX_PAGE_SIZE}
 
 
-def test_total_4001_returns_split_count_probes_only() -> None:
+def test_total_4001_returns_fixed_upload_slice_pages_only() -> None:
     probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)
 
-    split = plan_queries_from_count(
+    pages = plan_queries_from_count(
         probe,
         total=4001,
         upload_date_ranges=[("2020-01-01", "2020-12-31"), ("2021-01-01", "2021-12-31")],
         bboxes=["0,0,10,10"],
     )
 
-    assert split
-    assert {query.lane for query in split} == {"count_probe"}
-    assert not any(query.lane in {"normal_page", "bbox_page"} for query in split)
-    assert {query.per_page for query in split} == {COUNT_PROBE_PAGE_SIZE}
+    assert pages
+    assert {query.lane for query in pages} == {"normal_page"}
+    assert not any(query.lane == "count_probe" for query in pages)
+    assert {query.per_page for query in pages} == {NORMAL_PAGE_SIZE}
 
 
-def test_split_metadata_carries_parent_total_hash_and_depth() -> None:
+def test_fixed_slice_metadata_carries_upload_dates_depth_and_index() -> None:
     probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)
 
-    split = plan_queries_from_count(
+    pages = plan_queries_from_count(
         probe,
         total=4001,
         taken_date_ranges=[("2024-01-01", "2024-06-30"), ("2024-07-01", "2024-12-31")],
     )
 
-    assert [query.split_reason for query in split] == ["taken_date", "taken_date"]
-    assert {query.parent_total for query in split} == {4001}
-    assert all(query.parent_query_hash for query in split)
-    assert [query.split_depth for query in split] == [1, 1]
+    assert [(query.split_reason, query.split_depth, query.slice_index) for query in pages[:2]] == [
+        ("upload_date", 1, 0),
+        ("upload_date", 1, 0),
+    ]
+    assert pages[0].min_upload_date == "2004-02-10"
+    assert pages[0].max_upload_date == "2004-02-19"
 
 
-def test_default_split_priority_prefers_upload_date_before_bbox() -> None:
-    probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)
-
-    split = plan_queries_from_count(
-        probe,
-        total=4001,
-        upload_date_ranges=[("2021-01-01", "2021-12-31")],
-        bboxes=["0,0,10,10"],
+def test_over_threshold_probe_with_upload_bounds_uses_fixed_slices_within_bounds() -> None:
+    probe = FlickrQuery(
+        term="butterfly",
+        language="en",
+        search_field="text",
+        lane="count_probe",
+        has_geo=0,
+        min_upload_date="2021-01-01",
+        max_upload_date="2021-01-10",
     )
 
-    assert [query.split_reason for query in split] == ["upload_date"]
-    assert split[0].min_upload_date == "2021-01-01"
-    assert split[0].bbox is None
+    pages = plan_queries_from_count(probe, total=4001)
+
+    assert len(pages) == 16
+    assert pages[0].min_upload_date == "2021-01-01"
+    assert pages[7].max_upload_date == "2021-01-05"
+    assert pages[-1].max_upload_date == "2021-01-10"
 
 
 def test_planned_work_is_sorted_deterministically() -> None:
     probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)
 
-    split = plan_queries_from_count(
-        probe,
-        total=4001,
-        taken_date_ranges=[("2025-01-01", "2025-12-31"), ("2024-01-01", "2024-12-31")],
-    )
+    pages = plan_queries_from_count(probe, total=4001)
 
-    assert [(query.split_depth, query.min_taken_date, query.max_taken_date, query.term) for query in split] == [
-        (1, "2024-01-01", "2024-12-31", "butterfly"),
-        (1, "2025-01-01", "2025-12-31", "butterfly"),
+    assert [(query.slice_index, query.min_upload_date, query.max_upload_date, query.page) for query in pages[:10]] == [
+        (0, "2004-02-10", "2004-02-19", 1),
+        (0, "2004-02-10", "2004-02-19", 2),
+        (0, "2004-02-10", "2004-02-19", 3),
+        (0, "2004-02-10", "2004-02-19", 4),
+        (0, "2004-02-10", "2004-02-19", 5),
+        (0, "2004-02-10", "2004-02-19", 6),
+        (0, "2004-02-10", "2004-02-19", 7),
+        (0, "2004-02-10", "2004-02-19", 8),
+        (1, "2004-02-20", "2004-02-29", 1),
+        (1, "2004-02-20", "2004-02-29", 2),
     ]
 
 
@@ -188,16 +201,16 @@ def test_query_under_page_limit_creates_250_record_geo_pages() -> None:
     assert all(page.page < 4000 for page in pages)
 
 
-def test_query_over_page_limit_splits_to_count_probes_not_oversized_pages() -> None:
+def test_query_over_page_limit_uses_fixed_slice_pages_not_count_probes() -> None:
     probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe")
 
-    split = plan_queries_from_count(probe, total=MAX_RESULT_PAGES_PER_QUERY * GEO_PAGE_SIZE + 1)
+    pages = plan_queries_from_count(probe, total=MAX_RESULT_PAGES_PER_QUERY * GEO_PAGE_SIZE + 1)
 
-    assert split
-    assert {query.lane for query in split} == {"count_probe"}
-    assert {query.split_reason for query in split} == {"upload_date"}
-    assert all(query.page == 1 for query in split)
-    assert all(query.per_page == COUNT_PROBE_PAGE_SIZE for query in split)
+    assert pages
+    assert {query.lane for query in pages} == {"normal_page"}
+    assert {query.split_reason for query in pages} == {"upload_date"}
+    assert not any(query.lane == "count_probe" for query in pages)
+    assert all(query.per_page == NORMAL_PAGE_SIZE for query in pages)
 
 
 def test_flickr_search_params_use_text_or_tags_and_url_l_url_m_only() -> None:
@@ -215,6 +228,69 @@ def test_flickr_search_params_use_text_or_tags_and_url_l_url_m_only() -> None:
     assert "url_l" in str(params["extras"])
     assert "url_m" in str(params["extras"])
     assert "url_o" not in str(params["extras"])
+
+
+def test_fixed_upload_date_slices_create_five_day_periods() -> None:
+    slices = fixed_upload_date_slices(start_date="2007-01-01", end_date="2007-12-31", slice_days=5)
+
+    assert len(slices) == 73
+    assert slices[0] == ("2007-01-01", "2007-01-05")
+    assert slices[-1] == ("2007-12-27", "2007-12-31")
+
+
+def test_fixed_upload_date_slices_cover_leap_year_and_full_range() -> None:
+    leap = fixed_upload_date_slices(start_date="2008-01-01", end_date="2008-12-31", slice_days=5)
+    full = fixed_upload_date_slices(start_date="2007-01-01", end_date="2026-12-31", slice_days=5)
+
+    assert len(leap) == 74
+    assert leap[-1] == ("2008-12-31", "2008-12-31")
+    assert len(full) == 1461
+    assert full[0] == ("2007-01-01", "2007-01-05")
+    assert full[-1] == ("2026-12-27", "2026-12-31")
+
+
+def test_fixed_upload_date_slices_support_coarse_then_fine_periods() -> None:
+    slices = fixed_upload_date_slices(
+        start_date="2004-02-10",
+        end_date="2016-01-10",
+        slice_days=5,
+        coarse_end_date="2015-12-31",
+        coarse_slice_days=10,
+    )
+
+    assert slices[0] == ("2004-02-10", "2004-02-19")
+    assert ("2016-01-01", "2016-01-05") in slices
+    assert slices[-1] == ("2016-01-06", "2016-01-10")
+    assert all(start <= end for start, end in slices)
+
+
+def test_plan_fixed_upload_slice_pages_creates_pages_without_count_probes() -> None:
+    pages = plan_fixed_upload_slice_pages(
+        term="butterfly",
+        search_field="text",
+        start_date="2007-01-01",
+        end_date="2007-01-10",
+        slice_days=5,
+        coarse_end_date=None,
+        coarse_slice_days=None,
+        pages_per_slice=8,
+    )
+
+    assert len(pages) == 16
+    assert {page.lane for page in pages} == {"normal_page"}
+    assert {page.per_page for page in pages} == {NORMAL_PAGE_SIZE}
+    assert not any(page.lane == "count_probe" for page in pages)
+    assert [(page.slice_index, page.min_upload_date, page.max_upload_date, page.page) for page in pages[:9]] == [
+        (0, "2007-01-01", "2007-01-05", 1),
+        (0, "2007-01-01", "2007-01-05", 2),
+        (0, "2007-01-01", "2007-01-05", 3),
+        (0, "2007-01-01", "2007-01-05", 4),
+        (0, "2007-01-01", "2007-01-05", 5),
+        (0, "2007-01-01", "2007-01-05", 6),
+        (0, "2007-01-01", "2007-01-05", 7),
+        (0, "2007-01-01", "2007-01-05", 8),
+        (1, "2007-01-06", "2007-01-10", 1),
+    ]
 
 
 def test_deduplicates_by_photo_id_and_image_url() -> None:

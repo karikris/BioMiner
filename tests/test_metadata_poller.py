@@ -5,7 +5,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from biominer.flickr_fetch.query_planner import BBOX_PAGE_SIZE, COUNT_PROBE_PAGE_SIZE, NORMAL_PAGE_SIZE, FlickrQuery
+from biominer.flickr_fetch.query_planner import BBOX_PAGE_SIZE, COUNT_PROBE_PAGE_SIZE, NORMAL_PAGE_SIZE, FlickrQuery, fixed_upload_date_slices
 from biominer.flickr_fetch.metadata_poller import MetadataPollState, poll_once
 
 
@@ -186,7 +186,7 @@ def test_poll_once_enqueues_pages_for_count_probe_under_page_limit(tmp_path) -> 
     assert pending == 15
 
 
-def test_poll_once_splits_count_probe_over_stable_result_threshold(tmp_path) -> None:
+def test_poll_once_plans_fixed_slice_pages_over_stable_result_threshold(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     state.enqueue_work_item(FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", per_page=1))
 
@@ -199,11 +199,20 @@ def test_poll_once_splits_count_probe_over_stable_result_threshold(tmp_path) -> 
     )
 
     with sqlite3.connect(state.path) as conn:
-        rows = conn.execute("SELECT lane, per_page, json_extract(query_json, '$.split_reason') FROM flickr_work_items WHERE status = 'pending'").fetchall()
+        rows = conn.execute("SELECT lane, per_page, json_extract(query_json, '$.split_reason') FROM flickr_work_items WHERE status = 'pending' LIMIT 20").fetchall()
+        pending_count = conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'pending'").fetchone()[0]
 
     assert rows
-    assert {row[0] for row in rows} == {"count_probe"}
-    assert {row[1] for row in rows} == {COUNT_PROBE_PAGE_SIZE}
+    expected_slices = fixed_upload_date_slices(
+        start_date="2004-02-10",
+        end_date=datetime.now(UTC).date().isoformat(),
+        slice_days=5,
+        coarse_end_date="2015-12-31",
+        coarse_slice_days=10,
+    )
+    assert pending_count == len(expected_slices) * 8
+    assert {row[0] for row in rows} == {"normal_page"}
+    assert {row[1] for row in rows} == {NORMAL_PAGE_SIZE}
     assert {row[2] for row in rows} == {"upload_date"}
 
 
@@ -333,6 +342,96 @@ def test_claim_pending_uses_deterministic_date_slice_order(tmp_path) -> None:
     claimed = state.claim_pending(limit=1)
 
     assert claimed[0][1].min_taken_date == "2024-01-01"
+
+
+def test_claim_pending_orders_fixed_slice_pages_by_slice_then_page(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(
+        FlickrQuery(
+            term="butterfly",
+            language="en",
+            search_field="text",
+            lane="normal_page",
+            page=2,
+            per_page=500,
+            has_geo=0,
+            min_upload_date="2007-01-06",
+            max_upload_date="2007-01-10",
+            slice_index=1,
+        )
+    )
+    state.enqueue_work_item(
+        FlickrQuery(
+            term="butterfly",
+            language="en",
+            search_field="text",
+            lane="normal_page",
+            page=8,
+            per_page=500,
+            has_geo=0,
+            min_upload_date="2007-01-01",
+            max_upload_date="2007-01-05",
+            slice_index=0,
+        )
+    )
+    state.enqueue_work_item(
+        FlickrQuery(
+            term="butterfly",
+            language="en",
+            search_field="text",
+            lane="normal_page",
+            page=1,
+            per_page=500,
+            has_geo=0,
+            min_upload_date="2007-01-01",
+            max_upload_date="2007-01-05",
+            slice_index=0,
+        )
+    )
+
+    claimed = state.claim_pending(limit=3)
+
+    assert [(query.slice_index, query.page) for _work_id, query in claimed] == [(0, 1), (0, 8), (1, 2)]
+
+
+def test_poll_once_records_page_payload_count_for_saturation_reporting(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(
+        FlickrQuery(
+            term="butterfly",
+            language="en",
+            search_field="text",
+            lane="normal_page",
+            page=8,
+            per_page=500,
+            has_geo=0,
+            min_upload_date="2007-01-01",
+            max_upload_date="2007-01-05",
+            slice_index=0,
+        )
+    )
+    payload = {
+        "photos": {
+            "total": "500",
+            "photo": [
+                {"id": str(index), "url_l": f"https://live.staticflickr.com/{index}.jpg"}
+                for index in range(500)
+            ],
+        }
+    }
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=1,
+        fetch_metadata=lambda query: payload,
+    )
+
+    with sqlite3.connect(state.path) as conn:
+        row = conn.execute("SELECT records_returned FROM flickr_work_items WHERE page = 8").fetchone()
+    assert result.source_records_inserted == 500
+    assert row[0] == 500
 
 
 def test_poll_once_respects_3500_soft_budget_without_fetching(tmp_path) -> None:

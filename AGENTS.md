@@ -52,10 +52,12 @@ Separate these:
 3500 API calls/hour is budget. 4000 records/query is the maximum stable BioMiner leaf threshold because Flickr documents only the first 4000 results/query as accessible.
 
 Invariant:
-- count-probe first;
-- if `total <= 4000`, enqueue pages;
-- if `total > 4000`, enqueue smaller count probes only;
-- never enqueue page work for a query whose latest count probe is `>4000`;
+- broad butterfly discovery uses fixed upload-date slices, not recursive count-probe splitting;
+- start at `2004-02-10` and advance to today;
+- use 10-day upload-date slices through `2015-12-31`;
+- use 5-day upload-date slices from `2016-01-01` through today;
+- enqueue pages 1..8 for each slice at `per_page=500`;
+- report a slice as saturated when page 8 returns 500 records;
 - if budget ends, stop cleanly; next run resumes pending work in deterministic DB order.
 
 Page sizes:
@@ -64,7 +66,7 @@ Page sizes:
 - geo/bbox page `per_page=250`;
 - image URL preference `url_l -> url_m`; no default `url_o`.
 
-Example: `text=butterfly`, total about 3300 means `ceil(3300/500)=7` page calls, not 3300 page calls.
+Example: `text=butterfly` starts with upload-date slice `2004-02-10..2004-02-19`, pages 1..8, then resumes with the next pending deterministic date slice.
 
 ## Step rules
 Step 1 fetch:
@@ -72,7 +74,7 @@ Step 1 fetch:
 - use shared SQLite API ledger/work table;
 - reserve call before request across all workers;
 - resume pending, requeue stale claims, dedupe photo/image keys;
-- split broad searches recursively by taken date, upload date, bbox, narrower term.
+- seed broad searches as fixed upload-date page work.
 
 Step 2 filter:
 - input Step 1 parquet + anti-keyword JSON;
