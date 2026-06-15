@@ -5,9 +5,11 @@ import json
 from biominer.flickr_fetch.query_planner import (
     BBOX_PAGE_SIZE,
     COUNT_PROBE_PAGE_SIZE,
+    FLICKR_SEARCH_RESULT_WINDOW,
     GEO_PAGE_SIZE,
     MAX_RESULT_PAGES_PER_QUERY,
     NORMAL_PAGE_SIZE,
+    STABLE_RESULT_THRESHOLD,
     FlickrQuery,
     build_papilio_demoleus_count_probes_from_json,
     build_count_probes,
@@ -78,6 +80,102 @@ def test_high_volume_queries_split_before_pages() -> None:
     assert [item.per_page for item in split] == [COUNT_PROBE_PAGE_SIZE, COUNT_PROBE_PAGE_SIZE]
     assert split[0].min_taken_date == "2024-01-01"
     assert split[0].parent_total == (MAX_RESULT_PAGES_PER_QUERY + 1) * NORMAL_PAGE_SIZE
+
+
+def test_stable_threshold_matches_flickr_result_window() -> None:
+    assert STABLE_RESULT_THRESHOLD == 4000
+    assert FLICKR_SEARCH_RESULT_WINDOW == 4000
+
+
+def test_total_4000_creates_standard_pages_for_non_geo_leaf() -> None:
+    probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)
+
+    pages = plan_queries_from_count(probe, total=4000)
+
+    assert [page.lane for page in pages] == ["normal_page"] * 8
+    assert [page.page for page in pages] == list(range(1, 9))
+    assert {page.per_page for page in pages} == {NORMAL_PAGE_SIZE}
+
+
+def test_text_butterfly_total_3300_creates_seven_standard_pages() -> None:
+    probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)
+
+    pages = plan_queries_from_count(probe, total=3300)
+
+    assert [page.lane for page in pages] == ["normal_page"] * 7
+    assert [page.page for page in pages] == list(range(1, 8))
+    assert {page.per_page for page in pages} == {NORMAL_PAGE_SIZE}
+
+
+def test_total_4000_creates_bbox_pages_for_geo_leaf() -> None:
+    probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", bbox="0,0,10,10")
+
+    pages = plan_queries_from_count(probe, total=4000)
+
+    assert [page.lane for page in pages] == ["bbox_page"] * 16
+    assert [page.page for page in pages] == list(range(1, 17))
+    assert {page.per_page for page in pages} == {BBOX_PAGE_SIZE}
+
+
+def test_total_4001_returns_split_count_probes_only() -> None:
+    probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)
+
+    split = plan_queries_from_count(
+        probe,
+        total=4001,
+        upload_date_ranges=[("2020-01-01", "2020-12-31"), ("2021-01-01", "2021-12-31")],
+        bboxes=["0,0,10,10"],
+    )
+
+    assert split
+    assert {query.lane for query in split} == {"count_probe"}
+    assert not any(query.lane in {"normal_page", "bbox_page"} for query in split)
+    assert {query.per_page for query in split} == {COUNT_PROBE_PAGE_SIZE}
+
+
+def test_split_metadata_carries_parent_total_hash_and_depth() -> None:
+    probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)
+
+    split = plan_queries_from_count(
+        probe,
+        total=4001,
+        taken_date_ranges=[("2024-01-01", "2024-06-30"), ("2024-07-01", "2024-12-31")],
+    )
+
+    assert [query.split_reason for query in split] == ["taken_date", "taken_date"]
+    assert {query.parent_total for query in split} == {4001}
+    assert all(query.parent_query_hash for query in split)
+    assert [query.split_depth for query in split] == [1, 1]
+
+
+def test_default_split_priority_prefers_upload_date_before_bbox() -> None:
+    probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)
+
+    split = plan_queries_from_count(
+        probe,
+        total=4001,
+        upload_date_ranges=[("2021-01-01", "2021-12-31")],
+        bboxes=["0,0,10,10"],
+    )
+
+    assert [query.split_reason for query in split] == ["upload_date"]
+    assert split[0].min_upload_date == "2021-01-01"
+    assert split[0].bbox is None
+
+
+def test_planned_work_is_sorted_deterministically() -> None:
+    probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)
+
+    split = plan_queries_from_count(
+        probe,
+        total=4001,
+        taken_date_ranges=[("2025-01-01", "2025-12-31"), ("2024-01-01", "2024-12-31")],
+    )
+
+    assert [(query.split_depth, query.min_taken_date, query.max_taken_date, query.term) for query in split] == [
+        (1, "2024-01-01", "2024-12-31", "butterfly"),
+        (1, "2025-01-01", "2025-12-31", "butterfly"),
+    ]
 
 
 def test_query_under_page_limit_creates_250_record_geo_pages() -> None:
