@@ -1,5 +1,14 @@
 # Code Cleanup Report
 
+## Step 1 Flickr 4000-Result Search-Space Coverage
+
+- Files changed: `src/biominer/flickr_fetch/query_planner.py`, `src/biominer/flickr_fetch/metadata_poller.py`, `src/biominer/reports/flickr_fetch.py`, `src/biominer/cli.py`, `scripts/run_flickr_text_search.py`, README, focused tests, and this cleanup report.
+- Tests added or updated: added local tests for 4000-result leaf planning, over-window split probes, deterministic date-slice resume, pre-request API reservation, count-probe-first script behavior, and split-progress reporting.
+- Redundant code removed: replaced direct deep-page script defaults with one count-probe-first path; direct page mode is explicit and guarded.
+- Compatibility shims retained: direct page enqueue remains available only behind explicit debug flags with a 4000-record safety check.
+- Generated artifacts excluded: raw Flickr payloads, logs, PID/manifest outputs, parquet files, state DBs, caches, images, model weights, and virtual environments were not staged.
+- Remaining cleanup recommendation: migrate any operator shell one-liners to the count-probe-first script flags before the next live broad Flickr run.
+
 Generated: 2026-06-07T11:11:00.135875+00:00
 
 ## README Name-Evidence Command Documentation
