@@ -14,9 +14,19 @@ NORMAL_PAGE_SIZE = 500
 GEO_PAGE_SIZE = 250
 BBOX_PAGE_SIZE = GEO_PAGE_SIZE
 COUNT_PROBE_PAGE_SIZE = 1
-MAX_RESULT_PAGES_PER_QUERY = 3999
-MAX_RESULTS_PER_QUERY = MAX_RESULT_PAGES_PER_QUERY * GEO_PAGE_SIZE
-SPLIT_TOTAL_THRESHOLD = MAX_RESULTS_PER_QUERY
+FLICKR_SEARCH_RESULT_WINDOW = 4000
+STABLE_RESULT_THRESHOLD = FLICKR_SEARCH_RESULT_WINDOW
+MAX_RESULT_PAGES_PER_QUERY = FLICKR_SEARCH_RESULT_WINDOW
+MAX_RESULTS_PER_QUERY = FLICKR_SEARCH_RESULT_WINDOW
+SPLIT_TOTAL_THRESHOLD = STABLE_RESULT_THRESHOLD
+SPLIT_REASON_PRIORITY = {
+    None: 0,
+    "taken_date": 1,
+    "upload_date": 2,
+    "bbox": 3,
+    "narrower_term": 4,
+}
+LANE_PRIORITY = {"count_probe": 0, "normal_page": 1, "bbox_page": 1}
 DEFAULT_EXTRAS = "description,license,date_upload,date_taken,geo,tags,machine_tags,owner_name,o_dims,url_l,url_m,last_update,media,views"
 PAPILIO_DEMOLEUS_ANCHOR_TERMS = (
     "Papilio demoleus",
@@ -169,6 +179,8 @@ class FlickrQuery:
     term_confidence: str | None = None
     notes: str | None = None
     parent_query_hash: str | None = None
+    split_depth: int = 0
+    bbox_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -230,7 +242,7 @@ def result_pages_for_total(total: int, *, per_page: int = NORMAL_PAGE_SIZE) -> i
 
 
 def query_fits_page_limit(total: int, *, per_page: int = NORMAL_PAGE_SIZE, max_pages: int = MAX_RESULT_PAGES_PER_QUERY) -> bool:
-    return result_pages_for_total(total, per_page=per_page) <= max_pages
+    return total <= STABLE_RESULT_THRESHOLD and result_pages_for_total(total, per_page=per_page) <= max_pages
 
 
 def page_size_for_query(query: FlickrQuery) -> int:
@@ -249,24 +261,98 @@ def plan_queries_from_count(
     narrower_terms: Iterable[str] = (),
     max_pages: int = MAX_RESULT_PAGES_PER_QUERY,
 ) -> tuple[FlickrQuery, ...]:
-    if query_fits_page_limit(total, per_page=page_size_for_query(probe), max_pages=max_pages):
+    if total <= STABLE_RESULT_THRESHOLD and query_fits_page_limit(total, per_page=page_size_for_query(probe), max_pages=max_pages):
         return plan_pages_from_count(probe, total=total)
     split_bboxes = tuple(bboxes)
     split_upload_ranges = tuple(upload_date_ranges)
-    if not split_bboxes and probe.bbox is None:
-        split_bboxes = tuple(PAPILIO_DEMOLEUS_REGION_BBOXES.values())
     if not split_upload_ranges and probe.min_upload_date is None and probe.max_upload_date is None:
         split_upload_ranges = DEFAULT_UPLOAD_DATE_RANGES
     if not split_upload_ranges and probe.min_upload_date and probe.max_upload_date:
         split_upload_ranges = _year_ranges(probe.min_upload_date, probe.max_upload_date)
-    return split_high_volume_query(
-        probe,
-        total=total,
-        taken_date_ranges=taken_date_ranges,
-        upload_date_ranges=split_upload_ranges,
-        bboxes=split_bboxes,
-        narrower_terms=narrower_terms,
+    if not split_bboxes and probe.bbox is None:
+        split_bboxes = tuple(PAPILIO_DEMOLEUS_REGION_BBOXES.values())
+    return _sort_queries(
+        split_high_volume_query(
+            probe,
+            total=total,
+            taken_date_ranges=taken_date_ranges,
+            upload_date_ranges=split_upload_ranges,
+            bboxes=split_bboxes,
+            narrower_terms=narrower_terms,
+        )
     )
+
+
+def sort_queries_for_resume(queries: Iterable[FlickrQuery]) -> tuple[FlickrQuery, ...]:
+    return _sort_queries(queries)
+
+
+def query_sort_key(query: FlickrQuery) -> tuple[object, ...]:
+    return _query_sort_key(query)
+
+
+def split_priority(query: FlickrQuery) -> int:
+    return SPLIT_REASON_PRIORITY.get(query.split_reason, 99)
+
+
+def lane_priority(query: FlickrQuery) -> int:
+    return LANE_PRIORITY.get(query.lane, 99)
+
+
+def query_hash(query: FlickrQuery) -> str:
+    return _query_hash(query)
+
+
+def query_date_kind(query: FlickrQuery) -> str:
+    if query.min_taken_date or query.max_taken_date:
+        return "taken_date"
+    if query.min_upload_date or query.max_upload_date:
+        return "upload_date"
+    return ""
+
+
+def query_min_date(query: FlickrQuery) -> str:
+    return query.min_taken_date or query.min_upload_date or ""
+
+
+def query_max_date(query: FlickrQuery) -> str:
+    return query.max_taken_date or query.max_upload_date or ""
+
+
+def _sort_queries(queries: Iterable[FlickrQuery]) -> tuple[FlickrQuery, ...]:
+    return tuple(sorted(queries, key=_query_sort_key))
+
+
+def _query_sort_key(query: FlickrQuery) -> tuple[object, ...]:
+    return (
+        query.split_depth,
+        split_priority(query),
+        query_date_kind(query),
+        query_min_date(query),
+        query_max_date(query),
+        query.bbox_index if query.bbox_index is not None else 999999,
+        query.region or "",
+        query.term.casefold(),
+        lane_priority(query),
+        query.page,
+        _query_hash(query),
+    )
+
+
+def _split_with_bboxes(probe: FlickrQuery, *, total: int, bboxes: tuple[str, ...]) -> tuple[FlickrQuery, ...]:
+    return tuple(_split_probe(probe, bbox=bbox, bbox_index=index, reason="bbox", total=total) for index, bbox in enumerate(bboxes))
+
+
+def _split_with_narrower_terms(probe: FlickrQuery, *, total: int, narrower_terms: tuple[str, ...]) -> tuple[FlickrQuery, ...]:
+    return tuple(_split_probe(probe, term=term, reason="narrower_term", total=total) for term in narrower_terms)
+
+
+def _split_with_taken_ranges(probe: FlickrQuery, *, total: int, taken: tuple[tuple[str, str], ...]) -> tuple[FlickrQuery, ...]:
+    return tuple(_split_probe(probe, min_taken_date=start, max_taken_date=end, reason="taken_date", total=total) for start, end in taken)
+
+
+def _split_with_upload_ranges(probe: FlickrQuery, *, total: int, upload: tuple[tuple[str, str], ...]) -> tuple[FlickrQuery, ...]:
+    return tuple(_split_probe(probe, min_upload_date=start, max_upload_date=end, reason="upload_date", total=total) for start, end in upload)
 
 
 def split_high_volume_query(
@@ -278,18 +364,18 @@ def split_high_volume_query(
     bboxes: Iterable[str] = (),
     narrower_terms: Iterable[str] = (),
 ) -> tuple[FlickrQuery, ...]:
-    if total <= SPLIT_TOTAL_THRESHOLD:
+    if total <= STABLE_RESULT_THRESHOLD:
         return plan_pages_from_count(probe, total=total)
     taken = tuple(taken_date_ranges)
     if taken:
-        return tuple(_split_probe(probe, min_taken_date=start, max_taken_date=end, reason="taken_date", total=total) for start, end in taken)
-    bbox_values = tuple(bboxes)
-    if bbox_values:
-        return tuple(_split_probe(probe, bbox=bbox, reason="bbox", total=total) for bbox in bbox_values)
+        return _sort_queries(_split_with_taken_ranges(probe, total=total, taken=taken))
     upload = tuple(upload_date_ranges)
     if upload:
-        return tuple(_split_probe(probe, min_upload_date=start, max_upload_date=end, reason="upload_date", total=total) for start, end in upload)
-    return tuple(_split_probe(probe, term=term, reason="narrower_term", total=total) for term in narrower_terms)
+        return _sort_queries(_split_with_upload_ranges(probe, total=total, upload=upload))
+    bbox_values = tuple(bboxes)
+    if bbox_values:
+        return _sort_queries(_split_with_bboxes(probe, total=total, bboxes=bbox_values))
+    return _sort_queries(_split_with_narrower_terms(probe, total=total, narrower_terms=tuple(narrower_terms)))
 
 
 def build_worldwide_discovery_plan() -> QueryPlan:
@@ -409,6 +495,8 @@ def _page_query(probe: FlickrQuery, *, page: int, per_page: int, lane: QueryLane
         term_confidence=probe.term_confidence,
         notes=probe.notes,
         parent_query_hash=probe.parent_query_hash,
+        split_depth=probe.split_depth,
+        bbox_index=probe.bbox_index,
     )
 
 
@@ -423,6 +511,7 @@ def _split_probe(
     max_taken_date: str | None = None,
     min_upload_date: str | None = None,
     max_upload_date: str | None = None,
+    bbox_index: int | None = None,
 ) -> FlickrQuery:
     return FlickrQuery(
         term=term or probe.term,
@@ -443,6 +532,8 @@ def _split_probe(
         term_confidence=probe.term_confidence,
         notes=probe.notes,
         parent_query_hash=probe.parent_query_hash or _query_hash(probe),
+        split_depth=probe.split_depth + 1,
+        bbox_index=bbox_index if bbox_index is not None else probe.bbox_index,
     )
 
 

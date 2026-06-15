@@ -195,7 +195,7 @@ def test_query_over_page_limit_splits_to_count_probes_not_oversized_pages() -> N
 
     assert split
     assert {query.lane for query in split} == {"count_probe"}
-    assert {query.split_reason for query in split} == {"bbox"}
+    assert {query.split_reason for query in split} == {"upload_date"}
     assert all(query.page == 1 for query in split)
     assert all(query.per_page == COUNT_PROBE_PAGE_SIZE for query in split)
 
