@@ -19,6 +19,11 @@ from biominer.flickr_fetch.query_planner import (
     deduplicate_photo_records,
     flickr_search_params,
     plan_queries_from_count,
+    query_date_kind,
+    query_hash,
+    query_max_date,
+    query_min_date,
+    split_priority,
 )
 from biominer.storage.parquet import write_parquet
 
@@ -76,9 +81,12 @@ class MetadataPollState:
                 """
                 INSERT OR IGNORE INTO flickr_work_items (
                     work_item_id, status, query_json, lane, page, per_page,
-                    claimed_at, completed_at, error, created_at
+                    split_depth, split_priority, split_reason, parent_query_hash,
+                    parent_total, date_kind, min_date, max_date, bbox_index,
+                    bbox_label, term, query_hash, claimed_at, completed_at,
+                    error, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
                 """,
                 (
                     work_item_id,
@@ -87,6 +95,18 @@ class MetadataPollState:
                     query.lane,
                     query.page,
                     query.per_page,
+                    query.split_depth,
+                    split_priority(query),
+                    query.split_reason,
+                    query.parent_query_hash,
+                    query.parent_total,
+                    query_date_kind(query),
+                    query_min_date(query),
+                    query_max_date(query),
+                    query.bbox_index,
+                    query.region or query.bbox,
+                    query.term,
+                    query_hash(query),
                     _timestamp(),
                 ),
             )
@@ -128,7 +148,18 @@ class MetadataPollState:
                 SELECT work_item_id, query_json
                 FROM flickr_work_items
                 WHERE status = ?
-                ORDER BY created_at, work_item_id
+                ORDER BY
+                    COALESCE(split_depth, 0),
+                    COALESCE(split_priority, 99),
+                    COALESCE(date_kind, ''),
+                    COALESCE(min_date, ''),
+                    COALESCE(max_date, ''),
+                    COALESCE(bbox_index, 999999),
+                    COALESCE(bbox_label, ''),
+                    COALESCE(term, ''),
+                    CASE lane WHEN 'count_probe' THEN 0 WHEN 'normal_page' THEN 1 WHEN 'bbox_page' THEN 1 ELSE 99 END,
+                    page,
+                    COALESCE(query_hash, work_item_id)
                 LIMIT ?
                 """,
                 (PENDING, limit),
@@ -342,6 +373,18 @@ class MetadataPollState:
                     lane TEXT NOT NULL,
                     page INTEGER NOT NULL,
                     per_page INTEGER NOT NULL,
+                    split_depth INTEGER,
+                    split_priority INTEGER,
+                    split_reason TEXT,
+                    parent_query_hash TEXT,
+                    parent_total INTEGER,
+                    date_kind TEXT,
+                    min_date TEXT,
+                    max_date TEXT,
+                    bbox_index INTEGER,
+                    bbox_label TEXT,
+                    term TEXT,
+                    query_hash TEXT,
                     claimed_at TEXT,
                     completed_at TEXT,
                     error TEXT,
@@ -349,6 +392,7 @@ class MetadataPollState:
                 )
                 """
             )
+            self._ensure_work_item_columns(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS source_records (
@@ -399,6 +443,26 @@ class MetadataPollState:
                 )
                 """
             )
+
+    def _ensure_work_item_columns(self, conn: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(flickr_work_items)").fetchall()}
+        columns = {
+            "split_depth": "INTEGER",
+            "split_priority": "INTEGER",
+            "split_reason": "TEXT",
+            "parent_query_hash": "TEXT",
+            "parent_total": "INTEGER",
+            "date_kind": "TEXT",
+            "min_date": "TEXT",
+            "max_date": "TEXT",
+            "bbox_index": "INTEGER",
+            "bbox_label": "TEXT",
+            "term": "TEXT",
+            "query_hash": "TEXT",
+        }
+        for name, sql_type in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE flickr_work_items ADD COLUMN {name} {sql_type}")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)

@@ -17,8 +17,26 @@ def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
             row[0]
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
         }
+        work_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(flickr_work_items)").fetchall()
+        }
 
     assert {"api_call_ledger", "flickr_work_items", "source_records", "source_record_query_hits", "image_triage_queue"}.issubset(tables)
+    assert {
+        "split_depth",
+        "split_priority",
+        "split_reason",
+        "parent_query_hash",
+        "parent_total",
+        "date_kind",
+        "min_date",
+        "max_date",
+        "bbox_index",
+        "bbox_label",
+        "term",
+        "query_hash",
+    }.issubset(work_columns)
 
 
 def test_poll_once_fetches_metadata_only_dedupes_and_queues_image_urls(tmp_path) -> None:
@@ -283,6 +301,38 @@ def test_poll_once_second_run_resumes_pending_pages_without_duplicates(tmp_path)
     assert second.work_items_claimed == 1
     assert source_count == 2
     assert statuses == {"completed": 2}
+
+
+def test_claim_pending_uses_deterministic_date_slice_order(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    later = FlickrQuery(
+        term="butterfly",
+        language="en",
+        search_field="text",
+        lane="count_probe",
+        per_page=1,
+        min_taken_date="2025-01-01",
+        max_taken_date="2025-12-31",
+        split_reason="taken_date",
+        split_depth=1,
+    )
+    older = FlickrQuery(
+        term="butterfly",
+        language="en",
+        search_field="text",
+        lane="count_probe",
+        per_page=1,
+        min_taken_date="2024-01-01",
+        max_taken_date="2024-12-31",
+        split_reason="taken_date",
+        split_depth=1,
+    )
+    state.enqueue_work_item(later)
+    state.enqueue_work_item(older)
+
+    claimed = state.claim_pending(limit=1)
+
+    assert claimed[0][1].min_taken_date == "2024-01-01"
 
 
 def test_poll_once_respects_3500_soft_budget_without_fetching(tmp_path) -> None:
