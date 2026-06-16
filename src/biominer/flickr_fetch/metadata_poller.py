@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -538,6 +538,8 @@ def poll_once(
                         query_hits_inserted += query_hits
                         duplicate_query_hits += duplicate_hits
                         queued += queued_count
+                        for next_query in _remaining_page_queries(query, pages=_payload_pages(payload)):
+                            state.enqueue_work_item(next_query)
                     state.complete_work_item(work_item_id, records_returned=records_returned)
                 except Exception as exc:  # noqa: BLE001 - poller records failure and exits bounded cycle.
                     state.update_api_call_status(work_item_id=work_item_id, status="failed")
@@ -627,6 +629,17 @@ def _payload_page(payload: dict[str, Any]) -> int:
 
 def _payload_perpage(payload: dict[str, Any]) -> int:
     return int(payload.get("photos", {}).get("perpage") or 0)
+
+
+def _remaining_page_queries(query: FlickrQuery, *, pages: int) -> tuple[FlickrQuery, ...]:
+    if query.lane != "normal_page" or query.page != 1:
+        return ()
+    if query.split_reason != "upload_date" or not query.min_upload_date or not query.max_upload_date:
+        return ()
+    last_page = min(max(0, pages), 8)
+    if last_page <= 1:
+        return ()
+    return tuple(replace(query, page=page) for page in range(2, last_page + 1))
 
 
 def _payload_photo_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
