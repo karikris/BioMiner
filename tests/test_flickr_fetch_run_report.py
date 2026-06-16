@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import importlib.util
+import json
 from pathlib import Path
 import sqlite3
 
@@ -50,6 +51,21 @@ def test_write_step1_manifest_records_background_run_contract(tmp_path) -> None:
     assert payload["expected_outputs"]["evidence_output"].endswith("flickr_text_butterfly.parquet")
     assert "environment" in payload
     assert "secrets" not in payload["environment"]
+
+
+def test_log_event_writes_visible_jsonl_to_stdout_and_file(tmp_path, capsys) -> None:
+    script = _load_fetch_script()
+    log_path = tmp_path / "run.log"
+
+    script.log_event({"event": "run_started", "run_id": "run-1", "pages": 3}, log_path=log_path)
+
+    stdout_payload = json.loads(capsys.readouterr().out.strip())
+    file_payload = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert stdout_payload["event"] == "run_started"
+    assert stdout_payload["run_id"] == "run-1"
+    assert stdout_payload["pages"] == 3
+    assert "time" in stdout_payload
+    assert file_payload == stdout_payload
 
 
 def test_build_step1_fetch_report_includes_required_metrics(tmp_path) -> None:

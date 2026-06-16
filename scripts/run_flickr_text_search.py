@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 from biominer.flickr_fetch.metadata_poller import MetadataPollState, poll_once
 from biominer.flickr_fetch.query_planner import (
@@ -54,6 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--coarse-slice-days", type=int, default=DEFAULT_COARSE_SLICE_DAYS)
     parser.add_argument("--pages-per-slice", type=int, default=DEFAULT_FIXED_SLICE_PAGES)
     return parser
+
+
+def log_event(event: dict[str, Any], *, log_path: str | Path | None = None) -> None:
+    payload = {"time": datetime.now(UTC).isoformat(), **event}
+    line = json.dumps(payload, sort_keys=True, default=str)
+    print(line, flush=True)
+    if log_path:
+        target = Path(log_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
 
 
 def main() -> None:
@@ -114,6 +126,23 @@ def main() -> None:
     }
     started = datetime.now(UTC)
     git_sha = current_git_sha()
+    log_event(
+        {
+            "event": "run_started",
+            "run_id": args.run_id,
+            "term": args.term,
+            "search_field": args.search_field,
+            "start_date": args.start_date,
+            "end_date": args.end_date,
+            "slice_days": args.slice_days,
+            "workers": args.workers,
+            "max_api_calls": args.max_api_calls,
+            "state_db": args.state_db,
+            "raw_root": args.raw_root,
+            "evidence_output": args.evidence_output,
+        },
+        log_path=args.log_path,
+    )
     write_step1_manifest(
         args.manifest,
         run_id=args.run_id,
@@ -158,7 +187,8 @@ def main() -> None:
             "end_date": args.end_date,
             "pages_per_slice": args.pages_per_slice,
         }
-    print(json.dumps(event, sort_keys=True), flush=True)
+    pending_summary = _work_summary(state)
+    log_event({**event, **pending_summary}, log_path=args.log_path)
     result = poll_once(
         state_db=args.state_db,
         raw_root=args.raw_root,
@@ -166,6 +196,7 @@ def main() -> None:
         max_api_calls=args.max_api_calls,
         api_key=api_key,
         workers=args.workers,
+        progress_callback=lambda item: log_event(item, log_path=args.log_path),
     )
     ended = datetime.now(UTC)
     report = build_step1_fetch_report(
@@ -187,7 +218,17 @@ def main() -> None:
     manifest["status"] = "completed"
     manifest["end_time"] = ended.isoformat()
     Path(args.manifest).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-    print(json.dumps({"event": "run_completed", **result.__dict__, "state_db": str(result.state_db)}, default=str, sort_keys=True), flush=True)
+    log_event(
+        {
+            "event": "run_completed",
+            **result.__dict__,
+            "state_db": str(result.state_db),
+            "manifest": args.manifest,
+            "report": args.report,
+            **_work_summary(state),
+        },
+        log_path=args.log_path,
+    )
 
 
 def _enqueue_count_probe(state: MetadataPollState, *, term: str, search_field: SearchField) -> int:
@@ -249,6 +290,22 @@ def _enqueue_direct_pages(state: MetadataPollState, *, term: str, pages: int, se
         )
         for page in range(1, pages + 1)
     )
+
+
+def _work_summary(state: MetadataPollState) -> dict[str, int]:
+    import sqlite3
+
+    with sqlite3.connect(state.path) as conn:
+        pending_total = int(conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'pending'").fetchone()[0])
+        pending_page1 = int(conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'pending' AND page = 1").fetchone()[0])
+        pending_pages_2_8 = int(conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'pending' AND page BETWEEN 2 AND 8").fetchone()[0])
+        completed_total = int(conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'completed'").fetchone()[0])
+    return {
+        "pending_total": pending_total,
+        "pending_page1": pending_page1,
+        "pending_pages_2_8": pending_pages_2_8,
+        "completed_total": completed_total,
+    }
 
 
 if __name__ == "__main__":

@@ -37,6 +37,7 @@ FAILED = "failed"
 DEFAULT_STALE_CLAIM_SECONDS = 3600
 
 FetchMetadata = Callable[[FlickrQuery], dict[str, Any]]
+ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -525,13 +526,25 @@ def poll_once(
     fetch_metadata: FetchMetadata | None = None,
     workers: int = 1,
     stale_claim_seconds: int = DEFAULT_STALE_CLAIM_SECONDS,
+    progress_callback: ProgressCallback | None = None,
 ) -> PollOnceResult:
     state = MetadataPollState(state_db)
     stale_requeued = state.requeue_stale_claims(stale_after_seconds=stale_claim_seconds)
+    _progress(progress_callback, {"event": "stale_claims_requeued", "count": stale_requeued})
     state.ensure_seed_work_items()
     soft_remaining, hard_remaining = state.remaining_api_budget(max_api_calls=max_api_calls)
+    _progress(
+        progress_callback,
+        {
+            "event": "budget_checked",
+            "remaining_soft_budget": soft_remaining,
+            "remaining_hard_budget": hard_remaining,
+            "max_api_calls": max_api_calls,
+        },
+    )
     claim_limit = min(soft_remaining, hard_remaining)
     claimed = state.claim_pending(limit=claim_limit)
+    _progress(progress_callback, {"event": "work_claimed", "claimed": len(claimed), "claim_limit": claim_limit})
     raw_written = 0
     records_inserted = 0
     duplicates = 0
@@ -566,6 +579,15 @@ def poll_once(
                         for next_query in plan_queries_from_count(query, total=total):
                             state.enqueue_work_item(next_query)
                         records_returned = None
+                        _progress(
+                            progress_callback,
+                            {
+                                "event": "count_probe_completed",
+                                "lane": query.lane,
+                                "page": query.page,
+                                "response_total": total,
+                            },
+                        )
                     else:
                         records = _payload_photo_records(payload)
                         inserted, skipped, queued_count, query_hits, duplicate_hits = state.insert_source_records(records, source_query=query)
@@ -575,8 +597,40 @@ def poll_once(
                         query_hits_inserted += query_hits
                         duplicate_query_hits += duplicate_hits
                         queued += queued_count
-                        for next_query in _remaining_page_queries(query, pages=response_pages):
-                            state.enqueue_work_item(next_query)
+                        remaining_queries = _remaining_page_queries(query, pages=response_pages)
+                        remaining_inserted = 0
+                        for next_query in remaining_queries:
+                            remaining_inserted += state.enqueue_work_item(next_query)
+                        _progress(
+                            progress_callback,
+                            {
+                                "event": "page_completed",
+                                "lane": query.lane,
+                                "page": query.page,
+                                "per_page": query.per_page,
+                                "min_date": query_min_date(query),
+                                "max_date": query_max_date(query),
+                                "response_total": total,
+                                "response_pages": response_pages,
+                                "response_page": response_page,
+                                "response_perpage": response_perpage,
+                                "records_returned": records_returned,
+                                "records_inserted": inserted,
+                                "duplicates_skipped": skipped,
+                                "remaining_pages_enqueued": remaining_inserted,
+                            },
+                        )
+                        if remaining_queries:
+                            _progress(
+                                progress_callback,
+                                {
+                                    "event": "remaining_pages_enqueued",
+                                    "enqueued": remaining_inserted,
+                                    "pages": [item.page for item in remaining_queries],
+                                    "min_date": query_min_date(query),
+                                    "max_date": query_max_date(query),
+                                },
+                            )
                     state.complete_work_item(
                         work_item_id,
                         records_returned=records_returned,
@@ -588,10 +642,20 @@ def poll_once(
                 except Exception as exc:  # noqa: BLE001 - poller records failure and exits bounded cycle.
                     state.update_api_call_status(work_item_id=work_item_id, status="failed")
                     state.fail_work_item(work_item_id, str(exc))
+                    _progress(
+                        progress_callback,
+                        {
+                            "event": "work_failed",
+                            "work_item_id": work_item_id,
+                            "lane": query.lane,
+                            "page": query.page,
+                            "error": str(exc),
+                        },
+                    )
 
     evidence_rows = _write_evidence(evidence_output, payloads)
     soft_after, hard_after = state.remaining_api_budget(max_api_calls=max_api_calls)
-    return PollOnceResult(
+    result = PollOnceResult(
         state_db=Path(state_db),
         raw_responses_written=raw_written,
         evidence_rows_written=evidence_rows,
@@ -606,6 +670,13 @@ def poll_once(
         remaining_hard_budget=hard_after,
         stale_claims_requeued=stale_requeued,
     )
+    _progress(progress_callback, {"event": "poll_completed", **{**result.__dict__, "state_db": str(result.state_db)}})
+    return result
+
+
+def _progress(callback: ProgressCallback | None, event: dict[str, Any]) -> None:
+    if callback:
+        callback(event)
 
 
 def _http_fetcher(*, api_key: str | None) -> FetchMetadata:

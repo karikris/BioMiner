@@ -1,5 +1,14 @@
 # Code Cleanup Report
 
+## Step 1 Visible Flickr Fetch Logging
+
+- Files changed: `scripts/run_flickr_text_search.py`, `src/biominer/flickr_fetch/metadata_poller.py`, focused tests, and this cleanup report.
+- Tests added or updated: added JSONL log-event coverage and poller progress-callback coverage for budget, claim, page completion, and dynamic page enqueue events.
+- Redundant code removed: replaced script-only final `print` calls with a shared JSONL `log_event` helper used for start, seed, progress, and completion events.
+- Compatibility shims retained: existing stdout JSON event behavior is preserved; the same events are also appended to `--log-path`.
+- Generated artifacts excluded: raw Flickr payloads, logs, PID/manifest outputs, parquet files, state DBs, caches, images, model weights, and virtual environments were not staged.
+- Remaining cleanup recommendation: add a public `--quiet` or `--progress-every` flag if operator logs become too verbose on very large runs.
+
 ## Step 1 Dynamic Flickr Upload-Date Slice Paging
 
 - Files changed: `src/biominer/flickr_fetch/query_planner.py`, `src/biominer/flickr_fetch/metadata_poller.py`, `src/biominer/reports/flickr_fetch.py`, `scripts/run_flickr_text_search.py`, `README.md`, `AGENTS.md`, focused tests, and this cleanup report.

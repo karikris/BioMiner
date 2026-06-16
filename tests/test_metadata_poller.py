@@ -569,6 +569,57 @@ def test_poll_once_page_one_enqueues_remaining_reported_pages(tmp_path) -> None:
     ]
 
 
+def test_poll_once_progress_callback_reports_claim_page_and_dynamic_enqueue(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(
+        FlickrQuery(
+            term="butterfly",
+            language="en",
+            search_field="text",
+            lane="normal_page",
+            page=1,
+            per_page=500,
+            has_geo=0,
+            min_upload_date="2007-01-01",
+            max_upload_date="2007-01-05",
+            split_reason="upload_date",
+            split_depth=1,
+            slice_index=0,
+        )
+    )
+    events: list[dict[str, object]] = []
+
+    poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=1,
+        fetch_metadata=lambda query: {
+            "photos": {
+                "total": "1200",
+                "pages": "3",
+                "page": "1",
+                "perpage": "500",
+                "photo": [{"id": "1", "url_l": "https://live.staticflickr.com/1.jpg"}],
+            }
+        },
+        progress_callback=events.append,
+    )
+
+    event_names = [str(event["event"]) for event in events]
+    assert "budget_checked" in event_names
+    assert "work_claimed" in event_names
+    assert "page_completed" in event_names
+    assert "remaining_pages_enqueued" in event_names
+    page_event = next(event for event in events if event["event"] == "page_completed")
+    enqueue_event = next(event for event in events if event["event"] == "remaining_pages_enqueued")
+    assert page_event["page"] == 1
+    assert page_event["response_pages"] == 3
+    assert page_event["records_inserted"] == 1
+    assert enqueue_event["enqueued"] == 2
+    assert enqueue_event["pages"] == [2, 3]
+
+
 def test_poll_once_page_one_caps_dynamic_enqueue_at_page_eight(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     state.enqueue_work_item(
