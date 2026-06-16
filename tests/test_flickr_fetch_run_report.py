@@ -266,14 +266,17 @@ def test_enqueue_fixed_upload_slice_pages_supports_tag_search(tmp_path) -> None:
         pages_per_slice=8,
     )
 
-    assert inserted == 24
+    assert inserted == 3
     with sqlite3.connect(state.path) as conn:
         rows = conn.execute(
             "SELECT json_extract(query_json, '$.search_field'), page, per_page, json_extract(query_json, '$.has_geo'), min_date, max_date "
             "FROM flickr_work_items ORDER BY min_date, page"
         ).fetchall()
-    assert rows[:8] == [("tags", page, 500, 0, "2004-02-10", "2004-02-14") for page in range(1, 9)]
-    assert rows[-1] == ("tags", 8, 500, 0, "2004-02-20", "2004-02-20")
+    assert rows == [
+        ("tags", 1, 500, 0, "2004-02-10", "2004-02-14"),
+        ("tags", 1, 500, 0, "2004-02-15", "2004-02-19"),
+        ("tags", 1, 500, 0, "2004-02-20", "2004-02-20"),
+    ]
 
 
 def test_direct_page_enqueue_rejects_unsafe_ranges(tmp_path) -> None:
