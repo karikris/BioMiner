@@ -147,7 +147,7 @@ def test_fixed_slice_metadata_carries_upload_dates_depth_and_index() -> None:
 
     assert [(query.split_reason, query.split_depth, query.slice_index) for query in pages[:2]] == [
         ("upload_date", 1, 0),
-        ("upload_date", 1, 0),
+        ("upload_date", 1, 1),
     ]
     assert pages[0].min_upload_date == "2004-02-10"
     assert pages[0].max_upload_date == "2004-02-14"
@@ -166,9 +166,9 @@ def test_over_threshold_probe_with_upload_bounds_uses_fixed_slices_within_bounds
 
     pages = plan_queries_from_count(probe, total=4001)
 
-    assert len(pages) == 16
+    assert len(pages) == 2
     assert pages[0].min_upload_date == "2021-01-01"
-    assert pages[7].max_upload_date == "2021-01-05"
+    assert pages[0].max_upload_date == "2021-01-05"
     assert pages[-1].max_upload_date == "2021-01-10"
 
 
@@ -177,17 +177,10 @@ def test_planned_work_is_sorted_deterministically() -> None:
 
     pages = plan_queries_from_count(probe, total=4001)
 
-    assert [(query.slice_index, query.min_upload_date, query.max_upload_date, query.page) for query in pages[:10]] == [
+    assert [(query.slice_index, query.min_upload_date, query.max_upload_date, query.page) for query in pages[:3]] == [
         (0, "2004-02-10", "2004-02-14", 1),
-        (0, "2004-02-10", "2004-02-14", 2),
-        (0, "2004-02-10", "2004-02-14", 3),
-        (0, "2004-02-10", "2004-02-14", 4),
-        (0, "2004-02-10", "2004-02-14", 5),
-        (0, "2004-02-10", "2004-02-14", 6),
-        (0, "2004-02-10", "2004-02-14", 7),
-        (0, "2004-02-10", "2004-02-14", 8),
         (1, "2004-02-15", "2004-02-19", 1),
-        (1, "2004-02-15", "2004-02-19", 2),
+        (2, "2004-02-20", "2004-02-24", 1),
     ]
 
 
@@ -264,7 +257,7 @@ def test_fixed_upload_date_slices_support_coarse_then_fine_periods() -> None:
     assert all(start <= end for start, end in slices)
 
 
-def test_plan_fixed_upload_slice_pages_creates_pages_without_count_probes() -> None:
+def test_plan_fixed_upload_slice_pages_creates_page_one_only_without_count_probes() -> None:
     pages = plan_fixed_upload_slice_pages(
         term="butterfly",
         search_field="text",
@@ -276,19 +269,13 @@ def test_plan_fixed_upload_slice_pages_creates_pages_without_count_probes() -> N
         pages_per_slice=8,
     )
 
-    assert len(pages) == 16
+    assert len(pages) == 2
     assert {page.lane for page in pages} == {"normal_page"}
     assert {page.per_page for page in pages} == {NORMAL_PAGE_SIZE}
+    assert {page.page for page in pages} == {1}
     assert not any(page.lane == "count_probe" for page in pages)
-    assert [(page.slice_index, page.min_upload_date, page.max_upload_date, page.page) for page in pages[:9]] == [
+    assert [(page.slice_index, page.min_upload_date, page.max_upload_date, page.page) for page in pages] == [
         (0, "2007-01-01", "2007-01-05", 1),
-        (0, "2007-01-01", "2007-01-05", 2),
-        (0, "2007-01-01", "2007-01-05", 3),
-        (0, "2007-01-01", "2007-01-05", 4),
-        (0, "2007-01-01", "2007-01-05", 5),
-        (0, "2007-01-01", "2007-01-05", 6),
-        (0, "2007-01-01", "2007-01-05", 7),
-        (0, "2007-01-01", "2007-01-05", 8),
         (1, "2007-01-06", "2007-01-10", 1),
     ]
 

@@ -285,7 +285,7 @@ def plan_fixed_upload_slice_pages(
     slice_days: int = DEFAULT_FIXED_SLICE_DAYS,
     coarse_end_date: str | None = DEFAULT_COARSE_SLICE_END_DATE,
     coarse_slice_days: int | None = DEFAULT_COARSE_SLICE_DAYS,
-    pages_per_slice: int = DEFAULT_FIXED_SLICE_PAGES,
+    pages_per_slice: int = 1,
     language: str = "en",
 ) -> tuple[FlickrQuery, ...]:
     pages: list[FlickrQuery] = []
@@ -298,7 +298,7 @@ def plan_fixed_upload_slice_pages(
             coarse_slice_days=coarse_slice_days,
         )
     ):
-        for page in range(1, pages_per_slice + 1):
+        for page in range(1, min(pages_per_slice, 1) + 1):
             pages.append(
                 FlickrQuery(
                     term=term,
