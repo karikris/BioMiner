@@ -617,6 +617,18 @@ def _payload_total(payload: dict[str, Any]) -> int:
     return int(payload.get("photos", {}).get("total") or 0)
 
 
+def _payload_pages(payload: dict[str, Any]) -> int:
+    return int(payload.get("photos", {}).get("pages") or 0)
+
+
+def _payload_page(payload: dict[str, Any]) -> int:
+    return int(payload.get("photos", {}).get("page") or 0)
+
+
+def _payload_perpage(payload: dict[str, Any]) -> int:
+    return int(payload.get("photos", {}).get("perpage") or 0)
+
+
 def _payload_photo_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
     photos = payload.get("photos", {})
     rows = photos.get("photo", []) if isinstance(photos, dict) else []

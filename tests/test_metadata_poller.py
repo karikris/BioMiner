@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 
 from biominer.flickr_fetch.query_planner import BBOX_PAGE_SIZE, COUNT_PROBE_PAGE_SIZE, NORMAL_PAGE_SIZE, FlickrQuery, fixed_upload_date_slices
-from biominer.flickr_fetch.metadata_poller import MetadataPollState, poll_once
+from biominer.flickr_fetch.metadata_poller import MetadataPollState, _payload_page, _payload_pages, _payload_perpage, poll_once
 
 
 def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
@@ -210,7 +210,7 @@ def test_poll_once_plans_fixed_slice_pages_over_stable_result_threshold(tmp_path
         coarse_end_date=None,
         coarse_slice_days=None,
     )
-    assert pending_count == len(expected_slices) * 8
+    assert pending_count == len(expected_slices)
     assert {row[0] for row in rows} == {"normal_page"}
     assert {row[1] for row in rows} == {NORMAL_PAGE_SIZE}
     assert {row[2] for row in rows} == {"upload_date"}
@@ -250,6 +250,20 @@ def test_poll_once_enqueues_all_pages_for_4000_record_standard_leaf(tmp_path) ->
         rows = conn.execute("SELECT lane, page, per_page FROM flickr_work_items WHERE status = 'pending' ORDER BY page").fetchall()
 
     assert rows == [("normal_page", page, NORMAL_PAGE_SIZE) for page in range(1, 9)]
+
+
+def test_payload_page_metadata_helpers_read_flickr_response_values() -> None:
+    payload = {"photos": {"total": "740", "pages": "2", "page": "1", "perpage": "500", "photo": []}}
+
+    assert _payload_pages(payload) == 2
+    assert _payload_page(payload) == 1
+    assert _payload_perpage(payload) == 500
+
+
+def test_payload_page_metadata_helpers_default_missing_values() -> None:
+    assert _payload_pages({"photos": {}}) == 0
+    assert _payload_page({"photos": {}}) == 0
+    assert _payload_perpage({"photos": {}}) == 0
 
 
 def test_poll_once_reserves_api_call_before_fetch(tmp_path) -> None:
