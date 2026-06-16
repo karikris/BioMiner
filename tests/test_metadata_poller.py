@@ -448,6 +448,42 @@ def test_poll_once_records_page_payload_count_for_saturation_reporting(tmp_path)
     assert row[0] == 500
 
 
+def test_poll_once_records_page_response_metadata_for_reporting(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(
+        FlickrQuery(
+            term="butterfly",
+            language="en",
+            search_field="text",
+            lane="normal_page",
+            page=1,
+            per_page=500,
+            has_geo=0,
+            min_upload_date="2007-01-01",
+            max_upload_date="2007-01-05",
+            split_reason="upload_date",
+            split_depth=1,
+            slice_index=0,
+        )
+    )
+
+    poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=1,
+        fetch_metadata=lambda query: {
+            "photos": {"total": "9000", "pages": "20", "page": "1", "perpage": "500", "photo": []}
+        },
+    )
+
+    with sqlite3.connect(state.path) as conn:
+        row = conn.execute(
+            "SELECT response_total, response_pages, response_page, response_perpage FROM flickr_work_items WHERE page = 1"
+        ).fetchone()
+    assert row == (9000, 20, 1, 500)
+
+
 def test_poll_once_page_one_single_page_slice_enqueues_no_extra_pages(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     state.enqueue_work_item(
