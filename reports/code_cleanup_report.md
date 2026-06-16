@@ -1,11 +1,11 @@
 # Code Cleanup Report
 
-## Step 1 Fixed Flickr Upload-Date Slices
+## Step 1 Dynamic Flickr Upload-Date Slice Paging
 
 - Files changed: `src/biominer/flickr_fetch/query_planner.py`, `src/biominer/flickr_fetch/metadata_poller.py`, `src/biominer/reports/flickr_fetch.py`, `scripts/run_flickr_text_search.py`, `README.md`, `AGENTS.md`, focused tests, and this cleanup report.
-- Tests added or updated: added fixed upload-date slice planning, deterministic slice/page resume, full-page saturation reporting, fixed-slice runner enqueue coverage, and all-5-day default coverage.
-- Redundant code removed: broad runner defaults no longer seed count-probe recursion; fixed upload-date page work is now the authoritative broad-search path.
-- Compatibility shims retained: explicit guarded direct-page mode remains for debug use; count-probe helpers and optional coarse-slice arguments remain for narrow and existing CLI workflows, but default broad runs use 5-day slices only.
+- Tests added or updated: added page-1-only fixed slice planning, page metadata parsing, dynamic remaining-page enqueueing, deterministic dynamic page resume, duplicate enqueue protection, avoided-call reporting, full-page saturation reporting, fixed-slice runner enqueue coverage, and all-5-day default coverage.
+- Redundant code removed: broad runner defaults no longer seed count-probe recursion or blindly pre-enqueue pages 2..8; fixed upload-date page-1 work plus dynamic remaining pages is now the authoritative broad-search path.
+- Compatibility shims retained: explicit guarded direct-page mode remains for debug use; count-probe helpers and optional coarse-slice arguments remain for narrow and existing CLI workflows, but default broad runs use 5-day slices and dynamic page enqueueing.
 - Generated artifacts excluded: raw Flickr payloads, logs, PID/manifest outputs, parquet files, state DBs, caches, images, model weights, and virtual environments were not staged.
 - Remaining cleanup recommendation: promote fixed-slice runner flags into the main `biominer` CLI if this script becomes the standard operator entry point.
 

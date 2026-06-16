@@ -196,10 +196,11 @@ Planning logic:
 ```text
 start at 2004-02-10 and advance to today
 use 5-day upload-date slices for the full range
-enqueue pages 1..8 for each slice at per_page=500
+enqueue page 1 only for each slice at per_page=500
+after page 1 returns, enqueue pages 2..min(photos.pages, 8)
 ```
 
-If page 8 returns 500 records, report that upload-date slice as saturated at Flickr's result window. The slice is retained for downstream review, and future planning can split only those saturated windows more narrowly if needed.
+Page 1 is a real metadata page, not a `per_page=1` count probe. BioMiner stores all records from page 1, reads `photos.total`, `photos.pages`, `photos.page`, and `photos.perpage`, then enqueues only the remaining pages that Flickr says exist. If page 8 returns 500 records, report that upload-date slice as saturated at Flickr's result window. The slice is retained for downstream review, and future planning can split only those saturated windows more narrowly if needed.
 
 Work-item ordering should be stable across reruns:
 
@@ -230,10 +231,10 @@ content_types=0
 min_upload_date=2004-02-10
 max_upload_date=2004-02-14
 per_page=500
-page=1..8
+page=1
 ```
 
-The next slice is `2004-02-15..2004-02-19`, also pages 1..8. With the 3,500-call hourly budget, a bounded run stops after the current poll-once claim set and resumes remaining pending slices in deterministic SQLite order.
+The first bounded pass starts with page 1 for each slice. If Flickr reports `photos.pages=3` for a slice, BioMiner then enqueues pages 2 and 3 only; if `photos.pages=1`, it stops after page 1. With the 3,500-call hourly budget, a bounded run stops after the current poll-once claim set and resumes remaining pending slices in deterministic SQLite order.
 
 Recommended output layout:
 

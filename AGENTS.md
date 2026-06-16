@@ -55,7 +55,9 @@ Invariant:
 - broad butterfly discovery uses fixed upload-date slices, not recursive count-probe splitting;
 - start at `2004-02-10` and advance to today;
 - use 5-day upload-date slices for the full range;
-- enqueue pages 1..8 for each slice at `per_page=500`;
+- enqueue page 1 only for each slice at `per_page=500`;
+- page 1 is a real metadata fetch; read `photos.total`, `photos.pages`, `photos.page`, and `photos.perpage`;
+- after page 1 returns, enqueue only pages 2..min(`photos.pages`, 8);
 - report a slice as saturated when page 8 returns 500 records;
 - if budget ends, stop cleanly; next run resumes pending work in deterministic DB order.
 
@@ -65,7 +67,7 @@ Page sizes:
 - geo/bbox page `per_page=250`;
 - image URL preference `url_l -> url_m`; no default `url_o`.
 
-Example: `text=butterfly` starts with upload-date slice `2004-02-10..2004-02-14`, pages 1..8, then resumes with the next pending deterministic date slice.
+Example: `text=butterfly` starts with upload-date slice `2004-02-10..2004-02-14`, page 1, then enqueues only the remaining pages Flickr reports for that slice.
 
 ## Step rules
 Step 1 fetch:
@@ -73,7 +75,7 @@ Step 1 fetch:
 - use shared SQLite API ledger/work table;
 - reserve call before request across all workers;
 - resume pending, requeue stale claims, dedupe photo/image keys;
-- seed broad searches as fixed upload-date page work.
+- seed broad searches as fixed upload-date page-1 work and dynamically enqueue remaining pages from page metadata.
 
 Step 2 filter:
 - input Step 1 parquet + anti-keyword JSON;
