@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 import httpx
+import polars as pl
 
 from biominer.flickr_fetch.query_planner import BBOX_PAGE_SIZE, COUNT_PROBE_PAGE_SIZE, NORMAL_PAGE_SIZE, FlickrQuery, fixed_upload_date_slices
 from biominer.flickr_fetch.metadata_poller import MetadataPollState, _payload_page, _payload_pages, _payload_perpage, poll_once
@@ -76,11 +77,58 @@ def test_poll_once_fetches_metadata_only_dedupes_and_queues_image_urls(tmp_path)
     assert result.duplicate_records_skipped == 1
     assert result.image_urls_queued == 2
     assert result.evidence_rows_written == 3
+    assert result.evidence_rows_total == 3
+    assert len(list((tmp_path / "evidence" / "poll_pages").glob("*.parquet"))) == 1
     assert list((tmp_path / "raw").rglob("*.json"))
     assert not list(tmp_path.rglob("*.jpg"))
     with sqlite3.connect(state.path) as conn:
         assert conn.execute("SELECT count(*) FROM source_records").fetchone()[0] == 2
         assert conn.execute("SELECT count(*) FROM image_triage_queue").fetchone()[0] == 2
+
+
+def test_poll_once_compacts_evidence_shards_without_duplicate_existing_rows(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="butterfly-1", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+    state.enqueue_work_item(FlickrQuery(term="butterfly-2", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+    evidence_output = tmp_path / "evidence" / "poll.parquet"
+
+    first = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=evidence_output,
+        max_api_calls=1,
+        fetch_metadata=lambda item: {
+            "photos": {
+                "total": "1",
+                "pages": "1",
+                "page": "1",
+                "perpage": "250",
+                "photo": [{"id": "1", "title": "first", "url_l": "https://live.staticflickr.com/1.jpg"}],
+            }
+        },
+    )
+    second = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=evidence_output,
+        max_api_calls=3,
+        fetch_metadata=lambda item: {
+            "photos": {
+                "total": "1",
+                "pages": "1",
+                "page": "1",
+                "perpage": "250",
+                "photo": [{"id": "2", "title": "second", "url_l": "https://live.staticflickr.com/2.jpg"}],
+            }
+        },
+    )
+
+    frame = pl.read_parquet(evidence_output)
+    assert first.evidence_rows_written == 1
+    assert first.evidence_rows_total == 1
+    assert second.evidence_rows_written == 1
+    assert second.evidence_rows_total == 2
+    assert frame.height == 2
 
 
 def test_poll_once_preserves_duplicate_query_hits_for_source_record(tmp_path) -> None:
@@ -417,7 +465,7 @@ def test_poll_once_does_not_claim_or_reserve_full_budget_before_fetch(tmp_path) 
                     "SELECT count(*) FROM flickr_work_items WHERE status = 'claimed'"
                 ).fetchone()[0]
                 observed_before_first_fetch["reserved"] = conn.execute(
-                    "SELECT count(*) FROM api_call_ledger WHERE status = 'reserved'"
+                    "SELECT count(*) FROM api_call_ledger"
                 ).fetchone()[0]
         return {"photos": {"total": "0", "photo": []}}
 

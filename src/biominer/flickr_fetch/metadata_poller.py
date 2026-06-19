@@ -62,6 +62,7 @@ class PollOnceResult:
     state_db: Path
     raw_responses_written: int
     evidence_rows_written: int
+    evidence_rows_total: int
     source_records_inserted: int
     duplicate_records_skipped: int
     query_hits_inserted: int
@@ -626,7 +627,7 @@ def poll_once(
     queued = 0
     work_items_claimed = 0
     api_calls_made = 0
-    payloads: list[dict[str, Any]] = []
+    evidence_rows_written = 0
     fetcher = fetch_metadata or _http_fetcher(api_key=api_key)
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -665,8 +666,12 @@ def poll_once(
                         payload, attempts = future.result()
                         api_calls_made += attempts
                         raw_written += 1
-                        payloads.append(payload)
                         _write_raw_response(raw_root=Path(raw_root), work_item_id=work_item_id, query=query, payload=payload)
+                        evidence_rows_written += _write_evidence_shard(
+                            evidence_output=evidence_output,
+                            work_item_id=work_item_id,
+                            payload=payload,
+                        )
                         total = _payload_total(payload)
                         response_pages = _payload_pages(payload)
                         response_page = _payload_page(payload)
@@ -769,12 +774,13 @@ def poll_once(
                             },
                         )
 
-    evidence_rows = _write_evidence(evidence_output, payloads)
+    evidence_rows_total = _compact_evidence_output(evidence_output)
     soft_after, hard_after = state.remaining_api_budget(max_api_calls=max_api_calls)
     result = PollOnceResult(
         state_db=Path(state_db),
         raw_responses_written=raw_written,
-        evidence_rows_written=evidence_rows,
+        evidence_rows_written=evidence_rows_written,
+        evidence_rows_total=evidence_rows_total,
         source_records_inserted=records_inserted,
         duplicate_records_skipped=duplicates,
         query_hits_inserted=query_hits_inserted,
@@ -896,23 +902,44 @@ def _safe_query_variant(term: str) -> str:
     return "".join(char if char.isalnum() else "_" for char in term.casefold()).strip("_")
 
 
-def _write_evidence(evidence_output: str | Path, payloads: list[dict[str, Any]]) -> int:
-    if not payloads:
+def _write_evidence_shard(*, evidence_output: str | Path, work_item_id: str, payload: dict[str, Any]) -> int:
+    frame = build_evidence_frame([payload], species_query="multilingual_lepidoptera")
+    if frame.is_empty():
         return 0
-    frame = build_evidence_frame(payloads, species_query="multilingual_lepidoptera")
-    output = Path(evidence_output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if output.exists():
-        existing = build_evidence_frame([], species_query="multilingual_lepidoptera")
-        try:
-            import polars as pl
+    shard_root = _evidence_shard_root(Path(evidence_output))
+    shard_root.mkdir(parents=True, exist_ok=True)
+    write_parquet(frame, shard_root / f"{work_item_id}.parquet")
+    return frame.height
 
-            existing = pl.read_parquet(output)
-            frame = pl.concat([existing, frame], how="diagonal_relaxed")
-        except Exception:
-            pass
+
+def _compact_evidence_output(evidence_output: str | Path) -> int:
+    output = Path(evidence_output)
+    shard_root = _evidence_shard_root(output)
+    _ensure_legacy_evidence_shard(output=output, shard_root=shard_root)
+    shard_paths = sorted(shard_root.glob("*.parquet")) if shard_root.exists() else []
+    if not shard_paths:
+        return 0
+    frame = pl.read_parquet(shard_paths)
+    output.parent.mkdir(parents=True, exist_ok=True)
     write_parquet(frame, output)
     return frame.height
+
+
+def _ensure_legacy_evidence_shard(*, output: Path, shard_root: Path) -> None:
+    if not output.exists() or (shard_root.exists() and any(shard_root.glob("*.parquet"))):
+        return
+    try:
+        legacy = pl.read_parquet(output)
+    except Exception:
+        return
+    if legacy.is_empty():
+        return
+    shard_root.mkdir(parents=True, exist_ok=True)
+    write_parquet(legacy, shard_root / "__legacy__.parquet")
+
+
+def _evidence_shard_root(output: Path) -> Path:
+    return output.parent / f"{output.stem}_pages"
 
 
 def _payload_total(payload: dict[str, Any]) -> int:

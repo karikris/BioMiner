@@ -103,7 +103,7 @@ def build_step1_fetch_report(
             "query_hits_inserted": result.query_hits_inserted,
             "duplicate_query_hits_skipped": result.duplicate_query_hits_skipped,
             "image_urls_queued": result.image_urls_queued,
-            "parquet_rows": result.evidence_rows_written,
+            "parquet_rows": result.evidence_rows_total,
         },
         "query_provenance": _query_provenance_summary(query_provenance),
         "throughput": {
