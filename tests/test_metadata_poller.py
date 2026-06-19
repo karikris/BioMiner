@@ -51,8 +51,50 @@ def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
         "bbox_label",
         "term",
         "query_hash",
+        "registry_version",
+        "query_definition_id",
+        "accepted_taxon_key",
+        "accepted_scientific_name",
     }.issubset(work_columns)
     assert {"started_at", "finished_at", "duration_sec", "http_status"}.issubset(api_columns)
+
+
+def test_metadata_state_persists_registry_query_provenance_idempotently(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    query = FlickrQuery(
+        term="Papilio demoleus",
+        language="la",
+        search_field="tags",
+        lane="normal_page",
+        page=1,
+        per_page=NORMAL_PAGE_SIZE,
+        has_geo=0,
+        min_upload_date="2026-01-01",
+        max_upload_date="2026-01-05",
+        split_reason="upload_date",
+        split_depth=1,
+        query_definition_id="q-tags",
+        registry_version="registry-v1",
+        accepted_taxon_key="gbif:100",
+        accepted_scientific_name="Papilio demoleus",
+        family_key="gbif:10",
+        genus_key="gbif:90",
+        species_key="gbif:100",
+    )
+
+    assert state.enqueue_work_item(query) == 1
+    assert state.enqueue_work_item(query) == 0
+
+    with sqlite3.connect(state.path) as conn:
+        row = conn.execute(
+            """
+            SELECT registry_version, query_definition_id, accepted_taxon_key,
+                   accepted_scientific_name, family_key, genus_key, species_key
+            FROM flickr_work_items
+            """
+        ).fetchone()
+
+    assert row == ("registry-v1", "q-tags", "gbif:100", "Papilio demoleus", "gbif:10", "gbif:90", "gbif:100")
 
 
 def test_poll_once_fetches_metadata_only_dedupes_and_queues_image_urls(tmp_path) -> None:

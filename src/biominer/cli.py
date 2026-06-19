@@ -14,6 +14,7 @@ from biominer.flickr_fetch.query_planner import (
     NORMAL_PAGE_SIZE,
     STABLE_RESULT_THRESHOLD,
     build_papilio_demoleus_count_probes_from_json,
+    load_registry_flickr_queries,
 )
 from biominer.flickr_comments.comment_review import (
     apply_comment_review_decisions_to_parquet,
@@ -68,6 +69,12 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--reuse-source-json", action="store_true")
     registry_build.add_argument("--report-dir", default="reports")
     registry_build.add_argument("--retrieved-at")
+    registry_seed = registry_subparsers.add_parser("seed-flickr-queries")
+    registry_seed.add_argument("--query-definitions", required=True)
+    registry_seed.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
+    registry_seed.add_argument("--start-date", default="2004-02-10")
+    registry_seed.add_argument("--end-date", default=datetime.now(UTC).date().isoformat())
+    registry_seed.add_argument("--slice-days", type=int, default=5)
     build_comment_queue = subparsers.add_parser("build-comment-review-queue")
     build_comment_queue.add_argument("--input", required=True)
     build_comment_queue.add_argument("--state-db", default="data/state/comment_review.sqlite")
@@ -234,6 +241,28 @@ def run(args: argparse.Namespace) -> int:
                 print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
                 return 2
             print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        if args.registry_command == "seed-flickr-queries":
+            queries = load_registry_flickr_queries(
+                args.query_definitions,
+                start_date=args.start_date,
+                end_date=args.end_date,
+                slice_days=args.slice_days,
+            )
+            state = MetadataPollState(args.state_db)
+            inserted = sum(state.enqueue_work_item(query) for query in queries)
+            print(
+                json.dumps(
+                    {
+                        "query_definitions": args.query_definitions,
+                        "state_db": args.state_db,
+                        "work_items_seen": len(queries),
+                        "work_items_inserted": inserted,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
             return 0
         return 2
     if args.command == "build-comment-review-queue":

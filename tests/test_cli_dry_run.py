@@ -259,6 +259,58 @@ def test_registry_build_cli_reuses_source_json_and_writes_report(tmp_path, capsy
     assert Path(payload["report_md"]).exists()
 
 
+def test_registry_seed_flickr_queries_cli_loads_query_definitions_into_state(tmp_path, capsys) -> None:
+    query_definitions = tmp_path / "flickr_query_definitions.parquet"
+    pl.DataFrame(
+        [
+            {
+                "query_definition_id": "q-tags",
+                "registry_version": "registry-v1",
+                "accepted_taxon_key": "gbif:100",
+                "accepted_scientific_name": "Papilio demoleus",
+                "family_key": "gbif:10",
+                "genus_key": "gbif:90",
+                "species_key": "gbif:100",
+                "source_term": "Papilio demoleus",
+                "language": "la",
+                "search_field": "tags",
+                "search_priority": 10,
+                "normalized_match_key": "papilio demoleus",
+                "bbox": "",
+                "region": "",
+                "name_class": "accepted_scientific",
+                "confidence": "high",
+                "enabled": True,
+            }
+        ]
+    ).write_parquet(query_definitions)
+    state_db = tmp_path / "poller.sqlite"
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "registry",
+            "seed-flickr-queries",
+            "--query-definitions",
+            str(query_definitions),
+            "--state-db",
+            str(state_db),
+            "--start-date",
+            "2026-01-01",
+            "--end-date",
+            "2026-01-05",
+        ]
+    )
+
+    assert run(args) == 0
+    capsys.readouterr()
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["query_definitions"] == str(query_definitions)
+    assert payload["work_items_seen"] == 1
+    assert payload["work_items_inserted"] == 0
+
+
 def test_cli_help_does_not_describe_old_gold_silver_bronze_logic(capsys) -> None:
     parser = build_parser()
 

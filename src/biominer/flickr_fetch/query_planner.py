@@ -7,6 +7,8 @@ from math import ceil
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
+import polars as pl
+
 
 SearchField = Literal["text", "tags"]
 QueryLane = Literal["count_probe", "normal_page", "bbox_page"]
@@ -187,6 +189,13 @@ class FlickrQuery:
     split_depth: int = 0
     bbox_index: int | None = None
     slice_index: int | None = None
+    registry_version: str | None = None
+    query_definition_id: str | None = None
+    accepted_taxon_key: str | None = None
+    accepted_scientific_name: str | None = None
+    family_key: str | None = None
+    genus_key: str | None = None
+    species_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -228,6 +237,60 @@ def build_count_probes(
         for term in (terms or multilingual_seed_terms())
         for field in search_fields
     )
+
+
+def load_registry_flickr_queries(
+    path: str | Path,
+    *,
+    start_date: str = DEFAULT_FIXED_SLICE_START_DATE,
+    end_date: str = DEFAULT_FIXED_SLICE_END_DATE,
+    slice_days: int = DEFAULT_FIXED_SLICE_DAYS,
+) -> tuple[FlickrQuery, ...]:
+    frame = pl.read_parquet(path)
+    if frame.is_empty():
+        return ()
+    if "normalized_match_key" not in frame.columns:
+        frame = frame.with_columns(pl.col("source_term").str.to_lowercase().alias("normalized_match_key"))
+    rows = frame.filter(pl.col("enabled") if "enabled" in frame.columns else pl.lit(True)).sort(
+        ["search_priority", "normalized_match_key", "query_definition_id"]
+    ).to_dicts()
+    queries: list[FlickrQuery] = []
+    for row in rows:
+        field = str(row.get("search_field") or "text")
+        if field not in {"text", "tags"}:
+            continue
+        bbox = str(row.get("bbox") or "") or None
+        for slice_index, (slice_start, slice_end) in enumerate(
+            fixed_upload_date_slices(start_date=start_date, end_date=end_date, slice_days=slice_days)
+        ):
+            queries.append(
+                FlickrQuery(
+                    term=str(row.get("source_term") or row.get("normalized_query_term") or ""),
+                    language=str(row.get("language") or "und"),
+                    search_field=field,
+                    lane="bbox_page" if bbox else "normal_page",
+                    page=1,
+                    per_page=BBOX_PAGE_SIZE if bbox else NORMAL_PAGE_SIZE,
+                    has_geo=1 if bbox else 0,
+                    bbox=bbox,
+                    min_upload_date=slice_start,
+                    max_upload_date=slice_end,
+                    split_reason="upload_date",
+                    region=str(row.get("region") or "") or None,
+                    term_type=str(row.get("name_class") or "") or None,
+                    term_confidence=str(row.get("confidence") or "") or None,
+                    split_depth=1,
+                    slice_index=slice_index,
+                    registry_version=str(row.get("registry_version") or "") or None,
+                    query_definition_id=str(row.get("query_definition_id") or "") or None,
+                    accepted_taxon_key=str(row.get("accepted_taxon_key") or "") or None,
+                    accepted_scientific_name=str(row.get("accepted_scientific_name") or "") or None,
+                    family_key=str(row.get("family_key") or "") or None,
+                    genus_key=str(row.get("genus_key") or "") or None,
+                    species_key=str(row.get("species_key") or "") or None,
+                )
+            )
+    return tuple(queries)
 
 
 def plan_pages_from_count(probe: FlickrQuery, *, total: int) -> tuple[FlickrQuery, ...]:

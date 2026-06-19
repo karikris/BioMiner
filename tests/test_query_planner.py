@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import polars as pl
+
 from biominer.flickr_fetch.query_planner import (
     BBOX_PAGE_SIZE,
     COUNT_PROBE_PAGE_SIZE,
@@ -18,6 +20,7 @@ from biominer.flickr_fetch.query_planner import (
     fixed_upload_date_slices,
     flickr_search_params,
     load_papilio_demoleus_terms_from_json,
+    load_registry_flickr_queries,
     multilingual_seed_terms,
     outside_known_papilio_demoleus_regions,
     papilio_demoleus_known_region_for_coordinate,
@@ -46,6 +49,68 @@ def test_count_probes_are_recorded_for_text_and_tags() -> None:
     assert {probe.search_field for probe in plan.count_probes} == {"text", "tags"}
     assert {probe.per_page for probe in plan.count_probes} == {COUNT_PROBE_PAGE_SIZE}
     assert all(probe.lane == "count_probe" for probe in plan.count_probes)
+
+
+def test_registry_query_definitions_load_as_page_one_upload_slice_work(tmp_path) -> None:
+    registry_queries = tmp_path / "flickr_query_definitions.parquet"
+    pl.DataFrame(
+        [
+            {
+                "query_definition_id": "q-text",
+                "registry_version": "registry-v1",
+                "accepted_taxon_key": "gbif:100",
+                "accepted_scientific_name": "Papilio demoleus",
+                "family_key": "gbif:10",
+                "genus_key": "gbif:90",
+                "species_key": "gbif:100",
+                "source_term": "Papilio demoleus",
+                "language": "la",
+                "search_field": "text",
+                "search_priority": 50,
+                "bbox": "",
+                "region": "",
+                "name_class": "accepted_scientific",
+                "confidence": "high",
+                "enabled": True,
+            },
+            {
+                "query_definition_id": "q-tags",
+                "registry_version": "registry-v1",
+                "accepted_taxon_key": "gbif:100",
+                "accepted_scientific_name": "Papilio demoleus",
+                "family_key": "gbif:10",
+                "genus_key": "gbif:90",
+                "species_key": "gbif:100",
+                "source_term": "Papilio demoleus",
+                "language": "la",
+                "search_field": "tags",
+                "search_priority": 10,
+                "bbox": "",
+                "region": "",
+                "name_class": "accepted_scientific",
+                "confidence": "high",
+                "enabled": True,
+            },
+        ]
+    ).write_parquet(registry_queries)
+
+    queries = load_registry_flickr_queries(
+        registry_queries,
+        start_date="2026-01-01",
+        end_date="2026-01-05",
+    )
+
+    assert [query.search_field for query in queries] == ["tags", "text"]
+    assert {query.lane for query in queries} == {"normal_page"}
+    assert {query.page for query in queries} == {1}
+    assert {query.per_page for query in queries} == {NORMAL_PAGE_SIZE}
+    assert {query.has_geo for query in queries} == {0}
+    assert queries[0].query_definition_id == "q-tags"
+    assert queries[0].registry_version == "registry-v1"
+    assert queries[0].accepted_taxon_key == "gbif:100"
+    assert queries[0].accepted_scientific_name == "Papilio demoleus"
+    assert queries[0].min_upload_date == "2026-01-01"
+    assert queries[0].max_upload_date == "2026-01-05"
 
 
 def test_geo_pages_use_250_and_non_geo_pages_use_500_records() -> None:
