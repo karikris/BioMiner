@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+from time import monotonic
 from typing import Any
 
 from biominer.registry.gbif import GBIFClient, resolve_family
@@ -11,7 +13,9 @@ def build_gbif_source_snapshot(
     scope: ButterflyScope,
     *,
     retrieved_at: str,
+    page_limit: int = 1000,
 ) -> dict[str, Any]:
+    started = monotonic()
     root_match = client.match_name(scope.root_scientific_name, rank=scope.root_rank)
     root_key = root_match.get("acceptedUsageKey") or root_match.get("usageKey")
     if root_key is None:
@@ -38,11 +42,11 @@ def build_gbif_source_snapshot(
             }
         )
 
-        for genus in client.children(family_key, rank="GENUS"):
+        for genus in client.children(family_key, rank="GENUS", limit=page_limit):
             genus_key = genus.get("key")
             taxa.append(_taxon_row(genus, parent_key=f"gbif:{family_key}", family=family_usage, genus=genus))
             names.append(_scientific_name_row(genus, name_class="accepted_scientific"))
-            for species in client.children(genus_key, rank="SPECIES"):
+            for species in client.children(genus_key, rank="SPECIES", limit=page_limit):
                 species_key = species.get("key")
                 taxa.append(
                     _taxon_row(
@@ -54,9 +58,9 @@ def build_gbif_source_snapshot(
                     )
                 )
                 names.append(_scientific_name_row(species, name_class="accepted_scientific"))
-                for synonym in client.synonyms(species_key):
+                for synonym in client.synonyms(species_key, limit=page_limit):
                     names.append(_scientific_name_row(synonym, name_class="scientific_synonym", accepted_key=species_key))
-                for vernacular in client.vernacular_names(species_key):
+                for vernacular in client.vernacular_names(species_key, limit=page_limit):
                     names.append(_vernacular_name_row(vernacular, accepted_key=species_key))
 
     return {
@@ -66,6 +70,29 @@ def build_gbif_source_snapshot(
         "taxa": taxa,
         "names": names,
         "source_assertions": assertions,
+        "metrics": _metrics(taxa, names, assertions, gbif_calls=client.call_count, elapsed_seconds=monotonic() - started),
+    }
+
+
+def _metrics(
+    taxa: list[dict[str, str]],
+    names: list[dict[str, object]],
+    assertions: list[dict[str, Any]],
+    *,
+    gbif_calls: int,
+    elapsed_seconds: float,
+) -> dict[str, Any]:
+    taxa_by_rank = Counter(row["rank"] for row in taxa)
+    name_classes = Counter(str(row["name_class"]) for row in names)
+    return {
+        "gbif_calls": gbif_calls,
+        "taxa_rows": len(taxa),
+        "taxa_by_rank": dict(sorted(taxa_by_rank.items())),
+        "name_rows": len(names),
+        "synonym_rows": name_classes.get("scientific_synonym", 0),
+        "vernacular_rows": name_classes.get("vernacular", 0),
+        "source_assertion_rows": len(assertions),
+        "elapsed_seconds": round(elapsed_seconds, 6),
     }
 
 

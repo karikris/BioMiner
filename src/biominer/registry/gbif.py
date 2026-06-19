@@ -24,27 +24,46 @@ class GBIFClient:
     def __init__(self, *, http_get: HTTPGet | None = None, base_url: str = GBIF_BASE_URL) -> None:
         self._http_get = http_get or _http_get
         self.base_url = base_url.rstrip("/")
+        self.call_count = 0
 
     def match_name(self, name: str, *, rank: str | None = None, strict: bool = False) -> dict[str, Any]:
         params: dict[str, object] = {"name": name, "strict": str(strict).lower()}
         if rank:
             params["rank"] = rank
-        return self._http_get("/species/match", params)
+        return self._get("/species/match", params)
 
     def usage(self, key: int | str) -> dict[str, Any]:
-        return self._http_get(f"/species/{key}", {})
+        return self._get(f"/species/{key}", {})
 
     def children(self, key: int | str, *, rank: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:
         params: dict[str, object] = {"limit": limit}
         if rank:
             params["rank"] = rank
-        return _results(self._http_get(f"/species/{key}/children", params))
+        return self._paginated_results(f"/species/{key}/children", params, limit=limit)
 
     def synonyms(self, key: int | str, *, limit: int = 1000) -> list[dict[str, Any]]:
-        return _results(self._http_get(f"/species/{key}/synonyms", {"limit": limit}))
+        return self._paginated_results(f"/species/{key}/synonyms", {"limit": limit}, limit=limit)
 
     def vernacular_names(self, key: int | str, *, limit: int = 1000) -> list[dict[str, Any]]:
-        return _results(self._http_get(f"/species/{key}/vernacularNames", {"limit": limit}))
+        return self._paginated_results(f"/species/{key}/vernacularNames", {"limit": limit}, limit=limit)
+
+    def _get(self, path: str, params: dict[str, object]) -> dict[str, Any]:
+        self.call_count += 1
+        return self._http_get(path, params)
+
+    def _paginated_results(self, path: str, params: dict[str, object], *, limit: int) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page_params = dict(params)
+            if offset:
+                page_params["offset"] = offset
+            payload = self._get(path, page_params)
+            page_rows = _results(payload)
+            rows.extend(page_rows)
+            if _is_final_page(payload, rows_returned=len(page_rows), offset=offset, limit=limit):
+                return rows
+            offset += len(page_rows)
 
 
 def resolve_family(client: GBIFClient, family_name: str, *, root_name: str) -> FamilyResolution:
@@ -83,6 +102,17 @@ def _http_get(path: str, params: dict[str, object]) -> dict[str, Any]:
 def _results(payload: dict[str, Any]) -> list[dict[str, Any]]:
     rows = payload.get("results", [])
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def _is_final_page(payload: dict[str, Any], *, rows_returned: int, offset: int, limit: int) -> bool:
+    if payload.get("endOfRecords") is True:
+        return True
+    if rows_returned == 0:
+        return True
+    count = payload.get("count")
+    if isinstance(count, int) and offset + rows_returned >= count:
+        return True
+    return rows_returned < limit
 
 
 def _lineage_names(usage: dict[str, Any]) -> list[str]:

@@ -42,6 +42,63 @@ def test_gbif_client_keeps_match_usage_children_synonyms_and_vernacular_endpoint
     ]
 
 
+def test_gbif_client_paginates_list_endpoints_until_end_of_records() -> None:
+    http = FakeGBIFHTTP(
+        {
+            ("/species/10/children", (("limit", 2), ("rank", "GENUS"))): {
+                "offset": 0,
+                "limit": 2,
+                "count": 3,
+                "endOfRecords": False,
+                "results": [{"key": 90}, {"key": 91}],
+            },
+            ("/species/10/children", (("limit", 2), ("offset", 2), ("rank", "GENUS"))): {
+                "offset": 2,
+                "limit": 2,
+                "count": 3,
+                "endOfRecords": True,
+                "results": [{"key": 92}],
+            },
+            ("/species/100/synonyms", (("limit", 1),)): {
+                "offset": 0,
+                "limit": 1,
+                "count": 2,
+                "endOfRecords": False,
+                "results": [{"key": 101}],
+            },
+            ("/species/100/synonyms", (("limit", 1), ("offset", 1))): {
+                "offset": 1,
+                "limit": 1,
+                "count": 2,
+                "endOfRecords": True,
+                "results": [{"key": 102}],
+            },
+            ("/species/100/vernacularNames", (("limit", 1),)): {
+                "offset": 0,
+                "limit": 1,
+                "count": 2,
+                "endOfRecords": False,
+                "results": [{"vernacularName": "Lime Butterfly"}],
+            },
+            ("/species/100/vernacularNames", (("limit", 1), ("offset", 1))): {
+                "offset": 1,
+                "limit": 1,
+                "count": 2,
+                "endOfRecords": True,
+                "results": [{"vernacularName": "Chequered Swallowtail"}],
+            },
+        }
+    )
+    client = GBIFClient(http_get=http)
+
+    assert client.children(10, rank="GENUS", limit=2) == [{"key": 90}, {"key": 91}, {"key": 92}]
+    assert client.synonyms(100, limit=1) == [{"key": 101}, {"key": 102}]
+    assert client.vernacular_names(100, limit=1) == [
+        {"vernacularName": "Lime Butterfly"},
+        {"vernacularName": "Chequered Swallowtail"},
+    ]
+
+
 def test_resolve_family_accepts_family_with_papilionoidea_lineage() -> None:
     http = FakeGBIFHTTP(
         {
