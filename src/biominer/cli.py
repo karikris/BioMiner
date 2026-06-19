@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,9 @@ from biominer.filter.anti_keywords import filter_biodiversity_parquet
 from biominer.filter.rules import classify_evidence_frame
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.registry.compiler import compile_registry_fixture
+from biominer.registry.gbif import GBIFClient
+from biominer.registry.gbif_source import build_gbif_source_snapshot
+from biominer.registry.scope import load_scope
 from biominer.reports.buckets import export_bucket_views
 from biominer.reports.name_evidence import build_name_evidence_report, write_name_evidence_report
 
@@ -51,6 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
     registry_compile.add_argument("--output-dir", required=True)
     registry_compile.add_argument("--registry-version", required=True)
     registry_compile.add_argument("--scope-json", default="config/butterfly_scope.json")
+    registry_fetch_taxonomy = registry_subparsers.add_parser("fetch-taxonomy")
+    registry_fetch_taxonomy.add_argument("--output-json", required=True)
+    registry_fetch_taxonomy.add_argument("--scope-json", default="config/butterfly_scope.json")
+    registry_fetch_taxonomy.add_argument("--retrieved-at")
     build_comment_queue = subparsers.add_parser("build-comment-review-queue")
     build_comment_queue.add_argument("--input", required=True)
     build_comment_queue.add_argument("--state-db", default="data/state/comment_review.sqlite")
@@ -169,6 +177,30 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
     if args.command == "registry":
+        if args.registry_command == "fetch-taxonomy":
+            retrieved_at = args.retrieved_at or datetime.now(UTC).isoformat()
+            snapshot = build_gbif_source_snapshot(
+                GBIFClient(),
+                load_scope(args.scope_json),
+                retrieved_at=retrieved_at,
+            )
+            output = Path(args.output_json)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
+            print(
+                json.dumps(
+                    {
+                        "output_json": str(output),
+                        "source": snapshot.get("source"),
+                        "taxa_rows": len(snapshot.get("taxa", [])),
+                        "name_rows": len(snapshot.get("names", [])),
+                        "source_assertion_rows": len(snapshot.get("source_assertions", [])),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
         if args.registry_command == "compile-fixture":
             payload = compile_registry_fixture(
                 args.source_json,

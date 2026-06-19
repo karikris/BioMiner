@@ -138,6 +138,46 @@ def test_registry_compile_fixture_cli_writes_registry_outputs(tmp_path, capsys) 
     assert (output / "flickr_query_definitions.parquet").exists()
 
 
+def test_registry_fetch_taxonomy_cli_writes_gbif_source_snapshot(tmp_path, capsys, monkeypatch) -> None:
+    output = tmp_path / "gbif_source.json"
+
+    def fake_build(client, scope, *, retrieved_at):  # noqa: ANN001 - CLI test verifies wiring, not types.
+        return {
+            "source": "GBIF",
+            "source_version": "gbif-species-api",
+            "retrieved_at": retrieved_at,
+            "taxa": [{"accepted_taxon_key": "gbif:1", "scientific_name": scope.root_scientific_name}],
+            "names": [],
+            "source_assertions": [],
+        }
+
+    monkeypatch.setattr("biominer.cli.build_gbif_source_snapshot", fake_build)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "registry",
+            "fetch-taxonomy",
+            "--output-json",
+            str(output),
+            "--retrieved-at",
+            "2026-06-20T00:00:00+00:00",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    source = json.loads(output.read_text(encoding="utf-8"))
+    assert payload == {
+        "output_json": str(output),
+        "source": "GBIF",
+        "taxa_rows": 1,
+        "name_rows": 0,
+        "source_assertion_rows": 0,
+    }
+    assert source["taxa"][0]["scientific_name"] == "Papilionoidea"
+
+
 def test_cli_help_does_not_describe_old_gold_silver_bronze_logic(capsys) -> None:
     parser = build_parser()
 
