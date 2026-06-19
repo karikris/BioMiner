@@ -11,6 +11,7 @@ from typing import Any, Callable, Protocol
 import polars as pl
 
 from biominer.bioclip.bioclip import DEFAULT_TRIAGE_LABELS
+from biominer.bioclip.async_image_cache import cache_images_async
 from biominer.bioclip.image_cache import CachedImage, cache_image_from_url
 from biominer.bioclip.species_candidates import SpeciesCandidate, label_to_scientific_name, species_labels
 from biominer.bioclip.temp_image_store import cleanup_cached_image
@@ -270,6 +271,9 @@ def _fill_register(
     failures: list[dict[str, object]] = []
     skipped_existing = 0
     register_cache_root = cache_root / register_id
+
+    # Phase 1: filter to downloadable records.
+    downloadable: list[tuple[dict[str, Any], dict[str, object]]] = []
     for record in records:
         base = _base_row(
             record,
@@ -296,12 +300,31 @@ def _fill_register(
                 }
             )
             continue
-        try:
-            cached = cache_image(str(base["image_url"]), cache_root=register_cache_root)
-        except Exception as exc:  # noqa: BLE001 - download failures are recorded and processing continues.
-            failures.append(_failure_row(base, status="failed_download", error=str(exc), retry_eligible=True))
-            continue
-        items.append(_RegisterItem(record=record, base=base, cached=cached))
+        downloadable.append((record, base))
+
+    if not downloadable:
+        return _RegisterFill(register_id=register_id, items=items, failures=failures, records_seen=len(records), skipped_existing=skipped_existing)
+
+    # Phase 2: batch-download using async I/O when using the default
+    # downloader; fall back to sequential for injected test fakes.
+    if cache_image is cache_image_from_url:
+        urls = [str(base["image_url"]) for _, base in downloadable]
+        results = cache_images_async(urls, cache_root=str(register_cache_root))
+        for (record, base), result in zip(downloadable, results, strict=True):
+            if isinstance(result, Exception):
+                failures.append(_failure_row(base, status="failed_download", error=str(result), retry_eligible=True))
+            else:
+                items.append(_RegisterItem(record=record, base=base, cached=result))
+    else:
+        # Sequential fallback for injected cache_image (tests).
+        for record, base in downloadable:
+            try:
+                cached = cache_image(str(base["image_url"]), cache_root=register_cache_root)
+            except Exception as exc:  # noqa: BLE001 - download failures are recorded and processing continues.
+                failures.append(_failure_row(base, status="failed_download", error=str(exc), retry_eligible=True))
+                continue
+            items.append(_RegisterItem(record=record, base=base, cached=cached))
+
     return _RegisterFill(register_id=register_id, items=items, failures=failures, records_seen=len(records), skipped_existing=skipped_existing)
 
 
