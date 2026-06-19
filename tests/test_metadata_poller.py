@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 import sqlite3
 import threading
@@ -368,7 +369,7 @@ def test_poll_once_second_run_resumes_pending_pages_without_duplicates(tmp_path)
     assert statuses == {"completed": 2}
 
 
-def test_claim_pending_uses_deterministic_date_slice_order(tmp_path) -> None:
+def test_claim_and_reserve_pending_uses_deterministic_date_slice_order(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     later = FlickrQuery(
         term="butterfly",
@@ -395,12 +396,14 @@ def test_claim_pending_uses_deterministic_date_slice_order(tmp_path) -> None:
     state.enqueue_work_item(later)
     state.enqueue_work_item(older)
 
-    claimed = state.claim_pending(limit=1)
+    claimed = state.claim_and_reserve_pending(limit=1, max_api_calls=1, endpoint="flickr.photos.search")
 
     assert claimed[0][1].min_taken_date == "2024-01-01"
+    with sqlite3.connect(state.path) as conn:
+        assert conn.execute("SELECT count(*) FROM api_call_ledger WHERE status = 'reserved'").fetchone()[0] == 1
 
 
-def test_claim_pending_orders_fixed_slice_pages_by_slice_then_page(tmp_path) -> None:
+def test_claim_and_reserve_pending_orders_fixed_slice_pages_by_slice_then_page(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     state.enqueue_work_item(
         FlickrQuery(
@@ -445,9 +448,44 @@ def test_claim_pending_orders_fixed_slice_pages_by_slice_then_page(tmp_path) -> 
         )
     )
 
-    claimed = state.claim_pending(limit=3)
+    claimed = state.claim_and_reserve_pending(limit=3, max_api_calls=3, endpoint="flickr.photos.search")
 
     assert [(query.slice_index, query.page) for _work_id, query in claimed] == [(0, 1), (0, 8), (1, 2)]
+
+
+def test_claim_and_reserve_pending_is_atomic_across_state_instances(tmp_path) -> None:
+    state_db = tmp_path / "poller.sqlite"
+    state = MetadataPollState(state_db)
+    for index in range(10):
+        state.enqueue_work_item(
+            FlickrQuery(
+                term=f"butterfly-{index}",
+                language="en",
+                search_field="text",
+                lane="normal_page",
+                page=1,
+                per_page=500,
+            )
+        )
+
+    def claim_once(index: int) -> int:
+        claimed = MetadataPollState(state_db).claim_and_reserve_pending(
+            limit=1,
+            max_api_calls=3,
+            endpoint="flickr.photos.search",
+        )
+        return len(claimed)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        claimed_counts = list(executor.map(claim_once, range(10)))
+
+    with sqlite3.connect(state_db) as conn:
+        reserved = conn.execute("SELECT count(*) FROM api_call_ledger WHERE status = 'reserved'").fetchone()[0]
+        claimed_work = conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'claimed'").fetchone()[0]
+
+    assert sum(claimed_counts) == 3
+    assert reserved == 3
+    assert claimed_work == 3
 
 
 def test_poll_once_records_page_payload_count_for_saturation_reporting(tmp_path) -> None:
@@ -839,7 +877,7 @@ def test_poll_once_requeues_stale_claimed_work(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     query = FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=250)
     state.enqueue_work_item(query)
-    claimed = state.claim_pending(limit=1)
+    claimed = state.claim_and_reserve_pending(limit=1, max_api_calls=1, endpoint="flickr.photos.search")
     stale_time = datetime.now(UTC) - timedelta(hours=2)
     with sqlite3.connect(state.path) as conn:
         conn.execute("UPDATE flickr_work_items SET claimed_at = ? WHERE work_item_id = ?", (stale_time.isoformat(), claimed[0][0]))
@@ -848,7 +886,7 @@ def test_poll_once_requeues_stale_claimed_work(tmp_path) -> None:
         state_db=state.path,
         raw_root=tmp_path / "raw",
         evidence_output=tmp_path / "evidence.parquet",
-        max_api_calls=1,
+        max_api_calls=2,
         fetch_metadata=lambda item: {"photos": {"total": "0", "photo": []}},
         stale_claim_seconds=60,
     )

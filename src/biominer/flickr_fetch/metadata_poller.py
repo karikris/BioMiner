@@ -132,21 +132,33 @@ class MetadataPollState:
         return int(result.rowcount)
 
     def api_calls_in_window(self, *, now: datetime | None = None) -> int:
-        cutoff = _unix_timestamp(now) - 3600
         with self._connect() as conn:
-            return int(conn.execute("SELECT count(*) FROM api_call_ledger WHERE created_at >= ?", (cutoff,)).fetchone()[0])
+            return self._api_calls_in_window(conn, _unix_timestamp(now))
 
     def remaining_api_budget(self, *, max_api_calls: int, now: datetime | None = None) -> tuple[int, int]:
         used = self.api_calls_in_window(now=now)
         soft_limit = min(max_api_calls, SOFT_API_CALLS_PER_HOUR)
         return max(0, soft_limit - used), max(0, HARD_API_CALLS_PER_HOUR - used)
 
-    def claim_pending(self, *, limit: int) -> list[tuple[str, FlickrQuery]]:
+    def claim_and_reserve_pending(
+        self,
+        *,
+        limit: int,
+        max_api_calls: int,
+        endpoint: str,
+        now: datetime | None = None,
+    ) -> list[tuple[str, FlickrQuery]]:
         if limit <= 0:
             return []
         claimed: list[tuple[str, FlickrQuery]] = []
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            used = self._api_calls_in_window(conn, _unix_timestamp(now))
+            soft_limit = min(max_api_calls, SOFT_API_CALLS_PER_HOUR)
+            claim_limit = min(limit, max(0, soft_limit - used), max(0, HARD_API_CALLS_PER_HOUR - used))
+            if claim_limit <= 0:
+                conn.execute("COMMIT")
+                return []
             rows = conn.execute(
                 """
                 SELECT work_item_id, query_json
@@ -167,16 +179,40 @@ class MetadataPollState:
                     COALESCE(query_hash, work_item_id)
                 LIMIT ?
                 """,
-                (PENDING, limit),
+                (PENDING, claim_limit),
             ).fetchall()
+            timestamp = _timestamp(now)
+            unix_timestamp = _unix_timestamp(now)
             for row in rows:
                 conn.execute(
                     "UPDATE flickr_work_items SET status = ?, claimed_at = ? WHERE work_item_id = ?",
-                    (CLAIMED, _timestamp(), row["work_item_id"]),
+                    (CLAIMED, timestamp, row["work_item_id"]),
+                )
+                conn.execute(
+                    "INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at) VALUES (?, ?, ?, ?)",
+                    (endpoint, row["work_item_id"], "reserved", unix_timestamp),
                 )
                 claimed.append((str(row["work_item_id"]), _query_from_json(str(row["query_json"]))))
             conn.execute("COMMIT")
         return claimed
+
+    def api_budget_summary(self, *, max_api_calls: int = SOFT_API_CALLS_PER_HOUR, now: datetime | None = None) -> dict[str, object]:
+        soft_remaining, hard_remaining = self.remaining_api_budget(max_api_calls=max_api_calls, now=now)
+        return {
+            "state_db": str(self.path),
+            "api_calls_in_window": self.api_calls_in_window(now=now),
+            "remaining_soft_budget": soft_remaining,
+            "remaining_hard_budget": hard_remaining,
+            "soft_api_calls_per_hour": SOFT_API_CALLS_PER_HOUR,
+            "hard_api_calls_per_hour": HARD_API_CALLS_PER_HOUR,
+            "photo_records_in_window": "not_instrumented",
+            "hard_photo_records_per_hour": "not_instrumented",
+            "window_seconds": 3600,
+        }
+
+    def _api_calls_in_window(self, conn: sqlite3.Connection, now: float) -> int:
+        cutoff = now - 3600
+        return int(conn.execute("SELECT count(*) FROM api_call_ledger WHERE created_at >= ?", (cutoff,)).fetchone()[0])
 
     def log_api_call(self, *, work_item_id: str, endpoint: str, status: str) -> None:
         with self._connect() as conn:
@@ -184,9 +220,6 @@ class MetadataPollState:
                 "INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at) VALUES (?, ?, ?, ?)",
                 (endpoint, work_item_id, status, _unix_timestamp()),
             )
-
-    def reserve_api_call(self, *, work_item_id: str, endpoint: str) -> None:
-        self.log_api_call(work_item_id=work_item_id, endpoint=endpoint, status="reserved")
 
     def update_api_call_status(self, *, work_item_id: str, status: str) -> None:
         with self._connect() as conn:
@@ -560,14 +593,16 @@ def poll_once(
             claim_limit = min(soft_remaining, hard_remaining, max(1, workers))
             if claim_limit <= 0:
                 break
-            claimed = state.claim_pending(limit=claim_limit)
+            claimed = state.claim_and_reserve_pending(
+                limit=claim_limit,
+                max_api_calls=max_api_calls,
+                endpoint=SEARCH_METHOD,
+            )
             _progress(progress_callback, {"event": "work_claimed", "claimed": len(claimed), "claim_limit": claim_limit})
             if not claimed:
                 break
             work_items_claimed += len(claimed)
             api_calls_made += len(claimed)
-            for work_item_id, _query in claimed:
-                state.reserve_api_call(work_item_id=work_item_id, endpoint=SEARCH_METHOD)
             pending: dict[Future[dict[str, Any]], tuple[str, FlickrQuery]] = {
                 pool.submit(fetcher, query): (work_item_id, query)
                 for work_item_id, query in claimed
@@ -796,8 +831,8 @@ def _query_from_json(payload: str) -> FlickrQuery:
     return FlickrQuery(**data)
 
 
-def _timestamp() -> str:
-    return datetime.now(UTC).isoformat()
+def _timestamp(value: datetime | None = None) -> str:
+    return (value or datetime.now(UTC)).isoformat()
 
 
 def _unix_timestamp(value: datetime | None = None) -> float:

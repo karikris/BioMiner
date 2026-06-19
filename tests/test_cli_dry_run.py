@@ -6,7 +6,6 @@ from pathlib import Path
 import polars as pl
 
 from biominer.cli import build_parser, run
-from biominer.flickr_fetch.rate_limiter import FlickrRateLimiter
 
 
 def test_cli_exposes_only_lean_pipeline_commands() -> None:
@@ -92,18 +91,19 @@ def test_cli_help_does_not_describe_old_gold_silver_bronze_logic(capsys) -> None
 
 
 def test_qa_rate_limit_outputs_limiter_status_json(tmp_path, capsys) -> None:
-    limiter = FlickrRateLimiter(tmp_path / "limits.sqlite")
-    limiter.acquire_api_token("flickr.photos.search", "work-1")
-    limiter.log_call("flickr.photos.search", "work-1", "ok")
-    limiter.log_photo_records(["1", "2"], "work-1")
+    state = tmp_path / "poller.sqlite"
+    from biominer.flickr_fetch.metadata_poller import MetadataPollState
+
+    poll_state = MetadataPollState(state)
+    poll_state.log_api_call(work_item_id="work-1", endpoint="flickr.photos.search", status="ok")
     parser = build_parser()
-    args = parser.parse_args(["qa-rate-limit", "--ledger-path", str(tmp_path / "limits.sqlite")])
+    args = parser.parse_args(["qa-rate-limit", "--state-db", str(state)])
 
     assert run(args) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["api_calls_in_window"] == 1
-    assert payload["photo_records_in_window"] == 2
+    assert payload["photo_records_in_window"] == "not_instrumented"
     assert payload["soft_api_calls_per_hour"] == 3500
     assert payload["hard_api_calls_per_hour"] == 3600
 

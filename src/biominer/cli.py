@@ -14,7 +14,6 @@ from biominer.flickr_fetch.query_planner import (
     STABLE_RESULT_THRESHOLD,
     build_papilio_demoleus_count_probes_from_json,
 )
-from biominer.flickr_fetch.rate_limiter import DEFAULT_RATE_LIMIT_LEDGER_PATH, FlickrRateLimiter
 from biominer.flickr_comments.comment_review import (
     apply_comment_review_decisions_to_parquet,
     build_comment_review_queue_from_parquet,
@@ -78,7 +77,8 @@ def build_parser() -> argparse.ArgumentParser:
     compact_parquet.add_argument("--input-root", required=True)
     compact_parquet.add_argument("--output", required=True)
     qa_rate_limit = subparsers.add_parser("qa-rate-limit")
-    qa_rate_limit.add_argument("--ledger-path", default=str(DEFAULT_RATE_LIMIT_LEDGER_PATH))
+    qa_rate_limit.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
+    qa_rate_limit.add_argument("--ledger-path", dest="state_db")
     qa_summary = subparsers.add_parser("qa-summary")
     qa_summary.add_argument("--report", required=True)
     export_views = subparsers.add_parser("export-bucket-views")
@@ -230,17 +230,7 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
     if args.command == "qa-rate-limit":
-        limiter = FlickrRateLimiter(args.ledger_path)
-        payload = {
-            "ledger_path": str(limiter.ledger_path),
-            "api_calls_in_window": limiter.api_calls_in_window(),
-            "photo_records_in_window": limiter.photo_records_in_window(),
-            "soft_api_calls_per_hour": limiter.soft_api_calls_per_hour,
-            "hard_api_calls_per_hour": limiter.hard_api_calls_per_hour,
-            "hard_photo_records_per_hour": limiter.hard_photo_records_per_hour,
-            "window_seconds": limiter.window_seconds,
-        }
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        print(json.dumps(MetadataPollState(args.state_db).api_budget_summary(), indent=2, sort_keys=True))
         return 0
     if args.command == "qa-summary":
         print(json.dumps(_summarize_report(Path(args.report)), indent=2, sort_keys=True))
