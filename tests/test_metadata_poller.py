@@ -289,6 +289,48 @@ def test_poll_once_reserves_api_call_before_fetch(tmp_path) -> None:
         assert conn.execute("SELECT status FROM flickr_work_items").fetchone()[0] == "completed"
 
 
+def test_poll_once_does_not_claim_or_reserve_full_budget_before_fetch(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    for index in range(20):
+        state.enqueue_work_item(
+            FlickrQuery(
+                term=f"butterfly-{index}",
+                language="en",
+                search_field="text",
+                lane="normal_page",
+                page=1,
+                per_page=250,
+            )
+        )
+
+    observed_before_first_fetch: dict[str, int] = {}
+
+    def fake_fetch(item: FlickrQuery) -> dict[str, object]:
+        if not observed_before_first_fetch:
+            with sqlite3.connect(state.path) as conn:
+                observed_before_first_fetch["claimed"] = conn.execute(
+                    "SELECT count(*) FROM flickr_work_items WHERE status = 'claimed'"
+                ).fetchone()[0]
+                observed_before_first_fetch["reserved"] = conn.execute(
+                    "SELECT count(*) FROM api_call_ledger WHERE status = 'reserved'"
+                ).fetchone()[0]
+        return {"photos": {"total": "0", "photo": []}}
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=20,
+        workers=2,
+        fetch_metadata=fake_fetch,
+    )
+
+    assert result.api_calls_made == 20
+    assert observed_before_first_fetch == {"claimed": 2, "reserved": 2}
+    with sqlite3.connect(state.path) as conn:
+        assert conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'claimed'").fetchone()[0] == 0
+
+
 def test_poll_once_second_run_resumes_pending_pages_without_duplicates(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     state.enqueue_work_item(FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
@@ -620,7 +662,39 @@ def test_poll_once_progress_callback_reports_claim_page_and_dynamic_enqueue(tmp_
     assert enqueue_event["pages"] == [2, 3]
 
 
-def test_poll_once_page_one_caps_dynamic_enqueue_at_page_eight(tmp_path) -> None:
+def test_poll_once_page_one_caps_dynamic_enqueue_at_page_sixteen_when_flickr_returns_250_perpage(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(
+        FlickrQuery(
+            term="butterfly",
+            language="en",
+            search_field="text",
+            lane="normal_page",
+            page=1,
+            per_page=500,
+            has_geo=0,
+            min_upload_date="2007-01-01",
+            max_upload_date="2007-01-05",
+            split_reason="upload_date",
+            split_depth=1,
+            slice_index=0,
+        )
+    )
+
+    poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=1,
+        fetch_metadata=lambda query: {"photos": {"total": "9000", "pages": "20", "page": "1", "perpage": "250", "photo": []}},
+    )
+
+    with sqlite3.connect(state.path) as conn:
+        rows = conn.execute("SELECT page, per_page FROM flickr_work_items WHERE status = 'pending' ORDER BY page").fetchall()
+    assert rows == [(page, 250) for page in range(2, 17)]
+
+
+def test_poll_once_page_one_caps_dynamic_enqueue_at_page_eight_when_flickr_returns_500_perpage(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     state.enqueue_work_item(
         FlickrQuery(
@@ -648,8 +722,8 @@ def test_poll_once_page_one_caps_dynamic_enqueue_at_page_eight(tmp_path) -> None
     )
 
     with sqlite3.connect(state.path) as conn:
-        pages = [row[0] for row in conn.execute("SELECT page FROM flickr_work_items WHERE status = 'pending' ORDER BY page").fetchall()]
-    assert pages == list(range(2, 9))
+        rows = conn.execute("SELECT page, per_page FROM flickr_work_items WHERE status = 'pending' ORDER BY page").fetchall()
+    assert rows == [(page, 500) for page in range(2, 9)]
 
 
 def test_poll_once_dynamic_enqueue_dedupes_existing_remaining_pages(tmp_path) -> None:
@@ -727,16 +801,16 @@ def test_poll_once_second_run_resumes_dynamically_enqueued_pages(tmp_path) -> No
         state_db=state.path,
         raw_root=tmp_path / "raw",
         evidence_output=tmp_path / "evidence.parquet",
-        max_api_calls=2,
+        max_api_calls=3,
         fetch_metadata=fake_fetch,
     )
 
     with sqlite3.connect(state.path) as conn:
         statuses = conn.execute("SELECT page, status FROM flickr_work_items ORDER BY page").fetchall()
     assert first.work_items_claimed == 1
-    assert second.work_items_claimed == 1
-    assert seen_pages == [1, 2]
-    assert statuses == [(1, "completed"), (2, "completed"), (3, "pending")]
+    assert second.work_items_claimed == 2
+    assert seen_pages == [1, 2, 3]
+    assert statuses == [(1, "completed"), (2, "completed"), (3, "completed")]
 
 
 def test_poll_once_respects_3500_soft_budget_without_fetching(tmp_path) -> None:

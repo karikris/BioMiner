@@ -283,8 +283,8 @@ def test_build_step1_fetch_report_includes_dynamic_page_enqueue_metrics(tmp_path
         slice_index=0,
     )
     state.enqueue_work_item(page_one)
-    for page in range(2, 9):
-        state.enqueue_work_item(FlickrQuery(**{**page_one.__dict__, "page": page}))
+    for page in range(2, 17):
+        state.enqueue_work_item(FlickrQuery(**{**page_one.__dict__, "page": page, "per_page": 250}))
     with sqlite3.connect(state.path) as conn:
         conn.execute(
             """
@@ -294,7 +294,7 @@ def test_build_step1_fetch_report_includes_dynamic_page_enqueue_metrics(tmp_path
                 response_total = 9000,
                 response_pages = 20,
                 response_page = 1,
-                response_perpage = 500
+                response_perpage = 250
             WHERE page = 1
             """
         )
@@ -328,7 +328,7 @@ def test_build_step1_fetch_report_includes_dynamic_page_enqueue_metrics(tmp_path
     )
 
     assert report["work"]["slice_page1_completed"] == 1
-    assert report["work"]["remaining_pages_enqueued_from_page1"] == 7
+    assert report["work"]["remaining_pages_enqueued_from_page1"] == 15
     assert report["work"]["empty_or_single_page_slices"] == 0
     assert report["work"]["page_calls_avoided_estimate"] == 0
     assert report["work"]["reported_over_window_slices"] == [

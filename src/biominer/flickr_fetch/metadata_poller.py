@@ -14,6 +14,7 @@ import polars as pl
 from biominer.filter.extractor import build_evidence_frame
 from biominer.flickr_fetch.endpoints import FLICKR_REST_BASE_URL, SEARCH_METHOD
 from biominer.flickr_fetch.query_planner import (
+    FLICKR_SEARCH_RESULT_WINDOW,
     FlickrQuery,
     build_count_probes,
     deduplicate_photo_records,
@@ -542,116 +543,126 @@ def poll_once(
             "max_api_calls": max_api_calls,
         },
     )
-    claim_limit = min(soft_remaining, hard_remaining)
-    claimed = state.claim_pending(limit=claim_limit)
-    _progress(progress_callback, {"event": "work_claimed", "claimed": len(claimed), "claim_limit": claim_limit})
     raw_written = 0
     records_inserted = 0
     duplicates = 0
     query_hits_inserted = 0
     duplicate_query_hits = 0
     queued = 0
+    work_items_claimed = 0
+    api_calls_made = 0
     payloads: list[dict[str, Any]] = []
     fetcher = fetch_metadata or _http_fetcher(api_key=api_key)
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        for work_item_id, _query in claimed:
-            state.reserve_api_call(work_item_id=work_item_id, endpoint=SEARCH_METHOD)
-        pending: dict[Future[dict[str, Any]], tuple[str, FlickrQuery]] = {
-            pool.submit(fetcher, query): (work_item_id, query)
-            for work_item_id, query in claimed
-        }
-        while pending:
-            done, _ = wait(pending, return_when=FIRST_COMPLETED)
-            for future in done:
-                work_item_id, query = pending.pop(future)
-                try:
-                    payload = future.result()
-                    state.update_api_call_status(work_item_id=work_item_id, status="ok")
-                    raw_written += 1
-                    payloads.append(payload)
-                    _write_raw_response(raw_root=Path(raw_root), work_item_id=work_item_id, query=query, payload=payload)
-                    total = _payload_total(payload)
-                    response_pages = _payload_pages(payload)
-                    response_page = _payload_page(payload)
-                    response_perpage = _payload_perpage(payload)
-                    if query.lane == "count_probe":
-                        for next_query in plan_queries_from_count(query, total=total):
-                            state.enqueue_work_item(next_query)
-                        records_returned = None
-                        _progress(
-                            progress_callback,
-                            {
-                                "event": "count_probe_completed",
-                                "lane": query.lane,
-                                "page": query.page,
-                                "response_total": total,
-                            },
-                        )
-                    else:
-                        records = _payload_photo_records(payload)
-                        inserted, skipped, queued_count, query_hits, duplicate_hits = state.insert_source_records(records, source_query=query)
-                        records_returned = len(records)
-                        records_inserted += inserted
-                        duplicates += skipped
-                        query_hits_inserted += query_hits
-                        duplicate_query_hits += duplicate_hits
-                        queued += queued_count
-                        remaining_queries = _remaining_page_queries(query, pages=response_pages)
-                        remaining_inserted = 0
-                        for next_query in remaining_queries:
-                            remaining_inserted += state.enqueue_work_item(next_query)
-                        _progress(
-                            progress_callback,
-                            {
-                                "event": "page_completed",
-                                "lane": query.lane,
-                                "page": query.page,
-                                "per_page": query.per_page,
-                                "min_date": query_min_date(query),
-                                "max_date": query_max_date(query),
-                                "response_total": total,
-                                "response_pages": response_pages,
-                                "response_page": response_page,
-                                "response_perpage": response_perpage,
-                                "records_returned": records_returned,
-                                "records_inserted": inserted,
-                                "duplicates_skipped": skipped,
-                                "remaining_pages_enqueued": remaining_inserted,
-                            },
-                        )
-                        if remaining_queries:
+        while True:
+            soft_remaining, hard_remaining = state.remaining_api_budget(max_api_calls=max_api_calls)
+            claim_limit = min(soft_remaining, hard_remaining, max(1, workers))
+            if claim_limit <= 0:
+                break
+            claimed = state.claim_pending(limit=claim_limit)
+            _progress(progress_callback, {"event": "work_claimed", "claimed": len(claimed), "claim_limit": claim_limit})
+            if not claimed:
+                break
+            work_items_claimed += len(claimed)
+            api_calls_made += len(claimed)
+            for work_item_id, _query in claimed:
+                state.reserve_api_call(work_item_id=work_item_id, endpoint=SEARCH_METHOD)
+            pending: dict[Future[dict[str, Any]], tuple[str, FlickrQuery]] = {
+                pool.submit(fetcher, query): (work_item_id, query)
+                for work_item_id, query in claimed
+            }
+            while pending:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    work_item_id, query = pending.pop(future)
+                    try:
+                        payload = future.result()
+                        state.update_api_call_status(work_item_id=work_item_id, status="ok")
+                        raw_written += 1
+                        payloads.append(payload)
+                        _write_raw_response(raw_root=Path(raw_root), work_item_id=work_item_id, query=query, payload=payload)
+                        total = _payload_total(payload)
+                        response_pages = _payload_pages(payload)
+                        response_page = _payload_page(payload)
+                        response_perpage = _payload_perpage(payload)
+                        if query.lane == "count_probe":
+                            for next_query in plan_queries_from_count(query, total=total):
+                                state.enqueue_work_item(next_query)
+                            records_returned = None
                             _progress(
                                 progress_callback,
                                 {
-                                    "event": "remaining_pages_enqueued",
-                                    "enqueued": remaining_inserted,
-                                    "pages": [item.page for item in remaining_queries],
-                                    "min_date": query_min_date(query),
-                                    "max_date": query_max_date(query),
+                                    "event": "count_probe_completed",
+                                    "lane": query.lane,
+                                    "page": query.page,
+                                    "response_total": total,
                                 },
                             )
-                    state.complete_work_item(
-                        work_item_id,
-                        records_returned=records_returned,
-                        response_total=total,
-                        response_pages=response_pages,
-                        response_page=response_page,
-                        response_perpage=response_perpage,
-                    )
-                except Exception as exc:  # noqa: BLE001 - poller records failure and exits bounded cycle.
-                    state.update_api_call_status(work_item_id=work_item_id, status="failed")
-                    state.fail_work_item(work_item_id, str(exc))
-                    _progress(
-                        progress_callback,
-                        {
-                            "event": "work_failed",
-                            "work_item_id": work_item_id,
-                            "lane": query.lane,
-                            "page": query.page,
-                            "error": str(exc),
-                        },
-                    )
+                        else:
+                            records = _payload_photo_records(payload)
+                            inserted, skipped, queued_count, query_hits, duplicate_hits = state.insert_source_records(records, source_query=query)
+                            records_returned = len(records)
+                            records_inserted += inserted
+                            duplicates += skipped
+                            query_hits_inserted += query_hits
+                            duplicate_query_hits += duplicate_hits
+                            queued += queued_count
+                            remaining_queries = _remaining_page_queries(query, pages=response_pages, per_page=response_perpage or query.per_page)
+                            remaining_inserted = 0
+                            for next_query in remaining_queries:
+                                remaining_inserted += state.enqueue_work_item(next_query)
+                            _progress(
+                                progress_callback,
+                                {
+                                    "event": "page_completed",
+                                    "lane": query.lane,
+                                    "page": query.page,
+                                    "per_page": query.per_page,
+                                    "min_date": query_min_date(query),
+                                    "max_date": query_max_date(query),
+                                    "response_total": total,
+                                    "response_pages": response_pages,
+                                    "response_page": response_page,
+                                    "response_perpage": response_perpage,
+                                    "records_returned": records_returned,
+                                    "records_inserted": inserted,
+                                    "duplicates_skipped": skipped,
+                                    "remaining_pages_enqueued": remaining_inserted,
+                                },
+                            )
+                            if remaining_queries:
+                                _progress(
+                                    progress_callback,
+                                    {
+                                        "event": "remaining_pages_enqueued",
+                                        "enqueued": remaining_inserted,
+                                        "pages": [item.page for item in remaining_queries],
+                                        "min_date": query_min_date(query),
+                                        "max_date": query_max_date(query),
+                                    },
+                                )
+                        state.complete_work_item(
+                            work_item_id,
+                            records_returned=records_returned,
+                            response_total=total,
+                            response_pages=response_pages,
+                            response_page=response_page,
+                            response_perpage=response_perpage,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - poller records failure and exits bounded cycle.
+                        state.update_api_call_status(work_item_id=work_item_id, status="failed")
+                        state.fail_work_item(work_item_id, str(exc))
+                        _progress(
+                            progress_callback,
+                            {
+                                "event": "work_failed",
+                                "work_item_id": work_item_id,
+                                "lane": query.lane,
+                                "page": query.page,
+                                "error": str(exc),
+                            },
+                        )
 
     evidence_rows = _write_evidence(evidence_output, payloads)
     soft_after, hard_after = state.remaining_api_budget(max_api_calls=max_api_calls)
@@ -664,8 +675,8 @@ def poll_once(
         query_hits_inserted=query_hits_inserted,
         duplicate_query_hits_skipped=duplicate_query_hits,
         image_urls_queued=queued,
-        work_items_claimed=len(claimed),
-        api_calls_made=len(claimed),
+        work_items_claimed=work_items_claimed,
+        api_calls_made=api_calls_made,
         remaining_soft_budget=soft_after,
         remaining_hard_budget=hard_after,
         stale_claims_requeued=stale_requeued,
@@ -746,15 +757,18 @@ def _payload_perpage(payload: dict[str, Any]) -> int:
     return int(payload.get("photos", {}).get("perpage") or 0)
 
 
-def _remaining_page_queries(query: FlickrQuery, *, pages: int) -> tuple[FlickrQuery, ...]:
+def _remaining_page_queries(query: FlickrQuery, *, pages: int, per_page: int) -> tuple[FlickrQuery, ...]:
     if query.lane != "normal_page" or query.page != 1:
         return ()
     if query.split_reason != "upload_date" or not query.min_upload_date or not query.max_upload_date:
         return ()
-    last_page = min(max(0, pages), 8)
+    if per_page <= 0:
+        per_page = query.per_page
+    max_accessible_pages = max(1, FLICKR_SEARCH_RESULT_WINDOW // per_page)
+    last_page = min(max(0, pages), max_accessible_pages)
     if last_page <= 1:
         return ()
-    return tuple(replace(query, page=page) for page in range(2, last_page + 1))
+    return tuple(replace(query, page=page, per_page=per_page) for page in range(2, last_page + 1))
 
 
 def _payload_photo_records(payload: dict[str, Any]) -> list[dict[str, Any]]:

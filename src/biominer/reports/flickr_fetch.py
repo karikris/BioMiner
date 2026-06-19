@@ -216,7 +216,7 @@ def _state_work_summary(path: Path) -> dict[str, Any]:
                 "slice_page1_completed": page1_completed,
                 "remaining_pages_enqueued_from_page1": remaining_pages,
                 "empty_or_single_page_slices": _empty_or_single_page_slices(conn),
-                "page_calls_avoided_estimate": max(0, (page1_completed * 7) - remaining_pages),
+                "page_calls_avoided_estimate": max(0, _remaining_page_capacity_from_page1(conn) - remaining_pages),
                 "reported_over_window_slices": _reported_over_window_slices(conn),
             }
     except sqlite3.DatabaseError:
@@ -267,9 +267,10 @@ def _saturated_slices(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         FROM flickr_work_items
         WHERE status = 'completed'
           AND lane = 'normal_page'
-          AND page = 8
-          AND per_page = 500
-          AND records_returned = 500
+          AND (
+            (page = 8 AND per_page = 500 AND records_returned = 500)
+            OR (page = 16 AND per_page = 250 AND records_returned = 250)
+          )
           AND COALESCE(date_kind, '') != ''
         ORDER BY min_date, max_date, page
         """
@@ -313,11 +314,32 @@ def _remaining_pages_enqueued_from_page1(conn: sqlite3.Connection) -> int:
         SELECT count(*)
         FROM flickr_work_items
         WHERE lane = 'normal_page'
-          AND page BETWEEN 2 AND 8
+          AND page BETWEEN 2 AND 16
           AND split_reason = 'upload_date'
           AND COALESCE(date_kind, '') != ''
         """,
     )
+
+
+def _remaining_page_capacity_from_page1(conn: sqlite3.Connection) -> int:
+    if not _has_columns(conn, "response_perpage"):
+        return _slice_page1_completed(conn) * 7
+    rows = conn.execute(
+        """
+        SELECT COALESCE(response_perpage, per_page) AS perpage
+        FROM flickr_work_items
+        WHERE status = 'completed'
+          AND lane = 'normal_page'
+          AND page = 1
+          AND split_reason = 'upload_date'
+          AND COALESCE(date_kind, '') != ''
+        """
+    ).fetchall()
+    capacity = 0
+    for row in rows:
+        perpage = int(row["perpage"] or 500)
+        capacity += max(0, (4000 // perpage) - 1) if perpage > 0 else 0
+    return capacity
 
 
 def _empty_or_single_page_slices(conn: sqlite3.Connection) -> int:
@@ -348,7 +370,10 @@ def _reported_over_window_slices(conn: sqlite3.Connection) -> list[dict[str, Any
           AND lane = 'normal_page'
           AND page = 1
           AND split_reason = 'upload_date'
-          AND (COALESCE(response_total, 0) > 4000 OR COALESCE(response_pages, 0) > 8)
+          AND (
+            COALESCE(response_total, 0) > 4000
+            OR COALESCE(response_pages, 0) > (4000 / COALESCE(NULLIF(response_perpage, 0), per_page, 500))
+          )
         ORDER BY min_date, max_date
         """
     ).fetchall()
