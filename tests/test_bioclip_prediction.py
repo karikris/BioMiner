@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 
+import pytest
+
 from biominer.bioclip.bioclip import (
     BioClipClassifier,
     DEFAULT_BIOCLIP_LABELS,
@@ -419,6 +421,10 @@ def test_bioclip_classifier_builds_species_and_triage_prediction_with_label_sets
     assert record["species_top1_score"] == 0.91
     assert record["triage_top1_label"] == "a photo of an adult butterfly"
     assert record["triage_top1_score"] == 0.88
+    assert record["species_top1_top2_margin"] == pytest.approx(0.82)
+    assert record["triage_top1_top2_margin"] is None
+    assert record["species_topk_entropy"] > 0
+    assert record["triage_topk_entropy"] == 0
     assert "a photo of an adult butterfly" in DEFAULT_TRIAGE_LABELS
 
 

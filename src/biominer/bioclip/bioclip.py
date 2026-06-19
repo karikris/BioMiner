@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 from typing import IO, Any, Callable, Mapping, Sequence
 
+from biominer.bioclip.diagnostics import probability_entropy, topk_margin
 from biominer.bioclip.model_registry import BioClipRuntime
 from biominer.bioclip.prompt_templates import PromptVariant, aggregate_prompt_scores
 
@@ -379,6 +380,8 @@ def build_label_set_prediction_record(
 ) -> dict[str, Any]:
     species_topk = _topk_json(topk_by_label_set.get("species", []))
     triage_topk = _topk_json(topk_by_label_set.get("triage", []))
+    species_scores = [float(row["score"]) for row in species_topk]
+    triage_scores = [float(row["score"]) for row in triage_topk]
     compatibility_topk = species_topk or triage_topk
     agreement_status = classify_species_agreement(
         resolved_scientific_name=resolved_scientific_name,
@@ -400,9 +403,13 @@ def build_label_set_prediction_record(
         "species_top1_score": species_topk[0]["score"] if species_topk else None,
         "species_topk_json": species_topk,
         "species_prompt_topk_json": [dict(row) for row in species_prompt_topk],
+        "species_top1_top2_margin": topk_margin(species_topk),
+        "species_topk_entropy": probability_entropy(species_scores),
         "triage_top1_label": triage_topk[0]["label"] if triage_topk else None,
         "triage_top1_score": triage_topk[0]["score"] if triage_topk else None,
         "triage_topk_json": triage_topk,
+        "triage_top1_top2_margin": topk_margin(triage_topk),
+        "triage_topk_entropy": probability_entropy(triage_scores),
         "top1_label": compatibility_topk[0]["label"] if compatibility_topk else None,
         "top1_score": compatibility_topk[0]["score"] if compatibility_topk else None,
         "topk_json": compatibility_topk,
