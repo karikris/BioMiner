@@ -25,6 +25,7 @@ from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState
 from biominer.filter.anti_keywords import filter_biodiversity_parquet
 from biominer.filter.rules import classify_evidence_frame
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
+from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry
 from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.gbif import GBIFClient
@@ -75,6 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
     registry_seed.add_argument("--start-date", default="2004-02-10")
     registry_seed.add_argument("--end-date", default=datetime.now(UTC).date().isoformat())
     registry_seed.add_argument("--slice-days", type=int, default=5)
+    registry_audit = registry_subparsers.add_parser("audit")
+    registry_audit.add_argument("--registry-dir", required=True)
     build_comment_queue = subparsers.add_parser("build-comment-review-queue")
     build_comment_queue.add_argument("--input", required=True)
     build_comment_queue.add_argument("--state-db", default="data/state/comment_review.sqlite")
@@ -263,6 +266,9 @@ def run(args: argparse.Namespace) -> int:
                     sort_keys=True,
                 )
             )
+            return 0
+        if args.registry_command == "audit":
+            print(json.dumps(audit_registry(args.registry_dir), indent=2, sort_keys=True))
             return 0
         return 2
     if args.command == "build-comment-review-queue":

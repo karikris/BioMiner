@@ -311,6 +311,48 @@ def test_registry_seed_flickr_queries_cli_loads_query_definitions_into_state(tmp
     assert payload["work_items_inserted"] == 0
 
 
+def test_registry_audit_cli_summarizes_registry_parquet_with_duckdb(tmp_path, capsys) -> None:
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    pl.DataFrame(
+        [
+            {"rank": "SUPERFAMILY", "family": ""},
+            {"rank": "FAMILY", "family": "Papilionidae"},
+            {"rank": "SPECIES", "family": "Papilionidae"},
+        ]
+    ).write_parquet(registry / "taxa.parquet")
+    pl.DataFrame(
+        [
+            {"name_class": "accepted_scientific", "source": "GBIF", "language": "la", "enabled": True},
+            {"name_class": "vernacular", "source": "GBIF", "language": "eng", "enabled": True},
+            {"name_class": "vernacular_alias", "source": "fixture", "language": "en", "enabled": False},
+        ]
+    ).write_parquet(registry / "names.parquet")
+    pl.DataFrame(
+        [
+            {"search_field": "tags", "enabled": True},
+            {"search_field": "text", "enabled": True},
+        ]
+    ).write_parquet(registry / "flickr_query_definitions.parquet")
+    pl.DataFrame(
+        [
+            {"severity": "warning", "code": "disabled_names_excluded_from_queries", "subject": "1"},
+        ]
+    ).write_parquet(registry / "qa_findings.parquet")
+
+    parser = build_parser()
+    args = parser.parse_args(["registry", "audit", "--registry-dir", str(registry)])
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["registry_dir"] == str(registry)
+    assert payload["taxa_by_rank"] == {"FAMILY": 1, "SPECIES": 1, "SUPERFAMILY": 1}
+    assert payload["enabled_names_by_class"] == {"accepted_scientific": 1, "vernacular": 1}
+    assert payload["flickr_queries_by_field"] == {"tags": 1, "text": 1}
+    assert payload["qa_by_severity"] == {"warning": 1}
+
+
 def test_cli_help_does_not_describe_old_gold_silver_bronze_logic(capsys) -> None:
     parser = build_parser()
 
