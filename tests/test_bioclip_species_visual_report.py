@@ -4,7 +4,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 import pytest
 
 
@@ -38,10 +38,16 @@ def test_topk_summary_counts_thresholded_species_per_image() -> None:
     assert summary["species_count_ge_0.10"] == 2
 
 
+def test_report_module_does_not_import_pandas() -> None:
+    report = load_report_module()
+
+    assert not hasattr(report, "pd")
+
+
 def test_numeric_summary_reports_distribution_points() -> None:
     report = load_report_module()
 
-    summary = report.numeric_summary(pd.Series([0.1, 0.4, 0.8, 1.0]))
+    summary = report.numeric_summary(pl.Series([0.1, 0.4, 0.8, 1.0]))
 
     assert summary["count"] == 4
     assert summary["min"] == 0.1
@@ -51,7 +57,7 @@ def test_numeric_summary_reports_distribution_points() -> None:
 
 def test_apply_filters_keeps_species_and_drops_excluded_categories() -> None:
     report = load_report_module()
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         [
             {"species_top1_scientific_name": "Papilio demoleus", "image_category": "adult_butterfly"},
             {"species_top1_scientific_name": "Papilio demoleus", "image_category": "artwork"},
@@ -65,8 +71,8 @@ def test_apply_filters_keeps_species_and_drops_excluded_categories() -> None:
         excluded_image_categories=("artwork", "museum_specimen", "object_or_product"),
     )
 
-    assert len(filtered) == 1
-    assert filtered.iloc[0]["image_category"] == "adult_butterfly"
+    assert filtered.height == 1
+    assert filtered.row(0, named=True)["image_category"] == "adult_butterfly"
     assert result.rows_before == 3
     assert result.rows_after == 1
     assert result.rows_dropped == 2
@@ -74,7 +80,7 @@ def test_apply_filters_keeps_species_and_drops_excluded_categories() -> None:
 
 def test_normalize_reason_labels_renames_legacy_not_target_species() -> None:
     report = load_report_module()
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         [
             {
                 "bin_reason": "not_target_species",
@@ -86,6 +92,7 @@ def test_normalize_reason_labels_renames_legacy_not_target_species() -> None:
 
     normalized = report.normalize_reason_labels(df)
 
-    assert normalized.iloc[0]["bin_reason"] == "below_50"
-    assert normalized.iloc[0]["triage_reason"] == "below_50"
-    assert normalized.iloc[0]["publication_state_reason"] == "below_50"
+    row = normalized.row(0, named=True)
+    assert row["bin_reason"] == "below_50"
+    assert row["triage_reason"] == "below_50"
+    assert row["publication_state_reason"] == "below_50"

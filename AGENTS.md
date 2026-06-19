@@ -41,6 +41,12 @@ BioCLIP = screening evidence, not taxonomic validation. No Darwin Core publishin
 - If tests fail after intended replacement: improve new code, redesign tests, or remove obsolete tests.
 - Keep one authoritative implementation per behavior: rate limit, query split, bucket policy, image lifecycle, comment promotion.
 
+## Data stack rules
+- Prefer Polars over pandas for dataframe work because BioMiner handles large metadata and classification tables where memory efficiency matters.
+- Prefer Parquet for durable tabular storage.
+- Prefer DuckDB as the query engine for local analytics, joins, summaries, and report queries over loading large tables into memory.
+- Do not add new pandas usage unless a dependency boundary truly requires it; when touching pandas-based legacy code, replace it with Polars/DuckDB where practical and remove redundant pandas tests/imports in the same change.
+
 ## Flickr limits
 Separate these:
 - `SOFT_API_CALLS_PER_HOUR = 3500`

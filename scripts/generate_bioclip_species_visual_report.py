@@ -13,7 +13,7 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/biominer-matplotlib")
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
-import pandas as pd
+import polars as pl
 import seaborn as sns
 
 
@@ -117,11 +117,11 @@ def main() -> None:
         species=args.species,
         excluded_image_categories=tuple(args.exclude_image_categories),
     )
-    if predictions.empty:
+    if predictions.is_empty():
         raise SystemExit("No records remain after applying report filters.")
     if args.write_filtered_parquet:
         filtered_parquet = args.filtered_parquet or output_dir / "filtered_report_records.parquet"
-        predictions.to_parquet(filtered_parquet, index=False)
+        predictions.write_parquet(filtered_parquet)
 
     summary = write_tables(predictions, output_dir, filter_result)
     figures = write_figures(predictions, output_dir)
@@ -132,54 +132,59 @@ def main() -> None:
     print(f"Wrote PDF deck to {output_dir / 'bioclip25_species_visual_report_deck.pdf'}")
 
 
-def load_predictions(predictions_path: Path, candidates_path: Path) -> pd.DataFrame:
-    df = pd.read_parquet(predictions_path)
+def load_predictions(predictions_path: Path, candidates_path: Path) -> pl.DataFrame:
+    df = pl.read_parquet(predictions_path)
     df = normalize_reason_labels(df)
     if candidates_path.exists():
-        candidates = pd.read_parquet(candidates_path)
-        candidates = candidates[["scientific_name", "family", "genus"]].drop_duplicates("scientific_name")
-        df = df.merge(
+        candidates = pl.read_parquet(candidates_path)
+        candidates = candidates.select(["scientific_name", "family", "genus"]).unique(subset=["scientific_name"])
+        df = df.join(
             candidates,
             how="left",
             left_on="species_top1_scientific_name",
             right_on="scientific_name",
         )
     else:
-        df["family"] = pd.NA
-        df["genus"] = pd.NA
+        df = df.with_columns(pl.lit(None, dtype=pl.Utf8).alias("family"), pl.lit(None, dtype=pl.Utf8).alias("genus"))
 
-    df["genus"] = df["genus"].fillna(df["species_top1_scientific_name"].str.split().str[0])
-    fallback_family = df["genus"].map(FAMILY_FALLBACK_BY_GENUS)
-    df["family_resolved"] = df["family"].fillna(fallback_family).fillna("Unresolved")
-    df["score_band"] = pd.cut(df["species_top1_score"], bins=SCORE_BINS, labels=SCORE_LABELS)
-    df["capture_month"] = pd.to_datetime(df[["year", "month"]].assign(day=1), errors="coerce")
+    fallback_family = pl.col("genus").replace_strict(FAMILY_FALLBACK_BY_GENUS, default=None)
+    df = df.with_columns(
+        pl.coalesce(
+            pl.col("genus"),
+            pl.col("species_top1_scientific_name").str.split(" ").list.first(),
+        ).alias("genus")
+    ).with_columns(
+        pl.coalesce(pl.col("family"), fallback_family, pl.lit("Unresolved")).alias("family_resolved"),
+        score_band_expr("species_top1_score").alias("score_band"),
+        pl.format("{}-{}-01", pl.col("year"), pl.col("month")).str.strptime(pl.Date, "%Y-%m-%d", strict=False).alias("capture_month"),
+    )
 
-    topk_metrics = df["species_topk_json"].apply(topk_summary).apply(pd.Series)
-    df = pd.concat([df, topk_metrics], axis=1)
+    topk_metrics = pl.DataFrame([topk_summary(topk) for topk in df["species_topk_json"].to_list()])
+    df = df.hstack(topk_metrics) if topk_metrics.height else df
     return df
 
 
-def normalize_reason_labels(df: pd.DataFrame) -> pd.DataFrame:
-    renamed = df.copy()
-    for column in ("bin_reason", "triage_reason", "publication_state_reason"):
-        if column in renamed.columns:
-            renamed[column] = renamed[column].replace({"not_target_species": "below_50"})
-    return renamed
+def normalize_reason_labels(df: pl.DataFrame) -> pl.DataFrame:
+    expressions = [
+        pl.col(column).replace({"not_target_species": "below_50"}).alias(column)
+        for column in ("bin_reason", "triage_reason", "publication_state_reason")
+        if column in df.columns
+    ]
+    return df.with_columns(expressions) if expressions else df
 
 
 def apply_filters(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     *,
     species: str | None,
     excluded_image_categories: tuple[str, ...],
-) -> tuple[pd.DataFrame, FilterResult]:
+) -> tuple[pl.DataFrame, FilterResult]:
     rows_before = len(df)
     filtered = df
     if species:
-        filtered = filtered[filtered["species_top1_scientific_name"] == species]
+        filtered = filtered.filter(pl.col("species_top1_scientific_name") == species)
     if excluded_image_categories:
-        filtered = filtered[~filtered["image_category"].isin(excluded_image_categories)]
-    filtered = filtered.copy()
+        filtered = filtered.filter(~pl.col("image_category").is_in(excluded_image_categories))
     return filtered, FilterResult(
         rows_before=rows_before,
         rows_after=len(filtered),
@@ -223,7 +228,14 @@ def clean_species_label(label: Any) -> str | None:
     return label[len(prefix) :] if label.startswith(prefix) else label
 
 
-def write_tables(df: pd.DataFrame, output_dir: Path, filter_result: FilterResult | None = None) -> dict[str, object]:
+def score_band_expr(column: str) -> pl.Expr:
+    expr = pl.lit(None, dtype=pl.Utf8)
+    for lower, upper, label in reversed(list(zip(SCORE_BINS[:-1], SCORE_BINS[1:], SCORE_LABELS, strict=True))):
+        expr = pl.when((pl.col(column) > lower) & (pl.col(column) <= upper)).then(pl.lit(label)).otherwise(expr)
+    return expr
+
+
+def write_tables(df: pl.DataFrame, output_dir: Path, filter_result: FilterResult | None = None) -> dict[str, object]:
     top_species = value_count_table(df, "species_top1_scientific_name", "species")
     top_families = value_count_table(df, "family_resolved", "family")
     occurrence_bins = value_count_table(df, "occurrence_bin", "occurrence_bin")
@@ -233,18 +245,14 @@ def write_tables(df: pd.DataFrame, output_dir: Path, filter_result: FilterResult
     score_bands = value_count_table(df, "score_band", "score_band")
     species_per_image = species_per_image_table(df)
     family_bin = (
-        df.groupby(["family_resolved", "occurrence_bin"], observed=True)
-        .size()
-        .rename("records")
-        .reset_index()
-        .sort_values(["family_resolved", "occurrence_bin"])
+        df.group_by(["family_resolved", "occurrence_bin"])
+        .len(name="records")
+        .sort(["family_resolved", "occurrence_bin"])
     )
     monthly = (
-        df.groupby(["year", "month"], observed=True)
-        .size()
-        .rename("records")
-        .reset_index()
-        .sort_values(["year", "month"])
+        df.group_by(["year", "month"])
+        .len(name="records")
+        .sort(["year", "month"])
     )
 
     table_map = {
@@ -260,20 +268,20 @@ def write_tables(df: pd.DataFrame, output_dir: Path, filter_result: FilterResult
         "monthly_counts.csv": monthly,
     }
     for filename, table in table_map.items():
-        table.to_csv(output_dir / filename, index=False)
+        table.write_csv(output_dir / filename)
 
     summary = {
-        "records": int(len(df)),
-        "unique_top1_species": int(df["species_top1_scientific_name"].nunique()),
-        "families": int(df["family_resolved"].nunique()),
-        "records_with_geo": int(df[["latitude", "longitude"]].notna().all(axis=1).sum()),
-        "records_with_event_date": int(df["captured_at"].notna().sum()),
-        "downloaded_images_deleted": int(df["image_deleted_after_classification"].fillna(False).sum()),
-        "classification_status": df["classification_status"].value_counts(dropna=False).to_dict(),
-        "occurrence_bins": df["occurrence_bin"].value_counts(dropna=False).to_dict(),
-        "image_categories": df["image_category"].value_counts(dropna=False).to_dict(),
-        "life_stages": df["life_stage"].value_counts(dropna=False).to_dict(),
-        "bin_reasons": df["bin_reason"].value_counts(dropna=False).to_dict(),
+        "records": int(df.height),
+        "unique_top1_species": int(df["species_top1_scientific_name"].n_unique()),
+        "families": int(df["family_resolved"].n_unique()),
+        "records_with_geo": int(df.filter(pl.col("latitude").is_not_null() & pl.col("longitude").is_not_null()).height),
+        "records_with_event_date": int(df.filter(pl.col("captured_at").is_not_null()).height),
+        "downloaded_images_deleted": int(df.select(pl.col("image_deleted_after_classification").fill_null(False).sum()).item()),
+        "classification_status": value_counts_dict(df, "classification_status"),
+        "occurrence_bins": value_counts_dict(df, "occurrence_bin"),
+        "image_categories": value_counts_dict(df, "image_category"),
+        "life_stages": value_counts_dict(df, "life_stage"),
+        "bin_reasons": value_counts_dict(df, "bin_reason"),
         "score_stats": numeric_summary(df["species_top1_score"]),
         "bioclip_score_stats": numeric_summary(df["bioclip_top1_score"]),
         "triage_score_stats": numeric_summary(df["triage_top1_score"]),
@@ -285,9 +293,9 @@ def write_tables(df: pd.DataFrame, output_dir: Path, filter_result: FilterResult
                 for threshold in SPECIES_COUNT_THRESHOLDS
             },
         },
-        "top_10_species": top_species.head(10).to_dict(orient="records"),
-        "top_10_families": top_families.head(10).to_dict(orient="records"),
-        "unresolved_family_records": int((df["family_resolved"] == "Unresolved").sum()),
+        "top_10_species": top_species.head(10).to_dicts(),
+        "top_10_families": top_families.head(10).to_dicts(),
+        "unresolved_family_records": int(df.filter(pl.col("family_resolved") == "Unresolved").height),
     }
     if filter_result is not None:
         summary["filters"] = {
@@ -301,40 +309,57 @@ def write_tables(df: pd.DataFrame, output_dir: Path, filter_result: FilterResult
     return summary
 
 
-def value_count_table(df: pd.DataFrame, column: str, label: str) -> pd.DataFrame:
-    data = df[column].value_counts(dropna=False).rename_axis(label).reset_index(name="records")
-    data[label] = data[label].astype(str)
-    return data
+def value_count_table(df: pl.DataFrame, column: str, label: str) -> pl.DataFrame:
+    return (
+        df.group_by(column, maintain_order=True)
+        .len(name="records")
+        .rename({column: label})
+        .with_columns(pl.col(label).cast(pl.Utf8).fill_null("None"))
+        .sort("records", descending=True)
+    )
 
 
-def species_per_image_table(df: pd.DataFrame) -> pd.DataFrame:
+def species_per_image_table(df: pl.DataFrame) -> pl.DataFrame:
     frames = []
     for threshold in SPECIES_COUNT_THRESHOLDS:
         column = f"species_count_ge_{threshold:.2f}"
-        data = df[column].value_counts().sort_index().rename_axis("species_count").reset_index(name="records")
-        data.insert(0, "score_threshold", threshold)
+        data = (
+            df.group_by(column)
+            .len(name="records")
+            .rename({column: "species_count"})
+            .sort("species_count")
+            .with_columns(pl.lit(threshold).alias("score_threshold"))
+            .select(["score_threshold", "species_count", "records"])
+        )
         frames.append(data)
-    return pd.concat(frames, ignore_index=True)
+    return pl.concat(frames)
 
 
-def numeric_summary(series: pd.Series) -> dict[str, float | int | None]:
-    clean = pd.to_numeric(series, errors="coerce").dropna()
-    if clean.empty:
+def numeric_summary(series: pl.Series) -> dict[str, float | int | None]:
+    clean = series.cast(pl.Float64, strict=False).drop_nulls()
+    if clean.is_empty():
         return {"count": 0, "min": None, "p25": None, "median": None, "mean": None, "p75": None, "p90": None, "max": None}
-    quantiles = clean.quantile([0.25, 0.50, 0.75, 0.90])
     return {
-        "count": int(clean.size),
+        "count": int(clean.len()),
         "min": float(clean.min()),
-        "p25": float(quantiles.loc[0.25]),
-        "median": float(quantiles.loc[0.50]),
+        "p25": float(clean.quantile(0.25, interpolation="linear")),
+        "median": float(clean.median()),
         "mean": float(clean.mean()),
-        "p75": float(quantiles.loc[0.75]),
-        "p90": float(quantiles.loc[0.90]),
+        "p75": float(clean.quantile(0.75, interpolation="linear")),
+        "p90": float(clean.quantile(0.90, interpolation="linear")),
         "max": float(clean.max()),
     }
 
 
-def write_figures(df: pd.DataFrame, output_dir: Path) -> list[tuple[str, str]]:
+def value_counts_dict(df: pl.DataFrame, column: str) -> dict[str, int]:
+    return {str(row[column]): int(row["records"]) for row in value_count_table(df, column, column).to_dicts()}
+
+
+def plot_data(df: pl.DataFrame) -> dict[str, list[object]]:
+    return df.to_dict(as_series=False)
+
+
+def write_figures(df: pl.DataFrame, output_dir: Path) -> list[tuple[str, str]]:
     figures = [
         ("Overview", overview_dashboard(df, output_dir)),
         ("Top 10 Predicted Species", top_species_plot(df, output_dir)),
@@ -356,17 +381,23 @@ def write_figures(df: pd.DataFrame, output_dir: Path) -> list[tuple[str, str]]:
     return figures
 
 
-def overview_dashboard(df: pd.DataFrame, output_dir: Path) -> str:
+def overview_dashboard(df: pl.DataFrame, output_dir: Path) -> str:
     fig, axes = plt.subplots(2, 2, figsize=(14, 9))
     fig.suptitle("Papilio demoleus BioCLIP 2.5 Classification Overview", fontsize=22, y=0.98)
 
     metrics = [
-        ("Records", f"{len(df):,}"),
-        ("Top-1 species", f"{df['species_top1_scientific_name'].nunique():,}"),
+        ("Records", f"{df.height:,}"),
+        ("Top-1 species", f"{df['species_top1_scientific_name'].n_unique():,}"),
         ("Median species score", f"{df['species_top1_score'].median():.3f}"),
-        ("Geo-tagged records", f"{df[['latitude', 'longitude']].notna().all(axis=1).sum():,}"),
-        ("Deleted temp images", f"{df['image_deleted_after_classification'].fillna(False).sum():,}"),
-        ("Gold records", f"{(df['occurrence_bin'] == 'gold').sum():,}"),
+        (
+            "Geo-tagged records",
+            f"{df.filter(pl.col('latitude').is_not_null() & pl.col('longitude').is_not_null()).height:,}",
+        ),
+        (
+            "Deleted temp images",
+            f"{int(df.select(pl.col('image_deleted_after_classification').fill_null(False).sum()).item()):,}",
+        ),
+        ("Gold records", f"{df.filter(pl.col('occurrence_bin') == 'gold').height:,}"),
     ]
     axes[0, 0].axis("off")
     for index, (label, value) in enumerate(metrics):
@@ -374,21 +405,19 @@ def overview_dashboard(df: pd.DataFrame, output_dir: Path) -> str:
         axes[0, 0].text(0.05 + col * 0.48, 0.82 - row * 0.28, value, fontsize=26, weight="bold")
         axes[0, 0].text(0.05 + col * 0.48, 0.72 - row * 0.28, label, fontsize=13)
 
-    top_species = df["species_top1_scientific_name"].value_counts().head(8).sort_values().reset_index()
-    top_species.columns = ["species", "records"]
-    sns.barplot(data=top_species, y="species", x="records", ax=axes[0, 1], color="#0072B2")
+    top_species = value_count_table(df, "species_top1_scientific_name", "species").head(8).sort("records")
+    sns.barplot(data=plot_data(top_species), y="species", x="records", ax=axes[0, 1], color="#0072B2")
     axes[0, 1].set_title("Leading predicted species")
     axes[0, 1].set_xlabel("Records")
     axes[0, 1].set_ylabel("")
 
-    sns.histplot(data=df, x="species_top1_score", bins=35, ax=axes[1, 0], color="#009E73")
+    sns.histplot(x=df["species_top1_score"].to_list(), bins=35, ax=axes[1, 0], color="#009E73")
     axes[1, 0].set_title("Species certainty scores")
     axes[1, 0].set_xlabel("Top-1 score")
     axes[1, 0].set_ylabel("Records")
 
-    bins = df["occurrence_bin"].value_counts().sort_values().reset_index()
-    bins.columns = ["occurrence_bin", "records"]
-    sns.barplot(data=bins, y="occurrence_bin", x="records", ax=axes[1, 1], color="#D55E00")
+    bins = value_count_table(df, "occurrence_bin", "occurrence_bin").sort("records")
+    sns.barplot(data=plot_data(bins), y="occurrence_bin", x="records", ax=axes[1, 1], color="#D55E00")
     axes[1, 1].set_title("Occurrence bins")
     axes[1, 1].set_xlabel("Records")
     axes[1, 1].set_ylabel("")
@@ -396,11 +425,10 @@ def overview_dashboard(df: pd.DataFrame, output_dir: Path) -> str:
     return savefig(fig, output_dir / "overview_dashboard.png")
 
 
-def top_species_plot(df: pd.DataFrame, output_dir: Path) -> str:
-    data = df["species_top1_scientific_name"].value_counts().head(10).sort_values().reset_index()
-    data.columns = ["species", "records"]
+def top_species_plot(df: pl.DataFrame, output_dir: Path) -> str:
+    data = value_count_table(df, "species_top1_scientific_name", "species").head(10).sort("records")
     fig, ax = plt.subplots(figsize=(11, 7))
-    sns.barplot(data=data, y="species", x="records", ax=ax, color="#0072B2")
+    sns.barplot(data=plot_data(data), y="species", x="records", ax=ax, color="#0072B2")
     ax.set_title("Top 10 Butterfly Species By Prediction Count")
     ax.set_xlabel("Predictions")
     ax.set_ylabel("")
@@ -408,12 +436,11 @@ def top_species_plot(df: pd.DataFrame, output_dir: Path) -> str:
     return savefig(fig, output_dir / "top_10_species_predictions.png")
 
 
-def top_families_plot(df: pd.DataFrame, output_dir: Path) -> str:
-    data = df["family_resolved"].value_counts().head(10).sort_values().reset_index()
-    data.columns = ["family", "records"]
+def top_families_plot(df: pl.DataFrame, output_dir: Path) -> str:
+    data = value_count_table(df, "family_resolved", "family").head(10).sort("records")
     fig, ax = plt.subplots(figsize=(10.5, 6.2))
-    colors = [PALETTE.get(family, "#666666") for family in data["family"]]
-    sns.barplot(data=data, y="family", x="records", ax=ax, palette=colors, hue="family", legend=False)
+    colors = [PALETTE.get(family, "#666666") for family in data["family"].to_list()]
+    sns.barplot(data=plot_data(data), y="family", x="records", ax=ax, palette=colors, hue="family", legend=False)
     ax.set_title("Top Families By Record Count")
     ax.set_xlabel("Records")
     ax.set_ylabel("")
@@ -421,12 +448,11 @@ def top_families_plot(df: pd.DataFrame, output_dir: Path) -> str:
     return savefig(fig, output_dir / "top_family_counts.png")
 
 
-def occurrence_bin_plot(df: pd.DataFrame, output_dir: Path) -> str:
-    data = df["occurrence_bin"].value_counts().sort_values().reset_index()
-    data.columns = ["occurrence_bin", "records"]
+def occurrence_bin_plot(df: pl.DataFrame, output_dir: Path) -> str:
+    data = value_count_table(df, "occurrence_bin", "occurrence_bin").sort("records")
     fig, ax = plt.subplots(figsize=(10, 5.8))
-    colors = [PALETTE.get(bin_name, "#666666") for bin_name in data["occurrence_bin"]]
-    sns.barplot(data=data, y="occurrence_bin", x="records", ax=ax, palette=colors, hue="occurrence_bin", legend=False)
+    colors = [PALETTE.get(bin_name, "#666666") for bin_name in data["occurrence_bin"].to_list()]
+    sns.barplot(data=plot_data(data), y="occurrence_bin", x="records", ax=ax, palette=colors, hue="occurrence_bin", legend=False)
     ax.set_title("Occurrence Bin Mix")
     ax.set_xlabel("Records")
     ax.set_ylabel("")
@@ -434,11 +460,10 @@ def occurrence_bin_plot(df: pd.DataFrame, output_dir: Path) -> str:
     return savefig(fig, output_dir / "occurrence_bin_mix.png")
 
 
-def bin_reason_plot(df: pd.DataFrame, output_dir: Path) -> str:
-    data = df["bin_reason"].value_counts().head(12).sort_values().reset_index()
-    data.columns = ["bin_reason", "records"]
+def bin_reason_plot(df: pl.DataFrame, output_dir: Path) -> str:
+    data = value_count_table(df, "bin_reason", "bin_reason").head(12).sort("records")
     fig, ax = plt.subplots(figsize=(11, 6.5))
-    sns.barplot(data=data, y="bin_reason", x="records", ax=ax, color="#56B4E9")
+    sns.barplot(data=plot_data(data), y="bin_reason", x="records", ax=ax, color="#56B4E9")
     ax.set_title("Top Bin Reasons")
     ax.set_xlabel("Records")
     ax.set_ylabel("")
@@ -446,17 +471,30 @@ def bin_reason_plot(df: pd.DataFrame, output_dir: Path) -> str:
     return savefig(fig, output_dir / "bin_reason_counts.png")
 
 
-def family_occurrence_plot(df: pd.DataFrame, output_dir: Path) -> str:
-    top_families = df["family_resolved"].value_counts().head(8).index
-    data = (
-        df[df["family_resolved"].isin(top_families)]
-        .groupby(["family_resolved", "occurrence_bin"], observed=True)
-        .size()
-        .unstack(fill_value=0)
-        .loc[top_families]
+def family_occurrence_plot(df: pl.DataFrame, output_dir: Path) -> str:
+    top_families = value_count_table(df, "family_resolved", "family").head(8)["family"].to_list()
+    grouped = (
+        df.filter(pl.col("family_resolved").is_in(top_families))
+        .group_by(["family_resolved", "occurrence_bin"])
+        .len(name="records")
     )
+    records_by_pair = {
+        (row["family_resolved"], row["occurrence_bin"]): int(row["records"])
+        for row in grouped.to_dicts()
+    }
+    bin_names = grouped["occurrence_bin"].drop_nulls().unique().sort().to_list()
     fig, ax = plt.subplots(figsize=(11, 6))
-    data.plot(kind="barh", stacked=True, ax=ax, color=[PALETTE.get(c, None) for c in data.columns])
+    left = [0] * len(top_families)
+    for bin_name in bin_names:
+        values = [records_by_pair.get((family, bin_name), 0) for family in top_families]
+        ax.barh(
+            top_families,
+            values,
+            left=left,
+            label=bin_name,
+            color=PALETTE.get(bin_name, "#666666"),
+        )
+        left = [current + value for current, value in zip(left, values, strict=True)]
     ax.invert_yaxis()
     ax.set_title("Top Families Split By Occurrence Bin")
     ax.set_xlabel("Records")
@@ -465,31 +503,33 @@ def family_occurrence_plot(df: pd.DataFrame, output_dir: Path) -> str:
     return savefig(fig, output_dir / "family_by_occurrence_bin.png")
 
 
-def score_distribution_plot(df: pd.DataFrame, output_dir: Path) -> str:
+def score_distribution_plot(df: pl.DataFrame, output_dir: Path) -> str:
     fig, axes = plt.subplots(1, 2, figsize=(14, 5.8))
+    data = df.select(["species_top1_score", "occurrence_bin"])
+    bin_palette = {k: PALETTE.get(k, "#666666") for k in data["occurrence_bin"].drop_nulls().unique().to_list()}
     sns.histplot(
-        data=df,
+        data=plot_data(data),
         x="species_top1_score",
         hue="occurrence_bin",
         bins=40,
         multiple="stack",
-        palette={k: PALETTE.get(k, "#666666") for k in df["occurrence_bin"].dropna().unique()},
+        palette=bin_palette,
         ax=axes[0],
     )
     axes[0].set_title("Species Top-1 Score Distribution")
     axes[0].set_xlabel("BioCLIP species top-1 score")
     axes[0].set_ylabel("Records")
 
-    sns.ecdfplot(data=df, x="species_top1_score", hue="occurrence_bin", ax=axes[1])
+    sns.ecdfplot(data=plot_data(data), x="species_top1_score", hue="occurrence_bin", ax=axes[1])
     axes[1].set_title("Cumulative Certainty By Bin")
     axes[1].set_xlabel("BioCLIP species top-1 score")
     axes[1].set_ylabel("Cumulative share")
     return savefig(fig, output_dir / "species_score_distribution.png")
 
 
-def margin_distribution_plot(df: pd.DataFrame, output_dir: Path) -> str:
+def margin_distribution_plot(df: pl.DataFrame, output_dir: Path) -> str:
     fig, ax = plt.subplots(figsize=(11, 6))
-    sns.histplot(data=df, x="species_top1_top2_margin", bins=50, color="#56B4E9", ax=ax)
+    sns.histplot(x=df["species_top1_top2_margin"].to_list(), bins=50, color="#56B4E9", ax=ax)
     ax.axvline(df["species_top1_top2_margin"].median(), color="#D55E00", linewidth=2, label="median")
     ax.set_title("Ambiguity: Top-1 Score Minus Top-2 Score")
     ax.set_xlabel("Top-1 minus top-2 species score")
@@ -498,34 +538,32 @@ def margin_distribution_plot(df: pd.DataFrame, output_dir: Path) -> str:
     return savefig(fig, output_dir / "top1_top2_margin_distribution.png")
 
 
-def species_per_image_plot(df: pd.DataFrame, output_dir: Path) -> str:
-    rows = []
-    for threshold in SPECIES_COUNT_THRESHOLDS:
-        column = f"species_count_ge_{threshold:.2f}"
-        counts = df[column].value_counts().sort_index()
-        for species_count, records in counts.items():
-            rows.append({"score_threshold": f">= {threshold:.2f}", "species_count": species_count, "records": records})
-    data = pd.DataFrame(rows)
+def species_per_image_plot(df: pl.DataFrame, output_dir: Path) -> str:
+    data = species_per_image_table(df).with_columns(
+        pl.col("score_threshold")
+        .map_elements(lambda value: f">= {value:.2f}", return_dtype=pl.Utf8)
+        .alias("score_threshold")
+    )
     fig, ax = plt.subplots(figsize=(11, 6))
-    sns.barplot(data=data, x="species_count", y="records", hue="score_threshold", ax=ax)
+    sns.barplot(data=plot_data(data), x="species_count", y="records", hue="score_threshold", ax=ax)
     ax.set_title("How Many Species Candidates Appear In One Image?")
     ax.set_xlabel("Species candidates in the top-k list at score threshold")
     ax.set_ylabel("Records")
     return savefig(fig, output_dir / "species_candidates_per_image.png")
 
 
-def top_species_score_boxplot(df: pd.DataFrame, output_dir: Path) -> str:
-    top_species = df["species_top1_scientific_name"].value_counts().head(12).index
-    data = df[df["species_top1_scientific_name"].isin(top_species)].copy()
-    data["species_top1_scientific_name"] = pd.Categorical(
-        data["species_top1_scientific_name"], categories=list(top_species), ordered=True
+def top_species_score_boxplot(df: pl.DataFrame, output_dir: Path) -> str:
+    top_species = value_count_table(df, "species_top1_scientific_name", "species").head(12)["species"].to_list()
+    data = df.filter(pl.col("species_top1_scientific_name").is_in(top_species)).select(
+        ["species_top1_scientific_name", "species_top1_score", "occurrence_bin"]
     )
     fig, ax = plt.subplots(figsize=(12, 7))
     sns.boxplot(
-        data=data,
+        data=plot_data(data),
         y="species_top1_scientific_name",
         x="species_top1_score",
         hue="occurrence_bin",
+        order=top_species,
         fliersize=1.5,
         ax=ax,
     )
@@ -536,11 +574,10 @@ def top_species_score_boxplot(df: pd.DataFrame, output_dir: Path) -> str:
     return savefig(fig, output_dir / "top_species_score_spread.png")
 
 
-def category_plot(df: pd.DataFrame, output_dir: Path) -> str:
-    data = df["image_category"].value_counts().sort_values().reset_index()
-    data.columns = ["image_category", "records"]
+def category_plot(df: pl.DataFrame, output_dir: Path) -> str:
+    data = value_count_table(df, "image_category", "image_category").sort("records")
     fig, ax = plt.subplots(figsize=(10, 5.8))
-    sns.barplot(data=data, y="image_category", x="records", ax=ax, color="#009E73")
+    sns.barplot(data=plot_data(data), y="image_category", x="records", ax=ax, color="#009E73")
     ax.set_title("Image Category Mix")
     ax.set_xlabel("Records")
     ax.set_ylabel("")
@@ -548,11 +585,10 @@ def category_plot(df: pd.DataFrame, output_dir: Path) -> str:
     return savefig(fig, output_dir / "image_category_mix.png")
 
 
-def life_stage_plot(df: pd.DataFrame, output_dir: Path) -> str:
-    data = df["life_stage"].value_counts().sort_values().reset_index()
-    data.columns = ["life_stage", "records"]
+def life_stage_plot(df: pl.DataFrame, output_dir: Path) -> str:
+    data = value_count_table(df, "life_stage", "life_stage").sort("records")
     fig, ax = plt.subplots(figsize=(10, 5.8))
-    sns.barplot(data=data, y="life_stage", x="records", ax=ax, color="#CC79A7")
+    sns.barplot(data=plot_data(data), y="life_stage", x="records", ax=ax, color="#CC79A7")
     ax.set_title("Life Stage Mix")
     ax.set_xlabel("Records")
     ax.set_ylabel("")
@@ -560,31 +596,39 @@ def life_stage_plot(df: pd.DataFrame, output_dir: Path) -> str:
     return savefig(fig, output_dir / "life_stage_mix.png")
 
 
-def month_heatmap(df: pd.DataFrame, output_dir: Path) -> str:
+def month_heatmap(df: pl.DataFrame, output_dir: Path) -> str:
     data = (
-        df.groupby(["year", "month"], observed=True)
-        .size()
-        .rename("records")
-        .reset_index()
-        .pivot(index="year", columns="month", values="records")
-        .fillna(0)
+        df.group_by(["year", "month"])
+        .len(name="records")
+        .pivot(index="year", on="month", values="records")
+        .fill_null(0)
+        .sort("year")
     )
     fig, ax = plt.subplots(figsize=(12, 7))
-    sns.heatmap(data, cmap="YlGnBu", linewidths=0.2, linecolor="white", ax=ax)
+    month_columns = [column for column in data.columns if column != "year"]
+    sns.heatmap(
+        data.select(month_columns).to_numpy(),
+        xticklabels=month_columns,
+        yticklabels=data["year"].to_list(),
+        cmap="YlGnBu",
+        linewidths=0.2,
+        linecolor="white",
+        ax=ax,
+    )
     ax.set_title("Predicted Records By Capture Year And Month")
     ax.set_xlabel("Month")
     ax.set_ylabel("Year")
     return savefig(fig, output_dir / "capture_year_month_heatmap.png")
 
 
-def map_scatter(df: pd.DataFrame, output_dir: Path) -> str:
-    geo = df.dropna(subset=["longitude", "latitude"]).copy()
+def map_scatter(df: pl.DataFrame, output_dir: Path) -> str:
+    geo = df.filter(pl.col("longitude").is_not_null() & pl.col("latitude").is_not_null())
     fig, ax = plt.subplots(figsize=(12, 6.5))
-    if geo.empty:
+    if geo.is_empty():
         ax.text(0.5, 0.5, "No geotagged records", ha="center", va="center", fontsize=18)
     else:
         sns.scatterplot(
-            data=geo,
+            data=plot_data(geo.select(["longitude", "latitude", "family_resolved", "species_top1_score"])),
             x="longitude",
             y="latitude",
             hue="family_resolved",
@@ -592,7 +636,7 @@ def map_scatter(df: pd.DataFrame, output_dir: Path) -> str:
             sizes=(8, 38),
             alpha=0.45,
             linewidth=0,
-            palette={family: PALETTE.get(family, "#666666") for family in geo["family_resolved"].unique()},
+            palette={family: PALETTE.get(family, "#666666") for family in geo["family_resolved"].unique().to_list()},
             ax=ax,
         )
     ax.set_title("Global Geotag Footprint By Predicted Family")
@@ -604,13 +648,15 @@ def map_scatter(df: pd.DataFrame, output_dir: Path) -> str:
     return savefig(fig, output_dir / "global_prediction_footprint.png")
 
 
-def dominance_curve(df: pd.DataFrame, output_dir: Path) -> str:
-    counts = df["species_top1_scientific_name"].value_counts().reset_index()
-    counts.columns = ["species", "records"]
-    counts["rank"] = range(1, len(counts) + 1)
-    counts["cumulative_share"] = counts["records"].cumsum() / counts["records"].sum()
+def dominance_curve(df: pl.DataFrame, output_dir: Path) -> str:
+    counts = value_count_table(df, "species_top1_scientific_name", "species")
+    total = counts["records"].sum()
+    counts = counts.with_columns(
+        pl.int_range(1, pl.len() + 1).alias("rank"),
+        (pl.col("records").cum_sum() / total).alias("cumulative_share"),
+    )
     fig, ax = plt.subplots(figsize=(10, 5.8))
-    sns.lineplot(data=counts, x="rank", y="cumulative_share", ax=ax, color="#D55E00")
+    sns.lineplot(data=plot_data(counts), x="rank", y="cumulative_share", ax=ax, color="#D55E00")
     ax.axhline(0.8, color="#555555", linestyle="--", linewidth=1)
     ax.set_title("Species Dominance Curve")
     ax.set_xlabel("Species rank by prediction count")
@@ -619,7 +665,7 @@ def dominance_curve(df: pd.DataFrame, output_dir: Path) -> str:
     return savefig(fig, output_dir / "species_dominance_curve.png")
 
 
-def pipeline_health_plot(df: pd.DataFrame, output_dir: Path) -> str:
+def pipeline_health_plot(df: pl.DataFrame, output_dir: Path) -> str:
     fig, axes = plt.subplots(1, 3, figsize=(15, 5.5))
     panels = [
         ("Classification status", "classification_status"),
@@ -627,10 +673,8 @@ def pipeline_health_plot(df: pd.DataFrame, output_dir: Path) -> str:
         ("Temp image deleted", "image_deleted_after_classification"),
     ]
     for ax, (title, column) in zip(axes, panels, strict=True):
-        data = df[column].value_counts(dropna=False).sort_values().reset_index()
-        data.columns = [column, "records"]
-        data[column] = data[column].astype(str)
-        sns.barplot(data=data, y=column, x="records", ax=ax, color="#0072B2")
+        data = value_count_table(df, column, column).sort("records")
+        sns.barplot(data=plot_data(data), y=column, x="records", ax=ax, color="#0072B2")
         ax.set_title(title)
         ax.set_xlabel("Records")
         ax.set_ylabel("")
@@ -665,7 +709,7 @@ def savefig(fig: plt.Figure, path: Path) -> str:
 
 
 def write_html_report(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     summary: dict[str, object],
     figures: list[tuple[str, str]],
     predictions_path: Path,
