@@ -189,6 +189,8 @@ def _state_work_summary(path: Path) -> dict[str, Any]:
         "empty_or_single_page_slices": "not_instrumented",
         "page_calls_avoided_estimate": "not_instrumented",
         "reported_over_window_slices": "not_instrumented",
+        "saturated_remediation_pending": "not_instrumented",
+        "saturated_remediation_enqueued": "not_instrumented",
     }
     if not path.exists():
         return fallback
@@ -219,6 +221,8 @@ def _state_work_summary(path: Path) -> dict[str, Any]:
                 "empty_or_single_page_slices": _empty_or_single_page_slices(conn),
                 "page_calls_avoided_estimate": max(0, _remaining_page_capacity_from_page1(conn) - remaining_pages),
                 "reported_over_window_slices": _reported_over_window_slices(conn),
+                "saturated_remediation_pending": len(saturated_slices),
+                "saturated_remediation_enqueued": _saturated_remediation_enqueued(conn),
             }
     except sqlite3.DatabaseError:
         return fallback
@@ -431,6 +435,23 @@ def _reported_over_window_slices(conn: sqlite3.Connection) -> list[dict[str, Any
         }
         for row in rows
     ]
+
+
+def _saturated_remediation_enqueued(conn: sqlite3.Connection) -> int:
+    if not _has_columns(conn, "parent_query_hash"):
+        return 0
+    return _one(
+        conn,
+        """
+        SELECT count(*)
+        FROM flickr_work_items
+        WHERE lane = 'normal_page'
+          AND page = 1
+          AND split_reason = 'upload_date'
+          AND parent_query_hash IS NOT NULL
+          AND COALESCE(date_kind, '') != ''
+        """,
+    )
 
 
 def environment_summary() -> dict[str, str | None]:

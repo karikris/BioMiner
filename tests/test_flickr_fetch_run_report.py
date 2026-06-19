@@ -313,6 +313,8 @@ def test_build_step1_fetch_report_marks_page_8_full_slice_as_saturated(tmp_path)
         {"date_kind": "upload_date", "min_date": "2007-01-01", "max_date": "2007-01-05", "page": 8, "records_returned": 500}
     ]
     assert report["work"]["saturated_slice_count"] == 1
+    assert report["work"]["saturated_remediation_pending"] == 1
+    assert report["work"]["saturated_remediation_enqueued"] == 0
 
 
 def test_build_step1_fetch_report_includes_dynamic_page_enqueue_metrics(tmp_path) -> None:

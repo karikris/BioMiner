@@ -20,6 +20,7 @@ from biominer.flickr_fetch.query_planner import (
     build_count_probes,
     deduplicate_photo_records,
     flickr_search_params,
+    fixed_upload_date_slices,
     plan_queries_from_count,
     query_date_kind,
     query_hash,
@@ -256,6 +257,64 @@ class MetadataPollState:
             "hard_photo_records_per_hour": "not_instrumented",
             "window_seconds": 3600,
         }
+
+    def enqueue_saturated_upload_slice_remediation(self, *, slice_days: int = 1) -> dict[str, object]:
+        if slice_days <= 0:
+            raise ValueError("slice_days must be positive")
+        saturated = self._saturated_upload_slice_queries()
+        generated = 0
+        inserted = 0
+        for parent_id, query in saturated:
+            if not query.min_upload_date or not query.max_upload_date:
+                continue
+            for index, (start, end) in enumerate(
+                fixed_upload_date_slices(
+                    start_date=query.min_upload_date,
+                    end_date=query.max_upload_date,
+                    slice_days=slice_days,
+                )
+            ):
+                generated += 1
+                inserted += self.enqueue_work_item(
+                    replace(
+                        query,
+                        lane="normal_page",
+                        page=1,
+                        min_upload_date=start,
+                        max_upload_date=end,
+                        parent_query_hash=query.parent_query_hash or parent_id,
+                        split_depth=query.split_depth + 1,
+                        slice_index=index,
+                    )
+                )
+        return {
+            "saturated_slices_seen": len(saturated),
+            "sub_slices_generated": generated,
+            "work_items_inserted": inserted,
+            "duplicates_skipped": generated - inserted,
+            "slice_days": slice_days,
+            "state_db": str(self.path),
+        }
+
+    def _saturated_upload_slice_queries(self) -> list[tuple[str, FlickrQuery]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT work_item_id, query_json
+                FROM flickr_work_items
+                WHERE status = 'completed'
+                  AND lane = 'normal_page'
+                  AND split_reason = 'upload_date'
+                  AND (
+                    (page = 8 AND per_page = 500 AND records_returned = 500)
+                    OR (page = 16 AND per_page = 250 AND records_returned = 250)
+                  )
+                  AND COALESCE(min_date, '') != ''
+                  AND COALESCE(max_date, '') != ''
+                ORDER BY min_date, max_date, page
+                """
+            ).fetchall()
+        return [(str(row["work_item_id"]), _query_from_json(str(row["query_json"]))) for row in rows]
 
     def _api_calls_in_window(self, conn: sqlite3.Connection, now: float) -> int:
         cutoff = now - 3600

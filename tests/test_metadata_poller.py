@@ -688,6 +688,80 @@ def test_poll_once_records_page_payload_count_for_saturation_reporting(tmp_path)
     assert row[0] == 500
 
 
+def test_enqueue_saturated_upload_slice_remediation_splits_five_day_window(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    saturated = FlickrQuery(
+        term="butterfly",
+        language="en",
+        search_field="text",
+        lane="normal_page",
+        page=8,
+        per_page=500,
+        has_geo=0,
+        min_upload_date="2007-01-01",
+        max_upload_date="2007-01-05",
+        split_reason="upload_date",
+        split_depth=1,
+        slice_index=0,
+    )
+    state.enqueue_work_item(saturated)
+    with sqlite3.connect(state.path) as conn:
+        work_id = conn.execute("SELECT work_item_id FROM flickr_work_items").fetchone()[0]
+    state.complete_work_item(work_id, records_returned=500)
+
+    first = state.enqueue_saturated_upload_slice_remediation(slice_days=1)
+    second = state.enqueue_saturated_upload_slice_remediation(slice_days=1)
+
+    with sqlite3.connect(state.path) as conn:
+        rows = conn.execute(
+            """
+            SELECT page, per_page, min_date, max_date, parent_query_hash
+            FROM flickr_work_items
+            WHERE parent_query_hash IS NOT NULL
+            ORDER BY min_date
+            """
+        ).fetchall()
+    assert first["saturated_slices_seen"] == 1
+    assert first["sub_slices_generated"] == 5
+    assert first["work_items_inserted"] == 5
+    assert second["work_items_inserted"] == 0
+    assert [(row[0], row[1], row[2], row[3]) for row in rows] == [
+        (1, 500, "2007-01-01", "2007-01-01"),
+        (1, 500, "2007-01-02", "2007-01-02"),
+        (1, 500, "2007-01-03", "2007-01-03"),
+        (1, 500, "2007-01-04", "2007-01-04"),
+        (1, 500, "2007-01-05", "2007-01-05"),
+    ]
+    assert {row[4] for row in rows} == {work_id}
+
+
+def test_enqueue_saturated_upload_slice_remediation_ignores_unsaturated_slice(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    unsaturated = FlickrQuery(
+        term="butterfly",
+        language="en",
+        search_field="text",
+        lane="normal_page",
+        page=8,
+        per_page=500,
+        has_geo=0,
+        min_upload_date="2007-01-01",
+        max_upload_date="2007-01-05",
+        split_reason="upload_date",
+        split_depth=1,
+        slice_index=0,
+    )
+    state.enqueue_work_item(unsaturated)
+    with sqlite3.connect(state.path) as conn:
+        work_id = conn.execute("SELECT work_item_id FROM flickr_work_items").fetchone()[0]
+    state.complete_work_item(work_id, records_returned=499)
+
+    payload = state.enqueue_saturated_upload_slice_remediation(slice_days=1)
+
+    assert payload["saturated_slices_seen"] == 0
+    assert payload["work_items_inserted"] == 0
+
+
 def test_poll_once_records_page_response_metadata_for_reporting(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     state.enqueue_work_item(
