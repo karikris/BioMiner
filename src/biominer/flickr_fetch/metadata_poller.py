@@ -206,8 +206,11 @@ class MetadataPollState:
                     (CLAIMED, timestamp, row["work_item_id"]),
                 )
                 conn.execute(
-                    "INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at) VALUES (?, ?, ?, ?)",
-                    (endpoint, row["work_item_id"], "reserved", unix_timestamp),
+                    """
+                    INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at, started_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (endpoint, row["work_item_id"], "reserved", unix_timestamp, unix_timestamp),
                 )
                 claimed.append((str(row["work_item_id"]), _query_from_json(str(row["query_json"]))))
             conn.execute("COMMIT")
@@ -232,8 +235,11 @@ class MetadataPollState:
                 conn.execute("COMMIT")
                 raise FlickrFetchError("hard API call cap reached before retry", retryable=False)
             conn.execute(
-                "INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at) VALUES (?, ?, ?, ?)",
-                (endpoint, work_item_id, "reserved", _unix_timestamp(now)),
+                """
+                INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at, started_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (endpoint, work_item_id, "reserved", _unix_timestamp(now), _unix_timestamp(now)),
             )
             conn.execute("COMMIT")
 
@@ -258,16 +264,29 @@ class MetadataPollState:
     def log_api_call(self, *, work_item_id: str, endpoint: str, status: str) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at) VALUES (?, ?, ?, ?)",
-                (endpoint, work_item_id, status, _unix_timestamp()),
+                """
+                INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at, started_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (endpoint, work_item_id, status, _unix_timestamp(), _unix_timestamp()),
             )
 
-    def update_api_call_status(self, *, work_item_id: str, status: str) -> None:
+    def update_api_call_status(
+        self,
+        *,
+        work_item_id: str,
+        status: str,
+        duration_sec: float | None = None,
+        http_status: int | None = None,
+    ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE api_call_ledger
-                SET status = ?
+                SET status = ?,
+                    finished_at = ?,
+                    duration_sec = ?,
+                    http_status = ?
                 WHERE id = (
                     SELECT id
                     FROM api_call_ledger
@@ -276,7 +295,7 @@ class MetadataPollState:
                     LIMIT 1
                 )
                 """,
-                (status, work_item_id),
+                (status, _unix_timestamp(), duration_sec, http_status, work_item_id),
             )
 
     def complete_work_item(
@@ -468,10 +487,15 @@ class MetadataPollState:
                     endpoint TEXT NOT NULL,
                     work_item_id TEXT NOT NULL,
                     status TEXT NOT NULL,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    started_at REAL,
+                    finished_at REAL,
+                    duration_sec REAL,
+                    http_status INTEGER
                 )
                 """
             )
+            self._ensure_api_call_columns(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS flickr_work_items (
@@ -583,6 +607,18 @@ class MetadataPollState:
         for name, sql_type in columns.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE flickr_work_items ADD COLUMN {name} {sql_type}")
+
+    def _ensure_api_call_columns(self, conn: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(api_call_ledger)").fetchall()}
+        columns = {
+            "started_at": "REAL",
+            "finished_at": "REAL",
+            "duration_sec": "REAL",
+            "http_status": "INTEGER",
+        }
+        for name, sql_type in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE api_call_ledger ADD COLUMN {name} {sql_type}")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
@@ -834,14 +870,24 @@ def _fetch_with_retries(
     attempts = 0
     while True:
         attempts += 1
+        started = time.perf_counter()
         try:
             payload = fetcher(query)
             _validate_flickr_search_payload(payload)
-            state.update_api_call_status(work_item_id=work_item_id, status="ok")
+            state.update_api_call_status(
+                work_item_id=work_item_id,
+                status="ok",
+                duration_sec=time.perf_counter() - started,
+            )
             return payload, attempts
         except Exception as exc:  # noqa: BLE001 - classification keeps retry policy explicit.
             error = _classify_fetch_error(exc)
-            state.update_api_call_status(work_item_id=work_item_id, status="failed")
+            state.update_api_call_status(
+                work_item_id=work_item_id,
+                status="failed",
+                duration_sec=time.perf_counter() - started,
+                http_status=error.http_status,
+            )
             if not error.retryable or attempts > max_retries:
                 raise FlickrFetchFailure(error, attempts=attempts) from exc
             if retry_backoff_seconds > 0:

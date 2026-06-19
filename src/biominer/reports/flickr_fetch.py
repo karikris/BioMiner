@@ -64,6 +64,7 @@ def build_step1_fetch_report(
     evidence_bytes = _file_bytes(Path(evidence_output))
     state_bytes = _file_bytes(result.state_db)
     state_work = _state_work_summary(result.state_db)
+    call_timings = _api_call_timing_summary(result.state_db)
     return {
         "run_id": run_id,
         "command": command,
@@ -76,9 +77,9 @@ def build_step1_fetch_report(
         "workers": workers,
         "timings": {
             "total_sec": total_sec,
-            "avg_sec_per_call": (total_sec / result.api_calls_made) if result.api_calls_made else None,
-            "p50_call_sec": "not_instrumented",
-            "p95_call_sec": "not_instrumented",
+            "avg_sec_per_call": call_timings["avg_sec_per_call"],
+            "p50_call_sec": call_timings["p50_call_sec"],
+            "p95_call_sec": call_timings["p95_call_sec"],
         },
         "api_budget": {
             "api_calls_used": result.api_calls_made,
@@ -221,6 +222,49 @@ def _state_work_summary(path: Path) -> dict[str, Any]:
             }
     except sqlite3.DatabaseError:
         return fallback
+
+
+def _api_call_timing_summary(path: Path) -> dict[str, float | None | str]:
+    fallback: dict[str, float | None | str] = {
+        "avg_sec_per_call": None,
+        "p50_call_sec": "not_instrumented",
+        "p95_call_sec": "not_instrumented",
+    }
+    if not path.exists():
+        return fallback
+    try:
+        with sqlite3.connect(path) as conn:
+            conn.row_factory = sqlite3.Row
+            tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+            if "api_call_ledger" not in tables or not _has_api_columns(conn, "duration_sec"):
+                return fallback
+            durations = [
+                float(row["duration_sec"])
+                for row in conn.execute(
+                    "SELECT duration_sec FROM api_call_ledger WHERE duration_sec IS NOT NULL ORDER BY duration_sec"
+                ).fetchall()
+            ]
+    except sqlite3.DatabaseError:
+        return fallback
+    if not durations:
+        return fallback
+    return {
+        "avg_sec_per_call": sum(durations) / len(durations),
+        "p50_call_sec": _percentile(durations, 50),
+        "p95_call_sec": _percentile(durations, 95),
+    }
+
+
+def _has_api_columns(conn: sqlite3.Connection, *names: str) -> bool:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(api_call_ledger)").fetchall()}
+    return all(name in existing for name in names)
+
+
+def _percentile(sorted_values: list[float], percentile: int) -> float:
+    if not sorted_values:
+        raise ValueError("sorted_values must not be empty")
+    index = max(0, min(len(sorted_values) - 1, int(((percentile / 100) * len(sorted_values) + 0.999999) - 1)))
+    return sorted_values[index]
 
 
 def _one(conn: sqlite3.Connection, sql: str) -> int:

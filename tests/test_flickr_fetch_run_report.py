@@ -138,6 +138,52 @@ def test_build_step1_fetch_report_includes_required_metrics(tmp_path) -> None:
     assert report["query_provenance"]["top_query_labels_by_records"][0] == {"query_label": "tags:Papilio", "records": 1}
 
 
+def test_build_step1_fetch_report_uses_recorded_api_call_timings(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "state.sqlite")
+    with sqlite3.connect(state.path) as conn:
+        for duration in (0.1, 0.2, 0.3):
+            conn.execute(
+                """
+                INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at, started_at, finished_at, duration_sec)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("flickr.photos.search", f"work-{duration}", "ok", 1.0, 1.0, 1.0 + duration, duration),
+            )
+    result = PollOnceResult(
+        state_db=state.path,
+        raw_responses_written=3,
+        evidence_rows_written=3,
+        evidence_rows_total=3,
+        source_records_inserted=3,
+        duplicate_records_skipped=0,
+        query_hits_inserted=3,
+        duplicate_query_hits_skipped=0,
+        image_urls_queued=3,
+        work_items_claimed=3,
+        api_calls_made=3,
+        remaining_soft_budget=3497,
+        remaining_hard_budget=3597,
+        stale_claims_requeued=0,
+    )
+
+    report = build_step1_fetch_report(
+        run_id="run",
+        command=["biominer", "poll-once"],
+        result=result,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        started_at=datetime(2026, 6, 12, tzinfo=UTC),
+        ended_at=datetime(2026, 6, 12, 0, 0, 10, tzinfo=UTC),
+        workers=1,
+        expected_pages=3,
+        status="completed",
+    )
+
+    assert round(report["timings"]["avg_sec_per_call"], 6) == 0.2
+    assert report["timings"]["p50_call_sec"] == 0.2
+    assert report["timings"]["p95_call_sec"] == 0.3
+
+
 def test_build_step1_fetch_report_includes_split_progress_metrics(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "state.sqlite")
     completed = FlickrQuery(

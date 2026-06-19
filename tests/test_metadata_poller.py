@@ -25,6 +25,10 @@ def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
             row[1]
             for row in conn.execute("PRAGMA table_info(flickr_work_items)").fetchall()
         }
+        api_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(api_call_ledger)").fetchall()
+        }
 
     assert {"api_call_ledger", "flickr_work_items", "source_records", "source_record_query_hits", "image_triage_queue"}.issubset(tables)
     assert {
@@ -41,6 +45,7 @@ def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
         "term",
         "query_hash",
     }.issubset(work_columns)
+    assert {"started_at", "finished_at", "duration_sec", "http_status"}.issubset(api_columns)
 
 
 def test_poll_once_fetches_metadata_only_dedupes_and_queues_image_urls(tmp_path) -> None:
@@ -363,9 +368,12 @@ def test_poll_once_retries_transient_timeout_before_success(tmp_path) -> None:
 
     with sqlite3.connect(state.path) as conn:
         statuses = conn.execute("SELECT status, count(*) FROM api_call_ledger GROUP BY status ORDER BY status").fetchall()
+        durations = [row[0] for row in conn.execute("SELECT duration_sec FROM api_call_ledger ORDER BY id").fetchall()]
     assert result.api_calls_made == 2
     assert result.raw_responses_written == 1
     assert statuses == [("failed", 1), ("ok", 1)]
+    assert len(durations) == 2
+    assert all(duration is not None and duration >= 0 for duration in durations)
 
 
 def test_poll_once_does_not_retry_flickr_semantic_failure(tmp_path) -> None:
