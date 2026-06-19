@@ -48,7 +48,6 @@ def seed_time_chunks(
             slice_days=days,
             coarse_end_date=None,
             coarse_slice_days=None,
-            pages_per_slice=1,
         )
     )
 

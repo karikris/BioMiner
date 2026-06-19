@@ -14,7 +14,6 @@ from biominer.flickr_fetch.query_planner import (
     DEFAULT_COARSE_SLICE_END_DATE,
     DEFAULT_FIXED_SLICE_DAYS,
     DEFAULT_FIXED_SLICE_END_DATE,
-    DEFAULT_FIXED_SLICE_PAGES,
     DEFAULT_FIXED_SLICE_START_DATE,
     GEO_PAGE_SIZE,
     NORMAL_PAGE_SIZE,
@@ -53,7 +52,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--slice-days", type=int, default=DEFAULT_FIXED_SLICE_DAYS)
     parser.add_argument("--coarse-end-date", default=DEFAULT_COARSE_SLICE_END_DATE)
     parser.add_argument("--coarse-slice-days", type=int, default=DEFAULT_COARSE_SLICE_DAYS)
-    parser.add_argument("--pages-per-slice", type=int, default=DEFAULT_FIXED_SLICE_PAGES)
     return parser
 
 
@@ -103,8 +101,6 @@ def main() -> None:
         args.end_date,
         "--slice-days",
         str(args.slice_days),
-        "--pages-per-slice",
-        str(args.pages_per_slice),
     ]
     if args.coarse_end_date:
         command.extend(["--coarse-end-date", args.coarse_end_date])
@@ -176,7 +172,6 @@ def main() -> None:
             slice_days=args.slice_days,
             coarse_end_date=args.coarse_end_date,
             coarse_slice_days=args.coarse_slice_days,
-            pages_per_slice=args.pages_per_slice,
         )
         event = {
             "event": "work_enqueued",
@@ -185,7 +180,6 @@ def main() -> None:
             "mode": "fixed_upload_slices",
             "start_date": args.start_date,
             "end_date": args.end_date,
-            "pages_per_slice": args.pages_per_slice,
         }
     pending_summary = _work_summary(state)
     log_event({**event, **pending_summary}, log_path=args.log_path)
@@ -255,7 +249,6 @@ def _enqueue_fixed_upload_slice_pages(
     slice_days: int,
     coarse_end_date: str | None,
     coarse_slice_days: int | None,
-    pages_per_slice: int,
 ) -> int:
     return sum(
         state.enqueue_work_item(query)
@@ -267,7 +260,6 @@ def _enqueue_fixed_upload_slice_pages(
             slice_days=slice_days,
             coarse_end_date=coarse_end_date,
             coarse_slice_days=coarse_slice_days,
-            pages_per_slice=pages_per_slice,
         )
     )
 
@@ -298,12 +290,12 @@ def _work_summary(state: MetadataPollState) -> dict[str, int]:
     with sqlite3.connect(state.path) as conn:
         pending_total = int(conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'pending'").fetchone()[0])
         pending_page1 = int(conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'pending' AND page = 1").fetchone()[0])
-        pending_pages_2_8 = int(conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'pending' AND page BETWEEN 2 AND 8").fetchone()[0])
+        pending_non_page1 = int(conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'pending' AND page > 1").fetchone()[0])
         completed_total = int(conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'completed'").fetchone()[0])
     return {
         "pending_total": pending_total,
         "pending_page1": pending_page1,
-        "pending_pages_2_8": pending_pages_2_8,
+        "pending_non_page1": pending_non_page1,
         "completed_total": completed_total,
     }
 

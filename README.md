@@ -183,12 +183,12 @@ Flickr's `per_page` maximum for normal searches is 500, while geo/bbox queries r
 
 ## Stable Search-Space Coverage
 
-BioMiner covers broad Flickr searches with deterministic upload-date slices, not blind deep paging.
+BioMiner covers broad Flickr searches with deterministic upload-date slices and Flickr-reported pagination metadata.
 
 Core invariant:
 
 ```text
-Never page beyond Flickr's 4,000-result accessible window for any single query slice.
+Seed broad discovery with upload-date page 1 work, then enqueue every page Flickr reports for that exact slice.
 ```
 
 Planning logic:
@@ -197,10 +197,10 @@ Planning logic:
 start at 2004-02-10 and advance to today
 use 5-day upload-date slices for the full range
 enqueue page 1 only for each slice at per_page=500
-after page 1 returns, enqueue pages 2..min(photos.pages, 8)
+after any page returns, ensure pages 1..photos.pages exist in SQLite for that exact query/date slice
 ```
 
-Page 1 is a real metadata page, not a `per_page=1` count probe. BioMiner stores all records from page 1, reads `photos.total`, `photos.pages`, `photos.page`, and `photos.perpage`, then enqueues only the remaining pages that Flickr says exist. If page 8 returns 500 records, report that upload-date slice as saturated at Flickr's result window. The slice is retained for downstream review, and future planning can split only those saturated windows more narrowly if needed.
+Page 1 is a real metadata page, not a `per_page=1` count probe. BioMiner stores all records from each fetched page, reads `photos.total`, `photos.pages`, `photos.page`, and `photos.perpage`, then idempotently inserts any missing page work from `1..photos.pages`. Flickr's `photos.perpage` is stored as the actual response page size; BioMiner does not assume the requested `per_page` value was accepted.
 
 Work-item ordering should be stable across reruns:
 

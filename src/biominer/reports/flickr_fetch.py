@@ -182,15 +182,10 @@ def _state_work_summary(path: Path) -> dict[str, Any]:
         "last_completed_date_range": None,
         "next_pending_date_range": None,
         "has_pending_work": None,
-        "saturated_slices": "not_instrumented",
-        "saturated_slice_count": "not_instrumented",
         "slice_page1_completed": "not_instrumented",
         "remaining_pages_enqueued_from_page1": "not_instrumented",
         "empty_or_single_page_slices": "not_instrumented",
-        "page_calls_avoided_estimate": "not_instrumented",
-        "reported_over_window_slices": "not_instrumented",
-        "saturated_remediation_pending": "not_instrumented",
-        "saturated_remediation_enqueued": "not_instrumented",
+        "reported_pagination_gaps": "not_instrumented",
     }
     if not path.exists():
         return fallback
@@ -200,7 +195,6 @@ def _state_work_summary(path: Path) -> dict[str, Any]:
             tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
             if "flickr_work_items" not in tables:
                 return fallback
-            saturated_slices = _saturated_slices(conn)
             page1_completed = _slice_page1_completed(conn)
             remaining_pages = _remaining_pages_enqueued_from_page1(conn)
             return {
@@ -214,15 +208,10 @@ def _state_work_summary(path: Path) -> dict[str, Any]:
                 "last_completed_date_range": _date_range(conn, status="completed", descending=True),
                 "next_pending_date_range": _date_range(conn, status="pending", descending=False),
                 "has_pending_work": bool(_one(conn, "SELECT count(*) FROM flickr_work_items WHERE status = 'pending'")),
-                "saturated_slices": saturated_slices,
-                "saturated_slice_count": len(saturated_slices),
                 "slice_page1_completed": page1_completed,
                 "remaining_pages_enqueued_from_page1": remaining_pages,
                 "empty_or_single_page_slices": _empty_or_single_page_slices(conn),
-                "page_calls_avoided_estimate": max(0, _remaining_page_capacity_from_page1(conn) - remaining_pages),
-                "reported_over_window_slices": _reported_over_window_slices(conn),
-                "saturated_remediation_pending": len(saturated_slices),
-                "saturated_remediation_enqueued": _saturated_remediation_enqueued(conn),
+                "reported_pagination_gaps": _reported_pagination_gaps(conn),
             }
     except sqlite3.DatabaseError:
         return fallback
@@ -305,36 +294,6 @@ def _date_range(conn: sqlite3.Connection, *, status: str, descending: bool) -> d
     return {"date_kind": str(row["date_kind"]), "min_date": str(row["min_date"]), "max_date": str(row["max_date"])}
 
 
-def _saturated_slices(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(flickr_work_items)").fetchall()}
-    if "records_returned" not in existing:
-        return []
-    rows = conn.execute(
-        """
-        SELECT date_kind, min_date, max_date, page, records_returned
-        FROM flickr_work_items
-        WHERE status = 'completed'
-          AND lane = 'normal_page'
-          AND (
-            (page = 8 AND per_page = 500 AND records_returned = 500)
-            OR (page = 16 AND per_page = 250 AND records_returned = 250)
-          )
-          AND COALESCE(date_kind, '') != ''
-        ORDER BY min_date, max_date, page
-        """
-    ).fetchall()
-    return [
-        {
-            "date_kind": str(row["date_kind"]),
-            "min_date": str(row["min_date"]),
-            "max_date": str(row["max_date"]),
-            "page": int(row["page"]),
-            "records_returned": int(row["records_returned"]),
-        }
-        for row in rows
-    ]
-
-
 def _has_columns(conn: sqlite3.Connection, *names: str) -> bool:
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(flickr_work_items)").fetchall()}
     return all(name in existing for name in names)
@@ -362,32 +321,11 @@ def _remaining_pages_enqueued_from_page1(conn: sqlite3.Connection) -> int:
         SELECT count(*)
         FROM flickr_work_items
         WHERE lane = 'normal_page'
-          AND page BETWEEN 2 AND 16
+          AND page > 1
           AND split_reason = 'upload_date'
           AND COALESCE(date_kind, '') != ''
         """,
     )
-
-
-def _remaining_page_capacity_from_page1(conn: sqlite3.Connection) -> int:
-    if not _has_columns(conn, "response_perpage"):
-        return _slice_page1_completed(conn) * 7
-    rows = conn.execute(
-        """
-        SELECT COALESCE(response_perpage, per_page) AS perpage
-        FROM flickr_work_items
-        WHERE status = 'completed'
-          AND lane = 'normal_page'
-          AND page = 1
-          AND split_reason = 'upload_date'
-          AND COALESCE(date_kind, '') != ''
-        """
-    ).fetchall()
-    capacity = 0
-    for row in rows:
-        perpage = int(row["perpage"] or 500)
-        capacity += max(0, (4000 // perpage) - 1) if perpage > 0 else 0
-    return capacity
 
 
 def _empty_or_single_page_slices(conn: sqlite3.Connection) -> int:
@@ -407,51 +345,71 @@ def _empty_or_single_page_slices(conn: sqlite3.Connection) -> int:
     )
 
 
-def _reported_over_window_slices(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    if not _has_columns(conn, "response_total", "response_pages"):
+def _reported_pagination_gaps(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    if not _has_columns(conn, "response_pages"):
         return []
     rows = conn.execute(
         """
-        SELECT date_kind, min_date, max_date, response_total, response_pages
-        FROM flickr_work_items
-        WHERE status = 'completed'
-          AND lane = 'normal_page'
-          AND page = 1
-          AND split_reason = 'upload_date'
-          AND (
-            COALESCE(response_total, 0) > 4000
-            OR COALESCE(response_pages, 0) > (4000 / COALESCE(NULLIF(response_perpage, 0), per_page, 500))
-          )
-        ORDER BY min_date, max_date
+        WITH reported AS (
+            SELECT
+                lane,
+                term,
+                date_kind,
+                min_date,
+                max_date,
+                bbox_label,
+                max(response_pages) AS response_pages
+            FROM flickr_work_items
+            WHERE lane IN ('normal_page', 'bbox_page')
+              AND response_pages IS NOT NULL
+            GROUP BY lane, term, date_kind, min_date, max_date, bbox_label
+        ),
+        known AS (
+            SELECT
+                lane,
+                term,
+                date_kind,
+                min_date,
+                max_date,
+                bbox_label,
+                max(page) AS highest_known_page,
+                count(DISTINCT page) AS known_pages
+            FROM flickr_work_items
+            WHERE lane IN ('normal_page', 'bbox_page')
+            GROUP BY lane, term, date_kind, min_date, max_date, bbox_label
+        )
+        SELECT
+            reported.date_kind,
+            reported.min_date,
+            reported.max_date,
+            reported.response_pages,
+            known.highest_known_page,
+            known.known_pages
+        FROM reported
+        JOIN known
+          ON known.lane = reported.lane
+         AND known.term = reported.term
+         AND COALESCE(known.date_kind, '') = COALESCE(reported.date_kind, '')
+         AND COALESCE(known.min_date, '') = COALESCE(reported.min_date, '')
+         AND COALESCE(known.max_date, '') = COALESCE(reported.max_date, '')
+         AND COALESCE(known.bbox_label, '') = COALESCE(reported.bbox_label, '')
+        WHERE reported.response_pages > known.highest_known_page
+           OR known.known_pages < reported.response_pages
+        ORDER BY reported.min_date, reported.max_date
+        LIMIT 100
         """
     ).fetchall()
     return [
         {
-            "date_kind": str(row["date_kind"]),
-            "min_date": str(row["min_date"]),
-            "max_date": str(row["max_date"]),
-            "response_total": int(row["response_total"]),
+            "date_kind": str(row["date_kind"] or ""),
+            "min_date": str(row["min_date"] or ""),
+            "max_date": str(row["max_date"] or ""),
             "response_pages": int(row["response_pages"]),
+            "highest_known_page": int(row["highest_known_page"]),
+            "known_pages": int(row["known_pages"]),
         }
         for row in rows
     ]
-
-
-def _saturated_remediation_enqueued(conn: sqlite3.Connection) -> int:
-    if not _has_columns(conn, "parent_query_hash"):
-        return 0
-    return _one(
-        conn,
-        """
-        SELECT count(*)
-        FROM flickr_work_items
-        WHERE lane = 'normal_page'
-          AND page = 1
-          AND split_reason = 'upload_date'
-          AND parent_query_hash IS NOT NULL
-          AND COALESCE(date_kind, '') != ''
-        """,
-    )
 
 
 def environment_summary() -> dict[str, str | None]:

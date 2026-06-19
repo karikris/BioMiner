@@ -25,6 +25,7 @@ from biominer.flickr_fetch.query_planner import (
     plan_fixed_upload_slice_pages,
     plan_queries_from_count,
     plan_pages_from_count,
+    result_pages_for_total,
 )
 
 
@@ -95,8 +96,9 @@ def test_total_4000_creates_standard_pages_for_non_geo_leaf() -> None:
 
     pages = plan_queries_from_count(probe, total=4000)
 
-    assert [page.lane for page in pages] == ["normal_page"] * 8
-    assert [page.page for page in pages] == list(range(1, 9))
+    expected_pages = result_pages_for_total(4000, per_page=NORMAL_PAGE_SIZE)
+    assert [page.lane for page in pages] == ["normal_page"] * expected_pages
+    assert [page.page for page in pages] == list(range(1, expected_pages + 1))
     assert {page.per_page for page in pages} == {NORMAL_PAGE_SIZE}
 
 
@@ -106,7 +108,8 @@ def test_text_butterfly_total_3300_creates_seven_standard_pages() -> None:
     pages = plan_queries_from_count(probe, total=3300)
 
     assert [page.lane for page in pages] == ["normal_page"] * 7
-    assert [page.page for page in pages] == list(range(1, 8))
+    expected_pages = result_pages_for_total(3300, per_page=NORMAL_PAGE_SIZE)
+    assert [page.page for page in pages] == list(range(1, expected_pages + 1))
     assert {page.per_page for page in pages} == {NORMAL_PAGE_SIZE}
 
 
@@ -184,7 +187,7 @@ def test_planned_work_is_sorted_deterministically() -> None:
     ]
 
 
-def test_query_under_page_limit_creates_250_record_geo_pages() -> None:
+def test_query_inside_result_window_creates_250_record_geo_pages() -> None:
     probe = FlickrQuery(term="Papilio demoleus", language="la", search_field="text", lane="count_probe")
 
     pages = plan_queries_from_count(probe, total=501)
@@ -194,7 +197,7 @@ def test_query_under_page_limit_creates_250_record_geo_pages() -> None:
     assert all(page.page < 4000 for page in pages)
 
 
-def test_query_over_page_limit_uses_fixed_slice_pages_not_count_probes() -> None:
+def test_query_over_result_window_uses_fixed_slice_pages_not_count_probes() -> None:
     probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe")
 
     pages = plan_queries_from_count(probe, total=MAX_ACCESSIBLE_RESULTS_PER_QUERY * GEO_PAGE_SIZE + 1)
@@ -266,7 +269,6 @@ def test_plan_fixed_upload_slice_pages_creates_page_one_only_without_count_probe
         slice_days=5,
         coarse_end_date=None,
         coarse_slice_days=None,
-        pages_per_slice=8,
     )
 
     assert len(pages) == 2

@@ -261,62 +261,6 @@ def test_build_step1_fetch_report_includes_split_progress_metrics(tmp_path) -> N
     assert report["throughput"]["records_per_page"] == 500
 
 
-def test_build_step1_fetch_report_marks_page_8_full_slice_as_saturated(tmp_path) -> None:
-    state = MetadataPollState(tmp_path / "state.sqlite")
-    page = FlickrQuery(
-        term="butterfly",
-        language="en",
-        search_field="text",
-        lane="normal_page",
-        page=8,
-        per_page=500,
-        has_geo=0,
-        min_upload_date="2007-01-01",
-        max_upload_date="2007-01-05",
-        slice_index=0,
-    )
-    state.enqueue_work_item(page)
-    with sqlite3.connect(state.path) as conn:
-        work_id = conn.execute("SELECT work_item_id FROM flickr_work_items").fetchone()[0]
-        conn.execute("UPDATE flickr_work_items SET status = 'completed', records_returned = 500 WHERE work_item_id = ?", (work_id,))
-    result = PollOnceResult(
-        state_db=state.path,
-        raw_responses_written=1,
-        evidence_rows_written=500,
-        evidence_rows_total=500,
-        source_records_inserted=500,
-        duplicate_records_skipped=0,
-        query_hits_inserted=500,
-        duplicate_query_hits_skipped=0,
-        image_urls_queued=500,
-        work_items_claimed=1,
-        api_calls_made=1,
-        remaining_soft_budget=3499,
-        remaining_hard_budget=3599,
-        stale_claims_requeued=0,
-    )
-
-    report = build_step1_fetch_report(
-        run_id="run",
-        command=["biominer", "poll-once"],
-        result=result,
-        raw_root=tmp_path / "raw",
-        evidence_output=tmp_path / "evidence.parquet",
-        started_at=datetime(2026, 6, 12, tzinfo=UTC),
-        ended_at=datetime(2026, 6, 12, 0, 0, 10, tzinfo=UTC),
-        workers=1,
-        expected_pages=8,
-        status="completed",
-    )
-
-    assert report["work"]["saturated_slices"] == [
-        {"date_kind": "upload_date", "min_date": "2007-01-01", "max_date": "2007-01-05", "page": 8, "records_returned": 500}
-    ]
-    assert report["work"]["saturated_slice_count"] == 1
-    assert report["work"]["saturated_remediation_pending"] == 1
-    assert report["work"]["saturated_remediation_enqueued"] == 0
-
-
 def test_build_step1_fetch_report_includes_dynamic_page_enqueue_metrics(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "state.sqlite")
     page_one = FlickrQuery(
@@ -375,21 +319,21 @@ def test_build_step1_fetch_report_includes_dynamic_page_enqueue_metrics(tmp_path
         started_at=datetime(2026, 6, 12, tzinfo=UTC),
         ended_at=datetime(2026, 6, 12, 0, 0, 10, tzinfo=UTC),
         workers=1,
-        expected_pages=8,
+        expected_pages=20,
         status="completed",
     )
 
     assert report["work"]["slice_page1_completed"] == 1
     assert report["work"]["remaining_pages_enqueued_from_page1"] == 15
     assert report["work"]["empty_or_single_page_slices"] == 0
-    assert report["work"]["page_calls_avoided_estimate"] == 0
-    assert report["work"]["reported_over_window_slices"] == [
+    assert report["work"]["reported_pagination_gaps"] == [
         {
             "date_kind": "upload_date",
             "min_date": "2007-01-01",
             "max_date": "2007-01-05",
-            "response_total": 9000,
             "response_pages": 20,
+            "highest_known_page": 16,
+            "known_pages": 16,
         }
     ]
 
@@ -407,7 +351,6 @@ def test_enqueue_fixed_upload_slice_pages_supports_tag_search(tmp_path) -> None:
         slice_days=5,
         coarse_end_date=None,
         coarse_slice_days=None,
-        pages_per_slice=8,
     )
 
     assert inserted == 3

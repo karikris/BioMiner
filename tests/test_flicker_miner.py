@@ -49,7 +49,7 @@ def test_seed_time_chunks_creates_2024_eleven_30_day_batches_with_page_one_only(
     assert {row[2] for row in rows} == {1}
 
 
-def test_2024_batches_can_expand_to_page_sixteen_from_flickr_page_metadata(tmp_path) -> None:
+def test_2024_batches_expand_to_all_flickr_reported_pages_and_leave_budget_remainder_pending(tmp_path) -> None:
     from biominer.flickr_fetch.metadata_poller import poll_once
 
     state_db = tmp_path / "poller.sqlite"
@@ -88,7 +88,18 @@ def test_2024_batches_can_expand_to_page_sixteen_from_flickr_page_metadata(tmp_p
             """
         ).fetchall()
         statuses = conn.execute("SELECT status, count(*) FROM flickr_work_items GROUP BY status").fetchall()
+        slice_maxes = conn.execute(
+            """
+            SELECT min_date, max(page), count(*)
+            FROM flickr_work_items
+            GROUP BY min_date
+            ORDER BY min_date
+            """
+        ).fetchall()
 
-    assert page_counts == [(page, 11) for page in range(1, 17)]
-    assert statuses == [("completed", 176)]
+    assert page_counts[0] == (1, 11)
+    assert page_counts[-1] == (20, 9)
+    assert statuses == [("completed", 176), ("pending", 6)]
+    assert slice_maxes[:9] == [(row[0], 20, 20) for row in slice_maxes[:9]]
+    assert slice_maxes[9:] == [(row[0], 1, 1) for row in slice_maxes[9:]]
     assert result.work_items_claimed == 176

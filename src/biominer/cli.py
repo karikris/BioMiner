@@ -79,9 +79,6 @@ def build_parser() -> argparse.ArgumentParser:
     qa_rate_limit = subparsers.add_parser("qa-rate-limit")
     qa_rate_limit.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
     qa_rate_limit.add_argument("--ledger-path", dest="state_db")
-    saturated_upload = subparsers.add_parser("enqueue-saturated-upload-slices")
-    saturated_upload.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
-    saturated_upload.add_argument("--slice-days", type=int, default=1)
     qa_summary = subparsers.add_parser("qa-summary")
     qa_summary.add_argument("--report", required=True)
     export_views = subparsers.add_parser("export-bucket-views")
@@ -234,14 +231,6 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "qa-rate-limit":
         print(json.dumps(MetadataPollState(args.state_db).api_budget_summary(), indent=2, sort_keys=True))
-        return 0
-    if args.command == "enqueue-saturated-upload-slices":
-        try:
-            payload = MetadataPollState(args.state_db).enqueue_saturated_upload_slice_remediation(slice_days=args.slice_days)
-        except ValueError as exc:
-            print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-            return 2
-        print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     if args.command == "qa-summary":
         print(json.dumps(_summarize_report(Path(args.report)), indent=2, sort_keys=True))

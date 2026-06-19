@@ -45,7 +45,6 @@ DEFAULT_FIXED_SLICE_END_DATE = date.today().isoformat()
 DEFAULT_COARSE_SLICE_END_DATE: str | None = None
 DEFAULT_COARSE_SLICE_DAYS: int | None = None
 DEFAULT_FIXED_SLICE_DAYS = 5
-DEFAULT_FIXED_SLICE_PAGES = FLICKR_SEARCH_RESULT_WINDOW // NORMAL_PAGE_SIZE
 PAPILIO_DEMOLEUS_REGION_BBOXES: dict[str, str] = {
     "India": "68.11,6.55,97.40,35.67",
     "Pakistan": "60.87,23.63,77.84,37.08",
@@ -284,7 +283,6 @@ def plan_fixed_upload_slice_pages(
     slice_days: int = DEFAULT_FIXED_SLICE_DAYS,
     coarse_end_date: str | None = DEFAULT_COARSE_SLICE_END_DATE,
     coarse_slice_days: int | None = DEFAULT_COARSE_SLICE_DAYS,
-    pages_per_slice: int = 1,
     language: str = "en",
 ) -> tuple[FlickrQuery, ...]:
     pages: list[FlickrQuery] = []
@@ -297,23 +295,22 @@ def plan_fixed_upload_slice_pages(
             coarse_slice_days=coarse_slice_days,
         )
     ):
-        for page in range(1, min(pages_per_slice, 1) + 1):
-            pages.append(
-                FlickrQuery(
-                    term=term,
-                    language=language,
-                    search_field=search_field,
-                    lane="normal_page",
-                    page=page,
-                    per_page=NORMAL_PAGE_SIZE,
-                    has_geo=0,
-                    min_upload_date=start,
-                    max_upload_date=end,
-                    split_reason="upload_date",
-                    split_depth=1,
-                    slice_index=slice_index,
-                )
+        pages.append(
+            FlickrQuery(
+                term=term,
+                language=language,
+                search_field=search_field,
+                lane="normal_page",
+                page=1,
+                per_page=NORMAL_PAGE_SIZE,
+                has_geo=0,
+                min_upload_date=start,
+                max_upload_date=end,
+                split_reason="upload_date",
+                split_depth=1,
+                slice_index=slice_index,
             )
+        )
     return _sort_queries(pages)
 
 
@@ -323,8 +320,8 @@ def result_pages_for_total(total: int, *, per_page: int = NORMAL_PAGE_SIZE) -> i
     return ceil(total / per_page)
 
 
-def query_fits_page_limit(total: int, *, per_page: int = NORMAL_PAGE_SIZE, max_pages: int = MAX_ACCESSIBLE_RESULTS_PER_QUERY) -> bool:
-    return total <= STABLE_RESULT_THRESHOLD and result_pages_for_total(total, per_page=per_page) <= max_pages
+def query_fits_result_window(total: int) -> bool:
+    return total <= STABLE_RESULT_THRESHOLD
 
 
 def page_size_for_query(query: FlickrQuery) -> int:
@@ -341,9 +338,8 @@ def plan_queries_from_count(
     upload_date_ranges: Iterable[tuple[str, str]] = (),
     bboxes: Iterable[str] = (),
     narrower_terms: Iterable[str] = (),
-    max_pages: int = MAX_ACCESSIBLE_RESULTS_PER_QUERY,
 ) -> tuple[FlickrQuery, ...]:
-    if total <= STABLE_RESULT_THRESHOLD and query_fits_page_limit(total, per_page=page_size_for_query(probe), max_pages=max_pages):
+    if query_fits_result_window(total):
         return plan_pages_from_count(probe, total=total)
     return plan_fixed_upload_slice_pages(
         term=probe.term,

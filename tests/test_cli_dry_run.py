@@ -108,26 +108,6 @@ def test_qa_rate_limit_outputs_limiter_status_json(tmp_path, capsys) -> None:
     assert payload["hard_api_calls_per_hour"] == 3600
 
 
-def test_enqueue_saturated_upload_slices_cli_outputs_json(tmp_path, capsys) -> None:
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "enqueue-saturated-upload-slices",
-            "--state-db",
-            str(tmp_path / "poller.sqlite"),
-            "--slice-days",
-            "1",
-        ]
-    )
-
-    assert run(args) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["saturated_slices_seen"] == 0
-    assert payload["work_items_inserted"] == 0
-    assert payload["slice_days"] == 1
-
-
 def test_qa_summary_outputs_report_summary(tmp_path, capsys) -> None:
     report_path = tmp_path / "report.json"
     report_path.write_text(

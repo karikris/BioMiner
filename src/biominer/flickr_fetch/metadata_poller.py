@@ -15,12 +15,10 @@ import polars as pl
 from biominer.filter.extractor import build_evidence_frame
 from biominer.flickr_fetch.endpoints import FLICKR_REST_BASE_URL, SEARCH_METHOD
 from biominer.flickr_fetch.query_planner import (
-    FLICKR_SEARCH_RESULT_WINDOW,
     FlickrQuery,
     build_count_probes,
     deduplicate_photo_records,
     flickr_search_params,
-    fixed_upload_date_slices,
     plan_queries_from_count,
     query_date_kind,
     query_hash,
@@ -76,6 +74,16 @@ class PollOnceResult:
     stale_claims_requeued: int
 
 
+@dataclass(frozen=True)
+class PageEnsureResult:
+    target_pages: int
+    new_pages_enqueued: int
+    total_known_work_items: int
+    highest_known_page: int
+    missing_pages: tuple[int, ...]
+    warnings: tuple[dict[str, object], ...]
+
+
 class MetadataPollState:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -95,44 +103,95 @@ class MetadataPollState:
             return int(conn.execute("SELECT count(*) FROM flickr_work_items").fetchone()[0])
 
     def enqueue_work_item(self, query: FlickrQuery) -> int:
-        work_item_id = _work_item_id(query)
         with self._connect() as conn:
-            result = conn.execute(
-                """
-                INSERT OR IGNORE INTO flickr_work_items (
-                    work_item_id, status, query_json, lane, page, per_page,
-                    split_depth, split_priority, split_reason, parent_query_hash,
-                    parent_total, date_kind, min_date, max_date, bbox_index,
-                    slice_index, bbox_label, term, query_hash, claimed_at,
-                    completed_at, error, records_returned, response_total,
-                    response_pages, response_page, response_perpage, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?)
-                """,
-                (
-                    work_item_id,
-                    PENDING,
-                    json.dumps(asdict(query), sort_keys=True, ensure_ascii=False),
-                    query.lane,
-                    query.page,
-                    query.per_page,
-                    query.split_depth,
-                    split_priority(query),
-                    query.split_reason,
-                    query.parent_query_hash,
-                    query.parent_total,
-                    query_date_kind(query),
-                    query_min_date(query),
-                    query_max_date(query),
-                    query.bbox_index,
-                    query.slice_index,
-                    query.region or query.bbox,
-                    query.term,
-                    query_hash(query),
-                    _timestamp(),
-                ),
-            )
+            result = _insert_work_item(conn, query)
         return int(result.rowcount)
+
+    def ensure_reported_pages(self, query: FlickrQuery, *, response_pages: int, response_perpage: int | None = None) -> PageEnsureResult:
+        if query.lane == "count_probe" or response_pages <= 0:
+            return PageEnsureResult(
+                target_pages=0,
+                new_pages_enqueued=0,
+                total_known_work_items=0,
+                highest_known_page=0,
+                missing_pages=(),
+                warnings=(),
+            )
+        effective_perpage = response_perpage or query.per_page
+        if effective_perpage <= 0:
+            effective_perpage = query.per_page
+        warnings: list[dict[str, object]] = []
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            before = _pagination_rows(conn, query)
+            previous_reported_page_counts = [int(row["response_pages"]) for row in before if row["response_pages"] is not None]
+            previous_reported_page_count = max(previous_reported_page_counts, default=0)
+            highest_before = max((int(row["page"]) for row in before), default=0)
+            if previous_reported_page_count and previous_reported_page_count != response_pages:
+                warnings.append(
+                    {
+                        "event": "pagination_metadata_changed",
+                        "level": "warning",
+                        "previous_response_pages": previous_reported_page_count,
+                        "response_pages": response_pages,
+                        "min_date": query_min_date(query),
+                        "max_date": query_max_date(query),
+                    }
+                )
+            target_pages = max(response_pages, previous_reported_page_count)
+            existing_pages = {int(row["page"]) for row in before}
+            inserted = 0
+            for page in range(1, target_pages + 1):
+                if page in existing_pages:
+                    continue
+                result = _insert_work_item(conn, replace(query, page=page, per_page=effective_perpage))
+                inserted += int(result.rowcount)
+            after = _pagination_rows(conn, query)
+            known_pages = {int(row["page"]) for row in after}
+            missing_pages = tuple(page for page in range(1, target_pages + 1) if page not in known_pages)
+            highest_after = max(known_pages, default=0)
+            if response_pages > highest_before:
+                warnings.append(
+                    {
+                        "event": "pagination_pages_discovered",
+                        "level": "warning",
+                        "response_pages": response_pages,
+                        "highest_queued_page_before_enqueue": highest_before,
+                        "min_date": query_min_date(query),
+                        "max_date": query_max_date(query),
+                    }
+                )
+            if response_pages > highest_after:
+                warnings.append(
+                    {
+                        "event": "pagination_invariant_failed",
+                        "level": "error",
+                        "response_pages": response_pages,
+                        "highest_queued_page": highest_after,
+                        "min_date": query_min_date(query),
+                        "max_date": query_max_date(query),
+                    }
+                )
+            if missing_pages:
+                warnings.append(
+                    {
+                        "event": "pagination_missing_pages",
+                        "level": "error",
+                        "response_pages": target_pages,
+                        "missing_pages": list(missing_pages),
+                        "min_date": query_min_date(query),
+                        "max_date": query_max_date(query),
+                    }
+                )
+            conn.execute("COMMIT")
+        return PageEnsureResult(
+            target_pages=target_pages,
+            new_pages_enqueued=inserted,
+            total_known_work_items=len(after),
+            highest_known_page=highest_after,
+            missing_pages=missing_pages,
+            warnings=tuple(warnings),
+        )
 
     def requeue_stale_claims(self, *, stale_after_seconds: int = DEFAULT_STALE_CLAIM_SECONDS, now: datetime | None = None) -> int:
         cutoff = datetime.fromtimestamp((now or datetime.now(UTC)).timestamp() - stale_after_seconds, UTC).isoformat()
@@ -257,64 +316,6 @@ class MetadataPollState:
             "hard_photo_records_per_hour": "not_instrumented",
             "window_seconds": 3600,
         }
-
-    def enqueue_saturated_upload_slice_remediation(self, *, slice_days: int = 1) -> dict[str, object]:
-        if slice_days <= 0:
-            raise ValueError("slice_days must be positive")
-        saturated = self._saturated_upload_slice_queries()
-        generated = 0
-        inserted = 0
-        for parent_id, query in saturated:
-            if not query.min_upload_date or not query.max_upload_date:
-                continue
-            for index, (start, end) in enumerate(
-                fixed_upload_date_slices(
-                    start_date=query.min_upload_date,
-                    end_date=query.max_upload_date,
-                    slice_days=slice_days,
-                )
-            ):
-                generated += 1
-                inserted += self.enqueue_work_item(
-                    replace(
-                        query,
-                        lane="normal_page",
-                        page=1,
-                        min_upload_date=start,
-                        max_upload_date=end,
-                        parent_query_hash=query.parent_query_hash or parent_id,
-                        split_depth=query.split_depth + 1,
-                        slice_index=index,
-                    )
-                )
-        return {
-            "saturated_slices_seen": len(saturated),
-            "sub_slices_generated": generated,
-            "work_items_inserted": inserted,
-            "duplicates_skipped": generated - inserted,
-            "slice_days": slice_days,
-            "state_db": str(self.path),
-        }
-
-    def _saturated_upload_slice_queries(self) -> list[tuple[str, FlickrQuery]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT work_item_id, query_json
-                FROM flickr_work_items
-                WHERE status = 'completed'
-                  AND lane = 'normal_page'
-                  AND split_reason = 'upload_date'
-                  AND (
-                    (page = 8 AND per_page = 500 AND records_returned = 500)
-                    OR (page = 16 AND per_page = 250 AND records_returned = 250)
-                  )
-                  AND COALESCE(min_date, '') != ''
-                  AND COALESCE(max_date, '') != ''
-                ORDER BY min_date, max_date, page
-                """
-            ).fetchall()
-        return [(str(row["work_item_id"]), _query_from_json(str(row["query_json"]))) for row in rows]
 
     def _api_calls_in_window(self, conn: sqlite3.Connection, now: float) -> int:
         cutoff = now - 3600
@@ -837,10 +838,11 @@ def poll_once(
                             query_hits_inserted += query_hits
                             duplicate_query_hits += duplicate_hits
                             queued += queued_count
-                            remaining_queries = _remaining_page_queries(query, pages=response_pages, per_page=response_perpage or query.per_page)
-                            remaining_inserted = 0
-                            for next_query in remaining_queries:
-                                remaining_inserted += state.enqueue_work_item(next_query)
+                            page_ensure = state.ensure_reported_pages(
+                                query,
+                                response_pages=response_pages,
+                                response_perpage=response_perpage,
+                            )
                             _progress(
                                 progress_callback,
                                 {
@@ -857,16 +859,23 @@ def poll_once(
                                     "records_returned": records_returned,
                                     "records_inserted": inserted,
                                     "duplicates_skipped": skipped,
-                                    "remaining_pages_enqueued": remaining_inserted,
+                                    "remaining_pages_enqueued": page_ensure.new_pages_enqueued,
+                                    "known_work_items_for_query": page_ensure.total_known_work_items,
+                                    "highest_known_page": page_ensure.highest_known_page,
+                                    "missing_pages": list(page_ensure.missing_pages),
                                 },
                             )
-                            if remaining_queries:
+                            for warning in page_ensure.warnings:
+                                _progress(progress_callback, warning)
+                            if page_ensure.new_pages_enqueued:
                                 _progress(
                                     progress_callback,
                                     {
                                         "event": "remaining_pages_enqueued",
-                                        "enqueued": remaining_inserted,
-                                        "pages": [item.page for item in remaining_queries],
+                                        "enqueued": page_ensure.new_pages_enqueued,
+                                        "target_pages": page_ensure.target_pages,
+                                        "known_work_items_for_query": page_ensure.total_known_work_items,
+                                        "missing_pages": list(page_ensure.missing_pages),
                                         "min_date": query_min_date(query),
                                         "max_date": query_max_date(query),
                                     },
@@ -1116,18 +1125,75 @@ def _response_int(value: object, *, key: str) -> int:
         raise FlickrFetchError(f"Flickr response photos.{key} must be an integer") from exc
 
 
-def _remaining_page_queries(query: FlickrQuery, *, pages: int, per_page: int) -> tuple[FlickrQuery, ...]:
-    if query.lane != "normal_page" or query.page != 1:
-        return ()
-    if query.split_reason != "upload_date" or not query.min_upload_date or not query.max_upload_date:
-        return ()
-    if per_page <= 0:
-        per_page = query.per_page
-    max_accessible_pages = max(1, FLICKR_SEARCH_RESULT_WINDOW // per_page)
-    last_page = min(max(0, pages), max_accessible_pages)
-    if last_page <= 1:
-        return ()
-    return tuple(replace(query, page=page, per_page=per_page) for page in range(2, last_page + 1))
+def _insert_work_item(conn: sqlite3.Connection, query: FlickrQuery) -> sqlite3.Cursor:
+    work_item_id = _work_item_id(query)
+    return conn.execute(
+        """
+        INSERT OR IGNORE INTO flickr_work_items (
+            work_item_id, status, query_json, lane, page, per_page,
+            split_depth, split_priority, split_reason, parent_query_hash,
+            parent_total, date_kind, min_date, max_date, bbox_index,
+            slice_index, bbox_label, term, query_hash, claimed_at,
+            completed_at, error, records_returned, response_total,
+            response_pages, response_page, response_perpage, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?)
+        """,
+        (
+            work_item_id,
+            PENDING,
+            json.dumps(asdict(query), sort_keys=True, ensure_ascii=False),
+            query.lane,
+            query.page,
+            query.per_page,
+            query.split_depth,
+            split_priority(query),
+            query.split_reason,
+            query.parent_query_hash,
+            query.parent_total,
+            query_date_kind(query),
+            query_min_date(query),
+            query_max_date(query),
+            query.bbox_index,
+            query.slice_index,
+            query.region or query.bbox,
+            query.term,
+            query_hash(query),
+            _timestamp(),
+        ),
+    )
+
+
+def _pagination_rows(conn: sqlite3.Connection, query: FlickrQuery) -> list[sqlite3.Row]:
+    rows = conn.execute(
+        """
+        SELECT page, query_json, response_pages
+        FROM flickr_work_items
+        WHERE lane = ?
+          AND term = ?
+          AND COALESCE(date_kind, '') = ?
+          AND COALESCE(min_date, '') = ?
+          AND COALESCE(max_date, '') = ?
+          AND COALESCE(bbox_label, '') = ?
+        """,
+        (
+            query.lane,
+            query.term,
+            query_date_kind(query),
+            query_min_date(query),
+            query_max_date(query),
+            query.region or query.bbox or "",
+        ),
+    ).fetchall()
+    identity = _pagination_identity(query)
+    return [row for row in rows if _pagination_identity(_query_from_json(str(row["query_json"]))) == identity]
+
+
+def _pagination_identity(query: FlickrQuery) -> dict[str, Any]:
+    payload = asdict(query)
+    payload.pop("page", None)
+    payload.pop("per_page", None)
+    return payload
 
 
 def _payload_photo_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
