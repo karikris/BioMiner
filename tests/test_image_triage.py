@@ -143,6 +143,40 @@ def test_life_stage_labels_go_to_bronze_with_specific_stage() -> None:
         assert result["life_stage"] == life_stage
 
 
+def test_high_species_score_with_small_margin_goes_to_review() -> None:
+    result = classify_bioclip_triage(
+        record=_record(),
+        prediction={
+            "species_top1_label": "a photo of Papilio demoleus",
+            "species_top1_scientific_name": "Papilio demoleus",
+            "species_top1_score": 0.92,
+            "species_top1_top2_margin": 0.02,
+            "triage_group_top": "adult_butterfly",
+            "triage_group_scores": {"adult_butterfly": 0.91, "hard_negative": 0.04},
+        },
+    )
+
+    assert result["occurrence_bin"] == "in_review"
+    assert result["bin_reason"] == "ambiguous_species_margin"
+
+
+def test_hard_negative_group_overrides_species_score() -> None:
+    result = classify_bioclip_triage(
+        record=_record(),
+        prediction={
+            "species_top1_label": "a photo of Papilio demoleus",
+            "species_top1_scientific_name": "Papilio demoleus",
+            "species_top1_score": 0.95,
+            "species_top1_top2_margin": 0.50,
+            "triage_group_top": "hard_negative",
+            "triage_group_scores": {"adult_butterfly": 0.08, "hard_negative": 0.87},
+        },
+    )
+
+    assert result["occurrence_bin"] == "bin"
+    assert result["bin_reason"] == "hard_negative_group"
+
+
 def test_no_new_darwin_core_logic_added() -> None:
     triage_source = Path("src/biominer/bioclip/triage.py").read_text(encoding="utf-8")
 

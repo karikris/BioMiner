@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 from typing import IO, Any, Callable, Mapping, Sequence
 
-from biominer.bioclip.diagnostics import probability_entropy, topk_margin
+from biominer.bioclip.diagnostics import TRIAGE_LABEL_GROUPS, grouped_probability_summary, probability_entropy, topk_margin
 from biominer.bioclip.model_registry import BioClipRuntime
 from biominer.bioclip.prompt_templates import PromptVariant, aggregate_prompt_scores
 
@@ -169,8 +169,10 @@ class BioClipClassifier:
         for index, image in enumerate(images):
             topk_by_label_set: dict[str, list[tuple[str, float]]] = {}
             prompt_topk_by_label_set: dict[str, list[dict[str, object]]] = {}
+            raw_scores_by_label_set: dict[str, Mapping[str, float]] = {}
             for label_set_name, labels in label_sets.items():
                 scores = scores_by_label_set[label_set_name][index]
+                raw_scores_by_label_set[label_set_name] = scores
                 if label_set_name == "species" and species_prompt_variants:
                     aggregated = aggregate_prompt_scores(scores=scores, variants=species_prompt_variants, top_k=top_k)
                     topk_by_label_set[label_set_name] = [
@@ -194,6 +196,7 @@ class BioClipClassifier:
                     text_evidence_present=bool(image.get("text_evidence_present")),
                     topk_by_label_set=topk_by_label_set,
                     species_prompt_topk=prompt_topk_by_label_set.get("species", []),
+                    triage_scores_by_label=raw_scores_by_label_set.get("triage", {}),
                 )
             )
         return records
@@ -377,9 +380,14 @@ def build_label_set_prediction_record(
     text_evidence_present: bool,
     topk_by_label_set: Mapping[str, list[tuple[str, float]]],
     species_prompt_topk: Sequence[Mapping[str, object]] = (),
+    triage_scores_by_label: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     species_topk = _topk_json(topk_by_label_set.get("species", []))
     triage_topk = _topk_json(topk_by_label_set.get("triage", []))
+    triage_group_summary = grouped_probability_summary(
+        scores=triage_scores_by_label or {},
+        groups=TRIAGE_LABEL_GROUPS,
+    )
     species_scores = [float(row["score"]) for row in species_topk]
     triage_scores = [float(row["score"]) for row in triage_topk]
     compatibility_topk = species_topk or triage_topk
@@ -410,6 +418,8 @@ def build_label_set_prediction_record(
         "triage_topk_json": triage_topk,
         "triage_top1_top2_margin": topk_margin(triage_topk),
         "triage_topk_entropy": probability_entropy(triage_scores),
+        "triage_group_top": triage_group_summary["top_group"],
+        "triage_group_scores": triage_group_summary["group_scores"],
         "top1_label": compatibility_topk[0]["label"] if compatibility_topk else None,
         "top1_score": compatibility_topk[0]["score"] if compatibility_topk else None,
         "topk_json": compatibility_topk,

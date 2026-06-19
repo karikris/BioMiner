@@ -425,6 +425,8 @@ def test_bioclip_classifier_builds_species_and_triage_prediction_with_label_sets
     assert record["triage_top1_top2_margin"] is None
     assert record["species_topk_entropy"] > 0
     assert record["triage_topk_entropy"] == 0
+    assert record["triage_group_top"] == "adult_butterfly"
+    assert record["triage_group_scores"]["adult_butterfly"] == pytest.approx(0.88)
     assert "a photo of an adult butterfly" in DEFAULT_TRIAGE_LABELS
 
 

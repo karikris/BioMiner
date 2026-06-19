@@ -62,12 +62,25 @@ NEGATIVE_RECORD_FIELDS = (
 def classify_bioclip_triage(*, record: dict[str, Any], prediction: dict[str, object]) -> dict[str, object]:
     species_top1_label = str(prediction.get("species_top1_label", prediction.get("bioclip_top1_label", prediction.get("top1_label", ""))) or "")
     species_top1_score = _optional_float(prediction.get("species_top1_score", prediction.get("bioclip_top1_score", prediction.get("top1_score"))))
+    species_margin = _optional_float(prediction.get("species_top1_top2_margin"))
     species_top1_name = str(prediction.get("species_top1_scientific_name") or _species_name_from_label(species_top1_label) or "")
     triage_top1_label = str(prediction.get("triage_top1_label", prediction.get("bioclip_top1_label", prediction.get("top1_label", ""))) or "")
+    triage_group_top = str(prediction.get("triage_group_top") or "")
+    triage_group_scores = prediction.get("triage_group_scores") if isinstance(prediction.get("triage_group_scores"), dict) else {}
+    hard_negative_score = _optional_float(triage_group_scores.get("hard_negative")) if isinstance(triage_group_scores, dict) else None
     negative_reason = _negative_reason(record, triage_top1_label)
     category = _category_for_prediction(top1_label=triage_top1_label, negative_reason=negative_reason)
     text_species_match = _text_species_match(record, species_top1_name)
     is_species_supported = bool(text_species_match and species_top1_score is not None and species_top1_score >= SILVER_SPECIES_CONFIDENCE_THRESHOLD)
+    if triage_group_top == "hard_negative" and hard_negative_score is not None and hard_negative_score >= 0.70:
+        return _bucket_result(category_defaults(), bucket="bin", reason="hard_negative_group", text_species_match=text_species_match, is_target_positive=False, is_negative_material=True)
+    if (
+        species_top1_score is not None
+        and species_top1_score >= GOLD_SPECIES_CONFIDENCE_THRESHOLD
+        and species_margin is not None
+        and species_margin < 0.05
+    ):
+        return _bucket_result(category_defaults(), bucket="in_review", reason="ambiguous_species_margin", text_species_match=text_species_match, is_target_positive=False, is_negative_material=False)
     if category["image_category"] in BIN_CATEGORIES:
         reason = str(category["negative_filter_reason"] or negative_reason or category["image_category"])
         return _bucket_result(category, bucket="bin", reason=reason, text_species_match=text_species_match, is_target_positive=False, is_negative_material=True)
