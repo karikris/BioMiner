@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 import sqlite3
+import time
 from typing import Any, Callable
 
 import httpx
@@ -36,9 +37,24 @@ CLAIMED = "claimed"
 COMPLETED = "completed"
 FAILED = "failed"
 DEFAULT_STALE_CLAIM_SECONDS = 3600
+DEFAULT_MAX_RETRIES = 2
 
 FetchMetadata = Callable[[FlickrQuery], dict[str, Any]]
 ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+class FlickrFetchError(RuntimeError):
+    def __init__(self, message: str, *, retryable: bool = False, http_status: int | None = None) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.http_status = http_status
+
+
+class FlickrFetchFailure(RuntimeError):
+    def __init__(self, error: FlickrFetchError, *, attempts: int) -> None:
+        super().__init__(str(error))
+        self.error = error
+        self.attempts = attempts
 
 
 @dataclass(frozen=True)
@@ -195,6 +211,30 @@ class MetadataPollState:
                 claimed.append((str(row["work_item_id"]), _query_from_json(str(row["query_json"]))))
             conn.execute("COMMIT")
         return claimed
+
+    def reserve_retry_api_call(
+        self,
+        *,
+        work_item_id: str,
+        endpoint: str,
+        max_api_calls: int,
+        now: datetime | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            used = self._api_calls_in_window(conn, _unix_timestamp(now))
+            soft_limit = min(max_api_calls, SOFT_API_CALLS_PER_HOUR)
+            if used >= soft_limit:
+                conn.execute("COMMIT")
+                raise FlickrFetchError("soft API call cap reached before retry", retryable=False)
+            if used >= HARD_API_CALLS_PER_HOUR:
+                conn.execute("COMMIT")
+                raise FlickrFetchError("hard API call cap reached before retry", retryable=False)
+            conn.execute(
+                "INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at) VALUES (?, ?, ?, ?)",
+                (endpoint, work_item_id, "reserved", _unix_timestamp(now)),
+            )
+            conn.execute("COMMIT")
 
     def api_budget_summary(self, *, max_api_calls: int = SOFT_API_CALLS_PER_HOUR, now: datetime | None = None) -> dict[str, object]:
         soft_remaining, hard_remaining = self.remaining_api_budget(max_api_calls=max_api_calls, now=now)
@@ -560,6 +600,8 @@ def poll_once(
     fetch_metadata: FetchMetadata | None = None,
     workers: int = 1,
     stale_claim_seconds: int = DEFAULT_STALE_CLAIM_SECONDS,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    retry_backoff_seconds: float = 0.0,
     progress_callback: ProgressCallback | None = None,
 ) -> PollOnceResult:
     state = MetadataPollState(state_db)
@@ -602,9 +644,17 @@ def poll_once(
             if not claimed:
                 break
             work_items_claimed += len(claimed)
-            api_calls_made += len(claimed)
-            pending: dict[Future[dict[str, Any]], tuple[str, FlickrQuery]] = {
-                pool.submit(fetcher, query): (work_item_id, query)
+            pending: dict[Future[tuple[dict[str, Any], int]], tuple[str, FlickrQuery]] = {
+                pool.submit(
+                    _fetch_with_retries,
+                    state=state,
+                    work_item_id=work_item_id,
+                    query=query,
+                    fetcher=fetcher,
+                    max_api_calls=max_api_calls,
+                    max_retries=max_retries,
+                    retry_backoff_seconds=retry_backoff_seconds,
+                ): (work_item_id, query)
                 for work_item_id, query in claimed
             }
             while pending:
@@ -612,8 +662,8 @@ def poll_once(
                 for future in done:
                     work_item_id, query = pending.pop(future)
                     try:
-                        payload = future.result()
-                        state.update_api_call_status(work_item_id=work_item_id, status="ok")
+                        payload, attempts = future.result()
+                        api_calls_made += attempts
                         raw_written += 1
                         payloads.append(payload)
                         _write_raw_response(raw_root=Path(raw_root), work_item_id=work_item_id, query=query, payload=payload)
@@ -685,8 +735,8 @@ def poll_once(
                             response_page=response_page,
                             response_perpage=response_perpage,
                         )
-                    except Exception as exc:  # noqa: BLE001 - poller records failure and exits bounded cycle.
-                        state.update_api_call_status(work_item_id=work_item_id, status="failed")
+                    except FlickrFetchFailure as exc:
+                        api_calls_made += exc.attempts
                         state.fail_work_item(work_item_id, str(exc))
                         _progress(
                             progress_callback,
@@ -696,6 +746,26 @@ def poll_once(
                                 "lane": query.lane,
                                 "page": query.page,
                                 "error": str(exc),
+                                "attempts": exc.attempts,
+                                "retryable": exc.error.retryable,
+                                "http_status": exc.error.http_status,
+                            },
+                        )
+                    except Exception as exc:  # noqa: BLE001 - poller records unexpected failure and exits bounded cycle.
+                        state.update_api_call_status(work_item_id=work_item_id, status="failed")
+                        api_calls_made += 1
+                        state.fail_work_item(work_item_id, str(exc))
+                        _progress(
+                            progress_callback,
+                            {
+                                "event": "work_failed",
+                                "work_item_id": work_item_id,
+                                "lane": query.lane,
+                                "page": query.page,
+                                "error": str(exc),
+                                "attempts": 1,
+                                "retryable": False,
+                                "http_status": None,
                             },
                         )
 
@@ -745,6 +815,75 @@ def _http_fetcher(*, api_key: str | None) -> FetchMetadata:
     return fetch
 
 
+def _fetch_with_retries(
+    *,
+    state: MetadataPollState,
+    work_item_id: str,
+    query: FlickrQuery,
+    fetcher: FetchMetadata,
+    max_api_calls: int,
+    max_retries: int,
+    retry_backoff_seconds: float,
+) -> tuple[dict[str, Any], int]:
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            payload = fetcher(query)
+            _validate_flickr_search_payload(payload)
+            state.update_api_call_status(work_item_id=work_item_id, status="ok")
+            return payload, attempts
+        except Exception as exc:  # noqa: BLE001 - classification keeps retry policy explicit.
+            error = _classify_fetch_error(exc)
+            state.update_api_call_status(work_item_id=work_item_id, status="failed")
+            if not error.retryable or attempts > max_retries:
+                raise FlickrFetchFailure(error, attempts=attempts) from exc
+            if retry_backoff_seconds > 0:
+                time.sleep(retry_backoff_seconds * (2 ** (attempts - 1)))
+            try:
+                state.reserve_retry_api_call(
+                    work_item_id=work_item_id,
+                    endpoint=SEARCH_METHOD,
+                    max_api_calls=max_api_calls,
+                )
+            except FlickrFetchError as budget_error:
+                raise FlickrFetchFailure(budget_error, attempts=attempts) from exc
+
+
+def _classify_fetch_error(exc: Exception) -> FlickrFetchError:
+    if isinstance(exc, FlickrFetchError):
+        return exc
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return FlickrFetchError(
+            f"HTTP {status} from Flickr",
+            retryable=status == 429 or 500 <= status <= 599,
+            http_status=status,
+        )
+    if isinstance(exc, httpx.TimeoutException | httpx.TransportError):
+        return FlickrFetchError(str(exc) or exc.__class__.__name__, retryable=True)
+    return FlickrFetchError(str(exc) or exc.__class__.__name__, retryable=False)
+
+
+def _validate_flickr_search_payload(payload: dict[str, Any]) -> None:
+    if not isinstance(payload, dict):
+        raise FlickrFetchError("Flickr response must be a JSON object")
+    if payload.get("stat") == "fail":
+        code = payload.get("code")
+        message = payload.get("message") or "Flickr API error"
+        raise FlickrFetchError(f"Flickr API error {code}: {message}")
+    photos = payload.get("photos")
+    if not isinstance(photos, dict):
+        raise FlickrFetchError("Flickr response missing photos object")
+    for key in ("total", "pages", "page", "perpage"):
+        _response_int(photos.get(key), key=key)
+    rows = photos.get("photo", [])
+    if rows is None:
+        rows = []
+    if not isinstance(rows, list):
+        raise FlickrFetchError("Flickr response photos.photo must be a list")
+
+
 def _write_raw_response(*, raw_root: Path, work_item_id: str, query: FlickrQuery, payload: dict[str, Any]) -> Path:
     target_dir = raw_root / "flickr" / "photos_search" / query.search_field / _safe_query_variant(query.term)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -777,19 +916,28 @@ def _write_evidence(evidence_output: str | Path, payloads: list[dict[str, Any]])
 
 
 def _payload_total(payload: dict[str, Any]) -> int:
-    return int(payload.get("photos", {}).get("total") or 0)
+    return _response_int(payload.get("photos", {}).get("total"), key="total")
 
 
 def _payload_pages(payload: dict[str, Any]) -> int:
-    return int(payload.get("photos", {}).get("pages") or 0)
+    return _response_int(payload.get("photos", {}).get("pages"), key="pages")
 
 
 def _payload_page(payload: dict[str, Any]) -> int:
-    return int(payload.get("photos", {}).get("page") or 0)
+    return _response_int(payload.get("photos", {}).get("page"), key="page")
 
 
 def _payload_perpage(payload: dict[str, Any]) -> int:
-    return int(payload.get("photos", {}).get("perpage") or 0)
+    return _response_int(payload.get("photos", {}).get("perpage"), key="perpage")
+
+
+def _response_int(value: object, *, key: str) -> int:
+    if value in (None, ""):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise FlickrFetchError(f"Flickr response photos.{key} must be an integer") from exc
 
 
 def _remaining_page_queries(query: FlickrQuery, *, pages: int, per_page: int) -> tuple[FlickrQuery, ...]:

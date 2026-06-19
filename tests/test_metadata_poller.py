@@ -6,6 +6,8 @@ import sqlite3
 import threading
 from pathlib import Path
 
+import httpx
+
 from biominer.flickr_fetch.query_planner import BBOX_PAGE_SIZE, COUNT_PROBE_PAGE_SIZE, NORMAL_PAGE_SIZE, FlickrQuery, fixed_upload_date_slices
 from biominer.flickr_fetch.metadata_poller import MetadataPollState, _payload_page, _payload_pages, _payload_perpage, poll_once
 
@@ -288,6 +290,108 @@ def test_poll_once_reserves_api_call_before_fetch(tmp_path) -> None:
     assert result.raw_responses_written == 1
     with sqlite3.connect(state.path) as conn:
         assert conn.execute("SELECT status FROM flickr_work_items").fetchone()[0] == "completed"
+
+
+def test_poll_once_retries_transient_timeout_before_success(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+    calls = 0
+
+    def flaky_fetch(item: FlickrQuery) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.TimeoutException("timed out")
+        return {"photos": {"total": "1", "pages": "1", "page": "1", "perpage": "250", "photo": [{"id": "1", "url_l": "https://live.staticflickr.com/1.jpg"}]}}
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=2,
+        fetch_metadata=flaky_fetch,
+        max_retries=1,
+    )
+
+    with sqlite3.connect(state.path) as conn:
+        statuses = conn.execute("SELECT status, count(*) FROM api_call_ledger GROUP BY status ORDER BY status").fetchall()
+    assert result.api_calls_made == 2
+    assert result.raw_responses_written == 1
+    assert statuses == [("failed", 1), ("ok", 1)]
+
+
+def test_poll_once_does_not_retry_flickr_semantic_failure(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=3,
+        fetch_metadata=lambda item: {"stat": "fail", "code": 100, "message": "Invalid API Key"},
+        max_retries=2,
+    )
+
+    with sqlite3.connect(state.path) as conn:
+        status, error = conn.execute("SELECT status, error FROM flickr_work_items").fetchone()
+        api_calls = conn.execute("SELECT count(*) FROM api_call_ledger").fetchone()[0]
+    assert result.api_calls_made == 1
+    assert status == "failed"
+    assert "Invalid API Key" in error
+    assert api_calls == 1
+
+
+def test_poll_once_does_not_retry_malformed_flickr_payload(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=3,
+        fetch_metadata=lambda item: {"photos": {"total": "not-an-int", "photo": []}},
+        max_retries=2,
+    )
+
+    with sqlite3.connect(state.path) as conn:
+        status, error = conn.execute("SELECT status, error FROM flickr_work_items").fetchone()
+        api_calls = conn.execute("SELECT count(*) FROM api_call_ledger").fetchone()[0]
+    assert result.api_calls_made == 1
+    assert status == "failed"
+    assert "photos.total" in error
+    assert api_calls == 1
+
+
+def test_poll_once_retries_http_429_status(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+    calls = 0
+
+    def flaky_fetch(item: FlickrQuery) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            request = httpx.Request("GET", "https://www.flickr.com/services/rest/")
+            response = httpx.Response(429, request=request)
+            raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+        return {"photos": {"total": "0", "pages": "0", "page": "1", "perpage": "250", "photo": []}}
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=2,
+        fetch_metadata=flaky_fetch,
+        max_retries=1,
+    )
+
+    with sqlite3.connect(state.path) as conn:
+        statuses = conn.execute("SELECT status, count(*) FROM api_call_ledger GROUP BY status ORDER BY status").fetchall()
+    assert result.api_calls_made == 2
+    assert result.raw_responses_written == 1
+    assert statuses == [("failed", 1), ("ok", 1)]
 
 
 def test_poll_once_does_not_claim_or_reserve_full_budget_before_fetch(tmp_path) -> None:
