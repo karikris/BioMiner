@@ -79,6 +79,65 @@ def test_build_papilio_demoleus_query_plan_cli_reads_keyword_json(tmp_path, caps
     assert payload["stable_result_threshold"] == 4000
 
 
+def test_registry_compile_fixture_cli_writes_registry_outputs(tmp_path, capsys) -> None:
+    source = tmp_path / "registry_source.json"
+    source.write_text(
+        json.dumps(
+            {
+                "source": "fixture",
+                "source_version": "2026-06-20",
+                "retrieved_at": "2026-06-20T00:00:00+00:00",
+                "taxa": [
+                    {
+                        "accepted_taxon_key": "gbif:1",
+                        "scientific_name": "Papilionoidea",
+                        "rank": "SUPERFAMILY",
+                    }
+                ],
+                "names": [
+                    {
+                        "accepted_taxon_key": "gbif:1",
+                        "verbatim_name": "Papilionoidea",
+                        "display_name": "Papilionoidea",
+                        "language": "la",
+                        "script": "Latn",
+                        "name_class": "accepted_scientific",
+                        "source": "GBIF",
+                        "source_record_id": "gbif:1",
+                        "trust_tier": "T1",
+                        "precision_tier": "high",
+                        "confidence": "high",
+                        "enabled": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "registry"
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "registry",
+            "compile-fixture",
+            "--source-json",
+            str(source),
+            "--output-dir",
+            str(output),
+            "--registry-version",
+            "test-registry",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["registry_version"] == "test-registry"
+    assert payload["query_definition_rows"] == 2
+    assert (output / "manifest.json").exists()
+    assert (output / "flickr_query_definitions.parquet").exists()
+
+
 def test_cli_help_does_not_describe_old_gold_silver_bronze_logic(capsys) -> None:
     parser = build_parser()
 

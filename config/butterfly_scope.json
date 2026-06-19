@@ -1,0 +1,16 @@
+{
+  "scope_id": "papilionoidea-seven-family-scope",
+  "root": {
+    "scientific_name": "Papilionoidea",
+    "rank": "SUPERFAMILY"
+  },
+  "included_families": [
+    "Hesperiidae",
+    "Papilionidae",
+    "Pieridae",
+    "Lycaenidae",
+    "Riodinidae",
+    "Nymphalidae",
+    "Hedylidae"
+  ]
+}

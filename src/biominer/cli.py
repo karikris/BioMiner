@@ -23,6 +23,7 @@ from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState
 from biominer.filter.anti_keywords import filter_biodiversity_parquet
 from biominer.filter.rules import classify_evidence_frame
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
+from biominer.registry.compiler import compile_registry_fixture
 from biominer.reports.buckets import export_bucket_views
 from biominer.reports.name_evidence import build_name_evidence_report, write_name_evidence_report
 
@@ -43,6 +44,13 @@ def build_parser() -> argparse.ArgumentParser:
     papilio_plan = subparsers.add_parser("build-papilio-demoleus-query-plan")
     papilio_plan.add_argument("--keywords-json", required=True)
     papilio_plan.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
+    registry = subparsers.add_parser("registry")
+    registry_subparsers = registry.add_subparsers(dest="registry_command")
+    registry_compile = registry_subparsers.add_parser("compile-fixture")
+    registry_compile.add_argument("--source-json", required=True)
+    registry_compile.add_argument("--output-dir", required=True)
+    registry_compile.add_argument("--registry-version", required=True)
+    registry_compile.add_argument("--scope-json", default="config/butterfly_scope.json")
     build_comment_queue = subparsers.add_parser("build-comment-review-queue")
     build_comment_queue.add_argument("--input", required=True)
     build_comment_queue.add_argument("--state-db", default="data/state/comment_review.sqlite")
@@ -160,6 +168,17 @@ def run(args: argparse.Namespace) -> int:
             )
         )
         return 0
+    if args.command == "registry":
+        if args.registry_command == "compile-fixture":
+            payload = compile_registry_fixture(
+                args.source_json,
+                args.output_dir,
+                registry_version=args.registry_version,
+                scope_path=args.scope_json,
+            )
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        return 2
     if args.command == "build-comment-review-queue":
         payload = build_comment_review_queue_from_parquet(input_path=args.input, state_db=args.state_db)
         print(json.dumps(payload, indent=2, sort_keys=True))
