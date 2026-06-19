@@ -88,6 +88,8 @@ def classify_bioclip_triage(*, record: dict[str, Any], prediction: dict[str, obj
         return _bucket_result(category, bucket="in_review", reason="missing_bioclip", text_species_match=text_species_match, is_target_positive=False, is_negative_material=False)
     if category["image_category"] == "life_stage_non_adult":
         return _bucket_result(category, bucket="bronze", reason=str(category["life_stage"]), text_species_match=text_species_match, is_target_positive=is_species_supported, is_negative_material=False)
+    if _taxonomy_inconsistent(prediction):
+        return _bucket_result(category, bucket="in_review", reason="taxonomy_inconsistent", text_species_match=text_species_match, is_target_positive=False, is_negative_material=False)
     if category["image_category"] == "adult_butterfly" and text_species_match:
         if not _has_image_url(record):
             return _bucket_result(category, bucket="in_review", reason="missing_image_url", text_species_match=text_species_match, is_target_positive=is_species_supported, is_negative_material=False)
@@ -170,6 +172,8 @@ def _prediction_fields(prediction: dict[str, object]) -> dict[str, object]:
         "bioclip_topk_json": topk if isinstance(topk, list) else [],
         "species_top1_label": prediction.get("species_top1_label"),
         "species_top1_scientific_name": prediction.get("species_top1_scientific_name"),
+        "species_top1_genus": prediction.get("species_top1_genus"),
+        "species_top1_family": prediction.get("species_top1_family"),
         "species_top1_score": _optional_float(prediction.get("species_top1_score")),
         "species_topk_json": prediction.get("species_topk_json", []),
         "triage_top1_label": prediction.get("triage_top1_label"),
@@ -190,6 +194,8 @@ def _empty_result_fields() -> dict[str, object]:
         "bioclip_topk_json": [],
         "species_top1_label": None,
         "species_top1_scientific_name": None,
+        "species_top1_genus": None,
+        "species_top1_family": None,
         "species_top1_score": None,
         "species_topk_json": [],
         "triage_top1_label": None,
@@ -269,6 +275,16 @@ def _negative_reason(record: dict[str, Any], top1_label: str) -> str | None:
 
 def _has_image_url(record: dict[str, Any]) -> bool:
     return bool(record.get("image_url") or record.get("image_url_used"))
+
+
+def _taxonomy_inconsistent(prediction: dict[str, object]) -> bool:
+    species_genus = str(prediction.get("species_top1_genus") or "")
+    genus_top1 = str(prediction.get("genus_top1") or "")
+    species_family = str(prediction.get("species_top1_family") or "")
+    family_top1 = str(prediction.get("family_top1") or "")
+    if species_genus and genus_top1 and species_genus != genus_top1:
+        return True
+    return bool(species_family and family_top1 and species_family != family_top1)
 
 
 def _has_event_date(record: dict[str, Any]) -> bool:

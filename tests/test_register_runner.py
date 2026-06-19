@@ -117,6 +117,23 @@ def test_register_runner_preserves_scientific_name_for_common_name_prompt(tmp_pa
     assert row["species_top1_scientific_name"] == "Papilio demoleus"
 
 
+def test_register_runner_persists_species_taxonomy_metadata(tmp_path) -> None:
+    classifier = FakeRegisterClassifier(species_name="Papilio demoleus")
+
+    result = process_records_with_registers(
+        [_record(1)],
+        classifier=classifier,
+        species_candidates=_candidates(),
+        output_path=tmp_path / "triage.parquet",
+        cache_root=tmp_path / "cache",
+        cache_image=fake_cache([]),
+    )
+
+    row = result.frame.to_dicts()[0]
+    assert row["species_top1_genus"] == "Papilio"
+    assert row["species_top1_family"] == "Papilionidae"
+
+
 class FakeRegisterClassifier:
     def __init__(self, *, species_label: str = "a photo of Papilio demoleus", species_name: str | None = None) -> None:
         self.species_label = species_label

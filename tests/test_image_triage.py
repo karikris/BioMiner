@@ -177,6 +177,25 @@ def test_hard_negative_group_overrides_species_score() -> None:
     assert result["bin_reason"] == "hard_negative_group"
 
 
+def test_gold_requires_genus_consistency_when_available() -> None:
+    result = classify_bioclip_triage(
+        record=_record(),
+        prediction={
+            "species_top1_label": "a photo of Papilio demoleus",
+            "species_top1_scientific_name": "Papilio demoleus",
+            "species_top1_score": 0.93,
+            "species_top1_top2_margin": 0.30,
+            "species_top1_genus": "Papilio",
+            "species_top1_family": "Papilionidae",
+            "genus_top1": "Danaus",
+            "family_top1": "Nymphalidae",
+        },
+    )
+
+    assert result["occurrence_bin"] == "in_review"
+    assert result["bin_reason"] == "taxonomy_inconsistent"
+
+
 def test_no_new_darwin_core_logic_added() -> None:
     triage_source = Path("src/biominer/bioclip/triage.py").read_text(encoding="utf-8")
 

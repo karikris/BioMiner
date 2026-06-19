@@ -75,6 +75,13 @@ def label_to_scientific_name(candidates: list[SpeciesCandidate]) -> dict[str, st
     return {candidate.label: candidate.scientific_name for candidate in candidates}
 
 
+def taxon_metadata_by_scientific_name(candidates: list[SpeciesCandidate]) -> dict[str, dict[str, str | None]]:
+    return {
+        candidate.scientific_name: {"genus": candidate.genus, "family": candidate.family}
+        for candidate in candidates
+    }
+
+
 def species_prompt_variants(candidates: list[SpeciesCandidate]) -> list[PromptVariant]:
     variants: list[PromptVariant] = []
     for candidate in candidates:
