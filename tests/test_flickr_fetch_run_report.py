@@ -336,6 +336,19 @@ def test_build_step1_fetch_report_includes_dynamic_page_enqueue_metrics(tmp_path
             "known_pages": 16,
         }
     ]
+    assert report["work"]["reported_over_16_page_slices"] == [
+        {
+            "lane": "normal_page",
+            "term": "butterfly",
+            "date_kind": "upload_date",
+            "min_date": "2007-01-01",
+            "max_date": "2007-01-05",
+            "bbox_label": "",
+            "response_pages": 20,
+            "response_perpage": 250,
+            "response_total": 9000,
+        }
+    ]
 
 
 def test_enqueue_fixed_upload_slice_pages_supports_tag_search(tmp_path) -> None:

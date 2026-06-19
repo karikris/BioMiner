@@ -188,7 +188,7 @@ BioMiner covers broad Flickr searches with deterministic upload-date slices and 
 Core invariant:
 
 ```text
-Seed broad discovery with upload-date page 1 work, then enqueue every page Flickr reports for that exact slice.
+Seed broad discovery with upload-date page 1 work, enqueue only Flickr's accessible 4000-result window, and report over-window slices.
 ```
 
 Planning logic:
@@ -197,10 +197,10 @@ Planning logic:
 start at 2004-02-10 and advance to today
 use 5-day upload-date slices for the full range
 enqueue page 1 only for each slice at per_page=500
-after any page returns, ensure pages 1..photos.pages exist in SQLite for that exact query/date slice
+after any page returns, ensure pages 1..min(photos.pages, 4000/photos.perpage) exist in SQLite for that exact query/date slice
 ```
 
-Page 1 is a real metadata page, not a `per_page=1` count probe. BioMiner stores all records from each fetched page, reads `photos.total`, `photos.pages`, `photos.page`, and `photos.perpage`, then idempotently inserts any missing page work from `1..photos.pages`. Flickr's `photos.perpage` is stored as the actual response page size; BioMiner does not assume the requested `per_page` value was accepted.
+Page 1 is a real metadata page, not a `per_page=1` count probe. BioMiner stores all records from each fetched page, reads `photos.total`, `photos.pages`, `photos.page`, and `photos.perpage`, then idempotently inserts any missing accessible page work. Flickr's `photos.perpage` is stored as the actual response page size; BioMiner does not assume the requested `per_page` value was accepted. If Flickr reports more than 16 pages at `perpage=250`, BioMiner reports the query slice as over-window for narrower follow-up rather than enqueueing inaccessible pages.
 
 Work-item ordering should be stable across reruns:
 

@@ -955,6 +955,45 @@ def test_poll_once_enqueues_all_reported_pages_when_flickr_returns_250_perpage(t
     assert rows == [(1, 500, "completed"), *((page, 250, "pending") for page in range(2, 15))]
 
 
+def test_poll_once_caps_executable_pages_at_flickr_accessible_window_and_warns(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(
+        FlickrQuery(
+            term="butterfly",
+            language="en",
+            search_field="text",
+            lane="normal_page",
+            page=1,
+            per_page=500,
+            has_geo=0,
+            min_upload_date="2007-01-01",
+            max_upload_date="2007-01-05",
+            split_reason="upload_date",
+            split_depth=1,
+            slice_index=0,
+        )
+    )
+    events: list[dict[str, object]] = []
+
+    poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=1,
+        fetch_metadata=lambda query: {"photos": {"total": "9000", "pages": "20", "page": "1", "perpage": "250", "photo": []}},
+        progress_callback=events.append,
+    )
+
+    with sqlite3.connect(state.path) as conn:
+        rows = conn.execute("SELECT page, per_page, status FROM flickr_work_items ORDER BY page").fetchall()
+    page_event = next(event for event in events if event["event"] == "page_completed")
+    assert rows == [(1, 500, "completed"), *((page, 250, "pending") for page in range(2, 17))]
+    assert page_event["reported_pages"] == 20
+    assert page_event["accessible_pages"] == 16
+    assert page_event["known_work_items_for_query"] == 16
+    assert any(event["event"] == "pagination_over_accessible_window" and event["response_pages"] == 20 for event in events)
+
+
 def test_poll_once_uses_response_pages_not_requested_page_size_calculation(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     state.enqueue_work_item(

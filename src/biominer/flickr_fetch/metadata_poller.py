@@ -15,6 +15,7 @@ import polars as pl
 from biominer.filter.extractor import build_evidence_frame
 from biominer.flickr_fetch.endpoints import FLICKR_REST_BASE_URL, SEARCH_METHOD
 from biominer.flickr_fetch.query_planner import (
+    FLICKR_SEARCH_RESULT_WINDOW,
     FlickrQuery,
     build_count_probes,
     deduplicate_photo_records,
@@ -76,7 +77,9 @@ class PollOnceResult:
 
 @dataclass(frozen=True)
 class PageEnsureResult:
+    reported_pages: int
     target_pages: int
+    accessible_pages: int
     new_pages_enqueued: int
     total_known_work_items: int
     highest_known_page: int
@@ -110,7 +113,9 @@ class MetadataPollState:
     def ensure_reported_pages(self, query: FlickrQuery, *, response_pages: int, response_perpage: int | None = None) -> PageEnsureResult:
         if query.lane == "count_probe" or response_pages <= 0:
             return PageEnsureResult(
+                reported_pages=response_pages,
                 target_pages=0,
+                accessible_pages=0,
                 new_pages_enqueued=0,
                 total_known_work_items=0,
                 highest_known_page=0,
@@ -120,6 +125,7 @@ class MetadataPollState:
         effective_perpage = response_perpage or query.per_page
         if effective_perpage <= 0:
             effective_perpage = query.per_page
+        accessible_pages = _accessible_page_window(effective_perpage)
         warnings: list[dict[str, object]] = []
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -138,7 +144,20 @@ class MetadataPollState:
                         "max_date": query_max_date(query),
                     }
                 )
-            target_pages = max(response_pages, previous_reported_page_count)
+            reported_target_pages = max(response_pages, previous_reported_page_count)
+            target_pages = min(reported_target_pages, accessible_pages)
+            if reported_target_pages > accessible_pages:
+                warnings.append(
+                    {
+                        "event": "pagination_over_accessible_window",
+                        "level": "warning",
+                        "response_pages": reported_target_pages,
+                        "accessible_pages": accessible_pages,
+                        "response_perpage": effective_perpage,
+                        "min_date": query_min_date(query),
+                        "max_date": query_max_date(query),
+                    }
+                )
             existing_pages = {int(row["page"]) for row in before}
             inserted = 0
             for page in range(1, target_pages + 1):
@@ -161,12 +180,13 @@ class MetadataPollState:
                         "max_date": query_max_date(query),
                     }
                 )
-            if response_pages > highest_after:
+            if target_pages > highest_after:
                 warnings.append(
                     {
                         "event": "pagination_invariant_failed",
                         "level": "error",
-                        "response_pages": response_pages,
+                        "response_pages": reported_target_pages,
+                        "target_pages": target_pages,
                         "highest_queued_page": highest_after,
                         "min_date": query_min_date(query),
                         "max_date": query_max_date(query),
@@ -177,7 +197,8 @@ class MetadataPollState:
                     {
                         "event": "pagination_missing_pages",
                         "level": "error",
-                        "response_pages": target_pages,
+                        "response_pages": reported_target_pages,
+                        "target_pages": target_pages,
                         "missing_pages": list(missing_pages),
                         "min_date": query_min_date(query),
                         "max_date": query_max_date(query),
@@ -185,7 +206,9 @@ class MetadataPollState:
                 )
             conn.execute("COMMIT")
         return PageEnsureResult(
+            reported_pages=reported_target_pages,
             target_pages=target_pages,
+            accessible_pages=accessible_pages,
             new_pages_enqueued=inserted,
             total_known_work_items=len(after),
             highest_known_page=highest_after,
@@ -859,6 +882,8 @@ def poll_once(
                                     "records_returned": records_returned,
                                     "records_inserted": inserted,
                                     "duplicates_skipped": skipped,
+                                    "reported_pages": page_ensure.reported_pages,
+                                    "accessible_pages": page_ensure.accessible_pages,
                                     "remaining_pages_enqueued": page_ensure.new_pages_enqueued,
                                     "known_work_items_for_query": page_ensure.total_known_work_items,
                                     "highest_known_page": page_ensure.highest_known_page,
@@ -873,7 +898,9 @@ def poll_once(
                                     {
                                         "event": "remaining_pages_enqueued",
                                         "enqueued": page_ensure.new_pages_enqueued,
+                                        "reported_pages": page_ensure.reported_pages,
                                         "target_pages": page_ensure.target_pages,
+                                        "accessible_pages": page_ensure.accessible_pages,
                                         "known_work_items_for_query": page_ensure.total_known_work_items,
                                         "missing_pages": list(page_ensure.missing_pages),
                                         "min_date": query_min_date(query),
@@ -1123,6 +1150,12 @@ def _response_int(value: object, *, key: str) -> int:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise FlickrFetchError(f"Flickr response photos.{key} must be an integer") from exc
+
+
+def _accessible_page_window(per_page: int) -> int:
+    if per_page <= 0:
+        return 1
+    return max(1, FLICKR_SEARCH_RESULT_WINDOW // per_page)
 
 
 def _insert_work_item(conn: sqlite3.Connection, query: FlickrQuery) -> sqlite3.Cursor:

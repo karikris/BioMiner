@@ -186,6 +186,7 @@ def _state_work_summary(path: Path) -> dict[str, Any]:
         "remaining_pages_enqueued_from_page1": "not_instrumented",
         "empty_or_single_page_slices": "not_instrumented",
         "reported_pagination_gaps": "not_instrumented",
+        "reported_over_16_page_slices": "not_instrumented",
     }
     if not path.exists():
         return fallback
@@ -212,6 +213,7 @@ def _state_work_summary(path: Path) -> dict[str, Any]:
                 "remaining_pages_enqueued_from_page1": remaining_pages,
                 "empty_or_single_page_slices": _empty_or_single_page_slices(conn),
                 "reported_pagination_gaps": _reported_pagination_gaps(conn),
+                "reported_over_16_page_slices": _reported_over_16_page_slices(conn),
             }
     except sqlite3.DatabaseError:
         return fallback
@@ -407,6 +409,45 @@ def _reported_pagination_gaps(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "response_pages": int(row["response_pages"]),
             "highest_known_page": int(row["highest_known_page"]),
             "known_pages": int(row["known_pages"]),
+        }
+        for row in rows
+    ]
+
+
+def _reported_over_16_page_slices(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    if not _has_columns(conn, "response_pages"):
+        return []
+    rows = conn.execute(
+        """
+        SELECT
+            lane,
+            term,
+            date_kind,
+            min_date,
+            max_date,
+            bbox_label,
+            max(response_pages) AS response_pages,
+            max(response_perpage) AS response_perpage,
+            max(response_total) AS response_total
+        FROM flickr_work_items
+        WHERE lane IN ('normal_page', 'bbox_page')
+          AND response_pages > 16
+        GROUP BY lane, term, date_kind, min_date, max_date, bbox_label
+        ORDER BY min_date, max_date, term
+        LIMIT 100
+        """
+    ).fetchall()
+    return [
+        {
+            "lane": str(row["lane"]),
+            "term": str(row["term"]),
+            "date_kind": str(row["date_kind"] or ""),
+            "min_date": str(row["min_date"] or ""),
+            "max_date": str(row["max_date"] or ""),
+            "bbox_label": str(row["bbox_label"] or ""),
+            "response_pages": int(row["response_pages"]),
+            "response_perpage": int(row["response_perpage"] or 0),
+            "response_total": int(row["response_total"] or 0),
         }
         for row in rows
     ]
