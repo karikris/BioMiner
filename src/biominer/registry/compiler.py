@@ -35,7 +35,7 @@ def compile_registry_fixture(
     evidence = _name_evidence_frame(payload.get("names", []), registry_version=registry_version, source_payload=payload)
     snapshots = _source_snapshots_frame(payload, source_path=source)
     queries = _query_definitions_frame(names, taxa, registry_version=registry_version)
-    qa_findings = _qa_findings(taxa, names, scope)
+    qa_findings = _qa_findings(taxa, names, queries, scope)
     qa = pl.DataFrame(qa_findings) if qa_findings else _empty_qa_frame()
     manifest = _manifest(
         registry_version=registry_version,
@@ -253,16 +253,51 @@ def _taxon_relations_frame(taxa: pl.DataFrame) -> pl.DataFrame:
     return pl.DataFrame(rows, schema={"accepted_taxon_key": pl.String, "related_taxon_key": pl.String, "relation_type": pl.String})
 
 
-def _qa_findings(taxa: pl.DataFrame, names: pl.DataFrame, scope) -> list[dict[str, Any]]:
+def _qa_findings(taxa: pl.DataFrame, names: pl.DataFrame, queries: pl.DataFrame, scope) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     if taxa.filter((pl.col("scientific_name") == scope.root_scientific_name) & (pl.col("rank") == scope.root_rank)).is_empty():
         findings.append(_finding("fatal", "missing_scope_root", scope.root_scientific_name))
     families = set(taxa.filter(pl.col("rank") == "FAMILY").select("scientific_name").to_series().to_list())
     missing = [family for family in scope.included_families if family not in families]
     if missing:
-        findings.append(_finding("warning", "configured_family_not_in_source", ",".join(missing)))
+        findings.extend(_finding("fatal", "configured_family_not_in_source", family) for family in missing)
     if names.filter(pl.col("normalized_match_key") == "").height:
         findings.append(_finding("fatal", "empty_normalized_name", "names"))
+    if not queries.is_empty():
+        duplicate_query_rows = queries.filter(pl.col("query_definition_id").is_duplicated()).height
+        if duplicate_query_rows:
+            findings.append(_finding("fatal", "duplicate_query_definition_id", str(duplicate_query_rows)))
+        missing_lineage = queries.filter(pl.col("accepted_scientific_name") == "").height
+        if missing_lineage:
+            findings.append(_finding("fatal", "query_without_accepted_taxon_lineage", str(missing_lineage)))
+    if not names.is_empty():
+        enabled = names.filter(pl.col("enabled"))
+        collisions = (
+            enabled.group_by("normalized_match_key")
+            .agg(pl.col("accepted_taxon_key").n_unique().alias("taxon_count"))
+            .filter((pl.col("normalized_match_key") != "") & (pl.col("taxon_count") > 1))
+            .select("normalized_match_key")
+            .to_series()
+            .to_list()
+        )
+        findings.extend(_finding("warning", "normalized_name_collision", str(key)) for key in sorted(collisions))
+        weak_metadata = names.filter(
+            (pl.col("enabled"))
+            & (pl.col("name_class").is_in(["vernacular", "vernacular_alias"]))
+            & ((pl.col("language") == "") | (pl.col("script") == ""))
+        )
+        findings.extend(
+            _finding("warning", "weak_language_or_script_metadata", str(name))
+            for name in sorted(set(weak_metadata.select("display_name").to_series().to_list()))
+        )
+        missing_source = names.filter((pl.col("enabled")) & ((pl.col("source") == "") | (pl.col("source_record_id") == "")))
+        findings.extend(
+            _finding("warning", "missing_name_source_evidence", str(name))
+            for name in sorted(set(missing_source.select("display_name").to_series().to_list()))
+        )
+        disabled_count = names.filter(~pl.col("enabled")).height
+        if disabled_count:
+            findings.append(_finding("warning", "disabled_names_excluded_from_queries", str(disabled_count)))
     return findings
 
 
@@ -286,6 +321,7 @@ def _manifest(
     output_dir: Path,
 ) -> dict[str, Any]:
     fatal_count = qa.filter(pl.col("severity") == "fatal").height if not qa.is_empty() else 0
+    warning_count = qa.filter(pl.col("severity") == "warning").height if not qa.is_empty() else 0
     return {
         "registry_version": registry_version,
         "registry_schema_version": REGISTRY_SCHEMA_VERSION,
@@ -298,6 +334,8 @@ def _manifest(
         "name_rows": names.height,
         "query_definition_rows": queries.height,
         "qa_finding_rows": qa.height,
+        "qa_fatal_count": fatal_count,
+        "qa_warning_count": warning_count,
         "qa_status": "failed" if fatal_count else "passed",
         "source_hash": _file_hash(source_path),
     }

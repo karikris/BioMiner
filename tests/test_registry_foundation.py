@@ -20,6 +20,21 @@ BUTTERFLY_FAMILIES = (
 
 
 def _write_fixture(path) -> None:
+    family_rows = [
+        {
+            "accepted_taxon_key": f"gbif:fam:{family}",
+            "scientific_name": family,
+            "rank": "FAMILY",
+            "parent_key": "gbif:1",
+            "family_key": f"gbif:fam:{family}",
+            "family": family,
+            "genus_key": "",
+            "genus": "",
+            "species_key": "",
+            "species": "",
+        }
+        for family in BUTTERFLY_FAMILIES
+    ]
     path.write_text(
         json.dumps(
             {
@@ -39,18 +54,7 @@ def _write_fixture(path) -> None:
                         "species_key": "",
                         "species": "",
                     },
-                    {
-                        "accepted_taxon_key": "gbif:10",
-                        "scientific_name": "Papilionidae",
-                        "rank": "FAMILY",
-                        "parent_key": "gbif:1",
-                        "family_key": "gbif:10",
-                        "family": "Papilionidae",
-                        "genus_key": "",
-                        "genus": "",
-                        "species_key": "",
-                        "species": "",
-                    },
+                    *family_rows,
                     {
                         "accepted_taxon_key": "gbif:100",
                         "scientific_name": "Papilio demoleus",
@@ -137,10 +141,12 @@ def test_compile_registry_fixture_writes_normalized_parquet_and_manifest(tmp_pat
     manifest = compile_registry_fixture(source, output, registry_version="test-registry")
 
     assert manifest["registry_version"] == "test-registry"
-    assert manifest["taxa_rows"] == 3
+    assert manifest["taxa_rows"] == 9
     assert manifest["name_rows"] == 3
     assert manifest["query_definition_rows"] == 4
     assert manifest["qa_status"] == "passed"
+    assert manifest["qa_fatal_count"] == 0
+    assert manifest["qa_warning_count"] == 1
     assert (output / "taxa.parquet").exists()
     assert (output / "names.parquet").exists()
     assert (output / "name_evidence.parquet").exists()
@@ -172,3 +178,70 @@ def test_compile_registry_fixture_emits_atomic_flickr_queries_with_tags_before_t
     ]
     assert queries.select("query_definition_id").to_series().n_unique() == 4
     assert queries.select(["normalized_query_term", "search_field", "region"]).unique().height == 4
+
+
+def test_compile_registry_fixture_marks_missing_configured_family_as_fatal(tmp_path) -> None:
+    source = tmp_path / "source.json"
+    output = tmp_path / "registry"
+    _write_fixture(source)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["taxa"] = [row for row in payload["taxa"] if row["scientific_name"] != "Hedylidae"]
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = compile_registry_fixture(source, output, registry_version="test-registry")
+
+    qa = pl.read_parquet(output / "qa_findings.parquet")
+    assert manifest["qa_status"] == "failed"
+    assert {"severity": "fatal", "code": "configured_family_not_in_source", "subject": "Hedylidae"} in qa.to_dicts()
+
+
+def test_compile_registry_fixture_reports_duplicate_query_ids_and_name_warnings(tmp_path) -> None:
+    source = tmp_path / "source.json"
+    output = tmp_path / "registry"
+    _write_fixture(source)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["taxa"].append(
+        {
+            "accepted_taxon_key": "gbif:200",
+            "scientific_name": "Pieris brassicae",
+            "rank": "SPECIES",
+            "parent_key": "gbif:190",
+            "family_key": "gbif:fam:Pieridae",
+            "family": "Pieridae",
+            "genus_key": "gbif:190",
+            "genus": "Pieris",
+            "species_key": "gbif:200",
+            "species": "Pieris brassicae",
+        }
+    )
+    payload["names"].extend(
+        [
+            dict(payload["names"][0]),
+            {
+                "accepted_taxon_key": "gbif:200",
+                "verbatim_name": "Lime Butterfly",
+                "display_name": "Lime Butterfly",
+                "language": "",
+                "script": "",
+                "region": "",
+                "bbox": "",
+                "name_class": "vernacular",
+                "source": "fixture",
+                "source_record_id": "",
+                "trust_tier": "T2",
+                "precision_tier": "medium",
+                "confidence": "medium",
+                "enabled": True,
+            },
+        ]
+    )
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = compile_registry_fixture(source, output, registry_version="test-registry")
+
+    qa = pl.read_parquet(output / "qa_findings.parquet").to_dicts()
+    assert manifest["qa_status"] == "failed"
+    assert {"severity": "fatal", "code": "duplicate_query_definition_id", "subject": "4"} in qa
+    assert {"severity": "warning", "code": "normalized_name_collision", "subject": "lime butterfly"} in qa
+    assert {"severity": "warning", "code": "weak_language_or_script_metadata", "subject": "Lime Butterfly"} in qa
+    assert {"severity": "warning", "code": "missing_name_source_evidence", "subject": "Lime Butterfly"} in qa
