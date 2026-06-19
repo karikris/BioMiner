@@ -17,8 +17,7 @@ BBOX_PAGE_SIZE = GEO_PAGE_SIZE
 COUNT_PROBE_PAGE_SIZE = 1
 FLICKR_SEARCH_RESULT_WINDOW = 4000
 STABLE_RESULT_THRESHOLD = FLICKR_SEARCH_RESULT_WINDOW
-MAX_RESULT_PAGES_PER_QUERY = FLICKR_SEARCH_RESULT_WINDOW
-MAX_RESULTS_PER_QUERY = FLICKR_SEARCH_RESULT_WINDOW
+MAX_ACCESSIBLE_RESULTS_PER_QUERY = FLICKR_SEARCH_RESULT_WINDOW
 SPLIT_TOTAL_THRESHOLD = STABLE_RESULT_THRESHOLD
 SPLIT_REASON_PRIORITY = {
     None: 0,
@@ -324,7 +323,7 @@ def result_pages_for_total(total: int, *, per_page: int = NORMAL_PAGE_SIZE) -> i
     return ceil(total / per_page)
 
 
-def query_fits_page_limit(total: int, *, per_page: int = NORMAL_PAGE_SIZE, max_pages: int = MAX_RESULT_PAGES_PER_QUERY) -> bool:
+def query_fits_page_limit(total: int, *, per_page: int = NORMAL_PAGE_SIZE, max_pages: int = MAX_ACCESSIBLE_RESULTS_PER_QUERY) -> bool:
     return total <= STABLE_RESULT_THRESHOLD and result_pages_for_total(total, per_page=per_page) <= max_pages
 
 
@@ -342,7 +341,7 @@ def plan_queries_from_count(
     upload_date_ranges: Iterable[tuple[str, str]] = (),
     bboxes: Iterable[str] = (),
     narrower_terms: Iterable[str] = (),
-    max_pages: int = MAX_RESULT_PAGES_PER_QUERY,
+    max_pages: int = MAX_ACCESSIBLE_RESULTS_PER_QUERY,
 ) -> tuple[FlickrQuery, ...]:
     if total <= STABLE_RESULT_THRESHOLD and query_fits_page_limit(total, per_page=page_size_for_query(probe), max_pages=max_pages):
         return plan_pages_from_count(probe, total=total)
@@ -536,10 +535,10 @@ def flickr_search_params(query: FlickrQuery) -> dict[str, str | int]:
 
 
 def deduplicate_photo_records(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str | None, str | None]] = set()
+    seen: set[str] = set()
     unique: list[dict[str, Any]] = []
     for record in records:
-        key = (str(record.get("id") or record.get("flickr_photo_id") or ""), str(record.get("url_l") or record.get("url_m") or record.get("image_url") or ""))
+        key = str(record.get("id") or record.get("flickr_photo_id") or "")
         if key in seen:
             continue
         seen.add(key)

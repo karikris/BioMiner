@@ -416,28 +416,51 @@ class MetadataPollState:
                     continue
                 source_record_hash = _source_record_hash(record)
                 image_url_kind = "url_l" if record.get("url_l") else "url_m"
-                result = conn.execute(
+                conn.execute(
                     """
-                    INSERT OR IGNORE INTO source_records (
-                        source, flickr_photo_id, image_url, image_url_kind,
-                        source_record_hash, query_term, query_language,
-                        query_field, raw_json, created_at
+                    INSERT OR IGNORE INTO source_record_image_urls (
+                        source, flickr_photo_id, image_url, image_url_kind, first_seen_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (
-                        "flickr",
-                        photo_id,
-                        image_url,
-                        image_url_kind,
-                        source_record_hash,
-                        source_query.term,
-                        source_query.language,
-                        source_query.search_field,
-                        json.dumps(record, sort_keys=True, ensure_ascii=False),
-                        _timestamp(),
-                    ),
+                    ("flickr", photo_id, image_url, image_url_kind, _timestamp()),
                 )
+                existing = conn.execute(
+                    """
+                    SELECT image_url
+                    FROM source_records
+                    WHERE source = ? AND flickr_photo_id = ?
+                    ORDER BY created_at
+                    LIMIT 1
+                    """,
+                    ("flickr", photo_id),
+                ).fetchone()
+                canonical_image_url = str(existing["image_url"]) if existing else image_url
+                source_inserted = False
+                if existing is None:
+                    result = conn.execute(
+                        """
+                        INSERT OR IGNORE INTO source_records (
+                            source, flickr_photo_id, image_url, image_url_kind,
+                            source_record_hash, query_term, query_language,
+                            query_field, raw_json, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "flickr",
+                            photo_id,
+                            image_url,
+                            image_url_kind,
+                            source_record_hash,
+                            source_query.term,
+                            source_query.language,
+                            source_query.search_field,
+                            json.dumps(record, sort_keys=True, ensure_ascii=False),
+                            _timestamp(),
+                        ),
+                    )
+                    source_inserted = bool(result.rowcount)
                 query_result = conn.execute(
                     """
                     INSERT OR IGNORE INTO source_record_query_hits (
@@ -450,7 +473,7 @@ class MetadataPollState:
                     (
                         "flickr",
                         photo_id,
-                        image_url,
+                        canonical_image_url,
                         source_query.search_field,
                         source_query.term,
                         source_query.language,
@@ -463,7 +486,7 @@ class MetadataPollState:
                     query_hits_inserted += 1
                 else:
                     duplicate_query_hits += 1
-                if result.rowcount:
+                if source_inserted:
                     inserted += 1
                     queue_result = conn.execute(
                         """
@@ -603,8 +626,29 @@ class MetadataPollState:
                     query_field TEXT NOT NULL,
                     raw_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    PRIMARY KEY (source, flickr_photo_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS source_record_image_urls (
+                    source TEXT NOT NULL,
+                    flickr_photo_id TEXT NOT NULL,
+                    image_url TEXT NOT NULL,
+                    image_url_kind TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
                     PRIMARY KEY (source, flickr_photo_id, image_url)
                 )
+                """
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO source_record_image_urls (
+                    source, flickr_photo_id, image_url, image_url_kind, first_seen_at
+                )
+                SELECT source, flickr_photo_id, image_url, image_url_kind, created_at
+                FROM source_records
                 """
             )
             conn.execute(

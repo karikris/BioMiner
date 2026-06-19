@@ -7,7 +7,7 @@ from biominer.flickr_fetch.query_planner import (
     COUNT_PROBE_PAGE_SIZE,
     FLICKR_SEARCH_RESULT_WINDOW,
     GEO_PAGE_SIZE,
-    MAX_RESULT_PAGES_PER_QUERY,
+    MAX_ACCESSIBLE_RESULTS_PER_QUERY,
     NORMAL_PAGE_SIZE,
     STABLE_RESULT_THRESHOLD,
     FlickrQuery,
@@ -71,7 +71,7 @@ def test_high_volume_queries_use_fixed_upload_slice_pages() -> None:
 
     pages = plan_queries_from_count(
         probe,
-        total=(MAX_RESULT_PAGES_PER_QUERY + 1) * NORMAL_PAGE_SIZE,
+        total=(MAX_ACCESSIBLE_RESULTS_PER_QUERY + 1) * NORMAL_PAGE_SIZE,
         taken_date_ranges=[("2024-01-01", "2024-06-30"), ("2024-07-01", "2024-12-31")],
         upload_date_ranges=[("2024-01-01", "2024-12-31")],
         bboxes=["0,0,10,10"],
@@ -197,7 +197,7 @@ def test_query_under_page_limit_creates_250_record_geo_pages() -> None:
 def test_query_over_page_limit_uses_fixed_slice_pages_not_count_probes() -> None:
     probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe")
 
-    pages = plan_queries_from_count(probe, total=MAX_RESULT_PAGES_PER_QUERY * GEO_PAGE_SIZE + 1)
+    pages = plan_queries_from_count(probe, total=MAX_ACCESSIBLE_RESULTS_PER_QUERY * GEO_PAGE_SIZE + 1)
 
     assert pages
     assert {query.lane for query in pages} == {"normal_page"}
@@ -280,7 +280,7 @@ def test_plan_fixed_upload_slice_pages_creates_page_one_only_without_count_probe
     ]
 
 
-def test_deduplicates_by_photo_id_and_image_url() -> None:
+def test_deduplicates_by_photo_id() -> None:
     unique = deduplicate_photo_records(
         [
             {"id": "1", "url_l": "https://live.staticflickr.com/1_l.jpg"},
@@ -290,7 +290,7 @@ def test_deduplicates_by_photo_id_and_image_url() -> None:
         ]
     )
 
-    assert [row["id"] for row in unique] == ["1", "1", "2"]
+    assert [row["id"] for row in unique] == ["1", "2"]
 
 
 def test_loads_papilio_demoleus_keyword_json_and_gates_broad_terms(tmp_path) -> None:

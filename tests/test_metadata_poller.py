@@ -30,7 +30,14 @@ def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
             for row in conn.execute("PRAGMA table_info(api_call_ledger)").fetchall()
         }
 
-    assert {"api_call_ledger", "flickr_work_items", "source_records", "source_record_query_hits", "image_triage_queue"}.issubset(tables)
+    assert {
+        "api_call_ledger",
+        "flickr_work_items",
+        "source_records",
+        "source_record_image_urls",
+        "source_record_query_hits",
+        "image_triage_queue",
+    }.issubset(tables)
     assert {
         "split_depth",
         "split_priority",
@@ -173,6 +180,60 @@ def test_poll_once_preserves_duplicate_query_hits_for_source_record(tmp_path) ->
         ).fetchall()
     assert source_rows == [("text", "Papilio")]
     assert query_hits == [("tags", "Papilionidae"), ("text", "Papilio")]
+
+
+def test_poll_once_keeps_one_source_record_and_tracks_image_url_history(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="Papilio", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+
+    def fake_fetch(item: FlickrQuery) -> dict[str, object]:
+        suffix = "large" if item.search_field == "text" else "medium"
+        url_key = "url_l" if item.search_field == "text" else "url_m"
+        return {
+            "photos": {
+                "total": "1",
+                "photo": [
+                    {
+                        "id": "1",
+                        "title": "swallowtail",
+                        url_key: f"https://live.staticflickr.com/1_{suffix}.jpg",
+                    }
+                ],
+            }
+        }
+
+    first = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=1,
+        fetch_metadata=fake_fetch,
+    )
+    state.enqueue_work_item(FlickrQuery(term="Papilio", language="en", search_field="tags", lane="normal_page", page=1, per_page=250))
+    second = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=3,
+        fetch_metadata=fake_fetch,
+    )
+
+    with sqlite3.connect(state.path) as conn:
+        source_rows = conn.execute("SELECT flickr_photo_id, image_url FROM source_records").fetchall()
+        url_rows = conn.execute("SELECT image_url, image_url_kind FROM source_record_image_urls ORDER BY image_url").fetchall()
+        query_hits = conn.execute("SELECT query_field, image_url FROM source_record_query_hits ORDER BY query_field").fetchall()
+    assert first.source_records_inserted == 1
+    assert second.source_records_inserted == 0
+    assert second.duplicate_records_skipped == 1
+    assert source_rows == [("1", "https://live.staticflickr.com/1_large.jpg")]
+    assert url_rows == [
+        ("https://live.staticflickr.com/1_large.jpg", "url_l"),
+        ("https://live.staticflickr.com/1_medium.jpg", "url_m"),
+    ]
+    assert query_hits == [
+        ("tags", "https://live.staticflickr.com/1_large.jpg"),
+        ("text", "https://live.staticflickr.com/1_large.jpg"),
+    ]
 
 
 def test_export_source_records_with_query_provenance_lists_all_keywords(tmp_path) -> None:
