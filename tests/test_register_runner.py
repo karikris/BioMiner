@@ -96,18 +96,43 @@ def test_register_runner_routes_other_species_to_bronze(tmp_path) -> None:
     assert row["bin_reason"] == "below_50"
 
 
-class FakeRegisterClassifier:
-    def __init__(self, *, species_label: str = "a photo of Papilio demoleus") -> None:
-        self.species_label = species_label
-        self.batch_sizes: list[int] = []
+def test_register_runner_preserves_scientific_name_for_common_name_prompt(tmp_path) -> None:
+    classifier = FakeRegisterClassifier(
+        species_label="a photo of lime butterfly",
+        species_name="Papilio demoleus",
+    )
 
-    def classify_images_with_label_sets(self, images, *, label_sets, top_k=10):  # noqa: ANN001 - test fake.
+    result = process_records_with_registers(
+        [_record(1)],
+        classifier=classifier,
+        species_candidates=_candidates(),
+        output_path=tmp_path / "triage.parquet",
+        cache_root=tmp_path / "cache",
+        cache_image=fake_cache([]),
+    )
+
+    row = result.frame.to_dicts()[0]
+    assert classifier.received_species_prompt_variants is True
+    assert row["species_top1_label"] == "a photo of lime butterfly"
+    assert row["species_top1_scientific_name"] == "Papilio demoleus"
+
+
+class FakeRegisterClassifier:
+    def __init__(self, *, species_label: str = "a photo of Papilio demoleus", species_name: str | None = None) -> None:
+        self.species_label = species_label
+        self.species_name = species_name
+        self.batch_sizes: list[int] = []
+        self.received_species_prompt_variants = False
+
+    def classify_images_with_label_sets(self, images, *, label_sets, species_prompt_variants=None, top_k=10):  # noqa: ANN001 - test fake.
         self.batch_sizes.append(len(images))
+        self.received_species_prompt_variants = species_prompt_variants is not None
         assert "species" in label_sets
         assert "triage" in label_sets
         return [
             {
                 "species_top1_label": self.species_label,
+                "species_top1_scientific_name": self.species_name,
                 "species_top1_score": 0.91,
                 "species_topk_json": [{"label": self.species_label, "score": 0.91}],
                 "triage_top1_label": "a photo of an adult butterfly",

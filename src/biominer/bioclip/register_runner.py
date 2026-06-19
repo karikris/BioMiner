@@ -13,7 +13,8 @@ import polars as pl
 from biominer.bioclip.bioclip import DEFAULT_TRIAGE_LABELS
 from biominer.bioclip.async_image_cache import cache_images_async
 from biominer.bioclip.image_cache import CachedImage, cache_image_from_url
-from biominer.bioclip.species_candidates import SpeciesCandidate, label_to_scientific_name, species_labels
+from biominer.bioclip.prompt_templates import PromptVariant
+from biominer.bioclip.species_candidates import SpeciesCandidate, label_to_scientific_name, species_prompt_variants
 from biominer.bioclip.temp_image_store import cleanup_cached_image
 from biominer.bioclip.triage import (
     _base_row,
@@ -38,6 +39,7 @@ class RegisterBatchClassifier(Protocol):
         images: Sequence[dict[str, object]],
         *,
         label_sets: dict[str, Sequence[str]],
+        species_prompt_variants: Sequence[PromptVariant] | None = None,
         top_k: int = 10,
     ) -> list[dict[str, Any]]:
         ...
@@ -97,8 +99,9 @@ def process_records_with_registers(
     processed_keys = _successful_keys(existing)
     records_iter = iter(records)
     classified_at = _timestamp(now)
+    species_variants = species_prompt_variants(species_candidates)
     label_sets: dict[str, Sequence[str]] = {
-        "species": species_labels(species_candidates),
+        "species": [variant.label for variant in species_variants],
         "triage": DEFAULT_TRIAGE_LABELS,
     }
     species_by_label = label_to_scientific_name(species_candidates)
@@ -153,6 +156,7 @@ def process_records_with_registers(
                     items=fill.items,
                     classifier=classifier,
                     label_sets=label_sets,
+                    species_prompt_variants=species_variants,
                     species_by_label=species_by_label,
                     rows=rows,
                     cache_root=Path(cache_root),
@@ -334,6 +338,7 @@ def _classify_register(
     items: list[_RegisterItem],
     classifier: RegisterBatchClassifier,
     label_sets: dict[str, Sequence[str]],
+    species_prompt_variants: Sequence[PromptVariant],
     species_by_label: dict[str, str],
     rows: list[dict[str, object]],
     cache_root: Path,
@@ -346,7 +351,11 @@ def _classify_register(
     deleted = 0
     images = [_image_payload(item) for item in items]
     try:
-        predictions = classifier.classify_images_with_label_sets(images, label_sets=label_sets)
+        predictions = classifier.classify_images_with_label_sets(
+            images,
+            label_sets=label_sets,
+            species_prompt_variants=species_prompt_variants,
+        )
         if len(predictions) != len(items):
             raise RuntimeError(f"BioCLIP returned {len(predictions)} predictions for {len(items)} images")
         for item, prediction in zip(items, predictions, strict=True):
@@ -358,7 +367,11 @@ def _classify_register(
     except Exception as exc:  # noqa: BLE001 - isolate bad images through the same persistent classifier.
         for item in items:
             try:
-                prediction = classifier.classify_images_with_label_sets([_image_payload(item)], label_sets=label_sets)[0]
+                prediction = classifier.classify_images_with_label_sets(
+                    [_image_payload(item)],
+                    label_sets=label_sets,
+                    species_prompt_variants=species_prompt_variants,
+                )[0]
                 rows.append(_success_row(item, prediction, register_id, species_by_label, cache_root))
                 if rows[-1]["image_deleted_after_classification"]:
                     deleted += 1
@@ -406,7 +419,8 @@ def _success_row(
 ) -> dict[str, object]:
     enriched_prediction = {
         **prediction,
-        "species_top1_scientific_name": species_by_label.get(str(prediction.get("species_top1_label") or "")),
+        "species_top1_scientific_name": prediction.get("species_top1_scientific_name")
+        or species_by_label.get(str(prediction.get("species_top1_label") or "")),
     }
     image_deleted = cleanup_cached_image(item.cached, cache_root=cache_root, delete_after_success=True)
     triage = classify_bioclip_triage(record={**item.record, **item.base}, prediction=enriched_prediction)

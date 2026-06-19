@@ -420,3 +420,53 @@ def test_bioclip_classifier_builds_species_and_triage_prediction_with_label_sets
     assert record["triage_top1_label"] == "a photo of an adult butterfly"
     assert record["triage_top1_score"] == 0.88
     assert "a photo of an adult butterfly" in DEFAULT_TRIAGE_LABELS
+
+
+def test_bioclip_classifier_aggregates_species_prompt_variants() -> None:
+    from biominer.bioclip.prompt_templates import PromptVariant
+
+    class FakeScorer:
+        def score_label_sets_batch(self, image_paths, label_sets):  # noqa: ANN001 - test fake.
+            return {
+                "species": [
+                    {
+                        "a photo of Papilio demoleus": 0.62,
+                        "a photo of lime butterfly": 0.84,
+                        "a photo of Papilio machaon": 0.21,
+                    }
+                ],
+                "triage": [{"a photo of an adult butterfly": 0.91}],
+            }
+
+    classifier = BioClipClassifier(runtime=_runtime(), scorer=FakeScorer())
+    records = classifier.classify_images_with_label_sets(
+        [
+            {
+                "flickr_photo_id": "1",
+                "image_path": "/tmp/1.jpg",
+                "image_hash": "sha256:image",
+                "image_url_used": "https://live.staticflickr.com/1.jpg",
+                "resolved_scientific_name": "Papilio demoleus",
+                "text_evidence_present": True,
+            }
+        ],
+        label_sets={
+            "species": [
+                "a photo of Papilio demoleus",
+                "a photo of lime butterfly",
+                "a photo of Papilio machaon",
+            ],
+            "triage": ["a photo of an adult butterfly"],
+        },
+        species_prompt_variants=[
+            PromptVariant("a photo of Papilio demoleus", "Papilio demoleus", "scientific"),
+            PromptVariant("a photo of lime butterfly", "Papilio demoleus", "common"),
+            PromptVariant("a photo of Papilio machaon", "Papilio machaon", "scientific"),
+        ],
+    )
+
+    record = records[0]
+    assert record["species_top1_scientific_name"] == "Papilio demoleus"
+    assert record["species_top1_score"] == 0.84
+    assert record["species_top1_label"] == "a photo of lime butterfly"
+    assert record["species_prompt_topk_json"][0]["prompt_scores"]["a photo of Papilio demoleus"] == 0.62

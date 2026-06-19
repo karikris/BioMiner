@@ -7,6 +7,7 @@ import subprocess
 from typing import IO, Any, Callable, Mapping, Sequence
 
 from biominer.bioclip.model_registry import BioClipRuntime
+from biominer.bioclip.prompt_templates import PromptVariant, aggregate_prompt_scores
 
 BioClipScorer = Callable[[Path, Sequence[str]], Mapping[str, float]]
 BioClipBatchScorer = Callable[[Sequence[Path], Sequence[str]], Sequence[Mapping[str, float]]]
@@ -157,6 +158,7 @@ class BioClipClassifier:
         *,
         label_sets: LabelSets,
         top_k: int = 10,
+        species_prompt_variants: Sequence[PromptVariant] | None = None,
     ) -> list[dict[str, Any]]:
         if not self.runtime.available:
             raise RuntimeError(f"BioCLIP runtime is not available: {self.runtime.unavailable_reason}")
@@ -165,13 +167,22 @@ class BioClipClassifier:
         records: list[dict[str, Any]] = []
         for index, image in enumerate(images):
             topk_by_label_set: dict[str, list[tuple[str, float]]] = {}
+            prompt_topk_by_label_set: dict[str, list[dict[str, object]]] = {}
             for label_set_name, labels in label_sets.items():
                 scores = scores_by_label_set[label_set_name][index]
-                topk_by_label_set[label_set_name] = sorted(
-                    ((label, float(scores.get(label, 0.0))) for label in labels),
-                    key=lambda item: item[1],
-                    reverse=True,
-                )[:top_k]
+                if label_set_name == "species" and species_prompt_variants:
+                    aggregated = aggregate_prompt_scores(scores=scores, variants=species_prompt_variants, top_k=top_k)
+                    topk_by_label_set[label_set_name] = [
+                        (str(row["best_label"]), float(row["score"]))
+                        for row in aggregated
+                    ]
+                    prompt_topk_by_label_set[label_set_name] = aggregated
+                else:
+                    topk_by_label_set[label_set_name] = sorted(
+                        ((label, float(scores.get(label, 0.0))) for label in labels),
+                        key=lambda item: item[1],
+                        reverse=True,
+                    )[:top_k]
             records.append(
                 build_label_set_prediction_record(
                     flickr_photo_id=str(image["flickr_photo_id"]),
@@ -181,6 +192,7 @@ class BioClipClassifier:
                     resolved_scientific_name=str(image.get("resolved_scientific_name") or ""),
                     text_evidence_present=bool(image.get("text_evidence_present")),
                     topk_by_label_set=topk_by_label_set,
+                    species_prompt_topk=prompt_topk_by_label_set.get("species", []),
                 )
             )
         return records
@@ -363,6 +375,7 @@ def build_label_set_prediction_record(
     resolved_scientific_name: str,
     text_evidence_present: bool,
     topk_by_label_set: Mapping[str, list[tuple[str, float]]],
+    species_prompt_topk: Sequence[Mapping[str, object]] = (),
 ) -> dict[str, Any]:
     species_topk = _topk_json(topk_by_label_set.get("species", []))
     triage_topk = _topk_json(topk_by_label_set.get("triage", []))
@@ -383,8 +396,10 @@ def build_label_set_prediction_record(
         "image_hash": image_hash,
         "image_url_used": image_url_used,
         "species_top1_label": species_topk[0]["label"] if species_topk else None,
+        "species_top1_scientific_name": str(species_prompt_topk[0]["taxon_key"]) if species_prompt_topk else None,
         "species_top1_score": species_topk[0]["score"] if species_topk else None,
         "species_topk_json": species_topk,
+        "species_prompt_topk_json": [dict(row) for row in species_prompt_topk],
         "triage_top1_label": triage_topk[0]["label"] if triage_topk else None,
         "triage_top1_score": triage_topk[0]["score"] if triage_topk else None,
         "triage_topk_json": triage_topk,
