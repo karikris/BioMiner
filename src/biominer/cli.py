@@ -24,6 +24,7 @@ from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState
 from biominer.filter.anti_keywords import filter_biodiversity_parquet
 from biominer.filter.rules import classify_evidence_frame
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
+from biominer.registry.build import build_registry
 from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.gbif import GBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
@@ -59,6 +60,14 @@ def build_parser() -> argparse.ArgumentParser:
     registry_fetch_taxonomy.add_argument("--output-json", required=True)
     registry_fetch_taxonomy.add_argument("--scope-json", default="config/butterfly_scope.json")
     registry_fetch_taxonomy.add_argument("--retrieved-at")
+    registry_build = registry_subparsers.add_parser("build")
+    registry_build.add_argument("--output-dir", required=True)
+    registry_build.add_argument("--registry-version", required=True)
+    registry_build.add_argument("--scope-json", default="config/butterfly_scope.json")
+    registry_build.add_argument("--source-json")
+    registry_build.add_argument("--reuse-source-json", action="store_true")
+    registry_build.add_argument("--report-dir", default="reports")
+    registry_build.add_argument("--retrieved-at")
     build_comment_queue = subparsers.add_parser("build-comment-review-queue")
     build_comment_queue.add_argument("--input", required=True)
     build_comment_queue.add_argument("--state-db", default="data/state/comment_review.sqlite")
@@ -208,6 +217,22 @@ def run(args: argparse.Namespace) -> int:
                 registry_version=args.registry_version,
                 scope_path=args.scope_json,
             )
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        if args.registry_command == "build":
+            try:
+                payload = build_registry(
+                    output_dir=args.output_dir,
+                    registry_version=args.registry_version,
+                    scope_path=args.scope_json,
+                    source_json=args.source_json,
+                    reuse_source_json=args.reuse_source_json,
+                    report_dir=args.report_dir,
+                    retrieved_at=args.retrieved_at,
+                )
+            except FileNotFoundError as exc:
+                print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+                return 2
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
         return 2

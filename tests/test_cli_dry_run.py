@@ -178,6 +178,87 @@ def test_registry_fetch_taxonomy_cli_writes_gbif_source_snapshot(tmp_path, capsy
     assert source["taxa"][0]["scientific_name"] == "Papilionoidea"
 
 
+def test_registry_build_cli_reuses_source_json_and_writes_report(tmp_path, capsys) -> None:
+    scope = tmp_path / "scope.json"
+    scope.write_text(
+        json.dumps(
+            {
+                "scope_id": "test-scope",
+                "root": {"scientific_name": "Papilionoidea", "rank": "SUPERFAMILY"},
+                "included_families": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = tmp_path / "registry_source.json"
+    source.write_text(
+        json.dumps(
+            {
+                "source": "GBIF",
+                "source_version": "gbif-species-api",
+                "retrieved_at": "2026-06-20T00:00:00+00:00",
+                "metrics": {"gbif_calls": 12},
+                "taxa": [
+                    {
+                        "accepted_taxon_key": "gbif:1",
+                        "scientific_name": "Papilionoidea",
+                        "rank": "SUPERFAMILY",
+                    }
+                ],
+                "names": [
+                    {
+                        "accepted_taxon_key": "gbif:1",
+                        "verbatim_name": "Papilionoidea",
+                        "display_name": "Papilionoidea",
+                        "language": "la",
+                        "script": "Latn",
+                        "name_class": "accepted_scientific",
+                        "source": "GBIF",
+                        "source_record_id": "gbif:1",
+                        "trust_tier": "T1",
+                        "precision_tier": "high",
+                        "confidence": "high",
+                        "enabled": True,
+                    }
+                ],
+                "source_assertions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "registry"
+    reports = tmp_path / "reports"
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "registry",
+            "build",
+            "--source-json",
+            str(source),
+            "--reuse-source-json",
+            "--output-dir",
+            str(output),
+            "--registry-version",
+            "test-registry",
+            "--scope-json",
+            str(scope),
+            "--report-dir",
+            str(reports),
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["registry_version"] == "test-registry"
+    assert payload["source_json"] == str(source)
+    assert payload["manifest"]["qa_status"] == "passed"
+    assert (output / "manifest.json").exists()
+    assert (output / "flickr_query_definitions.parquet").exists()
+    assert Path(payload["report_json"]).exists()
+    assert Path(payload["report_md"]).exists()
+
+
 def test_cli_help_does_not_describe_old_gold_silver_bronze_logic(capsys) -> None:
     parser = build_parser()
 
