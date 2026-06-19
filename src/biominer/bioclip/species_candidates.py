@@ -6,6 +6,8 @@ from typing import Any
 
 import polars as pl
 
+from biominer.bioclip.prompt_templates import PromptVariant, build_species_prompt_variants
+
 
 TARGET_SPECIES = "Papilio demoleus"
 DEFAULT_SPECIES_CANDIDATE_LIMIT = 2_000
@@ -21,6 +23,7 @@ class SpeciesCandidate:
     source: str | None
     source_taxon_id: str | None
     is_target_species: bool
+    common_names: tuple[str, ...] = ()
 
     @property
     def label(self) -> str:
@@ -58,6 +61,7 @@ def load_species_candidates(
                 source="pinned_target",
                 source_taxon_id=None,
                 is_target_species=True,
+                common_names=("lime butterfly", "chequered swallowtail", "citrus swallowtail"),
             ),
         )
     return ordered[:limit]
@@ -69,6 +73,18 @@ def species_labels(candidates: list[SpeciesCandidate]) -> list[str]:
 
 def label_to_scientific_name(candidates: list[SpeciesCandidate]) -> dict[str, str]:
     return {candidate.label: candidate.scientific_name for candidate in candidates}
+
+
+def species_prompt_variants(candidates: list[SpeciesCandidate]) -> list[PromptVariant]:
+    variants: list[PromptVariant] = []
+    for candidate in candidates:
+        variants.extend(
+            build_species_prompt_variants(
+                scientific_name=candidate.scientific_name,
+                common_names=candidate.common_names,
+            )
+        )
+    return variants
 
 
 def _read_candidate_frame(path: Path) -> pl.DataFrame:
@@ -104,6 +120,7 @@ def _candidate_from_row(row: dict[str, Any], *, target_species: str) -> SpeciesC
         source=_first_text(row, "source"),
         source_taxon_id=_first_text(row, "source_taxon_id", "taxon_id", "taxonID"),
         is_target_species=_normalize(scientific_name) == _normalize(target_species),
+        common_names=_split_common_names(_first_text(row, "common_names", "commonNames", "vernacular_names", "vernacularNames")),
     )
 
 
@@ -125,6 +142,17 @@ def _first_text(row: dict[str, Any], *keys: str) -> str | None:
         if value not in (None, ""):
             return str(value).strip()
     return None
+
+
+def _split_common_names(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    names: list[str] = []
+    for part in value.replace(";", "|").split("|"):
+        cleaned = " ".join(part.strip().split())
+        if cleaned and cleaned not in names:
+            names.append(cleaned)
+    return tuple(names)
 
 
 def _normalize(value: str) -> str:

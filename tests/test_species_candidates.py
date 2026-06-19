@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from biominer.bioclip.species_candidates import load_species_candidates, species_labels
+from biominer.bioclip.species_candidates import load_species_candidates, species_labels, species_prompt_variants
 
 
 def test_load_species_candidates_pins_target_and_limits_species_rows(tmp_path) -> None:
@@ -36,3 +36,20 @@ def test_load_species_candidates_reads_parquet_and_dedupes_names(tmp_path) -> No
     candidates = load_species_candidates(path, limit=10)
 
     assert [candidate.scientific_name for candidate in candidates] == ["Papilio demoleus", "Papilio machaon"]
+
+
+def test_species_candidates_read_common_names_and_build_prompt_variants(tmp_path) -> None:
+    path = tmp_path / "candidates.csv"
+    path.write_text(
+        "scientific_name,rank,family,genus,common_names\n"
+        "Papilio demoleus,species,Papilionidae,Papilio,lime butterfly|chequered swallowtail\n",
+        encoding="utf-8",
+    )
+
+    candidates = load_species_candidates(path)
+    assert candidates[0].common_names == ("lime butterfly", "chequered swallowtail")
+
+    variants = species_prompt_variants(candidates)
+    labels = [variant.label for variant in variants]
+    assert "a photo of Papilio demoleus" in labels
+    assert "a photo of lime butterfly" in labels
