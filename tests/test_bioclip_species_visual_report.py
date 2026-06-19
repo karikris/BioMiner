@@ -96,3 +96,44 @@ def test_normalize_reason_labels_renames_legacy_not_target_species() -> None:
     assert row["bin_reason"] == "below_50"
     assert row["triage_reason"] == "below_50"
     assert row["publication_state_reason"] == "below_50"
+
+
+def test_write_tables_includes_diagnostics_summary_and_triage_group_table(tmp_path) -> None:
+    report = load_report_module()
+    df = pl.DataFrame(
+        [
+            {
+                "species_top1_scientific_name": "Papilio demoleus",
+                "family_resolved": "Papilionidae",
+                "occurrence_bin": "gold",
+                "image_category": "adult_butterfly",
+                "life_stage": "adult_butterfly",
+                "bin_reason": "adult_butterfly_species_match_score_gt_070",
+                "score_band": "0.90-0.98",
+                "species_count_ge_0.01": 2,
+                "species_count_ge_0.05": 2,
+                "species_count_ge_0.10": 1,
+                "year": 2024,
+                "month": 5,
+                "latitude": -27.0,
+                "longitude": 153.0,
+                "captured_at": "2024-05-06",
+                "image_deleted_after_classification": True,
+                "classification_status": "success",
+                "species_top1_score": 0.91,
+                "bioclip_top1_score": 0.91,
+                "triage_top1_score": 0.88,
+                "species_topk_count": 2,
+                "species_top1_top2_margin": 0.30,
+                "species_topk_entropy": 0.42,
+                "triage_group_top": "adult_butterfly",
+            }
+        ]
+    )
+
+    summary = report.write_tables(df, tmp_path)
+
+    assert summary["species_margin_stats"]["median"] == pytest.approx(0.30)
+    assert summary["species_entropy_stats"]["max"] == pytest.approx(0.42)
+    assert summary["triage_groups"] == {"adult_butterfly": 1}
+    assert (tmp_path / "triage_group_counts.csv").exists()

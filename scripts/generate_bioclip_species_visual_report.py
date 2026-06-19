@@ -267,6 +267,8 @@ def write_tables(df: pl.DataFrame, output_dir: Path, filter_result: FilterResult
         "family_by_occurrence_bin.csv": family_bin,
         "monthly_counts.csv": monthly,
     }
+    if "triage_group_top" in df.columns:
+        table_map["triage_group_counts.csv"] = value_count_table(df, "triage_group_top", "triage_group_top")
     for filename, table in table_map.items():
         table.write_csv(output_dir / filename)
 
@@ -297,6 +299,12 @@ def write_tables(df: pl.DataFrame, output_dir: Path, filter_result: FilterResult
         "top_10_families": top_families.head(10).to_dicts(),
         "unresolved_family_records": int(df.filter(pl.col("family_resolved") == "Unresolved").height),
     }
+    if "species_top1_top2_margin" in df.columns:
+        summary["species_margin_stats"] = numeric_summary(df["species_top1_top2_margin"])
+    if "species_topk_entropy" in df.columns:
+        summary["species_entropy_stats"] = numeric_summary(df["species_topk_entropy"])
+    if "triage_group_top" in df.columns:
+        summary["triage_groups"] = value_counts_dict(df, "triage_group_top")
     if filter_result is not None:
         summary["filters"] = {
             "source_rows_before_filter": filter_result.rows_before,
