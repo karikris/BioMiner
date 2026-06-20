@@ -20,7 +20,7 @@ CacheKey = tuple[str, tuple[tuple[str, str], ...]]
 USER_AGENT = "BioMiner/0.1 registry-enrichment"
 DEFAULT_WIKIDATA_MIN_DELAY_SECONDS = 1.0
 DEFAULT_WIKIDATA_MAX_DELAY_SECONDS = 120.0
-DEFAULT_WIKIDATA_RATE_LIMIT_COOLDOWN_SECONDS = 5.0
+DEFAULT_WIKIDATA_RATE_LIMIT_COOLDOWN_SECONDS = 12.0
 logger = logging.getLogger(__name__)
 
 
