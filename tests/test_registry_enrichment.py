@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 
 import httpx
 import polars as pl
@@ -412,6 +414,73 @@ def test_build_enrichment_sources_checkpoints_logs_and_reports(tmp_path, caplog)
     assert "registry.enrichment.checkpoint_write" in log_text
     assert "source_name_assertions.parquet" in log_text
     assert "name_assertion_rows=3" in log_text
+
+
+class ConcurrencyTrackingClient:
+    def __init__(self, source: str, *, delay_seconds: float) -> None:
+        self.source = source
+        self.delay_seconds = delay_seconds
+        self.active = 0
+        self.max_active = 0
+        self.lock = threading.Lock()
+
+    def enrich_species(self, context):  # noqa: ANN001 - test double tracks concurrent calls.
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            time.sleep(self.delay_seconds)
+            return {
+                "name_assertions": [
+                    {
+                        "accepted_taxon_key": context.accepted_taxon_key,
+                        "display_name": f"{self.source} {context.accepted_scientific_name}",
+                        "language": "eng",
+                        "script": "Latn",
+                        "region": "",
+                        "name_class": "vernacular",
+                        "source": self.source,
+                        "source_record_id": f"{self.source}:{context.accepted_taxon_key}",
+                        "trust_tier": "T2",
+                        "precision_tier": "medium",
+                        "confidence": "high",
+                        "enabled": True,
+                        "review_state": "accepted",
+                    }
+                ],
+                "external_links": [],
+                "source_snapshots": [],
+            }
+        finally:
+            with self.lock:
+                self.active -= 1
+
+
+def test_wikidata_source_is_limited_to_one_concurrent_query(tmp_path) -> None:
+    registry, _scope = _write_base_registry(
+        tmp_path,
+        species_names=("Papilio demoleus", "Papilio machaon", "Papilio polytes", "Papilio xuthus"),
+    )
+    trackers = {
+        "col": ConcurrencyTrackingClient("CoL", delay_seconds=0.03),
+        "wikidata": ConcurrencyTrackingClient("Wikidata", delay_seconds=0.03),
+        "itis": ConcurrencyTrackingClient("ITIS", delay_seconds=0.06),
+    }
+
+    manifest = build_enrichment_sources_from_registry(
+        registry_dir=registry,
+        sources=("col", "wikidata", "itis"),
+        clients=trackers,
+        workers=4,
+        progress_every=4,
+        checkpoint_every=4,
+        report_dir=tmp_path / "reports",
+    )
+
+    assert trackers["col"].max_active > 1
+    assert trackers["itis"].max_active > 1
+    assert trackers["wikidata"].max_active == 1
+    assert manifest["source_worker_limits"] == {"col": 4, "wikidata": 1, "itis": 4}
 
 
 def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, capsys, monkeypatch) -> None:

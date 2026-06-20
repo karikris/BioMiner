@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Iterator
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -33,6 +34,7 @@ ENRICHMENT_MANIFEST_FILE = "enrichment_manifest.json"
 logger = logging.getLogger(__name__)
 ClientBundleFactory = Callable[[], dict[str, Any]]
 _worker_local = threading.local()
+_source_semaphores = {"wikidata": threading.BoundedSemaphore(1)}
 
 
 @dataclass(frozen=True)
@@ -88,11 +90,12 @@ def build_enrichment_sources_from_registry(
     contexts = [_species_context(row, names_by_taxon) for row in species_rows]
     registry_version = _registry_version(registry)
     logger.info(
-        "registry.enrichment.start registry=%s species=%d sources=%s workers=%d progress_every=%d checkpoint_every=%d max_retries=%d limit=%d",
+        "registry.enrichment.start registry=%s species=%d sources=%s workers=%d source_worker_limits=%s progress_every=%d checkpoint_every=%d max_retries=%d limit=%d",
         registry,
         len(contexts),
         ",".join(source_order),
         workers,
+        _source_worker_limits(source_order, workers),
         progress_every,
         checkpoint_every,
         max_retries,
@@ -134,6 +137,7 @@ def build_enrichment_sources_from_registry(
                 total=len(contexts),
                 source_order=source_order,
                 workers=workers,
+                source_worker_limits=_source_worker_limits(source_order, workers),
                 progress_every=progress_every,
                 checkpoint_every=checkpoint_every,
                 max_retries=max_retries,
@@ -153,6 +157,7 @@ def build_enrichment_sources_from_registry(
             total=0,
             source_order=source_order,
             workers=workers,
+            source_worker_limits=_source_worker_limits(source_order, workers),
             progress_every=progress_every,
             checkpoint_every=checkpoint_every,
             max_retries=max_retries,
@@ -170,6 +175,7 @@ def build_enrichment_sources_from_registry(
             errors=errors,
             source_order=source_order,
             workers=workers,
+            source_worker_limits=_source_worker_limits(source_order, workers),
             progress_every=progress_every,
             checkpoint_every=checkpoint_every,
             max_retries=max_retries,
@@ -281,7 +287,8 @@ def _enrich_species_context(context: SpeciesContext, *, sources: tuple[str, ...]
             errors.append({"source": source, "accepted_taxon_key": context.accepted_taxon_key, "error": "missing_client"})
             continue
         try:
-            result = client.enrich_species(context)
+            with _source_query_limit(source):
+                result = client.enrich_species(context)
         except Exception as exc:  # noqa: BLE001 - source staging records and continues per species.
             errors.append({"source": source, "accepted_taxon_key": context.accepted_taxon_key, "error": type(exc).__name__})
             logger.info(
@@ -303,6 +310,15 @@ def _enrich_species_context(context: SpeciesContext, *, sources: tuple[str, ...]
     )
 
 
+def _source_worker_limits(sources: tuple[str, ...], workers: int) -> dict[str, int]:
+    return {source: (1 if source == "wikidata" else workers) for source in sources}
+
+
+def _source_query_limit(source: str):
+    semaphore = _source_semaphores.get(source)
+    return semaphore if semaphore is not None else nullcontext()
+
+
 def _write_enrichment_checkpoint(
     registry: Path,
     *,
@@ -314,6 +330,7 @@ def _write_enrichment_checkpoint(
     total: int,
     source_order: tuple[str, ...],
     workers: int,
+    source_worker_limits: dict[str, int],
     progress_every: int,
     checkpoint_every: int,
     max_retries: int,
@@ -331,6 +348,7 @@ def _write_enrichment_checkpoint(
         {
             "registry_dir": str(registry),
             "source_order": list(source_order),
+            "source_worker_limits": source_worker_limits,
             "species_seen": total,
             "completed_species": completed,
             "status": status,
@@ -479,6 +497,7 @@ def _enrichment_report(
     errors: list[dict[str, str]],
     source_order: tuple[str, ...],
     workers: int,
+    source_worker_limits: dict[str, int],
     progress_every: int,
     checkpoint_every: int,
     max_retries: int,
@@ -493,6 +512,7 @@ def _enrichment_report(
         "registry_dir": str(registry),
         "status": manifest.get("status"),
         "source_order": list(source_order),
+        "source_worker_limits": source_worker_limits,
         "workers": workers,
         "progress_every": progress_every,
         "checkpoint_every": checkpoint_every,
