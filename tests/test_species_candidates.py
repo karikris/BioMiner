@@ -1,25 +1,29 @@
 from __future__ import annotations
 
 import polars as pl
+import pytest
 
 from biominer.bioclip.species_candidates import load_species_candidates, species_labels, species_prompt_variants
 
 
-def test_load_species_candidates_pins_target_and_limits_species_rows(tmp_path) -> None:
-    path = tmp_path / "global_checklist.csv"
-    path.write_text(
-        "scientificName,rank,family,genus,source,taxon_id\n"
-        "Danaus plexippus,species,Nymphalidae,Danaus,global,1\n"
-        "Papilio demoleus,subspecies,Papilionidae,Papilio,global,2\n"
-        "Vanessa cardui,species,Nymphalidae,Vanessa,global,3\n",
-        encoding="utf-8",
-    )
+def test_load_species_candidates_limits_registry_species_rows_without_pinned_injection(tmp_path) -> None:
+    path = tmp_path / "global_checklist.parquet"
+    pl.DataFrame(
+        {
+            "scientificName": ["Danaus plexippus", "Papilio demoleus", "Vanessa cardui"],
+            "rank": ["species", "subspecies", "species"],
+            "family": ["Nymphalidae", "Papilionidae", "Nymphalidae"],
+            "genus": ["Danaus", "Papilio", "Vanessa"],
+            "source": ["registry", "registry", "registry"],
+            "taxon_id": ["1", "2", "3"],
+        }
+    ).write_parquet(path)
 
     candidates = load_species_candidates(path, limit=2)
 
-    assert [candidate.scientific_name for candidate in candidates] == ["Papilio demoleus", "Danaus plexippus"]
-    assert candidates[0].is_target_species is True
-    assert species_labels(candidates)[0] == "a photo of Papilio demoleus"
+    assert [candidate.scientific_name for candidate in candidates] == ["Danaus plexippus", "Vanessa cardui"]
+    assert all(candidate.is_target_species is False for candidate in candidates)
+    assert species_labels(candidates)[0] == "a photo of Danaus plexippus"
 
 
 def test_load_species_candidates_reads_parquet_and_dedupes_names(tmp_path) -> None:
@@ -39,12 +43,16 @@ def test_load_species_candidates_reads_parquet_and_dedupes_names(tmp_path) -> No
 
 
 def test_species_candidates_read_common_names_and_build_prompt_variants(tmp_path) -> None:
-    path = tmp_path / "candidates.csv"
-    path.write_text(
-        "scientific_name,rank,family,genus,common_names\n"
-        "Papilio demoleus,species,Papilionidae,Papilio,lime butterfly|chequered swallowtail\n",
-        encoding="utf-8",
-    )
+    path = tmp_path / "candidates.parquet"
+    pl.DataFrame(
+        {
+            "scientific_name": ["Papilio demoleus"],
+            "rank": ["species"],
+            "family": ["Papilionidae"],
+            "genus": ["Papilio"],
+            "common_names": ["lime butterfly|chequered swallowtail"],
+        }
+    ).write_parquet(path)
 
     candidates = load_species_candidates(path)
     assert candidates[0].common_names == ("lime butterfly", "chequered swallowtail")
@@ -53,3 +61,11 @@ def test_species_candidates_read_common_names_and_build_prompt_variants(tmp_path
     labels = [variant.label for variant in variants]
     assert "a photo of Papilio demoleus" in labels
     assert "a photo of lime butterfly" in labels
+
+
+def test_species_candidates_reject_csv_inputs(tmp_path) -> None:
+    path = tmp_path / "candidates.csv"
+    path.write_text("scientific_name,rank\nPapilio demoleus,species\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Parquet"):
+        load_species_candidates(path)

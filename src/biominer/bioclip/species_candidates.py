@@ -9,7 +9,6 @@ import polars as pl
 from biominer.bioclip.prompt_templates import PromptVariant, build_species_prompt_variants
 
 
-TARGET_SPECIES = "Papilio demoleus"
 DEFAULT_SPECIES_CANDIDATE_LIMIT = 2_000
 
 
@@ -34,7 +33,7 @@ def load_species_candidates(
     path: str | Path,
     *,
     limit: int = DEFAULT_SPECIES_CANDIDATE_LIMIT,
-    target_species: str = TARGET_SPECIES,
+    target_species: str | None = None,
 ) -> list[SpeciesCandidate]:
     source = Path(path)
     frame = _read_candidate_frame(source)
@@ -49,21 +48,6 @@ def load_species_candidates(
             item.scientific_name.casefold(),
         ),
     )
-    if not any(candidate.scientific_name == target_species for candidate in ordered):
-        ordered.insert(
-            0,
-            SpeciesCandidate(
-                scientific_name=target_species,
-                canonical_name=target_species,
-                rank="species",
-                family="Papilionidae",
-                genus="Papilio",
-                source="pinned_target",
-                source_taxon_id=None,
-                is_target_species=True,
-                common_names=("lime butterfly", "chequered swallowtail", "citrus swallowtail"),
-            ),
-        )
     return ordered[:limit]
 
 
@@ -97,13 +81,10 @@ def species_prompt_variants(candidates: list[SpeciesCandidate]) -> list[PromptVa
 def _read_candidate_frame(path: Path) -> pl.DataFrame:
     if path.suffix.casefold() == ".parquet":
         return pl.read_parquet(path)
-    if path.suffix.casefold() in {".csv", ".tsv"}:
-        separator = "\t" if path.suffix.casefold() == ".tsv" else ","
-        return pl.read_csv(path, separator=separator)
-    raise ValueError(f"Unsupported species candidate file type: {path}")
+    raise ValueError(f"Species candidate inputs must be Parquet files: {path}")
 
 
-def _candidate_from_row(row: dict[str, Any], *, target_species: str) -> SpeciesCandidate:
+def _candidate_from_row(row: dict[str, Any], *, target_species: str | None) -> SpeciesCandidate:
     scientific_name = _first_text(
         row,
         "scientific_name",
@@ -126,7 +107,7 @@ def _candidate_from_row(row: dict[str, Any], *, target_species: str) -> SpeciesC
         genus=genus,
         source=_first_text(row, "source"),
         source_taxon_id=_first_text(row, "source_taxon_id", "taxon_id", "taxonID"),
-        is_target_species=_normalize(scientific_name) == _normalize(target_species),
+        is_target_species=bool(target_species) and _normalize(scientific_name) == _normalize(target_species),
         common_names=_split_common_names(_first_text(row, "common_names", "commonNames", "vernacular_names", "vernacularNames")),
     )
 
