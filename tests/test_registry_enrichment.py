@@ -411,6 +411,11 @@ def test_build_enrichment_sources_checkpoints_logs_and_reports(tmp_path, caplog)
     assert staged_manifest["completed_species"] == 3
     assert assertions.select("accepted_taxon_key").to_series().to_list() == ["gbif:100", "gbif:101", "gbif:102"]
     assert report["artifact_bytes"]["source_name_assertions.parquet"] > 0
+    assertion_artifact = staged_manifest["artifacts"]["source_name_assertions.parquet"]
+    assert assertion_artifact["rows"] == 3
+    assert assertion_artifact["size_bytes"] > 0
+    assert assertion_artifact["sha256"].startswith("sha256:")
+    assert staged_manifest["artifacts"]["enrichment_manifest.json"]["sha256"].startswith("sha256:")
     assert "registry.enrichment.checkpoint_write" in log_text
     assert "source_name_assertions.parquet" in log_text
     assert "name_assertion_rows=3" in log_text

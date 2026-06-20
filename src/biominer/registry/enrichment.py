@@ -18,6 +18,8 @@ from typing import Any
 
 import polars as pl
 
+from biominer.common.artifacts import write_json_artifact, write_parquet_artifact
+from biominer.common.concurrency import bounded_map_ordered
 from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.normalize import normalize_name_key
 
@@ -213,9 +215,9 @@ def write_enrichment_sources(
     assertions = _name_assertions_frame(name_assertions or [])
     links = _external_links_frame(external_links or [])
     snapshots = _source_snapshots_frame(source_snapshots or [])
-    assertions.write_parquet(output / SOURCE_ASSERTIONS_FILE)
-    links.write_parquet(output / EXTERNAL_LINKS_FILE)
-    snapshots.write_parquet(output / ENRICHMENT_SOURCE_SNAPSHOTS_FILE)
+    assertion_artifact = write_parquet_artifact(output / SOURCE_ASSERTIONS_FILE, assertions)
+    link_artifact = write_parquet_artifact(output / EXTERNAL_LINKS_FILE, links)
+    snapshot_artifact = write_parquet_artifact(output / ENRICHMENT_SOURCE_SNAPSHOTS_FILE, snapshots)
     manifest = {
         "schema_version": ENRICHMENT_SCHEMA_VERSION,
         "created_at": datetime.now(UTC).isoformat(),
@@ -227,8 +229,15 @@ def write_enrichment_sources(
             "external_taxon_links": EXTERNAL_LINKS_FILE,
             "enrichment_source_snapshots": ENRICHMENT_SOURCE_SNAPSHOTS_FILE,
         },
+        "artifacts": {
+            SOURCE_ASSERTIONS_FILE: assertion_artifact.to_dict(),
+            EXTERNAL_LINKS_FILE: link_artifact.to_dict(),
+            ENRICHMENT_SOURCE_SNAPSHOTS_FILE: snapshot_artifact.to_dict(),
+        },
     }
-    (output / ENRICHMENT_MANIFEST_FILE).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    manifest_artifact = write_json_artifact(output / ENRICHMENT_MANIFEST_FILE, manifest)
+    manifest["artifacts"][ENRICHMENT_MANIFEST_FILE] = manifest_artifact.to_dict()
+    write_json_artifact(output / ENRICHMENT_MANIFEST_FILE, manifest)
     return manifest
 
 
@@ -271,7 +280,7 @@ def _enrichment_iterator(
 
     def generator() -> Iterator[SpeciesEnrichmentResult]:
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="registry-enrich", initializer=initializer) as executor:
-            yield from executor.map(task, contexts, buffersize=workers * 4)
+            yield from bounded_map_ordered(executor, task, contexts, buffersize=workers * 4)
 
     return generator()
 
@@ -364,7 +373,9 @@ def _write_enrichment_checkpoint(
             "artifact_bytes": _artifact_bytes(registry),
         }
     )
-    (registry / ENRICHMENT_MANIFEST_FILE).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    manifest_artifact = write_json_artifact(registry / ENRICHMENT_MANIFEST_FILE, manifest)
+    manifest.setdefault("artifacts", {})[ENRICHMENT_MANIFEST_FILE] = manifest_artifact.to_dict()
+    write_json_artifact(registry / ENRICHMENT_MANIFEST_FILE, manifest)
     logger.info(
         "registry.enrichment.checkpoint_write completed=%d/%d status=%s name_assertion_rows=%d external_taxon_link_rows=%d source_snapshot_rows=%d files=%s artifact_bytes=%s elapsed_seconds=%.1f",
         completed,
