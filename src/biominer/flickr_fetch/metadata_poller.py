@@ -17,7 +17,6 @@ from biominer.flickr_fetch.endpoints import FLICKR_REST_BASE_URL, SEARCH_METHOD
 from biominer.flickr_fetch.query_planner import (
     FLICKR_SEARCH_RESULT_WINDOW,
     FlickrQuery,
-    build_count_probes,
     deduplicate_photo_records,
     flickr_search_params,
     plan_queries_from_count,
@@ -98,7 +97,7 @@ class MetadataPollState:
         if self.work_item_count() > 0:
             return 0
         seeded = 0
-        for query in queries or build_count_probes():
+        for query in queries or ():
             seeded += self.enqueue_work_item(query)
         return seeded
 

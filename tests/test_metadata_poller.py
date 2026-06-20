@@ -528,6 +528,22 @@ def test_http_fetcher_reuses_pooled_client(monkeypatch) -> None:
     assert len(clients) == 1
 
 
+def test_poll_once_does_not_seed_default_queries_for_empty_state(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=1,
+        fetch_metadata=lambda query: (_ for _ in ()).throw(AssertionError("unexpected fetch")),
+    )
+
+    assert result.work_items_claimed == 0
+    assert result.api_calls_made == 0
+    assert state.work_item_count() == 0
+
+
 def test_poll_once_reserves_api_call_before_fetch(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     state.enqueue_work_item(FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
