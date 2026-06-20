@@ -902,3 +902,27 @@ def test_wikidata_rate_limit_waits_after_retry_penalty_completes() -> None:
 
     assert len(calls) == 2
     assert sleeps == [2.0]
+
+
+def test_wikidata_retry_penalty_increases_following_request_delay() -> None:
+    sleeps = []
+    current_time = 100.0
+
+    def monotonic() -> float:
+        return current_time
+
+    def sleep(seconds: float) -> None:
+        nonlocal current_time
+        sleeps.append(seconds)
+        current_time += seconds
+
+    limiter = WikidataRateLimiter(min_delay_seconds=2.0, max_delay_seconds=6.0, sleep=sleep, monotonic=monotonic)
+    limiter.wait()
+    limiter.retry_sleep(55.0)
+    limiter.record_request_complete()
+    limiter.wait()
+    limiter.retry_sleep(55.0)
+    limiter.record_request_complete()
+    limiter.wait()
+
+    assert sleeps == [55.0, 4.0, 55.0, 6.0]

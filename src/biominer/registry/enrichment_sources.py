@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import MutableMapping
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from copy import deepcopy
 import logging
 import os
@@ -17,7 +16,8 @@ from biominer.registry.enrichment import SpeciesContext
 HTTPGet = Callable[[str, dict[str, object]], dict[str, Any]]
 CacheKey = tuple[str, tuple[tuple[str, str], ...]]
 USER_AGENT = "BioMiner/0.1 registry-enrichment"
-DEFAULT_WIKIDATA_MIN_DELAY_SECONDS = 2.0
+DEFAULT_WIKIDATA_MIN_DELAY_SECONDS = 5.0
+DEFAULT_WIKIDATA_MAX_DELAY_SECONDS = 30.0
 logger = logging.getLogger(__name__)
 
 
@@ -26,12 +26,17 @@ class WikidataRateLimiter:
         self,
         *,
         min_delay_seconds: float = DEFAULT_WIKIDATA_MIN_DELAY_SECONDS,
+        max_delay_seconds: float = DEFAULT_WIKIDATA_MAX_DELAY_SECONDS,
         sleep: Callable[[float], None] = default_sleep,
         monotonic: Callable[[], float] = default_monotonic,
     ) -> None:
         if min_delay_seconds < 0:
             raise ValueError("min_delay_seconds must be >= 0")
+        if max_delay_seconds < min_delay_seconds:
+            raise ValueError("max_delay_seconds must be >= min_delay_seconds")
         self.min_delay_seconds = min_delay_seconds
+        self.max_delay_seconds = max_delay_seconds
+        self._current_delay_seconds = min_delay_seconds
         self._sleep = sleep
         self._monotonic = monotonic
         self._lock = threading.Lock()
@@ -41,7 +46,7 @@ class WikidataRateLimiter:
         with self._lock:
             now = self._monotonic()
             if self._last_request_completed_at is not None:
-                wait_seconds = self.min_delay_seconds - (now - self._last_request_completed_at)
+                wait_seconds = self._current_delay_seconds - (now - self._last_request_completed_at)
                 if wait_seconds > 0:
                     logger.info("wikidata.rate_limit_sleep seconds=%.3f", wait_seconds)
                     self._sleep(wait_seconds)
@@ -50,19 +55,46 @@ class WikidataRateLimiter:
         with self._lock:
             self._last_request_completed_at = self._monotonic()
 
+    def retry_sleep(self, seconds: float) -> None:
+        with self._lock:
+            previous_delay = self._current_delay_seconds
+            self._current_delay_seconds = min(self.max_delay_seconds, max(self.min_delay_seconds, previous_delay * 2))
+            logger.info(
+                "wikidata.retry_backoff_sleep retry_after_seconds=%.3f min_delay_seconds=%.3f previous_delay_seconds=%.3f next_delay_seconds=%.3f",
+                seconds,
+                self.min_delay_seconds,
+                previous_delay,
+                self._current_delay_seconds,
+            )
+        self._sleep(seconds)
+
 
 def _default_wikidata_min_delay_seconds() -> float:
-    raw = os.environ.get("BIOMINER_WIKIDATA_MIN_DELAY_SECONDS")
+    return _float_env("BIOMINER_WIKIDATA_MIN_DELAY_SECONDS", DEFAULT_WIKIDATA_MIN_DELAY_SECONDS)
+
+
+def _default_wikidata_max_delay_seconds() -> float:
+    return max(
+        _default_wikidata_min_delay_seconds(),
+        _float_env("BIOMINER_WIKIDATA_MAX_DELAY_SECONDS", DEFAULT_WIKIDATA_MAX_DELAY_SECONDS),
+    )
+
+
+def _float_env(name: str, fallback: float) -> float:
+    raw = os.environ.get(name)
     if raw is None:
-        return DEFAULT_WIKIDATA_MIN_DELAY_SECONDS
+        return fallback
     try:
         return max(0.0, float(raw))
     except ValueError:
-        logger.info("wikidata.invalid_min_delay value=%s fallback=%.3f", raw, DEFAULT_WIKIDATA_MIN_DELAY_SECONDS)
-        return DEFAULT_WIKIDATA_MIN_DELAY_SECONDS
+        logger.info("wikidata.invalid_float_env name=%s value=%s fallback=%.3f", name, raw, fallback)
+        return fallback
 
 
-_WIKIDATA_RATE_LIMITER = WikidataRateLimiter(min_delay_seconds=_default_wikidata_min_delay_seconds())
+_WIKIDATA_RATE_LIMITER = WikidataRateLimiter(
+    min_delay_seconds=_default_wikidata_min_delay_seconds(),
+    max_delay_seconds=_default_wikidata_max_delay_seconds(),
+)
 _WIKIDATA_CACHE: dict[CacheKey, dict[str, Any]] = {}
 _WIKIDATA_CACHE_LOCK = threading.Lock()
 
@@ -114,8 +146,8 @@ class WikidataClient:
         rate_limiter: WikidataRateLimiter | None = None,
         cache: MutableMapping[CacheKey, dict[str, Any]] | None = None,
     ) -> None:
-        self._http_get = http_get or _json_get("https://www.wikidata.org", max_retries=max_retries)
         self._rate_limiter = rate_limiter or _WIKIDATA_RATE_LIMITER
+        self._http_get = http_get or _json_get("https://www.wikidata.org", max_retries=max_retries, sleep=self._rate_limiter.retry_sleep)
         self._cache = cache if cache is not None else _WIKIDATA_CACHE
 
     def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
