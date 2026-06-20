@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import json
+import logging
 
+import httpx
 import polars as pl
 
 from biominer.cli import build_parser, run
 from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.enrichment import SpeciesContext, build_enrichment_sources_from_registry, compile_enriched_registry, write_enrichment_sources
-from biominer.registry.enrichment_sources import ITISClient
+from biominer.registry.enrichment_sources import ITISClient, _json_get
 
 
-def _write_base_registry(tmp_path):
+def _write_base_registry(tmp_path, species_names: tuple[str, ...] = ("Papilio demoleus",)):
     scope = tmp_path / "scope.json"
     scope.write_text(
         json.dumps(
@@ -67,36 +69,40 @@ def _write_base_registry(tmp_path):
                         "species_key": "",
                         "species": "",
                     },
-                    {
-                        "accepted_taxon_key": "gbif:100",
-                        "scientific_name": "Papilio demoleus",
-                        "rank": "SPECIES",
-                        "parent_key": "gbif:90",
-                        "family_key": "gbif:10",
-                        "family": "Papilionidae",
-                        "genus_key": "gbif:90",
-                        "genus": "Papilio",
-                        "species_key": "gbif:100",
-                        "species": "Papilio demoleus",
-                    },
+                    *[
+                        {
+                            "accepted_taxon_key": f"gbif:{100 + index}",
+                            "scientific_name": species_name,
+                            "rank": "SPECIES",
+                            "parent_key": "gbif:90",
+                            "family_key": "gbif:10",
+                            "family": "Papilionidae",
+                            "genus_key": "gbif:90",
+                            "genus": "Papilio",
+                            "species_key": f"gbif:{100 + index}",
+                            "species": species_name,
+                        }
+                        for index, species_name in enumerate(species_names)
+                    ],
                 ],
                 "names": [
                     {
-                        "accepted_taxon_key": "gbif:100",
-                        "verbatim_name": "Papilio demoleus",
-                        "display_name": "Papilio demoleus",
+                        "accepted_taxon_key": f"gbif:{100 + index}",
+                        "verbatim_name": species_name,
+                        "display_name": species_name,
                         "language": "la",
                         "script": "Latn",
                         "region": "",
                         "bbox": "",
                         "name_class": "accepted_scientific",
                         "source": "GBIF",
-                        "source_record_id": "gbif:100",
+                        "source_record_id": f"gbif:{100 + index}",
                         "trust_tier": "T1",
                         "precision_tier": "high",
                         "confidence": "high",
                         "enabled": True,
                     }
+                    for index, species_name in enumerate(species_names)
                 ],
             }
         ),
@@ -361,6 +367,7 @@ def test_build_enrichment_sources_feeds_species_context_to_priority_services(tmp
         registry_dir=registry,
         sources=("col", "wikidata", "itis"),
         clients=clients,
+        report_dir=tmp_path / "reports",
     )
 
     assertions = pl.read_parquet(registry / "source_name_assertions.parquet")
@@ -373,10 +380,54 @@ def test_build_enrichment_sources_feeds_species_context_to_priority_services(tmp
     assert clients["col"].contexts[0].current_names == ("Papilio demoleus",)
 
 
+def test_build_enrichment_sources_checkpoints_logs_and_reports(tmp_path, caplog) -> None:
+    registry, _scope = _write_base_registry(tmp_path, species_names=("Papilio demoleus", "Papilio machaon", "Papilio polytes"))
+    caplog.set_level(logging.INFO, logger="biominer.registry.enrichment")
+
+    def client_factory():
+        return {"col": RecordingEnrichmentClient("CoL", "Source Lime")}
+
+    manifest = build_enrichment_sources_from_registry(
+        registry_dir=registry,
+        sources=("col",),
+        client_factory=client_factory,
+        workers=2,
+        progress_every=1,
+        checkpoint_every=1,
+        max_retries=0,
+        report_dir=tmp_path / "reports",
+    )
+
+    assertions = pl.read_parquet(registry / "source_name_assertions.parquet")
+    staged_manifest = json.loads((registry / "enrichment_manifest.json").read_text(encoding="utf-8"))
+    report = json.loads((tmp_path / "reports" / "registry_enrichment_base.json").read_text(encoding="utf-8"))
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+
+    assert manifest["workers"] == 2
+    assert manifest["completed_species"] == 3
+    assert manifest["name_assertion_rows"] == 3
+    assert staged_manifest["completed_species"] == 3
+    assert assertions.select("accepted_taxon_key").to_series().to_list() == ["gbif:100", "gbif:101", "gbif:102"]
+    assert report["artifact_bytes"]["source_name_assertions.parquet"] > 0
+    assert "registry.enrichment.checkpoint_write" in log_text
+    assert "source_name_assertions.parquet" in log_text
+    assert "name_assertion_rows=3" in log_text
+
+
 def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, capsys, monkeypatch) -> None:
     registry, _scope = _write_base_registry(tmp_path)
 
-    def fake_build(*, registry_dir, sources):  # noqa: ANN001 - CLI wiring test.
+    def fake_build(
+        *,
+        registry_dir,
+        sources,
+        workers,
+        progress_every,
+        checkpoint_every,
+        max_retries,
+        limit,
+        report_dir,
+    ):  # noqa: ANN001 - CLI wiring test.
         return write_enrichment_sources(
             registry_dir,
             name_assertions=[
@@ -395,7 +446,18 @@ def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, 
                     "review_state": "accepted",
                 }
             ],
-        ) | {"registry_dir": str(registry_dir), "source_order": list(sources), "species_seen": 1, "errors": []}
+        ) | {
+            "registry_dir": str(registry_dir),
+            "source_order": list(sources),
+            "species_seen": 1,
+            "errors": [],
+            "workers": workers,
+            "progress_every": progress_every,
+            "checkpoint_every": checkpoint_every,
+            "max_retries": max_retries,
+            "limit": limit,
+            "report_dir": str(report_dir),
+        }
 
     monkeypatch.setattr("biominer.cli.build_enrichment_sources_from_registry", fake_build)
     parser = build_parser()
@@ -407,6 +469,18 @@ def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, 
             str(registry),
             "--sources",
             "col,wikidata,itis",
+            "--workers",
+            "3",
+            "--progress-every",
+            "4",
+            "--checkpoint-every",
+            "5",
+            "--max-retries",
+            "6",
+            "--limit",
+            "7",
+            "--report-dir",
+            str(tmp_path / "reports"),
         ]
     )
 
@@ -415,6 +489,12 @@ def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, 
     payload = json.loads(capsys.readouterr().out)
     assert payload["registry_dir"] == str(registry)
     assert payload["source_order"] == ["col", "wikidata", "itis"]
+    assert payload["workers"] == 3
+    assert payload["progress_every"] == 4
+    assert payload["checkpoint_every"] == 5
+    assert payload["max_retries"] == 6
+    assert payload["limit"] == 7
+    assert payload["report_dir"] == str(tmp_path / "reports")
     assert (registry / "source_name_assertions.parquet").exists()
 
 
@@ -432,9 +512,10 @@ def test_source_clients_reuse_http_client_between_requests(monkeypatch) -> None:
             return self._payload
 
     class FakeHTTPClient:
-        def __init__(self, *, base_url: str, timeout: float) -> None:
+        def __init__(self, *, base_url: str, timeout: float, headers: dict[str, str] | None = None) -> None:
             self.base_url = base_url
             self.timeout = timeout
+            self.headers = headers or {}
             self.paths = []
             created_clients.append(self)
 
@@ -465,3 +546,74 @@ def test_source_clients_reuse_http_client_between_requests(monkeypatch) -> None:
         "/ITISWebService/jsonservice/getCommonNamesFromTSN",
     ]
     assert result["name_assertions"][0]["display_name"] == "Lime Swallowtail"
+
+
+def test_json_get_sends_user_agent_and_retries_transient_errors(monkeypatch) -> None:
+    attempts = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+            self.status_code = status_code
+            self.headers = {"Retry-After": "0"} if status_code == 503 else {}
+            self._payload = payload
+            self.request = httpx.Request("GET", "https://example.test/resource")
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError("boom", request=self.request, response=self)
+
+        def json(self):
+            return self._payload
+
+    class FakeHTTPClient:
+        def __init__(self, *, base_url: str, timeout: float, headers: dict[str, str]) -> None:
+            self.base_url = base_url
+            self.timeout = timeout
+            self.headers = headers
+
+        def get(self, path: str, params):
+            attempts.append({"path": path, "params": params, "headers": self.headers})
+            if len(attempts) == 1:
+                return FakeResponse(503, {"error": "temporary"})
+            return FakeResponse(200, {"results": [{"name": "ok"}]})
+
+    monkeypatch.setattr("biominer.registry.enrichment_sources.httpx.Client", FakeHTTPClient)
+    payload = _json_get("https://example.test", max_retries=2, sleep=lambda _seconds: None)("/resource", {"q": "Papilio"})
+
+    assert payload == {"results": [{"name": "ok"}]}
+    assert len(attempts) == 2
+    assert attempts[0]["headers"]["User-Agent"].startswith("BioMiner/")
+
+
+def test_json_get_does_not_retry_permanent_4xx(monkeypatch) -> None:
+    attempts = []
+
+    class FakeResponse:
+        status_code = 403
+        headers = {}
+        request = httpx.Request("GET", "https://example.test/resource")
+
+        def raise_for_status(self) -> None:
+            raise httpx.HTTPStatusError("forbidden", request=self.request, response=self)
+
+        def json(self):
+            return {"error": "forbidden"}
+
+    class FakeHTTPClient:
+        def __init__(self, *, base_url: str, timeout: float, headers: dict[str, str]) -> None:
+            self.headers = headers
+
+        def get(self, path: str, params):
+            attempts.append((path, params))
+            return FakeResponse()
+
+    monkeypatch.setattr("biominer.registry.enrichment_sources.httpx.Client", FakeHTTPClient)
+
+    try:
+        _json_get("https://example.test", max_retries=2, sleep=lambda _seconds: None)("/resource", {})
+    except httpx.HTTPStatusError:
+        pass
+    else:  # pragma: no cover - assertion path is clearer than pytest.raises import churn here.
+        raise AssertionError("expected permanent HTTP error")
+
+    assert len(attempts) == 1

@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
 import json
+import logging
+import os
 from pathlib import Path
+import subprocess
+import threading
+from time import monotonic
 from typing import Any
 
 import polars as pl
@@ -22,6 +30,11 @@ NAME_CANDIDATES_FILE = "name_candidates.parquet"
 ENRICHMENT_MANIFEST_FILE = "enrichment_manifest.json"
 
 
+logger = logging.getLogger(__name__)
+ClientBundleFactory = Callable[[], dict[str, Any]]
+_worker_local = threading.local()
+
+
 @dataclass(frozen=True)
 class SpeciesContext:
     accepted_taxon_key: str
@@ -33,74 +46,152 @@ class SpeciesContext:
     current_names: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class SpeciesEnrichmentResult:
+    accepted_taxon_key: str
+    name_assertions: tuple[dict[str, Any], ...]
+    external_links: tuple[dict[str, Any], ...]
+    source_snapshots: tuple[dict[str, Any], ...]
+    errors: tuple[dict[str, str], ...]
+
+
 def build_enrichment_sources_from_registry(
     *,
     registry_dir: str | Path,
     sources: tuple[str, ...] = ("col", "wikidata", "itis"),
     clients: dict[str, Any] | None = None,
+    client_factory: ClientBundleFactory | None = None,
+    workers: int = 8,
+    progress_every: int = 100,
+    checkpoint_every: int = 500,
+    max_retries: int = 5,
+    limit: int = 0,
+    report_dir: str | Path = "reports",
 ) -> dict[str, Any]:
+    _validate_runtime_options(workers=workers, progress_every=progress_every, checkpoint_every=checkpoint_every, max_retries=max_retries, limit=limit)
+    started = monotonic()
     registry = Path(registry_dir)
-    clients = clients or default_enrichment_clients()
     taxa = pl.read_parquet(registry / "taxa.parquet")
     names = pl.read_parquet(registry / "names.parquet")
     species_rows = taxa.filter(pl.col("rank") == "SPECIES").sort(["family", "genus", "scientific_name"]).to_dicts()
+    if limit:
+        species_rows = species_rows[:limit]
     names_by_taxon: dict[str, list[str]] = {}
     for row in names.sort(["accepted_taxon_key", "display_name"]).to_dicts():
         names_by_taxon.setdefault(str(row.get("accepted_taxon_key") or ""), []).append(str(row.get("display_name") or ""))
 
+    source_order = tuple(sources)
     name_assertions: list[dict[str, Any]] = []
     external_links: list[dict[str, Any]] = []
     source_snapshots: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
-    for species in species_rows:
-        context = SpeciesContext(
-            accepted_taxon_key=str(species.get("accepted_taxon_key") or ""),
-            accepted_scientific_name=str(species.get("scientific_name") or ""),
-            family_key=str(species.get("family_key") or ""),
-            family=str(species.get("family") or ""),
-            genus_key=str(species.get("genus_key") or ""),
-            genus=str(species.get("genus") or ""),
-            current_names=tuple(names_by_taxon.get(str(species.get("accepted_taxon_key") or ""), [])),
-        )
-        for source in sources:
-            client = clients.get(source)
-            if client is None:
-                errors.append({"source": source, "accepted_taxon_key": context.accepted_taxon_key, "error": "missing_client"})
-                continue
-            try:
-                result = client.enrich_species(context)
-            except Exception as exc:  # noqa: BLE001 - source staging records and continues per species.
-                errors.append({"source": source, "accepted_taxon_key": context.accepted_taxon_key, "error": type(exc).__name__})
-                continue
-            name_assertions.extend(result.get("name_assertions", []))
-            external_links.extend(result.get("external_links", []))
-            source_snapshots.extend(result.get("source_snapshots", []))
-
-    manifest = write_enrichment_sources(
+    contexts = [_species_context(row, names_by_taxon) for row in species_rows]
+    registry_version = _registry_version(registry)
+    logger.info(
+        "registry.enrichment.start registry=%s species=%d sources=%s workers=%d progress_every=%d checkpoint_every=%d max_retries=%d limit=%d",
         registry,
-        name_assertions=name_assertions,
-        external_links=external_links,
-        source_snapshots=_deduplicate_dicts(source_snapshots, keys=("source", "source_version", "source_path", "source_response_hash")),
+        len(contexts),
+        ",".join(source_order),
+        workers,
+        progress_every,
+        checkpoint_every,
+        max_retries,
+        limit,
     )
-    manifest.update(
-        {
-            "registry_dir": str(registry),
-            "source_order": list(sources),
-            "species_seen": len(species_rows),
-            "errors": errors,
-        }
+
+    completed = 0
+    for result in _enrichment_iterator(
+        contexts=contexts,
+        sources=source_order,
+        clients=clients,
+        client_factory=client_factory,
+        workers=workers,
+        max_retries=max_retries,
+    ):
+        completed += 1
+        name_assertions.extend(result.name_assertions)
+        external_links.extend(result.external_links)
+        source_snapshots.extend(result.source_snapshots)
+        errors.extend(result.errors)
+        if completed % progress_every == 0 or completed == len(contexts):
+            logger.info(
+                "registry.enrichment.progress completed=%d/%d name_assertion_rows=%d external_taxon_link_rows=%d errors=%d elapsed_seconds=%.1f",
+                completed,
+                len(contexts),
+                len(name_assertions),
+                len(external_links),
+                len(errors),
+                monotonic() - started,
+            )
+        if completed % checkpoint_every == 0 or completed == len(contexts):
+            _write_enrichment_checkpoint(
+                registry,
+                name_assertions=name_assertions,
+                external_links=external_links,
+                source_snapshots=source_snapshots,
+                errors=errors,
+                completed=completed,
+                total=len(contexts),
+                source_order=source_order,
+                workers=workers,
+                progress_every=progress_every,
+                checkpoint_every=checkpoint_every,
+                max_retries=max_retries,
+                limit=limit,
+                started=started,
+                status="partial" if completed < len(contexts) else "complete",
+            )
+
+    if not contexts:
+        _write_enrichment_checkpoint(
+            registry,
+            name_assertions=[],
+            external_links=[],
+            source_snapshots=[],
+            errors=[],
+            completed=0,
+            total=0,
+            source_order=source_order,
+            workers=workers,
+            progress_every=progress_every,
+            checkpoint_every=checkpoint_every,
+            max_retries=max_retries,
+            limit=limit,
+            started=started,
+            status="complete",
+        )
+
+    manifest = json.loads((registry / ENRICHMENT_MANIFEST_FILE).read_text(encoding="utf-8"))
+    report_paths = _write_enrichment_reports(
+        report=_enrichment_report(
+            registry=registry,
+            registry_version=registry_version,
+            manifest=manifest,
+            errors=errors,
+            source_order=source_order,
+            workers=workers,
+            progress_every=progress_every,
+            checkpoint_every=checkpoint_every,
+            max_retries=max_retries,
+            limit=limit,
+            elapsed_seconds=monotonic() - started,
+        ),
+        report_dir=Path(report_dir),
+        registry_version=registry_version,
     )
+    manifest.update(report_paths)
     (registry / ENRICHMENT_MANIFEST_FILE).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    logger.info("registry.enrichment.complete registry=%s completed=%d status=%s", registry, completed, manifest.get("status"))
     return manifest
 
 
-def default_enrichment_clients() -> dict[str, Any]:
+def default_enrichment_clients(*, max_retries: int = 5) -> dict[str, Any]:
     from biominer.registry.enrichment_sources import CatalogueOfLifeClient, ITISClient, WikidataClient
 
     return {
-        "col": CatalogueOfLifeClient(),
-        "wikidata": WikidataClient(),
-        "itis": ITISClient(),
+        "col": CatalogueOfLifeClient(max_retries=max_retries),
+        "wikidata": WikidataClient(max_retries=max_retries),
+        "itis": ITISClient(max_retries=max_retries),
     }
 
 
@@ -132,6 +223,142 @@ def write_enrichment_sources(
         },
     }
     (output / ENRICHMENT_MANIFEST_FILE).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    return manifest
+
+
+def _species_context(species: dict[str, Any], names_by_taxon: dict[str, list[str]]) -> SpeciesContext:
+    key = str(species.get("accepted_taxon_key") or "")
+    return SpeciesContext(
+        accepted_taxon_key=key,
+        accepted_scientific_name=str(species.get("scientific_name") or ""),
+        family_key=str(species.get("family_key") or ""),
+        family=str(species.get("family") or ""),
+        genus_key=str(species.get("genus_key") or ""),
+        genus=str(species.get("genus") or ""),
+        current_names=tuple(names_by_taxon.get(key, [])),
+    )
+
+
+def _enrichment_iterator(
+    *,
+    contexts: list[SpeciesContext],
+    sources: tuple[str, ...],
+    clients: dict[str, Any] | None,
+    client_factory: ClientBundleFactory | None,
+    workers: int,
+    max_retries: int,
+) -> Iterator[SpeciesEnrichmentResult]:
+    if not contexts:
+        return iter(())
+    if workers == 1:
+        bundle = clients or (client_factory() if client_factory else default_enrichment_clients(max_retries=max_retries))
+        return (_enrich_species_context(context, sources=sources, clients=bundle) for context in contexts)
+
+    def initializer() -> None:
+        _worker_local.clients = clients or (client_factory() if client_factory else default_enrichment_clients(max_retries=max_retries))
+
+    def task(context: SpeciesContext) -> SpeciesEnrichmentResult:
+        bundle = getattr(_worker_local, "clients", None)
+        if bundle is None:
+            raise RuntimeError("Enrichment worker clients were not initialized")
+        return _enrich_species_context(context, sources=sources, clients=bundle)
+
+    def generator() -> Iterator[SpeciesEnrichmentResult]:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="registry-enrich", initializer=initializer) as executor:
+            yield from executor.map(task, contexts, buffersize=workers * 4)
+
+    return generator()
+
+
+def _enrich_species_context(context: SpeciesContext, *, sources: tuple[str, ...], clients: dict[str, Any]) -> SpeciesEnrichmentResult:
+    name_assertions: list[dict[str, Any]] = []
+    external_links: list[dict[str, Any]] = []
+    source_snapshots: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for source in sources:
+        client = clients.get(source)
+        if client is None:
+            errors.append({"source": source, "accepted_taxon_key": context.accepted_taxon_key, "error": "missing_client"})
+            continue
+        try:
+            result = client.enrich_species(context)
+        except Exception as exc:  # noqa: BLE001 - source staging records and continues per species.
+            errors.append({"source": source, "accepted_taxon_key": context.accepted_taxon_key, "error": type(exc).__name__})
+            logger.info(
+                "registry.enrichment.source_error source=%s accepted_taxon_key=%s error=%s",
+                source,
+                context.accepted_taxon_key,
+                type(exc).__name__,
+            )
+            continue
+        name_assertions.extend(result.get("name_assertions", []))
+        external_links.extend(result.get("external_links", []))
+        source_snapshots.extend(result.get("source_snapshots", []))
+    return SpeciesEnrichmentResult(
+        accepted_taxon_key=context.accepted_taxon_key,
+        name_assertions=tuple(name_assertions),
+        external_links=tuple(external_links),
+        source_snapshots=tuple(source_snapshots),
+        errors=tuple(errors),
+    )
+
+
+def _write_enrichment_checkpoint(
+    registry: Path,
+    *,
+    name_assertions: list[dict[str, Any]],
+    external_links: list[dict[str, Any]],
+    source_snapshots: list[dict[str, Any]],
+    errors: list[dict[str, str]],
+    completed: int,
+    total: int,
+    source_order: tuple[str, ...],
+    workers: int,
+    progress_every: int,
+    checkpoint_every: int,
+    max_retries: int,
+    limit: int,
+    started: float,
+    status: str,
+) -> dict[str, Any]:
+    manifest = write_enrichment_sources(
+        registry,
+        name_assertions=_deduplicate_dicts(name_assertions, keys=("assertion_id", "accepted_taxon_key", "source", "source_record_id", "display_name")),
+        external_links=_deduplicate_dicts(external_links, keys=("accepted_taxon_key", "source", "source_taxon_id", "match_method")),
+        source_snapshots=_deduplicate_dicts(source_snapshots, keys=("source", "source_version", "source_path", "source_response_hash")),
+    )
+    manifest.update(
+        {
+            "registry_dir": str(registry),
+            "source_order": list(source_order),
+            "species_seen": total,
+            "completed_species": completed,
+            "status": status,
+            "workers": workers,
+            "progress_every": progress_every,
+            "checkpoint_every": checkpoint_every,
+            "max_retries": max_retries,
+            "limit": limit,
+            "errors": errors,
+            "error_counts_by_source": dict(sorted(Counter(error["source"] for error in errors).items())),
+            "elapsed_seconds": round(monotonic() - started, 6),
+            "species_per_second": round(completed / max(monotonic() - started, 0.000001), 6),
+            "artifact_bytes": _artifact_bytes(registry),
+        }
+    )
+    (registry / ENRICHMENT_MANIFEST_FILE).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    logger.info(
+        "registry.enrichment.checkpoint_write completed=%d/%d status=%s name_assertion_rows=%d external_taxon_link_rows=%d source_snapshot_rows=%d files=%s artifact_bytes=%s elapsed_seconds=%.1f",
+        completed,
+        total,
+        status,
+        manifest["name_assertion_rows"],
+        manifest["external_taxon_link_rows"],
+        manifest["source_snapshot_rows"],
+        ",".join(manifest["files"].values()),
+        manifest["artifact_bytes"],
+        manifest["elapsed_seconds"],
+    )
     return manifest
 
 
@@ -207,6 +434,119 @@ def compile_enriched_registry(
 
 def _read_or_empty(path: Path, schema: dict[str, pl.DataType]) -> pl.DataFrame:
     return pl.read_parquet(path) if path.exists() else pl.DataFrame(schema=schema)
+
+
+def _validate_runtime_options(*, workers: int, progress_every: int, checkpoint_every: int, max_retries: int, limit: int) -> None:
+    if workers < 1 or workers > 32:
+        raise ValueError("workers must be between 1 and 32")
+    if progress_every < 1:
+        raise ValueError("progress_every must be >= 1")
+    if checkpoint_every < 1:
+        raise ValueError("checkpoint_every must be >= 1")
+    if max_retries < 0:
+        raise ValueError("max_retries must be >= 0")
+    if limit < 0:
+        raise ValueError("limit must be >= 0")
+
+
+def _registry_version(registry: Path) -> str:
+    manifest_path = registry / "manifest.json"
+    if not manifest_path.exists():
+        return "unknown"
+    try:
+        return str(json.loads(manifest_path.read_text(encoding="utf-8")).get("registry_version") or "unknown")
+    except json.JSONDecodeError:
+        return "unknown"
+
+
+def _artifact_bytes(registry: Path) -> dict[str, int]:
+    return {
+        file_name: ((registry / file_name).stat().st_size if (registry / file_name).exists() else 0)
+        for file_name in (
+            SOURCE_ASSERTIONS_FILE,
+            EXTERNAL_LINKS_FILE,
+            ENRICHMENT_SOURCE_SNAPSHOTS_FILE,
+            ENRICHMENT_MANIFEST_FILE,
+        )
+    }
+
+
+def _enrichment_report(
+    *,
+    registry: Path,
+    registry_version: str,
+    manifest: dict[str, Any],
+    errors: list[dict[str, str]],
+    source_order: tuple[str, ...],
+    workers: int,
+    progress_every: int,
+    checkpoint_every: int,
+    max_retries: int,
+    limit: int,
+    elapsed_seconds: float,
+) -> dict[str, Any]:
+    return {
+        "command": "biominer registry enrich-sources",
+        "git_sha": _git_sha(),
+        "pid": os.getpid(),
+        "registry_version": registry_version,
+        "registry_dir": str(registry),
+        "status": manifest.get("status"),
+        "source_order": list(source_order),
+        "workers": workers,
+        "progress_every": progress_every,
+        "checkpoint_every": checkpoint_every,
+        "max_retries": max_retries,
+        "limit": limit,
+        "species_seen": manifest.get("species_seen"),
+        "completed_species": manifest.get("completed_species"),
+        "name_assertion_rows": manifest.get("name_assertion_rows"),
+        "external_taxon_link_rows": manifest.get("external_taxon_link_rows"),
+        "source_snapshot_rows": manifest.get("source_snapshot_rows"),
+        "error_count": len(errors),
+        "error_counts_by_source": dict(sorted(Counter(error["source"] for error in errors).items())),
+        "artifact_bytes": manifest.get("artifact_bytes"),
+        "elapsed_seconds": round(elapsed_seconds, 6),
+        "unsupported_metrics": {
+            "rss_peak_memory": "not_instrumented",
+            "gpu_memory": "not_applicable",
+        },
+    }
+
+
+def _write_enrichment_reports(report: dict[str, Any], *, report_dir: Path, registry_version: str) -> dict[str, str]:
+    report_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"registry_enrichment_{registry_version}"
+    json_path = report_dir / f"{stem}.json"
+    md_path = report_dir / f"{stem}.md"
+    json_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    md_path.write_text(_enrichment_report_markdown(report), encoding="utf-8")
+    return {"report_json": str(json_path), "report_md": str(md_path)}
+
+
+def _enrichment_report_markdown(report: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            f"# Registry Enrichment {report['registry_version']}",
+            "",
+            f"- Status: {report['status']}",
+            f"- Registry: {report['registry_dir']}",
+            f"- Sources: {', '.join(report['source_order'])}",
+            f"- Completed species: {report['completed_species']}/{report['species_seen']}",
+            f"- Name assertions: {report['name_assertion_rows']}",
+            f"- External links: {report['external_taxon_link_rows']}",
+            f"- Source snapshots: {report['source_snapshot_rows']}",
+            f"- Errors: {report['error_count']}",
+            "",
+        ]
+    )
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "not_instrumented"
 
 
 def _name_assertions_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:

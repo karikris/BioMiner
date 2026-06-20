@@ -71,6 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
     registry_enrich_sources = registry_subparsers.add_parser("enrich-sources")
     registry_enrich_sources.add_argument("--registry-dir", required=True)
     registry_enrich_sources.add_argument("--sources", default="col,wikidata,itis")
+    registry_enrich_sources.add_argument("--workers", type=int, default=8)
+    registry_enrich_sources.add_argument("--progress-every", type=int, default=100)
+    registry_enrich_sources.add_argument("--checkpoint-every", type=int, default=500)
+    registry_enrich_sources.add_argument("--max-retries", type=int, default=5)
+    registry_enrich_sources.add_argument("--limit", type=int, default=0)
+    registry_enrich_sources.add_argument("--report-dir", default="reports")
     registry_build = registry_subparsers.add_parser("build")
     registry_build.add_argument("--output-dir", required=True)
     registry_build.add_argument("--registry-version", required=True)
@@ -251,9 +257,20 @@ def run(args: argparse.Namespace) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
         if args.registry_command == "enrich-sources":
+            logging.basicConfig(
+                level=getattr(logging, os.environ.get("BIOMINER_LOG_LEVEL", "INFO").upper(), logging.INFO),
+                format="%(asctime)s %(levelname)s %(name)s %(message)s",
+                force=True,
+            )
             payload = build_enrichment_sources_from_registry(
                 registry_dir=args.registry_dir,
                 sources=tuple(part.strip() for part in args.sources.split(",") if part.strip()),
+                workers=args.workers,
+                progress_every=args.progress_every,
+                checkpoint_every=args.checkpoint_every,
+                max_retries=args.max_retries,
+                limit=args.limit,
+                report_dir=args.report_dir,
             )
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0

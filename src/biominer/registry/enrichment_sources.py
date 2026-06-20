@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
+from email.utils import parsedate_to_datetime
+import logging
+import random
+from time import sleep as default_sleep
 from typing import Any
 
 import httpx
@@ -9,11 +14,14 @@ from biominer.registry.enrichment import SpeciesContext
 
 
 HTTPGet = Callable[[str, dict[str, object]], dict[str, Any]]
+logger = logging.getLogger(__name__)
+RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
+USER_AGENT = "BioMiner/0.1 registry-enrichment"
 
 
 class CatalogueOfLifeClient:
-    def __init__(self, *, http_get: HTTPGet | None = None) -> None:
-        self._http_get = http_get or _json_get("https://api.checklistbank.org")
+    def __init__(self, *, http_get: HTTPGet | None = None, max_retries: int = 5) -> None:
+        self._http_get = http_get or _json_get("https://api.checklistbank.org", max_retries=max_retries)
 
     def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
         payload = self._http_get("/dataset/3/nameusage/search", {"q": context.accepted_scientific_name, "limit": 10})
@@ -50,8 +58,8 @@ class CatalogueOfLifeClient:
 
 
 class WikidataClient:
-    def __init__(self, *, http_get: HTTPGet | None = None) -> None:
-        self._http_get = http_get or _json_get("https://www.wikidata.org")
+    def __init__(self, *, http_get: HTTPGet | None = None, max_retries: int = 5) -> None:
+        self._http_get = http_get or _json_get("https://www.wikidata.org", max_retries=max_retries)
 
     def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
         query = (
@@ -92,8 +100,8 @@ class WikidataClient:
 
 
 class ITISClient:
-    def __init__(self, *, http_get: HTTPGet | None = None) -> None:
-        self._http_get = http_get or _json_get("https://www.itis.gov")
+    def __init__(self, *, http_get: HTTPGet | None = None, max_retries: int = 5) -> None:
+        self._http_get = http_get or _json_get("https://www.itis.gov", max_retries=max_retries)
 
     def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
         payload = self._http_get("/ITISWebService/jsonservice/searchByScientificName", {"srchKey": context.accepted_scientific_name})
@@ -127,18 +135,70 @@ class ITISClient:
         return {"name_assertions": assertions, "external_links": links, "source_snapshots": [_snapshot("ITIS", "itis-jsonservice")]}
 
 
-def _json_get(base_url: str) -> HTTPGet:
-    client = httpx.Client(base_url=base_url, timeout=30.0)
+def _json_get(
+    base_url: str,
+    *,
+    max_retries: int = 5,
+    sleep: Callable[[float], None] = default_sleep,
+) -> HTTPGet:
+    client = httpx.Client(base_url=base_url, timeout=30.0, headers={"User-Agent": USER_AGENT})
 
     def get(path: str, params: dict[str, object]) -> dict[str, Any]:
-        response = client.get(path, params=params)
-        response.raise_for_status()
-        payload = response.json()
-        if isinstance(payload, dict):
-            return payload
-        return {"results": payload}
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                response = client.get(path, params=params)
+                status_code = int(getattr(response, "status_code", 200))
+                if status_code in RETRYABLE_STATUS_CODES and attempt <= max_retries:
+                    wait_seconds = _retry_after_seconds(response.headers.get("Retry-After")) or _backoff_seconds(attempt)
+                    logger.info(
+                        "registry.enrichment.http_retry base_url=%s path=%s status=%d attempt=%d wait_seconds=%.3f",
+                        base_url,
+                        path,
+                        status_code,
+                        attempt,
+                        wait_seconds,
+                    )
+                    sleep(wait_seconds)
+                    continue
+                response.raise_for_status()
+                payload = response.json()
+                if isinstance(payload, dict):
+                    return payload
+                return {"results": payload}
+            except (httpx.TimeoutException, httpx.TransportError):
+                if attempt > max_retries:
+                    raise
+                wait_seconds = _backoff_seconds(attempt)
+                logger.info(
+                    "registry.enrichment.http_retry base_url=%s path=%s error=transport attempt=%d wait_seconds=%.3f",
+                    base_url,
+                    path,
+                    attempt,
+                    wait_seconds,
+                )
+                sleep(wait_seconds)
 
     return get
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    stripped = value.strip()
+    if stripped.isdigit():
+        return float(stripped)
+    try:
+        parsed = parsedate_to_datetime(stripped)
+    except (TypeError, ValueError):
+        return None
+    delta = (parsed - datetime.now(parsed.tzinfo)).total_seconds()
+    return max(delta, 0.0)
+
+
+def _backoff_seconds(attempt: int) -> float:
+    return min(30.0, (0.5 * (2 ** max(attempt - 1, 0))) + random.uniform(0.0, 0.25))
 
 
 def _name_assertion(
