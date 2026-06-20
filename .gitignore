@@ -9,5 +9,6 @@ __pycache__/
 .venv/
 *.egg-info/
 =*
+.worktrees/
 config/papilio_demoleus_flickr_estimator.sh2
 config/papilio_demoleus_multilingual_keywords.json
