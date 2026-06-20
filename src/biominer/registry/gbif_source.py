@@ -15,6 +15,7 @@ from typing import Any
 
 import polars as pl
 
+from biominer.common.concurrency import bounded_map_ordered
 from biominer.registry.gbif import GBIFClient, resolve_family
 from biominer.registry.gbif_production import ProductionGBIFClient
 from biominer.registry.scope import ButterflyScope
@@ -268,7 +269,7 @@ def _enrichment_iterator(
     def generator() -> Iterator[SpeciesEnrichment]:
         try:
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="gbif-enrich", initializer=initializer) as executor:
-                yield from executor.map(task, species_rows)
+                yield from bounded_map_ordered(executor, task, species_rows, buffersize=workers * 2)
         finally:
             for worker_client in worker_clients:
                 close = getattr(worker_client, "close", None)

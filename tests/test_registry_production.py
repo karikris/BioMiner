@@ -67,6 +67,31 @@ def test_retrying_http_get_retries_503_then_succeeds() -> None:
     assert sleeps == [0.5]
 
 
+def test_retrying_http_get_applies_jitter_to_exponential_backoff() -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503, request=request)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    getter = RetryingHTTPGet(
+        max_retries=2,
+        sleep=sleeps.append,
+        jitter=lambda attempt: 0.25 * (attempt + 1),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        assert getter("/species/1", {}) == {"ok": True}
+    finally:
+        getter.close()
+
+    assert sleeps == [0.75]
+
+
 def test_retrying_http_get_does_not_retry_404() -> None:
     calls = 0
 
@@ -152,6 +177,36 @@ def test_gbif_source_snapshot_checkpoints_and_resumes_species_enrichment(tmp_pat
         "Papilio xuthus synonym",
         "Asian Swallowtail",
     ]
+
+
+def test_gbif_species_enrichment_uses_bounded_ordered_map(monkeypatch, tmp_path) -> None:
+    import biominer.registry.gbif_source as gbif_source
+
+    calls: list[int] = []
+    original = gbif_source.bounded_map_ordered
+
+    def spy(executor, function, items, *, buffersize):  # noqa: ANN001 - mirrors helper signature.
+        calls.append(buffersize)
+        yield from original(executor, function, items, buffersize=buffersize)
+
+    monkeypatch.setattr(gbif_source, "bounded_map_ordered", spy)
+    build_gbif_source_snapshot(
+        GBIFClient(http_get=FakeGBIFHTTP(_family_source_responses())),
+        ButterflyScope(
+            scope_id="test-scope",
+            root_scientific_name="Papilionoidea",
+            root_rank="SUPERFAMILY",
+            included_families=("Papilionidae",),
+        ),
+        retrieved_at="2026-06-20T00:00:00+00:00",
+        checkpoint_dir=tmp_path / "checkpoints",
+        workers=2,
+        progress_every=1,
+        checkpoint_every=1,
+        client_factory=lambda: GBIFClient(http_get=FakeGBIFHTTP(_species_enrichment_responses())),
+    )
+
+    assert calls == [4]
 
 
 def _family_source_responses() -> dict[tuple[str, tuple[tuple[str, object], ...]], dict[str, Any]]:
