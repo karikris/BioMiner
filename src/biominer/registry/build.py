@@ -53,6 +53,7 @@ def build_registry(
                 client,
                 load_scope(scope_path),
                 retrieved_at=retrieved,
+                registry_version=registry_version,
                 checkpoint_dir=output / "checkpoints",
                 workers=workers,
                 progress_every=progress_every,

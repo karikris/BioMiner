@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import hashlib
 import json
 import logging
 import os
@@ -22,6 +23,8 @@ from biominer.registry.scope import ButterflyScope
 
 
 logger = logging.getLogger(__name__)
+GBIF_SOURCE = "GBIF"
+CHECKPOINT_SCHEMA_VERSION = 2
 GBIFClientFactory = Callable[[], GBIFClient]
 _worker_local = threading.local()
 
@@ -49,6 +52,7 @@ def build_gbif_source_snapshot(
     scope: ButterflyScope,
     *,
     retrieved_at: str,
+    registry_version: str = "",
     page_limit: int = 1000,
     checkpoint_dir: str | Path | None = None,
     workers: int = 1,
@@ -67,6 +71,7 @@ def build_gbif_source_snapshot(
     checkpoint_root = Path(checkpoint_dir) if checkpoint_dir else None
     if checkpoint_root:
         checkpoint_root.mkdir(parents=True, exist_ok=True)
+    scope_hash = _scope_hash(scope)
     root_key = scope.root_taxon_key
     if not root_key:
         root_match = client.match_name(
@@ -151,7 +156,18 @@ def build_gbif_source_snapshot(
                 family_base_names.append(_scientific_name_row(species, name_class="accepted_scientific"))
 
         species_rows.sort(key=lambda row: (_scientific_name(row), str(row.get("key") or "")))
-        checkpoint = _load_checkpoint(checkpoint_root, family_name, family_key) if checkpoint_root else FamilyCheckpoint(set(), [])
+        checkpoint = (
+            _load_checkpoint(
+                checkpoint_root,
+                family_name,
+                family_key,
+                registry_version=registry_version,
+                scope_hash=scope_hash,
+                source=GBIF_SOURCE,
+            )
+            if checkpoint_root
+            else FamilyCheckpoint(set(), [])
+        )
         total_resumed_species += len(checkpoint.completed_species_keys)
         pending_species = [row for row in species_rows if str(row.get("key") or "") not in checkpoint.completed_species_keys]
         logger.info(
@@ -188,14 +204,41 @@ def build_gbif_source_snapshot(
                         len(checkpoint.enrichment_names),
                     )
                 if checkpoint_root and completed_this_run % checkpoint_every == 0:
-                    _write_checkpoint(checkpoint_root, family_name, family_key, checkpoint, status="partial")
+                    _write_checkpoint(
+                        checkpoint_root,
+                        family_name,
+                        family_key,
+                        checkpoint,
+                        status="partial",
+                        registry_version=registry_version,
+                        scope_hash=scope_hash,
+                        source=GBIF_SOURCE,
+                    )
         except BaseException:
             if checkpoint_root:
-                _write_checkpoint(checkpoint_root, family_name, family_key, checkpoint, status="partial")
+                _write_checkpoint(
+                    checkpoint_root,
+                    family_name,
+                    family_key,
+                    checkpoint,
+                    status="partial",
+                    registry_version=registry_version,
+                    scope_hash=scope_hash,
+                    source=GBIF_SOURCE,
+                )
             raise
 
         if checkpoint_root:
-            _write_checkpoint(checkpoint_root, family_name, family_key, checkpoint, status="complete")
+            _write_checkpoint(
+                checkpoint_root,
+                family_name,
+                family_key,
+                checkpoint,
+                status="complete",
+                registry_version=registry_version,
+                scope_hash=scope_hash,
+                source=GBIF_SOURCE,
+            )
         family_enrichment_names = _deduplicate_name_rows(checkpoint.enrichment_names)
         family_names = _interleave_enrichment_names(family_base_names, family_enrichment_names)
         taxa.extend(family_taxa)
@@ -233,6 +276,7 @@ def build_gbif_source_snapshot(
             progress_every=progress_every,
             checkpoint_every=checkpoint_every,
             resumed_species=total_resumed_species,
+            scope_hash=scope_hash,
         ),
     }
 
@@ -300,7 +344,15 @@ def _enrich_species(client: GBIFClient, species: dict[str, Any], *, page_limit: 
     )
 
 
-def _load_checkpoint(checkpoint_root: Path | None, family_name: str, family_key: str) -> FamilyCheckpoint:
+def _load_checkpoint(
+    checkpoint_root: Path | None,
+    family_name: str,
+    family_key: str,
+    *,
+    registry_version: str,
+    scope_hash: str,
+    source: str,
+) -> FamilyCheckpoint:
     if checkpoint_root is None:
         return FamilyCheckpoint(set(), [])
     family_dir = _checkpoint_family_dir(checkpoint_root, family_name)
@@ -309,8 +361,20 @@ def _load_checkpoint(checkpoint_root: Path | None, family_name: str, family_key:
     if not state_path.exists():
         return FamilyCheckpoint(set(), [])
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    if str(state.get("family_key") or "") != family_key:
-        raise ValueError(f"Checkpoint for {family_name} belongs to GBIF key {state.get('family_key')!r}, expected {family_key!r}")
+    expected = {
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "registry_version": registry_version,
+        "scope_hash": scope_hash,
+        "source": source,
+        "family_key": family_key,
+    }
+    for key, expected_value in expected.items():
+        actual = state.get(key)
+        if actual != expected_value:
+            raise ValueError(
+                f"Checkpoint for {family_name} has incompatible {key}: "
+                f"{actual!r}, expected {expected_value!r}"
+            )
     enrichment_names = pl.read_parquet(names_path).to_dicts() if names_path.exists() else []
     return FamilyCheckpoint(
         completed_species_keys={str(value) for value in state.get("completed_species_keys", [])},
@@ -328,6 +392,9 @@ def _write_checkpoint(
     checkpoint: FamilyCheckpoint,
     *,
     status: str,
+    registry_version: str,
+    scope_hash: str,
+    source: str,
 ) -> None:
     family_dir = _checkpoint_family_dir(checkpoint_root, family_name)
     family_dir.mkdir(parents=True, exist_ok=True)
@@ -340,7 +407,10 @@ def _write_checkpoint(
     frame.write_parquet(names_tmp)
     os.replace(names_tmp, names_path)
     state = {
-        "schema_version": 1,
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "registry_version": registry_version,
+        "scope_hash": scope_hash,
+        "source": source,
         "family": family_name,
         "family_key": family_key,
         "status": status,
@@ -387,6 +457,7 @@ def _metrics(
     progress_every: int,
     checkpoint_every: int,
     resumed_species: int,
+    scope_hash: str,
 ) -> dict[str, Any]:
     taxa_by_rank = Counter(row["rank"] for row in taxa)
     name_classes = Counter(str(row["name_class"]) for row in names)
@@ -404,8 +475,22 @@ def _metrics(
         "progress_every": progress_every,
         "checkpoint_every": checkpoint_every,
         "resumed_species": resumed_species,
+        "scope_hash": scope_hash,
         "elapsed_seconds": round(elapsed_seconds, 6),
     }
+
+
+def _scope_hash(scope: ButterflyScope) -> str:
+    payload = {
+        "scope_id": scope.scope_id,
+        "root_scientific_name": scope.root_scientific_name,
+        "root_rank": scope.root_rank,
+        "root_taxon_key": scope.root_taxon_key,
+        "included_families": list(scope.included_families),
+        "family_taxon_keys": dict(sorted(scope.family_taxon_keys.items())),
+    }
+    encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _deduplicate_taxa_rows(rows: Iterable[dict[str, str]]) -> list[dict[str, str]]:

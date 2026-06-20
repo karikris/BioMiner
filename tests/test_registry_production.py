@@ -135,6 +135,7 @@ def test_gbif_source_snapshot_checkpoints_and_resumes_species_enrichment(tmp_pat
         GBIFClient(http_get=main_http),
         scope,
         retrieved_at="2026-06-20T00:00:00+00:00",
+        registry_version="registry-v1",
         checkpoint_dir=tmp_path / "checkpoints",
         workers=2,
         progress_every=1,
@@ -145,6 +146,10 @@ def test_gbif_source_snapshot_checkpoints_and_resumes_species_enrichment(tmp_pat
     checkpoint_state = json.loads((tmp_path / "checkpoints" / "Papilionidae" / "state.json").read_text(encoding="utf-8"))
     checkpoint_names = pl.read_parquet(tmp_path / "checkpoints" / "Papilionidae" / "enrichment_names.parquet")
     assert checkpoint_state["status"] == "complete"
+    assert checkpoint_state["registry_version"] == "registry-v1"
+    assert checkpoint_state["source"] == "GBIF"
+    assert checkpoint_state["schema_version"] == 2
+    assert checkpoint_state["scope_hash"].startswith("sha256:")
     assert checkpoint_state["completed_species_keys"] == ["100", "101"]
     assert checkpoint_names.select("display_name").to_series().to_list() == [
         "Papilio erithonius",
@@ -162,6 +167,7 @@ def test_gbif_source_snapshot_checkpoints_and_resumes_species_enrichment(tmp_pat
         GBIFClient(http_get=FakeGBIFHTTP(_family_source_responses())),
         scope,
         retrieved_at="2026-06-20T00:00:00+00:00",
+        registry_version="registry-v1",
         checkpoint_dir=tmp_path / "checkpoints",
         workers=2,
         progress_every=1,
@@ -177,6 +183,43 @@ def test_gbif_source_snapshot_checkpoints_and_resumes_species_enrichment(tmp_pat
         "Papilio xuthus synonym",
         "Asian Swallowtail",
     ]
+
+
+def test_gbif_checkpoint_rejects_registry_version_mismatch(tmp_path) -> None:
+    scope = ButterflyScope(
+        scope_id="test-scope",
+        root_scientific_name="Papilionoidea",
+        root_rank="SUPERFAMILY",
+        included_families=("Papilionidae",),
+    )
+    build_gbif_source_snapshot(
+        GBIFClient(http_get=FakeGBIFHTTP(_family_source_responses())),
+        scope,
+        retrieved_at="2026-06-20T00:00:00+00:00",
+        registry_version="registry-v1",
+        checkpoint_dir=tmp_path / "checkpoints",
+        workers=2,
+        progress_every=1,
+        checkpoint_every=1,
+        client_factory=lambda: GBIFClient(http_get=FakeGBIFHTTP(_species_enrichment_responses())),
+    )
+
+    try:
+        build_gbif_source_snapshot(
+            GBIFClient(http_get=FakeGBIFHTTP(_family_source_responses())),
+            scope,
+            retrieved_at="2026-06-20T00:00:00+00:00",
+            registry_version="registry-v2",
+            checkpoint_dir=tmp_path / "checkpoints",
+            workers=2,
+            progress_every=1,
+            checkpoint_every=1,
+            client_factory=lambda: GBIFClient(http_get=FakeGBIFHTTP(_species_enrichment_responses())),
+        )
+    except ValueError as exc:
+        assert "registry_version" in str(exc)
+    else:
+        raise AssertionError("Expected checkpoint registry_version mismatch")
 
 
 def test_gbif_species_enrichment_uses_bounded_ordered_map(monkeypatch, tmp_path) -> None:
