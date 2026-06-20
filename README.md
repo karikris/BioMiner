@@ -1,48 +1,158 @@
 # BioMiner
 
-BioMiner is a lean Flickr Lepidoptera image-triage pipeline. It discovers Flickr photo metadata, filters obvious non-biodiversity records, classifies candidate images with BioCLIP 2.5, assigns evidence buckets, and uses targeted Flickr comment review to promote ambiguous Bronze records when comments provide matching species evidence.
+BioMiner is a taxonomically grounded Flickr butterfly-discovery and image-triage pipeline.
+
+It builds a reviewed multilingual butterfly name registry, compiles deterministic Flickr search definitions, fetches Flickr metadata, removes obvious non-biodiversity material, classifies temporary images with BioCLIP 2.5, assigns evidence buckets, and uses targeted Flickr comment review to strengthen ambiguous records.
+
+BioMiner separates three forms of evidence:
+
+- **taxonomic identity** from the versioned Step 0 registry;
+- **discovery evidence** from Flickr queries and metadata;
+- **screening evidence** from BioCLIP and comment review.
 
 BioCLIP output is screening evidence only. BioMiner does not claim taxonomic validation, does not publish verified Darwin Core occurrences, and does not keep a permanent Flickr image archive.
 
-## Active Workflow
+## Pipeline
 
 ```text
-Flickr photos.search metadata + image URLs
--> metadata/evidence parquet
--> anti-keyword and metadata filtering
--> temporary image download
--> BioCLIP 2.5 species + triage scoring
--> occurrence_bin, image_category, life_stage
--> delete downloaded image
--> targeted Bronze comment review
--> Gold/Silver/Bronze/Bin outputs + compact reports
+Step 0: taxonomic registry
+  GBIF accepted spine
+  + synonyms and vernacular names
+  + optional CoL/Wikidata/iNaturalist/EOL evidence
+  + reviewed translation candidates
+  -> versioned registry Parquet
+  -> atomic Flickr tags/text query definitions
+
+Step 1: Flickr metadata discovery
+  registry query definitions
+  -> fixed upload-date slices
+  -> Flickr photos.search metadata
+  -> canonical photos + complete query-hit provenance
+
+Step 2: metadata filtering
+  metadata/evidence Parquet
+  -> remove obvious non-biodiversity and hard negatives
+
+Step 3: BioCLIP screening
+  temporary image download
+  -> BioCLIP 2.5 species and triage scoring
+  -> Gold/Silver/Bronze/Bin/InReview
+  -> delete temporary image
+
+Step 4: targeted comment review
+  Bronze/ambiguous records
+  -> matching species/synonym evidence
+  -> promotion where all bucket rules are satisfied
 ```
 
-The active package is `biominer` under `src/`. The CLI entry point is `biominer`.
-
-## Repository Status
-
-This repository is focused on Flickr Lepidoptera triage. The current active path is:
-
-- bounded Flickr metadata polling;
-- deterministic Flickr query planning with fixed upload-date slices;
-- bounded broad-search coverage from 2004-02-10 through today;
-- anti-keyword filtering of obvious non-biodiversity material;
-- temporary image caching and cleanup after classification;
-- BioCLIP 2.5 register-based batch classification helpers;
-- rule-based occurrence bins and image category fields;
-- targeted comment review for Bronze or ambiguous records;
-- compact JSON/parquet reports and QA summaries.
-
-BioCLIP/OpenCLIP/PyTorch runtime work may live in `karikris/BioCLIPMiner` or be imported through the BioCLIP runner. This repo keeps local unit tests free of network, Flickr credentials, CUDA, BioCLIP weights, and real downloaded images.
-
-## Install
-
-Python 3.14 or newer is required.
+The active package is `biominer` under `src/`. Run commands through:
 
 ```bash
-uv venv
-uv pip install -e '.[test]'
+uv run biominer
+```
+
+## Core invariants
+
+1. **Step 0 is mandatory before Flickr query generation.**
+2. **GBIF accepted taxon keys define the production taxonomic spine.**
+3. **Deduplicate photo processing, not discovery evidence.**
+4. **Tags and text searches are separate atomic query definitions.**
+5. **Flickr metadata is retained even when an image is never downloaded.**
+6. **Downloaded Flickr images are temporary and deleted after classification.**
+7. **BioCLIP is screening evidence, not taxonomic authority.**
+8. **Generated translations are disabled until reviewed or independently corroborated.**
+9. **Fatal registry QA blocks promotion to `data/registry/current`.**
+10. **Long-running API work must be resumable, bounded, and observable.**
+
+## Repository status
+
+The active implementation covers:
+
+- GBIF-backed Papilionoidea registry construction;
+- seven pinned butterfly-family identities;
+- accepted family, genus, and species traversal;
+- species synonyms and vernacular names;
+- bounded concurrent species enrichment;
+- retry, progress, and checkpoint controls;
+- deterministic atomic Flickr query compilation;
+- fixed upload-date Flickr search slicing;
+- bounded metadata polling with a shared SQLite ledger;
+- anti-keyword filtering;
+- temporary image caching and deletion;
+- BioCLIP 2.5 register-based classification helpers;
+- evidence buckets and category/life-stage fields;
+- targeted Flickr comment review;
+- compact JSON, Markdown, Parquet, and DuckDB-based QA.
+
+Supplementary Catalogue of Life, Wikidata, iNaturalist, EOL, and generated-translation adapters remain lower-trust enrichment layers and must not replace GBIF accepted identities.
+
+## Repository layout
+
+```text
+src/biominer/
+  cli.py
+  registry/
+    build.py
+    compiler.py
+    gbif.py
+    gbif_source.py
+    scope.py
+    audit.py
+    ...
+  flickr_fetch/
+  filter/
+  bioclip/
+  flickr_comments/
+  common/
+  storage/
+  reports/
+
+config/
+  butterfly_scope.json
+  anti_keywords.json
+  ...
+
+tests/
+data/
+staging/
+reports/
+logs/
+run/
+```
+
+Generated data, raw payloads, registry outputs, model files, downloaded images, local databases, credentials, and caches must not be committed.
+
+## Requirements
+
+- Python 3.14 or newer;
+- `uv`;
+- network access for live GBIF or Flickr work;
+- Flickr API key only for commands that call Flickr;
+- BioCLIP/OpenCLIP/PyTorch runtime only for Step 3.
+
+The standard GIL-enabled CPython 3.14 build is sufficient. Step 0 concurrency is network-I/O concurrency and does not require free-threaded Python.
+
+## Installation
+
+Create and synchronise the project environment:
+
+```bash
+cd ~/BioMiner
+unset VIRTUAL_ENV
+uv sync --extra test
+```
+
+Verify the CLI:
+
+```bash
+uv run biominer --help
+uv run biominer registry build --help
+```
+
+Run the local test suite:
+
+```bash
+uv run pytest -q
 ```
 
 Set Flickr credentials only for commands that call Flickr:
@@ -52,109 +162,426 @@ cp .env.example .env
 # edit .env and set FLICKR_API_KEY
 ```
 
-Generated data, local operator inputs, caches, parquet files, DuckDB files, virtual environments, model weights, raw API payloads, and image artifacts must not be committed.
+Never commit `.env` or API keys.
 
-## Main Commands
+# Step 0 — Taxonomic registry
 
-Show the command surface:
+Step 0 creates the authoritative versioned taxonomic name graph used by every downstream query and evidence row.
 
-```bash
-biominer --help
+## Butterfly scope
+
+Configured root:
+
+```yaml
+root:
+  scientific_name: Papilionoidea
+  rank: SUPERFAMILY
+  gbif_taxon_key: 1875
 ```
 
-Build count-probe work items from a reviewed keyword JSON:
+Configured families:
 
-```bash
-biominer build-papilio-demoleus-query-plan   --keywords-json config/papilio_demoleus_multilingual_keywords.json   --state-db data/state/flickr_poller.sqlite
-```
+| Family | GBIF key |
+|---|---:|
+| Hesperiidae | 6953 |
+| Papilionidae | 9417 |
+| Pieridae | 5481 |
+| Lycaenidae | 5473 |
+| Riodinidae | 1933999 |
+| Nymphalidae | 7017 |
+| Hedylidae | 6951 |
 
-Run one bounded metadata polling cycle:
+For each configured family BioMiner:
 
-```bash
-biominer poll-once   --max-api-calls 3500   --workers 1   --state-db data/state/flickr_poller.sqlite   --raw-root data/raw   --evidence-output staging/evidence/poll_once_evidence.parquet
-```
+1. runs GBIF name matching and retains the matcher result;
+2. uses the pinned accepted family key for production identity;
+3. requires rank `FAMILY`;
+4. requires accepted status;
+5. requires the pinned key to resolve to the configured family name;
+6. checks its lineage;
+7. accepts `Lepidoptera` as the recorded fallback when GBIF omits the intermediate `Papilionoidea` node;
+8. fails on a conflicting valid family-level match.
 
-Apply evidence rules to a parquet evidence file:
+A GBIF `HIGHERRANK` result may be retained as source evidence but must never replace the pinned family identity. This is required for Hedylidae, whose matcher may return a higher-rank fallback while the reviewed accepted family key remains valid.
 
-```bash
-biominer apply-rules   --evidence staging/evidence/poll_once_evidence.parquet   --output staging/evidence/classified.parquet
-```
+## Step 0A — GBIF spine
 
-Drop obvious non-biodiversity records before downstream review:
+GBIF supplies:
 
-```bash
-biominer filter   --input staging/evidence/classified.parquet   --anti-keywords-json config/anti_keywords.json   --output staging/evidence/filtered.parquet   --dropped-output staging/evidence/dropped.parquet
-```
+- accepted taxon keys;
+- root, family, genus, and species hierarchy;
+- accepted/synonym relationships;
+- first-layer vernacular names.
 
-Build and process the targeted comment-review queue:
-
-```bash
-biominer build-comment-review-queue   --input staging/evidence/classified.parquet   --state-db data/state/comment_review.sqlite
-
-biominer review-comments-once   --state-db data/state/comment_review.sqlite   --max-api-calls 300
-
-biominer apply-comment-review-decisions   --input staging/evidence/classified.parquet   --output staging/evidence/classified_with_comments.parquet   --state-db data/state/comment_review.sqlite
-```
-
-Inspect local API budget state or summarize an existing report:
-
-```bash
-biominer qa-rate-limit
-biominer qa-summary --report reports/some_run_summary.json
-```
-
-Compact parquet shards or export bucket-specific parquet views:
-
-```bash
-biominer compact-parquet   --input-root staging/evidence/shards   --output staging/evidence/compacted.parquet
-
-biominer export-bucket-views   --input staging/evidence/classified_with_comments.parquet   --output-dir reports/bucket_views
-```
-
-Clean a temporary image cache explicitly when needed:
-
-```bash
-biominer gc-cache --cache-root data/cache/images --delete
-```
-
-## Flickr Limits And BioMiner Policy
-
-BioMiner separates three different concepts that should not be confused.
-
-### 1. Flickr official result window
-
-Flickr `flickr.photos.search` documents that it returns at most the first **4,000 results** for any given search query. This is a search-window constraint, not an hourly API-call quota.
-
-### 2. BioMiner stable leaf-query threshold
-
-BioMiner uses:
+Traversal:
 
 ```text
-STABLE_RESULT_THRESHOLD = 4000
+Papilionoidea
+-> seven configured families
+-> accepted genera
+-> accepted species
+-> species synonyms
+-> species vernacular names
 ```
 
-This matches Flickr's documented 4,000-result accessible search window.
+The accepted spine is enumerated deterministically. Independent species enrichment is performed concurrently.
 
-If a count probe is used for a narrow query and reports `total <= 4000`, BioMiner may enqueue normal page fetches for that exact query.
+## Concurrent production build
 
-For broad butterfly discovery, BioMiner now avoids recursive count-probe expansion and seeds fixed upload-date slices directly.
+The production registry command exposes:
 
-### 3. BioMiner hourly API-call budget
+```bash
+uv run biominer registry build \
+  --output-dir data/registry/<version> \
+  --registry-version <version> \
+  --scope-json config/butterfly_scope.json \
+  --report-dir reports \
+  --workers 8 \
+  --progress-every 100 \
+  --checkpoint-every 500 \
+  --max-retries 5
+```
 
-BioMiner uses an operational API budget:
+Behavior:
+
+- bounded `ThreadPoolExecutor` species enrichment;
+- default eight workers;
+- bounded task submission;
+- pooled HTTP connections;
+- retry of HTTP 429, 502, 503, 504, timeouts, and transient transport failures;
+- `Retry-After` support;
+- exponential backoff with jitter;
+- permanent 4xx errors are not retried;
+- worker results are merged only in the main thread;
+- deterministic sorting before output;
+- family-level resumable checkpoints;
+- structured progress logs.
+
+The implementation parallelises species synonym and vernacular-name retrieval. Taxonomic spine construction remains ordered and deterministic.
+
+## Start a production registry build
+
+Use sequential shell assignments so `V`, `OUT`, and `LOG` cannot reuse stale values:
+
+```bash
+cd ~/BioMiner && unset VIRTUAL_ENV && \
+ROOT="$PWD" && \
+V="$(date -u +%Y.%m.%d.%H%M%S)" && \
+OUT="data/registry/$V" && \
+LOG="logs/step0_$V.log" && \
+export ROOT V OUT LOG && \
+mkdir -p "$OUT" reports logs run && \
+{
+  nohup bash -c '
+set -euo pipefail
+cd "$ROOT"
+
+BIOMINER_LOG_LEVEL=INFO PYTHONUNBUFFERED=1 \
+uv run biominer registry build \
+  --output-dir "$OUT" \
+  --registry-version "$V" \
+  --scope-json config/butterfly_scope.json \
+  --report-dir reports \
+  --workers 8 \
+  --progress-every 100 \
+  --checkpoint-every 500 \
+  --max-retries 5
+
+uv run python -c "
+import json, pathlib, sys
+m = json.loads(pathlib.Path(sys.argv[1]).read_text())
+print(json.dumps(m, indent=2))
+sys.exit(0 if m.get(\"qa_fatal_count\", 1) == 0 else 1)
+" "$OUT/manifest.json"
+
+uv run biominer registry audit \
+  --registry-dir "$OUT" \
+  > "reports/registry_audit_$V.json"
+
+ln -sfn "$V" data/registry/current
+' >"$LOG" 2>&1 </dev/null &
+
+  PID=$!
+  printf 'V=%q\nPID=%q\nOUT=%q\nLOG=%q\n' \
+    "$V" "$PID" "$OUT" "$LOG" \
+    > run/latest_step0.env
+
+  printf 'Registry started: version=%s pid=%s output=%s log=%s\n' \
+    "$V" "$PID" "$OUT" "$LOG"
+}
+```
+
+## Follow the build
+
+```bash
+cd ~/BioMiner
+source run/latest_step0.env
+tail --pid="$PID" -n 60 -f "$LOG"
+```
+
+Pressing `Ctrl+C` stops only the log follower.
+
+Expected progress events include:
+
+```text
+registry.build.start
+registry.gbif.root
+registry.gbif.family.start
+registry.gbif.family.genera
+registry.gbif.family.progress
+registry.gbif.family.checkpoint
+registry.gbif.family.complete
+registry.gbif.complete
+registry.build.compile.start
+registry.build.compile.complete
+registry.build.complete
+```
+
+## Resume an interrupted build
+
+Reuse the same version and output directory:
+
+```bash
+cd ~/BioMiner
+source run/latest_step0.env
+
+{
+  nohup bash -c '
+set -euo pipefail
+cd "$ROOT"
+
+BIOMINER_LOG_LEVEL=INFO PYTHONUNBUFFERED=1 \
+uv run biominer registry build \
+  --output-dir "$OUT" \
+  --registry-version "$V" \
+  --scope-json config/butterfly_scope.json \
+  --report-dir reports \
+  --workers 8 \
+  --progress-every 100 \
+  --checkpoint-every 500 \
+  --max-retries 5
+' >>"$LOG" 2>&1 </dev/null &
+
+  PID=$!
+  printf 'V=%q\nPID=%q\nOUT=%q\nLOG=%q\n' \
+    "$V" "$PID" "$OUT" "$LOG" \
+    > run/latest_step0.env
+
+  echo "Resumed version=$V pid=$PID"
+}
+```
+
+A checkpoint is reusable only when its registry version, scope hash, source, and schema version match.
+
+## Registry outputs
+
+A successful registry version contains:
+
+```text
+data/registry/<version>/
+  taxa.parquet
+  taxon_relations.parquet
+  names.parquet
+  name_evidence.parquet
+  source_snapshots.parquet
+  flickr_query_definitions.parquet
+  qa_findings.parquet
+  manifest.json
+  gbif_source_snapshot.json
+  checkpoints/
+```
+
+The successful version is promoted through:
+
+```text
+data/registry/current
+```
+
+Promotion occurs only after compilation, manifest validation, registry audit, and fatal QA checks pass.
+
+## Registry audit
+
+```bash
+uv run biominer registry audit \
+  --registry-dir data/registry/current
+```
+
+The audit queries Parquet through DuckDB and reports:
+
+- taxa by rank and family;
+- accepted, synonym, and vernacular name counts;
+- language/source/trust distributions;
+- Flickr query counts by field and priority;
+- fatal and warning QA findings.
+
+## Step 0B — Supplemental names
+
+GBIF remains the accepted taxonomic spine.
+
+Supplementary sources:
+
+| Source | Use |
+|---|---|
+| Catalogue of Life | accepted/synonym evidence, vernacular evidence, discrepancy QA |
+| Wikidata | labels, aliases, language, QID, linked external IDs |
+| iNaturalist | regional preferred and place-linked names |
+| EOL | optional additional vernacular evidence |
+| Translation providers | disabled candidate translations only |
+
+Wikidata entities must first be linked to an accepted taxon. Wikidata category relationships are not taxonomic authority.
+
+Regional names retain geographic scope. An Australian preferred name must not be promoted to a global name without preserving that scope.
+
+Default trust policy:
+
+| Source | Tier |
+|---|---|
+| GBIF accepted taxonomy | T1 |
+| Catalogue of Life taxonomy | T1 |
+| GBIF or CoL vernacular | T2 |
+| iNaturalist established regional name | T2/T4 |
+| EOL common name | T2/T3 |
+| Wikidata label or alias | T3 |
+| Curator override | T5 |
+| Independently corroborated translation | T6 |
+| Raw generated translation | T7 |
+
+Raw generated translations remain disabled until reviewed or independently corroborated.
+
+## Step 0C — Flickr query compilation
+
+Each enabled registry name is compiled into separate atomic Flickr definitions.
+
+Priority order:
+
+| Priority | Definition |
+|---:|---|
+| 10 | species scientific name — tags |
+| 20 | species common name — tags |
+| 30 | genus scientific name — tags |
+| 40 | family scientific/common name — tags |
+| 50 | species scientific name — text |
+| 60 | species common name — text |
+| 70 | genus/family — text |
+| 80 | broad butterfly terms — tags |
+| 90 | broad butterfly terms — text |
+| 100+ | experimental translations |
+
+Each definition retains:
+
+- registry version;
+- deterministic query-definition ID;
+- accepted GBIF taxon key;
+- accepted scientific name;
+- rank and lineage keys;
+- source term and normalized query term;
+- language, script, region, and bbox;
+- term class;
+- trust and precision tier;
+- search field;
+- priority;
+- enabled/review state.
+
+Tags are scheduled before text.
+
+## Step 0D — Registry QA
+
+The production build checks:
+
+- configured taxon identity, rank, status, and key;
+- accepted/synonym relationships;
+- lineage and root-validation mode;
+- source discrepancies;
+- language and script codes;
+- name collisions across taxa;
+- duplicate names and query definitions;
+- suspicious translations;
+- untranslated or generic terms;
+- taxa without accepted names;
+- taxa without enabled query definitions;
+- checkpoint compatibility and completeness.
+
+Fatal findings prevent promotion. Warnings remain visible in `qa_findings.parquet` and reports.
+
+# Step 1 — Flickr metadata discovery
+
+Step 1 consumes enabled definitions from:
+
+```text
+data/registry/current/flickr_query_definitions.parquet
+```
+
+It fetches Flickr metadata only.
+
+Outputs include:
+
+- raw Flickr response payloads;
+- canonical photo metadata;
+- query-hit provenance;
+- API ledger and work state;
+- evidence Parquet;
+- compact reports.
+
+## Deduplication rule
+
+**Deduplicate photo processing, not discovery evidence.**
+
+Maintain separately:
+
+1. one canonical photo row;
+2. every query-hit row;
+3. every term, field, language, source, and taxon that discovered the photo;
+4. every duplicate hit removed from repeated processing.
+
+The duplicate-hit report should be stored as:
+
+```text
+flickr_deduplicated_hits.parquet
+```
+
+Required columns include:
+
+```text
+flickr_photo_id
+retained_hit_id
+removed_hit_id
+query_definition_id
+query_term
+search_field
+accepted_taxon_key
+family_key
+genus_key
+species_key
+registry_version
+deduplication_reason
+```
+
+For each photo BioMiner supports:
+
+- query-derived candidate taxonomy;
+- metadata-derived keyword matches from title, description, tags, machine tags, and comments.
+
+A broad term such as `butterfly` must not imply a family, genus, or species by itself.
+
+## Flickr result and rate limits
+
+Keep these separate:
 
 ```text
 SOFT_API_CALLS_PER_HOUR = 3500
 HARD_API_CALLS_PER_HOUR = 3600
+STABLE_RESULT_THRESHOLD = 4000
+FLICKR_SEARCH_RESULT_WINDOW = 4000
 ```
 
-The hourly budget controls how many API calls the poller may make in a bounded run. It is separate from the 4,000 result threshold.
+- 3,500 calls/hour is BioMiner's operating budget.
+- 3,600 calls/hour is the hard local ceiling.
+- 4,000 results is Flickr's accessible search window per query.
+- 4,000 is therefore the stable BioMiner leaf threshold.
 
-If the budget runs out, `poll-once` stops cleanly, leaves remaining work pending, and the next run resumes in deterministic database order.
+## Flickr search policy
 
-## Flickr Discovery Rules
-
-BioMiner uses Flickr `photos.search` for metadata discovery. The default request should use:
+Default request fields:
 
 ```text
 media=photos
@@ -163,15 +590,15 @@ content_types=0
 extras=description,license,date_upload,date_taken,owner_name,last_update,geo,tags,machine_tags,o_dims,views,media,url_l,url_m
 ```
 
-Image URL preference is:
+Image URL preference:
 
 ```text
 url_l -> url_m
 ```
 
-`url_o` is not part of the default active path. Original images are diagnostic only.
+Do not use `url_o` by default.
 
-Page-size policy:
+Page sizes:
 
 ```text
 count probes: per_page=1
@@ -179,154 +606,61 @@ normal pages: per_page=500
 bbox/geotagged pages: per_page=250
 ```
 
-Flickr's `per_page` maximum for normal searches is 500, while geo/bbox queries return only 250 results per page.
+## Stable broad-search coverage
 
-## Stable Search-Space Coverage
-
-BioMiner covers broad Flickr searches with deterministic upload-date slices and Flickr-reported pagination metadata.
-
-Core invariant:
+Broad terms use deterministic upload-date slices:
 
 ```text
-Seed broad discovery with upload-date page 1 work, enqueue only Flickr's accessible 4000-result window, and report over-window slices.
+start: 2004-02-10
+slice length: 5 days
+end: current date
+initial page: 1
+per_page: 500
+accessible pages: at most 8
 ```
 
-Planning logic:
+Workflow:
 
-```text
-start at 2004-02-10 and advance to today
-use 5-day upload-date slices for the full range
-enqueue page 1 only for each slice at per_page=500
-after any page returns, ensure pages 1..min(photos.pages, 4000/photos.perpage) exist in SQLite for that exact query/date slice
+1. enqueue page 1 for each five-day slice;
+2. fetch and store the real page-1 metadata;
+3. read `photos.total`, `photos.pages`, `photos.page`, and `photos.perpage`;
+4. enqueue pages 2 through `min(photos.pages, 8)`;
+5. mark a slice saturated when page 8 returns 500 rows;
+6. stop cleanly when the API budget is exhausted;
+7. resume pending work in deterministic SQLite order.
+
+Broad searches do not recursively count-probe the full time range.
+
+## Metadata polling
+
+```bash
+uv run biominer poll-once \
+  --max-api-calls 3500 \
+  --workers 8 \
+  --state-db data/state/flickr_poller.sqlite \
+  --raw-root data/raw \
+  --evidence-output staging/evidence/poll_once_evidence.parquet
 ```
 
-Page 1 is a real metadata page, not a `per_page=1` count probe. BioMiner stores all records from each fetched page, reads `photos.total`, `photos.pages`, `photos.page`, and `photos.perpage`, then idempotently inserts any missing accessible page work. Flickr's `photos.perpage` is stored as the actual response page size; BioMiner does not assume the requested `per_page` value was accepted. If Flickr reports more than 16 pages at `perpage=250`, BioMiner reports the query slice as over-window for narrower follow-up rather than enqueueing inaccessible pages.
+Each worker must reserve an API-call token before making a request.
 
-Work-item ordering should be stable across reruns:
-
-```text
-split_depth
-split_priority
-date range start
-date range end
-slice index
-bbox or region order
-term
-page number
-query hash
-```
-
-All work items must have stable IDs derived from canonical query JSON. The database should use idempotent insertion, so reruns do not duplicate already planned work.
-
-## Example: Querying `text=butterfly`
-
-For broad `butterfly` discovery, the active runner seeds fixed upload-date slices instead of recursively probing the full query.
-
-```text
-method=flickr.photos.search
-text=butterfly
-media=photos
-safe_search=1
-content_types=0
-min_upload_date=2004-02-10
-max_upload_date=2004-02-14
-per_page=500
-page=1
-```
-
-The first bounded pass starts with page 1 for each slice. If Flickr reports `photos.pages=3` for a slice, BioMiner then enqueues pages 2 and 3 only; if `photos.pages=1`, it stops after page 1. With the 3,500-call hourly budget, a bounded run stops after the current poll-once claim set and resumes remaining pending slices in deterministic SQLite order.
-
-Recommended output layout:
-
-```text
-data/raw/flickr/photos_search/text/butterfly/
-  normal_page-00001-<work_id>.json
-  normal_page-00002-<work_id>.json
-  ...
-  normal_page-00007-<work_id>.json
-
-staging/evidence/text_butterfly_metadata.parquet
-reports/text_butterfly_fetch_manifest.json
-reports/text_butterfly_fetch_profile.json
-```
-
-If a slice's eighth page is full, BioMiner reports that slice as saturated at Flickr's accessible window.
-
-## Step 1: Metadata Fetch
+# Step 2 — Metadata filter
 
 Inputs:
 
 ```text
-operator keyword JSON
-Flickr API key
-SQLite state database
+staging/evidence/poll_once_evidence.parquet
+config/anti_keywords.json
 ```
 
-Outputs:
+Run:
 
-```text
-raw Flickr JSON
-metadata/evidence parquet
-API call ledger
-work-item state
-fetch reports
-```
-
-Rules:
-
-- fetch metadata only;
-- never download images in Step 1;
-- reserve one API-call token before each request;
-- stop at the hourly budget;
-- requeue stale claimed work;
-- resume pending work deterministically;
-- dedupe source records by Flickr photo ID and image URL;
-- write compact run metrics.
-
-Required Step 1 metrics:
-
-```text
-api_calls_used
-api_calls_remaining_soft
-api_calls_remaining_hard
-calls_per_hour
-count_probes_completed
-page_fetches_completed
-split_probes_enqueued_by_reason
-pending_count_probes
-pending_page_fetches
-records_fetched
-records_per_call
-duplicate_records_skipped
-raw_response_bytes
-parquet_rows
-parquet_bytes
-total_seconds
-average_seconds_per_call
-p50_seconds_per_call
-p95_seconds_per_call
-max_rss_kb
-peak_traced_bytes
-budget_limited_exit
-```
-
-Unsupported metrics should be written as `null` or `"not_instrumented"`, never guessed.
-
-## Step 2: Metadata Filter
-
-Inputs:
-
-```text
-Step 1 evidence parquet
-operator anti-keyword JSON
-```
-
-Outputs:
-
-```text
-filtered candidates parquet
-dropped records parquet
-filter report
+```bash
+uv run biominer filter \
+  --input staging/evidence/poll_once_evidence.parquet \
+  --anti-keywords-json config/anti_keywords.json \
+  --output staging/evidence/filtered.parquet \
+  --dropped-output staging/evidence/dropped.parquet
 ```
 
 Drop obvious non-biodiversity material:
@@ -354,44 +688,25 @@ pupa
 chrysalis
 ```
 
-Step 2 must not make final species decisions. It only removes obvious non-biodiversity or hard-negative metadata records.
+Step 2 does not make final species decisions.
 
-Required Step 2 metrics:
+# Step 3 — BioCLIP 2.5 screening
 
-```text
-input_rows
-kept_rows
-dropped_rows
-drop_reasons
-image_category_counts
-life_stage_counts
-null_image_url_count
-null_date_count
-null_geo_count
-total_seconds
-rows_per_second
-max_rss_kb
-peak_traced_bytes
-```
-
-## Step 3: BioCLIP 2.5 Classification
-
-BioCLIP classification uses temporary image download and register-based processing.
+BioCLIP uses temporary image downloads and register-based processing.
 
 Rules:
 
-- use the register runner;
-- keep one persistent model worker for the run;
+- use one persistent model worker per run;
 - default `register_count=4`;
 - default `register_size=20`;
-- download images temporarily;
+- download an image temporarily;
 - classify;
-- write prediction rows;
-- delete staged image files;
-- skip successful records on rerun using source/photo/image/model/checkpoint keys;
+- write the prediction row;
+- delete the staged image;
+- idempotently skip successful records by source/photo/image/model/checkpoint;
 - use fake classifiers in tests.
 
-Successful records are skipped on rerun for the same combination:
+Successful-record identity:
 
 ```text
 source
@@ -402,92 +717,41 @@ model_version
 model_checkpoint
 ```
 
-Required Step 3 metrics:
+## Evidence buckets
 
-```text
-records_seen
-records_classified
-records_skipped_existing
-download_failures
-bioclip_failures
-images_downloaded
-images_deleted_after_classification
-cache_bytes_before
-cache_bytes_after
-max_staged_images
-model_id
-model_version
-model_checkpoint
-register_count
-register_size
-total_seconds
-images_per_second
-average_seconds_per_image
-bucket_counts
-score_distribution
-max_rss_kb
-peak_traced_bytes
-gpu_memory_peak_mb
-```
+### Gold
 
-## Triage Rules
+- butterfly at any life stage;
+- BioCLIP species score above 0.70;
+- matching scientific or accepted common-name evidence;
+- image URL;
+- event date;
+- latitude and longitude;
+- no hard-negative category.
 
-Occurrence bins:
+### Silver
 
-```text
-gold
-silver
-bronze
-bin
-in_review
-```
+- species score from 0.35 through 0.70 with matching species evidence; or
+- Gold-strength evidence missing event date or geolocation;
+- no hard-negative category.
 
-Gold:
+### Bronze
 
-```text
-adult butterfly
-BioCLIP species score > 0.70
-matching species evidence in Flickr title/tags/description/machine tags
-image URL present
-event date present
-latitude and longitude present
-image_category = adult_butterfly
-no hard-negative category
-```
+- remaining butterfly/life-stage records;
+- insufficient species agreement;
+- records needing comment or human review.
 
-Silver:
+### Bin
 
-```text
-BioCLIP species score 0.35 through 0.70
-matching species evidence in Flickr metadata
-image URL present
-no hard-negative category
-```
+- no butterfly detected;
+- hard-negative visual/material category;
+- irrelevant non-biodiversity record.
 
-Also keep otherwise Gold-strength records in Silver if they are missing event date or geolocation.
+Operational download or runtime failures remain retryable and must not be silently converted into biological negatives.
 
-Bronze:
+## Category model
 
-```text
-remaining butterfly records
-adult butterflies without enough species agreement
-egg/caterpillar/larva/pupa/chrysalis records
-records requiring comment review or human review
-```
-
-Bin:
-
-```text
-records with no butterfly in any life stage
-hard-negative visual/material categories
-failed or irrelevant non-biodiversity records
-```
-
-Operational failures such as missing image URLs, missing BioCLIP output, failed downloads, and runtime failures should stay in review/error handling paths and remain retryable where appropriate.
-
-## Category Model
-
-BioMiner uses one shared image category column:
+Primary category column:
 
 ```text
 image_category
@@ -510,7 +774,7 @@ not_lepidoptera
 unknown
 ```
 
-Allowed life stages:
+Life stages:
 
 ```text
 adult_butterfly
@@ -522,174 +786,222 @@ chrysalis
 unknown
 ```
 
-Default values are:
+# Step 4 — Targeted Flickr comment review
 
-```text
-image_category = adult_butterfly
-life_stage = adult_butterfly
-```
-
-Non-adult life stages use:
-
-```text
-image_category = life_stage_non_adult
-life_stage = egg | caterpillar | larva | pupa | chrysalis
-```
-
-## Step 4: Comment Review
-
-Comments are a targeted review phase. BioMiner does not fetch comments for every record by default.
+Comments are not fetched globally.
 
 Default queue:
 
 ```text
-Bronze records only
+Bronze records
 ```
 
-Records may also be queued when they are ambiguous:
+Additional ambiguous records may be queued for:
 
-```text
-BioCLIP versus Flickr text mismatch
-suspected species conflict
-missing date
-missing geo
-unknown category
-unknown life stage
-low confidence
-other incomplete evidence
+- BioCLIP/Flickr text mismatch;
+- suspected species conflict;
+- missing date;
+- missing geo;
+- unknown category or life stage;
+- low confidence;
+- incomplete evidence.
+
+Commands:
+
+```bash
+uv run biominer build-comment-review-queue \
+  --input staging/evidence/classified.parquet \
+  --state-db data/state/comment_review.sqlite
+
+uv run biominer review-comments-once \
+  --state-db data/state/comment_review.sqlite \
+  --max-api-calls 300
+
+uv run biominer apply-comment-review-decisions \
+  --input staging/evidence/classified.parquet \
+  --output staging/evidence/classified_with_comments.parquet \
+  --state-db data/state/comment_review.sqlite
 ```
-
-Comment review may:
-
-- confirm a BioCLIP species;
-- reveal a conflicting species;
-- provide date evidence;
-- provide location clues;
-- support promotion from Bronze to Gold or Silver.
-
-Comment review must not:
-
-- override hard-negative image categories;
-- replace BioCLIP evidence;
-- turn free-text place names into coordinates without safe structured resolution;
-- force Gold while event date or geolocation is still missing.
 
 Promotion rules:
 
 ```text
-Bronze -> Gold:
-  comments match BioCLIP species or accepted synonym
-  Gold metadata/adult rules are also satisfied
-  no hard-negative category
+Bronze -> Gold
+  comment species/synonym matches BioCLIP candidate
+  Gold score/date/geo/category rules also pass
+  no hard negative
 
-Bronze -> Silver:
-  comments match BioCLIP species or accepted synonym
+Bronze -> Silver
+  comment species/synonym matches
   species evidence is present
-  Gold metadata/adult rules are incomplete
+  Gold metadata requirements are incomplete
 
-Remain Bronze:
-  no comment match
+Remain Bronze
+  no match
   generic comments only
   species conflict
-  non-adult life stage
+  non-adult life stage without sufficient evidence
   incomplete evidence
 ```
 
-Required Step 4 metrics:
+Comments must not override hard negatives or fabricate structured coordinates from free text.
 
-```text
-queued_records
-api_calls_used
-comments_fetched
-records_with_comments
-species_matches
-species_conflicts
-gold_promotions
-silver_promotions
-retained_bronze
-errors
-total_seconds
-average_seconds_per_call
-max_rss_kb
-peak_traced_bytes
+# Common commands
+
+Apply evidence rules:
+
+```bash
+uv run biominer apply-rules \
+  --evidence staging/evidence/poll_once_evidence.parquet \
+  --output staging/evidence/classified.parquet
 ```
 
-## Reports
+Inspect API budget:
 
-Reports should stay compact and machine-readable.
-
-Expected report paths include:
-
-```text
-reports/query_term_totals.json
-reports/flickr_split_progress.json
-reports/api_budget_profile.json
-reports/fetch_profile.json
-reports/filter_profile.json
-reports/bioclip_profile.json
-reports/occurrence_bin_profile.json
-reports/life_stage_profile.json
-reports/no_geo_profile.json
-reports/comment_review_profile.json
-reports/cache_profile.json
-reports/idempotency_profile.json
-reports/code_cleanup_report.md
-reports/agents_update_recommendations.json
+```bash
+uv run biominer qa-rate-limit \
+  --state-db data/state/flickr_poller.sqlite
 ```
 
-Each run report should include:
+Summarise a report:
+
+```bash
+uv run biominer qa-summary \
+  --report reports/some_run_summary.json
+```
+
+Compact Parquet shards:
+
+```bash
+uv run biominer compact-parquet \
+  --input-root staging/evidence/shards \
+  --output staging/evidence/compacted.parquet
+```
+
+Export bucket views:
+
+```bash
+uv run biominer export-bucket-views \
+  --input staging/evidence/classified_with_comments.parquet \
+  --output-dir reports/bucket_views
+```
+
+Clean the temporary image cache:
+
+```bash
+uv run biominer gc-cache \
+  --cache-root data/cache/images \
+  --delete
+```
+
+# Data stack
+
+BioMiner uses:
+
+- **Polars** for dataframe operations;
+- **Parquet** for durable tabular storage;
+- **DuckDB** for local analytical queries and QA;
+- **SQLite** for operational work queues and rate-limit ledgers;
+- **JSON** only for compact configuration, manifests, checkpoints, and reports.
+
+Do not introduce pandas or CSV workflows unless a strict external boundary requires them. Do not add Seaborn; use Matplotlib directly.
+
+# Metrics and reports
+
+Every run writes compact JSON and Markdown under `reports/`.
+
+Include when applicable:
 
 ```text
 command
 git_sha
 run_id
-pid if background
+pid
+status
 started_at
 ended_at
-status
-environment summary without secrets
-per-step timings
+effective_workers
+retry_count
+rate_limit_events
+checkpoint_count
+resume_state
+api_calls_used
+api_calls_remaining
+calls_per_hour
+records_per_call
+avg/p50/p95_seconds_per_call
+rows_in
+rows_out
+dedupe_count
+error_count
+bucket_counts
+category_counts
+life_stage_counts
 total_seconds
-API budget profile
-throughput profile
-row counts
-bucket/category/life-stage distributions
-storage bytes by artifact class
-memory RSS/peak
-GPU memory if available
-failure counts
+rows_or_images_per_second
+artifact_bytes
+checkpoint_bytes
+cache_bytes_before
+cache_bytes_after
+rss_peak_memory
+gpu_memory_peak
 ```
 
-Unsupported metrics should be written as `null` or `"not_instrumented"`, never guessed.
+Unsupported metrics must be `null` or `"not_instrumented"`, never guessed.
 
-## Long Runs
+Expected report families include:
 
-For API fetches or BioCLIP processing that may run for minutes:
+```text
+reports/registry_build_<version>.json
+reports/registry_build_<version>.md
+reports/registry_audit_<version>.json
+reports/api_budget_profile.json
+reports/fetch_profile.json
+reports/filter_profile.json
+reports/bioclip_profile.json
+reports/occurrence_bin_profile.json
+reports/comment_review_profile.json
+reports/cache_profile.json
+reports/idempotency_profile.json
+```
 
-- start the run as a detached local process;
-- redirect logs to `logs/`;
-- write PID and manifest JSON to `reports/`;
-- include command, git SHA, expected outputs, start time, and status in the manifest;
-- end active agent work after the run starts;
-- do not tail logs continuously;
-- do not repeatedly poll progress unless explicitly asked.
+# Long-running processes
 
-## Tests
+For registry builds, Flickr fetches, and BioCLIP runs:
 
-Run the local test suite:
+- start one detached local process;
+- redirect output to `logs/`;
+- write PID, version, output, and log paths to `run/`;
+- write compact manifests to `reports/`;
+- use structured progress logging;
+- checkpoint resumable work;
+- do not continuously poll from an agent session;
+- inspect progress only when requested.
+
+# Tests
+
+Run all tests:
 
 ```bash
-pytest -q
+uv run pytest -q
 ```
 
-Focused tests should cover:
+Focused test areas:
 
 ```text
 CLI surface
+GBIF root and family-key validation
+GBIF synonym accepted-usage handling
+GBIF lineage fallback
+bounded species-enrichment concurrency
+retry/backoff behavior
+checkpoint compatibility and resume
+deterministic registry output
+registry query compilation
+registry fatal QA gates
 Flickr endpoint constraints
 API-budget enforcement
 fixed upload-date slicing
-stable leaf-query threshold
 deterministic resume order
 metadata filter rules
 category/life-stage rules
@@ -700,7 +1012,7 @@ comment-review queueing
 comment-derived promotions
 ```
 
-Tests must remain local and small. Do not add tests that require:
+Tests must remain local and small. They must not require:
 
 ```text
 network
@@ -708,19 +1020,19 @@ Flickr credentials
 CUDA
 real BioCLIP weights
 real downloaded images
-large parquet artifacts
+large Parquet artifacts
 large DuckDB artifacts
 model caches
 ```
 
-## Out Of Scope
+# Out of scope
 
-The current BioMiner scope deliberately excludes:
+The active BioMiner scope excludes:
 
-- Darwin Core occurrence publication as the active path;
-- taxonomic validation claims;
-- global comment fetching;
+- Darwin Core occurrence publication;
+- taxonomic-validation claims;
 - permanent Flickr image archival;
+- global comment fetching;
 - multi-key Flickr quota multiplication;
-- network/CUDA/model-weight requirements in unit tests;
-- blind deep paging of broad Flickr searches.
+- blind deep paging beyond Flickr's accessible result window;
+- network/CUDA/model-weight requirements in unit tests.
