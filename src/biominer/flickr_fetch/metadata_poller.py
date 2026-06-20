@@ -1051,6 +1051,7 @@ def _progress(callback: ProgressCallback | None, event: dict[str, Any]) -> None:
 def _http_fetcher(*, api_key: str | None) -> FetchMetadata:
     if not api_key:
         raise RuntimeError("Flickr API key is required for poll-once")
+    client = httpx.Client(timeout=30)
 
     def fetch(query: FlickrQuery) -> dict[str, Any]:
         params = {
@@ -1060,8 +1061,7 @@ def _http_fetcher(*, api_key: str | None) -> FetchMetadata:
             "format": "json",
             "nojsoncallback": 1,
         }
-        with httpx.Client(timeout=30) as client:
-            response = client.get(FLICKR_REST_BASE_URL, params=params)
+        response = client.get(FLICKR_REST_BASE_URL, params=params)
         response.raise_for_status()
         return response.json()
 

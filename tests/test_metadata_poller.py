@@ -10,7 +10,7 @@ import httpx
 import polars as pl
 
 from biominer.flickr_fetch.query_planner import BBOX_PAGE_SIZE, COUNT_PROBE_PAGE_SIZE, NORMAL_PAGE_SIZE, FlickrQuery, fixed_upload_date_slices
-from biominer.flickr_fetch.metadata_poller import MetadataPollState, _payload_page, _payload_pages, _payload_perpage, poll_once
+from biominer.flickr_fetch.metadata_poller import MetadataPollState, _http_fetcher, _payload_page, _payload_pages, _payload_perpage, poll_once
 
 
 def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
@@ -494,6 +494,38 @@ def test_payload_page_metadata_helpers_default_missing_values() -> None:
     assert _payload_pages({"photos": {}}) == 0
     assert _payload_page({"photos": {}}) == 0
     assert _payload_perpage({"photos": {}}) == 0
+
+
+def test_http_fetcher_reuses_pooled_client(monkeypatch) -> None:
+    clients = []
+
+    class FakeClient:
+        def __init__(self, *, timeout: int) -> None:
+            self.timeout = timeout
+            clients.append(self)
+
+        def __enter__(self) -> FakeClient:
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        def get(self, url: str, *, params: dict[str, object]) -> httpx.Response:
+            request = httpx.Request("GET", url, params=params)
+            return httpx.Response(
+                200,
+                request=request,
+                json={"photos": {"total": "0", "pages": "0", "page": "1", "perpage": "500", "photo": []}},
+            )
+
+    monkeypatch.setattr("biominer.flickr_fetch.metadata_poller.httpx.Client", FakeClient)
+    fetcher = _http_fetcher(api_key="secret")
+    query = FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=500)
+
+    fetcher(query)
+    fetcher(query)
+
+    assert len(clients) == 1
 
 
 def test_poll_once_reserves_api_call_before_fetch(tmp_path) -> None:
