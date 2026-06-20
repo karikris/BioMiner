@@ -207,8 +207,8 @@ Authority order:
 Source roles:
 
 * **Catalogue of Life**: supplemental accepted/synonym evidence, vernacular evidence, discrepancy QA. Normalize into stable tabular records inspired by ColDP; preserve source IDs and schema version.
-* **Wikidata**: labels, aliases, language, QID, taxon-name claim, and external IDs only after linking to an accepted taxon. Never use the category graph as taxonomic authority.
-* **iNaturalist**: regional preferred and place-linked common names. Retain geographic applicability.
+* **iNaturalist**: preferred Wikidata replacement for Step 0 common-name enrichment. Use exact accepted scientific-name matches only, collect preferred/common names, and retain geographic applicability when place-linked names are available.
+* **Wikidata**: explicit opt-in candidate evidence only. Labels, aliases, language, QID, taxon-name claim, and external IDs may be retained after linking to an accepted taxon, but never use the category graph as taxonomic authority.
 * **EOL**: optional vernacular evidence below GBIF/CoL unless corroborated.
 * **Translation providers**: generate candidates only after sourced-name retrieval. Store provider/model/version, source phrase, target language, back-translation/corroboration, and review state.
 
