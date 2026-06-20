@@ -10,7 +10,7 @@ import polars as pl
 
 from biominer.cli import build_parser, run
 from biominer.registry.compiler import compile_registry_fixture
-from biominer.registry.enrichment import SpeciesContext, build_enrichment_sources_from_registry, compile_enriched_registry, write_enrichment_sources
+from biominer.registry.enrichment import SourceRateLimitError, SpeciesContext, build_enrichment_sources_from_registry, compile_enriched_registry, write_enrichment_sources
 from biominer.registry.enrichment_sources import ITISClient, WikidataClient, WikidataRateLimiter, _json_get
 
 
@@ -926,3 +926,28 @@ def test_wikidata_retry_penalty_increases_following_request_delay() -> None:
     limiter.wait()
 
     assert sleeps == [55.0, 4.0, 55.0, 6.0]
+
+
+def test_wikidata_source_rate_limit_aborts_enrichment_run(tmp_path) -> None:
+    registry, _scope = _write_base_registry(tmp_path, species_names=("Papilio demoleus", "Papilio machaon"))
+    calls = []
+
+    class RateLimitedClient:
+        def enrich_species(self, context):  # noqa: ANN001 - test double raises the fatal source error.
+            calls.append(context.accepted_taxon_key)
+            raise SourceRateLimitError("wikidata rate limited")
+
+    try:
+        build_enrichment_sources_from_registry(
+            registry_dir=registry,
+            sources=("wikidata",),
+            clients={"wikidata": RateLimitedClient()},
+            workers=1,
+            report_dir=tmp_path / "reports",
+        )
+    except SourceRateLimitError:
+        pass
+    else:  # pragma: no cover - clearer assertion path than adding pytest import churn.
+        raise AssertionError("expected Wikidata rate limit to abort the enrichment run")
+
+    assert calls == ["gbif:100"]

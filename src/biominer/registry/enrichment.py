@@ -61,6 +61,14 @@ class SpeciesEnrichmentResult:
     errors: tuple[dict[str, str], ...]
 
 
+class FatalSourceError(RuntimeError):
+    """Raised when continuing a source run would harm the source or corrupt results."""
+
+
+class SourceRateLimitError(FatalSourceError):
+    """Raised when a source indicates the job should stop instead of retrying."""
+
+
 def build_enrichment_sources_from_registry(
     *,
     registry_dir: str | Path,
@@ -304,6 +312,13 @@ def _enrich_species_context(context: SpeciesContext, *, sources: tuple[str, ...]
         try:
             with _source_query_limit(source):
                 result = client.enrich_species(context)
+        except FatalSourceError:
+            logger.info(
+                "registry.enrichment.fatal_source_error source=%s accepted_taxon_key=%s",
+                source,
+                context.accepted_taxon_key,
+            )
+            raise
         except Exception as exc:  # noqa: BLE001 - source staging records and continues per species.
             errors.append({"source": source, "accepted_taxon_key": context.accepted_taxon_key, "error": type(exc).__name__})
             logger.info(
