@@ -18,9 +18,9 @@ from biominer.registry.enrichment import SpeciesContext
 HTTPGet = Callable[[str, dict[str, object]], dict[str, Any]]
 CacheKey = tuple[str, tuple[tuple[str, str], ...]]
 USER_AGENT = "BioMiner/0.1 registry-enrichment"
-DEFAULT_WIKIDATA_MIN_DELAY_SECONDS = 1.0
+DEFAULT_WIKIDATA_MIN_DELAY_SECONDS = 1.5
 DEFAULT_WIKIDATA_MAX_DELAY_SECONDS = 120.0
-DEFAULT_WIKIDATA_RATE_LIMIT_COOLDOWN_SECONDS = 12.0
+DEFAULT_WIKIDATA_RATE_LIMIT_COOLDOWN_SECONDS = 45.0
 logger = logging.getLogger(__name__)
 
 
@@ -91,6 +91,10 @@ def _default_wikidata_max_delay_seconds() -> float:
     )
 
 
+def _default_wikidata_rate_limit_cooldown_seconds() -> float:
+    return _float_env("BIOMINER_WIKIDATA_RATE_LIMIT_COOLDOWN_SECONDS", DEFAULT_WIKIDATA_RATE_LIMIT_COOLDOWN_SECONDS)
+
+
 def _float_env(name: str, fallback: float) -> float:
     raw = os.environ.get(name)
     if raw is None:
@@ -155,13 +159,15 @@ class WikidataClient:
         http_get: HTTPGet | None = None,
         max_retries: int = 5,
         rate_limiter: WikidataRateLimiter | None = None,
-        rate_limit_cooldown_seconds: float = DEFAULT_WIKIDATA_RATE_LIMIT_COOLDOWN_SECONDS,
+        rate_limit_cooldown_seconds: float | None = None,
         cache: MutableMapping[CacheKey, dict[str, Any]] | None = None,
     ) -> None:
         self._rate_limiter = rate_limiter or _WIKIDATA_RATE_LIMITER
         # Wikidata 429s skip the current term; retrying the same term keeps the job in a penalty loop.
         self._http_get = http_get or _json_get("https://www.wikidata.org", max_retries=0, sleep=self._rate_limiter.retry_sleep)
-        self._rate_limit_cooldown_seconds = rate_limit_cooldown_seconds
+        self._rate_limit_cooldown_seconds = (
+            _default_wikidata_rate_limit_cooldown_seconds() if rate_limit_cooldown_seconds is None else rate_limit_cooldown_seconds
+        )
         self._cache = cache if cache is not None else _WIKIDATA_CACHE
 
     def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:

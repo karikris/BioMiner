@@ -973,8 +973,8 @@ def test_wikidata_429_waits_cooldown_and_does_not_retry_same_keyword() -> None:
 
     client = WikidataClient(
         http_get=fake_get,
-        rate_limiter=WikidataRateLimiter(min_delay_seconds=1.0, sleep=sleep, monotonic=lambda: 100.0),
-        rate_limit_cooldown_seconds=12.0,
+        rate_limiter=WikidataRateLimiter(min_delay_seconds=1.5, sleep=sleep, monotonic=lambda: 100.0),
+        rate_limit_cooldown_seconds=45.0,
         cache={},
     )
 
@@ -996,4 +996,4 @@ def test_wikidata_429_waits_cooldown_and_does_not_retry_same_keyword() -> None:
         raise AssertionError("expected Wikidata term-level rate limit")
 
     assert len(calls) == 1
-    assert sleeps == [12.0]
+    assert sleeps == [45.0]
