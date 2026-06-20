@@ -860,3 +860,45 @@ def test_wikidata_client_rate_limits_uncached_requests_and_caches_no_results() -
     assert cached["name_assertions"] == []
     assert len(calls) == 2
     assert sleeps == [1.5]
+
+
+def test_wikidata_rate_limit_waits_after_retry_penalty_completes() -> None:
+    calls = []
+    sleeps = []
+    current_time = 100.0
+
+    def monotonic() -> float:
+        return current_time
+
+    def sleep(seconds: float) -> None:
+        nonlocal current_time
+        sleeps.append(seconds)
+        current_time += seconds
+
+    def fake_get(path: str, params: dict[str, object]) -> dict[str, object]:
+        nonlocal current_time
+        calls.append({"path": path, "params": params})
+        current_time += 55.0
+        return {"search": []}
+
+    client = WikidataClient(
+        http_get=fake_get,
+        rate_limiter=WikidataRateLimiter(min_delay_seconds=2.0, sleep=sleep, monotonic=monotonic),
+        cache={},
+    )
+
+    for taxon_key, scientific_name in (("gbif:100", "Papilio demoleus"), ("gbif:101", "Papilio machaon")):
+        client.enrich_species(
+            SpeciesContext(
+                accepted_taxon_key=taxon_key,
+                accepted_scientific_name=scientific_name,
+                family_key="gbif:10",
+                family="Papilionidae",
+                genus_key="gbif:90",
+                genus="Papilio",
+                current_names=(scientific_name,),
+            )
+        )
+
+    assert len(calls) == 2
+    assert sleeps == [2.0]

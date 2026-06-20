@@ -17,7 +17,7 @@ from biominer.registry.enrichment import SpeciesContext
 HTTPGet = Callable[[str, dict[str, object]], dict[str, Any]]
 CacheKey = tuple[str, tuple[tuple[str, str], ...]]
 USER_AGENT = "BioMiner/0.1 registry-enrichment"
-DEFAULT_WIKIDATA_MIN_DELAY_SECONDS = 1.5
+DEFAULT_WIKIDATA_MIN_DELAY_SECONDS = 2.0
 logger = logging.getLogger(__name__)
 
 
@@ -35,18 +35,20 @@ class WikidataRateLimiter:
         self._sleep = sleep
         self._monotonic = monotonic
         self._lock = threading.Lock()
-        self._last_request_started_at: float | None = None
+        self._last_request_completed_at: float | None = None
 
     def wait(self) -> None:
         with self._lock:
             now = self._monotonic()
-            if self._last_request_started_at is not None:
-                wait_seconds = self.min_delay_seconds - (now - self._last_request_started_at)
+            if self._last_request_completed_at is not None:
+                wait_seconds = self.min_delay_seconds - (now - self._last_request_completed_at)
                 if wait_seconds > 0:
                     logger.info("wikidata.rate_limit_sleep seconds=%.3f", wait_seconds)
                     self._sleep(wait_seconds)
-                    now = self._monotonic()
-            self._last_request_started_at = now
+
+    def record_request_complete(self) -> None:
+        with self._lock:
+            self._last_request_completed_at = self._monotonic()
 
 
 def _default_wikidata_min_delay_seconds() -> float:
@@ -164,7 +166,10 @@ class WikidataClient:
                 logger.info("wikidata.cache_hit search=%s", params.get("search"))
                 return deepcopy(cached_payload)
         self._rate_limiter.wait()
-        payload = self._http_get(path, params)
+        try:
+            payload = self._http_get(path, params)
+        finally:
+            self._rate_limiter.record_request_complete()
         with _WIKIDATA_CACHE_LOCK:
             self._cache[cache_key] = deepcopy(payload)
         return payload
