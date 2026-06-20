@@ -20,10 +20,19 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
 
 def test_poll_once_cli_accepts_bounded_cycle_arguments() -> None:
     parser = build_parser()
-    args = parser.parse_args(["poll-once", "--max-api-calls", "3500"])
+    args = parser.parse_args(
+        [
+            "poll-once",
+            "--max-api-calls",
+            "3500",
+            "--duplicate-report-output",
+            "reports/duplicate_hits_removed.parquet",
+        ]
+    )
 
     assert args.command == "poll-once"
     assert args.max_api_calls == 3500
+    assert args.duplicate_report_output == "reports/duplicate_hits_removed.parquet"
 
 
 def test_build_papilio_demoleus_query_plan_cli_reads_keyword_json(tmp_path, capsys) -> None:

@@ -224,6 +224,77 @@ def test_poll_once_preserves_duplicate_query_hits_for_source_record(tmp_path) ->
     assert query_hits == [("tags", "Papilionidae"), ("text", "Papilio")]
 
 
+def test_poll_once_writes_duplicate_hit_report_with_registry_provenance(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(
+        FlickrQuery(
+            term="Papilio",
+            language="en",
+            search_field="text",
+            lane="normal_page",
+            page=1,
+            per_page=250,
+            registry_version="registry-v1",
+            query_definition_id="query-a",
+            accepted_taxon_key="gbif:1",
+            family_key="gbif:fam",
+            genus_key="gbif:genus",
+            species_key="gbif:species",
+        )
+    )
+    state.enqueue_work_item(
+        FlickrQuery(
+            term="Papilionidae",
+            language="en",
+            search_field="tags",
+            lane="normal_page",
+            page=1,
+            per_page=250,
+            registry_version="registry-v1",
+            query_definition_id="query-b",
+            accepted_taxon_key="gbif:2",
+            family_key="gbif:fam",
+        )
+    )
+    duplicate_report = tmp_path / "reports" / "duplicate_hits_removed.parquet"
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence" / "poll.parquet",
+        duplicate_report_output=duplicate_report,
+        max_api_calls=2,
+        fetch_metadata=lambda item: {
+            "photos": {
+                "total": "1",
+                "photo": [{"id": "1", "title": "swallowtail", "url_l": "https://live.staticflickr.com/1_l.jpg"}],
+            }
+        },
+    )
+
+    rows = pl.read_parquet(duplicate_report).to_dicts()
+    assert result.duplicate_hit_report_rows == 1
+    assert rows == [
+        {
+            "source": "flickr",
+            "flickr_photo_id": "1",
+            "image_url": "https://live.staticflickr.com/1_l.jpg",
+            "retained_query_definition_id": "query-a",
+            "retained_query_term": "Papilio",
+            "retained_query_field": "text",
+            "removed_query_definition_id": "query-b",
+            "removed_query_term": "Papilionidae",
+            "removed_query_field": "tags",
+            "removed_accepted_taxon_key": "gbif:2",
+            "removed_family_key": "gbif:fam",
+            "removed_genus_key": "",
+            "removed_species_key": "",
+            "registry_version": "registry-v1",
+            "deduplication_reason": "canonical_photo_already_seen",
+        }
+    ]
+
+
 def test_poll_once_keeps_one_source_record_and_tracks_image_url_history(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     state.enqueue_work_item(FlickrQuery(term="Papilio", language="en", search_field="text", lane="normal_page", page=1, per_page=250))

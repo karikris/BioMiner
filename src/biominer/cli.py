@@ -101,6 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     poll_once_parser.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
     poll_once_parser.add_argument("--raw-root", default="data/raw")
     poll_once_parser.add_argument("--evidence-output", default="staging/evidence/poll_once_evidence.parquet")
+    poll_once_parser.add_argument("--duplicate-report-output", default="reports/duplicate_hits_removed.parquet")
     poll_once_parser.add_argument("--api-key-env", default="FLICKR_API_KEY")
     apply_rules = subparsers.add_parser("apply-rules")
     apply_rules.add_argument("--evidence", required=True)
@@ -310,6 +311,7 @@ def run(args: argparse.Namespace) -> int:
             state_db=args.state_db,
             raw_root=args.raw_root,
             evidence_output=args.evidence_output,
+            duplicate_report_output=args.duplicate_report_output,
             max_api_calls=args.max_api_calls,
             api_key=os.environ.get(args.api_key_env),
             workers=args.workers,

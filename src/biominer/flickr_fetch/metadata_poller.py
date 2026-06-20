@@ -67,6 +67,7 @@ class PollOnceResult:
     duplicate_records_skipped: int
     query_hits_inserted: int
     duplicate_query_hits_skipped: int
+    duplicate_hit_report_rows: int
     image_urls_queued: int
     work_items_claimed: int
     api_calls_made: int
@@ -424,13 +425,14 @@ class MetadataPollState:
                 (FAILED, _timestamp(), error, work_item_id),
             )
 
-    def insert_source_records(self, records: list[dict[str, Any]], *, source_query: FlickrQuery) -> tuple[int, int, int, int, int]:
+    def insert_source_records(self, records: list[dict[str, Any]], *, source_query: FlickrQuery) -> tuple[int, int, int, int, int, list[dict[str, Any]]]:
         inserted = 0
         unique_records = deduplicate_photo_records(records)
         skipped = len(records) - len(unique_records)
         queued = 0
         query_hits_inserted = 0
         duplicate_query_hits = 0
+        duplicate_hit_reports: list[dict[str, Any]] = []
         with self._connect() as conn:
             for record in unique_records:
                 photo_id = str(record.get("id") or "")
@@ -451,7 +453,7 @@ class MetadataPollState:
                 )
                 existing = conn.execute(
                     """
-                    SELECT image_url
+                    SELECT image_url, query_definition_id, query_term, query_field
                     FROM source_records
                     WHERE source = ? AND flickr_photo_id = ?
                     ORDER BY created_at
@@ -467,9 +469,11 @@ class MetadataPollState:
                         INSERT OR IGNORE INTO source_records (
                             source, flickr_photo_id, image_url, image_url_kind,
                             source_record_hash, query_term, query_language,
-                            query_field, raw_json, created_at
+                            query_field, registry_version, query_definition_id,
+                            accepted_taxon_key, family_key, genus_key, species_key,
+                            raw_json, created_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             "flickr",
@@ -480,6 +484,12 @@ class MetadataPollState:
                             source_query.term,
                             source_query.language,
                             source_query.search_field,
+                            source_query.registry_version,
+                            source_query.query_definition_id,
+                            source_query.accepted_taxon_key,
+                            source_query.family_key,
+                            source_query.genus_key,
+                            source_query.species_key,
                             json.dumps(record, sort_keys=True, ensure_ascii=False),
                             _timestamp(),
                         ),
@@ -533,7 +543,26 @@ class MetadataPollState:
                     queued += int(queue_result.rowcount)
                 else:
                     skipped += 1
-        return inserted, skipped, queued, query_hits_inserted, duplicate_query_hits
+                    duplicate_hit_reports.append(
+                        {
+                            "source": "flickr",
+                            "flickr_photo_id": photo_id,
+                            "image_url": canonical_image_url,
+                            "retained_query_definition_id": _text(existing["query_definition_id"]),
+                            "retained_query_term": _text(existing["query_term"]),
+                            "retained_query_field": _text(existing["query_field"]),
+                            "removed_query_definition_id": _text(source_query.query_definition_id),
+                            "removed_query_term": source_query.term,
+                            "removed_query_field": source_query.search_field,
+                            "removed_accepted_taxon_key": _text(source_query.accepted_taxon_key),
+                            "removed_family_key": _text(source_query.family_key),
+                            "removed_genus_key": _text(source_query.genus_key),
+                            "removed_species_key": _text(source_query.species_key),
+                            "registry_version": _text(source_query.registry_version),
+                            "deduplication_reason": "canonical_photo_already_seen",
+                        }
+                    )
+        return inserted, skipped, queued, query_hits_inserted, duplicate_query_hits, duplicate_hit_reports
 
     def source_records_with_query_provenance(self) -> pl.DataFrame:
         with self._connect() as conn:
@@ -655,12 +684,19 @@ class MetadataPollState:
                     query_term TEXT NOT NULL,
                     query_language TEXT NOT NULL,
                     query_field TEXT NOT NULL,
+                    registry_version TEXT,
+                    query_definition_id TEXT,
+                    accepted_taxon_key TEXT,
+                    family_key TEXT,
+                    genus_key TEXT,
+                    species_key TEXT,
                     raw_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (source, flickr_photo_id)
                 )
                 """
             )
+            self._ensure_source_record_columns(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS source_record_image_urls (
@@ -749,6 +785,20 @@ class MetadataPollState:
             if name not in existing:
                 conn.execute(f"ALTER TABLE flickr_work_items ADD COLUMN {name} {sql_type}")
 
+    def _ensure_source_record_columns(self, conn: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(source_records)").fetchall()}
+        columns = {
+            "registry_version": "TEXT",
+            "query_definition_id": "TEXT",
+            "accepted_taxon_key": "TEXT",
+            "family_key": "TEXT",
+            "genus_key": "TEXT",
+            "species_key": "TEXT",
+        }
+        for name, sql_type in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE source_records ADD COLUMN {name} {sql_type}")
+
     def _ensure_api_call_columns(self, conn: sqlite3.Connection) -> None:
         existing = {row["name"] for row in conn.execute("PRAGMA table_info(api_call_ledger)").fetchall()}
         columns = {
@@ -773,6 +823,7 @@ def poll_once(
     state_db: str | Path,
     raw_root: str | Path,
     evidence_output: str | Path,
+    duplicate_report_output: str | Path | None = None,
     max_api_calls: int = SOFT_API_CALLS_PER_HOUR,
     api_key: str | None = None,
     fetch_metadata: FetchMetadata | None = None,
@@ -801,6 +852,7 @@ def poll_once(
     duplicates = 0
     query_hits_inserted = 0
     duplicate_query_hits = 0
+    duplicate_hit_reports: list[dict[str, Any]] = []
     queued = 0
     work_items_claimed = 0
     api_calls_made = 0
@@ -868,12 +920,16 @@ def poll_once(
                             )
                         else:
                             records = _payload_photo_records(payload)
-                            inserted, skipped, queued_count, query_hits, duplicate_hits = state.insert_source_records(records, source_query=query)
+                            inserted, skipped, queued_count, query_hits, duplicate_hits, duplicate_report_rows = state.insert_source_records(
+                                records,
+                                source_query=query,
+                            )
                             records_returned = len(records)
                             records_inserted += inserted
                             duplicates += skipped
                             query_hits_inserted += query_hits
                             duplicate_query_hits += duplicate_hits
+                            duplicate_hit_reports.extend(duplicate_report_rows)
                             queued += queued_count
                             page_ensure = state.ensure_reported_pages(
                                 query,
@@ -964,6 +1020,7 @@ def poll_once(
                         )
 
     evidence_rows_total = _compact_evidence_output(evidence_output)
+    duplicate_report_rows = _write_duplicate_hit_report(duplicate_report_output, duplicate_hit_reports)
     soft_after, hard_after = state.remaining_api_budget(max_api_calls=max_api_calls)
     result = PollOnceResult(
         state_db=Path(state_db),
@@ -974,6 +1031,7 @@ def poll_once(
         duplicate_records_skipped=duplicates,
         query_hits_inserted=query_hits_inserted,
         duplicate_query_hits_skipped=duplicate_query_hits,
+        duplicate_hit_report_rows=duplicate_report_rows,
         image_urls_queued=queued,
         work_items_claimed=work_items_claimed,
         api_calls_made=api_calls_made,
@@ -1124,6 +1182,36 @@ def _compact_evidence_output(evidence_output: str | Path) -> int:
     return frame.height
 
 
+def _write_duplicate_hit_report(output: str | Path | None, rows: list[dict[str, Any]]) -> int:
+    if output is None:
+        return len(rows)
+    path = Path(output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame = pl.DataFrame(rows, schema=_duplicate_hit_report_schema())
+    write_parquet(frame, path)
+    return frame.height
+
+
+def _duplicate_hit_report_schema() -> dict[str, pl.DataType]:
+    return {
+        "source": pl.String,
+        "flickr_photo_id": pl.String,
+        "image_url": pl.String,
+        "retained_query_definition_id": pl.String,
+        "retained_query_term": pl.String,
+        "retained_query_field": pl.String,
+        "removed_query_definition_id": pl.String,
+        "removed_query_term": pl.String,
+        "removed_query_field": pl.String,
+        "removed_accepted_taxon_key": pl.String,
+        "removed_family_key": pl.String,
+        "removed_genus_key": pl.String,
+        "removed_species_key": pl.String,
+        "registry_version": pl.String,
+        "deduplication_reason": pl.String,
+    }
+
+
 def _ensure_legacy_evidence_shard(*, output: Path, shard_root: Path) -> None:
     if not output.exists() or (shard_root.exists() and any(shard_root.glob("*.parquet"))):
         return
@@ -1164,6 +1252,10 @@ def _response_int(value: object, *, key: str) -> int:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise FlickrFetchError(f"Flickr response photos.{key} must be an integer") from exc
+
+
+def _text(value: object) -> str:
+    return "" if value is None else str(value)
 
 
 def _accessible_page_window(per_page: int) -> int:
