@@ -37,8 +37,8 @@ ENRICHMENT_MANIFEST_FILE = "enrichment_manifest.json"
 logger = logging.getLogger(__name__)
 ClientBundleFactory = Callable[[], dict[str, Any]]
 _worker_local = threading.local()
-_source_semaphores = {"wikidata": threading.BoundedSemaphore(1)}
-_SOURCE_LABELS = {"col": "CoL", "wikidata": "Wikidata", "itis": "ITIS"}
+_source_semaphores = {"wikidata": threading.BoundedSemaphore(1), "inaturalist": threading.BoundedSemaphore(1)}
+_SOURCE_LABELS = {"col": "CoL", "wikidata": "Wikidata", "itis": "ITIS", "inaturalist": "iNaturalist"}
 
 
 @dataclass(frozen=True)
@@ -97,11 +97,20 @@ def build_enrichment_sources_from_registry(
     source_order = tuple(sources)
     name_assertions: list[dict[str, Any]] = []
     external_links: list[dict[str, Any]] = []
-    source_snapshots: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     completed_taxon_keys: list[str] = []
-    contexts = [_species_context(row, names_by_taxon) for row in species_rows]
+    all_contexts = [_species_context(row, names_by_taxon) for row in species_rows]
+    skipped_source_snapshots = _existing_source_snapshots_for_completed_contexts(registry, source_order, all_contexts)
+    source_snapshots: list[dict[str, Any]] = list(skipped_source_snapshots)
+    contexts = [context for context in all_contexts if not _context_has_completed_source_snapshot(context, source_order, skipped_source_snapshots)]
     registry_version = _registry_version(registry)
+    if len(contexts) != len(all_contexts):
+        logger.info(
+            "registry.enrichment.resume_skip source_order=%s skipped_species=%d remaining_species=%d",
+            ",".join(source_order),
+            len(all_contexts) - len(contexts),
+            len(contexts),
+        )
     logger.info(
         "registry.enrichment.start registry=%s species=%d sources=%s workers=%d source_worker_limits=%s progress_every=%d checkpoint_every=%d max_retries=%d limit=%d",
         registry,
@@ -208,12 +217,13 @@ def build_enrichment_sources_from_registry(
 
 
 def default_enrichment_clients(*, max_retries: int = 5) -> dict[str, Any]:
-    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, ITISClient, WikidataClient
+    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, INaturalistClient, ITISClient, WikidataClient
 
     return {
         "col": CatalogueOfLifeClient(max_retries=max_retries),
         "wikidata": WikidataClient(max_retries=max_retries),
         "itis": ITISClient(max_retries=max_retries),
+        "inaturalist": INaturalistClient(max_retries=max_retries),
     }
 
 
@@ -341,7 +351,7 @@ def _enrich_species_context(context: SpeciesContext, *, sources: tuple[str, ...]
 
 
 def _source_worker_limits(sources: tuple[str, ...], workers: int) -> dict[str, int]:
-    return {source: (1 if source == "wikidata" else workers) for source in sources}
+    return {source: (1 if source in {"wikidata", "inaturalist"} else workers) for source in sources}
 
 
 def _source_query_limit(source: str):
@@ -351,6 +361,35 @@ def _source_query_limit(source: str):
 
 def _source_labels(sources: tuple[str, ...]) -> set[str]:
     return {_SOURCE_LABELS.get(source, source) for source in sources}
+
+
+def _existing_source_snapshots_for_completed_contexts(
+    registry: Path,
+    source_order: tuple[str, ...],
+    contexts: list[SpeciesContext],
+) -> list[dict[str, Any]]:
+    if source_order != ("inaturalist",):
+        return []
+    path = registry / ENRICHMENT_SOURCE_SNAPSHOTS_FILE
+    if not path.exists():
+        return []
+    expected_paths = {f"taxa:q={context.accepted_scientific_name}" for context in contexts}
+    rows = []
+    for row in pl.read_parquet(path).to_dicts():
+        if str(row.get("source") or "") == "iNaturalist" and str(row.get("source_path") or "") in expected_paths:
+            rows.append(row)
+    return rows
+
+
+def _context_has_completed_source_snapshot(
+    context: SpeciesContext,
+    source_order: tuple[str, ...],
+    snapshots: list[dict[str, Any]],
+) -> bool:
+    if source_order != ("inaturalist",):
+        return False
+    source_path = f"taxa:q={context.accepted_scientific_name}"
+    return any(str(row.get("source") or "") == "iNaturalist" and str(row.get("source_path") or "") == source_path for row in snapshots)
 
 
 @contextmanager
@@ -711,7 +750,7 @@ def _combine_names(base_names: pl.DataFrame, enabled_enrichment: pl.DataFrame) -
 
 
 def _source_rank(source: str) -> int:
-    return {"GBIF": 0, "CoL": 1, "ITIS": 2, "Wikidata": 3}.get(source, 9)
+    return {"GBIF": 0, "CoL": 1, "ITIS": 2, "iNaturalist": 3, "Wikidata": 4}.get(source, 9)
 
 
 def _source_name_row(row: dict[str, Any]) -> dict[str, Any]:

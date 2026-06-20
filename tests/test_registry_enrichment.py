@@ -11,7 +11,14 @@ import polars as pl
 from biominer.cli import build_parser, run
 from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.enrichment import SpeciesContext, build_enrichment_sources_from_registry, compile_enriched_registry, write_enrichment_sources
-from biominer.registry.enrichment_sources import ITISClient, WikidataClient, WikidataRateLimitTermError, WikidataRateLimiter, _json_get
+from biominer.registry.enrichment_sources import (
+    INaturalistClient,
+    ITISClient,
+    WikidataClient,
+    WikidataRateLimitTermError,
+    WikidataRateLimiter,
+    _json_get,
+)
 
 
 def _write_base_registry(tmp_path, species_names: tuple[str, ...] = ("Papilio demoleus",)):
@@ -480,6 +487,38 @@ def test_source_split_partial_run_replaces_only_completed_taxa(tmp_path) -> None
     assert assertions.select("display_name").to_series().to_list() == ["Old Wikidata Machaon"]
 
 
+def test_inaturalist_only_run_skips_species_with_existing_source_snapshot(tmp_path) -> None:
+    registry, _scope = _write_base_registry(tmp_path, species_names=("Papilio demoleus", "Papilio machaon"))
+    write_enrichment_sources(
+        registry,
+        source_snapshots=[
+            {
+                "source": "iNaturalist",
+                "source_version": "inaturalist-v1",
+                "retrieved_at": "2026-06-20T00:00:00+00:00",
+                "source_path": "taxa:q=Papilio demoleus",
+                "source_response_hash": "sha256:existing",
+                "licence": "CC-BY-NC-4.0",
+            }
+        ],
+    )
+    client = RecordingEnrichmentClient("iNaturalist", "Machaon")
+
+    manifest = build_enrichment_sources_from_registry(
+        registry_dir=registry,
+        sources=("inaturalist",),
+        clients={"inaturalist": client},
+        workers=1,
+        progress_every=1,
+        checkpoint_every=1,
+        report_dir=tmp_path / "reports",
+    )
+
+    assert [context.accepted_scientific_name for context in client.contexts] == ["Papilio machaon"]
+    assert manifest["species_seen"] == 1
+    assert manifest["completed_species"] == 1
+
+
 def test_build_enrichment_sources_checkpoints_logs_and_reports(tmp_path, caplog) -> None:
     registry, _scope = _write_base_registry(tmp_path, species_names=("Papilio demoleus", "Papilio machaon", "Papilio polytes"))
     caplog.set_level(logging.INFO, logger="biominer.registry.enrichment")
@@ -584,6 +623,33 @@ def test_wikidata_source_is_limited_to_one_concurrent_query(tmp_path) -> None:
     assert trackers["itis"].max_active > 1
     assert trackers["wikidata"].max_active == 1
     assert manifest["source_worker_limits"] == {"col": 4, "wikidata": 1, "itis": 4}
+
+
+def test_inaturalist_source_is_limited_to_one_concurrent_query(tmp_path) -> None:
+    registry, _scope = _write_base_registry(
+        tmp_path,
+        species_names=("Papilio demoleus", "Papilio machaon", "Papilio polytes", "Papilio xuthus"),
+    )
+    trackers = {
+        "col": ConcurrencyTrackingClient("CoL", delay_seconds=0.03),
+        "inaturalist": ConcurrencyTrackingClient("iNaturalist", delay_seconds=0.03),
+        "itis": ConcurrencyTrackingClient("ITIS", delay_seconds=0.06),
+    }
+
+    manifest = build_enrichment_sources_from_registry(
+        registry_dir=registry,
+        sources=("col", "inaturalist", "itis"),
+        clients=trackers,
+        workers=4,
+        progress_every=4,
+        checkpoint_every=4,
+        report_dir=tmp_path / "reports",
+    )
+
+    assert trackers["col"].max_active > 1
+    assert trackers["itis"].max_active > 1
+    assert trackers["inaturalist"].max_active == 1
+    assert manifest["source_worker_limits"] == {"col": 4, "inaturalist": 1, "itis": 4}
 
 
 def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, capsys, monkeypatch) -> None:
@@ -796,6 +862,128 @@ def test_wikidata_client_uses_wbsearchentities_with_maxlag() -> None:
     ]
     assert result["external_links"][0]["source_taxon_id"] == "Q1"
     assert [row["display_name"] for row in result["name_assertions"]] == ["Lime butterfly", "Citrus swallowtail"]
+
+
+def test_inaturalist_client_uses_taxa_keyword_query_and_extracts_names() -> None:
+    calls = []
+
+    def fake_get(path: str, params: dict[str, object]) -> dict[str, object]:
+        calls.append({"path": path, "params": params})
+        return {
+            "results": [
+                {
+                    "id": 52194,
+                    "name": "Papilio demoleus",
+                    "rank": "species",
+                    "is_active": True,
+                    "preferred_common_name": "Lime Swallowtail",
+                    "matched_term": "Lime Butterfly",
+                    "taxon_names": [
+                        {"name": "Lime Swallowtail", "locale": "en", "lexicon": "English", "source_id": 1},
+                        {"name": "Citrus Swallowtail", "locale": "en", "lexicon": "English", "source_id": 2},
+                        {"name": "Papilio demoleus", "locale": "la", "lexicon": "Scientific Names", "source_id": 3},
+                    ],
+                }
+            ]
+        }
+
+    result = INaturalistClient(http_get=fake_get).enrich_species(
+        SpeciesContext(
+            accepted_taxon_key="gbif:100",
+            accepted_scientific_name="Papilio demoleus",
+            family_key="gbif:10",
+            family="Papilionidae",
+            genus_key="gbif:90",
+            genus="Papilio",
+            current_names=("Papilio demoleus",),
+        )
+    )
+
+    assert calls == [
+        {
+            "path": "/v1/taxa",
+            "params": {"q": "Papilio demoleus", "rank": "species", "is_active": True, "all_names": True, "per_page": 10},
+        }
+    ]
+    assert result["external_links"] == [
+        {
+            "accepted_taxon_key": "gbif:100",
+            "source": "iNaturalist",
+            "source_taxon_id": "52194",
+            "match_method": "scientific_name",
+            "match_confidence": "high",
+            "lineage_check": "gbif_scientific_name_exact",
+        }
+    ]
+    assert [(row["display_name"], row["language"], row["trust_tier"], row["enabled"]) for row in result["name_assertions"]] == [
+        ("Lime Swallowtail", "en", "T2", True),
+        ("Lime Butterfly", "en", "T4", False),
+        ("Citrus Swallowtail", "en", "T4", False),
+    ]
+    assert result["source_snapshots"][0]["source"] == "iNaturalist"
+    assert result["source_snapshots"][0]["source_path"] == "taxa:q=Papilio demoleus"
+
+
+def test_inaturalist_client_uses_autocomplete_fallback_when_taxa_has_no_exact_match() -> None:
+    calls = []
+
+    def fake_get(path: str, params: dict[str, object]) -> dict[str, object]:
+        calls.append({"path": path, "params": params})
+        if path == "/v1/taxa":
+            return {"results": [{"id": 1, "name": "Papilio", "rank": "genus", "is_active": True}]}
+        return {
+            "results": [
+                {
+                    "id": 2,
+                    "name": "Papilio demoleus",
+                    "rank": "species",
+                    "is_active": True,
+                    "preferred_common_name": "Lime Swallowtail",
+                }
+            ]
+        }
+
+    result = INaturalistClient(http_get=fake_get).enrich_species(
+        SpeciesContext(
+            accepted_taxon_key="gbif:100",
+            accepted_scientific_name="Papilio demoleus",
+            family_key="gbif:10",
+            family="Papilionidae",
+            genus_key="gbif:90",
+            genus="Papilio",
+            current_names=("Papilio demoleus",),
+        )
+    )
+
+    assert [call["path"] for call in calls] == ["/v1/taxa", "/v1/taxa/autocomplete"]
+    assert result["external_links"][0]["source_taxon_id"] == "2"
+    assert result["name_assertions"][0]["display_name"] == "Lime Swallowtail"
+
+
+def test_inaturalist_client_rejects_non_exact_or_inactive_taxa_but_snapshots_query() -> None:
+    def fake_get(_path: str, _params: dict[str, object]) -> dict[str, object]:
+        return {
+            "results": [
+                {"id": 1, "name": "Papilio", "rank": "genus", "is_active": True, "preferred_common_name": "Swallowtails"},
+                {"id": 2, "name": "Papilio demoleus", "rank": "species", "is_active": False, "preferred_common_name": "Lime Swallowtail"},
+            ]
+        }
+
+    result = INaturalistClient(http_get=fake_get).enrich_species(
+        SpeciesContext(
+            accepted_taxon_key="gbif:100",
+            accepted_scientific_name="Papilio demoleus",
+            family_key="gbif:10",
+            family="Papilionidae",
+            genus_key="gbif:90",
+            genus="Papilio",
+            current_names=("Papilio demoleus",),
+        )
+    )
+
+    assert result["external_links"] == []
+    assert result["name_assertions"] == []
+    assert result["source_snapshots"][0]["source_path"] == "taxa:q=Papilio demoleus"
 
 
 def test_wikidata_client_rate_limits_uncached_requests_and_caches_no_results() -> None:

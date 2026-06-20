@@ -269,6 +269,34 @@ class ITISClient:
         return {"name_assertions": assertions, "external_links": links, "source_snapshots": [_snapshot("ITIS", "itis-jsonservice")]}
 
 
+class INaturalistClient:
+    def __init__(self, *, http_get: HTTPGet | None = None, max_retries: int = 5) -> None:
+        self._http_get = http_get or _json_get("https://api.inaturalist.org", max_retries=max_retries)
+
+    def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
+        params = {"q": context.accepted_scientific_name, "rank": "species", "is_active": True, "all_names": True, "per_page": 10}
+        payload = self._http_get("/v1/taxa", params)
+        match = _inaturalist_exact_species_match(payload, context)
+        if match is None:
+            payload = self._http_get("/v1/taxa/autocomplete", params)
+            match = _inaturalist_exact_species_match(payload, context)
+        snapshot = _snapshot("iNaturalist", "inaturalist-v1", query=f"taxa:q={context.accepted_scientific_name}")
+        if match is None:
+            return {"name_assertions": [], "external_links": [], "source_snapshots": [snapshot]}
+
+        source_taxon_id = _first_string(match, "id")
+        assertions = _inaturalist_name_assertions(context, match, source_taxon_id=source_taxon_id)
+        links = []
+        if source_taxon_id:
+            links.append(
+                {
+                    **_external_link(context, source="iNaturalist", source_taxon_id=source_taxon_id, match_method="scientific_name"),
+                    "lineage_check": "gbif_scientific_name_exact",
+                }
+            )
+        return {"name_assertions": assertions, "external_links": links, "source_snapshots": [snapshot]}
+
+
 def _json_get(
     base_url: str,
     *,
@@ -311,6 +339,7 @@ def _name_assertion(
     enabled: bool = True,
     review_state: str = "accepted",
     disabled_reason: str = "",
+    source_taxon_id: str = "",
 ) -> dict[str, Any]:
     return {
         "accepted_taxon_key": context.accepted_taxon_key,
@@ -323,6 +352,7 @@ def _name_assertion(
         "name_class": name_class,
         "source": source,
         "source_record_id": source_record_id,
+        "source_taxon_id": source_taxon_id,
         "trust_tier": trust_tier,
         "precision_tier": precision_tier,
         "confidence": confidence,
@@ -388,3 +418,99 @@ def _vernacular_values(row: dict[str, Any]) -> list[str]:
             if value:
                 values.append(value)
     return values
+
+
+def _inaturalist_exact_species_match(payload: dict[str, Any], context: SpeciesContext) -> dict[str, Any] | None:
+    for row in _result_rows(payload):
+        if str(row.get("rank") or "").lower() != "species":
+            continue
+        if row.get("is_active") is False:
+            continue
+        if _first_string(row, "name") == context.accepted_scientific_name:
+            return row
+    return None
+
+
+def _inaturalist_name_assertions(context: SpeciesContext, row: dict[str, Any], *, source_taxon_id: str) -> list[dict[str, Any]]:
+    assertions: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def append_name(
+        display_name: str,
+        *,
+        source_record_id: str,
+        language: str = "en",
+        trust_tier: str = "T4",
+        confidence: str = "medium",
+        enabled: bool = False,
+        review_state: str = "candidate",
+        disabled_reason: str = "inaturalist_name_requires_review",
+    ) -> None:
+        normalized = display_name.strip()
+        if not normalized or normalized == context.accepted_scientific_name or normalized in seen:
+            return
+        seen.add(normalized)
+        assertions.append(
+            _name_assertion(
+                context,
+                normalized,
+                source="iNaturalist",
+                source_record_id=source_record_id,
+                language=language,
+                script="Latn",
+                trust_tier=trust_tier,
+                precision_tier="medium",
+                confidence=confidence,
+                enabled=enabled,
+                review_state=review_state,
+                disabled_reason=disabled_reason,
+                source_taxon_id=source_taxon_id,
+            )
+        )
+
+    preferred = _first_string(row, "preferred_common_name", "english_common_name")
+    if preferred:
+        append_name(
+            preferred,
+            source_record_id=f"inaturalist:{source_taxon_id}:preferred_common_name",
+            language=_inaturalist_language(row, "en"),
+            trust_tier="T2",
+            confidence="high",
+            enabled=True,
+            review_state="accepted",
+            disabled_reason="",
+        )
+    matched_term = _first_string(row, "matched_term")
+    if matched_term:
+        append_name(matched_term, source_record_id=f"inaturalist:{source_taxon_id}:matched_term:{matched_term}")
+
+    for index, item in enumerate(_inaturalist_taxon_name_items(row)):
+        display_name = _first_string(item, "name", "lexicon_name", "vernacularName", "commonName")
+        source_record_fragment = _first_string(item, "id", "source_id") or str(index)
+        append_name(
+            display_name,
+            source_record_id=f"inaturalist:{source_taxon_id}:taxon_name:{source_record_fragment}",
+            language=_inaturalist_language(item, "en"),
+        )
+    return assertions
+
+
+def _inaturalist_taxon_name_items(row: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for key in ("taxon_names", "names", "common_names", "all_names"):
+        value = row.get(key)
+        if isinstance(value, list):
+            items.extend(item for item in value if isinstance(item, dict))
+    return items
+
+
+def _inaturalist_language(row: dict[str, Any], fallback: str) -> str:
+    locale = _first_string(row, "locale", "language", "lang")
+    if locale:
+        return locale.split("-")[0].lower()
+    lexicon = _first_string(row, "lexicon").lower()
+    if lexicon == "english":
+        return "en"
+    if lexicon == "scientific names":
+        return "la"
+    return fallback

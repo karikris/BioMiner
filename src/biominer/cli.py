@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     registry_fetch_taxonomy.add_argument("--retrieved-at")
     registry_enrich_sources = registry_subparsers.add_parser("enrich-sources")
     registry_enrich_sources.add_argument("--registry-dir", required=True)
-    registry_enrich_sources.add_argument("--sources", default="col,wikidata,itis")
+    registry_enrich_sources.add_argument("--sources", default="col,itis,inaturalist")
     registry_enrich_sources.add_argument("--workers", type=int, default=8)
     registry_enrich_sources.add_argument("--progress-every", type=int, default=100)
     registry_enrich_sources.add_argument("--checkpoint-every", type=int, default=500)
