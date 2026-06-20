@@ -29,6 +29,7 @@ from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, Metad
 from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry
 from biominer.registry.compiler import compile_registry_fixture
+from biominer.registry.enrichment import build_enrichment_sources_from_registry, compile_enriched_registry
 from biominer.registry.gbif import GBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
@@ -59,10 +60,23 @@ def build_parser() -> argparse.ArgumentParser:
     registry_compile.add_argument("--output-dir", required=True)
     registry_compile.add_argument("--registry-version", required=True)
     registry_compile.add_argument("--scope-json", default="config/butterfly_scope.json")
+    registry_compile_enriched = registry_subparsers.add_parser("compile-enriched")
+    registry_compile_enriched.add_argument("--registry-dir", required=True)
+    registry_compile_enriched.add_argument("--registry-version", required=True)
+    registry_compile_enriched.add_argument("--scope-json", default="config/butterfly_scope.json")
     registry_fetch_taxonomy = registry_subparsers.add_parser("fetch-taxonomy")
     registry_fetch_taxonomy.add_argument("--output-json", required=True)
     registry_fetch_taxonomy.add_argument("--scope-json", default="config/butterfly_scope.json")
     registry_fetch_taxonomy.add_argument("--retrieved-at")
+    registry_enrich_sources = registry_subparsers.add_parser("enrich-sources")
+    registry_enrich_sources.add_argument("--registry-dir", required=True)
+    registry_enrich_sources.add_argument("--sources", default="col,wikidata,itis")
+    registry_enrich_sources.add_argument("--workers", type=int, default=8)
+    registry_enrich_sources.add_argument("--progress-every", type=int, default=100)
+    registry_enrich_sources.add_argument("--checkpoint-every", type=int, default=500)
+    registry_enrich_sources.add_argument("--max-retries", type=int, default=5)
+    registry_enrich_sources.add_argument("--limit", type=int, default=0)
+    registry_enrich_sources.add_argument("--report-dir", default="reports")
     registry_build = registry_subparsers.add_parser("build")
     registry_build.add_argument("--output-dir", required=True)
     registry_build.add_argument("--registry-version", required=True)
@@ -232,6 +246,32 @@ def run(args: argparse.Namespace) -> int:
                 args.output_dir,
                 registry_version=args.registry_version,
                 scope_path=args.scope_json,
+            )
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        if args.registry_command == "compile-enriched":
+            payload = compile_enriched_registry(
+                registry_dir=args.registry_dir,
+                registry_version=args.registry_version,
+                scope_path=args.scope_json,
+            )
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        if args.registry_command == "enrich-sources":
+            logging.basicConfig(
+                level=getattr(logging, os.environ.get("BIOMINER_LOG_LEVEL", "INFO").upper(), logging.INFO),
+                format="%(asctime)s %(levelname)s %(name)s %(message)s",
+                force=True,
+            )
+            payload = build_enrichment_sources_from_registry(
+                registry_dir=args.registry_dir,
+                sources=tuple(part.strip() for part in args.sources.split(",") if part.strip()),
+                workers=args.workers,
+                progress_every=args.progress_every,
+                checkpoint_every=args.checkpoint_every,
+                max_retries=args.max_retries,
+                limit=args.limit,
+                report_dir=args.report_dir,
             )
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
