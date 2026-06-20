@@ -402,6 +402,14 @@ Buckets:
 
 Every run writes compact JSON/Markdown under `reports/`.
 
+ETL/ELT logging invariant:
+
+* Every extraction, enrichment, transformation, and load step must write structured INFO logs and compact JSON/Markdown reports.
+* Logs and reports must identify command, run ID or PID, git SHA, inputs, outputs, status, start/end timestamps, elapsed seconds, row counts, byte counts, retry/error counters, and artifact paths.
+* Long-running jobs must checkpoint into their current output area and log every checkpoint write with file names, row counts, byte sizes, completed work, total work, throughput, and errors by source/category.
+* Workers may extract or enrich only; the main thread/process merges, sorts, deduplicates, writes artifacts, and emits load/transform logs.
+* Unsupported metrics are recorded as `null` or `not_instrumented`; never guess.
+
 Include when applicable:
 
 * command, git SHA, run ID, PID, status, start/end;
