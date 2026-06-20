@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -70,6 +71,10 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--reuse-source-json", action="store_true")
     registry_build.add_argument("--report-dir", default="reports")
     registry_build.add_argument("--retrieved-at")
+    registry_build.add_argument("--workers", type=int, default=8)
+    registry_build.add_argument("--progress-every", type=int, default=100)
+    registry_build.add_argument("--checkpoint-every", type=int, default=500)
+    registry_build.add_argument("--max-retries", type=int, default=5)
     registry_seed = registry_subparsers.add_parser("seed-flickr-queries")
     registry_seed.add_argument("--query-definitions", required=True)
     registry_seed.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
@@ -230,6 +235,11 @@ def run(args: argparse.Namespace) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
         if args.registry_command == "build":
+            logging.basicConfig(
+                level=getattr(logging, os.environ.get("BIOMINER_LOG_LEVEL", "INFO").upper(), logging.INFO),
+                format="%(asctime)s %(levelname)s %(name)s %(message)s",
+                force=True,
+            )
             try:
                 payload = build_registry(
                     output_dir=args.output_dir,
@@ -239,6 +249,10 @@ def run(args: argparse.Namespace) -> int:
                     reuse_source_json=args.reuse_source_json,
                     report_dir=args.report_dir,
                     retrieved_at=args.retrieved_at,
+                    workers=args.workers,
+                    progress_every=args.progress_every,
+                    checkpoint_every=args.checkpoint_every,
+                    max_retries=args.max_retries,
                 )
             except FileNotFoundError as exc:
                 print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
