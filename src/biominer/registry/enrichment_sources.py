@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 from email.utils import parsedate_to_datetime
+import json
 import logging
 import random
 from time import sleep as default_sleep
@@ -135,6 +136,65 @@ class ITISClient:
         return {"name_assertions": assertions, "external_links": links, "source_snapshots": [_snapshot("ITIS", "itis-jsonservice")]}
 
 
+class INaturalistClient:
+    def __init__(self, *, http_get: HTTPGet | None = None, max_retries: int = 5) -> None:
+        self._http_get = http_get or _json_get("https://api.inaturalist.org", max_retries=max_retries)
+
+    def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
+        payload = self._http_get(
+            "/v1/taxa",
+            {
+                "q": context.accepted_scientific_name,
+                "rank": "species",
+                "per_page": 10,
+            },
+        )
+        assertions: list[dict[str, Any]] = []
+        links: list[dict[str, Any]] = []
+        for row in _result_rows(payload):
+            scientific_name = _first_string(row, "name", "scientific_name")
+            if scientific_name and scientific_name != context.accepted_scientific_name:
+                continue
+            taxon_id = _first_string(row, "id")
+            if taxon_id:
+                links.append(_external_link(context, source="iNaturalist", source_taxon_id=taxon_id, match_method="scientific_name"))
+            common_name = _first_string(row, "preferred_common_name", "english_common_name")
+            if common_name:
+                assertions.append(
+                    _name_assertion(
+                        context,
+                        common_name,
+                        source="iNaturalist",
+                        source_record_id=f"inaturalist:{taxon_id}:preferred_common_name",
+                        language="eng",
+                        script="Latn",
+                        trust_tier="T2",
+                        precision_tier="medium",
+                        confidence="high",
+                    )
+                )
+            for taxon_name in _list_values(row, "names"):
+                if not isinstance(taxon_name, dict):
+                    continue
+                value = _first_string(taxon_name, "name")
+                locale = _first_string(taxon_name, "locale", "lexicon") or "eng"
+                if value:
+                    assertions.append(
+                        _name_assertion(
+                            context,
+                            value,
+                            source="iNaturalist",
+                            source_record_id=f"inaturalist:{taxon_id}:name:{locale}:{value}",
+                            language=locale,
+                            script="Latn",
+                            trust_tier="T4",
+                            precision_tier="medium",
+                            confidence="medium",
+                        )
+                    )
+        return {"name_assertions": assertions, "external_links": links, "source_snapshots": [_snapshot("iNaturalist", "inaturalist-v1-taxa")]}
+
+
 def _json_get(
     base_url: str,
     *,
@@ -163,7 +223,37 @@ def _json_get(
                     sleep(wait_seconds)
                     continue
                 response.raise_for_status()
-                payload = response.json()
+                try:
+                    payload = response.json()
+                except UnicodeDecodeError:
+                    try:
+                        payload = _decode_json_payload(response)
+                    except json.JSONDecodeError:
+                        if attempt > max_retries:
+                            raise
+                        wait_seconds = _backoff_seconds(attempt)
+                        logger.info(
+                            "registry.enrichment.http_retry base_url=%s path=%s error=json_decode attempt=%d wait_seconds=%.3f",
+                            base_url,
+                            path,
+                            attempt,
+                            wait_seconds,
+                        )
+                        sleep(wait_seconds)
+                        continue
+                except json.JSONDecodeError:
+                    if attempt > max_retries:
+                        raise
+                    wait_seconds = _backoff_seconds(attempt)
+                    logger.info(
+                        "registry.enrichment.http_retry base_url=%s path=%s error=json_decode attempt=%d wait_seconds=%.3f",
+                        base_url,
+                        path,
+                        attempt,
+                        wait_seconds,
+                    )
+                    sleep(wait_seconds)
+                    continue
                 if isinstance(payload, dict):
                     return payload
                 return {"results": payload}
@@ -181,6 +271,14 @@ def _json_get(
                 sleep(wait_seconds)
 
     return get
+
+
+def _decode_json_payload(response: Any) -> dict[str, Any] | list[Any]:
+    content = getattr(response, "content", b"")
+    if not content:
+        raise json.JSONDecodeError("empty response content after decode failure", "", 0)
+    text = bytes(content).decode("utf-8", errors="replace")
+    return json.loads(text)
 
 
 def _retry_after_seconds(value: str | None) -> float | None:

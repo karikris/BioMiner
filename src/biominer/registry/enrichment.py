@@ -26,6 +26,7 @@ ENRICHMENT_SCHEMA_VERSION = "registry-enrichment-v1"
 SOURCE_ASSERTIONS_FILE = "source_name_assertions.parquet"
 EXTERNAL_LINKS_FILE = "external_taxon_links.parquet"
 ENRICHMENT_SOURCE_SNAPSHOTS_FILE = "enrichment_source_snapshots.parquet"
+SOURCE_ERRORS_FILE = "source_error_records.parquet"
 FINAL_SOURCE_SNAPSHOTS_FILE = "source_snapshots.parquet"
 NAME_CANDIDATES_FILE = "name_candidates.parquet"
 ENRICHMENT_MANIFEST_FILE = "enrichment_manifest.json"
@@ -60,6 +61,7 @@ class SpeciesEnrichmentResult:
 def build_enrichment_sources_from_registry(
     *,
     registry_dir: str | Path,
+    enrichment_dir: str | Path | None = None,
     sources: tuple[str, ...] = ("col", "wikidata", "itis"),
     clients: dict[str, Any] | None = None,
     client_factory: ClientBundleFactory | None = None,
@@ -73,6 +75,7 @@ def build_enrichment_sources_from_registry(
     _validate_runtime_options(workers=workers, progress_every=progress_every, checkpoint_every=checkpoint_every, max_retries=max_retries, limit=limit)
     started = monotonic()
     registry = Path(registry_dir)
+    output = Path(enrichment_dir) if enrichment_dir is not None else registry
     taxa = pl.read_parquet(registry / "taxa.parquet")
     names = pl.read_parquet(registry / "names.parquet")
     species_rows = taxa.filter(pl.col("rank") == "SPECIES").sort(["family", "genus", "scientific_name"]).to_dicts()
@@ -128,7 +131,7 @@ def build_enrichment_sources_from_registry(
             )
         if completed % checkpoint_every == 0 or completed == len(contexts):
             _write_enrichment_checkpoint(
-                registry,
+                output,
                 name_assertions=name_assertions,
                 external_links=external_links,
                 source_snapshots=source_snapshots,
@@ -148,7 +151,7 @@ def build_enrichment_sources_from_registry(
 
     if not contexts:
         _write_enrichment_checkpoint(
-            registry,
+            output,
             name_assertions=[],
             external_links=[],
             source_snapshots=[],
@@ -166,7 +169,7 @@ def build_enrichment_sources_from_registry(
             status="complete",
         )
 
-    manifest = json.loads((registry / ENRICHMENT_MANIFEST_FILE).read_text(encoding="utf-8"))
+    manifest = json.loads((output / ENRICHMENT_MANIFEST_FILE).read_text(encoding="utf-8"))
     report_paths = _write_enrichment_reports(
         report=_enrichment_report(
             registry=registry,
@@ -186,16 +189,17 @@ def build_enrichment_sources_from_registry(
         registry_version=registry_version,
     )
     manifest.update(report_paths)
-    (registry / ENRICHMENT_MANIFEST_FILE).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-    logger.info("registry.enrichment.complete registry=%s completed=%d status=%s", registry, completed, manifest.get("status"))
+    (output / ENRICHMENT_MANIFEST_FILE).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    logger.info("registry.enrichment.complete registry=%s enrichment_dir=%s completed=%d status=%s", registry, output, completed, manifest.get("status"))
     return manifest
 
 
 def default_enrichment_clients(*, max_retries: int = 5) -> dict[str, Any]:
-    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, ITISClient, WikidataClient
+    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, INaturalistClient, ITISClient, WikidataClient
 
     return {
         "col": CatalogueOfLifeClient(max_retries=max_retries),
+        "inaturalist": INaturalistClient(max_retries=max_retries),
         "wikidata": WikidataClient(max_retries=max_retries),
         "itis": ITISClient(max_retries=max_retries),
     }
@@ -207,25 +211,30 @@ def write_enrichment_sources(
     name_assertions: list[dict[str, Any]] | None = None,
     external_links: list[dict[str, Any]] | None = None,
     source_snapshots: list[dict[str, Any]] | None = None,
+    source_errors: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     assertions = _name_assertions_frame(name_assertions or [])
     links = _external_links_frame(external_links or [])
     snapshots = _source_snapshots_frame(source_snapshots or [])
+    errors = _source_errors_frame(source_errors or [])
     assertions.write_parquet(output / SOURCE_ASSERTIONS_FILE)
     links.write_parquet(output / EXTERNAL_LINKS_FILE)
     snapshots.write_parquet(output / ENRICHMENT_SOURCE_SNAPSHOTS_FILE)
+    errors.write_parquet(output / SOURCE_ERRORS_FILE)
     manifest = {
         "schema_version": ENRICHMENT_SCHEMA_VERSION,
         "created_at": datetime.now(UTC).isoformat(),
         "name_assertion_rows": assertions.height,
         "external_taxon_link_rows": links.height,
         "source_snapshot_rows": snapshots.height,
+        "source_error_rows": errors.height,
         "files": {
             "source_name_assertions": SOURCE_ASSERTIONS_FILE,
             "external_taxon_links": EXTERNAL_LINKS_FILE,
             "enrichment_source_snapshots": ENRICHMENT_SOURCE_SNAPSHOTS_FILE,
+            "source_error_records": SOURCE_ERRORS_FILE,
         },
     }
     (output / ENRICHMENT_MANIFEST_FILE).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
@@ -290,7 +299,18 @@ def _enrich_species_context(context: SpeciesContext, *, sources: tuple[str, ...]
             with _source_query_limit(source):
                 result = client.enrich_species(context)
         except Exception as exc:  # noqa: BLE001 - source staging records and continues per species.
-            errors.append({"source": source, "accepted_taxon_key": context.accepted_taxon_key, "error": type(exc).__name__})
+            errors.append(
+                {
+                    "source": source,
+                    "accepted_taxon_key": context.accepted_taxon_key,
+                    "error": type(exc).__name__,
+                    "error_class": type(exc).__name__,
+                    "endpoint": "",
+                    "attempts": "1",
+                    "retryable": "false",
+                    "disposition": "quarantined",
+                }
+            )
             logger.info(
                 "registry.enrichment.source_error source=%s accepted_taxon_key=%s error=%s",
                 source,
@@ -343,6 +363,7 @@ def _write_enrichment_checkpoint(
         name_assertions=_deduplicate_dicts(name_assertions, keys=("assertion_id", "accepted_taxon_key", "source", "source_record_id", "display_name")),
         external_links=_deduplicate_dicts(external_links, keys=("accepted_taxon_key", "source", "source_taxon_id", "match_method")),
         source_snapshots=_deduplicate_dicts(source_snapshots, keys=("source", "source_version", "source_path", "source_response_hash")),
+        source_errors=errors,
     )
     manifest.update(
         {
@@ -388,6 +409,7 @@ def compile_enriched_registry(
     base_registry_dir: str | Path | None = None,
     enrichment_dir: str | Path | None = None,
     output_dir: str | Path | None = None,
+    requested_sources: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     registry = Path(registry_dir) if registry_dir is not None else Path(base_registry_dir or "")
     base = Path(base_registry_dir) if base_registry_dir is not None else registry
@@ -401,6 +423,14 @@ def compile_enriched_registry(
     assertions = _read_or_empty(enrichment / SOURCE_ASSERTIONS_FILE, _name_assertion_schema())
     external_links = _read_or_empty(enrichment / EXTERNAL_LINKS_FILE, _external_link_schema())
     enrichment_snapshots = _read_or_empty(enrichment / ENRICHMENT_SOURCE_SNAPSHOTS_FILE, _source_snapshot_schema())
+    source_errors = _read_or_empty(enrichment / SOURCE_ERRORS_FILE, _source_error_schema())
+    if requested_sources is not None:
+        allowed_sources = _source_display_names(requested_sources)
+        allowed_error_sources = tuple(dict.fromkeys((*requested_sources, *allowed_sources)))
+        assertions = assertions.filter(pl.col("source").is_in(allowed_sources))
+        external_links = external_links.filter(pl.col("source").is_in(allowed_sources))
+        enrichment_snapshots = enrichment_snapshots.filter(pl.col("source").is_in(allowed_sources))
+        source_errors = source_errors.filter(pl.col("source").is_in(allowed_error_sources))
 
     accepted_keys = set(taxa["accepted_taxon_key"].to_list())
     candidates = _candidate_frame(assertions, accepted_keys)
@@ -420,10 +450,11 @@ def compile_enriched_registry(
     candidate_output.write_parquet(output / NAME_CANDIDATES_FILE)
     assertions.write_parquet(output / SOURCE_ASSERTIONS_FILE)
     external_links.write_parquet(output / EXTERNAL_LINKS_FILE)
+    source_errors.write_parquet(output / SOURCE_ERRORS_FILE)
     _merged_source_snapshots(base_snapshots, enrichment_snapshots).write_parquet(output / FINAL_SOURCE_SNAPSHOTS_FILE)
     _write_enriched_evidence(output, registry_version=registry_version, source_payload=source_payload, assertions=assertions)
 
-    extra_qa = _enrichment_qa(assertions, accepted_keys)
+    extra_qa = _enrichment_qa(assertions, accepted_keys, source_errors=source_errors)
     if extra_qa:
         qa = pl.read_parquet(output / "qa_findings.parquet")
         qa = pl.concat([qa, pl.DataFrame(extra_qa, schema={"severity": pl.String, "code": pl.String, "subject": pl.String})], how="vertical")
@@ -444,6 +475,8 @@ def compile_enriched_registry(
             "enabled_enrichment_name_rows": enabled_enrichment.height,
             "name_candidate_rows": candidate_output.height,
             "external_taxon_link_rows": external_links.height,
+            "source_error_rows": source_errors.height,
+            "enrichment_sources": list(requested_sources or []),
         }
     )
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
@@ -484,6 +517,7 @@ def _artifact_bytes(registry: Path) -> dict[str, int]:
             SOURCE_ASSERTIONS_FILE,
             EXTERNAL_LINKS_FILE,
             ENRICHMENT_SOURCE_SNAPSHOTS_FILE,
+            SOURCE_ERRORS_FILE,
             ENRICHMENT_MANIFEST_FILE,
         )
     }
@@ -523,6 +557,7 @@ def _enrichment_report(
         "name_assertion_rows": manifest.get("name_assertion_rows"),
         "external_taxon_link_rows": manifest.get("external_taxon_link_rows"),
         "source_snapshot_rows": manifest.get("source_snapshot_rows"),
+        "source_error_rows": manifest.get("source_error_rows"),
         "error_count": len(errors),
         "error_counts_by_source": dict(sorted(Counter(error["source"] for error in errors).items())),
         "artifact_bytes": manifest.get("artifact_bytes"),
@@ -556,6 +591,7 @@ def _enrichment_report_markdown(report: dict[str, Any]) -> str:
             f"- Name assertions: {report['name_assertion_rows']}",
             f"- External links: {report['external_taxon_link_rows']}",
             f"- Source snapshots: {report['source_snapshot_rows']}",
+            f"- Source errors: {report['source_error_rows']}",
             f"- Errors: {report['error_count']}",
             "",
         ]
@@ -635,7 +671,7 @@ def _combine_names(base_names: pl.DataFrame, enabled_enrichment: pl.DataFrame) -
 
 
 def _source_rank(source: str) -> int:
-    return {"GBIF": 0, "CoL": 1, "ITIS": 2, "Wikidata": 3}.get(source, 9)
+    return {"GBIF": 0, "CoL": 1, "ITIS": 2, "iNaturalist": 3, "Wikidata": 4}.get(source, 9)
 
 
 def _source_name_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -721,11 +757,15 @@ def _write_enriched_evidence(output: Path, *, registry_version: str, source_payl
     pl.DataFrame(rows, schema=base_evidence.schema).write_parquet(output / "name_evidence.parquet")
 
 
-def _enrichment_qa(assertions: pl.DataFrame, accepted_keys: set[str]) -> list[dict[str, str]]:
+def _enrichment_qa(assertions: pl.DataFrame, accepted_keys: set[str], *, source_errors: pl.DataFrame | None = None) -> list[dict[str, str]]:
     findings = []
     for row in assertions.to_dicts():
         if str(row.get("accepted_taxon_key") or "") not in accepted_keys:
             findings.append({"severity": "warning", "code": "enrichment_name_without_base_taxon", "subject": str(row.get("source_record_id") or "")})
+    if source_errors is not None:
+        for row in source_errors.to_dicts():
+            subject = f"{row.get('source')}:{row.get('accepted_taxon_key')}:{row.get('error_class')}"
+            findings.append({"severity": "warning", "code": "source_enrichment_error", "subject": subject})
     return findings
 
 
@@ -767,6 +807,27 @@ def _source_snapshots_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
         for row in rows
     ]
     return pl.DataFrame(normalized, schema=_source_snapshot_schema()) if normalized else pl.DataFrame(schema=_source_snapshot_schema())
+
+
+def _source_errors_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
+    normalized = [
+        {
+            "accepted_taxon_key": str(row.get("accepted_taxon_key") or ""),
+            "source": str(row.get("source") or ""),
+            "endpoint": str(row.get("endpoint") or ""),
+            "error_class": str(row.get("error_class") or row.get("error") or ""),
+            "attempts": int(row.get("attempts") or 1),
+            "retryable": str(row.get("retryable") or "false"),
+            "disposition": str(row.get("disposition") or "quarantined"),
+        }
+        for row in rows
+    ]
+    return pl.DataFrame(normalized, schema=_source_error_schema()) if normalized else pl.DataFrame(schema=_source_error_schema())
+
+
+def _source_display_names(sources: tuple[str, ...]) -> tuple[str, ...]:
+    mapping = {"col": "CoL", "itis": "ITIS", "inaturalist": "iNaturalist", "wikidata": "Wikidata"}
+    return tuple(mapping.get(source, source) for source in sources)
 
 
 def _name_assertion_schema() -> dict[str, pl.DataType]:
@@ -819,6 +880,18 @@ def _source_snapshot_schema() -> dict[str, pl.DataType]:
         "source_path": pl.String,
         "source_response_hash": pl.String,
         "licence": pl.String,
+    }
+
+
+def _source_error_schema() -> dict[str, pl.DataType]:
+    return {
+        "accepted_taxon_key": pl.String,
+        "source": pl.String,
+        "endpoint": pl.String,
+        "error_class": pl.String,
+        "attempts": pl.Int64,
+        "retryable": pl.String,
+        "disposition": pl.String,
     }
 
 

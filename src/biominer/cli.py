@@ -89,6 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--progress-every", type=int, default=100)
     registry_build.add_argument("--checkpoint-every", type=int, default=500)
     registry_build.add_argument("--max-retries", type=int, default=5)
+    registry_build.add_argument("--enrichment-sources", default="col,itis,inaturalist")
+    registry_build.add_argument("--skip-enrichment", action="store_true")
     registry_seed = registry_subparsers.add_parser("seed-flickr-queries")
     registry_seed.add_argument("--query-definitions", required=True)
     registry_seed.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
@@ -293,6 +295,8 @@ def run(args: argparse.Namespace) -> int:
                     progress_every=args.progress_every,
                     checkpoint_every=args.checkpoint_every,
                     max_retries=args.max_retries,
+                    enrichment_sources=tuple(part.strip() for part in args.enrichment_sources.split(",") if part.strip()),
+                    skip_enrichment=args.skip_enrichment,
                 )
             except FileNotFoundError as exc:
                 print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))

@@ -686,3 +686,32 @@ def test_json_get_does_not_retry_permanent_4xx(monkeypatch) -> None:
         raise AssertionError("expected permanent HTTP error")
 
     assert len(attempts) == 1
+
+
+def test_json_get_falls_back_to_replacement_decode_for_unicode_errors(monkeypatch) -> None:
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+
+        @property
+        def content(self) -> bytes:
+            return b'{"results":[{"commonName":"Lime \xff Swallowtail"}]}'
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    class FakeHTTPClient:
+        def __init__(self, *, base_url: str, timeout: float, headers: dict[str, str]) -> None:
+            self.headers = headers
+
+        def get(self, path: str, params):
+            return FakeResponse()
+
+    monkeypatch.setattr("biominer.registry.enrichment_sources.httpx.Client", FakeHTTPClient)
+
+    payload = _json_get("https://example.test", max_retries=0, sleep=lambda _seconds: None)("/resource", {})
+
+    assert payload == {"results": [{"commonName": "Lime � Swallowtail"}]}

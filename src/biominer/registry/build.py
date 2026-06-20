@@ -3,17 +3,21 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import json
 import logging
+import os
 from pathlib import Path
+import shutil
 import subprocess
 from typing import Any
 
 from biominer.registry.compiler import compile_registry_fixture
+from biominer.registry.enrichment import build_enrichment_sources_from_registry, compile_enriched_registry
 from biominer.registry.gbif_production import ProductionGBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
 
 
 logger = logging.getLogger(__name__)
+DEFAULT_ENRICHMENT_SOURCES = ("col", "itis", "inaturalist")
 
 
 def build_registry(
@@ -29,6 +33,8 @@ def build_registry(
     progress_every: int = 100,
     checkpoint_every: int = 500,
     max_retries: int = 5,
+    enrichment_sources: tuple[str, ...] = DEFAULT_ENRICHMENT_SOURCES,
+    skip_enrichment: bool = False,
 ) -> dict[str, Any]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -63,20 +69,79 @@ def build_registry(
         source_path.parent.mkdir(parents=True, exist_ok=True)
         source_path.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
 
-    logger.info("registry.build.compile.start source=%s", source_path)
+    base_dir = output / "checkpoints" / "base_registry"
+    logger.info("registry.build.compile_base.start source=%s base_dir=%s", source_path, base_dir)
     manifest = compile_registry_fixture(
         source_path,
-        output,
+        base_dir,
         registry_version=registry_version,
         scope_path=scope_path,
     )
     logger.info(
-        "registry.build.compile.complete status=%s taxa=%s names=%s queries=%s",
+        "registry.build.compile_base.complete status=%s taxa=%s names=%s queries=%s",
         manifest.get("qa_status"),
         manifest.get("taxa_rows"),
         manifest.get("name_rows"),
         manifest.get("query_definition_rows"),
     )
+    enrichment_manifest: dict[str, Any] | None = None
+    if skip_enrichment:
+        logger.info("registry.build.enrichment.skip output=%s", output)
+        manifest = compile_registry_fixture(
+            source_path,
+            output,
+            registry_version=registry_version,
+            scope_path=scope_path,
+        )
+    else:
+        run_id = _run_id(retrieved)
+        enrichment_dir = output / "checkpoints" / "enrichment" / run_id
+        logger.info(
+            "registry.build.enrichment.start base_dir=%s enrichment_dir=%s sources=%s",
+            base_dir,
+            enrichment_dir,
+            ",".join(enrichment_sources),
+        )
+        enrichment_manifest = build_enrichment_sources_from_registry(
+            registry_dir=base_dir,
+            enrichment_dir=enrichment_dir,
+            sources=enrichment_sources,
+            workers=workers,
+            progress_every=progress_every,
+            checkpoint_every=checkpoint_every,
+            max_retries=max_retries,
+            report_dir=report_dir,
+        )
+        logger.info(
+            "registry.build.compile_enriched.start base_dir=%s enrichment_dir=%s output=%s",
+            base_dir,
+            enrichment_dir,
+            output / "checkpoints" / "canonical" / run_id,
+        )
+        canonical_dir = output / "checkpoints" / "canonical" / run_id
+        manifest = compile_enriched_registry(
+            base_registry_dir=base_dir,
+            enrichment_dir=enrichment_dir,
+            output_dir=canonical_dir,
+            registry_version=registry_version,
+            scope_path=scope_path,
+            requested_sources=enrichment_sources,
+        )
+        logger.info(
+            "registry.build.compile_enriched.complete status=%s taxa=%s names=%s queries=%s enrichment_names=%s source_errors=%s",
+            manifest.get("qa_status"),
+            manifest.get("taxa_rows"),
+            manifest.get("name_rows"),
+            manifest.get("query_definition_rows"),
+            manifest.get("enabled_enrichment_name_rows"),
+            manifest.get("source_error_rows"),
+        )
+        if manifest.get("qa_status") == "passed":
+            manifest = {**manifest, "output_dir": str(output), "registry_dir": str(output)}
+            _promote_canonical_registry(canonical_dir, output, manifest=manifest)
+            logger.info("registry.build.promote.complete canonical_dir=%s output=%s", canonical_dir, output)
+        else:
+            logger.info("registry.build.promote.blocked status=%s canonical_dir=%s output=%s", manifest.get("qa_status"), canonical_dir, output)
     source_payload = json.loads(source_path.read_text(encoding="utf-8"))
     report = _build_report(
         manifest=manifest,
@@ -85,6 +150,9 @@ def build_registry(
         output_dir=output,
         registry_version=registry_version,
         retrieved_at=retrieved,
+        enrichment_sources=enrichment_sources,
+        skip_enrichment=skip_enrichment,
+        enrichment_manifest=enrichment_manifest,
     )
     report_paths = _write_reports(report, report_dir=Path(report_dir), registry_version=registry_version)
     logger.info("registry.build.complete version=%s status=%s output=%s", registry_version, manifest.get("qa_status"), output)
@@ -105,6 +173,9 @@ def _build_report(
     output_dir: Path,
     registry_version: str,
     retrieved_at: str,
+    enrichment_sources: tuple[str, ...],
+    skip_enrichment: bool,
+    enrichment_manifest: dict[str, Any] | None,
 ) -> dict[str, Any]:
     return {
         "command": "biominer registry build",
@@ -129,6 +200,14 @@ def _build_report(
         "query_definition_rows": manifest.get("query_definition_rows"),
         "qa_fatal_count": manifest.get("qa_fatal_count"),
         "qa_warning_count": manifest.get("qa_warning_count"),
+        "enrichment_enabled": not skip_enrichment,
+        "enrichment_sources": list(enrichment_sources) if not skip_enrichment else [],
+        "enrichment_name_assertion_rows": manifest.get("enrichment_name_assertion_rows"),
+        "enabled_enrichment_name_rows": manifest.get("enabled_enrichment_name_rows"),
+        "name_candidate_rows": manifest.get("name_candidate_rows"),
+        "external_taxon_link_rows": manifest.get("external_taxon_link_rows"),
+        "source_error_rows": manifest.get("source_error_rows"),
+        "enrichment_status": (enrichment_manifest or {}).get("status"),
         "unsupported_metrics": {
             "rss_peak_memory": "not_instrumented",
             "gpu_memory": "not_applicable",
@@ -158,8 +237,45 @@ def _report_markdown(report: dict[str, Any]) -> str:
             f"- Query definitions: {report['query_definition_rows']}",
             f"- QA fatal: {report['qa_fatal_count']}",
             f"- QA warning: {report['qa_warning_count']}",
+            f"- Enrichment enabled: {report['enrichment_enabled']}",
+            f"- Enrichment sources: {', '.join(report['enrichment_sources'])}",
+            f"- Enabled enrichment names: {report['enabled_enrichment_name_rows']}",
+            f"- Source errors: {report['source_error_rows']}",
             "",
         ]
+    )
+
+
+def _run_id(retrieved_at: str) -> str:
+    return retrieved_at.replace(":", "").replace("-", "").replace(".", "").replace("+", "Z")
+
+
+def _promote_canonical_registry(staged_dir: Path, output_dir: Path, *, manifest: dict[str, Any]) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for file_name in _canonical_registry_files():
+        source = staged_dir / file_name
+        if not source.exists():
+            continue
+        tmp = output_dir / f".{file_name}.tmp"
+        shutil.copy2(source, tmp)
+        os.replace(tmp, output_dir / file_name)
+    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _canonical_registry_files() -> tuple[str, ...]:
+    return (
+        "taxa.parquet",
+        "taxon_relations.parquet",
+        "names.parquet",
+        "name_evidence.parquet",
+        "source_snapshots.parquet",
+        "flickr_query_definitions.parquet",
+        "qa_findings.parquet",
+        "source_name_assertions.parquet",
+        "external_taxon_links.parquet",
+        "source_error_records.parquet",
+        "name_candidates.parquet",
+        "combined_source_snapshot.json",
     )
 
 
