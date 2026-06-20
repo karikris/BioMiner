@@ -21,11 +21,17 @@ USER_AGENT = "BioMiner/0.1 registry-enrichment"
 DEFAULT_WIKIDATA_MIN_DELAY_SECONDS = 1.5
 DEFAULT_WIKIDATA_MAX_DELAY_SECONDS = 120.0
 DEFAULT_WIKIDATA_RATE_LIMIT_COOLDOWN_SECONDS = 45.0
+DEFAULT_INATURALIST_MIN_DELAY_SECONDS = 1.0
+DEFAULT_INATURALIST_RATE_LIMIT_COOLDOWN_SECONDS = 10.0
 logger = logging.getLogger(__name__)
 
 
 class WikidataRateLimitTermError(RuntimeError):
     """Raised when one Wikidata search term is skipped after HTTP 429 cooldown."""
+
+
+class INaturalistRateLimitTermError(RuntimeError):
+    """Raised when one iNaturalist search term is skipped after HTTP 429 cooldown."""
 
 
 class WikidataRateLimiter:
@@ -80,6 +86,40 @@ class WikidataRateLimiter:
         self._sleep(seconds)
 
 
+class INaturalistRateLimiter:
+    def __init__(
+        self,
+        *,
+        min_delay_seconds: float = DEFAULT_INATURALIST_MIN_DELAY_SECONDS,
+        sleep: Callable[[float], None] = default_sleep,
+        monotonic: Callable[[], float] = default_monotonic,
+    ) -> None:
+        if min_delay_seconds < 0:
+            raise ValueError("min_delay_seconds must be >= 0")
+        self.min_delay_seconds = min_delay_seconds
+        self._sleep = sleep
+        self._monotonic = monotonic
+        self._lock = threading.Lock()
+        self._last_request_completed_at: float | None = None
+
+    def wait(self) -> None:
+        with self._lock:
+            now = self._monotonic()
+            if self._last_request_completed_at is not None:
+                wait_seconds = self.min_delay_seconds - (now - self._last_request_completed_at)
+                if wait_seconds > 0:
+                    logger.info("inaturalist.rate_limit_sleep seconds=%.3f", wait_seconds)
+                    self._sleep(wait_seconds)
+
+    def record_request_complete(self) -> None:
+        with self._lock:
+            self._last_request_completed_at = self._monotonic()
+
+    def rate_limit_cooldown(self, seconds: float) -> None:
+        logger.info("inaturalist.rate_limit_cooldown seconds=%.3f", seconds)
+        self._sleep(seconds)
+
+
 def _default_wikidata_min_delay_seconds() -> float:
     return _float_env("BIOMINER_WIKIDATA_MIN_DELAY_SECONDS", DEFAULT_WIKIDATA_MIN_DELAY_SECONDS)
 
@@ -93,6 +133,14 @@ def _default_wikidata_max_delay_seconds() -> float:
 
 def _default_wikidata_rate_limit_cooldown_seconds() -> float:
     return _float_env("BIOMINER_WIKIDATA_RATE_LIMIT_COOLDOWN_SECONDS", DEFAULT_WIKIDATA_RATE_LIMIT_COOLDOWN_SECONDS)
+
+
+def _default_inaturalist_min_delay_seconds() -> float:
+    return _float_env("BIOMINER_INATURALIST_MIN_DELAY_SECONDS", DEFAULT_INATURALIST_MIN_DELAY_SECONDS)
+
+
+def _default_inaturalist_rate_limit_cooldown_seconds() -> float:
+    return _float_env("BIOMINER_INATURALIST_RATE_LIMIT_COOLDOWN_SECONDS", DEFAULT_INATURALIST_RATE_LIMIT_COOLDOWN_SECONDS)
 
 
 def _float_env(name: str, fallback: float) -> float:
@@ -109,6 +157,9 @@ def _float_env(name: str, fallback: float) -> float:
 _WIKIDATA_RATE_LIMITER = WikidataRateLimiter(
     min_delay_seconds=_default_wikidata_min_delay_seconds(),
     max_delay_seconds=_default_wikidata_max_delay_seconds(),
+)
+_INATURALIST_RATE_LIMITER = INaturalistRateLimiter(
+    min_delay_seconds=_default_inaturalist_min_delay_seconds(),
 )
 _WIKIDATA_CACHE: dict[CacheKey, dict[str, Any]] = {}
 _WIKIDATA_CACHE_LOCK = threading.Lock()
@@ -270,15 +321,26 @@ class ITISClient:
 
 
 class INaturalistClient:
-    def __init__(self, *, http_get: HTTPGet | None = None, max_retries: int = 5) -> None:
-        self._http_get = http_get or _json_get("https://api.inaturalist.org", max_retries=max_retries)
+    def __init__(
+        self,
+        *,
+        http_get: HTTPGet | None = None,
+        max_retries: int = 5,
+        rate_limiter: INaturalistRateLimiter | None = None,
+        rate_limit_cooldown_seconds: float | None = None,
+    ) -> None:
+        self._rate_limiter = rate_limiter or _INATURALIST_RATE_LIMITER
+        self._http_get = http_get or _json_get("https://api.inaturalist.org", max_retries=0)
+        self._rate_limit_cooldown_seconds = (
+            _default_inaturalist_rate_limit_cooldown_seconds() if rate_limit_cooldown_seconds is None else rate_limit_cooldown_seconds
+        )
 
     def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
         params = {"q": context.accepted_scientific_name, "rank": "species", "is_active": True, "all_names": True, "per_page": 10}
-        payload = self._http_get("/v1/taxa", params)
+        payload = self._rate_limited_get("/v1/taxa", params)
         match = _inaturalist_exact_species_match(payload, context)
         if match is None:
-            payload = self._http_get("/v1/taxa/autocomplete", params)
+            payload = self._rate_limited_get("/v1/taxa/autocomplete", params)
             match = _inaturalist_exact_species_match(payload, context)
         snapshot = _snapshot("iNaturalist", "inaturalist-v1", query=f"taxa:q={context.accepted_scientific_name}")
         if match is None:
@@ -295,6 +357,18 @@ class INaturalistClient:
                 }
             )
         return {"name_assertions": assertions, "external_links": links, "source_snapshots": [snapshot]}
+
+    def _rate_limited_get(self, path: str, params: dict[str, object]) -> dict[str, Any]:
+        self._rate_limiter.wait()
+        try:
+            return self._http_get(path, params)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                self._rate_limiter.rate_limit_cooldown(self._rate_limit_cooldown_seconds)
+                raise INaturalistRateLimitTermError("iNaturalist HTTP 429 normal_throttling") from exc
+            raise
+        finally:
+            self._rate_limiter.record_request_complete()
 
 
 def _json_get(

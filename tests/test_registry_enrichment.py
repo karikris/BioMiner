@@ -13,6 +13,8 @@ from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.enrichment import SpeciesContext, build_enrichment_sources_from_registry, compile_enriched_registry, write_enrichment_sources
 from biominer.registry.enrichment_sources import (
     INaturalistClient,
+    INaturalistRateLimitTermError,
+    INaturalistRateLimiter,
     ITISClient,
     WikidataClient,
     WikidataRateLimitTermError,
@@ -887,7 +889,7 @@ def test_inaturalist_client_uses_taxa_keyword_query_and_extracts_names() -> None
             ]
         }
 
-    result = INaturalistClient(http_get=fake_get).enrich_species(
+    result = INaturalistClient(http_get=fake_get, rate_limiter=INaturalistRateLimiter(min_delay_seconds=0.0)).enrich_species(
         SpeciesContext(
             accepted_taxon_key="gbif:100",
             accepted_scientific_name="Papilio demoleus",
@@ -943,7 +945,7 @@ def test_inaturalist_client_uses_autocomplete_fallback_when_taxa_has_no_exact_ma
             ]
         }
 
-    result = INaturalistClient(http_get=fake_get).enrich_species(
+    result = INaturalistClient(http_get=fake_get, rate_limiter=INaturalistRateLimiter(min_delay_seconds=0.0)).enrich_species(
         SpeciesContext(
             accepted_taxon_key="gbif:100",
             accepted_scientific_name="Papilio demoleus",
@@ -960,6 +962,98 @@ def test_inaturalist_client_uses_autocomplete_fallback_when_taxa_has_no_exact_ma
     assert result["name_assertions"][0]["display_name"] == "Lime Swallowtail"
 
 
+def test_inaturalist_client_rate_limits_taxa_and_autocomplete_requests() -> None:
+    calls = []
+    sleeps = []
+    current_time = 100.0
+
+    def monotonic() -> float:
+        return current_time
+
+    def sleep(seconds: float) -> None:
+        nonlocal current_time
+        sleeps.append(seconds)
+        current_time += seconds
+
+    def fake_get(path: str, params: dict[str, object]) -> dict[str, object]:
+        nonlocal current_time
+        calls.append({"path": path, "params": params})
+        current_time += 0.2
+        if path == "/v1/taxa":
+            return {"results": []}
+        return {
+            "results": [
+                {
+                    "id": 2,
+                    "name": "Papilio demoleus",
+                    "rank": "species",
+                    "is_active": True,
+                    "preferred_common_name": "Lime Swallowtail",
+                }
+            ]
+        }
+
+    client = INaturalistClient(
+        http_get=fake_get,
+        rate_limiter=INaturalistRateLimiter(min_delay_seconds=1.0, sleep=sleep, monotonic=monotonic),
+    )
+
+    client.enrich_species(
+        SpeciesContext(
+            accepted_taxon_key="gbif:100",
+            accepted_scientific_name="Papilio demoleus",
+            family_key="gbif:10",
+            family="Papilionidae",
+            genus_key="gbif:90",
+            genus="Papilio",
+            current_names=("Papilio demoleus",),
+        )
+    )
+
+    assert [call["path"] for call in calls] == ["/v1/taxa", "/v1/taxa/autocomplete"]
+    assert sleeps == [1.0]
+
+
+def test_inaturalist_429_waits_cooldown_and_does_not_retry_same_keyword() -> None:
+    calls = []
+    sleeps = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    def fake_get(path: str, params: dict[str, object]) -> dict[str, object]:
+        calls.append({"path": path, "params": params})
+        request = httpx.Request("GET", "https://api.inaturalist.org/v1/taxa")
+        response = httpx.Response(429, request=request)
+        raise httpx.HTTPStatusError("normal_throttling", request=request, response=response)
+
+    client = INaturalistClient(
+        http_get=fake_get,
+        rate_limiter=INaturalistRateLimiter(min_delay_seconds=1.0, sleep=sleep, monotonic=lambda: 100.0),
+        rate_limit_cooldown_seconds=10.0,
+    )
+
+    try:
+        client.enrich_species(
+            SpeciesContext(
+                accepted_taxon_key="gbif:100",
+                accepted_scientific_name="Papilio demoleus",
+                family_key="gbif:10",
+                family="Papilionidae",
+                genus_key="gbif:90",
+                genus="Papilio",
+                current_names=("Papilio demoleus",),
+            )
+        )
+    except INaturalistRateLimitTermError:
+        pass
+    else:  # pragma: no cover - clearer assertion path than adding pytest import churn.
+        raise AssertionError("expected iNaturalist term-level rate limit")
+
+    assert len(calls) == 1
+    assert sleeps == [10.0]
+
+
 def test_inaturalist_client_rejects_non_exact_or_inactive_taxa_but_snapshots_query() -> None:
     def fake_get(_path: str, _params: dict[str, object]) -> dict[str, object]:
         return {
@@ -969,7 +1063,7 @@ def test_inaturalist_client_rejects_non_exact_or_inactive_taxa_but_snapshots_que
             ]
         }
 
-    result = INaturalistClient(http_get=fake_get).enrich_species(
+    result = INaturalistClient(http_get=fake_get, rate_limiter=INaturalistRateLimiter(min_delay_seconds=0.0)).enrich_species(
         SpeciesContext(
             accepted_taxon_key="gbif:100",
             accepted_scientific_name="Papilio demoleus",
