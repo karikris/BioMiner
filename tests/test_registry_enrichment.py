@@ -10,8 +10,8 @@ import polars as pl
 
 from biominer.cli import build_parser, run
 from biominer.registry.compiler import compile_registry_fixture
-from biominer.registry.enrichment import SourceRateLimitError, SpeciesContext, build_enrichment_sources_from_registry, compile_enriched_registry, write_enrichment_sources
-from biominer.registry.enrichment_sources import ITISClient, WikidataClient, WikidataRateLimiter, _json_get
+from biominer.registry.enrichment import SpeciesContext, build_enrichment_sources_from_registry, compile_enriched_registry, write_enrichment_sources
+from biominer.registry.enrichment_sources import ITISClient, WikidataClient, WikidataRateLimitTermError, WikidataRateLimiter, _json_get
 
 
 def _write_base_registry(tmp_path, species_names: tuple[str, ...] = ("Papilio demoleus",)):
@@ -928,26 +928,72 @@ def test_wikidata_retry_penalty_increases_following_request_delay() -> None:
     assert sleeps == [55.0, 4.0, 55.0, 6.0]
 
 
-def test_wikidata_source_rate_limit_aborts_enrichment_run(tmp_path) -> None:
+def test_wikidata_source_rate_limit_skips_term_and_continues(tmp_path) -> None:
     registry, _scope = _write_base_registry(tmp_path, species_names=("Papilio demoleus", "Papilio machaon"))
     calls = []
 
     class RateLimitedClient:
         def enrich_species(self, context):  # noqa: ANN001 - test double raises the fatal source error.
             calls.append(context.accepted_taxon_key)
-            raise SourceRateLimitError("wikidata rate limited")
+            if context.accepted_taxon_key == "gbif:100":
+                raise WikidataRateLimitTermError("wikidata rate limited")
+            return {
+                "name_assertions": [],
+                "external_links": [],
+                "source_snapshots": [{"source": "Wikidata", "source_version": "fixture", "source_path": "", "source_response_hash": "", "licence": ""}],
+            }
+
+    manifest = build_enrichment_sources_from_registry(
+        registry_dir=registry,
+        sources=("wikidata",),
+        clients={"wikidata": RateLimitedClient()},
+        workers=1,
+        progress_every=1,
+        checkpoint_every=1,
+        report_dir=tmp_path / "reports",
+    )
+
+    assert calls == ["gbif:100", "gbif:101"]
+    assert manifest["completed_species"] == 2
+    assert manifest["error_counts_by_source"] == {"wikidata": 1}
+
+
+def test_wikidata_429_waits_cooldown_and_does_not_retry_same_keyword() -> None:
+    calls = []
+    sleeps = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    def fake_get(path: str, params: dict[str, object]) -> dict[str, object]:
+        calls.append({"path": path, "params": params})
+        request = httpx.Request("GET", "https://www.wikidata.org/w/api.php")
+        response = httpx.Response(429, request=request, headers={"Retry-After": "55"})
+        raise httpx.HTTPStatusError("too many requests", request=request, response=response)
+
+    client = WikidataClient(
+        http_get=fake_get,
+        rate_limiter=WikidataRateLimiter(min_delay_seconds=1.0, sleep=sleep, monotonic=lambda: 100.0),
+        rate_limit_cooldown_seconds=5.0,
+        cache={},
+    )
 
     try:
-        build_enrichment_sources_from_registry(
-            registry_dir=registry,
-            sources=("wikidata",),
-            clients={"wikidata": RateLimitedClient()},
-            workers=1,
-            report_dir=tmp_path / "reports",
+        client.enrich_species(
+            SpeciesContext(
+                accepted_taxon_key="gbif:100",
+                accepted_scientific_name="Papilio demoleus",
+                family_key="gbif:10",
+                family="Papilionidae",
+                genus_key="gbif:90",
+                genus="Papilio",
+                current_names=("Papilio demoleus",),
+            )
         )
-    except SourceRateLimitError:
+    except WikidataRateLimitTermError:
         pass
     else:  # pragma: no cover - clearer assertion path than adding pytest import churn.
-        raise AssertionError("expected Wikidata rate limit to abort the enrichment run")
+        raise AssertionError("expected Wikidata term-level rate limit")
 
-    assert calls == ["gbif:100"]
+    assert len(calls) == 1
+    assert sleeps == [5.0]

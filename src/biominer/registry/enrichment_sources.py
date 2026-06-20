@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 
 from biominer.common.http import RetryingHTTPClient
-from biominer.registry.enrichment import SourceRateLimitError, SpeciesContext
+from biominer.registry.enrichment import SpeciesContext
 
 
 HTTPGet = Callable[[str, dict[str, object]], dict[str, Any]]
@@ -20,7 +20,12 @@ CacheKey = tuple[str, tuple[tuple[str, str], ...]]
 USER_AGENT = "BioMiner/0.1 registry-enrichment"
 DEFAULT_WIKIDATA_MIN_DELAY_SECONDS = 1.0
 DEFAULT_WIKIDATA_MAX_DELAY_SECONDS = 120.0
+DEFAULT_WIKIDATA_RATE_LIMIT_COOLDOWN_SECONDS = 5.0
 logger = logging.getLogger(__name__)
+
+
+class WikidataRateLimitTermError(RuntimeError):
+    """Raised when one Wikidata search term is skipped after HTTP 429 cooldown."""
 
 
 class WikidataRateLimiter:
@@ -68,6 +73,10 @@ class WikidataRateLimiter:
                 previous_delay,
                 self._current_delay_seconds,
             )
+        self._sleep(seconds)
+
+    def rate_limit_cooldown(self, seconds: float) -> None:
+        logger.info("wikidata.rate_limit_cooldown seconds=%.3f", seconds)
         self._sleep(seconds)
 
 
@@ -146,11 +155,13 @@ class WikidataClient:
         http_get: HTTPGet | None = None,
         max_retries: int = 5,
         rate_limiter: WikidataRateLimiter | None = None,
+        rate_limit_cooldown_seconds: float = DEFAULT_WIKIDATA_RATE_LIMIT_COOLDOWN_SECONDS,
         cache: MutableMapping[CacheKey, dict[str, Any]] | None = None,
     ) -> None:
         self._rate_limiter = rate_limiter or _WIKIDATA_RATE_LIMITER
-        # Wikidata 429s should stop the batch job; retrying per term keeps the job in a penalty loop.
+        # Wikidata 429s skip the current term; retrying the same term keeps the job in a penalty loop.
         self._http_get = http_get or _json_get("https://www.wikidata.org", max_retries=0, sleep=self._rate_limiter.retry_sleep)
+        self._rate_limit_cooldown_seconds = rate_limit_cooldown_seconds
         self._cache = cache if cache is not None else _WIKIDATA_CACHE
 
     def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
@@ -206,7 +217,8 @@ class WikidataClient:
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429:
                 retry_after = exc.response.headers.get("Retry-After", "")
-                raise SourceRateLimitError(f"wikidata HTTP 429 retry_after={retry_after}") from exc
+                self._rate_limiter.rate_limit_cooldown(self._rate_limit_cooldown_seconds)
+                raise WikidataRateLimitTermError(f"wikidata HTTP 429 retry_after={retry_after}") from exc
             raise
         finally:
             self._rate_limiter.record_request_complete()
