@@ -29,6 +29,7 @@ from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, Metad
 from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry
 from biominer.registry.compiler import compile_registry_fixture
+from biominer.registry.enrichment import build_enrichment_sources_from_registry, compile_enriched_registry
 from biominer.registry.gbif import GBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
@@ -59,10 +60,17 @@ def build_parser() -> argparse.ArgumentParser:
     registry_compile.add_argument("--output-dir", required=True)
     registry_compile.add_argument("--registry-version", required=True)
     registry_compile.add_argument("--scope-json", default="config/butterfly_scope.json")
+    registry_compile_enriched = registry_subparsers.add_parser("compile-enriched")
+    registry_compile_enriched.add_argument("--registry-dir", required=True)
+    registry_compile_enriched.add_argument("--registry-version", required=True)
+    registry_compile_enriched.add_argument("--scope-json", default="config/butterfly_scope.json")
     registry_fetch_taxonomy = registry_subparsers.add_parser("fetch-taxonomy")
     registry_fetch_taxonomy.add_argument("--output-json", required=True)
     registry_fetch_taxonomy.add_argument("--scope-json", default="config/butterfly_scope.json")
     registry_fetch_taxonomy.add_argument("--retrieved-at")
+    registry_enrich_sources = registry_subparsers.add_parser("enrich-sources")
+    registry_enrich_sources.add_argument("--registry-dir", required=True)
+    registry_enrich_sources.add_argument("--sources", default="col,wikidata,itis")
     registry_build = registry_subparsers.add_parser("build")
     registry_build.add_argument("--output-dir", required=True)
     registry_build.add_argument("--registry-version", required=True)
@@ -231,6 +239,21 @@ def run(args: argparse.Namespace) -> int:
                 args.output_dir,
                 registry_version=args.registry_version,
                 scope_path=args.scope_json,
+            )
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        if args.registry_command == "compile-enriched":
+            payload = compile_enriched_registry(
+                registry_dir=args.registry_dir,
+                registry_version=args.registry_version,
+                scope_path=args.scope_json,
+            )
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        if args.registry_command == "enrich-sources":
+            payload = build_enrichment_sources_from_registry(
+                registry_dir=args.registry_dir,
+                sources=tuple(part.strip() for part in args.sources.split(",") if part.strip()),
             )
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
