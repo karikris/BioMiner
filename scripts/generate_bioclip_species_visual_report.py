@@ -14,7 +14,6 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/biominer-matplotlib")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import polars as pl
-import seaborn as sns
 
 
 DEFAULT_RUN_DIR = Path(
@@ -100,15 +99,17 @@ def main() -> None:
     output_dir = args.output_dir or args.predictions.parent / "visual_report"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    sns.set_theme(
-        context="talk",
-        style="whitegrid",
-        rc={
+    plt.style.use("seaborn-v0_8-whitegrid")
+    plt.rcParams.update(
+        {
             "axes.spines.right": False,
             "axes.spines.top": False,
             "figure.dpi": 120,
             "savefig.dpi": 180,
-        },
+            "font.size": 14,
+            "axes.titlesize": 16,
+            "axes.labelsize": 14,
+        }
     )
 
     predictions = load_predictions(args.predictions, args.candidates)

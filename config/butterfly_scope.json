@@ -2,7 +2,8 @@
   "scope_id": "papilionoidea-seven-family-scope",
   "root": {
     "scientific_name": "Papilionoidea",
-    "rank": "SUPERFAMILY"
+    "rank": "SUPERFAMILY",
+    "gbif_taxon_key": "1875"
   },
   "included_families": [
     "Hesperiidae",
@@ -12,5 +13,14 @@
     "Riodinidae",
     "Nymphalidae",
     "Hedylidae"
-  ]
+  ],
+  "gbif_family_taxon_keys": {
+    "Hesperiidae": "6953",
+    "Papilionidae": "9417",
+    "Pieridae": "5481",
+    "Lycaenidae": "5473",
+    "Riodinidae": "1933999",
+    "Nymphalidae": "7017",
+    "Hedylidae": "6951"
+  }
 }

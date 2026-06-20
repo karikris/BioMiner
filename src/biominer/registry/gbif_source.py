@@ -16,17 +16,39 @@ def build_gbif_source_snapshot(
     page_limit: int = 1000,
 ) -> dict[str, Any]:
     started = monotonic()
-    root_match = client.match_name(scope.root_scientific_name, rank=scope.root_rank)
-    root_key = root_match.get("acceptedUsageKey") or root_match.get("usageKey")
-    if root_key is None:
-        raise ValueError(f"GBIF did not resolve scope root {scope.root_scientific_name!r}")
+    root_key = scope.root_taxon_key
+    if not root_key:
+        root_match = client.match_name(
+            scope.root_scientific_name,
+            rank=scope.root_rank,
+        )
+        root_key = root_match.get("acceptedUsageKey") or root_match.get("usageKey")
+        if root_key is None:
+            raise ValueError(
+                f"GBIF did not resolve scope root {scope.root_scientific_name!r}"
+            )
+
     root_usage = client.usage(root_key)
+    resolved_root_name = _scientific_name(root_usage)
+    resolved_root_rank = str(root_usage.get("rank") or "")
+
+    if resolved_root_name != scope.root_scientific_name or resolved_root_rank != scope.root_rank:
+        raise ValueError(
+            f"Configured GBIF root {root_key!r} resolved to "
+            f"{resolved_root_name!r} rank {resolved_root_rank!r}; expected "
+            f"{scope.root_scientific_name!r} rank {scope.root_rank!r}"
+        )
     taxa = [_taxon_row(root_usage, parent_key="", family={})]
     names = [_scientific_name_row(root_usage, name_class="accepted_scientific")]
     assertions: list[dict[str, Any]] = []
 
     for family_name in scope.included_families:
-        resolution = resolve_family(client, family_name, root_name=scope.root_scientific_name)
+        resolution = resolve_family(
+            client,
+            family_name,
+            root_name=scope.root_scientific_name,
+            expected_taxon_key=scope.family_taxon_keys.get(family_name),
+        )
         family_key = _bare_key(resolution.accepted_taxon_key)
         family_usage = client.usage(family_key)
         taxa.append(_taxon_row(family_usage, parent_key=f"gbif:{root_key}", family=family_usage))
@@ -39,6 +61,14 @@ def build_gbif_source_snapshot(
                 "match_type": resolution.match_type,
                 "confidence": resolution.confidence,
                 "lineage_names": list(resolution.lineage_names),
+                "root_lineage_verified": (
+                    scope.root_scientific_name in resolution.lineage_names
+                ),
+                "lineage_validation": (
+                    "explicit_root"
+                    if scope.root_scientific_name in resolution.lineage_names
+                    else "configured_family_lepidoptera_fallback"
+                ),
             }
         )
 
