@@ -12,6 +12,7 @@ REGISTRY_DIR="${REGISTRY_DIR:-$DEFAULT_REGISTRY}"
 REPORT_DIR="${REPORT_DIR:-$ROOT/reports}"
 LOG_DIR="${LOG_DIR:-$ROOT/logs}"
 RUN_ID="${RUN_ID:-registry_enrich_wikidata_butterflies_v1}"
+export BIOMINER_WIKIDATA_MIN_DELAY_SECONDS="${BIOMINER_WIKIDATA_MIN_DELAY_SECONDS:-1.5}"
 
 mkdir -p "$REPORT_DIR" "$LOG_DIR"
 if [[ ! -f "$REGISTRY_DIR/taxa.parquet" ]]; then

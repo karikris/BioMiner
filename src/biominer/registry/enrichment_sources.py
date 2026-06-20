@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from collections.abc import Callable
+from copy import deepcopy
+import logging
+import os
 from time import sleep as default_sleep
+from time import monotonic as default_monotonic
+import threading
 from typing import Any
 
 from biominer.common.http import RetryingHTTPClient
@@ -9,7 +15,54 @@ from biominer.registry.enrichment import SpeciesContext
 
 
 HTTPGet = Callable[[str, dict[str, object]], dict[str, Any]]
+CacheKey = tuple[str, tuple[tuple[str, str], ...]]
 USER_AGENT = "BioMiner/0.1 registry-enrichment"
+DEFAULT_WIKIDATA_MIN_DELAY_SECONDS = 1.5
+logger = logging.getLogger(__name__)
+
+
+class WikidataRateLimiter:
+    def __init__(
+        self,
+        *,
+        min_delay_seconds: float = DEFAULT_WIKIDATA_MIN_DELAY_SECONDS,
+        sleep: Callable[[float], None] = default_sleep,
+        monotonic: Callable[[], float] = default_monotonic,
+    ) -> None:
+        if min_delay_seconds < 0:
+            raise ValueError("min_delay_seconds must be >= 0")
+        self.min_delay_seconds = min_delay_seconds
+        self._sleep = sleep
+        self._monotonic = monotonic
+        self._lock = threading.Lock()
+        self._last_request_started_at: float | None = None
+
+    def wait(self) -> None:
+        with self._lock:
+            now = self._monotonic()
+            if self._last_request_started_at is not None:
+                wait_seconds = self.min_delay_seconds - (now - self._last_request_started_at)
+                if wait_seconds > 0:
+                    logger.info("wikidata.rate_limit_sleep seconds=%.3f", wait_seconds)
+                    self._sleep(wait_seconds)
+                    now = self._monotonic()
+            self._last_request_started_at = now
+
+
+def _default_wikidata_min_delay_seconds() -> float:
+    raw = os.environ.get("BIOMINER_WIKIDATA_MIN_DELAY_SECONDS")
+    if raw is None:
+        return DEFAULT_WIKIDATA_MIN_DELAY_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logger.info("wikidata.invalid_min_delay value=%s fallback=%.3f", raw, DEFAULT_WIKIDATA_MIN_DELAY_SECONDS)
+        return DEFAULT_WIKIDATA_MIN_DELAY_SECONDS
+
+
+_WIKIDATA_RATE_LIMITER = WikidataRateLimiter(min_delay_seconds=_default_wikidata_min_delay_seconds())
+_WIKIDATA_CACHE: dict[CacheKey, dict[str, Any]] = {}
+_WIKIDATA_CACHE_LOCK = threading.Lock()
 
 
 class CatalogueOfLifeClient:
@@ -51,8 +104,17 @@ class CatalogueOfLifeClient:
 
 
 class WikidataClient:
-    def __init__(self, *, http_get: HTTPGet | None = None, max_retries: int = 5) -> None:
+    def __init__(
+        self,
+        *,
+        http_get: HTTPGet | None = None,
+        max_retries: int = 5,
+        rate_limiter: WikidataRateLimiter | None = None,
+        cache: MutableMapping[CacheKey, dict[str, Any]] | None = None,
+    ) -> None:
         self._http_get = http_get or _json_get("https://www.wikidata.org", max_retries=max_retries)
+        self._rate_limiter = rate_limiter or _WIKIDATA_RATE_LIMITER
+        self._cache = cache if cache is not None else _WIKIDATA_CACHE
 
     def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
         params = {
@@ -64,7 +126,7 @@ class WikidataClient:
             "search": context.accepted_scientific_name,
             "type": "item",
         }
-        payload = self._http_get("/w/api.php", params)
+        payload = self._cached_rate_limited_get("/w/api.php", params)
         rows = _result_rows(payload)
         assertions: list[dict[str, Any]] = []
         links: list[dict[str, Any]] = []
@@ -93,6 +155,19 @@ class WikidataClient:
                         )
                     )
         return {"name_assertions": assertions, "external_links": links, "source_snapshots": [_snapshot("Wikidata", "wikibase-api", query=f"wbsearchentities:{context.accepted_scientific_name}")]}
+
+    def _cached_rate_limited_get(self, path: str, params: dict[str, object]) -> dict[str, Any]:
+        cache_key = _cache_key(path, params)
+        with _WIKIDATA_CACHE_LOCK:
+            cached_payload = self._cache.get(cache_key)
+            if cached_payload is not None:
+                logger.info("wikidata.cache_hit search=%s", params.get("search"))
+                return deepcopy(cached_payload)
+        self._rate_limiter.wait()
+        payload = self._http_get(path, params)
+        with _WIKIDATA_CACHE_LOCK:
+            self._cache[cache_key] = deepcopy(payload)
+        return payload
 
 
 class ITISClient:
@@ -152,6 +227,10 @@ def _json_get(
         return {"results": payload}
 
     return get
+
+
+def _cache_key(path: str, params: dict[str, object]) -> CacheKey:
+    return (path, tuple(sorted((str(key), str(value)) for key, value in params.items())))
 
 
 def _name_assertion(

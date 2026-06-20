@@ -11,7 +11,7 @@ import polars as pl
 from biominer.cli import build_parser, run
 from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.enrichment import SpeciesContext, build_enrichment_sources_from_registry, compile_enriched_registry, write_enrichment_sources
-from biominer.registry.enrichment_sources import ITISClient, WikidataClient, _json_get
+from biominer.registry.enrichment_sources import ITISClient, WikidataClient, WikidataRateLimiter, _json_get
 
 
 def _write_base_registry(tmp_path, species_names: tuple[str, ...] = ("Papilio demoleus",)):
@@ -796,3 +796,67 @@ def test_wikidata_client_uses_wbsearchentities_with_maxlag() -> None:
     ]
     assert result["external_links"][0]["source_taxon_id"] == "Q1"
     assert [row["display_name"] for row in result["name_assertions"]] == ["Lime butterfly", "Citrus swallowtail"]
+
+
+def test_wikidata_client_rate_limits_uncached_requests_and_caches_no_results() -> None:
+    calls = []
+    sleeps = []
+    current_time = 100.0
+
+    def monotonic() -> float:
+        return current_time
+
+    def sleep(seconds: float) -> None:
+        nonlocal current_time
+        sleeps.append(seconds)
+        current_time += seconds
+
+    def fake_get(path: str, params: dict[str, object]) -> dict[str, object]:
+        calls.append({"path": path, "params": params})
+        return {"search": []}
+
+    client = WikidataClient(
+        http_get=fake_get,
+        rate_limiter=WikidataRateLimiter(min_delay_seconds=1.5, sleep=sleep, monotonic=monotonic),
+        cache={},
+    )
+
+    first = client.enrich_species(
+        SpeciesContext(
+            accepted_taxon_key="gbif:100",
+            accepted_scientific_name="Papilio demoleus",
+            family_key="gbif:10",
+            family="Papilionidae",
+            genus_key="gbif:90",
+            genus="Papilio",
+            current_names=("Papilio demoleus",),
+        )
+    )
+    second = client.enrich_species(
+        SpeciesContext(
+            accepted_taxon_key="gbif:101",
+            accepted_scientific_name="Papilio machaon",
+            family_key="gbif:10",
+            family="Papilionidae",
+            genus_key="gbif:90",
+            genus="Papilio",
+            current_names=("Papilio machaon",),
+        )
+    )
+    cached = client.enrich_species(
+        SpeciesContext(
+            accepted_taxon_key="gbif:100",
+            accepted_scientific_name="Papilio demoleus",
+            family_key="gbif:10",
+            family="Papilionidae",
+            genus_key="gbif:90",
+            genus="Papilio",
+            current_names=("Papilio demoleus",),
+        )
+    )
+
+    assert first["name_assertions"] == []
+    assert second["name_assertions"] == []
+    assert cached["name_assertions"] == []
+    assert len(calls) == 2
+    assert sleeps == [1.5]
