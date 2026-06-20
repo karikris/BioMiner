@@ -87,6 +87,7 @@ def test_build_step1_fetch_report_includes_required_metrics(tmp_path) -> None:
         duplicate_records_skipped=50,
         query_hits_inserted=480,
         duplicate_query_hits_skipped=20,
+        duplicate_hit_report_rows=20,
         image_urls_queued=450,
         work_items_claimed=2,
         api_calls_made=2,
@@ -127,6 +128,7 @@ def test_build_step1_fetch_report_includes_required_metrics(tmp_path) -> None:
     assert report["status"] == "completed"
     assert report["api_budget"]["api_calls_used"] == 2
     assert report["api_budget"]["remaining_soft_budget"] == 3498
+    assert report["rows"]["duplicate_hit_report_rows"] == 20
     assert report["throughput"]["records_per_call"] == 250
     assert report["timings"]["total_sec"] == 20
     assert report["storage_bytes"]["raw_json_bytes"] == 2
@@ -158,6 +160,7 @@ def test_build_step1_fetch_report_uses_recorded_api_call_timings(tmp_path) -> No
         duplicate_records_skipped=0,
         query_hits_inserted=3,
         duplicate_query_hits_skipped=0,
+        duplicate_hit_report_rows=0,
         image_urls_queued=3,
         work_items_claimed=3,
         api_calls_made=3,
@@ -225,6 +228,7 @@ def test_build_step1_fetch_report_includes_split_progress_metrics(tmp_path) -> N
         duplicate_records_skipped=50,
         query_hits_inserted=450,
         duplicate_query_hits_skipped=0,
+        duplicate_hit_report_rows=50,
         image_urls_queued=450,
         work_items_claimed=1,
         api_calls_made=1,
@@ -302,6 +306,7 @@ def test_build_step1_fetch_report_includes_dynamic_page_enqueue_metrics(tmp_path
         duplicate_records_skipped=0,
         query_hits_inserted=500,
         duplicate_query_hits_skipped=0,
+        duplicate_hit_report_rows=0,
         image_urls_queued=500,
         work_items_claimed=1,
         api_calls_made=1,
