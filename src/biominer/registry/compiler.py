@@ -8,9 +8,9 @@ from typing import Any
 
 import polars as pl
 
+from biominer.common.artifacts import write_json_artifact, write_parquet_artifact
 from biominer.registry.normalize import normalize_name_key
 from biominer.registry.scope import load_scope
-from biominer.storage.parquet import write_parquet
 
 
 REGISTRY_SCHEMA_VERSION = "registry-foundation-v1"
@@ -48,14 +48,17 @@ def compile_registry_fixture(
         output_dir=output,
     )
 
-    write_parquet(taxa, output / "taxa.parquet")
-    write_parquet(_taxon_relations_frame(taxa), output / "taxon_relations.parquet")
-    write_parquet(names, output / "names.parquet")
-    write_parquet(evidence, output / "name_evidence.parquet")
-    write_parquet(snapshots, output / "source_snapshots.parquet")
-    write_parquet(queries, output / "flickr_query_definitions.parquet")
-    write_parquet(qa, output / "qa_findings.parquet")
-    (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    artifacts = [
+        write_parquet_artifact(output / "taxa.parquet", taxa),
+        write_parquet_artifact(output / "taxon_relations.parquet", _taxon_relations_frame(taxa)),
+        write_parquet_artifact(output / "names.parquet", names),
+        write_parquet_artifact(output / "name_evidence.parquet", evidence),
+        write_parquet_artifact(output / "source_snapshots.parquet", snapshots),
+        write_parquet_artifact(output / "flickr_query_definitions.parquet", queries),
+        write_parquet_artifact(output / "qa_findings.parquet", qa),
+    ]
+    manifest["artifacts"] = [artifact.to_dict() for artifact in artifacts]
+    write_json_artifact(output / "manifest.json", manifest)
     return manifest
 
 

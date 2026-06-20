@@ -147,6 +147,19 @@ def test_compile_registry_fixture_writes_normalized_parquet_and_manifest(tmp_pat
     assert manifest["qa_status"] == "passed"
     assert manifest["qa_fatal_count"] == 0
     assert manifest["qa_warning_count"] == 1
+    assert {artifact["file_name"] for artifact in manifest["artifacts"]} == {
+        "taxa.parquet",
+        "taxon_relations.parquet",
+        "names.parquet",
+        "name_evidence.parquet",
+        "source_snapshots.parquet",
+        "flickr_query_definitions.parquet",
+        "qa_findings.parquet",
+    }
+    taxa_artifact = next(artifact for artifact in manifest["artifacts"] if artifact["file_name"] == "taxa.parquet")
+    assert taxa_artifact["rows"] == 9
+    assert taxa_artifact["size_bytes"] > 0
+    assert taxa_artifact["sha256"].startswith("sha256:")
     assert (output / "taxa.parquet").exists()
     assert (output / "names.parquet").exists()
     assert (output / "name_evidence.parquet").exists()
