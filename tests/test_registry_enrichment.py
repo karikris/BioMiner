@@ -11,7 +11,7 @@ import polars as pl
 from biominer.cli import build_parser, run
 from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.enrichment import SpeciesContext, build_enrichment_sources_from_registry, compile_enriched_registry, write_enrichment_sources
-from biominer.registry.enrichment_sources import ITISClient, _json_get
+from biominer.registry.enrichment_sources import ITISClient, WikidataClient, _json_get
 
 
 def _write_base_registry(tmp_path, species_names: tuple[str, ...] = ("Papilio demoleus",)):
@@ -382,6 +382,104 @@ def test_build_enrichment_sources_feeds_species_context_to_priority_services(tmp
     assert clients["col"].contexts[0].current_names == ("Papilio demoleus",)
 
 
+def test_source_split_runs_merge_with_existing_staged_sources(tmp_path) -> None:
+    registry, _scope = _write_base_registry(tmp_path)
+    write_enrichment_sources(
+        registry,
+        name_assertions=[
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Existing CoL Lime",
+                "language": "eng",
+                "script": "Latn",
+                "region": "",
+                "name_class": "vernacular",
+                "source": "CoL",
+                "source_record_id": "col:existing",
+                "trust_tier": "T2",
+                "precision_tier": "medium",
+                "confidence": "high",
+                "enabled": True,
+                "review_state": "accepted",
+            }
+        ],
+    )
+
+    manifest = build_enrichment_sources_from_registry(
+        registry_dir=registry,
+        sources=("wikidata",),
+        clients={"wikidata": RecordingEnrichmentClient("Wikidata", "Wikidata Lime")},
+        workers=1,
+        progress_every=1,
+        checkpoint_every=1,
+        report_dir=tmp_path / "reports",
+    )
+
+    assertions = pl.read_parquet(registry / "source_name_assertions.parquet")
+    assert assertions.select("source").to_series().to_list() == ["CoL", "Wikidata"]
+    assert assertions.select("display_name").to_series().to_list() == ["Existing CoL Lime", "Wikidata Lime"]
+    assert manifest["source_order"] == ["wikidata"]
+    assert manifest["name_assertion_rows"] == 2
+
+
+def test_source_split_partial_run_replaces_only_completed_taxa(tmp_path) -> None:
+    registry, _scope = _write_base_registry(tmp_path, species_names=("Papilio demoleus", "Papilio machaon"))
+    write_enrichment_sources(
+        registry,
+        name_assertions=[
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Old Wikidata Lime",
+                "language": "eng",
+                "script": "Latn",
+                "region": "",
+                "name_class": "vernacular",
+                "source": "Wikidata",
+                "source_record_id": "wikidata:old:100",
+                "trust_tier": "T3",
+                "precision_tier": "medium",
+                "confidence": "low",
+                "enabled": False,
+                "review_state": "candidate",
+            },
+            {
+                "accepted_taxon_key": "gbif:101",
+                "display_name": "Old Wikidata Machaon",
+                "language": "eng",
+                "script": "Latn",
+                "region": "",
+                "name_class": "vernacular",
+                "source": "Wikidata",
+                "source_record_id": "wikidata:old:101",
+                "trust_tier": "T3",
+                "precision_tier": "medium",
+                "confidence": "low",
+                "enabled": False,
+                "review_state": "candidate",
+            },
+        ],
+    )
+
+    class EmptyClient:
+        def enrich_species(self, context):  # noqa: ANN001 - test double returns no new data for completed taxon.
+            return {"name_assertions": [], "external_links": [], "source_snapshots": []}
+
+    build_enrichment_sources_from_registry(
+        registry_dir=registry,
+        sources=("wikidata",),
+        clients={"wikidata": EmptyClient()},
+        workers=1,
+        limit=1,
+        progress_every=1,
+        checkpoint_every=1,
+        report_dir=tmp_path / "reports",
+    )
+
+    assertions = pl.read_parquet(registry / "source_name_assertions.parquet")
+    assert assertions.select("accepted_taxon_key").to_series().to_list() == ["gbif:101"]
+    assert assertions.select("display_name").to_series().to_list() == ["Old Wikidata Machaon"]
+
+
 def test_build_enrichment_sources_checkpoints_logs_and_reports(tmp_path, caplog) -> None:
     registry, _scope = _write_base_registry(tmp_path, species_names=("Papilio demoleus", "Papilio machaon", "Papilio polytes"))
     caplog.set_level(logging.INFO, logger="biominer.registry.enrichment")
@@ -661,3 +759,40 @@ def test_json_get_propagates_permanent_4xx_from_retrying_client(monkeypatch) -> 
         raise AssertionError("expected permanent HTTP error")
 
     assert len(attempts) == 1
+
+
+def test_wikidata_client_uses_wbsearchentities_with_maxlag() -> None:
+    calls = []
+
+    def fake_get(path: str, params: dict[str, object]) -> dict[str, object]:
+        calls.append({"path": path, "params": params})
+        return {"search": [{"id": "Q1", "label": "Lime butterfly", "aliases": ["Citrus swallowtail"]}]}
+
+    result = WikidataClient(http_get=fake_get).enrich_species(
+        SpeciesContext(
+            accepted_taxon_key="gbif:100",
+            accepted_scientific_name="Papilio demoleus",
+            family_key="gbif:10",
+            family="Papilionidae",
+            genus_key="gbif:90",
+            genus="Papilio",
+            current_names=("Papilio demoleus",),
+        )
+    )
+
+    assert calls == [
+        {
+            "path": "/w/api.php",
+            "params": {
+                "action": "wbsearchentities",
+                "format": "json",
+                "language": "en",
+                "limit": 10,
+                "maxlag": 5,
+                "search": "Papilio demoleus",
+                "type": "item",
+            },
+        }
+    ]
+    assert result["external_links"][0]["source_taxon_id"] == "Q1"
+    assert [row["display_name"] for row in result["name_assertions"]] == ["Lime butterfly", "Citrus swallowtail"]

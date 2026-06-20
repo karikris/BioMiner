@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Iterator
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import fcntl
 import hashlib
 import json
 import logging
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 ClientBundleFactory = Callable[[], dict[str, Any]]
 _worker_local = threading.local()
 _source_semaphores = {"wikidata": threading.BoundedSemaphore(1)}
+_SOURCE_LABELS = {"col": "CoL", "wikidata": "Wikidata", "itis": "ITIS"}
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,7 @@ def build_enrichment_sources_from_registry(
     external_links: list[dict[str, Any]] = []
     source_snapshots: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
+    completed_taxon_keys: list[str] = []
     contexts = [_species_context(row, names_by_taxon) for row in species_rows]
     registry_version = _registry_version(registry)
     logger.info(
@@ -114,6 +117,7 @@ def build_enrichment_sources_from_registry(
         max_retries=max_retries,
     ):
         completed += 1
+        completed_taxon_keys.append(result.accepted_taxon_key)
         name_assertions.extend(result.name_assertions)
         external_links.extend(result.external_links)
         source_snapshots.extend(result.source_snapshots)
@@ -135,6 +139,7 @@ def build_enrichment_sources_from_registry(
                 external_links=external_links,
                 source_snapshots=source_snapshots,
                 errors=errors,
+                completed_taxon_keys=completed_taxon_keys,
                 completed=completed,
                 total=len(contexts),
                 source_order=source_order,
@@ -155,6 +160,7 @@ def build_enrichment_sources_from_registry(
             external_links=[],
             source_snapshots=[],
             errors=[],
+            completed_taxon_keys=[],
             completed=0,
             total=0,
             source_order=source_order,
@@ -328,6 +334,34 @@ def _source_query_limit(source: str):
     return semaphore if semaphore is not None else nullcontext()
 
 
+def _source_labels(sources: tuple[str, ...]) -> set[str]:
+    return {_SOURCE_LABELS.get(source, source) for source in sources}
+
+
+@contextmanager
+def _registry_enrichment_lock(registry: Path) -> Iterator[None]:
+    registry.mkdir(parents=True, exist_ok=True)
+    lock_path = registry / ".enrichment_write.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _existing_rows_to_preserve(path: Path, *, source_labels: set[str], completed_taxon_keys: set[str] | None = None) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    preserved = []
+    for row in pl.read_parquet(path).to_dicts():
+        source = str(row.get("source") or "")
+        accepted_taxon_key = str(row.get("accepted_taxon_key") or "")
+        if source not in source_labels or (completed_taxon_keys is not None and accepted_taxon_key not in completed_taxon_keys):
+            preserved.append(row)
+    return preserved
+
+
 def _write_enrichment_checkpoint(
     registry: Path,
     *,
@@ -335,6 +369,7 @@ def _write_enrichment_checkpoint(
     external_links: list[dict[str, Any]],
     source_snapshots: list[dict[str, Any]],
     errors: list[dict[str, str]],
+    completed_taxon_keys: list[str],
     completed: int,
     total: int,
     source_order: tuple[str, ...],
@@ -347,35 +382,50 @@ def _write_enrichment_checkpoint(
     started: float,
     status: str,
 ) -> dict[str, Any]:
-    manifest = write_enrichment_sources(
-        registry,
-        name_assertions=_deduplicate_dicts(name_assertions, keys=("assertion_id", "accepted_taxon_key", "source", "source_record_id", "display_name")),
-        external_links=_deduplicate_dicts(external_links, keys=("accepted_taxon_key", "source", "source_taxon_id", "match_method")),
-        source_snapshots=_deduplicate_dicts(source_snapshots, keys=("source", "source_version", "source_path", "source_response_hash")),
-    )
-    manifest.update(
-        {
-            "registry_dir": str(registry),
-            "source_order": list(source_order),
-            "source_worker_limits": source_worker_limits,
-            "species_seen": total,
-            "completed_species": completed,
-            "status": status,
-            "workers": workers,
-            "progress_every": progress_every,
-            "checkpoint_every": checkpoint_every,
-            "max_retries": max_retries,
-            "limit": limit,
-            "errors": errors,
-            "error_counts_by_source": dict(sorted(Counter(error["source"] for error in errors).items())),
-            "elapsed_seconds": round(monotonic() - started, 6),
-            "species_per_second": round(completed / max(monotonic() - started, 0.000001), 6),
-            "artifact_bytes": _artifact_bytes(registry),
-        }
-    )
-    manifest_artifact = write_json_artifact(registry / ENRICHMENT_MANIFEST_FILE, manifest)
-    manifest.setdefault("artifacts", {})[ENRICHMENT_MANIFEST_FILE] = manifest_artifact.to_dict()
-    write_json_artifact(registry / ENRICHMENT_MANIFEST_FILE, manifest)
+    with _registry_enrichment_lock(registry):
+        current_source_labels = _source_labels(source_order)
+        completed_taxon_key_set = {str(key) for key in completed_taxon_keys if str(key)}
+        staged_assertions = [
+            *_existing_rows_to_preserve(registry / SOURCE_ASSERTIONS_FILE, source_labels=current_source_labels, completed_taxon_keys=completed_taxon_key_set),
+            *_deduplicate_dicts(name_assertions, keys=("assertion_id", "accepted_taxon_key", "source", "source_record_id", "display_name")),
+        ]
+        staged_links = [
+            *_existing_rows_to_preserve(registry / EXTERNAL_LINKS_FILE, source_labels=current_source_labels, completed_taxon_keys=completed_taxon_key_set),
+            *_deduplicate_dicts(external_links, keys=("accepted_taxon_key", "source", "source_taxon_id", "match_method")),
+        ]
+        staged_snapshots = [
+            *_existing_rows_to_preserve(registry / ENRICHMENT_SOURCE_SNAPSHOTS_FILE, source_labels=current_source_labels),
+            *_deduplicate_dicts(source_snapshots, keys=("source", "source_version", "source_path", "source_response_hash")),
+        ]
+        manifest = write_enrichment_sources(
+            registry,
+            name_assertions=_deduplicate_dicts(staged_assertions, keys=("assertion_id", "accepted_taxon_key", "source", "source_record_id", "display_name")),
+            external_links=_deduplicate_dicts(staged_links, keys=("accepted_taxon_key", "source", "source_taxon_id", "match_method")),
+            source_snapshots=_deduplicate_dicts(staged_snapshots, keys=("source", "source_version", "source_path", "source_response_hash")),
+        )
+        manifest.update(
+            {
+                "registry_dir": str(registry),
+                "source_order": list(source_order),
+                "source_worker_limits": source_worker_limits,
+                "species_seen": total,
+                "completed_species": completed,
+                "status": status,
+                "workers": workers,
+                "progress_every": progress_every,
+                "checkpoint_every": checkpoint_every,
+                "max_retries": max_retries,
+                "limit": limit,
+                "errors": errors,
+                "error_counts_by_source": dict(sorted(Counter(error["source"] for error in errors).items())),
+                "elapsed_seconds": round(monotonic() - started, 6),
+                "species_per_second": round(completed / max(monotonic() - started, 0.000001), 6),
+                "artifact_bytes": _artifact_bytes(registry),
+            }
+        )
+        manifest_artifact = write_json_artifact(registry / ENRICHMENT_MANIFEST_FILE, manifest)
+        manifest.setdefault("artifacts", {})[ENRICHMENT_MANIFEST_FILE] = manifest_artifact.to_dict()
+        write_json_artifact(registry / ENRICHMENT_MANIFEST_FILE, manifest)
     logger.info(
         "registry.enrichment.checkpoint_write completed=%d/%d status=%s name_assertion_rows=%d external_taxon_link_rows=%d source_snapshot_rows=%d files=%s artifact_bytes=%s elapsed_seconds=%.1f",
         completed,

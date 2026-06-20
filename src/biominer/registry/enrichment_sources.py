@@ -55,13 +55,16 @@ class WikidataClient:
         self._http_get = http_get or _json_get("https://www.wikidata.org", max_retries=max_retries)
 
     def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
-        query = (
-            "SELECT ?item ?itemLabel ?gbif WHERE { "
-            f"?item wdt:P846 \"{context.accepted_taxon_key.removeprefix('gbif:')}\". "
-            "OPTIONAL { ?item wdt:P846 ?gbif. } "
-            "SERVICE wikibase:label { bd:serviceParam wikibase:language \"[AUTO_LANGUAGE],en,es,fr,de,zh,ja\". } } LIMIT 10"
-        )
-        payload = self._http_get("/w/api.php", {"action": "query", "format": "json", "list": "search", "srsearch": context.accepted_scientific_name})
+        params = {
+            "action": "wbsearchentities",
+            "format": "json",
+            "language": "en",
+            "limit": 10,
+            "maxlag": 5,
+            "search": context.accepted_scientific_name,
+            "type": "item",
+        }
+        payload = self._http_get("/w/api.php", params)
         rows = _result_rows(payload)
         assertions: list[dict[str, Any]] = []
         links: list[dict[str, Any]] = []
@@ -89,7 +92,7 @@ class WikidataClient:
                             disabled_reason="wikidata_alias_requires_corroboration",
                         )
                     )
-        return {"name_assertions": assertions, "external_links": links, "source_snapshots": [_snapshot("Wikidata", "wikibase-api", query=query)]}
+        return {"name_assertions": assertions, "external_links": links, "source_snapshots": [_snapshot("Wikidata", "wikibase-api", query=f"wbsearchentities:{context.accepted_scientific_name}")]}
 
 
 class ITISClient:
