@@ -86,6 +86,23 @@ def test_retrying_http_client_uses_exponential_backoff_with_jitter() -> None:
     assert client.retry_count == 2
 
 
+def test_retrying_http_client_sends_configured_headers() -> None:
+    seen_user_agents: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_user_agents.append(request.headers["User-Agent"])
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    with RetryingHTTPClient(
+        base_url="https://example.test",
+        headers={"User-Agent": "BioMiner/test"},
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        assert client.get_json("/resource") == {"ok": True}
+
+    assert seen_user_agents == ["BioMiner/test"]
+
+
 def test_artifact_writers_return_size_and_sha256(tmp_path) -> None:
     json_meta = write_json_artifact(tmp_path / "manifest.json", {"b": 2, "a": 1})
     parquet_meta = write_parquet_artifact(tmp_path / "rows.parquet", pl.DataFrame({"id": [1, 2]}))

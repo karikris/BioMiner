@@ -570,31 +570,21 @@ def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, 
 def test_source_clients_reuse_http_client_between_requests(monkeypatch) -> None:
     created_clients = []
 
-    class FakeResponse:
-        def __init__(self, payload):
-            self._payload = payload
-
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self):
-            return self._payload
-
-    class FakeHTTPClient:
-        def __init__(self, *, base_url: str, timeout: float, headers: dict[str, str] | None = None) -> None:
+    class FakeRetryingHTTPClient:
+        def __init__(self, *, base_url: str, max_retries: int, timeout_seconds: float, sleep, headers: dict[str, str]) -> None:  # noqa: ANN001 - mirrors production seam.
             self.base_url = base_url
-            self.timeout = timeout
+            self.timeout_seconds = timeout_seconds
             self.headers = headers or {}
             self.paths = []
             created_clients.append(self)
 
-        def get(self, path: str, params):
+        def get_json(self, path: str, *, params):
             self.paths.append(path)
             if path.endswith("searchByScientificName"):
-                return FakeResponse({"scientificNames": [{"combinedName": "Papilio demoleus", "tsn": "123"}]})
-            return FakeResponse({"commonNames": [{"commonName": "Lime Swallowtail", "language": "eng"}]})
+                return {"scientificNames": [{"combinedName": "Papilio demoleus", "tsn": "123"}]}
+            return {"commonNames": [{"commonName": "Lime Swallowtail", "language": "eng"}]}
 
-    monkeypatch.setattr("biominer.registry.enrichment_sources.httpx.Client", FakeHTTPClient)
+    monkeypatch.setattr("biominer.registry.enrichment_sources.RetryingHTTPClient", FakeRetryingHTTPClient)
 
     client = ITISClient()
     result = client.enrich_species(
@@ -617,66 +607,46 @@ def test_source_clients_reuse_http_client_between_requests(monkeypatch) -> None:
     assert result["name_assertions"][0]["display_name"] == "Lime Swallowtail"
 
 
-def test_json_get_sends_user_agent_and_retries_transient_errors(monkeypatch) -> None:
-    attempts = []
+def test_json_get_uses_shared_retrying_http_client_with_user_agent(monkeypatch) -> None:
+    created_clients = []
+    calls = []
 
-    class FakeResponse:
-        def __init__(self, status_code: int, payload: dict[str, object]) -> None:
-            self.status_code = status_code
-            self.headers = {"Retry-After": "0"} if status_code == 503 else {}
-            self._payload = payload
-            self.request = httpx.Request("GET", "https://example.test/resource")
-
-        def raise_for_status(self) -> None:
-            if self.status_code >= 400:
-                raise httpx.HTTPStatusError("boom", request=self.request, response=self)
-
-        def json(self):
-            return self._payload
-
-    class FakeHTTPClient:
-        def __init__(self, *, base_url: str, timeout: float, headers: dict[str, str]) -> None:
+    class FakeRetryingHTTPClient:
+        def __init__(self, *, base_url: str, max_retries: int, timeout_seconds: float, sleep, headers: dict[str, str]) -> None:  # noqa: ANN001 - mirrors production seam.
             self.base_url = base_url
-            self.timeout = timeout
+            self.max_retries = max_retries
+            self.timeout_seconds = timeout_seconds
             self.headers = headers
+            created_clients.append(self)
 
-        def get(self, path: str, params):
-            attempts.append({"path": path, "params": params, "headers": self.headers})
-            if len(attempts) == 1:
-                return FakeResponse(503, {"error": "temporary"})
-            return FakeResponse(200, {"results": [{"name": "ok"}]})
+        def get_json(self, path: str, *, params):
+            calls.append({"path": path, "params": params})
+            return [{"name": "ok"}]
 
-    monkeypatch.setattr("biominer.registry.enrichment_sources.httpx.Client", FakeHTTPClient)
+    monkeypatch.setattr("biominer.registry.enrichment_sources.RetryingHTTPClient", FakeRetryingHTTPClient)
     payload = _json_get("https://example.test", max_retries=2, sleep=lambda _seconds: None)("/resource", {"q": "Papilio"})
 
     assert payload == {"results": [{"name": "ok"}]}
-    assert len(attempts) == 2
-    assert attempts[0]["headers"]["User-Agent"].startswith("BioMiner/")
+    assert calls == [{"path": "/resource", "params": {"q": "Papilio"}}]
+    assert created_clients[0].base_url == "https://example.test"
+    assert created_clients[0].max_retries == 2
+    assert created_clients[0].headers["User-Agent"].startswith("BioMiner/")
 
 
-def test_json_get_does_not_retry_permanent_4xx(monkeypatch) -> None:
+def test_json_get_propagates_permanent_4xx_from_retrying_client(monkeypatch) -> None:
     attempts = []
 
-    class FakeResponse:
-        status_code = 403
-        headers = {}
-        request = httpx.Request("GET", "https://example.test/resource")
+    class FakeRetryingHTTPClient:
+        def __init__(self, *, base_url: str, max_retries: int, timeout_seconds: float, sleep, headers: dict[str, str]) -> None:  # noqa: ANN001 - mirrors production seam.
+            return None
 
-        def raise_for_status(self) -> None:
-            raise httpx.HTTPStatusError("forbidden", request=self.request, response=self)
-
-        def json(self):
-            return {"error": "forbidden"}
-
-    class FakeHTTPClient:
-        def __init__(self, *, base_url: str, timeout: float, headers: dict[str, str]) -> None:
-            self.headers = headers
-
-        def get(self, path: str, params):
+        def get_json(self, path: str, *, params):
             attempts.append((path, params))
-            return FakeResponse()
+            request = httpx.Request("GET", "https://example.test/resource")
+            response = httpx.Response(403, request=request)
+            raise httpx.HTTPStatusError("forbidden", request=request, response=response)
 
-    monkeypatch.setattr("biominer.registry.enrichment_sources.httpx.Client", FakeHTTPClient)
+    monkeypatch.setattr("biominer.registry.enrichment_sources.RetryingHTTPClient", FakeRetryingHTTPClient)
 
     try:
         _json_get("https://example.test", max_retries=2, sleep=lambda _seconds: None)("/resource", {})

@@ -22,6 +22,7 @@ class RetryingHTTPClient:
         max_connections: int = 8,
         sleep: Sleep = time.sleep,
         jitter: Jitter | None = None,
+        headers: dict[str, str] | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         if max_retries < 0:
@@ -33,6 +34,7 @@ class RetryingHTTPClient:
         self._jitter = jitter or (lambda _attempt: 0.0)
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
+            headers=headers,
             timeout=httpx.Timeout(timeout_seconds),
             limits=httpx.Limits(max_connections=max_connections, max_keepalive_connections=max_connections),
             transport=transport,
