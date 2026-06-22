@@ -44,6 +44,9 @@ Use four phases for every change:
 * Do not paste long logs, raw rows, Parquet dumps, or repeated progress.
 * During API or BioCLIP runs: start once, write PID/log/manifest/checkpoints, and rely on structured progress logs rather than repeated agent polling.
 * Use `$headroom` skill to compress all model inputs and outputs.
+* Before sending large or repetitive content to the model, call `headroom_compress` and reason from the compressed result plus its compression hash.
+* For model responses or compressed outputs that need exact omitted details, call `headroom_retrieve` with a narrow query rather than reloading the whole original payload.
+* If Headroom MCP tools are unavailable, state that explicitly and fall back to focused reads/searches with compact summaries.
 
 ## MCP/tool rules
 
