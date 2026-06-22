@@ -18,7 +18,7 @@ BioCLIP output is screening evidence only. BioMiner does not claim taxonomic val
 Step 0: taxonomic registry
   GBIF accepted spine
   + synonyms and vernacular names
-  + optional CoL/Wikidata/iNaturalist/EOL evidence
+  + optional CoL/iNaturalist/ITIS/EOL evidence
   + reviewed translation candidates
   -> versioned registry Parquet
   -> atomic Flickr tags/text query definitions
@@ -84,7 +84,7 @@ The active implementation covers:
 - targeted Flickr comment review;
 - compact JSON, Markdown, Parquet, and DuckDB-based QA.
 
-Supplementary Catalogue of Life, Wikidata, iNaturalist, EOL, and generated-translation adapters remain lower-trust enrichment layers and must not replace GBIF accepted identities.
+Supplementary Catalogue of Life, iNaturalist, ITIS, EOL, and generated-translation adapters remain lower-trust enrichment layers and must not replace GBIF accepted identities.
 
 ## Repository layout
 
@@ -423,12 +423,12 @@ Supplementary sources:
 | Source | Use |
 |---|---|
 | Catalogue of Life | accepted/synonym evidence, vernacular evidence, discrepancy QA |
-| Wikidata | labels, aliases, language, QID, linked external IDs |
 | iNaturalist | regional preferred and place-linked names |
+| ITIS | common names and source taxon links |
 | EOL | optional additional vernacular evidence |
 | Translation providers | disabled candidate translations only |
 
-Wikidata entities must first be linked to an accepted taxon. Wikidata category relationships are not taxonomic authority.
+iNaturalist and ITIS names must first be linked to an accepted GBIF taxon and must not replace GBIF accepted identity.
 
 Regional names retain geographic scope. An Australian preferred name must not be promoted to a global name without preserving that scope.
 
@@ -441,7 +441,6 @@ Default trust policy:
 | GBIF or CoL vernacular | T2 |
 | iNaturalist established regional name | T2/T4 |
 | EOL common name | T2/T3 |
-| Wikidata label or alias | T3 |
 | Curator override | T5 |
 | Independently corroborated translation | T6 |
 | Raw generated translation | T7 |

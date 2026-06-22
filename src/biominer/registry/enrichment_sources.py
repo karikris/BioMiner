@@ -58,48 +58,6 @@ class CatalogueOfLifeClient:
         return {"name_assertions": assertions, "external_links": links, "source_snapshots": [_snapshot("CoL", "checklistbank-dataset-3")]}
 
 
-class WikidataClient:
-    def __init__(self, *, http_get: HTTPGet | None = None, max_retries: int = 5) -> None:
-        self._http_get = http_get or _json_get("https://www.wikidata.org", max_retries=max_retries)
-
-    def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
-        query = (
-            "SELECT ?item ?itemLabel ?gbif WHERE { "
-            f"?item wdt:P846 \"{context.accepted_taxon_key.removeprefix('gbif:')}\". "
-            "OPTIONAL { ?item wdt:P846 ?gbif. } "
-            "SERVICE wikibase:label { bd:serviceParam wikibase:language \"[AUTO_LANGUAGE],en,es,fr,de,zh,ja\". } } LIMIT 10"
-        )
-        payload = self._http_get("/w/api.php", {"action": "query", "format": "json", "list": "search", "srsearch": context.accepted_scientific_name})
-        rows = _result_rows(payload)
-        assertions: list[dict[str, Any]] = []
-        links: list[dict[str, Any]] = []
-        for row in rows:
-            qid = _first_string(row, "title", "id", "item")
-            label = _first_string(row, "label", "title", "itemLabel")
-            if not qid or not label:
-                continue
-            links.append(_external_link(context, source="Wikidata", source_taxon_id=qid, match_method="gbif_taxon_id"))
-            if label != context.accepted_scientific_name:
-                assertions.append(_name_assertion(context, label, source="Wikidata", source_record_id=f"wikidata:{qid}:label", trust_tier="T3"))
-            for alias in _list_values(row, "aliases"):
-                alias_text = _first_string(alias, "value", "label") if isinstance(alias, dict) else str(alias or "")
-                if alias_text:
-                    assertions.append(
-                        _name_assertion(
-                            context,
-                            alias_text,
-                            source="Wikidata",
-                            source_record_id=f"wikidata:{qid}:alias:{alias_text}",
-                            trust_tier="T3",
-                            confidence="low",
-                            enabled=False,
-                            review_state="candidate",
-                            disabled_reason="wikidata_alias_requires_corroboration",
-                        )
-                    )
-        return {"name_assertions": assertions, "external_links": links, "source_snapshots": [_snapshot("Wikidata", "wikibase-api", query=query)]}
-
-
 class ITISClient:
     def __init__(self, *, http_get: HTTPGet | None = None, max_retries: int = 5) -> None:
         self._http_get = http_get or _json_get("https://www.itis.gov", max_retries=max_retries)

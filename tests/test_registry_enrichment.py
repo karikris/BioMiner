@@ -10,7 +10,14 @@ import polars as pl
 
 from biominer.cli import build_parser, run
 from biominer.registry.compiler import compile_registry_fixture
-from biominer.registry.enrichment import SpeciesContext, build_enrichment_sources_from_registry, compile_enriched_registry, write_enrichment_sources
+from biominer.registry.enrichment import (
+    SOURCE_WORK_LEDGER_FILE,
+    SpeciesContext,
+    build_enrichment_sources_from_registry,
+    compile_enriched_registry,
+    default_enrichment_clients,
+    write_enrichment_sources,
+)
 from biominer.registry.enrichment_sources import ITISClient, _json_get
 
 
@@ -143,9 +150,9 @@ def test_compile_enriched_registry_adds_enabled_names_and_preserves_candidates(t
                 "script": "Latn",
                 "region": "",
                 "name_class": "vernacular",
-                "source": "Wikidata",
-                "source_record_id": "wikidata:Q1:label:en",
-                "trust_tier": "T3",
+                "source": "iNaturalist",
+                "source_record_id": "inaturalist:1:preferred_common_name",
+                "trust_tier": "T2",
                 "precision_tier": "medium",
                 "confidence": "high",
                 "enabled": True,
@@ -158,34 +165,34 @@ def test_compile_enriched_registry_adds_enabled_names_and_preserves_candidates(t
                 "script": "Latn",
                 "region": "",
                 "name_class": "vernacular_alias",
-                "source": "Wikidata",
-                "source_record_id": "wikidata:Q1:alias:en:0",
-                "trust_tier": "T3",
+                "source": "iNaturalist",
+                "source_record_id": "inaturalist:1:name:en:Citrus butterfly",
+                "trust_tier": "T4",
                 "precision_tier": "medium",
                 "confidence": "low",
                 "enabled": False,
                 "review_state": "candidate",
-                "disabled_reason": "wikidata_alias_requires_corroboration",
+                "disabled_reason": "regional_name_requires_review",
             },
         ],
         external_links=[
             {
                 "accepted_taxon_key": "gbif:100",
-                "source": "Wikidata",
-                "source_taxon_id": "Q1",
-                "match_method": "gbif_taxon_id",
+                "source": "iNaturalist",
+                "source_taxon_id": "1",
+                "match_method": "scientific_name",
                 "match_confidence": "high",
                 "lineage_check": "accepted_taxon_key",
             }
         ],
         source_snapshots=[
             {
-                "source": "Wikidata",
-                "source_version": "wikidata-entities",
+                "source": "iNaturalist",
+                "source_version": "inaturalist-v1-taxa",
                 "retrieved_at": "2026-06-20T00:00:00+00:00",
-                "source_path": "memory://wikidata",
+                "source_path": "memory://inaturalist",
                 "source_response_hash": "sha256:test",
-                "licence": "CC0-1.0",
+                "licence": "",
             }
         ],
     )
@@ -217,9 +224,9 @@ def test_compile_enriched_registry_adds_enabled_names_and_preserves_candidates(t
     assert "Citrus butterfly" in candidates["display_name"].to_list()
     assert "Citrus butterfly" not in queries["normalized_query_term"].to_list()
     assert evidence.filter(pl.col("source") == "ITIS").height == 1
-    assert evidence.filter(pl.col("source") == "Wikidata").height == 2
-    assert links.select("source_taxon_id").to_series().to_list() == ["Q1"]
-    assert snapshots.select("source").to_series().to_list() == ["GBIF", "Wikidata"]
+    assert evidence.filter(pl.col("source") == "iNaturalist").height == 2
+    assert links.select("source_taxon_id").to_series().to_list() == ["1"]
+    assert snapshots.select("source").to_series().to_list() == ["GBIF", "iNaturalist"]
 
 
 def test_compile_enriched_registry_keeps_conflicting_source_name_disabled(tmp_path) -> None:
@@ -306,6 +313,60 @@ def test_registry_compile_enriched_cli_writes_expanded_outputs(tmp_path, capsys)
     assert (registry / "source_name_assertions.parquet").exists()
 
 
+def test_compile_enriched_registry_filters_stale_sources_when_requested(tmp_path) -> None:
+    registry, scope = _write_base_registry(tmp_path)
+    write_enrichment_sources(
+        registry,
+        name_assertions=[
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "CoL Lime",
+                "language": "eng",
+                "script": "Latn",
+                "region": "",
+                "name_class": "vernacular",
+                "source": "CoL",
+                "source_record_id": "col:name:1",
+                "trust_tier": "T2",
+                "precision_tier": "medium",
+                "confidence": "high",
+                "enabled": True,
+                "review_state": "accepted",
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Old Wiki Lime",
+                "language": "eng",
+                "script": "Latn",
+                "region": "",
+                "name_class": "vernacular",
+                "source": "Wikidata",
+                "source_record_id": "wikidata:old",
+                "trust_tier": "T3",
+                "precision_tier": "medium",
+                "confidence": "low",
+                "enabled": True,
+                "review_state": "accepted",
+            },
+        ],
+    )
+
+    manifest = compile_enriched_registry(
+        registry_dir=registry,
+        registry_version="enriched",
+        scope_path=scope,
+        requested_sources=("col", "inaturalist", "itis"),
+    )
+
+    names = pl.read_parquet(registry / "names.parquet")
+    assertions = pl.read_parquet(registry / "source_name_assertions.parquet")
+
+    assert manifest["enrichment_sources"] == ["col", "inaturalist", "itis"]
+    assert "CoL Lime" in names["display_name"].to_list()
+    assert "Old Wiki Lime" not in names["display_name"].to_list()
+    assert "Wikidata" not in assertions["source"].to_list()
+
+
 class RecordingEnrichmentClient:
     def __init__(self, source: str, display_name: str, *, enabled: bool = True) -> None:
         self.source = source
@@ -326,12 +387,12 @@ class RecordingEnrichmentClient:
                     "name_class": "vernacular",
                     "source": self.source,
                     "source_record_id": f"{self.source}:name:{context.accepted_taxon_key}",
-                    "trust_tier": "T2" if self.source != "Wikidata" else "T3",
+                    "trust_tier": "T2",
                     "precision_tier": "medium",
                     "confidence": "high",
                     "enabled": self.enabled,
                     "review_state": "accepted" if self.enabled else "candidate",
-                    "disabled_reason": "" if self.enabled else "wikidata_alias_requires_corroboration",
+                    "disabled_reason": "" if self.enabled else "source_name_requires_review",
                 }
             ],
             "external_links": [
@@ -361,22 +422,22 @@ def test_build_enrichment_sources_feeds_species_context_to_priority_services(tmp
     registry, _scope = _write_base_registry(tmp_path)
     clients = {
         "col": RecordingEnrichmentClient("CoL", "CoL Lime"),
-        "wikidata": RecordingEnrichmentClient("Wikidata", "Wikidata Lime"),
+        "inaturalist": RecordingEnrichmentClient("iNaturalist", "iNat Lime"),
         "itis": RecordingEnrichmentClient("ITIS", "ITIS Lime"),
     }
 
     manifest = build_enrichment_sources_from_registry(
         registry_dir=registry,
-        sources=("col", "wikidata", "itis"),
+        sources=("col", "inaturalist", "itis"),
         clients=clients,
         report_dir=tmp_path / "reports",
     )
 
     assertions = pl.read_parquet(registry / "source_name_assertions.parquet")
     links = pl.read_parquet(registry / "external_taxon_links.parquet")
-    assert manifest["source_order"] == ["col", "wikidata", "itis"]
+    assert manifest["source_order"] == ["col", "inaturalist", "itis"]
     assert manifest["species_seen"] == 1
-    assert assertions.select("source").to_series().to_list() == ["CoL", "Wikidata", "ITIS"]
+    assert assertions.select("source").to_series().to_list() == ["CoL", "iNaturalist", "ITIS"]
     assert links.height == 3
     assert [client.contexts[0].accepted_scientific_name for client in clients.values()] == ["Papilio demoleus"] * 3
     assert clients["col"].contexts[0].current_names == ("Papilio demoleus",)
@@ -456,20 +517,20 @@ class ConcurrencyTrackingClient:
                 self.active -= 1
 
 
-def test_wikidata_source_is_limited_to_one_concurrent_query(tmp_path) -> None:
+def test_inaturalist_source_is_limited_to_one_concurrent_query(tmp_path) -> None:
     registry, _scope = _write_base_registry(
         tmp_path,
         species_names=("Papilio demoleus", "Papilio machaon", "Papilio polytes", "Papilio xuthus"),
     )
     trackers = {
         "col": ConcurrencyTrackingClient("CoL", delay_seconds=0.03),
-        "wikidata": ConcurrencyTrackingClient("Wikidata", delay_seconds=0.03),
+        "inaturalist": ConcurrencyTrackingClient("iNaturalist", delay_seconds=0.03),
         "itis": ConcurrencyTrackingClient("ITIS", delay_seconds=0.06),
     }
 
     manifest = build_enrichment_sources_from_registry(
         registry_dir=registry,
-        sources=("col", "wikidata", "itis"),
+        sources=("col", "inaturalist", "itis"),
         clients=trackers,
         workers=4,
         progress_every=4,
@@ -479,8 +540,84 @@ def test_wikidata_source_is_limited_to_one_concurrent_query(tmp_path) -> None:
 
     assert trackers["col"].max_active > 1
     assert trackers["itis"].max_active > 1
-    assert trackers["wikidata"].max_active == 1
-    assert manifest["source_worker_limits"] == {"col": 4, "wikidata": 1, "itis": 4}
+    assert trackers["inaturalist"].max_active == 1
+    assert manifest["source_worker_limits"] == {"col": 4, "inaturalist": 1, "itis": 4}
+
+
+def test_default_enrichment_clients_do_not_include_wikidata() -> None:
+    clients = default_enrichment_clients(max_retries=0)
+
+    assert list(clients) == ["col", "inaturalist", "itis"]
+    assert "wikidata" not in clients
+
+
+def test_inaturalist_daily_budget_writes_ledger_and_stops_cleanly(tmp_path) -> None:
+    registry, _scope = _write_base_registry(
+        tmp_path,
+        species_names=("Papilio demoleus", "Papilio machaon", "Papilio polytes"),
+    )
+    client = RecordingEnrichmentClient("iNaturalist", "iNat Lime")
+
+    manifest = build_enrichment_sources_from_registry(
+        registry_dir=registry,
+        sources=("inaturalist",),
+        clients={"inaturalist": client},
+        inaturalist_daily_request_limit=2,
+        workers=1,
+        progress_every=1,
+        checkpoint_every=1,
+        report_dir=tmp_path / "reports",
+    )
+
+    assertions = pl.read_parquet(registry / "source_name_assertions.parquet")
+    ledger = pl.read_parquet(registry / SOURCE_WORK_LEDGER_FILE)
+
+    assert manifest["status"] == "budget_exhausted"
+    assert manifest["source_budget_exhausted"] == ["inaturalist"]
+    assert client.contexts[0].accepted_scientific_name == "Papilio demoleus"
+    assert client.contexts[1].accepted_scientific_name == "Papilio machaon"
+    assert len(client.contexts) == 2
+    assert assertions.height == 2
+    assert ledger.filter((pl.col("source") == "inaturalist") & (pl.col("status") == "complete")).height == 2
+    assert ledger.select(pl.col("request_count").sum()).item() == 2
+
+
+def test_enrichment_resume_skips_completed_source_work(tmp_path) -> None:
+    registry, _scope = _write_base_registry(
+        tmp_path,
+        species_names=("Papilio demoleus", "Papilio machaon"),
+    )
+    first_client = RecordingEnrichmentClient("iNaturalist", "iNat Lime")
+    build_enrichment_sources_from_registry(
+        registry_dir=registry,
+        sources=("inaturalist",),
+        clients={"inaturalist": first_client},
+        inaturalist_daily_request_limit=1,
+        workers=1,
+        progress_every=1,
+        checkpoint_every=1,
+        report_dir=tmp_path / "reports",
+    )
+    second_client = RecordingEnrichmentClient("iNaturalist", "iNat Lime")
+
+    manifest = build_enrichment_sources_from_registry(
+        registry_dir=registry,
+        sources=("inaturalist",),
+        clients={"inaturalist": second_client},
+        inaturalist_daily_request_limit=10,
+        workers=1,
+        progress_every=1,
+        checkpoint_every=1,
+        report_dir=tmp_path / "reports",
+    )
+
+    assertions = pl.read_parquet(registry / "source_name_assertions.parquet")
+    ledger = pl.read_parquet(registry / SOURCE_WORK_LEDGER_FILE)
+
+    assert manifest["status"] == "complete"
+    assert [context.accepted_scientific_name for context in second_client.contexts] == ["Papilio machaon"]
+    assert assertions.height == 2
+    assert ledger.filter(pl.col("status") == "complete").height == 2
 
 
 def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, capsys, monkeypatch) -> None:
@@ -494,6 +631,7 @@ def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, 
         progress_every,
         checkpoint_every,
         max_retries,
+        inaturalist_daily_request_limit,
         limit,
         report_dir,
     ):  # noqa: ANN001 - CLI wiring test.
@@ -524,6 +662,7 @@ def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, 
             "progress_every": progress_every,
             "checkpoint_every": checkpoint_every,
             "max_retries": max_retries,
+            "inaturalist_daily_request_limit": inaturalist_daily_request_limit,
             "limit": limit,
             "report_dir": str(report_dir),
         }
@@ -537,7 +676,7 @@ def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, 
             "--registry-dir",
             str(registry),
             "--sources",
-            "col,wikidata,itis",
+            "col,inaturalist,itis",
             "--workers",
             "3",
             "--progress-every",
@@ -546,6 +685,8 @@ def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, 
             "5",
             "--max-retries",
             "6",
+            "--inaturalist-daily-request-limit",
+            "8",
             "--limit",
             "7",
             "--report-dir",
@@ -557,11 +698,12 @@ def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, 
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["registry_dir"] == str(registry)
-    assert payload["source_order"] == ["col", "wikidata", "itis"]
+    assert payload["source_order"] == ["col", "inaturalist", "itis"]
     assert payload["workers"] == 3
     assert payload["progress_every"] == 4
     assert payload["checkpoint_every"] == 5
     assert payload["max_retries"] == 6
+    assert payload["inaturalist_daily_request_limit"] == 8
     assert payload["limit"] == 7
     assert payload["report_dir"] == str(tmp_path / "reports")
     assert (registry / "source_name_assertions.parquet").exists()

@@ -181,7 +181,7 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
     manifest = json.loads((registry / "manifest.json").read_text(encoding="utf-8"))
 
     assert result["manifest"]["qa_status"] == "passed"
-    assert manifest["enrichment_sources"] == ["col", "itis", "inaturalist"]
+    assert manifest["enrichment_sources"] == ["col", "inaturalist", "itis"]
     assert {"Lime Swallowtail", "Lime Butterfly", "Chequered Swallowtail"}.issubset(set(names["display_name"].to_list()))
     assert "Stale Wikidata Name" not in names["display_name"].to_list()
     assert "Stale Wikidata Name" not in assertions["display_name"].to_list()

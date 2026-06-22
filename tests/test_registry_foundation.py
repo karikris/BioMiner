@@ -195,7 +195,7 @@ def test_compile_registry_fixture_marks_missing_configured_family_as_fatal(tmp_p
     assert {"severity": "fatal", "code": "configured_family_not_in_source", "subject": "Hedylidae"} in qa.to_dicts()
 
 
-def test_compile_registry_fixture_reports_duplicate_query_ids_and_name_warnings(tmp_path) -> None:
+def test_compile_registry_fixture_keeps_query_ids_unique_for_repeated_name_ids(tmp_path) -> None:
     source = tmp_path / "source.json"
     output = tmp_path / "registry"
     _write_fixture(source)
@@ -240,8 +240,11 @@ def test_compile_registry_fixture_reports_duplicate_query_ids_and_name_warnings(
     manifest = compile_registry_fixture(source, output, registry_version="test-registry")
 
     qa = pl.read_parquet(output / "qa_findings.parquet").to_dicts()
-    assert manifest["qa_status"] == "failed"
-    assert {"severity": "fatal", "code": "duplicate_query_definition_id", "subject": "4"} in qa
+    queries = pl.read_parquet(output / "flickr_query_definitions.parquet")
+
+    assert manifest["qa_status"] == "passed"
+    assert queries.select("query_definition_id").to_series().n_unique() == queries.height
+    assert not any(row["code"] == "duplicate_query_definition_id" for row in qa)
     assert {"severity": "warning", "code": "normalized_name_collision", "subject": "lime butterfly"} in qa
     assert {"severity": "warning", "code": "weak_language_or_script_metadata", "subject": "Lime Butterfly"} in qa
     assert {"severity": "warning", "code": "missing_name_source_evidence", "subject": "Lime Butterfly"} in qa

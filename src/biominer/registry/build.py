@@ -10,16 +10,13 @@ import subprocess
 from typing import Any
 
 from biominer.registry.compiler import compile_registry_fixture
-from biominer.registry.enrichment import build_enrichment_sources_from_registry, compile_enriched_registry
+from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST_DAILY_REQUEST_LIMIT, build_enrichment_sources_from_registry, compile_enriched_registry
 from biominer.registry.gbif_production import ProductionGBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
 
 
 logger = logging.getLogger(__name__)
-DEFAULT_ENRICHMENT_SOURCES = ("col", "itis", "inaturalist")
-
-
 def build_registry(
     *,
     output_dir: str | Path,
@@ -34,6 +31,7 @@ def build_registry(
     checkpoint_every: int = 500,
     max_retries: int = 5,
     enrichment_sources: tuple[str, ...] = DEFAULT_ENRICHMENT_SOURCES,
+    inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
     skip_enrichment: bool = False,
 ) -> dict[str, Any]:
     output = Path(output_dir)
@@ -110,6 +108,7 @@ def build_registry(
             progress_every=progress_every,
             checkpoint_every=checkpoint_every,
             max_retries=max_retries,
+            inaturalist_daily_request_limit=inaturalist_daily_request_limit,
             report_dir=report_dir,
         )
         logger.info(
@@ -151,6 +150,7 @@ def build_registry(
         registry_version=registry_version,
         retrieved_at=retrieved,
         enrichment_sources=enrichment_sources,
+        inaturalist_daily_request_limit=inaturalist_daily_request_limit,
         skip_enrichment=skip_enrichment,
         enrichment_manifest=enrichment_manifest,
     )
@@ -174,6 +174,7 @@ def _build_report(
     registry_version: str,
     retrieved_at: str,
     enrichment_sources: tuple[str, ...],
+    inaturalist_daily_request_limit: int,
     skip_enrichment: bool,
     enrichment_manifest: dict[str, Any] | None,
 ) -> dict[str, Any]:
@@ -202,6 +203,7 @@ def _build_report(
         "qa_warning_count": manifest.get("qa_warning_count"),
         "enrichment_enabled": not skip_enrichment,
         "enrichment_sources": list(enrichment_sources) if not skip_enrichment else [],
+        "inaturalist_daily_request_limit": inaturalist_daily_request_limit if not skip_enrichment else None,
         "enrichment_name_assertion_rows": manifest.get("enrichment_name_assertion_rows"),
         "enabled_enrichment_name_rows": manifest.get("enabled_enrichment_name_rows"),
         "name_candidate_rows": manifest.get("name_candidate_rows"),
@@ -239,6 +241,7 @@ def _report_markdown(report: dict[str, Any]) -> str:
             f"- QA warning: {report['qa_warning_count']}",
             f"- Enrichment enabled: {report['enrichment_enabled']}",
             f"- Enrichment sources: {', '.join(report['enrichment_sources'])}",
+            f"- iNaturalist daily request limit: {report['inaturalist_daily_request_limit']}",
             f"- Enabled enrichment names: {report['enabled_enrichment_name_rows']}",
             f"- Source errors: {report['source_error_rows']}",
             "",
@@ -274,8 +277,11 @@ def _canonical_registry_files() -> tuple[str, ...]:
         "source_name_assertions.parquet",
         "external_taxon_links.parquet",
         "source_error_records.parquet",
+        "source_work_ledger.parquet",
         "name_candidates.parquet",
         "combined_source_snapshot.json",
+        "enrichment_coverage.json",
+        "enrichment_coverage.md",
     )
 
 

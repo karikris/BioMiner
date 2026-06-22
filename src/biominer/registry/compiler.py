@@ -98,13 +98,15 @@ def _taxa_frame(rows: list[dict[str, Any]], *, scope_id: str) -> pl.DataFrame:
 
 
 def _names_frame(rows: list[dict[str, Any]], *, registry_version: str) -> pl.DataFrame:
-    normalized_rows = []
+    normalized_rows = {}
     for row in rows:
         display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
         accepted_taxon_key = str(row.get("accepted_taxon_key") or "")
-        normalized_rows.append(
+        name_id = _stable_id("name", registry_version, accepted_taxon_key, display_name, row.get("language"), row.get("region"))
+        normalized_rows.setdefault(
+            name_id,
             {
-                "name_id": _stable_id("name", registry_version, accepted_taxon_key, display_name, row.get("language"), row.get("region")),
+                "name_id": name_id,
                 "registry_version": registry_version,
                 "accepted_taxon_key": accepted_taxon_key,
                 "verbatim_name": str(row.get("verbatim_name") or display_name),
@@ -122,9 +124,9 @@ def _names_frame(rows: list[dict[str, Any]], *, registry_version: str) -> pl.Dat
                 "confidence": str(row.get("confidence") or ""),
                 "enabled": bool(row.get("enabled", True)),
                 "disabled_reason": str(row.get("disabled_reason") or ""),
-            }
+            },
         )
-    return pl.DataFrame(normalized_rows, schema=_names_schema())
+    return pl.DataFrame(list(normalized_rows.values()), schema=_names_schema())
 
 
 def _name_evidence_frame(rows: list[dict[str, Any]], *, registry_version: str, source_payload: dict[str, Any]) -> pl.DataFrame:
@@ -199,10 +201,16 @@ def _query_definitions_frame(names: pl.DataFrame, taxa: pl.DataFrame, *, registr
                     "query_definition_id": _stable_id(
                         "flickr-query",
                         registry_version,
+                        item["accepted_taxon_key"],
                         item["name_id"],
                         field,
+                        item["normalized_match_key"],
+                        item["language"],
                         item["region"],
                         item["bbox"],
+                        item["name_class"],
+                        item["source"],
+                        item["source_record_id"],
                     ),
                     "registry_schema_version": REGISTRY_SCHEMA_VERSION,
                     "compiler_version": COMPILER_VERSION,

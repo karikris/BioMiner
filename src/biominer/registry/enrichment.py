@@ -27,15 +27,20 @@ SOURCE_ASSERTIONS_FILE = "source_name_assertions.parquet"
 EXTERNAL_LINKS_FILE = "external_taxon_links.parquet"
 ENRICHMENT_SOURCE_SNAPSHOTS_FILE = "enrichment_source_snapshots.parquet"
 SOURCE_ERRORS_FILE = "source_error_records.parquet"
+SOURCE_WORK_LEDGER_FILE = "source_work_ledger.parquet"
 FINAL_SOURCE_SNAPSHOTS_FILE = "source_snapshots.parquet"
 NAME_CANDIDATES_FILE = "name_candidates.parquet"
 ENRICHMENT_MANIFEST_FILE = "enrichment_manifest.json"
+DEFAULT_ENRICHMENT_SOURCES = ("col", "inaturalist", "itis")
+INATURALIST_DAILY_REQUEST_LIMIT = 10000
+INATURALIST_WORKER_LIMIT = 1
+INATURALIST_REQUESTS_PER_SPECIES = 1
 
 
 logger = logging.getLogger(__name__)
 ClientBundleFactory = Callable[[], dict[str, Any]]
 _worker_local = threading.local()
-_source_semaphores = {"wikidata": threading.BoundedSemaphore(1)}
+_source_semaphores = {"inaturalist": threading.BoundedSemaphore(INATURALIST_WORKER_LIMIT)}
 
 
 @dataclass(frozen=True)
@@ -56,13 +61,38 @@ class SpeciesEnrichmentResult:
     external_links: tuple[dict[str, Any], ...]
     source_snapshots: tuple[dict[str, Any], ...]
     errors: tuple[dict[str, str], ...]
+    work_records: tuple[dict[str, Any], ...]
+
+
+class DailyRequestBudget:
+    def __init__(self, *, source: str, daily_limit: int, existing_rows: list[dict[str, Any]], day: str | None = None) -> None:
+        self.source = source
+        self.daily_limit = daily_limit
+        self.day = day or datetime.now(UTC).date().isoformat()
+        self._lock = threading.Lock()
+        self.used = sum(
+            int(row.get("request_count") or 0)
+            for row in existing_rows
+            if row.get("source") == source and row.get("request_day") == self.day
+        )
+        self.exhausted = False
+
+    def reserve(self, count: int = 1) -> bool:
+        if self.daily_limit <= 0:
+            return True
+        with self._lock:
+            if self.used + count > self.daily_limit:
+                self.exhausted = True
+                return False
+            self.used += count
+            return True
 
 
 def build_enrichment_sources_from_registry(
     *,
     registry_dir: str | Path,
     enrichment_dir: str | Path | None = None,
-    sources: tuple[str, ...] = ("col", "wikidata", "itis"),
+    sources: tuple[str, ...] = DEFAULT_ENRICHMENT_SOURCES,
     clients: dict[str, Any] | None = None,
     client_factory: ClientBundleFactory | None = None,
     workers: int = 8,
@@ -70,6 +100,7 @@ def build_enrichment_sources_from_registry(
     checkpoint_every: int = 500,
     max_retries: int = 5,
     limit: int = 0,
+    inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
     report_dir: str | Path = "reports",
 ) -> dict[str, Any]:
     _validate_runtime_options(workers=workers, progress_every=progress_every, checkpoint_every=checkpoint_every, max_retries=max_retries, limit=limit)
@@ -86,10 +117,40 @@ def build_enrichment_sources_from_registry(
         names_by_taxon.setdefault(str(row.get("accepted_taxon_key") or ""), []).append(str(row.get("display_name") or ""))
 
     source_order = tuple(sources)
-    name_assertions: list[dict[str, Any]] = []
-    external_links: list[dict[str, Any]] = []
-    source_snapshots: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
+    allowed_source_names = set(_source_display_names(source_order))
+    allowed_error_sources = set((*source_order, *allowed_source_names))
+    name_assertions: list[dict[str, Any]] = [
+        row for row in _read_or_empty(output / SOURCE_ASSERTIONS_FILE, _name_assertion_schema()).to_dicts()
+        if str(row.get("source") or "") in allowed_source_names
+    ]
+    external_links: list[dict[str, Any]] = [
+        row for row in _read_or_empty(output / EXTERNAL_LINKS_FILE, _external_link_schema()).to_dicts()
+        if str(row.get("source") or "") in allowed_source_names
+    ]
+    source_snapshots: list[dict[str, Any]] = [
+        row for row in _read_or_empty(output / ENRICHMENT_SOURCE_SNAPSHOTS_FILE, _source_snapshot_schema()).to_dicts()
+        if str(row.get("source") or "") in allowed_source_names
+    ]
+    errors: list[dict[str, str]] = [
+        row for row in _read_or_empty(output / SOURCE_ERRORS_FILE, _source_error_schema()).to_dicts()
+        if str(row.get("source") or "") in allowed_error_sources
+    ]
+    work_ledger: list[dict[str, Any]] = [
+        row for row in _read_or_empty(output / SOURCE_WORK_LEDGER_FILE, _source_work_schema()).to_dicts()
+        if str(row.get("source") or "") in source_order
+    ]
+    completed_work = {
+        (str(row.get("source") or ""), str(row.get("accepted_taxon_key") or ""))
+        for row in work_ledger
+        if str(row.get("status") or "") == "complete"
+    }
+    budgets = {
+        "inaturalist": DailyRequestBudget(
+            source="inaturalist",
+            daily_limit=inaturalist_daily_request_limit,
+            existing_rows=work_ledger,
+        )
+    }
     contexts = [_species_context(row, names_by_taxon) for row in species_rows]
     registry_version = _registry_version(registry)
     logger.info(
@@ -113,12 +174,15 @@ def build_enrichment_sources_from_registry(
         client_factory=client_factory,
         workers=workers,
         max_retries=max_retries,
+        completed_work=completed_work,
+        budgets=budgets,
     ):
         completed += 1
         name_assertions.extend(result.name_assertions)
         external_links.extend(result.external_links)
         source_snapshots.extend(result.source_snapshots)
         errors.extend(result.errors)
+        work_ledger.extend(result.work_records)
         if completed % progress_every == 0 or completed == len(contexts):
             logger.info(
                 "registry.enrichment.progress completed=%d/%d name_assertion_rows=%d external_taxon_link_rows=%d errors=%d elapsed_seconds=%.1f",
@@ -136,6 +200,7 @@ def build_enrichment_sources_from_registry(
                 external_links=external_links,
                 source_snapshots=source_snapshots,
                 errors=errors,
+                work_ledger=work_ledger,
                 completed=completed,
                 total=len(contexts),
                 source_order=source_order,
@@ -146,7 +211,8 @@ def build_enrichment_sources_from_registry(
                 max_retries=max_retries,
                 limit=limit,
                 started=started,
-                status="partial" if completed < len(contexts) else "complete",
+                base_registry_dir=registry,
+                status=_run_status(completed=completed, total=len(contexts), budgets=budgets),
             )
 
     if not contexts:
@@ -156,6 +222,7 @@ def build_enrichment_sources_from_registry(
             external_links=[],
             source_snapshots=[],
             errors=[],
+            work_ledger=[],
             completed=0,
             total=0,
             source_order=source_order,
@@ -166,6 +233,7 @@ def build_enrichment_sources_from_registry(
             max_retries=max_retries,
             limit=limit,
             started=started,
+            base_registry_dir=registry,
             status="complete",
         )
 
@@ -195,12 +263,11 @@ def build_enrichment_sources_from_registry(
 
 
 def default_enrichment_clients(*, max_retries: int = 5) -> dict[str, Any]:
-    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, INaturalistClient, ITISClient, WikidataClient
+    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, INaturalistClient, ITISClient
 
     return {
         "col": CatalogueOfLifeClient(max_retries=max_retries),
         "inaturalist": INaturalistClient(max_retries=max_retries),
-        "wikidata": WikidataClient(max_retries=max_retries),
         "itis": ITISClient(max_retries=max_retries),
     }
 
@@ -212,6 +279,7 @@ def write_enrichment_sources(
     external_links: list[dict[str, Any]] | None = None,
     source_snapshots: list[dict[str, Any]] | None = None,
     source_errors: list[dict[str, Any]] | None = None,
+    source_work: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -219,10 +287,12 @@ def write_enrichment_sources(
     links = _external_links_frame(external_links or [])
     snapshots = _source_snapshots_frame(source_snapshots or [])
     errors = _source_errors_frame(source_errors or [])
+    work = _source_work_frame(source_work or [])
     assertions.write_parquet(output / SOURCE_ASSERTIONS_FILE)
     links.write_parquet(output / EXTERNAL_LINKS_FILE)
     snapshots.write_parquet(output / ENRICHMENT_SOURCE_SNAPSHOTS_FILE)
     errors.write_parquet(output / SOURCE_ERRORS_FILE)
+    work.write_parquet(output / SOURCE_WORK_LEDGER_FILE)
     manifest = {
         "schema_version": ENRICHMENT_SCHEMA_VERSION,
         "created_at": datetime.now(UTC).isoformat(),
@@ -230,11 +300,13 @@ def write_enrichment_sources(
         "external_taxon_link_rows": links.height,
         "source_snapshot_rows": snapshots.height,
         "source_error_rows": errors.height,
+        "source_work_rows": work.height,
         "files": {
             "source_name_assertions": SOURCE_ASSERTIONS_FILE,
             "external_taxon_links": EXTERNAL_LINKS_FILE,
             "enrichment_source_snapshots": ENRICHMENT_SOURCE_SNAPSHOTS_FILE,
             "source_error_records": SOURCE_ERRORS_FILE,
+            "source_work_ledger": SOURCE_WORK_LEDGER_FILE,
         },
     }
     (output / ENRICHMENT_MANIFEST_FILE).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
@@ -262,12 +334,23 @@ def _enrichment_iterator(
     client_factory: ClientBundleFactory | None,
     workers: int,
     max_retries: int,
+    completed_work: set[tuple[str, str]],
+    budgets: dict[str, DailyRequestBudget],
 ) -> Iterator[SpeciesEnrichmentResult]:
     if not contexts:
         return iter(())
     if workers == 1:
         bundle = clients or (client_factory() if client_factory else default_enrichment_clients(max_retries=max_retries))
-        return (_enrich_species_context(context, sources=sources, clients=bundle) for context in contexts)
+        return (
+            _enrich_species_context(
+                context,
+                sources=sources,
+                clients=bundle,
+                completed_work=completed_work,
+                budgets=budgets,
+            )
+            for context in contexts
+        )
 
     def initializer() -> None:
         _worker_local.clients = clients or (client_factory() if client_factory else default_enrichment_clients(max_retries=max_retries))
@@ -276,7 +359,13 @@ def _enrichment_iterator(
         bundle = getattr(_worker_local, "clients", None)
         if bundle is None:
             raise RuntimeError("Enrichment worker clients were not initialized")
-        return _enrich_species_context(context, sources=sources, clients=bundle)
+        return _enrich_species_context(
+            context,
+            sources=sources,
+            clients=bundle,
+            completed_work=completed_work,
+            budgets=budgets,
+        )
 
     def generator() -> Iterator[SpeciesEnrichmentResult]:
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="registry-enrich", initializer=initializer) as executor:
@@ -285,15 +374,31 @@ def _enrichment_iterator(
     return generator()
 
 
-def _enrich_species_context(context: SpeciesContext, *, sources: tuple[str, ...], clients: dict[str, Any]) -> SpeciesEnrichmentResult:
+def _enrich_species_context(
+    context: SpeciesContext,
+    *,
+    sources: tuple[str, ...],
+    clients: dict[str, Any],
+    completed_work: set[tuple[str, str]],
+    budgets: dict[str, DailyRequestBudget],
+) -> SpeciesEnrichmentResult:
     name_assertions: list[dict[str, Any]] = []
     external_links: list[dict[str, Any]] = []
     source_snapshots: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
+    work_records: list[dict[str, Any]] = []
     for source in sources:
+        if (source, context.accepted_taxon_key) in completed_work:
+            continue
         client = clients.get(source)
         if client is None:
             errors.append({"source": source, "accepted_taxon_key": context.accepted_taxon_key, "error": "missing_client"})
+            work_records.append(_source_work_record(source=source, context=context, status="error", error_class="missing_client", request_count=0))
+            continue
+        request_count = _request_count_for_source(source)
+        budget = budgets.get(source)
+        if budget is not None and not budget.reserve(request_count):
+            work_records.append(_source_work_record(source=source, context=context, status="budget_exhausted", request_count=0))
             continue
         try:
             with _source_query_limit(source):
@@ -317,26 +422,70 @@ def _enrich_species_context(context: SpeciesContext, *, sources: tuple[str, ...]
                 context.accepted_taxon_key,
                 type(exc).__name__,
             )
+            work_records.append(
+                _source_work_record(
+                    source=source,
+                    context=context,
+                    status="error",
+                    error_class=type(exc).__name__,
+                    request_count=request_count,
+                )
+            )
             continue
         name_assertions.extend(result.get("name_assertions", []))
         external_links.extend(result.get("external_links", []))
         source_snapshots.extend(result.get("source_snapshots", []))
+        work_records.append(_source_work_record(source=source, context=context, status="complete", request_count=request_count))
     return SpeciesEnrichmentResult(
         accepted_taxon_key=context.accepted_taxon_key,
         name_assertions=tuple(name_assertions),
         external_links=tuple(external_links),
         source_snapshots=tuple(source_snapshots),
         errors=tuple(errors),
+        work_records=tuple(work_records),
     )
 
 
 def _source_worker_limits(sources: tuple[str, ...], workers: int) -> dict[str, int]:
-    return {source: (1 if source == "wikidata" else workers) for source in sources}
+    return {source: (INATURALIST_WORKER_LIMIT if source == "inaturalist" else workers) for source in sources}
 
 
 def _source_query_limit(source: str):
     semaphore = _source_semaphores.get(source)
     return semaphore if semaphore is not None else nullcontext()
+
+
+def _request_count_for_source(source: str) -> int:
+    return INATURALIST_REQUESTS_PER_SPECIES if source == "inaturalist" else 1
+
+
+def _source_work_record(
+    *,
+    source: str,
+    context: SpeciesContext,
+    status: str,
+    error_class: str = "",
+    request_count: int = 1,
+) -> dict[str, Any]:
+    now = datetime.now(UTC).isoformat()
+    return {
+        "source": source,
+        "accepted_taxon_key": context.accepted_taxon_key,
+        "accepted_scientific_name": context.accepted_scientific_name,
+        "status": status,
+        "attempts": 1,
+        "started_at": now,
+        "finished_at": now,
+        "request_count": request_count,
+        "error_class": error_class,
+        "request_day": datetime.now(UTC).date().isoformat(),
+    }
+
+
+def _run_status(*, completed: int, total: int, budgets: dict[str, DailyRequestBudget]) -> str:
+    if any(budget.exhausted for budget in budgets.values()):
+        return "budget_exhausted"
+    return "partial" if completed < total else "complete"
 
 
 def _write_enrichment_checkpoint(
@@ -346,6 +495,7 @@ def _write_enrichment_checkpoint(
     external_links: list[dict[str, Any]],
     source_snapshots: list[dict[str, Any]],
     errors: list[dict[str, str]],
+    work_ledger: list[dict[str, Any]],
     completed: int,
     total: int,
     source_order: tuple[str, ...],
@@ -356,20 +506,35 @@ def _write_enrichment_checkpoint(
     max_retries: int,
     limit: int,
     started: float,
+    base_registry_dir: Path,
     status: str,
 ) -> dict[str, Any]:
+    deduplicated_work = _deduplicate_latest_dicts(work_ledger, keys=("source", "accepted_taxon_key"))
     manifest = write_enrichment_sources(
         registry,
         name_assertions=_deduplicate_dicts(name_assertions, keys=("assertion_id", "accepted_taxon_key", "source", "source_record_id", "display_name")),
         external_links=_deduplicate_dicts(external_links, keys=("accepted_taxon_key", "source", "source_taxon_id", "match_method")),
         source_snapshots=_deduplicate_dicts(source_snapshots, keys=("source", "source_version", "source_path", "source_response_hash")),
         source_errors=errors,
+        source_work=deduplicated_work,
     )
+    coverage = _enrichment_coverage(name_assertions=name_assertions, source_order=source_order, total_species=total)
+    _write_coverage_report(registry, coverage)
     manifest.update(
         {
             "registry_dir": str(registry),
             "source_order": list(source_order),
+            "source_config_hash": _stable_id("sources", *source_order),
+            "base_registry_dir": str(base_registry_dir),
+            "base_registry_hash": _registry_artifact_hash(base_registry_dir),
             "source_worker_limits": source_worker_limits,
+            "source_budget_exhausted": sorted(
+                {
+                    str(row.get("source") or "")
+                    for row in deduplicated_work
+                    if str(row.get("status") or "") == "budget_exhausted"
+                }
+            ),
             "species_seen": total,
             "completed_species": completed,
             "status": status,
@@ -378,6 +543,7 @@ def _write_enrichment_checkpoint(
             "checkpoint_every": checkpoint_every,
             "max_retries": max_retries,
             "limit": limit,
+            "coverage": coverage,
             "errors": errors,
             "error_counts_by_source": dict(sorted(Counter(error["source"] for error in errors).items())),
             "elapsed_seconds": round(monotonic() - started, 6),
@@ -424,13 +590,15 @@ def compile_enriched_registry(
     external_links = _read_or_empty(enrichment / EXTERNAL_LINKS_FILE, _external_link_schema())
     enrichment_snapshots = _read_or_empty(enrichment / ENRICHMENT_SOURCE_SNAPSHOTS_FILE, _source_snapshot_schema())
     source_errors = _read_or_empty(enrichment / SOURCE_ERRORS_FILE, _source_error_schema())
-    if requested_sources is not None:
-        allowed_sources = _source_display_names(requested_sources)
-        allowed_error_sources = tuple(dict.fromkeys((*requested_sources, *allowed_sources)))
-        assertions = assertions.filter(pl.col("source").is_in(allowed_sources))
-        external_links = external_links.filter(pl.col("source").is_in(allowed_sources))
-        enrichment_snapshots = enrichment_snapshots.filter(pl.col("source").is_in(allowed_sources))
-        source_errors = source_errors.filter(pl.col("source").is_in(allowed_error_sources))
+    source_work = _read_or_empty(enrichment / SOURCE_WORK_LEDGER_FILE, _source_work_schema())
+    effective_sources = requested_sources or DEFAULT_ENRICHMENT_SOURCES
+    allowed_sources = _source_display_names(effective_sources)
+    allowed_error_sources = tuple(dict.fromkeys((*effective_sources, *allowed_sources)))
+    assertions = assertions.filter(pl.col("source").is_in(allowed_sources))
+    external_links = external_links.filter(pl.col("source").is_in(allowed_sources))
+    enrichment_snapshots = enrichment_snapshots.filter(pl.col("source").is_in(allowed_sources))
+    source_errors = source_errors.filter(pl.col("source").is_in(allowed_error_sources))
+    source_work = source_work.filter(pl.col("source").is_in(effective_sources))
 
     accepted_keys = set(taxa["accepted_taxon_key"].to_list())
     candidates = _candidate_frame(assertions, accepted_keys)
@@ -451,6 +619,7 @@ def compile_enriched_registry(
     assertions.write_parquet(output / SOURCE_ASSERTIONS_FILE)
     external_links.write_parquet(output / EXTERNAL_LINKS_FILE)
     source_errors.write_parquet(output / SOURCE_ERRORS_FILE)
+    source_work.write_parquet(output / SOURCE_WORK_LEDGER_FILE)
     _merged_source_snapshots(base_snapshots, enrichment_snapshots).write_parquet(output / FINAL_SOURCE_SNAPSHOTS_FILE)
     _write_enriched_evidence(output, registry_version=registry_version, source_payload=source_payload, assertions=assertions)
 
@@ -476,7 +645,8 @@ def compile_enriched_registry(
             "name_candidate_rows": candidate_output.height,
             "external_taxon_link_rows": external_links.height,
             "source_error_rows": source_errors.height,
-            "enrichment_sources": list(requested_sources or []),
+            "source_work_rows": source_work.height,
+            "enrichment_sources": list(effective_sources),
         }
     )
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
@@ -518,7 +688,10 @@ def _artifact_bytes(registry: Path) -> dict[str, int]:
             EXTERNAL_LINKS_FILE,
             ENRICHMENT_SOURCE_SNAPSHOTS_FILE,
             SOURCE_ERRORS_FILE,
+            SOURCE_WORK_LEDGER_FILE,
             ENRICHMENT_MANIFEST_FILE,
+            "enrichment_coverage.json",
+            "enrichment_coverage.md",
         )
     }
 
@@ -671,7 +844,7 @@ def _combine_names(base_names: pl.DataFrame, enabled_enrichment: pl.DataFrame) -
 
 
 def _source_rank(source: str) -> int:
-    return {"GBIF": 0, "CoL": 1, "ITIS": 2, "iNaturalist": 3, "Wikidata": 4}.get(source, 9)
+    return {"GBIF": 0, "CoL": 1, "iNaturalist": 2, "ITIS": 3}.get(source, 9)
 
 
 def _source_name_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -778,6 +951,14 @@ def _deduplicate_dicts(rows: list[dict[str, Any]], *, keys: tuple[str, ...]) -> 
     return list(unique.values())
 
 
+def _deduplicate_latest_dicts(rows: list[dict[str, Any]], *, keys: tuple[str, ...]) -> list[dict[str, Any]]:
+    unique: dict[tuple[str, ...], dict[str, Any]] = {}
+    for row in rows:
+        key = tuple(str(row.get(column) or "") for column in keys)
+        unique[key] = row
+    return list(unique.values())
+
+
 def _external_links_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
     normalized = [
         {
@@ -825,8 +1006,75 @@ def _source_errors_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
     return pl.DataFrame(normalized, schema=_source_error_schema()) if normalized else pl.DataFrame(schema=_source_error_schema())
 
 
+def _source_work_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
+    normalized = [
+        {
+            "source": str(row.get("source") or ""),
+            "accepted_taxon_key": str(row.get("accepted_taxon_key") or ""),
+            "accepted_scientific_name": str(row.get("accepted_scientific_name") or ""),
+            "status": str(row.get("status") or ""),
+            "attempts": int(row.get("attempts") or 0),
+            "started_at": str(row.get("started_at") or ""),
+            "finished_at": str(row.get("finished_at") or ""),
+            "request_count": int(row.get("request_count") or 0),
+            "error_class": str(row.get("error_class") or ""),
+            "request_day": str(row.get("request_day") or ""),
+        }
+        for row in rows
+    ]
+    return pl.DataFrame(normalized, schema=_source_work_schema()) if normalized else pl.DataFrame(schema=_source_work_schema())
+
+
+def _enrichment_coverage(*, name_assertions: list[dict[str, Any]], source_order: tuple[str, ...], total_species: int) -> dict[str, Any]:
+    source_names = _source_display_names(source_order)
+    rows = [row for row in name_assertions if str(row.get("source") or "") in source_names]
+    taxa_by_source: dict[str, set[str]] = {source: set() for source in source_names}
+    names_by_source: dict[str, int] = {source: 0 for source in source_names}
+    for row in rows:
+        source = str(row.get("source") or "")
+        names_by_source[source] = names_by_source.get(source, 0) + 1
+        taxa_by_source.setdefault(source, set()).add(str(row.get("accepted_taxon_key") or ""))
+    enriched_taxa = set().union(*taxa_by_source.values()) if taxa_by_source else set()
+    return {
+        "total_species": total_species,
+        "enriched_species": len(enriched_taxa),
+        "gbif_only_species": max(total_species - len(enriched_taxa), 0),
+        "name_assertion_rows_by_source": dict(sorted(names_by_source.items())),
+        "enriched_species_by_source": {
+            source: len(keys)
+            for source, keys in sorted(taxa_by_source.items())
+        },
+    }
+
+
+def _write_coverage_report(output: Path, coverage: dict[str, Any]) -> None:
+    (output / "enrichment_coverage.json").write_text(json.dumps(coverage, indent=2, sort_keys=True), encoding="utf-8")
+    lines = [
+        "# Registry Enrichment Coverage",
+        "",
+        f"- Total species: {coverage['total_species']}",
+        f"- Enriched species: {coverage['enriched_species']}",
+        f"- GBIF-only species: {coverage['gbif_only_species']}",
+        "",
+        "## Name assertions by source",
+        "",
+    ]
+    lines.extend(f"- {source}: {count}" for source, count in coverage["name_assertion_rows_by_source"].items())
+    (output / "enrichment_coverage.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _registry_artifact_hash(registry: Path) -> str:
+    digest = hashlib.sha256()
+    for file_name in ("taxa.parquet", "names.parquet", "manifest.json"):
+        path = registry / file_name
+        if path.exists():
+            digest.update(file_name.encode("utf-8"))
+            digest.update(path.read_bytes())
+    return "sha256:" + digest.hexdigest()
+
+
 def _source_display_names(sources: tuple[str, ...]) -> tuple[str, ...]:
-    mapping = {"col": "CoL", "itis": "ITIS", "inaturalist": "iNaturalist", "wikidata": "Wikidata"}
+    mapping = {"col": "CoL", "itis": "ITIS", "inaturalist": "iNaturalist"}
     return tuple(mapping.get(source, source) for source in sources)
 
 
@@ -892,6 +1140,21 @@ def _source_error_schema() -> dict[str, pl.DataType]:
         "attempts": pl.Int64,
         "retryable": pl.String,
         "disposition": pl.String,
+    }
+
+
+def _source_work_schema() -> dict[str, pl.DataType]:
+    return {
+        "source": pl.String,
+        "accepted_taxon_key": pl.String,
+        "accepted_scientific_name": pl.String,
+        "status": pl.String,
+        "attempts": pl.Int64,
+        "started_at": pl.String,
+        "finished_at": pl.String,
+        "request_count": pl.Int64,
+        "error_class": pl.String,
+        "request_day": pl.String,
     }
 
 
