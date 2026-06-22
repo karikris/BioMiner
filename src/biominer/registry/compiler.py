@@ -8,7 +8,7 @@ from typing import Any
 
 import polars as pl
 
-from biominer.registry.normalize import normalize_name_key
+from biominer.registry.normalize import normalize_language_code, normalize_name_key
 from biominer.registry.scope import load_scope
 from biominer.storage.parquet import write_parquet
 
@@ -102,7 +102,8 @@ def _names_frame(rows: list[dict[str, Any]], *, registry_version: str) -> pl.Dat
     for row in rows:
         display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
         accepted_taxon_key = str(row.get("accepted_taxon_key") or "")
-        name_id = _stable_id("name", registry_version, accepted_taxon_key, display_name, row.get("language"), row.get("region"))
+        language = normalize_language_code(row.get("language"))
+        name_id = _stable_id("name", registry_version, accepted_taxon_key, display_name, language, row.get("region"))
         normalized_rows.setdefault(
             name_id,
             {
@@ -112,7 +113,7 @@ def _names_frame(rows: list[dict[str, Any]], *, registry_version: str) -> pl.Dat
                 "verbatim_name": str(row.get("verbatim_name") or display_name),
                 "display_name": display_name,
                 "normalized_match_key": normalize_name_key(display_name),
-                "language": str(row.get("language") or ""),
+                "language": language,
                 "script": str(row.get("script") or ""),
                 "region": str(row.get("region") or ""),
                 "bbox": str(row.get("bbox") or ""),
@@ -135,10 +136,11 @@ def _name_evidence_frame(rows: list[dict[str, Any]], *, registry_version: str, s
     for row in rows:
         display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
         accepted_taxon_key = str(row.get("accepted_taxon_key") or "")
+        language = normalize_language_code(row.get("language"))
         evidence_rows.append(
             {
                 "evidence_id": _stable_id("evidence", registry_version, accepted_taxon_key, display_name, row.get("source"), row.get("source_record_id")),
-                "name_id": _stable_id("name", registry_version, accepted_taxon_key, display_name, row.get("language"), row.get("region")),
+                "name_id": _stable_id("name", registry_version, accepted_taxon_key, display_name, language, row.get("region")),
                 "registry_version": registry_version,
                 "accepted_taxon_key": accepted_taxon_key,
                 "source": str(row.get("source") or ""),

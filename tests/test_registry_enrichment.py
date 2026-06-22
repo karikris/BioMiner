@@ -229,6 +229,61 @@ def test_compile_enriched_registry_adds_enabled_names_and_preserves_candidates(t
     assert snapshots.select("source").to_series().to_list() == ["GBIF", "iNaturalist"]
 
 
+def test_english_language_variants_normalize_and_deduplicate(tmp_path) -> None:
+    registry, scope = _write_base_registry(tmp_path)
+    write_enrichment_sources(
+        registry,
+        name_assertions=[
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Lime Butterfly",
+                "language": "en",
+                "script": "Latn",
+                "name_class": "vernacular",
+                "source": "iNaturalist",
+                "source_record_id": "inaturalist:1:name:en:Lime Butterfly",
+                "trust_tier": "T4",
+                "precision_tier": "medium",
+                "confidence": "medium",
+                "enabled": True,
+                "review_state": "accepted",
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Lime Butterfly",
+                "language": "English",
+                "script": "Latn",
+                "name_class": "vernacular",
+                "source": "ITIS",
+                "source_record_id": "itis:123:common:Lime Butterfly",
+                "trust_tier": "T2",
+                "precision_tier": "medium",
+                "confidence": "high",
+                "enabled": True,
+                "review_state": "accepted",
+            },
+        ],
+    )
+
+    staged = pl.read_parquet(registry / "source_name_assertions.parquet")
+    assert staged.select("language").to_series().to_list() == ["eng", "eng"]
+
+    compile_enriched_registry(registry_dir=registry, registry_version="enriched", scope_path=scope)
+
+    names = pl.read_parquet(registry / "names.parquet")
+    lime_names = names.filter(pl.col("display_name") == "Lime Butterfly")
+    assert lime_names.height == 1
+    assert lime_names.select("language").to_series().to_list() == ["eng"]
+
+    queries = pl.read_parquet(registry / "flickr_query_definitions.parquet")
+    lime_queries = queries.filter(pl.col("source_term") == "Lime Butterfly")
+    assert lime_queries.height == 2
+    assert set(lime_queries.select("language").to_series().to_list()) == {"eng"}
+
+    evidence = pl.read_parquet(registry / "name_evidence.parquet")
+    assert evidence.filter(pl.col("source").is_in(["iNaturalist", "ITIS"])).height == 2
+
+
 def test_compile_enriched_registry_keeps_conflicting_source_name_disabled(tmp_path) -> None:
     registry, scope = _write_base_registry(tmp_path)
     write_enrichment_sources(

@@ -19,7 +19,7 @@ from typing import Any
 import polars as pl
 
 from biominer.registry.compiler import compile_registry_fixture
-from biominer.registry.normalize import normalize_name_key
+from biominer.registry.normalize import normalize_language_code, normalize_name_key
 
 
 ENRICHMENT_SCHEMA_VERSION = "registry-enrichment-v1"
@@ -599,6 +599,7 @@ def compile_enriched_registry(
     enrichment_snapshots = enrichment_snapshots.filter(pl.col("source").is_in(allowed_sources))
     source_errors = source_errors.filter(pl.col("source").is_in(allowed_error_sources))
     source_work = source_work.filter(pl.col("source").is_in(effective_sources))
+    assertions = _name_assertions_frame(assertions.to_dicts())
 
     accepted_keys = set(taxa["accepted_taxon_key"].to_list())
     candidates = _candidate_frame(assertions, accepted_keys)
@@ -787,13 +788,14 @@ def _normalize_assertion(row: dict[str, Any]) -> dict[str, Any]:
     display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
     source = str(row.get("source") or "")
     source_record_id = str(row.get("source_record_id") or "")
+    language = normalize_language_code(row.get("language"))
     return {
         "assertion_id": str(row.get("assertion_id") or _stable_id("assertion", source, source_record_id, row.get("accepted_taxon_key"), display_name)),
         "accepted_taxon_key": str(row.get("accepted_taxon_key") or ""),
         "verbatim_name": str(row.get("verbatim_name") or display_name),
         "display_name": display_name,
         "normalized_match_key": normalize_name_key(display_name),
-        "language": str(row.get("language") or ""),
+        "language": language,
         "script": str(row.get("script") or ""),
         "region": str(row.get("region") or ""),
         "bbox": str(row.get("bbox") or ""),
@@ -849,11 +851,12 @@ def _source_rank(source: str) -> int:
 
 def _source_name_row(row: dict[str, Any]) -> dict[str, Any]:
     display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
+    language = normalize_language_code(row.get("language"))
     return {
         "accepted_taxon_key": str(row.get("accepted_taxon_key") or ""),
         "verbatim_name": str(row.get("verbatim_name") or display_name),
         "display_name": display_name,
-        "language": str(row.get("language") or ""),
+        "language": language,
         "script": str(row.get("script") or ""),
         "region": str(row.get("region") or ""),
         "bbox": str(row.get("bbox") or ""),
@@ -907,7 +910,8 @@ def _write_enriched_evidence(output: Path, *, registry_version: str, source_payl
     source_hash = _payload_hash(source_payload)
     for row in assertions.to_dicts():
         display_name = str(row.get("display_name") or "")
-        name_id = _stable_id("name", registry_version, row.get("accepted_taxon_key"), display_name, row.get("language"), row.get("region"))
+        language = normalize_language_code(row.get("language"))
+        name_id = _stable_id("name", registry_version, row.get("accepted_taxon_key"), display_name, language, row.get("region"))
         evidence_id = _stable_id("evidence", registry_version, row.get("accepted_taxon_key"), display_name, row.get("source"), row.get("source_record_id"))
         if evidence_id in seen_evidence_ids:
             continue
