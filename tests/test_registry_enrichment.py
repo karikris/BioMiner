@@ -19,6 +19,7 @@ from biominer.registry.enrichment import (
     write_enrichment_sources,
 )
 from biominer.registry.enrichment_sources import ITISClient, _json_get
+from biominer.registry.enrichment_sources import TMDGermanClient
 
 
 def _write_base_registry(tmp_path, species_names: tuple[str, ...] = ("Papilio demoleus",)):
@@ -282,6 +283,248 @@ def test_english_language_variants_normalize_and_deduplicate(tmp_path) -> None:
 
     evidence = pl.read_parquet(registry / "name_evidence.parquet")
     assert evidence.filter(pl.col("source").is_in(["iNaturalist", "ITIS"])).height == 2
+
+
+def test_tmd_german_client_maps_species_names_and_skips_unusable_rows() -> None:
+    calls = []
+
+    def graphql_post(payload):
+        calls.append(payload)
+        project = str(payload["variables"]["project"])
+        if project == "407":
+            return {
+                "data": {
+                    "taxonEntries": {
+                        "totalCount": 4,
+                        "edges": [
+                            {
+                                "node": {
+                                    "ptnameId": 1,
+                                    "projectId": 407,
+                                    "uiLabel": "Papilio demoleus",
+                                    "family": "Papilionidae",
+                                    "genus": "Papilio",
+                                    "species": "demoleus",
+                                    "author": "Linnaeus, 1758",
+                                }
+                            },
+                            {
+                                "node": {
+                                    "ptnameId": 2,
+                                    "projectId": 407,
+                                    "uiLabel": "Papilio machaon",
+                                    "family": "Papilionidae",
+                                    "genus": "Papilio",
+                                    "species": "machaon",
+                                    "author": "Linnaeus, 1758",
+                                }
+                            },
+                            {
+                                "node": {
+                                    "ptnameId": 3,
+                                    "projectId": 407,
+                                    "uiLabel": "#Zygaena minos/purpuralis(Komplex)",
+                                    "family": "Zygaenidae",
+                                    "genus": "Zygaena",
+                                    "species": "minos/purpuralis",
+                                    "author": "(Komplex)",
+                                }
+                            },
+                            {
+                                "node": {
+                                    "ptnameId": 600003,
+                                    "projectId": 407,
+                                    "uiLabel": "Papilionidae",
+                                    "family": "Papilionidae",
+                                    "genus": None,
+                                    "species": None,
+                                    "author": None,
+                                }
+                            },
+                        ],
+                    }
+                }
+            }
+        return {
+            "data": {
+                "taxonEntries": {
+                    "totalCount": 4,
+                    "edges": [
+                        {
+                            "node": {
+                                "ptnameId": 1,
+                                "projectId": 410,
+                                "uiLabel": "Karierter Schwalbenschwanz",
+                                "family": "Papilionidae",
+                                "genus": "Papilio",
+                                "species": "Karierter Schwalbenschwanz",
+                            }
+                        },
+                        {
+                            "node": {
+                                "ptnameId": 2,
+                                "projectId": 410,
+                                "uiLabel": "Schwalbenschwanz",
+                                "family": "Papilionidae",
+                                "genus": "Papilio",
+                                "species": "Schwalbenschwanz",
+                            }
+                        },
+                        {
+                            "node": {
+                                "ptnameId": 3,
+                                "projectId": 410,
+                                "uiLabel": "Komplex",
+                                "family": "Zygaenidae",
+                                "genus": "Zygaena",
+                                "species": "Komplex",
+                            }
+                        },
+                        {
+                            "node": {
+                                "ptnameId": 600003,
+                                "projectId": 407,
+                                "uiLabel": "Papilionidae",
+                                "family": "Papilionidae",
+                                "genus": None,
+                                "species": None,
+                            }
+                        },
+                    ],
+                }
+            }
+        }
+
+    client = TMDGermanClient(graphql_post=graphql_post)
+    result = client.enrich_registry(
+        taxa_rows=[
+            {"accepted_taxon_key": "gbif:100", "rank": "SPECIES", "scientific_name": "Papilio demoleus"},
+            {"accepted_taxon_key": "gbif:101", "rank": "SPECIES", "scientific_name": "Papilio machaon"},
+            {"accepted_taxon_key": "gbif:10", "rank": "FAMILY", "scientific_name": "Papilionidae"},
+        ],
+        name_rows=[],
+    )
+
+    assertions = result["name_assertions"]
+    assert [(row["accepted_taxon_key"], row["display_name"], row["language"], row["region"]) for row in assertions] == [
+        ("gbif:100", "Karierter Schwalbenschwanz", "deu", "DE"),
+        ("gbif:101", "Schwalbenschwanz", "deu", "DE"),
+    ]
+    assert {row["source"] for row in assertions} == {"TMD"}
+    assert {row["match_method"] for row in result["external_links"]} == {"scientific_name"}
+    assert result["coverage"]["family_genus_german_labels"] == "not_available_from_tmd"
+    assert result["coverage"]["mapped_accepted_name_rows"] == 2
+    assert result["coverage"]["skipped_complex_rows"] == 1
+    assert result["coverage"]["skipped_parent_rank_rows"] == 1
+    assert len(calls) == 2
+
+
+def test_tmd_german_client_maps_unambiguous_synonyms_with_lower_confidence() -> None:
+    def graphql_post(payload):
+        project = str(payload["variables"]["project"])
+        label = "Old papilio" if project == "407" else "Alter Schwalbenschwanz"
+        return {
+            "data": {
+                "taxonEntries": {
+                    "totalCount": 1,
+                    "edges": [
+                        {
+                            "node": {
+                                "ptnameId": 9,
+                                "projectId": int(project),
+                                "uiLabel": label,
+                                "family": "Papilionidae",
+                                "genus": "Old",
+                                "species": "papilio" if project == "407" else "Alter Schwalbenschwanz",
+                            }
+                        }
+                    ],
+                }
+            }
+        }
+
+    result = TMDGermanClient(graphql_post=graphql_post).enrich_registry(
+        taxa_rows=[{"accepted_taxon_key": "gbif:100", "rank": "SPECIES", "scientific_name": "Papilio demoleus"}],
+        name_rows=[
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Old papilio",
+                "name_class": "scientific_synonym",
+            }
+        ],
+    )
+
+    assert result["name_assertions"][0]["accepted_taxon_key"] == "gbif:100"
+    assert result["name_assertions"][0]["confidence"] == "medium"
+    assert result["external_links"][0]["match_method"] == "scientific_synonym"
+    assert result["coverage"]["mapped_synonym_rows"] == 1
+
+
+def test_build_enrichment_sources_runs_tmd_de_as_bulk_source(tmp_path) -> None:
+    registry, _scope = _write_base_registry(tmp_path)
+
+    class FakeTMDClient:
+        def enrich_registry(self, *, taxa_rows, name_rows):  # noqa: ANN001 - fake client mirrors source API.
+            assert any(row["scientific_name"] == "Papilio demoleus" for row in taxa_rows)
+            assert any(row["display_name"] == "Papilio demoleus" for row in name_rows)
+            return {
+                "name_assertions": [
+                    {
+                        "accepted_taxon_key": "gbif:100",
+                        "display_name": "Karierter Schwalbenschwanz",
+                        "language": "deu",
+                        "script": "Latn",
+                        "region": "DE",
+                        "name_class": "vernacular",
+                        "source": "TMD",
+                        "source_record_id": "tmd:410:1:Karierter Schwalbenschwanz",
+                        "source_taxon_id": "1",
+                        "trust_tier": "T2",
+                        "precision_tier": "high",
+                        "confidence": "high",
+                        "enabled": True,
+                        "review_state": "accepted",
+                    }
+                ],
+                "external_links": [
+                    {
+                        "accepted_taxon_key": "gbif:100",
+                        "source": "TMD",
+                        "source_taxon_id": "1",
+                        "match_method": "scientific_name",
+                        "match_confidence": "high",
+                        "lineage_check": "accepted_taxon_key",
+                    }
+                ],
+                "source_snapshots": [
+                    {
+                        "source": "TMD",
+                        "source_version": "tmd-taxonomy-graphql-projects-407-410",
+                        "retrieved_at": "2026-06-20T00:00:00+00:00",
+                        "source_path": "memory://tmd",
+                        "source_response_hash": "sha256:tmd",
+                        "licence": "",
+                    }
+                ],
+                "coverage": {"family_genus_german_labels": "not_available_from_tmd"},
+            }
+
+    manifest = build_enrichment_sources_from_registry(
+        registry_dir=registry,
+        sources=("tmd_de",),
+        clients={"tmd_de": FakeTMDClient()},
+        report_dir=tmp_path / "reports",
+    )
+
+    assertions = pl.read_parquet(registry / "source_name_assertions.parquet")
+    work = pl.read_parquet(registry / SOURCE_WORK_LEDGER_FILE)
+    coverage = json.loads((registry / "enrichment_coverage.json").read_text(encoding="utf-8"))
+
+    assert manifest["source_order"] == ["tmd_de"]
+    assert assertions.select("source").to_series().to_list() == ["TMD"]
+    assert assertions.select("display_name").to_series().to_list() == ["Karierter Schwalbenschwanz"]
+    assert work.select("accepted_taxon_key").to_series().to_list() == ["__registry__"]
+    assert coverage["bulk_sources"]["TMD"]["family_genus_german_labels"] == "not_available_from_tmd"
 
 
 def test_compile_enriched_registry_keeps_conflicting_source_name_disabled(tmp_path) -> None:
@@ -602,7 +845,7 @@ def test_inaturalist_source_is_limited_to_one_concurrent_query(tmp_path) -> None
 def test_default_enrichment_clients_do_not_include_wikidata() -> None:
     clients = default_enrichment_clients(max_retries=0)
 
-    assert list(clients) == ["col", "inaturalist", "itis"]
+    assert list(clients) == ["col", "inaturalist", "tmd_de", "itis"]
     assert "wikidata" not in clients
 
 

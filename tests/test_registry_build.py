@@ -150,6 +150,53 @@ class RecordingSourceClient:
         }
 
 
+class RecordingTMDClient:
+    def enrich_registry(self, *, taxa_rows, name_rows):  # noqa: ANN001 - test double.
+        assert any(row["scientific_name"] == "Papilio demoleus" for row in taxa_rows)
+        assert any(row["display_name"] == "Papilio demoleus" for row in name_rows)
+        return {
+            "name_assertions": [
+                {
+                    "accepted_taxon_key": "gbif:100",
+                    "display_name": "Zitronen-Schwalbenschwanz",
+                    "language": "deu",
+                    "script": "Latn",
+                    "region": "DE",
+                    "name_class": "vernacular",
+                    "source": "TMD",
+                    "source_record_id": "tmd:410:1:Zitronen-Schwalbenschwanz",
+                    "source_taxon_id": "1",
+                    "trust_tier": "T2",
+                    "precision_tier": "high",
+                    "confidence": "high",
+                    "enabled": True,
+                    "review_state": "accepted",
+                }
+            ],
+            "external_links": [
+                {
+                    "accepted_taxon_key": "gbif:100",
+                    "source": "TMD",
+                    "source_taxon_id": "1",
+                    "match_method": "scientific_name",
+                    "match_confidence": "high",
+                    "lineage_check": "accepted_taxon_key",
+                }
+            ],
+            "source_snapshots": [
+                {
+                    "source": "TMD",
+                    "source_version": "fixture",
+                    "retrieved_at": "2026-06-20T00:00:00+00:00",
+                    "source_path": "memory://tmd",
+                    "source_response_hash": "sha256:tmd",
+                    "licence": "",
+                }
+            ],
+            "coverage": {"family_genus_german_labels": "not_available_from_tmd", "request_count": 1},
+        }
+
+
 def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_path, monkeypatch) -> None:
     scope = tmp_path / "scope.json"
     _scope(scope)
@@ -159,6 +206,7 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
         "col": RecordingSourceClient("CoL", "Lime Swallowtail"),
         "itis": RecordingSourceClient("ITIS", "Lime Butterfly"),
         "inaturalist": RecordingSourceClient("iNaturalist", "Chequered Swallowtail"),
+        "tmd_de": RecordingTMDClient(),
         "wikidata": RecordingSourceClient("Wikidata", "Stale Wikidata Name"),
     }
     monkeypatch.setattr("biominer.registry.enrichment.default_enrichment_clients", lambda max_retries=5: clients)
@@ -181,8 +229,10 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
     manifest = json.loads((registry / "manifest.json").read_text(encoding="utf-8"))
 
     assert result["manifest"]["qa_status"] == "passed"
-    assert manifest["enrichment_sources"] == ["col", "inaturalist", "itis"]
-    assert {"Lime Swallowtail", "Lime Butterfly", "Chequered Swallowtail"}.issubset(set(names["display_name"].to_list()))
+    assert manifest["enrichment_sources"] == ["col", "inaturalist", "tmd_de", "itis"]
+    assert {"Lime Swallowtail", "Lime Butterfly", "Chequered Swallowtail", "Zitronen-Schwalbenschwanz"}.issubset(
+        set(names["display_name"].to_list())
+    )
     assert "Stale Wikidata Name" not in names["display_name"].to_list()
     assert "Stale Wikidata Name" not in assertions["display_name"].to_list()
     assert "Lime Swallowtail" in queries["normalized_query_term"].to_list()
@@ -198,6 +248,7 @@ def test_registry_build_quarantines_source_errors_without_siloing_successful_nam
         "col": RecordingSourceClient("CoL", "Lime Swallowtail"),
         "itis": RecordingSourceClient("ITIS", "Broken ITIS", raise_error=True),
         "inaturalist": RecordingSourceClient("iNaturalist", "Chequered Swallowtail"),
+        "tmd_de": RecordingTMDClient(),
     }
     monkeypatch.setattr("biominer.registry.enrichment.default_enrichment_clients", lambda max_retries=5: clients)
 

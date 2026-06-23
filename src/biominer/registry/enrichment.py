@@ -31,7 +31,9 @@ SOURCE_WORK_LEDGER_FILE = "source_work_ledger.parquet"
 FINAL_SOURCE_SNAPSHOTS_FILE = "source_snapshots.parquet"
 NAME_CANDIDATES_FILE = "name_candidates.parquet"
 ENRICHMENT_MANIFEST_FILE = "enrichment_manifest.json"
-DEFAULT_ENRICHMENT_SOURCES = ("col", "inaturalist", "itis")
+DEFAULT_ENRICHMENT_SOURCES = ("col", "inaturalist", "tmd_de", "itis")
+BULK_ENRICHMENT_SOURCES = frozenset({"tmd_de"})
+BULK_REGISTRY_WORK_KEY = "__registry__"
 INATURALIST_DAILY_REQUEST_LIMIT = 10000
 INATURALIST_WORKER_LIMIT = 1
 INATURALIST_REQUESTS_PER_SPECIES = 1
@@ -166,10 +168,25 @@ def build_enrichment_sources_from_registry(
         limit,
     )
 
+    bulk_coverage = _run_bulk_enrichment_sources(
+        source_order=source_order,
+        clients=clients,
+        client_factory=client_factory,
+        max_retries=max_retries,
+        completed_work=completed_work,
+        taxa_rows=taxa.to_dicts(),
+        name_rows=names.to_dicts(),
+        name_assertions=name_assertions,
+        external_links=external_links,
+        source_snapshots=source_snapshots,
+        errors=errors,
+        work_ledger=work_ledger,
+    )
+    per_species_sources = tuple(source for source in source_order if source not in BULK_ENRICHMENT_SOURCES)
     completed = 0
     for result in _enrichment_iterator(
         contexts=contexts,
-        sources=source_order,
+        sources=per_species_sources,
         clients=clients,
         client_factory=client_factory,
         workers=workers,
@@ -213,18 +230,20 @@ def build_enrichment_sources_from_registry(
                 started=started,
                 base_registry_dir=registry,
                 status=_run_status(completed=completed, total=len(contexts), budgets=budgets),
+                bulk_coverage=bulk_coverage,
             )
 
-    if not contexts:
+    if not contexts or not per_species_sources:
+        completed_without_species_work = 0 if not contexts else len(contexts)
         _write_enrichment_checkpoint(
             output,
-            name_assertions=[],
-            external_links=[],
-            source_snapshots=[],
-            errors=[],
-            work_ledger=[],
-            completed=0,
-            total=0,
+            name_assertions=name_assertions,
+            external_links=external_links,
+            source_snapshots=source_snapshots,
+            errors=errors,
+            work_ledger=work_ledger,
+            completed=completed_without_species_work,
+            total=len(contexts),
             source_order=source_order,
             workers=workers,
             source_worker_limits=_source_worker_limits(source_order, workers),
@@ -235,6 +254,7 @@ def build_enrichment_sources_from_registry(
             started=started,
             base_registry_dir=registry,
             status="complete",
+            bulk_coverage=bulk_coverage,
         )
 
     manifest = json.loads((output / ENRICHMENT_MANIFEST_FILE).read_text(encoding="utf-8"))
@@ -263,11 +283,12 @@ def build_enrichment_sources_from_registry(
 
 
 def default_enrichment_clients(*, max_retries: int = 5) -> dict[str, Any]:
-    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, INaturalistClient, ITISClient
+    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, INaturalistClient, ITISClient, TMDGermanClient
 
     return {
         "col": CatalogueOfLifeClient(max_retries=max_retries),
         "inaturalist": INaturalistClient(max_retries=max_retries),
+        "tmd_de": TMDGermanClient(max_retries=max_retries),
         "itis": ITISClient(max_retries=max_retries),
     }
 
@@ -446,8 +467,57 @@ def _enrich_species_context(
     )
 
 
+def _run_bulk_enrichment_sources(
+    *,
+    source_order: tuple[str, ...],
+    clients: dict[str, Any] | None,
+    client_factory: ClientBundleFactory | None,
+    max_retries: int,
+    completed_work: set[tuple[str, str]],
+    taxa_rows: list[dict[str, Any]],
+    name_rows: list[dict[str, Any]],
+    name_assertions: list[dict[str, Any]],
+    external_links: list[dict[str, Any]],
+    source_snapshots: list[dict[str, Any]],
+    errors: list[dict[str, str]],
+    work_ledger: list[dict[str, Any]],
+) -> dict[str, Any]:
+    bulk_coverage: dict[str, Any] = {}
+    bulk_sources = tuple(source for source in source_order if source in BULK_ENRICHMENT_SOURCES)
+    if not bulk_sources:
+        return bulk_coverage
+    bundle = clients or (client_factory() if client_factory else default_enrichment_clients(max_retries=max_retries))
+    for source in bulk_sources:
+        display_source = _source_display_names((source,))[0]
+        if (source, BULK_REGISTRY_WORK_KEY) in completed_work:
+            continue
+        client = bundle.get(source)
+        if client is None:
+            error_class = "missing_client"
+            errors.append(_bulk_source_error(source=source, error_class=error_class))
+            work_ledger.append(_bulk_source_work_record(source=source, status="error", error_class=error_class, request_count=0))
+            continue
+        try:
+            result = client.enrich_registry(taxa_rows=taxa_rows, name_rows=name_rows)
+        except Exception as exc:  # noqa: BLE001 - bulk source errors are staged and quarantined.
+            error_class = type(exc).__name__
+            errors.append(_bulk_source_error(source=source, error_class=error_class))
+            logger.info("registry.enrichment.bulk_source_error source=%s error=%s", source, error_class)
+            work_ledger.append(_bulk_source_work_record(source=source, status="error", error_class=error_class, request_count=0))
+            continue
+        name_assertions.extend(result.get("name_assertions", []))
+        external_links.extend(result.get("external_links", []))
+        source_snapshots.extend(result.get("source_snapshots", []))
+        coverage = result.get("coverage", {})
+        if isinstance(coverage, dict):
+            bulk_coverage[display_source] = coverage
+        request_count = int(coverage.get("request_count") or 1) if isinstance(coverage, dict) else 1
+        work_ledger.append(_bulk_source_work_record(source=source, status="complete", request_count=request_count))
+    return bulk_coverage
+
+
 def _source_worker_limits(sources: tuple[str, ...], workers: int) -> dict[str, int]:
-    return {source: (INATURALIST_WORKER_LIMIT if source == "inaturalist" else workers) for source in sources}
+    return {source: (INATURALIST_WORKER_LIMIT if source in {"inaturalist", "tmd_de"} else workers) for source in sources}
 
 
 def _source_query_limit(source: str):
@@ -482,6 +552,41 @@ def _source_work_record(
     }
 
 
+def _bulk_source_work_record(
+    *,
+    source: str,
+    status: str,
+    error_class: str = "",
+    request_count: int = 1,
+) -> dict[str, Any]:
+    now = datetime.now(UTC).isoformat()
+    return {
+        "source": source,
+        "accepted_taxon_key": BULK_REGISTRY_WORK_KEY,
+        "accepted_scientific_name": "registry",
+        "status": status,
+        "attempts": 1,
+        "started_at": now,
+        "finished_at": now,
+        "request_count": request_count,
+        "error_class": error_class,
+        "request_day": datetime.now(UTC).date().isoformat(),
+    }
+
+
+def _bulk_source_error(*, source: str, error_class: str) -> dict[str, str]:
+    return {
+        "source": source,
+        "accepted_taxon_key": BULK_REGISTRY_WORK_KEY,
+        "error": error_class,
+        "error_class": error_class,
+        "endpoint": "",
+        "attempts": "1",
+        "retryable": "false",
+        "disposition": "quarantined",
+    }
+
+
 def _run_status(*, completed: int, total: int, budgets: dict[str, DailyRequestBudget]) -> str:
     if any(budget.exhausted for budget in budgets.values()):
         return "budget_exhausted"
@@ -508,6 +613,7 @@ def _write_enrichment_checkpoint(
     started: float,
     base_registry_dir: Path,
     status: str,
+    bulk_coverage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     deduplicated_work = _deduplicate_latest_dicts(work_ledger, keys=("source", "accepted_taxon_key"))
     manifest = write_enrichment_sources(
@@ -518,7 +624,7 @@ def _write_enrichment_checkpoint(
         source_errors=errors,
         source_work=deduplicated_work,
     )
-    coverage = _enrichment_coverage(name_assertions=name_assertions, source_order=source_order, total_species=total)
+    coverage = _enrichment_coverage(name_assertions=name_assertions, source_order=source_order, total_species=total, bulk_coverage=bulk_coverage)
     _write_coverage_report(registry, coverage)
     manifest.update(
         {
@@ -846,7 +952,7 @@ def _combine_names(base_names: pl.DataFrame, enabled_enrichment: pl.DataFrame) -
 
 
 def _source_rank(source: str) -> int:
-    return {"GBIF": 0, "CoL": 1, "iNaturalist": 2, "ITIS": 3}.get(source, 9)
+    return {"GBIF": 0, "CoL": 1, "TMD": 2, "iNaturalist": 3, "ITIS": 4}.get(source, 9)
 
 
 def _source_name_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -1029,7 +1135,13 @@ def _source_work_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
     return pl.DataFrame(normalized, schema=_source_work_schema()) if normalized else pl.DataFrame(schema=_source_work_schema())
 
 
-def _enrichment_coverage(*, name_assertions: list[dict[str, Any]], source_order: tuple[str, ...], total_species: int) -> dict[str, Any]:
+def _enrichment_coverage(
+    *,
+    name_assertions: list[dict[str, Any]],
+    source_order: tuple[str, ...],
+    total_species: int,
+    bulk_coverage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     source_names = _source_display_names(source_order)
     rows = [row for row in name_assertions if str(row.get("source") or "") in source_names]
     taxa_by_source: dict[str, set[str]] = {source: set() for source in source_names}
@@ -1039,7 +1151,7 @@ def _enrichment_coverage(*, name_assertions: list[dict[str, Any]], source_order:
         names_by_source[source] = names_by_source.get(source, 0) + 1
         taxa_by_source.setdefault(source, set()).add(str(row.get("accepted_taxon_key") or ""))
     enriched_taxa = set().union(*taxa_by_source.values()) if taxa_by_source else set()
-    return {
+    coverage = {
         "total_species": total_species,
         "enriched_species": len(enriched_taxa),
         "gbif_only_species": max(total_species - len(enriched_taxa), 0),
@@ -1049,6 +1161,9 @@ def _enrichment_coverage(*, name_assertions: list[dict[str, Any]], source_order:
             for source, keys in sorted(taxa_by_source.items())
         },
     }
+    if bulk_coverage:
+        coverage["bulk_sources"] = bulk_coverage
+    return coverage
 
 
 def _write_coverage_report(output: Path, coverage: dict[str, Any]) -> None:
@@ -1078,7 +1193,7 @@ def _registry_artifact_hash(registry: Path) -> str:
 
 
 def _source_display_names(sources: tuple[str, ...]) -> tuple[str, ...]:
-    mapping = {"col": "CoL", "itis": "ITIS", "inaturalist": "iNaturalist"}
+    mapping = {"col": "CoL", "itis": "ITIS", "inaturalist": "iNaturalist", "tmd_de": "TMD"}
     return tuple(mapping.get(source, source) for source in sources)
 
 

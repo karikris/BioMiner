@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 from email.utils import parsedate_to_datetime
+import hashlib
 import json
 import logging
 import random
@@ -12,12 +13,18 @@ from typing import Any
 import httpx
 
 from biominer.registry.enrichment import SpeciesContext
+from biominer.registry.normalize import normalize_name_key
 
 
 HTTPGet = Callable[[str, dict[str, object]], dict[str, Any]]
+GraphQLPost = Callable[[dict[str, Any]], dict[str, Any]]
 logger = logging.getLogger(__name__)
 RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
 USER_AGENT = "BioMiner/0.1 registry-enrichment"
+TMD_TAXONOMY_GRAPHQL_URL = "https://web.app.ufz.de/biome-taxonomy-api/graphql"
+TMD_SCIENTIFIC_PROJECT_ID = "407"
+TMD_GERMAN_PROJECT_ID = "410"
+TMD_SOURCE_VERSION = "tmd-taxonomy-graphql-projects-407-410"
 
 
 class CatalogueOfLifeClient:
@@ -153,6 +160,167 @@ class INaturalistClient:
         return {"name_assertions": assertions, "external_links": links, "source_snapshots": [_snapshot("iNaturalist", "inaturalist-v1-taxa")]}
 
 
+class TMDGermanClient:
+    def __init__(self, *, graphql_post: GraphQLPost | None = None, max_retries: int = 5) -> None:
+        self._graphql_post = graphql_post or _graphql_post(TMD_TAXONOMY_GRAPHQL_URL, max_retries=max_retries)
+
+    def enrich_registry(self, *, taxa_rows: list[dict[str, Any]], name_rows: list[dict[str, Any]]) -> dict[str, Any]:
+        scientific_rows, scientific_request_count = self._fetch_project(TMD_SCIENTIFIC_PROJECT_ID)
+        german_rows, german_request_count = self._fetch_project(TMD_GERMAN_PROJECT_ID)
+        german_by_id = {str(row.get("ptnameId") or ""): row for row in german_rows}
+        accepted_lookup = _accepted_species_lookup(taxa_rows)
+        synonym_lookup = _unambiguous_synonym_lookup(name_rows)
+        assertions: list[dict[str, Any]] = []
+        links: list[dict[str, Any]] = []
+        coverage = {
+            "scientific_rows_fetched": len(scientific_rows),
+            "german_rows_fetched": len(german_rows),
+            "joined_ptname_rows": 0,
+            "mapped_accepted_name_rows": 0,
+            "mapped_synonym_rows": 0,
+            "unmapped_rows": 0,
+            "out_of_scope_rows": 0,
+            "skipped_complex_rows": 0,
+            "skipped_parent_rank_rows": 0,
+            "family_genus_german_labels": "not_available_from_tmd",
+            "request_count": scientific_request_count + german_request_count,
+        }
+        snapshot_payload = {"scientific": scientific_rows, "german": german_rows}
+
+        for scientific in scientific_rows:
+            ptname_id = str(scientific.get("ptnameId") or "")
+            german = german_by_id.get(ptname_id)
+            if german is None:
+                coverage["unmapped_rows"] += 1
+                continue
+            coverage["joined_ptname_rows"] += 1
+            scientific_name = _tmd_scientific_name(scientific)
+            if not scientific_name:
+                coverage["skipped_parent_rank_rows"] += 1
+                continue
+            if _is_tmd_complex(scientific):
+                coverage["skipped_complex_rows"] += 1
+                continue
+            german_name = str(german.get("uiLabel") or german.get("species") or "").strip()
+            if not german_name:
+                coverage["unmapped_rows"] += 1
+                continue
+            match_key = normalize_name_key(scientific_name)
+            accepted_taxon_key = accepted_lookup.get(match_key)
+            match_method = "scientific_name"
+            confidence = "high"
+            if accepted_taxon_key:
+                coverage["mapped_accepted_name_rows"] += 1
+            else:
+                accepted_taxon_key = synonym_lookup.get(match_key)
+                match_method = "scientific_synonym"
+                confidence = "medium"
+                if accepted_taxon_key:
+                    coverage["mapped_synonym_rows"] += 1
+            if not accepted_taxon_key:
+                coverage["out_of_scope_rows"] += 1
+                continue
+            source_record_id = f"tmd:{TMD_GERMAN_PROJECT_ID}:{ptname_id}:{german_name}"
+            assertions.append(
+                {
+                    "accepted_taxon_key": accepted_taxon_key,
+                    "verbatim_name": german_name,
+                    "display_name": german_name,
+                    "language": "deu",
+                    "script": "Latn",
+                    "region": "DE",
+                    "bbox": "",
+                    "name_class": "vernacular",
+                    "source": "TMD",
+                    "source_record_id": source_record_id,
+                    "source_taxon_id": ptname_id,
+                    "trust_tier": "T2",
+                    "precision_tier": "high",
+                    "confidence": confidence,
+                    "enabled": True,
+                    "review_state": "accepted",
+                    "disabled_reason": "",
+                }
+            )
+            links.append(
+                {
+                    "accepted_taxon_key": accepted_taxon_key,
+                    "source": "TMD",
+                    "source_taxon_id": ptname_id,
+                    "match_method": match_method,
+                    "match_confidence": confidence,
+                    "lineage_check": "accepted_taxon_key",
+                }
+            )
+
+        return {
+            "name_assertions": assertions,
+            "external_links": links,
+            "source_snapshots": [
+                {
+                    "source": "TMD",
+                    "source_version": TMD_SOURCE_VERSION,
+                    "retrieved_at": "",
+                    "source_path": TMD_TAXONOMY_GRAPHQL_URL,
+                    "source_response_hash": _payload_hash(snapshot_payload),
+                    "licence": "",
+                }
+            ],
+            "coverage": coverage,
+        }
+
+    def _fetch_project(self, project_id: str) -> tuple[list[dict[str, Any]], int]:
+        rows: list[dict[str, Any]] = []
+        after: str | None = None
+        request_count = 0
+        while True:
+            payload = self._graphql_post(
+                {
+                    "query": _TMD_TAXON_ENTRIES_QUERY,
+                    "variables": {"project": project_id, "first": 500, "after": after},
+                }
+            )
+            request_count += 1
+            if payload.get("errors"):
+                raise ValueError("TMD GraphQL response contained errors")
+            connection = payload.get("data", {}).get("taxonEntries", {})
+            rows.extend(
+                edge["node"]
+                for edge in connection.get("edges", [])
+                if isinstance(edge, dict) and isinstance(edge.get("node"), dict)
+            )
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            after = page_info.get("endCursor")
+            if not after:
+                break
+        return rows, request_count
+
+
+_TMD_TAXON_ENTRIES_QUERY = """
+query TMDTaxonEntries($project: String, $first: Int, $after: String) {
+  taxonEntries(first: $first, after: $after, projectId_is: $project) {
+    totalCount
+    pageInfo { hasNextPage endCursor }
+    edges {
+      node {
+        ptnameId
+        projectId
+        ptnameIdParent
+        uiLabel
+        toplevelgroup
+        family
+        genus
+        species
+        author
+      }
+    }
+  }
+}
+"""
+
+
 def _json_get(
     base_url: str,
     *,
@@ -231,6 +399,52 @@ def _json_get(
     return get
 
 
+def _graphql_post(
+    url: str,
+    *,
+    max_retries: int = 5,
+    sleep: Callable[[float], None] = default_sleep,
+) -> GraphQLPost:
+    client = httpx.Client(timeout=30.0, headers={"User-Agent": USER_AGENT})
+
+    def post(payload: dict[str, Any]) -> dict[str, Any]:
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                response = client.post(url, json=payload)
+                status_code = int(getattr(response, "status_code", 200))
+                if status_code in RETRYABLE_STATUS_CODES and attempt <= max_retries:
+                    wait_seconds = _retry_after_seconds(response.headers.get("Retry-After")) or _backoff_seconds(attempt)
+                    logger.info(
+                        "registry.enrichment.http_retry url=%s status=%d attempt=%d wait_seconds=%.3f",
+                        url,
+                        status_code,
+                        attempt,
+                        wait_seconds,
+                    )
+                    sleep(wait_seconds)
+                    continue
+                response.raise_for_status()
+                result = response.json()
+                if isinstance(result, dict):
+                    return result
+                return {"data": result}
+            except (httpx.TimeoutException, httpx.TransportError, json.JSONDecodeError):
+                if attempt > max_retries:
+                    raise
+                wait_seconds = _backoff_seconds(attempt)
+                logger.info(
+                    "registry.enrichment.http_retry url=%s error=graphql attempt=%d wait_seconds=%.3f",
+                    url,
+                    attempt,
+                    wait_seconds,
+                )
+                sleep(wait_seconds)
+
+    return post
+
+
 def _decode_json_payload(response: Any) -> dict[str, Any] | list[Any]:
     content = getattr(response, "content", b"")
     if not content:
@@ -255,6 +469,46 @@ def _retry_after_seconds(value: str | None) -> float | None:
 
 def _backoff_seconds(attempt: int) -> float:
     return min(30.0, (0.5 * (2 ** max(attempt - 1, 0))) + random.uniform(0.0, 0.25))
+
+
+def _accepted_species_lookup(taxa_rows: list[dict[str, Any]]) -> dict[str, str]:
+    return {
+        normalize_name_key(row.get("scientific_name")): str(row.get("accepted_taxon_key") or "")
+        for row in taxa_rows
+        if str(row.get("rank") or "") == "SPECIES" and row.get("scientific_name") and row.get("accepted_taxon_key")
+    }
+
+
+def _unambiguous_synonym_lookup(name_rows: list[dict[str, Any]]) -> dict[str, str]:
+    grouped: dict[str, set[str]] = {}
+    for row in name_rows:
+        if str(row.get("name_class") or "") != "scientific_synonym":
+            continue
+        key = normalize_name_key(row.get("display_name") or row.get("verbatim_name"))
+        accepted_key = str(row.get("accepted_taxon_key") or "")
+        if key and accepted_key:
+            grouped.setdefault(key, set()).add(accepted_key)
+    return {key: next(iter(values)) for key, values in grouped.items() if len(values) == 1}
+
+
+def _tmd_scientific_name(row: dict[str, Any]) -> str:
+    genus = str(row.get("genus") or "").strip()
+    species = str(row.get("species") or "").strip()
+    if genus and species:
+        return f"{genus} {species}".strip()
+    return ""
+
+
+def _is_tmd_complex(row: dict[str, Any]) -> bool:
+    ui_label = str(row.get("uiLabel") or "")
+    species = str(row.get("species") or "")
+    author = str(row.get("author") or "")
+    return ui_label.startswith("#") or "/" in species or "Komplex" in author
+
+
+def _payload_hash(payload: dict[str, Any]) -> str:
+    data = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return "sha256:" + hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
 def _name_assertion(
