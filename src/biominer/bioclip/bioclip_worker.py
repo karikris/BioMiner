@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Sequence
 
 
+DEFAULT_DEVICE = "auto"
+VALID_DEVICES = {"auto", "cuda", "mps", "cpu"}
+
+
 def main() -> None:
     if "--persistent" in sys.argv[1:]:
         run_persistent_worker()
@@ -14,7 +18,7 @@ def main() -> None:
     request = json.loads(sys.stdin.read())
     configure_hf_cache_env(Path(request.get("hf_cache_dir") or "data/cache/huggingface"))
     image_paths = request.get("image_paths")
-    require_cuda = bool(request.get("require_cuda", True))
+    device = device_from_request(request)
     label_sets = request.get("label_sets")
     if label_sets is not None:
         scores_by_image_by_label_set = score_image_label_sets(
@@ -22,7 +26,7 @@ def main() -> None:
             label_sets={str(name): list(labels) for name, labels in label_sets.items()},
             model_name=request["model_name"],
             checkpoint=request["checkpoint"],
-            require_cuda=require_cuda,
+            device=device,
         )
         print(json.dumps({"scores_by_image_by_label_set": scores_by_image_by_label_set}, sort_keys=True))
         return
@@ -32,7 +36,7 @@ def main() -> None:
             labels=request["labels"],
             model_name=request["model_name"],
             checkpoint=request["checkpoint"],
-            require_cuda=require_cuda,
+            device=device,
         )
         print(json.dumps({"scores": scores}, sort_keys=True))
         return
@@ -41,7 +45,7 @@ def main() -> None:
         labels=request["labels"],
         model_name=request["model_name"],
         checkpoint=request["checkpoint"],
-        require_cuda=require_cuda,
+        device=device,
     )
     print(json.dumps({"scores_by_image": scores_by_image}, sort_keys=True))
 
@@ -55,22 +59,37 @@ def configure_hf_cache_env(cache_dir: str | Path) -> Path:
     return cache_path
 
 
+def device_from_request(request: dict[str, object]) -> str:
+    if "device" in request and request["device"] not in (None, ""):
+        return normalize_device(str(request["device"]))
+    if request.get("require_cuda") is True:
+        return "cuda"
+    return DEFAULT_DEVICE
+
+
+def normalize_device(device: str) -> str:
+    normalized = device.casefold().strip()
+    if normalized not in VALID_DEVICES:
+        raise ValueError(f"Unsupported BioCLIP device {device!r}; expected one of {sorted(VALID_DEVICES)}")
+    return normalized
+
+
 def run_persistent_worker() -> None:
     loaded: _LoadedBioClipModel | None = None
-    loaded_key: tuple[str, str, bool] | None = None
+    loaded_key: tuple[str, str, str] | None = None
     for line in sys.stdin:
         try:
             request = json.loads(line)
             if request.get("shutdown"):
                 return
             configure_hf_cache_env(Path(request.get("hf_cache_dir") or "data/cache/huggingface"))
-            require_cuda = bool(request.get("require_cuda", True))
-            key = (str(request["model_name"]), str(request["checkpoint"]), require_cuda)
+            device = device_from_request(request)
+            key = (str(request["model_name"]), str(request["checkpoint"]), device)
             if loaded is None or loaded_key != key:
                 loaded = _LoadedBioClipModel.load(
                     model_name=key[0],
                     checkpoint=key[1],
-                    require_cuda=require_cuda,
+                    device=key[2],
                 )
                 loaded_key = key
                 print(json.dumps({"ready": True, "device": loaded.device, "gpu_name": loaded.gpu_name}, sort_keys=True), flush=True)
@@ -115,14 +134,15 @@ def score_image(
     labels: Sequence[str],
     model_name: str,
     checkpoint: str,
-    require_cuda: bool = True,
+    device: str = DEFAULT_DEVICE,
+    require_cuda: bool | None = None,
 ) -> dict[str, float]:
     return score_images(
         image_paths=[image_path],
         labels=labels,
         model_name=model_name,
         checkpoint=checkpoint,
-        require_cuda=require_cuda,
+        device=_coerce_device(device=device, require_cuda=require_cuda),
     )[0]
 
 
@@ -132,9 +152,14 @@ def score_images(
     labels: Sequence[str],
     model_name: str,
     checkpoint: str,
-    require_cuda: bool = True,
+    device: str = DEFAULT_DEVICE,
+    require_cuda: bool | None = None,
 ) -> list[dict[str, float]]:
-    model = _LoadedBioClipModel.load(model_name=model_name, checkpoint=checkpoint, require_cuda=require_cuda)
+    model = _LoadedBioClipModel.load(
+        model_name=model_name,
+        checkpoint=checkpoint,
+        device=_coerce_device(device=device, require_cuda=require_cuda),
+    )
     return model.score_images(image_paths, labels)
 
 
@@ -144,10 +169,21 @@ def score_image_label_sets(
     label_sets: dict[str, Sequence[str]],
     model_name: str,
     checkpoint: str,
-    require_cuda: bool = True,
+    device: str = DEFAULT_DEVICE,
+    require_cuda: bool | None = None,
 ) -> dict[str, list[dict[str, float]]]:
-    model = _LoadedBioClipModel.load(model_name=model_name, checkpoint=checkpoint, require_cuda=require_cuda)
+    model = _LoadedBioClipModel.load(
+        model_name=model_name,
+        checkpoint=checkpoint,
+        device=_coerce_device(device=device, require_cuda=require_cuda),
+    )
     return model.score_image_label_sets(image_paths, label_sets)
+
+
+def _coerce_device(*, device: str, require_cuda: bool | None) -> str:
+    if require_cuda is True and device == DEFAULT_DEVICE:
+        return "cuda"
+    return normalize_device(device)
 
 
 class _LoadedBioClipModel:
@@ -161,23 +197,21 @@ class _LoadedBioClipModel:
         self._text_features_by_labels: dict[tuple[str, ...], object] = {}
 
     @classmethod
-    def load(cls, *, model_name: str, checkpoint: str, require_cuda: bool = True) -> "_LoadedBioClipModel":
+    def load(cls, *, model_name: str, checkpoint: str, device: str = DEFAULT_DEVICE) -> "_LoadedBioClipModel":
         try:
             import open_clip
             import torch
         except Exception as exc:  # noqa: BLE001 - executed in the external model runtime.
             raise RuntimeError(f"BioCLIP dependencies are unavailable: {exc}") from exc
 
-        if require_cuda and not torch.cuda.is_available():
-            raise RuntimeError("BioCLIP requires CUDA, but torch.cuda.is_available() is false")
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        gpu_name = torch.cuda.get_device_name(0) if device == "cuda" else ""
+        resolved_device = resolve_torch_device(torch, device)
+        gpu_name = torch_device_name(torch, resolved_device)
         model_args = open_clip_model_args(model_name, checkpoint)
         model, _, preprocess = open_clip.create_model_and_transforms(model_args["model_name"], pretrained=model_args["pretrained"])
         tokenizer = open_clip.get_tokenizer(model_args["model_name"])
-        model = model.to(device)
+        model = model.to(resolved_device)
         model.eval()
-        return cls(model=model, preprocess=preprocess, tokenizer=tokenizer, torch=torch, device=device, gpu_name=gpu_name)
+        return cls(model=model, preprocess=preprocess, tokenizer=tokenizer, torch=torch, device=resolved_device, gpu_name=gpu_name)
 
     def score_images(self, image_paths: Sequence[Path], labels: Sequence[str]) -> list[dict[str, float]]:
         try:
@@ -246,6 +280,35 @@ def open_clip_model_args(model_name: str, checkpoint: str) -> dict[str, str | No
     if model_name.startswith("hf-hub:"):
         return {"model_name": model_name, "pretrained": None}
     return {"model_name": model_name, "pretrained": checkpoint or None}
+
+
+def resolve_torch_device(torch, requested_device: str = DEFAULT_DEVICE) -> str:  # noqa: ANN001 - torch module.
+    device = normalize_device(requested_device)
+    if device == "auto":
+        if torch.cuda.is_available():
+            return "cuda"
+        if _mps_available(torch):
+            return "mps"
+        return "cpu"
+    if device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("BioCLIP requested CUDA, but torch.cuda.is_available() is false")
+    if device == "mps" and not _mps_available(torch):
+        raise RuntimeError("BioCLIP requested MPS, but torch.backends.mps.is_available() is false")
+    return device
+
+
+def torch_device_name(torch, device: str) -> str:  # noqa: ANN001 - torch module.
+    if device == "cuda":
+        return str(torch.cuda.get_device_name(0))
+    if device == "mps":
+        return "Apple MPS"
+    return ""
+
+
+def _mps_available(torch) -> bool:  # noqa: ANN001 - torch module.
+    backends = getattr(torch, "backends", None)
+    mps = getattr(backends, "mps", None)
+    return bool(mps is not None and mps.is_available())
 
 
 if __name__ == "__main__":

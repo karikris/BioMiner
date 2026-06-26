@@ -171,7 +171,7 @@ def test_external_bioclip_scorer_invokes_runtime_python_with_json() -> None:
     assert scores["a photo of Papilio demoleus"] == 0.97
     assert calls[0]["cmd"][0] == "/home/toffe/bioclip25/.venv/bin/python"
     assert "image_paths" in calls[0]["input"]
-    assert '"require_cuda": true' in calls[0]["input"]
+    assert '"device": "auto"' in calls[0]["input"]
     assert "imageomics/bioclip-2" in calls[0]["input"]
     assert "data/cache/huggingface" in calls[0]["input"]
 
@@ -202,7 +202,7 @@ def test_external_bioclip_scorer_formats_batch_request() -> None:
     assert scores[0]["a photo of Papilio demoleus"] == 0.9
     assert scores[1]["a photo of a moth"] == 0.8
     assert '"image_paths": ["/tmp/1.jpg", "/tmp/2.jpg"]' in calls[0]["input"]
-    assert '"require_cuda": true' in calls[0]["input"]
+    assert '"device": "auto"' in calls[0]["input"]
 
 
 def test_external_bioclip_scorer_formats_label_set_request() -> None:
@@ -251,7 +251,7 @@ def test_external_bioclip_scorer_raises_with_worker_stderr() -> None:
         raise AssertionError("expected worker failure to raise")
 
 
-def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_requires_cuda() -> None:
+def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_uses_auto_device() -> None:
     writes: list[str] = []
 
     class FakeStdin:
@@ -318,8 +318,8 @@ def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_requires_cuda()
     assert len(processes) == 1
     assert "--persistent" in processes[0].cmd
     assert '"image_paths": ["/tmp/1.jpg", "/tmp/2.jpg"]' in writes[0]
-    assert '"require_cuda": true' in writes[0]
-    assert '"require_cuda": true' in writes[1]
+    assert '"device": "auto"' in writes[0]
+    assert '"device": "auto"' in writes[1]
     assert '"shutdown": true' in writes[-1]
     assert processes[0].waited is True
 

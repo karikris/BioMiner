@@ -238,13 +238,14 @@ class ExternalBioClipScorer:
         worker_script: str | Path | None = None,
         hf_cache_dir: str | Path = "data/cache/huggingface",
         runner: SubprocessRunner = subprocess.run,
-        require_cuda: bool = True,
+        device: str = "auto",
+        require_cuda: bool | None = None,
     ) -> None:
         self.runtime = runtime
         self.worker_script = Path(worker_script) if worker_script is not None else _default_worker_script()
         self.hf_cache_dir = Path(hf_cache_dir)
         self.runner = runner
-        self.require_cuda = require_cuda
+        self.device = _coerce_worker_device(device=device, require_cuda=require_cuda)
 
     def __call__(self, image_path: Path, labels: Sequence[str]) -> Mapping[str, float]:
         return self.score_batch([image_path], labels)[0]
@@ -258,7 +259,7 @@ class ExternalBioClipScorer:
             "model_name": self.runtime.model.model_name,
             "checkpoint": self.runtime.model.checkpoint,
             "hf_cache_dir": str(self.hf_cache_dir),
-            "require_cuda": self.require_cuda,
+            "device": self.device,
         }
         result = self.runner(
             [str(self.runtime.venv_python), str(self.worker_script)],
@@ -290,7 +291,7 @@ class ExternalBioClipScorer:
             "model_name": self.runtime.model.model_name,
             "checkpoint": self.runtime.model.checkpoint,
             "hf_cache_dir": str(self.hf_cache_dir),
-            "require_cuda": self.require_cuda,
+            "device": self.device,
         }
         result = self.runner(
             [str(self.runtime.venv_python), str(self.worker_script)],
@@ -458,13 +459,14 @@ class PersistentBioClipScorer:
         worker_script: str | Path | None = None,
         hf_cache_dir: str | Path = "data/cache/huggingface",
         popen: PopenFactory = subprocess.Popen,
-        require_cuda: bool = True,
+        device: str = "auto",
+        require_cuda: bool | None = None,
     ) -> None:
         self.runtime = runtime
         self.worker_script = Path(worker_script) if worker_script is not None else _default_worker_script()
         self.hf_cache_dir = Path(hf_cache_dir)
         self.popen = popen
-        self.require_cuda = require_cuda
+        self.requested_device = _coerce_worker_device(device=device, require_cuda=require_cuda)
         self._process: subprocess.Popen[str] | None = None
         self._stdin: IO[str] | None = None
         self._stdout: IO[str] | None = None
@@ -490,7 +492,7 @@ class PersistentBioClipScorer:
             "model_name": self.runtime.model.model_name,
             "checkpoint": self.runtime.model.checkpoint,
             "hf_cache_dir": str(self.hf_cache_dir),
-            "require_cuda": self.require_cuda,
+            "device": self.requested_device,
         }
         assert self._stdin is not None
         assert self._stdout is not None
@@ -531,7 +533,7 @@ class PersistentBioClipScorer:
             "model_name": self.runtime.model.model_name,
             "checkpoint": self.runtime.model.checkpoint,
             "hf_cache_dir": str(self.hf_cache_dir),
-            "require_cuda": self.require_cuda,
+            "device": self.requested_device,
         }
         assert self._stdin is not None
         assert self._stdout is not None
@@ -600,3 +602,12 @@ def _coerce_label_set_scores(payload: Mapping[str, Sequence[Mapping[str, object]
         ]
         for label_set_name, scores_by_image in payload.items()
     }
+
+
+def _coerce_worker_device(*, device: str, require_cuda: bool | None) -> str:
+    if require_cuda is True and device == "auto":
+        return "cuda"
+    normalized = device.casefold().strip()
+    if normalized not in {"auto", "cuda", "mps", "cpu"}:
+        raise ValueError(f"Unsupported BioCLIP device {device!r}")
+    return normalized
