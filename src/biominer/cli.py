@@ -674,8 +674,8 @@ def _bioclip_worker_env(hf_cache_dir: str | Path) -> dict[str, str]:
     cache_path = Path(hf_cache_dir).resolve()
     hub_path = cache_path / "hub"
     hub_path.mkdir(parents=True, exist_ok=True)
-    env.setdefault("HF_HOME", str(cache_path))
-    env.setdefault("HUGGINGFACE_HUB_CACHE", str(hub_path))
+    env["HF_HOME"] = str(cache_path)
+    env["HUGGINGFACE_HUB_CACHE"] = str(hub_path)
     return env
 
 
