@@ -7,9 +7,9 @@ cd "$ROOT"
 RUNTIME_DIR="${BIOMINER_BIOCLIP_RUNTIME_DIR:-.venv-bioclip-py312}"
 PYTHON_VERSION="${BIOMINER_BIOCLIP_PYTHON:-3.12}"
 
-uv venv --python "$PYTHON_VERSION" "$RUNTIME_DIR"
+uv venv --no-project --allow-existing --python "$PYTHON_VERSION" "$RUNTIME_DIR"
 
-uv pip --python "$RUNTIME_DIR/bin/python" install \
+uv pip install --python "$RUNTIME_DIR/bin/python" \
   "torch>=2.12,<2.13" \
   "torchvision>=0.27,<0.28" \
   "open_clip_torch>=3.3,<4" \
