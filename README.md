@@ -708,6 +708,36 @@ BioCLIP 2.5 Huge runs through a separate Python 3.12 sidecar environment:
 bash scripts/setup_bioclip_py312.sh
 ```
 
+Verify the sidecar runtime without loading the model:
+
+```bash
+uv run biominer bioclip runtime-check \
+  --runtime-python .venv-bioclip-py312/bin/python \
+  --device auto
+```
+
+Prefetch the BioCLIP 2.5 Huge safetensors snapshot:
+
+```bash
+uv run biominer bioclip prefetch-model \
+  --runtime-python .venv-bioclip-py312/bin/python \
+  --hf-cache-dir data/cache/huggingface
+```
+
+Run local screening:
+
+```bash
+uv run biominer bioclip screen \
+  --input staging/evidence/filtered.parquet \
+  --species-candidates data/registry/current/taxa.parquet \
+  --output staging/evidence/classified.parquet \
+  --runtime-python .venv-bioclip-py312/bin/python \
+  --device auto \
+  --register-count 2 \
+  --register-size 4 \
+  --download-workers 4
+```
+
 Rules:
 
 - use one persistent model worker per run;
