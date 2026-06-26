@@ -131,6 +131,7 @@ Generated data, raw payloads, registry outputs, model files, downloaded images, 
 - BioCLIP/OpenCLIP/PyTorch runtime only for Step 3.
 
 The standard GIL-enabled CPython 3.14 build is sufficient. Step 0 concurrency is network-I/O concurrency and does not require free-threaded Python.
+PyTorch is intentionally kept out of the main Python 3.14 BioMiner environment. Step 3 uses a separate Python 3.12 BioCLIP worker environment.
 
 ## Installation
 
@@ -141,6 +142,14 @@ cd ~/BioMiner
 unset VIRTUAL_ENV
 uv sync --extra test
 ```
+
+Create the optional BioCLIP worker environment only on machines that will run Step 3:
+
+```bash
+bash scripts/setup_bioclip_py312.sh
+```
+
+This creates `.venv-bioclip-py312` with PyTorch, OpenCLIP, Pillow, Safetensors, Hugging Face Hub, and HF Xet. The worker environment is local-only and must not be committed.
 
 Verify the CLI:
 
@@ -693,11 +702,17 @@ Step 2 does not make final species decisions.
 
 BioCLIP uses temporary image downloads and register-based processing.
 
+BioCLIP 2.5 Huge runs through a separate Python 3.12 sidecar environment:
+
+```bash
+bash scripts/setup_bioclip_py312.sh
+```
+
 Rules:
 
 - use one persistent model worker per run;
-- default `register_count=4`;
-- default `register_size=20`;
+- default local `register_count=2`;
+- default local `register_size=4`;
 - download an image temporarily;
 - classify;
 - write the prediction row;
