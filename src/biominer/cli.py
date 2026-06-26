@@ -6,9 +6,14 @@ import json
 import logging
 import os
 from pathlib import Path
+import subprocess
 
 import polars as pl
 
+from biominer.bioclip.bioclip import BioClipClassifier, PersistentBioClipScorer
+from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
+from biominer.bioclip.register_runner import process_records_with_registers
+from biominer.bioclip.species_candidates import DEFAULT_SPECIES_CANDIDATE_LIMIT, TARGET_SPECIES, load_species_candidates
 from biominer.flickr_fetch.query_planner import (
     FLICKR_SEARCH_RESULT_WINDOW,
     GEO_PAGE_SIZE,
@@ -37,10 +42,56 @@ from biominer.reports.buckets import export_bucket_views
 from biominer.reports.name_evidence import build_name_evidence_report, write_name_evidence_report
 
 
+BIOCLIP_25_HUGE_REPO_ID = "imageomics/bioclip-2.5-vith14"
+BIOCLIP_25_HUGE_REVISION = "191d741545e4c741cdef4b22c6eb69c945c1e592"
+BIOCLIP_RUNTIME_PYTHON = ".venv-bioclip-py312/bin/python"
+BIOCLIP_HF_CACHE_DIR = "data/cache/huggingface"
+BIOCLIP_PREFETCH_ALLOW_PATTERNS = (
+    "open_clip_config.json",
+    "open_clip_model.safetensors",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "vocab.json",
+    "merges.txt",
+)
+BIOCLIP_PREFETCH_IGNORE_PATTERNS = (
+    "*.bin",
+    "*.pt",
+    "pytorch_model*",
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="biominer")
     parser.add_argument("--version", action="store_true")
     subparsers = parser.add_subparsers(dest="command")
+    bioclip = subparsers.add_parser("bioclip")
+    bioclip_subparsers = bioclip.add_subparsers(dest="bioclip_command")
+    bioclip_runtime = bioclip_subparsers.add_parser("runtime-check")
+    bioclip_runtime.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    bioclip_runtime.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    bioclip_runtime.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
+    bioclip_prefetch = bioclip_subparsers.add_parser("prefetch-model")
+    bioclip_prefetch.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    bioclip_prefetch.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
+    bioclip_prefetch.add_argument("--model-name", default=BIOCLIP_25_HUGE_REPO_ID)
+    bioclip_prefetch.add_argument("--revision", default=BIOCLIP_25_HUGE_REVISION)
+    bioclip_prefetch.add_argument("--max-workers", type=int, default=8)
+    bioclip_screen = bioclip_subparsers.add_parser("screen")
+    bioclip_screen.add_argument("--input", required=True)
+    bioclip_screen.add_argument("--species-candidates", required=True)
+    bioclip_screen.add_argument("--output", required=True)
+    bioclip_screen.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    bioclip_screen.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
+    bioclip_screen.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    bioclip_screen.add_argument("--cache-root", default="data/cache/images")
+    bioclip_screen.add_argument("--register-count", type=int, default=2)
+    bioclip_screen.add_argument("--register-size", type=int, default=4)
+    bioclip_screen.add_argument("--download-workers", type=int, default=4)
+    bioclip_screen.add_argument("--candidate-limit", type=int, default=DEFAULT_SPECIES_CANDIDATE_LIMIT)
+    bioclip_screen.add_argument("--target-species", default=TARGET_SPECIES)
+    bioclip_screen.add_argument("--bucket-views-dir")
     fetch_comments = subparsers.add_parser("fetch-comments")
     fetch_comments.add_argument("--photo-id", action="append", default=[])
     fetch_comments.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
@@ -156,6 +207,14 @@ def run(args: argparse.Namespace) -> int:
     if args.version:
         print("biominer 0.1.0")
         return 0
+    if args.command == "bioclip":
+        if args.bioclip_command == "runtime-check":
+            return _run_bioclip_runtime_check(args)
+        if args.bioclip_command == "prefetch-model":
+            return _run_bioclip_prefetch_model(args)
+        if args.bioclip_command == "screen":
+            return _run_bioclip_screen(args)
+        return 2
     if args.command == "fetch-comments":
         state = CommentsEnrichmentState(args.state_db)
         queued = state.queue_candidates(
@@ -476,6 +535,204 @@ def _cache_gc_summary(cache_root: Path, *, delete: bool) -> dict[str, object]:
         "bytes_seen": sum(path.stat().st_size for path in files if path.exists()),
         "deleted_files": deleted,
     }
+
+
+def _run_bioclip_runtime_check(args: argparse.Namespace) -> int:
+    runtime_python = Path(args.runtime_python)
+    if not runtime_python.exists():
+        print(json.dumps({"error": f"BioCLIP runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
+        return 2
+    env = _bioclip_worker_env(args.hf_cache_dir)
+    result = subprocess.run(
+        [
+            str(runtime_python),
+            "-c",
+            _BIOCLIP_RUNTIME_CHECK_SCRIPT,
+            args.device,
+        ],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(json.dumps({"error": result.stderr.strip() or result.stdout.strip()}, indent=2, sort_keys=True))
+        return 2
+    print(result.stdout.strip())
+    return 0
+
+
+def _run_bioclip_prefetch_model(args: argparse.Namespace) -> int:
+    runtime_python = Path(args.runtime_python)
+    if not runtime_python.exists():
+        print(json.dumps({"error": f"BioCLIP runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
+        return 2
+    env = _bioclip_worker_env(args.hf_cache_dir)
+    result = subprocess.run(
+        [
+            str(runtime_python),
+            "-c",
+            _BIOCLIP_PREFETCH_SCRIPT,
+            args.model_name,
+            args.revision,
+            str(args.max_workers),
+        ],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(json.dumps({"error": result.stderr.strip() or result.stdout.strip()}, indent=2, sort_keys=True))
+        return 2
+    print(result.stdout.strip())
+    return 0
+
+
+def _run_bioclip_screen(args: argparse.Namespace) -> int:
+    runtime_python = Path(args.runtime_python)
+    if not runtime_python.exists():
+        print(json.dumps({"error": f"BioCLIP runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
+        return 2
+
+    runtime = _bioclip_runtime(runtime_python=runtime_python)
+    scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
+    try:
+        classifier = BioClipClassifier(runtime=runtime, scorer=scorer)
+        records = pl.read_parquet(args.input).to_dicts()
+        species_candidates = load_species_candidates(
+            args.species_candidates,
+            limit=args.candidate_limit,
+            target_species=args.target_species,
+        )
+        result = process_records_with_registers(
+            records,
+            classifier=classifier,
+            species_candidates=species_candidates,
+            output_path=args.output,
+            cache_root=args.cache_root,
+            register_count=args.register_count,
+            register_size=args.register_size,
+            download_workers=args.download_workers,
+            model_id="bioclip2_5",
+            model_version="bioclip2_5_huge",
+            model_checkpoint=BIOCLIP_25_HUGE_REVISION,
+            bucket_views_dir=args.bucket_views_dir,
+        )
+    finally:
+        scorer.close()
+
+    print(
+        json.dumps(
+            {
+                "output": str(result.output_path),
+                "rows": result.frame.height,
+                "records_seen": result.records_seen,
+                "records_classified": result.records_classified,
+                "records_skipped_existing": result.records_skipped_existing,
+                "download_failures": result.download_failures,
+                "bioclip_failures": result.bioclip_failures,
+                "images_deleted_after_classification": result.images_deleted_after_classification,
+                "max_staged_images": result.max_staged_images,
+                "register_count": result.register_count,
+                "register_size": result.register_size,
+                "model_name": BIOCLIP_25_HUGE_REPO_ID,
+                "model_revision": BIOCLIP_25_HUGE_REVISION,
+                "device": args.device,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _bioclip_runtime(*, runtime_python: Path) -> BioClipRuntime:
+    model = ModelConfig(
+        model_id="bioclip2_5_huge",
+        display_name="BioCLIP 2.5 Huge",
+        role="preferred",
+        status="use_if_available",
+        task="biology image-text classification and embedding",
+        model_name=BIOCLIP_25_HUGE_REPO_ID,
+        checkpoint=BIOCLIP_25_HUGE_REVISION,
+        package_name="open_clip_torch",
+        package_version="3.3.0",
+        model_hash=f"hf-revision:{BIOCLIP_25_HUGE_REVISION}",
+    )
+    return BioClipRuntime(
+        model=model,
+        home=runtime_python.parent.parent,
+        venv_python=runtime_python,
+        package_version="3.3.0",
+        available=True,
+    )
+
+
+def _bioclip_worker_env(hf_cache_dir: str | Path) -> dict[str, str]:
+    env = os.environ.copy()
+    cache_path = Path(hf_cache_dir).resolve()
+    hub_path = cache_path / "hub"
+    hub_path.mkdir(parents=True, exist_ok=True)
+    env.setdefault("HF_HOME", str(cache_path))
+    env.setdefault("HUGGINGFACE_HUB_CACHE", str(hub_path))
+    return env
+
+
+_BIOCLIP_RUNTIME_CHECK_SCRIPT = r"""
+from __future__ import annotations
+
+import importlib.metadata
+import json
+import sys
+
+import open_clip
+import torch
+
+requested = sys.argv[1]
+if requested == "auto":
+    if torch.cuda.is_available():
+        resolved = "cuda"
+    elif torch.backends.mps.is_available():
+        resolved = "mps"
+    else:
+        resolved = "cpu"
+elif requested == "cuda" and not torch.cuda.is_available():
+    raise SystemExit("CUDA was requested but is not available")
+elif requested == "mps" and not torch.backends.mps.is_available():
+    raise SystemExit("MPS was requested but is not available")
+else:
+    resolved = requested
+
+print(json.dumps({
+    "device_requested": requested,
+    "device_resolved": resolved,
+    "cuda_available": torch.cuda.is_available(),
+    "mps_available": torch.backends.mps.is_available(),
+    "open_clip_version": importlib.metadata.version("open_clip_torch"),
+    "torch_version": torch.__version__,
+}, sort_keys=True))
+"""
+
+
+_BIOCLIP_PREFETCH_SCRIPT = rf"""
+from __future__ import annotations
+
+import json
+import sys
+
+from huggingface_hub import snapshot_download
+
+path = snapshot_download(
+    repo_id=sys.argv[1],
+    repo_type="model",
+    revision=sys.argv[2],
+    allow_patterns={list(BIOCLIP_PREFETCH_ALLOW_PATTERNS)!r},
+    ignore_patterns={list(BIOCLIP_PREFETCH_IGNORE_PATTERNS)!r},
+    max_workers=int(sys.argv[3]),
+)
+print(json.dumps({{"snapshot_path": path, "model_name": sys.argv[1], "revision": sys.argv[2]}}, sort_keys=True))
+"""
 
 
 def main() -> None:

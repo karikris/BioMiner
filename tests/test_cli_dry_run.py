@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
+from types import SimpleNamespace
 
 import polars as pl
 
@@ -13,6 +15,7 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     commands = parser._subparsers._group_actions[0].choices  # noqa: SLF001 - parser surface regression test.
 
     assert "poll-once" in commands
+    assert "bioclip" in commands
     assert "build-papilio-demoleus-query-plan" in commands
     assert "fetch" not in commands
     assert "fetch-live" not in commands
@@ -24,6 +27,161 @@ def test_poll_once_cli_accepts_bounded_cycle_arguments() -> None:
 
     assert args.command == "poll-once"
     assert args.max_api_calls == 3500
+
+
+def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch) -> None:
+    runtime_python = tmp_path / "runtime" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("# fake python", encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    def fake_run(cmd, *, capture_output, check, env, text):  # noqa: ANN001 - mirrors subprocess.run.
+        calls.append({"cmd": cmd, "capture_output": capture_output, "check": check, "env": env, "text": text})
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout='{"device_resolved":"mps","mps_available":true}\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr("biominer.cli.subprocess.run", fake_run)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "bioclip",
+            "runtime-check",
+            "--runtime-python",
+            str(runtime_python),
+            "--hf-cache-dir",
+            str(tmp_path / "hf"),
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["device_resolved"] == "mps"
+    assert calls[0]["cmd"][0] == str(runtime_python)
+    assert calls[0]["cmd"][-1] == "auto"
+    assert calls[0]["env"]["HF_HOME"] == str((tmp_path / "hf").resolve())
+
+
+def test_bioclip_prefetch_model_uses_snapshot_download_sidecar(tmp_path, capsys, monkeypatch) -> None:
+    runtime_python = tmp_path / "runtime" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("# fake python", encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    def fake_run(cmd, *, capture_output, check, env, text):  # noqa: ANN001 - mirrors subprocess.run.
+        calls.append({"cmd": cmd, "capture_output": capture_output, "check": check, "env": env, "text": text})
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout='{"snapshot_path":"/tmp/hf/model","model_name":"imageomics/bioclip-2.5-vith14"}\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr("biominer.cli.subprocess.run", fake_run)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "bioclip",
+            "prefetch-model",
+            "--runtime-python",
+            str(runtime_python),
+            "--hf-cache-dir",
+            str(tmp_path / "hf"),
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["model_name"] == "imageomics/bioclip-2.5-vith14"
+    assert calls[0]["cmd"][0] == str(runtime_python)
+    assert calls[0]["cmd"][-3] == "imageomics/bioclip-2.5-vith14"
+    assert calls[0]["env"]["HUGGINGFACE_HUB_CACHE"] == str((tmp_path / "hf" / "hub").resolve())
+
+
+def test_bioclip_screen_wires_register_runner_with_sidecar_runtime(tmp_path, capsys, monkeypatch) -> None:
+    runtime_python = tmp_path / "runtime" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("# fake python", encoding="utf-8")
+    input_path = tmp_path / "filtered.parquet"
+    candidates_path = tmp_path / "candidates.tsv"
+    output_path = tmp_path / "classified.parquet"
+    candidates_path.write_text("scientific_name\trank\nPapilio demoleus\tspecies\n", encoding="utf-8")
+    pl.DataFrame(
+        [
+            {
+                "source_record_id": "1",
+                "flickr_photo_id": "1",
+                "image_url": "https://live.staticflickr.com/1.jpg",
+                "title": "Papilio demoleus",
+            }
+        ]
+    ).write_parquet(input_path)
+    calls: dict[str, object] = {}
+
+    class FakeScorer:
+        def __init__(self, *, runtime, hf_cache_dir, device):  # noqa: ANN001 - mirrors scorer init.
+            calls["scorer"] = {"runtime": runtime, "hf_cache_dir": hf_cache_dir, "device": device}
+
+        def close(self) -> None:
+            calls["closed"] = True
+
+    class FakeClassifier:
+        def __init__(self, *, runtime, scorer):  # noqa: ANN001 - mirrors classifier init.
+            calls["classifier"] = {"runtime": runtime, "scorer": scorer}
+
+    def fake_process(records, **kwargs):  # noqa: ANN001 - mirrors register runner call.
+        calls["records"] = records
+        calls["runner_kwargs"] = kwargs
+        return SimpleNamespace(
+            frame=pl.DataFrame([{"classification_status": "success"}]),
+            output_path=Path(kwargs["output_path"]),
+            records_seen=1,
+            records_classified=1,
+            records_skipped_existing=0,
+            download_failures=0,
+            bioclip_failures=0,
+            images_deleted_after_classification=1,
+            max_staged_images=1,
+            register_count=kwargs["register_count"],
+            register_size=kwargs["register_size"],
+        )
+
+    monkeypatch.setattr("biominer.cli.PersistentBioClipScorer", FakeScorer)
+    monkeypatch.setattr("biominer.cli.BioClipClassifier", FakeClassifier)
+    monkeypatch.setattr("biominer.cli.process_records_with_registers", fake_process)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "bioclip",
+            "screen",
+            "--input",
+            str(input_path),
+            "--species-candidates",
+            str(candidates_path),
+            "--output",
+            str(output_path),
+            "--runtime-python",
+            str(runtime_python),
+            "--device",
+            "mps",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["records_classified"] == 1
+    assert payload["register_count"] == 2
+    assert payload["register_size"] == 4
+    assert calls["closed"] is True
+    assert calls["records"][0]["flickr_photo_id"] == "1"
+    assert calls["scorer"]["device"] == "mps"
+    assert calls["runner_kwargs"]["model_checkpoint"] == "191d741545e4c741cdef4b22c6eb69c945c1e592"
 
 
 def test_build_papilio_demoleus_query_plan_cli_reads_keyword_json(tmp_path, capsys) -> None:
