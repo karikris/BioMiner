@@ -224,6 +224,52 @@ def test_bioclip_benchmark_cli_writes_report(tmp_path, capsys) -> None:
     assert report["runs"][0]["classification_mode"] == "triage"
 
 
+def test_geo_build_gbif_candidates_cli_wires_builder(tmp_path, capsys, monkeypatch) -> None:
+    calls: dict[str, object] = {}
+
+    def fake_build(**kwargs):  # noqa: ANN001 - mirrors builder call.
+        calls.update(kwargs)
+        return {
+            "geo_version": kwargs["geo_version"],
+            "output_dir": str(kwargs["output_dir"]),
+            "state_db": str(kwargs["state_db"]),
+            "species_seen": 1,
+            "species_completed": 1,
+            "species_failed": 0,
+            "occurrence_rows": 2,
+            "outputs": {},
+            "state_counts": {"completed": 1},
+        }
+
+    monkeypatch.setattr("biominer.cli.build_gbif_geo_candidates", fake_build)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "geo",
+            "build-gbif-candidates",
+            "--taxa",
+            str(tmp_path / "taxa.parquet"),
+            "--output-dir",
+            str(tmp_path / "geo"),
+            "--geo-version",
+            "geo-v1",
+            "--state-db",
+            str(tmp_path / "state.sqlite"),
+            "--limit-species",
+            "7",
+            "--workers",
+            "2",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["geo_version"] == "geo-v1"
+    assert calls["limit_species"] == 7
+    assert calls["workers"] == 2
+
+
 def test_build_papilio_demoleus_query_plan_cli_reads_keyword_json(tmp_path, capsys) -> None:
     keywords = tmp_path / "keywords.json"
     keywords.write_text(

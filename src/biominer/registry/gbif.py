@@ -54,6 +54,9 @@ class GBIFClient:
     def vernacular_names(self, key: int | str, *, limit: int = 1000) -> list[dict[str, Any]]:
         return self._paginated_results(f"/species/{key}/vernacularNames", {"limit": limit}, limit=limit)
 
+    def occurrence_search(self, params: dict[str, object]) -> dict[str, Any]:
+        return self._get_object("/occurrence/search", params)
+
     def _get(self, path: str, params: dict[str, object]) -> JSONPayload:
         self.call_count += 1
         return self._http_get(path, params)

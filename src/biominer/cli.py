@@ -33,6 +33,7 @@ from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState
 from biominer.filter.anti_keywords import filter_biodiversity_parquet
 from biominer.filter.rules import classify_evidence_frame
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
+from biominer.geo.gbif_candidates import build_gbif_geo_candidates
 from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry
 from biominer.registry.compiler import compile_registry_fixture
@@ -109,6 +110,16 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_benchmark.add_argument("--candidate-strategy", choices=[strategy.value for strategy in CandidateStrategy], default=CandidateStrategy.ALL.value)
     bioclip_benchmark.add_argument("--download-workers", type=int, default=4)
     bioclip_benchmark.add_argument("--output", required=True)
+    geo = subparsers.add_parser("geo")
+    geo_subparsers = geo.add_subparsers(dest="geo_command")
+    geo_build_gbif = geo_subparsers.add_parser("build-gbif-candidates")
+    geo_build_gbif.add_argument("--taxa", default="data/registry/current/taxa.parquet")
+    geo_build_gbif.add_argument("--output-dir", required=True)
+    geo_build_gbif.add_argument("--geo-version", required=True)
+    geo_build_gbif.add_argument("--state-db", default="data/state/gbif_geo.sqlite")
+    geo_build_gbif.add_argument("--limit-species", type=int, default=0)
+    geo_build_gbif.add_argument("--max-retries", type=int, default=8)
+    geo_build_gbif.add_argument("--workers", type=int, default=4)
     fetch_comments = subparsers.add_parser("fetch-comments")
     fetch_comments.add_argument("--photo-id", action="append", default=[])
     fetch_comments.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
@@ -233,6 +244,10 @@ def run(args: argparse.Namespace) -> int:
             return _run_bioclip_screen(args)
         if args.bioclip_command == "benchmark":
             return _run_bioclip_benchmark(args)
+        return 2
+    if args.command == "geo":
+        if args.geo_command == "build-gbif-candidates":
+            return _run_geo_build_gbif_candidates(args)
         return 2
     if args.command == "fetch-comments":
         state = CommentsEnrichmentState(args.state_db)
@@ -705,6 +720,29 @@ def _run_bioclip_benchmark(args: argparse.Namespace) -> int:
             sort_keys=True,
         )
     )
+    return 0
+
+
+def _run_geo_build_gbif_candidates(args: argparse.Namespace) -> int:
+    logging.basicConfig(
+        level=getattr(logging, os.environ.get("BIOMINER_LOG_LEVEL", "INFO").upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        force=True,
+    )
+    try:
+        payload = build_gbif_geo_candidates(
+            taxa_path=args.taxa,
+            output_dir=args.output_dir,
+            geo_version=args.geo_version,
+            state_db=args.state_db,
+            limit_species=args.limit_species,
+            max_retries=args.max_retries,
+            workers=args.workers,
+        )
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+        return 2
+    print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
 
