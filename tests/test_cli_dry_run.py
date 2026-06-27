@@ -182,6 +182,46 @@ def test_bioclip_screen_wires_register_runner_with_sidecar_runtime(tmp_path, cap
     assert calls["records"][0]["flickr_photo_id"] == "1"
     assert calls["scorer"]["device"] == "mps"
     assert calls["runner_kwargs"]["model_checkpoint"] == "191d741545e4c741cdef4b22c6eb69c945c1e592"
+    assert calls["runner_kwargs"]["classification_mode"] == "hybrid"
+    assert calls["runner_kwargs"]["target_species"] is None
+
+
+def test_bioclip_benchmark_cli_writes_report(tmp_path, capsys) -> None:
+    input_path = tmp_path / "filtered.parquet"
+    candidates_path = tmp_path / "taxa.parquet"
+    output_path = tmp_path / "benchmark.json"
+    pl.DataFrame([{"flickr_photo_id": "1"}]).write_parquet(input_path)
+    pl.DataFrame([{"scientific_name": "Danaus plexippus", "rank": "species"}]).write_parquet(candidates_path)
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "bioclip",
+            "benchmark",
+            "--input",
+            str(input_path),
+            "--species-candidates",
+            str(candidates_path),
+            "--register-sizes",
+            "8",
+            "--register-counts",
+            "2",
+            "--candidate-limits",
+            "500",
+            "--classification-modes",
+            "triage",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "benchmark_skeleton_written"
+    assert payload["configurations"] == 1
+    assert report["runs"][0]["classification_mode"] == "triage"
 
 
 def test_build_papilio_demoleus_query_plan_cli_reads_keyword_json(tmp_path, capsys) -> None:

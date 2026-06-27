@@ -160,11 +160,16 @@ class BioClipClassifier:
         label_sets: LabelSets,
         top_k: int = 10,
         species_prompt_variants: Sequence[PromptVariant] | None = None,
+        return_image_embeddings: bool = False,
     ) -> list[dict[str, Any]]:
         if not self.runtime.available:
             raise RuntimeError(f"BioCLIP runtime is not available: {self.runtime.unavailable_reason}")
         image_paths = [Path(str(image["image_path"])) for image in images]
-        scores_by_label_set = self._score_label_sets_batch(image_paths, label_sets)
+        image_embeddings: Sequence[Sequence[float]] = ()
+        if return_image_embeddings:
+            scores_by_label_set, image_embeddings = self._score_label_sets_batch_with_embeddings(image_paths, label_sets)
+        else:
+            scores_by_label_set = self._score_label_sets_batch(image_paths, label_sets)
         records: list[dict[str, Any]] = []
         for index, image in enumerate(images):
             topk_by_label_set: dict[str, list[tuple[str, float]]] = {}
@@ -197,6 +202,7 @@ class BioClipClassifier:
                     topk_by_label_set=topk_by_label_set,
                     species_prompt_topk=prompt_topk_by_label_set.get("species", []),
                     triage_scores_by_label=raw_scores_by_label_set.get("triage", {}),
+                    image_embedding=image_embeddings[index] if index < len(image_embeddings) else None,
                 )
             )
         return records
@@ -228,6 +234,15 @@ class BioClipClassifier:
             name: [self._score(image_path, labels) for image_path in image_paths]
             for name, labels in label_sets.items()
         }
+
+    def _score_label_sets_batch_with_embeddings(
+        self,
+        image_paths: Sequence[Path],
+        label_sets: LabelSets,
+    ) -> tuple[dict[str, list[Mapping[str, float]]], Sequence[Sequence[float]]]:
+        if self._scorer is not None and hasattr(self._scorer, "score_label_sets_batch_with_embeddings"):
+            return self._scorer.score_label_sets_batch_with_embeddings(image_paths, label_sets)  # type: ignore[attr-defined]
+        return self._score_label_sets_batch(image_paths, label_sets), ()
 
 
 class ExternalBioClipScorer:
@@ -304,6 +319,34 @@ class ExternalBioClipScorer:
             raise RuntimeError(f"BioCLIP worker failed: {result.stderr.strip()}")
         payload = json.loads(result.stdout)
         return _coerce_label_set_scores(payload["scores_by_image_by_label_set"])
+
+    def score_label_sets_batch_with_embeddings(
+        self,
+        image_paths: Sequence[Path],
+        label_sets: LabelSets,
+    ) -> tuple[dict[str, list[Mapping[str, float]]], Sequence[Sequence[float]]]:
+        if self.runtime.venv_python is None:
+            raise RuntimeError("BioCLIP runtime does not define a Python executable")
+        request = {
+            "image_paths": [str(image_path) for image_path in image_paths],
+            "label_sets": {name: list(labels) for name, labels in label_sets.items()},
+            "model_name": self.runtime.model.model_name,
+            "checkpoint": self.runtime.model.checkpoint,
+            "hf_cache_dir": str(self.hf_cache_dir),
+            "device": self.device,
+            "return_image_embeddings": True,
+        }
+        result = self.runner(
+            [str(self.runtime.venv_python), str(self.worker_script)],
+            input=json.dumps(request),
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"BioCLIP worker failed: {result.stderr.strip()}")
+        payload = json.loads(result.stdout)
+        return _coerce_label_set_scores(payload["scores_by_image_by_label_set"]), _coerce_embeddings(payload.get("image_embeddings", []))
 
 
 def classify_species_agreement(
@@ -382,6 +425,7 @@ def build_label_set_prediction_record(
     topk_by_label_set: Mapping[str, list[tuple[str, float]]],
     species_prompt_topk: Sequence[Mapping[str, object]] = (),
     triage_scores_by_label: Mapping[str, float] | None = None,
+    image_embedding: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     species_topk = _topk_json(topk_by_label_set.get("species", []))
     triage_topk = _topk_json(topk_by_label_set.get("triage", []))
@@ -397,7 +441,7 @@ def build_label_set_prediction_record(
         topk_labels=[str(item["label"]) for item in species_topk],
         text_evidence_present=text_evidence_present,
     )
-    return {
+    record = {
         "flickr_photo_id": flickr_photo_id,
         "model_family": "bioclip",
         "model_name": runtime.model.model_name,
@@ -428,6 +472,11 @@ def build_label_set_prediction_record(
         "vision_review_required": _vision_review_required(agreement_status),
         "created_at": datetime.now(UTC).isoformat(),
     }
+    if image_embedding is not None:
+        record["image_embedding"] = [float(value) for value in image_embedding]
+        record["embedding_dimension"] = len(image_embedding)
+        record["preprocessing_version"] = "open_clip_default"
+    return record
 
 
 def _topk_json(topk: Sequence[tuple[str, float]]) -> list[dict[str, float | str]]:
@@ -557,6 +606,45 @@ class PersistentBioClipScorer:
                 return _coerce_label_set_scores(payload["scores_by_image_by_label_set"])
             raise RuntimeError("BioCLIP worker response did not include label-set scores")
 
+    def score_label_sets_batch_with_embeddings(
+        self,
+        image_paths: Sequence[Path],
+        label_sets: LabelSets,
+    ) -> tuple[dict[str, list[Mapping[str, float]]], Sequence[Sequence[float]]]:
+        process = self._ensure_process()
+        if process.poll() is not None:
+            raise RuntimeError(f"BioCLIP persistent worker exited early with code {process.returncode}")
+        request = {
+            "image_paths": [str(image_path) for image_path in image_paths],
+            "label_sets": {name: list(labels) for name, labels in label_sets.items()},
+            "model_name": self.runtime.model.model_name,
+            "checkpoint": self.runtime.model.checkpoint,
+            "hf_cache_dir": str(self.hf_cache_dir),
+            "device": self.requested_device,
+            "return_image_embeddings": True,
+        }
+        assert self._stdin is not None
+        assert self._stdout is not None
+        self._stdin.write(json.dumps(request, sort_keys=True) + "\n")
+        self._stdin.flush()
+        while True:
+            line = self._stdout.readline()
+            if not line:
+                raise RuntimeError("BioCLIP persistent worker closed stdout before returning scores")
+            payload = json.loads(line)
+            if "error" in payload:
+                raise RuntimeError(f"BioCLIP worker failed: {payload['error']}")
+            if payload.get("ready"):
+                self.device = str(payload.get("device") or "")
+                self.gpu_name = str(payload.get("gpu_name") or "")
+                continue
+            if "device" in payload:
+                self.device = str(payload.get("device") or "")
+                self.gpu_name = str(payload.get("gpu_name") or "")
+            if "scores_by_image_by_label_set" in payload:
+                return _coerce_label_set_scores(payload["scores_by_image_by_label_set"]), _coerce_embeddings(payload.get("image_embeddings", []))
+            raise RuntimeError("BioCLIP worker response did not include label-set scores")
+
     def close(self) -> None:
         process = self._process
         if process is None:
@@ -602,6 +690,16 @@ def _coerce_label_set_scores(payload: Mapping[str, Sequence[Mapping[str, object]
         ]
         for label_set_name, scores_by_image in payload.items()
     }
+
+
+def _coerce_embeddings(payload: object) -> list[list[float]]:
+    if not isinstance(payload, list):
+        return []
+    embeddings: list[list[float]] = []
+    for row in payload:
+        if isinstance(row, list):
+            embeddings.append([float(value) for value in row])
+    return embeddings
 
 
 def _coerce_worker_device(*, device: str, require_cuda: bool | None) -> str:

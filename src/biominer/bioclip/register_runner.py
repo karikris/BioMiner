@@ -12,6 +12,12 @@ import polars as pl
 
 from biominer.bioclip.bioclip import DEFAULT_TRIAGE_LABELS
 from biominer.bioclip.async_image_cache import cache_images_async
+from biominer.bioclip.candidate_sets import (
+    CandidateMode,
+    CandidateSet,
+    CandidateStrategy,
+    build_candidate_set,
+)
 from biominer.bioclip.image_cache import CachedImage, cache_image_from_url
 from biominer.bioclip.prompt_templates import PromptVariant
 from biominer.bioclip.species_candidates import (
@@ -46,6 +52,7 @@ class RegisterBatchClassifier(Protocol):
         label_sets: dict[str, Sequence[str]],
         species_prompt_variants: Sequence[PromptVariant] | None = None,
         top_k: int = 10,
+        return_image_embeddings: bool = False,
     ) -> list[dict[str, Any]]:
         ...
 
@@ -63,6 +70,12 @@ class RegisterRunnerResult:
     max_staged_images: int
     register_count: int
     register_size: int
+    candidate_set_count: int
+    avg_records_per_candidate_set: float
+    max_records_per_candidate_set: int
+    text_embedding_cache_hit_proxy: int
+    embedding_output_path: Path | None = None
+    embeddings_written: int = 0
 
 
 @dataclass(frozen=True)
@@ -70,6 +83,12 @@ class _RegisterItem:
     record: dict[str, Any]
     base: dict[str, object]
     cached: CachedImage
+
+
+@dataclass(frozen=True)
+class _CandidateGroup:
+    candidate_set: CandidateSet
+    items: list[_RegisterItem]
 
 
 @dataclass(frozen=True)
@@ -92,6 +111,12 @@ def process_records_with_registers(
     register_count: int = 4,
     register_size: int = 20,
     download_workers: int = 4,
+    classification_mode: str | CandidateMode = CandidateMode.HYBRID,
+    candidate_strategy: str | CandidateStrategy = CandidateStrategy.ALL,
+    candidate_limit: int | None = None,
+    target_species: str | None = None,
+    emit_image_embeddings: bool = False,
+    embedding_output: str | Path | None = None,
     source: str = "flickr",
     model_id: str = "bioclip2_5",
     model_version: str = "bioclip2_5_huge",
@@ -119,6 +144,8 @@ def process_records_with_registers(
     download_failures = 0
     bioclip_failures = 0
     deleted = 0
+    candidate_set_record_counts: dict[str, int] = {}
+    embedding_rows: list[dict[str, object]] = []
     max_staged = 0
     staged = 0
 
@@ -157,7 +184,7 @@ def process_records_with_registers(
                 max_staged = max(max_staged, staged)
 
             for register_id, fill in fills:
-                processed, failed, cleaned = _classify_register(
+                processed, failed, cleaned, group_counts = _classify_register(
                     register_id=register_id,
                     items=fill.items,
                     classifier=classifier,
@@ -165,13 +192,22 @@ def process_records_with_registers(
                     species_prompt_variants=species_variants,
                     species_by_label=species_by_label,
                     taxon_metadata_by_name=taxon_metadata_by_name,
+                    species_candidates=species_candidates,
+                    classification_mode=classification_mode,
+                    candidate_strategy=candidate_strategy,
+                    candidate_limit=candidate_limit,
+                    target_species=target_species,
+                    emit_image_embeddings=emit_image_embeddings,
                     rows=rows,
+                    embedding_rows=embedding_rows,
                     cache_root=Path(cache_root),
                     processed_keys=processed_keys,
                 )
                 classified += processed
                 bioclip_failures += failed
                 deleted += cleaned
+                for signature, count in group_counts.items():
+                    candidate_set_record_counts[signature] = candidate_set_record_counts.get(signature, 0) + count
                 staged -= len(fill.items)
 
                 refill = _submit_register_fill(
@@ -193,8 +229,15 @@ def process_records_with_registers(
 
     new_frame = pl.DataFrame(rows) if rows else _empty_triage_frame()
     combined = pl.concat([existing, new_frame], how="diagonal_relaxed") if existing.height else new_frame
+    combined = _stable_sort_frame(combined)
     write_parquet(combined, output)
     write_bucket_views(combined, bucket_views_dir or output.parent)
+    embedding_output_path = Path(embedding_output) if embedding_output else None
+    embeddings_written = 0
+    if emit_image_embeddings and embedding_output_path is not None:
+        embeddings_written = _write_embedding_rows(embedding_rows, embedding_output_path)
+    candidate_set_count = len(candidate_set_record_counts)
+    classified_for_candidate_sets = sum(candidate_set_record_counts.values())
     return RegisterRunnerResult(
         frame=combined,
         output_path=output,
@@ -207,6 +250,14 @@ def process_records_with_registers(
         max_staged_images=max_staged,
         register_count=register_count,
         register_size=register_size,
+        candidate_set_count=candidate_set_count,
+        avg_records_per_candidate_set=(
+            classified_for_candidate_sets / candidate_set_count if candidate_set_count else 0.0
+        ),
+        max_records_per_candidate_set=max(candidate_set_record_counts.values(), default=0),
+        text_embedding_cache_hit_proxy=sum(max(0, count - 1) for count in candidate_set_record_counts.values()),
+        embedding_output_path=embedding_output_path,
+        embeddings_written=embeddings_written,
     )
 
 
@@ -222,6 +273,12 @@ def write_register_runner_progress(path: str | Path, result: RegisterRunnerResul
         "max_staged_images": result.max_staged_images,
         "register_count": result.register_count,
         "register_size": result.register_size,
+        "candidate_set_count": result.candidate_set_count,
+        "avg_records_per_candidate_set": result.avg_records_per_candidate_set,
+        "max_records_per_candidate_set": result.max_records_per_candidate_set,
+        "text_embedding_cache_hit_proxy": result.text_embedding_cache_hit_proxy,
+        "embedding_output_path": str(result.embedding_output_path) if result.embedding_output_path else None,
+        "embeddings_written": result.embeddings_written,
         "model_load_policy": "one persistent BioCLIP 2.5 worker for the full run",
         "updated_at": datetime.now(UTC).isoformat(),
     }
@@ -348,74 +405,247 @@ def _classify_register(
     species_prompt_variants: Sequence[PromptVariant],
     species_by_label: dict[str, str],
     taxon_metadata_by_name: dict[str, dict[str, str | None]],
+    species_candidates: Sequence[SpeciesCandidate],
+    classification_mode: str | CandidateMode,
+    candidate_strategy: str | CandidateStrategy,
+    candidate_limit: int | None,
+    target_species: str | None,
+    emit_image_embeddings: bool,
     rows: list[dict[str, object]],
+    embedding_rows: list[dict[str, object]],
     cache_root: Path,
     processed_keys: set[tuple[object, ...]],
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, dict[str, int]]:
     if not items:
-        return 0, 0, 0
+        return 0, 0, 0, {}
     processed = 0
     failed = 0
     deleted = 0
-    images = [_image_payload(item) for item in items]
-    try:
-        predictions = classifier.classify_images_with_label_sets(
-            images,
-            label_sets=label_sets,
-            species_prompt_variants=species_prompt_variants,
-        )
-        if len(predictions) != len(items):
-            raise RuntimeError(f"BioCLIP returned {len(predictions)} predictions for {len(items)} images")
-        for item, prediction in zip(items, predictions, strict=True):
-            rows.append(_success_row(item, prediction, register_id, species_by_label, taxon_metadata_by_name, cache_root))
-            if rows[-1]["image_deleted_after_classification"]:
-                deleted += 1
-            processed_keys.add(_dedupe_key(item.base))
-            processed += 1
-    except Exception as exc:  # noqa: BLE001 - isolate bad images through the same persistent classifier.
-        for item in items:
-            try:
-                prediction = classifier.classify_images_with_label_sets(
-                    [_image_payload(item)],
-                    label_sets=label_sets,
-                    species_prompt_variants=species_prompt_variants,
-                )[0]
-                rows.append(_success_row(item, prediction, register_id, species_by_label, taxon_metadata_by_name, cache_root))
+    groups = _group_items_by_candidate_set(
+        items,
+        species_candidates=species_candidates,
+        classification_mode=classification_mode,
+        candidate_strategy=candidate_strategy,
+        candidate_limit=candidate_limit,
+    )
+    group_counts = {group.candidate_set.signature: len(group.items) for group in groups}
+    for group in groups:
+        active_label_sets: dict[str, Sequence[str]] = {
+            name: tuple(labels)
+            for name, labels in group.candidate_set.label_sets.items()
+        }
+        active_species_variants: Sequence[PromptVariant] = group.candidate_set.species_prompt_variants
+        if not active_label_sets:
+            active_label_sets = label_sets
+            active_species_variants = species_prompt_variants
+        images = [_image_payload(item, group.candidate_set, target_species=target_species) for item in group.items]
+        try:
+            predictions = _classify_images(
+                classifier,
+                images,
+                label_sets=active_label_sets,
+                species_prompt_variants=active_species_variants,
+                return_image_embeddings=emit_image_embeddings,
+            )
+            if len(predictions) != len(group.items):
+                raise RuntimeError(f"BioCLIP returned {len(predictions)} predictions for {len(group.items)} images")
+            for item, prediction in zip(group.items, predictions, strict=True):
+                rows.append(_success_row(item, prediction, register_id, species_by_label, taxon_metadata_by_name, cache_root, group.candidate_set))
+                if emit_image_embeddings:
+                    embedding_row = _embedding_row(item, prediction)
+                    if embedding_row is not None:
+                        embedding_rows.append(embedding_row)
                 if rows[-1]["image_deleted_after_classification"]:
                     deleted += 1
                 processed_keys.add(_dedupe_key(item.base))
                 processed += 1
-            except Exception as single_exc:  # noqa: BLE001 - record and continue.
-                image_deleted = cleanup_cached_image(item.cached, cache_root=cache_root, delete_after_success=True)
-                rows.append(
-                    _failure_row(
-                        item.base,
-                        status="failed_bioclip",
-                        error=f"{single_exc}; batch_error={exc}",
-                        retry_eligible=True,
-                        image_hash=item.cached.image_hash,
-                        image_downloaded=True,
-                        image_deleted_after_classification=image_deleted,
+        except Exception as exc:  # noqa: BLE001 - isolate bad images through the same persistent classifier.
+            for item in group.items:
+                image = _image_payload(item, group.candidate_set, target_species=target_species)
+                try:
+                    prediction = _classify_images(
+                        classifier,
+                        [image],
+                        label_sets=active_label_sets,
+                        species_prompt_variants=active_species_variants,
+                        return_image_embeddings=emit_image_embeddings,
+                    )[0]
+                    rows.append(_success_row(item, prediction, register_id, species_by_label, taxon_metadata_by_name, cache_root, group.candidate_set))
+                    if emit_image_embeddings:
+                        embedding_row = _embedding_row(item, prediction)
+                        if embedding_row is not None:
+                            embedding_rows.append(embedding_row)
+                    if rows[-1]["image_deleted_after_classification"]:
+                        deleted += 1
+                    processed_keys.add(_dedupe_key(item.base))
+                    processed += 1
+                except Exception as single_exc:  # noqa: BLE001 - record and continue.
+                    image_deleted = cleanup_cached_image(item.cached, cache_root=cache_root, delete_after_success=True)
+                    rows.append(
+                        _failure_row(
+                            item.base,
+                            status="failed_bioclip",
+                            error=f"{single_exc}; batch_error={exc}",
+                            retry_eligible=True,
+                            image_hash=item.cached.image_hash,
+                            image_downloaded=True,
+                            image_deleted_after_classification=image_deleted,
+                        )
+                        | {
+                            "register_id": register_id,
+                            "candidate_set_signature": group.candidate_set.signature,
+                            "candidate_set_label_count": group.candidate_set.label_count,
+                            "classification_mode": group.candidate_set.mode.value,
+                            "candidate_strategy": group.candidate_set.strategy.value,
+                        }
                     )
-                    | {"register_id": register_id}
-                )
-                failed += 1
-                if image_deleted:
-                    deleted += 1
-    return processed, failed, deleted
+                    failed += 1
+                    if image_deleted:
+                        deleted += 1
+    return processed, failed, deleted, group_counts
 
 
-def _image_payload(item: _RegisterItem) -> dict[str, object]:
+def _classify_images(
+    classifier: RegisterBatchClassifier,
+    images: Sequence[dict[str, object]],
+    *,
+    label_sets: dict[str, Sequence[str]],
+    species_prompt_variants: Sequence[PromptVariant],
+    return_image_embeddings: bool,
+) -> list[dict[str, Any]]:
+    if return_image_embeddings:
+        return classifier.classify_images_with_label_sets(
+            images,
+            label_sets=label_sets,
+            species_prompt_variants=species_prompt_variants,
+            return_image_embeddings=True,
+        )
+    return classifier.classify_images_with_label_sets(
+        images,
+        label_sets=label_sets,
+        species_prompt_variants=species_prompt_variants,
+    )
+
+
+def _group_items_by_candidate_set(
+    items: Sequence[_RegisterItem],
+    *,
+    species_candidates: Sequence[SpeciesCandidate],
+    classification_mode: str | CandidateMode,
+    candidate_strategy: str | CandidateStrategy,
+    candidate_limit: int | None,
+) -> list[_CandidateGroup]:
+    grouped: dict[str, _CandidateGroup] = {}
+    for item in items:
+        candidate_set = build_candidate_set(
+            item.record,
+            species_candidates=species_candidates,
+            mode=classification_mode,
+            strategy=candidate_strategy,
+            candidate_limit=candidate_limit,
+        )
+        existing = grouped.get(candidate_set.signature)
+        if existing is None:
+            grouped[candidate_set.signature] = _CandidateGroup(candidate_set=candidate_set, items=[item])
+        else:
+            existing.items.append(item)
+    return list(grouped.values())
+
+
+def _image_payload(item: _RegisterItem, candidate_set: CandidateSet, *, target_species: str | None) -> dict[str, object]:
     return {
         "flickr_photo_id": str(item.base["flickr_photo_id"]),
         "image_path": item.cached.path,
         "image_hash": item.cached.image_hash,
         "image_url_used": item.cached.source_url,
-        "resolved_scientific_name": "Papilio demoleus",
+        "resolved_scientific_name": _resolved_scientific_name(item.record, candidate_set, target_species=target_species),
+        "candidate_set_signature": candidate_set.signature,
+        "candidate_set_label_count": candidate_set.label_count,
+        "classification_mode": candidate_set.mode.value,
+        "candidate_strategy": candidate_set.strategy.value,
         "text_evidence_present": bool(
             item.record.get("title") or item.record.get("description") or item.record.get("tags") or item.record.get("machine_tags")
         ),
     }
+
+
+def _resolved_scientific_name(record: dict[str, Any], candidate_set: CandidateSet, *, target_species: str | None) -> str:
+    if target_species:
+        return target_species
+    for key in (
+        "resolved_scientific_name",
+        "species_final_top1",
+        "species_top1_scientific_name",
+        "accepted_scientific_name",
+        "scientific_name",
+        "scientificName",
+        "target_species",
+    ):
+        value = record.get(key)
+        if value not in (None, ""):
+            return str(value)
+    if len(candidate_set.species_candidates) == 1:
+        return candidate_set.species_candidates[0].scientific_name
+    return ""
+
+
+def _embedding_row(item: _RegisterItem, prediction: dict[str, Any]) -> dict[str, object] | None:
+    embedding = prediction.get("image_embedding")
+    if not isinstance(embedding, list):
+        return None
+    vector = [float(value) for value in embedding]
+    return {
+        "image_hash": item.cached.image_hash,
+        "source": item.base.get("source"),
+        "source_record_id": item.base.get("source_record_id"),
+        "flickr_photo_id": item.base.get("flickr_photo_id"),
+        "model_id": item.base.get("model_id"),
+        "model_version": item.base.get("model_version"),
+        "model_checkpoint": item.base.get("model_checkpoint"),
+        "preprocessing_version": str(prediction.get("preprocessing_version") or "open_clip_default"),
+        "embedding_dimension": len(vector),
+        "embedding": vector,
+        "created_at": prediction.get("created_at") or datetime.now(UTC).isoformat(),
+    }
+
+
+def _write_embedding_rows(rows: list[dict[str, object]], output: Path) -> int:
+    schema = {
+        "image_hash": pl.Utf8,
+        "source": pl.Utf8,
+        "source_record_id": pl.Utf8,
+        "flickr_photo_id": pl.Utf8,
+        "model_id": pl.Utf8,
+        "model_version": pl.Utf8,
+        "model_checkpoint": pl.Utf8,
+        "preprocessing_version": pl.Utf8,
+        "embedding_dimension": pl.Int64,
+        "embedding": pl.List(pl.Float64),
+        "created_at": pl.Utf8,
+    }
+    new_frame = pl.DataFrame(rows, schema=schema) if rows else pl.DataFrame(schema=schema)
+    if output.exists():
+        existing = pl.read_parquet(output)
+        combined = pl.concat([existing, new_frame], how="diagonal_relaxed")
+    else:
+        combined = new_frame
+    if combined.height:
+        combined = combined.unique(
+            subset=["image_hash", "model_checkpoint", "preprocessing_version"],
+            keep="last",
+            maintain_order=True,
+        ).sort(["image_hash", "model_checkpoint", "preprocessing_version"])
+    write_parquet(combined, output)
+    return len(rows)
+
+
+def _stable_sort_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    sort_columns = [
+        column
+        for column in ("source_record_id", "flickr_photo_id", "source_record_hash", "classification_status")
+        if column in frame.columns
+    ]
+    return frame.sort(sort_columns) if sort_columns and frame.height else frame
 
 
 def _success_row(
@@ -425,6 +655,7 @@ def _success_row(
     species_by_label: dict[str, str],
     taxon_metadata_by_name: dict[str, dict[str, str | None]],
     cache_root: Path,
+    candidate_set: CandidateSet,
 ) -> dict[str, object]:
     species_name = (
         prediction.get("species_top1_scientific_name")
@@ -447,6 +678,10 @@ def _success_row(
         "classification_status": "success",
         "classification_error": None,
         "retry_eligible": False,
+        "candidate_set_signature": candidate_set.signature,
+        "candidate_set_label_count": candidate_set.label_count,
+        "classification_mode": candidate_set.mode.value,
+        "candidate_strategy": candidate_set.strategy.value,
         **_prediction_fields(enriched_prediction),
         **triage,
         "image_deleted_after_classification": image_deleted,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from math import log
+import sys
 from typing import Mapping, Sequence
 
 
@@ -58,3 +59,66 @@ def grouped_probability_summary(
     }
     top_group = max(group_scores.items(), key=lambda item: item[1])[0] if group_scores else None
     return {"top_group": top_group, "group_scores": group_scores}
+
+
+def mps_memory_metrics(torch_module: object | None = None) -> dict[str, object]:
+    torch = torch_module
+    if torch is None:
+        try:
+            import torch as imported_torch
+        except Exception:  # noqa: BLE001 - PyTorch is optional in the main runtime.
+            return _mps_metrics(
+                available=False,
+                current=None,
+                driver=None,
+                recommended=None,
+                note="torch_unavailable",
+            )
+        torch = imported_torch
+    mps = getattr(getattr(torch, "backends", None), "mps", None)
+    available = bool(mps is not None and mps.is_available())
+    if not available:
+        return _mps_metrics(
+            available=False,
+            current=None,
+            driver=None,
+            recommended=None,
+            note="mps_unavailable",
+        )
+    return _mps_metrics(
+        available=True,
+        current=_call_torch_mps_metric(torch, "current_allocated_memory"),
+        driver=_call_torch_mps_metric(torch, "driver_allocated_memory"),
+        recommended=_call_torch_mps_metric(torch, "recommended_max_memory"),
+        note=None,
+    )
+
+
+def _mps_metrics(
+    *,
+    available: bool,
+    current: int | None,
+    driver: int | None,
+    recommended: int | None,
+    note: str | None,
+) -> dict[str, object]:
+    return {
+        "mps_available": available,
+        "mps_current_allocated_memory_bytes": current,
+        "mps_driver_allocated_memory_bytes": driver,
+        "mps_recommended_max_memory_bytes": recommended,
+        "mps_metrics_note": note,
+        "platform": sys.platform,
+    }
+
+
+def _call_torch_mps_metric(torch: object, name: str) -> int | None:
+    mps_module = getattr(torch, "mps", None)
+    metric = getattr(mps_module, name, None)
+    if metric is None:
+        return None
+    try:
+        value = metric()
+    except Exception:  # noqa: BLE001 - unsupported metric stays null, never guessed.
+        return None
+    return int(value) if value is not None else None

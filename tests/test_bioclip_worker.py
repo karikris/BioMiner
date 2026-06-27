@@ -77,6 +77,42 @@ def test_worker_main_accepts_batch_request_without_loading_model(monkeypatch, tm
     assert calls["device"] == "auto"
 
 
+def test_worker_main_can_return_label_set_embeddings_without_loading_model(monkeypatch, tmp_path, capsys) -> None:
+    calls: dict[str, object] = {}
+
+    def fake_score_label_sets_with_embeddings(*, image_paths, label_sets, model_name, checkpoint, device):  # noqa: ANN001 - mirrors worker signature.
+        calls["image_paths"] = image_paths
+        calls["label_sets"] = label_sets
+        calls["model_name"] = model_name
+        calls["checkpoint"] = checkpoint
+        calls["device"] = device
+        return {"species": [{"a photo of Danaus plexippus": 0.7}]}, [[0.6, 0.8]]
+
+    monkeypatch.setattr(bioclip_worker, "score_image_label_sets_with_embeddings", fake_score_label_sets_with_embeddings)
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "image_paths": ["/tmp/1.jpg"],
+                    "label_sets": {"species": ["a photo of Danaus plexippus"]},
+                    "model_name": "ViT-H-14",
+                    "checkpoint": "checkpoint",
+                    "hf_cache_dir": str(tmp_path / "hf"),
+                    "return_image_embeddings": True,
+                }
+            )
+        ),
+    )
+
+    bioclip_worker.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["scores_by_image_by_label_set"]["species"][0]["a photo of Danaus plexippus"] == 0.7
+    assert payload["image_embeddings"] == [[0.6, 0.8]]
+    assert calls["device"] == "auto"
+
+
 class FakeTorch:
     def __init__(self, *, cuda: bool, mps: bool) -> None:
         self.cuda = FakeCuda(cuda)

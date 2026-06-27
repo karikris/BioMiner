@@ -10,10 +10,12 @@ import subprocess
 
 import polars as pl
 
+from biominer.bioclip.benchmark import build_benchmark_report, parse_csv_candidate_modes, parse_csv_ints
 from biominer.bioclip.bioclip import BioClipClassifier, PersistentBioClipScorer
+from biominer.bioclip.candidate_sets import CandidateMode, CandidateStrategy
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
 from biominer.bioclip.register_runner import process_records_with_registers
-from biominer.bioclip.species_candidates import DEFAULT_SPECIES_CANDIDATE_LIMIT, TARGET_SPECIES, load_species_candidates
+from biominer.bioclip.species_candidates import DEFAULT_SPECIES_CANDIDATE_LIMIT, load_species_candidates
 from biominer.flickr_fetch.query_planner import (
     FLICKR_SEARCH_RESULT_WINDOW,
     GEO_PAGE_SIZE,
@@ -90,8 +92,23 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_screen.add_argument("--register-size", type=int, default=4)
     bioclip_screen.add_argument("--download-workers", type=int, default=4)
     bioclip_screen.add_argument("--candidate-limit", type=int, default=DEFAULT_SPECIES_CANDIDATE_LIMIT)
-    bioclip_screen.add_argument("--target-species", default=TARGET_SPECIES)
+    bioclip_screen.add_argument("--candidate-mode", choices=[mode.value for mode in CandidateMode], default=CandidateMode.HYBRID.value)
+    bioclip_screen.add_argument("--candidate-strategy", choices=[strategy.value for strategy in CandidateStrategy], default=CandidateStrategy.ALL.value)
+    bioclip_screen.add_argument("--target-species")
+    bioclip_screen.add_argument("--emit-image-embeddings", action="store_true")
+    bioclip_screen.add_argument("--embedding-output")
     bioclip_screen.add_argument("--bucket-views-dir")
+    bioclip_benchmark = bioclip_subparsers.add_parser("benchmark")
+    bioclip_benchmark.add_argument("--input", required=True)
+    bioclip_benchmark.add_argument("--species-candidates", required=True)
+    bioclip_benchmark.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    bioclip_benchmark.add_argument("--register-sizes", default="8,16,32,64")
+    bioclip_benchmark.add_argument("--register-counts", default="2,4,6")
+    bioclip_benchmark.add_argument("--candidate-limits", default="500,2000,18000")
+    bioclip_benchmark.add_argument("--classification-modes", default="triage,hybrid,rescue_full_species")
+    bioclip_benchmark.add_argument("--candidate-strategy", choices=[strategy.value for strategy in CandidateStrategy], default=CandidateStrategy.ALL.value)
+    bioclip_benchmark.add_argument("--download-workers", type=int, default=4)
+    bioclip_benchmark.add_argument("--output", required=True)
     fetch_comments = subparsers.add_parser("fetch-comments")
     fetch_comments.add_argument("--photo-id", action="append", default=[])
     fetch_comments.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
@@ -214,6 +231,8 @@ def run(args: argparse.Namespace) -> int:
             return _run_bioclip_prefetch_model(args)
         if args.bioclip_command == "screen":
             return _run_bioclip_screen(args)
+        if args.bioclip_command == "benchmark":
+            return _run_bioclip_benchmark(args)
         return 2
     if args.command == "fetch-comments":
         state = CommentsEnrichmentState(args.state_db)
@@ -614,6 +633,12 @@ def _run_bioclip_screen(args: argparse.Namespace) -> int:
             register_count=args.register_count,
             register_size=args.register_size,
             download_workers=args.download_workers,
+            classification_mode=args.candidate_mode,
+            candidate_strategy=args.candidate_strategy,
+            candidate_limit=args.candidate_limit,
+            target_species=args.target_species,
+            emit_image_embeddings=args.emit_image_embeddings,
+            embedding_output=args.embedding_output,
             model_id="bioclip2_5",
             model_version="bioclip2_5_huge",
             model_checkpoint=BIOCLIP_25_HUGE_REVISION,
@@ -636,9 +661,45 @@ def _run_bioclip_screen(args: argparse.Namespace) -> int:
                 "max_staged_images": result.max_staged_images,
                 "register_count": result.register_count,
                 "register_size": result.register_size,
+                "candidate_set_count": getattr(result, "candidate_set_count", None),
+                "avg_records_per_candidate_set": getattr(result, "avg_records_per_candidate_set", None),
+                "max_records_per_candidate_set": getattr(result, "max_records_per_candidate_set", None),
+                "text_embedding_cache_hit_proxy": getattr(result, "text_embedding_cache_hit_proxy", None),
+                "classification_mode": args.candidate_mode,
+                "candidate_strategy": args.candidate_strategy,
+                "embedding_output": str(getattr(result, "embedding_output_path", None)) if getattr(result, "embedding_output_path", None) else None,
+                "embeddings_written": getattr(result, "embeddings_written", 0),
                 "model_name": BIOCLIP_25_HUGE_REPO_ID,
                 "model_revision": BIOCLIP_25_HUGE_REVISION,
                 "device": args.device,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _run_bioclip_benchmark(args: argparse.Namespace) -> int:
+    report = build_benchmark_report(
+        input_path=args.input,
+        species_candidates_path=args.species_candidates,
+        output_path=args.output,
+        device=args.device,
+        register_sizes=parse_csv_ints(args.register_sizes),
+        register_counts=parse_csv_ints(args.register_counts),
+        candidate_limits=parse_csv_ints(args.candidate_limits),
+        classification_modes=parse_csv_candidate_modes(args.classification_modes),
+        candidate_strategy=args.candidate_strategy,
+        download_workers=args.download_workers,
+    )
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "run_id": report["run_id"],
+                "configurations": len(report["runs"]) if isinstance(report.get("runs"), list) else 0,
+                "status": "benchmark_skeleton_written",
             },
             indent=2,
             sort_keys=True,

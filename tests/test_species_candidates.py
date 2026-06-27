@@ -5,7 +5,7 @@ import polars as pl
 from biominer.bioclip.species_candidates import load_species_candidates, species_labels, species_prompt_variants
 
 
-def test_load_species_candidates_pins_target_and_limits_species_rows(tmp_path) -> None:
+def test_load_species_candidates_does_not_pin_target_without_explicit_request(tmp_path) -> None:
     path = tmp_path / "global_checklist.csv"
     path.write_text(
         "scientificName,rank,family,genus,source,taxon_id\n"
@@ -16,6 +16,22 @@ def test_load_species_candidates_pins_target_and_limits_species_rows(tmp_path) -
     )
 
     candidates = load_species_candidates(path, limit=2)
+
+    assert [candidate.scientific_name for candidate in candidates] == ["Danaus plexippus", "Vanessa cardui"]
+    assert candidates[0].is_target_species is False
+
+
+def test_load_species_candidates_pins_target_when_explicitly_requested(tmp_path) -> None:
+    path = tmp_path / "global_checklist.csv"
+    path.write_text(
+        "scientificName,rank,family,genus,source,taxon_id\n"
+        "Danaus plexippus,species,Nymphalidae,Danaus,global,1\n"
+        "Papilio demoleus,subspecies,Papilionidae,Papilio,global,2\n"
+        "Vanessa cardui,species,Nymphalidae,Vanessa,global,3\n",
+        encoding="utf-8",
+    )
+
+    candidates = load_species_candidates(path, limit=2, target_species="Papilio demoleus")
 
     assert [candidate.scientific_name for candidate in candidates] == ["Papilio demoleus", "Danaus plexippus"]
     assert candidates[0].is_target_species is True

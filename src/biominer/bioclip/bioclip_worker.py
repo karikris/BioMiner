@@ -21,6 +21,16 @@ def main() -> None:
     device = device_from_request(request)
     label_sets = request.get("label_sets")
     if label_sets is not None:
+        if request.get("return_image_embeddings"):
+            scores_by_image_by_label_set, image_embeddings = score_image_label_sets_with_embeddings(
+                image_paths=[Path(path) for path in image_paths],
+                label_sets={str(name): list(labels) for name, labels in label_sets.items()},
+                model_name=request["model_name"],
+                checkpoint=request["checkpoint"],
+                device=device,
+            )
+            print(json.dumps({"scores_by_image_by_label_set": scores_by_image_by_label_set, "image_embeddings": image_embeddings}, sort_keys=True))
+            return
         scores_by_image_by_label_set = score_image_label_sets(
             image_paths=[Path(path) for path in image_paths],
             label_sets={str(name): list(labels) for name, labels in label_sets.items()},
@@ -96,19 +106,26 @@ def run_persistent_worker() -> None:
             image_paths = request.get("image_paths")
             label_sets = request.get("label_sets")
             if label_sets is not None:
-                scores_by_image_by_label_set = loaded.score_image_label_sets(
-                    [Path(path) for path in image_paths],
-                    {str(name): list(labels) for name, labels in label_sets.items()},
-                )
+                if request.get("return_image_embeddings"):
+                    scores_by_image_by_label_set, image_embeddings = loaded.score_image_label_sets_with_embeddings(
+                        [Path(path) for path in image_paths],
+                        {str(name): list(labels) for name, labels in label_sets.items()},
+                    )
+                else:
+                    scores_by_image_by_label_set = loaded.score_image_label_sets(
+                        [Path(path) for path in image_paths],
+                        {str(name): list(labels) for name, labels in label_sets.items()},
+                    )
+                    image_embeddings = None
+                response = {
+                    "scores_by_image_by_label_set": scores_by_image_by_label_set,
+                    "device": loaded.device,
+                    "gpu_name": loaded.gpu_name,
+                }
+                if image_embeddings is not None:
+                    response["image_embeddings"] = image_embeddings
                 print(
-                    json.dumps(
-                        {
-                            "scores_by_image_by_label_set": scores_by_image_by_label_set,
-                            "device": loaded.device,
-                            "gpu_name": loaded.gpu_name,
-                        },
-                        sort_keys=True,
-                    ),
+                    json.dumps(response, sort_keys=True),
                     flush=True,
                 )
                 continue
@@ -178,6 +195,23 @@ def score_image_label_sets(
         device=_coerce_device(device=device, require_cuda=require_cuda),
     )
     return model.score_image_label_sets(image_paths, label_sets)
+
+
+def score_image_label_sets_with_embeddings(
+    *,
+    image_paths: Sequence[Path],
+    label_sets: dict[str, Sequence[str]],
+    model_name: str,
+    checkpoint: str,
+    device: str = DEFAULT_DEVICE,
+    require_cuda: bool | None = None,
+) -> tuple[dict[str, list[dict[str, float]]], list[list[float]]]:
+    model = _LoadedBioClipModel.load(
+        model_name=model_name,
+        checkpoint=checkpoint,
+        device=_coerce_device(device=device, require_cuda=require_cuda),
+    )
+    return model.score_image_label_sets_with_embeddings(image_paths, label_sets)
 
 
 def _coerce_device(*, device: str, require_cuda: bool | None) -> str:
@@ -253,6 +287,31 @@ class _LoadedBioClipModel:
                         {label: float(probabilities[index].detach().cpu()) for index, label in enumerate(labels)}
                     )
         return scores_by_label_set
+
+    def score_image_label_sets_with_embeddings(
+        self,
+        image_paths: Sequence[Path],
+        label_sets: dict[str, Sequence[str]],
+    ) -> tuple[dict[str, list[dict[str, float]]], list[list[float]]]:
+        try:
+            from PIL import Image
+        except Exception as exc:  # noqa: BLE001 - executed in the external model runtime.
+            raise RuntimeError(f"BioCLIP dependencies are unavailable: {exc}") from exc
+
+        text_features_by_set = {name: self._text_features(labels) for name, labels in label_sets.items()}
+        scores_by_label_set: dict[str, list[dict[str, float]]] = {name: [] for name in label_sets}
+        with self.torch.no_grad():
+            image_batch = self._image_batch(image_paths, Image)
+            image_features = self.model.encode_image(image_batch)
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            for label_set_name, labels in label_sets.items():
+                probabilities_by_image = (100.0 * image_features @ text_features_by_set[label_set_name].T).softmax(dim=-1)
+                for probabilities in probabilities_by_image:
+                    scores_by_label_set[label_set_name].append(
+                        {label: float(probabilities[index].detach().cpu()) for index, label in enumerate(labels)}
+                    )
+            embeddings = image_features.detach().cpu().tolist()
+        return scores_by_label_set, [[float(value) for value in row] for row in embeddings]
 
     def _image_batch(self, image_paths: Sequence[Path], image_module):  # noqa: ANN001 - PIL module.
         images = [
