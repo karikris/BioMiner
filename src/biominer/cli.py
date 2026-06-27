@@ -95,6 +95,10 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_screen.add_argument("--candidate-limit", type=int, default=DEFAULT_SPECIES_CANDIDATE_LIMIT)
     bioclip_screen.add_argument("--candidate-mode", choices=[mode.value for mode in CandidateMode], default=CandidateMode.HYBRID.value)
     bioclip_screen.add_argument("--candidate-strategy", choices=[strategy.value for strategy in CandidateStrategy], default=CandidateStrategy.ALL.value)
+    bioclip_screen.add_argument("--geo-candidates")
+    bioclip_screen.add_argument("--geo-grid-level", default="G4_5deg")
+    bioclip_screen.add_argument("--geo-min-species-per-cell", type=int, default=5)
+    bioclip_screen.add_argument("--geo-include-neighbours", action="store_true")
     bioclip_screen.add_argument("--target-species")
     bioclip_screen.add_argument("--emit-image-embeddings", action="store_true")
     bioclip_screen.add_argument("--embedding-output")
@@ -639,6 +643,7 @@ def _run_bioclip_screen(args: argparse.Namespace) -> int:
             limit=args.candidate_limit,
             target_species=args.target_species,
         )
+        geo_species_index = pl.read_parquet(args.geo_candidates) if args.geo_candidates else None
         result = process_records_with_registers(
             records,
             classifier=classifier,
@@ -651,6 +656,10 @@ def _run_bioclip_screen(args: argparse.Namespace) -> int:
             classification_mode=args.candidate_mode,
             candidate_strategy=args.candidate_strategy,
             candidate_limit=args.candidate_limit,
+            geo_species_index=geo_species_index,
+            geo_grid_level=args.geo_grid_level,
+            geo_min_species_per_cell=args.geo_min_species_per_cell,
+            geo_include_neighbours=args.geo_include_neighbours,
             target_species=args.target_species,
             emit_image_embeddings=args.emit_image_embeddings,
             embedding_output=args.embedding_output,
@@ -682,6 +691,10 @@ def _run_bioclip_screen(args: argparse.Namespace) -> int:
                 "text_embedding_cache_hit_proxy": getattr(result, "text_embedding_cache_hit_proxy", None),
                 "classification_mode": args.candidate_mode,
                 "candidate_strategy": args.candidate_strategy,
+                "geo_candidates": args.geo_candidates,
+                "geo_grid_level": args.geo_grid_level,
+                "geo_min_species_per_cell": args.geo_min_species_per_cell,
+                "geo_include_neighbours": args.geo_include_neighbours,
                 "embedding_output": str(getattr(result, "embedding_output_path", None)) if getattr(result, "embedding_output_path", None) else None,
                 "embeddings_written": getattr(result, "embeddings_written", 0),
                 "model_name": BIOCLIP_25_HUGE_REPO_ID,

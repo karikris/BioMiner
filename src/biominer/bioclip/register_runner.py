@@ -114,6 +114,10 @@ def process_records_with_registers(
     classification_mode: str | CandidateMode = CandidateMode.HYBRID,
     candidate_strategy: str | CandidateStrategy = CandidateStrategy.ALL,
     candidate_limit: int | None = None,
+    geo_species_index: pl.DataFrame | None = None,
+    geo_grid_level: str = "G4_5deg",
+    geo_min_species_per_cell: int = 5,
+    geo_include_neighbours: bool = False,
     target_species: str | None = None,
     emit_image_embeddings: bool = False,
     embedding_output: str | Path | None = None,
@@ -196,6 +200,10 @@ def process_records_with_registers(
                     classification_mode=classification_mode,
                     candidate_strategy=candidate_strategy,
                     candidate_limit=candidate_limit,
+                    geo_species_index=geo_species_index,
+                    geo_grid_level=geo_grid_level,
+                    geo_min_species_per_cell=geo_min_species_per_cell,
+                    geo_include_neighbours=geo_include_neighbours,
                     target_species=target_species,
                     emit_image_embeddings=emit_image_embeddings,
                     rows=rows,
@@ -409,6 +417,10 @@ def _classify_register(
     classification_mode: str | CandidateMode,
     candidate_strategy: str | CandidateStrategy,
     candidate_limit: int | None,
+    geo_species_index: pl.DataFrame | None,
+    geo_grid_level: str,
+    geo_min_species_per_cell: int,
+    geo_include_neighbours: bool,
     target_species: str | None,
     emit_image_embeddings: bool,
     rows: list[dict[str, object]],
@@ -427,6 +439,10 @@ def _classify_register(
         classification_mode=classification_mode,
         candidate_strategy=candidate_strategy,
         candidate_limit=candidate_limit,
+        geo_species_index=geo_species_index,
+        geo_grid_level=geo_grid_level,
+        geo_min_species_per_cell=geo_min_species_per_cell,
+        geo_include_neighbours=geo_include_neighbours,
     )
     group_counts = {group.candidate_set.signature: len(group.items) for group in groups}
     for group in groups:
@@ -446,9 +462,18 @@ def _classify_register(
                 label_sets=active_label_sets,
                 species_prompt_variants=active_species_variants,
                 return_image_embeddings=emit_image_embeddings,
+                top_k=20,
             )
             if len(predictions) != len(group.items):
                 raise RuntimeError(f"BioCLIP returned {len(predictions)} predictions for {len(group.items)} images")
+            predictions = _rerank_species_top20(
+                classifier=classifier,
+                items=group.items,
+                predictions=predictions,
+                candidate_set=group.candidate_set,
+                target_species=target_species,
+                species_by_label=species_by_label,
+            )
             for item, prediction in zip(group.items, predictions, strict=True):
                 rows.append(_success_row(item, prediction, register_id, species_by_label, taxon_metadata_by_name, cache_root, group.candidate_set))
                 if emit_image_embeddings:
@@ -469,6 +494,15 @@ def _classify_register(
                         label_sets=active_label_sets,
                         species_prompt_variants=active_species_variants,
                         return_image_embeddings=emit_image_embeddings,
+                        top_k=20,
+                    )[0]
+                    prediction = _rerank_species_top20(
+                        classifier=classifier,
+                        items=[item],
+                        predictions=[prediction],
+                        candidate_set=group.candidate_set,
+                        target_species=target_species,
+                        species_by_label=species_by_label,
                     )[0]
                     rows.append(_success_row(item, prediction, register_id, species_by_label, taxon_metadata_by_name, cache_root, group.candidate_set))
                     if emit_image_embeddings:
@@ -512,19 +546,186 @@ def _classify_images(
     label_sets: dict[str, Sequence[str]],
     species_prompt_variants: Sequence[PromptVariant],
     return_image_embeddings: bool,
+    top_k: int = 10,
 ) -> list[dict[str, Any]]:
     if return_image_embeddings:
         return classifier.classify_images_with_label_sets(
             images,
             label_sets=label_sets,
             species_prompt_variants=species_prompt_variants,
+            top_k=top_k,
             return_image_embeddings=True,
         )
     return classifier.classify_images_with_label_sets(
         images,
         label_sets=label_sets,
         species_prompt_variants=species_prompt_variants,
+        top_k=top_k,
     )
+
+
+def _rerank_species_top20(
+    *,
+    classifier: RegisterBatchClassifier,
+    items: Sequence[_RegisterItem],
+    predictions: Sequence[dict[str, Any]],
+    candidate_set: CandidateSet,
+    target_species: str | None,
+    species_by_label: dict[str, str],
+) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any] | None] = [None] * len(predictions)
+    grouped: dict[tuple[str, ...], list[int]] = {}
+    candidates_by_key: dict[tuple[str, ...], list[SpeciesCandidate]] = {}
+    for index, prediction in enumerate(predictions):
+        top20_candidates = _top20_candidates_from_prediction(prediction, candidate_set.species_candidates, species_by_label)
+        if not top20_candidates:
+            enriched[index] = _with_species_result_columns(prediction, None, candidate_set)
+            continue
+        key = tuple(candidate.scientific_name for candidate in top20_candidates)
+        grouped.setdefault(key, []).append(index)
+        candidates_by_key[key] = top20_candidates
+    for key, indexes in grouped.items():
+        top20_candidates = candidates_by_key[key]
+        variants = tuple(species_prompt_variants(list(top20_candidates)))
+        labels = tuple(variant.label for variant in variants)
+        if not labels:
+            for index in indexes:
+                enriched[index] = _with_species_result_columns(predictions[index], None, candidate_set)
+            continue
+        rerank_predictions = _classify_images(
+            classifier,
+            [_image_payload(items[index], candidate_set, target_species=target_species) for index in indexes],
+            label_sets={"species": labels},
+            species_prompt_variants=variants,
+            return_image_embeddings=False,
+            top_k=5,
+        )
+        for index, rerank_prediction in zip(indexes, rerank_predictions, strict=True):
+            rerank_prediction = {
+                **rerank_prediction,
+                "species_top1_scientific_name": rerank_prediction.get("species_top1_scientific_name")
+                or species_by_label.get(str(rerank_prediction.get("species_top1_label") or "")),
+            }
+            enriched[index] = _with_species_result_columns(predictions[index], rerank_prediction, candidate_set)
+    return [row if row is not None else _with_species_result_columns(prediction, None, candidate_set) for row, prediction in zip(enriched, predictions, strict=True)]
+
+
+def _top20_candidates_from_prediction(
+    prediction: dict[str, Any],
+    candidates: Sequence[SpeciesCandidate],
+    species_by_label: dict[str, str],
+) -> list[SpeciesCandidate]:
+    by_name = {candidate.scientific_name: candidate for candidate in candidates}
+    ordered_names: list[str] = []
+    prompt_topk = prediction.get("species_prompt_topk_json")
+    if isinstance(prompt_topk, list):
+        for row in prompt_topk[:20]:
+            if isinstance(row, dict) and row.get("taxon_key"):
+                ordered_names.append(str(row["taxon_key"]))
+    species_topk = prediction.get("species_topk_json")
+    if isinstance(species_topk, list):
+        for row in species_topk[:20]:
+            if not isinstance(row, dict):
+                continue
+            label = str(row.get("label") or "")
+            name = species_by_label.get(label)
+            if name:
+                ordered_names.append(name)
+    selected: list[SpeciesCandidate] = []
+    seen: set[str] = set()
+    for name in ordered_names:
+        candidate = by_name.get(name)
+        if candidate is not None and candidate.scientific_name not in seen:
+            selected.append(candidate)
+            seen.add(candidate.scientific_name)
+    return selected[:20]
+
+
+def _with_species_result_columns(
+    prediction: dict[str, Any],
+    rerank_prediction: dict[str, Any] | None,
+    candidate_set: CandidateSet,
+) -> dict[str, Any]:
+    species_top20 = _topk_rows(prediction.get("species_prompt_topk_json")) or _topk_rows(prediction.get("species_topk_json"))
+    species_top20 = species_top20[:20]
+    output = {
+        **prediction,
+        "species_top20_json": species_top20,
+        "species_candidate_count": len(candidate_set.species_candidates),
+        "species_candidate_sources_json": candidate_set.species_candidate_sources_json,
+        "geo_candidate_cell_id": candidate_set.geo_candidate_cell_id,
+        "geo_candidate_grid_level": candidate_set.geo_candidate_grid_level,
+        "geo_candidate_fallback_level": candidate_set.geo_candidate_fallback_level,
+        "species_entropy": prediction.get("species_entropy", prediction.get("species_topk_entropy")),
+        "genus_candidates_by_family_json": json.dumps(
+            candidate_set.genus_candidates_by_family or {},
+            ensure_ascii=True,
+            sort_keys=True,
+        ),
+    }
+    if rerank_prediction is None:
+        output.update(
+            {
+                "species_top5_rerun_json": species_top20[:5],
+                "species_final_top1": prediction.get("species_top1_scientific_name"),
+                "species_final_top1_score": prediction.get("species_top1_score"),
+                "species_final_margin": prediction.get("species_top1_top2_margin"),
+                "species_final_entropy": prediction.get("species_entropy", prediction.get("species_topk_entropy")),
+                "species_final_evidence_summary_json": _species_evidence_summary(candidate_set, rerun=False),
+            }
+        )
+        return output
+    rerank_top5 = _topk_rows(rerank_prediction.get("species_prompt_topk_json")) or _topk_rows(rerank_prediction.get("species_topk_json"))
+    rerank_top5 = rerank_top5[:5]
+    output.update(
+        {
+            "species_top5_rerun_json": rerank_top5,
+            "species_final_top1": _top1_taxon_name(rerank_prediction) or prediction.get("species_top1_scientific_name"),
+            "species_final_top1_score": rerank_prediction.get("species_top1_score", prediction.get("species_top1_score")),
+            "species_final_margin": rerank_prediction.get("species_top1_top2_margin", prediction.get("species_top1_top2_margin")),
+            "species_final_entropy": rerank_prediction.get("species_entropy", rerank_prediction.get("species_topk_entropy")),
+            "species_final_evidence_summary_json": _species_evidence_summary(candidate_set, rerun=True),
+        }
+    )
+    return output
+
+
+def _topk_rows(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(row) for row in value if isinstance(row, dict)]
+
+
+def _top1_taxon_name(prediction: dict[str, Any]) -> str | None:
+    prompt_topk = _topk_rows(prediction.get("species_prompt_topk_json"))
+    if prompt_topk and prompt_topk[0].get("taxon_key"):
+        return str(prompt_topk[0]["taxon_key"])
+    return prediction.get("species_top1_scientific_name")
+
+
+def _species_evidence_summary(candidate_set: CandidateSet, *, rerun: bool) -> str:
+    return json.dumps(
+        {
+            "candidate_strategy": candidate_set.strategy.value,
+            "candidate_mode": candidate_set.mode.value,
+            "candidate_count": len(candidate_set.species_candidates),
+            "candidate_sources": _json_rows(candidate_set.species_candidate_sources_json),
+            "geo_candidate_cell_id": candidate_set.geo_candidate_cell_id,
+            "geo_candidate_grid_level": candidate_set.geo_candidate_grid_level,
+            "geo_candidate_fallback_level": candidate_set.geo_candidate_fallback_level,
+            "pass5_rerun": rerun,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+
+
+def _json_rows(value: str) -> list[dict[str, object]]:
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return [row for row in decoded if isinstance(row, dict)] if isinstance(decoded, list) else []
 
 
 def _group_items_by_candidate_set(
@@ -534,6 +735,10 @@ def _group_items_by_candidate_set(
     classification_mode: str | CandidateMode,
     candidate_strategy: str | CandidateStrategy,
     candidate_limit: int | None,
+    geo_species_index: pl.DataFrame | None,
+    geo_grid_level: str,
+    geo_min_species_per_cell: int,
+    geo_include_neighbours: bool,
 ) -> list[_CandidateGroup]:
     grouped: dict[str, _CandidateGroup] = {}
     for item in items:
@@ -543,6 +748,10 @@ def _group_items_by_candidate_set(
             mode=classification_mode,
             strategy=candidate_strategy,
             candidate_limit=candidate_limit,
+            geo_species_index=geo_species_index,
+            geo_grid_level=geo_grid_level,
+            geo_min_species_per_cell=geo_min_species_per_cell,
+            geo_include_neighbours=geo_include_neighbours,
         )
         existing = grouped.get(candidate_set.signature)
         if existing is None:

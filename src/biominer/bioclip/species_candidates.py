@@ -113,7 +113,7 @@ def _candidate_from_row(row: dict[str, Any], *, target_species: str | None) -> S
         family=_first_text(row, "family"),
         genus=genus,
         source=_first_text(row, "source"),
-        source_taxon_id=_first_text(row, "source_taxon_id", "taxon_id", "taxonID"),
+        source_taxon_id=_first_text(row, "source_taxon_id", "taxon_id", "taxonID", "accepted_taxon_key", "species_key", "speciesKey"),
         is_target_species=bool(target_species and _normalize(scientific_name) == _normalize(target_species)),
         common_names=_split_common_names(_first_text(row, "common_names", "commonNames", "vernacular_names", "vernacularNames")),
     )

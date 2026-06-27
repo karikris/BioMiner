@@ -7,10 +7,13 @@ import hashlib
 import json
 from typing import Any, Mapping, Sequence
 
+import polars as pl
+
 from biominer.bioclip.bioclip import DEFAULT_TRIAGE_LABELS
 from biominer.bioclip.prompt_templates import PromptVariant
 from biominer.bioclip.species_candidates import SpeciesCandidate, species_prompt_variants
 from biominer.common.species import species_text_matches
+from biominer.geo.grid import candidate_set_for_point
 
 
 BUTTERFLY_FAMILIES: tuple[str, ...] = (
@@ -53,14 +56,28 @@ class CandidateSet:
     family_candidates: tuple[str, ...] = ()
     genus_candidates_by_family: Mapping[str, tuple[str, ...]] | None = None
     provenance: tuple[str, ...] = ()
+    species_candidate_sources_json: str = "[]"
+    geo_candidate_cell_id: str | None = None
+    geo_candidate_grid_level: str | None = None
+    geo_candidate_fallback_level: str | None = None
 
     @property
     def signature(self) -> str:
-        return candidate_set_signature(self.label_sets)
+        return _candidate_signature(self)
 
     @property
     def label_count(self) -> int:
         return sum(len(labels) for labels in self.label_sets.values())
+
+
+@dataclass(frozen=True)
+class _CandidateSelection:
+    species_candidates: tuple[SpeciesCandidate, ...]
+    provenance: tuple[str, ...]
+    species_candidate_sources_json: str = "[]"
+    geo_candidate_cell_id: str | None = None
+    geo_candidate_grid_level: str | None = None
+    geo_candidate_fallback_level: str | None = None
 
 
 def parse_candidate_mode(value: str | CandidateMode) -> CandidateMode:
@@ -99,15 +116,29 @@ def build_candidate_set(
     mode: str | CandidateMode = CandidateMode.HYBRID,
     strategy: str | CandidateStrategy = CandidateStrategy.ALL,
     candidate_limit: int | None = None,
+    geo_species_index: pl.DataFrame | None = None,
+    geo_grid_level: str = "G4_5deg",
+    geo_min_species_per_cell: int = 5,
+    geo_include_neighbours: bool = False,
 ) -> CandidateSet:
     parsed_mode = parse_candidate_mode(mode)
     parsed_strategy = parse_candidate_strategy(strategy)
-    selected_species = tuple(_select_species_candidates(record, species_candidates, parsed_strategy, candidate_limit))
+    selection = _select_species_candidates(
+        record,
+        species_candidates,
+        parsed_strategy,
+        candidate_limit,
+        geo_species_index=geo_species_index,
+        geo_grid_level=geo_grid_level,
+        geo_min_species_per_cell=geo_min_species_per_cell,
+        geo_include_neighbours=geo_include_neighbours,
+    )
+    selected_species = selection.species_candidates
     label_sets: dict[str, tuple[str, ...]] = {}
     families: tuple[str, ...] = ()
     genera_by_family: Mapping[str, tuple[str, ...]] | None = None
     variants: tuple[PromptVariant, ...] = ()
-    provenance: list[str] = []
+    provenance: list[str] = list(selection.provenance)
 
     if parsed_mode in {CandidateMode.TRIAGE, CandidateMode.HYBRID, CandidateMode.RESCUE_FULL_SPECIES}:
         label_sets["triage"] = tuple(DEFAULT_TRIAGE_LABELS)
@@ -143,6 +174,10 @@ def build_candidate_set(
         family_candidates=families,
         genus_candidates_by_family=genera_by_family,
         provenance=tuple(provenance),
+        species_candidate_sources_json=selection.species_candidate_sources_json,
+        geo_candidate_cell_id=selection.geo_candidate_cell_id,
+        geo_candidate_grid_level=selection.geo_candidate_grid_level,
+        geo_candidate_fallback_level=selection.geo_candidate_fallback_level,
     )
 
 
@@ -191,25 +226,155 @@ def _select_species_candidates(
     candidates: Sequence[SpeciesCandidate],
     strategy: CandidateStrategy,
     candidate_limit: int | None,
-) -> list[SpeciesCandidate]:
+    *,
+    geo_species_index: pl.DataFrame | None,
+    geo_grid_level: str,
+    geo_min_species_per_cell: int,
+    geo_include_neighbours: bool,
+) -> _CandidateSelection:
+    geo = _geo_candidate_selection(
+        record,
+        candidates,
+        geo_species_index=geo_species_index,
+        geo_grid_level=geo_grid_level,
+        geo_min_species_per_cell=geo_min_species_per_cell,
+        geo_include_neighbours=geo_include_neighbours,
+        candidate_limit=candidate_limit,
+    )
     if strategy == CandidateStrategy.METADATA:
         selected = [candidate for candidate in candidates if _metadata_matches_candidate(record, candidate)]
-        return selected or list(_limit_candidates(candidates, candidate_limit))
+        if selected:
+            return _selection(selected, "metadata_match", candidate_limit, source_rows=[{"source": "metadata_match", "species_count": len(selected)}])
+        return _selection(candidates, "metadata_fallback_global", candidate_limit, source_rows=[{"source": "global_fallback"}])
     if strategy == CandidateStrategy.GEO:
+        if geo is not None and geo.species_candidates:
+            return geo
         selected = _species_from_record_names(record, candidates, ("geo_candidate_species_json", "geo_species_candidates_json"))
-        return selected or list(_limit_candidates(candidates, candidate_limit))
-    if strategy in {CandidateStrategy.HIERARCHICAL, CandidateStrategy.GENUS_TOPK}:
+        if selected:
+            return _selection(selected, "record_geo_candidates", candidate_limit, source_rows=[{"source": "record_geo_candidates", "species_count": len(selected)}])
+        if geo is not None:
+            return _selection(
+                candidates,
+                "geo_empty_global_rescue",
+                candidate_limit,
+                source_rows=_json_rows(geo.species_candidate_sources_json) + [{"source": "global_rescue"}],
+                geo_candidate_cell_id=geo.geo_candidate_cell_id,
+                geo_candidate_grid_level=geo.geo_candidate_grid_level,
+                geo_candidate_fallback_level=geo.geo_candidate_fallback_level,
+            )
+        return _selection(candidates, "geo_unavailable_global_rescue", candidate_limit, source_rows=[{"source": "global_rescue"}])
+    if strategy == CandidateStrategy.HIERARCHICAL:
+        base = list(geo.species_candidates) if geo is not None and geo.species_candidates else list(candidates)
+        metadata_rescue = [candidate for candidate in candidates if _metadata_matches_candidate(record, candidate)]
+        families = retained_families_from_record(record)
+        genera = _retained_genera_from_record(record)
+        if genera:
+            gated = [candidate for candidate in base if candidate.genus in genera]
+            gate_source = "genus_gate"
+        elif families:
+            family_set = set(families)
+            gated = [candidate for candidate in base if candidate.family in family_set]
+            gate_source = "family_gate"
+        else:
+            gated = base
+            gate_source = "geo_base" if geo is not None and geo.species_candidates else "global_base"
+        selected = _dedupe_species([*gated, *metadata_rescue])
+        source_rows = _json_rows(geo.species_candidate_sources_json) if geo is not None else [{"source": "global_candidates"}]
+        source_rows.append({"source": gate_source, "species_count": len(gated)})
+        if metadata_rescue:
+            source_rows.append({"source": "metadata_rescue", "species_count": len(metadata_rescue)})
+        if not selected and geo is not None and geo.species_candidates:
+            selected = list(geo.species_candidates)
+            source_rows.append({"source": "geo_only_fallback", "species_count": len(selected)})
+        return _selection(
+            selected or candidates,
+            "hierarchical",
+            candidate_limit,
+            source_rows=source_rows,
+            geo_candidate_cell_id=geo.geo_candidate_cell_id if geo is not None else None,
+            geo_candidate_grid_level=geo.geo_candidate_grid_level if geo is not None else None,
+            geo_candidate_fallback_level=geo.geo_candidate_fallback_level if geo is not None else None,
+        )
+    if strategy == CandidateStrategy.GENUS_TOPK:
         genera = _retained_genera_from_record(record)
         if genera:
             selected = [candidate for candidate in candidates if candidate.genus in genera]
-            return selected[:candidate_limit] if candidate_limit else selected
+            return _selection(selected, "genus_topk", candidate_limit, source_rows=[{"source": "genus_topk", "species_count": len(selected)}])
     if strategy == CandidateStrategy.FAMILY_TOPK:
         families = retained_families_from_record(record)
         if families:
             family_set = set(families)
             selected = [candidate for candidate in candidates if candidate.family in family_set]
-            return selected[:candidate_limit] if candidate_limit else selected
-    return list(_limit_candidates(candidates, candidate_limit))
+            return _selection(selected, "family_topk", candidate_limit, source_rows=[{"source": "family_topk", "species_count": len(selected)}])
+    return _selection(candidates, "all_candidates", candidate_limit, source_rows=[{"source": "all_candidates"}])
+
+
+def _selection(
+    candidates: Sequence[SpeciesCandidate],
+    provenance: str,
+    candidate_limit: int | None,
+    *,
+    source_rows: Sequence[Mapping[str, object]],
+    geo_candidate_cell_id: str | None = None,
+    geo_candidate_grid_level: str | None = None,
+    geo_candidate_fallback_level: str | None = None,
+) -> _CandidateSelection:
+    selected = tuple(_limit_candidates(_dedupe_species(candidates), candidate_limit))
+    return _CandidateSelection(
+        species_candidates=selected,
+        provenance=(provenance,),
+        species_candidate_sources_json=_json_dumps(source_rows),
+        geo_candidate_cell_id=geo_candidate_cell_id,
+        geo_candidate_grid_level=geo_candidate_grid_level,
+        geo_candidate_fallback_level=geo_candidate_fallback_level,
+    )
+
+
+def _geo_candidate_selection(
+    record: Mapping[str, Any],
+    candidates: Sequence[SpeciesCandidate],
+    *,
+    geo_species_index: pl.DataFrame | None,
+    geo_grid_level: str,
+    geo_min_species_per_cell: int,
+    geo_include_neighbours: bool,
+    candidate_limit: int | None,
+) -> _CandidateSelection | None:
+    if geo_species_index is None:
+        return None
+    latitude = _optional_float(record.get("latitude", record.get("decimalLatitude")))
+    longitude = _optional_float(record.get("longitude", record.get("decimalLongitude")))
+    if latitude is None or longitude is None:
+        return None
+    lookup = candidate_set_for_point(
+        geo_species_index,
+        latitude=latitude,
+        longitude=longitude,
+        preferred_grid_level=geo_grid_level,
+        min_species_per_cell=geo_min_species_per_cell,
+        include_neighbours=geo_include_neighbours,
+    )
+    selected = _species_from_geo_frame(lookup.candidates, candidates)
+    source_rows = [
+        {
+            "source": "gbif_geo",
+            "requested_grid_level": lookup.requested_grid_level,
+            "grid_level": lookup.selected_grid_level,
+            "geocell_id": lookup.geocell_id,
+            "fallback_reason": lookup.fallback_reason,
+            "index_rows": lookup.candidates.height,
+            "species_count": len(selected),
+        }
+    ]
+    return _selection(
+        selected,
+        "gbif_geo_candidates",
+        candidate_limit,
+        source_rows=source_rows,
+        geo_candidate_cell_id=lookup.geocell_id,
+        geo_candidate_grid_level=lookup.selected_grid_level,
+        geo_candidate_fallback_level=lookup.fallback_reason,
+    )
 
 
 def _limit_candidates(candidates: Sequence[SpeciesCandidate], limit: int | None) -> Sequence[SpeciesCandidate]:
@@ -265,6 +430,75 @@ def _coerce_topk_rows(value: object) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return [row for row in value if isinstance(row, dict)]
     return []
+
+
+def _species_from_geo_frame(geo_frame: pl.DataFrame, candidates: Sequence[SpeciesCandidate]) -> list[SpeciesCandidate]:
+    if geo_frame.is_empty():
+        return []
+    rows = geo_frame.to_dicts()
+    names = {_normalize(row.get("scientific_name")) for row in rows if row.get("scientific_name")}
+    keys = {
+        _normalize_source_key(row.get("species_key") or row.get("speciesKey") or row.get("taxonKey"))
+        for row in rows
+        if row.get("species_key") or row.get("speciesKey") or row.get("taxonKey")
+    }
+    selected: list[SpeciesCandidate] = []
+    for candidate in candidates:
+        if _normalize(candidate.scientific_name) in names:
+            selected.append(candidate)
+            continue
+        source_key = _normalize_source_key(candidate.source_taxon_id)
+        if source_key and source_key in keys:
+            selected.append(candidate)
+    return selected
+
+
+def _dedupe_species(candidates: Sequence[SpeciesCandidate]) -> list[SpeciesCandidate]:
+    deduped: dict[str, SpeciesCandidate] = {}
+    for candidate in candidates:
+        key = _normalize(candidate.scientific_name)
+        if key and key not in deduped:
+            deduped[key] = candidate
+    return list(deduped.values())
+
+
+def _candidate_signature(candidate_set: CandidateSet) -> str:
+    payload = {
+        "label_sets": {
+            str(name): list(labels)
+            for name, labels in sorted(candidate_set.label_sets.items(), key=lambda item: str(item[0]))
+        },
+        "provenance": list(candidate_set.provenance),
+        "species_candidate_sources_json": candidate_set.species_candidate_sources_json,
+        "geo_candidate_cell_id": candidate_set.geo_candidate_cell_id,
+        "geo_candidate_grid_level": candidate_set.geo_candidate_grid_level,
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _json_dumps(rows: Sequence[Mapping[str, object]]) -> str:
+    return json.dumps([dict(row) for row in rows], ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def _json_rows(value: str) -> list[dict[str, object]]:
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return [row for row in decoded if isinstance(row, dict)] if isinstance(decoded, list) else []
+
+
+def _optional_float(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    return float(value)
+
+
+def _normalize_source_key(value: object) -> str:
+    if value in (None, ""):
+        return ""
+    return str(value).removeprefix("gbif:")
 
 
 def _normalize(value: object) -> str:

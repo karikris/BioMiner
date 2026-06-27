@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import polars as pl
+
 from biominer.bioclip.image_cache import CachedImage
 from biominer.bioclip.register_runner import process_records_with_registers
 from biominer.bioclip.species_candidates import SpeciesCandidate
+from biominer.geo.grid import geocell_id
 
 
 def _record(index: int) -> dict[str, object]:
@@ -88,7 +91,9 @@ def test_register_runner_uses_four_twenty_image_registers_and_deletes_images(tmp
     assert result.max_staged_images <= 80
     assert result.max_staged_images >= 20
     assert max(classifier.batch_sizes) == 20
-    assert sorted(classifier.batch_sizes) == [5, 20, 20, 20, 20]
+    assert sorted(classifier.batch_sizes) == [5, 5, 20, 20, 20, 20, 20, 20, 20, 20]
+    assert classifier.top_k_seen.count(20) == 5
+    assert classifier.top_k_seen.count(5) == 5
     assert {path.parent.name for path in cache_calls} <= {"register_0", "register_1", "register_2", "register_3"}
     assert not any(path.exists() for path in cache_calls)
     assert result.frame.filter(result.frame["occurrence_bin"] == "gold").height == 85
@@ -190,7 +195,7 @@ def test_register_runner_groups_records_by_candidate_signature(tmp_path) -> None
     assert result.candidate_set_count == 2
     assert result.max_records_per_candidate_set == 2
     assert result.text_embedding_cache_hit_proxy == 1
-    assert sorted(classifier.batch_sizes) == [1, 2]
+    assert sorted(classifier.batch_sizes) == [1, 2, 2]
 
 
 def test_register_runner_writes_embedding_output_schema(tmp_path) -> None:
@@ -218,6 +223,78 @@ def test_register_runner_writes_embedding_output_schema(tmp_path) -> None:
     assert row["image_hash"] == "sha256:1"
     assert row["embedding_dimension"] == 2
     assert row["embedding"] == [0.6, 0.8]
+
+
+def test_register_runner_records_geo_candidate_context(tmp_path) -> None:
+    latitude = -27.0
+    longitude = 153.0
+    geo_index = pl.DataFrame(
+        [
+            {
+                "grid_level": "G4_5deg",
+                "geocell_id": geocell_id("G4_5deg", latitude, longitude),
+                "species_key": "2",
+                "scientific_name": "Papilio machaon",
+                "candidate_rank_prior": 1.0,
+            }
+        ]
+    )
+    classifier = FakeRegisterClassifier(species_label="a photo of Papilio machaon", species_name="Papilio machaon")
+
+    result = process_records_with_registers(
+        [_record(1)],
+        classifier=classifier,
+        species_candidates=_candidates(),
+        output_path=tmp_path / "triage.parquet",
+        cache_root=tmp_path / "cache",
+        cache_image=fake_cache([]),
+        candidate_strategy="geo",
+        geo_species_index=geo_index,
+        geo_min_species_per_cell=1,
+    )
+
+    row = result.frame.to_dicts()[0]
+    assert row["species_candidate_count"] == 1
+    assert row["geo_candidate_grid_level"] == "G4_5deg"
+    assert "gbif_geo" in row["species_candidate_sources_json"]
+    assert all("Papilio machaon" in label for label in classifier.label_sets_seen[0]["species"])
+
+
+def test_pass5_rerank_uses_only_pass4_top20_candidates(tmp_path) -> None:
+    candidates = [
+        SpeciesCandidate(
+            scientific_name=f"Genus{index} species{index}",
+            canonical_name=f"Genus{index} species{index}",
+            rank="species",
+            family="Nymphalidae",
+            genus=f"Genus{index}",
+            source="test",
+            source_taxon_id=str(index),
+            is_target_species=False,
+        )
+        for index in range(25)
+    ]
+    classifier = Top20RerankClassifier([candidate.scientific_name for candidate in candidates])
+
+    result = process_records_with_registers(
+        [_record(1)],
+        classifier=classifier,
+        species_candidates=candidates,
+        output_path=tmp_path / "triage.parquet",
+        cache_root=tmp_path / "cache",
+        cache_image=fake_cache([]),
+        classification_mode="species",
+        candidate_strategy="all",
+        candidate_limit=25,
+    )
+
+    labels = " ".join(classifier.pass5_labels)
+    assert "Genus19 species19" in labels
+    assert "Genus20 species20" not in labels
+    row = result.frame.to_dicts()[0]
+    assert len(row["species_top20_json"]) == 20
+    assert row["species_final_top1"] == "Genus0 species0"
+    assert row["species_final_evidence_summary_json"]
 
 
 def test_failed_download_remains_retryable(tmp_path) -> None:
@@ -294,20 +371,26 @@ class FakeRegisterClassifier:
         self.image_embedding = image_embedding
         self.batch_sizes: list[int] = []
         self.images_seen: list[dict[str, object]] = []
+        self.label_sets_seen: list[dict[str, tuple[str, ...]]] = []
+        self.top_k_seen: list[int] = []
         self.received_species_prompt_variants = False
 
     def classify_images_with_label_sets(self, images, *, label_sets, species_prompt_variants=None, top_k=10, return_image_embeddings=False):  # noqa: ANN001 - test fake.
         self.batch_sizes.append(len(images))
         self.images_seen.extend(images)
+        self.label_sets_seen.append({str(name): tuple(labels) for name, labels in label_sets.items()})
+        self.top_k_seen.append(top_k)
         self.received_species_prompt_variants = species_prompt_variants is not None
         assert "species" in label_sets
-        assert "triage" in label_sets
         rows = [
             {
                 "species_top1_label": self.species_label,
                 "species_top1_scientific_name": self.species_name,
                 "species_top1_score": 0.91,
                 "species_topk_json": [{"label": self.species_label, "score": 0.91}],
+                "species_prompt_topk_json": [{"taxon_key": self.species_name or self.species_label.removeprefix("a photo of "), "score": 0.91, "best_label": self.species_label}],
+                "species_top1_top2_margin": 0.42,
+                "species_entropy": 0.2,
                 "triage_top1_label": "a photo of an adult butterfly",
                 "triage_top1_score": 0.88,
                 "triage_topk_json": [{"label": "a photo of an adult butterfly", "score": 0.88}],
@@ -326,6 +409,40 @@ class FakeRegisterClassifier:
 class FailingRegisterClassifier:
     def classify_images_with_label_sets(self, images, *, label_sets, species_prompt_variants=None, top_k=10, return_image_embeddings=False):  # noqa: ANN001 - test fake.
         raise RuntimeError("worker unavailable")
+
+
+class Top20RerankClassifier:
+    def __init__(self, names: list[str]) -> None:
+        self.names = names
+        self.pass5_labels: tuple[str, ...] = ()
+
+    def classify_images_with_label_sets(self, images, *, label_sets, species_prompt_variants=None, top_k=10, return_image_embeddings=False):  # noqa: ANN001 - test fake.
+        if top_k == 5:
+            self.pass5_labels = tuple(label_sets["species"])
+            name = self.names[0]
+            return [self._row(name, top_k=5) for _image in images]
+        return [self._row(self.names[0], top_k=20) for _image in images]
+
+    def _row(self, name: str, *, top_k: int) -> dict[str, object]:
+        top_names = self.names[:top_k]
+        return {
+            "species_top1_label": f"a photo of {name}",
+            "species_top1_scientific_name": name,
+            "species_top1_score": 0.91,
+            "species_topk_json": [{"label": f"a photo of {candidate}", "score": 1.0 - index * 0.01} for index, candidate in enumerate(top_names)],
+            "species_prompt_topk_json": [
+                {"taxon_key": candidate, "score": 1.0 - index * 0.01, "best_label": f"a photo of {candidate}"}
+                for index, candidate in enumerate(top_names)
+            ],
+            "species_top1_top2_margin": 0.1,
+            "species_entropy": 0.2,
+            "triage_top1_label": "a photo of an adult butterfly",
+            "triage_top1_score": 0.88,
+            "triage_topk_json": [{"label": "a photo of an adult butterfly", "score": 0.88}],
+            "top1_label": f"a photo of {name}",
+            "top1_score": 0.91,
+            "topk_json": [{"label": f"a photo of {name}", "score": 0.91}],
+        }
 
 
 def fake_cache(paths: list[Path]):

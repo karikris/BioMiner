@@ -428,12 +428,16 @@ def build_label_set_prediction_record(
     image_embedding: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     species_topk = _topk_json(topk_by_label_set.get("species", []))
+    family_topk = _topk_json(topk_by_label_set.get("family", []))
+    genus_topk = _topk_json(topk_by_label_set.get("genus", []))
     triage_topk = _topk_json(topk_by_label_set.get("triage", []))
     triage_group_summary = grouped_probability_summary(
         scores=triage_scores_by_label or {},
         groups=TRIAGE_LABEL_GROUPS,
     )
     species_scores = [float(row["score"]) for row in species_topk]
+    family_scores = [float(row["score"]) for row in family_topk]
+    genus_scores = [float(row["score"]) for row in genus_topk]
     triage_scores = [float(row["score"]) for row in triage_topk]
     compatibility_topk = species_topk or triage_topk
     agreement_status = classify_species_agreement(
@@ -455,9 +459,23 @@ def build_label_set_prediction_record(
         "species_top1_scientific_name": str(species_prompt_topk[0]["taxon_key"]) if species_prompt_topk else None,
         "species_top1_score": species_topk[0]["score"] if species_topk else None,
         "species_topk_json": species_topk,
+        "species_top20_json": species_prompt_topk[:20] if species_prompt_topk else species_topk[:20],
         "species_prompt_topk_json": [dict(row) for row in species_prompt_topk],
         "species_top1_top2_margin": topk_margin(species_topk),
         "species_topk_entropy": probability_entropy(species_scores),
+        "species_entropy": probability_entropy(species_scores),
+        "family_topk_json": family_topk,
+        "family_top1": _taxon_name_from_family_label(str(family_topk[0]["label"])) if family_topk else None,
+        "family_top1_score": family_topk[0]["score"] if family_topk else None,
+        "family_top1_top2_margin": topk_margin(family_topk),
+        "family_entropy": probability_entropy(family_scores),
+        "family_keep_count": min(3, len(family_topk)),
+        "genus_topk_json": genus_topk,
+        "genus_top1": _taxon_name_from_genus_label(str(genus_topk[0]["label"])) if genus_topk else None,
+        "genus_top1_score": genus_topk[0]["score"] if genus_topk else None,
+        "genus_margin": topk_margin(genus_topk),
+        "genus_entropy": probability_entropy(genus_scores),
+        "genus_keep_count": min(8, len(genus_topk)),
         "triage_top1_label": triage_topk[0]["label"] if triage_topk else None,
         "triage_top1_score": triage_topk[0]["score"] if triage_topk else None,
         "triage_topk_json": triage_topk,
@@ -481,6 +499,14 @@ def build_label_set_prediction_record(
 
 def _topk_json(topk: Sequence[tuple[str, float]]) -> list[dict[str, float | str]]:
     return [{"label": label, "score": float(score)} for label, score in topk]
+
+
+def _taxon_name_from_family_label(label: str) -> str:
+    return label.replace("a photo of a ", "").replace(" butterfly", "")
+
+
+def _taxon_name_from_genus_label(label: str) -> str:
+    return label.replace("a photo of a ", "").replace(" butterfly", "")
 
 
 def _vision_review_required(agreement_status: str) -> bool:

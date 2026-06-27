@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+import polars as pl
 
 from biominer.bioclip.candidate_sets import (
     CandidateMode,
@@ -13,6 +14,7 @@ from biominer.bioclip.candidate_sets import (
     parse_candidate_strategy,
 )
 from biominer.bioclip.species_candidates import SpeciesCandidate
+from biominer.geo.grid import geocell_id
 
 
 def _candidate(name: str, *, family: str, genus: str) -> SpeciesCandidate:
@@ -70,3 +72,87 @@ def test_candidate_set_signature_is_deterministic() -> None:
 
     assert left == right
     assert left != changed_order
+
+
+def test_geo_strategy_uses_geo_index_for_geolocated_record() -> None:
+    latitude = -27.0
+    longitude = 153.0
+    cell_id = geocell_id("G4_5deg", latitude, longitude)
+    candidates = [
+        _candidate("Danaus plexippus", family="Nymphalidae", genus="Danaus"),
+        _candidate("Papilio machaon", family="Papilionidae", genus="Papilio"),
+    ]
+    geo_index = pl.DataFrame(
+        [
+            {
+                "grid_level": "G4_5deg",
+                "geocell_id": cell_id,
+                "species_key": "1",
+                "scientific_name": "Danaus plexippus",
+                "candidate_rank_prior": 1.0,
+            }
+        ]
+    )
+
+    candidate_set = build_candidate_set(
+        {"latitude": latitude, "longitude": longitude},
+        species_candidates=candidates,
+        mode="species",
+        strategy="geo",
+        geo_species_index=geo_index,
+        geo_min_species_per_cell=1,
+    )
+
+    assert [candidate.scientific_name for candidate in candidate_set.species_candidates] == ["Danaus plexippus"]
+    assert candidate_set.geo_candidate_cell_id == cell_id
+    assert candidate_set.geo_candidate_grid_level == "G4_5deg"
+    assert "gbif_geo" in candidate_set.species_candidate_sources_json
+
+
+def test_hierarchical_strategy_intersects_geo_gate_and_rescues_metadata_match() -> None:
+    latitude = -27.0
+    longitude = 153.0
+    cell_id = geocell_id("G4_5deg", latitude, longitude)
+    candidates = [
+        _candidate("Danaus plexippus", family="Nymphalidae", genus="Danaus"),
+        _candidate("Papilio machaon", family="Papilionidae", genus="Papilio"),
+        _candidate("Vanessa cardui", family="Nymphalidae", genus="Vanessa"),
+    ]
+    geo_index = pl.DataFrame(
+        [
+            {
+                "grid_level": "G4_5deg",
+                "geocell_id": cell_id,
+                "species_key": "1",
+                "scientific_name": "Danaus plexippus",
+                "candidate_rank_prior": 0.6,
+            },
+            {
+                "grid_level": "G4_5deg",
+                "geocell_id": cell_id,
+                "species_key": "2",
+                "scientific_name": "Papilio machaon",
+                "candidate_rank_prior": 0.4,
+            },
+        ]
+    )
+
+    candidate_set = build_candidate_set(
+        {
+            "latitude": latitude,
+            "longitude": longitude,
+            "title": "Danaus plexippus",
+            "family_topk_json": [{"label": "a photo of a Papilionidae butterfly", "score": 0.9}],
+        },
+        species_candidates=candidates,
+        mode="species",
+        strategy="hierarchical",
+        geo_species_index=geo_index,
+        geo_min_species_per_cell=1,
+    )
+
+    assert [candidate.scientific_name for candidate in candidate_set.species_candidates] == [
+        "Papilio machaon",
+        "Danaus plexippus",
+    ]
+    assert "metadata_rescue" in candidate_set.species_candidate_sources_json
