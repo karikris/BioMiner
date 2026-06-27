@@ -34,6 +34,7 @@ from biominer.filter.anti_keywords import filter_biodiversity_parquet
 from biominer.filter.rules import classify_evidence_frame
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.geo.gbif_candidates import build_gbif_geo_candidates
+from biominer.geo.qa import build_geo_qa_report
 from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry
 from biominer.registry.compiler import compile_registry_fixture
@@ -128,6 +129,12 @@ def build_parser() -> argparse.ArgumentParser:
     geo_build_gbif.add_argument("--limit-species", type=int, default=0)
     geo_build_gbif.add_argument("--max-retries", type=int, default=8)
     geo_build_gbif.add_argument("--workers", type=int, default=4)
+    geo_qa = geo_subparsers.add_parser("qa")
+    geo_qa.add_argument("--classified", required=True)
+    geo_qa.add_argument("--geo-candidates", required=True)
+    geo_qa.add_argument("--benchmark-json")
+    geo_qa.add_argument("--output-dir", default="reports")
+    geo_qa.add_argument("--report-name", default="geo_qa")
     fetch_comments = subparsers.add_parser("fetch-comments")
     fetch_comments.add_argument("--photo-id", action="append", default=[])
     fetch_comments.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
@@ -256,6 +263,8 @@ def run(args: argparse.Namespace) -> int:
     if args.command == "geo":
         if args.geo_command == "build-gbif-candidates":
             return _run_geo_build_gbif_candidates(args)
+        if args.geo_command == "qa":
+            return _run_geo_qa(args)
         return 2
     if args.command == "fetch-comments":
         state = CommentsEnrichmentState(args.state_db)
@@ -802,6 +811,29 @@ def _run_geo_build_gbif_candidates(args: argparse.Namespace) -> int:
         print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
         return 2
     print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_geo_qa(args: argparse.Namespace) -> int:
+    payload = build_geo_qa_report(
+        classified_path=args.classified,
+        geo_candidates_path=args.geo_candidates,
+        benchmark_json=args.benchmark_json,
+        output_dir=args.output_dir,
+        report_name=args.report_name,
+    )
+    print(
+        json.dumps(
+            {
+                "json_report": payload["json_report"],
+                "markdown_report": payload["markdown_report"],
+                "classified_rows": payload["classified_rows"],
+                "geo_candidate_index_rows": payload["geo_candidate_index_rows"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
