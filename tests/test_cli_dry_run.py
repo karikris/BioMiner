@@ -219,7 +219,7 @@ def test_bioclip_benchmark_cli_writes_report(tmp_path, capsys) -> None:
 
     payload = json.loads(capsys.readouterr().out)
     report = json.loads(output_path.read_text(encoding="utf-8"))
-    assert payload["status"] == "benchmark_skeleton_written"
+    assert payload["status"] == "benchmark_dry_run_written"
     assert payload["configurations"] == 1
     assert report["runs"][0]["classification_mode"] == "triage"
 

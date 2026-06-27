@@ -106,13 +106,17 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_benchmark = bioclip_subparsers.add_parser("benchmark")
     bioclip_benchmark.add_argument("--input", required=True)
     bioclip_benchmark.add_argument("--species-candidates", required=True)
+    bioclip_benchmark.add_argument("--runtime-python")
+    bioclip_benchmark.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
     bioclip_benchmark.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    bioclip_benchmark.add_argument("--cache-root", default="data/cache/images")
     bioclip_benchmark.add_argument("--register-sizes", default="8,16,32,64")
     bioclip_benchmark.add_argument("--register-counts", default="2,4,6")
     bioclip_benchmark.add_argument("--candidate-limits", default="500,2000,18000")
     bioclip_benchmark.add_argument("--classification-modes", default="triage,hybrid,rescue_full_species")
     bioclip_benchmark.add_argument("--candidate-strategy", choices=[strategy.value for strategy in CandidateStrategy], default=CandidateStrategy.ALL.value)
     bioclip_benchmark.add_argument("--download-workers", type=int, default=4)
+    bioclip_benchmark.add_argument("--dry-run", action="store_true")
     bioclip_benchmark.add_argument("--output", required=True)
     geo = subparsers.add_parser("geo")
     geo_subparsers = geo.add_subparsers(dest="geo_command")
@@ -709,25 +713,67 @@ def _run_bioclip_screen(args: argparse.Namespace) -> int:
 
 
 def _run_bioclip_benchmark(args: argparse.Namespace) -> int:
-    report = build_benchmark_report(
-        input_path=args.input,
-        species_candidates_path=args.species_candidates,
-        output_path=args.output,
-        device=args.device,
-        register_sizes=parse_csv_ints(args.register_sizes),
-        register_counts=parse_csv_ints(args.register_counts),
-        candidate_limits=parse_csv_ints(args.candidate_limits),
-        classification_modes=parse_csv_candidate_modes(args.classification_modes),
-        candidate_strategy=args.candidate_strategy,
-        download_workers=args.download_workers,
-    )
+    dry_run = bool(args.dry_run or not args.runtime_python)
+    scorer = None
+    screen_runner = None
+    if not dry_run:
+        runtime_python = Path(args.runtime_python)
+        if not runtime_python.exists():
+            print(json.dumps({"error": f"BioCLIP runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
+            return 2
+        runtime = _bioclip_runtime(runtime_python=runtime_python)
+        scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
+        classifier = BioClipClassifier(runtime=runtime, scorer=scorer)
+        records = pl.read_parquet(args.input).to_dicts()
+
+        def screen_runner(config):  # noqa: ANN001 - BenchmarkRunConfig is intentionally local to benchmark module.
+            species_candidates = load_species_candidates(
+                args.species_candidates,
+                limit=config.candidate_limit,
+            )
+            return process_records_with_registers(
+                records,
+                classifier=classifier,
+                species_candidates=species_candidates,
+                output_path=config.output_path,
+                cache_root=args.cache_root,
+                register_count=config.register_count,
+                register_size=config.register_size,
+                download_workers=config.download_workers,
+                classification_mode=config.classification_mode,
+                candidate_strategy=config.candidate_strategy,
+                candidate_limit=config.candidate_limit,
+                model_id="bioclip2_5",
+                model_version="bioclip2_5_huge",
+                model_checkpoint=BIOCLIP_25_HUGE_REVISION,
+                bucket_views_dir=config.output_path.with_suffix(""),
+            )
+
+    try:
+        report = build_benchmark_report(
+            input_path=args.input,
+            species_candidates_path=args.species_candidates,
+            output_path=args.output,
+            device=args.device,
+            register_sizes=parse_csv_ints(args.register_sizes),
+            register_counts=parse_csv_ints(args.register_counts),
+            candidate_limits=parse_csv_ints(args.candidate_limits),
+            classification_modes=parse_csv_candidate_modes(args.classification_modes),
+            candidate_strategy=args.candidate_strategy,
+            download_workers=args.download_workers,
+            dry_run=dry_run,
+            screen_runner=screen_runner,
+        )
+    finally:
+        if scorer is not None:
+            scorer.close()
     print(
         json.dumps(
             {
                 "output": str(args.output),
                 "run_id": report["run_id"],
                 "configurations": len(report["runs"]) if isinstance(report.get("runs"), list) else 0,
-                "status": "benchmark_skeleton_written",
+                "status": "benchmark_dry_run_written" if dry_run else "benchmark_runs_written",
             },
             indent=2,
             sort_keys=True,
