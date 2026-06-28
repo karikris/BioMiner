@@ -27,7 +27,7 @@ Step 1: Flickr metadata discovery
   registry query definitions
   -> fixed upload-date slices
   -> Flickr photos.search metadata
-  -> canonical photos + complete query-hit provenance
+  -> canonical photos + folded query-term provenance
 
 Step 2: metadata filtering
   metadata/evidence Parquet
@@ -55,7 +55,7 @@ uv run biominer
 
 1. **Step 0 is mandatory before Flickr query generation.**
 2. **GBIF accepted taxon keys define the production taxonomic spine.**
-3. **Deduplicate photo processing, not discovery evidence.**
+3. **Deduplicate evidence rows by Flickr photo ID and fold discovery terms into canonical provenance arrays.**
 4. **Tags and text searches are separate atomic query definitions.**
 5. **Flickr metadata is retained even when an image is never downloaded.**
 6. **Downloaded Flickr images are temporary and deleted after classification.**
@@ -525,29 +525,53 @@ Outputs include:
 
 - raw Flickr response payloads;
 - canonical photo metadata;
-- query-hit provenance;
+- folded query-term provenance;
 - API ledger and work state;
 - evidence Parquet;
 - compact reports.
 
 ## Deduplication rule
 
-**Deduplicate photo processing, not discovery evidence.**
+**Deduplicate evidence rows by Flickr photo ID and fold discovery terms into canonical provenance arrays.**
 
-Maintain separately:
+BioMiner keeps one canonical row per Flickr photo. When separate text or tag searches rediscover the same photo, the row is not duplicated; the search terms are retained in provenance arrays:
 
-1. one canonical photo row;
-2. every query-hit row;
-3. every term, field, language, source, and taxon that discovered the photo;
-4. every duplicate hit removed from repeated processing.
+```text
+text_search_terms
+tag_search_terms
+all_query_labels
+query_hit_count
+duplicate_query_hit_count
+```
 
-The duplicate-hit report should be stored as:
+The first query that created the canonical row is preserved separately:
+
+```text
+first_query_field
+first_query_term
+first_query_language
+```
+
+Registry and taxonomic provenance are also folded into list fields when present:
+
+```text
+query_definition_ids
+discovery_accepted_taxon_keys
+discovery_family_keys
+discovery_genus_keys
+discovery_species_keys
+registry_versions
+```
+
+This reduces Parquet row inflation while preserving the search-term provenance needed for auditing.
+
+An optional duplicate-hit QA report may be stored as:
 
 ```text
 flickr_deduplicated_hits.parquet
 ```
 
-Required columns include:
+Suggested columns include:
 
 ```text
 flickr_photo_id

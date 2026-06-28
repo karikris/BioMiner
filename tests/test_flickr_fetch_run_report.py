@@ -127,6 +127,10 @@ def test_build_step1_fetch_report_includes_required_metrics(tmp_path) -> None:
     assert report["status"] == "completed"
     assert report["api_budget"]["api_calls_used"] == 2
     assert report["api_budget"]["remaining_soft_budget"] == 3498
+    assert report["rows"]["canonical_evidence_rows_written"] == 500
+    assert report["rows"]["query_terms_added"] == 480
+    assert report["rows"]["duplicate_query_terms_skipped"] == 20
+    assert report["rows"]["query_hits_inserted"] == 480
     assert report["throughput"]["records_per_call"] == 250
     assert report["timings"]["total_sec"] == 20
     assert report["storage_bytes"]["raw_json_bytes"] == 2
@@ -257,6 +261,7 @@ def test_build_step1_fetch_report_includes_split_progress_metrics(tmp_path) -> N
     assert report["work"]["last_completed_date_range"] == {"date_kind": "upload_date", "min_date": "2020-01-01", "max_date": "2020-12-31"}
     assert report["work"]["next_pending_date_range"] == {"date_kind": "upload_date", "min_date": "2021-01-01", "max_date": "2021-12-31"}
     assert report["rows"]["records_fetched"] == 500
+    assert report["rows"]["canonical_evidence_rows_written"] == 500
     assert report["rows"]["records_inserted"] == 450
     assert report["throughput"]["records_per_page"] == 500
 
