@@ -422,6 +422,79 @@ def test_registry_fetch_taxonomy_cli_writes_gbif_source_snapshot(tmp_path, capsy
     assert source["taxa"][0]["scientific_name"] == "Papilionoidea"
 
 
+def test_registry_translate_names_cli_wires_species_harvest_and_merge(tmp_path, capsys, monkeypatch) -> None:
+    calls: dict[str, object] = {}
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["fr", "zh-Hant"]), encoding="utf-8")
+
+    def fake_harvest_species(**kwargs):  # noqa: ANN003 - CLI test verifies wiring.
+        calls["harvest_species"] = kwargs
+        return {"name_assertion_rows": 2}
+
+    def fake_merge(output_dir):  # noqa: ANN001 - CLI test verifies wiring.
+        calls["merge"] = output_dir
+        return {"merged_source_name_assertion_rows": 2}
+
+    monkeypatch.setenv("LIBRE_KEY", "secret")
+    monkeypatch.setattr("biominer.cli.harvest_species_name_translations", fake_harvest_species)
+    monkeypatch.setattr("biominer.cli.merge_name_translation_sidecar_into_enrichment", fake_merge)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "registry",
+            "translate-names",
+            "--scientific-name",
+            "Papilio demoleus",
+            "--accepted-taxon-key",
+            "gbif:1938069",
+            "--seed-common-name",
+            "Lime butterfly",
+            "--output-dir",
+            str(tmp_path / "translations"),
+            "--sources",
+            "gbif,wikidata",
+            "--target-locale",
+            "de",
+            "--target-locales-json",
+            str(locales),
+            "--max-inaturalist-locale-probes",
+            "3",
+            "--libretranslate-url",
+            "http://localhost:5000",
+            "--libretranslate-api-key-env",
+            "LIBRE_KEY",
+            "--merge-into-enrichment",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert calls["harvest_species"] == {
+        "scientific_name": "Papilio demoleus",
+        "accepted_taxon_key": "gbif:1938069",
+        "seed_common_names": ["Lime butterfly"],
+        "output_dir": str(tmp_path / "translations"),
+        "sources": ("gbif", "wikidata"),
+        "target_locales": ["de", "fr", "zh-Hant"],
+        "max_inaturalist_locale_probes": 3,
+        "libretranslate_url": "http://localhost:5000",
+        "libretranslate_api_key": "secret",
+    }
+    assert calls["merge"] == str(tmp_path / "translations")
+    assert payload["merge"]["merged_source_name_assertion_rows"] == 2
+
+
+def test_registry_translate_names_cli_requires_one_input_mode(tmp_path, capsys) -> None:
+    parser = build_parser()
+    args = parser.parse_args(["registry", "translate-names", "--output-dir", str(tmp_path)])
+
+    assert run(args) == 2
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"] == "Use exactly one of --registry-dir or --scientific-name"
+
+
 def test_registry_build_cli_reuses_source_json_and_writes_report(tmp_path, capsys) -> None:
     scope = tmp_path / "scope.json"
     scope.write_text(

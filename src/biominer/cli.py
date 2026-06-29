@@ -41,6 +41,12 @@ from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.enrichment import INATURALIST_DAILY_REQUEST_LIMIT, build_enrichment_sources_from_registry, compile_enriched_registry
 from biominer.registry.gbif import GBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
+from biominer.registry.name_translations import (
+    DEFAULT_SOURCES as DEFAULT_NAME_TRANSLATION_SOURCES,
+    harvest_registry_name_translations,
+    harvest_species_name_translations,
+    merge_name_translation_sidecar_into_enrichment,
+)
 from biominer.registry.scope import load_scope
 from biominer.reports.buckets import export_bucket_views
 from biominer.reports.name_evidence import build_name_evidence_report, write_name_evidence_report
@@ -172,6 +178,20 @@ def build_parser() -> argparse.ArgumentParser:
     registry_enrich_sources.add_argument("--inaturalist-daily-request-limit", type=int, default=INATURALIST_DAILY_REQUEST_LIMIT)
     registry_enrich_sources.add_argument("--limit", type=int, default=0)
     registry_enrich_sources.add_argument("--report-dir", default="reports")
+    registry_translate_names = registry_subparsers.add_parser("translate-names")
+    registry_translate_names.add_argument("--registry-dir")
+    registry_translate_names.add_argument("--scientific-name")
+    registry_translate_names.add_argument("--accepted-taxon-key", default="")
+    registry_translate_names.add_argument("--seed-common-name", action="append", default=[])
+    registry_translate_names.add_argument("--output-dir", required=True)
+    registry_translate_names.add_argument("--sources", default=",".join(DEFAULT_NAME_TRANSLATION_SOURCES))
+    registry_translate_names.add_argument("--target-locale", action="append", default=[])
+    registry_translate_names.add_argument("--target-locales-json")
+    registry_translate_names.add_argument("--limit", type=int, default=0)
+    registry_translate_names.add_argument("--max-inaturalist-locale-probes", type=int, default=0)
+    registry_translate_names.add_argument("--libretranslate-url", default="")
+    registry_translate_names.add_argument("--libretranslate-api-key-env", default="LIBRETRANSLATE_API_KEY")
+    registry_translate_names.add_argument("--merge-into-enrichment", action="store_true")
     registry_build = registry_subparsers.add_parser("build")
     registry_build.add_argument("--output-dir", required=True)
     registry_build.add_argument("--registry-version", required=True)
@@ -329,6 +349,8 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
     if args.command == "registry":
+        if args.registry_command == "translate-names":
+            return _run_registry_translate_names(args)
         if args.registry_command == "fetch-taxonomy":
             retrieved_at = args.retrieved_at or datetime.now(UTC).isoformat()
             snapshot = build_gbif_source_snapshot(
@@ -533,6 +555,56 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps({"output": args.output, **report}, indent=2, sort_keys=True))
         return 0
     return 2
+
+
+def _run_registry_translate_names(args: argparse.Namespace) -> int:
+    has_registry = bool(args.registry_dir)
+    has_species = bool(args.scientific_name)
+    if has_registry == has_species:
+        print(json.dumps({"error": "Use exactly one of --registry-dir or --scientific-name"}, indent=2, sort_keys=True))
+        return 2
+
+    target_locales = list(args.target_locale or [])
+    if args.target_locales_json:
+        try:
+            payload = json.loads(Path(args.target_locales_json).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(json.dumps({"error": f"Unable to read target locales JSON: {exc}"}, indent=2, sort_keys=True))
+            return 2
+        if not isinstance(payload, list):
+            print(json.dumps({"error": "--target-locales-json must contain a JSON list"}, indent=2, sort_keys=True))
+            return 2
+        target_locales.extend(str(item) for item in payload if item)
+
+    sources = tuple(part.strip() for part in args.sources.split(",") if part.strip())
+    libretranslate_api_key = os.environ.get(args.libretranslate_api_key_env, "")
+    if has_registry:
+        manifest = harvest_registry_name_translations(
+            registry_dir=args.registry_dir,
+            output_dir=args.output_dir,
+            sources=sources,
+            target_locales=target_locales,
+            limit=args.limit,
+            max_inaturalist_locale_probes=args.max_inaturalist_locale_probes,
+            libretranslate_url=args.libretranslate_url,
+            libretranslate_api_key=libretranslate_api_key,
+        )
+    else:
+        manifest = harvest_species_name_translations(
+            scientific_name=args.scientific_name,
+            accepted_taxon_key=args.accepted_taxon_key,
+            seed_common_names=args.seed_common_name,
+            output_dir=args.output_dir,
+            sources=sources,
+            target_locales=target_locales,
+            max_inaturalist_locale_probes=args.max_inaturalist_locale_probes,
+            libretranslate_url=args.libretranslate_url,
+            libretranslate_api_key=libretranslate_api_key,
+        )
+    if args.merge_into_enrichment:
+        manifest["merge"] = merge_name_translation_sidecar_into_enrichment(args.output_dir)
+    print(json.dumps(manifest, indent=2, sort_keys=True))
+    return 0
 
 
 def _summarize_report(report_path: Path) -> dict[str, object]:
