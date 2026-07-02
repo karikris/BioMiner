@@ -175,6 +175,8 @@ def build_parser() -> argparse.ArgumentParser:
     detect_eval.add_argument("--predictions", required=True)
     detect_eval.add_argument("--ground-truth")
     detect_eval.add_argument("--output", required=True)
+    detect_eval.add_argument("--iou-threshold", type=float, default=0.5)
+    detect_eval.add_argument("--score-threshold", type=float, default=0.35)
     fetch_comments = subparsers.add_parser("fetch-comments")
     fetch_comments.add_argument("--photo-id", action="append", default=[])
     fetch_comments.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
@@ -1149,7 +1151,17 @@ def _run_detect_crop_preview(args: argparse.Namespace) -> int:
 def _run_detect_eval(args: argparse.Namespace) -> int:
     predictions = pl.read_parquet(args.predictions).to_dicts()
     truth = pl.read_parquet(args.ground_truth).to_dicts() if args.ground_truth else None
-    report = evaluate_xie_style(predictions=predictions, ground_truth=truth)
+    report = evaluate_xie_style(
+        predictions=predictions,
+        ground_truth=truth,
+        iou_threshold=args.iou_threshold,
+        score_threshold=args.score_threshold,
+    )
+    report = {
+        **report,
+        "iou_threshold": args.iou_threshold,
+        "score_threshold": args.score_threshold,
+    }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")

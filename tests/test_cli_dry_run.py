@@ -259,6 +259,72 @@ def test_detect_boxes_cli_applies_runtime_profile_with_explicit_overrides(tmp_pa
     assert pipeline["run_policy"].crop_batch_size == 24
 
 
+def test_detect_eval_cli_forwards_xie_thresholds(tmp_path, capsys, monkeypatch) -> None:
+    predictions = tmp_path / "predictions.parquet"
+    truth = tmp_path / "truth.parquet"
+    output = tmp_path / "eval_report.json"
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "bbox_xyxy": [0.0, 0.0, 10.0, 10.0],
+                "species_top1_scientific_name": "Danaus plexippus",
+                "species_top1_score": 0.71,
+            }
+        ]
+    ).write_parquet(predictions)
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "bbox_xyxy": [0.0, 0.0, 10.0, 10.0],
+                "scientific_name": "Danaus plexippus",
+            }
+        ]
+    ).write_parquet(truth)
+    calls: dict[str, object] = {}
+
+    def fake_evaluate(**kwargs):  # noqa: ANN003, ANN202 - mirrors evaluate_xie_style.
+        calls["evaluate"] = kwargs
+        return {
+            "ground_truth_available": True,
+            "detector_ap50": 1.0,
+            "joint_map50": 1.0,
+        }
+
+    monkeypatch.setattr("biominer.cli.evaluate_xie_style", fake_evaluate)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "detect",
+            "eval",
+            "--predictions",
+            str(predictions),
+            "--ground-truth",
+            str(truth),
+            "--output",
+            str(output),
+            "--iou-threshold",
+            "0.6",
+            "--score-threshold",
+            "0.45",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["iou_threshold"] == 0.6
+    assert payload["score_threshold"] == 0.45
+    assert report["iou_threshold"] == 0.6
+    assert report["score_threshold"] == 0.45
+    assert calls["evaluate"]["iou_threshold"] == 0.6
+    assert calls["evaluate"]["score_threshold"] == 0.45
+
+
 def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     parser = build_parser()
     screen = parser.parse_args(
