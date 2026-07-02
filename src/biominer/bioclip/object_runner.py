@@ -304,6 +304,10 @@ def _score_detection(
     ranked_genera = _rank_labels(genus_labels, genus_scores)
     ranked_species = _rank_species(candidate_set.species_candidates, species_scores)
     target_score = _target_score(ranked_species, context.scientific_name)
+    top1_name = ranked_species[0][0] if ranked_species else None
+    species_top20 = [name for name, _score in ranked_species[:20]]
+    species_top5 = [name for name, _score in ranked_species[:5]]
+    taxon_key_by_name = _taxon_key_by_name(candidate_set.species_candidates)
     top1_score = ranked_species[0][1] if ranked_species else 0.0
     margin = _margin(ranked_species)
     family_margin = _margin(ranked_families)
@@ -331,11 +335,15 @@ def _score_detection(
         "genus_top1": ranked_genera[0][0] if ranked_genera else None,
         "genus_top1_score": ranked_genera[0][1] if ranked_genera else 0.0,
         "genus_margin": genus_margin,
-        "species_top20": [name for name, _score in ranked_species[:20]],
-        "species_top5": [name for name, _score in ranked_species[:5]],
-        "species_top1_scientific_name": ranked_species[0][0] if ranked_species else None,
+        "species_top20": species_top20,
+        "species_top20_accepted_taxon_keys": [_taxon_key_for_name(taxon_key_by_name, name) for name in species_top20],
+        "species_top5": species_top5,
+        "species_top5_accepted_taxon_keys": [_taxon_key_for_name(taxon_key_by_name, name) for name in species_top5],
+        "species_top1_scientific_name": top1_name,
+        "species_top1_accepted_taxon_key": _taxon_key_for_name(taxon_key_by_name, top1_name),
         "species_top1_score": top1_score,
         "species_top1_margin": margin,
+        "target_accepted_taxon_key": context.accepted_taxon_key,
         "target_species_score": target_score,
         "target_species_rank": _target_rank(ranked_species, context.scientific_name),
         "geospatial_prior_score": geo.score,
@@ -359,6 +367,20 @@ def _rank_species(candidates: tuple[CandidateTaxon, ...], scores: dict[str, floa
 
 def _rank_labels(labels: tuple[str, ...], scores: dict[str, float]) -> list[tuple[str, float]]:
     return sorted(((label, float(scores.get(label, 0.0))) for label in labels), key=lambda item: item[1], reverse=True)
+
+
+def _taxon_key_by_name(candidates: tuple[CandidateTaxon, ...]) -> dict[str, str]:
+    return {
+        _norm(candidate.scientific_name): str(candidate.accepted_taxon_key)
+        for candidate in candidates
+        if candidate.accepted_taxon_key
+    }
+
+
+def _taxon_key_for_name(keys_by_name: dict[str, str], name: str | None) -> str | None:
+    if not name:
+        return None
+    return keys_by_name.get(_norm(name))
 
 
 def _bucket(*, item: dict[str, Any], target_score: float, margin: float | None, geo: GeospatialPrior) -> tuple[str, str]:
