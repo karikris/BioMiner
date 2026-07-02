@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+import biominer.detection.policy as detection_policy
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.detection.evaluate import evaluate_xie_style, iou_xyxy, joint_detection_species_correct
@@ -35,6 +36,27 @@ def test_detection_policy_defaults_match_object_pipeline_profile() -> None:
     assert run_policy.detector_workers == 1
     assert run_policy.max_inflight_images == 32
     assert run_policy.crop_batch_size == 24
+
+
+def test_mac_m5pro_profile_matches_local_apple_silicon_defaults() -> None:
+    assert hasattr(detection_policy, "runtime_profile")
+    profile = detection_policy.runtime_profile("mac_m5pro_64gb")
+
+    assert profile.profile_name == "mac_m5pro_64gb"
+    assert profile.detection_policy.image_max_side_px == 1280
+    assert profile.detection_policy.crop_target_px == 336
+    assert profile.detection_policy.retain_debug_crops is False
+    assert profile.run_policy.download_workers == 4
+    assert profile.run_policy.decode_workers == 4
+    assert profile.run_policy.detector_workers == 1
+    assert profile.bioclip_workers == 1
+    assert profile.run_policy.max_inflight_images == 32
+    assert profile.run_policy.max_inflight_crops == 96
+    assert profile.run_policy.detector_batch_size == 4
+    assert profile.run_policy.crop_batch_size == 24
+    assert profile.text_embedding_batch_size == 256
+    assert profile.worker_shard_target_mb == 64
+    assert profile.compacted_shard_target_mb == 256
 
 
 def test_detection_rows_keep_join_keys_and_stable_detection_id() -> None:
