@@ -232,13 +232,25 @@ def _score_detection(
     ablation_mode: AblationMode,
 ) -> dict[str, Any]:
     species_labels = candidate_set.prompt_labels("species")
-    family_labels = tuple(candidate.family or "" for candidate in candidate_set.family_candidates)
-    genus_labels = tuple(candidate.genus or "" for candidate in candidate_set.genus_candidates)
+    family_labels = tuple(_unique(candidate.family for candidate in candidate_set.family_candidates if candidate.family))
+    genus_labels = tuple(
+        _unique(
+            candidate.genus
+            for candidate in (*candidate_set.genus_candidates, *candidate_set.family_candidates)
+            if candidate.genus
+        )
+    )
+    family_scores = scorer.score(item, family_labels) if family_labels else {}
+    genus_scores = scorer.score(item, genus_labels) if genus_labels else {}
     species_scores = scorer.score(item, species_labels)
+    ranked_families = _rank_labels(family_labels, family_scores)
+    ranked_genera = _rank_labels(genus_labels, genus_scores)
     ranked_species = _rank_species(candidate_set.species_candidates, species_scores)
     target_score = _target_score(ranked_species, context.scientific_name)
     top1_score = ranked_species[0][1] if ranked_species else 0.0
     margin = _margin(ranked_species)
+    family_margin = _margin(ranked_families)
+    genus_margin = _margin(ranked_genera)
     geo = apply_geospatial_soft_prior(item, context, visual_score=target_score)
     bucket, reason = _bucket(item=item, target_score=target_score, margin=margin, geo=geo)
     return {
@@ -254,14 +266,14 @@ def _score_detection(
         "ablation_mode": ablation_mode,
         "triage_group_top": "butterfly_like",
         "triage_group_scores": {"butterfly_like": float(item.get("detector_score") or 0.0)},
-        "family_top3": _top_unique(family_labels, 3),
-        "family_top1": _top_unique(family_labels, 1)[0] if _top_unique(family_labels, 1) else None,
-        "family_top1_score": top1_score,
-        "family_margin": margin,
-        "genus_top8": _top_unique(genus_labels, 8),
-        "genus_top1": _top_unique(genus_labels, 1)[0] if _top_unique(genus_labels, 1) else None,
-        "genus_top1_score": top1_score,
-        "genus_margin": margin,
+        "family_top3": [name for name, _score in ranked_families[:3]],
+        "family_top1": ranked_families[0][0] if ranked_families else None,
+        "family_top1_score": ranked_families[0][1] if ranked_families else 0.0,
+        "family_margin": family_margin,
+        "genus_top8": [name for name, _score in ranked_genera[:8]],
+        "genus_top1": ranked_genera[0][0] if ranked_genera else None,
+        "genus_top1_score": ranked_genera[0][1] if ranked_genera else 0.0,
+        "genus_margin": genus_margin,
         "species_top20": [name for name, _score in ranked_species[:20]],
         "species_top5": [name for name, _score in ranked_species[:5]],
         "species_top1_scientific_name": ranked_species[0][0] if ranked_species else None,
@@ -286,6 +298,10 @@ def _rank_species(candidates: tuple[CandidateTaxon, ...], scores: dict[str, floa
         labels = [candidate.scientific_name, f"a photo of {candidate.scientific_name}", *candidate.common_names]
         ranked.append((candidate.scientific_name, max(float(scores.get(label, 0.0)) for label in labels)))
     return sorted(ranked, key=lambda item: item[1], reverse=True)
+
+
+def _rank_labels(labels: tuple[str, ...], scores: dict[str, float]) -> list[tuple[str, float]]:
+    return sorted(((label, float(scores.get(label, 0.0))) for label in labels), key=lambda item: item[1], reverse=True)
 
 
 def _bucket(*, item: dict[str, Any], target_score: float, margin: float | None, geo: GeospatialPrior) -> tuple[str, str]:

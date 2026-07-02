@@ -218,7 +218,7 @@ def test_screen_object_detections_passes_ablation_mode_to_scorer(tmp_path) -> No
         ablation_mode="whole_image",
     )
 
-    assert scorer.modes == ["whole_image"]
+    assert scorer.modes == ["whole_image", "whole_image", "whole_image"]
 
 
 def test_ephemeral_scorer_uses_distinct_visual_inputs_for_ablation_modes(tmp_path) -> None:
@@ -336,6 +336,65 @@ def test_object_bioclip_scores_detection_crops_with_join_keys(tmp_path) -> None:
     assert row["target_species_score"] == 0.82
     assert row["occurrence_bin"] == "gold"
     assert row["is_target_positive"] is True
+
+
+def test_object_bioclip_scores_family_genus_and_species_stages_separately(tmp_path) -> None:
+    candidates = tmp_path / "species_candidates.parquet"
+    pl.DataFrame(
+        [
+            {"scientific_name": "Danaus plexippus", "accepted_taxon_key": "gbif:5131654", "family": "Nymphalidae", "genus": "Danaus"},
+            {"scientific_name": "Danaus gilippus", "accepted_taxon_key": "gbif:5131655", "family": "Nymphalidae", "genus": "Danaus"},
+            {"scientific_name": "Limenitis archippus", "accepted_taxon_key": "gbif:1900000", "family": "Nymphalidae", "genus": "Limenitis"},
+        ]
+    ).write_parquet(candidates)
+    candidate_set = build_candidate_set(_context(), species_candidate_path=candidates)
+
+    class StageRecordingScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        def score(self, item: dict[str, object], labels: tuple[str, ...]) -> dict[str, float]:
+            self.calls.append(labels)
+            scores = {label: 0.0 for label in labels}
+            if labels == ("Nymphalidae",):
+                scores["Nymphalidae"] = 0.61
+            elif labels == ("Danaus", "Limenitis"):
+                scores["Danaus"] = 0.72
+                scores["Limenitis"] = 0.21
+            else:
+                scores["a photo of Danaus plexippus"] = 0.83
+                scores["a photo of Danaus gilippus"] = 0.44
+                scores["a photo of Limenitis archippus"] = 0.12
+            return scores
+
+    scorer = StageRecordingScorer()
+
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections().head(1),
+        species_context=_context(),
+        candidate_set=candidate_set,
+        scorer=scorer,
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+    )
+
+    row = result.frame.to_dicts()[0]
+    assert scorer.calls == [
+        ("Nymphalidae",),
+        ("Danaus", "Limenitis"),
+        candidate_set.prompt_labels("species"),
+    ]
+    assert row["family_top3"] == ["Nymphalidae"]
+    assert row["family_top1_score"] == 0.61
+    assert row["genus_top8"] == ["Danaus", "Limenitis"]
+    assert row["genus_top1_score"] == 0.72
+    assert row["species_top5"] == ["Danaus plexippus", "Danaus gilippus", "Limenitis archippus"]
+    assert row["target_species_score"] == 0.83
 
 
 def test_geography_soft_prior_routes_conflict_to_review_without_discarding() -> None:
