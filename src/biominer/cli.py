@@ -19,7 +19,7 @@ from biominer.bioclip.register_runner import process_records_with_registers
 from biominer.bioclip.species_candidates import DEFAULT_SPECIES_CANDIDATE_LIMIT, load_species_candidates
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.detection.evaluate import evaluate_xie_style
-from biominer.detection.schema import build_detection_rows
+from biominer.detection.pipeline import run_detection_pipeline
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_comments.comment_review import (
     CommentReviewState,
@@ -962,24 +962,27 @@ def _run_detect_boxes(args: argparse.Namespace) -> int:
         return 2
     records = pl.read_parquet(args.input).to_dicts()
     detector = FakeObjectDetector([_fake_detections_for_record(record) for record in records])
-    rows: list[dict[str, object]] = []
-    images = [_blank_decoded_image(record) for record in records]
-    for record, image, detections in zip(records, images, detector.detect_batch(images), strict=True):
-        rows.extend(
-            build_detection_rows(
-                record=record,
-                image=image,
-                detections=detections,
-                detector_backend=detector.backend,
-                detector_model_id=detector.model_id,
-                detector_model_version=detector.model_version,
-                detector_checkpoint=detector.checkpoint,
-            )
+    result = run_detection_pipeline(
+        records=records,
+        detector=detector,
+        output_path=args.output,
+        image_loader=_blank_decoded_image,
+    )
+    print(
+        json.dumps(
+            {
+                "output": str(result.output_path),
+                "rows": result.frame.height,
+                "backend": detector.backend,
+                "records_seen": result.records_seen,
+                "images_loaded": result.images_loaded,
+                "detections_written": result.detections_written,
+                "crops_created": result.crops_created,
+            },
+            indent=2,
+            sort_keys=True,
         )
-    output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame(rows).write_parquet(output)
-    print(json.dumps({"output": str(output), "rows": len(rows), "backend": detector.backend}, indent=2, sort_keys=True))
+    )
     return 0
 
 

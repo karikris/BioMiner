@@ -7,6 +7,7 @@ import pytest
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.detection.evaluate import evaluate_xie_style, iou_xyxy, joint_detection_species_correct
+from biominer.detection.pipeline import run_detection_pipeline
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 from biominer.detection.schema import build_detection_rows, detection_id_for
 
@@ -126,6 +127,82 @@ def test_fake_detector_returns_multiple_rows_for_one_photo() -> None:
     assert detector.backend == "fake"
     assert [len(batch) for batch in detections] == [1, 2]
     assert detections[1][1].label == "life_stage"
+
+
+def test_detection_pipeline_writes_ephemeral_crop_metadata_for_each_detection(tmp_path) -> None:
+    output = tmp_path / "object_detections.parquet"
+    records = [
+        {
+            "source": "flickr",
+            "flickr_photo_id": "photo-1",
+            "source_record_hash": "sha256:source-1",
+            "image_url": "memory://photo-1",
+            "photo_page_url": "https://www.flickr.com/photos/u/photo-1",
+        }
+    ]
+    detector = FakeObjectDetector(
+        [
+            [
+                DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 3, 3)),
+                DetectionCandidate(label="butterfly", score=0.8, bbox_xyxy=(1, 1, 4, 4)),
+            ]
+        ]
+    )
+
+    result = run_detection_pipeline(
+        records=records,
+        detector=detector,
+        output_path=output,
+        image_loader=lambda record: _image(),
+        detection_policy=DetectionPolicy(backend="fake", crop_padding_ratio=0.25, crop_target_px=3),
+    )
+
+    rows = result.frame.sort("detector_score", descending=True).to_dicts()
+    assert output.exists()
+    assert result.records_seen == 1
+    assert result.images_loaded == 1
+    assert result.detections_written == 2
+    assert result.crops_created == 2
+    assert all(row["source"] == "flickr" and row["flickr_photo_id"] == "photo-1" for row in rows)
+    assert all(row["crop_hash"].startswith("sha256:") for row in rows)
+    assert all(row["crop_width"] == 3 and row["crop_height"] == 3 for row in rows)
+    assert all(row["crop_padding_ratio"] == 0.25 for row in rows)
+    assert all(row["crop_storage_policy"] == "ephemeral" for row in rows)
+    assert "encoded_bytes" not in result.frame.columns
+    assert len({row["detection_id"] for row in rows}) == 2
+    assert len({row["crop_hash"] for row in rows}) == 2
+
+
+def test_detection_pipeline_uses_bounded_map_buffersize(tmp_path) -> None:
+    calls: list[int | None] = []
+
+    class RecordingExecutor:
+        def __init__(self, max_workers):  # noqa: ANN001 - mirrors executor constructor.
+            self.max_workers = max_workers
+
+        def __enter__(self):  # noqa: ANN204 - mirrors executor context manager.
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001, ANN204 - mirrors executor context manager.
+            return None
+
+        def map(self, fn, iterable, *, buffersize=None):  # noqa: ANN001, ANN202 - mirrors Executor.map.
+            calls.append(buffersize)
+            return [fn(item) for item in iterable]
+
+    run_detection_pipeline(
+        records=[
+            {"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "memory://photo-1"},
+            {"source": "flickr", "flickr_photo_id": "photo-2", "image_url": "memory://photo-2"},
+        ],
+        detector=FakeObjectDetector([[DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 2, 2))], []]),
+        output_path=tmp_path / "object_detections.parquet",
+        image_loader=lambda record: _image(),
+        run_policy=DetectionRunPolicy(download_workers=2, max_inflight_images=7),
+        executor_factory=RecordingExecutor,
+    )
+
+    assert calls == [7]
 
 
 def test_xie_style_evaluation_uses_iou_and_species_correctness() -> None:

@@ -282,6 +282,46 @@ def test_bioclip_screen_wires_register_runner_with_sidecar_runtime(tmp_path, cap
     assert calls["runner_kwargs"]["model_checkpoint"] == "191d741545e4c741cdef4b22c6eb69c945c1e592"
 
 
+def test_detect_boxes_fake_backend_writes_crop_metadata(tmp_path, capsys) -> None:
+    input_path = tmp_path / "filtered.parquet"
+    output_path = tmp_path / "object_detections.parquet"
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "image_url": "memory://photo-1",
+                "image_width": 4,
+                "image_height": 4,
+            }
+        ]
+    ).write_parquet(input_path)
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "detect",
+            "boxes",
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+            "--backend",
+            "fake",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    row = pl.read_parquet(output_path).to_dicts()[0]
+    assert payload["rows"] == 1
+    assert row["crop_hash"].startswith("sha256:")
+    assert row["crop_width"] == 336
+    assert row["crop_height"] == 336
+    assert row["crop_storage_policy"] == "ephemeral"
+
+
 def test_species_run_cli_resolves_registry_compiles_queries_and_seeds_work(tmp_path, capsys) -> None:
     registry = tmp_path / "registry"
     registry.mkdir()
