@@ -28,6 +28,7 @@ def run_object_ablations(
     scorer: ObjectBioClipScorer,
     output_dir: str | Path,
     modes: tuple[AblationMode, ...],
+    geo_prior_table: pl.DataFrame | None = None,
 ) -> AblationRunReport:
     base = Path(output_dir)
     base.mkdir(parents=True, exist_ok=True)
@@ -41,6 +42,7 @@ def run_object_ablations(
             scorer=scorer,
             output_path=base / f"object_bioclip_scores_{mode}.parquet",
             ablation_mode=mode,
+            geo_prior_table=geo_prior_table,
         )
         frames.append(result.frame)
     combined = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()

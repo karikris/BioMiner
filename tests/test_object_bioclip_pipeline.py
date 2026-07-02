@@ -430,6 +430,32 @@ def test_geography_soft_prior_routes_conflict_to_review_without_discarding() -> 
     assert missing.hard_discard is False
 
 
+def test_geography_soft_prior_uses_target_geo_prior_table() -> None:
+    context = _context()
+    geo_prior_table = pl.DataFrame(
+        [
+            {
+                "accepted_taxon_key": "gbif:5131654",
+                "scientific_name": "Danaus plexippus",
+                "bbox": "140.0,-40.0,155.0,-25.0",
+                "source": "fixture",
+            }
+        ]
+    )
+
+    prior = apply_geospatial_soft_prior(
+        {"latitude": -35.0, "longitude": 149.0},
+        context,
+        visual_score=0.8,
+        geo_prior_table=geo_prior_table,
+    )
+
+    assert prior.score > 0
+    assert prior.reason == "within_geo_prior_table"
+    assert prior.route_to_review is False
+    assert prior.hard_discard is False
+
+
 def test_ablation_modes_write_rows_with_shared_photo_join_keys(tmp_path) -> None:
     candidate_set = build_candidate_set(_context())
     report = run_object_ablations(

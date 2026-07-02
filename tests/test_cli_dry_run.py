@@ -306,8 +306,18 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
     )
     input_path = tmp_path / "filtered.parquet"
     detections_path = tmp_path / "detections.parquet"
+    geo_prior_path = tmp_path / "geo_prior.parquet"
     output_path = tmp_path / "scores.parquet"
     pl.DataFrame([{"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "https://example.test/1.jpg"}]).write_parquet(input_path)
+    pl.DataFrame(
+        [
+            {
+                "accepted_taxon_key": "gbif:1",
+                "scientific_name": "Danaus plexippus",
+                "bbox": "-170.0,5.0,-50.0,75.0",
+            }
+        ]
+    ).write_parquet(geo_prior_path)
     pl.DataFrame(
         [
             {
@@ -359,6 +369,8 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
             str(context_path),
             "--output",
             str(output_path),
+            "--geo-prior-table",
+            str(geo_prior_path),
             "--runtime-python",
             str(runtime_python),
             "--device",
@@ -375,6 +387,7 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
     assert calls["crop_scorer"]["model_checkpoint"] == "191d741545e4c741cdef4b22c6eb69c945c1e592"
     assert calls["crop_scorer"]["crop_target_px"] == 336
     assert calls["screen"]["ablation_mode"] == "detector_crop"
+    assert calls["screen"]["geo_prior_table"].height == 1
 
 
 def test_detect_boxes_fake_backend_writes_crop_metadata(tmp_path, capsys) -> None:

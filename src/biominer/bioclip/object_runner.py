@@ -157,6 +157,7 @@ def screen_object_detections(
     scorer: ObjectBioClipScorer,
     output_path: str | Path | None = None,
     ablation_mode: AblationMode = "detector_crop",
+    geo_prior_table: pl.DataFrame | None = None,
 ) -> ObjectScreenResult:
     records_by_photo = {
         (str(row.get("source") or ""), str(row.get("flickr_photo_id") or "")): row
@@ -169,7 +170,16 @@ def screen_object_detections(
         key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
         record = records_by_photo.get(key, {})
         item = {**record, **detection, "ablation_mode": ablation_mode}
-        rows.append(_score_detection(item=item, context=species_context, candidate_set=candidate_set, scorer=scorer, ablation_mode=ablation_mode))
+        rows.append(
+            _score_detection(
+                item=item,
+                context=species_context,
+                candidate_set=candidate_set,
+                scorer=scorer,
+                ablation_mode=ablation_mode,
+                geo_prior_table=geo_prior_table,
+            )
+        )
     frame = pl.DataFrame(rows) if rows else pl.DataFrame()
     output = Path(output_path) if output_path is not None else None
     if output is not None:
@@ -194,6 +204,14 @@ def apply_geospatial_soft_prior(
     longitude = _optional_float(row.get("longitude"))
     if latitude is None or longitude is None:
         return GeospatialPrior(score=0.0, reason="missing_geo")
+    table_prior = _geo_prior_table_match(
+        latitude=latitude,
+        longitude=longitude,
+        species_context=species_context,
+        geo_prior_table=geo_prior_table,
+    )
+    if table_prior is not None:
+        return table_prior
     for region in species_context.regions:
         if region.bbox and _coordinate_in_bbox(latitude=latitude, longitude=longitude, bbox=region.bbox):
             return GeospatialPrior(score=0.10, reason="within_context_region")
@@ -249,6 +267,7 @@ def _score_detection(
     candidate_set: CandidateSet,
     scorer: ObjectBioClipScorer,
     ablation_mode: AblationMode,
+    geo_prior_table: pl.DataFrame | None = None,
 ) -> dict[str, Any]:
     species_labels = candidate_set.prompt_labels("species")
     family_labels = tuple(_unique(candidate.family for candidate in candidate_set.family_candidates if candidate.family))
@@ -270,7 +289,7 @@ def _score_detection(
     margin = _margin(ranked_species)
     family_margin = _margin(ranked_families)
     genus_margin = _margin(ranked_genera)
-    geo = apply_geospatial_soft_prior(item, context, visual_score=target_score)
+    geo = apply_geospatial_soft_prior(item, context, visual_score=target_score, geo_prior_table=geo_prior_table)
     bucket, reason = _bucket(item=item, target_score=target_score, margin=margin, geo=geo)
     return {
         "source": str(item.get("source") or ""),
@@ -472,6 +491,55 @@ def _text_evidence_score(item: dict[str, Any], context: SpeciesContext) -> float
 def _comment_evidence_score(item: dict[str, Any], context: SpeciesContext) -> float:
     text = str(item.get("comments_text") or "")
     return 1.0 if text and any(term.casefold() in text.casefold() for term in context.target_terms()) else 0.0
+
+
+def _geo_prior_table_match(
+    *,
+    latitude: float,
+    longitude: float,
+    species_context: SpeciesContext,
+    geo_prior_table: pl.DataFrame | None,
+) -> GeospatialPrior | None:
+    if geo_prior_table is None or geo_prior_table.is_empty():
+        return None
+    for row in geo_prior_table.to_dicts():
+        if not _geo_prior_row_matches_context(row, species_context):
+            continue
+        bbox = _geo_prior_bbox(row)
+        if bbox and _coordinate_in_bbox(latitude=latitude, longitude=longitude, bbox=bbox):
+            return GeospatialPrior(score=0.10, reason="within_geo_prior_table")
+    return None
+
+
+def _geo_prior_row_matches_context(row: dict[str, Any], species_context: SpeciesContext) -> bool:
+    context_keys = {
+        _norm(species_context.accepted_taxon_key),
+        _norm(species_context.species_key),
+    } - {""}
+    for key_column in ("accepted_taxon_key", "target_accepted_taxon_key", "species_key", "accepted_usage_key"):
+        value = _norm(row.get(key_column))
+        if value and value in context_keys:
+            return True
+
+    context_names = {
+        _norm(species_context.scientific_name),
+        _norm(species_context.canonical_name),
+    } - {""}
+    for name_column in ("scientific_name", "accepted_scientific_name", "target_scientific_name", "canonical_name"):
+        value = _norm(row.get(name_column))
+        if value and value in context_names:
+            return True
+    return False
+
+
+def _geo_prior_bbox(row: dict[str, Any]) -> str | None:
+    bbox = str(row.get("bbox") or "").strip()
+    if bbox:
+        return bbox
+    parts = [_optional_float(row.get(column)) for column in ("min_lon", "min_lat", "max_lon", "max_lat")]
+    if all(value is not None for value in parts):
+        return ",".join(str(value) for value in parts)
+    return None
 
 
 def _coordinate_in_bbox(*, latitude: float, longitude: float, bbox: str) -> bool:

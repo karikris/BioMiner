@@ -112,6 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_screen_objects.add_argument("--detections", required=True)
     bioclip_screen_objects.add_argument("--species-context", required=True)
     bioclip_screen_objects.add_argument("--species-candidates")
+    bioclip_screen_objects.add_argument("--geo-prior-table")
     bioclip_screen_objects.add_argument("--output", required=True)
     bioclip_screen_objects.add_argument("--ablation-mode", choices=("whole_image", "detector_crop", "detector_crop_segmentation"), default="detector_crop")
     bioclip_screen_objects.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
@@ -127,6 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_ablate_objects.add_argument("--detections", required=True)
     bioclip_ablate_objects.add_argument("--species-context", required=True)
     bioclip_ablate_objects.add_argument("--species-candidates")
+    bioclip_ablate_objects.add_argument("--geo-prior-table")
     bioclip_ablate_objects.add_argument("--output-dir", required=True)
     bioclip_ablate_objects.add_argument("--modes", default="whole_image,detector_crop,detector_crop_segmentation")
     bioclip_ablate_objects.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
@@ -1049,6 +1051,7 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
     context = SpeciesContext.read_json(args.species_context)
     records = pl.read_parquet(args.input)
     detections = pl.read_parquet(args.detections)
+    geo_prior_table = _optional_parquet(getattr(args, "geo_prior_table", None))
     candidate_set = build_candidate_set(context, species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None)
     runtime = _bioclip_runtime(runtime_python=runtime_python)
     scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
@@ -1072,6 +1075,7 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
             scorer=object_scorer,
             output_path=args.output,
             ablation_mode=args.ablation_mode,
+            geo_prior_table=geo_prior_table,
         )
     finally:
         scorer.close()
@@ -1101,6 +1105,7 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
     context = SpeciesContext.read_json(args.species_context)
     records = pl.read_parquet(args.input)
     detections = pl.read_parquet(args.detections)
+    geo_prior_table = _optional_parquet(getattr(args, "geo_prior_table", None))
     candidate_set = build_candidate_set(context, species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None)
     modes = tuple(part.strip() for part in args.modes.split(",") if part.strip())
     runtime = _bioclip_runtime(runtime_python=runtime_python)
@@ -1125,11 +1130,18 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
             scorer=object_scorer,
             output_dir=args.output_dir,
             modes=modes,  # type: ignore[arg-type]
+            geo_prior_table=geo_prior_table,
         )
     finally:
         scorer.close()
     print(json.dumps({"output_dir": str(report.output_dir), **report.report}, indent=2, sort_keys=True))
     return 0
+
+
+def _optional_parquet(path: str | Path | None) -> pl.DataFrame | None:
+    if not path:
+        return None
+    return pl.read_parquet(path)
 
 
 def _fake_detections_for_record(record: dict[str, object]) -> list[DetectionCandidate]:

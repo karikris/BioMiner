@@ -192,7 +192,7 @@ class CommentReviewState:
                 text = _comment_text(comment)
                 if not text:
                     continue
-                for term in mine_comment_terms(text):
+                for term in mine_comment_terms(text, common_name_terms=_context_common_name_terms(self.species_context)):
                     result = conn.execute(
                         """
                         INSERT OR IGNORE INTO comment_derived_terms (
@@ -679,6 +679,12 @@ def _common_name_from_text(text: str, *, species_context: SpeciesContext | None 
         if _normalize(name.name) in normalized:
             return name.name
     return None
+
+
+def _context_common_name_terms(species_context: SpeciesContext | None) -> tuple[str, ...]:
+    if species_context is None:
+        return ()
+    return tuple(name.name for name in species_context.common_names if name.name)
 
 
 def _life_stage_from_text(text: str) -> str | None:

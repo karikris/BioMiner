@@ -35,15 +35,23 @@ def test_obvious_hard_negative_bronze_not_queued_unless_selected_for_qa(tmp_path
 
 
 def test_comment_term_mining_finds_scientific_common_and_life_stage_terms() -> None:
-    terms = mine_comment_terms("Papilio demoleus lime butterfly caterpillar")
+    terms = mine_comment_terms("Papilio demoleus lime butterfly caterpillar", common_name_terms=("lime butterfly",))
 
     assert ("Papilio demoleus", "scientific_name") in {(term.term, term.term_kind) for term in terms}
     assert ("lime butterfly", "common_name") in {(term.term, term.term_kind) for term in terms}
     assert ("caterpillar", "life_stage") in {(term.term, term.term_kind) for term in terms}
 
 
+def test_comment_term_mining_has_no_species_common_name_defaults() -> None:
+    terms = mine_comment_terms("Papilio demoleus lime butterfly caterpillar")
+
+    assert ("Papilio demoleus", "scientific_name") in {(term.term, term.term_kind) for term in terms}
+    assert ("lime butterfly", "common_name") not in {(term.term, term.term_kind) for term in terms}
+    assert ("caterpillar", "life_stage") in {(term.term, term.term_kind) for term in terms}
+
+
 def test_comments_derived_terms_are_thresholded_across_photos_and_users(tmp_path) -> None:
-    state = CommentsEnrichmentState(tmp_path / "comments.sqlite")
+    state = CommentsEnrichmentState(tmp_path / "comments.sqlite", common_name_terms=("lime butterfly",))
     state.record_comments(
         flickr_photo_id="1",
         comments=[{"author": "same-user", "_content": "Papilio demoleus lime butterfly caterpillar"}],
@@ -68,7 +76,7 @@ def test_comments_derived_terms_are_thresholded_across_photos_and_users(tmp_path
 
 
 def test_promoted_comment_terms_create_new_work_items(tmp_path) -> None:
-    state = CommentsEnrichmentState(tmp_path / "comments.sqlite")
+    state = CommentsEnrichmentState(tmp_path / "comments.sqlite", common_name_terms=("lime butterfly",))
     state.record_comments(flickr_photo_id="1", comments=[{"author": "u1", "_content": "lime butterfly"}])
     state.record_comments(flickr_photo_id="2", comments=[{"author": "u2", "_content": "lime butterfly"}])
 

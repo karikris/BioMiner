@@ -20,14 +20,6 @@ COMMENTS_METHOD = "flickr.photos.comments.getList"
 COMPLETED = "completed"
 FAILED = "failed"
 
-COMMON_NAME_TERMS: tuple[str, ...] = (
-    "lime butterfly",
-    "chequered swallowtail",
-    "checkered swallowtail",
-    "citrus swallowtail",
-    "swallowtail",
-    "butterfly",
-)
 HARD_NEGATIVE_BRONZE_TERMS: tuple[str, ...] = (
     "museum",
     "specimen",
@@ -71,8 +63,9 @@ class CommentsEnrichmentState:
     schema migration layer.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, common_name_terms: Iterable[str] = ()) -> None:
         self.path = Path(path)
+        self.common_name_terms = tuple(term for term in common_name_terms if term)
         MetadataPollState(self.path)
         self._init_db()
 
@@ -125,7 +118,7 @@ class CommentsEnrichmentState:
                 if not text:
                     continue
                 author_id = str(comment.get("author") or comment.get("author_id") or comment.get("user") or "")
-                for term in mine_comment_terms(text):
+                for term in mine_comment_terms(text, common_name_terms=self.common_name_terms):
                     result = conn.execute(
                         """
                         INSERT OR IGNORE INTO comments_term_observations (
@@ -310,13 +303,13 @@ class CommentsEnrichmentState:
         return conn
 
 
-def mine_comment_terms(text: str) -> tuple[CommentTerm, ...]:
+def mine_comment_terms(text: str, *, common_name_terms: Iterable[str] = ()) -> tuple[CommentTerm, ...]:
     normalized = _normalize(text)
     terms: set[CommentTerm] = set()
     for name in SCIENTIFIC_NAME_PATTERN.findall(text):
         terms.add(CommentTerm(term=name, term_kind="scientific_name"))
     occupied_spans: list[tuple[int, int]] = []
-    for common_name in sorted(COMMON_NAME_TERMS, key=len, reverse=True):
+    for common_name in sorted(set(common_name_terms), key=len, reverse=True):
         match = _phrase_match(normalized, common_name)
         if match and not _span_overlaps(match.span(), occupied_spans):
             terms.add(CommentTerm(term=common_name, term_kind="common_name"))
