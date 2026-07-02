@@ -65,7 +65,9 @@ def build_candidate_set(
     if candidate_rows:
         source_evidence.append(str(species_candidate_path))
     species = _species_candidates(context, candidate_rows)
-    species = _add_query_provenance_candidates(species, records or [])
+    species, query_provenance_added = _add_query_provenance_candidates(species, records or [])
+    if query_provenance_added:
+        source_evidence.append("query_provenance")
     if not any(_norm(candidate.scientific_name) == _norm(context.scientific_name) for candidate in species):
         species.insert(0, target)
     species = _dedupe_taxa(species)
@@ -128,10 +130,14 @@ def _species_candidates(context: SpeciesContext, rows: list[dict[str, Any]]) -> 
     return candidates
 
 
-def _add_query_provenance_candidates(candidates: list[CandidateTaxon], records: list[dict[str, Any]]) -> list[CandidateTaxon]:
+def _add_query_provenance_candidates(
+    candidates: list[CandidateTaxon],
+    records: list[dict[str, Any]],
+) -> tuple[list[CandidateTaxon], bool]:
     by_key = {str(candidate.accepted_taxon_key or ""): candidate for candidate in candidates if candidate.accepted_taxon_key}
+    added = False
     for record in records:
-        keys = record.get("discovery_species_keys") or ()
+        keys = record.get("discovery_species_keys") or record.get("discovery_accepted_taxon_keys") or ()
         names = record.get("scientific_names_detected") or ()
         if isinstance(keys, str):
             keys = [keys]
@@ -141,7 +147,9 @@ def _add_query_provenance_candidates(candidates: list[CandidateTaxon], records: 
             if str(key) in by_key or not name:
                 continue
             candidates.append(CandidateTaxon(scientific_name=str(name), accepted_taxon_key=str(key), rank="species"))
-    return candidates
+            by_key[str(key)] = candidates[-1]
+            added = True
+    return candidates, added
 
 
 def _candidate_set_id(*, context: SpeciesContext, species: list[CandidateTaxon], geospatial_scope: str | None) -> str:

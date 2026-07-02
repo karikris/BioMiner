@@ -153,6 +153,23 @@ def test_candidate_set_uses_species_context_and_same_genus_family_candidates(tmp
     assert "monarch butterfly" in candidate_set.prompt_labels("species")
 
 
+def test_candidate_set_uses_query_provenance_accepted_taxon_keys() -> None:
+    candidate_set = build_candidate_set(
+        _context(),
+        records=[
+            {
+                "discovery_accepted_taxon_keys": ["gbif:999001"],
+                "scientific_names_detected": ["Danaus erippus"],
+            }
+        ],
+    )
+
+    by_name = {candidate.scientific_name: candidate for candidate in candidate_set.species_candidates}
+    assert by_name["Danaus erippus"].accepted_taxon_key == "gbif:999001"
+    assert "query_provenance" in candidate_set.source_evidence
+    assert "a photo of Danaus erippus" in candidate_set.prompt_labels("species")
+
+
 def test_ephemeral_crop_bioclip_scorer_scores_temp_crop_and_deletes_file(tmp_path) -> None:
     seen: dict[str, object] = {}
 
