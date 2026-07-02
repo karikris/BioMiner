@@ -101,6 +101,8 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
             "object_detections.parquet",
             "--backend",
             "fake",
+            "--profile",
+            "mac_m5pro_64gb",
             "--parquet-batch-rows",
             "6",
             "--image-max-side-px",
@@ -123,6 +125,7 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
     assert args.image_max_side_px == 960
     assert args.crop_padding_ratio == 0.2
     assert species_args.species_command == "detect"
+    assert species_args.profile == "mac_m5pro_64gb"
     assert species_args.parquet_batch_rows == 6
     assert species_args.image_max_side_px == 1024
 
@@ -194,6 +197,66 @@ def test_detect_boxes_cli_forwards_detection_and_run_policies(tmp_path, capsys, 
     assert pipeline["run_policy"].max_inflight_images == 7
     assert pipeline["run_policy"].detector_batch_size == 3
     assert pipeline["run_policy"].parquet_batch_rows == 5
+
+
+def test_detect_boxes_cli_applies_runtime_profile_with_explicit_overrides(tmp_path, capsys, monkeypatch) -> None:
+    input_path = tmp_path / "filtered.parquet"
+    output_path = tmp_path / "object_detections.parquet"
+    pl.DataFrame([{"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "memory://photo-1"}]).write_parquet(input_path)
+    calls: dict[str, object] = {}
+
+    def fake_backend(args, records):  # noqa: ANN001, ANN202 - mirrors _detect_boxes_backend.
+        calls["backend_args"] = args
+        calls["records"] = records
+        return SimpleNamespace(backend="fake"), lambda record: None
+
+    def fake_pipeline(**kwargs):  # noqa: ANN003, ANN202 - mirrors run_detection_pipeline.
+        calls["pipeline"] = kwargs
+        return SimpleNamespace(
+            frame=pl.DataFrame([{"detection_status": "detected"}]),
+            output_path=Path(kwargs["output_path"]),
+            records_seen=1,
+            images_loaded=1,
+            detections_written=1,
+            crops_created=1,
+            parquet_batches_written=1,
+        )
+
+    monkeypatch.setattr("biominer.cli._detect_boxes_backend", fake_backend)
+    monkeypatch.setattr("biominer.cli.run_detection_pipeline", fake_pipeline)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "detect",
+            "boxes",
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+            "--backend",
+            "fake",
+            "--profile",
+            "mac_m5pro_64gb",
+            "--crop-target-px",
+            "448",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    pipeline = calls["pipeline"]
+    assert payload["profile"] == "mac_m5pro_64gb"
+    assert pipeline["detection_policy"].image_max_side_px == 1280
+    assert pipeline["detection_policy"].crop_target_px == 448
+    assert pipeline["detection_policy"].retain_debug_crops is False
+    assert pipeline["run_policy"].download_workers == 4
+    assert pipeline["run_policy"].decode_workers == 4
+    assert pipeline["run_policy"].detector_workers == 1
+    assert pipeline["run_policy"].max_inflight_images == 32
+    assert pipeline["run_policy"].max_inflight_crops == 96
+    assert pipeline["run_policy"].detector_batch_size == 4
+    assert pipeline["run_policy"].crop_batch_size == 24
 
 
 def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:

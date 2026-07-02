@@ -29,7 +29,7 @@ from biominer.detection.detector_base import DecodedImage, DetectionCandidate, F
 from biominer.detection.evaluate import evaluate_xie_style
 from biominer.detection.image_io import load_decoded_image_from_record
 from biominer.detection.pipeline import run_detection_pipeline
-from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
+from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, runtime_profile
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_comments.comment_review import (
     CommentReviewState,
@@ -406,6 +406,7 @@ def _add_object_evidence_join_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_detection_policy_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--profile", choices=("mac_m5pro_64gb",))
     parser.add_argument("--box-score-threshold", type=float, default=0.20)
     parser.add_argument("--nms-iou-threshold", type=float, default=0.50)
     parser.add_argument("--min-box-area-ratio", type=float, default=0.0005)
@@ -1048,39 +1049,22 @@ def _run_detect_boxes(args: argparse.Namespace) -> int:
     except RuntimeError as exc:
         print(json.dumps({"error": str(exc), "backend": args.backend, "runtime_python": args.runtime_python}, indent=2, sort_keys=True))
         return 2
+    detection_policy = _detection_policy_from_args(args)
+    run_policy = _detection_run_policy_from_args(args)
     result = run_detection_pipeline(
         records=records,
         detector=detector,
         output_path=args.output,
         image_loader=image_loader,
-        detection_policy=DetectionPolicy(
-            backend=args.backend,
-            box_score_threshold=args.box_score_threshold,
-            nms_iou_threshold=args.nms_iou_threshold,
-            min_box_area_ratio=args.min_box_area_ratio,
-            max_boxes_per_image=args.max_boxes_per_image,
-            crop_padding_ratio=args.crop_padding_ratio,
-            image_max_side_px=args.image_max_side_px,
-            crop_target_px=args.crop_target_px,
-            retain_debug_crops=args.retain_debug_crops,
-            debug_crop_limit=args.debug_crop_limit,
-        ),
-        run_policy=DetectionRunPolicy(
-            download_workers=args.download_workers,
-            decode_workers=args.decode_workers,
-            detector_workers=args.detector_workers,
-            max_inflight_images=args.max_inflight_images,
-            max_inflight_crops=args.max_inflight_crops,
-            detector_batch_size=args.detector_batch_size,
-            crop_batch_size=args.crop_batch_size,
-            parquet_batch_rows=args.parquet_batch_rows,
-        ),
+        detection_policy=detection_policy,
+        run_policy=run_policy,
     )
     print(
         json.dumps(
             {
                 "output": str(result.output_path),
                 "rows": result.frame.height,
+                "profile": args.profile,
                 "backend": detector.backend,
                 "records_seen": result.records_seen,
                 "images_loaded": result.images_loaded,
@@ -1105,6 +1089,36 @@ def _detect_boxes_backend(args: argparse.Namespace, records: list[dict[str, obje
             return YoloSidecarObjectDetector(runtime_python=args.runtime_python, device=args.device), load_decoded_image_from_record
         return YoloObjectDetector(device=args.device), load_decoded_image_from_record
     raise RuntimeError(f"unsupported detection backend: {args.backend}")
+
+
+def _detection_policy_from_args(args: argparse.Namespace) -> DetectionPolicy:
+    profile = runtime_profile(args.profile).detection_policy if getattr(args, "profile", None) else DetectionPolicy()
+    return DetectionPolicy(
+        backend=args.backend,
+        box_score_threshold=args.box_score_threshold,
+        nms_iou_threshold=args.nms_iou_threshold,
+        min_box_area_ratio=args.min_box_area_ratio,
+        max_boxes_per_image=args.max_boxes_per_image,
+        crop_padding_ratio=args.crop_padding_ratio,
+        image_max_side_px=args.image_max_side_px if args.image_max_side_px is not None else profile.image_max_side_px,
+        crop_target_px=args.crop_target_px if args.crop_target_px is not None else profile.crop_target_px,
+        retain_debug_crops=args.retain_debug_crops or profile.retain_debug_crops,
+        debug_crop_limit=args.debug_crop_limit,
+    )
+
+
+def _detection_run_policy_from_args(args: argparse.Namespace) -> DetectionRunPolicy:
+    profile = runtime_profile(args.profile).run_policy if getattr(args, "profile", None) else DetectionRunPolicy()
+    return DetectionRunPolicy(
+        download_workers=args.download_workers if args.download_workers is not None else profile.download_workers,
+        decode_workers=args.decode_workers if args.decode_workers is not None else profile.decode_workers,
+        detector_workers=args.detector_workers if args.detector_workers is not None else profile.detector_workers,
+        max_inflight_images=args.max_inflight_images if args.max_inflight_images is not None else profile.max_inflight_images,
+        max_inflight_crops=args.max_inflight_crops if args.max_inflight_crops is not None else profile.max_inflight_crops,
+        detector_batch_size=args.detector_batch_size if args.detector_batch_size is not None else profile.detector_batch_size,
+        crop_batch_size=args.crop_batch_size if args.crop_batch_size is not None else profile.crop_batch_size,
+        parquet_batch_rows=args.parquet_batch_rows,
+    )
 
 
 def _use_vision_sidecar(runtime_python: str) -> bool:
