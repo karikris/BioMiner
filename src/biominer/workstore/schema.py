@@ -62,6 +62,22 @@ CREATE TABLE IF NOT EXISTS biominer_parquet_shards (
   metadata_json jsonb,
   committed_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS biominer_compaction_inputs (
+  compaction_run_id text NOT NULL,
+  output_shard_id text NOT NULL,
+  source_shard_id text NOT NULL,
+  source_uri text NOT NULL,
+  job_name text NOT NULL,
+  source_stage text NOT NULL,
+  output_stage text NOT NULL,
+  registry_version text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (output_shard_id, source_shard_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_biominer_compaction_inputs_source
+ON biominer_compaction_inputs(job_name, source_stage, registry_version, source_shard_id);
 """
 
 

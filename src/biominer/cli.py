@@ -40,6 +40,10 @@ from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
 from biominer.reports.buckets import export_bucket_views
 from biominer.reports.name_evidence import build_name_evidence_report, write_name_evidence_report
+from biominer.storage.compaction import compact_parquet_shards
+from biominer.storage.config import StorageConfig, load_storage_config_from_env
+from biominer.storage.factory import create_storage_backend
+from biominer.workstore.sqlite import SQLiteWorkStore
 
 
 BIOCLIP_25_HUGE_REPO_ID = "imageomics/bioclip-2.5-vith14"
@@ -189,8 +193,22 @@ def build_parser() -> argparse.ArgumentParser:
     gc_cache.add_argument("--cache-root", required=True)
     gc_cache.add_argument("--delete", action="store_true")
     compact_parquet = subparsers.add_parser("compact-parquet")
-    compact_parquet.add_argument("--input-root", required=True)
-    compact_parquet.add_argument("--output", required=True)
+    compact_parquet.add_argument("--input-root")
+    compact_parquet.add_argument("--output")
+    compact_parquet.add_argument("--input-prefix")
+    compact_parquet.add_argument("--output-prefix")
+    compact_parquet.add_argument("--source-stage", default="poll_once")
+    compact_parquet.add_argument("--output-stage")
+    compact_parquet.add_argument("--registry-version")
+    compact_parquet.add_argument("--run-id")
+    compact_parquet.add_argument("--compaction-run-id")
+    compact_parquet.add_argument("--target-file-mb", type=int, default=256)
+    compact_parquet.add_argument("--max-file-mb", type=int, default=512)
+    compact_parquet.add_argument("--dedupe-key", action="append", default=[])
+    compact_parquet.add_argument("--schema-mode", choices=("strict", "diagonal_relaxed"), default="strict")
+    compact_parquet.add_argument("--dry-run", action="store_true")
+    compact_parquet.add_argument("--storage-backend", choices=("local", "s3"), default="local")
+    compact_parquet.add_argument("--workstore-sqlite-path")
     qa_rate_limit = subparsers.add_parser("qa-rate-limit")
     qa_rate_limit.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
     qa_rate_limit.add_argument("--ledger-path", dest="state_db")
@@ -456,6 +474,35 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps(_cache_gc_summary(Path(args.cache_root), delete=args.delete), indent=2, sort_keys=True))
         return 0
     if args.command == "compact-parquet":
+        if args.input_prefix or args.output_prefix:
+            if not args.input_prefix or not args.output_prefix:
+                print(json.dumps({"error": "--input-prefix and --output-prefix must be provided together"}, indent=2, sort_keys=True))
+                return 2
+            env_config = load_storage_config_from_env()
+            storage = create_storage_backend(StorageConfig(**{**env_config.__dict__, "backend": args.storage_backend}))
+            workstore = SQLiteWorkStore(args.workstore_sqlite_path) if args.workstore_sqlite_path else None
+            result = compact_parquet_shards(
+                storage=storage,
+                workstore=workstore,
+                input_prefix=args.input_prefix,
+                output_prefix=args.output_prefix,
+                job_name="flickr_poll_once",
+                source_stage=args.source_stage,
+                output_stage=args.output_stage,
+                registry_version=args.registry_version,
+                run_id=args.run_id,
+                compaction_run_id=args.compaction_run_id,
+                target_file_mb=args.target_file_mb,
+                max_file_mb=args.max_file_mb,
+                dedupe_keys=args.dedupe_key or None,
+                schema_mode=args.schema_mode,
+                dry_run=args.dry_run,
+            )
+            print(json.dumps(result.__dict__, indent=2, sort_keys=True))
+            return 0
+        if not args.input_root or not args.output:
+            print(json.dumps({"error": "--input-root and --output are required for legacy compaction"}, indent=2, sort_keys=True))
+            return 2
         input_paths = sorted(Path(args.input_root).rglob("*.parquet"))
         frame = pl.read_parquet(input_paths) if input_paths else pl.DataFrame()
         output_path = Path(args.output)

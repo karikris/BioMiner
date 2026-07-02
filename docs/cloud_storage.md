@@ -124,3 +124,46 @@ Stale claims are rows with `status='claimed'` and an old `claimed_at`. Requeuein
 Shard manifest repair is optional. It lists shard objects under a prefix, compares them with `biominer_parquet_shards`, and registers missing rows. Local tests may read Parquet metadata for row counts. Cloud repair does not download large objects for checksums in this phase.
 
 Postgres/Supabase remains scaffolded for Phase 3, with claim SQL using `FOR UPDATE SKIP LOCKED` for safe multi-worker claiming. Tests are local-only and do not require Backblaze B2, Supabase, network access, Docker, Flickr credentials, CUDA, or BioCLIP weights.
+
+## Phase 4 Compaction
+
+Phase 4 adds periodic compaction for immutable worker shards. Compaction reads small source shards, writes new immutable compacted Parquet parts, and records source-to-output relationships in `WorkStore`. It does not delete, rewrite, or append to source shards.
+
+Evidence compaction writes paths like:
+
+```text
+evidence/stage=<source_stage>_compacted/registry_version=<registry_version>/run_id=<compaction_run_id>/part=000001.parquet
+```
+
+The planner sorts candidate shards deterministically, excludes source shards already consumed by successful compaction manifests, and groups bounded inputs toward a target compacted file size. Exact compressed sizes are not required; the planner uses shard `byte_count` when available and allows small leftover groups.
+
+The executor:
+
+- reads each planned group with Polars;
+- validates strict schema compatibility by default;
+- optionally deduplicates by configured keys such as `source,flickr_photo_id`;
+- writes a fresh compacted part through `CloudStorage.write_parquet_shard`;
+- registers the compacted output shard;
+- records consumed source shard IDs in `biominer_compaction_inputs`;
+- writes `reports/run_id=<compaction_run_id>/compaction_<source_stage>.json`.
+
+The legacy local command still works:
+
+```text
+biominer compact-parquet --input-root staging/evidence/shards --output staging/evidence/compacted.parquet
+```
+
+The cloud-compatible mode uses prefixes and immutable part paths:
+
+```text
+biominer compact-parquet \
+  --input-prefix staging/evidence/stage=poll_once \
+  --output-prefix staging \
+  --source-stage poll_once \
+  --registry-version butterflies-v1 \
+  --compaction-run-id compact-1 \
+  --dedupe-key source \
+  --dedupe-key flickr_photo_id
+```
+
+Backblaze B2 remains S3-compatible object storage via `s3://...` paths and endpoint configuration. Phase 4 tests are local-only; provider lifecycle deletion and full cloud compaction operations remain later work.

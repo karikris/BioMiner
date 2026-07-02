@@ -370,6 +370,118 @@ class SQLiteWorkStore:
             ).fetchall()
         return [_row_to_shard(row) for row in rows]
 
+    def list_candidate_shards(
+        self,
+        *,
+        job_name: str,
+        stage: str,
+        registry_version: str | None,
+        run_id: str | None = None,
+        include_compacted: bool = False,
+    ) -> list[dict[str, Any]]:
+        candidates = self.list_committed_shards(
+            job_name=job_name,
+            stage=stage,
+            registry_version=registry_version,
+            run_id=run_id,
+        )
+        if include_compacted:
+            return candidates
+        consumed = self.list_compacted_source_shard_ids(job_name=job_name, stage=stage, registry_version=registry_version)
+        return [shard for shard in candidates if str(shard["shard_id"]) not in consumed]
+
+    def list_compacted_source_shard_ids(
+        self,
+        *,
+        job_name: str,
+        stage: str,
+        registry_version: str | None,
+    ) -> set[str]:
+        clauses = ["job_name = ?", "source_stage = ?"]
+        params: list[Any] = [job_name, stage]
+        _add_nullable_filter(clauses, params, "registry_version", registry_version)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT source_shard_id
+                FROM biominer_compaction_inputs
+                WHERE {' AND '.join(clauses)}
+                """,
+                params,
+            ).fetchall()
+        return {str(row["source_shard_id"]) for row in rows}
+
+    def register_compaction_output(
+        self,
+        *,
+        compaction_run_id: str,
+        output_shard_id: str,
+        output_uri: str,
+        source_shards: list[dict[str, Any]],
+        job_name: str,
+        source_stage: str,
+        output_stage: str,
+        registry_version: str | None,
+        row_count: int | None,
+        byte_count: int | None,
+        checksum: str | None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        merged_metadata = {
+            **(metadata or {}),
+            "compaction_run_id": compaction_run_id,
+            "source_stage": source_stage,
+            "source_shard_count": len(source_shards),
+            "source_shard_ids": [str(shard["shard_id"]) for shard in source_shards],
+        }
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO biominer_parquet_shards (
+                    shard_id, job_name, registry_version, stage, run_id, worker_id,
+                    uri, row_count, byte_count, checksum, metadata_json, committed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    output_shard_id,
+                    job_name,
+                    registry_version,
+                    output_stage,
+                    compaction_run_id,
+                    "compaction",
+                    output_uri,
+                    row_count,
+                    byte_count,
+                    checksum,
+                    _json_dumps(merged_metadata),
+                    _timestamp(),
+                ),
+            )
+            for shard in source_shards:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO biominer_compaction_inputs (
+                        compaction_run_id, output_shard_id, source_shard_id, source_uri,
+                        job_name, source_stage, output_stage, registry_version, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        compaction_run_id,
+                        output_shard_id,
+                        str(shard["shard_id"]),
+                        str(shard["uri"]),
+                        job_name,
+                        source_stage,
+                        output_stage,
+                        registry_version,
+                        _timestamp(),
+                    ),
+                )
+            conn.execute("COMMIT")
+
     def mark_run_started(self, *, run_id: str) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -469,6 +581,22 @@ class SQLiteWorkStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS biominer_compaction_inputs (
+                    compaction_run_id TEXT NOT NULL,
+                    output_shard_id TEXT NOT NULL,
+                    source_shard_id TEXT NOT NULL,
+                    source_uri TEXT NOT NULL,
+                    job_name TEXT NOT NULL,
+                    source_stage TEXT NOT NULL,
+                    output_stage TEXT NOT NULL,
+                    registry_version TEXT,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (output_shard_id, source_shard_id)
+                )
+                """
+            )
             _ensure_column(conn, "biominer_runs", "stage", "stage TEXT NOT NULL DEFAULT 'default'")
             _ensure_column(conn, "biominer_runs", "summary_json", "summary_json TEXT")
             _ensure_column(conn, "biominer_work_items", "stage", "stage TEXT NOT NULL DEFAULT 'default'")
@@ -496,6 +624,12 @@ class SQLiteWorkStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_biominer_parquet_shards_stage
                 ON biominer_parquet_shards(job_name, registry_version, stage, run_id)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_biominer_compaction_inputs_source
+                ON biominer_compaction_inputs(job_name, source_stage, registry_version, source_shard_id)
                 """
             )
 

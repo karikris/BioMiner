@@ -134,6 +134,7 @@ def test_postgres_schema_and_claim_sql_are_supabase_compatible() -> None:
         "biominer_work_items",
         "biominer_api_call_ledger",
         "biominer_parquet_shards",
+        "biominer_compaction_inputs",
     ):
         assert table in POSTGRES_SCHEMA_SQL
     assert "FOR UPDATE SKIP LOCKED" in POSTGRES_CLAIM_SQL

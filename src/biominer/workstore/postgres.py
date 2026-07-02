@@ -135,6 +135,47 @@ class PostgresWorkStore:
         self._require_psycopg()
         raise NotImplementedError("PostgresWorkStore shard inventory listing will be implemented in the cloud migration phase")
 
+    def list_candidate_shards(
+        self,
+        *,
+        job_name: str,
+        stage: str,
+        registry_version: str | None,
+        run_id: str | None = None,
+        include_compacted: bool = False,
+    ) -> list[dict[str, Any]]:
+        self._require_psycopg()
+        raise NotImplementedError("PostgresWorkStore compaction candidate listing will be implemented in the cloud migration phase")
+
+    def list_compacted_source_shard_ids(
+        self,
+        *,
+        job_name: str,
+        stage: str,
+        registry_version: str | None,
+    ) -> set[str]:
+        self._require_psycopg()
+        raise NotImplementedError("PostgresWorkStore compaction input listing will be implemented in the cloud migration phase")
+
+    def register_compaction_output(
+        self,
+        *,
+        compaction_run_id: str,
+        output_shard_id: str,
+        output_uri: str,
+        source_shards: list[dict[str, Any]],
+        job_name: str,
+        source_stage: str,
+        output_stage: str,
+        registry_version: str | None,
+        row_count: int | None,
+        byte_count: int | None,
+        checksum: str | None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self._require_psycopg()
+        raise NotImplementedError("PostgresWorkStore compaction manifests will be implemented in the cloud migration phase")
+
     def mark_run_started(self, *, run_id: str) -> None:
         self._require_psycopg()
         raise NotImplementedError("PostgresWorkStore run state will be implemented in the cloud migration phase")

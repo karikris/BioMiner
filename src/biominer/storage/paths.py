@@ -56,6 +56,27 @@ def build_evidence_shard_uri(
     )
 
 
+def build_compacted_evidence_uri(
+    base_prefix: str,
+    *,
+    source_stage: str,
+    registry_version: str | None,
+    compaction_run_id: str,
+    part_id: str | int,
+) -> str:
+    part = f"{part_id:06d}" if isinstance(part_id, int) else safe_path_component(str(part_id))
+    if not part.endswith(".parquet"):
+        part = f"{part}.parquet"
+    return join_uri(
+        base_prefix,
+        "evidence",
+        f"stage={safe_path_component(source_stage)}_compacted",
+        f"registry_version={safe_path_component(registry_version or 'unknown')}",
+        f"run_id={compaction_run_id}",
+        f"part={part}",
+    )
+
+
 def build_report_uri(
     base_prefix: str,
     *,
