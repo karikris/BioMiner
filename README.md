@@ -122,6 +122,17 @@ run/
 
 Generated data, raw payloads, registry outputs, model files, downloaded images, local databases, credentials, and caches must not be committed.
 
+## Cloud Integration Status
+
+Phase 1 cloud integration is interface-only and local-compatible. BioMiner now separates durable artifact storage from operational work state:
+
+- `CloudStorage` / `LocalStorageBackend` for local Parquet shards and JSON artifacts;
+- `WorkStore` / `SQLiteWorkStore` for local queue and resume state;
+- S3-compatible storage scaffolding for Backblaze B2 via `s3://...` URIs and a configurable endpoint URL;
+- Supabase Postgres scaffolding for future queue, ledger, run, and shard inventory state.
+
+Local filesystem + SQLite remains the default. Workers must write unique immutable Parquet shards such as `evidence/stage=poll_once/run_id=<run_id>/worker=<worker_id>/batch=<batch_id>.parquet`; compaction is a later phase. See `docs/cloud_storage.md`.
+
 ## Requirements
 
 - Python 3.14 or newer;
