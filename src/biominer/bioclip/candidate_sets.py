@@ -68,6 +68,9 @@ def build_candidate_set(
     species, query_provenance_added = _add_query_provenance_candidates(species, records or [])
     if query_provenance_added:
         source_evidence.append("query_provenance")
+    species, metadata_text_added = _add_metadata_text_candidates(species, records or [])
+    if metadata_text_added:
+        source_evidence.append("metadata_text")
     if not any(_norm(candidate.scientific_name) == _norm(context.scientific_name) for candidate in species):
         species.insert(0, target)
     species = _dedupe_taxa(species)
@@ -148,6 +151,34 @@ def _add_query_provenance_candidates(
                 continue
             candidates.append(CandidateTaxon(scientific_name=str(name), accepted_taxon_key=str(key), rank="species"))
             by_key[str(key)] = candidates[-1]
+            added = True
+    return candidates, added
+
+
+def _add_metadata_text_candidates(
+    candidates: list[CandidateTaxon],
+    records: list[dict[str, Any]],
+) -> tuple[list[CandidateTaxon], bool]:
+    by_name = {_norm(candidate.scientific_name) for candidate in candidates}
+    added = False
+    for record in records:
+        names = record.get("scientific_names_detected") or ()
+        if isinstance(names, str):
+            names = [names]
+        for name in names:
+            cleaned = " ".join(str(name or "").split())
+            key = _norm(cleaned)
+            if not cleaned or key in by_name:
+                continue
+            candidates.append(
+                CandidateTaxon(
+                    scientific_name=cleaned,
+                    accepted_taxon_key=None,
+                    rank="species",
+                    genus=cleaned.split(" ", 1)[0],
+                )
+            )
+            by_name.add(key)
             added = True
     return candidates, added
 

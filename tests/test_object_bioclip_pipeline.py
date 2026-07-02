@@ -170,6 +170,22 @@ def test_candidate_set_uses_query_provenance_accepted_taxon_keys() -> None:
     assert "a photo of Danaus erippus" in candidate_set.prompt_labels("species")
 
 
+def test_candidate_set_uses_metadata_scientific_names_without_query_keys() -> None:
+    candidate_set = build_candidate_set(
+        _context(),
+        records=[
+            {
+                "scientific_names_detected": ["Danaus gilippus"],
+            }
+        ],
+    )
+
+    by_name = {candidate.scientific_name: candidate for candidate in candidate_set.species_candidates}
+    assert by_name["Danaus gilippus"].accepted_taxon_key is None
+    assert "metadata_text" in candidate_set.source_evidence
+    assert "a photo of Danaus gilippus" in candidate_set.prompt_labels("species")
+
+
 def test_ephemeral_crop_bioclip_scorer_scores_temp_crop_and_deletes_file(tmp_path) -> None:
     seen: dict[str, object] = {}
 
