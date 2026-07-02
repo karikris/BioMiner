@@ -442,6 +442,60 @@ def test_persistent_bioclip_scorer_can_embed_text_labels_for_cache() -> None:
     assert '"device": "auto"' in writes[0]
 
 
+def test_persistent_bioclip_scorer_can_embed_image_paths_for_cache() -> None:
+    writes: list[str] = []
+
+    class FakeStdin:
+        def write(self, value: str) -> None:
+            writes.append(value)
+
+        def flush(self) -> None:
+            return None
+
+    class FakeStdout:
+        def __init__(self) -> None:
+            self.lines = iter(
+                [
+                    '{"ready":true,"device":"cuda","gpu_name":"NVIDIA GeForce RTX 3060"}\n',
+                    '{"image_embeddings":[[0.1,0.9],[0.8,0.2]],"embedding_dim":2}\n',
+                ]
+            )
+
+        def readline(self) -> str:
+            return next(self.lines)
+
+    class FakeProcess:
+        def __init__(self, cmd) -> None:  # noqa: ANN001 - mirrors subprocess.Popen.
+            self.cmd = cmd
+            self.stdin = FakeStdin()
+            self.stdout = FakeStdout()
+            self.stderr = None
+            self.returncode = None
+
+        def poll(self):  # noqa: ANN202 - mirrors subprocess.Popen.
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.returncode = 0
+
+        def wait(self, timeout=None):  # noqa: ANN001, ANN202 - mirrors subprocess.Popen.
+            self.returncode = 0
+            return 0
+
+    def fake_popen(cmd, **kwargs):  # noqa: ANN001, ANN202 - mirrors subprocess.Popen.
+        return FakeProcess(cmd)
+
+    scorer = PersistentBioClipScorer(runtime=_runtime(), popen=fake_popen)
+    try:
+        embeddings = scorer.embed_image_paths([Path("/tmp/crop-1.ppm"), Path("/tmp/crop-2.ppm")])
+    finally:
+        scorer.close()
+
+    assert embeddings == [[0.1, 0.9], [0.8, 0.2]]
+    assert '"image_embedding_paths": ["/tmp/crop-1.ppm", "/tmp/crop-2.ppm"]' in writes[0]
+    assert '"device": "auto"' in writes[0]
+
+
 def test_bioclip_classifier_builds_species_and_triage_prediction_with_label_sets() -> None:
     class FakeScorer:
         def score_label_sets_batch(self, image_paths, label_sets):  # noqa: ANN001 - test fake.

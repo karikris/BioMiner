@@ -89,6 +89,36 @@ def prepare_candidate_text_embedding_cache(
     return upsert_text_embedding_cache(rows, path, embed_labels=embed_labels, created_at=created_at)
 
 
+def prepare_object_image_embedding_cache(
+    rows: list[dict[str, Any]],
+    path: str | Path,
+    *,
+    model_id: str,
+    model_checkpoint: str,
+    crop_path_by_hash: dict[str, Path],
+    embed_image_paths: Callable[[list[Path]], list[list[float]]],
+    created_at: str | None = None,
+) -> EmbeddingCacheUpdate:
+    requested = [
+        {
+            "source": row.get("source"),
+            "flickr_photo_id": row.get("flickr_photo_id"),
+            "detection_id": row.get("detection_id"),
+            "crop_hash": row.get("crop_hash"),
+            "model_id": model_id,
+            "model_checkpoint": model_checkpoint,
+        }
+        for row in rows
+        if row.get("crop_hash")
+    ]
+
+    def embed_missing(missing_rows: list[dict[str, Any]]) -> list[list[float]]:
+        paths = [_crop_path_for_row(row, crop_path_by_hash=crop_path_by_hash) for row in missing_rows]
+        return embed_image_paths(paths)
+
+    return upsert_image_embedding_cache(requested, path, embed_images=embed_missing, created_at=created_at)
+
+
 def read_embedding_cache(path: str | Path) -> pl.DataFrame:
     source = Path(path)
     return pl.read_parquet(source) if source.exists() else pl.DataFrame()
@@ -283,6 +313,14 @@ def _candidate_prompt_labels(candidate: CandidateTaxon, *, rank: str) -> tuple[s
         return _unique_labels([candidate.genus or (candidate.scientific_name if candidate.rank == "genus" else "")])
     labels = [candidate.scientific_name, f"a photo of {candidate.scientific_name}", *candidate.common_names]
     return _unique_labels(labels)
+
+
+def _crop_path_for_row(row: dict[str, Any], *, crop_path_by_hash: dict[str, Path]) -> Path:
+    crop_hash = str(row.get("crop_hash") or "")
+    try:
+        return crop_path_by_hash[crop_hash]
+    except KeyError as exc:
+        raise KeyError(f"missing crop path for crop_hash={crop_hash!r}") from exc
 
 
 def _unique_labels(values: list[str]) -> tuple[str, ...]:

@@ -109,6 +109,22 @@ def run_persistent_worker() -> None:
                     flush=True,
                 )
                 continue
+            image_embedding_paths = request.get("image_embedding_paths")
+            if image_embedding_paths is not None:
+                embeddings = loaded.image_embeddings([Path(path) for path in image_embedding_paths])
+                print(
+                    json.dumps(
+                        {
+                            "image_embeddings": embeddings,
+                            "embedding_dim": len(embeddings[0]) if embeddings else 0,
+                            "device": loaded.device,
+                            "gpu_name": loaded.gpu_name,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+                continue
             image_paths = request.get("image_paths")
             label_sets = request.get("label_sets")
             if label_sets is not None:
@@ -275,6 +291,21 @@ class _LoadedBioClipModel:
         return [
             [float(value) for value in row.detach().cpu().tolist()]
             for row in text_features
+        ]
+
+    def image_embeddings(self, image_paths: Sequence[Path]) -> list[list[float]]:
+        try:
+            from PIL import Image
+        except Exception as exc:  # noqa: BLE001 - executed in the external model runtime.
+            raise RuntimeError(f"BioCLIP dependencies are unavailable: {exc}") from exc
+
+        with self.torch.no_grad():
+            image_batch = self._image_batch(image_paths, Image)
+            image_features = self.model.encode_image(image_batch)
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        return [
+            [float(value) for value in row.detach().cpu().tolist()]
+            for row in image_features
         ]
 
     def _image_batch(self, image_paths: Sequence[Path], image_module):  # noqa: ANN001 - PIL module.

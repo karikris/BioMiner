@@ -8,6 +8,7 @@ from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
 from biominer.bioclip.embedding_cache import (
     candidate_text_embedding_rows,
     prepare_candidate_text_embedding_cache,
+    prepare_object_image_embedding_cache,
     upsert_image_embedding_cache,
     upsert_text_embedding_cache,
     write_image_embedding_cache,
@@ -280,4 +281,60 @@ def test_image_embedding_cache_reuses_existing_crop_hash_without_recomputing(tmp
         ("det-1", [0.9, 0.1]),
         ("det-2", [0.9, 0.1]),
         ("det-3", [0.2, 0.8]),
+    ]
+
+
+def test_prepare_object_image_embedding_cache_uses_crop_paths_without_persisting_them(tmp_path: Path) -> None:
+    cache_path = tmp_path / "object_image_embeddings.parquet"
+    crop_a = tmp_path / "crop-a.ppm"
+    crop_b = tmp_path / "crop-b.ppm"
+    crop_a.write_bytes(b"P6\n1 1\n255\nabc")
+    crop_b.write_bytes(b"P6\n1 1\n255\ndef")
+    write_image_embedding_cache(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "detection_id": "det-1",
+                "crop_hash": "sha256:crop-a",
+                "model_id": "bioclip",
+                "model_checkpoint": "checkpoint-a",
+                "embedding_dim": 2,
+                "embedding": [0.9, 0.1],
+                "created_at": "2026-01-01T00:00:00+00:00",
+            }
+        ],
+        cache_path,
+    )
+    rows = [
+        {"source": "flickr", "flickr_photo_id": "photo-1", "detection_id": "det-1", "crop_hash": "sha256:crop-a"},
+        {"source": "flickr", "flickr_photo_id": "photo-2", "detection_id": "det-2", "crop_hash": "sha256:crop-a"},
+        {"source": "flickr", "flickr_photo_id": "photo-3", "detection_id": "det-3", "crop_hash": "sha256:crop-b"},
+    ]
+    calls: list[list[Path]] = []
+
+    def embed(paths: list[Path]) -> list[list[float]]:
+        calls.append(paths)
+        return [[0.2, 0.8] for _path in paths]
+
+    result = prepare_object_image_embedding_cache(
+        rows,
+        cache_path,
+        model_id="bioclip",
+        model_checkpoint="checkpoint-a",
+        crop_path_by_hash={"sha256:crop-a": crop_a, "sha256:crop-b": crop_b},
+        embed_image_paths=embed,
+        created_at="2026-01-02T00:00:00+00:00",
+    )
+
+    frame = pl.read_parquet(cache_path).sort("detection_id")
+    assert calls == [[crop_b]]
+    assert result.embeddings_computed == 1
+    assert result.rows_reused == 1
+    assert result.rows_added == 2
+    assert "image_path" not in frame.columns
+    assert frame.select(["detection_id", "embedding"]).to_dicts() == [
+        {"detection_id": "det-1", "embedding": [0.9, 0.1]},
+        {"detection_id": "det-2", "embedding": [0.9, 0.1]},
+        {"detection_id": "det-3", "embedding": [0.2, 0.8]},
     ]

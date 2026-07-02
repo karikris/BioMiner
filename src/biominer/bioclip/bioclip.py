@@ -559,6 +559,39 @@ class PersistentBioClipScorer:
                 return [[float(value) for value in embedding] for embedding in payload["text_embeddings"]]
             raise RuntimeError("BioCLIP worker response did not include text embeddings")
 
+    def embed_image_paths(self, image_paths: Sequence[Path]) -> list[list[float]]:
+        process = self._ensure_process()
+        if process.poll() is not None:
+            raise RuntimeError(f"BioCLIP persistent worker exited early with code {process.returncode}")
+        request = {
+            "image_embedding_paths": [str(image_path) for image_path in image_paths],
+            "model_name": self.runtime.model.model_name,
+            "checkpoint": self.runtime.model.checkpoint,
+            "hf_cache_dir": str(self.hf_cache_dir),
+            "device": self.requested_device,
+        }
+        assert self._stdin is not None
+        assert self._stdout is not None
+        self._stdin.write(json.dumps(request, sort_keys=True) + "\n")
+        self._stdin.flush()
+        while True:
+            line = self._stdout.readline()
+            if not line:
+                raise RuntimeError("BioCLIP persistent worker closed stdout before returning image embeddings")
+            payload = json.loads(line)
+            if "error" in payload:
+                raise RuntimeError(f"BioCLIP worker failed: {payload['error']}")
+            if payload.get("ready"):
+                self.device = str(payload.get("device") or "")
+                self.gpu_name = str(payload.get("gpu_name") or "")
+                continue
+            if "device" in payload:
+                self.device = str(payload.get("device") or "")
+                self.gpu_name = str(payload.get("gpu_name") or "")
+            if "image_embeddings" in payload:
+                return [[float(value) for value in embedding] for embedding in payload["image_embeddings"]]
+            raise RuntimeError("BioCLIP worker response did not include image embeddings")
+
     def close(self) -> None:
         process = self._process
         if process is None:
