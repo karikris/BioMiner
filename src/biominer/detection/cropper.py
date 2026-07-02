@@ -69,15 +69,24 @@ def _resize_nearest(image: DecodedImage, bbox: list[float], *, target_px: int) -
     left, top, right, bottom = bbox
     width = max(1e-9, right - left)
     height = max(1e-9, bottom - top)
-    output = bytearray()
-    for y in range(target_px):
-        source_y = top + ((y + 0.5) / target_px) * height
+    if width >= height:
+        content_width = target_px
+        content_height = max(1, round(target_px * (height / width)))
+    else:
+        content_height = target_px
+        content_width = max(1, round(target_px * (width / height)))
+    x_offset = (target_px - content_width) // 2
+    y_offset = (target_px - content_height) // 2
+    output = bytearray(bytes(target_px * target_px * 3))
+    for y in range(content_height):
+        source_y = top + ((y + 0.5) / content_height) * height
         pixel_y = min(image.height - 1, max(0, int(source_y)))
-        for x in range(target_px):
-            source_x = left + ((x + 0.5) / target_px) * width
+        for x in range(content_width):
+            source_x = left + ((x + 0.5) / content_width) * width
             pixel_x = min(image.width - 1, max(0, int(source_x)))
-            offset = (pixel_y * image.width + pixel_x) * 3
-            output.extend(image.data[offset : offset + 3])
+            source_offset = (pixel_y * image.width + pixel_x) * 3
+            target_offset = ((y + y_offset) * target_px + (x + x_offset)) * 3
+            output[target_offset : target_offset + 3] = image.data[source_offset : source_offset + 3]
     return bytes(output)
 
 

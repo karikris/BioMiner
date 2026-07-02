@@ -23,6 +23,10 @@ def _image() -> DecodedImage:
     return DecodedImage(width=4, height=4, mode="RGB", data=pixels, source_uri="memory://edge")
 
 
+def _wide_white_image() -> DecodedImage:
+    return DecodedImage(width=4, height=2, mode="RGB", data=bytes([255, 255, 255] * 8), source_uri="memory://wide")
+
+
 def test_detection_policy_defaults_match_object_pipeline_profile() -> None:
     policy = DetectionPolicy()
     run_policy = DetectionRunPolicy()
@@ -155,6 +159,16 @@ def test_cropper_clamps_edge_bbox_adds_padding_and_hashes_deterministically() ->
     assert crop.crop_hash == same.crop_hash
     assert crop.storage_policy == "ephemeral"
     assert len(crop.encoded_bytes) == 3 * 3 * 3
+
+
+def test_cropper_preserves_aspect_ratio_with_letterbox_padding() -> None:
+    crop = crop_with_padding(_wide_white_image(), bbox_xyxy=(0.0, 0.0, 4.0, 2.0), padding_ratio=0.0, target_px=4)
+    rows = [crop.encoded_bytes[index * 4 * 3 : (index + 1) * 4 * 3] for index in range(4)]
+
+    assert rows[0] == bytes([0, 0, 0] * 4)
+    assert rows[1] == bytes([255, 255, 255] * 4)
+    assert rows[2] == bytes([255, 255, 255] * 4)
+    assert rows[3] == bytes([0, 0, 0] * 4)
 
 
 def test_fake_detector_returns_multiple_rows_for_one_photo() -> None:
