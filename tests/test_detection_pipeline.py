@@ -588,6 +588,18 @@ def test_xie_style_detector_metrics_use_detector_scores_and_ap50_95() -> None:
     assert report["detector_ap50_95"] == pytest.approx(0.15)
 
 
+def test_xie_style_report_includes_evaluation_thresholds() -> None:
+    report = evaluate_xie_style(
+        predictions=[],
+        ground_truth=None,
+        iou_threshold=0.6,
+        score_threshold=0.45,
+    )
+
+    assert report["iou_threshold"] == 0.6
+    assert report["score_threshold"] == 0.45
+
+
 def test_xie_style_evaluation_without_ground_truth_reports_qa_only() -> None:
     report = evaluate_xie_style(
         predictions=[

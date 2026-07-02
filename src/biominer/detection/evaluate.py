@@ -47,6 +47,8 @@ def evaluate_xie_style(
     if not truth_rows:
         return {
             "ground_truth_available": False,
+            "iou_threshold": iou_threshold,
+            "score_threshold": score_threshold,
             "predictions_seen": len(prediction_rows),
             "detector_ap50": None,
             "detector_ap50_95": None,
@@ -78,6 +80,8 @@ def evaluate_xie_style(
     ]
     return {
         "ground_truth_available": True,
+        "iou_threshold": iou_threshold,
+        "score_threshold": score_threshold,
         "predictions_seen": len(prediction_rows),
         "ground_truth_seen": len(truth_rows),
         "matched_ground_truth": len(matched_truth),
