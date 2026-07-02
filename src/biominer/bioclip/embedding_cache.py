@@ -53,13 +53,18 @@ def candidate_text_embedding_rows(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str]] = set()
-    for candidate in candidate_set.species_candidates:
-        for label in _candidate_prompt_labels(candidate):
+    for candidate, rank in (
+        *((candidate, "family") for candidate in candidate_set.family_candidates),
+        *((candidate, "genus") for candidate in candidate_set.genus_candidates),
+        *((candidate, "genus") for candidate in candidate_set.family_candidates),
+        *((candidate, "species") for candidate in candidate_set.species_candidates),
+    ):
+        for label in _candidate_prompt_labels(candidate, rank=rank):
             row = {
                 "candidate_set_id": candidate_set.candidate_set_id,
                 "label": label,
-                "accepted_taxon_key": candidate.accepted_taxon_key,
-                "rank": candidate.rank,
+                "accepted_taxon_key": candidate.accepted_taxon_key if candidate.rank == rank else None,
+                "rank": rank,
                 "model_id": model_id,
                 "model_checkpoint": model_checkpoint,
             }
@@ -258,7 +263,11 @@ def _image_row_with_embedding(row: dict[str, Any], embedding: list[float], *, cr
     }
 
 
-def _candidate_prompt_labels(candidate: CandidateTaxon) -> tuple[str, ...]:
+def _candidate_prompt_labels(candidate: CandidateTaxon, *, rank: str) -> tuple[str, ...]:
+    if rank == "family":
+        return _unique_labels([candidate.family or (candidate.scientific_name if candidate.rank == "family" else "")])
+    if rank == "genus":
+        return _unique_labels([candidate.genus or (candidate.scientific_name if candidate.rank == "genus" else "")])
     labels = [candidate.scientific_name, f"a photo of {candidate.scientific_name}", *candidate.common_names]
     return _unique_labels(labels)
 

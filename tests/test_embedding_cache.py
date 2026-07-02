@@ -77,7 +77,7 @@ def test_text_embedding_cache_computes_only_missing_labels(tmp_path: Path) -> No
     assert frame.filter(pl.col("label") == "a photo of Danaus plexippus").to_dicts()[0]["embedding"] == [0.5, 0.5]
 
 
-def test_candidate_text_embedding_rows_are_derived_from_candidate_set_prompts() -> None:
+def test_candidate_text_embedding_rows_derive_stage_labels_from_candidate_set() -> None:
     candidate_set = CandidateSet(
         candidate_set_id="candidate-set-1",
         registry_version="registry-v1",
@@ -102,20 +102,67 @@ def test_candidate_text_embedding_rows_are_derived_from_candidate_set_prompts() 
 
     rows = candidate_text_embedding_rows(candidate_set, model_id="bioclip", model_checkpoint="checkpoint-a")
 
-    labels = [row["label"] for row in rows]
-    assert labels == [
-        "Danaus plexippus",
-        "a photo of Danaus plexippus",
-        "monarch butterfly",
-        "Danaus gilippus",
-        "a photo of Danaus gilippus",
+    assert [(row["label"], row["rank"], row["accepted_taxon_key"]) for row in rows] == [
+        ("Nymphalidae", "family", None),
+        ("Danaus", "genus", None),
+        ("Danaus plexippus", "species", "gbif:5131654"),
+        ("a photo of Danaus plexippus", "species", "gbif:5131654"),
+        ("monarch butterfly", "species", "gbif:5131654"),
+        ("Danaus gilippus", "species", "gbif:5131660"),
+        ("a photo of Danaus gilippus", "species", "gbif:5131660"),
     ]
     assert {row["candidate_set_id"] for row in rows} == {"candidate-set-1"}
     assert {row["model_id"] for row in rows} == {"bioclip"}
     assert {row["model_checkpoint"] for row in rows} == {"checkpoint-a"}
-    assert {row["rank"] for row in rows} == {"species"}
-    assert rows[0]["accepted_taxon_key"] == "gbif:5131654"
-    assert rows[-1]["accepted_taxon_key"] == "gbif:5131660"
+
+
+def test_candidate_text_embedding_rows_include_family_genus_and_species_stages() -> None:
+    candidate_set = CandidateSet(
+        candidate_set_id="candidate-set-staged",
+        registry_version="registry-v1",
+        target_accepted_taxon_key="gbif:5131654",
+        target_scientific_name="Danaus plexippus",
+        family_candidates=(CandidateTaxon(scientific_name="Nymphalidae", accepted_taxon_key="gbif:7017", rank="family"),),
+        genus_candidates=(CandidateTaxon(scientific_name="Danaus", accepted_taxon_key="gbif:5131645", rank="genus"),),
+        species_candidates=(CandidateTaxon(scientific_name="Danaus plexippus", accepted_taxon_key="gbif:5131654", rank="species"),),
+        prompt_variant_version="object-bioclip-prompts-v1",
+        geospatial_scope="global",
+        source_evidence=("fixture",),
+    )
+
+    rows = candidate_text_embedding_rows(candidate_set, model_id="bioclip", model_checkpoint="checkpoint-a")
+
+    assert [(row["label"], row["rank"], row["accepted_taxon_key"]) for row in rows] == [
+        ("Nymphalidae", "family", "gbif:7017"),
+        ("Danaus", "genus", "gbif:5131645"),
+        ("Danaus plexippus", "species", "gbif:5131654"),
+        ("a photo of Danaus plexippus", "species", "gbif:5131654"),
+    ]
+
+
+def test_candidate_text_embedding_rows_include_same_family_genus_stage_labels() -> None:
+    candidate_set = CandidateSet(
+        candidate_set_id="candidate-set-family-genera",
+        registry_version="registry-v1",
+        target_accepted_taxon_key="gbif:5131654",
+        target_scientific_name="Danaus plexippus",
+        family_candidates=(
+            CandidateTaxon(scientific_name="Danaus plexippus", accepted_taxon_key="gbif:5131654", family="Nymphalidae", genus="Danaus"),
+            CandidateTaxon(scientific_name="Limenitis archippus", accepted_taxon_key="gbif:1900000", family="Nymphalidae", genus="Limenitis"),
+        ),
+        genus_candidates=(CandidateTaxon(scientific_name="Danaus plexippus", accepted_taxon_key="gbif:5131654", family="Nymphalidae", genus="Danaus"),),
+        species_candidates=(CandidateTaxon(scientific_name="Danaus plexippus", accepted_taxon_key="gbif:5131654", family="Nymphalidae", genus="Danaus"),),
+        prompt_variant_version="object-bioclip-prompts-v1",
+        geospatial_scope="global",
+        source_evidence=("fixture",),
+    )
+
+    rows = candidate_text_embedding_rows(candidate_set, model_id="bioclip", model_checkpoint="checkpoint-a")
+
+    assert [(row["label"], row["rank"], row["accepted_taxon_key"]) for row in rows if row["rank"] == "genus"] == [
+        ("Danaus", "genus", None),
+        ("Limenitis", "genus", None),
+    ]
 
 
 def test_image_embedding_cache_reuses_existing_crop_hash_without_recomputing(tmp_path: Path) -> None:
