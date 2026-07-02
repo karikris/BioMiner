@@ -19,3 +19,21 @@ def test_local_papilio_demoleus_config_files_are_ignored() -> None:
 
     assert "config/papilio_demoleus_flickr_estimator.sh2" in text
     assert "config/papilio_demoleus_multilingual_keywords.json" in text
+
+
+def test_papilio_species_example_documents_generic_object_pipeline() -> None:
+    path = Path("examples/species/papilio_demoleus/object_pipeline.md")
+    assert path.exists()
+
+    text = path.read_text(encoding="utf-8")
+    for command in (
+        "biominer species detect",
+        "biominer species bioclip-objects",
+        "biominer species ablate-objects",
+        "biominer species join-object-evidence",
+    ):
+        assert command in text
+    assert '--context-json staging/species_runs/papilio_demoleus/species_context.json' in text
+    assert "--image-max-side-px" in text
+    assert "fetch_papilio_demoleus_multilingual_metadata.py" not in text
+    assert "classify_papilio_demoleus" not in text
