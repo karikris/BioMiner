@@ -125,6 +125,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "ablations",
             "--modes",
             "whole_image,detector_crop,detector_crop_segmentation",
+            "--parquet-batch-rows",
+            "11",
         ]
     )
     species_screen = parser.parse_args(
@@ -159,6 +161,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "geo_prior.parquet",
             "--output-dir",
             "ablations",
+            "--parquet-batch-rows",
+            "13",
         ]
     )
     join = parser.parse_args(
@@ -205,11 +209,13 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert ablate.bioclip_command == "ablate-objects"
     assert ablate.modes == "whole_image,detector_crop,detector_crop_segmentation"
     assert ablate.geo_prior_table == "geo_prior.parquet"
+    assert ablate.parquet_batch_rows == 11
     assert species_screen.species_command == "bioclip-objects"
     assert species_screen.geo_prior_table == "geo_prior.parquet"
     assert species_screen.parquet_batch_rows == 9
     assert species_ablate.species_command == "ablate-objects"
     assert species_ablate.geo_prior_table == "geo_prior.parquet"
+    assert species_ablate.parquet_batch_rows == 13
     assert join.bioclip_command == "join-object-evidence"
     assert join.scores == "object_bioclip_scores.parquet"
     assert species_join.species_command == "join-object-evidence"
@@ -503,6 +509,93 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
     assert calls["screen"]["geo_prior_table"].height == 1
     assert calls["candidate_set"]["records"][0]["flickr_photo_id"] == "photo-1"
     assert calls["candidate_set"]["records"][0]["scientific_names_detected"] == ["Danaus gilippus"]
+
+
+def test_bioclip_ablate_objects_forwards_parquet_batch_rows(tmp_path, capsys, monkeypatch) -> None:
+    runtime_python = tmp_path / "runtime" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("# fake python", encoding="utf-8")
+    context_path = tmp_path / "species_context.json"
+    context_path.write_text(
+        json.dumps(
+            {
+                "scientific_name": "Danaus plexippus",
+                "accepted_taxon_key": "gbif:1",
+                "canonical_name": "Danaus plexippus",
+                "family": "Nymphalidae",
+                "genus": "Danaus",
+                "family_key": "gbif:f",
+                "genus_key": "gbif:g",
+                "species_key": "gbif:1",
+                "registry_version": "registry-v1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    input_path = tmp_path / "filtered.parquet"
+    detections_path = tmp_path / "detections.parquet"
+    output_dir = tmp_path / "ablations"
+    pl.DataFrame([{"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "https://example.test/1.jpg"}]).write_parquet(input_path)
+    pl.DataFrame([{"source": "flickr", "flickr_photo_id": "photo-1", "detection_id": "det-1", "detection_status": "detected"}]).write_parquet(
+        detections_path
+    )
+    calls: dict[str, object] = {}
+
+    class FakePersistentScorer:
+        def __init__(self, **kwargs):  # noqa: ANN003 - mirrors scorer init.
+            calls["persistent"] = kwargs
+
+        def close(self) -> None:
+            calls["closed"] = True
+
+    class FakeCropScorer:
+        def __init__(self, **kwargs):  # noqa: ANN003 - mirrors crop scorer init.
+            calls["crop_scorer"] = kwargs
+
+    def fake_build_candidate_set(context, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors build_candidate_set.
+        calls["candidate_set"] = kwargs
+        return SimpleNamespace(candidate_set_id="candidate-set")
+
+    def fake_run_ablations(**kwargs):  # noqa: ANN003, ANN202 - mirrors run_object_ablations.
+        calls["ablation"] = kwargs
+        return SimpleNamespace(
+            output_dir=Path(kwargs["output_dir"]),
+            report={"score_batches_written_by_mode": {"detector_crop": 2}, "score_batches_written": 2},
+        )
+
+    monkeypatch.setattr("biominer.cli.PersistentBioClipScorer", FakePersistentScorer)
+    monkeypatch.setattr("biominer.cli.EphemeralCropBioClipScorer", FakeCropScorer)
+    monkeypatch.setattr("biominer.cli.build_candidate_set", fake_build_candidate_set)
+    monkeypatch.setattr("biominer.cli.run_object_ablations", fake_run_ablations)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "bioclip",
+            "ablate-objects",
+            "--input",
+            str(input_path),
+            "--detections",
+            str(detections_path),
+            "--species-context",
+            str(context_path),
+            "--output-dir",
+            str(output_dir),
+            "--runtime-python",
+            str(runtime_python),
+            "--modes",
+            "detector_crop",
+            "--parquet-batch-rows",
+            "2",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["score_batches_written"] == 2
+    assert calls["closed"] is True
+    assert calls["ablation"]["parquet_batch_rows"] == 2
+    assert calls["ablation"]["modes"] == ("detector_crop",)
 
 
 def test_bioclip_join_object_evidence_cli_writes_join_tables(tmp_path, capsys, monkeypatch) -> None:

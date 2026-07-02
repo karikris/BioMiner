@@ -29,10 +29,12 @@ def run_object_ablations(
     output_dir: str | Path,
     modes: tuple[AblationMode, ...],
     geo_prior_table: pl.DataFrame | None = None,
+    parquet_batch_rows: int = 10000,
 ) -> AblationRunReport:
     base = Path(output_dir)
     base.mkdir(parents=True, exist_ok=True)
     frames: list[pl.DataFrame] = []
+    score_batches_by_mode: dict[str, int] = {}
     for mode in modes:
         result = screen_object_detections(
             canonical_records=canonical_records,
@@ -43,10 +45,14 @@ def run_object_ablations(
             output_path=base / f"object_bioclip_scores_{mode}.parquet",
             ablation_mode=mode,
             geo_prior_table=geo_prior_table,
+            parquet_batch_rows=parquet_batch_rows,
         )
         frames.append(result.frame)
+        score_batches_by_mode[mode] = result.score_batches_written
     combined = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
     report = build_ablation_report(combined, canonical_records=canonical_records, detections=detections)
+    report["score_batches_written_by_mode"] = score_batches_by_mode
+    report["score_batches_written"] = sum(score_batches_by_mode.values())
     (base / "ablation_report.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     return AblationRunReport(output_dir=base, modes=modes, report=report)
 

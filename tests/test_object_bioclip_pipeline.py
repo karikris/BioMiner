@@ -715,6 +715,7 @@ def test_ablation_modes_write_rows_with_shared_photo_join_keys(tmp_path) -> None
         scorer=FakeObjectBioClipScorer({"sha256:crop-1": {"a photo of Danaus plexippus": 0.82}}),
         output_dir=tmp_path,
         modes=("whole_image", "detector_crop", "detector_crop_segmentation"),
+        parquet_batch_rows=1,
     )
 
     frames = [pl.read_parquet(tmp_path / f"object_bioclip_scores_{mode}.parquet") for mode in report.modes]
@@ -723,6 +724,11 @@ def test_ablation_modes_write_rows_with_shared_photo_join_keys(tmp_path) -> None
     assert {row["ablation_mode"] for row in rows} == {"whole_image", "detector_crop", "detector_crop_segmentation"}
     assert {row["source"] for row in rows} == {"flickr"}
     assert {row["flickr_photo_id"] for row in rows} == {"photo-1"}
+    assert report.report["score_batches_written_by_mode"] == {
+        "detector_crop": 1,
+        "detector_crop_segmentation": 1,
+        "whole_image": 1,
+    }
     assert build_ablation_report(pl.concat(frames))["crops_scored"] == 3
     assert build_ablation_report(pl.concat(frames))["gold_count"] == 3
 
