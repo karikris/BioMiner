@@ -30,12 +30,6 @@ SPLIT_REASON_PRIORITY = {
 }
 LANE_PRIORITY = {"count_probe": 0, "normal_page": 1, "bbox_page": 1}
 DEFAULT_EXTRAS = "description,license,date_upload,date_taken,geo,tags,machine_tags,owner_name,o_dims,url_l,url_m,last_update,media,views"
-PAPILIO_DEMOLEUS_ANCHOR_TERMS = (
-    "Papilio demoleus",
-    "demoleus",
-    "lime butterfly",
-    "common lime butterfly",
-)
 DEFAULT_UPLOAD_DATE_RANGES: tuple[tuple[str, str], ...] = (
     ("2004-01-01", "2009-12-31"),
     ("2010-01-01", "2014-12-31"),
@@ -47,46 +41,6 @@ DEFAULT_FIXED_SLICE_END_DATE = date.today().isoformat()
 DEFAULT_COARSE_SLICE_END_DATE: str | None = None
 DEFAULT_COARSE_SLICE_DAYS: int | None = None
 DEFAULT_FIXED_SLICE_DAYS = 5
-PAPILIO_DEMOLEUS_REGION_BBOXES: dict[str, str] = {
-    "India": "68.11,6.55,97.40,35.67",
-    "Pakistan": "60.87,23.63,77.84,37.08",
-    "Bangladesh": "88.01,20.59,92.67,26.63",
-    "Sri Lanka": "79.52,5.92,81.88,9.84",
-    "Nepal": "80.06,26.35,88.20,30.45",
-    "Myanmar": "92.17,9.78,101.17,28.55",
-    "Thailand": "97.34,5.61,105.64,20.46",
-    "Malaysia": "99.64,0.85,119.27,7.36",
-    "Singapore": "103.59,1.13,104.10,1.48",
-    "Indonesia": "95.01,-11.01,141.02,6.08",
-    "Philippines": "116.93,4.59,126.60,21.12",
-    "Vietnam": "102.14,8.18,109.47,23.39",
-    "Cambodia": "102.33,10.41,107.63,14.69",
-    "Laos": "100.08,13.91,107.70,22.51",
-    "China": "73.50,18.16,134.77,53.56",
-    "Taiwan": "119.31,21.89,122.00,25.30",
-    "Hong Kong": "113.82,22.13,114.43,22.57",
-    "Japan": "129.00,24.00,146.00,46.00",
-    "Australia": "112.92,-43.74,153.64,-10.05",
-    "Papua New Guinea": "140.84,-11.66,156.02,-1.32",
-    "Iraq": "38.79,29.06,48.58,37.39",
-    "Iran": "44.03,25.06,63.33,39.78",
-    "Saudi Arabia": "34.50,16.29,55.67,32.16",
-    "United Arab Emirates": "51.58,22.63,56.40,26.08",
-    "Oman": "52.00,16.64,59.84,26.39",
-    "Yemen": "42.55,12.11,54.54,18.99",
-    "Israel": "34.22,29.45,35.90,33.34",
-    "Jordan": "34.96,29.19,39.30,33.38",
-    "Egypt": "24.70,22.00,36.90,31.67",
-    "Seychelles": "46.20,-10.50,56.60,-3.70",
-    "Mauritius": "56.50,-20.70,63.60,-10.00",
-    "Dominican Republic": "-72.01,17.36,-68.32,19.98",
-    "Haiti": "-74.48,18.02,-71.62,20.09",
-    "Jamaica": "-78.37,17.64,-76.18,18.53",
-    "Caribbean": "-89.50,9.00,-59.00,27.00",
-    "Florida": "-87.64,24.40,-79.97,31.00",
-    "Central America": "-92.30,7.00,-77.00,18.50",
-    "South America": "-81.40,-55.98,-34.70,13.40",
-}
 
 MULTILINGUAL_SEED_TERMS: tuple[tuple[str, str], ...] = (
     ("en", "butterfly"),
@@ -514,67 +468,6 @@ def build_worldwide_discovery_plan() -> QueryPlan:
     return QueryPlan(count_probes=probes, page_queries=())
 
 
-def load_papilio_demoleus_terms_from_json(path: str | Path) -> tuple[MultilingualSearchTerm, ...]:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    entries = _keyword_entries(data)
-    terms: list[MultilingualSearchTerm] = []
-    seen: set[tuple[str, str, str | None, str | None]] = set()
-    for entry in entries:
-        if not entry.get("use_for_flickr", True):
-            continue
-        raw_term = _clean_term(entry.get("term"))
-        if not raw_term:
-            continue
-        regions = entry.get("regions") or [None]
-        for region in regions:
-            confidence = _term_confidence(entry)
-            term = _gated_term(raw_term, confidence=confidence)
-            key = (term.casefold(), str(entry.get("language") or "und"), region, entry.get("term_type"))
-            if key in seen:
-                continue
-            seen.add(key)
-            terms.append(
-                MultilingualSearchTerm(
-                    language=str(entry.get("language") or "und"),
-                    term=term,
-                    region=region,
-                    bbox=PAPILIO_DEMOLEUS_REGION_BBOXES.get(str(region)) if region else None,
-                    term_type=str(entry.get("term_type") or "unknown"),
-                    term_confidence=confidence,
-                    notes=_notes(entry, raw_term=raw_term, gated_term=term, confidence=confidence),
-                )
-            )
-    return tuple(terms)
-
-
-def build_papilio_demoleus_count_probes_from_json(
-    path: str | Path,
-    *,
-    search_fields: Iterable[SearchField] = ("text", "tags"),
-) -> tuple[FlickrQuery, ...]:
-    return build_count_probes(terms=load_papilio_demoleus_terms_from_json(path), search_fields=search_fields)
-
-
-def papilio_demoleus_known_region_for_coordinate(latitude: float, longitude: float) -> str | None:
-    for region, bbox in PAPILIO_DEMOLEUS_REGION_BBOXES.items():
-        if coordinate_in_bbox(latitude=latitude, longitude=longitude, bbox=bbox):
-            return region
-    return None
-
-
-def outside_known_papilio_demoleus_regions(record: dict[str, Any]) -> bool | None:
-    latitude = _optional_float(record.get("latitude", record.get("decimalLatitude")))
-    longitude = _optional_float(record.get("longitude", record.get("decimalLongitude")))
-    if latitude is None or longitude is None:
-        return None
-    return papilio_demoleus_known_region_for_coordinate(latitude, longitude) is None
-
-
-def coordinate_in_bbox(*, latitude: float, longitude: float, bbox: str) -> bool:
-    min_lon, min_lat, max_lon, max_lat = (float(value) for value in bbox.split(","))
-    return min_lat <= latitude <= max_lat and min_lon <= longitude <= max_lon
-
-
 def flickr_search_params(query: FlickrQuery) -> dict[str, str | int]:
     params: dict[str, str | int] = {
         query.search_field: query.term,
@@ -668,57 +561,6 @@ def _split_probe(
         bbox_index=bbox_index if bbox_index is not None else probe.bbox_index,
         slice_index=probe.slice_index,
     )
-
-
-def _keyword_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
-    groups = data.get("dictionary_groups", {})
-    entries: list[dict[str, Any]] = []
-    for group in groups.values():
-        if isinstance(group, list):
-            entries.extend(item for item in group if isinstance(item, dict))
-        elif isinstance(group, dict):
-            for region, items in group.items():
-                region_items = items if isinstance(items, list) else ()
-                for item in region_items:
-                    if isinstance(item, dict):
-                        regions = item.get("regions") or [region]
-                        entries.append({**item, "regions": regions})
-    return entries
-
-
-def _clean_term(value: object) -> str:
-    return " ".join(str(value or "").replace('"', "").split())
-
-
-def _optional_float(value: object) -> float | None:
-    if value in (None, ""):
-        return None
-    return float(value)
-
-
-def _term_confidence(entry: dict[str, Any]) -> str:
-    precision = str(entry.get("precision_tier") or "").casefold()
-    confidence = str(entry.get("confidence") or "").casefold()
-    term_type = str(entry.get("term_type") or "").casefold()
-    if precision == "low" or confidence == "low" or term_type in {"broad_butterfly", "host_plant", "life_stage", "pest_context"}:
-        return "broad"
-    return confidence or "medium"
-
-
-def _gated_term(term: str, *, confidence: str) -> str:
-    if confidence != "broad":
-        return term
-    normalized = term.casefold()
-    if any(anchor.casefold() in normalized for anchor in PAPILIO_DEMOLEUS_ANCHOR_TERMS):
-        return term
-    return f"{PAPILIO_DEMOLEUS_ANCHOR_TERMS[0]} {term}"
-
-
-def _notes(entry: dict[str, Any], *, raw_term: str, gated_term: str, confidence: str) -> str | None:
-    values = [str(entry.get("notes") or "").strip()]
-    if confidence == "broad" and raw_term != gated_term:
-        values.append("Broad/uncertain term gated with Papilio demoleus anchor for Flickr search precision.")
-    return " ".join(value for value in values if value) or None
 
 
 def _year_ranges(start: str, end: str) -> tuple[tuple[str, str], ...]:

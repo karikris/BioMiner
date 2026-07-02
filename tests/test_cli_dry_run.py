@@ -13,7 +13,7 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     commands = parser._subparsers._group_actions[0].choices  # noqa: SLF001 - parser surface regression test.
 
     assert "poll-once" in commands
-    assert "build-papilio-demoleus-query-plan" in commands
+    assert "build-papilio-demoleus-query-plan" not in commands
     assert "fetch" not in commands
     assert "fetch-live" not in commands
     assert "benchmark-existing-payloads" not in commands
@@ -33,59 +33,6 @@ def test_poll_once_cli_accepts_bounded_cycle_arguments() -> None:
     assert args.command == "poll-once"
     assert args.max_api_calls == 3500
     assert args.duplicate_report_output == "reports/duplicate_hits_removed.parquet"
-
-
-def test_build_papilio_demoleus_query_plan_cli_reads_keyword_json(tmp_path, capsys) -> None:
-    keywords = tmp_path / "keywords.json"
-    keywords.write_text(
-        json.dumps(
-            {
-                "dictionary_groups": {
-                    "scientific_taxonomic": [
-                        {
-                            "term": "Papilio demoleus",
-                            "language": "la",
-                            "term_type": "scientific_name",
-                            "confidence": "high",
-                            "use_for_flickr": True,
-                            "precision_tier": "high",
-                        }
-                    ],
-                    "multilingual_common_name_expansion": [
-                        {
-                            "term": "butterfly",
-                            "language": "en",
-                            "term_type": "broad_butterfly",
-                            "confidence": "medium",
-                            "use_for_flickr": True,
-                            "precision_tier": "low",
-                        }
-                    ],
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "build-papilio-demoleus-query-plan",
-            "--keywords-json",
-            str(keywords),
-            "--state-db",
-            str(tmp_path / "poller.sqlite"),
-        ]
-    )
-
-    assert run(args) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["count_probes_seen"] == 4
-    assert payload["count_probes_inserted"] == 4
-    assert payload["soft_api_calls_per_hour"] == 3500
-    assert payload["per_page_for_final_fetches"] == 250
-    assert payload["per_page_for_non_geo_fetches"] == 500
-    assert payload["flickr_search_result_window"] == 4000
-    assert payload["stable_result_threshold"] == 4000
 
 
 def test_registry_compile_fixture_cli_writes_registry_outputs(tmp_path, capsys) -> None:

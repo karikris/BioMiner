@@ -9,14 +9,7 @@ from pathlib import Path
 
 import polars as pl
 
-from biominer.flickr_fetch.query_planner import (
-    FLICKR_SEARCH_RESULT_WINDOW,
-    GEO_PAGE_SIZE,
-    NORMAL_PAGE_SIZE,
-    STABLE_RESULT_THRESHOLD,
-    build_papilio_demoleus_count_probes_from_json,
-    load_registry_flickr_queries,
-)
+from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_comments.comment_review import (
     apply_comment_review_decisions_to_parquet,
     build_comment_review_queue_from_parquet,
@@ -50,9 +43,6 @@ def build_parser() -> argparse.ArgumentParser:
     fetch_comments.add_argument("--api-key-env", default="FLICKR_API_KEY")
     fetch_comments.add_argument("--min-photos", type=int, default=2)
     fetch_comments.add_argument("--min-users", type=int, default=2)
-    papilio_plan = subparsers.add_parser("build-papilio-demoleus-query-plan")
-    papilio_plan.add_argument("--keywords-json", required=True)
-    papilio_plan.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
     registry = subparsers.add_parser("registry")
     registry_subparsers = registry.add_subparsers(dest="registry_command")
     registry_compile = registry_subparsers.add_parser("compile-fixture")
@@ -192,28 +182,6 @@ def run(args: argparse.Namespace) -> int:
             **state.summary(),
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
-    if args.command == "build-papilio-demoleus-query-plan":
-        queries = build_papilio_demoleus_count_probes_from_json(args.keywords_json)
-        state = MetadataPollState(args.state_db)
-        inserted = sum(state.enqueue_work_item(query) for query in queries)
-        print(
-            json.dumps(
-                {
-                    "state_db": args.state_db,
-                    "keywords_json": args.keywords_json,
-                    "count_probes_seen": len(queries),
-                    "count_probes_inserted": inserted,
-                    "soft_api_calls_per_hour": SOFT_API_CALLS_PER_HOUR,
-                    "per_page_for_final_fetches": GEO_PAGE_SIZE,
-                    "per_page_for_non_geo_fetches": NORMAL_PAGE_SIZE,
-                    "flickr_search_result_window": FLICKR_SEARCH_RESULT_WINDOW,
-                    "stable_result_threshold": STABLE_RESULT_THRESHOLD,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
         return 0
     if args.command == "registry":
         if args.registry_command == "fetch-taxonomy":
