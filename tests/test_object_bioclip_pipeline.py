@@ -7,7 +7,7 @@ import polars as pl
 import pytest
 
 from biominer.bioclip.ablation import build_ablation_report, run_object_ablations
-from biominer.bioclip.candidate_sets import build_candidate_set
+from biominer.bioclip.candidate_sets import CandidateTaxon, build_candidate_set
 from biominer.bioclip.object_runner import (
     EphemeralCropBioClipScorer,
     FakeObjectBioClipScorer,
@@ -635,6 +635,39 @@ def test_geography_soft_prior_uses_target_geo_prior_table() -> None:
 
     prior = apply_geospatial_soft_prior(
         {"latitude": -35.0, "longitude": 149.0},
+        context,
+        visual_score=0.8,
+        geo_prior_table=geo_prior_table,
+    )
+
+    assert prior.score > 0
+    assert prior.reason == "within_geo_prior_table"
+    assert prior.route_to_review is False
+    assert prior.hard_discard is False
+
+
+def test_geography_soft_prior_accepts_candidate_specific_geo_prior_table() -> None:
+    context = _context()
+    candidate = CandidateTaxon(
+        scientific_name="Danaus erippus",
+        accepted_taxon_key="gbif:1901234",
+        family="Nymphalidae",
+        genus="Danaus",
+    )
+    geo_prior_table = pl.DataFrame(
+        [
+            {
+                "accepted_taxon_key": "gbif:1901234",
+                "scientific_name": "Danaus erippus",
+                "bbox": "140.0,-40.0,155.0,-25.0",
+                "source": "fixture",
+            }
+        ]
+    )
+
+    prior = apply_geospatial_soft_prior(
+        {"latitude": -35.0, "longitude": 149.0},
+        candidate,
         context,
         visual_score=0.8,
         geo_prior_table=geo_prior_table,

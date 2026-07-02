@@ -215,11 +215,16 @@ def _canonical_record_for_detection(
 
 def apply_geospatial_soft_prior(
     row: dict[str, Any],
-    species_context: SpeciesContext,
+    candidate_or_context: CandidateTaxon | SpeciesContext,
+    species_context: SpeciesContext | None = None,
     *,
     visual_score: float,
     geo_prior_table: pl.DataFrame | None = None,
 ) -> GeospatialPrior:
+    candidate = candidate_or_context if isinstance(candidate_or_context, CandidateTaxon) else None
+    context = species_context or candidate_or_context
+    if not isinstance(context, SpeciesContext):
+        raise TypeError("species_context is required when applying a candidate-specific geospatial prior")
     latitude = _optional_float(row.get("latitude"))
     longitude = _optional_float(row.get("longitude"))
     if latitude is None or longitude is None:
@@ -227,12 +232,13 @@ def apply_geospatial_soft_prior(
     table_prior = _geo_prior_table_match(
         latitude=latitude,
         longitude=longitude,
-        species_context=species_context,
+        species_context=context,
+        candidate=candidate,
         geo_prior_table=geo_prior_table,
     )
     if table_prior is not None:
         return table_prior
-    for region in species_context.regions:
+    for region in context.regions:
         if region.bbox and _coordinate_in_bbox(latitude=latitude, longitude=longitude, bbox=region.bbox):
             return GeospatialPrior(score=0.10, reason="within_context_region")
     if visual_score >= DEFAULT_BUCKET_POLICY.gold_species_threshold:
@@ -310,12 +316,20 @@ def _score_detection(
     species_top5 = [name for name, _score in ranked_species[:5]]
     taxon_key_by_name = _taxon_key_by_name(candidate_set.species_candidates)
     top1_taxon_key = _taxon_key_for_name(taxon_key_by_name, top1_name)
+    top1_candidate = _candidate_for_name(candidate_set.species_candidates, top1_name)
     top1_score = ranked_species[0][1] if ranked_species else 0.0
     target_rank = _target_rank(ranked_species, context.scientific_name)
     margin = _margin(ranked_species)
     family_margin = _margin(ranked_families)
     genus_margin = _margin(ranked_genera)
-    geo = apply_geospatial_soft_prior(item, context, visual_score=target_score, geo_prior_table=geo_prior_table)
+    geo_candidate: CandidateTaxon | SpeciesContext = top1_candidate or context
+    geo = apply_geospatial_soft_prior(
+        item,
+        geo_candidate,
+        context if top1_candidate is not None else None,
+        visual_score=top1_score if top1_candidate is not None else target_score,
+        geo_prior_table=geo_prior_table,
+    )
     negative_reason = _hard_negative_photo_reason(item)
     if negative_reason:
         bucket, reason = "bin", negative_reason
@@ -389,6 +403,16 @@ def _taxon_key_for_name(keys_by_name: dict[str, str], name: str | None) -> str |
     if not name:
         return None
     return keys_by_name.get(_norm(name))
+
+
+def _candidate_for_name(candidates: tuple[CandidateTaxon, ...], name: str | None) -> CandidateTaxon | None:
+    if not name:
+        return None
+    normalized = _norm(name)
+    for candidate in candidates:
+        if _norm(candidate.scientific_name) == normalized:
+            return candidate
+    return None
 
 
 def _bucket(
@@ -624,11 +648,15 @@ def _geo_prior_table_match(
     longitude: float,
     species_context: SpeciesContext,
     geo_prior_table: pl.DataFrame | None,
+    candidate: CandidateTaxon | None = None,
 ) -> GeospatialPrior | None:
     if geo_prior_table is None or geo_prior_table.is_empty():
         return None
     for row in geo_prior_table.to_dicts():
-        if not _geo_prior_row_matches_context(row, species_context):
+        if not (
+            _geo_prior_row_matches_context(row, species_context)
+            or (candidate is not None and _geo_prior_row_matches_candidate(row, candidate))
+        ):
             continue
         bbox = _geo_prior_bbox(row)
         if bbox and _coordinate_in_bbox(latitude=latitude, longitude=longitude, bbox=bbox):
@@ -653,6 +681,25 @@ def _geo_prior_row_matches_context(row: dict[str, Any], species_context: Species
     for name_column in ("scientific_name", "accepted_scientific_name", "target_scientific_name", "canonical_name"):
         value = _norm(row.get(name_column))
         if value and value in context_names:
+            return True
+    return False
+
+
+def _geo_prior_row_matches_candidate(row: dict[str, Any], candidate: CandidateTaxon) -> bool:
+    candidate_keys = {
+        _norm(candidate.accepted_taxon_key),
+    } - {""}
+    for key_column in ("accepted_taxon_key", "target_accepted_taxon_key", "species_key", "accepted_usage_key"):
+        value = _norm(row.get(key_column))
+        if value and value in candidate_keys:
+            return True
+
+    candidate_names = {
+        _norm(candidate.scientific_name),
+    } - {""}
+    for name_column in ("scientific_name", "accepted_scientific_name", "target_scientific_name", "canonical_name"):
+        value = _norm(row.get(name_column))
+        if value and value in candidate_names:
             return True
     return False
 
