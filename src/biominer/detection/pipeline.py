@@ -12,7 +12,7 @@ import polars as pl
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage, ObjectDetector
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
-from biominer.detection.schema import build_detection_rows, detection_id_for
+from biominer.detection.schema import build_detection_rows, detection_id_for, empty_detection_frame
 from biominer.storage.parquet import write_parquet
 
 
@@ -171,7 +171,7 @@ def _flush_detection_row_buffer(*, row_buffer: list[dict[str, Any]], batch_paths
 
 def _read_detection_batches(batch_paths: list[Path]) -> pl.DataFrame:
     if not batch_paths:
-        return pl.DataFrame()
+        return empty_detection_frame()
     frames = [pl.read_parquet(path) for path in batch_paths]
     return pl.concat(frames, how="diagonal_relaxed")
 

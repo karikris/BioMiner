@@ -5,11 +5,47 @@ import hashlib
 import json
 from typing import Any, Iterable
 
+import polars as pl
+
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate
 from biominer.detection.policy import DetectionPolicy
 
 
 DETECTION_SCHEMA_VERSION = "object-detection-v1"
+DETECTION_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
+    "source": pl.String,
+    "flickr_photo_id": pl.String,
+    "source_record_hash": pl.String,
+    "image_url": pl.String,
+    "photo_page_url": pl.String,
+    "detection_id": pl.String,
+    "detector_backend": pl.String,
+    "prediction_source": pl.String,
+    "detector_model_id": pl.String,
+    "detector_model_version": pl.String,
+    "detector_checkpoint": pl.String,
+    "detected_at": pl.String,
+    "bbox_xyxy": pl.List(pl.Float64),
+    "bbox_xyxyn": pl.List(pl.Float64),
+    "bbox_xywhn": pl.List(pl.Float64),
+    "box_area_ratio": pl.Float64,
+    "detector_label": pl.String,
+    "detector_score": pl.Float64,
+    "objectness_score": pl.Float64,
+    "nms_group_id": pl.String,
+    "crop_padding_ratio": pl.Float64,
+    "crop_hash": pl.String,
+    "crop_width": pl.Int64,
+    "crop_height": pl.Int64,
+    "crop_storage_policy": pl.String,
+    "detection_status": pl.String,
+    "failure_reason": pl.String,
+    "schema_version": pl.String,
+}
+
+
+def empty_detection_frame() -> pl.DataFrame:
+    return pl.DataFrame(schema=DETECTION_OUTPUT_SCHEMA)
 
 
 def detection_id_for(

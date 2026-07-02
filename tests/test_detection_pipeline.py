@@ -152,6 +152,51 @@ def test_detection_rows_write_image_level_failure_when_no_objects_are_found() ->
     assert rows[0]["flickr_photo_id"] == "photo-2"
 
 
+def test_detection_pipeline_empty_input_writes_stable_schema(tmp_path) -> None:
+    output = tmp_path / "object_detections.parquet"
+
+    result = run_detection_pipeline(
+        records=[],
+        detector=FakeObjectDetector(),
+        output_path=output,
+        image_loader=lambda record: _image(),
+    )
+
+    frame = pl.read_parquet(output)
+    assert result.records_seen == 0
+    assert frame.height == 0
+    assert {
+        "source",
+        "flickr_photo_id",
+        "source_record_hash",
+        "image_url",
+        "photo_page_url",
+        "detection_id",
+        "detector_backend",
+        "prediction_source",
+        "detector_model_id",
+        "detector_model_version",
+        "detector_checkpoint",
+        "detected_at",
+        "bbox_xyxy",
+        "bbox_xyxyn",
+        "bbox_xywhn",
+        "box_area_ratio",
+        "detector_label",
+        "detector_score",
+        "objectness_score",
+        "nms_group_id",
+        "crop_padding_ratio",
+        "crop_hash",
+        "crop_width",
+        "crop_height",
+        "crop_storage_policy",
+        "detection_status",
+        "failure_reason",
+        "schema_version",
+    }.issubset(frame.columns)
+
+
 def test_cropper_clamps_edge_bbox_adds_padding_and_hashes_deterministically() -> None:
     crop = crop_with_padding(_image(), bbox_xyxy=(-1.0, -1.0, 2.0, 2.0), padding_ratio=0.25, target_px=3)
     same = crop_with_padding(_image(), bbox_xyxy=(-1.0, -1.0, 2.0, 2.0), padding_ratio=0.25, target_px=3)
