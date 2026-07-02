@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
@@ -12,6 +14,7 @@ from biominer.detection.evaluate import evaluate_xie_style, iou_xyxy, joint_dete
 from biominer.detection.pipeline import run_detection_pipeline
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 from biominer.detection.schema import build_detection_rows, detection_id_for
+from biominer.detection.yolo_detector import YoloSidecarObjectDetector
 
 
 def _image() -> DecodedImage:
@@ -188,6 +191,47 @@ def test_fake_detector_returns_multiple_rows_for_one_photo() -> None:
     assert detector.backend == "fake"
     assert [len(batch) for batch in detections] == [1, 2]
     assert detections[1][1].label == "life_stage"
+
+
+def test_yolo_sidecar_detector_serializes_rgb_images_without_importing_ultralytics(monkeypatch) -> None:
+    calls: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors subprocess.run.
+        calls["command"] = command
+        calls["payload"] = json.loads(kwargs["input"])
+        calls["env"] = kwargs["env"]
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "detections": [
+                        [
+                            {
+                                "label": "butterfly",
+                                "score": 0.91,
+                                "bbox_xyxy": [0.0, 0.0, 4.0, 2.0],
+                                "objectness_score": 0.88,
+                            }
+                        ]
+                    ]
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("biominer.detection.yolo_detector.subprocess.run", fake_run)
+    detector = YoloSidecarObjectDetector(runtime_python="/tmp/vision-python", device="mps")
+
+    detections = detector.detect_batch([_wide_white_image()])
+
+    payload = calls["payload"]
+    assert calls["command"] == ["/tmp/vision-python", "-m", "biominer.detection.yolo_detector"]
+    assert payload["device"] == "mps"
+    assert payload["model_path"] == "yolov8n.pt"
+    assert payload["images"][0]["width"] == 4
+    assert payload["images"][0]["height"] == 2
+    assert "src" in calls["env"]["PYTHONPATH"]
+    assert detections == [[DetectionCandidate(label="butterfly", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 2.0), objectness_score=0.88)]]
 
 
 def test_detection_pipeline_writes_ephemeral_crop_metadata_for_each_detection(tmp_path) -> None:

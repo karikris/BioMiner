@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import polars as pl
 
@@ -1083,10 +1084,19 @@ def _detect_boxes_backend(args: argparse.Namespace, records: list[dict[str, obje
     if args.backend == "fake":
         return FakeObjectDetector([_fake_detections_for_record(record) for record in records]), _blank_decoded_image
     if args.backend == "yolo":
-        from biominer.detection.yolo_detector import YoloObjectDetector
+        from biominer.detection.yolo_detector import YoloObjectDetector, YoloSidecarObjectDetector
 
+        if _use_vision_sidecar(args.runtime_python):
+            return YoloSidecarObjectDetector(runtime_python=args.runtime_python, device=args.device), load_decoded_image_from_record
         return YoloObjectDetector(device=args.device), load_decoded_image_from_record
     raise RuntimeError(f"unsupported detection backend: {args.backend}")
+
+
+def _use_vision_sidecar(runtime_python: str) -> bool:
+    path = Path(runtime_python)
+    if not path.exists():
+        return False
+    return path.resolve() != Path(sys.executable).resolve()
 
 
 def _run_detect_crop_preview(args: argparse.Namespace) -> int:

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import polars as pl
 
-from biominer.cli import build_parser, run
+from biominer.cli import _detect_boxes_backend, build_parser, load_decoded_image_from_record, run
 from biominer.detection.detector_base import DetectionCandidate
 
 
@@ -873,6 +873,57 @@ def test_detect_boxes_yolo_backend_uses_lazy_optional_adapter(tmp_path, capsys, 
     assert row["detector_model_id"] == "fake-yolo"
     assert row["detection_status"] == "detected"
     assert row["crop_storage_policy"] == "ephemeral"
+
+
+def test_detect_boxes_yolo_backend_uses_existing_sidecar_runtime(tmp_path, monkeypatch) -> None:
+    input_path = tmp_path / "filtered.parquet"
+    input_path.write_text("not read by backend selection", encoding="utf-8")
+    runtime_python = tmp_path / "vision" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("# fake python", encoding="utf-8")
+    calls: dict[str, object] = {}
+
+    class FakeYoloSidecarDetector:
+        backend = "yolo"
+        model_id = "fake-yolo-sidecar"
+        model_version = "sidecar-test"
+        checkpoint = "fake-yolo.pt"
+
+        def __init__(self, *, runtime_python: str, model_path: str = "yolov8n.pt", device: str = "auto") -> None:
+            calls["sidecar_init"] = {"runtime_python": runtime_python, "model_path": model_path, "device": device}
+
+        def detect_batch(self, images):  # noqa: ANN001, ANN201 - mirrors ObjectDetector protocol.
+            return [[] for _image in images]
+
+    class InProcessYoloDetector:
+        def __init__(self, **kwargs):  # noqa: ANN003, ANN204 - should not be called.
+            raise AssertionError(f"in-process YOLO should not be used when sidecar exists: {kwargs}")
+
+    monkeypatch.setattr("biominer.detection.yolo_detector.YoloObjectDetector", InProcessYoloDetector)
+    monkeypatch.setattr("biominer.detection.yolo_detector.YoloSidecarObjectDetector", FakeYoloSidecarDetector)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "detect",
+            "boxes",
+            "--input",
+            str(input_path),
+            "--output",
+            str(tmp_path / "object_detections.parquet"),
+            "--backend",
+            "yolo",
+            "--runtime-python",
+            str(runtime_python),
+            "--device",
+            "mps",
+        ]
+    )
+
+    detector, image_loader = _detect_boxes_backend(args, [])
+
+    assert detector.backend == "yolo"
+    assert image_loader is load_decoded_image_from_record
+    assert calls["sidecar_init"] == {"runtime_python": str(runtime_python), "model_path": "yolov8n.pt", "device": "mps"}
 
 
 def _fake_cli_image(record: dict[str, object]):
