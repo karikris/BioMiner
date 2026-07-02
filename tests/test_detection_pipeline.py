@@ -227,6 +227,32 @@ def test_detection_pipeline_uses_bounded_map_buffersize(tmp_path) -> None:
     assert calls == [7]
 
 
+def test_detection_pipeline_image_load_failures_use_stable_detection_id(tmp_path) -> None:
+    result = run_detection_pipeline(
+        records=[
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-failed",
+                "image_url": "memory://missing",
+            }
+        ],
+        detector=FakeObjectDetector(),
+        output_path=tmp_path / "object_detections.parquet",
+        image_loader=lambda record: (_ for _ in ()).throw(RuntimeError("decode failed")),
+    )
+
+    row = result.frame.to_dicts()[0]
+    assert row["detection_status"] == "failed_image_load"
+    assert row["failure_reason"] == "decode failed"
+    assert row["detection_id"] == detection_id_for(
+        source="flickr",
+        flickr_photo_id="photo-failed",
+        detector_checkpoint="fake-checkpoint",
+        bbox_xyxyn=(None, None, None, None),
+        detector_label="failed_image_load",
+    )
+
+
 def test_detection_pipeline_streams_loaded_images_into_detector_batches(tmp_path) -> None:
     consumed = {"records": 0}
     consumed_at_detect: list[int] = []

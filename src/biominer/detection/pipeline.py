@@ -11,7 +11,7 @@ import polars as pl
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage, ObjectDetector
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
-from biominer.detection.schema import build_detection_rows
+from biominer.detection.schema import build_detection_rows, detection_id_for
 from biominer.storage.parquet import write_parquet
 
 
@@ -165,7 +165,13 @@ def _image_failure_row(item: _LoadedImage, *, detector: ObjectDetector) -> dict[
         "source_record_hash": item.record.get("source_record_hash"),
         "image_url": str(item.record.get("image_url") or ""),
         "photo_page_url": item.record.get("photo_page_url"),
-        "detection_id": f"image-load-failed:{source}:{photo_id}",
+        "detection_id": detection_id_for(
+            source=source,
+            flickr_photo_id=photo_id,
+            detector_checkpoint=detector.checkpoint,
+            bbox_xyxyn=(None, None, None, None),
+            detector_label="failed_image_load",
+        ),
         "detector_backend": detector.backend,
         "detector_model_id": detector.model_id,
         "detector_model_version": detector.model_version,
