@@ -423,6 +423,7 @@ def test_object_bioclip_scores_detection_crops_with_join_keys(tmp_path) -> None:
     assert row["ablation_mode"] == "detector_crop"
     assert row["species_top5"][0] == "Danaus plexippus"
     assert row["species_top5_accepted_taxon_keys"][0] == "gbif:5131654"
+    assert row["accepted_taxon_key"] == "gbif:5131654"
     assert row["species_top1_accepted_taxon_key"] == "gbif:5131654"
     assert row["target_accepted_taxon_key"] == "gbif:5131654"
     assert row["target_species_rank"] == 1

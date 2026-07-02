@@ -309,6 +309,7 @@ def _score_detection(
     species_top20 = [name for name, _score in ranked_species[:20]]
     species_top5 = [name for name, _score in ranked_species[:5]]
     taxon_key_by_name = _taxon_key_by_name(candidate_set.species_candidates)
+    top1_taxon_key = _taxon_key_for_name(taxon_key_by_name, top1_name)
     top1_score = ranked_species[0][1] if ranked_species else 0.0
     target_rank = _target_rank(ranked_species, context.scientific_name)
     margin = _margin(ranked_species)
@@ -346,7 +347,8 @@ def _score_detection(
         "species_top5": species_top5,
         "species_top5_accepted_taxon_keys": [_taxon_key_for_name(taxon_key_by_name, name) for name in species_top5],
         "species_top1_scientific_name": top1_name,
-        "species_top1_accepted_taxon_key": _taxon_key_for_name(taxon_key_by_name, top1_name),
+        "species_top1_accepted_taxon_key": top1_taxon_key,
+        "accepted_taxon_key": top1_taxon_key,
         "species_top1_score": top1_score,
         "species_top1_margin": margin,
         "target_accepted_taxon_key": context.accepted_taxon_key,
