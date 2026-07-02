@@ -157,6 +157,42 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "ablations",
         ]
     )
+    join = parser.parse_args(
+        [
+            "bioclip",
+            "join-object-evidence",
+            "--input",
+            "filtered.parquet",
+            "--detections",
+            "object_detections.parquet",
+            "--scores",
+            "object_bioclip_scores.parquet",
+            "--joined-output",
+            "object_evidence_joined.parquet",
+            "--photo-summary-output",
+            "photo_evidence_summary.parquet",
+            "--species-context",
+            "species_context.json",
+        ]
+    )
+    species_join = parser.parse_args(
+        [
+            "species",
+            "join-object-evidence",
+            "--context-json",
+            "species_context.json",
+            "--input",
+            "filtered.parquet",
+            "--detections",
+            "object_detections.parquet",
+            "--scores",
+            "object_bioclip_scores.parquet",
+            "--joined-output",
+            "object_evidence_joined.parquet",
+            "--photo-summary-output",
+            "photo_evidence_summary.parquet",
+        ]
+    )
 
     assert screen.bioclip_command == "screen-objects"
     assert screen.ablation_mode == "detector_crop"
@@ -168,6 +204,10 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert species_screen.geo_prior_table == "geo_prior.parquet"
     assert species_ablate.species_command == "ablate-objects"
     assert species_ablate.geo_prior_table == "geo_prior.parquet"
+    assert join.bioclip_command == "join-object-evidence"
+    assert join.scores == "object_bioclip_scores.parquet"
+    assert species_join.species_command == "join-object-evidence"
+    assert species_join.context_json == "species_context.json"
 
 
 def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch) -> None:
@@ -446,6 +486,73 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
     assert calls["screen"]["geo_prior_table"].height == 1
     assert calls["candidate_set"]["records"][0]["flickr_photo_id"] == "photo-1"
     assert calls["candidate_set"]["records"][0]["scientific_names_detected"] == ["Danaus gilippus"]
+
+
+def test_bioclip_join_object_evidence_cli_writes_join_tables(tmp_path, capsys, monkeypatch) -> None:
+    context_path = tmp_path / "species_context.json"
+    context_path.write_text(
+        json.dumps(
+            {
+                "scientific_name": "Danaus plexippus",
+                "accepted_taxon_key": "gbif:1",
+                "canonical_name": "Danaus plexippus",
+                "family": "Nymphalidae",
+                "genus": "Danaus",
+                "family_key": "gbif:f",
+                "genus_key": "gbif:g",
+                "species_key": "gbif:1",
+                "registry_version": "registry-v1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    input_path = tmp_path / "filtered.parquet"
+    detections_path = tmp_path / "object_detections.parquet"
+    scores_path = tmp_path / "object_bioclip_scores.parquet"
+    joined_path = tmp_path / "object_evidence_joined.parquet"
+    summary_path = tmp_path / "photo_evidence_summary.parquet"
+    calls: dict[str, object] = {}
+
+    def fake_write_outputs(**kwargs):  # noqa: ANN003, ANN202 - mirrors write_object_evidence_outputs.
+        calls["kwargs"] = kwargs
+        return SimpleNamespace(
+            object_evidence_joined=Path(kwargs["joined_output_path"]),
+            photo_evidence_summary=Path(kwargs["photo_summary_output_path"]),
+        )
+
+    monkeypatch.setattr("biominer.cli.write_object_evidence_outputs", fake_write_outputs)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "bioclip",
+            "join-object-evidence",
+            "--input",
+            str(input_path),
+            "--detections",
+            str(detections_path),
+            "--scores",
+            str(scores_path),
+            "--joined-output",
+            str(joined_path),
+            "--photo-summary-output",
+            str(summary_path),
+            "--species-context",
+            str(context_path),
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    kwargs = calls["kwargs"]
+    assert payload == {
+        "object_evidence_joined": str(joined_path),
+        "photo_evidence_summary": str(summary_path),
+    }
+    assert kwargs["canonical_records_path"] == str(input_path)
+    assert kwargs["detections_path"] == str(detections_path)
+    assert kwargs["scores_path"] == str(scores_path)
+    assert kwargs["species_context"].scientific_name == "Danaus plexippus"
 
 
 def test_detect_boxes_fake_backend_writes_crop_metadata(tmp_path, capsys) -> None:

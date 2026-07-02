@@ -81,6 +81,14 @@ uv run biominer bioclip ablate-objects \
   --species-context staging/species_runs/example/species_context.json \
   --output-dir staging/species_runs/example/ablations \
   --modes whole_image,detector_crop,detector_crop_segmentation
+
+uv run biominer bioclip join-object-evidence \
+  --input staging/species_runs/example/filtered.parquet \
+  --detections staging/species_runs/example/object_detections.parquet \
+  --scores staging/species_runs/example/object_bioclip_scores.parquet \
+  --joined-output staging/species_runs/example/object_evidence_joined.parquet \
+  --photo-summary-output staging/species_runs/example/photo_evidence_summary.parquet \
+  --species-context staging/species_runs/example/species_context.json
 ```
 
 Object-level tables are not standalone silos. Every detection and score row keeps `source`, `flickr_photo_id`, and object-level `detection_id`/`crop_hash` where applicable. Geography is recorded as a soft prior and can route strong visual conflicts to review; it is not an absolute discard rule.

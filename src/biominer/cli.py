@@ -139,6 +139,9 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_ablate_objects.add_argument("--crop-target-px", type=int, default=336)
     bioclip_ablate_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
     bioclip_ablate_objects.add_argument("--retain-debug-crops", action="store_true")
+    bioclip_join_objects = bioclip_subparsers.add_parser("join-object-evidence")
+    _add_object_evidence_join_args(bioclip_join_objects)
+    bioclip_join_objects.add_argument("--species-context")
     detect = subparsers.add_parser("detect")
     detect_subparsers = detect.add_subparsers(dest="detect_command")
     detect_boxes = detect_subparsers.add_parser("boxes")
@@ -275,6 +278,9 @@ def build_parser() -> argparse.ArgumentParser:
     species_ablate_objects.add_argument("--crop-target-px", type=int, default=336)
     species_ablate_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
     species_ablate_objects.add_argument("--retain-debug-crops", action="store_true")
+    species_join_objects = species_subparsers.add_parser("join-object-evidence")
+    species_join_objects.add_argument("--context-json", required=True)
+    _add_object_evidence_join_args(species_join_objects)
     species_review = species_subparsers.add_parser("review-comments")
     species_review.add_argument("--context-json", required=True)
     species_review.add_argument("--input")
@@ -368,6 +374,14 @@ def _add_species_context_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output-root", required=True)
 
 
+def _add_object_evidence_join_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--detections", required=True)
+    parser.add_argument("--scores", required=True)
+    parser.add_argument("--joined-output", required=True)
+    parser.add_argument("--photo-summary-output", required=True)
+
+
 def run(args: argparse.Namespace) -> int:
     if args.version:
         print("biominer 0.1.0")
@@ -383,6 +397,8 @@ def run(args: argparse.Namespace) -> int:
             return _run_bioclip_screen_objects(args)
         if args.bioclip_command == "ablate-objects":
             return _run_bioclip_ablate_objects(args)
+        if args.bioclip_command == "join-object-evidence":
+            return _run_bioclip_join_object_evidence(args)
         return 2
     if args.command == "detect":
         if args.detect_command == "boxes":
@@ -782,6 +798,9 @@ def _run_species_command(args: argparse.Namespace) -> int:
     if args.species_command == "ablate-objects":
         args.species_context = args.context_json
         return _run_bioclip_ablate_objects(args)
+    if args.species_command == "join-object-evidence":
+        args.species_context = args.context_json
+        return _run_bioclip_join_object_evidence(args)
     if args.species_command == "review-comments":
         context = SpeciesContext.read_json(args.context_json)
         if args.input:
@@ -1145,6 +1164,29 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
     finally:
         scorer.close()
     print(json.dumps({"output_dir": str(report.output_dir), **report.report}, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_bioclip_join_object_evidence(args: argparse.Namespace) -> int:
+    context = SpeciesContext.read_json(args.species_context) if getattr(args, "species_context", None) else None
+    outputs = write_object_evidence_outputs(
+        canonical_records_path=args.input,
+        detections_path=args.detections,
+        scores_path=args.scores,
+        joined_output_path=args.joined_output,
+        photo_summary_output_path=args.photo_summary_output,
+        species_context=context,
+    )
+    print(
+        json.dumps(
+            {
+                "object_evidence_joined": str(outputs.object_evidence_joined),
+                "photo_evidence_summary": str(outputs.photo_evidence_summary),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
