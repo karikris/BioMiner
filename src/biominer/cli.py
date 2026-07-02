@@ -133,6 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_screen_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
     bioclip_screen_objects.add_argument("--parquet-batch-rows", type=int, default=10000)
     bioclip_screen_objects.add_argument("--retain-debug-crops", action="store_true")
+    bioclip_screen_objects.add_argument("--text-embedding-batch-size", type=int, default=256)
     bioclip_screen_objects.add_argument("--candidate-text-embedding-cache")
     bioclip_screen_objects.add_argument("--object-image-embedding-cache")
     bioclip_ablate_objects = bioclip_subparsers.add_parser("ablate-objects")
@@ -152,6 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_ablate_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
     bioclip_ablate_objects.add_argument("--parquet-batch-rows", type=int, default=10000)
     bioclip_ablate_objects.add_argument("--retain-debug-crops", action="store_true")
+    bioclip_ablate_objects.add_argument("--text-embedding-batch-size", type=int, default=256)
     bioclip_ablate_objects.add_argument("--candidate-text-embedding-cache")
     bioclip_ablate_objects.add_argument("--object-image-embedding-cache")
     bioclip_join_objects = bioclip_subparsers.add_parser("join-object-evidence")
@@ -280,6 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
     species_bioclip_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
     species_bioclip_objects.add_argument("--parquet-batch-rows", type=int, default=10000)
     species_bioclip_objects.add_argument("--retain-debug-crops", action="store_true")
+    species_bioclip_objects.add_argument("--text-embedding-batch-size", type=int, default=256)
     species_bioclip_objects.add_argument("--candidate-text-embedding-cache")
     species_bioclip_objects.add_argument("--object-image-embedding-cache")
     species_ablate_objects = species_subparsers.add_parser("ablate-objects")
@@ -299,6 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
     species_ablate_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
     species_ablate_objects.add_argument("--parquet-batch-rows", type=int, default=10000)
     species_ablate_objects.add_argument("--retain-debug-crops", action="store_true")
+    species_ablate_objects.add_argument("--text-embedding-batch-size", type=int, default=256)
     species_ablate_objects.add_argument("--candidate-text-embedding-cache")
     species_ablate_objects.add_argument("--object-image-embedding-cache")
     species_join_objects = species_subparsers.add_parser("join-object-evidence")
@@ -1326,6 +1330,7 @@ def _prepare_candidate_text_embedding_cache_if_requested(
         model_id="bioclip2_5",
         model_checkpoint=BIOCLIP_25_HUGE_REVISION,
         embed_labels=scorer.embed_text_labels,
+        batch_size=args.text_embedding_batch_size,
     )
     return {
         "output_path": str(update.output_path),
@@ -1333,6 +1338,7 @@ def _prepare_candidate_text_embedding_cache_if_requested(
         "rows_added": update.rows_added,
         "rows_reused": update.rows_reused,
         "embeddings_computed": update.embeddings_computed,
+        "text_embedding_batch_size": args.text_embedding_batch_size,
     }
 
 

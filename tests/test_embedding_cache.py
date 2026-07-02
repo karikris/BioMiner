@@ -79,6 +79,39 @@ def test_text_embedding_cache_computes_only_missing_labels(tmp_path: Path) -> No
     assert frame.filter(pl.col("label") == "a photo of Danaus plexippus").to_dicts()[0]["embedding"] == [0.5, 0.5]
 
 
+def test_text_embedding_cache_batches_missing_labels(tmp_path: Path) -> None:
+    cache_path = tmp_path / "candidate_text_embeddings.parquet"
+    requested = [
+        {
+            "candidate_set_id": "candidate-set-1",
+            "label": f"label-{index}",
+            "accepted_taxon_key": f"gbif:{index}",
+            "rank": "species",
+            "model_id": "bioclip",
+            "model_checkpoint": "checkpoint-a",
+        }
+        for index in range(5)
+    ]
+    calls: list[list[str]] = []
+
+    def embed(labels: list[str]) -> list[list[float]]:
+        calls.append(labels)
+        return [[float(index), float(index + 1)] for index, _label in enumerate(labels)]
+
+    result = upsert_text_embedding_cache(
+        requested,
+        cache_path,
+        embed_labels=embed,
+        created_at="2026-01-02T00:00:00+00:00",
+        batch_size=2,
+    )
+
+    assert calls == [["label-0", "label-1"], ["label-2", "label-3"], ["label-4"]]
+    assert result.embeddings_computed == 5
+    assert result.rows_added == 5
+    assert pl.read_parquet(cache_path).height == 5
+
+
 def test_candidate_text_embedding_rows_derive_stage_labels_from_candidate_set() -> None:
     candidate_set = CandidateSet(
         candidate_set_id="candidate-set-1",

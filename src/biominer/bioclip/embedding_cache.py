@@ -83,10 +83,11 @@ def prepare_candidate_text_embedding_cache(
     model_id: str,
     model_checkpoint: str,
     embed_labels: Callable[[list[str]], list[list[float]]],
+    batch_size: int | None = None,
     created_at: str | None = None,
 ) -> EmbeddingCacheUpdate:
     rows = candidate_text_embedding_rows(candidate_set, model_id=model_id, model_checkpoint=model_checkpoint)
-    return upsert_text_embedding_cache(rows, path, embed_labels=embed_labels, created_at=created_at)
+    return upsert_text_embedding_cache(rows, path, embed_labels=embed_labels, batch_size=batch_size, created_at=created_at)
 
 
 def prepare_object_image_embedding_cache(
@@ -139,6 +140,7 @@ def upsert_text_embedding_cache(
     path: str | Path,
     *,
     embed_labels: Callable[[list[str]], list[list[float]]],
+    batch_size: int | None = None,
     created_at: str | None = None,
 ) -> EmbeddingCacheUpdate:
     cache = read_embedding_cache(path)
@@ -146,7 +148,7 @@ def upsert_text_embedding_cache(
     existing_keys = _row_keys(cache, ["candidate_set_id", "label", "model_id", "model_checkpoint"])
     missing = [row for row in requested if _key(row, ["candidate_set_id", "label", "model_id", "model_checkpoint"]) not in existing_keys]
     labels = [str(row.get("label") or "") for row in missing]
-    embeddings = embed_labels(labels) if labels else []
+    embeddings = _embed_label_batches(labels, embed_labels=embed_labels, batch_size=batch_size)
     if len(embeddings) != len(missing):
         raise ValueError("embed_labels must return one embedding per missing label")
     new_rows = [
@@ -259,6 +261,25 @@ def _dedupe(frame: pl.DataFrame, keys: list[str]) -> pl.DataFrame:
     if frame.is_empty():
         return frame
     return frame.unique(subset=keys, maintain_order=True)
+
+
+def _embed_label_batches(
+    labels: list[str],
+    *,
+    embed_labels: Callable[[list[str]], list[list[float]]],
+    batch_size: int | None,
+) -> list[list[float]]:
+    if not labels:
+        return []
+    if batch_size is None:
+        return embed_labels(labels)
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    embeddings: list[list[float]] = []
+    for start in range(0, len(labels), batch_size):
+        batch = labels[start : start + batch_size]
+        embeddings.extend(embed_labels(batch))
+    return embeddings
 
 
 def _append_and_dedupe(cache: pl.DataFrame, new_rows: list[dict[str, Any]], keys: list[str]) -> pl.DataFrame:

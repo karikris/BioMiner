@@ -279,6 +279,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "detector_crop",
             "--parquet-batch-rows",
             "7",
+            "--text-embedding-batch-size",
+            "2",
             "--candidate-text-embedding-cache",
             "candidate_text_embeddings.parquet",
             "--object-image-embedding-cache",
@@ -303,6 +305,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "whole_image,detector_crop,detector_crop_segmentation",
             "--parquet-batch-rows",
             "11",
+            "--text-embedding-batch-size",
+            "3",
             "--candidate-text-embedding-cache",
             "candidate_text_embeddings.parquet",
             "--object-image-embedding-cache",
@@ -325,6 +329,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "object_bioclip_scores.parquet",
             "--parquet-batch-rows",
             "9",
+            "--text-embedding-batch-size",
+            "4",
             "--candidate-text-embedding-cache",
             "candidate_text_embeddings.parquet",
             "--object-image-embedding-cache",
@@ -347,6 +353,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "ablations",
             "--parquet-batch-rows",
             "13",
+            "--text-embedding-batch-size",
+            "5",
             "--candidate-text-embedding-cache",
             "candidate_text_embeddings.parquet",
             "--object-image-embedding-cache",
@@ -394,22 +402,26 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert screen.ablation_mode == "detector_crop"
     assert screen.geo_prior_table == "geo_prior.parquet"
     assert screen.parquet_batch_rows == 7
+    assert screen.text_embedding_batch_size == 2
     assert screen.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert screen.object_image_embedding_cache == "object_image_embeddings.parquet"
     assert ablate.bioclip_command == "ablate-objects"
     assert ablate.modes == "whole_image,detector_crop,detector_crop_segmentation"
     assert ablate.geo_prior_table == "geo_prior.parquet"
     assert ablate.parquet_batch_rows == 11
+    assert ablate.text_embedding_batch_size == 3
     assert ablate.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert ablate.object_image_embedding_cache == "object_image_embeddings.parquet"
     assert species_screen.species_command == "bioclip-objects"
     assert species_screen.geo_prior_table == "geo_prior.parquet"
     assert species_screen.parquet_batch_rows == 9
+    assert species_screen.text_embedding_batch_size == 4
     assert species_screen.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert species_screen.object_image_embedding_cache == "object_image_embeddings.parquet"
     assert species_ablate.species_command == "ablate-objects"
     assert species_ablate.geo_prior_table == "geo_prior.parquet"
     assert species_ablate.parquet_batch_rows == 13
+    assert species_ablate.text_embedding_batch_size == 5
     assert species_ablate.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert species_ablate.object_image_embedding_cache == "object_image_embeddings.parquet"
     assert join.bioclip_command == "join-object-evidence"
@@ -638,7 +650,7 @@ def test_bioclip_screen_objects_uses_embedding_caches_for_detector_crop_scoring(
             calls["persistent"] = {"runtime": runtime, "hf_cache_dir": hf_cache_dir, "device": device}
 
         def embed_text_labels(self, labels):  # noqa: ANN001, ANN201 - mirrors scorer API.
-            calls["embedded_labels"] = list(labels)
+            calls.setdefault("embedded_labels", []).append(list(labels))
             return [[float(index), float(index + 1)] for index, _label in enumerate(labels)]
 
         def embed_image_paths(self, image_paths):  # noqa: ANN001, ANN201 - mirrors scorer API.
@@ -727,6 +739,8 @@ def test_bioclip_screen_objects_uses_embedding_caches_for_detector_crop_scoring(
             "mps",
             "--parquet-batch-rows",
             "3",
+            "--text-embedding-batch-size",
+            "2",
             "--candidate-text-embedding-cache",
             str(text_cache_path),
             "--object-image-embedding-cache",
@@ -742,11 +756,12 @@ def test_bioclip_screen_objects_uses_embedding_caches_for_detector_crop_scoring(
     assert payload["score_batches_written"] == 3
     assert payload["candidate_text_embedding_cache"]["embeddings_computed"] == 4
     assert payload["candidate_text_embedding_cache"]["rows_added"] == 4
+    assert payload["candidate_text_embedding_cache"]["text_embedding_batch_size"] == 2
     assert payload["object_image_embedding_cache"]["embeddings_computed"] == 1
     assert payload["object_image_embedding_cache"]["rows_added"] == 1
     assert calls["closed"] is True
     assert calls["materialized_cleanup"] is True
-    assert calls["embedded_labels"] == ["Nymphalidae", "Danaus", "Danaus plexippus", "a photo of Danaus plexippus"]
+    assert calls["embedded_labels"] == [["Nymphalidae", "Danaus"], ["Danaus plexippus", "a photo of Danaus plexippus"]]
     assert calls["embedded_image_paths"] == [str(tmp_path / "crop.ppm")]
     assert calls["persistent"]["device"] == "mps"
     assert calls["cached_scorer"]["candidate_set_id"] == "candidate-set-from-records"
