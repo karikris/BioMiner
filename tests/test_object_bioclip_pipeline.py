@@ -570,6 +570,52 @@ def test_object_evidence_join_and_photo_summary_outputs(tmp_path) -> None:
     assert summary["all_candidate_species"] == ["Danaus plexippus"]
 
 
+def test_photo_summary_routes_geospatial_conflict_to_review(tmp_path) -> None:
+    canonical_path = tmp_path / "canonical.parquet"
+    detections_path = tmp_path / "detections.parquet"
+    scores_path = tmp_path / "scores.parquet"
+    _canonical_records().write_parquet(canonical_path)
+    _detections().write_parquet(detections_path)
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "detection_id": "det-1",
+                "crop_hash": "sha256:crop-1",
+                "target_species_score": 0.20,
+                "occurrence_bin": "bronze",
+                "species_top1_scientific_name": "Danaus plexippus",
+                "bin_reason": "weak_species_score",
+            },
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "detection_id": "det-2",
+                "crop_hash": "sha256:crop-2",
+                "target_species_score": 0.75,
+                "occurrence_bin": "in_review",
+                "species_top1_scientific_name": "Danaus plexippus",
+                "bin_reason": "geospatial_conflict",
+            },
+        ]
+    ).write_parquet(scores_path)
+
+    outputs = write_object_evidence_outputs(
+        canonical_records_path=canonical_path,
+        detections_path=detections_path,
+        scores_path=scores_path,
+        joined_output_path=tmp_path / "object_evidence_joined.parquet",
+        photo_summary_output_path=tmp_path / "photo_evidence_summary.parquet",
+    )
+
+    summary = pl.read_parquet(outputs.photo_evidence_summary).to_dicts()[0]
+    assert summary["best_detection_id"] == "det-2"
+    assert summary["best_object_occurrence_bin"] == "in_review"
+    assert summary["photo_occurrence_bin"] == "in_review"
+    assert summary["photo_bin_reason"] == "geospatial_conflict"
+
+
 def test_no_detection_with_strong_text_evidence_routes_photo_to_review(tmp_path) -> None:
     canonical = pl.DataFrame(
         [

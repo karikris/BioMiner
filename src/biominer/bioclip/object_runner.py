@@ -381,7 +381,7 @@ def _photo_summary(
                     "best_object_occurrence_bin": best["occurrence_bin"],
                     "best_object_species_top1": best["species_top1_scientific_name"],
                     "best_object_score": best["target_species_score"],
-                    "photo_occurrence_bin": _photo_bucket([row["occurrence_bin"] for row in sorted_rows]),
+                    "photo_occurrence_bin": _photo_bucket(sorted_rows),
                     "photo_bin_reason": best["bin_reason"],
                     "all_detection_ids": detection_ids,
                     "all_candidate_species": species,
@@ -456,7 +456,16 @@ def _has_columns(frame: pl.DataFrame, columns: Iterable[str]) -> bool:
     return all(column in existing for column in columns)
 
 
-def _photo_bucket(buckets: list[str]) -> str:
+def _photo_bucket(rows: list[dict[str, Any]]) -> str:
+    buckets = [str(row.get("occurrence_bin") or "") for row in rows]
+    review_reasons = {
+        "geospatial_conflict",
+        "ambiguous_species_margin",
+        "taxonomy_inconsistent",
+        "detected_object_without_bioclip_score",
+    }
+    if any(bucket == "in_review" and str(row.get("bin_reason") or "") in review_reasons for row, bucket in zip(rows, buckets, strict=True)):
+        return "in_review"
     for bucket in ("gold", "silver", "bronze", "in_review", "bin"):
         if bucket in buckets:
             return bucket
