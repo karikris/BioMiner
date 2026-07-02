@@ -473,6 +473,40 @@ def test_object_bioclip_scores_family_genus_and_species_stages_separately(tmp_pa
     assert row["target_species_score"] == 0.83
 
 
+def test_object_bioclip_routes_ambiguous_species_margin_to_review(tmp_path) -> None:
+    candidates = tmp_path / "species_candidates.parquet"
+    pl.DataFrame(
+        [
+            {"scientific_name": "Danaus plexippus", "accepted_taxon_key": "gbif:5131654", "family": "Nymphalidae", "genus": "Danaus"},
+            {"scientific_name": "Danaus gilippus", "accepted_taxon_key": "gbif:5131655", "family": "Nymphalidae", "genus": "Danaus"},
+        ]
+    ).write_parquet(candidates)
+    candidate_set = build_candidate_set(_context(), species_candidate_path=candidates)
+
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections().head(1),
+        species_context=_context(),
+        candidate_set=candidate_set,
+        scorer=FakeObjectBioClipScorer(
+            {
+                "sha256:crop-1": {
+                    "a photo of Danaus plexippus": 0.82,
+                    "a photo of Danaus gilippus": 0.80,
+                }
+            }
+        ),
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+    )
+
+    row = result.frame.to_dicts()[0]
+    assert row["species_top1_margin"] == pytest.approx(0.02)
+    assert row["occurrence_bin"] == "in_review"
+    assert row["bin_reason"] == "ambiguous_species_margin"
+    assert row["is_target_positive"] is False
+
+
 def test_geography_soft_prior_routes_conflict_to_review_without_discarding() -> None:
     context = _context()
     in_range = apply_geospatial_soft_prior({"latitude": 45.0, "longitude": -93.0}, context, visual_score=0.8)

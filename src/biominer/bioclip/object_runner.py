@@ -386,6 +386,12 @@ def _taxon_key_for_name(keys_by_name: dict[str, str], name: str | None) -> str |
 def _bucket(*, item: dict[str, Any], target_score: float, margin: float | None, geo: GeospatialPrior) -> tuple[str, str]:
     if geo.route_to_review:
         return "in_review", geo.reason
+    if (
+        target_score >= DEFAULT_BUCKET_POLICY.gold_species_threshold
+        and margin is not None
+        and margin < DEFAULT_BUCKET_POLICY.ambiguous_margin_threshold
+    ):
+        return "in_review", "ambiguous_species_margin"
     if target_score >= DEFAULT_BUCKET_POLICY.gold_species_threshold and _has_geo(item) and _has_event_date(item):
         return "gold", "target_species_score_ge_070"
     if target_score >= DEFAULT_BUCKET_POLICY.silver_species_threshold:
