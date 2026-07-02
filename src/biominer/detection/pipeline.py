@@ -83,6 +83,7 @@ def run_detection_pipeline(
                     parquet_batch_rows=runtime.parquet_batch_rows,
                 )
                 continue
+            loaded = _LoadedImage(record=loaded.record, image=_resize_image_to_max_side(loaded.image, policy.image_max_side_px))
             images_loaded += 1
             batch.append(loaded)
             if len(batch) >= runtime.detector_batch_size:
@@ -270,6 +271,49 @@ def _with_crop_metadata(row: dict[str, Any], *, image: DecodedImage, policy: Det
         "crop_height": crop.crop_height,
         "crop_storage_policy": crop.storage_policy,
     }
+
+
+def _resize_image_to_max_side(image: DecodedImage, max_side_px: int) -> DecodedImage:
+    if max_side_px <= 0:
+        return image
+    current_max_side = max(image.width, image.height)
+    if current_max_side <= max_side_px:
+        return image
+    scale = max_side_px / current_max_side
+    target_width = max(1, round(image.width * scale))
+    target_height = max(1, round(image.height * scale))
+    return DecodedImage(
+        width=target_width,
+        height=target_height,
+        mode=image.mode,
+        data=_resize_rgb_nearest(
+            image.data,
+            src_width=image.width,
+            src_height=image.height,
+            dst_width=target_width,
+            dst_height=target_height,
+        ),
+        source_uri=image.source_uri,
+    )
+
+
+def _resize_rgb_nearest(
+    data: bytes,
+    *,
+    src_width: int,
+    src_height: int,
+    dst_width: int,
+    dst_height: int,
+) -> bytes:
+    output = bytearray(dst_width * dst_height * 3)
+    for y in range(dst_height):
+        source_y = min(src_height - 1, int((y + 0.5) * src_height / dst_height))
+        for x in range(dst_width):
+            source_x = min(src_width - 1, int((x + 0.5) * src_width / dst_width))
+            source_offset = (source_y * src_width + source_x) * 3
+            target_offset = (y * dst_width + x) * 3
+            output[target_offset : target_offset + 3] = data[source_offset : source_offset + 3]
+    return bytes(output)
 
 
 def _image_failure_row(item: _LoadedImage, *, detector: ObjectDetector) -> dict[str, Any]:

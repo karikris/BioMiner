@@ -234,6 +234,35 @@ def test_detection_pipeline_writes_ephemeral_crop_metadata_for_each_detection(tm
     assert len({row["crop_hash"] for row in rows}) == 2
 
 
+def test_detection_pipeline_resizes_loaded_images_before_detection(tmp_path) -> None:
+    seen_dimensions: list[tuple[int, int]] = []
+
+    class RecordingDetector:
+        backend = "fake"
+        model_id = "fake-detector"
+        model_version = "v1"
+        checkpoint = "checkpoint-a"
+
+        def detect_batch(self, images):  # noqa: ANN001, ANN201 - mirrors detector protocol.
+            seen_dimensions.extend((image.width, image.height) for image in images)
+            return [[DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 2, 1))] for _image in images]
+
+    result = run_detection_pipeline(
+        records=[{"source": "flickr", "flickr_photo_id": "photo-resize", "image_url": "memory://wide"}],
+        detector=RecordingDetector(),
+        output_path=tmp_path / "object_detections.parquet",
+        image_loader=lambda record: _wide_white_image(),
+        detection_policy=DetectionPolicy(backend="fake", image_max_side_px=2, crop_target_px=2, min_box_area_ratio=0.0),
+        run_policy=DetectionRunPolicy(detector_batch_size=1),
+    )
+
+    row = result.frame.to_dicts()[0]
+    assert seen_dimensions == [(2, 1)]
+    assert row["bbox_xyxy"] == [0.0, 0.0, 2.0, 1.0]
+    assert row["bbox_xyxyn"] == [0.0, 0.0, 1.0, 1.0]
+    assert row["bbox_xywhn"] == [0.5, 0.5, 1.0, 1.0]
+
+
 def test_detection_pipeline_uses_bounded_map_buffersize(tmp_path) -> None:
     calls: list[int | None] = []
 
