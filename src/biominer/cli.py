@@ -976,26 +976,17 @@ def _run_bioclip_screen(args: argparse.Namespace) -> int:
 
 
 def _run_detect_boxes(args: argparse.Namespace) -> int:
-    if args.backend != "fake":
-        print(
-            json.dumps(
-                {
-                    "error": "detect boxes currently runs in-process only with --backend fake; YOLO is available through the optional adapter for vision sidecars",
-                    "backend": args.backend,
-                    "runtime_python": args.runtime_python,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 2
     records = pl.read_parquet(args.input).to_dicts()
-    detector = FakeObjectDetector([_fake_detections_for_record(record) for record in records])
+    try:
+        detector, image_loader = _detect_boxes_backend(args, records)
+    except RuntimeError as exc:
+        print(json.dumps({"error": str(exc), "backend": args.backend, "runtime_python": args.runtime_python}, indent=2, sort_keys=True))
+        return 2
     result = run_detection_pipeline(
         records=records,
         detector=detector,
         output_path=args.output,
-        image_loader=_blank_decoded_image,
+        image_loader=image_loader,
     )
     print(
         json.dumps(
@@ -1013,6 +1004,16 @@ def _run_detect_boxes(args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
+def _detect_boxes_backend(args: argparse.Namespace, records: list[dict[str, object]]):
+    if args.backend == "fake":
+        return FakeObjectDetector([_fake_detections_for_record(record) for record in records]), _blank_decoded_image
+    if args.backend == "yolo":
+        from biominer.detection.yolo_detector import YoloObjectDetector
+
+        return YoloObjectDetector(device=args.device), load_decoded_image_from_record
+    raise RuntimeError(f"unsupported detection backend: {args.backend}")
 
 
 def _run_detect_crop_preview(args: argparse.Namespace) -> int:

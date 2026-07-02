@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import polars as pl
 
 from biominer.cli import build_parser, run
+from biominer.detection.detector_base import DetectionCandidate
 
 
 def test_cli_exposes_only_lean_pipeline_commands() -> None:
@@ -414,6 +415,75 @@ def test_detect_boxes_fake_backend_writes_crop_metadata(tmp_path, capsys) -> Non
     assert row["crop_width"] == 336
     assert row["crop_height"] == 336
     assert row["crop_storage_policy"] == "ephemeral"
+
+
+def test_detect_boxes_yolo_backend_uses_lazy_optional_adapter(tmp_path, capsys, monkeypatch) -> None:
+    input_path = tmp_path / "filtered.parquet"
+    output_path = tmp_path / "object_detections.parquet"
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "image_url": "memory://photo-1",
+                "image_width": 4,
+                "image_height": 4,
+            }
+        ]
+    ).write_parquet(input_path)
+    calls: dict[str, object] = {}
+
+    class FakeYoloDetector:
+        backend = "yolo"
+        model_id = "fake-yolo"
+        model_version = "test"
+        checkpoint = "fake-yolo.pt"
+
+        def __init__(self, *, model_path: str = "yolov8n.pt", device: str = "auto") -> None:
+            calls["detector_init"] = {"model_path": model_path, "device": device}
+
+        def detect_batch(self, images):  # noqa: ANN001, ANN201 - mirrors ObjectDetector protocol.
+            calls["batch_size"] = len(images)
+            return [[DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 4, 4), objectness_score=0.9)]]
+
+    monkeypatch.setattr("biominer.detection.yolo_detector.YoloObjectDetector", FakeYoloDetector)
+    monkeypatch.setattr("biominer.cli.load_decoded_image_from_record", lambda record: _fake_cli_image(record))
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "detect",
+            "boxes",
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+            "--backend",
+            "yolo",
+            "--device",
+            "mps",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    row = pl.read_parquet(output_path).to_dicts()[0]
+    assert calls["detector_init"] == {"model_path": "yolov8n.pt", "device": "mps"}
+    assert calls["batch_size"] == 1
+    assert payload["backend"] == "yolo"
+    assert payload["rows"] == 1
+    assert row["detector_backend"] == "yolo"
+    assert row["detector_model_id"] == "fake-yolo"
+    assert row["detection_status"] == "detected"
+    assert row["crop_storage_policy"] == "ephemeral"
+
+
+def _fake_cli_image(record: dict[str, object]):
+    from biominer.detection.detector_base import DecodedImage
+
+    width = max(1, int(record.get("image_width") or 1))
+    height = max(1, int(record.get("image_height") or 1))
+    return DecodedImage(width=width, height=height, mode="RGB", data=b"\x00\x00\x00" * width * height)
 
 
 def test_species_run_cli_resolves_registry_compiles_queries_and_seeds_work(tmp_path, capsys) -> None:
