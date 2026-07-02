@@ -11,6 +11,7 @@ import polars as pl
 
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
+from biominer.bioclip.triage import BIN_CATEGORIES, NEGATIVE_RECORD_FIELDS
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage
 from biominer.detection.segmentation import NoneSegmenter, Segmenter
@@ -19,6 +20,12 @@ from biominer.storage.parquet import write_parquet
 
 
 AblationMode = Literal["whole_image", "detector_crop", "detector_crop_segmentation"]
+PHOTO_REVIEW_REASONS = {
+    "geospatial_conflict",
+    "ambiguous_species_margin",
+    "taxonomy_inconsistent",
+    "detected_object_without_bioclip_score",
+}
 
 
 class ObjectBioClipScorer(Protocol):
@@ -365,13 +372,16 @@ def _photo_summary(
 ) -> pl.DataFrame:
     rows: list[dict[str, Any]] = []
     summarized_keys: set[tuple[str, str]] = set()
+    canonical_by_photo = _canonical_by_photo(canonical)
     if _has_columns(scores, ["source", "flickr_photo_id", "target_species_score"]):
         for (_source, _photo), group in scores.group_by(["source", "flickr_photo_id"], maintain_order=True):
             sorted_rows = group.sort("target_species_score", descending=True).to_dicts()
             best = sorted_rows[0]
             detection_ids = [str(row["detection_id"]) for row in sorted_rows]
             species = _unique(row["species_top1_scientific_name"] for row in sorted_rows if row.get("species_top1_scientific_name"))
-            summarized_keys.add((str(best["source"]), str(best["flickr_photo_id"])))
+            key = (str(best["source"]), str(best["flickr_photo_id"]))
+            photo_bucket, photo_reason = _photo_bucket_and_reason(sorted_rows, canonical_by_photo.get(key, {}))
+            summarized_keys.add(key)
             rows.append(
                 {
                     "source": best["source"],
@@ -381,8 +391,8 @@ def _photo_summary(
                     "best_object_occurrence_bin": best["occurrence_bin"],
                     "best_object_species_top1": best["species_top1_scientific_name"],
                     "best_object_score": best["target_species_score"],
-                    "photo_occurrence_bin": _photo_bucket(sorted_rows),
-                    "photo_bin_reason": best["bin_reason"],
+                    "photo_occurrence_bin": photo_bucket,
+                    "photo_bin_reason": photo_reason,
                     "all_detection_ids": detection_ids,
                     "all_candidate_species": species,
                 }
@@ -451,25 +461,74 @@ def _detections_by_photo(detections: pl.DataFrame | None) -> dict[tuple[str, str
     return grouped
 
 
+def _canonical_by_photo(canonical: pl.DataFrame | None) -> dict[tuple[str, str], dict[str, Any]]:
+    if canonical is None or canonical.is_empty():
+        return {}
+    return {
+        (str(row.get("source") or ""), str(row.get("flickr_photo_id") or "")): row
+        for row in canonical.to_dicts()
+    }
+
+
 def _has_columns(frame: pl.DataFrame, columns: Iterable[str]) -> bool:
     existing = set(frame.columns)
     return all(column in existing for column in columns)
 
 
+def _photo_bucket_and_reason(rows: list[dict[str, Any]], canonical_record: dict[str, Any]) -> tuple[str, str]:
+    hard_negative_reason = _hard_negative_photo_reason(canonical_record)
+    if hard_negative_reason:
+        return "bin", hard_negative_reason
+    bucket = _photo_bucket(rows)
+    return bucket, _photo_bucket_reason(bucket, rows)
+
+
 def _photo_bucket(rows: list[dict[str, Any]]) -> str:
     buckets = [str(row.get("occurrence_bin") or "") for row in rows]
-    review_reasons = {
-        "geospatial_conflict",
-        "ambiguous_species_margin",
-        "taxonomy_inconsistent",
-        "detected_object_without_bioclip_score",
-    }
-    if any(bucket == "in_review" and str(row.get("bin_reason") or "") in review_reasons for row, bucket in zip(rows, buckets, strict=True)):
+    if any(bucket == "in_review" and str(row.get("bin_reason") or "") in PHOTO_REVIEW_REASONS for row, bucket in zip(rows, buckets, strict=True)):
         return "in_review"
     for bucket in ("gold", "silver", "bronze", "in_review", "bin"):
         if bucket in buckets:
             return bucket
     return "in_review"
+
+
+def _photo_bucket_reason(bucket: str, rows: list[dict[str, Any]]) -> str:
+    if bucket == "in_review":
+        for row in rows:
+            reason = str(row.get("bin_reason") or "")
+            if str(row.get("occurrence_bin") or "") == bucket and reason in PHOTO_REVIEW_REASONS:
+                return reason
+    for row in rows:
+        if str(row.get("occurrence_bin") or "") == bucket:
+            return str(row.get("bin_reason") or "")
+    return str(rows[0].get("bin_reason") or "") if rows else ""
+
+
+def _hard_negative_photo_reason(record: dict[str, Any]) -> str | None:
+    category = str(record.get("image_category") or "")
+    reason = str(record.get("negative_filter_reason") or "")
+    if _truthy(record.get("is_negative_material")):
+        return _negative_material_reason(category=category, reason=reason)
+    if category in BIN_CATEGORIES:
+        return _negative_material_reason(category=category, reason=reason)
+    for field, field_reason in NEGATIVE_RECORD_FIELDS:
+        if _truthy(record.get(field)):
+            return _negative_material_reason(category=field_reason, reason=reason)
+    return None
+
+
+def _negative_material_reason(*, category: str, reason: str) -> str:
+    value = reason or category or "image_material"
+    if value in {"non_target_order", "other_order", "not_butterfly", "not_lepidoptera", "other_insect"}:
+        value = "non_target_order"
+    return f"negative_material_{value}"
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().casefold() in {"1", "true", "yes", "y"}
+    return bool(value)
 
 
 def _target_score(ranked: list[tuple[str, float]], target: str) -> float:

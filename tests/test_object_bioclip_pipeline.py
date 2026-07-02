@@ -616,6 +616,45 @@ def test_photo_summary_routes_geospatial_conflict_to_review(tmp_path) -> None:
     assert summary["photo_bin_reason"] == "geospatial_conflict"
 
 
+def test_photo_summary_hard_negative_image_material_overrides_gold_object(tmp_path) -> None:
+    canonical_path = tmp_path / "canonical.parquet"
+    detections_path = tmp_path / "detections.parquet"
+    scores_path = tmp_path / "scores.parquet"
+    _canonical_records().with_columns(
+        pl.lit("artwork").alias("image_category"),
+        pl.lit("artwork").alias("negative_filter_reason"),
+        pl.lit(True).alias("is_negative_material"),
+    ).write_parquet(canonical_path)
+    _detections().head(1).write_parquet(detections_path)
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "detection_id": "det-1",
+                "crop_hash": "sha256:crop-1",
+                "target_species_score": 0.82,
+                "occurrence_bin": "gold",
+                "species_top1_scientific_name": "Danaus plexippus",
+                "bin_reason": "target_species_score_ge_070",
+            },
+        ]
+    ).write_parquet(scores_path)
+
+    outputs = write_object_evidence_outputs(
+        canonical_records_path=canonical_path,
+        detections_path=detections_path,
+        scores_path=scores_path,
+        joined_output_path=tmp_path / "object_evidence_joined.parquet",
+        photo_summary_output_path=tmp_path / "photo_evidence_summary.parquet",
+    )
+
+    summary = pl.read_parquet(outputs.photo_evidence_summary).to_dicts()[0]
+    assert summary["best_object_occurrence_bin"] == "gold"
+    assert summary["photo_occurrence_bin"] == "bin"
+    assert summary["photo_bin_reason"] == "negative_material_artwork"
+
+
 def test_no_detection_with_strong_text_evidence_routes_photo_to_review(tmp_path) -> None:
     canonical = pl.DataFrame(
         [
