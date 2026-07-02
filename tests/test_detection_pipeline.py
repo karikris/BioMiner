@@ -227,6 +227,55 @@ def test_detection_pipeline_uses_bounded_map_buffersize(tmp_path) -> None:
     assert calls == [7]
 
 
+def test_detection_pipeline_streams_loaded_images_into_detector_batches(tmp_path) -> None:
+    consumed = {"records": 0}
+    consumed_at_detect: list[int] = []
+
+    def records():
+        for index in range(5):
+            consumed["records"] += 1
+            yield {"source": "flickr", "flickr_photo_id": f"photo-{index}", "image_url": f"memory://photo-{index}"}
+
+    class LazyExecutor:
+        def __init__(self, max_workers):  # noqa: ANN001 - mirrors executor constructor.
+            self.max_workers = max_workers
+
+        def __enter__(self):  # noqa: ANN204 - mirrors executor context manager.
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001, ANN204 - mirrors executor context manager.
+            return None
+
+        def map(self, fn, iterable, *, buffersize=None):  # noqa: ANN001, ANN202 - mirrors Executor.map.
+            for item in iterable:
+                yield fn(item)
+
+    class RecordingDetector:
+        backend = "fake"
+        model_id = "fake-detector"
+        model_version = "v1"
+        checkpoint = "checkpoint-a"
+
+        def detect_batch(self, images):  # noqa: ANN001, ANN201 - mirrors detector protocol.
+            consumed_at_detect.append(consumed["records"])
+            return [[DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 2, 2))] for _image in images]
+
+    result = run_detection_pipeline(
+        records=records(),
+        detector=RecordingDetector(),
+        output_path=tmp_path / "object_detections.parquet",
+        image_loader=lambda record: _image(),
+        run_policy=DetectionRunPolicy(download_workers=1, max_inflight_images=2, detector_batch_size=2),
+        executor_factory=LazyExecutor,
+    )
+
+    assert consumed_at_detect[0] == 2
+    assert consumed_at_detect == [2, 4, 5]
+    assert result.records_seen == 5
+    assert result.images_loaded == 5
+    assert result.detections_written == 5
+
+
 def test_xie_style_evaluation_uses_iou_and_species_correctness() -> None:
     assert iou_xyxy((0, 0, 10, 10), (5, 5, 15, 15)) == pytest.approx(25 / 175)
     assert joint_detection_species_correct(

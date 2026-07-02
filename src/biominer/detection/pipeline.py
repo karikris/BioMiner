@@ -51,49 +51,46 @@ def run_detection_pipeline(
     run_policy: DetectionRunPolicy | None = None,
     executor_factory: ExecutorFactory = ThreadPoolExecutor,
 ) -> DetectionPipelineResult:
-    record_list = list(records)
     policy = detection_policy or DetectionPolicy(backend=detector.backend)
     runtime = run_policy or DetectionRunPolicy()
-    loaded = list(_load_images_bounded(record_list, image_loader=image_loader, run_policy=runtime, executor_factory=executor_factory))
-    valid = [item for item in loaded if item.image is not None]
-    batches = [valid[index : index + runtime.detector_batch_size] for index in range(0, len(valid), runtime.detector_batch_size)]
     rows: list[dict[str, Any]] = []
+    batch: list[_LoadedImage] = []
+    records_seen = 0
+    images_loaded = 0
+    image_failures = 0
     crops_created = 0
-    for batch in batches:
-        detections_by_image = detector.detect_batch([item.image for item in batch if item.image is not None])
-        for item, detections in zip(batch, detections_by_image, strict=True):
-            image = item.image
-            if image is None:
-                continue
-            detection_rows = build_detection_rows(
-                record=item.record,
-                image=image,
-                detections=detections,
-                detector_backend=detector.backend,
-                detector_model_id=detector.model_id,
-                detector_model_version=detector.model_version,
-                detector_checkpoint=detector.checkpoint,
-                policy=policy,
-            )
-            enriched = [_with_crop_metadata(row, image=image, policy=policy) for row in detection_rows]
+    for loaded in _load_images_bounded(records, image_loader=image_loader, run_policy=runtime, executor_factory=executor_factory):
+        records_seen += 1
+        if loaded.image is None:
+            image_failures += 1
+            rows.append(_image_failure_row(loaded, detector=detector))
+            continue
+        images_loaded += 1
+        batch.append(loaded)
+        if len(batch) >= runtime.detector_batch_size:
+            enriched = _detect_and_enrich_batch(batch, detector=detector, policy=policy)
             crops_created += sum(1 for row in enriched if row.get("crop_hash"))
             rows.extend(enriched)
-    rows.extend(_image_failure_row(item, detector=detector) for item in loaded if item.image is None)
+            batch = []
+    if batch:
+        enriched = _detect_and_enrich_batch(batch, detector=detector, policy=policy)
+        crops_created += sum(1 for row in enriched if row.get("crop_hash"))
+        rows.extend(enriched)
     frame = pl.DataFrame(rows) if rows else pl.DataFrame()
     output = write_parquet(frame, output_path)
     return DetectionPipelineResult(
         frame=frame,
         output_path=output,
-        records_seen=len(record_list),
-        images_loaded=len(valid),
-        image_failures=len(loaded) - len(valid),
+        records_seen=records_seen,
+        images_loaded=images_loaded,
+        image_failures=image_failures,
         detections_written=frame.filter(pl.col("detection_status") == "detected").height if frame.height and "detection_status" in frame.columns else 0,
         crops_created=crops_created,
     )
 
 
 def _load_images_bounded(
-    records: list[dict[str, Any]],
+    records: Iterable[dict[str, Any]],
     *,
     image_loader: ImageLoader,
     run_policy: DetectionRunPolicy,
@@ -107,6 +104,32 @@ def _load_images_bounded(
 
     with executor_factory(max_workers=run_policy.download_workers) as pool:
         yield from pool.map(load, records, buffersize=run_policy.max_inflight_images)
+
+
+def _detect_and_enrich_batch(
+    batch: list[_LoadedImage],
+    *,
+    detector: ObjectDetector,
+    policy: DetectionPolicy,
+) -> list[dict[str, Any]]:
+    detections_by_image = detector.detect_batch([item.image for item in batch if item.image is not None])
+    rows: list[dict[str, Any]] = []
+    for item, detections in zip(batch, detections_by_image, strict=True):
+        image = item.image
+        if image is None:
+            continue
+        detection_rows = build_detection_rows(
+            record=item.record,
+            image=image,
+            detections=detections,
+            detector_backend=detector.backend,
+            detector_model_id=detector.model_id,
+            detector_model_version=detector.model_version,
+            detector_checkpoint=detector.checkpoint,
+            policy=policy,
+        )
+        rows.extend(_with_crop_metadata(row, image=image, policy=policy) for row in detection_rows)
+    return rows
 
 
 def _with_crop_metadata(row: dict[str, Any], *, image: DecodedImage, policy: DetectionPolicy) -> dict[str, Any]:
