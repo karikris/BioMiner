@@ -11,6 +11,9 @@ from biominer.storage.uri import normalize_local_uri
 
 
 class LocalStorageBackend:
+    def __init__(self, *, prefix: str | Path = ".") -> None:
+        self.prefix = str(prefix)
+
     def read_parquet(self, uri: str | Path) -> pl.DataFrame:
         return pl.read_parquet(normalize_local_uri(uri))
 

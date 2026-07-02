@@ -41,7 +41,7 @@ from biominer.registry.scope import load_scope
 from biominer.reports.buckets import export_bucket_views
 from biominer.reports.name_evidence import build_name_evidence_report, write_name_evidence_report
 from biominer.storage.compaction import compact_parquet_shards
-from biominer.storage.config import StorageConfig, load_storage_config_from_env
+from biominer.config import StorageConfig, load_biominer_config
 from biominer.storage.factory import create_storage_backend
 from biominer.workstore.sqlite import SQLiteWorkStore
 
@@ -68,6 +68,7 @@ BIOCLIP_PREFETCH_IGNORE_PATTERNS = (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="biominer")
+    parser.add_argument("--config")
     parser.add_argument("--version", action="store_true")
     subparsers = parser.add_subparsers(dest="command")
     bioclip = subparsers.add_parser("bioclip")
@@ -207,7 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
     compact_parquet.add_argument("--dedupe-key", action="append", default=[])
     compact_parquet.add_argument("--schema-mode", choices=("strict", "diagonal_relaxed"), default="strict")
     compact_parquet.add_argument("--dry-run", action="store_true")
-    compact_parquet.add_argument("--storage-backend", choices=("local", "s3"), default="local")
+    compact_parquet.add_argument("--storage-backend", choices=("local", "s3"))
     compact_parquet.add_argument("--workstore-sqlite-path")
     qa_rate_limit = subparsers.add_parser("qa-rate-limit")
     qa_rate_limit.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
@@ -478,8 +479,14 @@ def run(args: argparse.Namespace) -> int:
             if not args.input_prefix or not args.output_prefix:
                 print(json.dumps({"error": "--input-prefix and --output-prefix must be provided together"}, indent=2, sort_keys=True))
                 return 2
-            env_config = load_storage_config_from_env()
-            storage = create_storage_backend(StorageConfig(**{**env_config.__dict__, "backend": args.storage_backend}))
+            biominer_config = load_biominer_config(args.config)
+            storage_config = StorageConfig(
+                **{
+                    **biominer_config.storage.__dict__,
+                    "backend": args.storage_backend or biominer_config.storage.backend,
+                }
+            )
+            storage = create_storage_backend(storage_config)
             workstore = SQLiteWorkStore(args.workstore_sqlite_path) if args.workstore_sqlite_path else None
             result = compact_parquet_shards(
                 storage=storage,

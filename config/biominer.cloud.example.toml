@@ -1,0 +1,17 @@
+[biominer.storage]
+backend = "s3"
+bucket = "biominer"
+prefix = "biominer"
+endpoint_url_env = "BIOMINER_S3_ENDPOINT_URL"
+access_key_id_env = "BIOMINER_S3_ACCESS_KEY_ID"
+secret_access_key_env = "BIOMINER_S3_SECRET_ACCESS_KEY"
+region = "auto"
+
+[biominer.workstore]
+backend = "postgres"
+dsn_env = "BIOMINER_WORKSTORE_DSN"
+
+[biominer.runtime]
+worker_id_env = "BIOMINER_WORKER_ID"
+default_batch_rows = 50000
+target_parquet_mb = 128
