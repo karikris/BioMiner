@@ -145,6 +145,44 @@ class SQLiteWorkStore:
             )
         return int(result.rowcount)
 
+    def register_shard(
+        self,
+        *,
+        job_name: str,
+        registry_version: str | None,
+        stage: str,
+        run_id: str,
+        worker_id: str,
+        uri: str,
+        checksum: str | None,
+        row_count: int,
+        byte_count: int | None = None,
+    ) -> None:
+        shard_id = hashlib.sha256(uri.encode("utf-8")).hexdigest()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO biominer_parquet_shards (
+                    shard_id, job_name, registry_version, stage, run_id, worker_id,
+                    uri, row_count, byte_count, checksum, committed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    shard_id,
+                    job_name,
+                    registry_version,
+                    stage,
+                    run_id,
+                    worker_id,
+                    uri,
+                    row_count,
+                    byte_count,
+                    checksum,
+                    _timestamp(),
+                ),
+            )
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
@@ -182,6 +220,29 @@ class SQLiteWorkStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_biominer_work_items_completed
                 ON biominer_work_items(job_name, registry_version, status)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS biominer_parquet_shards (
+                    shard_id TEXT PRIMARY KEY,
+                    job_name TEXT NOT NULL,
+                    registry_version TEXT,
+                    stage TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    worker_id TEXT NOT NULL,
+                    uri TEXT NOT NULL UNIQUE,
+                    row_count INTEGER NOT NULL,
+                    byte_count INTEGER,
+                    checksum TEXT,
+                    committed_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_biominer_parquet_shards_stage
+                ON biominer_parquet_shards(job_name, registry_version, stage, run_id)
                 """
             )
 

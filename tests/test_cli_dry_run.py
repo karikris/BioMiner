@@ -29,6 +29,33 @@ def test_poll_once_cli_accepts_bounded_cycle_arguments() -> None:
     assert args.max_api_calls == 3500
 
 
+def test_poll_once_cli_accepts_cloud_storage_phase2_arguments() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "poll-once",
+            "--run-id",
+            "run-1",
+            "--worker-id",
+            "worker-001",
+            "--storage-backend",
+            "local",
+            "--storage-prefix",
+            "staging",
+            "--evidence-stage",
+            "poll_once",
+            "--no-compact",
+        ]
+    )
+
+    assert args.run_id == "run-1"
+    assert args.worker_id == "worker-001"
+    assert args.storage_backend == "local"
+    assert args.storage_prefix == "staging"
+    assert args.evidence_stage == "poll_once"
+    assert args.no_compact is True
+
+
 def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch) -> None:
     runtime_python = tmp_path / "runtime" / "bin" / "python"
     runtime_python.parent.mkdir(parents=True)

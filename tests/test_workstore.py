@@ -79,6 +79,55 @@ def test_sqlite_workstore_derives_deterministic_work_key_when_missing(tmp_path) 
     assert claimed[0]["payload"] == {"term": "butterfly"}
 
 
+def test_sqlite_workstore_registers_shard_inventory(tmp_path) -> None:
+    store = SQLiteWorkStore(tmp_path / "work.sqlite")
+
+    store.register_shard(
+        job_name="poll_once",
+        registry_version="registry-v1",
+        stage="poll_once",
+        run_id="run-1",
+        worker_id="worker-1",
+        uri="staging/evidence/stage=poll_once/run_id=run-1/worker=worker-1/batch=000001.parquet",
+        checksum="sha256:abc",
+        row_count=2,
+        byte_count=123,
+    )
+    store.register_shard(
+        job_name="poll_once",
+        registry_version="registry-v1",
+        stage="poll_once",
+        run_id="run-1",
+        worker_id="worker-1",
+        uri="staging/evidence/stage=poll_once/run_id=run-1/worker=worker-1/batch=000001.parquet",
+        checksum="sha256:abc",
+        row_count=2,
+        byte_count=123,
+    )
+
+    with sqlite3.connect(store.path) as conn:
+        rows = conn.execute(
+            """
+            SELECT job_name, registry_version, stage, run_id, worker_id, uri, checksum, row_count, byte_count
+            FROM biominer_parquet_shards
+            """
+        ).fetchall()
+
+    assert rows == [
+        (
+            "poll_once",
+            "registry-v1",
+            "poll_once",
+            "run-1",
+            "worker-1",
+            "staging/evidence/stage=poll_once/run_id=run-1/worker=worker-1/batch=000001.parquet",
+            "sha256:abc",
+            2,
+            123,
+        )
+    ]
+
+
 def test_postgres_schema_and_claim_sql_are_supabase_compatible() -> None:
     for table in (
         "biominer_runs",

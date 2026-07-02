@@ -3,7 +3,9 @@ from __future__ import annotations
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
+import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import time
@@ -28,6 +30,13 @@ from biominer.flickr_fetch.query_planner import (
     split_priority,
 )
 from biominer.storage.parquet import write_parquet
+from biominer.storage.cloud import CloudStorage
+from biominer.storage.config import StorageConfig, load_storage_config_from_env
+from biominer.storage.factory import create_storage_backend
+from biominer.storage.local import LocalStorageBackend
+from biominer.storage.paths import build_evidence_shard_uri, build_raw_flickr_response_uri
+from biominer.storage.uri import is_cloud_uri, normalize_local_uri
+from biominer.workstore.base import WorkStore
 
 
 SOFT_API_CALLS_PER_HOUR = 3500
@@ -867,8 +876,21 @@ def poll_once(
     max_retries: int = DEFAULT_MAX_RETRIES,
     retry_backoff_seconds: float = 0.0,
     progress_callback: ProgressCallback | None = None,
+    run_id: str | None = None,
+    worker_id: str | None = None,
+    storage_backend: str = "local",
+    storage_prefix: str | Path | None = None,
+    evidence_stage: str = "poll_once",
+    compact_after_run: bool = True,
+    storage: CloudStorage | None = None,
+    work_store: WorkStore | None = None,
 ) -> PollOnceResult:
     state = MetadataPollState(state_db)
+    effective_run_id = run_id or _default_run_id()
+    effective_worker_id = worker_id or os.environ.get("BIOMINER_WORKER_ID") or "local"
+    output_storage = storage or _storage_backend_from_name(storage_backend)
+    raw_base_prefix = _raw_base_prefix(raw_root=raw_root, storage_prefix=storage_prefix, storage_backend=storage_backend)
+    evidence_base_prefix = _evidence_base_prefix(evidence_output=evidence_output, storage_prefix=storage_prefix)
     stale_requeued = state.requeue_stale_claims(stale_after_seconds=stale_claim_seconds)
     _progress(progress_callback, {"event": "stale_claims_requeued", "count": stale_requeued})
     state.ensure_seed_work_items()
@@ -891,6 +913,7 @@ def poll_once(
     work_items_claimed = 0
     api_calls_made = 0
     evidence_rows_written = 0
+    evidence_shard_rows = 0
     fetcher = fetch_metadata or _http_fetcher(api_key=api_key)
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -929,7 +952,14 @@ def poll_once(
                         payload, attempts = future.result()
                         api_calls_made += attempts
                         raw_written += 1
-                        _write_raw_response(raw_root=Path(raw_root), work_item_id=work_item_id, query=query, payload=payload)
+                        _write_raw_response(
+                            storage=output_storage,
+                            raw_base_prefix=str(raw_base_prefix),
+                            run_id=effective_run_id,
+                            work_item_id=work_item_id,
+                            query=query,
+                            payload=payload,
+                        )
                         total = _payload_total(payload)
                         response_pages = _payload_pages(payload)
                         response_page = _payload_page(payload)
@@ -950,6 +980,28 @@ def poll_once(
                         else:
                             records = _payload_photo_records(payload)
                             inserted, skipped, queued_count, query_hits, duplicate_hits = state.insert_source_records(records, source_query=query)
+                            shard_uri, shard_rows, shard_checksum, shard_bytes = _write_evidence_shard(
+                                storage=output_storage,
+                                evidence_base_prefix=str(evidence_base_prefix),
+                                stage=evidence_stage,
+                                run_id=effective_run_id,
+                                worker_id=effective_worker_id,
+                                work_item_id=work_item_id,
+                                payload=payload,
+                            )
+                            evidence_shard_rows += shard_rows
+                            if shard_uri and work_store:
+                                work_store.register_shard(
+                                    job_name="poll_once",
+                                    registry_version=query.registry_version,
+                                    stage=evidence_stage,
+                                    run_id=effective_run_id,
+                                    worker_id=effective_worker_id,
+                                    uri=shard_uri,
+                                    checksum=shard_checksum,
+                                    row_count=shard_rows,
+                                    byte_count=shard_bytes,
+                                )
                             records_returned = len(records)
                             records_inserted += inserted
                             duplicates += skipped
@@ -1044,8 +1096,12 @@ def poll_once(
                             },
                         )
 
-    evidence_rows_total = state.export_canonical_evidence(evidence_output)
-    evidence_rows_written = evidence_rows_total
+    if compact_after_run and not is_cloud_uri(evidence_output):
+        evidence_rows_total = state.export_canonical_evidence(evidence_output)
+        evidence_rows_written = evidence_rows_total
+    else:
+        evidence_rows_total = evidence_shard_rows
+        evidence_rows_written = evidence_shard_rows
     soft_after, hard_after = state.remaining_api_budget(max_api_calls=max_api_calls)
     result = PollOnceResult(
         state_db=Path(state_db),
@@ -1314,26 +1370,54 @@ def _validate_flickr_search_payload(payload: dict[str, Any]) -> None:
         raise FlickrFetchError("Flickr response photos.photo must be a list")
 
 
-def _write_raw_response(*, raw_root: Path, work_item_id: str, query: FlickrQuery, payload: dict[str, Any]) -> Path:
-    target_dir = raw_root / "flickr" / "photos_search" / query.search_field / _safe_query_variant(query.term)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / f"{query.lane}-{query.page:05d}-{work_item_id[:12]}.json"
-    target.write_text(json.dumps(payload, sort_keys=True, ensure_ascii=False), encoding="utf-8")
-    return target
+def _write_raw_response(
+    *,
+    storage: CloudStorage,
+    raw_base_prefix: str,
+    run_id: str,
+    work_item_id: str,
+    query: FlickrQuery,
+    payload: dict[str, Any],
+) -> str:
+    uri = build_raw_flickr_response_uri(
+        raw_base_prefix,
+        run_id=run_id,
+        query_field=query.search_field,
+        query_term=query.term,
+        lane=query.lane,
+        page=query.page,
+        work_item_id=work_item_id,
+    )
+    return storage.write_json(uri, payload)
 
 
 def _safe_query_variant(term: str) -> str:
     return "".join(char if char.isalnum() else "_" for char in term.casefold()).strip("_")
 
 
-def _write_evidence_shard(*, evidence_output: str | Path, work_item_id: str, payload: dict[str, Any]) -> int:
+def _write_evidence_shard(
+    *,
+    storage: CloudStorage,
+    evidence_base_prefix: str,
+    stage: str,
+    run_id: str,
+    worker_id: str,
+    work_item_id: str,
+    payload: dict[str, Any],
+) -> tuple[str | None, int, str | None, int | None]:
     frame = build_evidence_frame([payload], species_query="multilingual_lepidoptera")
     if frame.is_empty():
-        return 0
-    shard_root = _evidence_shard_root(Path(evidence_output))
-    shard_root.mkdir(parents=True, exist_ok=True)
-    write_parquet(frame, shard_root / f"{work_item_id}.parquet")
-    return frame.height
+        return None, 0, None, None
+    uri = build_evidence_shard_uri(
+        evidence_base_prefix,
+        stage=stage,
+        run_id=run_id,
+        worker_id=worker_id,
+        batch_id=work_item_id,
+    )
+    written = storage.write_parquet_shard(uri, frame)
+    checksum, byte_count = _local_artifact_metadata(written)
+    return written, frame.height, checksum, byte_count
 
 
 def _compact_evidence_output(evidence_output: str | Path) -> int:
@@ -1364,6 +1448,55 @@ def _ensure_legacy_evidence_shard(*, output: Path, shard_root: Path) -> None:
 
 def _evidence_shard_root(output: Path) -> Path:
     return output.parent / f"{output.stem}_pages"
+
+
+def _storage_backend_from_name(storage_backend: str) -> CloudStorage:
+    backend = storage_backend.lower()
+    if backend == "local":
+        return LocalStorageBackend()
+    config = load_storage_config_from_env()
+    return create_storage_backend(StorageConfig(**{**config.__dict__, "backend": backend}))
+
+
+def _raw_base_prefix(*, raw_root: str | Path, storage_prefix: str | Path | None, storage_backend: str) -> str:
+    if storage_backend.lower() != "local" and storage_prefix is not None:
+        return str(storage_prefix)
+    raw_value = str(raw_root).rstrip("/")
+    if is_cloud_uri(raw_value):
+        return raw_value.removesuffix("/raw")
+    raw = Path(raw_root)
+    return str(raw.parent) if raw.name == "raw" else str(raw)
+
+
+def _evidence_base_prefix(*, evidence_output: str | Path, storage_prefix: str | Path | None) -> str:
+    if storage_prefix is not None:
+        return str(storage_prefix)
+    output_value = str(evidence_output).rstrip("/")
+    if is_cloud_uri(output_value):
+        prefix, separator, _filename = output_value.rpartition("/")
+        if not separator:
+            return output_value
+        return prefix.removesuffix("/evidence")
+    output = Path(evidence_output)
+    parent = output.parent
+    return str(parent.parent) if parent.name == "evidence" else str(parent)
+
+
+def _default_run_id() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
+
+
+def _local_artifact_metadata(uri: str) -> tuple[str | None, int | None]:
+    if is_cloud_uri(uri):
+        return None, None
+    try:
+        path = normalize_local_uri(uri)
+    except ValueError:
+        return None, None
+    if not path.exists() or not path.is_file():
+        return None, None
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return f"sha256:{digest}", path.stat().st_size
 
 
 def _payload_total(payload: dict[str, Any]) -> int:

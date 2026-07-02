@@ -171,6 +171,12 @@ def build_parser() -> argparse.ArgumentParser:
     poll_once_parser.add_argument("--raw-root", default="data/raw")
     poll_once_parser.add_argument("--evidence-output", default="staging/evidence/poll_once_evidence.parquet")
     poll_once_parser.add_argument("--api-key-env", default="FLICKR_API_KEY")
+    poll_once_parser.add_argument("--run-id")
+    poll_once_parser.add_argument("--worker-id")
+    poll_once_parser.add_argument("--storage-backend", choices=("local", "s3"), default="local")
+    poll_once_parser.add_argument("--storage-prefix")
+    poll_once_parser.add_argument("--evidence-stage", default="poll_once")
+    poll_once_parser.add_argument("--no-compact", action="store_true")
     apply_rules = subparsers.add_parser("apply-rules")
     apply_rules.add_argument("--evidence", required=True)
     apply_rules.add_argument("--output", required=True)
@@ -421,6 +427,12 @@ def run(args: argparse.Namespace) -> int:
             api_key=os.environ.get(args.api_key_env),
             workers=args.workers,
             stale_claim_seconds=args.stale_claim_seconds,
+            run_id=args.run_id,
+            worker_id=args.worker_id,
+            storage_backend=args.storage_backend,
+            storage_prefix=args.storage_prefix,
+            evidence_stage=args.evidence_stage,
+            compact_after_run=not args.no_compact,
         )
         print(json.dumps({**result.__dict__, "state_db": str(result.state_db)}, indent=2, sort_keys=True))
         return 0

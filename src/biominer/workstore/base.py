@@ -22,3 +22,18 @@ class WorkStore(Protocol):
 
     def stale_claims_to_pending(self, stale_after_seconds: int) -> int:
         ...
+
+    def register_shard(
+        self,
+        *,
+        job_name: str,
+        registry_version: str | None,
+        stage: str,
+        run_id: str,
+        worker_id: str,
+        uri: str,
+        checksum: str | None,
+        row_count: int,
+        byte_count: int | None = None,
+    ) -> None:
+        ...

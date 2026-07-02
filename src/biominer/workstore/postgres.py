@@ -35,6 +35,22 @@ class PostgresWorkStore:
         self._require_psycopg()
         raise NotImplementedError("PostgresWorkStore stale claim requeue will be implemented in the cloud migration phase")
 
+    def register_shard(
+        self,
+        *,
+        job_name: str,
+        registry_version: str | None,
+        stage: str,
+        run_id: str,
+        worker_id: str,
+        uri: str,
+        checksum: str | None,
+        row_count: int,
+        byte_count: int | None = None,
+    ) -> None:
+        self._require_psycopg()
+        raise NotImplementedError("PostgresWorkStore shard inventory will be implemented in the cloud migration phase")
+
     @staticmethod
     def _require_psycopg() -> None:
         try:

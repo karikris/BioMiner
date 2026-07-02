@@ -1,6 +1,6 @@
-# Cloud Storage Phase 1
+# Cloud Storage Integration
 
-Phase 1 adds interfaces and local-compatible implementations only. The default BioMiner runtime remains local filesystem storage plus SQLite operational state.
+Phase 1 added interfaces and local-compatible implementations. Phase 2 starts routing Step 1 `poll_once` raw responses and evidence rows onto immutable local/cloud-compatible paths. The default BioMiner runtime remains local filesystem storage plus SQLite operational state.
 
 ## Split
 
@@ -15,11 +15,11 @@ Phase 1 adds interfaces and local-compatible implementations only. The default B
 
 - work queue rows;
 - completed work keys;
+- shard inventory;
 - API-call ledgers in later phases;
 - run manifests and resume state in later phases;
-- shard inventory in later phases.
 
-Local mode uses `LocalStorageBackend` and `SQLiteWorkStore`. Backblaze B2 is represented by `S3StorageBackend` through the S3-compatible API, using `s3://...` URIs plus `BIOMINER_S3_ENDPOINT_URL`. Supabase Postgres is represented by `PostgresWorkStore` scaffolding and schema SQL; it is not wired into the Flickr poller yet.
+Local mode uses `LocalStorageBackend` and `SQLiteWorkStore`. Backblaze B2 is represented by `S3StorageBackend` through the S3-compatible API, using `s3://...` URIs plus `BIOMINER_S3_ENDPOINT_URL`. Supabase Postgres is represented by `PostgresWorkStore` scaffolding and schema SQL.
 
 ## Configuration
 
@@ -50,11 +50,11 @@ BIOMINER_WORKSTORE_BACKEND=postgres
 BIOMINER_WORKSTORE_DSN=postgresql://...
 ```
 
-`psycopg` is intentionally optional for Phase 1. Importing BioMiner does not require it; Postgres methods raise a clear runtime error if it is absent.
+`psycopg` is intentionally optional. Importing BioMiner does not require it; Postgres methods raise a clear runtime error if it is absent.
 
 ## Shard Invariant
 
-Workers must not append into one shared cloud Parquet file. Each worker writes immutable shard objects using unique paths and then registers the shard in the control store in a later phase.
+Workers must not append into one shared cloud Parquet file. Each worker writes immutable shard objects using unique paths and then registers the shard in the control store when available.
 
 Preferred path shape:
 
@@ -69,3 +69,29 @@ s3://biominer/biominer/evidence/stage=poll_once/run_id=run-1/worker=w1/batch=000
 ```
 
 Compaction remains a later phase using Polars and DuckDB over shard sets.
+
+## Phase 2 Paths
+
+`poll_once` writes raw Flickr responses through `CloudStorage.write_json`:
+
+```text
+raw/source=flickr/method=photos_search/run_id=<run_id>/field=<text|tags>/term=<safe_term>/lane=<lane>/page=<page>/work_item_id=<work_item_id>.json
+```
+
+It writes per-work-item evidence shards through `CloudStorage.write_parquet_shard`:
+
+```text
+evidence/stage=poll_once/run_id=<run_id>/worker=<worker_id>/batch=<work_item_id>.parquet
+```
+
+Local compatibility remains: old-style `--raw-root data/raw --evidence-output staging/evidence/poll_once_evidence.parquet` still writes the compacted local evidence output after the run. Passing `--no-compact` skips that compatibility output and leaves only immutable shards.
+
+Reports and registry pointers use cloud-safe helper paths:
+
+```text
+reports/run_id=<run_id>/<report_name>.json
+registry/version=<registry_version>/<filename>
+registry/current/manifest.json
+```
+
+For object storage, registry `current` should be represented by a JSON pointer payload instead of POSIX symlink semantics.

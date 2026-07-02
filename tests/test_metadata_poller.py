@@ -12,6 +12,7 @@ import polars as pl
 
 from biominer.flickr_fetch.query_planner import BBOX_PAGE_SIZE, COUNT_PROBE_PAGE_SIZE, NORMAL_PAGE_SIZE, FlickrQuery, fixed_upload_date_slices
 from biominer.flickr_fetch.metadata_poller import MetadataPollState, _payload_page, _payload_pages, _payload_perpage, poll_once
+from biominer.workstore.sqlite import SQLiteWorkStore
 
 
 def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
@@ -299,6 +300,73 @@ def test_poll_once_compacts_evidence_shards_without_duplicate_existing_rows(tmp_
     assert second.evidence_rows_written == 2
     assert second.evidence_rows_total == 2
     assert frame.height == 2
+
+
+def test_poll_once_writes_immutable_local_raw_json_and_evidence_shards(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="Papilio demoleus / lime butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+    work_store = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence" / "poll.parquet",
+        max_api_calls=1,
+        fetch_metadata=lambda item: {
+            "photos": {
+                "total": "1",
+                "pages": "1",
+                "page": "1",
+                "perpage": "250",
+                "photo": [{"id": "1", "title": "lime butterfly", "url_l": "https://live.staticflickr.com/1.jpg"}],
+            }
+        },
+        run_id="run-1",
+        worker_id="worker-001",
+        storage_prefix=tmp_path / "staging",
+        compact_after_run=False,
+        work_store=work_store,
+    )
+
+    raw_files = list((tmp_path / "raw").rglob("*.json"))
+    evidence_shards = list((tmp_path / "staging" / "evidence" / "stage=poll_once" / "run_id=run-1" / "worker=worker-001").glob("*.parquet"))
+    assert result.evidence_rows_written == 1
+    assert result.evidence_rows_total == 1
+    assert raw_files
+    assert "source=flickr/method=photos_search/run_id=run-1/field=text/term=papilio_demoleus_lime_butterfly" in raw_files[0].as_posix()
+    assert evidence_shards
+    assert not (tmp_path / "evidence" / "poll.parquet").exists()
+    assert pl.read_parquet(evidence_shards).height == 1
+    with sqlite3.connect(work_store.path) as conn:
+        shard = conn.execute("SELECT stage, run_id, worker_id, uri, row_count FROM biominer_parquet_shards").fetchone()
+    assert shard[0:3] == ("poll_once", "run-1", "worker-001")
+    assert shard[3].endswith(".parquet")
+    assert shard[4] == 1
+
+
+def test_poll_once_old_style_local_arguments_still_write_compacted_output(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+    evidence_output = tmp_path / "evidence" / "poll.parquet"
+
+    poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=evidence_output,
+        max_api_calls=1,
+        fetch_metadata=lambda item: {
+            "photos": {
+                "total": "1",
+                "pages": "1",
+                "page": "1",
+                "perpage": "250",
+                "photo": [{"id": "1", "title": "butterfly", "url_l": "https://live.staticflickr.com/1.jpg"}],
+            }
+        },
+    )
+
+    assert evidence_output.exists()
+    assert pl.read_parquet(evidence_output).height == 1
 
 
 def test_poll_once_folds_duplicate_query_terms_onto_source_record(tmp_path) -> None:

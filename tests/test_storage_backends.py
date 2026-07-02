@@ -5,6 +5,15 @@ from pathlib import Path
 import polars as pl
 
 from biominer.storage.local import LocalStorageBackend
+from biominer.storage.paths import (
+    build_evidence_shard_uri,
+    build_raw_flickr_response_uri,
+    build_registry_current_pointer,
+    build_registry_current_uri,
+    build_registry_version_uri,
+    build_report_uri,
+    safe_path_component,
+)
 from biominer.storage.shard_paths import build_parquet_shard_uri
 from biominer.storage.uri import is_cloud_uri, is_s3_uri, join_uri, normalize_local_uri
 
@@ -98,3 +107,63 @@ def test_build_parquet_shard_uri_is_stable_for_local_and_s3() -> None:
         worker_id="w",
         batch_id="abc",
     ) == "staging/evidence/stage=filter/run_id=r/worker=w/batch=abc.parquet"
+
+
+def test_build_evidence_shard_uri_local_and_s3() -> None:
+    assert build_evidence_shard_uri(
+        "staging",
+        stage="poll_once",
+        run_id="run-1",
+        worker_id="worker-1",
+        batch_id=1,
+    ) == "staging/evidence/stage=poll_once/run_id=run-1/worker=worker-1/batch=000001.parquet"
+    assert build_evidence_shard_uri(
+        "s3://biominer/biominer",
+        stage="poll_once",
+        run_id="run-1",
+        worker_id="worker-1",
+        batch_id=1,
+    ) == "s3://biominer/biominer/evidence/stage=poll_once/run_id=run-1/worker=worker-1/batch=000001.parquet"
+
+
+def test_raw_flickr_response_uri_is_immutable_and_safe() -> None:
+    uri = build_raw_flickr_response_uri(
+        "s3://biominer/biominer",
+        run_id="2026-07-02T000000Z",
+        query_field="text",
+        query_term="Papilio demoleus / lime butterfly",
+        lane="normal_page",
+        page=1,
+        work_item_id="abc123",
+    )
+
+    assert safe_path_component("Papilio demoleus / lime butterfly") == "papilio_demoleus_lime_butterfly"
+    assert uri == (
+        "s3://biominer/biominer/raw/source=flickr/method=photos_search/"
+        "run_id=2026-07-02T000000Z/field=text/term=papilio_demoleus_lime_butterfly/"
+        "lane=normal_page/page=000001/work_item_id=abc123.json"
+    )
+
+
+def test_report_and_registry_uri_helpers_are_cloud_safe() -> None:
+    assert build_report_uri("reports", run_id="run-1", report_name="step1_report") == "reports/run_id=run-1/step1_report.json"
+    assert build_report_uri("s3://biominer/biominer", run_id="run-1", report_name="step1_report") == (
+        "s3://biominer/biominer/reports/run_id=run-1/step1_report.json"
+    )
+    assert build_registry_version_uri("s3://biominer/biominer", registry_version="butterflies-v1", filename="taxa.parquet") == (
+        "s3://biominer/biominer/registry/version=butterflies-v1/taxa.parquet"
+    )
+    assert build_registry_current_uri("s3://biominer/biominer", filename="manifest.json") == (
+        "s3://biominer/biominer/registry/current/manifest.json"
+    )
+    assert build_registry_current_pointer(
+        registry_version="butterflies-v1",
+        registry_prefix="s3://biominer/biominer/registry/version=butterflies-v1",
+        manifest_uri="s3://biominer/biominer/registry/version=butterflies-v1/manifest.json",
+        promoted_at="2026-07-02T00:00:00Z",
+    ) == {
+        "registry_version": "butterflies-v1",
+        "registry_prefix": "s3://biominer/biominer/registry/version=butterflies-v1",
+        "manifest_uri": "s3://biominer/biominer/registry/version=butterflies-v1/manifest.json",
+        "promoted_at": "2026-07-02T00:00:00Z",
+    }

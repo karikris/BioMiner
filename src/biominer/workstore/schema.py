@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS biominer_parquet_shards (
   job_name text NOT NULL,
   registry_version text,
   stage text NOT NULL,
+  run_id text NOT NULL,
+  worker_id text NOT NULL,
   uri text NOT NULL UNIQUE,
   row_count bigint,
   byte_count bigint,
