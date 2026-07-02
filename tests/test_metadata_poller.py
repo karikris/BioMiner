@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+import json
 import sqlite3
 import threading
 from pathlib import Path
@@ -28,6 +29,10 @@ def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
         api_columns = {
             row[1]
             for row in conn.execute("PRAGMA table_info(api_call_ledger)").fetchall()
+        }
+        source_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(source_records)").fetchall()
         }
 
     assert {
@@ -57,6 +62,116 @@ def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
         "accepted_scientific_name",
     }.issubset(work_columns)
     assert {"started_at", "finished_at", "duration_sec", "http_status"}.issubset(api_columns)
+    assert {
+        "text_search_terms_json",
+        "tag_search_terms_json",
+        "all_query_labels_json",
+        "query_definition_ids_json",
+        "accepted_taxon_keys_json",
+        "family_keys_json",
+        "genus_keys_json",
+        "species_keys_json",
+        "registry_versions_json",
+        "query_hit_count",
+        "duplicate_query_hit_count",
+        "last_seen_at",
+    }.issubset(source_columns)
+
+
+def test_metadata_poller_migrates_existing_source_records_and_reads_legacy_query_hits(tmp_path) -> None:
+    db_path = tmp_path / "poller.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE source_records (
+                source TEXT NOT NULL,
+                flickr_photo_id TEXT NOT NULL,
+                image_url TEXT NOT NULL,
+                image_url_kind TEXT NOT NULL,
+                source_record_hash TEXT NOT NULL,
+                query_term TEXT NOT NULL,
+                query_language TEXT NOT NULL,
+                query_field TEXT NOT NULL,
+                raw_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (source, flickr_photo_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO source_records (
+                source, flickr_photo_id, image_url, image_url_kind, source_record_hash,
+                query_term, query_language, query_field, raw_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "flickr",
+                "1",
+                "https://live.staticflickr.com/1_l.jpg",
+                "url_l",
+                "hash",
+                "Papilio",
+                "en",
+                "text",
+                json.dumps({"id": "1", "url_l": "https://live.staticflickr.com/1_l.jpg"}),
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+        conn.execute(
+            """
+            CREATE TABLE source_record_query_hits (
+                source TEXT NOT NULL,
+                flickr_photo_id TEXT NOT NULL,
+                image_url TEXT NOT NULL,
+                query_field TEXT NOT NULL,
+                query_term TEXT NOT NULL,
+                query_language TEXT NOT NULL,
+                query_lane TEXT NOT NULL,
+                query_page INTEGER NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                PRIMARY KEY (
+                    source, flickr_photo_id, image_url,
+                    query_field, query_term, query_language
+                )
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO source_record_query_hits (
+                source, flickr_photo_id, image_url, query_field, query_term,
+                query_language, query_lane, query_page, first_seen_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "flickr",
+                "1",
+                "https://live.staticflickr.com/1_l.jpg",
+                "tags",
+                "Papilionidae",
+                "en",
+                "normal_page",
+                1,
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+
+    state = MetadataPollState(db_path)
+
+    with sqlite3.connect(state.path) as conn:
+        source_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(source_records)").fetchall()
+        }
+    row = state.source_records_with_query_provenance().to_dicts()[0]
+
+    assert "all_query_labels_json" in source_columns
+    assert row["all_query_labels"] == ["tags:Papilionidae"]
+    assert row["tag_search_terms"] == ["Papilionidae"]
+    assert row["query_hit_count"] == 1
 
 
 def test_metadata_state_persists_registry_query_provenance_idempotently(tmp_path) -> None:
@@ -130,9 +245,10 @@ def test_poll_once_fetches_metadata_only_dedupes_and_queues_image_urls(tmp_path)
     assert result.source_records_inserted == 2
     assert result.duplicate_records_skipped == 1
     assert result.image_urls_queued == 2
-    assert result.evidence_rows_written == 3
-    assert result.evidence_rows_total == 3
-    assert len(list((tmp_path / "evidence" / "poll_pages").glob("*.parquet"))) == 1
+    assert result.evidence_rows_written == 2
+    assert result.evidence_rows_total == 2
+    assert pl.read_parquet(tmp_path / "evidence" / "poll.parquet").height == 2
+    assert not list((tmp_path / "evidence" / "poll_pages").glob("*.parquet"))
     assert list((tmp_path / "raw").rglob("*.json"))
     assert not list(tmp_path.rglob("*.jpg"))
     with sqlite3.connect(state.path) as conn:
@@ -180,12 +296,12 @@ def test_poll_once_compacts_evidence_shards_without_duplicate_existing_rows(tmp_
     frame = pl.read_parquet(evidence_output)
     assert first.evidence_rows_written == 1
     assert first.evidence_rows_total == 1
-    assert second.evidence_rows_written == 1
+    assert second.evidence_rows_written == 2
     assert second.evidence_rows_total == 2
     assert frame.height == 2
 
 
-def test_poll_once_preserves_duplicate_query_hits_for_source_record(tmp_path) -> None:
+def test_poll_once_folds_duplicate_query_terms_onto_source_record(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     state.enqueue_work_item(FlickrQuery(term="Papilio", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
     state.enqueue_work_item(FlickrQuery(term="Papilionidae", language="en", search_field="tags", lane="normal_page", page=1, per_page=250))
@@ -216,12 +332,20 @@ def test_poll_once_preserves_duplicate_query_hits_for_source_record(tmp_path) ->
     assert result.duplicate_records_skipped == 1
     assert result.query_hits_inserted == 2
     with sqlite3.connect(state.path) as conn:
-        source_rows = conn.execute("SELECT query_field, query_term FROM source_records").fetchall()
-        query_hits = conn.execute(
-            "SELECT query_field, query_term FROM source_record_query_hits ORDER BY query_field, query_term"
-        ).fetchall()
-    assert source_rows == [("text", "Papilio")]
-    assert query_hits == [("tags", "Papilionidae"), ("text", "Papilio")]
+        row = conn.execute(
+            """
+            SELECT query_field, query_term, text_search_terms_json, tag_search_terms_json,
+                   all_query_labels_json, query_hit_count, duplicate_query_hit_count
+            FROM source_records
+            """
+        ).fetchone()
+        query_hits = conn.execute("SELECT count(*) FROM source_record_query_hits").fetchone()[0]
+    assert row[:2] == ("text", "Papilio")
+    assert json.loads(row[2]) == ["Papilio"]
+    assert json.loads(row[3]) == ["Papilionidae"]
+    assert json.loads(row[4]) == ["text:Papilio", "tags:Papilionidae"]
+    assert row[5:] == (2, 0)
+    assert query_hits == 0
 
 
 def test_poll_once_keeps_one_source_record_and_tracks_image_url_history(tmp_path) -> None:
@@ -263,7 +387,9 @@ def test_poll_once_keeps_one_source_record_and_tracks_image_url_history(tmp_path
     with sqlite3.connect(state.path) as conn:
         source_rows = conn.execute("SELECT flickr_photo_id, image_url FROM source_records").fetchall()
         url_rows = conn.execute("SELECT image_url, image_url_kind FROM source_record_image_urls ORDER BY image_url").fetchall()
-        query_hits = conn.execute("SELECT query_field, image_url FROM source_record_query_hits ORDER BY query_field").fetchall()
+        provenance = conn.execute(
+            "SELECT text_search_terms_json, tag_search_terms_json, all_query_labels_json, query_hit_count FROM source_records"
+        ).fetchone()
     assert first.source_records_inserted == 1
     assert second.source_records_inserted == 0
     assert second.duplicate_records_skipped == 1
@@ -272,10 +398,10 @@ def test_poll_once_keeps_one_source_record_and_tracks_image_url_history(tmp_path
         ("https://live.staticflickr.com/1_large.jpg", "url_l"),
         ("https://live.staticflickr.com/1_medium.jpg", "url_m"),
     ]
-    assert query_hits == [
-        ("tags", "https://live.staticflickr.com/1_large.jpg"),
-        ("text", "https://live.staticflickr.com/1_large.jpg"),
-    ]
+    assert json.loads(provenance[0]) == ["Papilio"]
+    assert json.loads(provenance[1]) == ["Papilio"]
+    assert json.loads(provenance[2]) == ["text:Papilio", "tags:Papilio"]
+    assert provenance[3] == 2
 
 
 def test_export_source_records_with_query_provenance_lists_all_keywords(tmp_path) -> None:
@@ -302,10 +428,80 @@ def test_export_source_records_with_query_provenance_lists_all_keywords(tmp_path
     assert row["first_query_label"] == "text:Papilio"
     assert row["first_query_field"] == "text"
     assert row["first_query_term"] == "Papilio"
-    assert row["all_query_labels"] == ["tags:Papilionidae", "text:Papilio"]
-    assert row["all_query_terms"] == ["Papilionidae", "Papilio"]
-    assert row["all_query_fields"] == ["tags", "text"]
+    assert row["text_search_terms"] == ["Papilio"]
+    assert row["tag_search_terms"] == ["Papilionidae"]
+    assert row["all_query_labels"] == ["text:Papilio", "tags:Papilionidae"]
+    assert row["all_query_terms"] == ["Papilio", "Papilionidae"]
+    assert row["all_query_fields"] == ["text", "tags"]
     assert row["query_hit_count"] == 2
+    assert row["duplicate_query_hit_count"] == 0
+
+
+def test_poll_once_writes_one_evidence_row_with_folded_query_terms(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="Papilio", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+    state.enqueue_work_item(FlickrQuery(term="Papilionidae", language="en", search_field="tags", lane="normal_page", page=1, per_page=250))
+    evidence_output = tmp_path / "evidence" / "poll.parquet"
+
+    poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=evidence_output,
+        max_api_calls=2,
+        fetch_metadata=lambda item: {
+            "photos": {
+                "total": "1",
+                "pages": "1",
+                "page": "1",
+                "perpage": "250",
+                "photo": [{"id": "123", "title": "swallowtail", "url_l": "https://live.staticflickr.com/123_l.jpg"}],
+            }
+        },
+    )
+
+    frame = pl.read_parquet(evidence_output)
+    row = frame.to_dicts()[0]
+
+    assert frame.height == 1
+    assert row["text_search_terms"] == ["Papilio"]
+    assert row["tag_search_terms"] == ["Papilionidae"]
+    assert row["all_query_labels"] == ["text:Papilio", "tags:Papilionidae"]
+    assert row["query_hit_count"] == 2
+
+
+def test_poll_once_does_not_duplicate_same_field_term_on_rerun(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="Papilio", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+    state.enqueue_work_item(FlickrQuery(term="Papilio", language="en", search_field="text", lane="normal_page", page=2, per_page=250))
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence.parquet",
+        max_api_calls=2,
+        fetch_metadata=lambda item: {
+            "photos": {
+                "total": "1",
+                "pages": "2",
+                "page": str(item.page),
+                "perpage": "250",
+                "photo": [{"id": "1", "title": "swallowtail", "url_l": "https://live.staticflickr.com/1_l.jpg"}],
+            }
+        },
+    )
+
+    with sqlite3.connect(state.path) as conn:
+        row = conn.execute(
+            "SELECT text_search_terms_json, all_query_labels_json, query_hit_count, duplicate_query_hit_count FROM source_records"
+        ).fetchone()
+
+    assert result.source_records_inserted == 1
+    assert result.duplicate_records_skipped == 1
+    assert result.query_hits_inserted == 1
+    assert result.duplicate_query_hits_skipped == 1
+    assert json.loads(row[0]) == ["Papilio"]
+    assert json.loads(row[1]) == ["text:Papilio"]
+    assert row[2:] == (1, 1)
 
 
 def test_poll_once_records_count_probes_and_enqueues_pages(tmp_path) -> None:

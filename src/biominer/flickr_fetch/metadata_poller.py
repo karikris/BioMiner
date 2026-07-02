@@ -12,7 +12,7 @@ from typing import Any, Callable
 import httpx
 import polars as pl
 
-from biominer.filter.extractor import build_evidence_frame
+from biominer.filter.extractor import build_evidence_frame, extract_photo_evidence
 from biominer.flickr_fetch.endpoints import FLICKR_REST_BASE_URL, SEARCH_METHOD
 from biominer.flickr_fetch.query_planner import (
     FLICKR_SEARCH_RESULT_WINDOW,
@@ -429,8 +429,8 @@ class MetadataPollState:
         unique_records = deduplicate_photo_records(records)
         skipped = len(records) - len(unique_records)
         queued = 0
-        query_hits_inserted = 0
-        duplicate_query_hits = 0
+        query_terms_added = 0
+        duplicate_query_terms = 0
         with self._connect() as conn:
             for record in unique_records:
                 photo_id = str(record.get("id") or "")
@@ -459,7 +459,6 @@ class MetadataPollState:
                     """,
                     ("flickr", photo_id),
                 ).fetchone()
-                canonical_image_url = str(existing["image_url"]) if existing else image_url
                 source_inserted = False
                 if existing is None:
                     result = conn.execute(
@@ -485,31 +484,9 @@ class MetadataPollState:
                         ),
                     )
                     source_inserted = bool(result.rowcount)
-                query_result = conn.execute(
-                    """
-                    INSERT OR IGNORE INTO source_record_query_hits (
-                        source, flickr_photo_id, image_url, query_field,
-                        query_term, query_language, query_lane, query_page,
-                        first_seen_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        "flickr",
-                        photo_id,
-                        canonical_image_url,
-                        source_query.search_field,
-                        source_query.term,
-                        source_query.language,
-                        source_query.lane,
-                        source_query.page,
-                        _timestamp(),
-                    ),
-                )
-                if query_result.rowcount:
-                    query_hits_inserted += 1
-                else:
-                    duplicate_query_hits += 1
+                terms_added, duplicate_terms = _merge_query_provenance(conn, "flickr", photo_id, source_query)
+                query_terms_added += terms_added
+                duplicate_query_terms += duplicate_terms
                 if source_inserted:
                     inserted += 1
                     queue_result = conn.execute(
@@ -533,35 +510,46 @@ class MetadataPollState:
                     queued += int(queue_result.rowcount)
                 else:
                     skipped += 1
-        return inserted, skipped, queued, query_hits_inserted, duplicate_query_hits
+        return inserted, skipped, queued, query_terms_added, duplicate_query_terms
 
     def source_records_with_query_provenance(self) -> pl.DataFrame:
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT
-                    source_records.source,
-                    source_records.flickr_photo_id,
-                    source_records.image_url,
-                    source_records.image_url_kind,
-                    source_records.query_field AS first_query_field,
-                    source_records.query_term AS first_query_term,
-                    source_records.query_language AS first_query_language,
-                    source_record_query_hits.query_field,
-                    source_record_query_hits.query_term
+                    source,
+                    flickr_photo_id,
+                    image_url,
+                    image_url_kind,
+                    query_field AS first_query_field,
+                    query_term AS first_query_term,
+                    query_language AS first_query_language,
+                    text_search_terms_json,
+                    tag_search_terms_json,
+                    all_query_labels_json,
+                    query_hit_count,
+                    duplicate_query_hit_count
                 FROM source_records
-                LEFT JOIN source_record_query_hits
-                  ON source_record_query_hits.source = source_records.source
-                 AND source_record_query_hits.flickr_photo_id = source_records.flickr_photo_id
-                 AND source_record_query_hits.image_url = source_records.image_url
-                ORDER BY source_records.flickr_photo_id, source_record_query_hits.query_field, source_record_query_hits.query_term
+                ORDER BY source, flickr_photo_id
                 """
             ).fetchall()
-        grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+            fallback_hits = _legacy_query_hits_by_photo(conn)
+        output: list[dict[str, Any]] = []
         for row in rows:
-            key = (str(row["source"]), str(row["flickr_photo_id"]), str(row["image_url"]))
-            item = grouped.setdefault(
-                key,
+            first_query_label = f"{row['first_query_field']}:{row['first_query_term']}"
+            text_terms = _json_list(row["text_search_terms_json"])
+            tag_terms = _json_list(row["tag_search_terms_json"])
+            labels = _json_list(row["all_query_labels_json"])
+            if not labels:
+                legacy = fallback_hits.get((str(row["source"]), str(row["flickr_photo_id"])), [])
+                for field, term in legacy:
+                    _append_unique(labels, f"{field}:{term}")
+                    if field == "text":
+                        _append_unique(text_terms, term)
+                    if field == "tags":
+                        _append_unique(tag_terms, term)
+            all_terms = [*text_terms, *tag_terms]
+            output.append(
                 {
                     "source": row["source"],
                     "flickr_photo_id": row["flickr_photo_id"],
@@ -570,19 +558,96 @@ class MetadataPollState:
                     "first_query_field": row["first_query_field"],
                     "first_query_term": row["first_query_term"],
                     "first_query_language": row["first_query_language"],
-                    "first_query_label": f"{row['first_query_field']}:{row['first_query_term']}",
-                    "all_query_labels": [],
-                    "all_query_terms": [],
-                    "all_query_fields": [],
-                    "query_hit_count": 0,
-                },
+                    "first_query_label": first_query_label,
+                    "text_search_terms": text_terms,
+                    "tag_search_terms": tag_terms,
+                    "all_query_labels": labels,
+                    "all_query_terms": all_terms,
+                    "all_query_fields": _query_fields_from_labels(labels),
+                    "query_hit_count": int(row["query_hit_count"] or len(labels)),
+                    "duplicate_query_hit_count": int(row["duplicate_query_hit_count"] or 0),
+                }
             )
-            if row["query_field"] and row["query_term"]:
-                item["all_query_labels"].append(f"{row['query_field']}:{row['query_term']}")
-                item["all_query_terms"].append(row["query_term"])
-                item["all_query_fields"].append(row["query_field"])
-                item["query_hit_count"] += 1
-        return pl.DataFrame(list(grouped.values())) if grouped else pl.DataFrame()
+        return pl.DataFrame(output) if output else pl.DataFrame()
+
+    def canonical_source_records_frame(self) -> pl.DataFrame:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    source,
+                    flickr_photo_id,
+                    image_url,
+                    image_url_kind,
+                    query_field,
+                    query_term,
+                    query_language,
+                    raw_json,
+                    text_search_terms_json,
+                    tag_search_terms_json,
+                    all_query_labels_json,
+                    query_definition_ids_json,
+                    accepted_taxon_keys_json,
+                    family_keys_json,
+                    genus_keys_json,
+                    species_keys_json,
+                    registry_versions_json,
+                    query_hit_count,
+                    duplicate_query_hit_count
+                FROM source_records
+                WHERE image_url != ''
+                ORDER BY source, flickr_photo_id
+                """
+            ).fetchall()
+            fallback_hits = _legacy_query_hits_by_photo(conn)
+        evidence_rows: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                photo = json.loads(str(row["raw_json"]))
+            except json.JSONDecodeError:
+                continue
+            evidence = extract_photo_evidence(photo, species_query="multilingual_lepidoptera")
+            text_terms = _json_list(row["text_search_terms_json"])
+            tag_terms = _json_list(row["tag_search_terms_json"])
+            labels = _json_list(row["all_query_labels_json"])
+            if not labels:
+                legacy = fallback_hits.get((str(row["source"]), str(row["flickr_photo_id"])), [])
+                for field, term in legacy:
+                    _append_unique(labels, f"{field}:{term}")
+                    if field == "text":
+                        _append_unique(text_terms, term)
+                    if field == "tags":
+                        _append_unique(tag_terms, term)
+            evidence.update(
+                {
+                    "first_query_field": row["query_field"],
+                    "first_query_term": row["query_term"],
+                    "first_query_language": row["query_language"],
+                    "text_search_terms": text_terms,
+                    "tag_search_terms": tag_terms,
+                    "all_query_labels": labels,
+                    "all_query_terms": [*text_terms, *tag_terms],
+                    "all_query_fields": _query_fields_from_labels(labels),
+                    "query_hit_count": int(row["query_hit_count"] or len(labels)),
+                    "duplicate_query_hit_count": int(row["duplicate_query_hit_count"] or 0),
+                    "query_definition_ids": _json_list(row["query_definition_ids_json"]),
+                    "discovery_accepted_taxon_keys": _json_list(row["accepted_taxon_keys_json"]),
+                    "discovery_family_keys": _json_list(row["family_keys_json"]),
+                    "discovery_genus_keys": _json_list(row["genus_keys_json"]),
+                    "discovery_species_keys": _json_list(row["species_keys_json"]),
+                    "registry_versions": _json_list(row["registry_versions_json"]),
+                }
+            )
+            evidence_rows.append(evidence)
+        empty = build_evidence_frame([], species_query="multilingual_lepidoptera")
+        return pl.DataFrame(evidence_rows, schema=empty.schema) if evidence_rows else empty
+
+    def export_canonical_evidence(self, output_path: str | Path) -> int:
+        frame = self.canonical_source_records_frame()
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        write_parquet(frame, output)
+        return frame.height
 
     def _init_db(self) -> None:
         with self._connect() as conn:
@@ -661,6 +726,7 @@ class MetadataPollState:
                 )
                 """
             )
+            self._ensure_source_record_columns(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS source_record_image_urls (
@@ -761,6 +827,26 @@ class MetadataPollState:
             if name not in existing:
                 conn.execute(f"ALTER TABLE api_call_ledger ADD COLUMN {name} {sql_type}")
 
+    def _ensure_source_record_columns(self, conn: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(source_records)").fetchall()}
+        columns = {
+            "text_search_terms_json": "TEXT NOT NULL DEFAULT '[]'",
+            "tag_search_terms_json": "TEXT NOT NULL DEFAULT '[]'",
+            "all_query_labels_json": "TEXT NOT NULL DEFAULT '[]'",
+            "query_definition_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+            "accepted_taxon_keys_json": "TEXT NOT NULL DEFAULT '[]'",
+            "family_keys_json": "TEXT NOT NULL DEFAULT '[]'",
+            "genus_keys_json": "TEXT NOT NULL DEFAULT '[]'",
+            "species_keys_json": "TEXT NOT NULL DEFAULT '[]'",
+            "registry_versions_json": "TEXT NOT NULL DEFAULT '[]'",
+            "query_hit_count": "INTEGER NOT NULL DEFAULT 0",
+            "duplicate_query_hit_count": "INTEGER NOT NULL DEFAULT 0",
+            "last_seen_at": "TEXT",
+        }
+        for name, sql_type in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE source_records ADD COLUMN {name} {sql_type}")
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
@@ -844,11 +930,6 @@ def poll_once(
                         api_calls_made += attempts
                         raw_written += 1
                         _write_raw_response(raw_root=Path(raw_root), work_item_id=work_item_id, query=query, payload=payload)
-                        evidence_rows_written += _write_evidence_shard(
-                            evidence_output=evidence_output,
-                            work_item_id=work_item_id,
-                            payload=payload,
-                        )
                         total = _payload_total(payload)
                         response_pages = _payload_pages(payload)
                         response_page = _payload_page(payload)
@@ -963,7 +1044,8 @@ def poll_once(
                             },
                         )
 
-    evidence_rows_total = _compact_evidence_output(evidence_output)
+    evidence_rows_total = state.export_canonical_evidence(evidence_output)
+    evidence_rows_written = evidence_rows_total
     soft_after, hard_after = state.remaining_api_budget(max_api_calls=max_api_calls)
     result = PollOnceResult(
         state_db=Path(state_db),
@@ -983,6 +1065,149 @@ def poll_once(
     )
     _progress(progress_callback, {"event": "poll_completed", **{**result.__dict__, "state_db": str(result.state_db)}})
     return result
+
+
+def _json_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed if item not in (None, "")]
+
+
+def _json_dump_list(values: list[str]) -> str:
+    return json.dumps(values, ensure_ascii=False, separators=(",", ":"))
+
+
+def _append_unique(values: list[str], value: object | None) -> bool:
+    if value in (None, ""):
+        return False
+    item = str(value)
+    if item in values:
+        return False
+    values.append(item)
+    return True
+
+
+def _merge_query_provenance(
+    conn: sqlite3.Connection,
+    source: str,
+    flickr_photo_id: str,
+    source_query: FlickrQuery,
+) -> tuple[int, int]:
+    row = conn.execute(
+        """
+        SELECT
+            text_search_terms_json,
+            tag_search_terms_json,
+            all_query_labels_json,
+            query_definition_ids_json,
+            accepted_taxon_keys_json,
+            family_keys_json,
+            genus_keys_json,
+            species_keys_json,
+            registry_versions_json,
+            query_hit_count,
+            duplicate_query_hit_count
+        FROM source_records
+        WHERE source = ? AND flickr_photo_id = ?
+        """,
+        (source, flickr_photo_id),
+    ).fetchone()
+    if row is None:
+        return 0, 0
+    text_terms = _json_list(row["text_search_terms_json"])
+    tag_terms = _json_list(row["tag_search_terms_json"])
+    labels = _json_list(row["all_query_labels_json"])
+    query_definition_ids = _json_list(row["query_definition_ids_json"])
+    accepted_taxon_keys = _json_list(row["accepted_taxon_keys_json"])
+    family_keys = _json_list(row["family_keys_json"])
+    genus_keys = _json_list(row["genus_keys_json"])
+    species_keys = _json_list(row["species_keys_json"])
+    registry_versions = _json_list(row["registry_versions_json"])
+
+    label = f"{source_query.search_field}:{source_query.term}"
+    if source_query.search_field == "text":
+        _append_unique(text_terms, source_query.term)
+    elif source_query.search_field == "tags":
+        _append_unique(tag_terms, source_query.term)
+    label_added = _append_unique(labels, label)
+    _append_unique(query_definition_ids, source_query.query_definition_id)
+    _append_unique(accepted_taxon_keys, source_query.accepted_taxon_key)
+    _append_unique(family_keys, source_query.family_key)
+    _append_unique(genus_keys, source_query.genus_key)
+    _append_unique(species_keys, source_query.species_key)
+    _append_unique(registry_versions, source_query.registry_version)
+
+    query_hit_count = int(row["query_hit_count"] or 0) + (1 if label_added else 0)
+    duplicate_query_hit_count = int(row["duplicate_query_hit_count"] or 0) + (0 if label_added else 1)
+    conn.execute(
+        """
+        UPDATE source_records
+        SET text_search_terms_json = ?,
+            tag_search_terms_json = ?,
+            all_query_labels_json = ?,
+            query_definition_ids_json = ?,
+            accepted_taxon_keys_json = ?,
+            family_keys_json = ?,
+            genus_keys_json = ?,
+            species_keys_json = ?,
+            registry_versions_json = ?,
+            query_hit_count = ?,
+            duplicate_query_hit_count = ?,
+            last_seen_at = ?
+        WHERE source = ? AND flickr_photo_id = ?
+        """,
+        (
+            _json_dump_list(text_terms),
+            _json_dump_list(tag_terms),
+            _json_dump_list(labels),
+            _json_dump_list(query_definition_ids),
+            _json_dump_list(accepted_taxon_keys),
+            _json_dump_list(family_keys),
+            _json_dump_list(genus_keys),
+            _json_dump_list(species_keys),
+            _json_dump_list(registry_versions),
+            query_hit_count,
+            duplicate_query_hit_count,
+            _timestamp(),
+            source,
+            flickr_photo_id,
+        ),
+    )
+    return (1, 0) if label_added else (0, 1)
+
+
+def _query_fields_from_labels(labels: list[str]) -> list[str]:
+    fields: list[str] = []
+    for label in labels:
+        field, separator, _term = label.partition(":")
+        if separator:
+            fields.append(field)
+    return fields
+
+
+def _legacy_query_hits_by_photo(conn: sqlite3.Connection) -> dict[tuple[str, str], list[tuple[str, str]]]:
+    tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+    if "source_record_query_hits" not in tables:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT source, flickr_photo_id, query_field, query_term
+        FROM source_record_query_hits
+        ORDER BY source, flickr_photo_id, first_seen_at, query_field, query_term
+        """
+    ).fetchall()
+    grouped: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for row in rows:
+        grouped.setdefault((str(row["source"]), str(row["flickr_photo_id"])), []).append(
+            (str(row["query_field"]), str(row["query_term"]))
+        )
+    return grouped
 
 
 def _progress(callback: ProgressCallback | None, event: dict[str, Any]) -> None:
