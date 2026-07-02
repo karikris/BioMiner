@@ -14,9 +14,15 @@ import polars as pl
 from biominer.bioclip.bioclip import BioClipClassifier, PersistentBioClipScorer
 from biominer.bioclip.ablation import run_object_ablations
 from biominer.bioclip.candidate_sets import build_candidate_set
-from biominer.bioclip.embedding_cache import prepare_candidate_text_embedding_cache
+from biominer.bioclip.embedding_cache import read_embedding_cache, prepare_candidate_text_embedding_cache, prepare_object_image_embedding_cache
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
-from biominer.bioclip.object_runner import EphemeralCropBioClipScorer, screen_object_detections, write_object_evidence_outputs
+from biominer.bioclip.object_runner import (
+    CachedObjectEmbeddingScorer,
+    EphemeralCropBioClipScorer,
+    materialize_detector_crop_inputs,
+    screen_object_detections,
+    write_object_evidence_outputs,
+)
 from biominer.bioclip.register_runner import process_records_with_registers
 from biominer.bioclip.species_candidates import DEFAULT_SPECIES_CANDIDATE_LIMIT, load_species_candidates
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
@@ -128,6 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_screen_objects.add_argument("--parquet-batch-rows", type=int, default=10000)
     bioclip_screen_objects.add_argument("--retain-debug-crops", action="store_true")
     bioclip_screen_objects.add_argument("--candidate-text-embedding-cache")
+    bioclip_screen_objects.add_argument("--object-image-embedding-cache")
     bioclip_ablate_objects = bioclip_subparsers.add_parser("ablate-objects")
     bioclip_ablate_objects.add_argument("--input", required=True)
     bioclip_ablate_objects.add_argument("--detections", required=True)
@@ -146,6 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_ablate_objects.add_argument("--parquet-batch-rows", type=int, default=10000)
     bioclip_ablate_objects.add_argument("--retain-debug-crops", action="store_true")
     bioclip_ablate_objects.add_argument("--candidate-text-embedding-cache")
+    bioclip_ablate_objects.add_argument("--object-image-embedding-cache")
     bioclip_join_objects = bioclip_subparsers.add_parser("join-object-evidence")
     _add_object_evidence_join_args(bioclip_join_objects)
     bioclip_join_objects.add_argument("--species-context")
@@ -273,6 +281,7 @@ def build_parser() -> argparse.ArgumentParser:
     species_bioclip_objects.add_argument("--parquet-batch-rows", type=int, default=10000)
     species_bioclip_objects.add_argument("--retain-debug-crops", action="store_true")
     species_bioclip_objects.add_argument("--candidate-text-embedding-cache")
+    species_bioclip_objects.add_argument("--object-image-embedding-cache")
     species_ablate_objects = species_subparsers.add_parser("ablate-objects")
     species_ablate_objects.add_argument("--context-json", required=True)
     species_ablate_objects.add_argument("--input", required=True)
@@ -291,6 +300,7 @@ def build_parser() -> argparse.ArgumentParser:
     species_ablate_objects.add_argument("--parquet-batch-rows", type=int, default=10000)
     species_ablate_objects.add_argument("--retain-debug-crops", action="store_true")
     species_ablate_objects.add_argument("--candidate-text-embedding-cache")
+    species_ablate_objects.add_argument("--object-image-embedding-cache")
     species_join_objects = species_subparsers.add_parser("join-object-evidence")
     species_join_objects.add_argument("--context-json", required=True)
     _add_object_evidence_join_args(species_join_objects)
@@ -1145,19 +1155,23 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
     )
     runtime = _bioclip_runtime(runtime_python=runtime_python)
     scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
-    text_cache_payload = _prepare_candidate_text_embedding_cache_if_requested(args=args, candidate_set=candidate_set, scorer=scorer)
-    object_scorer = EphemeralCropBioClipScorer(
-        scorer=scorer,
-        image_loader=lambda item: load_decoded_image_from_record(item, cache_root=args.cache_root),
-        temp_dir=args.crop_temp_dir,
-        crop_padding_ratio=args.crop_padding_ratio,
-        crop_target_px=args.crop_target_px,
-        model_id="bioclip2_5",
-        model_version="bioclip2_5_huge",
-        model_checkpoint=BIOCLIP_25_HUGE_REVISION,
-        retain_debug_crops=args.retain_debug_crops,
-    )
     try:
+        cache_error = _validate_object_image_cache_args(args=args, modes=(args.ablation_mode,))
+        if cache_error is not None:
+            print(json.dumps({"error": cache_error}, indent=2, sort_keys=True))
+            return 2
+        text_cache_payload = _prepare_candidate_text_embedding_cache_if_requested(args=args, candidate_set=candidate_set, scorer=scorer)
+        object_cache_payload = _prepare_object_image_embedding_cache_if_requested(
+            args=args,
+            records=records,
+            detections=detections,
+            scorer=scorer,
+        )
+        object_scorer = _object_scorer_for_args(
+            args=args,
+            scorer=scorer,
+            candidate_set_id=candidate_set.candidate_set_id,
+        )
         result = screen_object_detections(
             canonical_records=records,
             detections=detections,
@@ -1181,8 +1195,9 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
                 "crops_scored": result.crops_scored,
                 "score_batches_written": result.score_batches_written,
                 "candidate_set_id": candidate_set.candidate_set_id,
-                "scorer": "ephemeral_crop_bioclip",
+                "scorer": "cached_object_embedding" if object_cache_payload is not None else "ephemeral_crop_bioclip",
                 **({"candidate_text_embedding_cache": text_cache_payload} if text_cache_payload is not None else {}),
+                **({"object_image_embedding_cache": object_cache_payload} if object_cache_payload is not None else {}),
             },
             indent=2,
             sort_keys=True,
@@ -1208,19 +1223,23 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
     modes = tuple(part.strip() for part in args.modes.split(",") if part.strip())
     runtime = _bioclip_runtime(runtime_python=runtime_python)
     scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
-    text_cache_payload = _prepare_candidate_text_embedding_cache_if_requested(args=args, candidate_set=candidate_set, scorer=scorer)
-    object_scorer = EphemeralCropBioClipScorer(
-        scorer=scorer,
-        image_loader=lambda item: load_decoded_image_from_record(item, cache_root=args.cache_root),
-        temp_dir=args.crop_temp_dir,
-        crop_padding_ratio=args.crop_padding_ratio,
-        crop_target_px=args.crop_target_px,
-        model_id="bioclip2_5",
-        model_version="bioclip2_5_huge",
-        model_checkpoint=BIOCLIP_25_HUGE_REVISION,
-        retain_debug_crops=args.retain_debug_crops,
-    )
     try:
+        cache_error = _validate_object_image_cache_args(args=args, modes=modes)
+        if cache_error is not None:
+            print(json.dumps({"error": cache_error}, indent=2, sort_keys=True))
+            return 2
+        text_cache_payload = _prepare_candidate_text_embedding_cache_if_requested(args=args, candidate_set=candidate_set, scorer=scorer)
+        object_cache_payload = _prepare_object_image_embedding_cache_if_requested(
+            args=args,
+            records=records,
+            detections=detections,
+            scorer=scorer,
+        )
+        object_scorer = _object_scorer_for_args(
+            args=args,
+            scorer=scorer,
+            candidate_set_id=candidate_set.candidate_set_id,
+        )
         report = run_object_ablations(
             canonical_records=records,
             detections=detections,
@@ -1240,6 +1259,7 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
                 "output_dir": str(report.output_dir),
                 **report.report,
                 **({"candidate_text_embedding_cache": text_cache_payload} if text_cache_payload is not None else {}),
+                **({"object_image_embedding_cache": object_cache_payload} if object_cache_payload is not None else {}),
             },
             indent=2,
             sort_keys=True,
@@ -1300,6 +1320,83 @@ def _prepare_candidate_text_embedding_cache_if_requested(
         "rows_reused": update.rows_reused,
         "embeddings_computed": update.embeddings_computed,
     }
+
+
+def _validate_object_image_cache_args(*, args: argparse.Namespace, modes: tuple[str, ...]) -> str | None:
+    if not getattr(args, "object_image_embedding_cache", None):
+        return None
+    if not getattr(args, "candidate_text_embedding_cache", None):
+        return "--object-image-embedding-cache requires --candidate-text-embedding-cache for cached dot-product scoring"
+    unsupported = sorted(set(modes) - {"detector_crop"})
+    if unsupported:
+        return "--object-image-embedding-cache is only valid for detector_crop mode; unsupported modes: " + ",".join(unsupported)
+    return None
+
+
+def _prepare_object_image_embedding_cache_if_requested(
+    *,
+    args: argparse.Namespace,
+    records: pl.DataFrame,
+    detections: pl.DataFrame,
+    scorer: PersistentBioClipScorer,
+) -> dict[str, object] | None:
+    cache_path = getattr(args, "object_image_embedding_cache", None)
+    if not cache_path:
+        return None
+    materialized = materialize_detector_crop_inputs(
+        canonical_records=records,
+        detections=detections,
+        image_loader=lambda item: load_decoded_image_from_record(item, cache_root=args.cache_root),
+        temp_dir=args.crop_temp_dir,
+        crop_padding_ratio=args.crop_padding_ratio,
+        crop_target_px=args.crop_target_px,
+    )
+    try:
+        update = prepare_object_image_embedding_cache(
+            materialized.rows,
+            cache_path,
+            model_id="bioclip2_5",
+            model_checkpoint=BIOCLIP_25_HUGE_REVISION,
+            crop_path_by_hash=materialized.crop_path_by_hash,
+            embed_image_paths=scorer.embed_image_paths,
+        )
+    finally:
+        materialized.cleanup()
+    return {
+        "output_path": str(update.output_path),
+        "rows_total": update.rows_total,
+        "rows_added": update.rows_added,
+        "rows_reused": update.rows_reused,
+        "embeddings_computed": update.embeddings_computed,
+    }
+
+
+def _object_scorer_for_args(
+    *,
+    args: argparse.Namespace,
+    scorer: PersistentBioClipScorer,
+    candidate_set_id: str,
+) -> object:
+    if getattr(args, "object_image_embedding_cache", None):
+        return CachedObjectEmbeddingScorer(
+            text_embeddings=read_embedding_cache(args.candidate_text_embedding_cache),
+            image_embeddings=read_embedding_cache(args.object_image_embedding_cache),
+            candidate_set_id=candidate_set_id,
+            model_id="bioclip2_5",
+            model_version="bioclip2_5_huge",
+            model_checkpoint=BIOCLIP_25_HUGE_REVISION,
+        )
+    return EphemeralCropBioClipScorer(
+        scorer=scorer,
+        image_loader=lambda item: load_decoded_image_from_record(item, cache_root=args.cache_root),
+        temp_dir=args.crop_temp_dir,
+        crop_padding_ratio=args.crop_padding_ratio,
+        crop_target_px=args.crop_target_px,
+        model_id="bioclip2_5",
+        model_version="bioclip2_5_huge",
+        model_checkpoint=BIOCLIP_25_HUGE_REVISION,
+        retain_debug_crops=args.retain_debug_crops,
+    )
 
 
 def _fake_detections_for_record(record: dict[str, object]) -> list[DetectionCandidate]:

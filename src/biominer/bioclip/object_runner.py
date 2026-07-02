@@ -63,6 +63,17 @@ class ObjectEvidenceOutputs:
     photo_evidence_summary: Path
 
 
+@dataclass(frozen=True)
+class MaterializedCropInputs:
+    rows: list[dict[str, Any]]
+    crop_path_by_hash: dict[str, Path]
+    temp_dir: Path
+
+    def cleanup(self) -> None:
+        if self.temp_dir.exists():
+            rmtree(self.temp_dir)
+
+
 class FakeObjectBioClipScorer:
     model_id = "fake-bioclip"
     model_version = "test"
@@ -156,6 +167,104 @@ class EphemeralCropBioClipScorer:
 
     def _should_retain_debug_crop(self) -> bool:
         return self._retain_debug_crops and self._debug_crops_written < self._debug_crop_limit
+
+
+class CachedObjectEmbeddingScorer:
+    def __init__(
+        self,
+        *,
+        text_embeddings: pl.DataFrame,
+        image_embeddings: pl.DataFrame,
+        candidate_set_id: str,
+        model_id: str,
+        model_version: str,
+        model_checkpoint: str,
+    ) -> None:
+        self.model_id = model_id
+        self.model_version = model_version
+        self.model_checkpoint = model_checkpoint
+        self._text_by_label = _cached_text_embedding_by_label(
+            text_embeddings,
+            candidate_set_id=candidate_set_id,
+            model_id=model_id,
+            model_checkpoint=model_checkpoint,
+        )
+        self._image_by_crop_hash = _cached_image_embedding_by_crop_hash(
+            image_embeddings,
+            model_id=model_id,
+            model_checkpoint=model_checkpoint,
+        )
+
+    def score(self, item: dict[str, Any], labels: tuple[str, ...]) -> dict[str, float]:
+        mode = str(item.get("ablation_mode") or "detector_crop")
+        if mode != "detector_crop":
+            raise ValueError("cached object image embeddings are only valid for detector_crop scoring")
+        crop_hash = str(item.get("crop_hash") or "")
+        try:
+            image_embedding = self._image_by_crop_hash[crop_hash]
+        except KeyError as exc:
+            raise KeyError(f"missing cached object image embedding for crop_hash={crop_hash!r}") from exc
+        scores: dict[str, float] = {}
+        for label in labels:
+            try:
+                text_embedding = self._text_by_label[str(label)]
+            except KeyError as exc:
+                raise KeyError(f"missing cached candidate text embedding for label={label!r}") from exc
+            scores[str(label)] = _cosine_similarity(image_embedding, text_embedding)
+        return scores
+
+
+def materialize_detector_crop_inputs(
+    *,
+    canonical_records: pl.DataFrame,
+    detections: pl.DataFrame,
+    image_loader: Any,
+    temp_dir: str | Path,
+    crop_padding_ratio: float = 0.12,
+    crop_target_px: int = 336,
+) -> MaterializedCropInputs:
+    records_by_photo = {
+        (str(row.get("source") or ""), str(row.get("flickr_photo_id") or "")): row
+        for row in canonical_records.to_dicts()
+    }
+    base = Path(temp_dir) / ".object_image_embedding_cache.tmp"
+    if base.exists():
+        rmtree(base)
+    base.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    crop_path_by_hash: dict[str, Path] = {}
+    for detection in detections.to_dicts():
+        if str(detection.get("detection_status") or "") != "detected":
+            continue
+        key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
+        record = _canonical_record_for_detection(records_by_photo, key=key)
+        item = {**detection, **record, "ablation_mode": "detector_crop"}
+        image = image_loader(item)
+        if not isinstance(image, DecodedImage):
+            raise TypeError("image_loader must return a DecodedImage")
+        bbox = detection.get("bbox_xyxy")
+        if not isinstance(bbox, list | tuple) or len(bbox) != 4:
+            raise ValueError("object image embedding cache requires bbox_xyxy")
+        crop = crop_with_padding(
+            image,
+            bbox_xyxy=tuple(float(value) for value in bbox),  # type: ignore[arg-type]
+            padding_ratio=crop_padding_ratio,
+            target_px=crop_target_px,
+        )
+        crop_hash = str(detection.get("crop_hash") or crop.crop_hash)
+        rows.append(
+            {
+                "source": str(detection.get("source") or ""),
+                "flickr_photo_id": str(detection.get("flickr_photo_id") or ""),
+                "detection_id": str(detection.get("detection_id") or ""),
+                "crop_hash": crop_hash,
+            }
+        )
+        if crop_hash not in crop_path_by_hash:
+            path = base / f"{_safe_file_stem(crop_hash)}.ppm"
+            path.write_bytes(_ppm_bytes(crop.encoded_bytes, width=crop.crop_width, height=crop.crop_height))
+            crop_path_by_hash[crop_hash] = path
+    return MaterializedCropInputs(rows=rows, crop_path_by_hash=crop_path_by_hash, temp_dir=base)
 
 
 def screen_object_detections(
@@ -826,6 +935,56 @@ def _ablation_mode(item: dict[str, Any]) -> AblationMode:
 
 def _bytes_hash(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _safe_file_stem(value: str) -> str:
+    return value.replace(":", "_").replace("/", "_").replace("\\", "_")
+
+
+def _cached_text_embedding_by_label(
+    frame: pl.DataFrame,
+    *,
+    candidate_set_id: str,
+    model_id: str,
+    model_checkpoint: str,
+) -> dict[str, list[float]]:
+    if frame.is_empty():
+        return {}
+    filtered = frame.filter(
+        (pl.col("candidate_set_id") == candidate_set_id)
+        & (pl.col("model_id") == model_id)
+        & (pl.col("model_checkpoint") == model_checkpoint)
+    )
+    return {str(row["label"]): _float_vector(row["embedding"]) for row in filtered.select(["label", "embedding"]).to_dicts()}
+
+
+def _cached_image_embedding_by_crop_hash(
+    frame: pl.DataFrame,
+    *,
+    model_id: str,
+    model_checkpoint: str,
+) -> dict[str, list[float]]:
+    if frame.is_empty():
+        return {}
+    filtered = frame.filter((pl.col("model_id") == model_id) & (pl.col("model_checkpoint") == model_checkpoint))
+    output: dict[str, list[float]] = {}
+    for row in filtered.select(["crop_hash", "embedding"]).to_dicts():
+        output.setdefault(str(row["crop_hash"]), _float_vector(row["embedding"]))
+    return output
+
+
+def _float_vector(value: Any) -> list[float]:
+    return [float(item) for item in value]
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if len(left) != len(right):
+        raise ValueError(f"embedding dimensions differ: image={len(left)}, text={len(right)}")
+    left_norm = sum(value * value for value in left) ** 0.5
+    right_norm = sum(value * value for value in right) ** 0.5
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+    return sum(a * b for a, b in zip(left, right, strict=True)) / (left_norm * right_norm)
 
 
 def _norm(value: object) -> str:

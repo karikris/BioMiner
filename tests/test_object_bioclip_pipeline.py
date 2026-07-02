@@ -9,6 +9,7 @@ import pytest
 from biominer.bioclip.ablation import build_ablation_report, run_object_ablations
 from biominer.bioclip.candidate_sets import CandidateTaxon, build_candidate_set
 from biominer.bioclip.object_runner import (
+    CachedObjectEmbeddingScorer,
     EphemeralCropBioClipScorer,
     FakeObjectBioClipScorer,
     apply_geospatial_soft_prior,
@@ -281,6 +282,51 @@ def test_ephemeral_crop_bioclip_scorer_scores_temp_crop_and_deletes_file(tmp_pat
     assert seen["header"] == [b"P6", b"3 3", b"255"]
     assert seen["labels"] == ("a photo of Danaus plexippus", "a photo of Danaus gilippus")
     assert list(tmp_path.iterdir()) == []
+
+
+def test_cached_object_embedding_scorer_scores_from_text_and_crop_embeddings() -> None:
+    scorer = CachedObjectEmbeddingScorer(
+        text_embeddings=pl.DataFrame(
+            [
+                {
+                    "candidate_set_id": "candidate-set-1",
+                    "label": "Danaus plexippus",
+                    "model_id": "bioclip",
+                    "model_checkpoint": "checkpoint-a",
+                    "embedding": [1.0, 0.0],
+                },
+                {
+                    "candidate_set_id": "candidate-set-1",
+                    "label": "Danaus gilippus",
+                    "model_id": "bioclip",
+                    "model_checkpoint": "checkpoint-a",
+                    "embedding": [0.0, 1.0],
+                },
+            ]
+        ),
+        image_embeddings=pl.DataFrame(
+            [
+                {
+                    "source": "flickr",
+                    "flickr_photo_id": "photo-1",
+                    "detection_id": "det-1",
+                    "crop_hash": "sha256:crop-1",
+                    "model_id": "bioclip",
+                    "model_checkpoint": "checkpoint-a",
+                    "embedding": [0.8, 0.2],
+                }
+            ]
+        ),
+        candidate_set_id="candidate-set-1",
+        model_id="bioclip",
+        model_version="test",
+        model_checkpoint="checkpoint-a",
+    )
+
+    scores = scorer.score({"crop_hash": "sha256:crop-1"}, ("Danaus plexippus", "Danaus gilippus"))
+
+    assert scores["Danaus plexippus"] > scores["Danaus gilippus"]
+    assert round(scores["Danaus plexippus"], 6) == round(0.8 / ((0.8**2 + 0.2**2) ** 0.5), 6)
 
 
 def test_screen_object_detections_passes_ablation_mode_to_scorer(tmp_path) -> None:

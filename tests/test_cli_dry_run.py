@@ -218,6 +218,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "7",
             "--candidate-text-embedding-cache",
             "candidate_text_embeddings.parquet",
+            "--object-image-embedding-cache",
+            "object_image_embeddings.parquet",
         ]
     )
     ablate = parser.parse_args(
@@ -240,6 +242,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "11",
             "--candidate-text-embedding-cache",
             "candidate_text_embeddings.parquet",
+            "--object-image-embedding-cache",
+            "object_image_embeddings.parquet",
         ]
     )
     species_screen = parser.parse_args(
@@ -260,6 +264,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "9",
             "--candidate-text-embedding-cache",
             "candidate_text_embeddings.parquet",
+            "--object-image-embedding-cache",
+            "object_image_embeddings.parquet",
         ]
     )
     species_ablate = parser.parse_args(
@@ -280,6 +286,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "13",
             "--candidate-text-embedding-cache",
             "candidate_text_embeddings.parquet",
+            "--object-image-embedding-cache",
+            "object_image_embeddings.parquet",
         ]
     )
     join = parser.parse_args(
@@ -324,19 +332,23 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert screen.geo_prior_table == "geo_prior.parquet"
     assert screen.parquet_batch_rows == 7
     assert screen.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
+    assert screen.object_image_embedding_cache == "object_image_embeddings.parquet"
     assert ablate.bioclip_command == "ablate-objects"
     assert ablate.modes == "whole_image,detector_crop,detector_crop_segmentation"
     assert ablate.geo_prior_table == "geo_prior.parquet"
     assert ablate.parquet_batch_rows == 11
     assert ablate.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
+    assert ablate.object_image_embedding_cache == "object_image_embeddings.parquet"
     assert species_screen.species_command == "bioclip-objects"
     assert species_screen.geo_prior_table == "geo_prior.parquet"
     assert species_screen.parquet_batch_rows == 9
     assert species_screen.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
+    assert species_screen.object_image_embedding_cache == "object_image_embeddings.parquet"
     assert species_ablate.species_command == "ablate-objects"
     assert species_ablate.geo_prior_table == "geo_prior.parquet"
     assert species_ablate.parquet_batch_rows == 13
     assert species_ablate.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
+    assert species_ablate.object_image_embedding_cache == "object_image_embeddings.parquet"
     assert join.bioclip_command == "join-object-evidence"
     assert join.scores == "object_bioclip_scores.parquet"
     assert species_join.species_command == "join-object-evidence"
@@ -498,7 +510,7 @@ def test_bioclip_screen_wires_register_runner_with_sidecar_runtime(tmp_path, cap
     assert calls["runner_kwargs"]["model_checkpoint"] == "191d741545e4c741cdef4b22c6eb69c945c1e592"
 
 
-def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime(tmp_path, capsys, monkeypatch) -> None:
+def test_bioclip_screen_objects_uses_embedding_caches_for_detector_crop_scoring(tmp_path, capsys, monkeypatch) -> None:
     runtime_python = tmp_path / "runtime" / "bin" / "python"
     runtime_python.parent.mkdir(parents=True)
     runtime_python.write_text("# fake python", encoding="utf-8")
@@ -524,6 +536,7 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
     geo_prior_path = tmp_path / "geo_prior.parquet"
     output_path = tmp_path / "scores.parquet"
     text_cache_path = tmp_path / "candidate_text_embeddings.parquet"
+    image_cache_path = tmp_path / "object_image_embeddings.parquet"
     pl.DataFrame(
         [
             {
@@ -565,6 +578,10 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
             calls["embedded_labels"] = list(labels)
             return [[float(index), float(index + 1)] for index, _label in enumerate(labels)]
 
+        def embed_image_paths(self, image_paths):  # noqa: ANN001, ANN201 - mirrors scorer API.
+            calls["embedded_image_paths"] = [str(path) for path in image_paths]
+            return [[0.5, 0.5] for _path in image_paths]
+
         def close(self) -> None:
             calls["closed"] = True
 
@@ -600,10 +617,32 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
             species_candidates=(CandidateTaxon(scientific_name="Danaus plexippus", accepted_taxon_key="gbif:5131654", rank="species"),),
         )
 
+    def fake_materialize(**kwargs):  # noqa: ANN003, ANN202 - mirrors materialize_detector_crop_inputs.
+        calls["materialize"] = kwargs
+        crop_path = tmp_path / "crop.ppm"
+        crop_path.write_bytes(b"P6\n1 1\n255\nabc")
+        return SimpleNamespace(
+            rows=[{"source": "flickr", "flickr_photo_id": "photo-1", "detection_id": "det-1", "crop_hash": "sha256:crop"}],
+            crop_path_by_hash={"sha256:crop": crop_path},
+            cleanup=lambda: calls.setdefault("materialized_cleanup", True),
+        )
+
+    class FakeCachedScorer:
+        def __init__(self, **kwargs):  # noqa: ANN003 - mirrors cached scorer init.
+            calls["cached_scorer"] = kwargs
+            self.model_id = kwargs["model_id"]
+            self.model_version = kwargs["model_version"]
+            self.model_checkpoint = kwargs["model_checkpoint"]
+
+        def score(self, item, labels):  # noqa: ANN001, ANN201 - mirrors object scorer.
+            return {label: 0.0 for label in labels}
+
     monkeypatch.setattr("biominer.cli.PersistentBioClipScorer", FakePersistentScorer)
     monkeypatch.setattr("biominer.cli.EphemeralCropBioClipScorer", FakeCropScorer)
     monkeypatch.setattr("biominer.cli.screen_object_detections", fake_screen)
     monkeypatch.setattr("biominer.cli.build_candidate_set", fake_build_candidate_set)
+    monkeypatch.setattr("biominer.cli.materialize_detector_crop_inputs", fake_materialize)
+    monkeypatch.setattr("biominer.cli.CachedObjectEmbeddingScorer", FakeCachedScorer)
     parser = build_parser()
     args = parser.parse_args(
         [
@@ -627,6 +666,8 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
             "3",
             "--candidate-text-embedding-cache",
             str(text_cache_path),
+            "--object-image-embedding-cache",
+            str(image_cache_path),
         ]
     )
 
@@ -634,20 +675,27 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["rows"] == 1
+    assert payload["scorer"] == "cached_object_embedding"
     assert payload["score_batches_written"] == 3
     assert payload["candidate_text_embedding_cache"]["embeddings_computed"] == 4
     assert payload["candidate_text_embedding_cache"]["rows_added"] == 4
+    assert payload["object_image_embedding_cache"]["embeddings_computed"] == 1
+    assert payload["object_image_embedding_cache"]["rows_added"] == 1
     assert calls["closed"] is True
+    assert calls["materialized_cleanup"] is True
     assert calls["embedded_labels"] == ["Nymphalidae", "Danaus", "Danaus plexippus", "a photo of Danaus plexippus"]
+    assert calls["embedded_image_paths"] == [str(tmp_path / "crop.ppm")]
     assert calls["persistent"]["device"] == "mps"
-    assert calls["crop_scorer"]["model_checkpoint"] == "191d741545e4c741cdef4b22c6eb69c945c1e592"
-    assert calls["crop_scorer"]["crop_target_px"] == 336
+    assert calls["cached_scorer"]["candidate_set_id"] == "candidate-set-from-records"
+    assert calls["cached_scorer"]["model_checkpoint"] == "191d741545e4c741cdef4b22c6eb69c945c1e592"
+    assert calls["screen"]["scorer"].model_id == "bioclip2_5"
     assert calls["screen"]["ablation_mode"] == "detector_crop"
     assert calls["screen"]["parquet_batch_rows"] == 3
     assert calls["screen"]["geo_prior_table"].height == 1
     assert calls["candidate_set"]["records"][0]["flickr_photo_id"] == "photo-1"
     assert calls["candidate_set"]["records"][0]["scientific_names_detected"] == ["Danaus gilippus"]
     assert pl.read_parquet(text_cache_path).height == 4
+    assert pl.read_parquet(image_cache_path).height == 1
 
 
 def test_bioclip_ablate_objects_forwards_parquet_batch_rows(tmp_path, capsys, monkeypatch) -> None:
