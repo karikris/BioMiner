@@ -65,7 +65,11 @@ def build_candidate_set(
     if candidate_rows:
         source_evidence.append(str(species_candidate_path))
     species = _species_candidates(context, candidate_rows)
-    species, query_provenance_added = _add_query_provenance_candidates(species, records or [])
+    species, query_provenance_added = _add_query_provenance_candidates(
+        species,
+        records or [],
+        candidate_lookup=_candidate_lookup(candidate_rows),
+    )
     if query_provenance_added:
         source_evidence.append("query_provenance")
     species, metadata_text_added = _add_metadata_text_candidates(species, records or [])
@@ -110,42 +114,43 @@ def _species_candidates(context: SpeciesContext, rows: list[dict[str, Any]]) -> 
     target = _target_candidate(context)
     candidates: list[CandidateTaxon] = [target]
     for row in rows:
-        scientific_name = _first_text(row, "scientific_name", "accepted_scientific_name", "canonical_name", "species")
-        if not scientific_name:
+        candidate = _candidate_from_row(row)
+        if candidate is None:
             continue
-        family = _first_text(row, "family")
-        genus = _first_text(row, "genus") or scientific_name.split(" ", 1)[0]
-        same_genus = _norm(genus) == _norm(context.genus)
-        same_family = _norm(family) == _norm(context.family)
-        is_target = _norm(scientific_name) == _norm(context.scientific_name)
+        same_genus = _norm(candidate.genus) == _norm(context.genus)
+        same_family = _norm(candidate.family) == _norm(context.family)
+        is_target = _norm(candidate.scientific_name) == _norm(context.scientific_name)
         if not (is_target or same_genus or same_family):
             continue
-        candidates.append(
-            CandidateTaxon(
-                scientific_name=scientific_name,
-                accepted_taxon_key=_first_text(row, "accepted_taxon_key", "source_taxon_id", "taxon_id", "taxonID"),
-                rank=(_first_text(row, "rank", "taxon_rank") or "species").casefold(),
-                family=family,
-                genus=genus,
-                common_names=_split_names(_first_text(row, "common_names", "vernacular_names")),
-            )
-        )
+        candidates.append(candidate)
     return candidates
 
 
 def _add_query_provenance_candidates(
     candidates: list[CandidateTaxon],
     records: list[dict[str, Any]],
+    *,
+    candidate_lookup: dict[str, CandidateTaxon],
 ) -> tuple[list[CandidateTaxon], bool]:
     by_key = {str(candidate.accepted_taxon_key or ""): candidate for candidate in candidates if candidate.accepted_taxon_key}
     added = False
     for record in records:
-        keys = record.get("discovery_species_keys") or record.get("discovery_accepted_taxon_keys") or ()
+        keys = _query_provenance_keys(record)
         names = record.get("scientific_names_detected") or ()
         if isinstance(keys, str):
             keys = [keys]
         if isinstance(names, str):
             names = [names]
+        for key in keys:
+            normalized_key = str(key or "")
+            if not normalized_key or normalized_key in by_key:
+                continue
+            candidate = candidate_lookup.get(normalized_key)
+            if candidate is None:
+                continue
+            candidates.append(candidate)
+            by_key[normalized_key] = candidate
+            added = True
         for key, name in zip(keys, names, strict=False):
             if str(key) in by_key or not name:
                 continue
@@ -153,6 +158,43 @@ def _add_query_provenance_candidates(
             by_key[str(key)] = candidates[-1]
             added = True
     return candidates, added
+
+
+def _candidate_lookup(rows: list[dict[str, Any]]) -> dict[str, CandidateTaxon]:
+    lookup: dict[str, CandidateTaxon] = {}
+    for row in rows:
+        candidate = _candidate_from_row(row)
+        if candidate is None:
+            continue
+        for key_name in ("accepted_taxon_key", "source_taxon_id", "taxon_id", "taxonID", "species_key"):
+            key = _first_text(row, key_name)
+            if key:
+                lookup.setdefault(key, candidate)
+    return lookup
+
+
+def _candidate_from_row(row: dict[str, Any]) -> CandidateTaxon | None:
+    scientific_name = _first_text(row, "scientific_name", "accepted_scientific_name", "canonical_name", "species")
+    if not scientific_name:
+        return None
+    genus = _first_text(row, "genus") or scientific_name.split(" ", 1)[0]
+    return CandidateTaxon(
+        scientific_name=scientific_name,
+        accepted_taxon_key=_first_text(row, "accepted_taxon_key", "source_taxon_id", "taxon_id", "taxonID", "species_key"),
+        rank=(_first_text(row, "rank", "taxon_rank") or "species").casefold(),
+        family=_first_text(row, "family"),
+        genus=genus,
+        common_names=_split_names(_first_text(row, "common_names", "vernacular_names")),
+    )
+
+
+def _query_provenance_keys(record: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    for field in ("discovery_species_keys", "discovery_accepted_taxon_keys"):
+        value = record.get(field) or ()
+        values = [value] if isinstance(value, str) else value
+        keys.extend(str(item) for item in values if item)
+    return keys
 
 
 def _add_metadata_text_candidates(
