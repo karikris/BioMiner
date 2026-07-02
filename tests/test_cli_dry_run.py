@@ -99,6 +99,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "object_detections.parquet",
             "--species-context",
             "species_context.json",
+            "--geo-prior-table",
+            "geo_prior.parquet",
             "--output",
             "object_bioclip_scores.parquet",
             "--ablation-mode",
@@ -115,17 +117,57 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "object_detections.parquet",
             "--species-context",
             "species_context.json",
+            "--geo-prior-table",
+            "geo_prior.parquet",
             "--output-dir",
             "ablations",
             "--modes",
             "whole_image,detector_crop,detector_crop_segmentation",
         ]
     )
+    species_screen = parser.parse_args(
+        [
+            "species",
+            "bioclip-objects",
+            "--context-json",
+            "species_context.json",
+            "--input",
+            "filtered.parquet",
+            "--detections",
+            "object_detections.parquet",
+            "--geo-prior-table",
+            "geo_prior.parquet",
+            "--output",
+            "object_bioclip_scores.parquet",
+        ]
+    )
+    species_ablate = parser.parse_args(
+        [
+            "species",
+            "ablate-objects",
+            "--context-json",
+            "species_context.json",
+            "--input",
+            "filtered.parquet",
+            "--detections",
+            "object_detections.parquet",
+            "--geo-prior-table",
+            "geo_prior.parquet",
+            "--output-dir",
+            "ablations",
+        ]
+    )
 
     assert screen.bioclip_command == "screen-objects"
     assert screen.ablation_mode == "detector_crop"
+    assert screen.geo_prior_table == "geo_prior.parquet"
     assert ablate.bioclip_command == "ablate-objects"
     assert ablate.modes == "whole_image,detector_crop,detector_crop_segmentation"
+    assert ablate.geo_prior_table == "geo_prior.parquet"
+    assert species_screen.species_command == "bioclip-objects"
+    assert species_screen.geo_prior_table == "geo_prior.parquet"
+    assert species_ablate.species_command == "ablate-objects"
+    assert species_ablate.geo_prior_table == "geo_prior.parquet"
 
 
 def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch) -> None:
