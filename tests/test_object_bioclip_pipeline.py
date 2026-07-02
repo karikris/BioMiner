@@ -478,6 +478,73 @@ def test_object_bioclip_scores_detection_crops_with_join_keys(tmp_path) -> None:
     assert row["is_target_positive"] is True
 
 
+def test_object_bioclip_empty_scores_write_stable_schema(tmp_path) -> None:
+    output = tmp_path / "object_bioclip_scores.parquet"
+    detections = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "detection_id": "no-det-1",
+                "crop_hash": None,
+                "detection_status": "no_detection",
+                "failure_reason": "no_butterfly_like_object",
+            }
+        ]
+    )
+
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=detections,
+        species_context=_context(),
+        candidate_set=build_candidate_set(_context()),
+        scorer=FakeObjectBioClipScorer({}),
+        output_path=output,
+        ablation_mode="detector_crop",
+    )
+
+    frame = pl.read_parquet(output)
+    assert result.crops_scored == 0
+    assert frame.height == 0
+    assert {
+        "source",
+        "flickr_photo_id",
+        "detection_id",
+        "crop_hash",
+        "model_id",
+        "model_version",
+        "model_checkpoint",
+        "candidate_set_id",
+        "classified_at",
+        "ablation_mode",
+        "triage_group_top",
+        "triage_group_scores",
+        "family_top3",
+        "family_top1",
+        "family_top1_score",
+        "family_margin",
+        "genus_top8",
+        "genus_top1",
+        "genus_top1_score",
+        "genus_margin",
+        "species_top20",
+        "species_top5",
+        "species_top1_scientific_name",
+        "species_top1_score",
+        "species_top1_margin",
+        "target_species_score",
+        "target_species_rank",
+        "geospatial_prior_score",
+        "geospatial_prior_reason",
+        "text_evidence_score",
+        "comment_evidence_score",
+        "is_target_positive",
+        "is_negative_material",
+        "occurrence_bin",
+        "bin_reason",
+    }.issubset(frame.columns)
+
+
 def test_object_bioclip_scores_flush_to_parquet_batches(tmp_path) -> None:
     output = tmp_path / "object_bioclip_scores.parquet"
     result = screen_object_detections(

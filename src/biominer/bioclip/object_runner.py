@@ -28,6 +28,48 @@ PHOTO_REVIEW_REASONS = {
     "taxonomy_inconsistent",
     "detected_object_without_bioclip_score",
 }
+OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
+    "source": pl.String,
+    "flickr_photo_id": pl.String,
+    "detection_id": pl.String,
+    "crop_hash": pl.String,
+    "model_id": pl.String,
+    "model_version": pl.String,
+    "model_checkpoint": pl.String,
+    "candidate_set_id": pl.String,
+    "classified_at": pl.String,
+    "ablation_mode": pl.String,
+    "triage_group_top": pl.String,
+    "triage_group_scores": pl.Struct({"butterfly_like": pl.Float64}),
+    "family_top3": pl.List(pl.String),
+    "family_top1": pl.String,
+    "family_top1_score": pl.Float64,
+    "family_margin": pl.Float64,
+    "genus_top8": pl.List(pl.String),
+    "genus_top1": pl.String,
+    "genus_top1_score": pl.Float64,
+    "genus_margin": pl.Float64,
+    "species_top20": pl.List(pl.String),
+    "species_top20_accepted_taxon_keys": pl.List(pl.String),
+    "species_top5": pl.List(pl.String),
+    "species_top5_accepted_taxon_keys": pl.List(pl.String),
+    "species_top1_scientific_name": pl.String,
+    "species_top1_accepted_taxon_key": pl.String,
+    "accepted_taxon_key": pl.String,
+    "species_top1_score": pl.Float64,
+    "species_top1_margin": pl.Float64,
+    "target_accepted_taxon_key": pl.String,
+    "target_species_score": pl.Float64,
+    "target_species_rank": pl.Int64,
+    "geospatial_prior_score": pl.Float64,
+    "geospatial_prior_reason": pl.String,
+    "text_evidence_score": pl.Float64,
+    "comment_evidence_score": pl.Float64,
+    "is_target_positive": pl.Boolean,
+    "is_negative_material": pl.Boolean,
+    "occurrence_bin": pl.String,
+    "bin_reason": pl.String,
+}
 
 
 class ObjectBioClipScorer(Protocol):
@@ -320,7 +362,7 @@ def screen_object_detections(
             frame = _read_score_batches(batch_paths)
             write_parquet(frame, output)
         else:
-            frame = pl.DataFrame(rows) if rows else pl.DataFrame()
+            frame = pl.DataFrame(rows) if rows else empty_object_score_frame()
         return ObjectScreenResult(
             frame=frame,
             output_path=output,
@@ -366,9 +408,13 @@ def _flush_score_row_buffer(*, row_buffer: list[dict[str, Any]], batch_paths: li
 
 def _read_score_batches(batch_paths: list[Path]) -> pl.DataFrame:
     if not batch_paths:
-        return pl.DataFrame()
+        return empty_object_score_frame()
     frames = [pl.read_parquet(path) for path in batch_paths]
     return pl.concat(frames, how="diagonal_relaxed")
+
+
+def empty_object_score_frame() -> pl.DataFrame:
+    return pl.DataFrame(schema=OBJECT_SCORE_OUTPUT_SCHEMA)
 
 
 def _canonical_record_for_detection(
