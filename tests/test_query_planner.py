@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import polars as pl
 import biominer.flickr_fetch.query_planner as query_planner
 
@@ -42,6 +44,23 @@ def test_query_planner_does_not_export_legacy_species_json_or_region_helpers() -
         "outside_known_papilio_demoleus_regions",
     )
     assert [name for name in removed_exports if hasattr(query_planner, name)] == []
+
+
+def test_query_planner_source_has_no_papilio_specific_production_hardcoding() -> None:
+    source = Path(query_planner.__file__).read_text(encoding="utf-8")
+    forbidden = (
+        "Papilio demoleus",
+        "PAPILIO_DEMOLEUS_ANCHOR_TERMS",
+        "PAPILIO_DEMOLEUS_REGION_BBOXES",
+        "load_papilio_demoleus_terms_from_json",
+        "build_papilio_demoleus_count_probes_from_json",
+        "papilio_demoleus_known_region_for_coordinate",
+        "outside_known_papilio_demoleus_regions",
+        "known_region_for_coordinate",
+        "outside_known_regions",
+    )
+
+    assert [value for value in forbidden if value in source] == []
 
 
 def test_multilingual_seed_terms_are_seeded_once_and_include_lifestages() -> None:
