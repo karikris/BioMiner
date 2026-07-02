@@ -209,18 +209,37 @@ def write_object_evidence_outputs(
     scores_path: str | Path,
     joined_output_path: str | Path,
     photo_summary_output_path: str | Path,
+    species_context: SpeciesContext | None = None,
 ) -> ObjectEvidenceOutputs:
     canonical = pl.read_parquet(canonical_records_path)
     detections = pl.read_parquet(detections_path)
     scores = pl.read_parquet(scores_path)
-    joined = (
-        scores.join(canonical, on=["source", "flickr_photo_id"], how="left", suffix="_canonical")
-        .join(detections, on=["source", "flickr_photo_id", "detection_id", "crop_hash"], how="left", suffix="_detection")
-    )
-    summary = _photo_summary(scores)
+    joined = _object_evidence_joined(canonical=canonical, detections=detections, scores=scores)
+    summary = _photo_summary(scores, canonical=canonical, detections=detections, species_context=species_context)
     joined_path = write_parquet(joined, joined_output_path)
     summary_path = write_parquet(summary, photo_summary_output_path)
     return ObjectEvidenceOutputs(object_evidence_joined=joined_path, photo_evidence_summary=summary_path)
+
+
+def _object_evidence_joined(*, canonical: pl.DataFrame, detections: pl.DataFrame, scores: pl.DataFrame) -> pl.DataFrame:
+    join_keys = ["source", "flickr_photo_id", "detection_id", "crop_hash"]
+    scored = (
+        scores.join(canonical, on=["source", "flickr_photo_id"], how="left", suffix="_canonical")
+        .join(detections, on=join_keys, how="left", suffix="_detection")
+        if not scores.is_empty() and _has_columns(scores, join_keys)
+        else pl.DataFrame()
+    )
+    detection_only = detections
+    if not scores.is_empty() and _has_columns(scores, ["source", "flickr_photo_id", "detection_id"]):
+        scored_detection_keys = scores.select(["source", "flickr_photo_id", "detection_id"]).unique()
+        detection_only = detections.join(scored_detection_keys, on=["source", "flickr_photo_id", "detection_id"], how="anti")
+    if not detection_only.is_empty():
+        detection_only = detection_only.join(canonical, on=["source", "flickr_photo_id"], how="left", suffix="_canonical")
+    if scored.is_empty():
+        return detection_only
+    if detection_only.is_empty():
+        return scored
+    return pl.concat([scored, detection_only], how="diagonal_relaxed")
 
 
 def _score_detection(
@@ -318,29 +337,104 @@ def _bucket(*, item: dict[str, Any], target_score: float, margin: float | None, 
     return "bronze", "weak_species_score"
 
 
-def _photo_summary(scores: pl.DataFrame) -> pl.DataFrame:
+def _photo_summary(
+    scores: pl.DataFrame,
+    *,
+    canonical: pl.DataFrame | None = None,
+    detections: pl.DataFrame | None = None,
+    species_context: SpeciesContext | None = None,
+) -> pl.DataFrame:
     rows: list[dict[str, Any]] = []
-    for (_source, _photo), group in scores.group_by(["source", "flickr_photo_id"], maintain_order=True):
-        sorted_rows = group.sort("target_species_score", descending=True).to_dicts()
-        best = sorted_rows[0]
-        detection_ids = [str(row["detection_id"]) for row in sorted_rows]
-        species = _unique(row["species_top1_scientific_name"] for row in sorted_rows if row.get("species_top1_scientific_name"))
-        rows.append(
-            {
-                "source": best["source"],
-                "flickr_photo_id": best["flickr_photo_id"],
-                "best_detection_id": best["detection_id"],
-                "detection_count": len(detection_ids),
-                "best_object_occurrence_bin": best["occurrence_bin"],
-                "best_object_species_top1": best["species_top1_scientific_name"],
-                "best_object_score": best["target_species_score"],
-                "photo_occurrence_bin": _photo_bucket([row["occurrence_bin"] for row in sorted_rows]),
-                "photo_bin_reason": best["bin_reason"],
-                "all_detection_ids": detection_ids,
-                "all_candidate_species": species,
-            }
-        )
+    summarized_keys: set[tuple[str, str]] = set()
+    if _has_columns(scores, ["source", "flickr_photo_id", "target_species_score"]):
+        for (_source, _photo), group in scores.group_by(["source", "flickr_photo_id"], maintain_order=True):
+            sorted_rows = group.sort("target_species_score", descending=True).to_dicts()
+            best = sorted_rows[0]
+            detection_ids = [str(row["detection_id"]) for row in sorted_rows]
+            species = _unique(row["species_top1_scientific_name"] for row in sorted_rows if row.get("species_top1_scientific_name"))
+            summarized_keys.add((str(best["source"]), str(best["flickr_photo_id"])))
+            rows.append(
+                {
+                    "source": best["source"],
+                    "flickr_photo_id": best["flickr_photo_id"],
+                    "best_detection_id": best["detection_id"],
+                    "detection_count": len(detection_ids),
+                    "best_object_occurrence_bin": best["occurrence_bin"],
+                    "best_object_species_top1": best["species_top1_scientific_name"],
+                    "best_object_score": best["target_species_score"],
+                    "photo_occurrence_bin": _photo_bucket([row["occurrence_bin"] for row in sorted_rows]),
+                    "photo_bin_reason": best["bin_reason"],
+                    "all_detection_ids": detection_ids,
+                    "all_candidate_species": species,
+                }
+            )
+    if canonical is not None:
+        detections_by_photo = _detections_by_photo(detections)
+        for record in canonical.to_dicts():
+            key = (str(record.get("source") or ""), str(record.get("flickr_photo_id") or ""))
+            if key in summarized_keys:
+                continue
+            fallback = _unscored_photo_summary(record, detections_by_photo.get(key, []), species_context)
+            if fallback is not None:
+                rows.append(fallback)
+                summarized_keys.add(key)
     return pl.DataFrame(rows)
+
+
+def _unscored_photo_summary(
+    record: dict[str, Any],
+    detection_rows: list[dict[str, Any]],
+    species_context: SpeciesContext | None,
+) -> dict[str, Any] | None:
+    detections = [row for row in detection_rows if str(row.get("detection_status") or "") == "detected"]
+    detection_ids = _unique(row.get("detection_id") for row in detections)
+    if detection_ids:
+        return {
+            "source": str(record.get("source") or ""),
+            "flickr_photo_id": str(record.get("flickr_photo_id") or ""),
+            "best_detection_id": detection_ids[0],
+            "detection_count": len(detection_ids),
+            "best_object_occurrence_bin": None,
+            "best_object_species_top1": None,
+            "best_object_score": None,
+            "photo_occurrence_bin": "in_review",
+            "photo_bin_reason": "detected_object_without_bioclip_score",
+            "all_detection_ids": detection_ids,
+            "all_candidate_species": [],
+        }
+
+    has_detection_failure = any(str(row.get("detection_status") or "") == "no_detection" for row in detection_rows)
+    strong_text_evidence = species_context is not None and _text_evidence_score(record, species_context) > 0
+    if not has_detection_failure and not strong_text_evidence:
+        return None
+    return {
+        "source": str(record.get("source") or ""),
+        "flickr_photo_id": str(record.get("flickr_photo_id") or ""),
+        "best_detection_id": None,
+        "detection_count": 0,
+        "best_object_occurrence_bin": None,
+        "best_object_species_top1": None,
+        "best_object_score": None,
+        "photo_occurrence_bin": "in_review",
+        "photo_bin_reason": "no_detection_strong_text_evidence" if strong_text_evidence else "no_detection_without_object_score",
+        "all_detection_ids": [],
+        "all_candidate_species": [species_context.scientific_name] if strong_text_evidence and species_context is not None else [],
+    }
+
+
+def _detections_by_photo(detections: pl.DataFrame | None) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    if detections is None or detections.is_empty():
+        return {}
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in detections.to_dicts():
+        key = (str(row.get("source") or ""), str(row.get("flickr_photo_id") or ""))
+        grouped.setdefault(key, []).append(row)
+    return grouped
+
+
+def _has_columns(frame: pl.DataFrame, columns: Iterable[str]) -> bool:
+    existing = set(frame.columns)
+    return all(column in existing for column in columns)
 
 
 def _photo_bucket(buckets: list[str]) -> str:

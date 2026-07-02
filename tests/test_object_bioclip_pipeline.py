@@ -479,6 +479,107 @@ def test_object_evidence_join_and_photo_summary_outputs(tmp_path) -> None:
     assert summary["all_candidate_species"] == ["Danaus plexippus"]
 
 
+def test_no_detection_with_strong_text_evidence_routes_photo_to_review(tmp_path) -> None:
+    canonical = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-no-det",
+                "source_record_hash": "sha256:source-no-det",
+                "image_url": "https://live.staticflickr.com/photo-no-det.jpg",
+                "photo_page_url": "https://www.flickr.com/photos/u/photo-no-det",
+                "title": "Danaus plexippus on milkweed",
+                "raw_tags": "monarch butterfly",
+                "latitude": 45.0,
+                "longitude": -93.0,
+                "date_taken": "2024-07-01",
+            }
+        ]
+    )
+    detections = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-no-det",
+                "source_record_hash": "sha256:source-no-det",
+                "image_url": "https://live.staticflickr.com/photo-no-det.jpg",
+                "photo_page_url": "https://www.flickr.com/photos/u/photo-no-det",
+                "detection_id": "no-detection-photo-no-det",
+                "detector_backend": "fake",
+                "detector_model_id": "fake-detector",
+                "detector_model_version": "v1",
+                "detector_checkpoint": "checkpoint-a",
+                "detected_at": "2026-01-01T00:00:00+00:00",
+                "bbox_xyxy": [],
+                "bbox_xyxyn": [],
+                "bbox_xywhn": [],
+                "box_area_ratio": 0.0,
+                "detector_label": "no_detection",
+                "detector_score": 0.0,
+                "objectness_score": None,
+                "nms_group_id": None,
+                "crop_padding_ratio": 0.12,
+                "crop_hash": None,
+                "crop_width": None,
+                "crop_height": None,
+                "crop_storage_policy": "ephemeral",
+                "detection_status": "no_detection",
+                "failure_reason": "no_butterfly_like_object",
+            }
+        ]
+    )
+    scores = pl.DataFrame(
+        [],
+        schema={
+            "source": pl.String,
+            "flickr_photo_id": pl.String,
+            "detection_id": pl.String,
+            "crop_hash": pl.String,
+            "target_species_score": pl.Float64,
+            "occurrence_bin": pl.String,
+            "species_top1_scientific_name": pl.String,
+            "bin_reason": pl.String,
+        },
+    )
+    canonical_path = tmp_path / "canonical.parquet"
+    detections_path = tmp_path / "detections.parquet"
+    scores_path = tmp_path / "scores.parquet"
+    canonical.write_parquet(canonical_path)
+    detections.write_parquet(detections_path)
+    scores.write_parquet(scores_path)
+
+    outputs = write_object_evidence_outputs(
+        canonical_records_path=canonical_path,
+        detections_path=detections_path,
+        scores_path=scores_path,
+        joined_output_path=tmp_path / "object_evidence_joined.parquet",
+        photo_summary_output_path=tmp_path / "photo_evidence_summary.parquet",
+        species_context=_context(),
+    )
+
+    joined = pl.read_parquet(outputs.object_evidence_joined).to_dicts()
+    summary = pl.read_parquet(outputs.photo_evidence_summary).to_dicts()
+    assert len(joined) == 1
+    assert joined[0]["source"] == "flickr"
+    assert joined[0]["flickr_photo_id"] == "photo-no-det"
+    assert joined[0]["detection_status"] == "no_detection"
+    assert summary == [
+        {
+            "source": "flickr",
+            "flickr_photo_id": "photo-no-det",
+            "best_detection_id": None,
+            "detection_count": 0,
+            "best_object_occurrence_bin": None,
+            "best_object_species_top1": None,
+            "best_object_score": None,
+            "photo_occurrence_bin": "in_review",
+            "photo_bin_reason": "no_detection_strong_text_evidence",
+            "all_detection_ids": [],
+            "all_candidate_species": ["Danaus plexippus"],
+        }
+    ]
+
+
 def test_detection_object_pipeline_has_no_hardcoded_species_labels() -> None:
     root = Path("src/biominer")
     forbidden = ("Papilio demoleus", "TARGET_SPECIES", "PAPILIO_DEMOLEUS", "monarch butterfly")
