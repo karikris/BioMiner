@@ -23,6 +23,7 @@ AblationMode = Literal["whole_image", "detector_crop", "detector_crop_segmentati
 PHOTO_REVIEW_REASONS = {
     "geospatial_conflict",
     "ambiguous_species_margin",
+    "species_conflict",
     "taxonomy_inconsistent",
     "detected_object_without_bioclip_score",
 }
@@ -309,6 +310,7 @@ def _score_detection(
     species_top5 = [name for name, _score in ranked_species[:5]]
     taxon_key_by_name = _taxon_key_by_name(candidate_set.species_candidates)
     top1_score = ranked_species[0][1] if ranked_species else 0.0
+    target_rank = _target_rank(ranked_species, context.scientific_name)
     margin = _margin(ranked_species)
     family_margin = _margin(ranked_families)
     genus_margin = _margin(ranked_genera)
@@ -317,7 +319,7 @@ def _score_detection(
     if negative_reason:
         bucket, reason = "bin", negative_reason
     else:
-        bucket, reason = _bucket(item=item, target_score=target_score, margin=margin, geo=geo)
+        bucket, reason = _bucket(item=item, target_score=target_score, target_rank=target_rank, margin=margin, geo=geo)
     return {
         "source": str(item.get("source") or ""),
         "flickr_photo_id": str(item.get("flickr_photo_id") or ""),
@@ -349,7 +351,7 @@ def _score_detection(
         "species_top1_margin": margin,
         "target_accepted_taxon_key": context.accepted_taxon_key,
         "target_species_score": target_score,
-        "target_species_rank": _target_rank(ranked_species, context.scientific_name),
+        "target_species_rank": target_rank,
         "geospatial_prior_score": geo.score,
         "geospatial_prior_reason": geo.reason,
         "text_evidence_score": _text_evidence_score(item, context),
@@ -387,9 +389,18 @@ def _taxon_key_for_name(keys_by_name: dict[str, str], name: str | None) -> str |
     return keys_by_name.get(_norm(name))
 
 
-def _bucket(*, item: dict[str, Any], target_score: float, margin: float | None, geo: GeospatialPrior) -> tuple[str, str]:
+def _bucket(
+    *,
+    item: dict[str, Any],
+    target_score: float,
+    target_rank: int | None,
+    margin: float | None,
+    geo: GeospatialPrior,
+) -> tuple[str, str]:
     if geo.route_to_review:
         return "in_review", geo.reason
+    if target_rank is not None and target_rank != 1 and target_score >= DEFAULT_BUCKET_POLICY.silver_species_threshold:
+        return "in_review", "species_conflict"
     if (
         target_score >= DEFAULT_BUCKET_POLICY.gold_species_threshold
         and margin is not None
