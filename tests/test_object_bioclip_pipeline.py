@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from biominer.bioclip.ablation import build_ablation_report, run_object_ablations
 from biominer.bioclip.candidate_sets import build_candidate_set
@@ -369,6 +370,24 @@ def test_object_bioclip_scores_detection_crops_with_join_keys(tmp_path) -> None:
     assert row["target_species_score"] == 0.82
     assert row["occurrence_bin"] == "gold"
     assert row["is_target_positive"] is True
+
+
+def test_object_bioclip_rejects_detections_without_canonical_source_record(tmp_path) -> None:
+    candidate_set = build_candidate_set(_context())
+    detections = _detections().head(1).with_columns(pl.lit("photo-missing").alias("flickr_photo_id"))
+
+    with pytest.raises(ValueError, match="no canonical source record"):
+        screen_object_detections(
+            canonical_records=_canonical_records(),
+            detections=detections,
+            species_context=_context(),
+            candidate_set=candidate_set,
+            scorer=FakeObjectBioClipScorer({"sha256:crop-1": {"a photo of Danaus plexippus": 0.82}}),
+            output_path=tmp_path / "object_scores.parquet",
+            ablation_mode="detector_crop",
+        )
+
+    assert not (tmp_path / "object_scores.parquet").exists()
 
 
 def test_object_bioclip_scores_family_genus_and_species_stages_separately(tmp_path) -> None:

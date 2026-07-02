@@ -175,8 +175,8 @@ def screen_object_detections(
         if str(detection.get("detection_status") or "") != "detected":
             continue
         key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
-        record = records_by_photo.get(key, {})
-        item = {**record, **detection, "ablation_mode": ablation_mode}
+        record = _canonical_record_for_detection(records_by_photo, key=key)
+        item = {**detection, **record, "ablation_mode": ablation_mode}
         rows.append(
             _score_detection(
                 item=item,
@@ -198,6 +198,18 @@ def screen_object_detections(
         detections_seen=detections.height,
         crops_scored=len(rows),
     )
+
+
+def _canonical_record_for_detection(
+    records_by_photo: dict[tuple[str, str], dict[str, Any]],
+    *,
+    key: tuple[str, str],
+) -> dict[str, Any]:
+    record = records_by_photo.get(key)
+    if record is None:
+        source, photo_id = key
+        raise ValueError(f"object BioCLIP detection has no canonical source record: source={source!r}, flickr_photo_id={photo_id!r}")
+    return record
 
 
 def apply_geospatial_soft_prior(
