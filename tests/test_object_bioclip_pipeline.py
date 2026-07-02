@@ -435,6 +435,38 @@ def test_ablation_modes_write_rows_with_shared_photo_join_keys(tmp_path) -> None
     assert build_ablation_report(pl.concat(frames))["gold_count"] == 3
 
 
+def test_ablation_report_counts_no_detection_records(tmp_path) -> None:
+    detections = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "detection_id": "no-detection-photo-1",
+                "crop_hash": None,
+                "bbox_xyxy": [],
+                "detection_status": "no_detection",
+                "failure_reason": "no_butterfly_like_object",
+            }
+        ]
+    )
+
+    report = run_object_ablations(
+        canonical_records=_canonical_records(),
+        detections=detections,
+        species_context=_context(),
+        candidate_set=build_candidate_set(_context()),
+        scorer=FakeObjectBioClipScorer({}),
+        output_dir=tmp_path,
+        modes=("detector_crop",),
+    )
+
+    assert report.report["records_seen"] == 1
+    assert report.report["detections_seen"] == 1
+    assert report.report["crops_scored"] == 0
+    assert report.report["no_detection_records"] == 1
+    assert json.loads((tmp_path / "ablation_report.json").read_text(encoding="utf-8"))["no_detection_records"] == 1
+
+
 def test_object_evidence_join_and_photo_summary_outputs(tmp_path) -> None:
     candidate_set = build_candidate_set(_context())
     scores = screen_object_detections(

@@ -44,18 +44,26 @@ def run_object_ablations(
         )
         frames.append(result.frame)
     combined = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
-    report = build_ablation_report(combined)
+    report = build_ablation_report(combined, canonical_records=canonical_records, detections=detections)
     (base / "ablation_report.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     return AblationRunReport(output_dir=base, modes=modes, report=report)
 
 
-def build_ablation_report(frame: pl.DataFrame) -> dict[str, Any]:
+def build_ablation_report(
+    frame: pl.DataFrame,
+    *,
+    canonical_records: pl.DataFrame | None = None,
+    detections: pl.DataFrame | None = None,
+) -> dict[str, Any]:
+    records_seen = _records_seen(frame, canonical_records)
+    detections_seen = _detections_seen(frame, detections)
+    no_detection_records = _no_detection_records(detections)
     if frame.is_empty():
         return {
-            "records_seen": 0,
-            "detections_seen": 0,
+            "records_seen": records_seen,
+            "detections_seen": detections_seen,
             "crops_scored": 0,
-            "no_detection_records": 0,
+            "no_detection_records": no_detection_records,
             "mean_target_rank": None,
             "median_target_rank": None,
             "gold_count": 0,
@@ -70,10 +78,10 @@ def build_ablation_report(frame: pl.DataFrame) -> dict[str, Any]:
     counts = _bucket_counts(frame)
     return {
         "ablation_mode": sorted(frame.get_column("ablation_mode").unique().to_list()) if "ablation_mode" in frame.columns else [],
-        "records_seen": frame.select(["source", "flickr_photo_id"]).unique().height,
-        "detections_seen": frame.select(["source", "flickr_photo_id", "detection_id"]).unique().height,
+        "records_seen": records_seen,
+        "detections_seen": detections_seen,
         "crops_scored": frame.height,
-        "no_detection_records": 0,
+        "no_detection_records": no_detection_records,
         "mean_target_rank": sum(ranks) / len(ranks) if ranks else None,
         "median_target_rank": _median(ranks),
         "gold_count": counts.get("gold", 0),
@@ -84,6 +92,29 @@ def build_ablation_report(frame: pl.DataFrame) -> dict[str, Any]:
         "whole_image_vs_crop_disagreements": _disagreements(frame, "whole_image", "detector_crop"),
         "crop_vs_segmentation_disagreements": _disagreements(frame, "detector_crop", "detector_crop_segmentation"),
     }
+
+
+def _records_seen(frame: pl.DataFrame, canonical_records: pl.DataFrame | None) -> int:
+    if canonical_records is not None and not canonical_records.is_empty():
+        return canonical_records.select(["source", "flickr_photo_id"]).unique().height
+    if frame.is_empty() or not {"source", "flickr_photo_id"}.issubset(frame.columns):
+        return 0
+    return frame.select(["source", "flickr_photo_id"]).unique().height
+
+
+def _detections_seen(frame: pl.DataFrame, detections: pl.DataFrame | None) -> int:
+    columns = ["source", "flickr_photo_id", "detection_id"]
+    if detections is not None and not detections.is_empty():
+        return detections.select(columns).unique().height
+    if frame.is_empty() or not set(columns).issubset(frame.columns):
+        return 0
+    return frame.select(columns).unique().height
+
+
+def _no_detection_records(detections: pl.DataFrame | None) -> int:
+    if detections is None or detections.is_empty() or "detection_status" not in detections.columns:
+        return 0
+    return detections.filter(pl.col("detection_status") == "no_detection").select(["source", "flickr_photo_id"]).unique().height
 
 
 def _bucket_counts(frame: pl.DataFrame) -> dict[str, int]:
