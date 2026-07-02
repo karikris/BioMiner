@@ -43,6 +43,12 @@ class _LoadedImage:
     failure_reason: str | None = None
 
 
+@dataclass(frozen=True)
+class _CropJob:
+    row: dict[str, Any]
+    image: DecodedImage
+
+
 def run_detection_pipeline(
     *,
     records: Iterable[dict[str, Any]],
@@ -80,7 +86,13 @@ def run_detection_pipeline(
             images_loaded += 1
             batch.append(loaded)
             if len(batch) >= runtime.detector_batch_size:
-                enriched = _detect_and_enrich_batch(batch, detector=detector, policy=policy)
+                enriched = _detect_and_enrich_batch(
+                    batch,
+                    detector=detector,
+                    policy=policy,
+                    run_policy=runtime,
+                    executor_factory=executor_factory,
+                )
                 crops_created += sum(1 for row in enriched if row.get("crop_hash"))
                 _buffer_detection_rows(
                     enriched,
@@ -91,7 +103,13 @@ def run_detection_pipeline(
                 )
                 batch = []
         if batch:
-            enriched = _detect_and_enrich_batch(batch, detector=detector, policy=policy)
+            enriched = _detect_and_enrich_batch(
+                batch,
+                detector=detector,
+                policy=policy,
+                run_policy=runtime,
+                executor_factory=executor_factory,
+            )
             crops_created += sum(1 for row in enriched if row.get("crop_hash"))
             _buffer_detection_rows(
                 enriched,
@@ -179,9 +197,11 @@ def _detect_and_enrich_batch(
     *,
     detector: ObjectDetector,
     policy: DetectionPolicy,
+    run_policy: DetectionRunPolicy,
+    executor_factory: ExecutorFactory,
 ) -> list[dict[str, Any]]:
     detections_by_image = detector.detect_batch([item.image for item in batch if item.image is not None])
-    rows: list[dict[str, Any]] = []
+    crop_jobs: list[_CropJob] = []
     for item, detections in zip(batch, detections_by_image, strict=True):
         image = item.image
         if image is None:
@@ -196,8 +216,38 @@ def _detect_and_enrich_batch(
             detector_checkpoint=detector.checkpoint,
             policy=policy,
         )
-        rows.extend(_with_crop_metadata(row, image=image, policy=policy) for row in detection_rows)
+        crop_jobs.extend(_CropJob(row=row, image=image) for row in detection_rows)
+    return _with_crop_metadata_bounded(
+        crop_jobs,
+        policy=policy,
+        run_policy=run_policy,
+        executor_factory=executor_factory,
+    )
+
+
+def _with_crop_metadata_bounded(
+    jobs: list[_CropJob],
+    *,
+    policy: DetectionPolicy,
+    run_policy: DetectionRunPolicy,
+    executor_factory: ExecutorFactory,
+) -> list[dict[str, Any]]:
+    if not jobs:
+        return []
+
+    def enrich(job: _CropJob) -> dict[str, Any]:
+        return _with_crop_metadata(job.row, image=job.image, policy=policy)
+
+    rows: list[dict[str, Any]] = []
+    with executor_factory(max_workers=run_policy.decode_workers) as pool:
+        for chunk in _chunks(jobs, max(1, run_policy.crop_batch_size)):
+            rows.extend(pool.map(enrich, chunk, buffersize=run_policy.max_inflight_crops))
     return rows
+
+
+def _chunks(items: list[_CropJob], size: int) -> Iterable[list[_CropJob]]:
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
 
 
 def _with_crop_metadata(row: dict[str, Any], *, image: DecodedImage, policy: DetectionPolicy) -> dict[str, Any]:

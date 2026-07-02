@@ -259,11 +259,57 @@ def test_detection_pipeline_uses_bounded_map_buffersize(tmp_path) -> None:
         detector=FakeObjectDetector([[DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 2, 2))], []]),
         output_path=tmp_path / "object_detections.parquet",
         image_loader=lambda record: _image(),
-        run_policy=DetectionRunPolicy(download_workers=2, max_inflight_images=7),
+        run_policy=DetectionRunPolicy(download_workers=2, max_inflight_images=7, max_inflight_crops=11),
         executor_factory=RecordingExecutor,
     )
 
-    assert calls == [7]
+    assert calls == [7, 11]
+
+
+def test_detection_pipeline_batches_crop_enrichment_with_bounded_buffersize(tmp_path) -> None:
+    calls: list[tuple[int, int | None]] = []
+
+    class RecordingExecutor:
+        def __init__(self, max_workers):  # noqa: ANN001 - mirrors executor constructor.
+            self.max_workers = max_workers
+
+        def __enter__(self):  # noqa: ANN204 - mirrors executor context manager.
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001, ANN204 - mirrors executor context manager.
+            return None
+
+        def map(self, fn, iterable, *, buffersize=None):  # noqa: ANN001, ANN202 - mirrors Executor.map.
+            items = list(iterable)
+            calls.append((len(items), buffersize))
+            return [fn(item) for item in items]
+
+    run_detection_pipeline(
+        records=[{"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "memory://photo-1"}],
+        detector=FakeObjectDetector(
+            [
+                [
+                    DetectionCandidate(label="butterfly", score=0.95, bbox_xyxy=(0, 0, 1, 1)),
+                    DetectionCandidate(label="life_stage", score=0.90, bbox_xyxy=(1, 0, 2, 1)),
+                    DetectionCandidate(label="butterfly", score=0.85, bbox_xyxy=(2, 0, 3, 1)),
+                ]
+            ]
+        ),
+        output_path=tmp_path / "object_detections.parquet",
+        image_loader=lambda record: _image(),
+        detection_policy=DetectionPolicy(backend="fake", min_box_area_ratio=0.0),
+        run_policy=DetectionRunPolicy(
+            download_workers=1,
+            max_inflight_images=5,
+            decode_workers=2,
+            max_inflight_crops=11,
+            detector_batch_size=1,
+            crop_batch_size=2,
+        ),
+        executor_factory=RecordingExecutor,
+    )
+
+    assert calls == [(1, 5), (2, 11), (1, 11)]
 
 
 def test_detection_pipeline_image_load_failures_use_stable_detection_id(tmp_path) -> None:
