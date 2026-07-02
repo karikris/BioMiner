@@ -5,16 +5,19 @@ POSTGRES_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS biominer_runs (
   run_id text PRIMARY KEY,
   job_name text NOT NULL,
+  stage text NOT NULL,
   registry_version text,
   status text NOT NULL,
   started_at timestamptz NOT NULL,
   ended_at timestamptz,
-  config_json jsonb NOT NULL DEFAULT '{}'::jsonb
+  config_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  summary_json jsonb
 );
 
 CREATE TABLE IF NOT EXISTS biominer_work_items (
   work_key text PRIMARY KEY,
   job_name text NOT NULL,
+  stage text NOT NULL,
   registry_version text,
   status text NOT NULL,
   payload_json jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -30,7 +33,7 @@ CREATE TABLE IF NOT EXISTS biominer_work_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_biominer_work_items_pending
-ON biominer_work_items(status, created_at, work_key);
+ON biominer_work_items(job_name, stage, registry_version, status, created_at, work_key);
 
 CREATE TABLE IF NOT EXISTS biominer_api_call_ledger (
   id bigserial PRIMARY KEY,
@@ -56,6 +59,7 @@ CREATE TABLE IF NOT EXISTS biominer_parquet_shards (
   row_count bigint,
   byte_count bigint,
   checksum text,
+  metadata_json jsonb,
   committed_at timestamptz NOT NULL DEFAULT now()
 );
 """
@@ -65,7 +69,10 @@ POSTGRES_CLAIM_SQL = """
 WITH picked AS (
   SELECT work_key
   FROM biominer_work_items
-  WHERE status = 'pending'
+  WHERE job_name = %s
+    AND stage = %s
+    AND (registry_version IS NOT DISTINCT FROM %s)
+    AND status = 'pending'
   ORDER BY created_at, work_key
   FOR UPDATE SKIP LOCKED
   LIMIT %s

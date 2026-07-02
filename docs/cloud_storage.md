@@ -95,3 +95,32 @@ registry/current/manifest.json
 ```
 
 For object storage, registry `current` should be represented by a JSON pointer payload instead of POSIX symlink semantics.
+
+## Phase 3 Resume Model
+
+Phase 3 makes resume state durable in `WorkStore` instead of deriving it from local files alone. A run starts by reading three control-plane views:
+
+- `biominer_runs`: one logical execution for a job/stage/run ID;
+- `biominer_work_items`: pending, claimed, completed, and failed units of work;
+- `biominer_parquet_shards`: immutable output objects already committed by workers.
+
+`prepare_resume_plan` creates or reuses the run row, requeues stale claims, reads completed keys, enqueues only missing planned work, optionally repairs shard manifest rows from existing shard objects, and claims only pending work for the current worker.
+
+Completed work keys prevent duplicate processing. For Flickr `poll_once`, keys should be based on the query payload identity. For BioCLIP screening, the resume identity is exactly:
+
+```text
+source
+flickr_photo_id
+image_url
+model_id
+model_version
+model_checkpoint
+```
+
+Scores, bins, review state, and local cache paths are mutable outputs and are intentionally excluded from the BioCLIP resume key.
+
+Stale claims are rows with `status='claimed'` and an old `claimed_at`. Requeueing changes them back to `pending` and clears `claimed_by`/`claimed_at`; `attempt_count` increments only when the item is claimed again.
+
+Shard manifest repair is optional. It lists shard objects under a prefix, compares them with `biominer_parquet_shards`, and registers missing rows. Local tests may read Parquet metadata for row counts. Cloud repair does not download large objects for checksums in this phase.
+
+Postgres/Supabase remains scaffolded for Phase 3, with claim SQL using `FOR UPDATE SKIP LOCKED` for safe multi-worker claiming. Tests are local-only and do not require Backblaze B2, Supabase, network access, Docker, Flickr credentials, CUDA, or BioCLIP weights.
