@@ -69,6 +69,7 @@ def build_candidate_set(
         species,
         records or [],
         candidate_lookup=_candidate_lookup(candidate_rows),
+        group_lookup=_candidate_group_lookup(candidate_rows),
     )
     if query_provenance_added:
         source_evidence.append("query_provenance")
@@ -79,7 +80,7 @@ def build_candidate_set(
         species.insert(0, target)
     species = _dedupe_taxa(species)
     genus = tuple(candidate for candidate in species if _norm(candidate.genus) == _norm(context.genus))
-    family = tuple(candidate for candidate in species if _norm(candidate.family) == _norm(context.family))
+    family = tuple(candidate for candidate in species if candidate.family)
     candidate_set_id = _candidate_set_id(context=context, species=species, geospatial_scope=geospatial_scope)
     return CandidateSet(
         candidate_set_id=candidate_set_id,
@@ -131,8 +132,10 @@ def _add_query_provenance_candidates(
     records: list[dict[str, Any]],
     *,
     candidate_lookup: dict[str, CandidateTaxon],
+    group_lookup: dict[str, tuple[CandidateTaxon, ...]],
 ) -> tuple[list[CandidateTaxon], bool]:
     by_key = {str(candidate.accepted_taxon_key or ""): candidate for candidate in candidates if candidate.accepted_taxon_key}
+    by_name = {_norm(candidate.scientific_name) for candidate in candidates}
     added = False
     for record in records:
         keys = _query_provenance_keys(record)
@@ -150,12 +153,25 @@ def _add_query_provenance_candidates(
                 continue
             candidates.append(candidate)
             by_key[normalized_key] = candidate
+            by_name.add(_norm(candidate.scientific_name))
             added = True
+        for key in _query_provenance_group_keys(record):
+            for candidate in group_lookup.get(key, ()):
+                name_key = _norm(candidate.scientific_name)
+                taxon_key = str(candidate.accepted_taxon_key or "")
+                if name_key in by_name or (taxon_key and taxon_key in by_key):
+                    continue
+                candidates.append(candidate)
+                by_name.add(name_key)
+                if taxon_key:
+                    by_key[taxon_key] = candidate
+                added = True
         for key, name in zip(keys, names, strict=False):
             if str(key) in by_key or not name:
                 continue
             candidates.append(CandidateTaxon(scientific_name=str(name), accepted_taxon_key=str(key), rank="species"))
             by_key[str(key)] = candidates[-1]
+            by_name.add(_norm(str(name)))
             added = True
     return candidates, added
 
@@ -171,6 +187,19 @@ def _candidate_lookup(rows: list[dict[str, Any]]) -> dict[str, CandidateTaxon]:
             if key:
                 lookup.setdefault(key, candidate)
     return lookup
+
+
+def _candidate_group_lookup(rows: list[dict[str, Any]]) -> dict[str, tuple[CandidateTaxon, ...]]:
+    grouped: dict[str, list[CandidateTaxon]] = {}
+    for row in rows:
+        candidate = _candidate_from_row(row)
+        if candidate is None:
+            continue
+        for key_name in ("family_key", "genus_key"):
+            key = _first_text(row, key_name)
+            if key:
+                grouped.setdefault(key, []).append(candidate)
+    return {key: tuple(_dedupe_taxa(candidates)) for key, candidates in grouped.items()}
 
 
 def _candidate_from_row(row: dict[str, Any]) -> CandidateTaxon | None:
@@ -191,6 +220,15 @@ def _candidate_from_row(row: dict[str, Any]) -> CandidateTaxon | None:
 def _query_provenance_keys(record: dict[str, Any]) -> list[str]:
     keys: list[str] = []
     for field in ("discovery_species_keys", "discovery_accepted_taxon_keys"):
+        value = record.get(field) or ()
+        values = [value] if isinstance(value, str) else value
+        keys.extend(str(item) for item in values if item)
+    return keys
+
+
+def _query_provenance_group_keys(record: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    for field in ("discovery_family_keys", "discovery_genus_keys"):
         value = record.get(field) or ()
         values = [value] if isinstance(value, str) else value
         keys.extend(str(item) for item in values if item)

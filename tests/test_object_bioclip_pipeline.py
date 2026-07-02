@@ -192,6 +192,41 @@ def test_candidate_set_resolves_query_provenance_keys_from_candidate_parquet(tmp
     assert "a photo of Pieris rapae" in candidate_set.prompt_labels("species")
 
 
+def test_candidate_set_expands_query_provenance_genus_keys_from_candidate_parquet(tmp_path) -> None:
+    candidates = tmp_path / "species_candidates.parquet"
+    pl.DataFrame(
+        [
+            {
+                "scientific_name": "Danaus plexippus",
+                "accepted_taxon_key": "gbif:5131654",
+                "family": "Nymphalidae",
+                "family_key": "gbif:7017",
+                "genus": "Danaus",
+                "genus_key": "gbif:1927164",
+            },
+            {
+                "scientific_name": "Pieris rapae",
+                "accepted_taxon_key": "gbif:1005738",
+                "family": "Pieridae",
+                "family_key": "gbif:5481",
+                "genus": "Pieris",
+                "genus_key": "gbif:1924554",
+            },
+        ]
+    ).write_parquet(candidates)
+
+    candidate_set = build_candidate_set(
+        _context(),
+        species_candidate_path=candidates,
+        records=[{"discovery_genus_keys": ["gbif:1924554"]}],
+    )
+
+    assert "Pieris rapae" in [candidate.scientific_name for candidate in candidate_set.species_candidates]
+    assert "query_provenance" in candidate_set.source_evidence
+    assert "Pieridae" in [candidate.family for candidate in candidate_set.family_candidates]
+    assert "Pieris" in [candidate.genus for candidate in candidate_set.species_candidates]
+
+
 def test_candidate_set_uses_metadata_scientific_names_without_query_keys() -> None:
     candidate_set = build_candidate_set(
         _context(),
