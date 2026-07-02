@@ -733,6 +733,41 @@ def test_ablation_modes_write_rows_with_shared_photo_join_keys(tmp_path) -> None
     assert build_ablation_report(pl.concat(frames))["gold_count"] == 3
 
 
+def test_ablation_report_uses_objective_disagreement_field_names() -> None:
+    report = build_ablation_report(
+        pl.DataFrame(
+            [
+                {
+                    "source": "flickr",
+                    "flickr_photo_id": "photo-1",
+                    "detection_id": "det-1",
+                    "ablation_mode": "whole_image",
+                    "occurrence_bin": "gold",
+                },
+                {
+                    "source": "flickr",
+                    "flickr_photo_id": "photo-1",
+                    "detection_id": "det-1",
+                    "ablation_mode": "detector_crop",
+                    "occurrence_bin": "bronze",
+                },
+                {
+                    "source": "flickr",
+                    "flickr_photo_id": "photo-1",
+                    "detection_id": "det-1",
+                    "ablation_mode": "detector_crop_segmentation",
+                    "occurrence_bin": "bronze",
+                },
+            ]
+        )
+    )
+
+    assert report["whole_image_vs_crop"] == 1
+    assert report["crop_vs_segmentation"] == 0
+    assert report["whole_image_vs_crop_disagreements"] == 1
+    assert report["crop_vs_segmentation_disagreements"] == 0
+
+
 def test_ablation_report_counts_no_detection_records(tmp_path) -> None:
     detections = pl.DataFrame(
         [

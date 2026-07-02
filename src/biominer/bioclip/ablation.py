@@ -79,11 +79,15 @@ def build_ablation_report(
             "bronze_count": 0,
             "bin_count": 0,
             "in_review_count": 0,
+            "whole_image_vs_crop": 0,
+            "crop_vs_segmentation": 0,
             "whole_image_vs_crop_disagreements": 0,
             "crop_vs_segmentation_disagreements": 0,
         }
     ranks = [int(value) for value in frame.get_column("target_species_rank").drop_nulls().to_list()] if "target_species_rank" in frame.columns else []
     counts = _bucket_counts(frame)
+    whole_image_vs_crop = _disagreements(frame, "whole_image", "detector_crop")
+    crop_vs_segmentation = _disagreements(frame, "detector_crop", "detector_crop_segmentation")
     return {
         "ablation_mode": sorted(frame.get_column("ablation_mode").unique().to_list()) if "ablation_mode" in frame.columns else [],
         "records_seen": records_seen,
@@ -97,8 +101,10 @@ def build_ablation_report(
         "bronze_count": counts.get("bronze", 0),
         "bin_count": counts.get("bin", 0),
         "in_review_count": counts.get("in_review", 0),
-        "whole_image_vs_crop_disagreements": _disagreements(frame, "whole_image", "detector_crop"),
-        "crop_vs_segmentation_disagreements": _disagreements(frame, "detector_crop", "detector_crop_segmentation"),
+        "whole_image_vs_crop": whole_image_vs_crop,
+        "crop_vs_segmentation": crop_vs_segmentation,
+        "whole_image_vs_crop_disagreements": whole_image_vs_crop,
+        "crop_vs_segmentation_disagreements": crop_vs_segmentation,
     }
 
 
