@@ -193,6 +193,79 @@ def test_ephemeral_crop_bioclip_scorer_scores_temp_crop_and_deletes_file(tmp_pat
     assert list(tmp_path.iterdir()) == []
 
 
+def test_screen_object_detections_passes_ablation_mode_to_scorer(tmp_path) -> None:
+    class ModeRecordingScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self) -> None:
+            self.modes: list[str | None] = []
+
+        def score(self, item: dict[str, object], labels: tuple[str, ...]) -> dict[str, float]:
+            self.modes.append(item.get("ablation_mode"))  # type: ignore[arg-type]
+            return {label: (0.8 if label == "a photo of Danaus plexippus" else 0.0) for label in labels}
+
+    scorer = ModeRecordingScorer()
+
+    screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections().head(1),
+        species_context=_context(),
+        candidate_set=build_candidate_set(_context()),
+        scorer=scorer,
+        output_path=tmp_path / "scores.parquet",
+        ablation_mode="whole_image",
+    )
+
+    assert scorer.modes == ["whole_image"]
+
+
+def test_ephemeral_scorer_uses_distinct_visual_inputs_for_ablation_modes(tmp_path) -> None:
+    seen: list[tuple[str, bytes, bytes]] = []
+
+    class WhiteMaskSegmenter:
+        backend = "fake-mask"
+
+        def segment_crop(self, crop) -> bytes:
+            return b"\xff" * len(crop.encoded_bytes)
+
+    def scorer(path: Path, labels: tuple[str, ...]) -> dict[str, float]:
+        header1, header2, header3, body = path.read_bytes().split(b"\n", 3)
+        seen.append((header2.decode("ascii"), header3, body))
+        return {label: 0.5 for label in labels}
+
+    crop_scorer = EphemeralCropBioClipScorer(
+        scorer=scorer,
+        image_loader=lambda item: _decoded_image(),
+        temp_dir=tmp_path,
+        crop_target_px=3,
+        model_id="bioclip2_5",
+        model_version="bioclip2_5_huge",
+        model_checkpoint="checkpoint-a",
+        segmenter=WhiteMaskSegmenter(),
+    )
+    item = {
+        "source": "flickr",
+        "flickr_photo_id": "photo-1",
+        "detection_id": "det-1",
+        "bbox_xyxy": [0.0, 0.0, 3.0, 3.0],
+    }
+
+    for mode in ("whole_image", "detector_crop", "detector_crop_segmentation"):
+        crop_scorer.score({**item, "ablation_mode": mode}, ("a photo of Danaus plexippus",))
+
+    whole_image, crop, segmented = seen
+    assert whole_image[0] == "4 4"
+    assert len(whole_image[2]) == 4 * 4 * 3
+    assert crop[0] == "3 3"
+    assert len(crop[2]) == 3 * 3 * 3
+    assert segmented[0] == "3 3"
+    assert segmented[2] == b"\xff" * (3 * 3 * 3)
+    assert segmented[2] != crop[2]
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_object_bioclip_runner_can_score_detector_crops_with_ephemeral_scorer(tmp_path) -> None:
     candidate_set = build_candidate_set(_context())
 

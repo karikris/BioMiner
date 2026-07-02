@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import hashlib
 from pathlib import Path
 import tempfile
 from typing import Any, Iterable, Literal, Protocol
@@ -12,6 +13,7 @@ from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage
+from biominer.detection.segmentation import NoneSegmenter, Segmenter
 from biominer.species.context import SpeciesContext
 from biominer.storage.parquet import write_parquet
 
@@ -78,6 +80,7 @@ class EphemeralCropBioClipScorer:
         model_checkpoint: str,
         retain_debug_crops: bool = False,
         debug_crop_limit: int = 500,
+        segmenter: Segmenter | None = None,
     ) -> None:
         self._scorer = scorer
         self._image_loader = image_loader
@@ -90,11 +93,25 @@ class EphemeralCropBioClipScorer:
         self._retain_debug_crops = retain_debug_crops
         self._debug_crop_limit = debug_crop_limit
         self._debug_crops_written = 0
+        self._segmenter = segmenter or NoneSegmenter()
 
     def score(self, item: dict[str, Any], labels: tuple[str, ...]) -> dict[str, float]:
         image = self._image_loader(item)
         if not isinstance(image, DecodedImage):
             raise TypeError("image_loader must return a DecodedImage")
+        mode = _ablation_mode(item)
+        data, width, height, content_hash = self._visual_input_for_mode(item=item, image=image, mode=mode)
+        crop_path = self._write_temp_ppm(data, width=width, height=height, crop_hash=f"{mode}:{content_hash}")
+        try:
+            return {str(label): float(score) for label, score in dict(self._scorer(crop_path, labels)).items()}
+        finally:
+            if not self._should_retain_debug_crop():
+                crop_path.unlink(missing_ok=True)
+
+    def _visual_input_for_mode(self, *, item: dict[str, Any], image: DecodedImage, mode: AblationMode) -> tuple[bytes, int, int, str]:
+        if mode == "whole_image":
+            return image.data, image.width, image.height, _bytes_hash(image.data)
+
         bbox = item.get("bbox_xyxy")
         if not isinstance(bbox, list | tuple) or len(bbox) != 4:
             raise ValueError("object BioCLIP crop scoring requires bbox_xyxy")
@@ -104,12 +121,13 @@ class EphemeralCropBioClipScorer:
             padding_ratio=self._crop_padding_ratio,
             target_px=self._crop_target_px,
         )
-        crop_path = self._write_temp_ppm(crop.encoded_bytes, width=crop.crop_width, height=crop.crop_height, crop_hash=crop.crop_hash)
-        try:
-            return {str(label): float(score) for label, score in dict(self._scorer(crop_path, labels)).items()}
-        finally:
-            if not self._should_retain_debug_crop():
-                crop_path.unlink(missing_ok=True)
+        if mode == "detector_crop":
+            return crop.encoded_bytes, crop.crop_width, crop.crop_height, crop.crop_hash
+
+        segmented = self._segmenter.segment_crop(crop)
+        if segmented is None:
+            return crop.encoded_bytes, crop.crop_width, crop.crop_height, crop.crop_hash
+        return segmented, crop.crop_width, crop.crop_height, _bytes_hash(segmented)
 
     def _write_temp_ppm(self, data: bytes, *, width: int, height: int, crop_hash: str) -> Path:
         self._temp_dir.mkdir(parents=True, exist_ok=True)
@@ -150,7 +168,7 @@ def screen_object_detections(
             continue
         key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
         record = records_by_photo.get(key, {})
-        item = {**record, **detection}
+        item = {**record, **detection, "ablation_mode": ablation_mode}
         rows.append(_score_detection(item=item, context=species_context, candidate_set=candidate_set, scorer=scorer, ablation_mode=ablation_mode))
     frame = pl.DataFrame(rows) if rows else pl.DataFrame()
     output = Path(output_path) if output_path is not None else None
@@ -386,6 +404,17 @@ def _ppm_bytes(data: bytes, *, width: int, height: int) -> bytes:
     if len(data) != expected:
         raise ValueError(f"RGB crop bytes length {len(data)} does not match expected {expected}")
     return f"P6\n{width} {height}\n255\n".encode("ascii") + data
+
+
+def _ablation_mode(item: dict[str, Any]) -> AblationMode:
+    mode = str(item.get("ablation_mode") or "detector_crop")
+    if mode not in {"whole_image", "detector_crop", "detector_crop_segmentation"}:
+        raise ValueError(f"unsupported object BioCLIP ablation mode: {mode}")
+    return mode  # type: ignore[return-value]
+
+
+def _bytes_hash(data: bytes) -> str:
+    return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
 def _norm(value: object) -> str:
