@@ -395,6 +395,7 @@ def _add_detection_policy_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--min-box-area-ratio", type=float, default=0.0005)
     parser.add_argument("--max-boxes-per-image", type=int, default=8)
     parser.add_argument("--crop-padding-ratio", type=float, default=0.12)
+    parser.add_argument("--image-max-side-px", type=int, default=1280)
     parser.add_argument("--crop-target-px", type=int, default=336)
     parser.add_argument("--retain-debug-crops", action="store_true")
     parser.add_argument("--debug-crop-limit", type=int, default=500)
@@ -1043,6 +1044,7 @@ def _run_detect_boxes(args: argparse.Namespace) -> int:
             min_box_area_ratio=args.min_box_area_ratio,
             max_boxes_per_image=args.max_boxes_per_image,
             crop_padding_ratio=args.crop_padding_ratio,
+            image_max_side_px=args.image_max_side_px,
             crop_target_px=args.crop_target_px,
             retain_debug_crops=args.retain_debug_crops,
             debug_crop_limit=args.debug_crop_limit,

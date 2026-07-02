@@ -85,6 +85,8 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
             "5",
             "--crop-target-px",
             "224",
+            "--image-max-side-px",
+            "960",
             "--crop-padding-ratio",
             "0.2",
         ]
@@ -101,6 +103,8 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
             "fake",
             "--parquet-batch-rows",
             "6",
+            "--image-max-side-px",
+            "1024",
         ]
     )
 
@@ -116,9 +120,11 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
     assert args.detector_batch_size == 3
     assert args.parquet_batch_rows == 5
     assert args.crop_target_px == 224
+    assert args.image_max_side_px == 960
     assert args.crop_padding_ratio == 0.2
     assert species_args.species_command == "detect"
     assert species_args.parquet_batch_rows == 6
+    assert species_args.image_max_side_px == 1024
 
 
 def test_detect_boxes_cli_forwards_detection_and_run_policies(tmp_path, capsys, monkeypatch) -> None:
@@ -167,6 +173,8 @@ def test_detect_boxes_cli_forwards_detection_and_run_policies(tmp_path, capsys, 
             "5",
             "--crop-target-px",
             "224",
+            "--image-max-side-px",
+            "960",
             "--crop-padding-ratio",
             "0.2",
         ]
@@ -180,6 +188,7 @@ def test_detect_boxes_cli_forwards_detection_and_run_policies(tmp_path, capsys, 
     assert calls["records"][0]["flickr_photo_id"] == "photo-1"
     assert pipeline["detection_policy"].backend == "fake"
     assert pipeline["detection_policy"].crop_target_px == 224
+    assert pipeline["detection_policy"].image_max_side_px == 960
     assert pipeline["detection_policy"].crop_padding_ratio == 0.2
     assert pipeline["run_policy"].download_workers == 2
     assert pipeline["run_policy"].max_inflight_images == 7
