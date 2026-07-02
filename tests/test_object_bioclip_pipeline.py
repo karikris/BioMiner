@@ -13,10 +13,12 @@ from biominer.bioclip.object_runner import (
     EphemeralCropBioClipScorer,
     FakeObjectBioClipScorer,
     apply_geospatial_soft_prior,
+    empty_object_score_frame,
     screen_object_detections,
     write_object_evidence_outputs,
 )
 from biominer.detection.detector_base import DecodedImage
+from biominer.detection.schema import empty_detection_frame
 from biominer.species.context import CommonName, RegionHint, SpeciesContext
 
 
@@ -955,6 +957,44 @@ def test_object_evidence_join_and_photo_summary_outputs(tmp_path) -> None:
     assert summary["photo_occurrence_bin"] == "gold"
     assert summary["all_detection_ids"] == ["det-1", "det-2"]
     assert summary["all_candidate_species"] == ["Danaus plexippus"]
+
+
+def test_empty_object_evidence_outputs_keep_stable_join_table_schemas(tmp_path) -> None:
+    canonical_path = tmp_path / "canonical.parquet"
+    detections_path = tmp_path / "detections.parquet"
+    scores_path = tmp_path / "scores.parquet"
+    joined_path = tmp_path / "object_evidence_joined.parquet"
+    summary_path = tmp_path / "photo_evidence_summary.parquet"
+    pl.DataFrame(schema={"source": pl.String, "flickr_photo_id": pl.String}).write_parquet(canonical_path)
+    empty_detection_frame().write_parquet(detections_path)
+    empty_object_score_frame().write_parquet(scores_path)
+
+    outputs = write_object_evidence_outputs(
+        canonical_records_path=canonical_path,
+        detections_path=detections_path,
+        scores_path=scores_path,
+        joined_output_path=joined_path,
+        photo_summary_output_path=summary_path,
+    )
+
+    joined = pl.read_parquet(outputs.object_evidence_joined)
+    summary = pl.read_parquet(outputs.photo_evidence_summary)
+    assert joined.height == 0
+    assert summary.height == 0
+    assert {"source", "flickr_photo_id", "detection_id", "crop_hash", "model_id", "model_checkpoint", "candidate_set_id"}.issubset(joined.columns)
+    assert {
+        "source",
+        "flickr_photo_id",
+        "best_detection_id",
+        "detection_count",
+        "best_object_occurrence_bin",
+        "best_object_species_top1",
+        "best_object_score",
+        "photo_occurrence_bin",
+        "photo_bin_reason",
+        "all_detection_ids",
+        "all_candidate_species",
+    }.issubset(summary.columns)
 
 
 def test_photo_summary_routes_geospatial_conflict_to_review(tmp_path) -> None:

@@ -70,6 +70,41 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "occurrence_bin": pl.String,
     "bin_reason": pl.String,
 }
+OBJECT_EVIDENCE_JOINED_SCHEMA: dict[str, pl.DataType] = {
+    "source": pl.String,
+    "flickr_photo_id": pl.String,
+    "detection_id": pl.String,
+    "crop_hash": pl.String,
+    "model_id": pl.String,
+    "model_version": pl.String,
+    "model_checkpoint": pl.String,
+    "candidate_set_id": pl.String,
+    "ablation_mode": pl.String,
+    "target_species_score": pl.Float64,
+    "occurrence_bin": pl.String,
+    "bin_reason": pl.String,
+    "detection_status": pl.String,
+    "failure_reason": pl.String,
+    "detector_backend": pl.String,
+    "detector_model_id": pl.String,
+    "detector_model_version": pl.String,
+    "detector_checkpoint": pl.String,
+    "image_url": pl.String,
+    "photo_page_url": pl.String,
+}
+PHOTO_EVIDENCE_SUMMARY_SCHEMA: dict[str, pl.DataType] = {
+    "source": pl.String,
+    "flickr_photo_id": pl.String,
+    "best_detection_id": pl.String,
+    "detection_count": pl.Int64,
+    "best_object_occurrence_bin": pl.String,
+    "best_object_species_top1": pl.String,
+    "best_object_score": pl.Float64,
+    "photo_occurrence_bin": pl.String,
+    "photo_bin_reason": pl.String,
+    "all_detection_ids": pl.List(pl.String),
+    "all_candidate_species": pl.List(pl.String),
+}
 
 
 class ObjectBioClipScorer(Protocol):
@@ -496,10 +531,10 @@ def _object_evidence_joined(*, canonical: pl.DataFrame, detections: pl.DataFrame
     if not detection_only.is_empty():
         detection_only = detection_only.join(canonical, on=["source", "flickr_photo_id"], how="left", suffix="_canonical")
     if scored.is_empty():
-        return detection_only
+        return _ensure_columns(detection_only, OBJECT_EVIDENCE_JOINED_SCHEMA)
     if detection_only.is_empty():
-        return scored
-    return pl.concat([scored, detection_only], how="diagonal_relaxed")
+        return _ensure_columns(scored, OBJECT_EVIDENCE_JOINED_SCHEMA)
+    return _ensure_columns(pl.concat([scored, detection_only], how="diagonal_relaxed"), OBJECT_EVIDENCE_JOINED_SCHEMA)
 
 
 def _score_detection(
@@ -704,7 +739,18 @@ def _photo_summary(
             if fallback is not None:
                 rows.append(fallback)
                 summarized_keys.add(key)
-    return pl.DataFrame(rows)
+    return pl.DataFrame(rows) if rows else empty_photo_summary_frame()
+
+
+def empty_photo_summary_frame() -> pl.DataFrame:
+    return pl.DataFrame(schema=PHOTO_EVIDENCE_SUMMARY_SCHEMA)
+
+
+def _ensure_columns(frame: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.DataFrame:
+    if frame.is_empty() and not frame.columns:
+        return pl.DataFrame(schema=schema)
+    missing = [pl.lit(None, dtype=dtype).alias(name) for name, dtype in schema.items() if name not in frame.columns]
+    return frame.with_columns(missing) if missing else frame
 
 
 def _unscored_photo_summary(
