@@ -100,6 +100,29 @@ def test_detection_rows_keep_join_keys_and_stable_detection_id() -> None:
     )
 
 
+def test_detection_rows_apply_nms_iou_threshold_before_max_boxes() -> None:
+    image = _image()
+    record = {"source": "flickr", "flickr_photo_id": "photo-nms", "image_url": "https://example.test/nms.jpg"}
+
+    rows = build_detection_rows(
+        record=record,
+        image=image,
+        detections=[
+            DetectionCandidate(label="butterfly", score=0.95, bbox_xyxy=(0, 0, 3, 3)),
+            DetectionCandidate(label="butterfly", score=0.80, bbox_xyxy=(0.2, 0.2, 3.2, 3.2)),
+            DetectionCandidate(label="butterfly", score=0.70, bbox_xyxy=(3, 3, 4, 4)),
+        ],
+        detector_backend="fake",
+        detector_model_id="fake-detector",
+        detector_model_version="v1",
+        detector_checkpoint="checkpoint-a",
+        detected_at=datetime(2026, 1, 1, tzinfo=UTC),
+        policy=DetectionPolicy(backend="fake", nms_iou_threshold=0.5, min_box_area_ratio=0.0, max_boxes_per_image=8),
+    )
+
+    assert [row["detector_score"] for row in rows] == [0.95, 0.70]
+
+
 def test_detection_rows_write_image_level_failure_when_no_objects_are_found() -> None:
     rows = build_detection_rows(
         record={"source": "flickr", "flickr_photo_id": "photo-2", "image_url": "https://example.test/2.jpg"},

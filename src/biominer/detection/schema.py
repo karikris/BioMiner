@@ -162,17 +162,19 @@ def _filter_detections(
     image: DecodedImage,
     policy: DetectionPolicy,
 ) -> list[DetectionCandidate]:
-    output: list[DetectionCandidate] = []
+    output: list[tuple[DetectionCandidate, list[float]]] = []
     for detection in sorted(detections, key=lambda item: item.score, reverse=True):
         bbox = _bbox_xyxy(detection.bbox_xyxy, image=image)
         if detection.score < policy.box_score_threshold:
             continue
         if _box_area_ratio(bbox, image=image) < policy.min_box_area_ratio:
             continue
-        output.append(detection)
+        if any(_iou_xyxy(bbox, kept_bbox) > policy.nms_iou_threshold for _kept, kept_bbox in output):
+            continue
+        output.append((detection, bbox))
         if len(output) >= policy.max_boxes_per_image:
             break
-    return output
+    return [detection for detection, _bbox in output]
 
 
 def _bbox_xyxy(values: tuple[float, float, float, float], *, image: DecodedImage) -> list[float]:
@@ -202,6 +204,22 @@ def _bbox_xywhn(xyxyn: list[float]) -> list[float]:
 def _box_area_ratio(bbox: list[float], *, image: DecodedImage) -> float:
     area = max(0.0, bbox[2] - bbox[0]) * max(0.0, bbox[3] - bbox[1])
     return round(area / (image.width * image.height), 6)
+
+
+def _iou_xyxy(left: list[float], right: list[float]) -> float:
+    intersection_left = max(left[0], right[0])
+    intersection_top = max(left[1], right[1])
+    intersection_right = min(left[2], right[2])
+    intersection_bottom = min(left[3], right[3])
+    intersection = max(0.0, intersection_right - intersection_left) * max(0.0, intersection_bottom - intersection_top)
+    if intersection <= 0.0:
+        return 0.0
+    left_area = max(0.0, left[2] - left[0]) * max(0.0, left[3] - left[1])
+    right_area = max(0.0, right[2] - right[0]) * max(0.0, right[3] - right[1])
+    union = left_area + right_area - intersection
+    if union <= 0.0:
+        return 0.0
+    return intersection / union
 
 
 def _timestamp(value: datetime | str | None) -> str:
