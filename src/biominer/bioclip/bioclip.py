@@ -526,6 +526,39 @@ class PersistentBioClipScorer:
                 return _coerce_label_set_scores(payload["scores_by_image_by_label_set"])
             raise RuntimeError("BioCLIP worker response did not include label-set scores")
 
+    def embed_text_labels(self, labels: Sequence[str]) -> list[list[float]]:
+        process = self._ensure_process()
+        if process.poll() is not None:
+            raise RuntimeError(f"BioCLIP persistent worker exited early with code {process.returncode}")
+        request = {
+            "text_labels": list(labels),
+            "model_name": self.runtime.model.model_name,
+            "checkpoint": self.runtime.model.checkpoint,
+            "hf_cache_dir": str(self.hf_cache_dir),
+            "device": self.requested_device,
+        }
+        assert self._stdin is not None
+        assert self._stdout is not None
+        self._stdin.write(json.dumps(request, sort_keys=True) + "\n")
+        self._stdin.flush()
+        while True:
+            line = self._stdout.readline()
+            if not line:
+                raise RuntimeError("BioCLIP persistent worker closed stdout before returning text embeddings")
+            payload = json.loads(line)
+            if "error" in payload:
+                raise RuntimeError(f"BioCLIP worker failed: {payload['error']}")
+            if payload.get("ready"):
+                self.device = str(payload.get("device") or "")
+                self.gpu_name = str(payload.get("gpu_name") or "")
+                continue
+            if "device" in payload:
+                self.device = str(payload.get("device") or "")
+                self.gpu_name = str(payload.get("gpu_name") or "")
+            if "text_embeddings" in payload:
+                return [[float(value) for value in embedding] for embedding in payload["text_embeddings"]]
+            raise RuntimeError("BioCLIP worker response did not include text embeddings")
+
     def close(self) -> None:
         process = self._process
         if process is None:

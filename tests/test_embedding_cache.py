@@ -7,6 +7,7 @@ import polars as pl
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
 from biominer.bioclip.embedding_cache import (
     candidate_text_embedding_rows,
+    prepare_candidate_text_embedding_cache,
     upsert_image_embedding_cache,
     upsert_text_embedding_cache,
     write_image_embedding_cache,
@@ -162,6 +163,56 @@ def test_candidate_text_embedding_rows_include_same_family_genus_stage_labels() 
     assert [(row["label"], row["rank"], row["accepted_taxon_key"]) for row in rows if row["rank"] == "genus"] == [
         ("Danaus", "genus", None),
         ("Limenitis", "genus", None),
+    ]
+
+
+def test_prepare_candidate_text_embedding_cache_uses_candidate_set_and_reuses_cached_labels(tmp_path: Path) -> None:
+    cache_path = tmp_path / "candidate_text_embeddings.parquet"
+    candidate_set = CandidateSet(
+        candidate_set_id="candidate-set-cache",
+        registry_version="registry-v1",
+        target_accepted_taxon_key="gbif:5131654",
+        target_scientific_name="Danaus plexippus",
+        family_candidates=(CandidateTaxon(scientific_name="Nymphalidae", accepted_taxon_key="gbif:7017", rank="family"),),
+        genus_candidates=(CandidateTaxon(scientific_name="Danaus", accepted_taxon_key="gbif:5131645", rank="genus"),),
+        species_candidates=(CandidateTaxon(scientific_name="Danaus plexippus", accepted_taxon_key="gbif:5131654", rank="species"),),
+        prompt_variant_version="object-bioclip-prompts-v1",
+        geospatial_scope="global",
+        source_evidence=("fixture",),
+    )
+    calls: list[list[str]] = []
+
+    def embed(labels: list[str]) -> list[list[float]]:
+        calls.append(labels)
+        return [[float(index), float(index + 1)] for index, _label in enumerate(labels)]
+
+    first = prepare_candidate_text_embedding_cache(
+        candidate_set,
+        cache_path,
+        model_id="bioclip",
+        model_checkpoint="checkpoint-a",
+        embed_labels=embed,
+        created_at="2026-01-02T00:00:00+00:00",
+    )
+    second = prepare_candidate_text_embedding_cache(
+        candidate_set,
+        cache_path,
+        model_id="bioclip",
+        model_checkpoint="checkpoint-a",
+        embed_labels=embed,
+        created_at="2026-01-03T00:00:00+00:00",
+    )
+
+    assert calls == [["Nymphalidae", "Danaus", "Danaus plexippus", "a photo of Danaus plexippus"]]
+    assert first.embeddings_computed == 4
+    assert first.rows_added == 4
+    assert second.embeddings_computed == 0
+    assert second.rows_added == 0
+    assert pl.read_parquet(cache_path).sort("rank", "label").select(["label", "rank"]).to_dicts() == [
+        {"label": "Nymphalidae", "rank": "family"},
+        {"label": "Danaus", "rank": "genus"},
+        {"label": "Danaus plexippus", "rank": "species"},
+        {"label": "a photo of Danaus plexippus", "rank": "species"},
     ]
 
 

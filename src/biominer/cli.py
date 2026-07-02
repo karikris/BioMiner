@@ -14,6 +14,7 @@ import polars as pl
 from biominer.bioclip.bioclip import BioClipClassifier, PersistentBioClipScorer
 from biominer.bioclip.ablation import run_object_ablations
 from biominer.bioclip.candidate_sets import build_candidate_set
+from biominer.bioclip.embedding_cache import prepare_candidate_text_embedding_cache
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
 from biominer.bioclip.object_runner import EphemeralCropBioClipScorer, screen_object_detections, write_object_evidence_outputs
 from biominer.bioclip.register_runner import process_records_with_registers
@@ -126,6 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_screen_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
     bioclip_screen_objects.add_argument("--parquet-batch-rows", type=int, default=10000)
     bioclip_screen_objects.add_argument("--retain-debug-crops", action="store_true")
+    bioclip_screen_objects.add_argument("--candidate-text-embedding-cache")
     bioclip_ablate_objects = bioclip_subparsers.add_parser("ablate-objects")
     bioclip_ablate_objects.add_argument("--input", required=True)
     bioclip_ablate_objects.add_argument("--detections", required=True)
@@ -143,6 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_ablate_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
     bioclip_ablate_objects.add_argument("--parquet-batch-rows", type=int, default=10000)
     bioclip_ablate_objects.add_argument("--retain-debug-crops", action="store_true")
+    bioclip_ablate_objects.add_argument("--candidate-text-embedding-cache")
     bioclip_join_objects = bioclip_subparsers.add_parser("join-object-evidence")
     _add_object_evidence_join_args(bioclip_join_objects)
     bioclip_join_objects.add_argument("--species-context")
@@ -269,6 +272,7 @@ def build_parser() -> argparse.ArgumentParser:
     species_bioclip_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
     species_bioclip_objects.add_argument("--parquet-batch-rows", type=int, default=10000)
     species_bioclip_objects.add_argument("--retain-debug-crops", action="store_true")
+    species_bioclip_objects.add_argument("--candidate-text-embedding-cache")
     species_ablate_objects = species_subparsers.add_parser("ablate-objects")
     species_ablate_objects.add_argument("--context-json", required=True)
     species_ablate_objects.add_argument("--input", required=True)
@@ -286,6 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
     species_ablate_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
     species_ablate_objects.add_argument("--parquet-batch-rows", type=int, default=10000)
     species_ablate_objects.add_argument("--retain-debug-crops", action="store_true")
+    species_ablate_objects.add_argument("--candidate-text-embedding-cache")
     species_join_objects = species_subparsers.add_parser("join-object-evidence")
     species_join_objects.add_argument("--context-json", required=True)
     _add_object_evidence_join_args(species_join_objects)
@@ -1140,6 +1145,7 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
     )
     runtime = _bioclip_runtime(runtime_python=runtime_python)
     scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
+    text_cache_payload = _prepare_candidate_text_embedding_cache_if_requested(args=args, candidate_set=candidate_set, scorer=scorer)
     object_scorer = EphemeralCropBioClipScorer(
         scorer=scorer,
         image_loader=lambda item: load_decoded_image_from_record(item, cache_root=args.cache_root),
@@ -1176,6 +1182,7 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
                 "score_batches_written": result.score_batches_written,
                 "candidate_set_id": candidate_set.candidate_set_id,
                 "scorer": "ephemeral_crop_bioclip",
+                **({"candidate_text_embedding_cache": text_cache_payload} if text_cache_payload is not None else {}),
             },
             indent=2,
             sort_keys=True,
@@ -1201,6 +1208,7 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
     modes = tuple(part.strip() for part in args.modes.split(",") if part.strip())
     runtime = _bioclip_runtime(runtime_python=runtime_python)
     scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
+    text_cache_payload = _prepare_candidate_text_embedding_cache_if_requested(args=args, candidate_set=candidate_set, scorer=scorer)
     object_scorer = EphemeralCropBioClipScorer(
         scorer=scorer,
         image_loader=lambda item: load_decoded_image_from_record(item, cache_root=args.cache_root),
@@ -1226,7 +1234,17 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
         )
     finally:
         scorer.close()
-    print(json.dumps({"output_dir": str(report.output_dir), **report.report}, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "output_dir": str(report.output_dir),
+                **report.report,
+                **({"candidate_text_embedding_cache": text_cache_payload} if text_cache_payload is not None else {}),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -1257,6 +1275,31 @@ def _optional_parquet(path: str | Path | None) -> pl.DataFrame | None:
     if not path:
         return None
     return pl.read_parquet(path)
+
+
+def _prepare_candidate_text_embedding_cache_if_requested(
+    *,
+    args: argparse.Namespace,
+    candidate_set: object,
+    scorer: PersistentBioClipScorer,
+) -> dict[str, object] | None:
+    cache_path = getattr(args, "candidate_text_embedding_cache", None)
+    if not cache_path:
+        return None
+    update = prepare_candidate_text_embedding_cache(
+        candidate_set,  # type: ignore[arg-type]
+        cache_path,
+        model_id="bioclip2_5",
+        model_checkpoint=BIOCLIP_25_HUGE_REVISION,
+        embed_labels=scorer.embed_text_labels,
+    )
+    return {
+        "output_path": str(update.output_path),
+        "rows_total": update.rows_total,
+        "rows_added": update.rows_added,
+        "rows_reused": update.rows_reused,
+        "embeddings_computed": update.embeddings_computed,
+    }
 
 
 def _fake_detections_for_record(record: dict[str, object]) -> list[DetectionCandidate]:

@@ -76,6 +76,19 @@ def candidate_text_embedding_rows(
     return rows
 
 
+def prepare_candidate_text_embedding_cache(
+    candidate_set: CandidateSet,
+    path: str | Path,
+    *,
+    model_id: str,
+    model_checkpoint: str,
+    embed_labels: Callable[[list[str]], list[list[float]]],
+    created_at: str | None = None,
+) -> EmbeddingCacheUpdate:
+    rows = candidate_text_embedding_rows(candidate_set, model_id=model_id, model_checkpoint=model_checkpoint)
+    return upsert_text_embedding_cache(rows, path, embed_labels=embed_labels, created_at=created_at)
+
+
 def read_embedding_cache(path: str | Path) -> pl.DataFrame:
     source = Path(path)
     return pl.read_parquet(source) if source.exists() else pl.DataFrame()

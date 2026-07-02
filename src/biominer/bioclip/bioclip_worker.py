@@ -93,6 +93,22 @@ def run_persistent_worker() -> None:
                 )
                 loaded_key = key
                 print(json.dumps({"ready": True, "device": loaded.device, "gpu_name": loaded.gpu_name}, sort_keys=True), flush=True)
+            text_labels = request.get("text_labels")
+            if text_labels is not None:
+                embeddings = loaded.text_embeddings(list(text_labels))
+                print(
+                    json.dumps(
+                        {
+                            "text_embeddings": embeddings,
+                            "embedding_dim": len(embeddings[0]) if embeddings else 0,
+                            "device": loaded.device,
+                            "gpu_name": loaded.gpu_name,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+                continue
             image_paths = request.get("image_paths")
             label_sets = request.get("label_sets")
             if label_sets is not None:
@@ -253,6 +269,13 @@ class _LoadedBioClipModel:
                         {label: float(probabilities[index].detach().cpu()) for index, label in enumerate(labels)}
                     )
         return scores_by_label_set
+
+    def text_embeddings(self, labels: Sequence[str]) -> list[list[float]]:
+        text_features = self._text_features(labels)
+        return [
+            [float(value) for value in row.detach().cpu().tolist()]
+            for row in text_features
+        ]
 
     def _image_batch(self, image_paths: Sequence[Path], image_module):  # noqa: ANN001 - PIL module.
         images = [
