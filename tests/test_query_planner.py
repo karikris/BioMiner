@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import polars as pl
+import biominer.flickr_fetch.query_planner as query_planner
 
 from biominer.flickr_fetch.query_planner import (
     BBOX_PAGE_SIZE,
@@ -36,6 +37,23 @@ PAPILIO_DEMOLEUS_REGION_BBOXES = {
     "India": "68.11,6.55,97.40,35.67",
     "Florida": "-87.64,24.40,-79.97,31.00",
 }
+
+
+def test_species_keyword_helpers_are_generic_exports() -> None:
+    assert hasattr(query_planner, "load_species_terms_from_json")
+    assert hasattr(query_planner, "build_species_count_probes_from_json")
+    assert hasattr(query_planner, "known_region_for_coordinate")
+    assert hasattr(query_planner, "outside_known_regions")
+
+    removed_exports = (
+        "PAPILIO_DEMOLEUS_ANCHOR_TERMS",
+        "PAPILIO_DEMOLEUS_REGION_BBOXES",
+        "load_papilio_demoleus_terms_from_json",
+        "build_papilio_demoleus_count_probes_from_json",
+        "papilio_demoleus_known_region_for_coordinate",
+        "outside_known_papilio_demoleus_regions",
+    )
+    assert [name for name in removed_exports if hasattr(query_planner, name)] == []
 
 
 def test_multilingual_seed_terms_are_seeded_once_and_include_lifestages() -> None:

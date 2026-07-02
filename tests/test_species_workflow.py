@@ -265,10 +265,20 @@ def test_comment_review_uses_species_context_terms_for_common_names() -> None:
 
 def test_production_modules_do_not_hardcode_papilio_species() -> None:
     root = Path("src/biominer")
-    offenders = [
-        str(path)
-        for path in root.rglob("*.py")
-        if "Papilio demoleus" in path.read_text(encoding="utf-8")
-    ]
+    forbidden = (
+        "Papilio demoleus",
+        "PAPILIO_DEMOLEUS_ANCHOR_TERMS",
+        "PAPILIO_DEMOLEUS_REGION_BBOXES",
+        "load_papilio_demoleus_terms_from_json",
+        "build_papilio_demoleus_count_probes_from_json",
+        "papilio_demoleus_known_region_for_coordinate",
+        "outside_known_papilio_demoleus_regions",
+        "TARGET_SPECIES",
+        "TARGET_TERMS",
+    )
+    offenders = []
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        offenders.extend(f"{path}: {token}" for token in forbidden if token in text)
 
     assert offenders == []
