@@ -308,7 +308,16 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
     detections_path = tmp_path / "detections.parquet"
     geo_prior_path = tmp_path / "geo_prior.parquet"
     output_path = tmp_path / "scores.parquet"
-    pl.DataFrame([{"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "https://example.test/1.jpg"}]).write_parquet(input_path)
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "image_url": "https://example.test/1.jpg",
+                "scientific_names_detected": ["Danaus gilippus"],
+            }
+        ]
+    ).write_parquet(input_path)
     pl.DataFrame(
         [
             {
@@ -353,9 +362,14 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
         calls["screen"] = kwargs
         return SimpleNamespace(frame=pl.DataFrame([{"occurrence_bin": "bronze"}]), output_path=Path(kwargs["output_path"]), records_seen=1, detections_seen=1, crops_scored=1)
 
+    def fake_build_candidate_set(context, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors build_candidate_set.
+        calls["candidate_set"] = kwargs
+        return SimpleNamespace(candidate_set_id="candidate-set-from-records")
+
     monkeypatch.setattr("biominer.cli.PersistentBioClipScorer", FakePersistentScorer)
     monkeypatch.setattr("biominer.cli.EphemeralCropBioClipScorer", FakeCropScorer)
     monkeypatch.setattr("biominer.cli.screen_object_detections", fake_screen)
+    monkeypatch.setattr("biominer.cli.build_candidate_set", fake_build_candidate_set)
     parser = build_parser()
     args = parser.parse_args(
         [
@@ -388,6 +402,8 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
     assert calls["crop_scorer"]["crop_target_px"] == 336
     assert calls["screen"]["ablation_mode"] == "detector_crop"
     assert calls["screen"]["geo_prior_table"].height == 1
+    assert calls["candidate_set"]["records"][0]["flickr_photo_id"] == "photo-1"
+    assert calls["candidate_set"]["records"][0]["scientific_names_detected"] == ["Danaus gilippus"]
 
 
 def test_detect_boxes_fake_backend_writes_crop_metadata(tmp_path, capsys) -> None:

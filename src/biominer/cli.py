@@ -1052,7 +1052,11 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
     records = pl.read_parquet(args.input)
     detections = pl.read_parquet(args.detections)
     geo_prior_table = _optional_parquet(getattr(args, "geo_prior_table", None))
-    candidate_set = build_candidate_set(context, species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None)
+    candidate_set = build_candidate_set(
+        context,
+        species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None,
+        records=records.to_dicts(),
+    )
     runtime = _bioclip_runtime(runtime_python=runtime_python)
     scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
     object_scorer = EphemeralCropBioClipScorer(
@@ -1106,7 +1110,11 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
     records = pl.read_parquet(args.input)
     detections = pl.read_parquet(args.detections)
     geo_prior_table = _optional_parquet(getattr(args, "geo_prior_table", None))
-    candidate_set = build_candidate_set(context, species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None)
+    candidate_set = build_candidate_set(
+        context,
+        species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None,
+        records=records.to_dicts(),
+    )
     modes = tuple(part.strip() for part in args.modes.split(",") if part.strip())
     runtime = _bioclip_runtime(runtime_python=runtime_python)
     scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
