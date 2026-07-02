@@ -75,6 +75,32 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
             ".venv-vision-py312/bin/python",
             "--device",
             "mps",
+            "--download-workers",
+            "2",
+            "--max-inflight-images",
+            "7",
+            "--detector-batch-size",
+            "3",
+            "--parquet-batch-rows",
+            "5",
+            "--crop-target-px",
+            "224",
+            "--crop-padding-ratio",
+            "0.2",
+        ]
+    )
+    species_args = parser.parse_args(
+        [
+            "species",
+            "detect",
+            "--input",
+            "filtered.parquet",
+            "--output",
+            "object_detections.parquet",
+            "--backend",
+            "fake",
+            "--parquet-batch-rows",
+            "6",
         ]
     )
 
@@ -85,6 +111,80 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
     assert args.backend == "yolo"
     assert args.runtime_python == ".venv-vision-py312/bin/python"
     assert args.device == "mps"
+    assert args.download_workers == 2
+    assert args.max_inflight_images == 7
+    assert args.detector_batch_size == 3
+    assert args.parquet_batch_rows == 5
+    assert args.crop_target_px == 224
+    assert args.crop_padding_ratio == 0.2
+    assert species_args.species_command == "detect"
+    assert species_args.parquet_batch_rows == 6
+
+
+def test_detect_boxes_cli_forwards_detection_and_run_policies(tmp_path, capsys, monkeypatch) -> None:
+    input_path = tmp_path / "filtered.parquet"
+    output_path = tmp_path / "object_detections.parquet"
+    pl.DataFrame([{"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "memory://photo-1"}]).write_parquet(input_path)
+    calls: dict[str, object] = {}
+
+    def fake_backend(args, records):  # noqa: ANN001, ANN202 - mirrors _detect_boxes_backend.
+        calls["backend_args"] = args
+        calls["records"] = records
+        return SimpleNamespace(backend="fake"), lambda record: None
+
+    def fake_pipeline(**kwargs):  # noqa: ANN003, ANN202 - mirrors run_detection_pipeline.
+        calls["pipeline"] = kwargs
+        return SimpleNamespace(
+            frame=pl.DataFrame([{"detection_status": "no_detection"}]),
+            output_path=Path(kwargs["output_path"]),
+            records_seen=1,
+            images_loaded=1,
+            detections_written=0,
+            crops_created=0,
+            parquet_batches_written=2,
+        )
+
+    monkeypatch.setattr("biominer.cli._detect_boxes_backend", fake_backend)
+    monkeypatch.setattr("biominer.cli.run_detection_pipeline", fake_pipeline)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "detect",
+            "boxes",
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+            "--backend",
+            "fake",
+            "--download-workers",
+            "2",
+            "--max-inflight-images",
+            "7",
+            "--detector-batch-size",
+            "3",
+            "--parquet-batch-rows",
+            "5",
+            "--crop-target-px",
+            "224",
+            "--crop-padding-ratio",
+            "0.2",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    pipeline = calls["pipeline"]
+    assert payload["parquet_batches_written"] == 2
+    assert calls["records"][0]["flickr_photo_id"] == "photo-1"
+    assert pipeline["detection_policy"].backend == "fake"
+    assert pipeline["detection_policy"].crop_target_px == 224
+    assert pipeline["detection_policy"].crop_padding_ratio == 0.2
+    assert pipeline["run_policy"].download_workers == 2
+    assert pipeline["run_policy"].max_inflight_images == 7
+    assert pipeline["run_policy"].detector_batch_size == 3
+    assert pipeline["run_policy"].parquet_batch_rows == 5
 
 
 def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:

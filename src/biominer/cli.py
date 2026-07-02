@@ -21,6 +21,7 @@ from biominer.detection.detector_base import DecodedImage, DetectionCandidate, F
 from biominer.detection.evaluate import evaluate_xie_style
 from biominer.detection.image_io import load_decoded_image_from_record
 from biominer.detection.pipeline import run_detection_pipeline
+from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_comments.comment_review import (
     CommentReviewState,
@@ -152,6 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     detect_boxes.add_argument("--backend", default="yolo", choices=("yolo", "fake"))
     detect_boxes.add_argument("--runtime-python", default=".venv-vision-py312/bin/python")
     detect_boxes.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    _add_detection_policy_args(detect_boxes)
     detect_crop_preview = detect_subparsers.add_parser("crop-preview")
     detect_crop_preview.add_argument("--detections", required=True)
     detect_crop_preview.add_argument("--output", required=True)
@@ -248,6 +250,7 @@ def build_parser() -> argparse.ArgumentParser:
     species_detect.add_argument("--backend", default="yolo", choices=("yolo", "fake"))
     species_detect.add_argument("--runtime-python", default=".venv-vision-py312/bin/python")
     species_detect.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    _add_detection_policy_args(species_detect)
     species_bioclip_objects = species_subparsers.add_parser("bioclip-objects")
     species_bioclip_objects.add_argument("--context-json", required=True)
     species_bioclip_objects.add_argument("--input", required=True)
@@ -384,6 +387,25 @@ def _add_object_evidence_join_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--scores", required=True)
     parser.add_argument("--joined-output", required=True)
     parser.add_argument("--photo-summary-output", required=True)
+
+
+def _add_detection_policy_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--box-score-threshold", type=float, default=0.20)
+    parser.add_argument("--nms-iou-threshold", type=float, default=0.50)
+    parser.add_argument("--min-box-area-ratio", type=float, default=0.0005)
+    parser.add_argument("--max-boxes-per-image", type=int, default=8)
+    parser.add_argument("--crop-padding-ratio", type=float, default=0.12)
+    parser.add_argument("--crop-target-px", type=int, default=336)
+    parser.add_argument("--retain-debug-crops", action="store_true")
+    parser.add_argument("--debug-crop-limit", type=int, default=500)
+    parser.add_argument("--download-workers", type=int, default=4)
+    parser.add_argument("--decode-workers", type=int, default=4)
+    parser.add_argument("--detector-workers", type=int, default=1)
+    parser.add_argument("--max-inflight-images", type=int, default=32)
+    parser.add_argument("--max-inflight-crops", type=int, default=96)
+    parser.add_argument("--detector-batch-size", type=int, default=4)
+    parser.add_argument("--crop-batch-size", type=int, default=24)
+    parser.add_argument("--parquet-batch-rows", type=int, default=10000)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -1014,6 +1036,27 @@ def _run_detect_boxes(args: argparse.Namespace) -> int:
         detector=detector,
         output_path=args.output,
         image_loader=image_loader,
+        detection_policy=DetectionPolicy(
+            backend=args.backend,
+            box_score_threshold=args.box_score_threshold,
+            nms_iou_threshold=args.nms_iou_threshold,
+            min_box_area_ratio=args.min_box_area_ratio,
+            max_boxes_per_image=args.max_boxes_per_image,
+            crop_padding_ratio=args.crop_padding_ratio,
+            crop_target_px=args.crop_target_px,
+            retain_debug_crops=args.retain_debug_crops,
+            debug_crop_limit=args.debug_crop_limit,
+        ),
+        run_policy=DetectionRunPolicy(
+            download_workers=args.download_workers,
+            decode_workers=args.decode_workers,
+            detector_workers=args.detector_workers,
+            max_inflight_images=args.max_inflight_images,
+            max_inflight_crops=args.max_inflight_crops,
+            detector_batch_size=args.detector_batch_size,
+            crop_batch_size=args.crop_batch_size,
+            parquet_batch_rows=args.parquet_batch_rows,
+        ),
     )
     print(
         json.dumps(
@@ -1025,6 +1068,7 @@ def _run_detect_boxes(args: argparse.Namespace) -> int:
                 "images_loaded": result.images_loaded,
                 "detections_written": result.detections_written,
                 "crops_created": result.crops_created,
+                "parquet_batches_written": result.parquet_batches_written,
             },
             indent=2,
             sort_keys=True,
