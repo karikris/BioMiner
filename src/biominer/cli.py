@@ -11,9 +11,15 @@ import subprocess
 import polars as pl
 
 from biominer.bioclip.bioclip import BioClipClassifier, PersistentBioClipScorer
+from biominer.bioclip.ablation import run_object_ablations
+from biominer.bioclip.candidate_sets import build_candidate_set
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
+from biominer.bioclip.object_runner import FakeObjectBioClipScorer, screen_object_detections, write_object_evidence_outputs
 from biominer.bioclip.register_runner import process_records_with_registers
 from biominer.bioclip.species_candidates import DEFAULT_SPECIES_CANDIDATE_LIMIT, load_species_candidates
+from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
+from biominer.detection.evaluate import evaluate_xie_style
+from biominer.detection.schema import build_detection_rows
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_comments.comment_review import (
     CommentReviewState,
@@ -100,6 +106,39 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_screen.add_argument("--candidate-limit", type=int, default=DEFAULT_SPECIES_CANDIDATE_LIMIT)
     bioclip_screen.add_argument("--target-species")
     bioclip_screen.add_argument("--bucket-views-dir")
+    bioclip_screen_objects = bioclip_subparsers.add_parser("screen-objects")
+    bioclip_screen_objects.add_argument("--input", required=True)
+    bioclip_screen_objects.add_argument("--detections", required=True)
+    bioclip_screen_objects.add_argument("--species-context", required=True)
+    bioclip_screen_objects.add_argument("--species-candidates")
+    bioclip_screen_objects.add_argument("--output", required=True)
+    bioclip_screen_objects.add_argument("--ablation-mode", choices=("whole_image", "detector_crop", "detector_crop_segmentation"), default="detector_crop")
+    bioclip_screen_objects.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    bioclip_screen_objects.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    bioclip_ablate_objects = bioclip_subparsers.add_parser("ablate-objects")
+    bioclip_ablate_objects.add_argument("--input", required=True)
+    bioclip_ablate_objects.add_argument("--detections", required=True)
+    bioclip_ablate_objects.add_argument("--species-context", required=True)
+    bioclip_ablate_objects.add_argument("--species-candidates")
+    bioclip_ablate_objects.add_argument("--output-dir", required=True)
+    bioclip_ablate_objects.add_argument("--modes", default="whole_image,detector_crop,detector_crop_segmentation")
+    bioclip_ablate_objects.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    bioclip_ablate_objects.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    detect = subparsers.add_parser("detect")
+    detect_subparsers = detect.add_subparsers(dest="detect_command")
+    detect_boxes = detect_subparsers.add_parser("boxes")
+    detect_boxes.add_argument("--input", required=True)
+    detect_boxes.add_argument("--output", required=True)
+    detect_boxes.add_argument("--backend", default="yolo", choices=("yolo", "fake"))
+    detect_boxes.add_argument("--runtime-python", default=".venv-vision-py312/bin/python")
+    detect_boxes.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    detect_crop_preview = detect_subparsers.add_parser("crop-preview")
+    detect_crop_preview.add_argument("--detections", required=True)
+    detect_crop_preview.add_argument("--output", required=True)
+    detect_eval = detect_subparsers.add_parser("eval")
+    detect_eval.add_argument("--predictions", required=True)
+    detect_eval.add_argument("--ground-truth")
+    detect_eval.add_argument("--output", required=True)
     fetch_comments = subparsers.add_parser("fetch-comments")
     fetch_comments.add_argument("--photo-id", action="append", default=[])
     fetch_comments.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
@@ -183,6 +222,26 @@ def build_parser() -> argparse.ArgumentParser:
     species_bioclip.add_argument("--register-count", type=int, default=4)
     species_bioclip.add_argument("--register-size", type=int, default=20)
     species_bioclip.add_argument("--download-workers", type=int, default=4)
+    species_detect = species_subparsers.add_parser("detect")
+    species_detect.add_argument("--input", required=True)
+    species_detect.add_argument("--output", required=True)
+    species_detect.add_argument("--backend", default="yolo", choices=("yolo", "fake"))
+    species_detect.add_argument("--runtime-python", default=".venv-vision-py312/bin/python")
+    species_detect.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    species_bioclip_objects = species_subparsers.add_parser("bioclip-objects")
+    species_bioclip_objects.add_argument("--context-json", required=True)
+    species_bioclip_objects.add_argument("--input", required=True)
+    species_bioclip_objects.add_argument("--detections", required=True)
+    species_bioclip_objects.add_argument("--species-candidates")
+    species_bioclip_objects.add_argument("--output", required=True)
+    species_bioclip_objects.add_argument("--ablation-mode", choices=("whole_image", "detector_crop", "detector_crop_segmentation"), default="detector_crop")
+    species_ablate_objects = species_subparsers.add_parser("ablate-objects")
+    species_ablate_objects.add_argument("--context-json", required=True)
+    species_ablate_objects.add_argument("--input", required=True)
+    species_ablate_objects.add_argument("--detections", required=True)
+    species_ablate_objects.add_argument("--species-candidates")
+    species_ablate_objects.add_argument("--output-dir", required=True)
+    species_ablate_objects.add_argument("--modes", default="whole_image,detector_crop,detector_crop_segmentation")
     species_review = species_subparsers.add_parser("review-comments")
     species_review.add_argument("--context-json", required=True)
     species_review.add_argument("--input")
@@ -287,6 +346,18 @@ def run(args: argparse.Namespace) -> int:
             return _run_bioclip_prefetch_model(args)
         if args.bioclip_command == "screen":
             return _run_bioclip_screen(args)
+        if args.bioclip_command == "screen-objects":
+            return _run_bioclip_screen_objects(args)
+        if args.bioclip_command == "ablate-objects":
+            return _run_bioclip_ablate_objects(args)
+        return 2
+    if args.command == "detect":
+        if args.detect_command == "boxes":
+            return _run_detect_boxes(args)
+        if args.detect_command == "crop-preview":
+            return _run_detect_crop_preview(args)
+        if args.detect_command == "eval":
+            return _run_detect_eval(args)
         return 2
     if args.command == "fetch-comments":
         state = CommentsEnrichmentState(args.state_db)
@@ -670,6 +741,14 @@ def _run_species_command(args: argparse.Namespace) -> int:
             scorer.close()
         print(json.dumps({"output": str(result.output_path), "rows": result.frame.height}, indent=2, sort_keys=True))
         return 0
+    if args.species_command == "detect":
+        return _run_detect_boxes(args)
+    if args.species_command == "bioclip-objects":
+        args.species_context = args.context_json
+        return _run_bioclip_screen_objects(args)
+    if args.species_command == "ablate-objects":
+        args.species_context = args.context_json
+        return _run_bioclip_ablate_objects(args)
     if args.species_command == "review-comments":
         context = SpeciesContext.read_json(args.context_json)
         if args.input:
@@ -865,6 +944,136 @@ def _run_bioclip_screen(args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
+def _run_detect_boxes(args: argparse.Namespace) -> int:
+    if args.backend != "fake":
+        print(
+            json.dumps(
+                {
+                    "error": "detect boxes currently runs in-process only with --backend fake; YOLO is available through the optional adapter for vision sidecars",
+                    "backend": args.backend,
+                    "runtime_python": args.runtime_python,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
+    records = pl.read_parquet(args.input).to_dicts()
+    detector = FakeObjectDetector([_fake_detections_for_record(record) for record in records])
+    rows: list[dict[str, object]] = []
+    images = [_blank_decoded_image(record) for record in records]
+    for record, image, detections in zip(records, images, detector.detect_batch(images), strict=True):
+        rows.extend(
+            build_detection_rows(
+                record=record,
+                image=image,
+                detections=detections,
+                detector_backend=detector.backend,
+                detector_model_id=detector.model_id,
+                detector_model_version=detector.model_version,
+                detector_checkpoint=detector.checkpoint,
+            )
+        )
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(rows).write_parquet(output)
+    print(json.dumps({"output": str(output), "rows": len(rows), "backend": detector.backend}, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_detect_crop_preview(args: argparse.Namespace) -> int:
+    detections = pl.read_parquet(args.detections)
+    preview = {
+        "detections": args.detections,
+        "output": args.output,
+        "rows_seen": detections.height,
+        "note": "crop-preview records geometry only in the core environment; debug crop files require an explicit vision sidecar",
+    }
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.output).write_text(json.dumps(preview, indent=2, sort_keys=True), encoding="utf-8")
+    print(json.dumps(preview, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_detect_eval(args: argparse.Namespace) -> int:
+    predictions = pl.read_parquet(args.predictions).to_dicts()
+    truth = pl.read_parquet(args.ground_truth).to_dicts() if args.ground_truth else None
+    report = evaluate_xie_style(predictions=predictions, ground_truth=truth)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
+    context = SpeciesContext.read_json(args.species_context)
+    records = pl.read_parquet(args.input)
+    detections = pl.read_parquet(args.detections)
+    candidate_set = build_candidate_set(context, species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None)
+    result = screen_object_detections(
+        canonical_records=records,
+        detections=detections,
+        species_context=context,
+        candidate_set=candidate_set,
+        scorer=FakeObjectBioClipScorer({}),
+        output_path=args.output,
+        ablation_mode=args.ablation_mode,
+    )
+    print(
+        json.dumps(
+            {
+                "output": str(result.output_path),
+                "rows": result.frame.height,
+                "records_seen": result.records_seen,
+                "detections_seen": result.detections_seen,
+                "crops_scored": result.crops_scored,
+                "candidate_set_id": candidate_set.candidate_set_id,
+                "scorer": "fake_empty_scores",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
+    context = SpeciesContext.read_json(args.species_context)
+    records = pl.read_parquet(args.input)
+    detections = pl.read_parquet(args.detections)
+    candidate_set = build_candidate_set(context, species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None)
+    modes = tuple(part.strip() for part in args.modes.split(",") if part.strip())
+    report = run_object_ablations(
+        canonical_records=records,
+        detections=detections,
+        species_context=context,
+        candidate_set=candidate_set,
+        scorer=FakeObjectBioClipScorer({}),
+        output_dir=args.output_dir,
+        modes=modes,  # type: ignore[arg-type]
+    )
+    print(json.dumps({"output_dir": str(report.output_dir), **report.report}, indent=2, sort_keys=True))
+    return 0
+
+
+def _fake_detections_for_record(record: dict[str, object]) -> list[DetectionCandidate]:
+    bbox = record.get("bbox_xyxy")
+    width = int(record.get("image_width") or record.get("width") or 1)
+    height = int(record.get("image_height") or record.get("height") or 1)
+    if isinstance(bbox, list | tuple) and len(bbox) == 4:
+        values = tuple(float(value) for value in bbox)
+    else:
+        values = (0.0, 0.0, float(width), float(height))
+    return [DetectionCandidate(label="butterfly_like", score=1.0, bbox_xyxy=values, objectness_score=1.0)]
+
+
+def _blank_decoded_image(record: dict[str, object]) -> DecodedImage:
+    width = max(1, int(record.get("image_width") or record.get("width") or 1))
+    height = max(1, int(record.get("image_height") or record.get("height") or 1))
+    return DecodedImage(width=width, height=height, mode="RGB", data=b"\x00\x00\x00" * width * height)
 
 
 def _bioclip_runtime(*, runtime_python: Path) -> BioClipRuntime:

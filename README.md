@@ -45,6 +45,46 @@ Step 4: targeted comment review
   -> promotion where all bucket rules are satisfied
 ```
 
+## Object-Level BioCLIP Pipeline
+
+BioMiner now has a detector-first object pipeline alongside the existing whole-image/register BioCLIP path:
+
+```text
+canonical source records
+  -> object detections with source + flickr_photo_id join keys
+  -> ephemeral detector crops
+  -> BioCLIP object scores against SpeciesContext/candidate-set labels
+  -> whole-image, detector-crop, and crop+segmentation ablation rows
+  -> object_evidence_joined.parquet and photo_evidence_summary.parquet
+```
+
+The core Python 3.14 environment keeps heavy vision dependencies optional. `detect boxes --backend fake` is available for offline tests and deterministic local plumbing. YOLO and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent.
+
+Example command shape:
+
+```bash
+uv run biominer detect boxes \
+  --input staging/species_runs/example/filtered.parquet \
+  --output staging/species_runs/example/object_detections.parquet \
+  --backend fake
+
+uv run biominer bioclip screen-objects \
+  --input staging/species_runs/example/filtered.parquet \
+  --detections staging/species_runs/example/object_detections.parquet \
+  --species-context staging/species_runs/example/species_context.json \
+  --output staging/species_runs/example/object_bioclip_scores.parquet \
+  --ablation-mode detector_crop
+
+uv run biominer bioclip ablate-objects \
+  --input staging/species_runs/example/filtered.parquet \
+  --detections staging/species_runs/example/object_detections.parquet \
+  --species-context staging/species_runs/example/species_context.json \
+  --output-dir staging/species_runs/example/ablations \
+  --modes whole_image,detector_crop,detector_crop_segmentation
+```
+
+Object-level tables are not standalone silos. Every detection and score row keeps `source`, `flickr_photo_id`, and object-level `detection_id`/`crop_hash` where applicable. Geography is recorded as a soft prior and can route strong visual conflicts to review; it is not an absolute discard rule.
+
 The active package is `biominer` under `src/`. Run commands through:
 
 ```bash

@@ -58,6 +58,75 @@ def test_poll_once_cli_accepts_cloud_storage_phase2_arguments() -> None:
     assert args.no_compact is True
 
 
+def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "detect",
+            "boxes",
+            "--input",
+            "filtered.parquet",
+            "--output",
+            "object_detections.parquet",
+            "--backend",
+            "yolo",
+            "--runtime-python",
+            ".venv-vision-py312/bin/python",
+            "--device",
+            "mps",
+        ]
+    )
+
+    assert args.command == "detect"
+    assert args.detect_command == "boxes"
+    assert args.input == "filtered.parquet"
+    assert args.output == "object_detections.parquet"
+    assert args.backend == "yolo"
+    assert args.runtime_python == ".venv-vision-py312/bin/python"
+    assert args.device == "mps"
+
+
+def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
+    parser = build_parser()
+    screen = parser.parse_args(
+        [
+            "bioclip",
+            "screen-objects",
+            "--input",
+            "filtered.parquet",
+            "--detections",
+            "object_detections.parquet",
+            "--species-context",
+            "species_context.json",
+            "--output",
+            "object_bioclip_scores.parquet",
+            "--ablation-mode",
+            "detector_crop",
+        ]
+    )
+    ablate = parser.parse_args(
+        [
+            "bioclip",
+            "ablate-objects",
+            "--input",
+            "filtered.parquet",
+            "--detections",
+            "object_detections.parquet",
+            "--species-context",
+            "species_context.json",
+            "--output-dir",
+            "ablations",
+            "--modes",
+            "whole_image,detector_crop,detector_crop_segmentation",
+        ]
+    )
+
+    assert screen.bioclip_command == "screen-objects"
+    assert screen.ablation_mode == "detector_crop"
+    assert ablate.bioclip_command == "ablate-objects"
+    assert ablate.modes == "whole_image,detector_crop,detector_crop_segmentation"
+
+
 def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch) -> None:
     runtime_python = tmp_path / "runtime" / "bin" / "python"
     runtime_python.parent.mkdir(parents=True)

@@ -1,0 +1,17 @@
+{
+  "profile_name": "mac_m5pro_64gb",
+  "download_workers": 4,
+  "decode_workers": 4,
+  "detector_workers": 1,
+  "bioclip_workers": 1,
+  "max_inflight_images": 32,
+  "max_inflight_crops": 96,
+  "detector_batch_size": 4,
+  "crop_batch_size": 24,
+  "text_embedding_batch_size": 256,
+  "image_max_side_px": 1280,
+  "crop_target_px": 336,
+  "worker_shard_target_mb": 64,
+  "compacted_shard_target_mb": 256,
+  "retain_debug_crops": false
+}
