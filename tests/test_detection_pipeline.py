@@ -261,3 +261,62 @@ def test_xie_style_evaluation_uses_iou_and_species_correctness() -> None:
     assert report["family_top3_accuracy"] == pytest.approx(1.0)
     assert report["genus_top8_accuracy"] == pytest.approx(1.0)
     assert report["joint_map50"] == pytest.approx(1.0)
+
+
+def test_xie_style_detector_metrics_use_detector_scores_and_ap50_95() -> None:
+    report = evaluate_xie_style(
+        predictions=[
+            {
+                "source": "flickr",
+                "flickr_photo_id": "p1",
+                "bbox_xyxy": [40, 40, 50, 50],
+                "detector_score": 0.99,
+                "species_top1_scientific_name": "Danaus plexippus",
+                "species_top5": ["Danaus plexippus"],
+                "species_top1_score": 0.2,
+            },
+            {
+                "source": "flickr",
+                "flickr_photo_id": "p1",
+                "bbox_xyxy": [0, 0, 10, 10],
+                "detector_score": 0.40,
+                "species_top1_scientific_name": "Danaus plexippus",
+                "species_top5": ["Danaus plexippus"],
+                "species_top1_score": 0.9,
+            },
+        ],
+        ground_truth=[
+            {
+                "source": "flickr",
+                "flickr_photo_id": "p1",
+                "bbox_xyxy": [1, 1, 9, 9],
+                "scientific_name": "Danaus plexippus",
+            }
+        ],
+    )
+
+    assert report["detector_ap50"] == pytest.approx(0.5)
+    assert report["detector_ap50_95"] is not None
+    assert report["detector_ap50_95"] == pytest.approx(0.15)
+
+
+def test_xie_style_evaluation_without_ground_truth_reports_qa_only() -> None:
+    report = evaluate_xie_style(
+        predictions=[
+            {
+                "source": "flickr",
+                "flickr_photo_id": "p1",
+                "bbox_xyxy": [0, 0, 10, 10],
+                "detector_score": 0.90,
+                "species_top1_scientific_name": "Danaus plexippus",
+                "species_top1_score": 0.95,
+            }
+        ],
+        ground_truth=None,
+    )
+
+    assert report["ground_truth_available"] is False
+    assert report["predictions_seen"] == 1
+    assert report["detector_ap50"] is None
+    assert report["detector_ap50_95"] is None
+    assert report["joint_map50"] is None
