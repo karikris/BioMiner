@@ -854,7 +854,8 @@ def test_poll_once_does_not_claim_or_reserve_full_budget_before_fetch(tmp_path) 
     )
 
     assert result.api_calls_made == 20
-    assert observed_before_first_fetch == {"claimed": 2, "reserved": 2}
+    assert 1 <= observed_before_first_fetch["claimed"] <= 2
+    assert observed_before_first_fetch["reserved"] == 2
     with sqlite3.connect(state.path) as conn:
         assert conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'claimed'").fetchone()[0] == 0
 

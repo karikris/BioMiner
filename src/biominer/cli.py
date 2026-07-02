@@ -13,16 +13,10 @@ import polars as pl
 from biominer.bioclip.bioclip import BioClipClassifier, PersistentBioClipScorer
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
 from biominer.bioclip.register_runner import process_records_with_registers
-from biominer.bioclip.species_candidates import DEFAULT_SPECIES_CANDIDATE_LIMIT, TARGET_SPECIES, load_species_candidates
-from biominer.flickr_fetch.query_planner import (
-    FLICKR_SEARCH_RESULT_WINDOW,
-    GEO_PAGE_SIZE,
-    NORMAL_PAGE_SIZE,
-    STABLE_RESULT_THRESHOLD,
-    build_papilio_demoleus_count_probes_from_json,
-    load_registry_flickr_queries,
-)
+from biominer.bioclip.species_candidates import DEFAULT_SPECIES_CANDIDATE_LIMIT, load_species_candidates
+from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_comments.comment_review import (
+    CommentReviewState,
     apply_comment_review_decisions_to_parquet,
     build_comment_review_queue_from_parquet,
     review_comments_once,
@@ -40,6 +34,15 @@ from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
 from biominer.reports.buckets import export_bucket_views
 from biominer.reports.name_evidence import build_name_evidence_report, write_name_evidence_report
+from biominer.species.context import SpeciesContext
+from biominer.species.registry_refresh import resolve_species_context, write_species_registry_outputs
+from biominer.species.query_compile import write_species_flickr_queries
+from biominer.species.workflow import (
+    build_species_comment_queue,
+    fetch_species_flickr,
+    run_species_workflow,
+    species_candidates_from_context,
+)
 from biominer.storage.compaction import compact_parquet_shards
 from biominer.config import StorageConfig, load_biominer_config
 from biominer.storage.factory import create_storage_backend
@@ -95,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_screen.add_argument("--register-size", type=int, default=4)
     bioclip_screen.add_argument("--download-workers", type=int, default=4)
     bioclip_screen.add_argument("--candidate-limit", type=int, default=DEFAULT_SPECIES_CANDIDATE_LIMIT)
-    bioclip_screen.add_argument("--target-species", default=TARGET_SPECIES)
+    bioclip_screen.add_argument("--target-species")
     bioclip_screen.add_argument("--bucket-views-dir")
     fetch_comments = subparsers.add_parser("fetch-comments")
     fetch_comments.add_argument("--photo-id", action="append", default=[])
@@ -106,9 +109,6 @@ def build_parser() -> argparse.ArgumentParser:
     fetch_comments.add_argument("--api-key-env", default="FLICKR_API_KEY")
     fetch_comments.add_argument("--min-photos", type=int, default=2)
     fetch_comments.add_argument("--min-users", type=int, default=2)
-    papilio_plan = subparsers.add_parser("build-papilio-demoleus-query-plan")
-    papilio_plan.add_argument("--keywords-json", required=True)
-    papilio_plan.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
     registry = subparsers.add_parser("registry")
     registry_subparsers = registry.add_subparsers(dest="registry_command")
     registry_compile = registry_subparsers.add_parser("compile-fixture")
@@ -157,6 +157,47 @@ def build_parser() -> argparse.ArgumentParser:
     registry_seed.add_argument("--slice-days", type=int, default=5)
     registry_audit = registry_subparsers.add_parser("audit")
     registry_audit.add_argument("--registry-dir", required=True)
+    species = subparsers.add_parser("species")
+    species_subparsers = species.add_subparsers(dest="species_command")
+    species_resolve = species_subparsers.add_parser("resolve")
+    _add_species_context_args(species_resolve)
+    species_refresh = species_subparsers.add_parser("refresh-registry")
+    _add_species_context_args(species_refresh)
+    species_compile = species_subparsers.add_parser("compile-flickr-queries")
+    _add_species_context_args(species_compile)
+    species_fetch = species_subparsers.add_parser("fetch-flickr")
+    species_fetch.add_argument("--state-db", required=True)
+    species_fetch.add_argument("--output-root", required=True)
+    species_fetch.add_argument("--workers", type=int, default=8)
+    species_fetch.add_argument("--max-api-calls", type=int, default=SOFT_API_CALLS_PER_HOUR)
+    species_fetch.add_argument("--api-key-env", default="FLICKR_API_KEY")
+    species_bioclip = species_subparsers.add_parser("bioclip-funnel")
+    species_bioclip.add_argument("--context-json", required=True)
+    species_bioclip.add_argument("--input", required=True)
+    species_bioclip.add_argument("--species-candidates")
+    species_bioclip.add_argument("--output", required=True)
+    species_bioclip.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    species_bioclip.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
+    species_bioclip.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    species_bioclip.add_argument("--cache-root", default="data/cache/images")
+    species_bioclip.add_argument("--register-count", type=int, default=4)
+    species_bioclip.add_argument("--register-size", type=int, default=20)
+    species_bioclip.add_argument("--download-workers", type=int, default=4)
+    species_review = species_subparsers.add_parser("review-comments")
+    species_review.add_argument("--context-json", required=True)
+    species_review.add_argument("--input")
+    species_review.add_argument("--state-db", required=True)
+    species_review.add_argument("--max-api-calls", type=int, default=300)
+    species_review.add_argument("--api-key-env", default="FLICKR_API_KEY")
+    species_run = species_subparsers.add_parser("run")
+    species_run.add_argument("--scientific-name", required=True)
+    species_run.add_argument("--registry-dir", required=True)
+    species_run.add_argument("--output-root", required=True)
+    species_run.add_argument("--workers", type=int, default=8)
+    species_run.add_argument("--max-api-calls", type=int, default=SOFT_API_CALLS_PER_HOUR)
+    species_run.add_argument("--download-workers", type=int, default=4)
+    species_run.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    species_run.add_argument("--api-key-env", default="FLICKR_API_KEY")
     build_comment_queue = subparsers.add_parser("build-comment-review-queue")
     build_comment_queue.add_argument("--input", required=True)
     build_comment_queue.add_argument("--state-db", default="data/state/comment_review.sqlite")
@@ -228,6 +269,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _add_species_context_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--scientific-name")
+    parser.add_argument("--accepted-taxon-key")
+    parser.add_argument("--registry-dir", required=True)
+    parser.add_argument("--output-root", required=True)
+
+
 def run(args: argparse.Namespace) -> int:
     if args.version:
         print("biominer 0.1.0")
@@ -280,28 +328,8 @@ def run(args: argparse.Namespace) -> int:
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
-    if args.command == "build-papilio-demoleus-query-plan":
-        queries = build_papilio_demoleus_count_probes_from_json(args.keywords_json)
-        state = MetadataPollState(args.state_db)
-        inserted = sum(state.enqueue_work_item(query) for query in queries)
-        print(
-            json.dumps(
-                {
-                    "state_db": args.state_db,
-                    "keywords_json": args.keywords_json,
-                    "count_probes_seen": len(queries),
-                    "count_probes_inserted": inserted,
-                    "soft_api_calls_per_hour": SOFT_API_CALLS_PER_HOUR,
-                    "per_page_for_final_fetches": GEO_PAGE_SIZE,
-                    "per_page_for_non_geo_fetches": NORMAL_PAGE_SIZE,
-                    "flickr_search_result_window": FLICKR_SEARCH_RESULT_WINDOW,
-                    "stable_result_threshold": STABLE_RESULT_THRESHOLD,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 0
+    if args.command == "species":
+        return _run_species_command(args)
     if args.command == "registry":
         if args.registry_command == "fetch-taxonomy":
             retrieved_at = args.retrieved_at or datetime.now(UTC).isoformat()
@@ -568,6 +596,132 @@ def _summarize_report(report_path: Path) -> dict[str, object]:
         "max_rss_kb": memory.get("max_rss_kb"),
         "vision_model_loaded": compute.get("vision_model_loaded"),
     }
+
+
+def _run_species_command(args: argparse.Namespace) -> int:
+    if args.species_command in {"resolve", "refresh-registry", "compile-flickr-queries"}:
+        try:
+            context = resolve_species_context(
+                scientific_name=args.scientific_name,
+                accepted_taxon_key=args.accepted_taxon_key,
+                registry_dir=args.registry_dir,
+            )
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+            return 2
+        report = write_species_registry_outputs(context=context, registry_dir=args.registry_dir, output_root=args.output_root)
+        payload: dict[str, object] = {
+            "scientific_name": context.scientific_name,
+            "accepted_taxon_key": context.accepted_taxon_key,
+            "registry_version": context.registry_version,
+            "output_root": args.output_root,
+            "species_context": str(Path(args.output_root) / "species_context.json"),
+            "registry_refresh_report": report.get("report"),
+        }
+        if args.species_command == "compile-flickr-queries":
+            query_result = write_species_flickr_queries(context, Path(args.output_root) / "flickr_query_definitions.parquet")
+            payload.update({"query_definitions": str(query_result.output_path), "query_definition_rows": query_result.rows})
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if args.species_command == "fetch-flickr":
+        api_key = os.environ.get(args.api_key_env)
+        if not api_key:
+            print(json.dumps({"error": f"{args.api_key_env} is required for species fetch-flickr"}, indent=2, sort_keys=True))
+            return 2
+        result = fetch_species_flickr(
+            state_db=args.state_db,
+            output_root=args.output_root,
+            max_api_calls=args.max_api_calls,
+            api_key=api_key,
+            workers=args.workers,
+        )
+        print(json.dumps({**result.__dict__, "state_db": str(result.state_db)}, indent=2, sort_keys=True))
+        return 0
+    if args.species_command == "bioclip-funnel":
+        context = SpeciesContext.read_json(args.context_json)
+        runtime_python = Path(args.runtime_python)
+        if not runtime_python.exists():
+            print(json.dumps({"error": f"BioCLIP runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
+            return 2
+        runtime = _bioclip_runtime(runtime_python=runtime_python)
+        scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
+        try:
+            classifier = BioClipClassifier(runtime=runtime, scorer=scorer)
+            records = pl.read_parquet(args.input).to_dicts()
+            species_candidates = (
+                load_species_candidates(args.species_candidates, target_species=context.scientific_name)
+                if args.species_candidates
+                else species_candidates_from_context(context)
+            )
+            result = process_records_with_registers(
+                records,
+                classifier=classifier,
+                species_candidates=species_candidates,
+                output_path=args.output,
+                cache_root=args.cache_root,
+                register_count=args.register_count,
+                register_size=args.register_size,
+                download_workers=args.download_workers,
+                model_id="bioclip2_5",
+                model_version="bioclip2_5_huge",
+                model_checkpoint=BIOCLIP_25_HUGE_REVISION,
+            )
+        finally:
+            scorer.close()
+        print(json.dumps({"output": str(result.output_path), "rows": result.frame.height}, indent=2, sort_keys=True))
+        return 0
+    if args.species_command == "review-comments":
+        context = SpeciesContext.read_json(args.context_json)
+        if args.input:
+            payload = build_species_comment_queue(context=context, input_path=args.input, state_db=args.state_db)
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        api_key = os.environ.get(args.api_key_env)
+        if not api_key:
+            print(json.dumps({"error": f"{args.api_key_env} is required for species review-comments without --input"}, indent=2, sort_keys=True))
+            return 2
+        state = CommentReviewState(args.state_db, species_context=context)
+        result = state.process_pending(fetch_comments=fetch_flickr_comments(api_key=api_key), max_api_calls=args.max_api_calls)
+        print(json.dumps({**state.summary(), **result}, indent=2, sort_keys=True))
+        return 0
+    if args.species_command == "run":
+        api_key = os.environ.get(args.api_key_env)
+        try:
+            result = run_species_workflow(
+                scientific_name=args.scientific_name,
+                registry_dir=args.registry_dir,
+                output_root=args.output_root,
+                workers=args.workers,
+                max_api_calls=args.max_api_calls,
+                api_key=api_key,
+                fetch=bool(api_key),
+            )
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+            return 2
+        print(
+            json.dumps(
+                {
+                    "scientific_name": result.context.scientific_name,
+                    "accepted_taxon_key": result.context.accepted_taxon_key,
+                    "output_root": str(result.output_root),
+                    "species_context": str(result.output_root / "species_context.json"),
+                    "query_definitions": str(result.query_definitions),
+                    "state_db": str(result.state_db),
+                    "evidence_output": str(result.evidence_output),
+                    "fetch_status": "completed" if result.poll_result else "skipped_missing_api_key",
+                    "poll_result": None
+                    if result.poll_result is None
+                    else {**result.poll_result.__dict__, "state_db": str(result.poll_result.state_db)},
+                    "download_workers": args.download_workers,
+                    "device": args.device,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+    return 2
 
 
 def _publication_state_summary(frame: pl.DataFrame, output_path: Path) -> dict[str, object]:

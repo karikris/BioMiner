@@ -914,6 +914,10 @@ def poll_once(
     api_calls_made = 0
     evidence_rows_written = 0
     evidence_shard_rows = 0
+    evidence_shard_uri: str | None = None
+    evidence_shard_checksum: str | None = None
+    evidence_shard_bytes: int | None = None
+    shard_registry_version: str | None = None
     fetcher = fetch_metadata or _http_fetcher(api_key=api_key)
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -980,28 +984,8 @@ def poll_once(
                         else:
                             records = _payload_photo_records(payload)
                             inserted, skipped, queued_count, query_hits, duplicate_hits = state.insert_source_records(records, source_query=query)
-                            shard_uri, shard_rows, shard_checksum, shard_bytes = _write_evidence_shard(
-                                storage=output_storage,
-                                evidence_base_prefix=str(evidence_base_prefix),
-                                stage=evidence_stage,
-                                run_id=effective_run_id,
-                                worker_id=effective_worker_id,
-                                work_item_id=work_item_id,
-                                payload=payload,
-                            )
-                            evidence_shard_rows += shard_rows
-                            if shard_uri and work_store:
-                                work_store.register_shard(
-                                    job_name="poll_once",
-                                    registry_version=query.registry_version,
-                                    stage=evidence_stage,
-                                    run_id=effective_run_id,
-                                    worker_id=effective_worker_id,
-                                    uri=shard_uri,
-                                    checksum=shard_checksum,
-                                    row_count=shard_rows,
-                                    byte_count=shard_bytes,
-                                )
+                            if query.registry_version and shard_registry_version is None:
+                                shard_registry_version = query.registry_version
                             records_returned = len(records)
                             records_inserted += inserted
                             duplicates += skipped
@@ -1100,6 +1084,28 @@ def poll_once(
         evidence_rows_total = state.export_canonical_evidence(evidence_output)
         evidence_rows_written = evidence_rows_total
     else:
+        canonical_frame = state.canonical_source_records_frame()
+        evidence_shard_uri, evidence_shard_rows, evidence_shard_checksum, evidence_shard_bytes = _write_evidence_shard(
+            storage=output_storage,
+            evidence_base_prefix=str(evidence_base_prefix),
+            stage=evidence_stage,
+            run_id=effective_run_id,
+            worker_id=effective_worker_id,
+            batch_id="canonical",
+            frame=canonical_frame,
+        )
+        if evidence_shard_uri and work_store:
+            work_store.register_shard(
+                job_name="poll_once",
+                registry_version=shard_registry_version,
+                stage=evidence_stage,
+                run_id=effective_run_id,
+                worker_id=effective_worker_id,
+                uri=evidence_shard_uri,
+                checksum=evidence_shard_checksum,
+                row_count=evidence_shard_rows,
+                byte_count=evidence_shard_bytes,
+            )
         evidence_rows_total = evidence_shard_rows
         evidence_rows_written = evidence_shard_rows
     soft_after, hard_after = state.remaining_api_budget(max_api_calls=max_api_calls)
@@ -1402,10 +1408,9 @@ def _write_evidence_shard(
     stage: str,
     run_id: str,
     worker_id: str,
-    work_item_id: str,
-    payload: dict[str, Any],
+    batch_id: str,
+    frame: pl.DataFrame,
 ) -> tuple[str | None, int, str | None, int | None]:
-    frame = build_evidence_frame([payload], species_query="multilingual_lepidoptera")
     if frame.is_empty():
         return None, 0, None, None
     uri = build_evidence_shard_uri(
@@ -1413,7 +1418,7 @@ def _write_evidence_shard(
         stage=stage,
         run_id=run_id,
         worker_id=worker_id,
-        batch_id=work_item_id,
+        batch_id=batch_id,
     )
     written = storage.write_parquet_shard(uri, frame)
     checksum, byte_count = _local_artifact_metadata(written)

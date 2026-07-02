@@ -11,10 +11,12 @@ from typing import Any, Callable, Iterable
 
 import polars as pl
 
+from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
 from biominer.filter.category_model import infer_life_stage_from_text
 from biominer.filter.extractor import SCIENTIFIC_NAME_PATTERN
 from biominer.flickr_comments.comments_enrichment import fetch_flickr_comments, mine_comment_terms
 from biominer.flickr_fetch.metadata_poller import PENDING
+from biominer.species.context import SpeciesContext
 
 
 FetchComments = Callable[[str], list[dict[str, Any]]]
@@ -34,16 +36,9 @@ COMMENT_REVIEW_METRICS = (
     "comment_review_failures",
 )
 
-GOLD_SPECIES_CONFIDENCE_THRESHOLD = 0.70
-SILVER_SPECIES_CONFIDENCE_THRESHOLD = 0.35
+GOLD_SPECIES_CONFIDENCE_THRESHOLD = DEFAULT_BUCKET_POLICY.gold_species_threshold
+SILVER_SPECIES_CONFIDENCE_THRESHOLD = DEFAULT_BUCKET_POLICY.silver_species_threshold
 MAX_COMMENT_CALLS_PER_HOUR = 300
-TARGET_TERMS = (
-    "papilio demoleus",
-    "lime butterfly",
-    "chequered swallowtail",
-    "checkered swallowtail",
-    "citrus swallowtail",
-)
 GENERIC_LEPIDOPTERA_TERMS = ("butterfly", "swallowtail")
 HARD_NEGATIVE_CATEGORIES = {"museum_specimen", "artwork", "tattoo", "ai_generated", "other_insect", "not_lepidoptera", "object_or_product", "logo_or_brand", "textile_or_pattern"}
 
@@ -70,8 +65,9 @@ class CommentReviewResult:
 
 
 class CommentReviewState:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, species_context: SpeciesContext | None = None) -> None:
         self.path = Path(path)
+        self.species_context = species_context
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
@@ -84,7 +80,7 @@ class CommentReviewState:
         photo_id = str(record.get("flickr_photo_id") or record.get("id") or "")
         if not photo_id:
             return 0
-        reasons = comment_review_reasons(record)
+        reasons = comment_review_reasons(record, species_context=self.species_context)
         if not reasons:
             return 0
         source_record_id = str(record.get("source_record_id") or photo_id)
@@ -130,7 +126,7 @@ class CommentReviewState:
             summary["comment_calls_used"] += 1
             try:
                 comments = fetch_comments(str(row["flickr_photo_id"]))
-                result = review_comments_for_record(_record_from_row(row), comments)
+                result = review_comments_for_record(_record_from_row(row), comments, species_context=self.species_context)
                 terms_created = self.record_review_result(queue_row=row, review=result, comments=comments)
                 summary["comments_fetched"] += 1 if result.comments_fetched else 0
                 summary["comment_derived_terms_created"] += terms_created
@@ -479,13 +475,13 @@ def apply_comment_review_decisions_to_parquet(*, input_path: str | Path, output_
     return {"output": str(output), "rows": len(rows), "records_moved_to_gold": moved}
 
 
-def comment_review_reasons(record: dict[str, Any]) -> list[str]:
+def comment_review_reasons(record: dict[str, Any], *, species_context: SpeciesContext | None = None) -> list[str]:
     reasons: list[str] = []
     if str(record.get("occurrence_bin") or record.get("triage_bin") or "") != "bronze":
         return reasons
     reasons.append("bronze_comment_review")
-    flickr_candidate = flickr_text_species_candidate(record)
-    bioclip_candidate = bioclip_species_candidate(record)
+    flickr_candidate = flickr_text_species_candidate(record, species_context=species_context)
+    bioclip_candidate = bioclip_species_candidate(record, species_context=species_context)
     conflict = _truthy(record.get("bioclip_tag_conflict")) or _truthy(record.get("bioclip_species_conflict")) or _species_conflict(
         flickr_candidate=flickr_candidate,
         bioclip_candidate=bioclip_candidate,
@@ -508,18 +504,23 @@ def comment_review_reasons(record: dict[str, Any]) -> list[str]:
     return _ordered_unique(reasons)
 
 
-def review_comments_for_record(record: dict[str, Any], comments: Iterable[dict[str, Any]]) -> CommentReviewResult:
+def review_comments_for_record(
+    record: dict[str, Any],
+    comments: Iterable[dict[str, Any]],
+    *,
+    species_context: SpeciesContext | None = None,
+) -> CommentReviewResult:
     comment_list = [comment for comment in comments if isinstance(comment, dict)]
     text = " ".join(value for comment in comment_list if (value := _comment_text(comment)))
     species_name = _species_name_from_text(text)
-    common_name = _common_name_from_text(text)
-    comment_candidate = species_name or _target_species_from_common_name(common_name)
+    common_name = _common_name_from_text(text, species_context=species_context)
+    comment_candidate = _species_candidate_from_text(text, species_context=species_context) or species_name
     life_stage = _life_stage_from_text(text)
     date_evidence = _date_evidence_from_text(text)
     geo_evidence = _structured_geo_from_text(text)
     location_text = _location_text_from_text(text)
-    flickr_candidate = flickr_text_species_candidate(record)
-    bioclip_candidate = bioclip_species_candidate(record)
+    flickr_candidate = flickr_text_species_candidate(record, species_context=species_context)
+    bioclip_candidate = bioclip_species_candidate(record, species_context=species_context)
     conflict = _truthy(record.get("bioclip_tag_conflict")) or _truthy(record.get("bioclip_species_conflict")) or _species_conflict(
         flickr_candidate=flickr_candidate,
         bioclip_candidate=bioclip_candidate,
@@ -558,14 +559,14 @@ def review_comments_for_record(record: dict[str, Any], comments: Iterable[dict[s
     )
 
 
-def flickr_text_species_candidate(record: dict[str, Any]) -> str | None:
+def flickr_text_species_candidate(record: dict[str, Any], *, species_context: SpeciesContext | None = None) -> str | None:
     text = " ".join(str(record.get(key) or "") for key in ("raw_title", "title", "raw_description", "description", "raw_tags", "tags", "machine_tags"))
-    return _species_candidate_from_text(text)
+    return _species_candidate_from_text(text, species_context=species_context)
 
 
-def bioclip_species_candidate(record: dict[str, Any]) -> str | None:
+def bioclip_species_candidate(record: dict[str, Any], *, species_context: SpeciesContext | None = None) -> str | None:
     label = str(record.get("bioclip_top1_label", record.get("top1_label", "")) or "")
-    return _species_candidate_from_text(label)
+    return _species_candidate_from_text(label, species_context=species_context)
 
 
 def _comment_review_decision(
@@ -648,10 +649,12 @@ def _silver_eligible(
     return not (_has_event_date(record) or date_recovered) or not (_has_geo(record) or structured_geo_recovered) or score <= GOLD_SPECIES_CONFIDENCE_THRESHOLD
 
 
-def _species_candidate_from_text(text: str) -> str | None:
+def _species_candidate_from_text(text: str, *, species_context: SpeciesContext | None = None) -> str | None:
     normalized = _normalize(text)
-    if any(term in normalized for term in TARGET_TERMS):
-        return "Papilio demoleus"
+    if species_context is not None:
+        for term in species_context.target_terms():
+            if _normalize(term) in normalized:
+                return species_context.scientific_name
     names = SCIENTIFIC_NAME_PATTERN.findall(text)
     if names:
         return names[0]
@@ -668,16 +671,14 @@ def _species_name_from_text(text: str) -> str | None:
     return None
 
 
-def _common_name_from_text(text: str) -> str | None:
+def _common_name_from_text(text: str, *, species_context: SpeciesContext | None = None) -> str | None:
+    if species_context is None:
+        return None
     normalized = _normalize(text)
-    for term in TARGET_TERMS[1:]:
-        if term in normalized:
-            return term
+    for name in species_context.common_names:
+        if _normalize(name.name) in normalized:
+            return name.name
     return None
-
-
-def _target_species_from_common_name(common_name: str | None) -> str | None:
-    return "Papilio demoleus" if common_name else None
 
 
 def _life_stage_from_text(text: str) -> str | None:
@@ -713,7 +714,7 @@ def _species_conflict(*, flickr_candidate: str | None, bioclip_candidate: str | 
         return False
     if flickr_candidate == bioclip_candidate:
         return False
-    if bioclip_candidate == "butterfly" and flickr_candidate == TARGET_SPECIES:
+    if bioclip_candidate == "butterfly" and flickr_candidate not in {"non_target_insect"}:
         return False
     return True
 

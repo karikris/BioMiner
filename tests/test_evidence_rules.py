@@ -29,23 +29,23 @@ def _row(**overrides: object) -> dict[str, object]:
     return row
 
 
-def test_gold_score_gte_050_target_positive() -> None:
-    result = classify_evidence_row(_row(human_verification_detected=False, bioclip_top1_score=0.50))
+def test_gold_score_gte_070_target_positive() -> None:
+    result = classify_evidence_row(_row(human_verification_detected=False, bioclip_top1_score=0.70))
 
     assert result["publication_state"] == "gold"
-    assert result["publication_state_reason"] == "target_positive_score_gte_050"
+    assert result["publication_state_reason"] == "target_positive_score_gte_070"
     assert result["occurrence_bin"] == "gold"
-    assert result["bin_reason"] == "target_positive_score_gte_050"
+    assert result["bin_reason"] == "target_positive_score_gte_070"
     assert result["image_category"] == "adult_butterfly"
     assert result["life_stage"] == "adult_butterfly"
     assert result["review_reason"] == []
 
 
-def test_silver_score_lt_050_target_positive() -> None:
+def test_silver_score_035_to_070_target_positive() -> None:
     result = classify_evidence_row(_row(human_verification_detected=False, bioclip_top1_score=0.49))
 
     assert result["publication_state"] == "silver"
-    assert result["publication_state_reason"] == "target_positive_score_lt_050"
+    assert result["publication_state_reason"] == "target_positive_score_035_to_070"
     assert result["review_reason"] == []
 
 
@@ -85,7 +85,7 @@ def test_bronze_is_not_bioclip_positive_without_negative_material() -> None:
     result = classify_evidence_row(_row())
 
     assert result["publication_state"] == "gold"
-    assert result["publication_state_reason"] == "target_positive_score_gte_050"
+    assert result["publication_state_reason"] == "target_positive_score_gte_070"
 
 
 def test_generic_butterfly_label_goes_to_bronze_not_gold() -> None:
@@ -154,7 +154,7 @@ def test_classify_evidence_frame_adds_exactly_one_state_per_row() -> None:
         pl.DataFrame(
             [
                 _row(flickr_photo_id="gold"),
-                _row(flickr_photo_id="silver", bioclip_top1_score=0.25),
+                    _row(flickr_photo_id="silver", bioclip_top1_score=0.49),
                 _row(flickr_photo_id="bronze", artwork_detected=True),
                 _row(flickr_photo_id="review", image_url=None),
             ]

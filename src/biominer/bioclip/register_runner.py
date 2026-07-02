@@ -105,6 +105,7 @@ def process_records_with_registers(
     records_iter = iter(records)
     classified_at = _timestamp(now)
     species_variants = species_prompt_variants(species_candidates)
+    target_species_name = _target_species_name(species_candidates)
     label_sets: dict[str, Sequence[str]] = {
         "species": [variant.label for variant in species_variants],
         "triage": DEFAULT_TRIAGE_LABELS,
@@ -165,6 +166,7 @@ def process_records_with_registers(
                     species_prompt_variants=species_variants,
                     species_by_label=species_by_label,
                     taxon_metadata_by_name=taxon_metadata_by_name,
+                    target_species_name=target_species_name,
                     rows=rows,
                     cache_root=Path(cache_root),
                     processed_keys=processed_keys,
@@ -348,6 +350,7 @@ def _classify_register(
     species_prompt_variants: Sequence[PromptVariant],
     species_by_label: dict[str, str],
     taxon_metadata_by_name: dict[str, dict[str, str | None]],
+    target_species_name: str,
     rows: list[dict[str, object]],
     cache_root: Path,
     processed_keys: set[tuple[object, ...]],
@@ -357,7 +360,7 @@ def _classify_register(
     processed = 0
     failed = 0
     deleted = 0
-    images = [_image_payload(item) for item in items]
+    images = [_image_payload(item, target_species_name=target_species_name) for item in items]
     try:
         predictions = classifier.classify_images_with_label_sets(
             images,
@@ -376,7 +379,7 @@ def _classify_register(
         for item in items:
             try:
                 prediction = classifier.classify_images_with_label_sets(
-                    [_image_payload(item)],
+                    [_image_payload(item, target_species_name=target_species_name)],
                     label_sets=label_sets,
                     species_prompt_variants=species_prompt_variants,
                 )[0]
@@ -405,17 +408,26 @@ def _classify_register(
     return processed, failed, deleted
 
 
-def _image_payload(item: _RegisterItem) -> dict[str, object]:
+def _image_payload(item: _RegisterItem, *, target_species_name: str) -> dict[str, object]:
     return {
         "flickr_photo_id": str(item.base["flickr_photo_id"]),
         "image_path": item.cached.path,
         "image_hash": item.cached.image_hash,
         "image_url_used": item.cached.source_url,
-        "resolved_scientific_name": "Papilio demoleus",
+        "resolved_scientific_name": target_species_name,
         "text_evidence_present": bool(
             item.record.get("title") or item.record.get("description") or item.record.get("tags") or item.record.get("machine_tags")
         ),
     }
+
+
+def _target_species_name(candidates: list[SpeciesCandidate]) -> str:
+    for candidate in candidates:
+        if candidate.is_target_species:
+            return candidate.scientific_name
+    if candidates:
+        return candidates[0].scientific_name
+    raise ValueError("at least one species candidate is required")
 
 
 def _success_row(

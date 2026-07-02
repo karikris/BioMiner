@@ -1,0 +1,53 @@
+{
+  "accepted_taxon_key": "gbif:100",
+  "canonical_name": "Papilio demoleus",
+  "common_names": [
+    {
+      "confidence": "high",
+      "language": "en",
+      "name": "lime butterfly",
+      "source": "fixture",
+      "trust_tier": "T2"
+    },
+    {
+      "confidence": "high",
+      "language": "en",
+      "name": "chequered swallowtail",
+      "source": "fixture",
+      "trust_tier": "T2"
+    },
+    {
+      "confidence": "high",
+      "language": "en",
+      "name": "citrus swallowtail",
+      "source": "fixture",
+      "trust_tier": "T2"
+    }
+  ],
+  "family": "Papilionidae",
+  "family_key": "gbif:9417",
+  "genus": "Papilio",
+  "genus_key": "gbif:1933",
+  "regions": [],
+  "registry_version": "fixture-papilio-demoleus-v1",
+  "scientific_name": "Papilio demoleus",
+  "search_terms": [
+    {
+      "confidence": "broad",
+      "enabled": true,
+      "language": "en",
+      "precision_tier": "low",
+      "source": "fixture",
+      "term": "butterfly",
+      "term_class": "broad_butterfly",
+      "trust_tier": "T2"
+    }
+  ],
+  "source_versions": {
+    "fixture": "v1"
+  },
+  "species_key": "gbif:100",
+  "synonyms": [
+    "Papilio erithonius"
+  ]
+}

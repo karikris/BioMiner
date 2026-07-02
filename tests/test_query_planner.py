@@ -13,23 +13,29 @@ from biominer.flickr_fetch.query_planner import (
     NORMAL_PAGE_SIZE,
     STABLE_RESULT_THRESHOLD,
     FlickrQuery,
-    build_papilio_demoleus_count_probes_from_json,
     build_count_probes,
+    build_species_count_probes_from_json,
     build_worldwide_discovery_plan,
     deduplicate_photo_records,
     fixed_upload_date_slices,
     flickr_search_params,
-    load_papilio_demoleus_terms_from_json,
     load_registry_flickr_queries,
+    load_species_terms_from_json,
     multilingual_seed_terms,
-    outside_known_papilio_demoleus_regions,
-    papilio_demoleus_known_region_for_coordinate,
+    outside_known_regions,
     page_size_for_query,
     plan_fixed_upload_slice_pages,
     plan_queries_from_count,
     plan_pages_from_count,
     result_pages_for_total,
+    known_region_for_coordinate,
 )
+
+
+PAPILIO_DEMOLEUS_REGION_BBOXES = {
+    "India": "68.11,6.55,97.40,35.67",
+    "Florida": "-87.64,24.40,-79.97,31.00",
+}
 
 
 def test_multilingual_seed_terms_are_seeded_once_and_include_lifestages() -> None:
@@ -360,7 +366,7 @@ def test_deduplicates_by_photo_id() -> None:
     assert [row["id"] for row in unique] == ["1", "2"]
 
 
-def test_loads_papilio_demoleus_keyword_json_and_gates_broad_terms(tmp_path) -> None:
+def test_loads_species_keyword_json_and_gates_broad_terms(tmp_path) -> None:
     path = tmp_path / "keywords.json"
     path.write_text(
         json.dumps(
@@ -416,7 +422,11 @@ def test_loads_papilio_demoleus_keyword_json_and_gates_broad_terms(tmp_path) -> 
         encoding="utf-8",
     )
 
-    terms = load_papilio_demoleus_terms_from_json(path)
+    terms = load_species_terms_from_json(
+        path,
+        scientific_name="Papilio demoleus",
+        region_bboxes=PAPILIO_DEMOLEUS_REGION_BBOXES,
+    )
 
     assert ("Papilio demoleus", "la", None, "scientific_name", "high") in {
         (term.term, term.language, term.region, term.term_type, term.term_confidence) for term in terms
@@ -426,7 +436,11 @@ def test_loads_papilio_demoleus_keyword_json_and_gates_broad_terms(tmp_path) -> 
     }
     assert any(term.region == "India" and term.bbox and term.term == "Papilio demoleus India" for term in terms)
 
-    probes = build_papilio_demoleus_count_probes_from_json(path)
+    probes = build_species_count_probes_from_json(
+        path,
+        scientific_name="Papilio demoleus",
+        region_bboxes=PAPILIO_DEMOLEUS_REGION_BBOXES,
+    )
     assert len(probes) == len(terms) * 2
     assert {probe.search_field for probe in probes} == {"text", "tags"}
     assert all(probe.per_page == COUNT_PROBE_PAGE_SIZE for probe in probes)
@@ -456,7 +470,7 @@ def test_global_high_confidence_terms_are_not_forced_into_known_region_bboxes(tm
         encoding="utf-8",
     )
 
-    probes = build_papilio_demoleus_count_probes_from_json(path)
+    probes = build_species_count_probes_from_json(path, scientific_name="Papilio demoleus")
 
     assert probes
     assert all(probe.term == "Papilio demoleus" for probe in probes)
@@ -464,8 +478,8 @@ def test_global_high_confidence_terms_are_not_forced_into_known_region_bboxes(tm
     assert all(probe.region is None for probe in probes)
 
 
-def test_outside_known_papilio_demoleus_regions_can_be_flagged_for_discovery_review() -> None:
-    assert papilio_demoleus_known_region_for_coordinate(27.95, -82.46) == "Florida"
-    assert outside_known_papilio_demoleus_regions({"latitude": "27.95", "longitude": "-82.46"}) is False
-    assert outside_known_papilio_demoleus_regions({"latitude": "60.17", "longitude": "24.94"}) is True
-    assert outside_known_papilio_demoleus_regions({"latitude": "", "longitude": ""}) is None
+def test_outside_known_species_regions_can_be_flagged_for_discovery_review() -> None:
+    assert known_region_for_coordinate(latitude=27.95, longitude=-82.46, region_bboxes=PAPILIO_DEMOLEUS_REGION_BBOXES) == "Florida"
+    assert outside_known_regions({"latitude": "27.95", "longitude": "-82.46"}, region_bboxes=PAPILIO_DEMOLEUS_REGION_BBOXES) is False
+    assert outside_known_regions({"latitude": "60.17", "longitude": "24.94"}, region_bboxes=PAPILIO_DEMOLEUS_REGION_BBOXES) is True
+    assert outside_known_regions({"latitude": "", "longitude": ""}, region_bboxes=PAPILIO_DEMOLEUS_REGION_BBOXES) is None

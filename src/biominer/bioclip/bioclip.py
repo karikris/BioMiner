@@ -17,24 +17,6 @@ PopenFactory = Callable[..., subprocess.Popen[str]]
 LabelSets = Mapping[str, Sequence[str]]
 
 
-DEFAULT_BIOCLIP_LABELS = (
-    "a photo of Papilio demoleus",
-    "a photo of lime butterfly",
-    "a photo of chequered swallowtail",
-    "a photo of citrus swallowtail",
-    "a photo of a swallowtail butterfly",
-    "a photo of a butterfly",
-    "a photo of a moth",
-    "a photo of an egg",
-    "a photo of a caterpillar",
-    "a photo of a larva",
-    "a photo of a pupa",
-    "a photo of a chrysalis",
-    "a photo of a pinned museum specimen",
-    "a photo of artwork or illustration",
-    "a photo of a tattoo",
-)
-
 DEFAULT_TRIAGE_LABELS = (
     "a photo of an adult butterfly",
     "a photo of a swallowtail butterfly",
@@ -56,16 +38,9 @@ DEFAULT_TRIAGE_LABELS = (
     "a photo that is not a lepidoptera",
 )
 
-
-PAPILIO_DEMOLEUS_VISUAL_LABELS = {
-    "a photo of Papilio demoleus",
-    "a photo of lime butterfly",
-    "a photo of chequered swallowtail",
-    "a photo of citrus swallowtail",
-}
+DEFAULT_BIOCLIP_LABELS = DEFAULT_TRIAGE_LABELS
 
 SWALLOWTAIL_VISUAL_LABELS = {
-    *PAPILIO_DEMOLEUS_VISUAL_LABELS,
     "a photo of a swallowtail butterfly",
 }
 
@@ -319,12 +294,6 @@ def classify_species_agreement(
     species_label = _normalize_label(f"a photo of {resolved_scientific_name}")
     if species_label in normalized_labels:
         return "exact_species_agreement" if text_evidence_present else "vision_only"
-
-    if resolved_scientific_name == "Papilio demoleus":
-        if normalized_labels & {_normalize_label(label) for label in PAPILIO_DEMOLEUS_VISUAL_LABELS}:
-            return "exact_species_agreement" if text_evidence_present else "vision_only"
-        if normalized_labels & {_normalize_label(label) for label in SWALLOWTAIL_VISUAL_LABELS}:
-            return "same_family_agreement" if text_evidence_present else "vision_only"
 
     if normalized_labels & {_normalize_label(label) for label in BUTTERFLY_VISUAL_LABELS}:
         return "same_family_agreement" if text_evidence_present else "vision_only"

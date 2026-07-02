@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+import sqlite3
 from types import SimpleNamespace
 
 import polars as pl
@@ -16,7 +17,8 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
 
     assert "poll-once" in commands
     assert "bioclip" in commands
-    assert "build-papilio-demoleus-query-plan" in commands
+    assert "species" in commands
+    assert "build-papilio-demoleus-query-plan" not in commands
     assert "fetch" not in commands
     assert "fetch-live" not in commands
     assert "benchmark-existing-payloads" not in commands
@@ -211,57 +213,76 @@ def test_bioclip_screen_wires_register_runner_with_sidecar_runtime(tmp_path, cap
     assert calls["runner_kwargs"]["model_checkpoint"] == "191d741545e4c741cdef4b22c6eb69c945c1e592"
 
 
-def test_build_papilio_demoleus_query_plan_cli_reads_keyword_json(tmp_path, capsys) -> None:
-    keywords = tmp_path / "keywords.json"
-    keywords.write_text(
-        json.dumps(
+def test_species_run_cli_resolves_registry_compiles_queries_and_seeds_work(tmp_path, capsys) -> None:
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    pl.DataFrame(
+        [
             {
-                "dictionary_groups": {
-                    "scientific_taxonomic": [
-                        {
-                            "term": "Papilio demoleus",
-                            "language": "la",
-                            "term_type": "scientific_name",
-                            "confidence": "high",
-                            "use_for_flickr": True,
-                            "precision_tier": "high",
-                        }
-                    ],
-                    "multilingual_common_name_expansion": [
-                        {
-                            "term": "butterfly",
-                            "language": "en",
-                            "term_type": "broad_butterfly",
-                            "confidence": "medium",
-                            "use_for_flickr": True,
-                            "precision_tier": "low",
-                        }
-                    ],
-                }
+                "accepted_taxon_key": "gbif:100",
+                "scientific_name": "Papilio demoleus",
+                "rank": "SPECIES",
+                "family_key": "gbif:10",
+                "family": "Papilionidae",
+                "genus_key": "gbif:90",
+                "genus": "Papilio",
+                "species_key": "gbif:100",
+                "species": "Papilio demoleus",
             }
-        ),
-        encoding="utf-8",
+        ]
+    ).write_parquet(registry / "taxa.parquet")
+    pl.DataFrame(
+        [
+            {
+                "name_id": "name:1",
+                "registry_version": "registry-v1",
+                "accepted_taxon_key": "gbif:100",
+                "verbatim_name": "Papilio demoleus",
+                "display_name": "Papilio demoleus",
+                "language": "la",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "accepted_scientific",
+                "source": "gbif",
+                "source_record_id": "gbif:100",
+                "trust_tier": "T1",
+                "precision_tier": "high",
+                "confidence": "high",
+                "enabled": True,
+                "disabled_reason": "",
+            }
+        ]
+    ).write_parquet(registry / "names.parquet")
+    pl.DataFrame([]).write_parquet(registry / "name_evidence.parquet")
+    pl.DataFrame([{"source": "gbif", "source_version": "fixture", "retrieved_at": "2026-01-01"}]).write_parquet(
+        registry / "source_snapshots.parquet"
     )
+    pl.DataFrame([]).write_parquet(registry / "flickr_query_definitions.parquet")
+    (registry / "manifest.json").write_text(json.dumps({"registry_version": "registry-v1"}), encoding="utf-8")
+    output = tmp_path / "species_run"
     parser = build_parser()
     args = parser.parse_args(
         [
-            "build-papilio-demoleus-query-plan",
-            "--keywords-json",
-            str(keywords),
-            "--state-db",
-            str(tmp_path / "poller.sqlite"),
+            "species",
+            "run",
+            "--scientific-name",
+            "Papilio demoleus",
+            "--registry-dir",
+            str(registry),
+            "--output-root",
+            str(output),
         ]
     )
 
     assert run(args) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["count_probes_seen"] == 4
-    assert payload["count_probes_inserted"] == 4
-    assert payload["soft_api_calls_per_hour"] == 3500
-    assert payload["per_page_for_final_fetches"] == 250
-    assert payload["per_page_for_non_geo_fetches"] == 500
-    assert payload["flickr_search_result_window"] == 4000
-    assert payload["stable_result_threshold"] == 4000
+    assert payload["scientific_name"] == "Papilio demoleus"
+    assert payload["fetch_status"] == "skipped_missing_api_key"
+    assert (output / "species_context.json").exists()
+    assert (output / "flickr_query_definitions.parquet").exists()
+    with sqlite3.connect(output / "state" / "flickr_poller.sqlite") as conn:
+        assert conn.execute("SELECT count(*) FROM flickr_work_items").fetchone()[0] > 0
 
 
 def test_registry_compile_fixture_cli_writes_registry_outputs(tmp_path, capsys) -> None:

@@ -7,9 +7,9 @@ from typing import Any
 import polars as pl
 
 from biominer.bioclip.prompt_templates import PromptVariant, build_species_prompt_variants
+from biominer.species.context import SpeciesContext
 
 
-TARGET_SPECIES = "Papilio demoleus"
 DEFAULT_SPECIES_CANDIDATE_LIMIT = 2_000
 
 
@@ -34,7 +34,9 @@ def load_species_candidates(
     path: str | Path,
     *,
     limit: int = DEFAULT_SPECIES_CANDIDATE_LIMIT,
-    target_species: str = TARGET_SPECIES,
+    target_species: str | None = None,
+    allow_unregistered_target: bool = False,
+    target_context: SpeciesContext | None = None,
 ) -> list[SpeciesCandidate]:
     source = Path(path)
     frame = _read_candidate_frame(source)
@@ -43,27 +45,19 @@ def load_species_candidates(
     ordered = sorted(
         deduped,
         key=lambda item: (
-            not item.is_target_species,
+            bool(target_species) and not item.is_target_species,
             str(item.family or ""),
             str(item.genus or ""),
             item.scientific_name.casefold(),
         ),
     )
-    if not any(candidate.scientific_name == target_species for candidate in ordered):
-        ordered.insert(
-            0,
-            SpeciesCandidate(
-                scientific_name=target_species,
-                canonical_name=target_species,
-                rank="species",
-                family="Papilionidae",
-                genus="Papilio",
-                source="pinned_target",
-                source_taxon_id=None,
-                is_target_species=True,
-                common_names=("lime butterfly", "chequered swallowtail", "citrus swallowtail"),
-            ),
-        )
+    if target_species and not any(_normalize(candidate.scientific_name) == _normalize(target_species) for candidate in ordered):
+        if not allow_unregistered_target or target_context is None:
+            raise ValueError(
+                f"target species is absent from candidates: {target_species}; "
+                "provide registry candidates or use allow_unregistered_target with a SpeciesContext"
+            )
+        ordered.insert(0, _candidate_from_context(target_context))
     return ordered[:limit]
 
 
@@ -103,7 +97,7 @@ def _read_candidate_frame(path: Path) -> pl.DataFrame:
     raise ValueError(f"Unsupported species candidate file type: {path}")
 
 
-def _candidate_from_row(row: dict[str, Any], *, target_species: str) -> SpeciesCandidate:
+def _candidate_from_row(row: dict[str, Any], *, target_species: str | None) -> SpeciesCandidate:
     scientific_name = _first_text(
         row,
         "scientific_name",
@@ -126,8 +120,22 @@ def _candidate_from_row(row: dict[str, Any], *, target_species: str) -> SpeciesC
         genus=genus,
         source=_first_text(row, "source"),
         source_taxon_id=_first_text(row, "source_taxon_id", "taxon_id", "taxonID"),
-        is_target_species=_normalize(scientific_name) == _normalize(target_species),
+        is_target_species=bool(target_species and _normalize(scientific_name) == _normalize(target_species)),
         common_names=_split_common_names(_first_text(row, "common_names", "commonNames", "vernacular_names", "vernacularNames")),
+    )
+
+
+def _candidate_from_context(context: SpeciesContext) -> SpeciesCandidate:
+    return SpeciesCandidate(
+        scientific_name=context.scientific_name,
+        canonical_name=context.canonical_name,
+        rank="species",
+        family=context.family,
+        genus=context.genus,
+        source="species_context",
+        source_taxon_id=context.accepted_taxon_key,
+        is_target_species=True,
+        common_names=tuple(name.name for name in context.common_names),
     )
 
 

@@ -39,11 +39,10 @@ def _runtime() -> BioClipRuntime:
     )
 
 
-def test_default_bioclip_labels_include_required_papilio_prompts() -> None:
-    assert "a photo of Papilio demoleus" in DEFAULT_BIOCLIP_LABELS
-    assert "a photo of lime butterfly" in DEFAULT_BIOCLIP_LABELS
-    assert "a photo of chequered swallowtail" in DEFAULT_BIOCLIP_LABELS
-    assert "a photo of citrus swallowtail" in DEFAULT_BIOCLIP_LABELS
+def test_default_bioclip_labels_include_required_generic_triage_prompts() -> None:
+    assert "a photo of an adult butterfly" in DEFAULT_BIOCLIP_LABELS
+    assert "a photo of a butterfly" in DEFAULT_BIOCLIP_LABELS
+    assert "a photo of a moth" in DEFAULT_BIOCLIP_LABELS
     assert "a photo of a pinned museum specimen" in DEFAULT_BIOCLIP_LABELS
     assert "a photo of artwork or illustration" in DEFAULT_BIOCLIP_LABELS
 

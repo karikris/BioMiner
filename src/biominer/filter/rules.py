@@ -5,6 +5,7 @@ from typing import Any
 
 import polars as pl
 
+from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
 from biominer.filter.category_model import infer_category_from_record
 
 
@@ -26,10 +27,6 @@ REVIEW_REASON_PRECEDENCE = (
 )
 POSITIVE_SPECIES_AGREEMENT = {"exact_species_agreement", "same_genus_agreement", "same_family_agreement", "vision_only"}
 CONFLICT_SPECIES_AGREEMENT = {"text_vision_conflict", "non_butterfly"}
-TARGET_BUTTERFLY_LABELS = {
-    "a photo of Papilio demoleus",
-}
-TARGET_SPECIES = "Papilio demoleus"
 HARD_EXCLUSION_REASONS = {
     "artwork",
     "tattoo",
@@ -39,7 +36,7 @@ HARD_EXCLUSION_REASONS = {
     "multiple_species",
     "captivity_suspected",
 }
-BIOCLIP_CONFIDENCE_THRESHOLD = 0.50
+BIOCLIP_CONFIDENCE_THRESHOLD = DEFAULT_BUCKET_POLICY.silver_species_threshold
 
 
 def classify_evidence_frame(evidence: pl.DataFrame) -> pl.DataFrame:
@@ -66,12 +63,12 @@ def classify_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
     elif negative_reason:
         state = "bronze"
         state_reason = negative_reason
-    elif target_positive and score is not None and score >= BIOCLIP_CONFIDENCE_THRESHOLD:
+    elif target_positive and score is not None and score >= DEFAULT_BUCKET_POLICY.gold_species_threshold:
         state = "gold"
-        state_reason = "target_positive_score_gte_050"
-    elif target_positive and score is not None and score < BIOCLIP_CONFIDENCE_THRESHOLD:
+        state_reason = "target_positive_score_gte_070"
+    elif target_positive and score is not None and score >= DEFAULT_BUCKET_POLICY.silver_species_threshold:
         state = "silver"
-        state_reason = "target_positive_score_lt_050"
+        state_reason = "target_positive_score_035_to_070"
     elif score is not None:
         state = "bronze"
         state_reason = "below_50"
@@ -125,14 +122,17 @@ def review_reasons_for_evidence(row: dict[str, Any]) -> list[str]:
 
 
 def species_agreement_is_positive(row: dict[str, Any]) -> bool:
+    target_species = _target_species_from_row(row)
     species_name = str(row.get("species_top1_scientific_name") or "")
-    if species_name:
-        return _normalize_label(species_name) == _normalize_label(TARGET_SPECIES)
+    if species_name and target_species:
+        return _normalize_label(species_name) == _normalize_label(target_species)
     status = _species_agreement_status(row)
     if status in CONFLICT_SPECIES_AGREEMENT:
         return False
+    if status == "exact_species_agreement" and target_species:
+        return True
     label = _normalize_label(_bioclip_top1_label(row))
-    return label in {_normalize_label(value) for value in TARGET_BUTTERFLY_LABELS}
+    return bool(target_species and label == _normalize_label(f"a photo of {target_species}"))
 
 
 def species_agreement_is_conflict(row: dict[str, Any]) -> bool:
@@ -143,7 +143,10 @@ def species_agreement_is_conflict(row: dict[str, Any]) -> bool:
     label = _normalize_label(_bioclip_top1_label(row))
     if score is None or score < BIOCLIP_CONFIDENCE_THRESHOLD:
         return False
-    return bool(label and label not in {_normalize_label(value) for value in TARGET_BUTTERFLY_LABELS})
+    target_species = _target_species_from_row(row)
+    if not target_species:
+        return False
+    return bool(label and label != _normalize_label(f"a photo of {target_species}"))
 
 
 def target_signal_is_positive(row: dict[str, Any]) -> bool:
@@ -208,6 +211,14 @@ def _bioclip_top1_label(row: dict[str, Any]) -> str:
 
 def _species_agreement_status(row: dict[str, Any]) -> str:
     return str(row.get("bioclip_species_agreement_status", row.get("species_agreement_status", "")) or "")
+
+
+def _target_species_from_row(row: dict[str, Any]) -> str | None:
+    for key in ("target_scientific_name", "accepted_scientific_name", "species_query"):
+        value = str(row.get(key) or "").strip()
+        if value and " " in value:
+            return value
+    return None
 
 
 def _normalize_label(value: str) -> str:

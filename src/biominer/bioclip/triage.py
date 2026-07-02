@@ -10,12 +10,13 @@ import polars as pl
 
 from biominer.filter.category_model import category_defaults, category_from_negative_reason, infer_life_stage_from_text
 from biominer.common.species import species_text_matches
+from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
 
 
 TRIAGE_BINS = {"gold", "silver", "bronze", "bin", "in_review"}
 CLASSIFICATION_STATUSES = {"success", "skipped_existing", "failed_download", "failed_bioclip", "invalid_record"}
-GOLD_SPECIES_CONFIDENCE_THRESHOLD = 0.70
-SILVER_SPECIES_CONFIDENCE_THRESHOLD = 0.35
+GOLD_SPECIES_CONFIDENCE_THRESHOLD = DEFAULT_BUCKET_POLICY.gold_species_threshold
+SILVER_SPECIES_CONFIDENCE_THRESHOLD = DEFAULT_BUCKET_POLICY.silver_species_threshold
 BIN_CATEGORIES = {
     "museum_specimen",
     "artwork",
@@ -72,13 +73,13 @@ def classify_bioclip_triage(*, record: dict[str, Any], prediction: dict[str, obj
     category = _category_for_prediction(top1_label=triage_top1_label, negative_reason=negative_reason)
     text_species_match = _text_species_match(record, species_top1_name)
     is_species_supported = bool(text_species_match and species_top1_score is not None and species_top1_score >= SILVER_SPECIES_CONFIDENCE_THRESHOLD)
-    if triage_group_top == "hard_negative" and hard_negative_score is not None and hard_negative_score >= 0.70:
+    if triage_group_top == "hard_negative" and hard_negative_score is not None and hard_negative_score >= DEFAULT_BUCKET_POLICY.hard_negative_threshold:
         return _bucket_result(category_defaults(), bucket="bin", reason="hard_negative_group", text_species_match=text_species_match, is_target_positive=False, is_negative_material=True)
     if (
         species_top1_score is not None
         and species_top1_score >= GOLD_SPECIES_CONFIDENCE_THRESHOLD
         and species_margin is not None
-        and species_margin < 0.05
+        and species_margin < DEFAULT_BUCKET_POLICY.ambiguous_margin_threshold
     ):
         return _bucket_result(category_defaults(), bucket="in_review", reason="ambiguous_species_margin", text_species_match=text_species_match, is_target_positive=False, is_negative_material=False)
     if category["image_category"] in BIN_CATEGORIES:
