@@ -122,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_screen_objects.add_argument("--crop-temp-dir", default="data/cache/object_crops")
     bioclip_screen_objects.add_argument("--crop-target-px", type=int, default=336)
     bioclip_screen_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
+    bioclip_screen_objects.add_argument("--parquet-batch-rows", type=int, default=10000)
     bioclip_screen_objects.add_argument("--retain-debug-crops", action="store_true")
     bioclip_ablate_objects = bioclip_subparsers.add_parser("ablate-objects")
     bioclip_ablate_objects.add_argument("--input", required=True)
@@ -261,6 +262,7 @@ def build_parser() -> argparse.ArgumentParser:
     species_bioclip_objects.add_argument("--crop-temp-dir", default="data/cache/object_crops")
     species_bioclip_objects.add_argument("--crop-target-px", type=int, default=336)
     species_bioclip_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
+    species_bioclip_objects.add_argument("--parquet-batch-rows", type=int, default=10000)
     species_bioclip_objects.add_argument("--retain-debug-crops", action="store_true")
     species_ablate_objects = species_subparsers.add_parser("ablate-objects")
     species_ablate_objects.add_argument("--context-json", required=True)
@@ -1101,6 +1103,7 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
             output_path=args.output,
             ablation_mode=args.ablation_mode,
             geo_prior_table=geo_prior_table,
+            parquet_batch_rows=args.parquet_batch_rows,
         )
     finally:
         scorer.close()
@@ -1112,6 +1115,7 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
                 "records_seen": result.records_seen,
                 "detections_seen": result.detections_seen,
                 "crops_scored": result.crops_scored,
+                "score_batches_written": result.score_batches_written,
                 "candidate_set_id": candidate_set.candidate_set_id,
                 "scorer": "ephemeral_crop_bioclip",
             },

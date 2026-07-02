@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
 from pathlib import Path
+from shutil import rmtree
 import tempfile
 from typing import Any, Iterable, Literal, Protocol
 
@@ -53,6 +54,7 @@ class ObjectScreenResult:
     records_seen: int
     detections_seen: int
     crops_scored: int
+    score_batches_written: int = 0
 
 
 @dataclass(frozen=True)
@@ -166,20 +168,26 @@ def screen_object_detections(
     output_path: str | Path | None = None,
     ablation_mode: AblationMode = "detector_crop",
     geo_prior_table: pl.DataFrame | None = None,
+    parquet_batch_rows: int = 10000,
 ) -> ObjectScreenResult:
     records_by_photo = {
         (str(row.get("source") or ""), str(row.get("flickr_photo_id") or "")): row
         for row in canonical_records.to_dicts()
     }
     rows: list[dict[str, Any]] = []
-    for detection in detections.to_dicts():
-        if str(detection.get("detection_status") or "") != "detected":
-            continue
-        key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
-        record = _canonical_record_for_detection(records_by_photo, key=key)
-        item = {**detection, **record, "ablation_mode": ablation_mode}
-        rows.append(
-            _score_detection(
+    output = Path(output_path) if output_path is not None else None
+    batch_dir = _prepare_score_batch_dir(output) if output is not None else None
+    row_buffer: list[dict[str, Any]] = []
+    batch_paths: list[Path] = []
+    crops_scored = 0
+    try:
+        for detection in detections.to_dicts():
+            if str(detection.get("detection_status") or "") != "detected":
+                continue
+            key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
+            record = _canonical_record_for_detection(records_by_photo, key=key)
+            item = {**detection, **record, "ablation_mode": ablation_mode}
+            score_row = _score_detection(
                 item=item,
                 context=species_context,
                 candidate_set=candidate_set,
@@ -187,18 +195,71 @@ def screen_object_detections(
                 ablation_mode=ablation_mode,
                 geo_prior_table=geo_prior_table,
             )
+            crops_scored += 1
+            if output is None or batch_dir is None:
+                rows.append(score_row)
+            else:
+                _buffer_score_rows(
+                    [score_row],
+                    row_buffer=row_buffer,
+                    batch_paths=batch_paths,
+                    batch_dir=batch_dir,
+                    parquet_batch_rows=parquet_batch_rows,
+                )
+        if output is not None and batch_dir is not None:
+            _flush_score_row_buffer(row_buffer=row_buffer, batch_paths=batch_paths, batch_dir=batch_dir)
+            frame = _read_score_batches(batch_paths)
+            write_parquet(frame, output)
+        else:
+            frame = pl.DataFrame(rows) if rows else pl.DataFrame()
+        return ObjectScreenResult(
+            frame=frame,
+            output_path=output,
+            records_seen=canonical_records.height,
+            detections_seen=detections.height,
+            crops_scored=crops_scored,
+            score_batches_written=len(batch_paths),
         )
-    frame = pl.DataFrame(rows) if rows else pl.DataFrame()
-    output = Path(output_path) if output_path is not None else None
-    if output is not None:
-        write_parquet(frame, output)
-    return ObjectScreenResult(
-        frame=frame,
-        output_path=output,
-        records_seen=canonical_records.height,
-        detections_seen=detections.height,
-        crops_scored=len(rows),
-    )
+    finally:
+        if batch_dir is not None and batch_dir.exists():
+            rmtree(batch_dir)
+
+
+def _prepare_score_batch_dir(output_path: Path) -> Path:
+    batch_dir = output_path.parent / f".{output_path.name}.batches.tmp"
+    if batch_dir.exists():
+        rmtree(batch_dir)
+    return batch_dir
+
+
+def _buffer_score_rows(
+    rows: list[dict[str, Any]],
+    *,
+    row_buffer: list[dict[str, Any]],
+    batch_paths: list[Path],
+    batch_dir: Path,
+    parquet_batch_rows: int,
+) -> None:
+    row_buffer.extend(rows)
+    if len(row_buffer) >= max(1, parquet_batch_rows):
+        _flush_score_row_buffer(row_buffer=row_buffer, batch_paths=batch_paths, batch_dir=batch_dir)
+
+
+def _flush_score_row_buffer(*, row_buffer: list[dict[str, Any]], batch_paths: list[Path], batch_dir: Path) -> None:
+    if not row_buffer:
+        return
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    batch_path = batch_dir / f"batch-{len(batch_paths):06d}.parquet"
+    write_parquet(pl.DataFrame(row_buffer), batch_path)
+    batch_paths.append(batch_path)
+    row_buffer.clear()
+
+
+def _read_score_batches(batch_paths: list[Path]) -> pl.DataFrame:
+    if not batch_paths:
+        return pl.DataFrame()
+    frames = [pl.read_parquet(path) for path in batch_paths]
+    return pl.concat(frames, how="diagonal_relaxed")
 
 
 def _canonical_record_for_detection(

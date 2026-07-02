@@ -105,6 +105,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "object_bioclip_scores.parquet",
             "--ablation-mode",
             "detector_crop",
+            "--parquet-batch-rows",
+            "7",
         ]
     )
     ablate = parser.parse_args(
@@ -139,6 +141,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "geo_prior.parquet",
             "--output",
             "object_bioclip_scores.parquet",
+            "--parquet-batch-rows",
+            "9",
         ]
     )
     species_ablate = parser.parse_args(
@@ -197,11 +201,13 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert screen.bioclip_command == "screen-objects"
     assert screen.ablation_mode == "detector_crop"
     assert screen.geo_prior_table == "geo_prior.parquet"
+    assert screen.parquet_batch_rows == 7
     assert ablate.bioclip_command == "ablate-objects"
     assert ablate.modes == "whole_image,detector_crop,detector_crop_segmentation"
     assert ablate.geo_prior_table == "geo_prior.parquet"
     assert species_screen.species_command == "bioclip-objects"
     assert species_screen.geo_prior_table == "geo_prior.parquet"
+    assert species_screen.parquet_batch_rows == 9
     assert species_ablate.species_command == "ablate-objects"
     assert species_ablate.geo_prior_table == "geo_prior.parquet"
     assert join.bioclip_command == "join-object-evidence"
@@ -442,7 +448,14 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
 
     def fake_screen(**kwargs):  # noqa: ANN003, ANN202 - mirrors screen_object_detections.
         calls["screen"] = kwargs
-        return SimpleNamespace(frame=pl.DataFrame([{"occurrence_bin": "bronze"}]), output_path=Path(kwargs["output_path"]), records_seen=1, detections_seen=1, crops_scored=1)
+        return SimpleNamespace(
+            frame=pl.DataFrame([{"occurrence_bin": "bronze"}]),
+            output_path=Path(kwargs["output_path"]),
+            records_seen=1,
+            detections_seen=1,
+            crops_scored=1,
+            score_batches_written=3,
+        )
 
     def fake_build_candidate_set(context, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors build_candidate_set.
         calls["candidate_set"] = kwargs
@@ -471,6 +484,8 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
             str(runtime_python),
             "--device",
             "mps",
+            "--parquet-batch-rows",
+            "3",
         ]
     )
 
@@ -478,11 +493,13 @@ def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["rows"] == 1
+    assert payload["score_batches_written"] == 3
     assert calls["closed"] is True
     assert calls["persistent"]["device"] == "mps"
     assert calls["crop_scorer"]["model_checkpoint"] == "191d741545e4c741cdef4b22c6eb69c945c1e592"
     assert calls["crop_scorer"]["crop_target_px"] == 336
     assert calls["screen"]["ablation_mode"] == "detector_crop"
+    assert calls["screen"]["parquet_batch_rows"] == 3
     assert calls["screen"]["geo_prior_table"].height == 1
     assert calls["candidate_set"]["records"][0]["flickr_photo_id"] == "photo-1"
     assert calls["candidate_set"]["records"][0]["scientific_names_detected"] == ["Danaus gilippus"]

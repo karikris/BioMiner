@@ -432,6 +432,32 @@ def test_object_bioclip_scores_detection_crops_with_join_keys(tmp_path) -> None:
     assert row["is_target_positive"] is True
 
 
+def test_object_bioclip_scores_flush_to_parquet_batches(tmp_path) -> None:
+    output = tmp_path / "object_bioclip_scores.parquet"
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections(),
+        species_context=_context(),
+        candidate_set=build_candidate_set(_context()),
+        scorer=FakeObjectBioClipScorer(
+            {
+                "sha256:crop-1": {"a photo of Danaus plexippus": 0.82},
+                "sha256:crop-2": {"a photo of Danaus plexippus": 0.42},
+            }
+        ),
+        output_path=output,
+        ablation_mode="detector_crop",
+        parquet_batch_rows=1,
+    )
+
+    frame = pl.read_parquet(output)
+    assert result.score_batches_written == 2
+    assert result.crops_scored == 2
+    assert frame.height == 2
+    assert sorted(frame["detection_id"].to_list()) == ["det-1", "det-2"]
+    assert not (tmp_path / ".object_bioclip_scores.parquet.batches.tmp").exists()
+
+
 def test_object_bioclip_score_marks_hard_negative_image_material(tmp_path) -> None:
     candidate_set = build_candidate_set(_context())
     canonical = _canonical_records().with_columns(
