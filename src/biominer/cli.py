@@ -14,11 +14,12 @@ from biominer.bioclip.bioclip import BioClipClassifier, PersistentBioClipScorer
 from biominer.bioclip.ablation import run_object_ablations
 from biominer.bioclip.candidate_sets import build_candidate_set
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
-from biominer.bioclip.object_runner import FakeObjectBioClipScorer, screen_object_detections, write_object_evidence_outputs
+from biominer.bioclip.object_runner import EphemeralCropBioClipScorer, screen_object_detections, write_object_evidence_outputs
 from biominer.bioclip.register_runner import process_records_with_registers
 from biominer.bioclip.species_candidates import DEFAULT_SPECIES_CANDIDATE_LIMIT, load_species_candidates
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.detection.evaluate import evaluate_xie_style
+from biominer.detection.image_io import load_decoded_image_from_record
 from biominer.detection.pipeline import run_detection_pipeline
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_comments.comment_review import (
@@ -114,7 +115,13 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_screen_objects.add_argument("--output", required=True)
     bioclip_screen_objects.add_argument("--ablation-mode", choices=("whole_image", "detector_crop", "detector_crop_segmentation"), default="detector_crop")
     bioclip_screen_objects.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    bioclip_screen_objects.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
     bioclip_screen_objects.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    bioclip_screen_objects.add_argument("--cache-root", default="data/cache/images")
+    bioclip_screen_objects.add_argument("--crop-temp-dir", default="data/cache/object_crops")
+    bioclip_screen_objects.add_argument("--crop-target-px", type=int, default=336)
+    bioclip_screen_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
+    bioclip_screen_objects.add_argument("--retain-debug-crops", action="store_true")
     bioclip_ablate_objects = bioclip_subparsers.add_parser("ablate-objects")
     bioclip_ablate_objects.add_argument("--input", required=True)
     bioclip_ablate_objects.add_argument("--detections", required=True)
@@ -123,7 +130,13 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_ablate_objects.add_argument("--output-dir", required=True)
     bioclip_ablate_objects.add_argument("--modes", default="whole_image,detector_crop,detector_crop_segmentation")
     bioclip_ablate_objects.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    bioclip_ablate_objects.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
     bioclip_ablate_objects.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    bioclip_ablate_objects.add_argument("--cache-root", default="data/cache/images")
+    bioclip_ablate_objects.add_argument("--crop-temp-dir", default="data/cache/object_crops")
+    bioclip_ablate_objects.add_argument("--crop-target-px", type=int, default=336)
+    bioclip_ablate_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
+    bioclip_ablate_objects.add_argument("--retain-debug-crops", action="store_true")
     detect = subparsers.add_parser("detect")
     detect_subparsers = detect.add_subparsers(dest="detect_command")
     detect_boxes = detect_subparsers.add_parser("boxes")
@@ -235,6 +248,14 @@ def build_parser() -> argparse.ArgumentParser:
     species_bioclip_objects.add_argument("--species-candidates")
     species_bioclip_objects.add_argument("--output", required=True)
     species_bioclip_objects.add_argument("--ablation-mode", choices=("whole_image", "detector_crop", "detector_crop_segmentation"), default="detector_crop")
+    species_bioclip_objects.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    species_bioclip_objects.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
+    species_bioclip_objects.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    species_bioclip_objects.add_argument("--cache-root", default="data/cache/images")
+    species_bioclip_objects.add_argument("--crop-temp-dir", default="data/cache/object_crops")
+    species_bioclip_objects.add_argument("--crop-target-px", type=int, default=336)
+    species_bioclip_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
+    species_bioclip_objects.add_argument("--retain-debug-crops", action="store_true")
     species_ablate_objects = species_subparsers.add_parser("ablate-objects")
     species_ablate_objects.add_argument("--context-json", required=True)
     species_ablate_objects.add_argument("--input", required=True)
@@ -242,6 +263,14 @@ def build_parser() -> argparse.ArgumentParser:
     species_ablate_objects.add_argument("--species-candidates")
     species_ablate_objects.add_argument("--output-dir", required=True)
     species_ablate_objects.add_argument("--modes", default="whole_image,detector_crop,detector_crop_segmentation")
+    species_ablate_objects.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    species_ablate_objects.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
+    species_ablate_objects.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    species_ablate_objects.add_argument("--cache-root", default="data/cache/images")
+    species_ablate_objects.add_argument("--crop-temp-dir", default="data/cache/object_crops")
+    species_ablate_objects.add_argument("--crop-target-px", type=int, default=336)
+    species_ablate_objects.add_argument("--crop-padding-ratio", type=float, default=0.12)
+    species_ablate_objects.add_argument("--retain-debug-crops", action="store_true")
     species_review = species_subparsers.add_parser("review-comments")
     species_review.add_argument("--context-json", required=True)
     species_review.add_argument("--input")
@@ -1012,19 +1041,39 @@ def _run_detect_eval(args: argparse.Namespace) -> int:
 
 
 def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
+    runtime_python = Path(args.runtime_python)
+    if not runtime_python.exists():
+        print(json.dumps({"error": f"BioCLIP runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
+        return 2
     context = SpeciesContext.read_json(args.species_context)
     records = pl.read_parquet(args.input)
     detections = pl.read_parquet(args.detections)
     candidate_set = build_candidate_set(context, species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None)
-    result = screen_object_detections(
-        canonical_records=records,
-        detections=detections,
-        species_context=context,
-        candidate_set=candidate_set,
-        scorer=FakeObjectBioClipScorer({}),
-        output_path=args.output,
-        ablation_mode=args.ablation_mode,
+    runtime = _bioclip_runtime(runtime_python=runtime_python)
+    scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
+    object_scorer = EphemeralCropBioClipScorer(
+        scorer=scorer,
+        image_loader=lambda item: load_decoded_image_from_record(item, cache_root=args.cache_root),
+        temp_dir=args.crop_temp_dir,
+        crop_padding_ratio=args.crop_padding_ratio,
+        crop_target_px=args.crop_target_px,
+        model_id="bioclip2_5",
+        model_version="bioclip2_5_huge",
+        model_checkpoint=BIOCLIP_25_HUGE_REVISION,
+        retain_debug_crops=args.retain_debug_crops,
     )
+    try:
+        result = screen_object_detections(
+            canonical_records=records,
+            detections=detections,
+            species_context=context,
+            candidate_set=candidate_set,
+            scorer=object_scorer,
+            output_path=args.output,
+            ablation_mode=args.ablation_mode,
+        )
+    finally:
+        scorer.close()
     print(
         json.dumps(
             {
@@ -1034,7 +1083,7 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
                 "detections_seen": result.detections_seen,
                 "crops_scored": result.crops_scored,
                 "candidate_set_id": candidate_set.candidate_set_id,
-                "scorer": "fake_empty_scores",
+                "scorer": "ephemeral_crop_bioclip",
             },
             indent=2,
             sort_keys=True,
@@ -1044,20 +1093,40 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
 
 
 def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
+    runtime_python = Path(args.runtime_python)
+    if not runtime_python.exists():
+        print(json.dumps({"error": f"BioCLIP runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
+        return 2
     context = SpeciesContext.read_json(args.species_context)
     records = pl.read_parquet(args.input)
     detections = pl.read_parquet(args.detections)
     candidate_set = build_candidate_set(context, species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None)
     modes = tuple(part.strip() for part in args.modes.split(",") if part.strip())
-    report = run_object_ablations(
-        canonical_records=records,
-        detections=detections,
-        species_context=context,
-        candidate_set=candidate_set,
-        scorer=FakeObjectBioClipScorer({}),
-        output_dir=args.output_dir,
-        modes=modes,  # type: ignore[arg-type]
+    runtime = _bioclip_runtime(runtime_python=runtime_python)
+    scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
+    object_scorer = EphemeralCropBioClipScorer(
+        scorer=scorer,
+        image_loader=lambda item: load_decoded_image_from_record(item, cache_root=args.cache_root),
+        temp_dir=args.crop_temp_dir,
+        crop_padding_ratio=args.crop_padding_ratio,
+        crop_target_px=args.crop_target_px,
+        model_id="bioclip2_5",
+        model_version="bioclip2_5_huge",
+        model_checkpoint=BIOCLIP_25_HUGE_REVISION,
+        retain_debug_crops=args.retain_debug_crops,
     )
+    try:
+        report = run_object_ablations(
+            canonical_records=records,
+            detections=detections,
+            species_context=context,
+            candidate_set=candidate_set,
+            scorer=object_scorer,
+            output_dir=args.output_dir,
+            modes=modes,  # type: ignore[arg-type]
+        )
+    finally:
+        scorer.close()
     print(json.dumps({"output_dir": str(report.output_dir), **report.report}, indent=2, sort_keys=True))
     return 0
 

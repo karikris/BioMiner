@@ -3,12 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+import tempfile
 from typing import Any, Iterable, Literal, Protocol
 
 import polars as pl
 
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
+from biominer.detection.cropper import crop_with_padding
+from biominer.detection.detector_base import DecodedImage
 from biominer.species.context import SpeciesContext
 from biominer.storage.parquet import write_parquet
 
@@ -59,6 +62,72 @@ class FakeObjectBioClipScorer:
     def score(self, item: dict[str, Any], labels: tuple[str, ...]) -> dict[str, float]:
         scores = self.scores_by_crop.get(str(item.get("crop_hash") or ""), {})
         return {label: float(scores.get(label, 0.0)) for label in labels}
+
+
+class EphemeralCropBioClipScorer:
+    def __init__(
+        self,
+        *,
+        scorer: Any,
+        image_loader: Any,
+        temp_dir: str | Path,
+        crop_padding_ratio: float = 0.12,
+        crop_target_px: int = 336,
+        model_id: str,
+        model_version: str,
+        model_checkpoint: str,
+        retain_debug_crops: bool = False,
+        debug_crop_limit: int = 500,
+    ) -> None:
+        self._scorer = scorer
+        self._image_loader = image_loader
+        self._temp_dir = Path(temp_dir)
+        self._crop_padding_ratio = crop_padding_ratio
+        self._crop_target_px = crop_target_px
+        self.model_id = model_id
+        self.model_version = model_version
+        self.model_checkpoint = model_checkpoint
+        self._retain_debug_crops = retain_debug_crops
+        self._debug_crop_limit = debug_crop_limit
+        self._debug_crops_written = 0
+
+    def score(self, item: dict[str, Any], labels: tuple[str, ...]) -> dict[str, float]:
+        image = self._image_loader(item)
+        if not isinstance(image, DecodedImage):
+            raise TypeError("image_loader must return a DecodedImage")
+        bbox = item.get("bbox_xyxy")
+        if not isinstance(bbox, list | tuple) or len(bbox) != 4:
+            raise ValueError("object BioCLIP crop scoring requires bbox_xyxy")
+        crop = crop_with_padding(
+            image,
+            bbox_xyxy=tuple(float(value) for value in bbox),  # type: ignore[arg-type]
+            padding_ratio=self._crop_padding_ratio,
+            target_px=self._crop_target_px,
+        )
+        crop_path = self._write_temp_ppm(crop.encoded_bytes, width=crop.crop_width, height=crop.crop_height, crop_hash=crop.crop_hash)
+        try:
+            return {str(label): float(score) for label, score in dict(self._scorer(crop_path, labels)).items()}
+        finally:
+            if not self._should_retain_debug_crop():
+                crop_path.unlink(missing_ok=True)
+
+    def _write_temp_ppm(self, data: bytes, *, width: int, height: int, crop_hash: str) -> Path:
+        self._temp_dir.mkdir(parents=True, exist_ok=True)
+        safe_hash = crop_hash.replace(":", "_").replace("/", "_")
+        if self._should_retain_debug_crop():
+            path = self._temp_dir / f"{safe_hash}.ppm"
+            path.write_bytes(_ppm_bytes(data, width=width, height=height))
+            self._debug_crops_written += 1
+            return path
+        handle = tempfile.NamedTemporaryFile(prefix=f"{safe_hash}_", suffix=".ppm", dir=self._temp_dir, delete=False)
+        try:
+            handle.write(_ppm_bytes(data, width=width, height=height))
+            return Path(handle.name)
+        finally:
+            handle.close()
+
+    def _should_retain_debug_crop(self) -> bool:
+        return self._retain_debug_crops and self._debug_crops_written < self._debug_crop_limit
 
 
 def screen_object_detections(
@@ -310,6 +379,13 @@ def _optional_float(value: object) -> float | None:
     if value in (None, ""):
         return None
     return float(value)
+
+
+def _ppm_bytes(data: bytes, *, width: int, height: int) -> bytes:
+    expected = width * height * 3
+    if len(data) != expected:
+        raise ValueError(f"RGB crop bytes length {len(data)} does not match expected {expected}")
+    return f"P6\n{width} {height}\n255\n".encode("ascii") + data
 
 
 def _norm(value: object) -> str:

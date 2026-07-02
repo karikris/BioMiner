@@ -282,6 +282,100 @@ def test_bioclip_screen_wires_register_runner_with_sidecar_runtime(tmp_path, cap
     assert calls["runner_kwargs"]["model_checkpoint"] == "191d741545e4c741cdef4b22c6eb69c945c1e592"
 
 
+def test_bioclip_screen_objects_wires_ephemeral_crop_scorer_with_sidecar_runtime(tmp_path, capsys, monkeypatch) -> None:
+    runtime_python = tmp_path / "runtime" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("# fake python", encoding="utf-8")
+    context_path = tmp_path / "species_context.json"
+    context_path.write_text(
+        json.dumps(
+            {
+                "scientific_name": "Danaus plexippus",
+                "accepted_taxon_key": "gbif:1",
+                "canonical_name": "Danaus plexippus",
+                "family": "Nymphalidae",
+                "genus": "Danaus",
+                "family_key": "gbif:f",
+                "genus_key": "gbif:g",
+                "species_key": "gbif:1",
+                "registry_version": "registry-v1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    input_path = tmp_path / "filtered.parquet"
+    detections_path = tmp_path / "detections.parquet"
+    output_path = tmp_path / "scores.parquet"
+    pl.DataFrame([{"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "https://example.test/1.jpg"}]).write_parquet(input_path)
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "detection_id": "det-1",
+                "crop_hash": "sha256:crop",
+                "bbox_xyxy": [0.0, 0.0, 1.0, 1.0],
+                "detection_status": "detected",
+            }
+        ]
+    ).write_parquet(detections_path)
+    calls: dict[str, object] = {}
+
+    class FakePersistentScorer:
+        def __init__(self, *, runtime, hf_cache_dir, device):  # noqa: ANN001 - mirrors scorer init.
+            calls["persistent"] = {"runtime": runtime, "hf_cache_dir": hf_cache_dir, "device": device}
+
+        def close(self) -> None:
+            calls["closed"] = True
+
+    class FakeCropScorer:
+        def __init__(self, **kwargs):  # noqa: ANN003 - mirrors crop scorer init.
+            calls["crop_scorer"] = kwargs
+            self.model_id = kwargs["model_id"]
+            self.model_version = kwargs["model_version"]
+            self.model_checkpoint = kwargs["model_checkpoint"]
+
+        def score(self, item, labels):  # noqa: ANN001, ANN201 - mirrors object scorer.
+            return {label: 0.0 for label in labels}
+
+    def fake_screen(**kwargs):  # noqa: ANN003, ANN202 - mirrors screen_object_detections.
+        calls["screen"] = kwargs
+        return SimpleNamespace(frame=pl.DataFrame([{"occurrence_bin": "bronze"}]), output_path=Path(kwargs["output_path"]), records_seen=1, detections_seen=1, crops_scored=1)
+
+    monkeypatch.setattr("biominer.cli.PersistentBioClipScorer", FakePersistentScorer)
+    monkeypatch.setattr("biominer.cli.EphemeralCropBioClipScorer", FakeCropScorer)
+    monkeypatch.setattr("biominer.cli.screen_object_detections", fake_screen)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "bioclip",
+            "screen-objects",
+            "--input",
+            str(input_path),
+            "--detections",
+            str(detections_path),
+            "--species-context",
+            str(context_path),
+            "--output",
+            str(output_path),
+            "--runtime-python",
+            str(runtime_python),
+            "--device",
+            "mps",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["rows"] == 1
+    assert calls["closed"] is True
+    assert calls["persistent"]["device"] == "mps"
+    assert calls["crop_scorer"]["model_checkpoint"] == "191d741545e4c741cdef4b22c6eb69c945c1e592"
+    assert calls["crop_scorer"]["crop_target_px"] == 336
+    assert calls["screen"]["ablation_mode"] == "detector_crop"
+
+
 def test_detect_boxes_fake_backend_writes_crop_metadata(tmp_path, capsys) -> None:
     input_path = tmp_path / "filtered.parquet"
     output_path = tmp_path / "object_detections.parquet"

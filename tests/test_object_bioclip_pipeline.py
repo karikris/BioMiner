@@ -8,11 +8,13 @@ import polars as pl
 from biominer.bioclip.ablation import build_ablation_report, run_object_ablations
 from biominer.bioclip.candidate_sets import build_candidate_set
 from biominer.bioclip.object_runner import (
+    EphemeralCropBioClipScorer,
     FakeObjectBioClipScorer,
     apply_geospatial_soft_prior,
     screen_object_detections,
     write_object_evidence_outputs,
 )
+from biominer.detection.detector_base import DecodedImage
 from biominer.species.context import CommonName, RegionHint, SpeciesContext
 
 
@@ -115,6 +117,16 @@ def _detections() -> pl.DataFrame:
     )
 
 
+def _decoded_image() -> DecodedImage:
+    pixels = bytes(
+        value
+        for y in range(4)
+        for x in range(4)
+        for value in ((x * 40) % 256, (y * 40) % 256, ((x + y) * 20) % 256)
+    )
+    return DecodedImage(width=4, height=4, mode="RGB", data=pixels, source_uri="memory://photo-1")
+
+
 def test_candidate_set_uses_species_context_and_same_genus_family_candidates(tmp_path) -> None:
     candidates = tmp_path / "species_candidates.parquet"
     pl.DataFrame(
@@ -139,6 +151,78 @@ def test_candidate_set_uses_species_context_and_same_genus_family_candidates(tmp
     assert [candidate.scientific_name for candidate in candidate_set.genus_candidates] == ["Danaus plexippus", "Danaus gilippus"]
     assert "a photo of Danaus plexippus" in candidate_set.prompt_labels("species")
     assert "monarch butterfly" in candidate_set.prompt_labels("species")
+
+
+def test_ephemeral_crop_bioclip_scorer_scores_temp_crop_and_deletes_file(tmp_path) -> None:
+    seen: dict[str, object] = {}
+
+    def scorer(path: Path, labels: tuple[str, ...]) -> dict[str, float]:
+        data = path.read_bytes()
+        seen["exists_during_score"] = path.exists()
+        seen["suffix"] = path.suffix
+        seen["header"] = data.split(b"\n", 3)[:3]
+        seen["labels"] = labels
+        return {label: (0.9 if label == "a photo of Danaus plexippus" else 0.1) for label in labels}
+
+    crop_scorer = EphemeralCropBioClipScorer(
+        scorer=scorer,
+        image_loader=lambda item: _decoded_image(),
+        temp_dir=tmp_path,
+        crop_padding_ratio=0.25,
+        crop_target_px=3,
+        model_id="bioclip2_5",
+        model_version="bioclip2_5_huge",
+        model_checkpoint="checkpoint-a",
+    )
+
+    scores = crop_scorer.score(
+        {
+            "source": "flickr",
+            "flickr_photo_id": "photo-1",
+            "detection_id": "det-1",
+            "bbox_xyxy": [0.0, 0.0, 3.0, 3.0],
+        },
+        ("a photo of Danaus plexippus", "a photo of Danaus gilippus"),
+    )
+
+    assert scores["a photo of Danaus plexippus"] == 0.9
+    assert seen["exists_during_score"] is True
+    assert seen["suffix"] == ".ppm"
+    assert seen["header"] == [b"P6", b"3 3", b"255"]
+    assert seen["labels"] == ("a photo of Danaus plexippus", "a photo of Danaus gilippus")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_object_bioclip_runner_can_score_detector_crops_with_ephemeral_scorer(tmp_path) -> None:
+    candidate_set = build_candidate_set(_context())
+
+    crop_scorer = EphemeralCropBioClipScorer(
+        scorer=lambda path, labels: {label: (0.83 if label == "a photo of Danaus plexippus" else 0.05) for label in labels},
+        image_loader=lambda item: _decoded_image(),
+        temp_dir=tmp_path / "crops",
+        crop_target_px=3,
+        model_id="bioclip2_5",
+        model_version="bioclip2_5_huge",
+        model_checkpoint="checkpoint-a",
+    )
+
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections().head(1),
+        species_context=_context(),
+        candidate_set=candidate_set,
+        scorer=crop_scorer,
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+    )
+
+    row = result.frame.to_dicts()[0]
+    assert row["model_id"] == "bioclip2_5"
+    assert row["model_checkpoint"] == "checkpoint-a"
+    assert row["species_top1_scientific_name"] == "Danaus plexippus"
+    assert row["target_species_score"] == 0.83
+    assert row["occurrence_bin"] == "gold"
+    assert not (tmp_path / "crops").exists() or list((tmp_path / "crops").iterdir()) == []
 
 
 def test_object_bioclip_scores_detection_crops_with_join_keys(tmp_path) -> None:
