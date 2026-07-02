@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 import polars as pl
 import biominer.flickr_fetch.query_planner as query_planner
 
@@ -15,37 +13,27 @@ from biominer.flickr_fetch.query_planner import (
     STABLE_RESULT_THRESHOLD,
     FlickrQuery,
     build_count_probes,
-    build_species_count_probes_from_json,
     build_worldwide_discovery_plan,
     deduplicate_photo_records,
     fixed_upload_date_slices,
     flickr_search_params,
     load_registry_flickr_queries,
-    load_species_terms_from_json,
     multilingual_seed_terms,
-    outside_known_regions,
     page_size_for_query,
     plan_fixed_upload_slice_pages,
     plan_queries_from_count,
     plan_pages_from_count,
     result_pages_for_total,
-    known_region_for_coordinate,
 )
 
 
-PAPILIO_DEMOLEUS_REGION_BBOXES = {
-    "India": "68.11,6.55,97.40,35.67",
-    "Florida": "-87.64,24.40,-79.97,31.00",
-}
-
-
-def test_species_keyword_helpers_are_generic_exports() -> None:
-    assert hasattr(query_planner, "load_species_terms_from_json")
-    assert hasattr(query_planner, "build_species_count_probes_from_json")
-    assert hasattr(query_planner, "known_region_for_coordinate")
-    assert hasattr(query_planner, "outside_known_regions")
-
+def test_query_planner_does_not_export_legacy_species_json_or_region_helpers() -> None:
     removed_exports = (
+        "load_species_terms_from_json",
+        "build_species_count_probes_from_json",
+        "known_region_for_coordinate",
+        "outside_known_regions",
+        "coordinate_in_bbox",
         "PAPILIO_DEMOLEUS_ANCHOR_TERMS",
         "PAPILIO_DEMOLEUS_REGION_BBOXES",
         "load_papilio_demoleus_terms_from_json",
@@ -382,122 +370,3 @@ def test_deduplicates_by_photo_id() -> None:
     )
 
     assert [row["id"] for row in unique] == ["1", "2"]
-
-
-def test_loads_species_keyword_json_and_gates_broad_terms(tmp_path) -> None:
-    path = tmp_path / "keywords.json"
-    path.write_text(
-        json.dumps(
-            {
-                "dictionary_groups": {
-                    "scientific_taxonomic": [
-                        {
-                            "term": "Papilio demoleus",
-                            "language": "la",
-                            "term_type": "scientific_name",
-                            "confidence": "high",
-                            "use_for_flickr": True,
-                            "precision_tier": "high",
-                        }
-                    ],
-                    "english_common_names": [
-                        {
-                            "term": "lime butterfly",
-                            "language": "en",
-                            "term_type": "common_name",
-                            "confidence": "high",
-                            "use_for_flickr": True,
-                            "precision_tier": "high",
-                        }
-                    ],
-                    "multilingual_common_name_expansion": [
-                        {
-                            "term": "kupu-kupu",
-                            "language": "id",
-                            "term_type": "broad_butterfly",
-                            "confidence": "medium",
-                            "use_for_flickr": True,
-                            "precision_tier": "low",
-                        }
-                    ],
-                    "regional_terms": {
-                        "India": [
-                            {
-                                "term": "Papilio demoleus India",
-                                "language": "en",
-                                "term_type": "regional_synonym",
-                                "confidence": "medium",
-                                "regions": ["India"],
-                                "use_for_flickr": True,
-                                "precision_tier": "high",
-                            }
-                        ]
-                    },
-                }
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    terms = load_species_terms_from_json(
-        path,
-        scientific_name="Papilio demoleus",
-        region_bboxes=PAPILIO_DEMOLEUS_REGION_BBOXES,
-    )
-
-    assert ("Papilio demoleus", "la", None, "scientific_name", "high") in {
-        (term.term, term.language, term.region, term.term_type, term.term_confidence) for term in terms
-    }
-    assert ("Papilio demoleus kupu-kupu", "id", None, "broad_butterfly", "broad") in {
-        (term.term, term.language, term.region, term.term_type, term.term_confidence) for term in terms
-    }
-    assert any(term.region == "India" and term.bbox and term.term == "Papilio demoleus India" for term in terms)
-
-    probes = build_species_count_probes_from_json(
-        path,
-        scientific_name="Papilio demoleus",
-        region_bboxes=PAPILIO_DEMOLEUS_REGION_BBOXES,
-    )
-    assert len(probes) == len(terms) * 2
-    assert {probe.search_field for probe in probes} == {"text", "tags"}
-    assert all(probe.per_page == COUNT_PROBE_PAGE_SIZE for probe in probes)
-    assert any(probe.region == "India" and probe.bbox for probe in probes)
-
-
-def test_global_high_confidence_terms_are_not_forced_into_known_region_bboxes(tmp_path) -> None:
-    path = tmp_path / "keywords.json"
-    path.write_text(
-        json.dumps(
-            {
-                "dictionary_groups": {
-                    "scientific_taxonomic": [
-                        {
-                            "term": "Papilio demoleus",
-                            "language": "la",
-                            "term_type": "scientific_name",
-                            "confidence": "high",
-                            "regions": [],
-                            "use_for_flickr": True,
-                            "precision_tier": "high",
-                        }
-                    ]
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    probes = build_species_count_probes_from_json(path, scientific_name="Papilio demoleus")
-
-    assert probes
-    assert all(probe.term == "Papilio demoleus" for probe in probes)
-    assert all(probe.bbox is None for probe in probes)
-    assert all(probe.region is None for probe in probes)
-
-
-def test_outside_known_species_regions_can_be_flagged_for_discovery_review() -> None:
-    assert known_region_for_coordinate(latitude=27.95, longitude=-82.46, region_bboxes=PAPILIO_DEMOLEUS_REGION_BBOXES) == "Florida"
-    assert outside_known_regions({"latitude": "27.95", "longitude": "-82.46"}, region_bboxes=PAPILIO_DEMOLEUS_REGION_BBOXES) is False
-    assert outside_known_regions({"latitude": "60.17", "longitude": "24.94"}, region_bboxes=PAPILIO_DEMOLEUS_REGION_BBOXES) is True
-    assert outside_known_regions({"latitude": "", "longitude": ""}, region_bboxes=PAPILIO_DEMOLEUS_REGION_BBOXES) is None
