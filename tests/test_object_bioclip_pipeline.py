@@ -396,6 +396,31 @@ def test_object_bioclip_scores_detection_crops_with_join_keys(tmp_path) -> None:
     assert row["is_target_positive"] is True
 
 
+def test_object_bioclip_score_marks_hard_negative_image_material(tmp_path) -> None:
+    candidate_set = build_candidate_set(_context())
+    canonical = _canonical_records().with_columns(
+        pl.lit("artwork").alias("image_category"),
+        pl.lit("artwork").alias("negative_filter_reason"),
+        pl.lit(True).alias("is_negative_material"),
+    )
+
+    result = screen_object_detections(
+        canonical_records=canonical,
+        detections=_detections().head(1),
+        species_context=_context(),
+        candidate_set=candidate_set,
+        scorer=FakeObjectBioClipScorer({"sha256:crop-1": {"a photo of Danaus plexippus": 0.82}}),
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+    )
+
+    row = result.frame.to_dicts()[0]
+    assert row["occurrence_bin"] == "bin"
+    assert row["bin_reason"] == "negative_material_artwork"
+    assert row["is_negative_material"] is True
+    assert row["is_target_positive"] is False
+
+
 def test_object_bioclip_rejects_detections_without_canonical_source_record(tmp_path) -> None:
     candidate_set = build_candidate_set(_context())
     detections = _detections().head(1).with_columns(pl.lit("photo-missing").alias("flickr_photo_id"))

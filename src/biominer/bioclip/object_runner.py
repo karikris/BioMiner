@@ -313,7 +313,11 @@ def _score_detection(
     family_margin = _margin(ranked_families)
     genus_margin = _margin(ranked_genera)
     geo = apply_geospatial_soft_prior(item, context, visual_score=target_score, geo_prior_table=geo_prior_table)
-    bucket, reason = _bucket(item=item, target_score=target_score, margin=margin, geo=geo)
+    negative_reason = _hard_negative_photo_reason(item)
+    if negative_reason:
+        bucket, reason = "bin", negative_reason
+    else:
+        bucket, reason = _bucket(item=item, target_score=target_score, margin=margin, geo=geo)
     return {
         "source": str(item.get("source") or ""),
         "flickr_photo_id": str(item.get("flickr_photo_id") or ""),
@@ -351,7 +355,7 @@ def _score_detection(
         "text_evidence_score": _text_evidence_score(item, context),
         "comment_evidence_score": _comment_evidence_score(item, context),
         "is_target_positive": bucket in {"gold", "silver"},
-        "is_negative_material": False,
+        "is_negative_material": negative_reason is not None,
         "occurrence_bin": bucket,
         "bin_reason": reason,
     }
