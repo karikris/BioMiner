@@ -85,6 +85,7 @@ def test_detection_rows_keep_join_keys_and_stable_detection_id() -> None:
     row = rows[0]
     assert row["source"] == "flickr"
     assert row["flickr_photo_id"] == "photo-1"
+    assert row["prediction_source"] == "object_detector:fake"
     assert row["bbox_xyxy"] == [0.5, 0.5, 3.5, 3.5]
     assert row["bbox_xyxyn"] == [0.125, 0.125, 0.875, 0.875]
     assert row["bbox_xywhn"] == [0.5, 0.5, 0.75, 0.75]
@@ -267,6 +268,7 @@ def test_detection_pipeline_image_load_failures_use_stable_detection_id(tmp_path
     row = result.frame.to_dicts()[0]
     assert row["detection_status"] == "failed_image_load"
     assert row["failure_reason"] == "decode failed"
+    assert row["prediction_source"] == "object_detector:fake"
     assert row["detection_id"] == detection_id_for(
         source="flickr",
         flickr_photo_id="photo-failed",

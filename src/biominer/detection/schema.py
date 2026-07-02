@@ -133,6 +133,7 @@ def _base_row(
         "photo_page_url": _optional_string(record.get("photo_page_url")),
         "detection_id": detection_id,
         "detector_backend": detector_backend,
+        "prediction_source": f"object_detector:{detector_backend}",
         "detector_model_id": detector_model_id,
         "detector_model_version": detector_model_version,
         "detector_checkpoint": detector_checkpoint,

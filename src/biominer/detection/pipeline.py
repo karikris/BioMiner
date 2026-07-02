@@ -173,6 +173,7 @@ def _image_failure_row(item: _LoadedImage, *, detector: ObjectDetector) -> dict[
             detector_label="failed_image_load",
         ),
         "detector_backend": detector.backend,
+        "prediction_source": f"object_detector:{detector.backend}",
         "detector_model_id": detector.model_id,
         "detector_model_version": detector.model_version,
         "detector_checkpoint": detector.checkpoint,
