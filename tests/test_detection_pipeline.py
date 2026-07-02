@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import polars as pl
 import pytest
 
 import biominer.detection.policy as detection_policy
@@ -339,6 +340,38 @@ def test_detection_pipeline_streams_loaded_images_into_detector_batches(tmp_path
     assert result.records_seen == 5
     assert result.images_loaded == 5
     assert result.detections_written == 5
+
+
+def test_detection_pipeline_flushes_detection_rows_in_parquet_batches(tmp_path) -> None:
+    output = tmp_path / "object_detections.parquet"
+
+    def image_loader(record):  # noqa: ANN001, ANN202 - mirrors test image loader protocol.
+        if record["flickr_photo_id"] == "photo-1":
+            raise RuntimeError("decode failed")
+        return _image()
+
+    result = run_detection_pipeline(
+        records=[
+            {"source": "flickr", "flickr_photo_id": f"photo-{index}", "image_url": f"memory://photo-{index}"}
+            for index in range(3)
+        ],
+        detector=FakeObjectDetector(
+            [[DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 2, 2))] for _index in range(3)]
+        ),
+        output_path=output,
+        image_loader=image_loader,
+        run_policy=DetectionRunPolicy(detector_batch_size=1, parquet_batch_rows=1),
+    )
+
+    frame = pl.read_parquet(output)
+    assert result.parquet_batches_written == 3
+    assert result.records_seen == 3
+    assert result.image_failures == 1
+    assert result.detections_written == 2
+    assert frame.height == 3
+    assert sorted(frame["flickr_photo_id"].to_list()) == ["photo-0", "photo-1", "photo-2"]
+    assert sorted(frame["detection_status"].to_list()) == ["detected", "detected", "failed_image_load"]
+    assert not (tmp_path / ".object_detections.parquet.batches.tmp").exists()
 
 
 def test_xie_style_evaluation_uses_iou_and_species_correctness() -> None:

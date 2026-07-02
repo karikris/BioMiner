@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from shutil import rmtree
 from typing import Any, Protocol
 
 import polars as pl
@@ -32,6 +33,7 @@ class DetectionPipelineResult:
     image_failures: int
     detections_written: int
     crops_created: int
+    parquet_batches_written: int = 0
 
 
 @dataclass(frozen=True)
@@ -53,40 +55,106 @@ def run_detection_pipeline(
 ) -> DetectionPipelineResult:
     policy = detection_policy or DetectionPolicy(backend=detector.backend)
     runtime = run_policy or DetectionRunPolicy()
-    rows: list[dict[str, Any]] = []
+    output_target = Path(output_path)
+    batch_dir = _prepare_detection_batch_dir(output_target)
+    row_buffer: list[dict[str, Any]] = []
+    batch_paths: list[Path] = []
     batch: list[_LoadedImage] = []
     records_seen = 0
     images_loaded = 0
     image_failures = 0
     crops_created = 0
-    for loaded in _load_images_bounded(records, image_loader=image_loader, run_policy=runtime, executor_factory=executor_factory):
-        records_seen += 1
-        if loaded.image is None:
-            image_failures += 1
-            rows.append(_image_failure_row(loaded, detector=detector))
-            continue
-        images_loaded += 1
-        batch.append(loaded)
-        if len(batch) >= runtime.detector_batch_size:
+    try:
+        for loaded in _load_images_bounded(records, image_loader=image_loader, run_policy=runtime, executor_factory=executor_factory):
+            records_seen += 1
+            if loaded.image is None:
+                image_failures += 1
+                _buffer_detection_rows(
+                    [_image_failure_row(loaded, detector=detector)],
+                    row_buffer=row_buffer,
+                    batch_paths=batch_paths,
+                    batch_dir=batch_dir,
+                    parquet_batch_rows=runtime.parquet_batch_rows,
+                )
+                continue
+            images_loaded += 1
+            batch.append(loaded)
+            if len(batch) >= runtime.detector_batch_size:
+                enriched = _detect_and_enrich_batch(batch, detector=detector, policy=policy)
+                crops_created += sum(1 for row in enriched if row.get("crop_hash"))
+                _buffer_detection_rows(
+                    enriched,
+                    row_buffer=row_buffer,
+                    batch_paths=batch_paths,
+                    batch_dir=batch_dir,
+                    parquet_batch_rows=runtime.parquet_batch_rows,
+                )
+                batch = []
+        if batch:
             enriched = _detect_and_enrich_batch(batch, detector=detector, policy=policy)
             crops_created += sum(1 for row in enriched if row.get("crop_hash"))
-            rows.extend(enriched)
-            batch = []
-    if batch:
-        enriched = _detect_and_enrich_batch(batch, detector=detector, policy=policy)
-        crops_created += sum(1 for row in enriched if row.get("crop_hash"))
-        rows.extend(enriched)
-    frame = pl.DataFrame(rows) if rows else pl.DataFrame()
-    output = write_parquet(frame, output_path)
-    return DetectionPipelineResult(
-        frame=frame,
-        output_path=output,
-        records_seen=records_seen,
-        images_loaded=images_loaded,
-        image_failures=image_failures,
-        detections_written=frame.filter(pl.col("detection_status") == "detected").height if frame.height and "detection_status" in frame.columns else 0,
-        crops_created=crops_created,
-    )
+            _buffer_detection_rows(
+                enriched,
+                row_buffer=row_buffer,
+                batch_paths=batch_paths,
+                batch_dir=batch_dir,
+                parquet_batch_rows=runtime.parquet_batch_rows,
+            )
+        _flush_detection_row_buffer(row_buffer=row_buffer, batch_paths=batch_paths, batch_dir=batch_dir)
+        frame = _read_detection_batches(batch_paths)
+        output = write_parquet(frame, output_target)
+        return DetectionPipelineResult(
+            frame=frame,
+            output_path=output,
+            records_seen=records_seen,
+            images_loaded=images_loaded,
+            image_failures=image_failures,
+            detections_written=frame.filter(pl.col("detection_status") == "detected").height
+            if frame.height and "detection_status" in frame.columns
+            else 0,
+            crops_created=crops_created,
+            parquet_batches_written=len(batch_paths),
+        )
+    finally:
+        if batch_dir.exists():
+            rmtree(batch_dir)
+
+
+def _prepare_detection_batch_dir(output_path: Path) -> Path:
+    batch_dir = output_path.parent / f".{output_path.name}.batches.tmp"
+    if batch_dir.exists():
+        rmtree(batch_dir)
+    return batch_dir
+
+
+def _buffer_detection_rows(
+    rows: list[dict[str, Any]],
+    *,
+    row_buffer: list[dict[str, Any]],
+    batch_paths: list[Path],
+    batch_dir: Path,
+    parquet_batch_rows: int,
+) -> None:
+    row_buffer.extend(rows)
+    if len(row_buffer) >= max(1, parquet_batch_rows):
+        _flush_detection_row_buffer(row_buffer=row_buffer, batch_paths=batch_paths, batch_dir=batch_dir)
+
+
+def _flush_detection_row_buffer(*, row_buffer: list[dict[str, Any]], batch_paths: list[Path], batch_dir: Path) -> None:
+    if not row_buffer:
+        return
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    batch_path = batch_dir / f"batch-{len(batch_paths):06d}.parquet"
+    write_parquet(pl.DataFrame(row_buffer), batch_path)
+    batch_paths.append(batch_path)
+    row_buffer.clear()
+
+
+def _read_detection_batches(batch_paths: list[Path]) -> pl.DataFrame:
+    if not batch_paths:
+        return pl.DataFrame()
+    frames = [pl.read_parquet(path) for path in batch_paths]
+    return pl.concat(frames, how="diagonal_relaxed")
 
 
 def _load_images_bounded(
