@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 import polars as pl
 
+from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
 from biominer.storage.parquet import write_parquet
 
 
@@ -42,6 +43,32 @@ class EmbeddingCacheUpdate:
     rows_added: int
     rows_reused: int
     embeddings_computed: int
+
+
+def candidate_text_embedding_rows(
+    candidate_set: CandidateSet,
+    *,
+    model_id: str,
+    model_checkpoint: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for candidate in candidate_set.species_candidates:
+        for label in _candidate_prompt_labels(candidate):
+            row = {
+                "candidate_set_id": candidate_set.candidate_set_id,
+                "label": label,
+                "accepted_taxon_key": candidate.accepted_taxon_key,
+                "rank": candidate.rank,
+                "model_id": model_id,
+                "model_checkpoint": model_checkpoint,
+            }
+            row_key = _key(row, ["candidate_set_id", "label", "model_id", "model_checkpoint"])
+            if row_key in seen:
+                continue
+            seen.add(row_key)
+            rows.append(row)
+    return rows
 
 
 def read_embedding_cache(path: str | Path) -> pl.DataFrame:
@@ -229,6 +256,24 @@ def _image_row_with_embedding(row: dict[str, Any], embedding: list[float], *, cr
         "embedding": [float(value) for value in embedding],
         "created_at": created_at or _now_iso(),
     }
+
+
+def _candidate_prompt_labels(candidate: CandidateTaxon) -> tuple[str, ...]:
+    labels = [candidate.scientific_name, f"a photo of {candidate.scientific_name}", *candidate.common_names]
+    return _unique_labels(labels)
+
+
+def _unique_labels(values: list[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        cleaned = " ".join(str(value or "").split())
+        key = cleaned.casefold()
+        if not cleaned or key in seen:
+            continue
+        seen.add(key)
+        output.append(cleaned)
+    return tuple(output)
 
 
 def _key(row: dict[str, Any], keys: list[str]) -> tuple[str, ...]:
