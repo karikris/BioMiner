@@ -62,7 +62,7 @@ from biominer.species.workflow import (
     species_candidates_from_context,
 )
 from biominer.storage.compaction import compact_parquet_shards
-from biominer.config import StorageConfig, create_workstore, load_biominer_config, redact_config, validate_config
+from biominer.config import StorageConfig, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
 from biominer.storage.factory import create_storage_backend
 from biominer.storage.uri import join_uri
 from biominer.workstore.sqlite import SQLiteWorkStore
@@ -798,7 +798,7 @@ def _run_cloud_command(args: argparse.Namespace) -> int:
         try:
             payload = _run_cloud_doctor(args)
         except Exception as exc:  # pragma: no cover - exercised by live doctor runs.
-            print(json.dumps({"status": "error", "error": str(exc)}, indent=2, sort_keys=True))
+            print(json.dumps({"status": "error", "error": _redact_cloud_error(str(exc), args)}, indent=2, sort_keys=True))
             return 2
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0 if payload.get("status") == "ok" else 2
@@ -896,7 +896,7 @@ def _run_cloud_doctor(args: argparse.Namespace) -> dict[str, object]:
     except Exception as exc:  # noqa: BLE001 - doctor reports partial diagnostics.
         payload["status"] = "error"
         workstore_payload = dict(payload["workstore"]) if isinstance(payload["workstore"], dict) else {}
-        payload["workstore"] = {**workstore_payload, "error": str(exc)}
+        payload["workstore"] = {**workstore_payload, "error": redact_text(str(exc), config)}
     return payload
 
 
@@ -905,6 +905,14 @@ def _init_workstore_schema(workstore: object) -> None:
     if not callable(init_schema):
         raise RuntimeError("configured workstore does not support schema initialization")
     init_schema()
+
+
+def _redact_cloud_error(error: str, args: argparse.Namespace) -> str:
+    try:
+        config = load_biominer_config(args.config)
+    except Exception:  # noqa: BLE001 - best-effort fallback for config-load failures.
+        return error
+    return redact_text(error, config)
 
 
 def _storage_base_uri(*, storage: object, config: object) -> str:

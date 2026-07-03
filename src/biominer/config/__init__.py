@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Mapping, Any
 import os
 import tomllib
+from urllib.parse import urlsplit
 
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.local import LocalStorageBackend
@@ -178,6 +179,19 @@ def redact_config(config: BioMinerConfig) -> dict[str, Any]:
     }
 
 
+def redact_text(text: str, config: BioMinerConfig) -> str:
+    redacted = text
+    sensitive_values = {
+        config.storage.access_key_id,
+        config.storage.secret_access_key,
+        config.workstore.dsn,
+        _dsn_password(config.workstore.dsn),
+    }
+    for value in sorted((item for item in sensitive_values if item and len(item) >= 4), key=len, reverse=True):
+        redacted = redacted.replace(value, "<redacted>")
+    return redacted
+
+
 def _load_storage_config(raw: Any, env: Mapping[str, str]) -> StorageConfig:
     values = _as_table(raw, "biominer.storage")
     backend = str(values.get("backend", env.get("BIOMINER_STORAGE_BACKEND", "local"))).lower()
@@ -258,3 +272,12 @@ def _redact_access_key(value: str | None) -> str | None:
     if len(value) <= 4:
         return "<redacted>"
     return f"{value[:2]}...<redacted>"
+
+
+def _dsn_password(dsn: str | None) -> str | None:
+    if not dsn:
+        return None
+    try:
+        return urlsplit(dsn).password
+    except ValueError:
+        return None

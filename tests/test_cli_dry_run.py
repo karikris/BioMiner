@@ -118,6 +118,29 @@ def test_cloud_doctor_reports_storage_checks_when_workstore_fails(capsys, monkey
     assert output["workstore"]["error"] == "postgres unavailable"
 
 
+def test_cloud_doctor_redacts_secrets_from_error_payload(capsys, monkeypatch) -> None:
+    fake_storage = _FakeCloudStorage()
+    fake_store = _FakeCloudWorkStore(
+        init_error=RuntimeError(
+            "failed with postgresql://user:password@example.test:5432/postgres and secret-value"
+        )
+    )
+    config = _fake_cloud_config()
+    monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
+    monkeypatch.setattr("biominer.cli.validate_config", lambda config, require_cloud_credentials: None)
+    monkeypatch.setattr("biominer.cli.create_storage_backend", lambda storage_config: fake_storage)
+    monkeypatch.setattr("biominer.cli.create_workstore", lambda workstore_config: fake_store)
+
+    rc = run(build_parser().parse_args(["cloud", "doctor"]))
+    rendered = capsys.readouterr().out
+    output = json.loads(rendered)
+
+    assert rc == 2
+    assert "password" not in rendered
+    assert "secret-value" not in rendered
+    assert output["workstore"]["error"] == "failed with <redacted> and <redacted>"
+
+
 def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
     parser = build_parser()
     args = parser.parse_args(
