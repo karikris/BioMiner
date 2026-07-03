@@ -22,6 +22,7 @@ from biominer.run import (
     RunManifest,
     RunPaths,
     RunStage,
+    StageExecutionResult,
     StageRecord,
     StageStatus,
     TaxonScope,
@@ -161,6 +162,57 @@ def test_run_manifest_stage_status_and_count_roundtrip() -> None:
     assert roundtrip.stages[0].status is StageStatus.COMPLETE
     assert roundtrip.stages[0].metrics == {"compiled_definitions": 12}
     assert roundtrip.stages[0].outputs["query_definitions"].startswith("s3://")
+
+
+def test_orchestrator_resolves_scope_and_runs_stage_subset_with_fake_handlers(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    calls: list[int] = []
+
+    def fake_compile(plan):  # noqa: ANN001 - test double mirrors the stage handler protocol.
+        calls.append(plan.manifest.taxon_scope.species_count)
+        return StageExecutionResult(
+            metrics={"compiled_definitions": 4},
+            outputs={"query_definitions": plan.artifact_uris.query_definitions_uri},
+        )
+
+    request = ProductionRunRequest(
+        taxon="Papilio",
+        rank="genus",
+        registry_dir=str(registry),
+        output_root=tmp_path / "runs",
+        stages=(RunStage.RESOLVE_TAXON_SCOPE, RunStage.COMPILE_QUERIES, RunStage.DETECT_OBJECTS),
+    )
+    plan = ProductionRunOrchestrator(
+        request,
+        stage_handlers={RunStage.COMPILE_QUERIES: fake_compile},
+    ).run()
+
+    assert calls == [2]
+    assert plan.manifest.status == "complete"
+    assert [(stage.stage, stage.status, stage.message) for stage in plan.manifest.stages] == [
+        (RunStage.RESOLVE_TAXON_SCOPE, StageStatus.COMPLETE, None),
+        (RunStage.COMPILE_QUERIES, StageStatus.COMPLETE, None),
+        (RunStage.DETECT_OBJECTS, StageStatus.SKIPPED, "stage_not_implemented"),
+    ]
+    assert plan.manifest.stages[1].metrics == {"compiled_definitions": 4}
+    assert plan.paths.manifest_path.exists()
+
+
+def test_orchestrator_dry_run_marks_unimplemented_stages_skipped(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root=tmp_path / "runs",
+        stages=(RunStage.RESOLVE_TAXON_SCOPE, RunStage.POLL_FLICKR),
+        dry_run=True,
+    )
+
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope).run()
+
+    assert [stage.status for stage in plan.manifest.stages] == [StageStatus.COMPLETE, StageStatus.SKIPPED]
+    assert plan.manifest.stages[1].message == "dry_run"
+    assert plan.paths.manifest_path.exists()
 
 
 def test_run_paths_are_stable(tmp_path) -> None:
