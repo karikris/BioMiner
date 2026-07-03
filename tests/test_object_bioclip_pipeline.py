@@ -1496,6 +1496,78 @@ def test_no_detection_with_strong_text_evidence_routes_photo_to_review(tmp_path)
     ]
 
 
+def test_no_detection_without_species_text_bins_photo_as_no_butterfly(tmp_path) -> None:
+    canonical = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-no-butterfly",
+                "source_record_hash": "sha256:source-no-butterfly",
+                "image_url": "https://live.staticflickr.com/photo-no-butterfly.jpg",
+                "photo_page_url": "https://www.flickr.com/photos/u/photo-no-butterfly",
+                "title": "empty garden path",
+                "raw_tags": "garden path",
+                "latitude": 45.0,
+                "longitude": -93.0,
+                "date_taken": "2024-07-01",
+            }
+        ]
+    )
+    detections = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-no-butterfly",
+                "source_record_hash": "sha256:source-no-butterfly",
+                "image_url": "https://live.staticflickr.com/photo-no-butterfly.jpg",
+                "photo_page_url": "https://www.flickr.com/photos/u/photo-no-butterfly",
+                "detection_id": "no-detection-photo-no-butterfly",
+                "detector_backend": "fake",
+                "detector_model_id": "fake-detector",
+                "detector_model_version": "v1",
+                "detector_checkpoint": "checkpoint-a",
+                "detected_at": "2026-01-01T00:00:00+00:00",
+                "bbox_xyxy": [],
+                "bbox_xyxyn": [],
+                "bbox_xywhn": [],
+                "box_area_ratio": 0.0,
+                "detector_label": "no_detection",
+                "detector_score": 0.0,
+                "objectness_score": None,
+                "nms_group_id": None,
+                "crop_padding_ratio": 0.12,
+                "crop_hash": None,
+                "crop_width": None,
+                "crop_height": None,
+                "crop_storage_policy": "ephemeral",
+                "detection_status": "no_detection",
+                "failure_reason": "no_butterfly_like_object",
+            }
+        ]
+    )
+    scores = empty_object_score_frame()
+    canonical_path = tmp_path / "canonical.parquet"
+    detections_path = tmp_path / "detections.parquet"
+    scores_path = tmp_path / "scores.parquet"
+    canonical.write_parquet(canonical_path)
+    detections.write_parquet(detections_path)
+    scores.write_parquet(scores_path)
+
+    outputs = write_object_evidence_outputs(
+        canonical_records_path=canonical_path,
+        detections_path=detections_path,
+        scores_path=scores_path,
+        joined_output_path=tmp_path / "object_evidence_joined.parquet",
+        photo_summary_output_path=tmp_path / "photo_evidence_summary.parquet",
+        species_context=_context(),
+    )
+
+    summary = pl.read_parquet(outputs.photo_evidence_summary).to_dicts()[0]
+    assert summary["photo_occurrence_bin"] == "bin"
+    assert summary["photo_bin_reason"] == "no_butterfly_like_object"
+    assert summary["all_candidate_species"] == []
+
+
 def test_detection_object_pipeline_has_no_hardcoded_species_labels() -> None:
     root = Path("src/biominer")
     forbidden = ("Papilio demoleus", "TARGET_SPECIES", "PAPILIO_DEMOLEUS", "monarch butterfly")

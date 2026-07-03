@@ -811,6 +811,21 @@ def _unscored_photo_summary(
     strong_text_evidence = species_context is not None and _text_evidence_score(record, species_context) > 0
     if not has_detection_failure and not strong_text_evidence:
         return None
+    if has_detection_failure and not strong_text_evidence:
+        failure_reason = _no_detection_failure_reason(detection_rows)
+        return {
+            "source": str(record.get("source") or ""),
+            "flickr_photo_id": str(record.get("flickr_photo_id") or ""),
+            "best_detection_id": None,
+            "detection_count": 0,
+            "best_object_occurrence_bin": None,
+            "best_object_species_top1": None,
+            "best_object_score": None,
+            "photo_occurrence_bin": "bin" if failure_reason == "no_butterfly_like_object" else "in_review",
+            "photo_bin_reason": failure_reason,
+            "all_detection_ids": [],
+            "all_candidate_species": [],
+        }
     return {
         "source": str(record.get("source") or ""),
         "flickr_photo_id": str(record.get("flickr_photo_id") or ""),
@@ -824,6 +839,16 @@ def _unscored_photo_summary(
         "all_detection_ids": [],
         "all_candidate_species": [species_context.scientific_name] if strong_text_evidence and species_context is not None else [],
     }
+
+
+def _no_detection_failure_reason(detection_rows: list[dict[str, Any]]) -> str:
+    for row in detection_rows:
+        if str(row.get("detection_status") or "") != "no_detection":
+            continue
+        reason = str(row.get("failure_reason") or "").strip()
+        if reason:
+            return reason
+    return "no_detection_without_object_score"
 
 
 def _detections_by_photo(detections: pl.DataFrame | None) -> dict[tuple[str, str], list[dict[str, Any]]]:
