@@ -54,6 +54,7 @@ from biominer.registry.scope import load_scope
 from biominer.reports.buckets import export_bucket_views
 from biominer.reports.name_evidence import build_name_evidence_report, write_name_evidence_report
 from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR, YOLOE26_DIR
+from biominer.secrets_loader import load_runtime_secrets_env
 from biominer.species.context import SpeciesContext
 from biominer.species.registry_refresh import resolve_species_context, write_species_registry_outputs
 from biominer.species.query_compile import write_species_flickr_queries
@@ -2456,6 +2457,7 @@ print(json.dumps({
 
 
 def main() -> None:
+    load_runtime_secrets_env()
     raise SystemExit(run(build_parser().parse_args()))
 
 

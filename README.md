@@ -244,7 +244,16 @@ cp .env.example .env
 # edit .env and set FLICKR_API_KEY
 ```
 
-Never commit `.env` or API keys.
+BioMiner CLI startup also loads secrets automatically when a secrets file is present. The lookup order is:
+
+```text
+BIOMINER_SECRETS_ENV
+/Applications/secrets/secrets.env
+../secrets/secrets.env next to ./BioMiner
+/mnt/c/Applications/secrets/secrets.env for WSL
+```
+
+The Flickr variables expected by current commands are `FLICKR_API_KEY` and, when future signed Flickr operations need it, `FLICKR_SECRET_KEY`. Existing shell environment variables are preserved unless a caller explicitly asks the loader to override them. Never commit `.env`, `secrets.env`, or API keys.
 
 # Step 0 — Taxonomic registry
 
