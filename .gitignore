@@ -15,9 +15,9 @@ data/cache/object_crops/
 reports/*
 !reports/
 !reports/*.md
-run/
-runs/
-staging/
+/run/
+/runs/
+/staging/
 *.duckdb
 *.parquet
 *.sqlite
