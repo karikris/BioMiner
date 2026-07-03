@@ -1419,10 +1419,6 @@ def _write_raw_response(
     return storage.write_json(uri, payload)
 
 
-def _safe_query_variant(term: str) -> str:
-    return "".join(char if char.isalnum() else "_" for char in term.casefold()).strip("_")
-
-
 def _write_evidence_shard(
     *,
     storage: CloudStorage,
@@ -1445,36 +1441,6 @@ def _write_evidence_shard(
     written = storage.write_parquet_shard(uri, frame)
     checksum, byte_count = _local_artifact_metadata(written)
     return written, frame.height, checksum, byte_count
-
-
-def _compact_evidence_output(evidence_output: str | Path) -> int:
-    output = Path(evidence_output)
-    shard_root = _evidence_shard_root(output)
-    _ensure_legacy_evidence_shard(output=output, shard_root=shard_root)
-    shard_paths = sorted(shard_root.glob("*.parquet")) if shard_root.exists() else []
-    if not shard_paths:
-        return 0
-    frame = pl.read_parquet(shard_paths)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    write_parquet(frame, output)
-    return frame.height
-
-
-def _ensure_legacy_evidence_shard(*, output: Path, shard_root: Path) -> None:
-    if not output.exists() or (shard_root.exists() and any(shard_root.glob("*.parquet"))):
-        return
-    try:
-        legacy = pl.read_parquet(output)
-    except Exception:
-        return
-    if legacy.is_empty():
-        return
-    shard_root.mkdir(parents=True, exist_ok=True)
-    write_parquet(legacy, shard_root / "__legacy__.parquet")
-
-
-def _evidence_shard_root(output: Path) -> Path:
-    return output.parent / f"{output.stem}_pages"
 
 
 def _storage_backend_from_name(storage_backend: str) -> CloudStorage:
