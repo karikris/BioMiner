@@ -47,6 +47,15 @@ def test_registry_public_cli_exposes_only_build_and_audit() -> None:
         assert internal in dev_registry_choices
 
 
+def test_species_cli_no_longer_exposes_legacy_run_command() -> None:
+    parser = build_parser()
+    commands = parser._subparsers._group_actions[0].choices  # noqa: SLF001
+    species_choices = commands["species"]._subparsers._group_actions[0].choices  # noqa: SLF001
+
+    assert "run" not in species_choices
+    assert "run" in commands
+
+
 def test_cloud_cli_accepts_init_and_doctor_commands() -> None:
     parser = build_parser()
     init_args = parser.parse_args(["cloud", "init"])
@@ -1872,6 +1881,41 @@ def test_production_run_cli_resolves_registry_and_writes_dry_run_manifest(tmp_pa
     assert manifest["stages"][0]["status"] == "complete"
     assert manifest["stages"][1]["status"] == "skipped"
     assert (output / "run_id=species_papilio_demoleus" / "run_manifest.json").exists()
+
+
+def test_production_run_requires_cloud_config_by_default(tmp_path, capsys, monkeypatch) -> None:
+    config = BioMinerConfig(
+        storage=StorageConfig(
+            backend="s3",
+            bucket=None,
+            prefix="",
+            endpoint_url=None,
+            access_key_id=None,
+            secret_access_key=None,
+            region="",
+        ),
+        workstore=WorkStoreConfig(backend="postgres", dsn=None),
+        runtime=RuntimeConfig(worker_id=""),
+    )
+    monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--taxon",
+            "Papilio demoleus",
+            "--registry-dir",
+            str(tmp_path / "registry"),
+            "--output-prefix",
+            "s3://biominer/runs",
+            "--dry-run",
+        ]
+    )
+
+    assert run(args) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert "BIOMINER_S3_BUCKET" in payload["error"]
+    assert "BIOMINER_WORKSTORE_DSN" in payload["error"]
+    assert payload["config"]["storage"]["secret_access_key"] is None
 
 
 def test_registry_compile_fixture_cli_writes_registry_outputs(tmp_path, capsys) -> None:
