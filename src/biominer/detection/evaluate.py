@@ -73,20 +73,6 @@ def evaluate_xie_style(
         lambda prediction, truth: _norm(truth.get("genus")) in {_norm(value) for value in prediction.get("genus_top8", [])},
         truth_count=len(truth_rows),
     )
-    joint_results = [
-        (
-            truth is not None
-            and
-            joint_detection_species_correct(
-                prediction=prediction,
-                truth=truth,
-                iou_threshold=iou_threshold,
-                score_threshold=score_threshold,
-            ),
-            _optional_float(prediction.get("species_top1_score")) or 0.0,
-        )
-        for prediction, truth, _iou in matches
-    ]
     return {
         "ground_truth_available": True,
         "iou_threshold": iou_threshold,
@@ -100,18 +86,27 @@ def evaluate_xie_style(
         "species_top5_accuracy": species_top5,
         "family_top3_accuracy": family_top3,
         "genus_top8_accuracy": genus_top8,
-        "joint_map50": _ap(joint_results, len(truth_rows)),
-        "joint_top5_map50": _ap(
-            [
-                (
-                    truth is not None
-                    and iou >= iou_threshold
-                    and _species_top5_correct(prediction, truth),
-                    _optional_float(prediction.get("species_top1_score")) or 0.0,
-                )
-                for prediction, truth, iou in matches
-            ],
-            len(truth_rows),
+        "joint_map50": _joint_ap(
+            prediction_rows,
+            truth_rows,
+            iou_threshold=iou_threshold,
+            score_threshold=score_threshold,
+            predicate=lambda prediction, truth: joint_detection_species_correct(
+                prediction=prediction,
+                truth=truth,
+                iou_threshold=iou_threshold,
+                score_threshold=score_threshold,
+            ),
+        ),
+        "joint_top5_map50": _joint_ap(
+            prediction_rows,
+            truth_rows,
+            iou_threshold=iou_threshold,
+            score_threshold=score_threshold,
+            predicate=lambda prediction, truth: (
+                (_optional_float(prediction.get("species_top1_score")) or 0.0) >= score_threshold
+                and _species_top5_correct(prediction, truth)
+            ),
         ),
     }
 
@@ -153,6 +148,41 @@ def _best_matches(
 def _detector_ap(predictions: list[dict[str, Any]], truths: list[dict[str, Any]], *, iou_threshold: float) -> float | None:
     matches = _best_matches(predictions, truths, iou_threshold=iou_threshold, score_fn=_detector_score)
     return _ap([(truth is not None and iou >= iou_threshold, _detector_score(prediction)) for prediction, truth, iou in matches], len(truths))
+
+
+def _joint_ap(
+    predictions: list[dict[str, Any]],
+    truths: list[dict[str, Any]],
+    *,
+    iou_threshold: float,
+    score_threshold: float,
+    predicate: Callable[[dict[str, Any], dict[str, Any]], bool],
+) -> float | None:
+    truth_by_photo: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for truth in truths:
+        truth_by_photo[(str(truth.get("source") or ""), str(truth.get("flickr_photo_id") or ""))].append(truth)
+    used: set[int] = set()
+    results: list[tuple[bool, float]] = []
+    for prediction in sorted(predictions, key=_species_score, reverse=True):
+        score = _species_score(prediction)
+        matched_index = -1
+        matched_truth: dict[str, Any] | None = None
+        key = (str(prediction.get("source") or ""), str(prediction.get("flickr_photo_id") or ""))
+        for truth in truth_by_photo.get(key, []):
+            truth_index = id(truth)
+            if truth_index in used:
+                continue
+            if iou_xyxy(prediction.get("bbox_xyxy") or (), truth.get("bbox_xyxy") or ()) < iou_threshold:
+                continue
+            if score < score_threshold or not predicate(prediction, truth):
+                continue
+            matched_index = truth_index
+            matched_truth = truth
+            break
+        if matched_truth is not None:
+            used.add(matched_index)
+        results.append((matched_truth is not None, score))
+    return _ap(results, len(truths))
 
 
 def _detector_ap50_95(predictions: list[dict[str, Any]], truths: list[dict[str, Any]]) -> float | None:

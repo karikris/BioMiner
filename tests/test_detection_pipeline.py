@@ -736,6 +736,42 @@ def test_xie_style_joint_map_penalizes_high_scoring_false_positive() -> None:
     assert report["joint_top5_map50"] == pytest.approx(0.5)
 
 
+def test_xie_style_joint_map_allows_correct_species_after_wrong_species_match() -> None:
+    report = evaluate_xie_style(
+        predictions=[
+            {
+                "source": "flickr",
+                "flickr_photo_id": "p1",
+                "bbox_xyxy": [0, 0, 10, 10],
+                "detector_score": 0.99,
+                "species_top1_scientific_name": "Danaus gilippus",
+                "species_top5": ["Danaus gilippus"],
+                "species_top1_score": 0.99,
+            },
+            {
+                "source": "flickr",
+                "flickr_photo_id": "p1",
+                "bbox_xyxy": [0, 0, 10, 10],
+                "detector_score": 0.90,
+                "species_top1_scientific_name": "Danaus plexippus",
+                "species_top5": ["Danaus plexippus"],
+                "species_top1_score": 0.90,
+            },
+        ],
+        ground_truth=[
+            {
+                "source": "flickr",
+                "flickr_photo_id": "p1",
+                "bbox_xyxy": [1, 1, 9, 9],
+                "scientific_name": "Danaus plexippus",
+            }
+        ],
+    )
+
+    assert report["joint_map50"] == pytest.approx(0.5)
+    assert report["joint_top5_map50"] == pytest.approx(0.5)
+
+
 def test_xie_style_report_includes_evaluation_thresholds() -> None:
     report = evaluate_xie_style(
         predictions=[],
