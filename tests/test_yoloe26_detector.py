@@ -26,7 +26,7 @@ def test_yoloe26_default_prompts_and_coarse_labels_are_stable() -> None:
     assert yoloe26_coarse_label("pupa") == "pupa"
     assert yoloe26_coarse_label("flower") == "hard_negative"
     assert yoloe26_coarse_label("museum label") == "hard_negative"
-    assert yoloe26_coarse_label("custom proposal") == "object_proposal"
+    assert yoloe26_coarse_label("custom proposal") == "insect_like"
     assert "flower" not in default_yoloe26_prompts(include_hard_negative_prompts=False)
     assert "butterfly" in default_yoloe26_prompts(include_hard_negative_prompts=False)
 
@@ -59,4 +59,3 @@ class _FakeBox:
         self.xyxy = xyxy
         self.cls = cls
         self.conf = conf
-

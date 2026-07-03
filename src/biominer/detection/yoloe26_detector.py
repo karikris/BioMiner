@@ -72,7 +72,7 @@ def default_yoloe26_prompts(*, include_hard_negative_prompts: bool = True) -> tu
 
 
 def yoloe26_coarse_label(prompt: str) -> str:
-    return YOLOE26_PROMPT_LABEL_MAP.get(_normalise_prompt(prompt), "object_proposal")
+    return YOLOE26_PROMPT_LABEL_MAP.get(_normalise_prompt(prompt), "insect_like")
 
 
 class YoloE26ObjectDetector:

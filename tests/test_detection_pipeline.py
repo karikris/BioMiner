@@ -9,7 +9,7 @@ import pytest
 
 import biominer.detection.policy as detection_policy
 from biominer.detection.cropper import crop_with_padding
-from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
+from biominer.detection.detector_base import COARSE_DETECTOR_LABELS, DecodedImage, DetectionCandidate, FakeObjectDetector, normalize_detector_label
 from biominer.detection.evaluate import evaluate_xie_style, iou_xyxy, joint_detection_species_correct
 from biominer.detection.pipeline import run_detection_pipeline
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
@@ -44,6 +44,16 @@ def test_detection_policy_defaults_match_object_pipeline_profile() -> None:
     assert run_policy.detector_workers == 1
     assert run_policy.max_inflight_images == 32
     assert run_policy.crop_batch_size == 24
+
+
+def test_detection_candidate_contract_normalizes_legacy_labels_and_rejects_taxa() -> None:
+    assert set(COARSE_DETECTOR_LABELS) == {"butterfly_like", "moth_like", "caterpillar", "pupa", "insect_like", "hard_negative"}
+    assert normalize_detector_label("butterfly") == "butterfly_like"
+    assert normalize_detector_label("life stage") == "caterpillar"
+    assert normalize_detector_label("museum label") == "hard_negative"
+    assert DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 1, 1)).label == "butterfly_like"
+    with pytest.raises(ValueError, match="taxonomic"):
+        DetectionCandidate(label="Papilio demoleus", score=0.9, bbox_xyxy=(0, 0, 1, 1))
 
 
 def test_mac_m5pro_profile_matches_local_apple_silicon_defaults() -> None:
@@ -105,7 +115,7 @@ def test_detection_rows_keep_join_keys_and_stable_detection_id() -> None:
         flickr_photo_id="photo-1",
         detector_checkpoint="checkpoint-a",
         bbox_xyxyn=row["bbox_xyxyn"],
-        detector_label="butterfly",
+        detector_label="butterfly_like",
     )
 
 
@@ -235,7 +245,7 @@ def test_fake_detector_returns_multiple_rows_for_one_photo() -> None:
 
     assert detector.backend == "fake"
     assert [len(batch) for batch in detections] == [1, 2]
-    assert detections[1][1].label == "life_stage"
+    assert detections[1][1].label == "caterpillar"
 
 
 def test_yolo_sidecar_detector_serializes_rgb_images_without_importing_ultralytics(monkeypatch) -> None:
