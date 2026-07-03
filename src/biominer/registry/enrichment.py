@@ -1193,7 +1193,7 @@ def _registry_artifact_hash(registry: Path) -> str:
 
 
 def _source_display_names(sources: tuple[str, ...]) -> tuple[str, ...]:
-    mapping = {"col": "CoL", "itis": "ITIS", "inaturalist": "iNaturalist", "tmd_de": "TMD"}
+    mapping = {"col": "CoL", "itis": "ITIS", "inaturalist": "iNaturalist", "tmd_de": "TMD", "wikidata": "Wikidata"}
     return tuple(mapping.get(source, source) for source in sources)
 
 

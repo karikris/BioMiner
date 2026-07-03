@@ -25,6 +25,8 @@ TMD_TAXONOMY_GRAPHQL_URL = "https://web.app.ufz.de/biome-taxonomy-api/graphql"
 TMD_SCIENTIFIC_PROJECT_ID = "407"
 TMD_GERMAN_PROJECT_ID = "410"
 TMD_SOURCE_VERSION = "tmd-taxonomy-graphql-projects-407-410"
+WIKIDATA_WDQS_URL = "https://query.wikidata.org"
+WIKIDATA_SOURCE_VERSION = "wikidata-wdqs-p225-p846-p1843-labels-aliases"
 
 
 class CatalogueOfLifeClient:
@@ -158,6 +160,59 @@ class INaturalistClient:
                         )
                     )
         return {"name_assertions": assertions, "external_links": links, "source_snapshots": [_snapshot("iNaturalist", "inaturalist-v1-taxa")]}
+
+
+class WikidataClient:
+    def __init__(self, *, http_get: HTTPGet | None = None, max_retries: int = 5) -> None:
+        self._http_get = http_get or _json_get(WIKIDATA_WDQS_URL, max_retries=max_retries)
+
+    def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
+        query = _wikidata_taxon_query(context.accepted_scientific_name)
+        payload = self._http_get("/sparql", {"query": query, "format": "json"})
+        bindings = payload.get("results", {}).get("bindings", [])
+        if not isinstance(bindings, list):
+            bindings = []
+        assertions: list[dict[str, Any]] = []
+        links: list[dict[str, Any]] = []
+        linked_taxa: set[str] = set()
+        seen_assertions: set[tuple[str, str, str]] = set()
+        for binding in bindings:
+            if not isinstance(binding, dict) or not _wikidata_link_is_confident(binding, context):
+                continue
+            qid = _wikidata_entity_id(_binding_value(binding, "taxon"))
+            if not qid:
+                continue
+            if qid not in linked_taxa:
+                links.append(_external_link(context, source="Wikidata", source_taxon_id=qid, match_method="P225+P846"))
+                linked_taxa.add(qid)
+            for name, language, field in _wikidata_name_values(binding):
+                if normalize_name_key(name) == normalize_name_key(context.accepted_scientific_name):
+                    continue
+                key = (name.casefold(), language, field)
+                if key in seen_assertions:
+                    continue
+                seen_assertions.add(key)
+                assertions.append(
+                    _name_assertion(
+                        context,
+                        name,
+                        source="Wikidata",
+                        source_record_id=f"wikidata:{qid}:{field}:{language}:{name}",
+                        language=language,
+                        script="",
+                        name_class="vernacular" if field == "P1843" else "vernacular_alias",
+                        trust_tier="T3",
+                        precision_tier="medium",
+                        confidence="high",
+                        enabled=True,
+                        review_state="accepted",
+                    )
+                )
+        return {
+            "name_assertions": assertions,
+            "external_links": links,
+            "source_snapshots": [_snapshot("Wikidata", WIKIDATA_SOURCE_VERSION, query=query)],
+        }
 
 
 class TMDGermanClient:
@@ -319,6 +374,66 @@ query TMDTaxonEntries($project: String, $first: Int, $after: String) {
   }
 }
 """
+
+
+def _wikidata_taxon_query(scientific_name: str) -> str:
+    escaped = scientific_name.replace('"', '\\"')
+    return f"""
+SELECT ?taxon ?taxonLabel ?taxonLabelLang ?alias ?aliasLang ?commonName ?commonNameLang ?gbifId WHERE {{
+  ?taxon wdt:P225 "{escaped}" .
+  OPTIONAL {{ ?taxon wdt:P846 ?gbifId . }}
+  OPTIONAL {{ ?taxon wdt:P1843 ?commonName . BIND(LANG(?commonName) AS ?commonNameLang) }}
+  OPTIONAL {{ ?taxon rdfs:label ?taxonLabel . BIND(LANG(?taxonLabel) AS ?taxonLabelLang) }}
+  OPTIONAL {{ ?taxon skos:altLabel ?alias . BIND(LANG(?alias) AS ?aliasLang) }}
+  FILTER(!BOUND(?taxonLabelLang) || ?taxonLabelLang != "mul")
+  FILTER(!BOUND(?aliasLang) || ?aliasLang != "mul")
+}}
+""".strip()
+
+
+def _wikidata_link_is_confident(binding: dict[str, Any], context: SpeciesContext) -> bool:
+    scientific_name = _binding_value(binding, "scientificName") or context.accepted_scientific_name
+    if normalize_name_key(scientific_name) != normalize_name_key(context.accepted_scientific_name):
+        return False
+    accepted_key = str(context.accepted_taxon_key or "")
+    if accepted_key.startswith("gbif:"):
+        gbif_id = _binding_value(binding, "gbifId")
+        return bool(gbif_id and f"gbif:{gbif_id}" == accepted_key)
+    return bool(_wikidata_entity_id(_binding_value(binding, "taxon")))
+
+
+def _wikidata_name_values(binding: dict[str, Any]) -> list[tuple[str, str, str]]:
+    values: list[tuple[str, str, str]] = []
+    for field, lang_field, source_property in (
+        ("commonName", "commonNameLang", "P1843"),
+        ("taxonLabel", "taxonLabelLang", "rdfs:label"),
+        ("alias", "aliasLang", "skos:altLabel"),
+    ):
+        name = _binding_value(binding, field).strip()
+        if not name:
+            continue
+        language = _binding_value(binding, lang_field) or _binding_language(binding, field) or "und"
+        values.append((name, language, source_property))
+    return values
+
+
+def _binding_value(binding: dict[str, Any], key: str) -> str:
+    value = binding.get(key)
+    if isinstance(value, dict):
+        return str(value.get("value") or "")
+    return str(value or "")
+
+
+def _binding_language(binding: dict[str, Any], key: str) -> str:
+    value = binding.get(key)
+    if isinstance(value, dict):
+        return str(value.get("xml:lang") or value.get("lang") or "")
+    return ""
+
+
+def _wikidata_entity_id(value: str) -> str:
+    text = str(value or "").rstrip("/")
+    return text.rsplit("/", 1)[-1] if text else ""
 
 
 def _json_get(
