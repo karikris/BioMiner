@@ -167,7 +167,7 @@ def test_cloud_doctor_redacts_secrets_from_error_payload(capsys, monkeypatch) ->
 
 
 def test_poll_once_cloud_no_compact_passes_workstore(monkeypatch, capsys) -> None:
-    fake_store = object()
+    fake_store = _FakeCloudWorkStore()
     config = _fake_cloud_config()
     captured: dict[str, Any] = {}
     monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
@@ -195,6 +195,7 @@ def test_poll_once_cloud_no_compact_passes_workstore(monkeypatch, capsys) -> Non
 
     assert rc == 0
     assert output["evidence_rows_written"] == 0
+    assert fake_store.schema_initialized
     assert captured["work_store"] is fake_store
 
 

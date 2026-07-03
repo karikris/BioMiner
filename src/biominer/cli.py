@@ -655,6 +655,7 @@ def run(args: argparse.Namespace) -> int:
         if args.no_compact and args.storage_backend != "local":
             biominer_config = load_biominer_config(args.config)
             work_store = create_workstore(biominer_config.workstore)
+            _init_workstore_schema(work_store)
         result = poll_once(
             state_db=args.state_db,
             raw_root=args.raw_root,
