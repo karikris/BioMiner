@@ -766,25 +766,6 @@ class MetadataPollState:
             )
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS source_record_query_hits (
-                    source TEXT NOT NULL,
-                    flickr_photo_id TEXT NOT NULL,
-                    image_url TEXT NOT NULL,
-                    query_field TEXT NOT NULL,
-                    query_term TEXT NOT NULL,
-                    query_language TEXT NOT NULL,
-                    query_lane TEXT NOT NULL,
-                    query_page INTEGER NOT NULL,
-                    first_seen_at TEXT NOT NULL,
-                    PRIMARY KEY (
-                        source, flickr_photo_id, image_url,
-                        query_field, query_term, query_language
-                    )
-                )
-                """
-            )
-            conn.execute(
-                """
                 CREATE TABLE IF NOT EXISTS image_triage_queue (
                     source TEXT NOT NULL,
                     flickr_photo_id TEXT NOT NULL,

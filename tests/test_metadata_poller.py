@@ -48,9 +48,9 @@ def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
         "flickr_work_items",
         "source_records",
         "source_record_image_urls",
-        "source_record_query_hits",
         "image_triage_queue",
     }.issubset(tables)
+    assert "source_record_query_hits" not in tables
     assert {
         "split_depth",
         "split_priority",
@@ -515,13 +515,15 @@ def test_poll_once_folds_duplicate_query_terms_onto_source_record(tmp_path) -> N
             FROM source_records
             """
         ).fetchone()
-        query_hits = conn.execute("SELECT count(*) FROM source_record_query_hits").fetchone()[0]
+        legacy_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'source_record_query_hits'"
+        ).fetchone()
     assert row[:2] == ("text", "Papilio")
     assert json.loads(row[2]) == ["Papilio"]
     assert json.loads(row[3]) == ["Papilionidae"]
     assert json.loads(row[4]) == ["text:Papilio", "tags:Papilionidae"]
     assert row[5:] == (2, 0)
-    assert query_hits == 0
+    assert legacy_table is None
 
 
 def test_poll_once_keeps_one_source_record_and_tracks_image_url_history(tmp_path) -> None:
