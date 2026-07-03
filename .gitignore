@@ -1,7 +1,12 @@
 .env
 AGENTS.md
+.agents/
+skills-lock.json
 *:Zone.Identifier
 data/
+reports/
+run/
+runs/
 *.duckdb
 *.parquet
 __pycache__/
