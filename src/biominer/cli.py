@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from datetime import UTC, datetime
 from html import escape
 import json
@@ -54,6 +55,8 @@ from biominer.registry.scope import load_scope
 from biominer.reports.buckets import export_bucket_views
 from biominer.reports.name_evidence import build_name_evidence_report, write_name_evidence_report
 from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR, YOLOE26_DIR
+from biominer.run import ProductionRunOrchestrator, ProductionRunRequest, RunStage
+from biominer.run.stages import DEFAULT_PRODUCTION_STAGES
 from biominer.secrets_loader import load_runtime_secrets_env
 from biominer.species.context import SpeciesContext
 from biominer.species.registry_refresh import resolve_species_context, write_species_registry_outputs
@@ -61,11 +64,10 @@ from biominer.species.query_compile import write_species_flickr_queries
 from biominer.species.workflow import (
     build_species_comment_queue,
     fetch_species_flickr,
-    run_species_workflow,
     species_candidates_from_context,
 )
 from biominer.storage.compaction import compact_parquet_shards
-from biominer.config import StorageConfig, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
+from biominer.config import ConfigError, StorageConfig, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
 from biominer.storage.factory import create_storage_backend
 from biominer.storage.uri import join_uri
 from biominer.workstore.sqlite import SQLiteWorkStore
@@ -95,6 +97,28 @@ BIOCLIP_PREFETCH_IGNORE_PATTERNS = (
     "*.pt",
     "pytorch_model*",
 )
+
+RUN_STAGE_ALIASES = {
+    "resolve": RunStage.RESOLVE_TAXON_SCOPE,
+    "resolve_taxon_scope": RunStage.RESOLVE_TAXON_SCOPE,
+    "registry": RunStage.BUILD_REGISTRY,
+    "build_registry": RunStage.BUILD_REGISTRY,
+    "queries": RunStage.COMPILE_QUERIES,
+    "compile_queries": RunStage.COMPILE_QUERIES,
+    "enqueue": RunStage.ENQUEUE_FLICKR_WORK,
+    "enqueue_flickr_work": RunStage.ENQUEUE_FLICKR_WORK,
+    "fetch": RunStage.POLL_FLICKR,
+    "poll": RunStage.POLL_FLICKR,
+    "poll_flickr": RunStage.POLL_FLICKR,
+    "detect": RunStage.DETECT_OBJECTS,
+    "detect_objects": RunStage.DETECT_OBJECTS,
+    "score": RunStage.SCORE_BIOCLIP,
+    "score_bioclip": RunStage.SCORE_BIOCLIP,
+    "join": RunStage.JOIN_EVIDENCE,
+    "join_evidence": RunStage.JOIN_EVIDENCE,
+    "summarize": RunStage.SUMMARIZE,
+    "summary": RunStage.SUMMARIZE,
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -301,6 +325,19 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_subparsers = cloud.add_subparsers(dest="cloud_command")
     cloud_subparsers.add_parser("init")
     cloud_subparsers.add_parser("doctor")
+    production_run = subparsers.add_parser("run")
+    production_run.add_argument("--taxon", required=True)
+    production_run.add_argument("--rank", default="auto", choices=("auto", "family", "genus", "species"))
+    production_run.add_argument("--registry-dir", required=True)
+    production_run.add_argument("--output-prefix", required=True)
+    production_run.add_argument("--storage-backend", default="s3", choices=("s3", "local"))
+    production_run.add_argument("--workstore-backend", default="postgres", choices=("postgres", "sqlite"))
+    production_run.add_argument("--vision-backend", default="yoloe26")
+    production_run.add_argument("--bioclip-model", default=BIOCLIP_25_HUGE_REPO_ID)
+    production_run.add_argument("--stages")
+    production_run.add_argument("--dry-run", action="store_true")
+    production_run.add_argument("--limit-species", type=int, default=0)
+    production_run.add_argument("--limit-records", type=int, default=0)
     species = subparsers.add_parser("species")
     species_subparsers = species.add_subparsers(dest="species_command")
     species_resolve = species_subparsers.add_parser("resolve")
@@ -385,15 +422,6 @@ def build_parser() -> argparse.ArgumentParser:
     species_review.add_argument("--state-db", required=True)
     species_review.add_argument("--max-api-calls", type=int, default=300)
     species_review.add_argument("--api-key-env", default="FLICKR_API_KEY")
-    species_run = species_subparsers.add_parser("run")
-    species_run.add_argument("--scientific-name", required=True)
-    species_run.add_argument("--registry-dir", required=True)
-    species_run.add_argument("--output-root", required=True)
-    species_run.add_argument("--workers", type=int, default=8)
-    species_run.add_argument("--max-api-calls", type=int, default=SOFT_API_CALLS_PER_HOUR)
-    species_run.add_argument("--download-workers", type=int, default=4)
-    species_run.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    species_run.add_argument("--api-key-env", default="FLICKR_API_KEY")
     build_comment_queue = subparsers.add_parser("build-comment-review-queue")
     build_comment_queue.add_argument("--input", required=True)
     build_comment_queue.add_argument("--state-db", default="data/state/comment_review.sqlite")
@@ -578,6 +606,8 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "cloud":
         return _run_cloud_command(args)
+    if args.command == "run":
+        return _run_production_command(args)
     if args.command == "species":
         return _run_species_command(args)
     if args.command == "registry" or (args.command == "dev" and args.dev_command == "registry"):
@@ -1036,6 +1066,70 @@ def _summarize_report(report_path: Path) -> dict[str, object]:
     }
 
 
+def _run_production_command(args: argparse.Namespace) -> int:
+    config = None
+    try:
+        config = load_biominer_config(args.config)
+        config = replace(
+            config,
+            storage=replace(config.storage, backend=args.storage_backend),
+            workstore=replace(config.workstore, backend=args.workstore_backend),
+        )
+        allow_local = args.storage_backend == "local" and args.workstore_backend == "sqlite"
+        if (args.storage_backend == "local") != (args.workstore_backend == "sqlite"):
+            raise ConfigError("local dev mode requires --storage-backend local --workstore-backend sqlite")
+        validate_config(config, require_cloud_credentials=not allow_local, allow_local_backends=allow_local)
+        limits = {
+            key: value
+            for key, value in {"species": args.limit_species, "records": args.limit_records}.items()
+            if value and value > 0
+        }
+        request = ProductionRunRequest(
+            taxon=args.taxon,
+            rank=args.rank,
+            registry_dir=args.registry_dir,
+            output_root=args.output_prefix,
+            storage_backend=args.storage_backend,
+            workstore_backend=args.workstore_backend,
+            vision_backend=args.vision_backend,
+            bioclip_model=args.bioclip_model,
+            stages=_parse_run_stages(args.stages),
+            dry_run=args.dry_run,
+            limits=limits,
+        )
+        plan = ProductionRunOrchestrator(request).run()
+    except (ConfigError, FileNotFoundError, ValueError) as exc:
+        payload: dict[str, object] = {"error": redact_text(str(exc), config) if config else str(exc)}
+        if config is not None:
+            payload["config"] = redact_config(config)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 2
+    print(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
+    return 0
+
+
+def _parse_run_stages(value: str | None) -> tuple[RunStage, ...]:
+    if not value:
+        return DEFAULT_PRODUCTION_STAGES
+    stages: list[RunStage] = []
+    for raw_part in value.split(","):
+        part = raw_part.strip().casefold()
+        if not part:
+            continue
+        if part == "all":
+            return DEFAULT_PRODUCTION_STAGES
+        stage = RUN_STAGE_ALIASES.get(part)
+        if stage is None:
+            try:
+                stage = RunStage(part)
+            except ValueError as exc:
+                allowed = ", ".join(sorted(RUN_STAGE_ALIASES))
+                raise ValueError(f"unknown run stage {raw_part!r}; expected one of: {allowed}") from exc
+        if stage not in stages:
+            stages.append(stage)
+    return tuple(stages) or DEFAULT_PRODUCTION_STAGES
+
+
 def _run_species_command(args: argparse.Namespace) -> int:
     if args.species_command in {"resolve", "refresh-registry", "compile-flickr-queries"}:
         try:
@@ -1132,43 +1226,6 @@ def _run_species_command(args: argparse.Namespace) -> int:
         state = CommentReviewState(args.state_db, species_context=context)
         result = state.process_pending(fetch_comments=fetch_flickr_comments(api_key=api_key), max_api_calls=args.max_api_calls)
         print(json.dumps({**state.summary(), **result}, indent=2, sort_keys=True))
-        return 0
-    if args.species_command == "run":
-        api_key = os.environ.get(args.api_key_env)
-        try:
-            result = run_species_workflow(
-                scientific_name=args.scientific_name,
-                registry_dir=args.registry_dir,
-                output_root=args.output_root,
-                workers=args.workers,
-                max_api_calls=args.max_api_calls,
-                api_key=api_key,
-                fetch=bool(api_key),
-            )
-        except ValueError as exc:
-            print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-            return 2
-        print(
-            json.dumps(
-                {
-                    "scientific_name": result.context.scientific_name,
-                    "accepted_taxon_key": result.context.accepted_taxon_key,
-                    "output_root": str(result.output_root),
-                    "species_context": str(result.output_root / "species_context.json"),
-                    "query_definitions": str(result.query_definitions),
-                    "state_db": str(result.state_db),
-                    "evidence_output": str(result.evidence_output),
-                    "fetch_status": "completed" if result.poll_result else "skipped_missing_api_key",
-                    "poll_result": None
-                    if result.poll_result is None
-                    else {**result.poll_result.__dict__, "state_db": str(result.poll_result.state_db)},
-                    "download_workers": args.download_workers,
-                    "device": args.device,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
         return 0
     return 2
 

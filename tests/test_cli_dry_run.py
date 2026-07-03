@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
-import sqlite3
 from types import SimpleNamespace
 from typing import Any
 
@@ -21,6 +20,7 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     poll_once = parser.parse_args(["poll-once", "--max-api-calls", "3500", "--run-id", "run-1", "--worker-id", "worker-001"])
 
     assert "poll-once" in commands
+    assert "run" in commands
     assert "bioclip" in commands
     assert "species" in commands
     assert "dev" in commands
@@ -1791,7 +1791,7 @@ def _fake_cli_image(record: dict[str, object]):
     return DecodedImage(width=width, height=height, mode="RGB", data=b"\x00\x00\x00" * width * height)
 
 
-def test_species_run_cli_resolves_registry_compiles_queries_and_seeds_work(tmp_path, capsys) -> None:
+def test_production_run_cli_resolves_registry_and_writes_dry_run_manifest(tmp_path, capsys) -> None:
     registry = tmp_path / "registry"
     registry.mkdir()
     pl.DataFrame(
@@ -1842,25 +1842,36 @@ def test_species_run_cli_resolves_registry_compiles_queries_and_seeds_work(tmp_p
     parser = build_parser()
     args = parser.parse_args(
         [
-            "species",
             "run",
-            "--scientific-name",
+            "--taxon",
             "Papilio demoleus",
+            "--rank",
+            "species",
             "--registry-dir",
             str(registry),
-            "--output-root",
+            "--output-prefix",
             str(output),
+            "--storage-backend",
+            "local",
+            "--workstore-backend",
+            "sqlite",
+            "--dry-run",
         ]
     )
 
     assert run(args) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["scientific_name"] == "Papilio demoleus"
-    assert payload["fetch_status"] == "skipped_missing_api_key"
-    assert (output / "species_context.json").exists()
-    assert (output / "flickr_query_definitions.parquet").exists()
-    with sqlite3.connect(output / "state" / "flickr_poller.sqlite") as conn:
-        assert conn.execute("SELECT count(*) FROM flickr_work_items").fetchone()[0] > 0
+    manifest = payload["manifest"]
+
+    assert payload["request"]["taxon"] == "Papilio demoleus"
+    assert payload["request"]["storage_backend"] == "local"
+    assert payload["request"]["workstore_backend"] == "sqlite"
+    assert manifest["taxon_scope"]["accepted_taxon_key"] == "gbif:100"
+    assert manifest["taxon_scope"]["accepted_rank"] == "species"
+    assert manifest["stages"][0]["stage"] == "resolve_taxon_scope"
+    assert manifest["stages"][0]["status"] == "complete"
+    assert manifest["stages"][1]["status"] == "skipped"
+    assert (output / "run_id=species_papilio_demoleus" / "run_manifest.json").exists()
 
 
 def test_registry_compile_fixture_cli_writes_registry_outputs(tmp_path, capsys) -> None:
