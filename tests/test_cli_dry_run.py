@@ -68,6 +68,31 @@ def test_cloud_init_initializes_workstore_schema(capsys, monkeypatch) -> None:
     assert fake_storage.json_payloads[output["manifest_uri"]]["status"] == "ok"
 
 
+def test_cloud_init_redacts_secrets_from_error_payload(capsys, monkeypatch) -> None:
+    fake_store = _FakeCloudWorkStore(
+        init_error=RuntimeError(
+            "failed with postgresql://user:password@example.test:5432/postgres and secret-value"
+        )
+    )
+    fake_storage = _FakeCloudStorage()
+    config = _fake_cloud_config()
+    monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
+    monkeypatch.setattr("biominer.cli.validate_config", lambda config, require_cloud_credentials: None)
+    monkeypatch.setattr("biominer.cli.create_storage_backend", lambda storage_config: fake_storage)
+    monkeypatch.setattr("biominer.cli.create_workstore", lambda workstore_config: fake_store)
+
+    rc = run(build_parser().parse_args(["cloud", "init"]))
+    rendered = capsys.readouterr().out
+    output = json.loads(rendered)
+
+    assert rc == 2
+    assert "password" not in rendered
+    assert "secret-value" not in rendered
+    assert output["status"] == "error"
+    assert output["command"] == "cloud init"
+    assert output["error"] == "failed with <redacted> and <redacted>"
+
+
 def test_cloud_doctor_exercises_storage_and_workstore_without_printing_secrets(capsys, monkeypatch) -> None:
     fake_storage = _FakeCloudStorage()
     fake_store = _FakeCloudWorkStore()

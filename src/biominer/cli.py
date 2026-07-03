@@ -771,35 +771,50 @@ def run(args: argparse.Namespace) -> int:
 def _run_cloud_command(args: argparse.Namespace) -> int:
     if args.cloud_command == "init":
         config = load_biominer_config(args.config)
-        validate_config(config, require_cloud_credentials=True)
-        storage = create_storage_backend(config.storage)
-        workstore = create_workstore(config.workstore)
-        _init_workstore_schema(workstore)
-        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-        manifest_uri = join_uri(_storage_base_uri(storage=storage, config=config), "manifests", "cloud_init", f"{timestamp}.json")
-        manifest = {
-            "status": "ok",
-            "command": "cloud init",
-            "created_at": datetime.now(UTC).isoformat(),
-            "storage_backend": config.storage.backend,
-            "workstore_backend": config.workstore.backend,
-            "config": redact_config(config),
-        }
-        storage.write_json(manifest_uri, manifest)
-        print(
-            json.dumps(
-                {
-                    "status": "ok",
-                    "command": "cloud init",
-                    "workstore_backend": config.workstore.backend,
-                    "manifest_uri": manifest_uri,
-                    "config": redact_config(config),
-                },
-                indent=2,
-                sort_keys=True,
+        try:
+            validate_config(config, require_cloud_credentials=True)
+            storage = create_storage_backend(config.storage)
+            workstore = create_workstore(config.workstore)
+            _init_workstore_schema(workstore)
+            timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+            manifest_uri = join_uri(_storage_base_uri(storage=storage, config=config), "manifests", "cloud_init", f"{timestamp}.json")
+            manifest = {
+                "status": "ok",
+                "command": "cloud init",
+                "created_at": datetime.now(UTC).isoformat(),
+                "storage_backend": config.storage.backend,
+                "workstore_backend": config.workstore.backend,
+                "config": redact_config(config),
+            }
+            storage.write_json(manifest_uri, manifest)
+            print(
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "command": "cloud init",
+                        "workstore_backend": config.workstore.backend,
+                        "manifest_uri": manifest_uri,
+                        "config": redact_config(config),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
             )
-        )
-        return 0
+            return 0
+        except Exception as exc:  # noqa: BLE001 - cloud init reports redacted diagnostics.
+            print(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "command": "cloud init",
+                        "error": redact_text(str(exc), config),
+                        "config": redact_config(config),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 2
     if args.cloud_command == "doctor":
         try:
             payload = _run_cloud_doctor(args)
