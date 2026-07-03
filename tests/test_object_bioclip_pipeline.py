@@ -15,6 +15,7 @@ from biominer.bioclip.object_runner import (
     OBJECT_SCORE_OUTPUT_SCHEMA,
     apply_geospatial_soft_prior,
     empty_object_score_frame,
+    materialize_detector_crop_inputs,
     screen_object_detections,
     write_object_evidence_outputs,
 )
@@ -441,6 +442,28 @@ def test_cached_object_embedding_scorer_scores_from_text_and_crop_embeddings() -
 
     assert scores["Danaus plexippus"] > scores["Danaus gilippus"]
     assert round(scores["Danaus plexippus"], 6) == round(0.8 / ((0.8**2 + 0.2**2) ** 0.5), 6)
+
+
+def test_materialized_object_embedding_crops_are_cleaned_when_image_loading_fails(tmp_path) -> None:
+    calls = 0
+
+    def flaky_loader(item: dict[str, object]) -> DecodedImage:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError(f"decode failed for {item['detection_id']}")
+        return _decoded_image()
+
+    with pytest.raises(RuntimeError, match="decode failed"):
+        materialize_detector_crop_inputs(
+            canonical_records=_canonical_records(),
+            detections=_detections(),
+            image_loader=flaky_loader,
+            temp_dir=tmp_path,
+            crop_target_px=3,
+        )
+
+    assert not (tmp_path / ".object_image_embedding_cache.tmp").exists()
 
 
 def test_screen_object_detections_passes_ablation_mode_to_scorer(tmp_path) -> None:

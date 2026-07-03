@@ -309,37 +309,42 @@ def materialize_detector_crop_inputs(
     base.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
     crop_path_by_hash: dict[str, Path] = {}
-    for detection in detections.to_dicts():
-        if str(detection.get("detection_status") or "") != "detected":
-            continue
-        key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
-        record = _canonical_record_for_detection(records_by_photo, key=key)
-        item = {**detection, **record, "ablation_mode": "detector_crop"}
-        image = image_loader(item)
-        if not isinstance(image, DecodedImage):
-            raise TypeError("image_loader must return a DecodedImage")
-        bbox = detection.get("bbox_xyxy")
-        if not isinstance(bbox, list | tuple) or len(bbox) != 4:
-            raise ValueError("object image embedding cache requires bbox_xyxy")
-        crop = crop_with_padding(
-            image,
-            bbox_xyxy=tuple(float(value) for value in bbox),  # type: ignore[arg-type]
-            padding_ratio=crop_padding_ratio,
-            target_px=crop_target_px,
-        )
-        crop_hash = str(detection.get("crop_hash") or crop.crop_hash)
-        rows.append(
-            {
-                "source": str(detection.get("source") or ""),
-                "flickr_photo_id": str(detection.get("flickr_photo_id") or ""),
-                "detection_id": str(detection.get("detection_id") or ""),
-                "crop_hash": crop_hash,
-            }
-        )
-        if crop_hash not in crop_path_by_hash:
-            path = base / f"{_safe_file_stem(crop_hash)}.ppm"
-            path.write_bytes(_ppm_bytes(crop.encoded_bytes, width=crop.crop_width, height=crop.crop_height))
-            crop_path_by_hash[crop_hash] = path
+    try:
+        for detection in detections.to_dicts():
+            if str(detection.get("detection_status") or "") != "detected":
+                continue
+            key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
+            record = _canonical_record_for_detection(records_by_photo, key=key)
+            item = {**detection, **record, "ablation_mode": "detector_crop"}
+            image = image_loader(item)
+            if not isinstance(image, DecodedImage):
+                raise TypeError("image_loader must return a DecodedImage")
+            bbox = detection.get("bbox_xyxy")
+            if not isinstance(bbox, list | tuple) or len(bbox) != 4:
+                raise ValueError("object image embedding cache requires bbox_xyxy")
+            crop = crop_with_padding(
+                image,
+                bbox_xyxy=tuple(float(value) for value in bbox),  # type: ignore[arg-type]
+                padding_ratio=crop_padding_ratio,
+                target_px=crop_target_px,
+            )
+            crop_hash = str(detection.get("crop_hash") or crop.crop_hash)
+            rows.append(
+                {
+                    "source": str(detection.get("source") or ""),
+                    "flickr_photo_id": str(detection.get("flickr_photo_id") or ""),
+                    "detection_id": str(detection.get("detection_id") or ""),
+                    "crop_hash": crop_hash,
+                }
+            )
+            if crop_hash not in crop_path_by_hash:
+                path = base / f"{_safe_file_stem(crop_hash)}.ppm"
+                path.write_bytes(_ppm_bytes(crop.encoded_bytes, width=crop.crop_width, height=crop.crop_height))
+                crop_path_by_hash[crop_hash] = path
+    except Exception:
+        if base.exists():
+            rmtree(base)
+        raise
     return MaterializedCropInputs(rows=rows, crop_path_by_hash=crop_path_by_hash, temp_dir=base)
 
 
