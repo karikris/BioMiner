@@ -21,12 +21,12 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class StorageConfig:
-    backend: str = "local"
+    backend: str = "s3"
     bucket: str | None = None
-    prefix: str = "."
-    endpoint_url_env: str | None = None
-    access_key_id_env: str | None = None
-    secret_access_key_env: str | None = None
+    prefix: str = ""
+    endpoint_url_env: str | None = "BIOMINER_S3_ENDPOINT_URL"
+    access_key_id_env: str | None = "BIOMINER_S3_ACCESS_KEY_ID"
+    secret_access_key_env: str | None = "BIOMINER_S3_SECRET_ACCESS_KEY"
     region: str = "auto"
     endpoint_url: str | None = None
     access_key_id: str | None = field(default=None, repr=False)
@@ -35,9 +35,9 @@ class StorageConfig:
 
 @dataclass(frozen=True)
 class WorkStoreConfig:
-    backend: str = "sqlite"
+    backend: str = "postgres"
     sqlite_path: str = "data/state/biominer.sqlite"
-    dsn_env: str | None = None
+    dsn_env: str | None = "BIOMINER_WORKSTORE_DSN"
     dsn: str | None = field(default=None, repr=False)
 
 
@@ -96,7 +96,12 @@ def load_workstore_config_from_env(env: Mapping[str, str] | None = None) -> Work
     return _load_workstore_config({}, selected_env)
 
 
-def validate_config(config: BioMinerConfig, *, require_cloud_credentials: bool = False) -> None:
+def validate_config(
+    config: BioMinerConfig,
+    *,
+    require_cloud_credentials: bool = False,
+    allow_local_backends: bool = False,
+) -> None:
     if config.storage.backend not in {"local", "s3"}:
         raise ConfigError("storage.backend must be 'local' or 's3'")
     if config.workstore.backend not in {"sqlite", "postgres"}:
@@ -105,6 +110,12 @@ def validate_config(config: BioMinerConfig, *, require_cloud_credentials: bool =
         raise ConfigError("runtime.default_batch_rows must be positive")
     if config.runtime.target_parquet_mb <= 0:
         raise ConfigError("runtime.target_parquet_mb must be positive")
+    if require_cloud_credentials:
+        _require_value(config.runtime.worker_id, config.runtime.worker_id_env, "worker ID")
+    if not allow_local_backends and config.storage.backend == "local":
+        raise ConfigError("storage.backend=local is allowed only with an explicit dev/test override")
+    if not allow_local_backends and config.workstore.backend == "sqlite":
+        raise ConfigError("workstore.backend=sqlite is allowed only with an explicit dev/test override")
     if config.storage.backend == "s3":
         if not config.storage.bucket:
             raise ConfigError("storage.bucket is required for s3 storage")
@@ -125,8 +136,8 @@ def create_storage_backend(config: StorageConfig | None = None) -> CloudStorage:
     if backend == "local":
         return LocalStorageBackend(prefix=selected.prefix)
     if backend == "s3":
-        cloud_config = BioMinerConfig(storage=selected, workstore=WorkStoreConfig(), runtime=RuntimeConfig())
-        validate_config(cloud_config, require_cloud_credentials=True)
+        cloud_config = BioMinerConfig(storage=selected, workstore=WorkStoreConfig(backend="sqlite", dsn_env=None), runtime=RuntimeConfig())
+        validate_config(cloud_config, require_cloud_credentials=True, allow_local_backends=True)
         return S3StorageBackend(
             bucket=str(selected.bucket),
             prefix=selected.prefix,
@@ -194,7 +205,7 @@ def redact_text(text: str, config: BioMinerConfig) -> str:
 
 def _load_storage_config(raw: Any, env: Mapping[str, str]) -> StorageConfig:
     values = _as_table(raw, "biominer.storage")
-    backend = str(values.get("backend", env.get("BIOMINER_STORAGE_BACKEND", "local"))).lower()
+    backend = str(values.get("backend", env.get("BIOMINER_STORAGE_BACKEND", "s3"))).lower()
     prefix_default = "." if backend == "local" else env.get("BIOMINER_S3_PREFIX", "")
     endpoint_url_env = values.get("endpoint_url_env")
     access_key_id_env = values.get("access_key_id_env")
@@ -221,7 +232,7 @@ def _load_storage_config(raw: Any, env: Mapping[str, str]) -> StorageConfig:
 
 def _load_workstore_config(raw: Any, env: Mapping[str, str]) -> WorkStoreConfig:
     values = _as_table(raw, "biominer.workstore")
-    backend = str(values.get("backend", env.get("BIOMINER_WORKSTORE_BACKEND", "sqlite"))).lower()
+    backend = str(values.get("backend", env.get("BIOMINER_WORKSTORE_BACKEND", "postgres"))).lower()
     dsn_env = values.get("dsn_env")
     if backend == "postgres":
         dsn_env = str(dsn_env or "BIOMINER_WORKSTORE_DSN")
@@ -238,7 +249,7 @@ def _load_runtime_config(raw: Any, env: Mapping[str, str]) -> RuntimeConfig:
     worker_id_env = str(values.get("worker_id_env", "BIOMINER_WORKER_ID"))
     return RuntimeConfig(
         worker_id_env=worker_id_env,
-        worker_id=str(values.get("worker_id", env.get(worker_id_env, "local"))),
+        worker_id=str(values.get("worker_id", env.get(worker_id_env, ""))),
         default_batch_rows=int(values.get("default_batch_rows", 50000)),
         target_parquet_mb=int(values.get("target_parquet_mb", 64)),
     )
