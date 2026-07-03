@@ -20,6 +20,7 @@ import polars as pl
 
 from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.normalize import normalize_language_code, normalize_name_key
+from biominer.registry.trust_policy import decide_name_trust
 
 
 ENRICHMENT_SCHEMA_VERSION = "registry-enrichment-v1"
@@ -895,6 +896,19 @@ def _normalize_assertion(row: dict[str, Any]) -> dict[str, Any]:
     source = str(row.get("source") or "")
     source_record_id = str(row.get("source_record_id") or "")
     language = normalize_language_code(row.get("language"))
+    decision = decide_name_trust(
+        source=source,
+        name_class=str(row.get("name_class") or "vernacular"),
+        trust_tier=str(row.get("trust_tier") or ""),
+        confidence=str(row.get("confidence") or ""),
+        collision_status=str(row.get("collision_status") or ""),
+        review_state=str(row.get("review_state") or ""),
+        external_taxon_link_confident=_external_link_confident(row),
+        corroborated=bool(row.get("corroborated", False)),
+    )
+    source_enabled = bool(row.get("enabled", True))
+    enabled = bool(source_enabled and decision.enabled)
+    disabled_reason = str(row.get("disabled_reason") or decision.disabled_reason)
     return {
         "assertion_id": str(row.get("assertion_id") or _stable_id("assertion", source, source_record_id, row.get("accepted_taxon_key"), display_name)),
         "accepted_taxon_key": str(row.get("accepted_taxon_key") or ""),
@@ -909,12 +923,12 @@ def _normalize_assertion(row: dict[str, Any]) -> dict[str, Any]:
         "source": source,
         "source_record_id": source_record_id,
         "source_taxon_id": str(row.get("source_taxon_id") or ""),
-        "trust_tier": str(row.get("trust_tier") or ""),
+        "trust_tier": decision.trust_tier.value,
         "precision_tier": str(row.get("precision_tier") or ""),
         "confidence": str(row.get("confidence") or ""),
-        "enabled": bool(row.get("enabled", True)),
-        "review_state": str(row.get("review_state") or ("accepted" if row.get("enabled", True) else "candidate")),
-        "disabled_reason": str(row.get("disabled_reason") or ""),
+        "enabled": enabled,
+        "review_state": str(row.get("review_state") or ("accepted" if enabled else "candidate")),
+        "disabled_reason": "" if enabled else disabled_reason,
         "retrieved_at": str(row.get("retrieved_at") or ""),
         "licence": str(row.get("licence") or ""),
     }
@@ -923,6 +937,7 @@ def _normalize_assertion(row: dict[str, Any]) -> dict[str, Any]:
 def _candidate_frame(assertions: pl.DataFrame, accepted_keys: set[str]) -> pl.DataFrame:
     if assertions.is_empty():
         return pl.DataFrame(schema=_candidate_schema())
+    collision_keys = _collision_keys(assertions)
     rows = []
     for row in assertions.to_dicts():
         disabled_reason = str(row.get("disabled_reason") or "")
@@ -930,8 +945,45 @@ def _candidate_frame(assertions: pl.DataFrame, accepted_keys: set[str]) -> pl.Da
         if str(row.get("accepted_taxon_key") or "") not in accepted_keys:
             enabled = False
             disabled_reason = disabled_reason or "unknown_accepted_taxon_key"
+        elif _candidate_collision_key(row) in collision_keys:
+            decision = decide_name_trust(
+                source=str(row.get("source") or ""),
+                name_class=str(row.get("name_class") or ""),
+                trust_tier=str(row.get("trust_tier") or ""),
+                confidence=str(row.get("confidence") or ""),
+                collision_status="collision",
+                review_state=str(row.get("review_state") or ""),
+                external_taxon_link_confident=True,
+            )
+            enabled = bool(enabled and decision.enabled)
+            disabled_reason = "" if enabled else disabled_reason or decision.disabled_reason
         rows.append({**row, "enabled": enabled, "disabled_reason": disabled_reason})
     return pl.DataFrame(rows, schema=_candidate_schema())
+
+
+def _external_link_confident(row: dict[str, Any]) -> bool:
+    confidence = str(row.get("match_confidence") or row.get("external_taxon_link_confidence") or "").casefold()
+    lineage = str(row.get("lineage_check") or "").casefold()
+    source_taxon_id = str(row.get("source_taxon_id") or "")
+    return confidence in {"high", "confident", "accepted"} or lineage in {"accepted_taxon_key", "confident"} or bool(source_taxon_id)
+
+
+def _collision_keys(assertions: pl.DataFrame) -> set[tuple[str, str, str]]:
+    grouped: dict[tuple[str, str, str], set[str]] = {}
+    for row in assertions.to_dicts():
+        key = _candidate_collision_key(row)
+        if not key[0]:
+            continue
+        grouped.setdefault(key, set()).add(str(row.get("accepted_taxon_key") or ""))
+    return {key for key, taxa in grouped.items() if len(taxa) > 1}
+
+
+def _candidate_collision_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("normalized_match_key") or normalize_name_key(row.get("display_name") or row.get("verbatim_name"))),
+        str(row.get("language") or ""),
+        str(row.get("name_class") or ""),
+    )
 
 
 def _combine_names(base_names: pl.DataFrame, enabled_enrichment: pl.DataFrame) -> pl.DataFrame:
