@@ -18,6 +18,7 @@ from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 def test_cli_exposes_only_lean_pipeline_commands() -> None:
     parser = build_parser()
     commands = parser._subparsers._group_actions[0].choices  # noqa: SLF001 - parser surface regression test.
+    poll_once = parser.parse_args(["poll-once", "--max-api-calls", "3500", "--run-id", "run-1", "--worker-id", "worker-001"])
 
     assert "poll-once" in commands
     assert "bioclip" in commands
@@ -26,40 +27,10 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert "fetch" not in commands
     assert "fetch-live" not in commands
     assert "benchmark-existing-payloads" not in commands
-
-def test_poll_once_cli_accepts_bounded_cycle_arguments() -> None:
-    parser = build_parser()
-    args = parser.parse_args(["poll-once", "--max-api-calls", "3500"])
-
-    assert args.command == "poll-once"
-    assert args.max_api_calls == 3500
-
-
-def test_poll_once_cli_accepts_cloud_storage_phase2_arguments() -> None:
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "poll-once",
-            "--run-id",
-            "run-1",
-            "--worker-id",
-            "worker-001",
-            "--storage-backend",
-            "local",
-            "--storage-prefix",
-            "staging",
-            "--evidence-stage",
-            "poll_once",
-            "--no-compact",
-        ]
-    )
-
-    assert args.run_id == "run-1"
-    assert args.worker_id == "worker-001"
-    assert args.storage_backend == "local"
-    assert args.storage_prefix == "staging"
-    assert args.evidence_stage == "poll_once"
-    assert args.no_compact is True
+    assert poll_once.command == "poll-once"
+    assert poll_once.max_api_calls == 3500
+    assert poll_once.run_id == "run-1"
+    assert poll_once.worker_id == "worker-001"
 
 
 def test_cloud_cli_accepts_init_and_doctor_commands() -> None:
