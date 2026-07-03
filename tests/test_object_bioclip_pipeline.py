@@ -998,7 +998,19 @@ def test_empty_object_evidence_outputs_keep_stable_join_table_schemas(tmp_path) 
     summary = pl.read_parquet(outputs.photo_evidence_summary)
     assert joined.height == 0
     assert summary.height == 0
-    assert {"source", "flickr_photo_id", "detection_id", "crop_hash", "model_id", "model_checkpoint", "candidate_set_id"}.issubset(joined.columns)
+    assert {
+        "source",
+        "flickr_photo_id",
+        "detection_id",
+        "crop_hash",
+        "model_id",
+        "model_checkpoint",
+        "candidate_set_id",
+        "species_top1_scientific_name",
+        "species_top1_accepted_taxon_key",
+        "accepted_taxon_key",
+        "target_accepted_taxon_key",
+    }.issubset(joined.columns)
     assert {
         "source",
         "flickr_photo_id",
