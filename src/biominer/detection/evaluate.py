@@ -75,6 +75,8 @@ def evaluate_xie_style(
     )
     joint_results = [
         (
+            truth is not None
+            and
             joint_detection_species_correct(
                 prediction=prediction,
                 truth=truth,
@@ -84,7 +86,6 @@ def evaluate_xie_style(
             _optional_float(prediction.get("species_top1_score")) or 0.0,
         )
         for prediction, truth, _iou in matches
-        if truth is not None
     ]
     return {
         "ground_truth_available": True,
@@ -109,7 +110,6 @@ def evaluate_xie_style(
                     _optional_float(prediction.get("species_top1_score")) or 0.0,
                 )
                 for prediction, truth, iou in matches
-                if truth is not None
             ],
             len(truth_rows),
         ),
