@@ -412,7 +412,7 @@ def test_screen_object_detections_passes_ablation_mode_to_scorer(tmp_path) -> No
         ablation_mode="whole_image",
     )
 
-    assert scorer.modes == ["whole_image", "whole_image", "whole_image"]
+    assert scorer.modes == ["whole_image", "whole_image", "whole_image", "whole_image"]
 
 
 def test_ephemeral_scorer_uses_distinct_visual_inputs_for_ablation_modes(tmp_path) -> None:
@@ -758,6 +758,7 @@ def test_object_bioclip_scores_family_genus_and_species_stages_separately(tmp_pa
         ("Nymphalidae",),
         ("Danaus", "Limenitis"),
         candidate_set.prompt_labels("species"),
+        candidate_set.prompt_labels("species"),
     ]
     assert row["family_top3"] == ["Nymphalidae"]
     assert row["family_top1_score"] == 0.61
@@ -765,6 +766,97 @@ def test_object_bioclip_scores_family_genus_and_species_stages_separately(tmp_pa
     assert row["genus_top1_score"] == 0.72
     assert row["species_top5"] == ["Danaus plexippus", "Danaus gilippus", "Limenitis archippus"]
     assert row["target_species_score"] == 0.83
+
+
+def test_object_bioclip_reranks_species_top20_into_top5(tmp_path) -> None:
+    candidates = tmp_path / "species_candidates.parquet"
+    pl.DataFrame(
+        [
+            {"scientific_name": "Danaus plexippus", "accepted_taxon_key": "gbif:5131654", "family": "Nymphalidae", "genus": "Danaus"},
+            {"scientific_name": "Danaus gilippus", "accepted_taxon_key": "gbif:5131655", "family": "Nymphalidae", "genus": "Danaus"},
+            {"scientific_name": "Danaus erippus", "accepted_taxon_key": "gbif:5131656", "family": "Nymphalidae", "genus": "Danaus"},
+            {"scientific_name": "Danaus eresimus", "accepted_taxon_key": "gbif:5131657", "family": "Nymphalidae", "genus": "Danaus"},
+            {"scientific_name": "Limenitis archippus", "accepted_taxon_key": "gbif:1900000", "family": "Nymphalidae", "genus": "Limenitis"},
+            {"scientific_name": "Limenitis arthemis", "accepted_taxon_key": "gbif:1900001", "family": "Nymphalidae", "genus": "Limenitis"},
+        ]
+    ).write_parquet(candidates)
+    candidate_set = build_candidate_set(_context(), species_candidate_path=candidates)
+
+    class RerankRecordingScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self) -> None:
+            self.species_calls: list[tuple[str, ...]] = []
+
+        def score(self, item: dict[str, object], labels: tuple[str, ...]) -> dict[str, float]:
+            scores = {label: 0.0 for label in labels}
+            if labels == ("Nymphalidae",):
+                scores["Nymphalidae"] = 0.8
+                return scores
+            if labels == ("Danaus", "Limenitis"):
+                scores["Danaus"] = 0.8
+                scores["Limenitis"] = 0.2
+                return scores
+            self.species_calls.append(labels)
+            if len(self.species_calls) == 1:
+                for label, score in {
+                    "a photo of Danaus plexippus": 0.61,
+                    "a photo of Danaus gilippus": 0.93,
+                    "a photo of Danaus erippus": 0.72,
+                    "a photo of Danaus eresimus": 0.71,
+                    "a photo of Limenitis archippus": 0.70,
+                    "a photo of Limenitis arthemis": 0.20,
+                }.items():
+                    if label in scores:
+                        scores[label] = score
+                return scores
+            for label, score in {
+                "a photo of Danaus plexippus": 0.95,
+                "a photo of Danaus gilippus": 0.44,
+                "a photo of Danaus erippus": 0.43,
+                "a photo of Danaus eresimus": 0.42,
+                "a photo of Limenitis archippus": 0.41,
+            }.items():
+                if label in scores:
+                    scores[label] = score
+            return scores
+
+    scorer = RerankRecordingScorer()
+
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections().head(1),
+        species_context=_context(),
+        candidate_set=candidate_set,
+        scorer=scorer,
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+    )
+
+    row = result.frame.to_dicts()[0]
+    assert len(scorer.species_calls) == 2
+    assert scorer.species_calls[0] == candidate_set.prompt_labels("species")
+    assert "a photo of Limenitis arthemis" not in scorer.species_calls[1]
+    assert row["species_top20"][:6] == [
+        "Danaus gilippus",
+        "Danaus erippus",
+        "Danaus eresimus",
+        "Limenitis archippus",
+        "Danaus plexippus",
+        "Limenitis arthemis",
+    ]
+    assert row["species_top5"] == [
+        "Danaus plexippus",
+        "Danaus gilippus",
+        "Danaus erippus",
+        "Danaus eresimus",
+        "Limenitis archippus",
+    ]
+    assert row["species_top1_scientific_name"] == "Danaus plexippus"
+    assert row["target_species_score"] == 0.95
+    assert row["target_species_rank"] == 1
 
 
 def test_object_bioclip_routes_ambiguous_species_margin_to_review(tmp_path) -> None:

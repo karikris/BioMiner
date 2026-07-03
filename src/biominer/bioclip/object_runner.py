@@ -549,10 +549,17 @@ def _score_detection(
     species_scores = scorer.score(item, species_labels)
     ranked_families = _rank_labels(family_labels, family_scores)
     ranked_genera = _rank_labels(genus_labels, genus_scores)
-    ranked_species = _rank_species(candidate_set.species_candidates, species_scores)
+    ranked_species_top20 = _rank_species(candidate_set.species_candidates, species_scores)[:20]
+    rerank_candidates = _species_rerank_candidates(
+        candidate_set.species_candidates,
+        ranked_species_top20,
+        target_scientific_name=context.scientific_name,
+    )
+    rerank_scores = scorer.score(item, _species_prompt_labels(rerank_candidates)) if rerank_candidates else {}
+    ranked_species = _rank_species(rerank_candidates, rerank_scores) if rerank_candidates else ranked_species_top20
     target_score = _target_score(ranked_species, context.scientific_name)
     top1_name = ranked_species[0][0] if ranked_species else None
-    species_top20 = [name for name, _score in ranked_species[:20]]
+    species_top20 = [name for name, _score in ranked_species_top20]
     species_top5 = [name for name, _score in ranked_species[:5]]
     taxon_key_by_name = _taxon_key_by_name(candidate_set.species_candidates)
     top1_taxon_key = _taxon_key_for_name(taxon_key_by_name, top1_name)
@@ -622,9 +629,35 @@ def _score_detection(
 def _rank_species(candidates: tuple[CandidateTaxon, ...], scores: dict[str, float]) -> list[tuple[str, float]]:
     ranked: list[tuple[str, float]] = []
     for candidate in candidates:
-        labels = [candidate.scientific_name, f"a photo of {candidate.scientific_name}", *candidate.common_names]
+        labels = _candidate_species_labels(candidate)
         ranked.append((candidate.scientific_name, max(float(scores.get(label, 0.0)) for label in labels)))
     return sorted(ranked, key=lambda item: item[1], reverse=True)
+
+
+def _species_rerank_candidates(
+    candidates: tuple[CandidateTaxon, ...],
+    ranked_species_top20: list[tuple[str, float]],
+    *,
+    target_scientific_name: str,
+) -> tuple[CandidateTaxon, ...]:
+    candidates_by_name = {_norm(candidate.scientific_name): candidate for candidate in candidates}
+    selected: list[CandidateTaxon] = []
+    for name, _score in ranked_species_top20[:5]:
+        candidate = candidates_by_name.get(_norm(name))
+        if candidate is not None:
+            selected.append(candidate)
+    target = candidates_by_name.get(_norm(target_scientific_name))
+    if target is not None and all(_norm(candidate.scientific_name) != _norm(target.scientific_name) for candidate in selected):
+        selected.append(target)
+    return tuple(selected)
+
+
+def _species_prompt_labels(candidates: tuple[CandidateTaxon, ...]) -> tuple[str, ...]:
+    return tuple(_unique(label for candidate in candidates for label in _candidate_species_labels(candidate)))
+
+
+def _candidate_species_labels(candidate: CandidateTaxon) -> tuple[str, ...]:
+    return (candidate.scientific_name, f"a photo of {candidate.scientific_name}", *candidate.common_names)
 
 
 def _rank_labels(labels: tuple[str, ...], scores: dict[str, float]) -> list[tuple[str, float]]:
