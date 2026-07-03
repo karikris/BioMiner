@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import rmtree
+from threading import Lock
 from typing import Any, Protocol
 
 import polars as pl
@@ -49,6 +50,24 @@ class _CropJob:
     image: DecodedImage
 
 
+class _DebugCropWriter:
+    def __init__(self, directory: Path, *, limit: int) -> None:
+        self.directory = directory
+        self.limit = max(0, limit)
+        self._written = 0
+        self._lock = Lock()
+
+    def write(self, crop_hash: str, *, encoded_bytes: bytes, width: int, height: int) -> bool:
+        with self._lock:
+            if self._written >= self.limit:
+                return False
+            self.directory.mkdir(parents=True, exist_ok=True)
+            path = self.directory / f"{_safe_crop_stem(crop_hash)}.ppm"
+            path.write_bytes(f"P6\n{width} {height}\n255\n".encode("ascii") + encoded_bytes)
+            self._written += 1
+            return True
+
+
 def run_detection_pipeline(
     *,
     records: Iterable[dict[str, Any]],
@@ -63,6 +82,7 @@ def run_detection_pipeline(
     runtime = run_policy or DetectionRunPolicy()
     output_target = Path(output_path)
     batch_dir = _prepare_detection_batch_dir(output_target)
+    debug_writer = _prepare_debug_crop_writer(output_target, policy=policy)
     row_buffer: list[dict[str, Any]] = []
     batch_paths: list[Path] = []
     batch: list[_LoadedImage] = []
@@ -93,6 +113,7 @@ def run_detection_pipeline(
                     policy=policy,
                     run_policy=runtime,
                     executor_factory=executor_factory,
+                    debug_writer=debug_writer,
                 )
                 crops_created += sum(1 for row in enriched if row.get("crop_hash"))
                 _buffer_detection_rows(
@@ -110,6 +131,7 @@ def run_detection_pipeline(
                 policy=policy,
                 run_policy=runtime,
                 executor_factory=executor_factory,
+                debug_writer=debug_writer,
             )
             crops_created += sum(1 for row in enriched if row.get("crop_hash"))
             _buffer_detection_rows(
@@ -144,6 +166,15 @@ def _prepare_detection_batch_dir(output_path: Path) -> Path:
     if batch_dir.exists():
         rmtree(batch_dir)
     return batch_dir
+
+
+def _prepare_debug_crop_writer(output_path: Path, *, policy: DetectionPolicy) -> _DebugCropWriter | None:
+    if not policy.retain_debug_crops:
+        return None
+    directory = output_path.parent / f"{output_path.stem}_debug_crops"
+    if directory.exists():
+        rmtree(directory)
+    return _DebugCropWriter(directory, limit=policy.debug_crop_limit)
 
 
 def _buffer_detection_rows(
@@ -200,6 +231,7 @@ def _detect_and_enrich_batch(
     policy: DetectionPolicy,
     run_policy: DetectionRunPolicy,
     executor_factory: ExecutorFactory,
+    debug_writer: _DebugCropWriter | None,
 ) -> list[dict[str, Any]]:
     detections_by_image = detector.detect_batch([item.image for item in batch if item.image is not None])
     crop_jobs: list[_CropJob] = []
@@ -223,6 +255,7 @@ def _detect_and_enrich_batch(
         policy=policy,
         run_policy=run_policy,
         executor_factory=executor_factory,
+        debug_writer=debug_writer,
     )
 
 
@@ -232,12 +265,13 @@ def _with_crop_metadata_bounded(
     policy: DetectionPolicy,
     run_policy: DetectionRunPolicy,
     executor_factory: ExecutorFactory,
+    debug_writer: _DebugCropWriter | None,
 ) -> list[dict[str, Any]]:
     if not jobs:
         return []
 
     def enrich(job: _CropJob) -> dict[str, Any]:
-        return _with_crop_metadata(job.row, image=job.image, policy=policy)
+        return _with_crop_metadata(job.row, image=job.image, policy=policy, debug_writer=debug_writer)
 
     rows: list[dict[str, Any]] = []
     with executor_factory(max_workers=run_policy.decode_workers) as pool:
@@ -251,7 +285,13 @@ def _chunks(items: list[_CropJob], size: int) -> Iterable[list[_CropJob]]:
         yield items[start : start + size]
 
 
-def _with_crop_metadata(row: dict[str, Any], *, image: DecodedImage, policy: DetectionPolicy) -> dict[str, Any]:
+def _with_crop_metadata(
+    row: dict[str, Any],
+    *,
+    image: DecodedImage,
+    policy: DetectionPolicy,
+    debug_writer: _DebugCropWriter | None,
+) -> dict[str, Any]:
     if row.get("detection_status") != "detected":
         return row
     bbox = row.get("bbox_xyxy")
@@ -263,14 +303,26 @@ def _with_crop_metadata(row: dict[str, Any], *, image: DecodedImage, policy: Det
         padding_ratio=policy.crop_padding_ratio,
         target_px=policy.crop_target_px,
     )
+    storage_policy = crop.storage_policy
+    if debug_writer is not None and debug_writer.write(
+        crop.crop_hash,
+        encoded_bytes=crop.encoded_bytes,
+        width=crop.crop_width,
+        height=crop.crop_height,
+    ):
+        storage_policy = "debug_retained"
     return {
         **row,
         "crop_padding_ratio": policy.crop_padding_ratio,
         "crop_hash": crop.crop_hash,
         "crop_width": crop.crop_width,
         "crop_height": crop.crop_height,
-        "crop_storage_policy": crop.storage_policy,
+        "crop_storage_policy": storage_policy,
     }
+
+
+def _safe_crop_stem(crop_hash: str) -> str:
+    return "".join(character if character.isalnum() else "_" for character in crop_hash).strip("_") or "crop"
 
 
 def _resize_image_to_max_side(image: DecodedImage, max_side_px: int) -> DecodedImage:

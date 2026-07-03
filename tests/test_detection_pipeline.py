@@ -323,6 +323,40 @@ def test_detection_pipeline_writes_ephemeral_crop_metadata_for_each_detection(tm
     assert len({row["crop_hash"] for row in rows}) == 2
 
 
+def test_detection_pipeline_retains_debug_crops_only_when_enabled_and_limited(tmp_path) -> None:
+    output = tmp_path / "object_detections.parquet"
+    detector = FakeObjectDetector(
+        [
+            [
+                DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 2, 2)),
+                DetectionCandidate(label="butterfly", score=0.8, bbox_xyxy=(2, 2, 4, 4)),
+            ]
+        ]
+    )
+
+    result = run_detection_pipeline(
+        records=[{"source": "flickr", "flickr_photo_id": "photo-debug", "image_url": "memory://photo-debug"}],
+        detector=detector,
+        output_path=output,
+        image_loader=lambda record: _image(),
+        detection_policy=DetectionPolicy(
+            backend="fake",
+            crop_target_px=3,
+            min_box_area_ratio=0.0,
+            retain_debug_crops=True,
+            debug_crop_limit=1,
+        ),
+        run_policy=DetectionRunPolicy(decode_workers=1),
+    )
+
+    rows = result.frame.sort("detector_score", descending=True).to_dicts()
+    debug_dir = tmp_path / "object_detections_debug_crops"
+    retained = sorted(debug_dir.glob("*.ppm"))
+    assert len(retained) == 1
+    assert retained[0].read_bytes().startswith(b"P6\n3 3\n255\n")
+    assert [row["crop_storage_policy"] for row in rows] == ["debug_retained", "ephemeral"]
+
+
 def test_detection_pipeline_resizes_loaded_images_before_detection(tmp_path) -> None:
     seen_dimensions: list[tuple[int, int]] = []
 
