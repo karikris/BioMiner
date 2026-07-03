@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from html import escape
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -52,6 +53,8 @@ from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
 from biominer.reports.buckets import export_bucket_views
 from biominer.reports.name_evidence import build_name_evidence_report, write_name_evidence_report
+from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR, YOLOE26_DIR
+from biominer.secrets_loader import load_runtime_secrets_env
 from biominer.species.context import SpeciesContext
 from biominer.species.registry_refresh import resolve_species_context, write_species_registry_outputs
 from biominer.species.query_compile import write_species_flickr_queries
@@ -70,8 +73,14 @@ from biominer.workstore.sqlite import SQLiteWorkStore
 
 BIOCLIP_25_HUGE_REPO_ID = "imageomics/bioclip-2.5-vith14"
 BIOCLIP_25_HUGE_REVISION = "191d741545e4c741cdef4b22c6eb69c945c1e592"
-BIOCLIP_RUNTIME_PYTHON = ".venv-bioclip-py312/bin/python"
-BIOCLIP_HF_CACHE_DIR = "data/cache/huggingface"
+BIOMINER_BASE_PATH = BASE_PATH
+YOLOE26_RUNTIME_ROOT = YOLOE26_DIR
+YOLOE26_RUNTIME_PYTHON = str(YOLOE26_RUNTIME_ROOT / "venv" / "bin" / "python")
+YOLOE26_MODEL_DIR = str(YOLOE26_RUNTIME_ROOT / "models")
+YOLOE26_CACHE_ROOT = str(YOLOE26_RUNTIME_ROOT / "cache")
+BIOCLIP25_RUNTIME_ROOT = BIOCLIP25_DIR
+BIOCLIP_RUNTIME_PYTHON = str(BIOCLIP25_RUNTIME_ROOT / "venv" / "bin" / "python")
+BIOCLIP_HF_CACHE_DIR = str(BIOCLIP25_RUNTIME_ROOT / "cache" / "huggingface")
 BIOCLIP_PREFETCH_ALLOW_PATTERNS = (
     "open_clip_config.json",
     "open_clip_model.safetensors",
@@ -169,10 +178,54 @@ def build_parser() -> argparse.ArgumentParser:
     detect_boxes = detect_subparsers.add_parser("boxes")
     detect_boxes.add_argument("--input", required=True)
     detect_boxes.add_argument("--output", required=True)
-    detect_boxes.add_argument("--backend", default="yolo", choices=("yolo", "fake"))
-    detect_boxes.add_argument("--runtime-python", default=".venv-vision-py312/bin/python")
+    detect_boxes.add_argument("--backend", default="yolo", choices=("yolo", "yoloe26", "fake"))
+    detect_boxes.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
     detect_boxes.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    detect_boxes.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
+    detect_boxes.add_argument("--imgsz", type=int, default=640)
+    detect_boxes.add_argument("--conf", type=float, default=0.20)
+    detect_boxes.add_argument("--iou", type=float, default=0.50)
+    detect_boxes.add_argument("--max-det", type=int, default=8)
+    detect_boxes.add_argument("--prompt-class", action="append", default=[])
+    detect_boxes.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
     _add_detection_policy_args(detect_boxes)
+    yoloe26_runtime = detect_subparsers.add_parser("yoloe26-runtime-check")
+    yoloe26_runtime.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
+    yoloe26_runtime.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    yoloe26_runtime.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
+    yoloe26_prefetch = detect_subparsers.add_parser("yoloe26-prefetch")
+    yoloe26_prefetch.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
+    yoloe26_prefetch.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    yoloe26_prefetch.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
+    yoloe26_smoke = detect_subparsers.add_parser("yoloe26-smoke")
+    yoloe26_smoke.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
+    yoloe26_smoke.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    yoloe26_smoke.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
+    yoloe26_smoke.add_argument("--image")
+    yoloe26_smoke.add_argument("--output-dir", default="reports/yoloe26_smoke")
+    yoloe26_prototype = detect_subparsers.add_parser("yoloe26-prototype-run")
+    yoloe26_prototype.add_argument("--input", required=True)
+    yoloe26_prototype.add_argument("--species-context", required=True)
+    yoloe26_prototype.add_argument("--species-candidates")
+    yoloe26_prototype.add_argument("--output-dir", required=True)
+    yoloe26_prototype.add_argument("--vision-runtime-python", default=YOLOE26_RUNTIME_PYTHON)
+    yoloe26_prototype.add_argument("--bioclip-runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    yoloe26_prototype.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
+    yoloe26_prototype.add_argument("--cache-root", default=str(YOLOE26_RUNTIME_ROOT / "cache" / "images"))
+    yoloe26_prototype.add_argument("--crop-temp-dir", default=str(YOLOE26_RUNTIME_ROOT / "cache" / "object_crops"))
+    yoloe26_prototype.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    yoloe26_prototype.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
+    yoloe26_prototype.add_argument("--limit", type=int)
+    yoloe26_prototype.add_argument("--retain-debug-crops", action="store_true")
+    yoloe26_prototype.add_argument("--ablation-mode", choices=("whole_image", "detector_crop", "detector_crop_segmentation"), default="detector_crop")
+    yoloe26_prototype.add_argument("--also-whole-image", action="store_true")
+    yoloe26_prototype.add_argument("--parquet-batch-rows", type=int, default=10000)
+    yoloe26_prototype.add_argument("--imgsz", type=int, default=640)
+    yoloe26_prototype.add_argument("--conf", type=float, default=0.20)
+    yoloe26_prototype.add_argument("--iou", type=float, default=0.50)
+    yoloe26_prototype.add_argument("--max-det", type=int, default=8)
+    yoloe26_prototype.add_argument("--prompt-class", action="append", default=[])
+    yoloe26_prototype.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
     detect_crop_preview = detect_subparsers.add_parser("crop-preview")
     detect_crop_preview.add_argument("--detections", required=True)
     detect_crop_preview.add_argument("--output", required=True)
@@ -466,6 +519,14 @@ def run(args: argparse.Namespace) -> int:
     if args.command == "detect":
         if args.detect_command == "boxes":
             return _run_detect_boxes(args)
+        if args.detect_command == "yoloe26-runtime-check":
+            return _run_yoloe26_runtime_check(args)
+        if args.detect_command == "yoloe26-prefetch":
+            return _run_yoloe26_prefetch(args)
+        if args.detect_command == "yoloe26-smoke":
+            return _run_yoloe26_smoke(args)
+        if args.detect_command == "yoloe26-prototype-run":
+            return _run_yoloe26_prototype_run(args)
         if args.detect_command == "crop-preview":
             return _run_detect_crop_preview(args)
         if args.detect_command == "eval":
@@ -1251,7 +1312,7 @@ def _run_detect_boxes(args: argparse.Namespace) -> int:
     records = pl.read_parquet(args.input).to_dicts()
     try:
         detector, image_loader = _detect_boxes_backend(args, records)
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         print(json.dumps({"error": str(exc), "backend": args.backend, "runtime_python": args.runtime_python}, indent=2, sort_keys=True))
         return 2
     detection_policy = _detection_policy_from_args(args)
@@ -1284,6 +1345,225 @@ def _run_detect_boxes(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_yoloe26_runtime_check(args: argparse.Namespace) -> int:
+    runtime_python = Path(args.runtime_python).expanduser()
+    if not runtime_python.exists():
+        print(json.dumps({"error": f"YOLOE-26 runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
+        return 2
+    result = subprocess.run(
+        [
+            str(runtime_python),
+            "-c",
+            _YOLOE26_RUNTIME_CHECK_SCRIPT,
+            args.device,
+            args.checkpoint,
+        ],
+        capture_output=True,
+        check=False,
+        cwd=str(_yoloe26_model_dir(runtime_python)),
+        env=_yoloe26_worker_env(runtime_python),
+        text=True,
+    )
+    if result.returncode != 0:
+        print(json.dumps({"error": result.stderr.strip() or result.stdout.strip()}, indent=2, sort_keys=True))
+        return 2
+    print(result.stdout.strip())
+    return 0
+
+
+def _run_yoloe26_prefetch(args: argparse.Namespace) -> int:
+    runtime_python = Path(args.runtime_python).expanduser()
+    if not runtime_python.exists():
+        print(json.dumps({"error": f"YOLOE-26 runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
+        return 2
+    result = subprocess.run(
+        [
+            str(runtime_python),
+            "-c",
+            _YOLOE26_PREFETCH_SCRIPT,
+            args.device,
+            args.checkpoint,
+            json.dumps(list(_default_yoloe26_prompts())),
+        ],
+        capture_output=True,
+        check=False,
+        cwd=str(_yoloe26_model_dir(runtime_python)),
+        env=_yoloe26_worker_env(runtime_python),
+        text=True,
+    )
+    if result.returncode != 0:
+        print(json.dumps({"error": result.stderr.strip() or result.stdout.strip()}, indent=2, sort_keys=True))
+        return 2
+    print(result.stdout.strip())
+    return 0
+
+
+def _run_yoloe26_smoke(args: argparse.Namespace) -> int:
+    runtime_python = Path(args.runtime_python).expanduser()
+    if not runtime_python.exists():
+        print(json.dumps({"error": f"YOLOE-26 runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
+        return 2
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    image_path = str(Path(args.image).expanduser().resolve()) if args.image else ""
+    result = subprocess.run(
+        [
+            str(runtime_python),
+            "-c",
+            _YOLOE26_SMOKE_SCRIPT,
+            args.device,
+            args.checkpoint,
+            str(output_dir),
+            image_path,
+            json.dumps(list(_default_yoloe26_prompts())),
+        ],
+        capture_output=True,
+        check=False,
+        cwd=str(_yoloe26_model_dir(runtime_python)),
+        env=_yoloe26_worker_env(runtime_python),
+        text=True,
+    )
+    if result.returncode != 0:
+        print(json.dumps({"error": result.stderr.strip() or result.stdout.strip()}, indent=2, sort_keys=True))
+        return 2
+    print(result.stdout.strip())
+    return 0
+
+
+def _run_yoloe26_prototype_run(args: argparse.Namespace) -> int:
+    vision_python = Path(args.vision_runtime_python).expanduser()
+    bioclip_python = Path(args.bioclip_runtime_python).expanduser()
+    if not vision_python.exists():
+        print(json.dumps({"error": f"YOLOE-26 runtime Python not found: {vision_python}"}, indent=2, sort_keys=True))
+        return 2
+    if not bioclip_python.exists():
+        print(json.dumps({"error": f"BioCLIP runtime Python not found: {bioclip_python}"}, indent=2, sort_keys=True))
+        return 2
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    records = pl.read_parquet(args.input)
+    if args.limit is not None and args.limit > 0:
+        records = records.head(args.limit)
+        canonical_records_path = output_dir / "canonical_records_limited_yoloe26.parquet"
+        records.write_parquet(canonical_records_path)
+    else:
+        canonical_records_path = Path(args.input)
+
+    detections_path = output_dir / "object_detections_yoloe26.parquet"
+    scores_path = output_dir / "object_bioclip_scores_yoloe26.parquet"
+    joined_path = output_dir / "object_evidence_joined_yoloe26.parquet"
+    summary_path = output_dir / "photo_evidence_summary_yoloe26.parquet"
+    metrics_path = output_dir / "yoloe26_metrics.json"
+    manifest_path = output_dir / "yoloe26_run_manifest.json"
+    markdown_path = output_dir / "yoloe26_summary.md"
+
+    from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
+
+    detector = YoloE26SidecarObjectDetector(
+        runtime_python=str(vision_python),
+        checkpoint=args.checkpoint,
+        device=args.device,
+        imgsz=args.imgsz,
+        conf=args.conf,
+        iou=args.iou,
+        max_det=args.max_det,
+        prompt_classes=_yoloe26_prompt_classes(args),
+    )
+    detection_result = run_detection_pipeline(
+        records=records.to_dicts(),
+        detector=detector,
+        output_path=detections_path,
+        image_loader=lambda record: load_decoded_image_from_record(record, cache_root=args.cache_root),
+        detection_policy=DetectionPolicy(
+            backend="yoloe26",
+            box_score_threshold=args.conf,
+            nms_iou_threshold=args.iou,
+            max_boxes_per_image=args.max_det,
+            retain_debug_crops=args.retain_debug_crops,
+        ),
+        run_policy=DetectionRunPolicy(parquet_batch_rows=args.parquet_batch_rows),
+    )
+
+    context = SpeciesContext.read_json(args.species_context)
+    candidate_set = build_candidate_set(
+        context,
+        species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None,
+        records=records.to_dicts(),
+    )
+    runtime = _bioclip_runtime(runtime_python=bioclip_python)
+    scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
+    try:
+        object_scorer = EphemeralCropBioClipScorer(
+            scorer=scorer,
+            image_loader=lambda item: load_decoded_image_from_record(item, cache_root=args.cache_root),
+            temp_dir=args.crop_temp_dir,
+            crop_padding_ratio=0.12,
+            crop_target_px=336,
+            model_id="bioclip2_5",
+            model_version="bioclip2_5_huge",
+            model_checkpoint=BIOCLIP_25_HUGE_REVISION,
+            retain_debug_crops=args.retain_debug_crops,
+            segmenter=make_segmenter("none"),
+        )
+        score_result = screen_object_detections(
+            canonical_records=records,
+            detections=detection_result.frame,
+            species_context=context,
+            candidate_set=candidate_set,
+            scorer=object_scorer,
+            output_path=scores_path,
+            ablation_mode=args.ablation_mode,
+            parquet_batch_rows=args.parquet_batch_rows,
+        )
+    finally:
+        scorer.close()
+
+    evidence_outputs = write_object_evidence_outputs(
+        canonical_records_path=canonical_records_path,
+        detections_path=detections_path,
+        scores_path=scores_path,
+        joined_output_path=joined_path,
+        photo_summary_output_path=summary_path,
+        species_context=context,
+    )
+    photo_summary = pl.read_parquet(evidence_outputs.photo_evidence_summary)
+    metrics = _yoloe26_metrics(
+        detection_result=detection_result,
+        score_frame=score_result.frame,
+        photo_summary=photo_summary,
+        checkpoint=args.checkpoint,
+        prompt_classes=_yoloe26_prompt_classes(args),
+        device=args.device,
+        imgsz=args.imgsz,
+        conf=args.conf,
+        iou=args.iou,
+    )
+    metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
+    manifest = {
+        "input": str(args.input),
+        "canonical_records_path": str(canonical_records_path),
+        "species_context": str(args.species_context),
+        "species_candidates": args.species_candidates,
+        "vision_runtime_python": str(vision_python),
+        "bioclip_runtime_python": str(bioclip_python),
+        "outputs": {
+            "object_detections": str(detections_path),
+            "object_bioclip_scores": str(scores_path),
+            "object_evidence_joined": str(evidence_outputs.object_evidence_joined),
+            "photo_evidence_summary": str(evidence_outputs.photo_evidence_summary),
+            "metrics": str(metrics_path),
+            "summary": str(markdown_path),
+        },
+        "also_whole_image_requested": bool(args.also_whole_image),
+        "also_whole_image_status": "not_instrumented",
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    markdown_path.write_text(_yoloe26_summary_markdown(metrics=metrics, manifest=manifest), encoding="utf-8")
+    print(json.dumps({"metrics": str(metrics_path), "manifest": str(manifest_path), **manifest["outputs"]}, indent=2, sort_keys=True))
+    return 0
+
+
 def _detect_boxes_backend(args: argparse.Namespace, records: list[dict[str, object]]):
     if args.backend == "fake":
         return FakeObjectDetector([_fake_detections_for_record(record) for record in records]), _blank_decoded_image
@@ -1293,7 +1573,194 @@ def _detect_boxes_backend(args: argparse.Namespace, records: list[dict[str, obje
         if _use_vision_sidecar(args.runtime_python):
             return YoloSidecarObjectDetector(runtime_python=args.runtime_python, device=args.device), load_decoded_image_from_record
         return YoloObjectDetector(device=args.device), load_decoded_image_from_record
+    if args.backend == "yoloe26":
+        from biominer.detection.yoloe26_detector import YoloE26ObjectDetector, YoloE26SidecarObjectDetector
+
+        prompts = _yoloe26_prompt_classes(args)
+        kwargs = {
+            "checkpoint": args.checkpoint,
+            "device": args.device,
+            "imgsz": args.imgsz,
+            "conf": args.conf,
+            "iou": args.iou,
+            "max_det": args.max_det,
+            "prompt_classes": prompts,
+        }
+        if _use_vision_sidecar(args.runtime_python):
+            return YoloE26SidecarObjectDetector(runtime_python=args.runtime_python, **kwargs), load_decoded_image_from_record
+        return YoloE26ObjectDetector(**kwargs), load_decoded_image_from_record
     raise RuntimeError(f"unsupported detection backend: {args.backend}")
+
+
+def _yoloe26_prompt_classes(args: argparse.Namespace) -> tuple[str, ...]:
+    prompts = tuple(str(value) for value in getattr(args, "prompt_class", []) if str(value).strip())
+    if prompts:
+        return prompts
+    return _default_yoloe26_prompts(include_hard_negative_prompts=bool(getattr(args, "include_hard_negative_prompts", True)))
+
+
+def _default_yoloe26_prompts(*, include_hard_negative_prompts: bool = True) -> tuple[str, ...]:
+    from biominer.detection.yoloe26_detector import default_yoloe26_prompts
+
+    return default_yoloe26_prompts(include_hard_negative_prompts=include_hard_negative_prompts)
+
+
+def _yoloe26_worker_env(runtime_python: str | Path) -> dict[str, str]:
+    env = os.environ.copy()
+    runtime_root = _runtime_root_from_python(runtime_python, fallback=YOLOE26_RUNTIME_ROOT)
+    cache_root = runtime_root / "cache"
+    defaults = {
+        "HF_HOME": cache_root / "huggingface",
+        "HUGGINGFACE_HUB_CACHE": cache_root / "huggingface" / "hub",
+        "TORCH_HOME": cache_root / "torch",
+        "YOLO_CONFIG_DIR": cache_root / "ultralytics",
+        "BIOMINER_YOLO26_MODEL_DIR": runtime_root / "models",
+    }
+    source_path = str(Path.cwd() / "src")
+    current = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = source_path if not current else f"{source_path}{os.pathsep}{current}"
+    for key, value in defaults.items():
+        env.setdefault(key, str(value))
+        Path(env[key]).mkdir(parents=True, exist_ok=True)
+    return env
+
+
+def _yoloe26_model_dir(runtime_python: str | Path) -> Path:
+    env = _yoloe26_worker_env(runtime_python)
+    model_dir = Path(env["BIOMINER_YOLO26_MODEL_DIR"])
+    model_dir.mkdir(parents=True, exist_ok=True)
+    return model_dir
+
+
+def _runtime_root_from_python(runtime_python: str | Path, *, fallback: Path) -> Path:
+    path = Path(runtime_python).expanduser()
+    if len(path.parents) >= 3 and path.parent.name == "bin":
+        return path.parents[2]
+    return fallback
+
+
+def _yoloe26_metrics(
+    *,
+    detection_result: object,
+    score_frame: pl.DataFrame,
+    photo_summary: pl.DataFrame,
+    checkpoint: str,
+    prompt_classes: tuple[str, ...],
+    device: str,
+    imgsz: int,
+    conf: float,
+    iou: float,
+) -> dict[str, object]:
+    detections = detection_result.frame
+    detected = detections.filter(pl.col("detection_status") == "detected") if "detection_status" in detections.columns else detections
+    species_scores = _numeric_values(score_frame, "species_top1_score")
+    species_margins = _numeric_values(score_frame, "species_top1_margin")
+    detector_scores = _numeric_values(detected, "detector_score")
+    return {
+        "metrics_kind": "heuristic_without_ground_truth",
+        "records_seen": int(detection_result.records_seen),
+        "images_loaded": int(detection_result.images_loaded),
+        "image_failures": int(detection_result.image_failures),
+        "detections_written": int(detection_result.detections_written),
+        "no_detection_count": _count_equals(detections, "detection_status", "no_detection"),
+        "crops_created": int(detection_result.crops_created),
+        "crops_scored": int(score_frame.height),
+        "detections_by_detector_label": _value_counts(detected, "detector_label"),
+        "hard_negative_count": _count_equals(detected, "detector_label", "hard_negative"),
+        "occurrence_bin_counts": _value_counts(score_frame, "occurrence_bin"),
+        "photo_occurrence_bin_counts": _value_counts(photo_summary, "photo_occurrence_bin"),
+        "mean_detector_score": _mean(detector_scores),
+        "median_detector_score": _median(detector_scores),
+        "mean_species_top1_score": _mean(species_scores),
+        "median_species_top1_score": _median(species_scores),
+        "mean_species_margin": _mean(species_margins),
+        "median_species_margin": _median(species_margins),
+        "top20_bioclip_top1_species": _top_counts(score_frame, "species_top1_scientific_name", limit=20),
+        "top20_detector_labels": _top_counts(detected, "detector_label", limit=20),
+        "checkpoint": checkpoint,
+        "prompt_classes": list(prompt_classes),
+        "device": device,
+        "imgsz": imgsz,
+        "conf": conf,
+        "iou": iou,
+    }
+
+
+def _value_counts(frame: pl.DataFrame, column: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    if column not in frame.columns:
+        return counts
+    for value in frame.get_column(column).to_list():
+        text = str(value or "")
+        if not text:
+            continue
+        counts[text] = counts.get(text, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _top_counts(frame: pl.DataFrame, column: str, *, limit: int) -> list[dict[str, object]]:
+    return [{"value": key, "count": count} for key, count in list(_value_counts(frame, column).items())[:limit]]
+
+
+def _count_equals(frame: pl.DataFrame, column: str, expected: str) -> int:
+    if column not in frame.columns:
+        return 0
+    return sum(1 for value in frame.get_column(column).to_list() if str(value or "") == expected)
+
+
+def _numeric_values(frame: pl.DataFrame, column: str) -> list[float]:
+    if column not in frame.columns:
+        return []
+    values: list[float] = []
+    for value in frame.get_column(column).to_list():
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            values.append(number)
+    return values
+
+
+def _mean(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2
+
+
+def _yoloe26_summary_markdown(*, metrics: dict[str, object], manifest: dict[str, object]) -> str:
+    lines = [
+        "# YOLOE-26 Prototype Summary",
+        "",
+        "Metrics are heuristic because no reviewed ground-truth boxes or species labels were supplied.",
+        "",
+        f"- Records seen: {metrics['records_seen']}",
+        f"- Images loaded: {metrics['images_loaded']}",
+        f"- Image failures: {metrics['image_failures']}",
+        f"- Detections written: {metrics['detections_written']}",
+        f"- Crops scored: {metrics['crops_scored']}",
+        f"- Mean detector score: {metrics['mean_detector_score']}",
+        f"- Mean BioCLIP top1 species score: {metrics['mean_species_top1_score']}",
+        f"- Mean BioCLIP species margin: {metrics['mean_species_margin']}",
+        "",
+        "## Outputs",
+        "",
+    ]
+    outputs = manifest.get("outputs", {})
+    if isinstance(outputs, dict):
+        for key, value in outputs.items():
+            lines.append(f"- {key}: `{value}`")
+    lines.extend(["", "## Detector Labels", "", json.dumps(metrics["detections_by_detector_label"], indent=2, sort_keys=True)])
+    lines.extend(["", "## Occurrence Bins", "", json.dumps(metrics["occurrence_bin_counts"], indent=2, sort_keys=True)])
+    return "\n".join(lines) + "\n"
 
 
 def _detection_policy_from_args(args: argparse.Namespace) -> DetectionPolicy:
@@ -1849,7 +2316,148 @@ print(json.dumps({{"snapshot_path": path, "model_name": sys.argv[1], "revision":
 """
 
 
+_YOLOE26_RUNTIME_CHECK_SCRIPT = r"""
+from __future__ import annotations
+
+import importlib.metadata
+import json
+import sys
+
+import torch
+from ultralytics import YOLOE
+
+requested = sys.argv[1]
+checkpoint = sys.argv[2]
+if requested == "auto":
+    if torch.cuda.is_available():
+        resolved = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        resolved = "mps"
+    else:
+        resolved = "cpu"
+elif requested == "cuda" and not torch.cuda.is_available():
+    raise SystemExit("CUDA was requested but is not available")
+elif requested == "mps" and not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+    raise SystemExit("MPS was requested but is not available")
+else:
+    resolved = requested
+
+model = YOLOE(checkpoint)
+model.set_classes(["butterfly", "moth", "caterpillar", "pupa"])
+cuda_device_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+print(json.dumps({
+    "runtime_python": sys.executable,
+    "checkpoint": checkpoint,
+    "device_requested": requested,
+    "device_resolved": resolved,
+    "torch_version": torch.__version__,
+    "cuda_available": torch.cuda.is_available(),
+    "cuda_device_name": cuda_device_name,
+    "mps_available": hasattr(torch.backends, "mps") and torch.backends.mps.is_available(),
+    "ultralytics_version": importlib.metadata.version("ultralytics"),
+    "yoloe_import": True,
+    "checkpoint_load": True,
+    "set_classes": True,
+}, sort_keys=True))
+"""
+
+
+_YOLOE26_PREFETCH_SCRIPT = r"""
+from __future__ import annotations
+
+import importlib.metadata
+import json
+import os
+from pathlib import Path
+import sys
+
+import torch
+from ultralytics import YOLOE
+
+device = sys.argv[1]
+checkpoint = sys.argv[2]
+prompts = json.loads(sys.argv[3])
+model = YOLOE(checkpoint)
+model.set_classes(prompts)
+model_dir = Path(os.environ.get("BIOMINER_YOLO26_MODEL_DIR") or Path.cwd())
+checkpoint_path = model_dir / checkpoint
+print(json.dumps({
+    "runtime_python": sys.executable,
+    "checkpoint": checkpoint,
+    "checkpoint_path": str(checkpoint_path if checkpoint_path.exists() else checkpoint),
+    "model_cache_dir": str(model_dir),
+    "device_requested": device,
+    "torch_version": torch.__version__,
+    "cuda_available": torch.cuda.is_available(),
+    "mps_available": hasattr(torch.backends, "mps") and torch.backends.mps.is_available(),
+    "ultralytics_version": importlib.metadata.version("ultralytics"),
+    "prompt_class_count": len(prompts),
+}, sort_keys=True))
+"""
+
+
+_YOLOE26_SMOKE_SCRIPT = r"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+
+from PIL import Image, ImageDraw
+
+from biominer.detection.detector_base import DecodedImage
+from biominer.detection.yoloe26_detector import YoloE26ObjectDetector
+
+device = sys.argv[1]
+checkpoint = sys.argv[2]
+output_dir = Path(sys.argv[3])
+image_path = Path(sys.argv[4]) if sys.argv[4] else None
+prompts = tuple(json.loads(sys.argv[5]))
+output_dir.mkdir(parents=True, exist_ok=True)
+
+if image_path is not None:
+    image = Image.open(image_path).convert("RGB")
+    source_uri = str(image_path)
+    synthetic = False
+else:
+    image = Image.new("RGB", (32, 32), (240, 240, 240))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((8, 8, 24, 24), outline=(80, 80, 80), width=2)
+    source_uri = "synthetic://blank-smoke-image"
+    synthetic = True
+
+decoded = DecodedImage(width=image.width, height=image.height, mode="RGB", data=image.tobytes(), source_uri=source_uri)
+detector = YoloE26ObjectDetector(checkpoint=checkpoint, device=device, prompt_classes=prompts)
+detections = detector.detect_batch([decoded])[0]
+preview_rows = [
+    {
+        "label": item.label,
+        "score": item.score,
+        "bbox_xyxy": list(item.bbox_xyxy),
+        "objectness_score": item.objectness_score,
+    }
+    for item in detections
+]
+preview_path = output_dir / "detections_preview.json"
+preview_path.write_text(json.dumps({"synthetic_image": synthetic, "detections": preview_rows}, indent=2, sort_keys=True), encoding="utf-8")
+if detections:
+    annotated = image.copy()
+    draw = ImageDraw.Draw(annotated)
+    for item in detections:
+        draw.rectangle(item.bbox_xyxy, outline=(255, 100, 0), width=2)
+    annotated.save(output_dir / "annotated_preview.jpg")
+print(json.dumps({
+    "output_dir": str(output_dir),
+    "detections_preview": str(preview_path),
+    "detections": len(detections),
+    "synthetic_image": synthetic,
+    "checkpoint": checkpoint,
+}, sort_keys=True))
+"""
+
+
 def main() -> None:
+    load_runtime_secrets_env()
     raise SystemExit(run(build_parser().parse_args()))
 
 

@@ -58,7 +58,7 @@ canonical source records
   -> object_evidence_joined.parquet and photo_evidence_summary.parquet
 ```
 
-The core Python 3.14 environment keeps heavy vision dependencies optional. `detect boxes --backend fake` is available for offline tests and deterministic local plumbing. YOLO and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent.
+The core Python 3.14 environment keeps heavy vision dependencies optional. `detect boxes --backend fake` is available for offline tests and deterministic local plumbing. YOLOE-26, YOLO, and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent. The YOLOE-26 prototype treats YOLOE only as an object finder; BioCLIP 2.5 Huge remains the biological classifier and species scorer.
 
 Example command shape:
 
@@ -67,6 +67,17 @@ uv run biominer detect boxes \
   --input staging/species_runs/example/filtered.parquet \
   --output staging/species_runs/example/object_detections.parquet \
   --backend fake
+
+uv run biominer detect boxes \
+  --input staging/species_runs/example/filtered.parquet \
+  --output staging/species_runs/example/object_detections_yoloe26.parquet \
+  --backend yoloe26 \
+  --runtime-python "../YOLO26/venv/bin/python" \
+  --checkpoint yoloe-26s-seg.pt \
+  --device auto \
+  --conf 0.20 \
+  --iou 0.50 \
+  --max-det 8
 
 uv run biominer bioclip screen-objects \
   --input staging/species_runs/example/filtered.parquet \
@@ -92,6 +103,8 @@ uv run biominer bioclip join-object-evidence \
 ```
 
 Object-level tables are not standalone silos. Every detection and score row keeps `source`, `flickr_photo_id`, and object-level `detection_id`/`crop_hash` where applicable. Geography is recorded as a soft prior and can route strong visual conflicts to review; it is not an absolute discard rule.
+
+For the combined YOLOE-26 plus BioCLIP detector-crop prototype, see `docs/yoloe26_prototype.md`.
 
 The active package is `biominer` under `src/`. Run commands through:
 
@@ -197,18 +210,19 @@ PyTorch is intentionally kept out of the main Python 3.14 BioMiner environment. 
 Create and synchronise the project environment:
 
 ```bash
-cd ~/BioMiner
+cd ./BioMiner
 unset VIRTUAL_ENV
 uv sync --extra test
 ```
 
-Create the optional BioCLIP worker environment only on machines that will run Step 3:
+Create the optional YOLOE-26 and BioCLIP worker environments only on machines that will run detector-first or BioCLIP work:
 
 ```bash
-bash scripts/setup_bioclip_py312.sh
+bash scripts/setup_yoloe26_user_py312.sh
+bash scripts/setup_bioclip25_user_py312.sh
 ```
 
-This creates `.venv-bioclip-py312` with PyTorch, OpenCLIP, Pillow, Safetensors, Hugging Face Hub, and HF Xet. The worker environment is local-only and must not be committed.
+These create external Python 3.12 runtimes under `./YOLO26` and `./BioCLIP25` next to `./BioMiner`. Commands are run from `./BioMiner`, so runtime flags use `../YOLO26` and `../BioCLIP25`. Set `BIOMINER_BASE_PATH=/path/to/base` on macOS, WSL, or Ubuntu when the sibling folders live outside the inferred base path. The worker environments, model files, and caches are local-only and must not be committed.
 
 Verify the CLI:
 
@@ -230,7 +244,16 @@ cp .env.example .env
 # edit .env and set FLICKR_API_KEY
 ```
 
-Never commit `.env` or API keys.
+BioMiner CLI startup also loads secrets automatically when a secrets file is present. The lookup order is:
+
+```text
+BIOMINER_SECRETS_ENV
+/Applications/secrets/secrets.env
+../secrets/secrets.env next to ./BioMiner
+/mnt/c/Applications/secrets/secrets.env for WSL
+```
+
+The Flickr variables expected by current commands are `FLICKR_API_KEY` and, when future signed Flickr operations need it, `FLICKR_SECRET_KEY`. Existing shell environment variables are preserved unless a caller explicitly asks the loader to override them. Never commit `.env`, `secrets.env`, or API keys.
 
 # Step 0 — Taxonomic registry
 
@@ -759,14 +782,15 @@ BioCLIP uses temporary image downloads and register-based processing.
 BioCLIP 2.5 Huge runs through a separate Python 3.12 sidecar environment:
 
 ```bash
-bash scripts/setup_bioclip_py312.sh
+bash scripts/setup_bioclip25_user_py312.sh
 ```
 
 Verify the sidecar runtime without loading the model:
 
 ```bash
 uv run biominer bioclip runtime-check \
-  --runtime-python .venv-bioclip-py312/bin/python \
+  --runtime-python "../BioCLIP25/venv/bin/python" \
+  --hf-cache-dir "../BioCLIP25/cache/huggingface" \
   --device auto
 ```
 
@@ -774,8 +798,8 @@ Prefetch the BioCLIP 2.5 Huge safetensors snapshot:
 
 ```bash
 uv run biominer bioclip prefetch-model \
-  --runtime-python .venv-bioclip-py312/bin/python \
-  --hf-cache-dir data/cache/huggingface
+  --runtime-python "../BioCLIP25/venv/bin/python" \
+  --hf-cache-dir "../BioCLIP25/cache/huggingface"
 ```
 
 Run local screening:
@@ -785,7 +809,8 @@ uv run biominer bioclip screen \
   --input staging/evidence/filtered.parquet \
   --species-candidates data/registry/current/taxa.parquet \
   --output staging/evidence/classified.parquet \
-  --runtime-python .venv-bioclip-py312/bin/python \
+  --runtime-python "../BioCLIP25/venv/bin/python" \
+  --hf-cache-dir "../BioCLIP25/cache/huggingface" \
   --device auto \
   --register-count 2 \
   --register-size 4 \

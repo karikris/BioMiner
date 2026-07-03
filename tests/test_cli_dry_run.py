@@ -10,7 +10,7 @@ from typing import Any
 import polars as pl
 
 from biominer.config import BioMinerConfig, RuntimeConfig, StorageConfig, WorkStoreConfig
-from biominer.cli import _detect_boxes_backend, build_parser, load_decoded_image_from_record, run
+from biominer.cli import _detect_boxes_backend, _yoloe26_metrics, build_parser, load_decoded_image_from_record, run
 from biominer.detection.detector_base import DetectionCandidate
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 
@@ -291,6 +291,52 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
     assert species_args.profile == "mac_m5pro_64gb"
     assert species_args.parquet_batch_rows == 6
     assert species_args.image_max_side_px == 1024
+
+
+def test_detect_boxes_cli_accepts_yoloe26_arguments() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "detect",
+            "boxes",
+            "--input",
+            "filtered.parquet",
+            "--output",
+            "object_detections.parquet",
+            "--backend",
+            "yoloe26",
+            "--runtime-python",
+            "/runtime-base/YOLO26/venv/bin/python",
+            "--checkpoint",
+            "yoloe-26m-seg.pt",
+            "--device",
+            "mps",
+            "--imgsz",
+            "768",
+            "--conf",
+            "0.15",
+            "--iou",
+            "0.55",
+            "--max-det",
+            "12",
+            "--prompt-class",
+            "butterfly",
+            "--prompt-class",
+            "museum label",
+            "--no-include-hard-negative-prompts",
+        ]
+    )
+
+    assert args.backend == "yoloe26"
+    assert args.runtime_python == "/runtime-base/YOLO26/venv/bin/python"
+    assert args.checkpoint == "yoloe-26m-seg.pt"
+    assert args.device == "mps"
+    assert args.imgsz == 768
+    assert args.conf == 0.15
+    assert args.iou == 0.55
+    assert args.max_det == 12
+    assert args.prompt_class == ["butterfly", "museum label"]
+    assert args.include_hard_negative_prompts is False
 
 
 def test_detect_boxes_cli_forwards_detection_and_run_policies(tmp_path, capsys, monkeypatch) -> None:
@@ -1433,6 +1479,8 @@ def test_detect_boxes_yolo_backend_uses_lazy_optional_adapter(tmp_path, capsys, 
             str(output_path),
             "--backend",
             "yolo",
+            "--runtime-python",
+            str(tmp_path / "missing-vision-runtime" / "bin" / "python"),
             "--device",
             "mps",
         ]
@@ -1501,6 +1549,224 @@ def test_detect_boxes_yolo_backend_uses_existing_sidecar_runtime(tmp_path, monke
     assert detector.backend == "yolo"
     assert image_loader is load_decoded_image_from_record
     assert calls["sidecar_init"] == {"runtime_python": str(runtime_python), "model_path": "yolov8n.pt", "device": "mps"}
+
+
+def test_detect_boxes_yoloe26_backend_uses_sidecar_runtime(tmp_path, monkeypatch) -> None:
+    runtime_python = tmp_path / "YOLO26" / "venv" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("# fake python", encoding="utf-8")
+    calls: dict[str, object] = {}
+
+    class FakeYoloE26SidecarDetector:
+        backend = "yoloe26"
+        model_id = "fake-yoloe26-sidecar"
+        model_version = "sidecar-test"
+        checkpoint = "yoloe-26s-seg.pt"
+
+        def __init__(self, **kwargs):  # noqa: ANN003 - mirrors sidecar init.
+            calls["sidecar_init"] = kwargs
+
+        def detect_batch(self, images):  # noqa: ANN001, ANN201 - mirrors ObjectDetector protocol.
+            return [[] for _image in images]
+
+    class InProcessYoloE26Detector:
+        def __init__(self, **kwargs):  # noqa: ANN003, ANN204 - should not be called.
+            raise AssertionError(f"in-process YOLOE-26 should not be used when sidecar exists: {kwargs}")
+
+    monkeypatch.setattr("biominer.detection.yoloe26_detector.YoloE26SidecarObjectDetector", FakeYoloE26SidecarDetector)
+    monkeypatch.setattr("biominer.detection.yoloe26_detector.YoloE26ObjectDetector", InProcessYoloE26Detector)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "detect",
+            "boxes",
+            "--input",
+            str(tmp_path / "filtered.parquet"),
+            "--output",
+            str(tmp_path / "object_detections.parquet"),
+            "--backend",
+            "yoloe26",
+            "--runtime-python",
+            str(runtime_python),
+            "--device",
+            "mps",
+            "--checkpoint",
+            "yoloe-26s-seg.pt",
+            "--imgsz",
+            "640",
+            "--conf",
+            "0.2",
+            "--iou",
+            "0.5",
+            "--max-det",
+            "8",
+        ]
+    )
+
+    detector, image_loader = _detect_boxes_backend(args, [])
+
+    assert detector.backend == "yoloe26"
+    assert image_loader is load_decoded_image_from_record
+    assert calls["sidecar_init"] == {
+        "runtime_python": str(runtime_python),
+        "checkpoint": "yoloe-26s-seg.pt",
+        "device": "mps",
+        "imgsz": 640,
+        "conf": 0.2,
+        "iou": 0.5,
+        "max_det": 8,
+        "prompt_classes": (
+            "butterfly",
+            "moth",
+            "caterpillar",
+            "chrysalis",
+            "pupa",
+            "insect",
+            "butterfly wing",
+            "pinned butterfly specimen",
+            "butterfly specimen",
+            "lepidoptera",
+            "flower",
+            "leaf",
+            "person",
+            "hand",
+            "drawing",
+            "painting",
+            "logo",
+            "text",
+            "sign",
+            "museum label",
+        ),
+    }
+
+
+def test_yoloe26_runtime_commands_parse_with_applications_defaults() -> None:
+    parser = build_parser()
+
+    runtime = parser.parse_args(["detect", "yoloe26-runtime-check", "--device", "mps"])
+    prefetch = parser.parse_args(["detect", "yoloe26-prefetch", "--checkpoint", "yoloe-26s-seg.pt"])
+    smoke = parser.parse_args(["detect", "yoloe26-smoke", "--image", "manual.jpg"])
+    prototype = parser.parse_args(
+        [
+            "detect",
+            "yoloe26-prototype-run",
+            "--input",
+            "filtered.parquet",
+            "--species-context",
+            "species_context.json",
+            "--output-dir",
+            "reports/yoloe26",
+            "--limit",
+            "10",
+        ]
+    )
+
+    assert runtime.detect_command == "yoloe26-runtime-check"
+    assert runtime.runtime_python.endswith("/YOLO26/venv/bin/python")
+    assert prefetch.checkpoint == "yoloe-26s-seg.pt"
+    assert smoke.image == "manual.jpg"
+    assert prototype.vision_runtime_python.endswith("/YOLO26/venv/bin/python")
+    assert prototype.bioclip_runtime_python.endswith("/BioCLIP25/venv/bin/python")
+    assert prototype.limit == 10
+
+
+def test_yoloe26_smoke_resolves_paths_before_sidecar_run(tmp_path, capsys, monkeypatch) -> None:
+    runtime_python = tmp_path / "YOLO26" / "venv" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("# fake python", encoding="utf-8")
+    image_path = tmp_path / "manual.jpg"
+    image_path.write_bytes(b"not-a-real-image-for-this-mocked-test")
+    calls: list[dict[str, object]] = []
+
+    def fake_run(cmd, *, capture_output, check, cwd, env, text):  # noqa: ANN001 - mirrors subprocess.run.
+        calls.append({"cmd": cmd, "capture_output": capture_output, "check": check, "cwd": cwd, "env": env, "text": text})
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout='{"detections":0,"synthetic_image":false}\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr("biominer.cli.subprocess.run", fake_run)
+    monkeypatch.chdir(tmp_path)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "detect",
+            "yoloe26-smoke",
+            "--runtime-python",
+            str(runtime_python),
+            "--image",
+            "manual.jpg",
+            "--output-dir",
+            "smoke-output",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    command = calls[0]["cmd"]
+    assert payload["synthetic_image"] is False
+    assert command[0] == str(runtime_python)
+    assert command[5] == str((tmp_path / "smoke-output").resolve())
+    assert command[6] == str(image_path.resolve())
+    assert calls[0]["cwd"] == str(tmp_path / "YOLO26" / "models")
+
+
+def test_yoloe26_prototype_metrics_aggregate_tiny_frames() -> None:
+    detections = pl.DataFrame(
+        [
+            {"detection_status": "detected", "detector_label": "butterfly_like", "detector_score": 0.8},
+            {"detection_status": "detected", "detector_label": "hard_negative", "detector_score": 0.2},
+            {"detection_status": "no_detection", "detector_label": None, "detector_score": 0.0},
+        ]
+    )
+    scores = pl.DataFrame(
+        [
+            {
+                "occurrence_bin": "silver",
+                "species_top1_scientific_name": "Danaus plexippus",
+                "species_top1_score": 0.7,
+                "species_top1_margin": 0.3,
+            },
+            {
+                "occurrence_bin": "bronze",
+                "species_top1_scientific_name": "Danaus plexippus",
+                "species_top1_score": 0.4,
+                "species_top1_margin": 0.1,
+            },
+        ]
+    )
+    photo_summary = pl.DataFrame([{"photo_occurrence_bin": "silver"}, {"photo_occurrence_bin": "bin"}])
+
+    metrics = _yoloe26_metrics(
+        detection_result=SimpleNamespace(
+            frame=detections,
+            records_seen=3,
+            images_loaded=2,
+            image_failures=1,
+            detections_written=2,
+            crops_created=2,
+        ),
+        score_frame=scores,
+        photo_summary=photo_summary,
+        checkpoint="yoloe-26s-seg.pt",
+        prompt_classes=("butterfly",),
+        device="mps",
+        imgsz=640,
+        conf=0.2,
+        iou=0.5,
+    )
+
+    assert metrics["metrics_kind"] == "heuristic_without_ground_truth"
+    assert metrics["records_seen"] == 3
+    assert metrics["detections_by_detector_label"] == {"butterfly_like": 1, "hard_negative": 1}
+    assert metrics["hard_negative_count"] == 1
+    assert metrics["occurrence_bin_counts"] == {"bronze": 1, "silver": 1}
+    assert metrics["photo_occurrence_bin_counts"] == {"bin": 1, "silver": 1}
+    assert metrics["mean_species_top1_score"] == 0.55
+    assert metrics["top20_bioclip_top1_species"] == [{"value": "Danaus plexippus", "count": 2}]
 
 
 def _fake_cli_image(record: dict[str, object]):
