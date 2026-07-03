@@ -12,6 +12,7 @@ from biominer.bioclip.object_runner import (
     CachedObjectEmbeddingScorer,
     EphemeralCropBioClipScorer,
     FakeObjectBioClipScorer,
+    OBJECT_SCORE_OUTPUT_SCHEMA,
     apply_geospatial_soft_prior,
     empty_object_score_frame,
     screen_object_detections,
@@ -1001,6 +1002,7 @@ def test_empty_object_evidence_outputs_keep_stable_join_table_schemas(tmp_path) 
     summary = pl.read_parquet(outputs.photo_evidence_summary)
     assert joined.height == 0
     assert summary.height == 0
+    assert set(OBJECT_SCORE_OUTPUT_SCHEMA).issubset(joined.columns)
     assert {
         "source",
         "flickr_photo_id",
