@@ -61,8 +61,8 @@ def evaluate_xie_style(
         }
     matches = _best_matches(prediction_rows, truth_rows, iou_threshold=iou_threshold, score_fn=_species_score)
     matched_truth = [truth for _prediction, truth, iou in matches if truth is not None and iou >= iou_threshold]
-    species_top1 = _accuracy(matches, lambda prediction, truth: _norm(prediction.get("species_top1_scientific_name")) == _norm(truth.get("scientific_name")))
-    species_top5 = _accuracy(matches, lambda prediction, truth: _norm(truth.get("scientific_name")) in {_norm(value) for value in prediction.get("species_top5", [])})
+    species_top1 = _accuracy(matches, _species_top1_correct)
+    species_top5 = _accuracy(matches, _species_top5_correct)
     family_top3 = _accuracy(matches, lambda prediction, truth: _norm(truth.get("family")) in {_norm(value) for value in prediction.get("family_top3", [])})
     genus_top8 = _accuracy(matches, lambda prediction, truth: _norm(truth.get("genus")) in {_norm(value) for value in prediction.get("genus_top8", [])})
     joint_results = [
@@ -97,7 +97,7 @@ def evaluate_xie_style(
                 (
                     truth is not None
                     and iou >= iou_threshold
-                    and _norm(truth.get("scientific_name")) in {_norm(value) for value in prediction.get("species_top5", [])},
+                    and _species_top5_correct(prediction, truth),
                     _optional_float(prediction.get("species_top1_score")) or 0.0,
                 )
                 for prediction, truth, iou in matches
@@ -156,6 +156,22 @@ def _detector_ap50_95(predictions: list[dict[str, Any]], truths: list[dict[str, 
     if not present:
         return None
     return sum(present) / len(present)
+
+
+def _species_top1_correct(prediction: dict[str, Any], truth: dict[str, Any]) -> bool:
+    predicted_key = _norm(prediction.get("accepted_taxon_key") or prediction.get("species_top1_accepted_taxon_key"))
+    truth_key = _norm(truth.get("accepted_taxon_key"))
+    if predicted_key and truth_key:
+        return predicted_key == truth_key
+    return _norm(prediction.get("species_top1_scientific_name")) == _norm(truth.get("scientific_name"))
+
+
+def _species_top5_correct(prediction: dict[str, Any], truth: dict[str, Any]) -> bool:
+    truth_key = _norm(truth.get("accepted_taxon_key"))
+    predicted_keys = {_norm(value) for value in prediction.get("species_top5_accepted_taxon_keys", []) if value}
+    if truth_key and predicted_keys:
+        return truth_key in predicted_keys
+    return _norm(truth.get("scientific_name")) in {_norm(value) for value in prediction.get("species_top5", [])}
 
 
 def _accuracy(matches: list[tuple[dict[str, Any], dict[str, Any] | None, float]], predicate: Any) -> float:

@@ -596,6 +596,37 @@ def test_xie_style_evaluation_uses_iou_and_species_correctness() -> None:
     assert report["joint_map50"] == pytest.approx(1.0)
 
 
+def test_xie_style_evaluation_counts_accepted_taxon_key_species_matches() -> None:
+    report = evaluate_xie_style(
+        predictions=[
+            {
+                "source": "flickr",
+                "flickr_photo_id": "p1",
+                "bbox_xyxy": [0, 0, 10, 10],
+                "species_top1_scientific_name": "Anosia plexippus",
+                "species_top1_accepted_taxon_key": "gbif:5131654",
+                "species_top5": ["Anosia plexippus"],
+                "species_top5_accepted_taxon_keys": ["gbif:5131654"],
+                "species_top1_score": 0.9,
+            }
+        ],
+        ground_truth=[
+            {
+                "source": "flickr",
+                "flickr_photo_id": "p1",
+                "bbox_xyxy": [1, 1, 9, 9],
+                "scientific_name": "Danaus plexippus",
+                "accepted_taxon_key": "gbif:5131654",
+            }
+        ],
+    )
+
+    assert report["species_top1_accuracy"] == pytest.approx(1.0)
+    assert report["species_top5_accuracy"] == pytest.approx(1.0)
+    assert report["joint_map50"] == pytest.approx(1.0)
+    assert report["joint_top5_map50"] == pytest.approx(1.0)
+
+
 def test_xie_style_detector_metrics_use_detector_scores_and_ap50_95() -> None:
     report = evaluate_xie_style(
         predictions=[
