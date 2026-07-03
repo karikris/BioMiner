@@ -110,24 +110,35 @@ def validate_config(
         raise ConfigError("runtime.default_batch_rows must be positive")
     if config.runtime.target_parquet_mb <= 0:
         raise ConfigError("runtime.target_parquet_mb must be positive")
-    if require_cloud_credentials:
-        _require_value(config.runtime.worker_id, config.runtime.worker_id_env, "worker ID")
     if not allow_local_backends and config.storage.backend == "local":
         raise ConfigError("storage.backend=local is allowed only with an explicit dev/test override")
     if not allow_local_backends and config.workstore.backend == "sqlite":
         raise ConfigError("workstore.backend=sqlite is allowed only with an explicit dev/test override")
+    if require_cloud_credentials:
+        missing = production_missing_config_variables(config)
+        if missing:
+            raise ConfigError("missing production config values: " + ", ".join(missing))
     if config.storage.backend == "s3":
         if not config.storage.bucket:
             raise ConfigError("storage.bucket is required for s3 storage")
-        if require_cloud_credentials:
-            _require_value(config.storage.endpoint_url, config.storage.endpoint_url_env, "S3 endpoint URL")
-            _require_value(config.storage.access_key_id, config.storage.access_key_id_env, "S3 access key ID")
-            _require_value(config.storage.secret_access_key, config.storage.secret_access_key_env, "S3 secret access key")
     if config.workstore.backend == "postgres":
         if not config.workstore.dsn_env and not config.workstore.dsn:
             raise ConfigError("workstore.dsn_env or resolved dsn is required for postgres workstore")
-        if require_cloud_credentials:
-            _require_value(config.workstore.dsn, config.workstore.dsn_env, "Postgres DSN")
+
+
+def production_missing_config_variables(config: BioMinerConfig) -> list[str]:
+    missing: list[str] = []
+    if config.storage.backend == "s3":
+        _append_missing(missing, config.storage.bucket, "BIOMINER_S3_BUCKET")
+        _append_missing(missing, config.storage.prefix, "BIOMINER_S3_PREFIX")
+        _append_missing(missing, config.storage.endpoint_url, config.storage.endpoint_url_env or "BIOMINER_S3_ENDPOINT_URL")
+        _append_missing(missing, config.storage.access_key_id, config.storage.access_key_id_env or "BIOMINER_S3_ACCESS_KEY_ID")
+        _append_missing(missing, config.storage.secret_access_key, config.storage.secret_access_key_env or "BIOMINER_S3_SECRET_ACCESS_KEY")
+        _append_missing(missing, config.storage.region, "BIOMINER_S3_REGION")
+    if config.workstore.backend == "postgres":
+        _append_missing(missing, config.workstore.dsn, config.workstore.dsn_env or "BIOMINER_WORKSTORE_DSN")
+    _append_missing(missing, config.runtime.worker_id, config.runtime.worker_id_env)
+    return missing
 
 
 def create_storage_backend(config: StorageConfig | None = None) -> CloudStorage:
@@ -221,7 +232,7 @@ def _load_storage_config(raw: Any, env: Mapping[str, str]) -> StorageConfig:
         endpoint_url_env=_optional_str(endpoint_url_env),
         access_key_id_env=_optional_str(access_key_id_env),
         secret_access_key_env=_optional_str(secret_access_key_env),
-        region=str(values.get("region", env.get("BIOMINER_S3_REGION", "auto"))),
+        region=str(values.get("region", env.get("BIOMINER_S3_REGION", ""))),
         endpoint_url=_optional_str(values.get("endpoint_url") or (env.get(str(endpoint_url_env)) if endpoint_url_env else env.get("BIOMINER_S3_ENDPOINT_URL"))),
         access_key_id=_optional_str(values.get("access_key_id") or (env.get(str(access_key_id_env)) if access_key_id_env else env.get("BIOMINER_S3_ACCESS_KEY_ID"))),
         secret_access_key=_optional_str(
@@ -270,11 +281,10 @@ def _optional_str(value: Any) -> str | None:
     return text if text else None
 
 
-def _require_value(value: str | None, env_name: str | None, label: str) -> None:
+def _append_missing(missing: list[str], value: str | None, env_name: str | None) -> None:
     if value:
         return
-    suffix = f" via {env_name}" if env_name else ""
-    raise ConfigError(f"{label} is required{suffix}")
+    missing.append(str(env_name or "<unknown>"))
 
 
 def _redact_access_key(value: str | None) -> str | None:
