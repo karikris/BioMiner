@@ -566,6 +566,104 @@ def test_compile_enriched_registry_keeps_conflicting_source_name_disabled(tmp_pa
     assert {"severity": "warning", "code": "enrichment_name_without_base_taxon", "subject": "col:name:bad"} in qa.to_dicts()
 
 
+def test_compile_enriched_registry_preserves_t5_translations_as_disabled_candidates(tmp_path) -> None:
+    registry, scope = _write_base_registry(tmp_path)
+    write_enrichment_sources(
+        registry,
+        name_assertions=[
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Translated Lime",
+                "language": "eng",
+                "script": "Latn",
+                "region": "",
+                "name_class": "generated_translation",
+                "source": "Translation",
+                "source_record_id": "translation:gbif:100:eng",
+                "trust_tier": "T5",
+                "precision_tier": "low",
+                "confidence": "low",
+                "enabled": True,
+                "review_state": "candidate",
+            }
+        ],
+    )
+
+    compile_enriched_registry(
+        registry_dir=registry,
+        registry_version="enriched",
+        scope_path=scope,
+        requested_sources=("translation",),
+    )
+
+    names = pl.read_parquet(registry / "names.parquet")
+    candidates = pl.read_parquet(registry / "name_candidates.parquet")
+    queries = pl.read_parquet(registry / "flickr_query_definitions.parquet")
+
+    assert "Translated Lime" not in names["display_name"].to_list()
+    assert "Translated Lime" in candidates["display_name"].to_list()
+    assert candidates.select("trust_tier").to_series().to_list() == ["T5"]
+    assert candidates.select("enabled").to_series().to_list() == [False]
+    assert candidates.select("disabled_reason").to_series().to_list() == ["generated_translation_requires_review"]
+    assert "translated lime" not in queries["normalized_query_term"].to_list()
+
+
+def test_compile_enriched_registry_disables_unreviewed_cross_taxon_collisions(tmp_path) -> None:
+    registry, scope = _write_base_registry(tmp_path, species_names=("Papilio demoleus", "Papilio machaon"))
+    write_enrichment_sources(
+        registry,
+        name_assertions=[
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Shared Lime",
+                "language": "eng",
+                "script": "Latn",
+                "region": "",
+                "name_class": "vernacular",
+                "source": "iNaturalist",
+                "source_record_id": "inat:100:shared-lime",
+                "trust_tier": "T4",
+                "precision_tier": "medium",
+                "confidence": "medium",
+                "enabled": True,
+                "review_state": "candidate",
+            },
+            {
+                "accepted_taxon_key": "gbif:101",
+                "display_name": "Shared Lime",
+                "language": "eng",
+                "script": "Latn",
+                "region": "",
+                "name_class": "vernacular",
+                "source": "iNaturalist",
+                "source_record_id": "inat:101:shared-lime",
+                "trust_tier": "T4",
+                "precision_tier": "medium",
+                "confidence": "medium",
+                "enabled": True,
+                "review_state": "candidate",
+            },
+        ],
+    )
+
+    compile_enriched_registry(
+        registry_dir=registry,
+        registry_version="enriched",
+        scope_path=scope,
+        requested_sources=("inaturalist",),
+    )
+
+    names = pl.read_parquet(registry / "names.parquet")
+    candidates = pl.read_parquet(registry / "name_candidates.parquet").sort("accepted_taxon_key")
+    queries = pl.read_parquet(registry / "flickr_query_definitions.parquet")
+
+    assert "Shared Lime" not in names["display_name"].to_list()
+    assert candidates.select("accepted_taxon_key").to_series().to_list() == ["gbif:100", "gbif:101"]
+    assert candidates.select("enabled").to_series().to_list() == [False, False]
+    assert candidates.select("disabled_reason").to_series().to_list() == ["name_collision_requires_review", "name_collision_requires_review"]
+    assert "shared lime" not in queries["normalized_query_term"].to_list()
+
+
 def test_registry_compile_enriched_cli_writes_expanded_outputs(tmp_path, capsys) -> None:
     registry, scope = _write_base_registry(tmp_path)
     write_enrichment_sources(
