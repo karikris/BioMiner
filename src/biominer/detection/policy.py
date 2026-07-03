@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class DetectionPolicy:
-    backend: str = "yolo"
+    backend: str = "yoloe26"
     box_score_threshold: float = 0.20
     nms_iou_threshold: float = 0.50
     min_box_area_ratio: float = 0.0005

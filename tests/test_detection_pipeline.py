@@ -35,7 +35,7 @@ def test_detection_policy_defaults_match_object_pipeline_profile() -> None:
     policy = DetectionPolicy()
     run_policy = DetectionRunPolicy()
 
-    assert policy.backend == "yolo"
+    assert policy.backend == "yoloe26"
     assert policy.box_score_threshold == 0.20
     assert policy.nms_iou_threshold == 0.50
     assert policy.max_boxes_per_image == 8

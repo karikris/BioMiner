@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import polars as pl
+import pytest
 
 from biominer.config import BioMinerConfig, RuntimeConfig, StorageConfig, WorkStoreConfig
 from biominer.cli import _detect_boxes_backend, _yoloe26_metrics, build_parser, load_decoded_image_from_record, run
@@ -255,8 +256,6 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
             "filtered.parquet",
             "--output",
             "object_detections.parquet",
-            "--backend",
-            "yolo",
             "--runtime-python",
             ".venv-vision-py312/bin/python",
             "--device",
@@ -300,7 +299,7 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
     assert args.detect_command == "boxes"
     assert args.input == "filtered.parquet"
     assert args.output == "object_detections.parquet"
-    assert args.backend == "yolo"
+    assert args.backend == "yoloe26"
     assert args.runtime_python == ".venv-vision-py312/bin/python"
     assert args.device == "mps"
     assert args.download_workers == 2
@@ -1460,118 +1459,21 @@ def test_detect_boxes_fake_backend_writes_crop_metadata(tmp_path, capsys) -> Non
     assert row["crop_storage_policy"] == "ephemeral"
 
 
-def test_detect_boxes_yolo_backend_uses_lazy_optional_adapter(tmp_path, capsys, monkeypatch) -> None:
-    input_path = tmp_path / "filtered.parquet"
-    output_path = tmp_path / "object_detections.parquet"
-    pl.DataFrame(
-        [
-            {
-                "source": "flickr",
-                "flickr_photo_id": "photo-1",
-                "image_url": "memory://photo-1",
-                "image_width": 4,
-                "image_height": 4,
-            }
-        ]
-    ).write_parquet(input_path)
-    calls: dict[str, object] = {}
-
-    class FakeYoloDetector:
-        backend = "yolo"
-        model_id = "fake-yolo"
-        model_version = "test"
-        checkpoint = "fake-yolo.pt"
-
-        def __init__(self, *, model_path: str = "yolov8n.pt", device: str = "auto") -> None:
-            calls["detector_init"] = {"model_path": model_path, "device": device}
-
-        def detect_batch(self, images):  # noqa: ANN001, ANN201 - mirrors ObjectDetector protocol.
-            calls["batch_size"] = len(images)
-            return [[DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 4, 4), objectness_score=0.9)]]
-
-    monkeypatch.setattr("biominer.detection.yolo_detector.YoloObjectDetector", FakeYoloDetector)
-    monkeypatch.setattr("biominer.cli.load_decoded_image_from_record", lambda record: _fake_cli_image(record))
+def test_detect_boxes_public_backend_excludes_legacy_yolo() -> None:
     parser = build_parser()
-    args = parser.parse_args(
-        [
-            "detect",
-            "boxes",
-            "--input",
-            str(input_path),
-            "--output",
-            str(output_path),
-            "--backend",
-            "yolo",
-            "--runtime-python",
-            str(tmp_path / "missing-vision-runtime" / "bin" / "python"),
-            "--device",
-            "mps",
-        ]
-    )
-
-    assert run(args) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    row = pl.read_parquet(output_path).to_dicts()[0]
-    assert calls["detector_init"] == {"model_path": "yolov8n.pt", "device": "mps"}
-    assert calls["batch_size"] == 1
-    assert payload["backend"] == "yolo"
-    assert payload["rows"] == 1
-    assert row["detector_backend"] == "yolo"
-    assert row["detector_model_id"] == "fake-yolo"
-    assert row["detection_status"] == "detected"
-    assert row["crop_storage_policy"] == "ephemeral"
-
-
-def test_detect_boxes_yolo_backend_uses_existing_sidecar_runtime(tmp_path, monkeypatch) -> None:
-    input_path = tmp_path / "filtered.parquet"
-    input_path.write_text("not read by backend selection", encoding="utf-8")
-    runtime_python = tmp_path / "vision" / "bin" / "python"
-    runtime_python.parent.mkdir(parents=True)
-    runtime_python.write_text("# fake python", encoding="utf-8")
-    calls: dict[str, object] = {}
-
-    class FakeYoloSidecarDetector:
-        backend = "yolo"
-        model_id = "fake-yolo-sidecar"
-        model_version = "sidecar-test"
-        checkpoint = "fake-yolo.pt"
-
-        def __init__(self, *, runtime_python: str, model_path: str = "yolov8n.pt", device: str = "auto") -> None:
-            calls["sidecar_init"] = {"runtime_python": runtime_python, "model_path": model_path, "device": device}
-
-        def detect_batch(self, images):  # noqa: ANN001, ANN201 - mirrors ObjectDetector protocol.
-            return [[] for _image in images]
-
-    class InProcessYoloDetector:
-        def __init__(self, **kwargs):  # noqa: ANN003, ANN204 - should not be called.
-            raise AssertionError(f"in-process YOLO should not be used when sidecar exists: {kwargs}")
-
-    monkeypatch.setattr("biominer.detection.yolo_detector.YoloObjectDetector", InProcessYoloDetector)
-    monkeypatch.setattr("biominer.detection.yolo_detector.YoloSidecarObjectDetector", FakeYoloSidecarDetector)
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "detect",
-            "boxes",
-            "--input",
-            str(input_path),
-            "--output",
-            str(tmp_path / "object_detections.parquet"),
-            "--backend",
-            "yolo",
-            "--runtime-python",
-            str(runtime_python),
-            "--device",
-            "mps",
-        ]
-    )
-
-    detector, image_loader = _detect_boxes_backend(args, [])
-
-    assert detector.backend == "yolo"
-    assert image_loader is load_decoded_image_from_record
-    assert calls["sidecar_init"] == {"runtime_python": str(runtime_python), "model_path": "yolov8n.pt", "device": "mps"}
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "detect",
+                "boxes",
+                "--input",
+                "filtered.parquet",
+                "--output",
+                "object_detections.parquet",
+                "--backend",
+                "yolo",
+            ]
+        )
 
 
 def test_detect_boxes_yoloe26_backend_uses_sidecar_runtime(tmp_path, monkeypatch) -> None:

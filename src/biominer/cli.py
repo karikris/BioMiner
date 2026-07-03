@@ -202,7 +202,7 @@ def build_parser() -> argparse.ArgumentParser:
     detect_boxes = detect_subparsers.add_parser("boxes")
     detect_boxes.add_argument("--input", required=True)
     detect_boxes.add_argument("--output", required=True)
-    detect_boxes.add_argument("--backend", default="yolo", choices=("yolo", "yoloe26", "fake"))
+    detect_boxes.add_argument("--backend", default="yoloe26", choices=("yoloe26", "fake"))
     detect_boxes.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
     detect_boxes.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
     detect_boxes.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
@@ -367,7 +367,7 @@ def build_parser() -> argparse.ArgumentParser:
     species_detect = species_subparsers.add_parser("detect")
     species_detect.add_argument("--input", required=True)
     species_detect.add_argument("--output", required=True)
-    species_detect.add_argument("--backend", default="yolo", choices=("yolo", "fake"))
+    species_detect.add_argument("--backend", default="fake", choices=("fake",))
     species_detect.add_argument("--runtime-python", default=".venv-vision-py312/bin/python")
     species_detect.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
     _add_detection_policy_args(species_detect)
@@ -1633,6 +1633,7 @@ def _detect_boxes_backend(args: argparse.Namespace, records: list[dict[str, obje
     if args.backend == "fake":
         return FakeObjectDetector([_fake_detections_for_record(record) for record in records]), _blank_decoded_image
     if args.backend == "yolo":
+        # Legacy dev-only adapter. Public CLI choices route production detector runs to YOLOE-26.
         from biominer.detection.yolo_detector import YoloObjectDetector, YoloSidecarObjectDetector
 
         if _use_vision_sidecar(args.runtime_python):
