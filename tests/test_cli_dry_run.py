@@ -10,6 +10,7 @@ import polars as pl
 
 from biominer.cli import _detect_boxes_backend, build_parser, load_decoded_image_from_record, run
 from biominer.detection.detector_base import DetectionCandidate
+from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 
 
 def test_cli_exposes_only_lean_pipeline_commands() -> None:
@@ -257,6 +258,63 @@ def test_detect_boxes_cli_applies_runtime_profile_with_explicit_overrides(tmp_pa
     assert pipeline["run_policy"].max_inflight_crops == 96
     assert pipeline["run_policy"].detector_batch_size == 4
     assert pipeline["run_policy"].crop_batch_size == 24
+
+
+def test_detect_boxes_cli_uses_runtime_profile_defaults_when_not_overridden(tmp_path, capsys, monkeypatch) -> None:
+    input_path = tmp_path / "filtered.parquet"
+    output_path = tmp_path / "object_detections.parquet"
+    pl.DataFrame([{"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "memory://photo-1"}]).write_parquet(input_path)
+    calls: dict[str, object] = {}
+
+    def fake_backend(args, records):  # noqa: ANN001, ANN202 - mirrors _detect_boxes_backend.
+        return SimpleNamespace(backend="fake"), lambda record: None
+
+    def fake_pipeline(**kwargs):  # noqa: ANN003, ANN202 - mirrors run_detection_pipeline.
+        calls["pipeline"] = kwargs
+        return SimpleNamespace(
+            frame=pl.DataFrame([{"detection_status": "detected"}]),
+            output_path=Path(kwargs["output_path"]),
+            records_seen=1,
+            images_loaded=1,
+            detections_written=1,
+            crops_created=1,
+            parquet_batches_written=1,
+        )
+
+    custom_profile = SimpleNamespace(
+        detection_policy=DetectionPolicy(image_max_side_px=640, crop_target_px=224, max_boxes_per_image=3),
+        run_policy=DetectionRunPolicy(download_workers=2, max_inflight_images=5, detector_batch_size=6),
+    )
+
+    monkeypatch.setattr("biominer.cli._detect_boxes_backend", fake_backend)
+    monkeypatch.setattr("biominer.cli.run_detection_pipeline", fake_pipeline)
+    monkeypatch.setattr("biominer.cli.runtime_profile", lambda name: custom_profile)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "detect",
+            "boxes",
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+            "--backend",
+            "fake",
+            "--profile",
+            "mac_m5pro_64gb",
+        ]
+    )
+
+    assert run(args) == 0
+
+    capsys.readouterr()
+    pipeline = calls["pipeline"]
+    assert pipeline["detection_policy"].image_max_side_px == 640
+    assert pipeline["detection_policy"].crop_target_px == 224
+    assert pipeline["detection_policy"].max_boxes_per_image == 3
+    assert pipeline["run_policy"].download_workers == 2
+    assert pipeline["run_policy"].max_inflight_images == 5
+    assert pipeline["run_policy"].detector_batch_size == 6
 
 
 def test_detect_eval_cli_forwards_xie_thresholds(tmp_path, capsys, monkeypatch) -> None:
@@ -979,6 +1037,73 @@ def test_bioclip_join_object_evidence_cli_writes_join_tables(tmp_path, capsys, m
             str(summary_path),
             "--species-context",
             str(context_path),
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    kwargs = calls["kwargs"]
+    assert payload == {
+        "object_evidence_joined": str(joined_path),
+        "photo_evidence_summary": str(summary_path),
+    }
+    assert kwargs["canonical_records_path"] == str(input_path)
+    assert kwargs["detections_path"] == str(detections_path)
+    assert kwargs["scores_path"] == str(scores_path)
+    assert kwargs["species_context"].scientific_name == "Danaus plexippus"
+
+
+def test_species_join_object_evidence_cli_writes_join_tables(tmp_path, capsys, monkeypatch) -> None:
+    context_path = tmp_path / "species_context.json"
+    context_path.write_text(
+        json.dumps(
+            {
+                "scientific_name": "Danaus plexippus",
+                "accepted_taxon_key": "gbif:1",
+                "canonical_name": "Danaus plexippus",
+                "family": "Nymphalidae",
+                "genus": "Danaus",
+                "family_key": "gbif:f",
+                "genus_key": "gbif:g",
+                "species_key": "gbif:1",
+                "registry_version": "registry-v1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    input_path = tmp_path / "filtered.parquet"
+    detections_path = tmp_path / "object_detections.parquet"
+    scores_path = tmp_path / "object_bioclip_scores.parquet"
+    joined_path = tmp_path / "object_evidence_joined.parquet"
+    summary_path = tmp_path / "photo_evidence_summary.parquet"
+    calls: dict[str, object] = {}
+
+    def fake_write_outputs(**kwargs):  # noqa: ANN003, ANN202 - mirrors write_object_evidence_outputs.
+        calls["kwargs"] = kwargs
+        return SimpleNamespace(
+            object_evidence_joined=Path(kwargs["joined_output_path"]),
+            photo_evidence_summary=Path(kwargs["photo_summary_output_path"]),
+        )
+
+    monkeypatch.setattr("biominer.cli.write_object_evidence_outputs", fake_write_outputs)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "species",
+            "join-object-evidence",
+            "--context-json",
+            str(context_path),
+            "--input",
+            str(input_path),
+            "--detections",
+            str(detections_path),
+            "--scores",
+            str(scores_path),
+            "--joined-output",
+            str(joined_path),
+            "--photo-summary-output",
+            str(summary_path),
         ]
     )
 

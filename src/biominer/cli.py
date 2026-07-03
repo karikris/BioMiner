@@ -413,23 +413,23 @@ def _add_object_evidence_join_args(parser: argparse.ArgumentParser) -> None:
 
 def _add_detection_policy_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--profile", choices=("mac_m5pro_64gb",))
-    parser.add_argument("--box-score-threshold", type=float, default=0.20)
-    parser.add_argument("--nms-iou-threshold", type=float, default=0.50)
-    parser.add_argument("--min-box-area-ratio", type=float, default=0.0005)
-    parser.add_argument("--max-boxes-per-image", type=int, default=8)
-    parser.add_argument("--crop-padding-ratio", type=float, default=0.12)
-    parser.add_argument("--image-max-side-px", type=int, default=1280)
-    parser.add_argument("--crop-target-px", type=int, default=336)
+    parser.add_argument("--box-score-threshold", type=float)
+    parser.add_argument("--nms-iou-threshold", type=float)
+    parser.add_argument("--min-box-area-ratio", type=float)
+    parser.add_argument("--max-boxes-per-image", type=int)
+    parser.add_argument("--crop-padding-ratio", type=float)
+    parser.add_argument("--image-max-side-px", type=int)
+    parser.add_argument("--crop-target-px", type=int)
     parser.add_argument("--retain-debug-crops", action="store_true")
-    parser.add_argument("--debug-crop-limit", type=int, default=500)
-    parser.add_argument("--download-workers", type=int, default=4)
-    parser.add_argument("--decode-workers", type=int, default=4)
-    parser.add_argument("--detector-workers", type=int, default=1)
-    parser.add_argument("--max-inflight-images", type=int, default=32)
-    parser.add_argument("--max-inflight-crops", type=int, default=96)
-    parser.add_argument("--detector-batch-size", type=int, default=4)
-    parser.add_argument("--crop-batch-size", type=int, default=24)
-    parser.add_argument("--parquet-batch-rows", type=int, default=10000)
+    parser.add_argument("--debug-crop-limit", type=int)
+    parser.add_argument("--download-workers", type=int)
+    parser.add_argument("--decode-workers", type=int)
+    parser.add_argument("--detector-workers", type=int)
+    parser.add_argument("--max-inflight-images", type=int)
+    parser.add_argument("--max-inflight-crops", type=int)
+    parser.add_argument("--detector-batch-size", type=int)
+    parser.add_argument("--crop-batch-size", type=int)
+    parser.add_argument("--parquet-batch-rows", type=int)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -1101,15 +1101,15 @@ def _detection_policy_from_args(args: argparse.Namespace) -> DetectionPolicy:
     profile = runtime_profile(args.profile).detection_policy if getattr(args, "profile", None) else DetectionPolicy()
     return DetectionPolicy(
         backend=args.backend,
-        box_score_threshold=args.box_score_threshold,
-        nms_iou_threshold=args.nms_iou_threshold,
-        min_box_area_ratio=args.min_box_area_ratio,
-        max_boxes_per_image=args.max_boxes_per_image,
-        crop_padding_ratio=args.crop_padding_ratio,
+        box_score_threshold=args.box_score_threshold if args.box_score_threshold is not None else profile.box_score_threshold,
+        nms_iou_threshold=args.nms_iou_threshold if args.nms_iou_threshold is not None else profile.nms_iou_threshold,
+        min_box_area_ratio=args.min_box_area_ratio if args.min_box_area_ratio is not None else profile.min_box_area_ratio,
+        max_boxes_per_image=args.max_boxes_per_image if args.max_boxes_per_image is not None else profile.max_boxes_per_image,
+        crop_padding_ratio=args.crop_padding_ratio if args.crop_padding_ratio is not None else profile.crop_padding_ratio,
         image_max_side_px=args.image_max_side_px if args.image_max_side_px is not None else profile.image_max_side_px,
         crop_target_px=args.crop_target_px if args.crop_target_px is not None else profile.crop_target_px,
         retain_debug_crops=args.retain_debug_crops or profile.retain_debug_crops,
-        debug_crop_limit=args.debug_crop_limit,
+        debug_crop_limit=args.debug_crop_limit if args.debug_crop_limit is not None else profile.debug_crop_limit,
     )
 
 
@@ -1123,7 +1123,7 @@ def _detection_run_policy_from_args(args: argparse.Namespace) -> DetectionRunPol
         max_inflight_crops=args.max_inflight_crops if args.max_inflight_crops is not None else profile.max_inflight_crops,
         detector_batch_size=args.detector_batch_size if args.detector_batch_size is not None else profile.detector_batch_size,
         crop_batch_size=args.crop_batch_size if args.crop_batch_size is not None else profile.crop_batch_size,
-        parquet_batch_rows=args.parquet_batch_rows,
+        parquet_batch_rows=args.parquet_batch_rows if args.parquet_batch_rows is not None else profile.parquet_batch_rows,
     )
 
 
