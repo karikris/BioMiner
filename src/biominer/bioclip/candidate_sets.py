@@ -8,6 +8,7 @@ from typing import Any
 
 import polars as pl
 
+from biominer.filter.extractor import SCIENTIFIC_NAME_PATTERN
 from biominer.species.context import SpeciesContext
 
 
@@ -76,6 +77,9 @@ def build_candidate_set(
     species, metadata_text_added = _add_metadata_text_candidates(species, records or [])
     if metadata_text_added:
         source_evidence.append("metadata_text")
+    species, comment_added = _add_comment_candidates(species, records or [])
+    if comment_added:
+        source_evidence.append("comments")
     if not any(_norm(candidate.scientific_name) == _norm(context.scientific_name) for candidate in species):
         species.insert(0, target)
     species = _dedupe_taxa(species)
@@ -261,6 +265,43 @@ def _add_metadata_text_candidates(
             by_name.add(key)
             added = True
     return candidates, added
+
+
+def _add_comment_candidates(
+    candidates: list[CandidateTaxon],
+    records: list[dict[str, Any]],
+) -> tuple[list[CandidateTaxon], bool]:
+    by_name = {_norm(candidate.scientific_name) for candidate in candidates}
+    added = False
+    for record in records:
+        for name in _comment_candidate_names(record):
+            cleaned = " ".join(str(name or "").split())
+            key = _norm(cleaned)
+            if not cleaned or key in by_name:
+                continue
+            candidates.append(
+                CandidateTaxon(
+                    scientific_name=cleaned,
+                    accepted_taxon_key=None,
+                    rank="species",
+                    genus=cleaned.split(" ", 1)[0],
+                )
+            )
+            by_name.add(key)
+            added = True
+    return candidates, added
+
+
+def _comment_candidate_names(record: dict[str, Any]) -> tuple[str, ...]:
+    values: list[str] = []
+    for field in ("comment_species_candidate", "species_name_from_comments"):
+        value = record.get(field) or ()
+        items = [value] if isinstance(value, str) else value
+        values.extend(str(item) for item in items if item)
+    comments_text = str(record.get("comments_text") or "")
+    if comments_text:
+        values.extend(SCIENTIFIC_NAME_PATTERN.findall(comments_text))
+    return _unique(values)
 
 
 def _candidate_set_id(*, context: SpeciesContext, species: list[CandidateTaxon], geospatial_scope: str | None) -> str:

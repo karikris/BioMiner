@@ -246,6 +246,23 @@ def test_candidate_set_uses_metadata_scientific_names_without_query_keys() -> No
     assert "a photo of Danaus gilippus" in candidate_set.prompt_labels("species")
 
 
+def test_candidate_set_uses_comment_species_candidates() -> None:
+    candidate_set = build_candidate_set(
+        _context(),
+        records=[
+            {
+                "comments_text": "Local reviewer says this looks like Danaus eresimus, not monarch.",
+                "comment_species_candidate": "Danaus eresimus",
+            }
+        ],
+    )
+
+    by_name = {candidate.scientific_name: candidate for candidate in candidate_set.species_candidates}
+    assert by_name["Danaus eresimus"].genus == "Danaus"
+    assert "comments" in candidate_set.source_evidence
+    assert "a photo of Danaus eresimus" in candidate_set.prompt_labels("species")
+
+
 def test_ephemeral_crop_bioclip_scorer_scores_temp_crop_and_deletes_file(tmp_path) -> None:
     seen: dict[str, object] = {}
 
