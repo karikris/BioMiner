@@ -306,7 +306,7 @@ def test_detect_boxes_cli_accepts_yoloe26_arguments() -> None:
             "--backend",
             "yoloe26",
             "--runtime-python",
-            "/Users/example/Applications/YOLO26/venv/bin/python",
+            "/runtime-base/YOLO26/venv/bin/python",
             "--checkpoint",
             "yoloe-26m-seg.pt",
             "--device",
@@ -328,7 +328,7 @@ def test_detect_boxes_cli_accepts_yoloe26_arguments() -> None:
     )
 
     assert args.backend == "yoloe26"
-    assert args.runtime_python == "/Users/example/Applications/YOLO26/venv/bin/python"
+    assert args.runtime_python == "/runtime-base/YOLO26/venv/bin/python"
     assert args.checkpoint == "yoloe-26m-seg.pt"
     assert args.device == "mps"
     assert args.imgsz == 768
@@ -1662,11 +1662,11 @@ def test_yoloe26_runtime_commands_parse_with_applications_defaults() -> None:
     )
 
     assert runtime.detect_command == "yoloe26-runtime-check"
-    assert runtime.runtime_python.endswith("/Applications/YOLO26/venv/bin/python")
+    assert runtime.runtime_python.endswith("/YOLO26/venv/bin/python")
     assert prefetch.checkpoint == "yoloe-26s-seg.pt"
     assert smoke.image == "manual.jpg"
-    assert prototype.vision_runtime_python.endswith("/Applications/YOLO26/venv/bin/python")
-    assert prototype.bioclip_runtime_python.endswith("/Applications/BioCLIP25/venv/bin/python")
+    assert prototype.vision_runtime_python.endswith("/YOLO26/venv/bin/python")
+    assert prototype.bioclip_runtime_python.endswith("/BioCLIP25/venv/bin/python")
     assert prototype.limit == 10
 
 

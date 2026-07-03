@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${BIOMINER_BIOCLIP25_ROOT:-${HOME}/Applications/BioCLIP25}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
+DEFAULT_BASE_PATH="$(cd "${REPO_ROOT}/.." && pwd -P)"
+BASE_PATH="${BIOMINER_BASE_PATH:-${BIOMINER_RUNTIME_BASE_PATH:-${DEFAULT_BASE_PATH}}}"
+ROOT="${BIOMINER_BIOCLIP25_ROOT:-${BASE_PATH}/BioCLIP25}"
 VENV="${ROOT}/venv"
 CACHE="${ROOT}/cache"
 MODELS="${ROOT}/models"
@@ -55,6 +59,9 @@ cat <<EOF
 
 BioCLIP 2.5 runtime installed.
 
+Runtime base path:
+  ${BASE_PATH}
+
 Runtime python:
   ${VENV}/bin/python
 
@@ -63,6 +70,7 @@ Environment hints:
   export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE}"
   export TORCH_HOME="${TORCH_HOME}"
   export BIOMINER_BIOCLIP25_MODEL_DIR="${MODELS}"
+  export BIOMINER_BASE_PATH="${BASE_PATH}"
 
 EOF
 
@@ -83,4 +91,3 @@ for package in ("open_clip_torch", "huggingface_hub", "hf_xet"):
     except importlib.metadata.PackageNotFoundError:
         print(package, "not_installed")
 PY
-

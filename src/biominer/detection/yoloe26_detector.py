@@ -8,6 +8,7 @@ import subprocess
 from typing import Any, Sequence
 
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate
+from biominer.runtime_paths import YOLOE26_DIR
 
 
 DEFAULT_YOLOE26_CHECKPOINT = "yoloe-26s-seg.pt"
@@ -386,9 +387,8 @@ def _runtime_root(runtime_python: str | None = None) -> Path:
         path = Path(runtime_python).expanduser()
         if len(path.parents) >= 3 and path.parent.name == "bin":
             return path.parents[2]
-    return Path.home() / "Applications" / "YOLO26"
+    return YOLOE26_DIR
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised through sidecar subprocesses.
     _run_sidecar()
-

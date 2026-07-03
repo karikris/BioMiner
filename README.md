@@ -72,7 +72,7 @@ uv run biominer detect boxes \
   --input staging/species_runs/example/filtered.parquet \
   --output staging/species_runs/example/object_detections_yoloe26.parquet \
   --backend yoloe26 \
-  --runtime-python "$HOME/Applications/YOLO26/venv/bin/python" \
+  --runtime-python "../YOLO26/venv/bin/python" \
   --checkpoint yoloe-26s-seg.pt \
   --device auto \
   --conf 0.20 \
@@ -210,7 +210,7 @@ PyTorch is intentionally kept out of the main Python 3.14 BioMiner environment. 
 Create and synchronise the project environment:
 
 ```bash
-cd ~/BioMiner
+cd ./BioMiner
 unset VIRTUAL_ENV
 uv sync --extra test
 ```
@@ -222,7 +222,7 @@ bash scripts/setup_yoloe26_user_py312.sh
 bash scripts/setup_bioclip25_user_py312.sh
 ```
 
-These create external Python 3.12 runtimes under `$HOME/Applications/YOLO26` and `$HOME/Applications/BioCLIP25`. The worker environments, model files, and caches are local-only and must not be committed.
+These create external Python 3.12 runtimes under `./YOLO26` and `./BioCLIP25` next to `./BioMiner`. Commands are run from `./BioMiner`, so runtime flags use `../YOLO26` and `../BioCLIP25`. Set `BIOMINER_BASE_PATH=/path/to/base` on macOS, WSL, or Ubuntu when the sibling folders live outside the inferred base path. The worker environments, model files, and caches are local-only and must not be committed.
 
 Verify the CLI:
 
@@ -780,8 +780,8 @@ Verify the sidecar runtime without loading the model:
 
 ```bash
 uv run biominer bioclip runtime-check \
-  --runtime-python "$HOME/Applications/BioCLIP25/venv/bin/python" \
-  --hf-cache-dir "$HOME/Applications/BioCLIP25/cache/huggingface" \
+  --runtime-python "../BioCLIP25/venv/bin/python" \
+  --hf-cache-dir "../BioCLIP25/cache/huggingface" \
   --device auto
 ```
 
@@ -789,8 +789,8 @@ Prefetch the BioCLIP 2.5 Huge safetensors snapshot:
 
 ```bash
 uv run biominer bioclip prefetch-model \
-  --runtime-python "$HOME/Applications/BioCLIP25/venv/bin/python" \
-  --hf-cache-dir "$HOME/Applications/BioCLIP25/cache/huggingface"
+  --runtime-python "../BioCLIP25/venv/bin/python" \
+  --hf-cache-dir "../BioCLIP25/cache/huggingface"
 ```
 
 Run local screening:
@@ -800,8 +800,8 @@ uv run biominer bioclip screen \
   --input staging/evidence/filtered.parquet \
   --species-candidates data/registry/current/taxa.parquet \
   --output staging/evidence/classified.parquet \
-  --runtime-python "$HOME/Applications/BioCLIP25/venv/bin/python" \
-  --hf-cache-dir "$HOME/Applications/BioCLIP25/cache/huggingface" \
+  --runtime-python "../BioCLIP25/venv/bin/python" \
+  --hf-cache-dir "../BioCLIP25/cache/huggingface" \
   --device auto \
   --register-count 2 \
   --register-size 4 \

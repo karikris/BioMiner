@@ -35,16 +35,16 @@ Recorded before adding the BioMiner YOLOE-26 prototype code, using GitHub `origi
 
 Heavy vision dependencies and model files are intentionally outside the BioMiner repository:
 
-- YOLOE-26 runtime: `/Users/merm0001/Applications/YOLO26/venv/bin/python`
-- YOLOE-26 cache: `/Users/merm0001/Applications/YOLO26/cache`
-- YOLOE-26 model directory: `/Users/merm0001/Applications/YOLO26/models`
-- BioCLIP 2.5 runtime: `/Users/merm0001/Applications/BioCLIP25/venv/bin/python`
-- BioCLIP 2.5 cache: `/Users/merm0001/Applications/BioCLIP25/cache`
-- BioCLIP 2.5 model directory: `/Users/merm0001/Applications/BioCLIP25/models`
+- BioMiner checkout: `./BioMiner`
+- YOLOE-26 runtime: `./YOLO26/venv/bin/python`
+- YOLOE-26 cache: `./YOLO26/cache`
+- YOLOE-26 model directory: `./YOLO26/models`
+- BioCLIP 2.5 runtime: `./BioCLIP25/venv/bin/python`
+- BioCLIP 2.5 cache: `./BioCLIP25/cache`
+- BioCLIP 2.5 model directory: `./BioCLIP25/models`
 
 Validation already completed outside the repo:
 
 - YOLOE runtime imports `YOLOE`, loads `yoloe-26s-seg.pt`, and runs `set_classes`.
 - BioCLIP runtime loads `hf-hub:imageomics/bioclip-2.5-vith14` through OpenCLIP.
 - Both runtimes report Apple MPS availability.
-

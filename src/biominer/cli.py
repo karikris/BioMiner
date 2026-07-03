@@ -53,6 +53,7 @@ from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
 from biominer.reports.buckets import export_bucket_views
 from biominer.reports.name_evidence import build_name_evidence_report, write_name_evidence_report
+from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR, YOLOE26_DIR
 from biominer.species.context import SpeciesContext
 from biominer.species.registry_refresh import resolve_species_context, write_species_registry_outputs
 from biominer.species.query_compile import write_species_flickr_queries
@@ -71,11 +72,12 @@ from biominer.workstore.sqlite import SQLiteWorkStore
 
 BIOCLIP_25_HUGE_REPO_ID = "imageomics/bioclip-2.5-vith14"
 BIOCLIP_25_HUGE_REVISION = "191d741545e4c741cdef4b22c6eb69c945c1e592"
-YOLOE26_RUNTIME_ROOT = Path.home() / "Applications" / "YOLO26"
+BIOMINER_BASE_PATH = BASE_PATH
+YOLOE26_RUNTIME_ROOT = YOLOE26_DIR
 YOLOE26_RUNTIME_PYTHON = str(YOLOE26_RUNTIME_ROOT / "venv" / "bin" / "python")
 YOLOE26_MODEL_DIR = str(YOLOE26_RUNTIME_ROOT / "models")
 YOLOE26_CACHE_ROOT = str(YOLOE26_RUNTIME_ROOT / "cache")
-BIOCLIP25_RUNTIME_ROOT = Path.home() / "Applications" / "BioCLIP25"
+BIOCLIP25_RUNTIME_ROOT = BIOCLIP25_DIR
 BIOCLIP_RUNTIME_PYTHON = str(BIOCLIP25_RUNTIME_ROOT / "venv" / "bin" / "python")
 BIOCLIP_HF_CACHE_DIR = str(BIOCLIP25_RUNTIME_ROOT / "cache" / "huggingface")
 BIOCLIP_PREFETCH_ALLOW_PATTERNS = (

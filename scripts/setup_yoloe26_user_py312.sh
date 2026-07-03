@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${BIOMINER_YOLO26_ROOT:-${HOME}/Applications/YOLO26}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
+DEFAULT_BASE_PATH="$(cd "${REPO_ROOT}/.." && pwd -P)"
+BASE_PATH="${BIOMINER_BASE_PATH:-${BIOMINER_RUNTIME_BASE_PATH:-${DEFAULT_BASE_PATH}}}"
+ROOT="${BIOMINER_YOLO26_ROOT:-${BASE_PATH}/YOLO26}"
 VENV="${ROOT}/venv"
 CACHE="${ROOT}/cache"
 MODELS="${ROOT}/models"
@@ -57,6 +61,9 @@ cat <<EOF
 
 YOLOE-26 runtime installed.
 
+Runtime base path:
+  ${BASE_PATH}
+
 Runtime python:
   ${VENV}/bin/python
 
@@ -66,6 +73,7 @@ Environment hints:
   export TORCH_HOME="${TORCH_HOME}"
   export YOLO_CONFIG_DIR="${YOLO_CONFIG_DIR}"
   export BIOMINER_YOLO26_MODEL_DIR="${MODELS}"
+  export BIOMINER_BASE_PATH="${BASE_PATH}"
 
 EOF
 
@@ -85,4 +93,3 @@ try:
 except importlib.metadata.PackageNotFoundError:
     print("ultralytics", "not_installed")
 PY
-
