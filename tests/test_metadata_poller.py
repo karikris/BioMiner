@@ -10,7 +10,14 @@ from pathlib import Path
 import httpx
 import polars as pl
 
-from biominer.flickr_fetch.query_planner import BBOX_PAGE_SIZE, COUNT_PROBE_PAGE_SIZE, NORMAL_PAGE_SIZE, FlickrQuery, fixed_upload_date_slices
+from biominer.flickr_fetch.query_planner import (
+    BBOX_PAGE_SIZE,
+    COUNT_PROBE_PAGE_SIZE,
+    DEFAULT_FIXED_SLICE_END_DATE,
+    NORMAL_PAGE_SIZE,
+    FlickrQuery,
+    fixed_upload_date_slices,
+)
 from biominer.flickr_fetch.metadata_poller import MetadataPollState, _payload_page, _payload_pages, _payload_perpage, poll_once
 from biominer.workstore.sqlite import SQLiteWorkStore
 
@@ -344,6 +351,100 @@ def test_poll_once_writes_immutable_local_raw_json_and_evidence_shards(tmp_path)
     assert shard[4] == 1
 
 
+def test_poll_once_no_compact_writes_canonical_delta_shard_not_full_snapshot(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="Papilio", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+    work_store = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+
+    poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence" / "poll.parquet",
+        max_api_calls=1,
+        fetch_metadata=lambda item: {
+            "photos": {
+                "total": "1",
+                "pages": "1",
+                "page": "1",
+                "perpage": "250",
+                "photo": [{"id": "1", "title": "first", "url_l": "https://live.staticflickr.com/1.jpg"}],
+            }
+        },
+        run_id="run-1",
+        worker_id="worker-001",
+        storage_prefix=tmp_path / "staging",
+        compact_after_run=False,
+        work_store=work_store,
+    )
+    state.enqueue_work_item(FlickrQuery(term="Danaus", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence" / "poll.parquet",
+        max_api_calls=3,
+        fetch_metadata=lambda item: {
+            "photos": {
+                "total": "1",
+                "pages": "1",
+                "page": "1",
+                "perpage": "250",
+                "photo": [{"id": "2", "title": "second", "url_l": "https://live.staticflickr.com/2.jpg"}],
+            }
+        },
+        run_id="run-2",
+        worker_id="worker-001",
+        storage_prefix=tmp_path / "staging",
+        compact_after_run=False,
+        work_store=work_store,
+    )
+
+    second_shards = list((tmp_path / "staging" / "evidence" / "stage=poll_once" / "run_id=run-2" / "worker=worker-001").glob("*.parquet"))
+    second_frame = pl.read_parquet(second_shards)
+
+    assert result.evidence_rows_written == 1
+    assert result.evidence_rows_total == 1
+    assert second_frame["flickr_photo_id"].to_list() == ["2"]
+
+
+def test_poll_once_no_compact_dedupes_duplicate_photo_with_folded_provenance_in_shard(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    state.enqueue_work_item(FlickrQuery(term="Papilio", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
+    state.enqueue_work_item(FlickrQuery(term="Papilionidae", language="en", search_field="tags", lane="normal_page", page=1, per_page=250))
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence" / "poll.parquet",
+        max_api_calls=2,
+        fetch_metadata=lambda item: {
+            "photos": {
+                "total": "1",
+                "pages": "1",
+                "page": "1",
+                "perpage": "250",
+                "photo": [{"id": "123", "title": "swallowtail", "url_l": "https://live.staticflickr.com/123_l.jpg"}],
+            }
+        },
+        run_id="run-1",
+        worker_id="worker-001",
+        storage_prefix=tmp_path / "staging",
+        compact_after_run=False,
+    )
+
+    shards = list((tmp_path / "staging" / "evidence" / "stage=poll_once" / "run_id=run-1" / "worker=worker-001").glob("*.parquet"))
+    frame = pl.read_parquet(shards)
+    row = frame.to_dicts()[0]
+
+    assert result.evidence_rows_written == 1
+    assert frame.height == 1
+    assert row["flickr_photo_id"] == "123"
+    assert row["text_search_terms"] == ["Papilio"]
+    assert row["tag_search_terms"] == ["Papilionidae"]
+    assert row["all_query_labels"] == ["text:Papilio", "tags:Papilionidae"]
+    assert row["query_hit_count"] == 2
+
+
 def test_poll_once_old_style_local_arguments_still_write_compacted_output(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     state.enqueue_work_item(FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=250))
@@ -628,7 +729,7 @@ def test_poll_once_plans_fixed_slice_pages_over_stable_result_threshold(tmp_path
     assert rows
     expected_slices = fixed_upload_date_slices(
         start_date="2004-02-10",
-        end_date=datetime.now(UTC).date().isoformat(),
+        end_date=DEFAULT_FIXED_SLICE_END_DATE,
         slice_days=5,
         coarse_end_date=None,
         coarse_slice_days=None,

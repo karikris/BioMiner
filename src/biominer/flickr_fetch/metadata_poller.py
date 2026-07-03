@@ -579,10 +579,19 @@ class MetadataPollState:
             )
         return pl.DataFrame(output) if output else pl.DataFrame()
 
-    def canonical_source_records_frame(self) -> pl.DataFrame:
+    def canonical_source_records_frame(self, *, photo_ids: set[str] | None = None) -> pl.DataFrame:
+        empty = build_evidence_frame([], species_query="multilingual_lepidoptera")
+        if photo_ids is not None and not photo_ids:
+            return empty
+        photo_filter = ""
+        params: tuple[Any, ...] = ()
+        if photo_ids is not None:
+            placeholders = ", ".join("?" for _ in photo_ids)
+            photo_filter = f"AND flickr_photo_id IN ({placeholders})"
+            params = tuple(sorted(photo_ids))
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT
                     source,
                     flickr_photo_id,
@@ -605,8 +614,10 @@ class MetadataPollState:
                     duplicate_query_hit_count
                 FROM source_records
                 WHERE image_url != ''
+                  {photo_filter}
                 ORDER BY source, flickr_photo_id
-                """
+                """,
+                params,
             ).fetchall()
             fallback_hits = _legacy_query_hits_by_photo(conn)
         evidence_rows: list[dict[str, Any]] = []
@@ -648,7 +659,6 @@ class MetadataPollState:
                 }
             )
             evidence_rows.append(evidence)
-        empty = build_evidence_frame([], species_query="multilingual_lepidoptera")
         return pl.DataFrame(evidence_rows, schema=empty.schema) if evidence_rows else empty
 
     def export_canonical_evidence(self, output_path: str | Path) -> int:
@@ -918,6 +928,7 @@ def poll_once(
     evidence_shard_checksum: str | None = None
     evidence_shard_bytes: int | None = None
     shard_registry_version: str | None = None
+    delta_photo_ids: set[str] = set()
     fetcher = fetch_metadata or _http_fetcher(api_key=api_key)
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -984,6 +995,7 @@ def poll_once(
                         else:
                             records = _payload_photo_records(payload)
                             inserted, skipped, queued_count, query_hits, duplicate_hits = state.insert_source_records(records, source_query=query)
+                            delta_photo_ids.update(_photo_ids_from_records(records))
                             if query.registry_version and shard_registry_version is None:
                                 shard_registry_version = query.registry_version
                             records_returned = len(records)
@@ -1084,7 +1096,7 @@ def poll_once(
         evidence_rows_total = state.export_canonical_evidence(evidence_output)
         evidence_rows_written = evidence_rows_total
     else:
-        canonical_frame = state.canonical_source_records_frame()
+        canonical_frame = state.canonical_source_records_frame(photo_ids=delta_photo_ids)
         evidence_shard_uri, evidence_shard_rows, evidence_shard_checksum, evidence_shard_bytes = _write_evidence_shard(
             storage=output_storage,
             evidence_base_prefix=str(evidence_base_prefix),
@@ -1619,6 +1631,10 @@ def _payload_photo_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
     photos = payload.get("photos", {})
     rows = photos.get("photo", []) if isinstance(photos, dict) else []
     return [row for row in rows if isinstance(row, dict)]
+
+
+def _photo_ids_from_records(records: list[dict[str, Any]]) -> set[str]:
+    return {str(record.get("id")) for record in records if record.get("id") not in (None, "")}
 
 
 def _work_item_id(query: FlickrQuery) -> str:
