@@ -1670,6 +1670,50 @@ def test_yoloe26_runtime_commands_parse_with_applications_defaults() -> None:
     assert prototype.limit == 10
 
 
+def test_yoloe26_smoke_resolves_paths_before_sidecar_run(tmp_path, capsys, monkeypatch) -> None:
+    runtime_python = tmp_path / "YOLO26" / "venv" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("# fake python", encoding="utf-8")
+    image_path = tmp_path / "manual.jpg"
+    image_path.write_bytes(b"not-a-real-image-for-this-mocked-test")
+    calls: list[dict[str, object]] = []
+
+    def fake_run(cmd, *, capture_output, check, cwd, env, text):  # noqa: ANN001 - mirrors subprocess.run.
+        calls.append({"cmd": cmd, "capture_output": capture_output, "check": check, "cwd": cwd, "env": env, "text": text})
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout='{"detections":0,"synthetic_image":false}\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr("biominer.cli.subprocess.run", fake_run)
+    monkeypatch.chdir(tmp_path)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "detect",
+            "yoloe26-smoke",
+            "--runtime-python",
+            str(runtime_python),
+            "--image",
+            "manual.jpg",
+            "--output-dir",
+            "smoke-output",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    command = calls[0]["cmd"]
+    assert payload["synthetic_image"] is False
+    assert command[0] == str(runtime_python)
+    assert command[5] == str((tmp_path / "smoke-output").resolve())
+    assert command[6] == str(image_path.resolve())
+    assert calls[0]["cwd"] == str(tmp_path / "YOLO26" / "models")
+
+
 def test_yoloe26_prototype_metrics_aggregate_tiny_frames() -> None:
     detections = pl.DataFrame(
         [

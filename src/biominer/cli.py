@@ -1400,8 +1400,9 @@ def _run_yoloe26_smoke(args: argparse.Namespace) -> int:
     if not runtime_python.exists():
         print(json.dumps({"error": f"YOLOE-26 runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
         return 2
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    image_path = str(Path(args.image).expanduser().resolve()) if args.image else ""
     result = subprocess.run(
         [
             str(runtime_python),
@@ -1410,7 +1411,7 @@ def _run_yoloe26_smoke(args: argparse.Namespace) -> int:
             args.device,
             args.checkpoint,
             str(output_dir),
-            str(args.image or ""),
+            image_path,
             json.dumps(list(_default_yoloe26_prompts())),
         ],
         capture_output=True,

@@ -14,25 +14,25 @@ bash scripts/setup_bioclip25_user_py312.sh
 Default locations:
 
 ```text
-/Users/merm0001/Applications/YOLO26/venv/bin/python
-/Users/merm0001/Applications/YOLO26/models
-/Users/merm0001/Applications/YOLO26/cache
-/Users/merm0001/Applications/BioCLIP25/venv/bin/python
-/Users/merm0001/Applications/BioCLIP25/models
-/Users/merm0001/Applications/BioCLIP25/cache
+$HOME/Applications/YOLO26/venv/bin/python
+$HOME/Applications/YOLO26/models
+$HOME/Applications/YOLO26/cache
+$HOME/Applications/BioCLIP25/venv/bin/python
+$HOME/Applications/BioCLIP25/models
+$HOME/Applications/BioCLIP25/cache
 ```
 
 ## Runtime Checks
 
 ```bash
 uv run biominer detect yoloe26-runtime-check \
-  --runtime-python /Users/merm0001/Applications/YOLO26/venv/bin/python \
+  --runtime-python "$HOME/Applications/YOLO26/venv/bin/python" \
   --checkpoint yoloe-26s-seg.pt \
   --device auto
 
 uv run biominer bioclip runtime-check \
-  --runtime-python /Users/merm0001/Applications/BioCLIP25/venv/bin/python \
-  --hf-cache-dir /Users/merm0001/Applications/BioCLIP25/cache/huggingface \
+  --runtime-python "$HOME/Applications/BioCLIP25/venv/bin/python" \
+  --hf-cache-dir "$HOME/Applications/BioCLIP25/cache/huggingface" \
   --device auto
 ```
 
@@ -40,13 +40,13 @@ uv run biominer bioclip runtime-check \
 
 ```bash
 uv run biominer detect yoloe26-prefetch \
-  --runtime-python /Users/merm0001/Applications/YOLO26/venv/bin/python \
+  --runtime-python "$HOME/Applications/YOLO26/venv/bin/python" \
   --checkpoint yoloe-26s-seg.pt \
   --device auto
 
 uv run biominer bioclip prefetch-model \
-  --runtime-python /Users/merm0001/Applications/BioCLIP25/venv/bin/python \
-  --hf-cache-dir /Users/merm0001/Applications/BioCLIP25/cache/huggingface \
+  --runtime-python "$HOME/Applications/BioCLIP25/venv/bin/python" \
+  --hf-cache-dir "$HOME/Applications/BioCLIP25/cache/huggingface" \
   --model-name imageomics/bioclip-2.5-vith14
 ```
 
@@ -55,7 +55,7 @@ uv run biominer bioclip prefetch-model \
 ```bash
 uv run biominer detect boxes \
   --backend yoloe26 \
-  --runtime-python /Users/merm0001/Applications/YOLO26/venv/bin/python \
+  --runtime-python "$HOME/Applications/YOLO26/venv/bin/python" \
   --checkpoint yoloe-26s-seg.pt \
   --input staging/species_runs/example/filtered.parquet \
   --output staging/species_runs/example/object_detections_yoloe26.parquet \
@@ -85,9 +85,9 @@ uv run biominer detect yoloe26-prototype-run \
   --input staging/species_runs/example/filtered.parquet \
   --species-context staging/species_runs/example/species_context.json \
   --output-dir reports/yoloe26_prototype/example \
-  --vision-runtime-python /Users/merm0001/Applications/YOLO26/venv/bin/python \
-  --bioclip-runtime-python /Users/merm0001/Applications/BioCLIP25/venv/bin/python \
-  --hf-cache-dir /Users/merm0001/Applications/BioCLIP25/cache/huggingface \
+  --vision-runtime-python "$HOME/Applications/YOLO26/venv/bin/python" \
+  --bioclip-runtime-python "$HOME/Applications/BioCLIP25/venv/bin/python" \
+  --hf-cache-dir "$HOME/Applications/BioCLIP25/cache/huggingface" \
   --device auto \
   --checkpoint yoloe-26s-seg.pt \
   --limit 10
@@ -111,7 +111,7 @@ Use a manual image when available:
 
 ```bash
 uv run biominer detect yoloe26-smoke \
-  --runtime-python /Users/merm0001/Applications/YOLO26/venv/bin/python \
+  --runtime-python "$HOME/Applications/YOLO26/venv/bin/python" \
   --checkpoint yoloe-26s-seg.pt \
   --device auto \
   --image /path/to/manual_test_image.jpg \
@@ -129,4 +129,3 @@ Without `--image`, the command uses a synthetic placeholder and only validates r
 - Model files, caches, downloaded Flickr images, and generated Parquet outputs must not be committed.
 
 The next data-engineering step is to use YOLOE-26 boxes plus BioCLIP object scores to build a reviewed box dataset for later supervised YOLO fine-tuning.
-
