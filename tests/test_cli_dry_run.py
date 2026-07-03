@@ -23,6 +23,7 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert "poll-once" in commands
     assert "bioclip" in commands
     assert "species" in commands
+    assert "dev" in commands
     assert "build-papilio-demoleus-query-plan" not in commands
     assert "fetch" not in commands
     assert "fetch-live" not in commands
@@ -31,6 +32,19 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert poll_once.max_api_calls == 3500
     assert poll_once.run_id == "run-1"
     assert poll_once.worker_id == "worker-001"
+
+
+def test_registry_public_cli_exposes_only_build_and_audit() -> None:
+    parser = build_parser()
+    commands = parser._subparsers._group_actions[0].choices  # noqa: SLF001 - parser surface regression test.
+    registry_choices = commands["registry"]._subparsers._group_actions[0].choices  # noqa: SLF001
+    dev_choices = commands["dev"]._subparsers._group_actions[0].choices  # noqa: SLF001
+    dev_registry_choices = dev_choices["registry"]._subparsers._group_actions[0].choices  # noqa: SLF001
+
+    assert set(registry_choices) == {"build", "audit"}
+    for internal in {"fetch-taxonomy", "compile-fixture", "compile-enriched", "enrich-sources", "seed-flickr-queries"}:
+        assert internal not in registry_choices
+        assert internal in dev_registry_choices
 
 
 def test_cloud_cli_accepts_init_and_doctor_commands() -> None:
@@ -1888,6 +1902,7 @@ def test_registry_compile_fixture_cli_writes_registry_outputs(tmp_path, capsys) 
     parser = build_parser()
     args = parser.parse_args(
         [
+            "dev",
             "registry",
             "compile-fixture",
             "--source-json",
@@ -1925,6 +1940,7 @@ def test_registry_fetch_taxonomy_cli_writes_gbif_source_snapshot(tmp_path, capsy
     parser = build_parser()
     args = parser.parse_args(
         [
+            "dev",
             "registry",
             "fetch-taxonomy",
             "--output-json",
@@ -2058,6 +2074,7 @@ def test_registry_seed_flickr_queries_cli_loads_query_definitions_into_state(tmp
     parser = build_parser()
     args = parser.parse_args(
         [
+            "dev",
             "registry",
             "seed-flickr-queries",
             "--query-definitions",

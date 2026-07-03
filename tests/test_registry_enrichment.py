@@ -591,6 +591,7 @@ def test_registry_compile_enriched_cli_writes_expanded_outputs(tmp_path, capsys)
     parser = build_parser()
     args = parser.parse_args(
         [
+            "dev",
             "registry",
             "compile-enriched",
             "--registry-dir",
@@ -969,6 +970,7 @@ def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, 
     parser = build_parser()
     args = parser.parse_args(
         [
+            "dev",
             "registry",
             "enrich-sources",
             "--registry-dir",
