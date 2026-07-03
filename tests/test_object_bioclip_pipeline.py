@@ -166,6 +166,34 @@ def test_candidate_set_uses_species_context_and_same_genus_family_candidates(tmp
     assert "monarch butterfly" in candidate_set.prompt_labels("species")
 
 
+def test_candidate_set_reads_list_valued_common_names_from_candidate_parquet(tmp_path) -> None:
+    candidates = tmp_path / "species_candidates.parquet"
+    pl.DataFrame(
+        [
+            {
+                "scientific_name": "Danaus gilippus",
+                "accepted_taxon_key": "gbif:5131655",
+                "family": "Nymphalidae",
+                "genus": "Danaus",
+                "common_names": ["queen butterfly", "queen"],
+            },
+        ],
+        schema={
+            "scientific_name": pl.String,
+            "accepted_taxon_key": pl.String,
+            "family": pl.String,
+            "genus": pl.String,
+            "common_names": pl.List(pl.String),
+        },
+    ).write_parquet(candidates)
+
+    labels = build_candidate_set(_context(), species_candidate_path=candidates).prompt_labels("species")
+
+    assert "queen butterfly" in labels
+    assert "queen" in labels
+    assert "['queen butterfly', 'queen']" not in labels
+
+
 def test_candidate_set_records_geospatial_scope_source_evidence() -> None:
     candidate_set = build_candidate_set(_context(), geospatial_scope="geo_prior.parquet")
 

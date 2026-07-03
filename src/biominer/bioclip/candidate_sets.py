@@ -256,7 +256,7 @@ def _candidate_from_row(row: dict[str, Any]) -> CandidateTaxon | None:
         rank=(_first_text(row, "rank", "taxon_rank") or "species").casefold(),
         family=_first_text(row, "family"),
         genus=genus,
-        common_names=_split_names(_first_text(row, "common_names", "vernacular_names")),
+        common_names=_split_names(_first_value(row, "common_names", "vernacular_names")),
     )
 
 
@@ -374,9 +374,19 @@ def _first_text(row: dict[str, Any], *keys: str) -> str | None:
     return None
 
 
-def _split_names(value: str | None) -> tuple[str, ...]:
+def _first_value(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _split_names(value: Any) -> tuple[str, ...]:
     if not value:
         return ()
+    if isinstance(value, list | tuple):
+        return _unique(value)
     return _unique(value.replace(";", "|").split("|"))
 
 
