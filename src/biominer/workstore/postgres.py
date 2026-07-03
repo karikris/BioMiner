@@ -7,6 +7,7 @@ import hashlib
 import json
 
 from biominer.common.status import CLAIMED, COMPLETED, FAILED, PENDING, RUN_COMPLETED, RUN_FAILED, RUN_PLANNED, RUN_RUNNING
+from biominer.workstore.keys import scoped_work_item_key
 from biominer.workstore.schema import POSTGRES_CLAIM_SQL, POSTGRES_SCHEMA_SQL
 
 
@@ -104,7 +105,7 @@ class PostgresWorkStore:
         with self._connect() as conn:
             for item in items:
                 payload = dict(item)
-                work_key = str(payload.pop("work_key", "") or _derive_work_key(job_name, stage, registry_version, payload))
+                work_key = str(payload.pop("work_key", "") or scoped_work_item_key(job_name, stage, registry_version, payload))
                 result = conn.execute(
                     """
                     INSERT INTO biominer_work_items (
@@ -523,17 +524,6 @@ class PostgresWorkStore:
             import psycopg  # noqa: F401
         except ImportError as exc:
             raise RuntimeError("psycopg is required to use PostgresWorkStore; install the optional postgres dependency") from exc
-
-
-def _derive_work_key(job_name: str, stage: str, registry_version: str | None, payload: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        {"job_name": job_name, "stage": stage, "registry_version": registry_version, "payload": payload},
-        sort_keys=True,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
-    return f"{job_name}:{digest}"
 
 
 def _row_to_run(row: Mapping[str, Any]) -> dict[str, Any]:

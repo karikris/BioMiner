@@ -11,6 +11,17 @@ def stable_work_key(payload: dict[str, Any], *, prefix: str | None = None) -> st
     return f"{prefix}:{digest}" if prefix else digest
 
 
+def scoped_work_item_key(job_name: str, stage: str, registry_version: str | None, payload: dict[str, Any]) -> str:
+    canonical = {
+        "job_name": job_name,
+        "stage": stage,
+        "registry_version": registry_version,
+        "payload": payload,
+    }
+    digest = stable_work_key(canonical)[:24]
+    return f"{job_name}:{digest}"
+
+
 def flickr_poll_once_work_key(query_payload: dict[str, Any]) -> str:
     return stable_work_key(query_payload, prefix="flickr_poll_once")
 
