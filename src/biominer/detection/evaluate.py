@@ -61,10 +61,18 @@ def evaluate_xie_style(
         }
     matches = _best_matches(prediction_rows, truth_rows, iou_threshold=iou_threshold, score_fn=_species_score)
     matched_truth = [truth for _prediction, truth, iou in matches if truth is not None and iou >= iou_threshold]
-    species_top1 = _accuracy(matches, _species_top1_correct)
-    species_top5 = _accuracy(matches, _species_top5_correct)
-    family_top3 = _accuracy(matches, lambda prediction, truth: _norm(truth.get("family")) in {_norm(value) for value in prediction.get("family_top3", [])})
-    genus_top8 = _accuracy(matches, lambda prediction, truth: _norm(truth.get("genus")) in {_norm(value) for value in prediction.get("genus_top8", [])})
+    species_top1 = _accuracy(matches, _species_top1_correct, truth_count=len(truth_rows))
+    species_top5 = _accuracy(matches, _species_top5_correct, truth_count=len(truth_rows))
+    family_top3 = _accuracy(
+        matches,
+        lambda prediction, truth: _norm(truth.get("family")) in {_norm(value) for value in prediction.get("family_top3", [])},
+        truth_count=len(truth_rows),
+    )
+    genus_top8 = _accuracy(
+        matches,
+        lambda prediction, truth: _norm(truth.get("genus")) in {_norm(value) for value in prediction.get("genus_top8", [])},
+        truth_count=len(truth_rows),
+    )
     joint_results = [
         (
             joint_detection_species_correct(
@@ -174,11 +182,16 @@ def _species_top5_correct(prediction: dict[str, Any], truth: dict[str, Any]) -> 
     return _norm(truth.get("scientific_name")) in {_norm(value) for value in prediction.get("species_top5", [])}
 
 
-def _accuracy(matches: list[tuple[dict[str, Any], dict[str, Any] | None, float]], predicate: Any) -> float:
-    valid = [(prediction, truth) for prediction, truth, _iou in matches if truth is not None]
-    if not valid:
+def _accuracy(
+    matches: list[tuple[dict[str, Any], dict[str, Any] | None, float]],
+    predicate: Any,
+    *,
+    truth_count: int,
+) -> float:
+    if truth_count <= 0:
         return 0.0
-    return sum(1 for prediction, truth in valid if predicate(prediction, truth)) / len(valid)
+    valid = [(prediction, truth) for prediction, truth, _iou in matches if truth is not None]
+    return sum(1 for prediction, truth in valid if predicate(prediction, truth)) / truth_count
 
 
 def _ap(results: list[tuple[bool, float]], truth_count: int) -> float | None:

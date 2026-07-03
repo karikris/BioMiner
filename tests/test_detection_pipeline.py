@@ -732,3 +732,46 @@ def test_xie_style_evaluation_without_ground_truth_reports_qa_only() -> None:
     assert report["detector_ap50"] is None
     assert report["detector_ap50_95"] is None
     assert report["joint_map50"] is None
+
+
+def test_xie_style_taxonomic_accuracy_counts_missed_ground_truth_as_wrong() -> None:
+    report = evaluate_xie_style(
+        predictions=[
+            {
+                "source": "flickr",
+                "flickr_photo_id": "p1",
+                "bbox_xyxy": [0, 0, 10, 10],
+                "detector_score": 0.90,
+                "species_top1_scientific_name": "Danaus plexippus",
+                "species_top5": ["Danaus plexippus"],
+                "family_top3": ["Nymphalidae"],
+                "genus_top8": ["Danaus"],
+                "species_top1_score": 0.95,
+            }
+        ],
+        ground_truth=[
+            {
+                "source": "flickr",
+                "flickr_photo_id": "p1",
+                "bbox_xyxy": [0, 0, 10, 10],
+                "scientific_name": "Danaus plexippus",
+                "family": "Nymphalidae",
+                "genus": "Danaus",
+            },
+            {
+                "source": "flickr",
+                "flickr_photo_id": "p1",
+                "bbox_xyxy": [20, 20, 30, 30],
+                "scientific_name": "Danaus gilippus",
+                "family": "Nymphalidae",
+                "genus": "Danaus",
+            },
+        ],
+    )
+
+    assert report["ground_truth_seen"] == 2
+    assert report["matched_ground_truth"] == 1
+    assert report["species_top1_accuracy"] == pytest.approx(0.5)
+    assert report["species_top5_accuracy"] == pytest.approx(0.5)
+    assert report["family_top3_accuracy"] == pytest.approx(0.5)
+    assert report["genus_top8_accuracy"] == pytest.approx(0.5)
