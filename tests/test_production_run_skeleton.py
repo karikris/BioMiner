@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -14,7 +15,7 @@ from biominer.registry.trust_policy import (
     should_enable_name_by_default,
     source_default_trust_tier,
 )
-from biominer.run import ProductionRunOrchestrator, ProductionRunRequest, RunManifest, RunPaths, RunStage, TaxonScope
+from biominer.run import ProductionRunOrchestrator, ProductionRunRequest, RunManifest, RunPaths, RunStage, TaxonScope, resolve_taxon_scope_from_registry
 from biominer.species.context import CommonName, SpeciesContext
 
 
@@ -51,6 +52,39 @@ def test_taxon_scope_validates_rank_and_species_contexts() -> None:
             registry_version="test-v1",
             species_contexts=(),
         )
+
+
+def test_resolve_taxon_scope_from_registry_expands_species_genus_and_family(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+
+    species_scope = resolve_taxon_scope_from_registry(registry_dir=registry, input_name="Papilio demoleus", input_rank="species")
+    genus_scope = resolve_taxon_scope_from_registry(registry_dir=registry, input_name="Papilio", input_rank="genus")
+    family_scope = resolve_taxon_scope_from_registry(registry_dir=registry, input_name="Papilionidae", input_rank="family")
+    auto_scope = resolve_taxon_scope_from_registry(registry_dir=registry, input_name="Papilio", input_rank="auto")
+
+    assert species_scope.accepted_rank == "species"
+    assert species_scope.species_names == ("Papilio demoleus",)
+    assert species_scope.species_contexts[0].common_names[0].name == "Lime butterfly"
+    assert genus_scope.accepted_rank == "genus"
+    assert genus_scope.accepted_taxon_key == "gbif:90"
+    assert genus_scope.species_names == ("Papilio demoleus", "Papilio machaon")
+    assert family_scope.accepted_rank == "family"
+    assert family_scope.species_names == ("Papilio demoleus", "Papilio machaon", "Shared name")
+    assert auto_scope.accepted_rank == "genus"
+    assert auto_scope.species_count == 2
+
+
+def test_resolve_taxon_scope_reports_ambiguous_or_empty_registry_matches(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+
+    with pytest.raises(ValueError, match="ambiguous taxon match"):
+        resolve_taxon_scope_from_registry(registry_dir=registry, input_name="Shared name", input_rank="auto")
+
+    with pytest.raises(ValueError, match="no species found under genus"):
+        resolve_taxon_scope_from_registry(registry_dir=registry, input_name="Emptygenus", input_rank="genus")
+
+    with pytest.raises(ValueError, match="species not found"):
+        resolve_taxon_scope_from_registry(registry_dir=registry, input_name="Missing species", input_rank="species")
 
 
 def test_run_paths_and_dry_run_manifest(tmp_path) -> None:
@@ -133,3 +167,81 @@ def _species_context() -> SpeciesContext:
         registry_version="test-v1",
         common_names=(CommonName(name="Monarch", language="en", source="GBIF", trust_tier="T2"),),
     )
+
+
+def _write_rank_registry(registry: Path) -> Path:
+    registry.mkdir(parents=True, exist_ok=True)
+    taxa_rows = [
+        _taxon_row("gbif:10", "Papilionidae", "FAMILY", family_key="gbif:10", family="Papilionidae"),
+        _taxon_row("gbif:90", "Papilio", "GENUS", parent_key="gbif:10", family_key="gbif:10", family="Papilionidae", genus_key="gbif:90", genus="Papilio"),
+        _taxon_row("gbif:91", "Emptygenus", "GENUS", parent_key="gbif:10", family_key="gbif:10", family="Papilionidae", genus_key="gbif:91", genus="Emptygenus"),
+        _taxon_row("gbif:100", "Papilio demoleus", "SPECIES", parent_key="gbif:90", family_key="gbif:10", family="Papilionidae", genus_key="gbif:90", genus="Papilio", species_key="gbif:100", species="Papilio demoleus"),
+        _taxon_row("gbif:101", "Papilio machaon", "SPECIES", parent_key="gbif:90", family_key="gbif:10", family="Papilionidae", genus_key="gbif:90", genus="Papilio", species_key="gbif:101", species="Papilio machaon"),
+        _taxon_row("gbif:20", "Nymphalidae", "FAMILY", family_key="gbif:20", family="Nymphalidae"),
+        _taxon_row("gbif:190", "Danaus", "GENUS", parent_key="gbif:20", family_key="gbif:20", family="Nymphalidae", genus_key="gbif:190", genus="Danaus"),
+        _taxon_row("gbif:200", "Danaus plexippus", "SPECIES", parent_key="gbif:190", family_key="gbif:20", family="Nymphalidae", genus_key="gbif:190", genus="Danaus", species_key="gbif:200", species="Danaus plexippus"),
+        _taxon_row("gbif:300", "Shared name", "GENUS", parent_key="gbif:10", family_key="gbif:10", family="Papilionidae", genus_key="gbif:300", genus="Shared name"),
+        _taxon_row("gbif:301", "Shared name", "SPECIES", parent_key="gbif:300", family_key="gbif:10", family="Papilionidae", genus_key="gbif:300", genus="Shared name", species_key="gbif:301", species="Shared name"),
+    ]
+    pl.DataFrame(taxa_rows).write_parquet(registry / "taxa.parquet")
+    pl.DataFrame(
+        [
+            _name_row("gbif:100", "Papilio demoleus", "accepted_scientific", "la", "T1"),
+            _name_row("gbif:100", "Lime butterfly", "vernacular", "eng", "T2"),
+            _name_row("gbif:101", "Papilio machaon", "accepted_scientific", "la", "T1"),
+            _name_row("gbif:200", "Danaus plexippus", "accepted_scientific", "la", "T1"),
+            _name_row("gbif:301", "Shared name", "accepted_scientific", "la", "T1"),
+        ]
+    ).write_parquet(registry / "names.parquet")
+    pl.DataFrame([{"source": "GBIF", "source_version": "fixture", "retrieved_at": "2026-01-01T00:00:00Z"}]).write_parquet(registry / "source_snapshots.parquet")
+    (registry / "manifest.json").write_text(json.dumps({"registry_version": "rank-registry-v1"}), encoding="utf-8")
+    return registry
+
+
+def _taxon_row(
+    accepted_taxon_key: str,
+    scientific_name: str,
+    rank: str,
+    *,
+    parent_key: str = "",
+    family_key: str = "",
+    family: str = "",
+    genus_key: str = "",
+    genus: str = "",
+    species_key: str = "",
+    species: str = "",
+) -> dict[str, str]:
+    return {
+        "accepted_taxon_key": accepted_taxon_key,
+        "scientific_name": scientific_name,
+        "rank": rank,
+        "parent_key": parent_key,
+        "family_key": family_key,
+        "family": family,
+        "genus_key": genus_key,
+        "genus": genus,
+        "species_key": species_key,
+        "species": species,
+    }
+
+
+def _name_row(accepted_taxon_key: str, display_name: str, name_class: str, language: str, trust_tier: str) -> dict[str, object]:
+    return {
+        "name_id": f"name:{accepted_taxon_key}:{display_name}",
+        "registry_version": "rank-registry-v1",
+        "accepted_taxon_key": accepted_taxon_key,
+        "verbatim_name": display_name,
+        "display_name": display_name,
+        "language": language,
+        "script": "Latn",
+        "region": "",
+        "bbox": "",
+        "name_class": name_class,
+        "source": "GBIF",
+        "source_record_id": accepted_taxon_key,
+        "trust_tier": trust_tier,
+        "precision_tier": "high",
+        "confidence": "high",
+        "enabled": True,
+        "disabled_reason": "",
+    }
