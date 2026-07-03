@@ -737,13 +737,14 @@ def _photo_summary(
     rows: list[dict[str, Any]] = []
     summarized_keys: set[tuple[str, str]] = set()
     canonical_by_photo = _canonical_by_photo(canonical)
+    detections_by_photo = _detections_by_photo(detections)
     if _has_columns(scores, ["source", "flickr_photo_id", "target_species_score"]):
         for (_source, _photo), group in scores.group_by(["source", "flickr_photo_id"], maintain_order=True):
             sorted_rows = group.sort("target_species_score", descending=True).to_dicts()
             best = sorted_rows[0]
-            detection_ids = [str(row["detection_id"]) for row in sorted_rows]
-            species = _unique(row["species_top1_scientific_name"] for row in sorted_rows if row.get("species_top1_scientific_name"))
             key = (str(best["source"]), str(best["flickr_photo_id"]))
+            detection_ids = _summary_detection_ids(detections_by_photo.get(key, []), sorted_rows)
+            species = _unique(row["species_top1_scientific_name"] for row in sorted_rows if row.get("species_top1_scientific_name"))
             photo_bucket, photo_reason = _photo_bucket_and_reason(sorted_rows, canonical_by_photo.get(key, {}))
             summarized_keys.add(key)
             rows.append(
@@ -762,7 +763,6 @@ def _photo_summary(
                 }
             )
     if canonical is not None:
-        detections_by_photo = _detections_by_photo(detections)
         for record in canonical.to_dicts():
             key = (str(record.get("source") or ""), str(record.get("flickr_photo_id") or ""))
             if key in summarized_keys:
@@ -843,6 +843,17 @@ def _canonical_by_photo(canonical: pl.DataFrame | None) -> dict[tuple[str, str],
         (str(row.get("source") or ""), str(row.get("flickr_photo_id") or "")): row
         for row in canonical.to_dicts()
     }
+
+
+def _summary_detection_ids(detection_rows: list[dict[str, Any]], scored_rows: list[dict[str, Any]]) -> list[str]:
+    detection_ids = _unique(
+        row.get("detection_id")
+        for row in detection_rows
+        if str(row.get("detection_status") or "") == "detected"
+    )
+    if detection_ids:
+        return detection_ids
+    return _unique(row.get("detection_id") for row in scored_rows)
 
 
 def _has_columns(frame: pl.DataFrame, columns: Iterable[str]) -> bool:
