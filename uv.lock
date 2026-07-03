@@ -50,7 +50,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "matplotlib", marker = "extra == 'test'", specifier = ">=3.10" },
     { name = "polars", specifier = ">=1.30" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.3" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
     { name = "pyarrow", specifier = ">=18" },
     { name = "pydantic", specifier = ">=2.10" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },

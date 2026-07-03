@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from datetime import UTC, datetime, timedelta
 from typing import Any
 import sqlite3
@@ -142,7 +143,15 @@ def test_postgres_schema_and_claim_sql_are_supabase_compatible() -> None:
     assert "jsonb" in POSTGRES_SCHEMA_SQL
 
 
-def test_postgres_workstore_imports_without_psycopg_and_validates_lazily() -> None:
+def test_postgres_workstore_imports_without_psycopg_and_validates_lazily(monkeypatch) -> None:
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):  # noqa: ANN001, ANN202
+        if name == "psycopg" or name.startswith("psycopg."):
+            raise ImportError("missing psycopg")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
     store = PostgresWorkStore("postgresql://user:pass@example.test/db")
 
     with pytest.raises(RuntimeError, match="psycopg"):

@@ -766,14 +766,27 @@ def _run_cloud_command(args: argparse.Namespace) -> int:
     if args.cloud_command == "init":
         config = load_biominer_config(args.config)
         validate_config(config, require_cloud_credentials=True)
+        storage = create_storage_backend(config.storage)
         workstore = create_workstore(config.workstore)
         _init_workstore_schema(workstore)
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        manifest_uri = join_uri(_storage_base_uri(storage=storage, config=config), "manifests", "cloud_init", f"{timestamp}.json")
+        manifest = {
+            "status": "ok",
+            "command": "cloud init",
+            "created_at": datetime.now(UTC).isoformat(),
+            "storage_backend": config.storage.backend,
+            "workstore_backend": config.workstore.backend,
+            "config": redact_config(config),
+        }
+        storage.write_json(manifest_uri, manifest)
         print(
             json.dumps(
                 {
                     "status": "ok",
                     "command": "cloud init",
                     "workstore_backend": config.workstore.backend,
+                    "manifest_uri": manifest_uri,
                     "config": redact_config(config),
                 },
                 indent=2,
@@ -800,7 +813,7 @@ def _run_cloud_doctor(args: argparse.Namespace) -> dict[str, object]:
     _init_workstore_schema(workstore)
 
     run_id = f"cloud-doctor-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}"
-    base_uri = str(getattr(storage, "base_uri", config.storage.prefix))
+    base_uri = _storage_base_uri(storage=storage, config=config)
     doctor_prefix = join_uri(base_uri, "doctor", f"run_id={run_id}")
 
     json_uri = join_uri(doctor_prefix, "probe.json")
@@ -872,6 +885,16 @@ def _init_workstore_schema(workstore: object) -> None:
     if not callable(init_schema):
         raise RuntimeError("configured workstore does not support schema initialization")
     init_schema()
+
+
+def _storage_base_uri(*, storage: object, config: object) -> str:
+    base_uri = getattr(storage, "base_uri", None)
+    if base_uri:
+        return str(base_uri)
+    storage_config = getattr(config, "storage")
+    if getattr(storage_config, "backend") == "s3" and getattr(storage_config, "bucket"):
+        return join_uri(f"s3://{storage_config.bucket}", str(getattr(storage_config, "prefix", "") or ""))
+    return str(getattr(storage_config, "prefix", "."))
 
 
 def _summarize_report(report_path: Path) -> dict[str, object]:

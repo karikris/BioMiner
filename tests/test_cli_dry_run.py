@@ -75,9 +75,11 @@ def test_cloud_cli_accepts_init_and_doctor_commands() -> None:
 
 def test_cloud_init_initializes_workstore_schema(capsys, monkeypatch) -> None:
     fake_store = _FakeCloudWorkStore()
+    fake_storage = _FakeCloudStorage()
     config = _fake_cloud_config()
     monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
     monkeypatch.setattr("biominer.cli.validate_config", lambda config, require_cloud_credentials: None)
+    monkeypatch.setattr("biominer.cli.create_storage_backend", lambda storage_config: fake_storage)
     monkeypatch.setattr("biominer.cli.create_workstore", lambda workstore_config: fake_store)
 
     rc = run(build_parser().parse_args(["cloud", "init"]))
@@ -89,6 +91,10 @@ def test_cloud_init_initializes_workstore_schema(capsys, monkeypatch) -> None:
     assert output["workstore_backend"] == "postgres"
     assert "password" not in json.dumps(output)
     assert output["config"]["workstore"]["dsn"] == "<redacted>"
+    assert output["manifest_uri"].startswith("s3://biominer/biominer/manifests/cloud_init/")
+    assert output["manifest_uri"].endswith(".json")
+    assert fake_storage.json_payloads[output["manifest_uri"]]["command"] == "cloud init"
+    assert fake_storage.json_payloads[output["manifest_uri"]]["status"] == "ok"
 
 
 def test_cloud_doctor_exercises_storage_and_workstore_without_printing_secrets(capsys, monkeypatch) -> None:

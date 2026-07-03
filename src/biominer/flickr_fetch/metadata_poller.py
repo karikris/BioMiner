@@ -923,12 +923,14 @@ def poll_once(
     work_items_claimed = 0
     api_calls_made = 0
     evidence_rows_written = 0
+    evidence_rows_total = 0
     evidence_shard_rows = 0
     evidence_shard_uri: str | None = None
     evidence_shard_checksum: str | None = None
     evidence_shard_bytes: int | None = None
     shard_registry_version: str | None = None
-    delta_photo_ids: set[str] = set()
+    delta_photo_ids_by_work_item: dict[str, set[str]] = {}
+    shard_registry_versions_by_work_item: dict[str, str | None] = {}
     fetcher = fetch_metadata or _http_fetcher(api_key=api_key)
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -995,7 +997,12 @@ def poll_once(
                         else:
                             records = _payload_photo_records(payload)
                             inserted, skipped, queued_count, query_hits, duplicate_hits = state.insert_source_records(records, source_query=query)
-                            delta_photo_ids.update(_photo_ids_from_records(records))
+                            photo_ids = _photo_ids_from_records(records)
+                            if photo_ids:
+                                for existing_photo_ids in delta_photo_ids_by_work_item.values():
+                                    existing_photo_ids.difference_update(photo_ids)
+                                delta_photo_ids_by_work_item[work_item_id] = photo_ids
+                                shard_registry_versions_by_work_item[work_item_id] = query.registry_version
                             if query.registry_version and shard_registry_version is None:
                                 shard_registry_version = query.registry_version
                             records_returned = len(records)
@@ -1096,30 +1103,33 @@ def poll_once(
         evidence_rows_total = state.export_canonical_evidence(evidence_output)
         evidence_rows_written = evidence_rows_total
     else:
-        canonical_frame = state.canonical_source_records_frame(photo_ids=delta_photo_ids)
-        evidence_shard_uri, evidence_shard_rows, evidence_shard_checksum, evidence_shard_bytes = _write_evidence_shard(
-            storage=output_storage,
-            evidence_base_prefix=str(evidence_base_prefix),
-            stage=evidence_stage,
-            run_id=effective_run_id,
-            worker_id=effective_worker_id,
-            batch_id="canonical",
-            frame=canonical_frame,
-        )
-        if evidence_shard_uri and work_store:
-            work_store.register_shard(
-                job_name="poll_once",
-                registry_version=shard_registry_version,
+        for batch_work_item_id, photo_ids in sorted(delta_photo_ids_by_work_item.items()):
+            if not photo_ids:
+                continue
+            canonical_frame = state.canonical_source_records_frame(photo_ids=photo_ids)
+            evidence_shard_uri, evidence_shard_rows, evidence_shard_checksum, evidence_shard_bytes = _write_evidence_shard(
+                storage=output_storage,
+                evidence_base_prefix=str(evidence_base_prefix),
                 stage=evidence_stage,
                 run_id=effective_run_id,
                 worker_id=effective_worker_id,
-                uri=evidence_shard_uri,
-                checksum=evidence_shard_checksum,
-                row_count=evidence_shard_rows,
-                byte_count=evidence_shard_bytes,
+                batch_id=batch_work_item_id,
+                frame=canonical_frame,
             )
-        evidence_rows_total = evidence_shard_rows
-        evidence_rows_written = evidence_shard_rows
+            if evidence_shard_uri and work_store:
+                work_store.register_shard(
+                    job_name="poll_once",
+                    registry_version=shard_registry_versions_by_work_item.get(batch_work_item_id, shard_registry_version),
+                    stage=evidence_stage,
+                    run_id=effective_run_id,
+                    worker_id=effective_worker_id,
+                    uri=evidence_shard_uri,
+                    checksum=evidence_shard_checksum,
+                    row_count=evidence_shard_rows,
+                    byte_count=evidence_shard_bytes,
+                )
+            evidence_rows_total += evidence_shard_rows
+            evidence_rows_written += evidence_shard_rows
     soft_after, hard_after = state.remaining_api_budget(max_api_calls=max_api_calls)
     result = PollOnceResult(
         state_db=Path(state_db),

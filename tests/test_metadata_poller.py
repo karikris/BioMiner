@@ -18,7 +18,7 @@ from biominer.flickr_fetch.query_planner import (
     FlickrQuery,
     fixed_upload_date_slices,
 )
-from biominer.flickr_fetch.metadata_poller import MetadataPollState, _payload_page, _payload_pages, _payload_perpage, poll_once
+from biominer.flickr_fetch.metadata_poller import MetadataPollState, _payload_page, _payload_pages, _payload_perpage, _work_item_id, poll_once
 from biominer.workstore.sqlite import SQLiteWorkStore
 
 
@@ -404,6 +404,9 @@ def test_poll_once_no_compact_writes_canonical_delta_shard_not_full_snapshot(tmp
 
     assert result.evidence_rows_written == 1
     assert result.evidence_rows_total == 1
+    assert [path.stem for path in second_shards] == [
+        f"batch={_work_item_id(FlickrQuery(term='Danaus', language='en', search_field='text', lane='normal_page', page=1, per_page=250))}"
+    ]
     assert second_frame["flickr_photo_id"].to_list() == ["2"]
 
 
@@ -437,6 +440,10 @@ def test_poll_once_no_compact_dedupes_duplicate_photo_with_folded_provenance_in_
     row = frame.to_dicts()[0]
 
     assert result.evidence_rows_written == 1
+    assert len(shards) == 1
+    assert shards[0].stem == (
+        f"batch={_work_item_id(FlickrQuery(term='Papilionidae', language='en', search_field='tags', lane='normal_page', page=1, per_page=250))}"
+    )
     assert frame.height == 1
     assert row["flickr_photo_id"] == "123"
     assert row["text_search_terms"] == ["Papilio"]

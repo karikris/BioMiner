@@ -27,7 +27,7 @@ def test_load_defaults_without_file() -> None:
     assert config.workstore.backend == "sqlite"
     assert config.workstore.sqlite_path == "data/state/biominer.sqlite"
     assert config.runtime.default_batch_rows == 50000
-    assert config.runtime.target_parquet_mb == 128
+    assert config.runtime.target_parquet_mb == 64
 
 
 def test_load_cloud_toml_with_env_resolution(tmp_path) -> None:

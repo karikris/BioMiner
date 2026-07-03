@@ -45,7 +45,7 @@ class RuntimeConfig:
     worker_id_env: str = "BIOMINER_WORKER_ID"
     worker_id: str = "local"
     default_batch_rows: int = 50000
-    target_parquet_mb: int = 128
+    target_parquet_mb: int = 64
 
 
 @dataclass(frozen=True)
@@ -226,7 +226,7 @@ def _load_runtime_config(raw: Any, env: Mapping[str, str]) -> RuntimeConfig:
         worker_id_env=worker_id_env,
         worker_id=str(values.get("worker_id", env.get(worker_id_env, "local"))),
         default_batch_rows=int(values.get("default_batch_rows", 50000)),
-        target_parquet_mb=int(values.get("target_parquet_mb", 128)),
+        target_parquet_mb=int(values.get("target_parquet_mb", 64)),
     )
 
 
