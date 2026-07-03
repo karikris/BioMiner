@@ -944,6 +944,7 @@ def test_bioclip_screen_objects_uses_embedding_caches_for_detector_crop_scoring(
     assert calls["screen"]["ablation_mode"] == "detector_crop"
     assert calls["screen"]["parquet_batch_rows"] == 3
     assert calls["screen"]["geo_prior_table"].height == 1
+    assert calls["candidate_set"]["geospatial_scope"] == str(geo_prior_path)
     assert calls["candidate_set"]["records"][0]["flickr_photo_id"] == "photo-1"
     assert calls["candidate_set"]["records"][0]["scientific_names_detected"] == ["Danaus gilippus"]
     assert pl.read_parquet(text_cache_path).height == 4

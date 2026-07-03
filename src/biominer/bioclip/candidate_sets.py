@@ -62,6 +62,8 @@ def build_candidate_set(
 ) -> CandidateSet:
     target = _target_candidate(context)
     source_evidence = ["species_context"]
+    if geospatial_scope:
+        source_evidence.append(f"geospatial_scope:{geospatial_scope}")
     candidate_rows = _candidate_rows(species_candidate_path) if species_candidate_path else []
     if candidate_rows:
         source_evidence.append(str(species_candidate_path))

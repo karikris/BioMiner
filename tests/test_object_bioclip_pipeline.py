@@ -158,6 +158,13 @@ def test_candidate_set_uses_species_context_and_same_genus_family_candidates(tmp
     assert "monarch butterfly" in candidate_set.prompt_labels("species")
 
 
+def test_candidate_set_records_geospatial_scope_source_evidence() -> None:
+    candidate_set = build_candidate_set(_context(), geospatial_scope="geo_prior.parquet")
+
+    assert candidate_set.geospatial_scope == "geo_prior.parquet"
+    assert "geospatial_scope:geo_prior.parquet" in candidate_set.source_evidence
+
+
 def test_candidate_set_uses_query_provenance_accepted_taxon_keys() -> None:
     candidate_set = build_candidate_set(
         _context(),
