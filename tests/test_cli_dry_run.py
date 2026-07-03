@@ -94,6 +94,30 @@ def test_cloud_doctor_exercises_storage_and_workstore_without_printing_secrets(c
     assert output["workstore"]["registered_shards"] == 1
 
 
+def test_cloud_doctor_reports_storage_checks_when_workstore_fails(capsys, monkeypatch) -> None:
+    fake_storage = _FakeCloudStorage()
+    fake_store = _FakeCloudWorkStore(init_error=RuntimeError("postgres unavailable"))
+    config = _fake_cloud_config()
+    monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
+    monkeypatch.setattr("biominer.cli.validate_config", lambda config, require_cloud_credentials: None)
+    monkeypatch.setattr("biominer.cli.create_storage_backend", lambda storage_config: fake_storage)
+    monkeypatch.setattr("biominer.cli.create_workstore", lambda workstore_config: fake_store)
+
+    rc = run(build_parser().parse_args(["cloud", "doctor"]))
+    rendered = capsys.readouterr().out
+    output = json.loads(rendered)
+
+    assert rc == 2
+    assert "password" not in rendered
+    assert "secret-value" not in rendered
+    assert output["status"] == "error"
+    assert output["storage"]["json_roundtrip"] is True
+    assert output["storage"]["json_deleted"] is True
+    assert output["storage"]["parquet_rows"] == 2
+    assert output["workstore"]["schema_initialized"] is False
+    assert output["workstore"]["error"] == "postgres unavailable"
+
+
 def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
     parser = build_parser()
     args = parser.parse_args(
@@ -1907,12 +1931,15 @@ class _FakeCloudStorage:
 
 
 class _FakeCloudWorkStore:
-    def __init__(self) -> None:
+    def __init__(self, *, init_error: Exception | None = None) -> None:
+        self.init_error = init_error
         self.schema_initialized = False
         self.items: dict[str, dict[str, Any]] = {}
         self.shards: list[dict[str, Any]] = []
 
     def init_schema(self) -> None:
+        if self.init_error is not None:
+            raise self.init_error
         self.schema_initialized = True
 
     def get_or_create_run(self, **kwargs) -> dict[str, Any]:  # noqa: ANN003

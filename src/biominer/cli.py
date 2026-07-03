@@ -801,7 +801,7 @@ def _run_cloud_command(args: argparse.Namespace) -> int:
             print(json.dumps({"status": "error", "error": str(exc)}, indent=2, sort_keys=True))
             return 2
         print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
+        return 0 if payload.get("status") == "ok" else 2
     return 2
 
 
@@ -810,11 +810,30 @@ def _run_cloud_doctor(args: argparse.Namespace) -> dict[str, object]:
     validate_config(config, require_cloud_credentials=True)
     storage = create_storage_backend(config.storage)
     workstore = create_workstore(config.workstore)
-    _init_workstore_schema(workstore)
-
     run_id = f"cloud-doctor-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}"
     base_uri = _storage_base_uri(storage=storage, config=config)
     doctor_prefix = join_uri(base_uri, "doctor", f"run_id={run_id}")
+    payload: dict[str, object] = {
+        "status": "ok",
+        "command": "cloud doctor",
+        "config": redact_config(config),
+        "storage": {
+            "backend": config.storage.backend,
+            "json_roundtrip": False,
+            "json_deleted": False,
+            "json_uri": None,
+            "parquet_uri": None,
+            "parquet_rows": 0,
+        },
+        "workstore": {
+            "backend": config.workstore.backend,
+            "schema_initialized": False,
+            "work_items_inserted": 0,
+            "claimed_work_key": None,
+            "completed_keys": [],
+            "registered_shards": 0,
+        },
+    }
 
     json_uri = join_uri(doctor_prefix, "probe.json")
     json_payload = {"run_id": run_id, "probe": "json"}
@@ -826,58 +845,59 @@ def _run_cloud_doctor(args: argparse.Namespace) -> dict[str, object]:
     parquet_frame = pl.DataFrame({"probe": ["a", "b"], "value": [1, 2]})
     storage.write_parquet_shard(parquet_uri, parquet_frame)
     parquet_rows = storage.scan_parquet(parquet_uri).collect().height
+    payload["storage"] = {
+        "backend": config.storage.backend,
+        "json_roundtrip": json_roundtrip,
+        "json_deleted": json_deleted,
+        "json_uri": json_uri,
+        "parquet_uri": parquet_uri,
+        "parquet_rows": parquet_rows,
+    }
 
     job_name = "cloud_doctor"
     stage = "doctor"
     work_key = "cloud-doctor-work"
-    workstore.get_or_create_run(
-        job_name=job_name,
-        stage=stage,
-        run_id=run_id,
-        registry_version=None,
-        config={"command": "cloud doctor"},
-    )
-    inserted = workstore.enqueue_work(job_name, None, [{"work_key": work_key, "probe": "workstore"}], stage=stage)
-    claimed = workstore.claim_next_batch(config.runtime.worker_id, 1, job_name=job_name, stage=stage, registry_version=None)
-    claimed_work_key = str(claimed[0]["work_key"]) if claimed else None
-    if claimed_work_key:
-        workstore.mark_completed(claimed_work_key, parquet_uri, None, parquet_rows)
-    workstore.register_shard(
-        shard_id=f"{run_id}-probe",
-        job_name=job_name,
-        registry_version=None,
-        stage=stage,
-        run_id=run_id,
-        worker_id=config.runtime.worker_id,
-        uri=parquet_uri,
-        checksum=None,
-        row_count=parquet_rows,
-        byte_count=None,
-        metadata={"kind": "cloud_doctor"},
-    )
-    shards = workstore.list_committed_shards(job_name=job_name, stage=stage, registry_version=None, run_id=run_id)
-
-    return {
-        "status": "ok",
-        "command": "cloud doctor",
-        "config": redact_config(config),
-        "storage": {
-            "backend": config.storage.backend,
-            "json_roundtrip": json_roundtrip,
-            "json_deleted": json_deleted,
-            "json_uri": json_uri,
-            "parquet_uri": parquet_uri,
-            "parquet_rows": parquet_rows,
-        },
-        "workstore": {
+    try:
+        _init_workstore_schema(workstore)
+        workstore.get_or_create_run(
+            job_name=job_name,
+            stage=stage,
+            run_id=run_id,
+            registry_version=None,
+            config={"command": "cloud doctor"},
+        )
+        inserted = workstore.enqueue_work(job_name, None, [{"work_key": work_key, "probe": "workstore"}], stage=stage)
+        claimed = workstore.claim_next_batch(config.runtime.worker_id, 1, job_name=job_name, stage=stage, registry_version=None)
+        claimed_work_key = str(claimed[0]["work_key"]) if claimed else None
+        if claimed_work_key:
+            workstore.mark_completed(claimed_work_key, parquet_uri, None, parquet_rows)
+        workstore.register_shard(
+            shard_id=f"{run_id}-probe",
+            job_name=job_name,
+            registry_version=None,
+            stage=stage,
+            run_id=run_id,
+            worker_id=config.runtime.worker_id,
+            uri=parquet_uri,
+            checksum=None,
+            row_count=parquet_rows,
+            byte_count=None,
+            metadata={"kind": "cloud_doctor"},
+        )
+        shards = workstore.list_committed_shards(job_name=job_name, stage=stage, registry_version=None, run_id=run_id)
+        payload["workstore"] = {
             "backend": config.workstore.backend,
             "schema_initialized": True,
             "work_items_inserted": inserted,
             "claimed_work_key": claimed_work_key,
             "completed_keys": sorted(workstore.completed_keys(job_name, None, stage=stage)),
             "registered_shards": len(shards),
-        },
-    }
+        }
+    except Exception as exc:  # noqa: BLE001 - doctor reports partial diagnostics.
+        payload["status"] = "error"
+        workstore_payload = dict(payload["workstore"]) if isinstance(payload["workstore"], dict) else {}
+        payload["workstore"] = {**workstore_payload, "error": str(exc)}
+    return payload
 
 
 def _init_workstore_schema(workstore: object) -> None:
