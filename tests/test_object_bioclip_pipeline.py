@@ -1013,6 +1013,12 @@ def test_empty_object_evidence_outputs_keep_stable_join_table_schemas(tmp_path) 
         "species_top1_accepted_taxon_key",
         "accepted_taxon_key",
         "target_accepted_taxon_key",
+        "geospatial_prior_score",
+        "geospatial_prior_reason",
+        "text_evidence_score",
+        "comment_evidence_score",
+        "is_target_positive",
+        "is_negative_material",
     }.issubset(joined.columns)
     assert {
         "source",
