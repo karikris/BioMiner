@@ -66,6 +66,13 @@ class S3StorageBackend:
             raise ValueError(f"expected JSON object at {uri}")
         return payload
 
+    def delete(self, uri: str) -> bool:
+        filesystem, path = self._filesystem_and_path(uri)
+        if not self.exists(uri):
+            return False
+        filesystem.delete_file(path)
+        return True
+
     def exists(self, uri: str) -> bool:
         filesystem, path = self._filesystem_and_path(uri)
         return filesystem.get_file_info(path).type != self._pyarrow_fs().FileType.NotFound

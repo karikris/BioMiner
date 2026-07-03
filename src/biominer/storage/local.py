@@ -47,6 +47,13 @@ class LocalStorageBackend:
             raise ValueError(f"expected JSON object at {uri}")
         return payload
 
+    def delete(self, uri: str | Path) -> bool:
+        path = normalize_local_uri(uri)
+        if not path.exists():
+            return False
+        path.unlink()
+        return True
+
     def exists(self, uri: str | Path) -> bool:
         return normalize_local_uri(uri).exists()
 

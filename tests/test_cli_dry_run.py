@@ -5,9 +5,11 @@ from pathlib import Path
 import subprocess
 import sqlite3
 from types import SimpleNamespace
+from typing import Any
 
 import polars as pl
 
+from biominer.config import BioMinerConfig, RuntimeConfig, StorageConfig, WorkStoreConfig
 from biominer.cli import _detect_boxes_backend, build_parser, load_decoded_image_from_record, run
 from biominer.detection.detector_base import DetectionCandidate
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
@@ -58,6 +60,61 @@ def test_poll_once_cli_accepts_cloud_storage_phase2_arguments() -> None:
     assert args.storage_prefix == "staging"
     assert args.evidence_stage == "poll_once"
     assert args.no_compact is True
+
+
+def test_cloud_cli_accepts_init_and_doctor_commands() -> None:
+    parser = build_parser()
+    init_args = parser.parse_args(["cloud", "init"])
+    doctor_args = parser.parse_args(["cloud", "doctor"])
+
+    assert init_args.command == "cloud"
+    assert init_args.cloud_command == "init"
+    assert doctor_args.command == "cloud"
+    assert doctor_args.cloud_command == "doctor"
+
+
+def test_cloud_init_initializes_workstore_schema(capsys, monkeypatch) -> None:
+    fake_store = _FakeCloudWorkStore()
+    config = _fake_cloud_config()
+    monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
+    monkeypatch.setattr("biominer.cli.validate_config", lambda config, require_cloud_credentials: None)
+    monkeypatch.setattr("biominer.cli.create_workstore", lambda workstore_config: fake_store)
+
+    rc = run(build_parser().parse_args(["cloud", "init"]))
+    output = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert fake_store.schema_initialized
+    assert output["status"] == "ok"
+    assert output["workstore_backend"] == "postgres"
+    assert "password" not in json.dumps(output)
+    assert output["config"]["workstore"]["dsn"] == "<redacted>"
+
+
+def test_cloud_doctor_exercises_storage_and_workstore_without_printing_secrets(capsys, monkeypatch) -> None:
+    fake_storage = _FakeCloudStorage()
+    fake_store = _FakeCloudWorkStore()
+    config = _fake_cloud_config()
+    monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
+    monkeypatch.setattr("biominer.cli.validate_config", lambda config, require_cloud_credentials: None)
+    monkeypatch.setattr("biominer.cli.create_storage_backend", lambda storage_config: fake_storage)
+    monkeypatch.setattr("biominer.cli.create_workstore", lambda workstore_config: fake_store)
+
+    rc = run(build_parser().parse_args(["cloud", "doctor"]))
+    rendered = capsys.readouterr().out
+    output = json.loads(rendered)
+
+    assert rc == 0
+    assert "password" not in rendered
+    assert "secret-value" not in rendered
+    assert output["status"] == "ok"
+    assert output["storage"]["json_roundtrip"] is True
+    assert output["storage"]["json_deleted"] is True
+    assert output["storage"]["parquet_rows"] == 2
+    assert output["workstore"]["schema_initialized"] is True
+    assert output["workstore"]["claimed_work_key"] == "cloud-doctor-work"
+    assert output["workstore"]["completed_keys"] == ["cloud-doctor-work"]
+    assert output["workstore"]["registered_shards"] == 1
 
 
 def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
@@ -1828,3 +1885,114 @@ def test_export_bucket_views_cli_writes_derived_parquet_files(tmp_path, capsys) 
     assert (output_dir / "silver_records.parquet").exists()
     assert (output_dir / "bronze_records.parquet").exists()
     assert (output_dir / "bin_records.parquet").exists()
+
+
+def _fake_cloud_config() -> BioMinerConfig:
+    return BioMinerConfig(
+        storage=StorageConfig(
+            backend="s3",
+            bucket="biominer",
+            prefix="biominer",
+            endpoint_url="https://s3.us-east-005.backblazeb2.com",
+            access_key_id="key-id",
+            secret_access_key="secret-value",
+            region="us-east-005",
+        ),
+        workstore=WorkStoreConfig(
+            backend="postgres",
+            dsn="postgresql://user:password@example.test:5432/postgres",
+        ),
+        runtime=RuntimeConfig(worker_id="worker-001"),
+    )
+
+
+class _FakeCloudStorage:
+    def __init__(self) -> None:
+        self.json_payloads: dict[str, dict[str, Any]] = {}
+        self.parquet_payloads: dict[str, pl.DataFrame] = {}
+
+    def write_json(self, uri: str, payload: dict[str, Any]) -> str:
+        self.json_payloads[uri] = payload
+        return uri
+
+    def read_json(self, uri: str) -> dict[str, Any]:
+        return self.json_payloads[uri]
+
+    def delete(self, uri: str) -> bool:
+        return self.json_payloads.pop(uri, None) is not None
+
+    def write_parquet_shard(self, uri: str, frame: pl.DataFrame) -> str:
+        self.parquet_payloads[uri] = frame
+        return uri
+
+    def scan_parquet(self, uri: str) -> pl.LazyFrame:
+        return self.parquet_payloads[uri].lazy()
+
+
+class _FakeCloudWorkStore:
+    def __init__(self) -> None:
+        self.schema_initialized = False
+        self.items: dict[str, dict[str, Any]] = {}
+        self.shards: list[dict[str, Any]] = []
+
+    def init_schema(self) -> None:
+        self.schema_initialized = True
+
+    def get_or_create_run(self, **kwargs) -> dict[str, Any]:  # noqa: ANN003
+        return {"run_id": kwargs["run_id"], "status": "planned"}
+
+    def enqueue_work(self, job_name, registry_version=None, items=None, *, stage="default") -> int:  # noqa: ANN001, ANN202
+        inserted = 0
+        for item in items or []:
+            payload = dict(item)
+            work_key = str(payload.pop("work_key"))
+            if work_key in self.items:
+                continue
+            self.items[work_key] = {
+                "work_key": work_key,
+                "job_name": job_name,
+                "stage": stage,
+                "registry_version": registry_version,
+                "status": "pending",
+                "payload": payload,
+            }
+            inserted += 1
+        return inserted
+
+    def claim_next_batch(self, worker_id, limit=None, **filters) -> list[dict[str, Any]]:  # noqa: ANN001
+        claimed: list[dict[str, Any]] = []
+        for item in self.items.values():
+            if item["status"] != "pending":
+                continue
+            item["status"] = "claimed"
+            item["claimed_by"] = worker_id
+            claimed.append(item)
+            if len(claimed) == limit:
+                break
+        return claimed
+
+    def mark_completed(self, work_key, output_uri, checksum, row_count) -> None:  # noqa: ANN001
+        self.items[work_key].update(
+            {
+                "status": "completed",
+                "output_uri": output_uri,
+                "checksum": checksum,
+                "row_count": row_count,
+            }
+        )
+
+    def completed_keys(self, job_name, registry_version=None, *, stage=None) -> set[str]:  # noqa: ANN001
+        return {
+            key
+            for key, item in self.items.items()
+            if item["job_name"] == job_name
+            and item["registry_version"] == registry_version
+            and item["stage"] == stage
+            and item["status"] == "completed"
+        }
+
+    def register_shard(self, **kwargs) -> None:  # noqa: ANN003
+        self.shards.append(kwargs)
+
+    def list_committed_shards(self, **kwargs) -> list[dict[str, Any]]:  # noqa: ANN003
+        return list(self.shards)

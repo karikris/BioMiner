@@ -62,8 +62,9 @@ from biominer.species.workflow import (
     species_candidates_from_context,
 )
 from biominer.storage.compaction import compact_parquet_shards
-from biominer.config import StorageConfig, load_biominer_config
+from biominer.config import StorageConfig, create_workstore, load_biominer_config, redact_config, validate_config
 from biominer.storage.factory import create_storage_backend
+from biominer.storage.uri import join_uri
 from biominer.workstore.sqlite import SQLiteWorkStore
 
 
@@ -239,6 +240,10 @@ def build_parser() -> argparse.ArgumentParser:
     registry_seed.add_argument("--slice-days", type=int, default=5)
     registry_audit = registry_subparsers.add_parser("audit")
     registry_audit.add_argument("--registry-dir", required=True)
+    cloud = subparsers.add_parser("cloud")
+    cloud_subparsers = cloud.add_subparsers(dest="cloud_command")
+    cloud_subparsers.add_parser("init")
+    cloud_subparsers.add_parser("doctor")
     species = subparsers.add_parser("species")
     species_subparsers = species.add_subparsers(dest="species_command")
     species_resolve = species_subparsers.add_parser("resolve")
@@ -505,6 +510,8 @@ def run(args: argparse.Namespace) -> int:
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
+    if args.command == "cloud":
+        return _run_cloud_command(args)
     if args.command == "species":
         return _run_species_command(args)
     if args.command == "registry":
@@ -753,6 +760,118 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps({"output": args.output, **report}, indent=2, sort_keys=True))
         return 0
     return 2
+
+
+def _run_cloud_command(args: argparse.Namespace) -> int:
+    if args.cloud_command == "init":
+        config = load_biominer_config(args.config)
+        validate_config(config, require_cloud_credentials=True)
+        workstore = create_workstore(config.workstore)
+        _init_workstore_schema(workstore)
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "command": "cloud init",
+                    "workstore_backend": config.workstore.backend,
+                    "config": redact_config(config),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.cloud_command == "doctor":
+        try:
+            payload = _run_cloud_doctor(args)
+        except Exception as exc:  # pragma: no cover - exercised by live doctor runs.
+            print(json.dumps({"status": "error", "error": str(exc)}, indent=2, sort_keys=True))
+            return 2
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    return 2
+
+
+def _run_cloud_doctor(args: argparse.Namespace) -> dict[str, object]:
+    config = load_biominer_config(args.config)
+    validate_config(config, require_cloud_credentials=True)
+    storage = create_storage_backend(config.storage)
+    workstore = create_workstore(config.workstore)
+    _init_workstore_schema(workstore)
+
+    run_id = f"cloud-doctor-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}"
+    base_uri = str(getattr(storage, "base_uri", config.storage.prefix))
+    doctor_prefix = join_uri(base_uri, "doctor", f"run_id={run_id}")
+
+    json_uri = join_uri(doctor_prefix, "probe.json")
+    json_payload = {"run_id": run_id, "probe": "json"}
+    storage.write_json(json_uri, json_payload)
+    json_roundtrip = storage.read_json(json_uri) == json_payload
+    json_deleted = storage.delete(json_uri)
+
+    parquet_uri = join_uri(doctor_prefix, "probe.parquet")
+    parquet_frame = pl.DataFrame({"probe": ["a", "b"], "value": [1, 2]})
+    storage.write_parquet_shard(parquet_uri, parquet_frame)
+    parquet_rows = storage.scan_parquet(parquet_uri).collect().height
+
+    job_name = "cloud_doctor"
+    stage = "doctor"
+    work_key = "cloud-doctor-work"
+    workstore.get_or_create_run(
+        job_name=job_name,
+        stage=stage,
+        run_id=run_id,
+        registry_version=None,
+        config={"command": "cloud doctor"},
+    )
+    inserted = workstore.enqueue_work(job_name, None, [{"work_key": work_key, "probe": "workstore"}], stage=stage)
+    claimed = workstore.claim_next_batch(config.runtime.worker_id, 1, job_name=job_name, stage=stage, registry_version=None)
+    claimed_work_key = str(claimed[0]["work_key"]) if claimed else None
+    if claimed_work_key:
+        workstore.mark_completed(claimed_work_key, parquet_uri, None, parquet_rows)
+    workstore.register_shard(
+        shard_id=f"{run_id}-probe",
+        job_name=job_name,
+        registry_version=None,
+        stage=stage,
+        run_id=run_id,
+        worker_id=config.runtime.worker_id,
+        uri=parquet_uri,
+        checksum=None,
+        row_count=parquet_rows,
+        byte_count=None,
+        metadata={"kind": "cloud_doctor"},
+    )
+    shards = workstore.list_committed_shards(job_name=job_name, stage=stage, registry_version=None, run_id=run_id)
+
+    return {
+        "status": "ok",
+        "command": "cloud doctor",
+        "config": redact_config(config),
+        "storage": {
+            "backend": config.storage.backend,
+            "json_roundtrip": json_roundtrip,
+            "json_deleted": json_deleted,
+            "json_uri": json_uri,
+            "parquet_uri": parquet_uri,
+            "parquet_rows": parquet_rows,
+        },
+        "workstore": {
+            "backend": config.workstore.backend,
+            "schema_initialized": True,
+            "work_items_inserted": inserted,
+            "claimed_work_key": claimed_work_key,
+            "completed_keys": sorted(workstore.completed_keys(job_name, None, stage=stage)),
+            "registered_shards": len(shards),
+        },
+    }
+
+
+def _init_workstore_schema(workstore: object) -> None:
+    init_schema = getattr(workstore, "init_schema", None)
+    if not callable(init_schema):
+        raise RuntimeError("configured workstore does not support schema initialization")
+    init_schema()
 
 
 def _summarize_report(report_path: Path) -> dict[str, object]:
