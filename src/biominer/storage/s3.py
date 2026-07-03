@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from io import BytesIO
 from typing import Any
 import json
+import os
+import tempfile
 
 import polars as pl
 
@@ -37,12 +38,21 @@ class S3StorageBackend:
         return pl.scan_parquet(uri, storage_options=self._storage_options())
 
     def write_parquet_shard(self, uri: str, frame: pl.DataFrame) -> str:
-        payload = BytesIO()
-        frame.write_parquet(payload)
-        payload.seek(0)
         filesystem, path = self._filesystem_and_path(uri)
-        with filesystem.open_output_stream(path) as stream:
-            stream.write(payload.getvalue())
+        tmp_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+                tmp_path = tmp.name
+            frame.write_parquet(tmp_path)
+            with open(tmp_path, "rb") as payload, filesystem.open_output_stream(path) as stream:
+                while chunk := payload.read(8 * 1024 * 1024):
+                    stream.write(chunk)
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except FileNotFoundError:
+                    pass
         return uri
 
     def list_shards(self, prefix: str) -> list[str]:

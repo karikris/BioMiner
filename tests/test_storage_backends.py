@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import polars as pl
 
+import biominer.storage.s3 as s3_module
 from biominer.storage.local import LocalStorageBackend
 from biominer.storage.paths import (
     build_evidence_shard_uri,
@@ -15,6 +17,7 @@ from biominer.storage.paths import (
     safe_path_component,
 )
 from biominer.storage.shard_paths import build_parquet_shard_uri
+from biominer.storage.s3 import S3StorageBackend
 from biominer.storage.uri import is_cloud_uri, is_s3_uri, join_uri, normalize_local_uri
 
 
@@ -79,6 +82,28 @@ def test_local_storage_exposes_no_append_api_and_targets_unique_shards(tmp_path)
     storage.write_parquet_shard(shard_b, pl.DataFrame({"worker": ["w2"]}))
     assert storage.read_parquet(shard_a)["worker"].to_list() == ["w1"]
     assert storage.read_parquet(shard_b)["worker"].to_list() == ["w2"]
+
+
+def test_s3_storage_writes_parquet_without_materializing_payload(monkeypatch) -> None:
+    backend = S3StorageBackend(bucket="biominer", prefix="biominer")
+    stream = _FakeOutputStream()
+    filesystem = _FakeS3Filesystem(stream)
+
+    class NoGetValueBytesIO(io.BytesIO):
+        def getvalue(self):  # noqa: ANN201
+            raise AssertionError("S3 parquet upload must stream from a temp file")
+
+    monkeypatch.setattr(s3_module, "BytesIO", NoGetValueBytesIO, raising=False)
+    monkeypatch.setattr(backend, "_filesystem_and_path", lambda uri: (filesystem, "biominer/biominer/evidence/part.parquet"))
+
+    written = backend.write_parquet_shard(
+        "s3://biominer/biominer/evidence/part.parquet",
+        pl.DataFrame({"photo_id": ["1", "2"], "score": [0.7, 0.4]}),
+    )
+
+    assert written == "s3://biominer/biominer/evidence/part.parquet"
+    assert filesystem.paths == ["biominer/biominer/evidence/part.parquet"]
+    assert stream.bytes_written > 0
 
 
 def test_uri_helpers_classify_and_join_paths(tmp_path) -> None:
@@ -167,3 +192,27 @@ def test_report_and_registry_uri_helpers_are_cloud_safe() -> None:
         "manifest_uri": "s3://biominer/biominer/registry/version=butterflies-v1/manifest.json",
         "promoted_at": "2026-07-02T00:00:00Z",
     }
+
+
+class _FakeS3Filesystem:
+    def __init__(self, stream: "_FakeOutputStream") -> None:
+        self.stream = stream
+        self.paths: list[str] = []
+
+    def open_output_stream(self, path: str) -> "_FakeOutputStream":
+        self.paths.append(path)
+        return self.stream
+
+
+class _FakeOutputStream:
+    def __init__(self) -> None:
+        self.bytes_written = 0
+
+    def __enter__(self) -> "_FakeOutputStream":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+        return None
+
+    def write(self, data: bytes) -> None:
+        self.bytes_written += len(data)
