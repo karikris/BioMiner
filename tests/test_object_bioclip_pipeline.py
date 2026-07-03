@@ -1155,6 +1155,41 @@ def test_photo_summary_counts_unscored_detections_from_detection_table(tmp_path)
     assert summary["all_detection_ids"] == ["det-1", "det-2"]
 
 
+def test_photo_summary_retains_topk_candidate_species(tmp_path) -> None:
+    canonical_path = tmp_path / "canonical.parquet"
+    detections_path = tmp_path / "detections.parquet"
+    scores_path = tmp_path / "scores.parquet"
+    _canonical_records().write_parquet(canonical_path)
+    _detections().head(1).write_parquet(detections_path)
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "detection_id": "det-1",
+                "crop_hash": "sha256:crop-1",
+                "target_species_score": 0.82,
+                "occurrence_bin": "gold",
+                "species_top1_scientific_name": "Danaus plexippus",
+                "species_top5": ["Danaus plexippus", "Danaus gilippus"],
+                "species_top20": ["Danaus plexippus", "Danaus gilippus", "Limenitis archippus"],
+                "bin_reason": "target_species_score_ge_070",
+            }
+        ]
+    ).write_parquet(scores_path)
+
+    outputs = write_object_evidence_outputs(
+        canonical_records_path=canonical_path,
+        detections_path=detections_path,
+        scores_path=scores_path,
+        joined_output_path=tmp_path / "object_evidence_joined.parquet",
+        photo_summary_output_path=tmp_path / "photo_evidence_summary.parquet",
+    )
+
+    summary = pl.read_parquet(outputs.photo_evidence_summary).to_dicts()[0]
+    assert summary["all_candidate_species"] == ["Danaus plexippus", "Danaus gilippus", "Limenitis archippus"]
+
+
 def test_empty_object_evidence_outputs_keep_stable_join_table_schemas(tmp_path) -> None:
     canonical_path = tmp_path / "canonical.parquet"
     detections_path = tmp_path / "detections.parquet"

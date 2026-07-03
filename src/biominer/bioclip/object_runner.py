@@ -744,7 +744,7 @@ def _photo_summary(
             best = sorted_rows[0]
             key = (str(best["source"]), str(best["flickr_photo_id"]))
             detection_ids = _summary_detection_ids(detections_by_photo.get(key, []), sorted_rows)
-            species = _unique(row["species_top1_scientific_name"] for row in sorted_rows if row.get("species_top1_scientific_name"))
+            species = _summary_candidate_species(sorted_rows)
             photo_bucket, photo_reason = _photo_bucket_and_reason(sorted_rows, canonical_by_photo.get(key, {}))
             summarized_keys.add(key)
             rows.append(
@@ -843,6 +843,19 @@ def _canonical_by_photo(canonical: pl.DataFrame | None) -> dict[tuple[str, str],
         (str(row.get("source") or ""), str(row.get("flickr_photo_id") or "")): row
         for row in canonical.to_dicts()
     }
+
+
+def _summary_candidate_species(scored_rows: list[dict[str, Any]]) -> list[str]:
+    values: list[str] = []
+    for row in scored_rows:
+        top1 = str(row.get("species_top1_scientific_name") or "")
+        if top1:
+            values.append(top1)
+        for column in ("species_top5", "species_top20"):
+            candidates = row.get(column) or []
+            if isinstance(candidates, list | tuple):
+                values.extend(str(value) for value in candidates if value)
+    return _unique(values)
 
 
 def _summary_detection_ids(detection_rows: list[dict[str, Any]], scored_rows: list[dict[str, Any]]) -> list[str]:
