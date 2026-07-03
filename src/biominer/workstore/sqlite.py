@@ -145,6 +145,7 @@ class SQLiteWorkStore:
         if scoped:
             _add_nullable_filter(clauses, params, "registry_version", registry_version)
 
+        claimed_rows: list[sqlite3.Row] = []
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
@@ -158,6 +159,7 @@ class SQLiteWorkStore:
                 (*params, limit),
             ).fetchall()
             now = _timestamp()
+            work_keys = [str(row["work_key"]) for row in rows]
             for row in rows:
                 conn.execute(
                     """
@@ -171,8 +173,20 @@ class SQLiteWorkStore:
                     """,
                     (CLAIMED, worker_id, now, row["work_key"]),
                 )
+            if work_keys:
+                placeholders = ", ".join("?" for _ in work_keys)
+                refreshed = conn.execute(
+                    f"""
+                    SELECT *
+                    FROM biominer_work_items
+                    WHERE work_key IN ({placeholders})
+                    """,
+                    work_keys,
+                ).fetchall()
+                rows_by_key = {str(row["work_key"]): row for row in refreshed}
+                claimed_rows = [rows_by_key[key] for key in work_keys if key in rows_by_key]
             conn.execute("COMMIT")
-        return [_row_to_work_item(row) for row in rows]
+        return [_row_to_work_item(row) for row in claimed_rows]
 
     def list_work_items(
         self,

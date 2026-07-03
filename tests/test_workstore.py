@@ -29,6 +29,9 @@ def test_sqlite_workstore_enqueue_claim_and_complete(tmp_path) -> None:
     assert inserted == 2
     assert [item["work_key"] for item in claimed] == ["b", "a"]
     assert claimed[0]["payload"]["term"] == "beta"
+    assert claimed[0]["status"] == "claimed"
+    assert claimed[0]["claimed_by"] == "worker-1"
+    assert claimed[0]["attempt_count"] == 1
     assert store.claim_next_batch("worker-2", 2) == []
     assert store.completed_keys("poll_once", "registry-v1") == {"a"}
 
@@ -208,6 +211,9 @@ def test_postgres_workstore_contract_with_injected_connection() -> None:
     assert inserted == 2
     assert [item["work_key"] for item in claimed] == ["b", "a"]
     assert claimed[0]["payload"] == {"term": "beta"}
+    assert claimed[0]["status"] == "claimed"
+    assert claimed[0]["claimed_by"] == "worker-1"
+    assert claimed[0]["attempt_count"] == 1
     assert store.completed_keys("poll_once", "registry-v1", stage="metadata") == {"a"}
     assert store.list_committed_shards(job_name="poll_once", stage="metadata", registry_version="registry-v1") == [
         {
