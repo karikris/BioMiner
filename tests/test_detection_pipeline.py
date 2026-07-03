@@ -482,6 +482,8 @@ def test_detection_pipeline_image_load_failures_use_stable_detection_id(tmp_path
     assert row["detection_status"] == "failed_image_load"
     assert row["failure_reason"] == "decode failed"
     assert row["prediction_source"] == "object_detector:fake"
+    assert isinstance(row["detected_at"], str)
+    assert row["detected_at"].endswith("+00:00")
     assert row["detection_id"] == detection_id_for(
         source="flickr",
         flickr_photo_id="photo-failed",

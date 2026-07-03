@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from shutil import rmtree
 from threading import Lock
@@ -391,7 +392,7 @@ def _image_failure_row(item: _LoadedImage, *, detector: ObjectDetector) -> dict[
         "detector_model_id": detector.model_id,
         "detector_model_version": detector.model_version,
         "detector_checkpoint": detector.checkpoint,
-        "detected_at": None,
+        "detected_at": datetime.now(UTC).isoformat(),
         "bbox_xyxy": [],
         "bbox_xyxyn": [],
         "bbox_xywhn": [],
