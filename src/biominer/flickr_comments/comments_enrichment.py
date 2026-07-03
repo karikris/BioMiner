@@ -9,16 +9,15 @@ from typing import Any, Callable, Iterable
 
 import httpx
 
+from biominer.common.status import COMPLETED, FAILED, PENDING
 from biominer.filter.category_model import infer_life_stage_from_text
 from biominer.filter.extractor import SCIENTIFIC_NAME_PATTERN
 from biominer.flickr_fetch.endpoints import FLICKR_REST_BASE_URL
 from biominer.flickr_fetch.query_planner import COUNT_PROBE_PAGE_SIZE, FlickrQuery
-from biominer.flickr_fetch.metadata_poller import PENDING, MetadataPollState
+from biominer.flickr_fetch.metadata_poller import MetadataPollState
 
 
 COMMENTS_METHOD = "flickr.photos.comments.getList"
-COMPLETED = "completed"
-FAILED = "failed"
 
 HARD_NEGATIVE_BRONZE_TERMS: tuple[str, ...] = (
     "museum",

@@ -6,18 +6,8 @@ from typing import Any
 import hashlib
 import json
 
+from biominer.common.status import CLAIMED, COMPLETED, FAILED, PENDING, RUN_COMPLETED, RUN_FAILED, RUN_PLANNED, RUN_RUNNING
 from biominer.workstore.schema import POSTGRES_CLAIM_SQL, POSTGRES_SCHEMA_SQL
-
-
-PENDING = "pending"
-CLAIMED = "claimed"
-COMPLETED = "completed"
-FAILED = "failed"
-
-RUN_PLANNED = "planned"
-RUN_RUNNING = "running"
-RUN_COMPLETED = "completed"
-RUN_FAILED = "failed"
 
 
 class PostgresWorkStore:

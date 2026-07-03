@@ -7,16 +7,7 @@ import hashlib
 import json
 import sqlite3
 
-
-PENDING = "pending"
-CLAIMED = "claimed"
-COMPLETED = "completed"
-FAILED = "failed"
-
-RUN_PLANNED = "planned"
-RUN_RUNNING = "running"
-RUN_COMPLETED = "completed"
-RUN_FAILED = "failed"
+from biominer.common.status import CLAIMED, COMPLETED, FAILED, PENDING, RUN_COMPLETED, RUN_FAILED, RUN_PLANNED, RUN_RUNNING
 
 DEFAULT_STAGE = "default"
 

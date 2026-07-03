@@ -14,6 +14,7 @@ from typing import Any, Callable
 import httpx
 import polars as pl
 
+from biominer.common.status import CLAIMED, COMPLETED, FAILED, PENDING
 from biominer.filter.extractor import build_evidence_frame, extract_photo_evidence
 from biominer.flickr_fetch.endpoints import FLICKR_REST_BASE_URL, SEARCH_METHOD
 from biominer.flickr_fetch.query_planner import (
@@ -41,10 +42,6 @@ from biominer.workstore.base import WorkStore
 
 SOFT_API_CALLS_PER_HOUR = 3500
 HARD_API_CALLS_PER_HOUR = 3600
-PENDING = "pending"
-CLAIMED = "claimed"
-COMPLETED = "completed"
-FAILED = "failed"
 DEFAULT_STALE_CLAIM_SECONDS = 3600
 DEFAULT_MAX_RETRIES = 2
 
