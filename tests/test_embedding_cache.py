@@ -73,8 +73,10 @@ def test_text_embedding_cache_computes_only_missing_labels(tmp_path: Path) -> No
     assert calls == [["a photo of Danaus plexippus"]]
     assert result.embeddings_computed == 1
     assert result.rows_added == 1
+    assert result.rows_reused == 1
     assert second.embeddings_computed == 0
     assert second.rows_added == 0
+    assert second.rows_reused == 2
     assert frame.get_column("label").to_list() == ["Danaus plexippus", "a photo of Danaus plexippus"]
     assert frame.filter(pl.col("label") == "a photo of Danaus plexippus").to_dicts()[0]["embedding"] == [0.5, 0.5]
 

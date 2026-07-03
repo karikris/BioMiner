@@ -147,6 +147,7 @@ def upsert_text_embedding_cache(
     requested = _dedupe_request_rows(rows, ["candidate_set_id", "label", "model_id", "model_checkpoint"])
     existing_keys = _row_keys(cache, ["candidate_set_id", "label", "model_id", "model_checkpoint"])
     missing = [row for row in requested if _key(row, ["candidate_set_id", "label", "model_id", "model_checkpoint"]) not in existing_keys]
+    rows_reused = len(requested) - len(missing)
     labels = [str(row.get("label") or "") for row in missing]
     embeddings = _embed_label_batches(labels, embed_labels=embed_labels, batch_size=batch_size)
     if len(embeddings) != len(missing):
@@ -167,7 +168,7 @@ def upsert_text_embedding_cache(
         frame=frame,
         rows_total=frame.height,
         rows_added=len(new_rows),
-        rows_reused=0,
+        rows_reused=rows_reused,
         embeddings_computed=len(embeddings),
     )
 
