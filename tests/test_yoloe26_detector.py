@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 
+from biominer.detection.detector_base import COARSE_DETECTOR_LABELS
 from biominer.detection.yoloe26_detector import (
     DEFAULT_YOLOE26_PROMPTS,
     detections_from_yoloe_result,
@@ -46,6 +47,18 @@ def test_yoloe26_result_conversion_maps_prompts_to_detection_candidates() -> Non
     assert detections[0].bbox_xyxy == (1.0, 2.0, 9.0, 12.0)
     assert detections[0].score == 0.87
     assert detections[0].objectness_score == 0.87
+
+
+def test_yoloe26_result_conversion_keeps_taxonomic_custom_prompts_coarse() -> None:
+    result = _FakeResult(
+        names={0: "Papilio demoleus"},
+        boxes=[_FakeBox(xyxy=[[1.0, 2.0, 9.0, 12.0]], cls=[0], conf=[0.87])],
+    )
+
+    detections = detections_from_yoloe_result(result)
+
+    assert [item.label for item in detections] == ["insect_like"]
+    assert set(item.label for item in detections).issubset(set(COARSE_DETECTOR_LABELS))
 
 
 class _FakeResult:
