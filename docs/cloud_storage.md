@@ -1,6 +1,6 @@
-# Cloud Storage Integration
+# Production Storage And Workstore
 
-Phase 1 added interfaces and local-compatible implementations. Phase 2 starts routing Step 1 `poll_once` raw responses and evidence rows onto immutable local/cloud-compatible paths. The default BioMiner runtime remains local filesystem storage plus SQLite operational state.
+BioMiner production runs default to S3-compatible object storage plus a Postgres workstore. Local filesystem storage and SQLite remain available only as explicit dev/test overrides, for example with `config/biominer.local.example.toml` or future production-run flags that deliberately opt into local mode.
 
 ## Split
 
@@ -19,11 +19,43 @@ Phase 1 added interfaces and local-compatible implementations. Phase 2 starts ro
 - API-call ledgers in later phases;
 - run manifests and resume state in later phases;
 
-Local mode uses `LocalStorageBackend` and `SQLiteWorkStore`. Backblaze B2 is represented by `S3StorageBackend` through the S3-compatible API, using `s3://...` URIs plus `BIOMINER_S3_ENDPOINT_URL`. Supabase Postgres is represented by `PostgresWorkStore` scaffolding and schema SQL.
+Production mode uses `S3StorageBackend` through the S3-compatible API, using `s3://...` URIs plus `BIOMINER_S3_ENDPOINT_URL`. Supabase Postgres or another compatible Postgres service is represented by `PostgresWorkStore` and schema SQL. Dev/test local mode uses `LocalStorageBackend` and `SQLiteWorkStore` only when explicitly selected.
 
-## Configuration
+## Production Configuration
 
-Local mode is the default:
+Production defaults are:
+
+```text
+BIOMINER_STORAGE_BACKEND=s3
+BIOMINER_WORKSTORE_BACKEND=postgres
+```
+
+The required production environment values are:
+
+```text
+BIOMINER_S3_ENDPOINT_URL=https://s3.<region>.backblazeb2.com
+BIOMINER_S3_ACCESS_KEY_ID=...
+BIOMINER_S3_SECRET_ACCESS_KEY=...
+BIOMINER_S3_REGION=<region>
+BIOMINER_S3_BUCKET=biominer
+BIOMINER_S3_PREFIX=biominer
+BIOMINER_WORKSTORE_DSN=postgresql://...
+BIOMINER_WORKER_ID=<stable-worker-id>
+```
+
+The production config loader resolves these values from environment variables by default. If values are missing, production validation reports the exact missing variable names and redacts secret values from diagnostic payloads.
+
+Run cloud validation with:
+
+```text
+uv run biominer cloud doctor
+```
+
+`psycopg` is intentionally optional. Importing BioMiner does not require it; Postgres methods raise a clear runtime error if it is absent.
+
+## Explicit Dev/Test Local Mode
+
+Local filesystem and SQLite are not production defaults. Use them only for tests, parser smoke checks, or isolated development by explicitly selecting local backends:
 
 ```text
 BIOMINER_STORAGE_BACKEND=local
@@ -31,26 +63,11 @@ BIOMINER_WORKSTORE_BACKEND=sqlite
 BIOMINER_WORKSTORE_SQLITE_PATH=data/state/biominer.sqlite
 ```
 
-S3-compatible object storage uses:
+The checked-in example is `config/biominer.local.example.toml`:
 
 ```text
-BIOMINER_STORAGE_BACKEND=s3
-BIOMINER_S3_ENDPOINT_URL=https://s3.<region>.backblazeb2.com
-BIOMINER_S3_ACCESS_KEY_ID=...
-BIOMINER_S3_SECRET_ACCESS_KEY=...
-BIOMINER_S3_REGION=<region>
-BIOMINER_S3_BUCKET=biominer
-BIOMINER_S3_PREFIX=biominer
+uv run biominer --config config/biominer.local.example.toml --version
 ```
-
-Supabase Postgres scaffolding uses:
-
-```text
-BIOMINER_WORKSTORE_BACKEND=postgres
-BIOMINER_WORKSTORE_DSN=postgresql://...
-```
-
-`psycopg` is intentionally optional. Importing BioMiner does not require it; Postgres methods raise a clear runtime error if it is absent.
 
 ## Shard Invariant
 
