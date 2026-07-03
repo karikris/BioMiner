@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import UTC, datetime
+from html import escape
 import json
 import logging
 import os
@@ -171,6 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     detect_crop_preview = detect_subparsers.add_parser("crop-preview")
     detect_crop_preview.add_argument("--detections", required=True)
     detect_crop_preview.add_argument("--output", required=True)
+    detect_crop_preview.add_argument("--limit", type=int, default=200)
     detect_eval = detect_subparsers.add_parser("eval")
     detect_eval.add_argument("--predictions", required=True)
     detect_eval.add_argument("--ground-truth")
@@ -1136,16 +1138,125 @@ def _use_vision_sidecar(runtime_python: str) -> bool:
 
 def _run_detect_crop_preview(args: argparse.Namespace) -> int:
     detections = pl.read_parquet(args.detections)
+    rows = _crop_preview_rows(detections, limit=max(1, args.limit))
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.suffix.lower() in {".html", ".htm"}:
+        output.write_text(_crop_preview_html(rows), encoding="utf-8")
+        output_format = "html"
+    else:
+        output.write_text(json.dumps({"preview_rows": rows}, indent=2, sort_keys=True), encoding="utf-8")
+        output_format = "json"
     preview = {
         "detections": args.detections,
         "output": args.output,
+        "format": output_format,
         "rows_seen": detections.height,
-        "note": "crop-preview records geometry only in the core environment; debug crop files require an explicit vision sidecar",
+        "preview_rows": len(rows),
+        "skipped_rows": detections.height - len(rows),
+        "storage_policy": "remote_image_references_only",
     }
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.output).write_text(json.dumps(preview, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(preview, indent=2, sort_keys=True))
     return 0
+
+
+def _crop_preview_rows(detections: pl.DataFrame, *, limit: int) -> list[dict[str, object]]:
+    if detections.is_empty():
+        return []
+    rows: list[dict[str, object]] = []
+    for row in detections.to_dicts():
+        if len(rows) >= limit:
+            break
+        if str(row.get("detection_status") or "") != "detected":
+            continue
+        image_url = str(row.get("image_url") or "")
+        bbox = _normalised_bbox(row.get("bbox_xyxyn"))
+        if not image_url or bbox is None:
+            continue
+        x1, y1, x2, y2 = bbox
+        rows.append(
+            {
+                "source": str(row.get("source") or ""),
+                "flickr_photo_id": str(row.get("flickr_photo_id") or ""),
+                "image_url": image_url,
+                "detection_id": str(row.get("detection_id") or ""),
+                "crop_hash": str(row.get("crop_hash") or ""),
+                "detector_label": str(row.get("detector_label") or ""),
+                "detector_score": row.get("detector_score"),
+                "bbox_xyxyn": [x1, y1, x2, y2],
+                "left_pct": _percent(x1),
+                "top_pct": _percent(y1),
+                "width_pct": _percent(max(0.0, x2 - x1)),
+                "height_pct": _percent(max(0.0, y2 - y1)),
+            }
+        )
+    return rows
+
+
+def _normalised_bbox(value: object) -> tuple[float, float, float, float] | None:
+    if not isinstance(value, list | tuple) or len(value) != 4:
+        return None
+    try:
+        x1, y1, x2, y2 = (max(0.0, min(1.0, float(item))) for item in value)
+    except (TypeError, ValueError):
+        return None
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return x1, y1, x2, y2
+
+
+def _percent(value: float) -> str:
+    return f"{value * 100:.4f}%"
+
+
+def _crop_preview_html(rows: list[dict[str, object]]) -> str:
+    cards = "\n".join(_crop_preview_card(row) for row in rows)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BioMiner Crop Preview</title>
+<style>
+body {{ font-family: system-ui, sans-serif; margin: 24px; color: #1f2933; background: #f7f8fa; }}
+.grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }}
+.card {{ background: #fff; border: 1px solid #d7dce2; border-radius: 6px; padding: 12px; }}
+.image-wrap {{ position: relative; background: #111; overflow: hidden; }}
+.image-wrap img {{ display: block; width: 100%; height: auto; }}
+.bbox {{ position: absolute; border: 2px solid #f97316; box-sizing: border-box; }}
+.meta {{ font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }}
+</style>
+</head>
+<body>
+<h1>BioMiner Crop Preview</h1>
+<p>{len(rows)} detected crop previews. Images are referenced remotely; no local image archive is created.</p>
+<div class="grid">
+{cards}
+</div>
+</body>
+</html>
+"""
+
+
+def _crop_preview_card(row: dict[str, object]) -> str:
+    image_url = escape(str(row["image_url"]), quote=True)
+    title = escape(f"{row['source']}:{row['flickr_photo_id']}", quote=False)
+    detection_id = escape(str(row["detection_id"]), quote=False)
+    crop_hash = escape(str(row["crop_hash"]), quote=False)
+    label = escape(str(row["detector_label"]), quote=False)
+    score = row.get("detector_score")
+    score_text = "" if score is None else f"{float(score):.4f}"
+    return f"""<article class="card">
+<div class="image-wrap">
+<img src="{image_url}" alt="{title}">
+<div class="bbox" style="left: {row['left_pct']}; top: {row['top_pct']}; width: {row['width_pct']}; height: {row['height_pct']};"></div>
+</div>
+<div class="meta">
+<strong>{title}</strong><br>
+detection_id: {detection_id}<br>
+crop_hash: {crop_hash}<br>
+label: {label} score: {score_text}
+</div>
+</article>"""
 
 
 def _run_detect_eval(args: argparse.Namespace) -> int:

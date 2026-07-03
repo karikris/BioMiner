@@ -383,6 +383,56 @@ def test_detect_eval_cli_forwards_xie_thresholds(tmp_path, capsys, monkeypatch) 
     assert calls["evaluate"]["score_threshold"] == 0.45
 
 
+def test_detect_crop_preview_writes_html_artifact_without_image_archive(tmp_path, capsys) -> None:
+    detections = tmp_path / "object_detections.parquet"
+    output = tmp_path / "crop_preview.html"
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "image_url": "https://live.staticflickr.com/photo-1.jpg",
+                "detection_id": "det-1",
+                "crop_hash": "sha256:crop-1",
+                "bbox_xyxyn": [0.1, 0.2, 0.6, 0.8],
+                "bbox_xyxy": [10.0, 20.0, 60.0, 80.0],
+                "detector_label": "butterfly",
+                "detector_score": 0.91,
+                "detection_status": "detected",
+            },
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-2",
+                "image_url": "https://live.staticflickr.com/photo-2.jpg",
+                "detection_id": "det-2",
+                "crop_hash": None,
+                "bbox_xyxyn": None,
+                "bbox_xyxy": None,
+                "detector_label": None,
+                "detector_score": None,
+                "detection_status": "no_detection",
+            },
+        ]
+    ).write_parquet(detections)
+    parser = build_parser()
+    args = parser.parse_args(["detect", "crop-preview", "--detections", str(detections), "--output", str(output)])
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    html = output.read_text(encoding="utf-8")
+    assert payload["preview_rows"] == 1
+    assert payload["skipped_rows"] == 1
+    assert payload["storage_policy"] == "remote_image_references_only"
+    assert "photo-1" in html
+    assert "det-1" in html
+    assert "sha256:crop-1" in html
+    assert "https://live.staticflickr.com/photo-1.jpg" in html
+    assert "left: 10.0000%" in html
+    assert "width: 50.0000%" in html
+    assert not (tmp_path / "crop_preview_files").exists()
+
+
 def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     parser = build_parser()
     screen = parser.parse_args(
