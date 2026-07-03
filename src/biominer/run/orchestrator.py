@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from biominer.run.manifest import RunManifest, utc_now_iso
-from biominer.run.paths import RunPaths
+from biominer.run.paths import RunArtifactUris, RunPaths
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES, RunStage, default_stage_records
 from biominer.run.taxon_scope import InputRank, TaxonScope
 from biominer.storage.paths import safe_path_component
@@ -40,6 +40,7 @@ class ProductionRunRequest:
 class ProductionRunPlan:
     request: ProductionRunRequest
     paths: RunPaths
+    artifact_uris: RunArtifactUris
     manifest: RunManifest
 
     def to_dict(self) -> dict[str, Any]:
@@ -67,6 +68,15 @@ class ProductionRunPlan:
                 "object_evidence": str(self.paths.object_evidence_path),
                 "photo_summary": str(self.paths.photo_summary_path),
             },
+            "artifact_uris": self.artifact_uris.to_dict(),
+            "species_artifacts": {
+                context.scientific_name: {
+                    "root": self.artifact_uris.species_uri(context.scientific_name),
+                    "context": self.artifact_uris.species_context_uri(context.scientific_name),
+                    "query_definitions": self.artifact_uris.species_query_definitions_uri(context.scientific_name),
+                }
+                for context in self.manifest.taxon_scope.species_contexts
+            },
             "manifest": self.manifest.to_dict(),
         }
 
@@ -74,6 +84,7 @@ class ProductionRunPlan:
 def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) -> ProductionRunPlan:
     run_id = request.resolved_run_id()
     paths = RunPaths.from_root(request.output_root, run_id=run_id)
+    artifact_uris = RunArtifactUris.from_prefix(request.output_root, run_id=run_id)
     manifest = RunManifest(
         run_id=run_id,
         taxon_scope=taxon_scope,
@@ -85,9 +96,16 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
         model_configs={
             "vision_backend": request.vision_backend,
             "bioclip_model": request.bioclip_model,
+            "visual_modes": ["whole_image", "detector_crop", "detector_crop_segmentation"],
         },
+        query_counts={"compiled_definitions": 0, "enqueued_work_items": 0},
+        detection_counts={"images_seen": 0, "detections": 0, "crops_created": 0},
+        bioclip_counts={"objects_scored": 0, "whole_images_scored": 0},
+        evidence_counts={"object_evidence_rows": 0, "photo_summary_rows": 0},
+        metrics={"expanded_species_count": taxon_scope.species_count},
+        outputs=artifact_uris.to_dict(),
     )
-    return ProductionRunPlan(request=request, paths=paths, manifest=manifest)
+    return ProductionRunPlan(request=request, paths=paths, artifact_uris=artifact_uris, manifest=manifest)
 
 
 class ProductionRunOrchestrator:

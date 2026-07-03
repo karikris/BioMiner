@@ -15,7 +15,18 @@ from biominer.registry.trust_policy import (
     should_enable_name_by_default,
     source_default_trust_tier,
 )
-from biominer.run import ProductionRunOrchestrator, ProductionRunRequest, RunManifest, RunPaths, RunStage, TaxonScope, resolve_taxon_scope_from_registry
+from biominer.run import (
+    ProductionRunOrchestrator,
+    ProductionRunRequest,
+    RunArtifactUris,
+    RunManifest,
+    RunPaths,
+    RunStage,
+    StageRecord,
+    StageStatus,
+    TaxonScope,
+    resolve_taxon_scope_from_registry,
+)
 from biominer.species.context import CommonName, SpeciesContext
 
 
@@ -91,20 +102,65 @@ def test_run_paths_and_dry_run_manifest(tmp_path) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(taxon="Danaus plexippus", rank="species", output_root=tmp_path, dry_run=True)
     orchestrator = ProductionRunOrchestrator(request, taxon_scope=scope)
+    plan = orchestrator.plan()
 
     manifest_path = orchestrator.write_dry_run_manifest()
     manifest = RunManifest.read_json(manifest_path)
 
     assert manifest_path == tmp_path / "run_id=species_danaus_plexippus" / "run_manifest.json"
+    assert plan.artifact_uris.query_definitions_uri.endswith("/registry/flickr_query_definitions.parquet")
     assert manifest.storage_backend == "s3"
     assert manifest.workstore_backend == "postgres"
     assert manifest.taxon_scope == scope
+    assert manifest.query_counts == {"compiled_definitions": 0, "enqueued_work_items": 0}
+    assert manifest.detection_counts == {"images_seen": 0, "detections": 0, "crops_created": 0}
+    assert manifest.bioclip_counts == {"objects_scored": 0, "whole_images_scored": 0}
+    assert manifest.evidence_counts == {"object_evidence_rows": 0, "photo_summary_rows": 0}
+    assert manifest.outputs["manifest"].endswith("/run_manifest.json")
     assert [stage.stage for stage in manifest.stages][:3] == [
         RunStage.RESOLVE_TAXON_SCOPE,
         RunStage.BUILD_REGISTRY,
         RunStage.COMPILE_QUERIES,
     ]
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["species_count"] == 1
+
+
+def test_run_artifact_uris_are_s3_safe_and_species_scoped() -> None:
+    uris = RunArtifactUris.from_prefix("s3://biominer/runs", run_id="Family: Papilionidae")
+
+    assert uris.run_root_uri == "s3://biominer/runs/run_id=family_papilionidae"
+    assert uris.manifest_uri == "s3://biominer/runs/run_id=family_papilionidae/run_manifest.json"
+    assert uris.query_definitions_uri == "s3://biominer/runs/run_id=family_papilionidae/registry/flickr_query_definitions.parquet"
+    assert uris.object_detections_uri == "s3://biominer/runs/run_id=family_papilionidae/staging/object_detections.parquet"
+    assert uris.species_uri("Papilio demoleus") == "s3://biominer/runs/run_id=family_papilionidae/species/papilio_demoleus"
+    assert uris.species_context_uri("Papilio demoleus").endswith("/species/papilio_demoleus/species_context.json")
+    assert uris.to_dict()["photo_summary"].endswith("/staging/photo_evidence_summary.parquet")
+
+
+def test_run_manifest_stage_status_and_count_roundtrip() -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    manifest = RunManifest(
+        run_id="run-1",
+        taxon_scope=scope,
+        stages=(StageRecord(stage=RunStage.COMPILE_QUERIES),),
+        query_counts={"compiled_definitions": 0},
+    )
+
+    manifest = manifest.with_stage_status(
+        RunStage.COMPILE_QUERIES,
+        StageStatus.COMPLETE,
+        started_at="2026-01-01T00:00:00Z",
+        ended_at="2026-01-01T00:00:01Z",
+        metrics={"compiled_definitions": 12},
+        outputs={"query_definitions": "s3://biominer/runs/run_id=run-1/registry/flickr_query_definitions.parquet"},
+    )
+    payload = manifest.to_dict()
+    roundtrip = RunManifest.from_dict(payload)
+
+    assert roundtrip.query_counts == {"compiled_definitions": 0}
+    assert roundtrip.stages[0].status is StageStatus.COMPLETE
+    assert roundtrip.stages[0].metrics == {"compiled_definitions": 12}
+    assert roundtrip.stages[0].outputs["query_definitions"].startswith("s3://")
 
 
 def test_run_paths_are_stable(tmp_path) -> None:

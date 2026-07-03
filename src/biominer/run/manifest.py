@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from biominer.run.stages import StageRecord
+from biominer.run.stages import RunStage, StageRecord, StageStatus
 from biominer.run.taxon_scope import TaxonScope
 
 
@@ -23,11 +23,60 @@ class RunManifest:
     ended_at: str | None = None
     stages: tuple[StageRecord, ...] = ()
     model_configs: dict[str, Any] = field(default_factory=dict)
+    query_counts: dict[str, int] = field(default_factory=dict)
+    detection_counts: dict[str, int] = field(default_factory=dict)
+    bioclip_counts: dict[str, int] = field(default_factory=dict)
+    evidence_counts: dict[str, int] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
     outputs: dict[str, str] = field(default_factory=dict)
 
     def with_status(self, status: str, *, ended_at: str | None = None) -> RunManifest:
         return replace(self, status=status, ended_at=ended_at)
+
+    def with_stage_status(
+        self,
+        stage: RunStage | str,
+        status: StageStatus | str,
+        *,
+        started_at: str | None = None,
+        ended_at: str | None = None,
+        message: str | None = None,
+        metrics: dict[str, Any] | None = None,
+        outputs: dict[str, str] | None = None,
+    ) -> RunManifest:
+        target = RunStage(str(stage))
+        next_status = StageStatus(str(status))
+        updated: list[StageRecord] = []
+        replaced = False
+        for record in self.stages:
+            if record.stage == target:
+                updated.append(
+                    StageRecord(
+                        stage=target,
+                        status=next_status,
+                        started_at=started_at if started_at is not None else record.started_at,
+                        ended_at=ended_at if ended_at is not None else record.ended_at,
+                        message=message if message is not None else record.message,
+                        metrics={**record.metrics, **(metrics or {})},
+                        outputs={**record.outputs, **(outputs or {})},
+                    )
+                )
+                replaced = True
+            else:
+                updated.append(record)
+        if not replaced:
+            updated.append(
+                StageRecord(
+                    stage=target,
+                    status=next_status,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    message=message,
+                    metrics=dict(metrics or {}),
+                    outputs=dict(outputs or {}),
+                )
+            )
+        return replace(self, stages=tuple(updated))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -44,6 +93,10 @@ class RunManifest:
             "species_count": self.taxon_scope.species_count,
             "stages": [stage.to_dict() for stage in self.stages],
             "model_configs": dict(self.model_configs),
+            "query_counts": dict(self.query_counts),
+            "detection_counts": dict(self.detection_counts),
+            "bioclip_counts": dict(self.bioclip_counts),
+            "evidence_counts": dict(self.evidence_counts),
             "metrics": dict(self.metrics),
             "outputs": dict(self.outputs),
         }
@@ -62,6 +115,10 @@ class RunManifest:
             ended_at=payload.get("ended_at"),
             stages=tuple(StageRecord.from_dict(item) for item in payload.get("stages", ())),
             model_configs=dict(payload.get("model_configs") or {}),
+            query_counts={str(key): int(value) for key, value in dict(payload.get("query_counts") or {}).items()},
+            detection_counts={str(key): int(value) for key, value in dict(payload.get("detection_counts") or {}).items()},
+            bioclip_counts={str(key): int(value) for key, value in dict(payload.get("bioclip_counts") or {}).items()},
+            evidence_counts={str(key): int(value) for key, value in dict(payload.get("evidence_counts") or {}).items()},
             metrics=dict(payload.get("metrics") or {}),
             outputs={str(key): str(value) for key, value in dict(payload.get("outputs") or {}).items()},
         )
