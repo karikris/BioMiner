@@ -35,3 +35,12 @@ class SamLikeSegmenter:
 
     def segment_crop(self, crop: CropResult) -> bytes | None:
         return None
+
+
+def make_segmenter(backend: str = "none") -> Segmenter:
+    normalized = backend.strip().casefold()
+    if normalized == "none":
+        return NoneSegmenter()
+    if normalized in {"sam", "sam2"}:
+        return SamLikeSegmenter()
+    raise ValueError(f"unknown segmenter backend {backend!r}; expected one of: none, sam, sam2")

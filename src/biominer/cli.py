@@ -31,6 +31,7 @@ from biominer.detection.evaluate import evaluate_xie_style
 from biominer.detection.image_io import load_decoded_image_from_record
 from biominer.detection.pipeline import run_detection_pipeline
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, runtime_profile
+from biominer.detection.segmentation import make_segmenter
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_comments.comment_review import (
     CommentReviewState,
@@ -137,6 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_screen_objects.add_argument("--text-embedding-batch-size", type=int, default=256)
     bioclip_screen_objects.add_argument("--candidate-text-embedding-cache")
     bioclip_screen_objects.add_argument("--object-image-embedding-cache")
+    bioclip_screen_objects.add_argument("--segmenter", default="none", choices=("none", "sam", "sam2"))
     bioclip_ablate_objects = bioclip_subparsers.add_parser("ablate-objects")
     bioclip_ablate_objects.add_argument("--input", required=True)
     bioclip_ablate_objects.add_argument("--detections", required=True)
@@ -157,6 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_ablate_objects.add_argument("--text-embedding-batch-size", type=int, default=256)
     bioclip_ablate_objects.add_argument("--candidate-text-embedding-cache")
     bioclip_ablate_objects.add_argument("--object-image-embedding-cache")
+    bioclip_ablate_objects.add_argument("--segmenter", default="none", choices=("none", "sam", "sam2"))
     bioclip_join_objects = bioclip_subparsers.add_parser("join-object-evidence")
     _add_object_evidence_join_args(bioclip_join_objects)
     bioclip_join_objects.add_argument("--species-context")
@@ -289,6 +292,7 @@ def build_parser() -> argparse.ArgumentParser:
     species_bioclip_objects.add_argument("--text-embedding-batch-size", type=int, default=256)
     species_bioclip_objects.add_argument("--candidate-text-embedding-cache")
     species_bioclip_objects.add_argument("--object-image-embedding-cache")
+    species_bioclip_objects.add_argument("--segmenter", default="none", choices=("none", "sam", "sam2"))
     species_ablate_objects = species_subparsers.add_parser("ablate-objects")
     species_ablate_objects.add_argument("--context-json", required=True)
     species_ablate_objects.add_argument("--input", required=True)
@@ -309,6 +313,7 @@ def build_parser() -> argparse.ArgumentParser:
     species_ablate_objects.add_argument("--text-embedding-batch-size", type=int, default=256)
     species_ablate_objects.add_argument("--candidate-text-embedding-cache")
     species_ablate_objects.add_argument("--object-image-embedding-cache")
+    species_ablate_objects.add_argument("--segmenter", default="none", choices=("none", "sam", "sam2"))
     species_join_objects = species_subparsers.add_parser("join-object-evidence")
     species_join_objects.add_argument("--context-json", required=True)
     _add_object_evidence_join_args(species_join_objects)
@@ -1543,6 +1548,7 @@ def _object_scorer_for_args(
         model_version="bioclip2_5_huge",
         model_checkpoint=BIOCLIP_25_HUGE_REVISION,
         retain_debug_crops=args.retain_debug_crops,
+        segmenter=make_segmenter(getattr(args, "segmenter", "none")),
     )
 
 

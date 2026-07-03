@@ -19,6 +19,7 @@ from biominer.bioclip.object_runner import (
     write_object_evidence_outputs,
 )
 from biominer.detection.detector_base import DecodedImage
+from biominer.detection.segmentation import make_segmenter
 from biominer.detection.schema import empty_detection_frame
 from biominer.species.context import CommonName, RegionHint, SpeciesContext
 
@@ -130,6 +131,13 @@ def _decoded_image() -> DecodedImage:
         for value in ((x * 40) % 256, (y * 40) % 256, ((x + y) * 20) % 256)
     )
     return DecodedImage(width=4, height=4, mode="RGB", data=pixels, source_uri="memory://photo-1")
+
+
+def test_make_segmenter_defaults_to_optional_noop_backend() -> None:
+    segmenter = make_segmenter("none")
+
+    assert segmenter.backend == "none"
+    assert segmenter.segment_crop(None) is None  # type: ignore[arg-type]
 
 
 def test_candidate_set_uses_species_context_and_same_genus_family_candidates(tmp_path) -> None:

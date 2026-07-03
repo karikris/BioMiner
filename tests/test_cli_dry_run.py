@@ -459,6 +459,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "candidate_text_embeddings.parquet",
             "--object-image-embedding-cache",
             "object_image_embeddings.parquet",
+            "--segmenter",
+            "none",
         ]
     )
     ablate = parser.parse_args(
@@ -485,6 +487,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "candidate_text_embeddings.parquet",
             "--object-image-embedding-cache",
             "object_image_embeddings.parquet",
+            "--segmenter",
+            "none",
         ]
     )
     species_screen = parser.parse_args(
@@ -509,6 +513,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "candidate_text_embeddings.parquet",
             "--object-image-embedding-cache",
             "object_image_embeddings.parquet",
+            "--segmenter",
+            "none",
         ]
     )
     species_ablate = parser.parse_args(
@@ -533,6 +539,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "candidate_text_embeddings.parquet",
             "--object-image-embedding-cache",
             "object_image_embeddings.parquet",
+            "--segmenter",
+            "none",
         ]
     )
     join = parser.parse_args(
@@ -579,6 +587,7 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert screen.text_embedding_batch_size == 2
     assert screen.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert screen.object_image_embedding_cache == "object_image_embeddings.parquet"
+    assert screen.segmenter == "none"
     assert ablate.bioclip_command == "ablate-objects"
     assert ablate.modes == "whole_image,detector_crop,detector_crop_segmentation"
     assert ablate.geo_prior_table == "geo_prior.parquet"
@@ -586,18 +595,21 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert ablate.text_embedding_batch_size == 3
     assert ablate.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert ablate.object_image_embedding_cache == "object_image_embeddings.parquet"
+    assert ablate.segmenter == "none"
     assert species_screen.species_command == "bioclip-objects"
     assert species_screen.geo_prior_table == "geo_prior.parquet"
     assert species_screen.parquet_batch_rows == 9
     assert species_screen.text_embedding_batch_size == 4
     assert species_screen.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert species_screen.object_image_embedding_cache == "object_image_embeddings.parquet"
+    assert species_screen.segmenter == "none"
     assert species_ablate.species_command == "ablate-objects"
     assert species_ablate.geo_prior_table == "geo_prior.parquet"
     assert species_ablate.parquet_batch_rows == 13
     assert species_ablate.text_embedding_batch_size == 5
     assert species_ablate.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert species_ablate.object_image_embedding_cache == "object_image_embeddings.parquet"
+    assert species_ablate.segmenter == "none"
     assert join.bioclip_command == "join-object-evidence"
     assert join.scores == "object_bioclip_scores.parquet"
     assert species_join.species_command == "join-object-evidence"
@@ -1027,6 +1039,8 @@ def test_bioclip_ablate_objects_forwards_parquet_batch_rows(tmp_path, capsys, mo
             "detector_crop",
             "--parquet-batch-rows",
             "2",
+            "--segmenter",
+            "none",
         ]
     )
 
@@ -1037,6 +1051,7 @@ def test_bioclip_ablate_objects_forwards_parquet_batch_rows(tmp_path, capsys, mo
     assert calls["closed"] is True
     assert calls["ablation"]["parquet_batch_rows"] == 2
     assert calls["ablation"]["modes"] == ("detector_crop",)
+    assert calls["crop_scorer"]["segmenter"].backend == "none"
     assert calls["candidate_set"]["geo_prior_table"] is None
 
 
