@@ -246,6 +246,58 @@ def test_postgres_workstore_contract_with_injected_connection() -> None:
     ]
 
 
+def test_postgres_workstore_failure_listing_and_requeue_contract() -> None:
+    fake = _FakePostgres()
+    store = PostgresWorkStore("postgresql://user:pass@example.test/db", connect=fake.connect)
+
+    store.init_schema()
+    store.get_or_create_run(
+        job_name="poll_once",
+        stage="metadata",
+        run_id="run-poll",
+        registry_version="registry-v1",
+        config={"kind": "poll"},
+    )
+    store.get_or_create_run(
+        job_name="filter",
+        stage="metadata",
+        run_id="run-filter",
+        registry_version="registry-v1",
+        config={"kind": "filter"},
+    )
+    store.enqueue_work(
+        "poll_once",
+        "registry-v1",
+        [{"work_key": "fail-me"}, {"work_key": "retry-me"}],
+        stage="metadata",
+    )
+
+    first_claim = store.claim_next_batch("worker-1", 1, job_name="poll_once", stage="metadata", registry_version="registry-v1")
+    store.mark_failed(first_claim[0]["work_key"], "temporary failure")
+    second_claim = store.claim_next_batch("worker-1", 1, job_name="poll_once", stage="metadata", registry_version="registry-v1")
+    fake.work_items[second_claim[0]["work_key"]]["claimed_at"] = datetime(2026, 7, 3, tzinfo=UTC)
+
+    assert [run["run_id"] for run in store.list_runs(job_name="poll_once", stage="metadata", registry_version="registry-v1")] == ["run-poll"]
+    assert store.list_work_items(
+        job_name="poll_once",
+        stage="metadata",
+        registry_version="registry-v1",
+        statuses=["failed"],
+    )[0]["error"] == "temporary failure"
+    assert store.requeue_stale_claims(
+        job_name="poll_once",
+        stage="metadata",
+        registry_version="registry-v1",
+        stale_after_seconds=1,
+    ) == 1
+    assert store.list_work_items(
+        job_name="poll_once",
+        stage="metadata",
+        registry_version="registry-v1",
+        statuses=["pending"],
+    )[0]["work_key"] == "retry-me"
+
+
 class _FakeResult:
     def __init__(self, rows: list[dict[str, Any]] | None = None, *, rowcount: int = 0) -> None:
         self._rows = rows or []
@@ -305,6 +357,15 @@ class _FakePostgresConnection:
         if normalized.startswith("SELECT * FROM biominer_runs WHERE run_id"):
             row = self.db.runs.get(params[0])
             return _FakeResult([row] if row else [])
+        if normalized.startswith("SELECT * FROM biominer_runs"):
+            job_name, stage, registry_version = params[:3]
+            return _FakeResult(
+                [
+                    row
+                    for row in self.db.runs.values()
+                    if row["job_name"] == job_name and row["stage"] == stage and row["registry_version"] == registry_version
+                ]
+            )
         if normalized.startswith("INSERT INTO biominer_work_items"):
             work_key, job_name, stage, registry_version, status, payload, created_at = params
             if work_key in self.db.work_items:
@@ -343,6 +404,17 @@ class _FakePostgresConnection:
                 row["claimed_at"] = "2026-07-04T00:00:00+00:00"
                 row["attempt_count"] += 1
             return _FakeResult(rows)
+        if normalized.startswith("UPDATE biominer_work_items SET status = %s, completed_at") and len(params) == 4:
+            status, completed_at, error, work_key = params
+            row = self.db.work_items[work_key]
+            row.update(
+                {
+                    "status": status,
+                    "completed_at": str(completed_at),
+                    "error": error,
+                }
+            )
+            return _FakeResult(rowcount=1)
         if normalized.startswith("UPDATE biominer_work_items SET status = %s, completed_at"):
             status, completed_at, output_uri, checksum, row_count, error, work_key = params
             row = self.db.work_items[work_key]
@@ -357,6 +429,23 @@ class _FakePostgresConnection:
                 }
             )
             return _FakeResult(rowcount=1)
+        if normalized.startswith("UPDATE biominer_work_items SET status = %s, claimed_by = NULL"):
+            pending_status, claimed_status, cutoff, job_name, stage, registry_version = params
+            rowcount = 0
+            for row in self.db.work_items.values():
+                if (
+                    row["status"] == claimed_status
+                    and row["claimed_at"] is not None
+                    and row["claimed_at"] < cutoff
+                    and row["job_name"] == job_name
+                    and row["stage"] == stage
+                    and row["registry_version"] == registry_version
+                ):
+                    row["status"] = pending_status
+                    row["claimed_by"] = None
+                    row["claimed_at"] = None
+                    rowcount += 1
+            return _FakeResult(rowcount=rowcount)
         if normalized.startswith("SELECT work_key FROM biominer_work_items"):
             job_name, status, stage, registry_version = params
             return _FakeResult(
@@ -367,6 +456,19 @@ class _FakePostgresConnection:
                     and row["status"] == status
                     and row["stage"] == stage
                     and row["registry_version"] == registry_version
+                ]
+            )
+        if normalized.startswith("SELECT * FROM biominer_work_items"):
+            job_name, stage, registry_version, *rest = params
+            statuses = set(rest)
+            return _FakeResult(
+                [
+                    row
+                    for row in self.db.work_items.values()
+                    if row["job_name"] == job_name
+                    and row["stage"] == stage
+                    and row["registry_version"] == registry_version
+                    and (not statuses or row["status"] in statuses)
                 ]
             )
         if normalized.startswith("INSERT INTO biominer_parquet_shards"):
