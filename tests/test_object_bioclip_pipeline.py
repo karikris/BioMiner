@@ -929,7 +929,10 @@ def test_ablation_report_counts_no_detection_records(tmp_path) -> None:
     assert report.report["detections_seen"] == 1
     assert report.report["crops_scored"] == 0
     assert report.report["no_detection_records"] == 1
-    assert json.loads((tmp_path / "ablation_report.json").read_text(encoding="utf-8"))["no_detection_records"] == 1
+    assert report.report["ablation_mode"] == ["detector_crop"]
+    persisted = json.loads((tmp_path / "ablation_report.json").read_text(encoding="utf-8"))
+    assert persisted["no_detection_records"] == 1
+    assert persisted["ablation_mode"] == ["detector_crop"]
 
 
 def test_object_evidence_join_and_photo_summary_outputs(tmp_path) -> None:

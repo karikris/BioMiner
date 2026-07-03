@@ -51,6 +51,7 @@ def run_object_ablations(
         score_batches_by_mode[mode] = result.score_batches_written
     combined = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
     report = build_ablation_report(combined, canonical_records=canonical_records, detections=detections)
+    report["ablation_mode"] = list(modes)
     report["score_batches_written_by_mode"] = score_batches_by_mode
     report["score_batches_written"] = sum(score_batches_by_mode.values())
     (base / "ablation_report.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
@@ -68,6 +69,7 @@ def build_ablation_report(
     no_detection_records = _no_detection_records(detections)
     if frame.is_empty():
         return {
+            "ablation_mode": [],
             "records_seen": records_seen,
             "detections_seen": detections_seen,
             "crops_scored": 0,
