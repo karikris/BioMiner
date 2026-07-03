@@ -316,7 +316,7 @@ class PostgresWorkStore:
                     uri, row_count, byte_count, checksum, metadata_json, committed_at
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
-                ON CONFLICT (shard_id) DO NOTHING
+                ON CONFLICT DO NOTHING
                 """,
                 (
                     resolved_shard_id,
@@ -430,7 +430,7 @@ class PostgresWorkStore:
                     uri, row_count, byte_count, checksum, metadata_json, committed_at
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
-                ON CONFLICT (shard_id) DO NOTHING
+                ON CONFLICT DO NOTHING
                 """,
                 (
                     output_shard_id,

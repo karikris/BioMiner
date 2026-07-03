@@ -204,6 +204,19 @@ def test_postgres_workstore_contract_with_injected_connection() -> None:
         byte_count=100,
         metadata={"kind": "canonical_delta"},
     )
+    store.register_shard(
+        shard_id="shard-duplicate-id",
+        job_name="poll_once",
+        registry_version="registry-v1",
+        stage="metadata",
+        run_id="run-1",
+        worker_id="worker-1",
+        uri="s3://biominer/evidence/shard-1.parquet",
+        checksum="sha256:shard",
+        row_count=1,
+        byte_count=100,
+        metadata={"kind": "canonical_delta"},
+    )
 
     assert fake.schema_initialized
     assert run["config"] == {"max_api_calls": 10}
@@ -371,6 +384,8 @@ class _FakePostgresConnection:
                 metadata,
                 committed_at,
             ) = params
+            if shard_id in self.db.shards or any(row["uri"] == uri for row in self.db.shards.values()):
+                return _FakeResult(rowcount=0)
             self.db.shards.setdefault(
                 shard_id,
                 {
