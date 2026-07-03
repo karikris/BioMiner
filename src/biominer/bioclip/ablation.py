@@ -152,9 +152,23 @@ def _median(values: list[int]) -> float | None:
 def _disagreements(frame: pl.DataFrame, left: str, right: str) -> int:
     if "ablation_mode" not in frame.columns:
         return 0
-    left_frame = frame.filter(pl.col("ablation_mode") == left).select(["source", "flickr_photo_id", "detection_id", "occurrence_bin"])
-    right_frame = frame.filter(pl.col("ablation_mode") == right).select(["source", "flickr_photo_id", "detection_id", "occurrence_bin"])
+    compare_columns = [
+        column
+        for column in ("occurrence_bin", "species_top1_scientific_name", "species_top1_accepted_taxon_key", "target_species_rank")
+        if column in frame.columns
+    ]
+    if not compare_columns:
+        return 0
+    select_columns = ["source", "flickr_photo_id", "detection_id", *compare_columns]
+    left_frame = frame.filter(pl.col("ablation_mode") == left).select(select_columns)
+    right_frame = frame.filter(pl.col("ablation_mode") == right).select(select_columns)
     if left_frame.is_empty() or right_frame.is_empty():
         return 0
     joined = left_frame.join(right_frame, on=["source", "flickr_photo_id", "detection_id"], suffix="_right")
-    return joined.filter(pl.col("occurrence_bin") != pl.col("occurrence_bin_right")).height
+    disagreement = None
+    for column in compare_columns:
+        current = pl.col(column).fill_null("") != pl.col(f"{column}_right").fill_null("")
+        disagreement = current if disagreement is None else disagreement | current
+    if disagreement is None:
+        return 0
+    return joined.filter(disagreement).height

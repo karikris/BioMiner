@@ -1014,20 +1014,23 @@ def test_ablation_report_uses_objective_disagreement_field_names() -> None:
                     "detection_id": "det-1",
                     "ablation_mode": "whole_image",
                     "occurrence_bin": "gold",
+                    "species_top1_scientific_name": "Danaus gilippus",
                 },
                 {
                     "source": "flickr",
                     "flickr_photo_id": "photo-1",
                     "detection_id": "det-1",
                     "ablation_mode": "detector_crop",
-                    "occurrence_bin": "bronze",
+                    "occurrence_bin": "gold",
+                    "species_top1_scientific_name": "Danaus plexippus",
                 },
                 {
                     "source": "flickr",
                     "flickr_photo_id": "photo-1",
                     "detection_id": "det-1",
                     "ablation_mode": "detector_crop_segmentation",
-                    "occurrence_bin": "bronze",
+                    "occurrence_bin": "gold",
+                    "species_top1_scientific_name": "Danaus plexippus",
                 },
             ]
         )
