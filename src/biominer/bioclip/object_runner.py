@@ -15,6 +15,7 @@ from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
 from biominer.bioclip.triage import BIN_CATEGORIES, NEGATIVE_RECORD_FIELDS
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage
+from biominer.detection.schema import DETECTION_OUTPUT_SCHEMA
 from biominer.detection.segmentation import NoneSegmenter, Segmenter
 from biominer.species.context import SpeciesContext
 from biominer.storage.parquet import write_parquet
@@ -72,14 +73,23 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
 }
 OBJECT_EVIDENCE_JOINED_SCHEMA: dict[str, pl.DataType] = {
     **OBJECT_SCORE_OUTPUT_SCHEMA,
-    "detection_status": pl.String,
-    "failure_reason": pl.String,
-    "detector_backend": pl.String,
-    "detector_model_id": pl.String,
-    "detector_model_version": pl.String,
-    "detector_checkpoint": pl.String,
-    "image_url": pl.String,
-    "photo_page_url": pl.String,
+    **DETECTION_OUTPUT_SCHEMA,
+    "comments_fetched": pl.Boolean,
+    "comment_count": pl.Int64,
+    "species_match_from_comments": pl.Boolean,
+    "species_name_from_comments": pl.String,
+    "common_name_from_comments": pl.String,
+    "life_stage_from_comments": pl.String,
+    "date_evidence_from_comments": pl.String,
+    "geo_evidence_from_comments": pl.String,
+    "location_text_from_comments": pl.String,
+    "comment_review_decision": pl.String,
+    "comment_review_reason": pl.String,
+    "flickr_text_species_candidate": pl.String,
+    "bioclip_species_candidate": pl.String,
+    "bioclip_tag_conflict": pl.Boolean,
+    "comment_species_candidate": pl.String,
+    "comment_resolves_conflict": pl.Boolean,
 }
 PHOTO_EVIDENCE_SUMMARY_SCHEMA: dict[str, pl.DataType] = {
     "source": pl.String,

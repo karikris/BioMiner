@@ -20,7 +20,7 @@ from biominer.bioclip.object_runner import (
 )
 from biominer.detection.detector_base import DecodedImage
 from biominer.detection.segmentation import make_segmenter
-from biominer.detection.schema import empty_detection_frame
+from biominer.detection.schema import DETECTION_OUTPUT_SCHEMA, empty_detection_frame
 from biominer.species.context import CommonName, RegionHint, SpeciesContext
 
 
@@ -1146,6 +1146,12 @@ def test_empty_object_evidence_outputs_keep_stable_join_table_schemas(tmp_path) 
         "flickr_photo_id",
         "detection_id",
         "crop_hash",
+        "source_record_hash",
+        "prediction_source",
+        "bbox_xyxy",
+        "bbox_xyxyn",
+        "bbox_xywhn",
+        "schema_version",
         "model_id",
         "model_checkpoint",
         "candidate_set_id",
@@ -1159,7 +1165,13 @@ def test_empty_object_evidence_outputs_keep_stable_join_table_schemas(tmp_path) 
         "comment_evidence_score",
         "is_target_positive",
         "is_negative_material",
+        "comment_review_decision",
+        "comment_review_reason",
+        "comment_species_candidate",
+        "comment_resolves_conflict",
+        "geo_evidence_from_comments",
     }.issubset(joined.columns)
+    assert set(DETECTION_OUTPUT_SCHEMA).issubset(joined.columns)
     assert {
         "source",
         "flickr_photo_id",
