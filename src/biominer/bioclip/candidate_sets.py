@@ -347,7 +347,17 @@ def _candidate_set_id(*, context: SpeciesContext, species: list[CandidateTaxon],
     payload = {
         "registry_version": context.registry_version,
         "target": context.accepted_taxon_key,
-        "species": [(candidate.accepted_taxon_key, candidate.scientific_name) for candidate in species],
+        "species": [
+            {
+                "accepted_taxon_key": candidate.accepted_taxon_key,
+                "scientific_name": candidate.scientific_name,
+                "rank": candidate.rank,
+                "family": candidate.family,
+                "genus": candidate.genus,
+                "common_names": candidate.common_names,
+            }
+            for candidate in species
+        ],
         "prompt_variant_version": PROMPT_VARIANT_VERSION,
         "geospatial_scope": geospatial_scope,
     }
