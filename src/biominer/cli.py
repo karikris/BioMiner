@@ -878,7 +878,7 @@ def _run_cloud_doctor(args: argparse.Namespace) -> dict[str, object]:
 
     job_name = "cloud_doctor"
     stage = "doctor"
-    work_key = "cloud-doctor-work"
+    work_key = f"cloud-doctor-work:{run_id}"
     try:
         _init_workstore_schema(workstore)
         workstore.get_or_create_run(
@@ -912,7 +912,7 @@ def _run_cloud_doctor(args: argparse.Namespace) -> dict[str, object]:
             "schema_initialized": True,
             "work_items_inserted": inserted,
             "claimed_work_key": claimed_work_key,
-            "completed_keys": sorted(workstore.completed_keys(job_name, None, stage=stage)),
+            "completed_keys": [work_key] if work_key in workstore.completed_keys(job_name, None, stage=stage) else [],
             "registered_shards": len(shards),
         }
     except Exception as exc:  # noqa: BLE001 - doctor reports partial diagnostics.

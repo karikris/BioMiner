@@ -114,9 +114,32 @@ def test_cloud_doctor_exercises_storage_and_workstore_without_printing_secrets(c
     assert output["storage"]["json_deleted"] is True
     assert output["storage"]["parquet_rows"] == 2
     assert output["workstore"]["schema_initialized"] is True
-    assert output["workstore"]["claimed_work_key"] == "cloud-doctor-work"
-    assert output["workstore"]["completed_keys"] == ["cloud-doctor-work"]
+    assert output["workstore"]["claimed_work_key"].startswith("cloud-doctor-work:")
+    assert output["workstore"]["completed_keys"] == [output["workstore"]["claimed_work_key"]]
     assert output["workstore"]["registered_shards"] == 1
+
+
+def test_cloud_doctor_uses_run_scoped_work_item(capsys, monkeypatch) -> None:
+    fake_storage = _FakeCloudStorage()
+    fake_store = _FakeCloudWorkStore()
+    config = _fake_cloud_config()
+    monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
+    monkeypatch.setattr("biominer.cli.validate_config", lambda config, require_cloud_credentials: None)
+    monkeypatch.setattr("biominer.cli.create_storage_backend", lambda storage_config: fake_storage)
+    monkeypatch.setattr("biominer.cli.create_workstore", lambda workstore_config: fake_store)
+
+    first_rc = run(build_parser().parse_args(["cloud", "doctor"]))
+    first_output = json.loads(capsys.readouterr().out)
+    second_rc = run(build_parser().parse_args(["cloud", "doctor"]))
+    second_output = json.loads(capsys.readouterr().out)
+
+    assert first_rc == 0
+    assert second_rc == 0
+    assert first_output["workstore"]["claimed_work_key"].startswith("cloud-doctor-work:")
+    assert second_output["workstore"]["claimed_work_key"].startswith("cloud-doctor-work:")
+    assert first_output["workstore"]["claimed_work_key"] != second_output["workstore"]["claimed_work_key"]
+    assert second_output["workstore"]["completed_keys"] == [second_output["workstore"]["claimed_work_key"]]
+    assert second_output["workstore"]["work_items_inserted"] == 1
 
 
 def test_cloud_doctor_reports_storage_checks_when_workstore_fails(capsys, monkeypatch) -> None:
