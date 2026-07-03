@@ -945,6 +945,7 @@ def test_bioclip_screen_objects_uses_embedding_caches_for_detector_crop_scoring(
     assert calls["screen"]["parquet_batch_rows"] == 3
     assert calls["screen"]["geo_prior_table"].height == 1
     assert calls["candidate_set"]["geospatial_scope"] == str(geo_prior_path)
+    assert calls["candidate_set"]["geo_prior_table"].height == 1
     assert calls["candidate_set"]["records"][0]["flickr_photo_id"] == "photo-1"
     assert calls["candidate_set"]["records"][0]["scientific_names_detected"] == ["Danaus gilippus"]
     assert pl.read_parquet(text_cache_path).height == 4
@@ -1036,6 +1037,7 @@ def test_bioclip_ablate_objects_forwards_parquet_batch_rows(tmp_path, capsys, mo
     assert calls["closed"] is True
     assert calls["ablation"]["parquet_batch_rows"] == 2
     assert calls["ablation"]["modes"] == ("detector_crop",)
+    assert calls["candidate_set"]["geo_prior_table"] is None
 
 
 def test_bioclip_join_object_evidence_cli_writes_join_tables(tmp_path, capsys, monkeypatch) -> None:

@@ -165,6 +165,37 @@ def test_candidate_set_records_geospatial_scope_source_evidence() -> None:
     assert "geospatial_scope:geo_prior.parquet" in candidate_set.source_evidence
 
 
+def test_candidate_set_uses_geospatial_prior_table_candidates() -> None:
+    candidate_set = build_candidate_set(
+        _context(),
+        geospatial_scope="geo_prior.parquet",
+        geo_prior_table=pl.DataFrame(
+            [
+                {
+                    "scientific_name": "Danaus erippus",
+                    "accepted_taxon_key": "gbif:1901234",
+                    "family": "Nymphalidae",
+                    "genus": "Danaus",
+                    "bbox": "-75.0,-56.0,-34.0,-20.0",
+                    "source": "fixture",
+                },
+                {
+                    "scientific_name": "Papilio polyxenes",
+                    "accepted_taxon_key": "gbif:1900001",
+                    "family": "Papilionidae",
+                    "genus": "Papilio",
+                    "bbox": "-170.0,5.0,-50.0,75.0",
+                    "source": "fixture",
+                },
+            ]
+        ),
+    )
+
+    names = [candidate.scientific_name for candidate in candidate_set.species_candidates]
+    assert names == ["Danaus plexippus", "Danaus erippus"]
+    assert "geospatial_prior_table" in candidate_set.source_evidence
+
+
 def test_candidate_set_uses_query_provenance_accepted_taxon_keys() -> None:
     candidate_set = build_candidate_set(
         _context(),

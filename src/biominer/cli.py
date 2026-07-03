@@ -1294,6 +1294,7 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
         species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None,
         records=records.to_dicts(),
         geospatial_scope=str(args.geo_prior_table) if getattr(args, "geo_prior_table", None) else None,
+        geo_prior_table=geo_prior_table,
     )
     runtime = _bioclip_runtime(runtime_python=runtime_python)
     scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
@@ -1362,6 +1363,7 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
         species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None,
         records=records.to_dicts(),
         geospatial_scope=str(args.geo_prior_table) if getattr(args, "geo_prior_table", None) else None,
+        geo_prior_table=geo_prior_table,
     )
     modes = tuple(part.strip() for part in args.modes.split(",") if part.strip())
     runtime = _bioclip_runtime(runtime_python=runtime_python)

@@ -59,6 +59,7 @@ def build_candidate_set(
     species_candidate_path: str | Path | None = None,
     records: list[dict[str, Any]] | None = None,
     geospatial_scope: str | None = None,
+    geo_prior_table: pl.DataFrame | None = None,
 ) -> CandidateSet:
     target = _target_candidate(context)
     source_evidence = ["species_context"]
@@ -67,7 +68,11 @@ def build_candidate_set(
     candidate_rows = _candidate_rows(species_candidate_path) if species_candidate_path else []
     if candidate_rows:
         source_evidence.append(str(species_candidate_path))
+    geo_prior_rows = geo_prior_table.to_dicts() if geo_prior_table is not None and not geo_prior_table.is_empty() else []
+    if geo_prior_rows:
+        source_evidence.append("geospatial_prior_table")
     species = _species_candidates(context, candidate_rows)
+    species, _ = _add_geospatial_prior_candidates(species, context, geo_prior_rows)
     species, query_provenance_added = _add_query_provenance_candidates(
         species,
         records or [],
@@ -124,13 +129,45 @@ def _species_candidates(context: SpeciesContext, rows: list[dict[str, Any]]) -> 
         candidate = _candidate_from_row(row)
         if candidate is None:
             continue
-        same_genus = _norm(candidate.genus) == _norm(context.genus)
-        same_family = _norm(candidate.family) == _norm(context.family)
-        is_target = _norm(candidate.scientific_name) == _norm(context.scientific_name)
-        if not (is_target or same_genus or same_family):
+        if not _candidate_in_context_scope(candidate, context):
             continue
         candidates.append(candidate)
     return candidates
+
+
+def _add_geospatial_prior_candidates(
+    candidates: list[CandidateTaxon],
+    context: SpeciesContext,
+    rows: list[dict[str, Any]],
+) -> tuple[list[CandidateTaxon], bool]:
+    by_name = {_norm(candidate.scientific_name) for candidate in candidates}
+    by_key = {str(candidate.accepted_taxon_key or "") for candidate in candidates if candidate.accepted_taxon_key}
+    added = False
+    for row in rows:
+        candidate = _candidate_from_row(row)
+        if candidate is None or not _candidate_in_context_scope(candidate, context):
+            continue
+        name_key = _norm(candidate.scientific_name)
+        taxon_key = str(candidate.accepted_taxon_key or "")
+        if name_key in by_name or (taxon_key and taxon_key in by_key):
+            continue
+        candidates.append(candidate)
+        by_name.add(name_key)
+        if taxon_key:
+            by_key.add(taxon_key)
+        added = True
+    return candidates, added
+
+
+def _candidate_in_context_scope(candidate: CandidateTaxon, context: SpeciesContext) -> bool:
+    same_genus = _norm(candidate.genus) == _norm(context.genus)
+    same_family = _norm(candidate.family) == _norm(context.family)
+    is_target = _norm(candidate.scientific_name) == _norm(context.scientific_name)
+    is_target_key = bool(candidate.accepted_taxon_key) and _norm(candidate.accepted_taxon_key) in {
+        _norm(context.accepted_taxon_key),
+        _norm(context.species_key),
+    }
+    return is_target or is_target_key or same_genus or same_family
 
 
 def _add_query_provenance_candidates(
