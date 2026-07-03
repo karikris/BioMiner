@@ -760,10 +760,14 @@ def run(args: argparse.Namespace) -> int:
                 print(json.dumps({"error": "--input-prefix and --output-prefix must be provided together"}, indent=2, sort_keys=True))
                 return 2
             biominer_config = load_biominer_config(args.config)
+            storage_backend = args.storage_backend or (
+                "s3" if str(args.input_prefix).startswith("s3://") or str(args.output_prefix).startswith("s3://") else "local"
+            )
             storage_config = StorageConfig(
                 **{
                     **biominer_config.storage.__dict__,
-                    "backend": args.storage_backend or biominer_config.storage.backend,
+                    "backend": storage_backend,
+                    "prefix": str(args.output_prefix) if storage_backend == "local" else biominer_config.storage.prefix,
                 }
             )
             storage = create_storage_backend(storage_config)

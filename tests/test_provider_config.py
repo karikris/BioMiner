@@ -22,10 +22,15 @@ from biominer.workstore.sqlite import SQLiteWorkStore
 def test_load_defaults_without_file() -> None:
     config = load_biominer_config(None, env={})
 
-    assert config.storage.backend == "local"
-    assert config.storage.prefix == "."
-    assert config.workstore.backend == "sqlite"
+    assert config.storage.backend == "s3"
+    assert config.storage.prefix == ""
+    assert config.storage.endpoint_url_env == "BIOMINER_S3_ENDPOINT_URL"
+    assert config.storage.access_key_id_env == "BIOMINER_S3_ACCESS_KEY_ID"
+    assert config.storage.secret_access_key_env == "BIOMINER_S3_SECRET_ACCESS_KEY"
+    assert config.workstore.backend == "postgres"
+    assert config.workstore.dsn_env == "BIOMINER_WORKSTORE_DSN"
     assert config.workstore.sqlite_path == "data/state/biominer.sqlite"
+    assert config.runtime.worker_id == ""
     assert config.runtime.default_batch_rows == 50000
     assert config.runtime.target_parquet_mb == 64
 
@@ -90,14 +95,20 @@ def test_missing_cloud_env_raises_on_validation(tmp_path) -> None:
     )
     config = load_biominer_config(path, env={})
 
-    with pytest.raises(ConfigError, match="BIOMINER_S3_ENDPOINT_URL"):
+    with pytest.raises(ConfigError, match="BIOMINER_S3_ENDPOINT_URL.*BIOMINER_WORKSTORE_DSN.*BIOMINER_WORKER_ID"):
         validate_config(config, require_cloud_credentials=True)
 
 
-def test_local_config_does_not_require_cloud_env() -> None:
-    config = BioMinerConfig(storage=StorageConfig(), workstore=WorkStoreConfig(), runtime=RuntimeConfig())
+def test_local_config_requires_explicit_dev_override() -> None:
+    config = BioMinerConfig(
+        storage=StorageConfig(backend="local", prefix="."),
+        workstore=WorkStoreConfig(backend="sqlite", dsn_env=None),
+        runtime=RuntimeConfig(),
+    )
 
-    validate_config(config, require_cloud_credentials=True)
+    with pytest.raises(ConfigError, match="storage.backend=local"):
+        validate_config(config, require_cloud_credentials=True)
+    validate_config(config, require_cloud_credentials=True, allow_local_backends=True)
 
 
 def test_invalid_backend_rejected() -> None:
@@ -148,8 +159,8 @@ def test_redaction_hides_secrets() -> None:
 
 def test_factories_local(tmp_path) -> None:
     config = BioMinerConfig(
-        storage=StorageConfig(prefix=str(tmp_path)),
-        workstore=WorkStoreConfig(sqlite_path=str(tmp_path / "state.sqlite")),
+        storage=StorageConfig(backend="local", prefix=str(tmp_path)),
+        workstore=WorkStoreConfig(backend="sqlite", sqlite_path=str(tmp_path / "state.sqlite"), dsn_env=None),
         runtime=RuntimeConfig(),
     )
 
@@ -164,7 +175,7 @@ def test_factories_local(tmp_path) -> None:
 def test_factory_s3_missing_env_is_clear() -> None:
     config = StorageConfig(backend="s3", bucket="biominer", prefix="biominer")
 
-    with pytest.raises(ConfigError, match="endpoint"):
+    with pytest.raises(ConfigError, match="BIOMINER_S3_ENDPOINT_URL.*BIOMINER_S3_SECRET_ACCESS_KEY"):
         create_storage_backend(config)
 
 

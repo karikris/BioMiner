@@ -8,7 +8,7 @@ from biominer.workstore.factory import create_work_store
 from biominer.workstore.sqlite import SQLiteWorkStore
 
 
-def test_storage_config_defaults_to_local(monkeypatch) -> None:
+def test_storage_config_defaults_to_s3(monkeypatch) -> None:
     for key in (
         "BIOMINER_STORAGE_BACKEND",
         "BIOMINER_S3_ENDPOINT_URL",
@@ -22,7 +22,19 @@ def test_storage_config_defaults_to_local(monkeypatch) -> None:
 
     config = load_storage_config_from_env()
 
-    assert config == StorageConfig()
+    assert config == StorageConfig(region="")
+    assert config.backend == "s3"
+    assert config.endpoint_url_env == "BIOMINER_S3_ENDPOINT_URL"
+    assert config.access_key_id_env == "BIOMINER_S3_ACCESS_KEY_ID"
+    assert config.secret_access_key_env == "BIOMINER_S3_SECRET_ACCESS_KEY"
+
+
+def test_storage_config_allows_explicit_local_override(monkeypatch) -> None:
+    monkeypatch.setenv("BIOMINER_STORAGE_BACKEND", "local")
+
+    config = load_storage_config_from_env()
+
+    assert config == StorageConfig(backend="local", prefix=".", endpoint_url_env=None, access_key_id_env=None, secret_access_key_env=None, region="")
     assert create_storage_backend(config).__class__.__name__ == "LocalStorageBackend"
 
 
@@ -45,19 +57,30 @@ def test_storage_config_reads_s3_env_without_requiring_credentials_at_import(mon
 
 
 def test_s3_factory_requires_bucket_for_s3_backend() -> None:
-    with pytest.raises(ValueError, match="bucket"):
+    with pytest.raises(ValueError, match="BIOMINER_S3_BUCKET"):
         create_storage_backend(StorageConfig(backend="s3", endpoint_url="https://example.test"))
 
 
-def test_workstore_config_defaults_to_sqlite(monkeypatch, tmp_path) -> None:
+def test_workstore_config_defaults_to_postgres(monkeypatch) -> None:
     monkeypatch.delenv("BIOMINER_WORKSTORE_BACKEND", raising=False)
+    monkeypatch.delenv("BIOMINER_WORKSTORE_DSN", raising=False)
+
+    config = load_workstore_config_from_env()
+
+    assert config == WorkStoreConfig()
+    assert config.backend == "postgres"
+    assert config.dsn_env == "BIOMINER_WORKSTORE_DSN"
+
+
+def test_workstore_config_allows_explicit_sqlite_override(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("BIOMINER_WORKSTORE_BACKEND", "sqlite")
     monkeypatch.delenv("BIOMINER_WORKSTORE_DSN", raising=False)
     monkeypatch.setenv("BIOMINER_WORKSTORE_SQLITE_PATH", str(tmp_path / "state.sqlite"))
 
     config = load_workstore_config_from_env()
     store = create_work_store(config)
 
-    assert config == WorkStoreConfig(sqlite_path=str(tmp_path / "state.sqlite"))
+    assert config == WorkStoreConfig(backend="sqlite", sqlite_path=str(tmp_path / "state.sqlite"), dsn_env=None)
     assert isinstance(store, SQLiteWorkStore)
 
 
