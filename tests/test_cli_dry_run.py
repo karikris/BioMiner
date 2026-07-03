@@ -141,6 +141,38 @@ def test_cloud_doctor_redacts_secrets_from_error_payload(capsys, monkeypatch) ->
     assert output["workstore"]["error"] == "failed with <redacted> and <redacted>"
 
 
+def test_poll_once_cloud_no_compact_passes_workstore(monkeypatch, capsys) -> None:
+    fake_store = object()
+    config = _fake_cloud_config()
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
+    monkeypatch.setattr("biominer.cli.create_workstore", lambda workstore_config: fake_store)
+
+    def fake_poll_once(**kwargs) -> SimpleNamespace:  # noqa: ANN003
+        captured.update(kwargs)
+        return SimpleNamespace(state_db=Path("state.sqlite"), evidence_rows_written=0)
+
+    monkeypatch.setattr("biominer.cli.poll_once", fake_poll_once)
+
+    rc = run(
+        build_parser().parse_args(
+            [
+                "poll-once",
+                "--storage-backend",
+                "s3",
+                "--storage-prefix",
+                "s3://biominer/biominer",
+                "--no-compact",
+            ]
+        )
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert output["evidence_rows_written"] == 0
+    assert captured["work_store"] is fake_store
+
+
 def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
     parser = build_parser()
     args = parser.parse_args(

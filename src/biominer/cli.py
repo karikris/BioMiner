@@ -362,6 +362,7 @@ def build_parser() -> argparse.ArgumentParser:
     poll_once_parser.add_argument("--storage-prefix")
     poll_once_parser.add_argument("--evidence-stage", default="poll_once")
     poll_once_parser.add_argument("--no-compact", action="store_true")
+    poll_once_parser.add_argument("--config")
     apply_rules = subparsers.add_parser("apply-rules")
     apply_rules.add_argument("--evidence", required=True)
     apply_rules.add_argument("--output", required=True)
@@ -650,6 +651,10 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     if args.command == "poll-once":
+        work_store = None
+        if args.no_compact and args.storage_backend != "local":
+            biominer_config = load_biominer_config(args.config)
+            work_store = create_workstore(biominer_config.workstore)
         result = poll_once(
             state_db=args.state_db,
             raw_root=args.raw_root,
@@ -664,6 +669,7 @@ def run(args: argparse.Namespace) -> int:
             storage_prefix=args.storage_prefix,
             evidence_stage=args.evidence_stage,
             compact_after_run=not args.no_compact,
+            work_store=work_store,
         )
         print(json.dumps({**result.__dict__, "state_db": str(result.state_db)}, indent=2, sort_keys=True))
         return 0
