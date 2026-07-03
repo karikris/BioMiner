@@ -20,7 +20,6 @@ from biominer.flickr_fetch.endpoints import FLICKR_REST_BASE_URL, SEARCH_METHOD
 from biominer.flickr_fetch.query_planner import (
     FLICKR_SEARCH_RESULT_WINDOW,
     FlickrQuery,
-    build_count_probes,
     deduplicate_photo_records,
     flickr_search_params,
     plan_queries_from_count,
@@ -102,8 +101,10 @@ class MetadataPollState:
     def ensure_seed_work_items(self, queries: tuple[FlickrQuery, ...] | None = None) -> int:
         if self.work_item_count() > 0:
             return 0
+        if queries is None:
+            return 0
         seeded = 0
-        for query in queries or build_count_probes():
+        for query in queries:
             seeded += self.enqueue_work_item(query)
         return seeded
 
@@ -881,7 +882,6 @@ def poll_once(
     evidence_base_prefix = _evidence_base_prefix(evidence_output=evidence_output, storage_prefix=storage_prefix)
     stale_requeued = state.requeue_stale_claims(stale_after_seconds=stale_claim_seconds)
     _progress(progress_callback, {"event": "stale_claims_requeued", "count": stale_requeued})
-    state.ensure_seed_work_items()
     soft_remaining, hard_remaining = state.remaining_api_budget(max_api_calls=max_api_calls)
     _progress(
         progress_callback,

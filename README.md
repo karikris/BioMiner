@@ -530,13 +530,11 @@ Default trust policy:
 | GBIF accepted taxonomy | T1 |
 | Catalogue of Life taxonomy | T1 |
 | GBIF or CoL vernacular | T2 |
-| iNaturalist established regional name | T2/T4 |
-| EOL common name | T2/T3 |
-| Curator override | T5 |
-| Independently corroborated translation | T6 |
-| Raw generated translation | T7 |
+| Wikidata labels and aliases with confident taxon links | T3 |
+| iNaturalist or other community names | T4 unless reviewed |
+| Dictionary or generated translation candidates | T5 |
 
-Raw generated translations remain disabled until reviewed or independently corroborated.
+T5 translation candidates remain disabled until reviewed or independently corroborated.
 
 ## Step 0C — Flickr query compilation
 
@@ -553,9 +551,9 @@ Priority order:
 | 50 | species scientific name — text |
 | 60 | species common name — text |
 | 70 | genus/family — text |
-| 80 | broad butterfly terms — tags |
-| 90 | broad butterfly terms — text |
-| 100+ | experimental translations |
+| 80 | reviewed anchored broad terms — tags |
+| 90 | reviewed anchored broad terms — text |
+| 100+ | disabled experimental translation candidates |
 
 Each definition retains:
 
@@ -602,6 +600,7 @@ data/registry/current/flickr_query_definitions.parquet
 ```
 
 It fetches Flickr metadata only.
+Production polling does not seed generic multilingual searches automatically; work items must be created from registry-derived query definitions. Broad probes such as `butterfly` are explicit dev/review workflows and must remain anchored to accepted taxa before they can enter production discovery.
 
 Outputs include:
 
@@ -691,9 +690,9 @@ normal pages: per_page=500
 bbox/geotagged pages: per_page=250
 ```
 
-## Stable broad-search coverage
+## Explicit broad-probe coverage
 
-Broad terms use deterministic upload-date slices:
+Broad probes are not implicit production seeds. When retained for dev QA or a reviewed broad-query experiment, they use deterministic upload-date slices:
 
 ```text
 start: 2004-02-10

@@ -86,6 +86,40 @@ def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
     }.issubset(source_columns)
 
 
+def test_seed_work_items_requires_explicit_queries(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+
+    assert state.ensure_seed_work_items() == 0
+    assert state.work_item_count() == 0
+
+    query = FlickrQuery(term="Papilio demoleus", language="la", search_field="text", lane="normal_page", page=1, per_page=250)
+
+    assert state.ensure_seed_work_items((query,)) == 1
+    assert state.work_item_count() == 1
+    assert state.ensure_seed_work_items((query,)) == 0
+
+
+def test_poll_once_empty_state_does_not_seed_broad_multilingual_probes(tmp_path) -> None:
+    calls: list[FlickrQuery] = []
+
+    result = poll_once(
+        state_db=tmp_path / "poller.sqlite",
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence" / "poll.parquet",
+        max_api_calls=3500,
+        fetch_metadata=lambda query: calls.append(query) or {"photos": {"total": "0", "photo": []}},
+    )
+
+    assert calls == []
+    assert result.work_items_claimed == 0
+    assert result.api_calls_made == 0
+    assert result.raw_responses_written == 0
+    assert result.evidence_rows_total == 0
+
+    with sqlite3.connect(result.state_db) as conn:
+        assert conn.execute("SELECT count(*) FROM flickr_work_items").fetchone()[0] == 0
+
+
 def test_metadata_poller_migrates_existing_source_records_and_reads_legacy_query_hits(tmp_path) -> None:
     db_path = tmp_path / "poller.sqlite"
     with sqlite3.connect(db_path) as conn:
