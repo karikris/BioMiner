@@ -613,6 +613,73 @@ def test_orchestrator_polls_flickr_with_local_sqlite_and_fake_fetcher(tmp_path, 
     assert row["query_hit_count"] == 1
 
 
+def test_orchestrator_polls_t5_retrieval_queries_through_flickr_api(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("FLICKR_API_KEY", raising=False)
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_t5_query_definitions(registry)
+    real_query_loader = run_orchestrator_module.load_registry_flickr_queries_from_frame
+    seen_queries = []
+
+    def one_day_query_window(frame):  # noqa: ANN001 - test double mirrors the query loader signature used by the orchestrator.
+        return real_query_loader(
+            frame,
+            start_date="2026-01-01",
+            end_date="2026-01-01",
+            slice_days=1,
+        )
+
+    def fake_t5_fetch(query):  # noqa: ANN001 - test double records the exact poller query.
+        seen_queries.append(query)
+        return {
+            "photos": {
+                "page": str(query.page),
+                "pages": "1",
+                "perpage": str(query.per_page),
+                "total": "1",
+                "photo": [
+                    {
+                        "id": "t5-photo-1",
+                        "title": "retrieved by generated translation",
+                        "url_l": "https://live.staticflickr.com/t5-photo-1.jpg",
+                    }
+                ],
+            }
+        }
+
+    monkeypatch.setattr(run_orchestrator_module, "load_registry_flickr_queries_from_frame", one_day_query_window)
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.POLL_FLICKR,),
+        limits={"records": 2, "api_calls": 5, "workers": 1},
+    )
+
+    result = ProductionRunOrchestrator(request, metadata_fetcher=fake_t5_fetch).run()
+    queries = sorted(seen_queries, key=lambda query: query.search_field)
+
+    assert result.manifest.status == "complete"
+    assert [(query.search_field, query.term) for query in queries] == [
+        ("tags", "Translated Lime"),
+        ("text", "Translated Lime"),
+    ]
+    assert [query.trust_tier for query in queries] == ["T5", "T5"]
+    assert [query.term_type for query in queries] == ["generated_translation", "generated_translation"]
+    assert [query.query_definition_id for query in queries] == ["q-t5-tags", "q-t5-text"]
+    frame = pl.read_parquet(result.paths.source_records_path)
+    assert frame.height == 1
+    row = frame.to_dicts()[0]
+    assert row["flickr_photo_id"] == "t5-photo-1"
+    assert row["tag_search_terms"] == ["Translated Lime"]
+    assert row["text_search_terms"] == ["Translated Lime"]
+    assert row["all_query_labels"] == ["tags:Translated Lime", "text:Translated Lime"]
+    assert row["query_definition_ids"] == ["q-t5-tags", "q-t5-text"]
+    assert row["query_hit_count"] == 2
+
+
 def test_orchestrator_poll_stage_requires_fetcher_or_api_key(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("FLICKR_API_KEY", raising=False)
     registry = _write_rank_registry(tmp_path / "registry")

@@ -20,7 +20,6 @@ Recorded for branch `cleanup/production-workflow-postgres-s3` during Phase 0.
 
 ## Notes
 
-- Repository has moved to sibling layout under `/Users/merm0001/Repos`: `BioMiner`, `YOLO26`, `BioCLIP25`, and `secrets`.
-- Secrets loader currently resolves `/Users/merm0001/Repos/secrets/secrets.env` through sibling-base fallback.
+- Runtime paths use the sibling layout rooted at `BIOMINER_BASE_PATH` or the parent of `./BioMiner`: `./BioMiner`, `./YOLO26`, `./BioCLIP25`, and optional `./secrets`.
+- Secrets loader resolves `/Applications/secrets/secrets.env`, sibling `./secrets/secrets.env`, or WSL `/mnt/c/Applications/secrets/secrets.env` without printing secret values.
 - Real secret values were not printed; only presence/length checks were used in earlier verification.
-

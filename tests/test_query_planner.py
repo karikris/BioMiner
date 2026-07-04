@@ -136,6 +136,67 @@ def test_registry_query_definitions_load_as_page_one_upload_slice_work(tmp_path)
     assert queries[0].max_upload_date == "2026-01-05"
 
 
+def test_t5_query_definitions_become_flickr_api_search_params(tmp_path) -> None:
+    registry_queries = tmp_path / "flickr_query_definitions.parquet"
+    frame = pl.DataFrame(
+        [
+            {
+                "query_definition_id": "q-t5-tags",
+                "registry_version": "registry-v1",
+                "accepted_taxon_key": "gbif:100",
+                "accepted_scientific_name": "Papilio demoleus",
+                "family_key": "gbif:10",
+                "genus_key": "gbif:90",
+                "species_key": "gbif:100",
+                "source_term": "Translated Lime",
+                "language": "en",
+                "search_field": "tags",
+                "search_priority": 5,
+                "bbox": "",
+                "region": "",
+                "name_class": "generated_translation",
+                "confidence": "low",
+                "trust_tier": "T5",
+                "enabled": True,
+            },
+            {
+                "query_definition_id": "q-t5-text",
+                "registry_version": "registry-v1",
+                "accepted_taxon_key": "gbif:100",
+                "accepted_scientific_name": "Papilio demoleus",
+                "family_key": "gbif:10",
+                "genus_key": "gbif:90",
+                "species_key": "gbif:100",
+                "source_term": "Translated Lime",
+                "language": "en",
+                "search_field": "text",
+                "search_priority": 5,
+                "bbox": "",
+                "region": "",
+                "name_class": "generated_translation",
+                "confidence": "low",
+                "trust_tier": "T5",
+                "enabled": True,
+            },
+        ]
+    )
+    frame.write_parquet(registry_queries)
+
+    queries = load_registry_flickr_queries(
+        registry_queries,
+        start_date="2026-01-01",
+        end_date="2026-01-01",
+    )
+    by_field = {query.search_field: query for query in queries}
+
+    assert set(by_field) == {"tags", "text"}
+    assert by_field["tags"].trust_tier == "T5"
+    assert by_field["tags"].term_type == "generated_translation"
+    assert by_field["tags"].query_definition_id == "q-t5-tags"
+    assert flickr_search_params(by_field["tags"])["tags"] == "Translated Lime"
+    assert flickr_search_params(by_field["text"])["text"] == "Translated Lime"
+
+
 def test_geo_pages_use_250_and_non_geo_pages_use_500_records() -> None:
     geo_probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe")
     non_geo_probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)

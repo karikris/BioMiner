@@ -4,7 +4,7 @@ Recorded: 2026-07-05
 
 Current branch: `main`
 
-Latest audited base before this report edit: `874fdd0`
+Latest audited base before this report edit: `41f53a6`
 
 Note: the original refactor plan named branch `cleanup/production-workflow-postgres-s3`; a later operator instruction changed the working branch to `main`, and the cleanup commits are being pushed directly to `main`.
 
@@ -243,5 +243,5 @@ uv run --extra test pytest -q
 Latest full-suite result:
 
 ```text
-519 passed
+522 passed
 ```

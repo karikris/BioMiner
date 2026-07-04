@@ -143,6 +143,15 @@ def test_final_command_surface_audit_includes_migration_notes() -> None:
         assert expected in text
 
 
+def test_mcp_environment_report_uses_generic_runtime_layout() -> None:
+    text = Path("reports/refactor_mcp_environment.md").read_text(encoding="utf-8")
+
+    assert "/Users/merm0001/Repos" not in text
+    assert "BIOMINER_BASE_PATH" in text
+    assert "/Applications/secrets/secrets.env" in text
+    assert "/mnt/c/Applications/secrets/secrets.env" in text
+
+
 def test_yoloe26_docs_do_not_recommend_training_dataset_storage() -> None:
     text = Path("docs/yoloe26_prototype.md").read_text(encoding="utf-8")
 
