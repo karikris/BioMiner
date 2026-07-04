@@ -7,12 +7,12 @@ BioMiner's registry separates taxonomic identity, name evidence, and query eligi
 ```text
 T1  accepted taxonomic spine and reviewed first-party registry assertions
 T2  source-backed vernaculars or synonyms from trusted biodiversity sources
-T3  source-backed article labels, aliases, or names requiring weaker interpretation
+T3  Wikidata labels and aliases with confident external taxon links
 T4  unreviewed community/source enrichment that is useful for discovery but needs caution
 T5  generated or machine-translated candidates
 ```
 
-T1 and reviewed T2 assertions are the preferred basis for evidence matching. T3 and T4 can support discovery when their source and review state make that safe for the current registry policy. T5 records are disabled as accepted name evidence by default, but may still be used as retrieval-only Flickr search expansion terms with explicit T5 provenance.
+T1 and reviewed T2 assertions are the preferred basis for evidence matching. T3 assertions can support discovery only when the external taxon linkage is confident or the assertion has been explicitly accepted by review. T4 can support discovery when its source and review state make that safe for the current registry policy. T5 records are disabled as accepted name evidence by default, but may still be used as retrieval-only Flickr search expansion terms with explicit T5 provenance.
 
 ## Enablement
 

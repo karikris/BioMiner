@@ -80,6 +80,9 @@ def test_production_workflow_docs_exist_and_match_current_surface() -> None:
     registry = Path("docs/registry_trust_tiers.md").read_text(encoding="utf-8")
     for expected in ("T1", "T5", "disabled", "query_definition_id"):
         assert expected in registry
+    assert "T3  Wikidata labels and aliases with confident external taxon links" in registry
+    assert "external taxon linkage is confident" in registry
+    assert "weaker interpretation" not in registry
 
     vision = Path("docs/vision_workflow.md").read_text(encoding="utf-8")
     for expected in (
