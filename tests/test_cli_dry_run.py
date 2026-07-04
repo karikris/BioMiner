@@ -1733,6 +1733,7 @@ def test_production_run_compile_stage_uses_configured_cloud_storage(tmp_path, ca
     assert payload["manifest"]["stages"][0]["outputs"]["query_definitions"] == expected_uri
     assert list(fake_storage.parquet_payloads) == [expected_uri]
     assert fake_storage.parquet_payloads[expected_uri].height == 1
+    assert fake_storage.json_payloads["s3://biominer/runs/run_id=species_papilio_demoleus/run_manifest.json"]["status"] == "complete"
 
 
 def test_production_run_join_stage_uses_configured_cloud_storage(tmp_path, capsys, monkeypatch) -> None:

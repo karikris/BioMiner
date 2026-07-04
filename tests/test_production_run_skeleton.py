@@ -275,6 +275,7 @@ def test_orchestrator_writes_compiled_queries_to_cloud_storage(tmp_path) -> None
     assert plan.manifest.stages[0].outputs["query_definitions"] == expected_uri
     assert list(storage.parquet_payloads) == [expected_uri]
     assert storage.parquet_payloads[expected_uri].select("query_definition_id").to_series().to_list() == ["q-tags", "q-text"]
+    assert storage.json_payloads[plan.artifact_uris.manifest_uri]["status"] == "complete"
 
 
 def test_orchestrator_cloud_compile_requires_storage_backend(tmp_path) -> None:
@@ -499,6 +500,7 @@ def test_orchestrator_joins_evidence_from_cloud_storage() -> None:
         "object_evidence": plan.artifact_uris.object_evidence_uri,
         "photo_summary": plan.artifact_uris.photo_summary_uri,
     }
+    assert storage.json_payloads[plan.artifact_uris.manifest_uri]["evidence_counts"]["object_evidence_rows"] == 1
     joined = storage.parquet_payloads[plan.artifact_uris.object_evidence_uri]
     summary = storage.parquet_payloads[plan.artifact_uris.photo_summary_uri]
     assert joined.select("flickr_photo_id").to_series().to_list() == ["photo-1"]
@@ -631,6 +633,7 @@ def test_orchestrator_summarize_reads_and_writes_cloud_storage() -> None:
         "metrics": plan.artifact_uris.metrics_uri,
         "review_queue": plan.artifact_uris.review_queue_uri,
     }
+    assert storage.json_payloads[plan.artifact_uris.manifest_uri]["evidence_counts"]["review_queue_rows"] == 1
     assert storage.json_payloads[plan.artifact_uris.metrics_uri]["review_queue_bin_counts"] == {"in_review": 1}
     queue = storage.parquet_payloads[plan.artifact_uris.review_queue_uri]
     assert queue.select("flickr_photo_id").to_series().to_list() == ["review-1"]

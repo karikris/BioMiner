@@ -572,8 +572,10 @@ class ProductionRunOrchestrator:
             },
         )
 
-    def _write_manifest_if_local(self, plan: ProductionRunPlan) -> Path | None:
+    def _write_manifest_if_local(self, plan: ProductionRunPlan) -> Path | str | None:
         if is_cloud_uri(self.request.output_root):
+            if self.storage is not None:
+                return self.storage.write_json(plan.artifact_uris.manifest_uri, plan.manifest.to_dict())
             return None
         plan.paths.ensure_directories()
         return plan.manifest.write_json(plan.paths.manifest_path)
