@@ -19,7 +19,7 @@ Step 0: taxonomic registry
   GBIF accepted spine
   + synonyms and vernacular names
   + CoL/iNaturalist/ITIS/TMD/Wikidata evidence
-  + disabled generated translation candidates
+  + disabled generated translation candidates with retrieval-only Flickr expansion
   -> versioned registry Parquet
   -> atomic Flickr tags/text query definitions
 
@@ -141,7 +141,7 @@ uv run biominer
 5. **Flickr metadata is retained even when an image is never downloaded.**
 6. **Downloaded Flickr images are temporary and deleted after classification.**
 7. **BioCLIP is screening evidence, not taxonomic authority.**
-8. **Generated translations are disabled until reviewed or independently corroborated.**
+8. **Generated translations are disabled as accepted name evidence until reviewed or independently corroborated, but T5 candidates can still be used as retrieval-only Flickr search expansion.**
 9. **Fatal registry QA blocks promotion to `data/registry/current`.**
 10. **Long-running API work must be resumable, bounded, and observable.**
 
@@ -540,7 +540,7 @@ Supplementary sources:
 | ITIS | common names and source taxon links |
 | TMD | German common-name evidence where source mappings are unambiguous |
 | Wikidata | labels and aliases only with confident external taxon links |
-| Translation providers | disabled candidate translations only |
+| Translation providers | disabled candidate translations plus retrieval-only Flickr expansion |
 
 iNaturalist, ITIS, TMD, and Wikidata names must first be linked to an accepted GBIF taxon and must not replace GBIF accepted identity.
 
@@ -557,11 +557,11 @@ Default trust policy:
 | iNaturalist or other community names | T4 unless reviewed |
 | Dictionary or generated translation candidates | T5 |
 
-T5 translation candidates remain disabled until reviewed or independently corroborated.
+T5 translation candidates remain disabled as accepted name evidence until reviewed or independently corroborated. BioMiner still emits them as retrieval-only Flickr query definitions with `trust_tier = T5` so discovery can use broad translations without promoting them to accepted vernacular evidence.
 
 ## Step 0C — Flickr query compilation
 
-Each enabled registry name is compiled into separate atomic Flickr definitions.
+Each enabled registry name is compiled into separate atomic Flickr definitions. Disabled T5 translation candidates are also compiled into retrieval-only Flickr definitions so they can be sent to the Flickr API without becoming accepted name evidence.
 
 Priority order:
 
@@ -574,7 +574,7 @@ Priority order:
 | 50 | species scientific name — text |
 | 60 | species common name — text |
 | 70 | genus/family — text |
-| 80+ | disabled experimental translation candidates retained for review, not production search |
+| 80+ | disabled experimental translation candidates retained for review and used only as T5 retrieval expansion |
 
 Each definition retains:
 

@@ -4,7 +4,7 @@ Recorded: 2026-07-05
 
 Current branch: `main`
 
-Latest audited base before this report edit: `ab0d354`
+Latest audited base before this report edit: `15ec7dd`
 
 Note: the original refactor plan named branch `cleanup/production-workflow-postgres-s3`; a later operator instruction changed the working branch to `main`, and the cleanup commits are being pushed directly to `main`.
 
@@ -173,6 +173,10 @@ Confirmed current behavior:
 - `biominer registry build` defaults to enrichment sources:
   `col`, `inaturalist`, `itis`, `tmd_de`, and `wikidata`.
 - Registry-derived Flickr query definitions are the production discovery input.
+- Disabled T5 translation candidates are not promoted into `names.parquet`, but
+  they now produce retrieval-only Flickr query definitions with `trust_tier=T5`
+  so generated/dictionary translations can be sent to the Flickr API without
+  becoming accepted vernacular evidence.
 - The implicit broad seed fallback is removed; `MetadataPollState` now exposes only explicit `enqueue_initial_work_items(queries)` for registry-derived query definitions.
 - Built-in multilingual seed terms and the broad discovery seed planner were removed from `flickr_fetch.query_planner`.
 - Metadata text matching is a flag/review signal, not a public hard-drop path.
