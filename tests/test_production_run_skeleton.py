@@ -764,6 +764,60 @@ def test_orchestrator_cloud_detect_requires_storage_backend() -> None:
     assert result.manifest.stages[0].message == "storage_backend_required_for_detect_objects"
 
 
+def test_orchestrator_scores_bioclip_from_cloud_storage() -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    storage = _FakeRunStorage()
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root="s3://biominer/runs",
+        stages=(RunStage.SCORE_BIOCLIP,),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
+    canonical, detections, _ = _join_stage_input_frames()
+    storage.parquet_payloads[plan.artifact_uris.source_records_uri] = canonical
+    storage.parquet_payloads[plan.artifact_uris.object_detections_uri] = detections
+    scorer = _ConstantObjectScorer(
+        {
+            "Danaus plexippus": 0.82,
+            "a photo of Danaus plexippus": 0.81,
+            "Monarch": 0.50,
+            "Nymphalidae": 0.93,
+            "Danaus": 0.90,
+        }
+    )
+
+    result = ProductionRunOrchestrator(
+        request,
+        taxon_scope=scope,
+        storage=storage,
+        object_scorer=scorer,
+        allow_single_target_fixture=True,
+    ).run()
+
+    assert result.manifest.status == "complete"
+    assert result.manifest.bioclip_counts["objects_scored"] == 1
+    assert result.manifest.stages[0].outputs["object_scores"] == plan.artifact_uris.object_scores_uri
+    scores = storage.parquet_payloads[plan.artifact_uris.object_scores_uri]
+    assert scores.select("species_top1_scientific_name").to_series().to_list() == ["Danaus plexippus"]
+    assert storage.json_payloads[plan.artifact_uris.manifest_uri]["bioclip_counts"]["objects_scored"] == 1
+
+
+def test_orchestrator_cloud_score_requires_storage_backend() -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root="s3://biominer/runs",
+        stages=(RunStage.SCORE_BIOCLIP,),
+    )
+
+    result = ProductionRunOrchestrator(request, taxon_scope=scope, object_scorer=_ConstantObjectScorer({})).run()
+
+    assert result.manifest.status == "failed"
+    assert result.manifest.stages[0].message == "storage_backend_required_for_score_bioclip"
+
+
 def test_orchestrator_detect_stage_fails_without_detector_runtime(tmp_path) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(

@@ -442,7 +442,42 @@ class ProductionRunOrchestrator:
 
     def _run_score_bioclip_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if is_cloud_uri(self.request.output_root):
-            return StageExecutionResult(status=StageStatus.FAILED, message="score_bioclip_requires_local_artifacts_until_storage_io_is_wired")
+            if self.storage is None:
+                return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_score_bioclip")
+            missing = _missing_uris(
+                self.storage,
+                plan.artifact_uris.source_records_uri,
+                plan.artifact_uris.object_detections_uri,
+            )
+            if missing:
+                return StageExecutionResult(status=StageStatus.FAILED, message="missing_score_inputs: " + ", ".join(missing))
+            if self.object_scorer is None:
+                return StageExecutionResult(status=StageStatus.FAILED, message="bioclip_runtime_required_for_score_bioclip")
+            from biominer.bioclip.candidate_sets import build_candidate_set_for_taxon_scope
+            from biominer.bioclip.object_runner import screen_object_detections
+
+            canonical = self.storage.read_parquet(plan.artifact_uris.source_records_uri)
+            detections = self.storage.read_parquet(plan.artifact_uris.object_detections_uri)
+            target_context = plan.manifest.taxon_scope.species_contexts[0]
+            candidate_set = build_candidate_set_for_taxon_scope(
+                plan.manifest.taxon_scope,
+                target_context=target_context,
+                species_candidate_path=self.species_candidate_path,
+                records=canonical.to_dicts(),
+                allow_single_target_fixture=self.allow_single_target_fixture,
+            )
+            with tempfile.TemporaryDirectory(prefix="biominer-score-") as tmp_dir:
+                result = screen_object_detections(
+                    canonical_records=canonical,
+                    detections=detections,
+                    species_context=target_context,
+                    candidate_set=candidate_set,
+                    scorer=self.object_scorer,
+                    output_path=Path(tmp_dir) / "object_bioclip_scores.parquet",
+                    ablation_mode=self.request.bioclip_ablation_mode,  # type: ignore[arg-type]
+                )
+            output_uri = self.storage.write_parquet_shard(plan.artifact_uris.object_scores_uri, result.frame)
+            return StageExecutionResult(metrics=_object_score_metrics(result), outputs={"object_scores": output_uri})
         missing = _missing_paths(plan.paths.source_records_path, plan.paths.object_detections_path)
         if missing:
             return StageExecutionResult(status=StageStatus.FAILED, message="missing_score_inputs: " + ", ".join(missing))
@@ -473,17 +508,7 @@ class ProductionRunOrchestrator:
             ablation_mode=self.request.bioclip_ablation_mode,  # type: ignore[arg-type]
         )
         return StageExecutionResult(
-            metrics={
-                "records_seen": result.records_seen,
-                "detections_seen": result.detections_seen,
-                "crops_scored": result.crops_scored,
-                "objects_scored": result.crops_scored,
-                "score_batches_written": result.score_batches_written,
-                "segmentation_unavailable_count": result.segmentation_unavailable_count,
-                "segmentation_status": result.segmentation_status,
-                "visual_mode": result.visual_mode,
-                "visual_mode_status": result.visual_mode_status,
-            },
+            metrics=_object_score_metrics(result),
             outputs={"object_scores": str(result.output_path or plan.paths.object_scores_path)},
         )
 
@@ -637,6 +662,20 @@ def _missing_paths(*paths: Path) -> list[str]:
 
 def _missing_uris(storage: CloudStorage, *uris: str) -> list[str]:
     return [uri for uri in uris if not storage.exists(uri)]
+
+
+def _object_score_metrics(result: Any) -> dict[str, Any]:
+    return {
+        "records_seen": result.records_seen,
+        "detections_seen": result.detections_seen,
+        "crops_scored": result.crops_scored,
+        "objects_scored": result.crops_scored,
+        "score_batches_written": result.score_batches_written,
+        "segmentation_unavailable_count": result.segmentation_unavailable_count,
+        "segmentation_status": result.segmentation_status,
+        "visual_mode": result.visual_mode,
+        "visual_mode_status": result.visual_mode_status,
+    }
 
 
 def _merge_stage_counts(manifest: RunManifest, *, stage: RunStage, result: StageExecutionResult) -> RunManifest:
