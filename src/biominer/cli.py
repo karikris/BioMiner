@@ -41,8 +41,8 @@ from biominer.flickr_comments.comment_review import (
     review_comments_once,
 )
 from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState, fetch_flickr_comments
+from biominer.evidence.buckets import classify_evidence_frame
 from biominer.filter.metadata_flags import flag_metadata_parquet
-from biominer.filter.rules import classify_evidence_frame
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry

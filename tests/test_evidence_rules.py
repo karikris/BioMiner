@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from biominer.filter.rules import classify_evidence_frame, classify_evidence_row
+from biominer.evidence.buckets import classify_evidence_frame, classify_evidence_row
 
 
 def _row(**overrides: object) -> dict[str, object]:
@@ -107,6 +107,37 @@ def test_hard_exclusion_flags_force_bronze_even_when_otherwise_gold() -> None:
     assert result["publication_state"] == "bronze"
     assert result["publication_state_reason"] == "negative_material_artwork"
     assert result["review_reason"] == []
+
+
+def test_metadata_flags_do_not_demote_strong_visual_target_evidence() -> None:
+    result = classify_evidence_row(
+        _row(
+            artwork_hint=True,
+            hard_negative_text_hint=True,
+            matched_keyword_groups=["artwork"],
+            matched_keywords=["illustration"],
+        )
+    )
+
+    assert result["publication_state"] == "gold"
+    assert result["publication_state_reason"] == "target_positive_score_gte_070"
+    assert result["review_reason"] == []
+
+
+def test_metadata_flags_are_review_context_when_visual_scoring_is_missing() -> None:
+    result = classify_evidence_row(
+        _row(
+            bioclip_top1_score=None,
+            artwork_hint=True,
+            hard_negative_text_hint=True,
+            matched_keyword_groups=["artwork"],
+            matched_keywords=["illustration"],
+        )
+    )
+
+    assert result["publication_state"] == "in_review"
+    assert "artwork" in result["review_reason"]
+    assert "missing_bioclip" in result["review_reason"]
 
 
 def test_in_review_rows_get_precedent_review_reasons() -> None:
