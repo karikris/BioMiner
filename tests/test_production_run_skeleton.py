@@ -197,9 +197,11 @@ def test_orchestrator_resolves_scope_and_runs_stage_subset_with_fake_handlers(tm
     assert [(stage.stage, stage.status, stage.message) for stage in plan.manifest.stages] == [
         (RunStage.RESOLVE_TAXON_SCOPE, StageStatus.COMPLETE, None),
         (RunStage.COMPILE_QUERIES, StageStatus.COMPLETE, None),
-        (RunStage.BUILD_REGISTRY, StageStatus.SKIPPED, "stage_not_implemented"),
+        (RunStage.BUILD_REGISTRY, StageStatus.COMPLETE, None),
     ]
     assert plan.manifest.stages[1].metrics == {"compiled_definitions": 4}
+    assert plan.manifest.stages[2].metrics["registry_reused"] is True
+    assert plan.manifest.stages[2].metrics["taxa_rows"] == 10
     assert plan.paths.manifest_path.exists()
 
 
@@ -248,6 +250,54 @@ def test_orchestrator_compiles_registry_queries_and_enqueues_flickr_work(tmp_pat
     assert len(work_items) == 2
     assert work_items[0]["payload"]["run_id"] == "species_papilio_demoleus"
     assert work_items[0]["payload"]["query"]["accepted_taxon_key"] == "gbif:100"
+
+
+def test_orchestrator_build_registry_stage_validates_local_registry(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_query_definitions(registry)
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.BUILD_REGISTRY,),
+    )
+
+    result = ProductionRunOrchestrator(request).run()
+
+    assert result.manifest.status == "complete"
+    stage = result.manifest.stages[0]
+    assert stage.status is StageStatus.COMPLETE
+    assert stage.metrics["registry_reused"] is True
+    assert stage.metrics["registry_version"] == "rank-registry-v1"
+    assert stage.metrics["query_definition_rows"] == 2
+    assert stage.outputs["query_definitions"].endswith("flickr_query_definitions.parquet")
+    assert result.manifest.metrics["taxa_rows"] == 10
+
+
+def test_orchestrator_build_registry_stage_fails_when_registry_artifacts_are_missing(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.BUILD_REGISTRY,),
+    )
+
+    result = ProductionRunOrchestrator(request, taxon_scope=scope).run()
+
+    assert result.manifest.status == "failed"
+    assert result.manifest.stages[0].status is StageStatus.FAILED
+    assert result.manifest.stages[0].message is not None
+    assert "missing_registry_inputs:" in result.manifest.stages[0].message
+    assert "taxa.parquet" in result.manifest.stages[0].message
 
 
 def test_orchestrator_enqueue_is_idempotent_for_same_run_and_registry_queries(tmp_path) -> None:

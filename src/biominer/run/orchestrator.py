@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
+import json
 import os
 from pathlib import Path
 import shutil
@@ -225,6 +226,8 @@ class ProductionRunOrchestrator:
             )
         if self.request.dry_run:
             return StageExecutionResult(status=StageStatus.SKIPPED, message="dry_run")
+        if stage == RunStage.BUILD_REGISTRY:
+            return self._run_build_registry_stage(plan)
         if stage == RunStage.COMPILE_QUERIES:
             return self._run_compile_queries_stage(plan)
         if stage == RunStage.ENQUEUE_FLICKR_WORK:
@@ -240,6 +243,35 @@ class ProductionRunOrchestrator:
         if stage == RunStage.SUMMARIZE:
             return self._run_summarize_stage(plan)
         return StageExecutionResult(status=StageStatus.SKIPPED, message="stage_not_implemented")
+
+    def _run_build_registry_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
+        registry = self._registry_dir_path(stage_name="build_registry")
+        required = (
+            registry / "taxa.parquet",
+            registry / "names.parquet",
+            registry / "manifest.json",
+        )
+        missing = _missing_paths(*required)
+        if missing:
+            return StageExecutionResult(status=StageStatus.FAILED, message="missing_registry_inputs: " + ", ".join(missing))
+        query_definitions = registry / "flickr_query_definitions.parquet"
+        metrics = {
+            "registry_reused": True,
+            "taxa_rows": _parquet_row_count(registry / "taxa.parquet"),
+            "name_rows": _parquet_row_count(registry / "names.parquet"),
+            "query_definition_rows": _parquet_row_count(query_definitions) if query_definitions.exists() else 0,
+            "expanded_species_count": plan.manifest.taxon_scope.species_count,
+            "registry_version": _registry_manifest_version(registry),
+        }
+        outputs = {
+            "registry_dir": str(registry),
+            "manifest": str(registry / "manifest.json"),
+            "taxa": str(registry / "taxa.parquet"),
+            "names": str(registry / "names.parquet"),
+        }
+        if query_definitions.exists():
+            outputs["query_definitions"] = str(query_definitions)
+        return StageExecutionResult(metrics=metrics, outputs=outputs)
 
     def _run_compile_queries_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         source_path = self._registry_query_definitions_path()
@@ -416,15 +448,19 @@ class ProductionRunOrchestrator:
         )
 
     def _registry_query_definitions_path(self) -> Path:
-        if not self.request.registry_dir:
-            raise ValueError("registry_dir is required to compile Flickr queries")
-        registry_dir = str(self.request.registry_dir)
-        if is_cloud_uri(registry_dir):
-            raise ValueError("S3 registry query definition reads are not implemented in the local orchestrator yet")
-        path = Path(registry_dir) / "flickr_query_definitions.parquet"
+        registry = self._registry_dir_path(stage_name="compile_queries")
+        path = registry / "flickr_query_definitions.parquet"
         if not path.exists():
             raise FileNotFoundError(path)
         return path
+
+    def _registry_dir_path(self, *, stage_name: str) -> Path:
+        if not self.request.registry_dir:
+            raise ValueError(f"registry_dir is required for {stage_name}")
+        registry_dir = str(self.request.registry_dir)
+        if is_cloud_uri(registry_dir):
+            raise ValueError(f"S3 registry reads are not implemented for {stage_name} in the local orchestrator yet")
+        return Path(registry_dir)
 
     def _load_flickr_work_queries(self) -> tuple[FlickrQuery, ...]:
         queries = load_registry_flickr_queries(self._registry_query_definitions_path())
@@ -495,6 +531,13 @@ def _parquet_row_count(path: Path) -> int:
     return pl.scan_parquet(path).select(pl.len()).collect().item()
 
 
+def _registry_manifest_version(registry: Path) -> str:
+    try:
+        return str(json.loads((registry / "manifest.json").read_text(encoding="utf-8")).get("registry_version") or "")
+    except (FileNotFoundError, json.JSONDecodeError):
+        return ""
+
+
 def _missing_paths(*paths: Path) -> list[str]:
     return [str(path) for path in paths if not path.exists()]
 
@@ -517,6 +560,8 @@ def _merge_stage_counts(manifest: RunManifest, *, stage: RunStage, result: Stage
                 "enqueued_work_items": int(result.metrics.get("enqueued_work_items", 0)),
             },
         )
+    if stage == RunStage.BUILD_REGISTRY and result.status == StageStatus.COMPLETE:
+        return replace(manifest, metrics={**manifest.metrics, **result.metrics})
     if stage == RunStage.POLL_FLICKR and result.status == StageStatus.COMPLETE:
         return replace(
             manifest,
