@@ -4,7 +4,7 @@ Recorded: 2026-07-05
 
 Current branch: `main`
 
-Current HEAD before this audit report refresh: `9fd2b9e`
+Current HEAD at this audit report refresh: `67fb888`
 
 Note: the original refactor plan named branch `cleanup/production-workflow-postgres-s3`; a later operator instruction changed the working branch to `main`, and the cleanup commits are being pushed directly to `main`.
 
@@ -177,8 +177,14 @@ Confirmed current behavior:
 - Object detection emits BioMiner coarse labels only.
 - YOLOE-26 and YOLO26 adapters are object proposal backends, not species classifiers.
 - BioCLIP object scoring remains the species scorer.
+- Production `score_bioclip` now requests the full object visual mode set by default:
+  `whole_image`, `detector_crop`, and `detector_crop_segmentation`.
+- When segmentation masks are unavailable, the production scorer records
+  `detector_crop_segmentation` as unavailable and continues with whole-image
+  plus detector-crop scores.
 - Production run polling uses the validated `RuntimeConfig.worker_id` / `BIOMINER_WORKER_ID` instead of falling back to an ambient local worker ID.
 - Vision runtime checks, prefetch, smoke/prototype, crop preview, and evaluation utilities are dev-only.
+- Exact tracked-source searches for `anti_keywords`, `anti-keyword`, `anti keyword`, and `config/anti` return no matches.
 
 Known remaining debug surfaces:
 
@@ -201,4 +207,12 @@ uv run --extra test biominer dev --help
 uv run --extra test biominer dev registry --help
 uv run --extra test biominer dev comments --help
 uv run --extra test biominer dev flickr --help
+uv run --extra test pytest -q
+rg -n "anti_keywords|anti-keywords|anti keyword|anti-keyword|config/anti" README.md docs src tests config examples .gitignore pyproject.toml
+```
+
+Latest full-suite result:
+
+```text
+510 passed
 ```

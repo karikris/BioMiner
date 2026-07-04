@@ -4,7 +4,7 @@ Recorded: 2026-07-05
 
 Branch used for current cleanup commits: `main`
 
-Current HEAD before this audit report refresh: `9fd2b9e`
+Current HEAD at this audit report refresh: `67fb888`
 
 ## Removed Files
 
@@ -84,6 +84,7 @@ Legacy metadata hard-drop path:
 filter/rules.py
 apply-rules
 metadata text-list path helpers
+anti_keywords source/module path
 ```
 
 Replacement:
@@ -92,6 +93,16 @@ Replacement:
 filter/metadata_flags.py
 evidence/buckets.py
 evidence/join.py
+```
+
+Current exact tracked-source checks return no matches for:
+
+```text
+anti_keywords
+anti-keywords
+anti keyword
+anti-keyword
+config/anti
 ```
 
 Legacy detector path:
@@ -130,6 +141,9 @@ biominer dev registry seed-flickr-queries --query-definitions ...
 
 Production polling no longer creates broad Flickr work items from an empty state.
 Production run polling now uses the validated runtime worker ID from config rather than an ambient fallback.
+Production BioCLIP scoring now emits combined object score outputs for available visual modes and records
+`detector_crop_segmentation` as unavailable when masks are absent, instead of treating the third visual mode
+as an enhancement or silently dropping it from manifest metrics.
 
 ## Tests Removed Or Rewritten
 
