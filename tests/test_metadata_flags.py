@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 
 import polars as pl
 
 from biominer.filter.metadata_flags import flag_metadata_parquet, flag_metadata_records, load_metadata_keyword_groups
+
+
+def test_legacy_anti_keyword_module_path_is_removed() -> None:
+    assert importlib.util.find_spec("biominer.filter.anti_keywords") is None
 
 
 def _groups() -> dict[str, tuple[str, ...]]:
