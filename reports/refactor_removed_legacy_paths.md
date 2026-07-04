@@ -4,7 +4,7 @@ Recorded: 2026-07-05
 
 Branch used for current cleanup commits: `main`
 
-Latest audited base before this report edit: `593fc84`
+Latest audited base before this report edit: `548934a`
 
 ## Removed Files
 
@@ -130,6 +130,8 @@ biominer dev registry seed-flickr-queries --query-definitions ...
 
 Production polling no longer creates broad Flickr work items from an empty state.
 Production run polling now uses the validated runtime worker ID from config rather than an ambient fallback.
+Production Flickr work items preserve the compiled query `trust_tier`, including retrieval-only
+T5 generated-translation terms, so query provenance remains auditable at API polling time.
 Production BioCLIP scoring now emits combined object score outputs for available visual modes and records
 `detector_crop_segmentation` as unavailable when masks are absent, instead of treating the third visual mode
 as an enhancement or silently dropping it from manifest metrics.
@@ -164,7 +166,7 @@ Current full-suite result after the last code cleanup:
 
 ```text
 uv run --extra test pytest -q
-510 passed
+518 passed
 ```
 
 The latest command-surface and workflow cleanup was additionally checked with:
@@ -194,7 +196,7 @@ These are not public production commands. The public production entry point is `
 ## Known Follow-Up Tasks
 
 - Consider moving `SpeciesContext` from `biominer.species.context` into `biominer.run` or a neutral common schema module if the package name remains confusing after the public `species` CLI removal.
-- Continue replacing skipped orchestrator placeholders with real cloud-backed stages where production S3/Postgres IO is not yet fully wired.
+- Continue exercising the cloud-backed production stages with fake S3/Postgres fixtures as new stage behavior is added.
 - Keep `bioclip/register_runner.py` non-public unless a later benchmark/debug command needs it explicitly.
 - Review `README.md` examples that still use `staging/species_runs/...` debug paths and decide whether to move them into docs/examples only.
 
