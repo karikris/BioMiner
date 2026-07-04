@@ -29,12 +29,12 @@ Commands below are run from `./BioMiner`. Set `BIOMINER_BASE_PATH=/path/to/base`
 ## Runtime Checks
 
 ```bash
-uv run biominer vision yoloe26-runtime-check \
+uv run biominer dev vision yoloe26-runtime-check \
   --runtime-python "../YOLO26/venv/bin/python" \
   --checkpoint yoloe-26s-seg.pt \
   --device auto
 
-uv run biominer vision bioclip-runtime-check \
+uv run biominer dev vision bioclip-runtime-check \
   --runtime-python "../BioCLIP25/venv/bin/python" \
   --hf-cache-dir "../BioCLIP25/cache/huggingface" \
   --device auto
@@ -43,12 +43,12 @@ uv run biominer vision bioclip-runtime-check \
 ## Prefetch
 
 ```bash
-uv run biominer vision yoloe26-prefetch \
+uv run biominer dev vision yoloe26-prefetch \
   --runtime-python "../YOLO26/venv/bin/python" \
   --checkpoint yoloe-26s-seg.pt \
   --device auto
 
-uv run biominer vision bioclip-prefetch-model \
+uv run biominer dev vision bioclip-prefetch-model \
   --runtime-python "../BioCLIP25/venv/bin/python" \
   --hf-cache-dir "../BioCLIP25/cache/huggingface" \
   --model-name imageomics/bioclip-2.5-vith14
@@ -85,7 +85,7 @@ flower, leaf, person, hand, drawing, painting, logo, text, sign, museum label ->
 Run a bounded 10-image detector-crop prototype:
 
 ```bash
-uv run biominer vision yoloe26-prototype-run \
+uv run biominer dev vision yoloe26-prototype-run \
   --input staging/species_runs/example/canonical_source_records.parquet \
   --species-context staging/species_runs/example/species_context.json \
   --output-dir reports/yoloe26_prototype/example \
@@ -114,7 +114,7 @@ yoloe26_summary.md
 Use a manual image when available:
 
 ```bash
-uv run biominer vision yoloe26-smoke \
+uv run biominer dev vision yoloe26-smoke \
   --runtime-python "../YOLO26/venv/bin/python" \
   --checkpoint yoloe-26s-seg.pt \
   --device auto \

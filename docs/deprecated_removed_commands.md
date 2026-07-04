@@ -32,6 +32,6 @@ biominer storage doctor
 biominer workstore doctor
 ```
 
-Debug-only registry, Flickr, and comment utilities live under `biominer dev`.
+Debug-only registry, Flickr, comment, runtime-check, prefetch, smoke, crop-preview, evaluation, and prototype utilities live under `biominer dev`.
 
 The removed `report-name-evidence` path depended on ad hoc text-list inputs. Registry name evidence now belongs in the versioned registry outputs, and discovery/query provenance is folded into canonical Flickr source records.

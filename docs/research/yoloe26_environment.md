@@ -29,7 +29,7 @@ Recorded before adding the BioMiner YOLOE-26 prototype code, using GitHub `origi
 - Base: `origin/main`
 - Base commit: `52f5b83 infra: scope cloud doctor work item`
 - Historical audit note: at prototype start, detector helpers lived under `uv run biominer detect --help` and BioCLIP helpers lived under `uv run biominer bioclip --help`.
-- Current cleanup direction: model runtime and detector debug helpers are consolidated under `uv run biominer vision --help`.
+- Current cleanup direction: production object stages live under `uv run biominer vision --help`; model runtime and detector prototype helpers live under `uv run biominer dev vision --help`.
 
 ## External Runtime Layout
 

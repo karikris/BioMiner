@@ -541,6 +541,7 @@ def test_detect_eval_cli_forwards_xie_thresholds(tmp_path, capsys, monkeypatch) 
     parser = build_parser()
     args = parser.parse_args(
         [
+            "dev",
             "vision",
             "eval",
             "--predictions",
@@ -600,7 +601,7 @@ def test_detect_crop_preview_writes_html_artifact_without_image_archive(tmp_path
         ]
     ).write_parquet(detections)
     parser = build_parser()
-    args = parser.parse_args(["vision", "crop-preview", "--detections", str(detections), "--output", str(output)])
+    args = parser.parse_args(["dev", "vision", "crop-preview", "--detections", str(detections), "--output", str(output)])
 
     assert run(args) == 0
 
@@ -816,6 +817,7 @@ def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch
     parser = build_parser()
     args = parser.parse_args(
         [
+            "dev",
             "vision",
             "bioclip-runtime-check",
             "--runtime-python",
@@ -853,6 +855,7 @@ def test_bioclip_prefetch_model_uses_snapshot_download_sidecar(tmp_path, capsys,
     parser = build_parser()
     args = parser.parse_args(
         [
+            "dev",
             "vision",
             "bioclip-prefetch-model",
             "--runtime-python",
@@ -1387,11 +1390,12 @@ def test_detect_boxes_yoloe26_backend_uses_sidecar_runtime(tmp_path, monkeypatch
 def test_yoloe26_runtime_commands_parse_with_applications_defaults() -> None:
     parser = build_parser()
 
-    runtime = parser.parse_args(["vision", "yoloe26-runtime-check", "--device", "mps"])
-    prefetch = parser.parse_args(["vision", "yoloe26-prefetch", "--checkpoint", "yoloe-26s-seg.pt"])
-    smoke = parser.parse_args(["vision", "yoloe26-smoke", "--image", "manual.jpg"])
+    runtime = parser.parse_args(["dev", "vision", "yoloe26-runtime-check", "--device", "mps"])
+    prefetch = parser.parse_args(["dev", "vision", "yoloe26-prefetch", "--checkpoint", "yoloe-26s-seg.pt"])
+    smoke = parser.parse_args(["dev", "vision", "yoloe26-smoke", "--image", "manual.jpg"])
     prototype = parser.parse_args(
         [
+            "dev",
             "vision",
             "yoloe26-prototype-run",
             "--input",
@@ -1406,12 +1410,30 @@ def test_yoloe26_runtime_commands_parse_with_applications_defaults() -> None:
     )
 
     assert runtime.vision_command == "yoloe26-runtime-check"
+    assert runtime.dev_command == "vision"
     assert runtime.runtime_python.endswith("/YOLO26/venv/bin/python")
     assert prefetch.checkpoint == "yoloe-26s-seg.pt"
     assert smoke.image == "manual.jpg"
     assert prototype.vision_runtime_python.endswith("/YOLO26/venv/bin/python")
     assert prototype.bioclip_runtime_python.endswith("/BioCLIP25/venv/bin/python")
     assert prototype.limit == 10
+
+
+def test_public_vision_surface_excludes_debug_runtime_commands() -> None:
+    parser = build_parser()
+
+    for command in (
+        "bioclip-runtime-check",
+        "bioclip-prefetch-model",
+        "yoloe26-runtime-check",
+        "yoloe26-prefetch",
+        "yoloe26-smoke",
+        "yoloe26-prototype-run",
+        "crop-preview",
+        "eval",
+    ):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["vision", command])
 
 
 def test_yoloe26_smoke_resolves_paths_before_sidecar_run(tmp_path, capsys, monkeypatch) -> None:
@@ -1436,6 +1458,7 @@ def test_yoloe26_smoke_resolves_paths_before_sidecar_run(tmp_path, capsys, monke
     parser = build_parser()
     args = parser.parse_args(
         [
+            "dev",
             "vision",
             "yoloe26-smoke",
             "--runtime-python",
