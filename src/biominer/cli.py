@@ -798,6 +798,9 @@ def _run_production_command(args: argparse.Namespace) -> int:
             raise ConfigError("local dev mode requires --storage-backend local --workstore-backend sqlite")
         validate_config(config, require_cloud_credentials=not allow_local, allow_local_backends=allow_local)
         stages = _parse_run_stages(args.stages)
+        storage = None
+        if not args.dry_run and RunStage.COMPILE_QUERIES in stages and args.storage_backend != "local":
+            storage = create_storage_backend(config.storage)
         workstore = None
         if not args.dry_run and RunStage.ENQUEUE_FLICKR_WORK in stages:
             workstore = create_workstore(config.workstore)
@@ -820,7 +823,7 @@ def _run_production_command(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
             limits=limits,
         )
-        plan = ProductionRunOrchestrator(request, workstore=workstore).run()
+        plan = ProductionRunOrchestrator(request, storage=storage, workstore=workstore).run()
     except (ConfigError, FileNotFoundError, ValueError) as exc:
         payload: dict[str, object] = {"error": redact_text(str(exc), config) if config else str(exc)}
         if config is not None:

@@ -18,6 +18,7 @@ from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import RunArtifactUris, RunPaths
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES, RunStage, StageStatus, default_stage_records
 from biominer.run.taxon_scope import InputRank, TaxonScope, resolve_taxon_scope_from_registry
+from biominer.storage.cloud import CloudStorage
 from biominer.storage.paths import safe_path_component
 from biominer.storage.uri import is_cloud_uri
 from biominer.workstore.base import WorkStore
@@ -148,6 +149,7 @@ class ProductionRunOrchestrator:
         request: ProductionRunRequest,
         *,
         taxon_scope: TaxonScope | None = None,
+        storage: CloudStorage | None = None,
         workstore: WorkStore | None = None,
         object_detector: Any | None = None,
         image_loader: Callable[[dict[str, Any]], Any] | None = None,
@@ -160,6 +162,7 @@ class ProductionRunOrchestrator:
     ) -> None:
         self.request = request
         self.taxon_scope = taxon_scope
+        self.storage = storage
         self.workstore = workstore
         self.object_detector = object_detector
         self.image_loader = image_loader
@@ -286,6 +289,13 @@ class ProductionRunOrchestrator:
             if source_path.resolve() != plan.paths.query_definitions_path.resolve():
                 shutil.copyfile(source_path, plan.paths.query_definitions_path)
             outputs["local_query_definitions"] = str(plan.paths.query_definitions_path)
+        else:
+            if self.storage is None:
+                return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_compile_queries")
+            import polars as pl
+
+            uri = self.storage.write_parquet_shard(plan.artifact_uris.query_definitions_uri, pl.read_parquet(source_path))
+            outputs["query_definitions"] = uri
         return StageExecutionResult(
             metrics={
                 "registry_query_definition_rows": _parquet_row_count(source_path),

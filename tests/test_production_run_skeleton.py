@@ -254,6 +254,46 @@ def test_orchestrator_compiles_registry_queries_and_enqueues_flickr_work(tmp_pat
     assert work_items[0]["payload"]["query"]["accepted_taxon_key"] == "gbif:100"
 
 
+def test_orchestrator_writes_compiled_queries_to_cloud_storage(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_query_definitions(registry)
+    storage = _FakeRunStorage()
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root="s3://biominer/runs",
+        stages=(RunStage.COMPILE_QUERIES,),
+        limits={"records": 1},
+    )
+
+    plan = ProductionRunOrchestrator(request, storage=storage).run()
+
+    expected_uri = "s3://biominer/runs/run_id=species_papilio_demoleus/registry/flickr_query_definitions.parquet"
+    assert plan.manifest.status == "complete"
+    assert plan.manifest.query_counts == {"compiled_definitions": 2, "flickr_work_items": 1, "enqueued_work_items": 0}
+    assert plan.manifest.stages[0].outputs["query_definitions"] == expected_uri
+    assert list(storage.parquet_payloads) == [expected_uri]
+    assert storage.parquet_payloads[expected_uri].select("query_definition_id").to_series().to_list() == ["q-tags", "q-text"]
+
+
+def test_orchestrator_cloud_compile_requires_storage_backend(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_query_definitions(registry)
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root="s3://biominer/runs",
+        stages=(RunStage.COMPILE_QUERIES,),
+    )
+
+    plan = ProductionRunOrchestrator(request).run()
+
+    assert plan.manifest.status == "failed"
+    assert plan.manifest.stages[0].message == "storage_backend_required_for_compile_queries"
+
+
 def test_orchestrator_build_registry_stage_validates_local_registry(tmp_path) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     _write_query_definitions(registry)
@@ -860,6 +900,15 @@ class _ConstantObjectScorer:
 
     def score(self, _item: dict[str, object], labels: tuple[str, ...]) -> dict[str, float]:
         return {label: float(self.scores.get(label, 0.0)) for label in labels}
+
+
+class _FakeRunStorage:
+    def __init__(self) -> None:
+        self.parquet_payloads: dict[str, pl.DataFrame] = {}
+
+    def write_parquet_shard(self, uri: str, frame: pl.DataFrame) -> str:
+        self.parquet_payloads[uri] = frame
+        return uri
 
 
 def _query_definition_row(query_definition_id: str, source_term: str, search_field: str, search_priority: int) -> dict[str, object]:
