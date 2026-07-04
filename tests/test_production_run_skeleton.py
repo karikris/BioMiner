@@ -298,6 +298,12 @@ def test_orchestrator_reads_registry_inputs_from_cloud_storage(tmp_path) -> None
     assert storage.parquet_payloads[plan.artifact_uris.query_definitions_uri].height == 2
 
 
+def test_orchestrator_no_longer_reports_s3_registry_reads_as_unimplemented() -> None:
+    source = Path("src/biominer/run/orchestrator.py").read_text(encoding="utf-8")
+
+    assert "S3 registry reads are not implemented" not in source
+
+
 def test_orchestrator_writes_compiled_queries_to_cloud_storage(tmp_path) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     _write_query_definitions(registry)

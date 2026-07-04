@@ -694,7 +694,7 @@ class ProductionRunOrchestrator:
             raise ValueError(f"registry_dir is required for {stage_name}")
         registry_dir = str(self.request.registry_dir)
         if is_cloud_uri(registry_dir):
-            raise ValueError(f"S3 registry reads are not implemented for {stage_name} in the local orchestrator yet")
+            raise ValueError(f"registry_dir is a cloud URI for {stage_name}; read registry artifacts through the configured storage backend")
         return Path(registry_dir)
 
     def _load_flickr_work_queries(self) -> tuple[FlickrQuery, ...]:
