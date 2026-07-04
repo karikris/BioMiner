@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import polars as pl
 
 from biominer.common.text import normalize_text
-from biominer.config.keywords import load_json_config
 from biominer.filter.category_model import infer_category_from_text
-from biominer.storage.parquet import write_parquet
 
 
 TEXT_COLUMNS = (
@@ -63,19 +60,6 @@ HARD_NEGATIVE_GROUPS = {
 }
 
 
-def load_metadata_keyword_groups(path: str | Path) -> dict[str, tuple[str, ...]]:
-    data = load_json_config(path)
-    raw_groups = data.get("metadata_keywords", data)
-    if not isinstance(raw_groups, dict):
-        raise ValueError("Metadata keyword config must be an object or contain a metadata_keywords object")
-    groups: dict[str, tuple[str, ...]] = {}
-    for group_name, terms in raw_groups.items():
-        if not isinstance(terms, list):
-            raise ValueError(f"Metadata keyword group {group_name!r} must be a list")
-        groups[str(group_name)] = tuple(str(term).strip() for term in terms if str(term).strip())
-    return groups
-
-
 def flag_metadata_records(
     frame: pl.DataFrame,
     *,
@@ -83,24 +67,6 @@ def flag_metadata_records(
 ) -> pl.DataFrame:
     rows = [_flag_row(row, keyword_groups=keyword_groups) for row in frame.to_dicts()]
     return pl.DataFrame(rows) if rows else _empty_flag_frame(frame)
-
-
-def flag_metadata_parquet(
-    *,
-    input_path: str | Path,
-    keywords_json: str | Path,
-    output_path: str | Path,
-) -> dict[str, int | str]:
-    frame = pl.read_parquet(input_path)
-    flagged = flag_metadata_records(frame, keyword_groups=load_metadata_keyword_groups(keywords_json))
-    write_parquet(flagged, output_path)
-    return {
-        "input": str(input_path),
-        "output": str(output_path),
-        "input_rows": frame.height,
-        "flagged_rows": flagged.height,
-        "dropped_rows": 0,
-    }
 
 
 def _flag_row(row: dict[str, Any], *, keyword_groups: dict[str, tuple[str, ...]]) -> dict[str, Any]:
