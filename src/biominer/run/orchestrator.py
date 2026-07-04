@@ -55,6 +55,7 @@ class ProductionRunRequest:
     vision_backend: str = DEFAULT_VISION_BACKEND
     bioclip_model: str = DEFAULT_BIOCLIP_MODEL
     bioclip_ablation_mode: str = "detector_crop"
+    bioclip_ablation_modes: tuple[str, ...] = OBJECT_VISUAL_MODES
     worker_id: str = "local"
     stages: tuple[RunStage, ...] = DEFAULT_PRODUCTION_STAGES
     dry_run: bool = False
@@ -86,6 +87,7 @@ class ProductionRunPlan:
                 "vision_backend": self.request.vision_backend,
                 "bioclip_model": self.request.bioclip_model,
                 "bioclip_ablation_mode": self.request.bioclip_ablation_mode,
+                "bioclip_ablation_modes": list(self.request.bioclip_ablation_modes),
                 "worker_id": self.request.worker_id,
                 "stages": [stage.value for stage in self.request.stages],
                 "dry_run": self.request.dry_run,
@@ -129,6 +131,7 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
             "vision_backend": request.vision_backend,
             "bioclip_model": request.bioclip_model,
             "bioclip_ablation_mode": request.bioclip_ablation_mode,
+            "bioclip_ablation_modes": list(request.bioclip_ablation_modes),
             "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
             "visual_modes": list(OBJECT_VISUAL_MODES),
         },
@@ -617,7 +620,6 @@ class ProductionRunOrchestrator:
             if self.object_scorer is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="bioclip_runtime_required_for_score_bioclip")
             from biominer.bioclip.candidate_sets import build_candidate_set_for_taxon_scope
-            from biominer.bioclip.object_runner import screen_object_detections
 
             canonical = self.storage.read_parquet(plan.artifact_uris.source_records_uri)
             detections = self.storage.read_parquet(plan.artifact_uris.object_detections_uri)
@@ -630,17 +632,17 @@ class ProductionRunOrchestrator:
                 allow_single_target_fixture=self.allow_single_target_fixture,
             )
             with tempfile.TemporaryDirectory(prefix="biominer-score-") as tmp_dir:
-                result = screen_object_detections(
+                frame, metrics = _score_object_visual_modes(
                     canonical_records=canonical,
                     detections=detections,
                     species_context=target_context,
                     candidate_set=candidate_set,
                     scorer=self.object_scorer,
-                    output_path=Path(tmp_dir) / "object_bioclip_scores.parquet",
-                    ablation_mode=self.request.bioclip_ablation_mode,  # type: ignore[arg-type]
+                    output_dir=Path(tmp_dir),
+                    modes=_request_bioclip_modes(self.request),
                 )
-            output_uri = self.storage.write_parquet_shard(plan.artifact_uris.object_scores_uri, result.frame)
-            return StageExecutionResult(metrics=_object_score_metrics(result), outputs={"object_scores": output_uri})
+            output_uri = self.storage.write_parquet_shard(plan.artifact_uris.object_scores_uri, frame)
+            return StageExecutionResult(metrics=metrics, outputs={"object_scores": output_uri})
         missing = _missing_paths(plan.paths.source_records_path, plan.paths.object_detections_path)
         if missing:
             return StageExecutionResult(status=StageStatus.FAILED, message="missing_score_inputs: " + ", ".join(missing))
@@ -648,7 +650,6 @@ class ProductionRunOrchestrator:
             return StageExecutionResult(status=StageStatus.FAILED, message="bioclip_runtime_required_for_score_bioclip")
         import polars as pl
         from biominer.bioclip.candidate_sets import build_candidate_set_for_taxon_scope
-        from biominer.bioclip.object_runner import screen_object_detections
 
         plan.paths.ensure_directories()
         canonical = pl.read_parquet(plan.paths.source_records_path)
@@ -661,18 +662,20 @@ class ProductionRunOrchestrator:
             records=canonical.to_dicts(),
             allow_single_target_fixture=self.allow_single_target_fixture,
         )
-        result = screen_object_detections(
+        mode_output_dir = plan.paths.staging_dir / "object_bioclip_scores_by_mode"
+        frame, metrics = _score_object_visual_modes(
             canonical_records=canonical,
             detections=detections,
             species_context=target_context,
             candidate_set=candidate_set,
             scorer=self.object_scorer,
-            output_path=plan.paths.object_scores_path,
-            ablation_mode=self.request.bioclip_ablation_mode,  # type: ignore[arg-type]
+            output_dir=mode_output_dir,
+            modes=_request_bioclip_modes(self.request),
         )
+        write_parquet(frame, plan.paths.object_scores_path)
         return StageExecutionResult(
-            metrics=_object_score_metrics(result),
-            outputs={"object_scores": str(result.output_path or plan.paths.object_scores_path)},
+            metrics=metrics,
+            outputs={"object_scores": str(plan.paths.object_scores_path)},
         )
 
     def _registry_query_definitions_source(self) -> tuple[Any, str, Path | None]:
@@ -976,18 +979,73 @@ def _missing_uris(storage: CloudStorage, *uris: str) -> list[str]:
     return [uri for uri in uris if not storage.exists(uri)]
 
 
-def _object_score_metrics(result: Any) -> dict[str, Any]:
+def _request_bioclip_modes(request: ProductionRunRequest) -> tuple[Any, ...]:
+    raw_modes = request.bioclip_ablation_modes or (request.bioclip_ablation_mode,)
+    modes = tuple(str(mode) for mode in raw_modes if str(mode).strip())
+    if not modes:
+        modes = (request.bioclip_ablation_mode,)
+    unsupported = [mode for mode in modes if mode not in OBJECT_VISUAL_MODES]
+    if unsupported:
+        raise ValueError("unsupported BioCLIP visual mode(s): " + ", ".join(unsupported))
+    return modes
+
+
+def _score_object_visual_modes(
+    *,
+    canonical_records: Any,
+    detections: Any,
+    species_context: Any,
+    candidate_set: Any,
+    scorer: Any,
+    output_dir: Path,
+    modes: tuple[Any, ...],
+) -> tuple[Any, dict[str, Any]]:
+    import polars as pl
+    from biominer.bioclip.ablation import run_object_ablations
+
+    report = run_object_ablations(
+        canonical_records=canonical_records,
+        detections=detections,
+        species_context=species_context,
+        candidate_set=candidate_set,
+        scorer=scorer,
+        output_dir=output_dir,
+        modes=modes,  # type: ignore[arg-type]
+    )
+    frames = [
+        pl.read_parquet(path)
+        for mode in report.modes
+        if (path := report.output_dir / f"object_bioclip_scores_{mode}.parquet").exists()
+    ]
+    frame = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+    return frame, _object_ablation_metrics(report.report, frame=frame)
+
+
+def _object_ablation_metrics(report: dict[str, Any], *, frame: Any) -> dict[str, Any]:
     return {
-        "records_seen": result.records_seen,
-        "detections_seen": result.detections_seen,
-        "crops_scored": result.crops_scored,
-        "objects_scored": result.crops_scored,
-        "score_batches_written": result.score_batches_written,
-        "segmentation_unavailable_count": result.segmentation_unavailable_count,
-        "segmentation_status": result.segmentation_status,
-        "visual_mode": result.visual_mode,
-        "visual_mode_status": result.visual_mode_status,
+        "records_seen": int(report.get("records_seen") or 0),
+        "detections_seen": int(report.get("detections_seen") or 0),
+        "crops_scored": int(report.get("crops_scored") or 0),
+        "objects_scored": int(report.get("crops_scored") or 0),
+        "whole_images_scored": _mode_row_count(frame, "whole_image"),
+        "detector_crops_scored": _mode_row_count(frame, "detector_crop"),
+        "segmentation_crops_scored": _mode_row_count(frame, "detector_crop_segmentation"),
+        "score_batches_written": int(report.get("score_batches_written") or 0),
+        "primary_visual_classifier": report.get("primary_visual_classifier"),
+        "visual_modes_requested": list(report.get("visual_modes_requested") or []),
+        "visual_modes_scored": list(report.get("visual_modes_scored") or []),
+        "visual_mode_status_by_mode": dict(report.get("visual_mode_status_by_mode") or {}),
+        "segmentation_status_by_mode": dict(report.get("segmentation_status_by_mode") or {}),
+        "segmentation_unavailable_count_by_mode": dict(report.get("segmentation_unavailable_count_by_mode") or {}),
+        "segmentation_unavailable_reason_by_mode": dict(report.get("segmentation_unavailable_reason_by_mode") or {}),
+        "segmentation_unavailable_count": sum(int(value or 0) for value in dict(report.get("segmentation_unavailable_count_by_mode") or {}).values()),
     }
+
+
+def _mode_row_count(frame: Any, mode: str) -> int:
+    if frame.is_empty() or "ablation_mode" not in frame.columns:
+        return 0
+    return frame.filter(frame["ablation_mode"] == mode).height
 
 
 def _merge_stage_counts(manifest: RunManifest, *, stage: RunStage, result: StageExecutionResult) -> RunManifest:
@@ -1034,15 +1092,13 @@ def _merge_stage_counts(manifest: RunManifest, *, stage: RunStage, result: Stage
             metrics={**manifest.metrics, **result.metrics},
         )
     if stage == RunStage.SCORE_BIOCLIP and result.status == StageStatus.COMPLETE:
-        mode = str(result.metrics.get("visual_mode") or "")
         counts = {
             **manifest.bioclip_counts,
             "objects_scored": int(result.metrics.get("objects_scored", manifest.bioclip_counts.get("objects_scored", 0))),
+            "detector_crops_scored": int(result.metrics.get("detector_crops_scored", manifest.bioclip_counts.get("detector_crops_scored", 0))),
+            "whole_images_scored": int(result.metrics.get("whole_images_scored", manifest.bioclip_counts.get("whole_images_scored", 0))),
+            "segmentation_crops_scored": int(result.metrics.get("segmentation_crops_scored", manifest.bioclip_counts.get("segmentation_crops_scored", 0))),
         }
-        if mode == "whole_image":
-            counts["whole_images_scored"] = int(result.metrics.get("objects_scored", manifest.bioclip_counts.get("whole_images_scored", 0)))
-        if mode == "detector_crop_segmentation":
-            counts["segmentation_crops_scored"] = int(result.metrics.get("objects_scored", manifest.bioclip_counts.get("segmentation_crops_scored", 0)))
         return replace(manifest, bioclip_counts=counts, metrics={**manifest.metrics, **result.metrics})
     if stage in {RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE} and result.status == StageStatus.COMPLETE:
         return replace(
