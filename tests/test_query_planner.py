@@ -14,9 +14,6 @@ from biominer.flickr_fetch.query_planner import (
     NORMAL_PAGE_SIZE,
     STABLE_RESULT_THRESHOLD,
     FlickrQuery,
-    MultilingualSearchTerm,
-    build_count_probes,
-    build_worldwide_discovery_plan,
     deduplicate_photo_records,
     fixed_upload_date_slices,
     flickr_search_params,
@@ -44,6 +41,10 @@ def test_query_planner_does_not_export_legacy_species_json_or_region_helpers() -
         "outside_known_papilio_demoleus_regions",
         "MULTILINGUAL_SEED_TERMS",
         "multilingual_seed_terms",
+        "MultilingualSearchTerm",
+        "QueryPlan",
+        "build_count_probes",
+        "build_worldwide_discovery_plan",
     )
     assert [name for name in removed_exports if hasattr(query_planner, name)] == []
 
@@ -63,32 +64,6 @@ def test_query_planner_source_has_no_papilio_specific_production_hardcoding() ->
     )
 
     assert [value for value in forbidden if value in source] == []
-
-
-def test_count_probes_are_recorded_for_text_and_tags_when_terms_are_explicit() -> None:
-    terms = (
-        MultilingualSearchTerm(language="la", term="Papilio demoleus", term_type="accepted_scientific"),
-        MultilingualSearchTerm(language="en", term="lime butterfly", term_type="vernacular"),
-    )
-
-    plan = build_worldwide_discovery_plan(terms=terms)
-
-    assert plan.page_queries == ()
-    assert len(plan.count_probes) == 4
-    assert {probe.term for probe in plan.count_probes} == {"Papilio demoleus", "lime butterfly"}
-    assert {probe.search_field for probe in plan.count_probes} == {"text", "tags"}
-    assert {probe.per_page for probe in plan.count_probes} == {COUNT_PROBE_PAGE_SIZE}
-    assert all(probe.lane == "count_probe" for probe in plan.count_probes)
-    assert {probe.term_type for probe in plan.count_probes} == {"accepted_scientific", "vernacular"}
-
-
-def test_worldwide_discovery_plan_requires_explicit_terms() -> None:
-    try:
-        build_worldwide_discovery_plan()  # type: ignore[call-arg]
-    except TypeError as exc:
-        assert "terms" in str(exc)
-    else:  # pragma: no cover - defensive guard against implicit seed fallback returning.
-        raise AssertionError("build_worldwide_discovery_plan must require caller-provided terms")
 
 
 def test_registry_query_definitions_load_as_page_one_upload_slice_work(tmp_path) -> None:

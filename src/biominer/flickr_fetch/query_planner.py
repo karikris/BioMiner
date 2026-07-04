@@ -43,17 +43,6 @@ DEFAULT_COARSE_SLICE_DAYS: int | None = None
 DEFAULT_FIXED_SLICE_DAYS = 5
 
 @dataclass(frozen=True)
-class MultilingualSearchTerm:
-    language: str
-    term: str
-    region: str | None = None
-    bbox: str | None = None
-    term_type: str | None = None
-    term_confidence: str = "high"
-    notes: str | None = None
-
-
-@dataclass(frozen=True)
 class FlickrQuery:
     term: str
     language: str
@@ -84,35 +73,6 @@ class FlickrQuery:
     family_key: str | None = None
     genus_key: str | None = None
     species_key: str | None = None
-
-
-@dataclass(frozen=True)
-class QueryPlan:
-    count_probes: tuple[FlickrQuery, ...]
-    page_queries: tuple[FlickrQuery, ...]
-
-
-def build_count_probes(
-    *,
-    terms: Iterable[MultilingualSearchTerm],
-    search_fields: Iterable[SearchField] = ("text", "tags"),
-) -> tuple[FlickrQuery, ...]:
-    return tuple(
-        FlickrQuery(
-            term=term.term,
-            language=term.language,
-            search_field=field,
-            lane="count_probe",
-            per_page=COUNT_PROBE_PAGE_SIZE,
-            bbox=term.bbox,
-            region=term.region,
-            term_type=term.term_type,
-            term_confidence=term.term_confidence,
-            notes=term.notes,
-        )
-        for term in terms
-        for field in search_fields
-    )
 
 
 def load_registry_flickr_queries(
@@ -386,11 +346,6 @@ def split_high_volume_query(
     if bbox_values:
         return _sort_queries(_split_with_bboxes(probe, total=total, bboxes=bbox_values))
     return _sort_queries(_split_with_narrower_terms(probe, total=total, narrower_terms=tuple(narrower_terms)))
-
-
-def build_worldwide_discovery_plan(*, terms: Iterable[MultilingualSearchTerm]) -> QueryPlan:
-    probes = build_count_probes(terms=terms)
-    return QueryPlan(count_probes=probes, page_queries=())
 
 
 def flickr_search_params(query: FlickrQuery) -> dict[str, str | int]:
