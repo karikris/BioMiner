@@ -35,7 +35,8 @@ def test_metadata_keyword_flags_do_not_drop_non_biodiversity_hints() -> None:
     flagged = flag_metadata_records(frame, keyword_groups=_groups())
 
     assert flagged["flickr_photo_id"].to_list() == ["1", "2", "3"]
-    assert flagged["filter_decision"].to_list() == ["flag", "flag", "flag"]
+    assert "filter_decision" not in flagged.columns
+    assert "filter_reason" not in flagged.columns
     row_by_id = {row["flickr_photo_id"]: row for row in flagged.to_dicts()}
     assert row_by_id["1"]["hard_negative_text_hint"] is False
     assert row_by_id["2"]["artwork_hint"] is True

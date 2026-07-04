@@ -33,8 +33,6 @@ FLAG_COLUMNS: dict[str, pl.DataType] = {
     "metadata_image_category_hint": pl.String,
     "metadata_life_stage_hint": pl.String,
     "metadata_negative_reason_hint": pl.String,
-    "filter_decision": pl.String,
-    "filter_reason": pl.String,
 }
 
 HARD_NEGATIVE_GROUPS = {
@@ -100,8 +98,6 @@ def _flag_row(row: dict[str, Any], *, keyword_groups: dict[str, tuple[str, ...]]
         "metadata_image_category_hint": category["image_category"],
         "metadata_life_stage_hint": category["life_stage"],
         "metadata_negative_reason_hint": category["negative_filter_reason"],
-        "filter_decision": "flag",
-        "filter_reason": "metadata_flags",
     }
 
 
