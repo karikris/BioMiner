@@ -16,8 +16,10 @@ src/biominer/filter/rules.py
 src/biominer/reports/buckets.py
 src/biominer/reports/name_evidence.py
 src/biominer/detection/yolo_detector.py
+src/biominer/species/registry_refresh.py
 src/biominer/species/query_compile.py
 src/biominer/species/workflow.py
+tests/test_species_workflow.py
 tests/test_name_evidence_report.py
 ```
 
@@ -177,11 +179,10 @@ src/biominer/bioclip/register_runner.py
 src/biominer/bioclip/bioclip.py compatibility output columns
 src/biominer/storage/compaction.py internal immutable shard compaction helpers
 src/biominer/species/context.py shared SpeciesContext data model
-src/biominer/species/registry_refresh.py registry-to-SpeciesContext resolver
 src/biominer/flickr_fetch/metadata_poller.py legacy query-hit migration fallback
 ```
 
-These are not public production commands. The public production entry point is `biominer run`.
+These are not public production commands. The public production entry point is `biominer run`, and registry-backed species context resolution now lives inside `run.taxon_scope`.
 
 ## Known Follow-Up Tasks
 

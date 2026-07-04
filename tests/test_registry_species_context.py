@@ -8,8 +8,8 @@ import polars as pl
 from biominer.flickr_comments.comment_review import review_comments_for_record
 from biominer.flickr_fetch.metadata_poller import MetadataPollState, poll_once
 from biominer.flickr_fetch.query_planner import FlickrQuery, plan_pages_from_count, plan_queries_from_count
+from biominer.run.taxon_scope import resolve_species_context_from_registry
 from biominer.species.context import CommonName, SpeciesContext
-from biominer.species.registry_refresh import resolve_species_context
 
 
 def _write_registry_fixture(base: Path) -> None:
@@ -118,7 +118,7 @@ def test_species_context_resolves_papilio_fixture_from_registry_names(tmp_path) 
     registry = tmp_path / "registry"
     _write_registry_fixture(registry)
 
-    context = resolve_species_context(scientific_name="Papilio demoleus", registry_dir=registry)
+    context = resolve_species_context_from_registry(scientific_name="Papilio demoleus", registry_dir=registry)
 
     assert context.accepted_taxon_key == "gbif:100"
     assert context.synonyms == ("Papilio erithonius",)
