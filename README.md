@@ -717,8 +717,10 @@ Broad searches do not recursively count-probe the full time range.
 
 ## Metadata polling
 
+Production runs poll Flickr metadata through `uv run biominer run`. The direct poller is retained only as a dev/debug entry point:
+
 ```bash
-uv run biominer poll-once \
+uv run biominer dev flickr poll-once \
   --max-api-calls 3500 \
   --workers 8 \
   --state-db data/state/flickr_poller.sqlite \
@@ -918,15 +920,15 @@ Additional ambiguous records may be queued for:
 Commands:
 
 ```bash
-uv run biominer build-comment-review-queue \
+uv run biominer dev comments queue \
   --input staging/evidence/classified.parquet \
   --state-db data/state/comment_review.sqlite
 
-uv run biominer review-comments-once \
+uv run biominer dev comments review-once \
   --state-db data/state/comment_review.sqlite \
   --max-api-calls 300
 
-uv run biominer apply-comment-review-decisions \
+uv run biominer dev comments apply-decisions \
   --input staging/evidence/classified.parquet \
   --output staging/evidence/classified_with_comments.parquet \
   --state-db data/state/comment_review.sqlite

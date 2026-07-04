@@ -250,15 +250,6 @@ def build_parser() -> argparse.ArgumentParser:
     detect_eval.add_argument("--output", required=True)
     detect_eval.add_argument("--iou-threshold", type=float, default=0.5)
     detect_eval.add_argument("--score-threshold", type=float, default=0.35)
-    fetch_comments = subparsers.add_parser("fetch-comments")
-    fetch_comments.add_argument("--photo-id", action="append", default=[])
-    fetch_comments.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
-    fetch_comments.add_argument("--limit", type=int, default=0)
-    fetch_comments.add_argument("--dry-run", action="store_true")
-    fetch_comments.add_argument("--selected-for-qa", action="store_true")
-    fetch_comments.add_argument("--api-key-env", default="FLICKR_API_KEY")
-    fetch_comments.add_argument("--min-photos", type=int, default=2)
-    fetch_comments.add_argument("--min-users", type=int, default=2)
     registry = subparsers.add_parser("registry")
     registry_subparsers = registry.add_subparsers(dest="registry_command")
     registry_build = registry_subparsers.add_parser("build")
@@ -311,6 +302,32 @@ def build_parser() -> argparse.ArgumentParser:
     registry_seed.add_argument("--start-date", default="2004-02-10")
     registry_seed.add_argument("--end-date", default=datetime.now(UTC).date().isoformat())
     registry_seed.add_argument("--slice-days", type=int, default=5)
+    dev_comments = dev_subparsers.add_parser("comments")
+    dev_comments_subparsers = dev_comments.add_subparsers(dest="comments_command")
+    comments_fetch = dev_comments_subparsers.add_parser("fetch")
+    comments_fetch.add_argument("--photo-id", action="append", default=[])
+    comments_fetch.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
+    comments_fetch.add_argument("--limit", type=int, default=0)
+    comments_fetch.add_argument("--dry-run", action="store_true")
+    comments_fetch.add_argument("--selected-for-qa", action="store_true")
+    comments_fetch.add_argument("--api-key-env", default="FLICKR_API_KEY")
+    comments_fetch.add_argument("--min-photos", type=int, default=2)
+    comments_fetch.add_argument("--min-users", type=int, default=2)
+    comments_queue = dev_comments_subparsers.add_parser("queue")
+    comments_queue.add_argument("--input", required=True)
+    comments_queue.add_argument("--state-db", default="data/state/comment_review.sqlite")
+    comments_review = dev_comments_subparsers.add_parser("review-once")
+    comments_review.add_argument("--state-db", default="data/state/comment_review.sqlite")
+    comments_review.add_argument("--max-api-calls", type=int, default=300)
+    comments_review.add_argument("--api-key-env", default="FLICKR_API_KEY")
+    comments_apply = dev_comments_subparsers.add_parser("apply-decisions")
+    comments_apply.add_argument("--input", required=True)
+    comments_apply.add_argument("--output", required=True)
+    comments_apply.add_argument("--state-db", default="data/state/comment_review.sqlite")
+    dev_flickr = dev_subparsers.add_parser("flickr")
+    dev_flickr_subparsers = dev_flickr.add_subparsers(dest="flickr_command")
+    dev_poll_once = dev_flickr_subparsers.add_parser("poll-once")
+    _add_poll_once_args(dev_poll_once)
     storage = subparsers.add_parser("storage")
     storage_subparsers = storage.add_subparsers(dest="storage_command")
     storage_doctor = storage_subparsers.add_parser("doctor")
@@ -332,33 +349,24 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--dry-run", action="store_true")
     production_run.add_argument("--limit-species", type=int, default=0)
     production_run.add_argument("--limit-records", type=int, default=0)
-    build_comment_queue = subparsers.add_parser("build-comment-review-queue")
-    build_comment_queue.add_argument("--input", required=True)
-    build_comment_queue.add_argument("--state-db", default="data/state/comment_review.sqlite")
-    review_comments = subparsers.add_parser("review-comments-once")
-    review_comments.add_argument("--state-db", default="data/state/comment_review.sqlite")
-    review_comments.add_argument("--max-api-calls", type=int, default=300)
-    review_comments.add_argument("--api-key-env", default="FLICKR_API_KEY")
-    apply_comment_decisions = subparsers.add_parser("apply-comment-review-decisions")
-    apply_comment_decisions.add_argument("--input", required=True)
-    apply_comment_decisions.add_argument("--output", required=True)
-    apply_comment_decisions.add_argument("--state-db", default="data/state/comment_review.sqlite")
-    poll_once_parser = subparsers.add_parser("poll-once")
-    poll_once_parser.add_argument("--max-api-calls", type=int, default=SOFT_API_CALLS_PER_HOUR)
-    poll_once_parser.add_argument("--workers", type=int, default=1)
-    poll_once_parser.add_argument("--stale-claim-seconds", type=int, default=3600)
-    poll_once_parser.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
-    poll_once_parser.add_argument("--raw-root", default="data/raw")
-    poll_once_parser.add_argument("--evidence-output", default="staging/evidence/poll_once_evidence.parquet")
-    poll_once_parser.add_argument("--api-key-env", default="FLICKR_API_KEY")
-    poll_once_parser.add_argument("--run-id")
-    poll_once_parser.add_argument("--worker-id")
-    poll_once_parser.add_argument("--storage-backend", choices=("local", "s3"), default="local")
-    poll_once_parser.add_argument("--storage-prefix")
-    poll_once_parser.add_argument("--evidence-stage", default="poll_once")
-    poll_once_parser.add_argument("--no-compact", action="store_true")
-    poll_once_parser.add_argument("--config")
     return parser
+
+
+def _add_poll_once_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--max-api-calls", type=int, default=SOFT_API_CALLS_PER_HOUR)
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--stale-claim-seconds", type=int, default=3600)
+    parser.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
+    parser.add_argument("--raw-root", default="data/raw")
+    parser.add_argument("--evidence-output", default="staging/evidence/poll_once_evidence.parquet")
+    parser.add_argument("--api-key-env", default="FLICKR_API_KEY")
+    parser.add_argument("--run-id")
+    parser.add_argument("--worker-id")
+    parser.add_argument("--storage-backend", choices=("local", "s3"), default="local")
+    parser.add_argument("--storage-prefix")
+    parser.add_argument("--evidence-stage", default="poll_once")
+    parser.add_argument("--no-compact", action="store_true")
+    parser.add_argument("--config")
 
 
 def _add_object_evidence_join_args(parser: argparse.ArgumentParser) -> None:
@@ -428,52 +436,16 @@ def run(args: argparse.Namespace) -> int:
         if args.detect_command == "eval":
             return _run_detect_eval(args)
         return 2
-    if args.command == "fetch-comments":
-        state = CommentsEnrichmentState(args.state_db)
-        queued = state.queue_candidates(
-            (
-                {
-                    "source": "flickr",
-                    "flickr_photo_id": photo_id,
-                    "triage_bin": "in_review",
-                    "triage_reason": "selected_candidate",
-                }
-                for photo_id in args.photo_id
-            ),
-            selected_for_qa=args.selected_for_qa,
-        )
-        processed = {"comment_records_processed": 0, "comment_records_failed": 0, "term_observations_inserted": 0}
-        if args.limit > 0 and not args.dry_run:
-            api_key = os.environ.get(args.api_key_env)
-            if not api_key:
-                print(
-                    json.dumps(
-                        {"error": f"{args.api_key_env} is required unless --dry-run or --limit 0 is used"},
-                        indent=2,
-                        sort_keys=True,
-                    )
-                )
-                return 2
-            processed = state.process_pending(fetch_comments=fetch_flickr_comments(api_key=api_key), limit=args.limit)
-        promoted = state.promote_supported_terms(min_photos=args.min_photos, min_users=args.min_users)
-        payload = {
-            "implemented": True,
-            "comment_fetch_scope": "selected_candidate_records_only",
-            "photo_ids_requested": args.photo_id,
-            "queued_comment_candidates_added": queued,
-            **processed,
-            "promoted_terms_added": len(promoted),
-            "promoted_terms": [term.__dict__ for term in promoted],
-            **state.summary(),
-        }
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
     if args.command == "storage":
         return _run_storage_command(args)
     if args.command == "workstore":
         return _run_workstore_command(args)
     if args.command == "run":
         return _run_production_command(args)
+    if args.command == "dev" and args.dev_command == "comments":
+        return _run_dev_comments_command(args)
+    if args.command == "dev" and args.dev_command == "flickr":
+        return _run_dev_flickr_command(args)
     if args.command == "registry" or (args.command == "dev" and args.dev_command == "registry"):
         if args.registry_command == "fetch-taxonomy":
             retrieved_at = args.retrieved_at or datetime.now(UTC).isoformat()
@@ -589,11 +561,55 @@ def run(args: argparse.Namespace) -> int:
             print(json.dumps(audit_registry(args.registry_dir), indent=2, sort_keys=True))
             return 0
         return 2
-    if args.command == "build-comment-review-queue":
+    return 2
+
+
+def _run_dev_comments_command(args: argparse.Namespace) -> int:
+    if args.comments_command == "fetch":
+        state = CommentsEnrichmentState(args.state_db)
+        queued = state.queue_candidates(
+            (
+                {
+                    "source": "flickr",
+                    "flickr_photo_id": photo_id,
+                    "triage_bin": "in_review",
+                    "triage_reason": "selected_candidate",
+                }
+                for photo_id in args.photo_id
+            ),
+            selected_for_qa=args.selected_for_qa,
+        )
+        processed = {"comment_records_processed": 0, "comment_records_failed": 0, "term_observations_inserted": 0}
+        if args.limit > 0 and not args.dry_run:
+            api_key = os.environ.get(args.api_key_env)
+            if not api_key:
+                print(
+                    json.dumps(
+                        {"error": f"{args.api_key_env} is required unless --dry-run or --limit 0 is used"},
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+                return 2
+            processed = state.process_pending(fetch_comments=fetch_flickr_comments(api_key=api_key), limit=args.limit)
+        promoted = state.promote_supported_terms(min_photos=args.min_photos, min_users=args.min_users)
+        payload = {
+            "implemented": True,
+            "comment_fetch_scope": "selected_candidate_records_only",
+            "photo_ids_requested": args.photo_id,
+            "queued_comment_candidates_added": queued,
+            **processed,
+            "promoted_terms_added": len(promoted),
+            "promoted_terms": [term.__dict__ for term in promoted],
+            **state.summary(),
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if args.comments_command == "queue":
         payload = build_comment_review_queue_from_parquet(input_path=args.input, state_db=args.state_db)
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
-    if args.command == "review-comments-once":
+    if args.comments_command == "review-once":
         try:
             payload = review_comments_once(
                 state_db=args.state_db,
@@ -605,35 +621,39 @@ def run(args: argparse.Namespace) -> int:
             return 2
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
-    if args.command == "apply-comment-review-decisions":
+    if args.comments_command == "apply-decisions":
         payload = apply_comment_review_decisions_to_parquet(input_path=args.input, output_path=args.output, state_db=args.state_db)
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
-    if args.command == "poll-once":
-        work_store = None
-        if args.no_compact and args.storage_backend != "local":
-            biominer_config = load_biominer_config(args.config)
-            work_store = create_workstore(biominer_config.workstore)
-            _init_workstore_schema(work_store)
-        result = poll_once(
-            state_db=args.state_db,
-            raw_root=args.raw_root,
-            evidence_output=args.evidence_output,
-            max_api_calls=args.max_api_calls,
-            api_key=os.environ.get(args.api_key_env),
-            workers=args.workers,
-            stale_claim_seconds=args.stale_claim_seconds,
-            run_id=args.run_id,
-            worker_id=args.worker_id,
-            storage_backend=args.storage_backend,
-            storage_prefix=args.storage_prefix,
-            evidence_stage=args.evidence_stage,
-            compact_after_run=not args.no_compact,
-            work_store=work_store,
-        )
-        print(json.dumps({**result.__dict__, "state_db": str(result.state_db)}, indent=2, sort_keys=True))
-        return 0
     return 2
+
+
+def _run_dev_flickr_command(args: argparse.Namespace) -> int:
+    if args.flickr_command != "poll-once":
+        return 2
+    work_store = None
+    if args.no_compact and args.storage_backend != "local":
+        biominer_config = load_biominer_config(args.config)
+        work_store = create_workstore(biominer_config.workstore)
+        _init_workstore_schema(work_store)
+    result = poll_once(
+        state_db=args.state_db,
+        raw_root=args.raw_root,
+        evidence_output=args.evidence_output,
+        max_api_calls=args.max_api_calls,
+        api_key=os.environ.get(args.api_key_env),
+        workers=args.workers,
+        stale_claim_seconds=args.stale_claim_seconds,
+        run_id=args.run_id,
+        worker_id=args.worker_id,
+        storage_backend=args.storage_backend,
+        storage_prefix=args.storage_prefix,
+        evidence_stage=args.evidence_stage,
+        compact_after_run=not args.no_compact,
+        work_store=work_store,
+    )
+    print(json.dumps({**result.__dict__, "state_db": str(result.state_db)}, indent=2, sort_keys=True))
+    return 0
 
 
 def _run_storage_command(args: argparse.Namespace) -> int:

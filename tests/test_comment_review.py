@@ -162,15 +162,19 @@ def test_comment_review_cli_commands_run_once_without_network(tmp_path, capsys) 
     pl.DataFrame([_base_record()]).write_parquet(input_path)
 
     parser = build_parser()
-    assert run(parser.parse_args(["build-comment-review-queue", "--input", str(input_path), "--state-db", str(state_db)])) == 0
+    assert run(parser.parse_args(["dev", "comments", "queue", "--input", str(input_path), "--state-db", str(state_db)])) == 0
     queue_payload = json.loads(capsys.readouterr().out)
     assert queue_payload["comment_review_queue_created"] == 1
 
-    assert run(parser.parse_args(["apply-comment-review-decisions", "--input", str(input_path), "--output", str(output_path), "--state-db", str(state_db)])) == 0
+    assert run(
+        parser.parse_args(
+            ["dev", "comments", "apply-decisions", "--input", str(input_path), "--output", str(output_path), "--state-db", str(state_db)]
+        )
+    ) == 0
     apply_payload = json.loads(capsys.readouterr().out)
     assert apply_payload["rows"] == 1
     assert output_path.exists()
 
-    assert run(parser.parse_args(["review-comments-once", "--state-db", str(state_db), "--max-api-calls", "1"])) == 2
+    assert run(parser.parse_args(["dev", "comments", "review-once", "--state-db", str(state_db), "--max-api-calls", "1"])) == 2
     error_payload = json.loads(capsys.readouterr().out)
     assert "Flickr API key is required" in error_payload["error"]

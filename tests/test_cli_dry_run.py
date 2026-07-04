@@ -18,9 +18,10 @@ from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 def test_cli_exposes_only_lean_pipeline_commands() -> None:
     parser = build_parser()
     commands = parser._subparsers._group_actions[0].choices  # noqa: SLF001 - parser surface regression test.
-    poll_once = parser.parse_args(["poll-once", "--max-api-calls", "3500", "--run-id", "run-1", "--worker-id", "worker-001"])
+    poll_once = parser.parse_args(
+        ["dev", "flickr", "poll-once", "--max-api-calls", "3500", "--run-id", "run-1", "--worker-id", "worker-001"]
+    )
 
-    assert "poll-once" in commands
     assert "run" in commands
     assert "vision" in commands
     assert "evidence" in commands
@@ -30,6 +31,11 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert "species" not in commands
     assert "dev" in commands
     assert "cloud" not in commands
+    assert "fetch-comments" not in commands
+    assert "build-comment-review-queue" not in commands
+    assert "review-comments-once" not in commands
+    assert "apply-comment-review-decisions" not in commands
+    assert "poll-once" not in commands
     assert "filter" not in commands
     assert "apply-rules" not in commands
     assert "compact-parquet" not in commands
@@ -42,7 +48,9 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert "fetch" not in commands
     assert "fetch-live" not in commands
     assert "benchmark-existing-payloads" not in commands
-    assert poll_once.command == "poll-once"
+    assert poll_once.command == "dev"
+    assert poll_once.dev_command == "flickr"
+    assert poll_once.flickr_command == "poll-once"
     assert poll_once.max_api_calls == 3500
     assert poll_once.run_id == "run-1"
     assert poll_once.worker_id == "worker-001"
@@ -173,6 +181,8 @@ def test_poll_once_cloud_no_compact_passes_workstore(monkeypatch, capsys) -> Non
     rc = run(
         build_parser().parse_args(
             [
+                "dev",
+                "flickr",
                 "poll-once",
                 "--storage-backend",
                 "s3",
@@ -1925,6 +1935,21 @@ def test_removed_filter_and_apply_rules_commands_no_longer_parse() -> None:
         parser.parse_args(["filter", "--input", "evidence.parquet", "--output", "flagged.parquet"])
 
 
+def test_low_level_fetch_and_comment_commands_are_dev_only() -> None:
+    parser = build_parser()
+
+    removed_commands = (
+        ["fetch-comments", "--photo-id", "1"],
+        ["build-comment-review-queue", "--input", "classified.parquet"],
+        ["review-comments-once"],
+        ["apply-comment-review-decisions", "--input", "classified.parquet", "--output", "reviewed.parquet"],
+        ["poll-once"],
+    )
+    for command in removed_commands:
+        with pytest.raises(SystemExit):
+            parser.parse_args(command)
+
+
 def test_legacy_local_compaction_and_gc_cache_commands_no_longer_parse() -> None:
     parser = build_parser()
 
@@ -1944,7 +1969,7 @@ def test_legacy_ad_hoc_report_commands_no_longer_parse() -> None:
 
 def test_comments_enrichment_cli(tmp_path, capsys) -> None:
     parser = build_parser()
-    args = parser.parse_args(["fetch-comments", "--photo-id", "1", "--state-db", str(tmp_path / "comments.sqlite"), "--dry-run"])
+    args = parser.parse_args(["dev", "comments", "fetch", "--photo-id", "1", "--state-db", str(tmp_path / "comments.sqlite"), "--dry-run"])
     assert run(args) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["implemented"] is True
