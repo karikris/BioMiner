@@ -185,6 +185,7 @@ Confirmed current behavior:
   `detector_crop_segmentation` as unavailable and continues with whole-image
   plus detector-crop scores.
 - Production run polling uses the validated `RuntimeConfig.worker_id` / `BIOMINER_WORKER_ID` instead of falling back to an ambient local worker ID.
+- Production validation treats the default `local` worker id as missing for Postgres-backed runs; `BIOMINER_WORKER_ID` must be configured outside explicit local/SQLite dev mode.
 - Vision runtime checks, prefetch, smoke/prototype, crop preview, and evaluation utilities are dev-only.
 - Exact tracked-source searches for `anti_keywords`, `anti-keyword`, `anti keyword`, and `config/anti` return no matches.
 

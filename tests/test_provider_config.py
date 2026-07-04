@@ -99,6 +99,25 @@ def test_missing_cloud_env_raises_on_validation(tmp_path) -> None:
         validate_config(config, require_cloud_credentials=True)
 
 
+def test_production_validation_rejects_default_local_worker_id() -> None:
+    config = BioMinerConfig(
+        storage=StorageConfig(
+            backend="s3",
+            bucket="biominer",
+            prefix="prod",
+            endpoint_url="https://s3.example.test",
+            access_key_id="key-id",
+            secret_access_key="secret",
+            region="us-test-1",
+        ),
+        workstore=WorkStoreConfig(backend="postgres", dsn="postgresql://user:pass@example.test/db"),
+        runtime=RuntimeConfig(),
+    )
+
+    with pytest.raises(ConfigError, match="BIOMINER_WORKER_ID"):
+        validate_config(config, require_cloud_credentials=True)
+
+
 def test_local_config_requires_explicit_dev_override() -> None:
     config = BioMinerConfig(
         storage=StorageConfig(backend="local", prefix="."),

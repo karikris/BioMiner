@@ -137,7 +137,7 @@ def production_missing_config_variables(config: BioMinerConfig) -> list[str]:
         _append_missing(missing, config.storage.region, "BIOMINER_S3_REGION")
     if config.workstore.backend == "postgres":
         _append_missing(missing, config.workstore.dsn, config.workstore.dsn_env or "BIOMINER_WORKSTORE_DSN")
-    _append_missing(missing, config.runtime.worker_id, config.runtime.worker_id_env)
+        _append_missing(missing, _production_worker_id(config.runtime.worker_id), config.runtime.worker_id_env)
     return missing
 
 
@@ -285,6 +285,11 @@ def _append_missing(missing: list[str], value: str | None, env_name: str | None)
     if value:
         return
     missing.append(str(env_name or "<unknown>"))
+
+
+def _production_worker_id(value: str | None) -> str:
+    cleaned = str(value or "").strip()
+    return "" if cleaned.casefold() == "local" else cleaned
 
 
 def _redact_access_key(value: str | None) -> str | None:
