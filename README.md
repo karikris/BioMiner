@@ -138,7 +138,7 @@ The active implementation covers:
 - deterministic atomic Flickr query compilation;
 - fixed upload-date Flickr search slicing;
 - bounded metadata polling with a shared SQLite ledger;
-- anti-keyword filtering;
+- metadata keyword flagging for review evidence;
 - temporary image caching and deletion;
 - BioCLIP 2.5 register-based classification helpers;
 - evidence buckets and category/life-stage fields;
@@ -170,7 +170,7 @@ src/biominer/
 
 config/
   butterfly_scope.json
-  anti_keywords.json
+  vision_profiles/
   ...
 
 tests/
@@ -728,26 +728,15 @@ uv run biominer poll-once \
 
 Each worker must reserve an API-call token before making a request.
 
-# Step 2 — Metadata filter
+# Step 2 — Metadata flagging
 
 Inputs:
 
 ```text
 staging/evidence/poll_once_evidence.parquet
-config/anti_keywords.json
 ```
 
-Run:
-
-```bash
-uv run biominer filter \
-  --input staging/evidence/poll_once_evidence.parquet \
-  --anti-keywords-json config/anti_keywords.json \
-  --output staging/evidence/filtered.parquet \
-  --dropped-output staging/evidence/dropped.parquet
-```
-
-Drop obvious non-biodiversity material:
+Metadata keyword hits are retained as review and evidence-bucket flags rather than exposed as a public hard-drop command. Flag obvious non-biodiversity material:
 
 ```text
 artwork
