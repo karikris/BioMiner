@@ -30,7 +30,7 @@ def test_papilio_species_example_documents_generic_object_pipeline() -> None:
         "biominer vision detect",
         "biominer vision score",
         "biominer vision ablate",
-        "biominer vision join",
+        "biominer evidence join",
     ):
         assert command in text
     assert '--species-context staging/species_runs/papilio_demoleus/species_context.json' in text

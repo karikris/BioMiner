@@ -2,13 +2,18 @@
 
 This example keeps `Papilio demoleus` as fixture data and a CLI input only. The runnable path is the generic single-species object pipeline.
 
-Resolve the species context first:
+Resolve the species scope through the production run planner:
 
 ```bash
-uv run biominer species resolve \
-  --scientific-name "Papilio demoleus" \
+uv run biominer run \
+  --taxon "Papilio demoleus" \
+  --rank species \
   --registry-dir data/registry/current \
-  --output-root staging/species_runs/papilio_demoleus
+  --output-prefix staging/species_runs/papilio_demoleus \
+  --storage-backend local \
+  --workstore-backend sqlite \
+  --stages resolve \
+  --dry-run
 ```
 
 Run object detection on the filtered canonical records:
@@ -58,7 +63,7 @@ uv run biominer vision ablate \
 Join canonical records, object detections, and object BioCLIP scores:
 
 ```bash
-uv run biominer vision join \
+uv run biominer evidence join \
   --species-context staging/species_runs/papilio_demoleus/species_context.json \
   --input staging/species_runs/papilio_demoleus/filtered.parquet \
   --detections staging/species_runs/papilio_demoleus/object_detections.parquet \

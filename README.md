@@ -2,7 +2,7 @@
 
 BioMiner is a taxonomically grounded Flickr butterfly-discovery and image-triage pipeline.
 
-It builds a reviewed multilingual butterfly name registry, compiles deterministic Flickr search definitions, fetches Flickr metadata, removes obvious non-biodiversity material, classifies temporary images with BioCLIP 2.5, assigns evidence buckets, and uses targeted Flickr comment review to strengthen ambiguous records.
+It builds a reviewed multilingual butterfly name registry, compiles deterministic Flickr search definitions, fetches Flickr metadata, records metadata review flags, finds candidate objects with YOLOE/YOLO26-style coarse detectors, scores temporary whole images and crops with BioCLIP 2.5, assigns evidence buckets, and uses targeted Flickr comment review to strengthen ambiguous records.
 
 BioMiner separates three forms of evidence:
 
@@ -29,13 +29,14 @@ Step 1: Flickr metadata discovery
   -> Flickr photos.search metadata
   -> one canonical evidence row per photo with folded query-term provenance
 
-Step 2: metadata filtering
+Step 2: metadata flagging
   metadata/evidence Parquet
-  -> remove obvious non-biodiversity and hard negatives
+  -> preserve review flags for obvious non-biodiversity and hard-negative hints
 
-Step 3: BioCLIP screening
+Step 3: detector-first BioCLIP screening
   temporary image download
-  -> BioCLIP 2.5 species and triage scoring
+  -> YOLOE/YOLO26 coarse object proposals
+  -> BioCLIP 2.5 whole-image, detector-crop, and segmentation-crop scoring
   -> Gold/Silver/Bronze/Bin/InReview
   -> delete temporary image
 
@@ -47,14 +48,14 @@ Step 4: targeted comment review
 
 ## Object-Level BioCLIP Pipeline
 
-BioMiner now has a detector-first object pipeline alongside the existing whole-image/register BioCLIP path:
+BioMiner's production visual path is detector-first and object-evidence based:
 
 ```text
 canonical source records
   -> object detections with source + flickr_photo_id join keys
   -> ephemeral detector crops
   -> BioCLIP object scores against SpeciesContext/candidate-set labels
-  -> whole-image, detector-crop, and crop+segmentation ablation rows
+  -> whole-image, detector-crop, and detector-crop-segmentation rows when masks are available
   -> object_evidence_joined.parquet and photo_evidence_summary.parquet
 ```
 
@@ -93,7 +94,7 @@ uv run biominer vision ablate \
   --output-dir staging/species_runs/example/ablations \
   --modes whole_image,detector_crop,detector_crop_segmentation
 
-uv run biominer vision join \
+uv run biominer evidence join \
   --input staging/species_runs/example/filtered.parquet \
   --detections staging/species_runs/example/object_detections.parquet \
   --scores staging/species_runs/example/object_bioclip_scores.parquet \
@@ -183,16 +184,15 @@ run/
 
 Generated data, raw payloads, registry outputs, model files, downloaded images, local databases, credentials, and caches must not be committed.
 
-## Cloud Integration Status
+## Production Storage Status
 
-Phase 1 cloud integration is interface-only and local-compatible. BioMiner now separates durable artifact storage from operational work state:
+BioMiner separates durable artifact storage from operational work state:
 
-- `CloudStorage` / `LocalStorageBackend` for local Parquet shards and JSON artifacts;
-- `WorkStore` / `SQLiteWorkStore` for local queue and resume state;
-- S3-compatible storage scaffolding for Backblaze B2 via `s3://...` URIs and a configurable endpoint URL;
-- Supabase Postgres scaffolding for future queue, ledger, run, and shard inventory state.
+- S3-compatible storage for Parquet shards, manifests, reports, and raw-response audit payloads;
+- Postgres workstore rows for queues, API-call ledgers, completed keys, run state, shard inventory, and resume state;
+- explicit local filesystem and SQLite backends for tests and isolated development only.
 
-Local filesystem + SQLite remains the default. Workers must write unique immutable Parquet shards such as `evidence/stage=poll_once/run_id=<run_id>/worker=<worker_id>/batch=<batch_id>.parquet`; compaction is a later phase. See `docs/cloud_storage.md`.
+Production defaults are `BIOMINER_STORAGE_BACKEND=s3` and `BIOMINER_WORKSTORE_BACKEND=postgres`. Local filesystem + SQLite must be selected explicitly with local/dev config or `--storage-backend local --workstore-backend sqlite`. Workers write unique immutable Parquet shards such as `evidence/stage=poll_once/run_id=<run_id>/worker=<worker_id>/batch=<batch_id>.parquet`. See `docs/cloud_storage.md`.
 
 ## Requirements
 
@@ -959,50 +959,44 @@ Comments must not override hard negatives or fabricate structured coordinates fr
 
 # Common commands
 
-Apply evidence rules:
+Build or audit the registry:
 
 ```bash
-uv run biominer apply-rules \
-  --evidence staging/evidence/poll_once_evidence.parquet \
-  --output staging/evidence/classified.parquet
+uv run biominer registry build --help
+uv run biominer registry audit --help
 ```
 
-Inspect API budget:
+Run the rank-aware production workflow:
 
 ```bash
-uv run biominer qa-rate-limit \
-  --state-db data/state/flickr_poller.sqlite
+uv run biominer run \
+  --taxon "Papilio demoleus" \
+  --rank species \
+  --registry-dir data/registry/current \
+  --output-prefix s3://biominer/runs \
+  --storage-backend s3 \
+  --workstore-backend postgres
 ```
 
-Summarise a report:
+Validate production configuration:
 
 ```bash
-uv run biominer qa-summary \
-  --report reports/some_run_summary.json
+uv run biominer storage doctor
+uv run biominer workstore doctor
 ```
 
-Compact Parquet shards:
+Run object detection and BioCLIP scoring as debug subcommands:
 
 ```bash
-uv run biominer compact-parquet \
-  --input-root staging/evidence/shards \
-  --output staging/evidence/compacted.parquet
+uv run biominer vision detect --help
+uv run biominer vision score --help
+uv run biominer evidence join --help
 ```
 
-Export bucket views:
+Use dev-only utilities for direct Flickr/comment debugging:
 
 ```bash
-uv run biominer export-bucket-views \
-  --input staging/evidence/classified_with_comments.parquet \
-  --output-dir reports/bucket_views
-```
-
-Clean the temporary image cache:
-
-```bash
-uv run biominer gc-cache \
-  --cache-root data/cache/images \
-  --delete
+uv run biominer dev --help
 ```
 
 # Data stack

@@ -1,17 +1,22 @@
 # Cloud Provider Configuration
 
-BioMiner can be configured for local development or cloud-ready execution without changing pipeline code.
+BioMiner can be configured for production cloud execution or explicit local development without changing pipeline code.
 
-Local defaults require no environment variables:
+Production defaults are S3-compatible object storage plus a Postgres workstore:
 
 ```toml
 [biominer.storage]
-backend = "local"
-prefix = "."
+backend = "s3"
+bucket = "biominer"
+prefix = "biominer"
+endpoint_url_env = "BIOMINER_S3_ENDPOINT_URL"
+access_key_id_env = "BIOMINER_S3_ACCESS_KEY_ID"
+secret_access_key_env = "BIOMINER_S3_SECRET_ACCESS_KEY"
+region = "auto"
 
 [biominer.workstore]
-backend = "sqlite"
-sqlite_path = "data/state/biominer.sqlite"
+backend = "postgres"
+dsn_env = "BIOMINER_WORKSTORE_DSN"
 
 [biominer.runtime]
 worker_id_env = "BIOMINER_WORKER_ID"
@@ -42,9 +47,14 @@ Required environment variables for a Backblaze B2 plus Supabase-style setup:
 BIOMINER_S3_ENDPOINT_URL=https://s3.<region>.backblazeb2.com
 BIOMINER_S3_ACCESS_KEY_ID=<from environment>
 BIOMINER_S3_SECRET_ACCESS_KEY=<from environment>
+BIOMINER_S3_REGION=<region>
+BIOMINER_S3_BUCKET=biominer
+BIOMINER_S3_PREFIX=biominer
 BIOMINER_WORKSTORE_DSN=postgresql://user:password@host:5432/postgres
 BIOMINER_WORKER_ID=worker-001
 ```
+
+Local filesystem and SQLite are dev/test overrides only. Use `config/biominer.local.example.toml` or explicit `--storage-backend local --workstore-backend sqlite` flags for local smoke tests.
 
 Supabase Postgres stores control-plane state: work queue rows, API-call ledger rows, completed keys, run state, shard inventory, resume state, and compaction manifests. It does not store Parquet payloads.
 
@@ -65,16 +75,11 @@ Example local parser smoke:
 biominer --config config/biominer.local.example.toml --version
 ```
 
-Example cloud-compatible compaction dry run:
+Production configuration checks:
 
 ```text
-biominer --config config/biominer.cloud.example.toml compact-parquet \
-  --input-prefix s3://biominer/biominer/evidence/stage=poll_once/run_id=... \
-  --output-prefix s3://biominer/biominer \
-  --source-stage poll_once \
-  --registry-version butterflies-v1 \
-  --compaction-run-id compact-1 \
-  --dry-run
+biominer storage doctor --config config/biominer.cloud.example.toml
+biominer workstore doctor --config config/biominer.cloud.example.toml
 ```
 
 Cloud integration tests are offline/local only. They validate configuration parsing, validation, redaction, and local factories without Backblaze, Supabase, Docker, network access, Flickr credentials, CUDA, or BioCLIP weights.

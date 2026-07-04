@@ -48,7 +48,8 @@ The production config loader resolves these values from environment variables by
 Run cloud validation with:
 
 ```text
-uv run biominer cloud doctor
+uv run biominer storage doctor
+uv run biominer workstore doctor
 ```
 
 `psycopg` is intentionally optional. Importing BioMiner does not require it; Postgres methods raise a clear runtime error if it is absent.
@@ -142,9 +143,9 @@ Shard manifest repair is optional. It lists shard objects under a prefix, compar
 
 Postgres/Supabase remains scaffolded for Phase 3, with claim SQL using `FOR UPDATE SKIP LOCKED` for safe multi-worker claiming. Tests are local-only and do not require Backblaze B2, Supabase, network access, Docker, Flickr credentials, CUDA, or BioCLIP weights.
 
-## Phase 4 Compaction
+## Compaction Internals
 
-Phase 4 adds periodic compaction for immutable worker shards. Compaction reads small source shards, writes new immutable compacted Parquet parts, and records source-to-output relationships in `WorkStore`. It does not delete, rewrite, or append to source shards.
+BioMiner still has internal compaction helpers for immutable worker shards, but local compaction is no longer a public production command. Future production compaction should be run through orchestrated jobs that read shard inventory from `WorkStore`, write new immutable compacted Parquet parts, and record source-to-output relationships. It must not delete, rewrite, or append to source shards.
 
 Evidence compaction writes paths like:
 
@@ -164,23 +165,4 @@ The executor:
 - records consumed source shard IDs in `biominer_compaction_inputs`;
 - writes `reports/run_id=<compaction_run_id>/compaction_<source_stage>.json`.
 
-The legacy local command still works:
-
-```text
-biominer compact-parquet --input-root staging/evidence/shards --output staging/evidence/compacted.parquet
-```
-
-The cloud-compatible mode uses prefixes and immutable part paths:
-
-```text
-biominer compact-parquet \
-  --input-prefix staging/evidence/stage=poll_once \
-  --output-prefix staging \
-  --source-stage poll_once \
-  --registry-version butterflies-v1 \
-  --compaction-run-id compact-1 \
-  --dedupe-key source \
-  --dedupe-key flickr_photo_id
-```
-
-Backblaze B2 remains S3-compatible object storage via `s3://...` paths and endpoint configuration. Phase 4 tests are local-only; provider lifecycle deletion and full cloud compaction operations remain later work.
+Backblaze B2 remains S3-compatible object storage via `s3://...` paths and endpoint configuration. Compaction tests are local-only; provider lifecycle deletion and full cloud compaction operations remain later work.
