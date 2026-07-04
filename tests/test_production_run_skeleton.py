@@ -7,6 +7,7 @@ import polars as pl
 import pytest
 
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
+from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.evidence import evidence_count_metrics
 from biominer.evidence.join import write_object_evidence_outputs
 from biominer.registry.trust_policy import (
@@ -184,7 +185,7 @@ def test_orchestrator_resolves_scope_and_runs_stage_subset_with_fake_handlers(tm
         rank="genus",
         registry_dir=str(registry),
         output_root=tmp_path / "runs",
-        stages=(RunStage.RESOLVE_TAXON_SCOPE, RunStage.COMPILE_QUERIES, RunStage.DETECT_OBJECTS),
+        stages=(RunStage.RESOLVE_TAXON_SCOPE, RunStage.COMPILE_QUERIES, RunStage.POLL_FLICKR),
     )
     plan = ProductionRunOrchestrator(
         request,
@@ -196,7 +197,7 @@ def test_orchestrator_resolves_scope_and_runs_stage_subset_with_fake_handlers(tm
     assert [(stage.stage, stage.status, stage.message) for stage in plan.manifest.stages] == [
         (RunStage.RESOLVE_TAXON_SCOPE, StageStatus.COMPLETE, None),
         (RunStage.COMPILE_QUERIES, StageStatus.COMPLETE, None),
-        (RunStage.DETECT_OBJECTS, StageStatus.SKIPPED, "stage_not_implemented"),
+        (RunStage.POLL_FLICKR, StageStatus.SKIPPED, "stage_not_implemented"),
     ]
     assert plan.manifest.stages[1].metrics == {"compiled_definitions": 4}
     assert plan.paths.manifest_path.exists()
@@ -327,6 +328,78 @@ def test_orchestrator_join_evidence_fails_when_local_inputs_are_missing(tmp_path
     assert "canonical_source_records.parquet" in result.manifest.stages[0].message
 
 
+def test_orchestrator_runs_local_detection_and_object_scoring_with_injected_fakes(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
+    _write_source_records(plan.paths)
+    detector = FakeObjectDetector(
+        [[DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 4.0), objectness_score=0.91)]]
+    )
+    scorer = _ConstantObjectScorer(
+        {
+            "Danaus plexippus": 0.82,
+            "a photo of Danaus plexippus": 0.81,
+            "Monarch": 0.50,
+            "Nymphalidae": 0.93,
+            "Danaus": 0.90,
+        }
+    )
+
+    result = ProductionRunOrchestrator(
+        request,
+        taxon_scope=scope,
+        object_detector=detector,
+        image_loader=lambda _record: _tiny_rgb_image(),
+        object_scorer=scorer,
+        allow_single_target_fixture=True,
+    ).run()
+
+    assert result.manifest.status == "complete"
+    assert result.paths.object_detections_path.exists()
+    assert result.paths.object_scores_path.exists()
+    assert result.manifest.detection_counts == {
+        "images_seen": 1,
+        "detections": 1,
+        "crops_created": 1,
+        "images_loaded": 1,
+        "image_failures": 0,
+    }
+    assert result.manifest.bioclip_counts["objects_scored"] == 1
+    score_row = pl.read_parquet(result.paths.object_scores_path).to_dicts()[0]
+    assert score_row["species_top1_scientific_name"] == "Danaus plexippus"
+    assert score_row["target_species_score"] == 0.82
+    assert result.manifest.stages[0].outputs["object_detections"] == str(result.paths.object_detections_path)
+    assert result.manifest.stages[1].outputs["object_scores"] == str(result.paths.object_scores_path)
+
+
+def test_orchestrator_detect_stage_fails_without_detector_runtime(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.DETECT_OBJECTS,),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
+    _write_source_records(plan.paths)
+
+    result = ProductionRunOrchestrator(request, taxon_scope=scope).run()
+
+    assert result.manifest.status == "failed"
+    assert result.manifest.stages[0].status is StageStatus.FAILED
+    assert result.manifest.stages[0].message == "detector_runtime_required_for_detect_objects"
+
+
 def test_run_paths_are_stable(tmp_path) -> None:
     paths = RunPaths.from_root(tmp_path, run_id="Family: Papilionidae")
 
@@ -427,7 +500,7 @@ def _write_query_definitions(registry: Path) -> None:
     ).write_parquet(registry / "flickr_query_definitions.parquet")
 
 
-def _write_join_stage_inputs(paths: RunPaths) -> None:
+def _write_source_records(paths: RunPaths) -> None:
     paths.ensure_directories()
     pl.DataFrame(
         [
@@ -435,7 +508,7 @@ def _write_join_stage_inputs(paths: RunPaths) -> None:
                 "source": "flickr",
                 "flickr_photo_id": "photo-1",
                 "source_record_hash": "sha256:source-1",
-                "image_url": "https://live.staticflickr.com/photo-1.jpg",
+                "image_url": "memory://photo-1",
                 "photo_page_url": "https://www.flickr.com/photos/u/photo-1",
                 "title": "Monarch butterfly",
                 "description": "Danaus plexippus on milkweed",
@@ -446,6 +519,11 @@ def _write_join_stage_inputs(paths: RunPaths) -> None:
             }
         ]
     ).write_parquet(paths.source_records_path)
+
+
+def _write_join_stage_inputs(paths: RunPaths) -> None:
+    paths.ensure_directories()
+    _write_source_records(paths)
     pl.DataFrame(
         [
             {
@@ -511,6 +589,22 @@ def _write_join_stage_inputs(paths: RunPaths) -> None:
             }
         ]
     ).write_parquet(paths.object_scores_path)
+
+
+def _tiny_rgb_image() -> DecodedImage:
+    return DecodedImage(width=4, height=4, mode="RGB", data=bytes([255, 255, 255] * 16), source_uri="memory://photo-1")
+
+
+class _ConstantObjectScorer:
+    model_id = "fake-bioclip"
+    model_version = "test"
+    model_checkpoint = "fake-checkpoint"
+
+    def __init__(self, scores: dict[str, float]) -> None:
+        self.scores = scores
+
+    def score(self, _item: dict[str, object], labels: tuple[str, ...]) -> dict[str, float]:
+        return {label: float(self.scores.get(label, 0.0)) for label in labels}
 
 
 def _query_definition_row(query_definition_id: str, source_term: str, search_field: str, search_priority: int) -> dict[str, object]:

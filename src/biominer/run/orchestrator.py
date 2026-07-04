@@ -46,6 +46,7 @@ class ProductionRunRequest:
     workstore_backend: str = "postgres"
     vision_backend: str = DEFAULT_VISION_BACKEND
     bioclip_model: str = DEFAULT_BIOCLIP_MODEL
+    bioclip_ablation_mode: str = "detector_crop"
     stages: tuple[RunStage, ...] = DEFAULT_PRODUCTION_STAGES
     dry_run: bool = False
     limits: dict[str, int] = field(default_factory=dict)
@@ -75,6 +76,7 @@ class ProductionRunPlan:
                 "workstore_backend": self.request.workstore_backend,
                 "vision_backend": self.request.vision_backend,
                 "bioclip_model": self.request.bioclip_model,
+                "bioclip_ablation_mode": self.request.bioclip_ablation_mode,
                 "stages": [stage.value for stage in self.request.stages],
                 "dry_run": self.request.dry_run,
                 "limits": dict(self.request.limits),
@@ -116,6 +118,7 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
         model_configs={
             "vision_backend": request.vision_backend,
             "bioclip_model": request.bioclip_model,
+            "bioclip_ablation_mode": request.bioclip_ablation_mode,
             "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
             "visual_modes": list(OBJECT_VISUAL_MODES),
         },
@@ -143,11 +146,21 @@ class ProductionRunOrchestrator:
         *,
         taxon_scope: TaxonScope | None = None,
         workstore: WorkStore | None = None,
+        object_detector: Any | None = None,
+        image_loader: Callable[[dict[str, Any]], Any] | None = None,
+        object_scorer: Any | None = None,
+        species_candidate_path: str | Path | None = None,
+        allow_single_target_fixture: bool = False,
         stage_handlers: Mapping[RunStage, StageHandler] | None = None,
     ) -> None:
         self.request = request
         self.taxon_scope = taxon_scope
         self.workstore = workstore
+        self.object_detector = object_detector
+        self.image_loader = image_loader
+        self.object_scorer = object_scorer
+        self.species_candidate_path = species_candidate_path
+        self.allow_single_target_fixture = allow_single_target_fixture
         self.stage_handlers = dict(stage_handlers or {})
 
     def plan(self) -> ProductionRunPlan:
@@ -211,6 +224,10 @@ class ProductionRunOrchestrator:
             return self._run_compile_queries_stage(plan)
         if stage == RunStage.ENQUEUE_FLICKR_WORK:
             return self._run_enqueue_flickr_work_stage(plan)
+        if stage == RunStage.DETECT_OBJECTS:
+            return self._run_detect_objects_stage(plan)
+        if stage == RunStage.SCORE_BIOCLIP:
+            return self._run_score_bioclip_stage(plan)
         if stage == RunStage.JOIN_EVIDENCE:
             return self._run_join_evidence_stage(plan)
         if stage == RunStage.SUMMARIZE:
@@ -262,6 +279,84 @@ class ProductionRunOrchestrator:
                 "duplicate_work_items": len(queries) - inserted,
             },
             outputs={"workstore_stage": RunStage.POLL_FLICKR.value},
+        )
+
+    def _run_detect_objects_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
+        if is_cloud_uri(self.request.output_root):
+            return StageExecutionResult(status=StageStatus.FAILED, message="detect_objects_requires_local_artifacts_until_storage_io_is_wired")
+        missing = _missing_paths(plan.paths.source_records_path)
+        if missing:
+            return StageExecutionResult(status=StageStatus.FAILED, message="missing_detection_inputs: " + ", ".join(missing))
+        if self.object_detector is None or self.image_loader is None:
+            return StageExecutionResult(status=StageStatus.FAILED, message="detector_runtime_required_for_detect_objects")
+        import polars as pl
+        from biominer.detection.pipeline import run_detection_pipeline
+
+        plan.paths.ensure_directories()
+        records = pl.read_parquet(plan.paths.source_records_path).to_dicts()
+        result = run_detection_pipeline(
+            records=records,
+            detector=self.object_detector,
+            output_path=plan.paths.object_detections_path,
+            image_loader=self.image_loader,
+        )
+        return StageExecutionResult(
+            metrics={
+                "records_seen": result.records_seen,
+                "images_loaded": result.images_loaded,
+                "image_failures": result.image_failures,
+                "detections_written": result.detections_written,
+                "crops_created": result.crops_created,
+                "parquet_batches_written": result.parquet_batches_written,
+            },
+            outputs={"object_detections": str(result.output_path)},
+        )
+
+    def _run_score_bioclip_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
+        if is_cloud_uri(self.request.output_root):
+            return StageExecutionResult(status=StageStatus.FAILED, message="score_bioclip_requires_local_artifacts_until_storage_io_is_wired")
+        missing = _missing_paths(plan.paths.source_records_path, plan.paths.object_detections_path)
+        if missing:
+            return StageExecutionResult(status=StageStatus.FAILED, message="missing_score_inputs: " + ", ".join(missing))
+        if self.object_scorer is None:
+            return StageExecutionResult(status=StageStatus.FAILED, message="bioclip_runtime_required_for_score_bioclip")
+        import polars as pl
+        from biominer.bioclip.candidate_sets import build_candidate_set_for_taxon_scope
+        from biominer.bioclip.object_runner import screen_object_detections
+
+        plan.paths.ensure_directories()
+        canonical = pl.read_parquet(plan.paths.source_records_path)
+        detections = pl.read_parquet(plan.paths.object_detections_path)
+        target_context = plan.manifest.taxon_scope.species_contexts[0]
+        candidate_set = build_candidate_set_for_taxon_scope(
+            plan.manifest.taxon_scope,
+            target_context=target_context,
+            species_candidate_path=self.species_candidate_path,
+            records=canonical.to_dicts(),
+            allow_single_target_fixture=self.allow_single_target_fixture,
+        )
+        result = screen_object_detections(
+            canonical_records=canonical,
+            detections=detections,
+            species_context=target_context,
+            candidate_set=candidate_set,
+            scorer=self.object_scorer,
+            output_path=plan.paths.object_scores_path,
+            ablation_mode=self.request.bioclip_ablation_mode,  # type: ignore[arg-type]
+        )
+        return StageExecutionResult(
+            metrics={
+                "records_seen": result.records_seen,
+                "detections_seen": result.detections_seen,
+                "crops_scored": result.crops_scored,
+                "objects_scored": result.crops_scored,
+                "score_batches_written": result.score_batches_written,
+                "segmentation_unavailable_count": result.segmentation_unavailable_count,
+                "segmentation_status": result.segmentation_status,
+                "visual_mode": result.visual_mode,
+                "visual_mode_status": result.visual_mode_status,
+            },
+            outputs={"object_scores": str(result.output_path or plan.paths.object_scores_path)},
         )
 
     def _registry_query_definitions_path(self) -> Path:
@@ -366,6 +461,30 @@ def _merge_stage_counts(manifest: RunManifest, *, stage: RunStage, result: Stage
                 "enqueued_work_items": int(result.metrics.get("enqueued_work_items", 0)),
             },
         )
+    if stage == RunStage.DETECT_OBJECTS and result.status == StageStatus.COMPLETE:
+        return replace(
+            manifest,
+            detection_counts={
+                **manifest.detection_counts,
+                "images_seen": int(result.metrics.get("records_seen", manifest.detection_counts.get("images_seen", 0))),
+                "images_loaded": int(result.metrics.get("images_loaded", manifest.detection_counts.get("images_loaded", 0))),
+                "image_failures": int(result.metrics.get("image_failures", manifest.detection_counts.get("image_failures", 0))),
+                "detections": int(result.metrics.get("detections_written", manifest.detection_counts.get("detections", 0))),
+                "crops_created": int(result.metrics.get("crops_created", manifest.detection_counts.get("crops_created", 0))),
+            },
+            metrics={**manifest.metrics, **result.metrics},
+        )
+    if stage == RunStage.SCORE_BIOCLIP and result.status == StageStatus.COMPLETE:
+        mode = str(result.metrics.get("visual_mode") or "")
+        counts = {
+            **manifest.bioclip_counts,
+            "objects_scored": int(result.metrics.get("objects_scored", manifest.bioclip_counts.get("objects_scored", 0))),
+        }
+        if mode == "whole_image":
+            counts["whole_images_scored"] = int(result.metrics.get("objects_scored", manifest.bioclip_counts.get("whole_images_scored", 0)))
+        if mode == "detector_crop_segmentation":
+            counts["segmentation_crops_scored"] = int(result.metrics.get("objects_scored", manifest.bioclip_counts.get("segmentation_crops_scored", 0)))
+        return replace(manifest, bioclip_counts=counts, metrics={**manifest.metrics, **result.metrics})
     if stage in {RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE} and result.status == StageStatus.COMPLETE:
         return replace(
             manifest,
