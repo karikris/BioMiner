@@ -104,11 +104,11 @@ def test_missing_geo_goes_to_in_review_no_geo() -> None:
 
 def test_bronze_negative_material_museum_art_ai_other_insect() -> None:
     cases = [
-        (_record(museum_detected=True), "museum_specimen"),
+        (_record(), "pinned_specimen", {"top1_label": "a photo of a pinned museum specimen"}),
         (_record(), "artwork", {"top1_label": "a photo of artwork or illustration"}),
-        (_record(tattoo_detected=True), "tattoo"),
-        (_record(ai_generated_detected=True), "ai_generated"),
-        (_record(other_insect_detected=True), "other_insect"),
+        (_record(), "tattoo", {"top1_label": "a photo of a tattoo"}),
+        (_record(), "ai_generated", {"top1_label": "an ai generated image"}),
+        (_record(), "other_insect", {"top1_label": "a photo of an insect"}),
     ]
 
     for record, reason, *prediction_override in cases:
@@ -121,6 +121,18 @@ def test_bronze_negative_material_museum_art_ai_other_insect() -> None:
         assert result["bin_reason"] == reason
         assert result["negative_filter_reason"] == reason
         assert result["is_negative_material"] is True
+
+
+def test_metadata_negative_flags_do_not_override_strong_species_prediction() -> None:
+    result = classify_bioclip_triage(
+        record=_record(museum_detected=True, artwork_detected=True, ai_generated_detected=True, other_insect_detected=True),
+        prediction={"top1_label": "a photo of Papilio demoleus", "top1_score": 0.99, "topk_json": []},
+    )
+
+    assert result["triage_bin"] == "gold"
+    assert result["triage_reason"] == "adult_butterfly_species_match_score_gt_070"
+    assert result["negative_filter_reason"] is None
+    assert result["is_negative_material"] is False
 
 
 def test_life_stage_labels_go_to_bronze_with_specific_stage() -> None:

@@ -248,9 +248,6 @@ def _category_for_prediction(*, top1_label: str, negative_reason: str | None) ->
 
 
 def _negative_reason(record: dict[str, Any], top1_label: str) -> str | None:
-    for field, reason in NEGATIVE_RECORD_FIELDS:
-        if bool(record.get(field)):
-            return reason
     normalized = _normalize(top1_label)
     if normalized in {_normalize(label) for label in NEGATIVE_LABEL_REASONS}:
         return NEGATIVE_LABEL_REASONS[next(label for label in NEGATIVE_LABEL_REASONS if _normalize(label) == normalized)]
