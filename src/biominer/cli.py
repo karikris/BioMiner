@@ -62,11 +62,9 @@ from biominer.species.workflow import (
     build_species_comment_queue,
     fetch_species_flickr,
 )
-from biominer.storage.compaction import compact_parquet_shards
-from biominer.config import ConfigError, StorageConfig, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
+from biominer.config import ConfigError, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
 from biominer.storage.factory import create_storage_backend
 from biominer.storage.uri import join_uri
-from biominer.workstore.sqlite import SQLiteWorkStore
 
 
 BIOCLIP_25_HUGE_REPO_ID = "imageomics/bioclip-2.5-vith14"
@@ -384,26 +382,6 @@ def build_parser() -> argparse.ArgumentParser:
     poll_once_parser.add_argument("--evidence-stage", default="poll_once")
     poll_once_parser.add_argument("--no-compact", action="store_true")
     poll_once_parser.add_argument("--config")
-    gc_cache = subparsers.add_parser("gc-cache")
-    gc_cache.add_argument("--cache-root", required=True)
-    gc_cache.add_argument("--delete", action="store_true")
-    compact_parquet = subparsers.add_parser("compact-parquet")
-    compact_parquet.add_argument("--input-root")
-    compact_parquet.add_argument("--output")
-    compact_parquet.add_argument("--input-prefix")
-    compact_parquet.add_argument("--output-prefix")
-    compact_parquet.add_argument("--source-stage", default="poll_once")
-    compact_parquet.add_argument("--output-stage")
-    compact_parquet.add_argument("--registry-version")
-    compact_parquet.add_argument("--run-id")
-    compact_parquet.add_argument("--compaction-run-id")
-    compact_parquet.add_argument("--target-file-mb", type=int, default=256)
-    compact_parquet.add_argument("--max-file-mb", type=int, default=512)
-    compact_parquet.add_argument("--dedupe-key", action="append", default=[])
-    compact_parquet.add_argument("--schema-mode", choices=("strict", "diagonal_relaxed"), default="strict")
-    compact_parquet.add_argument("--dry-run", action="store_true")
-    compact_parquet.add_argument("--storage-backend", choices=("local", "s3"))
-    compact_parquet.add_argument("--workstore-sqlite-path")
     qa_rate_limit = subparsers.add_parser("qa-rate-limit")
     qa_rate_limit.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
     qa_rate_limit.add_argument("--ledger-path", dest="state_db")
@@ -700,66 +678,6 @@ def run(args: argparse.Namespace) -> int:
             work_store=work_store,
         )
         print(json.dumps({**result.__dict__, "state_db": str(result.state_db)}, indent=2, sort_keys=True))
-        return 0
-    if args.command == "gc-cache":
-        print(json.dumps(_cache_gc_summary(Path(args.cache_root), delete=args.delete), indent=2, sort_keys=True))
-        return 0
-    if args.command == "compact-parquet":
-        if args.input_prefix or args.output_prefix:
-            if not args.input_prefix or not args.output_prefix:
-                print(json.dumps({"error": "--input-prefix and --output-prefix must be provided together"}, indent=2, sort_keys=True))
-                return 2
-            biominer_config = load_biominer_config(args.config)
-            storage_backend = args.storage_backend or (
-                "s3" if str(args.input_prefix).startswith("s3://") or str(args.output_prefix).startswith("s3://") else "local"
-            )
-            storage_config = StorageConfig(
-                **{
-                    **biominer_config.storage.__dict__,
-                    "backend": storage_backend,
-                    "prefix": str(args.output_prefix) if storage_backend == "local" else biominer_config.storage.prefix,
-                }
-            )
-            storage = create_storage_backend(storage_config)
-            workstore = SQLiteWorkStore(args.workstore_sqlite_path) if args.workstore_sqlite_path else None
-            result = compact_parquet_shards(
-                storage=storage,
-                workstore=workstore,
-                input_prefix=args.input_prefix,
-                output_prefix=args.output_prefix,
-                job_name="flickr_poll_once",
-                source_stage=args.source_stage,
-                output_stage=args.output_stage,
-                registry_version=args.registry_version,
-                run_id=args.run_id,
-                compaction_run_id=args.compaction_run_id,
-                target_file_mb=args.target_file_mb,
-                max_file_mb=args.max_file_mb,
-                dedupe_keys=args.dedupe_key or None,
-                schema_mode=args.schema_mode,
-                dry_run=args.dry_run,
-            )
-            print(json.dumps(result.__dict__, indent=2, sort_keys=True))
-            return 0
-        if not args.input_root or not args.output:
-            print(json.dumps({"error": "--input-root and --output are required for legacy compaction"}, indent=2, sort_keys=True))
-            return 2
-        input_paths = sorted(Path(args.input_root).rglob("*.parquet"))
-        frame = pl.read_parquet(input_paths) if input_paths else pl.DataFrame()
-        output_path = Path(args.output)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        frame.write_parquet(output_path)
-        print(
-            json.dumps(
-                {
-                    "input_parquet_files": len(input_paths),
-                    "output": str(output_path),
-                    "rows": frame.height,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
         return 0
     if args.command == "qa-rate-limit":
         print(json.dumps(MetadataPollState(args.state_db).api_budget_summary(), indent=2, sort_keys=True))
@@ -1100,39 +1018,6 @@ def _run_species_command(args: argparse.Namespace) -> int:
         print(json.dumps({**state.summary(), **result}, indent=2, sort_keys=True))
         return 0
     return 2
-
-
-def _publication_state_summary(frame: pl.DataFrame, output_path: Path) -> dict[str, object]:
-    state_counts = {
-        str(row["publication_state"]): int(row["len"])
-        for row in frame.group_by("publication_state").len().to_dicts()
-    } if frame.height else {}
-    in_review_without_reason = 0
-    if frame.height and "review_reason" in frame.columns:
-        in_review_without_reason = frame.filter(
-            (pl.col("publication_state") == "in_review") & (pl.col("review_reason").list.len() == 0)
-        ).height
-    return {
-        "output": str(output_path),
-        "rows": frame.height,
-        "publication_state_counts": state_counts,
-        "in_review_without_reason": in_review_without_reason,
-    }
-
-
-def _cache_gc_summary(cache_root: Path, *, delete: bool) -> dict[str, object]:
-    files = [path for path in cache_root.rglob("*") if path.is_file()] if cache_root.exists() else []
-    deleted = 0
-    if delete:
-        for path in files:
-            path.unlink()
-            deleted += 1
-    return {
-        "cache_root": str(cache_root),
-        "files_seen": len(files),
-        "bytes_seen": sum(path.stat().st_size for path in files if path.exists()),
-        "deleted_files": deleted,
-    }
 
 
 def _run_bioclip_runtime_check(args: argparse.Namespace) -> int:

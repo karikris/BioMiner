@@ -29,6 +29,8 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert "dev" in commands
     assert "filter" not in commands
     assert "apply-rules" not in commands
+    assert "compact-parquet" not in commands
+    assert "gc-cache" not in commands
     assert "build-papilio-demoleus-query-plan" not in commands
     assert "fetch" not in commands
     assert "fetch-live" not in commands
@@ -2033,19 +2035,13 @@ def test_removed_filter_and_apply_rules_commands_no_longer_parse() -> None:
         parser.parse_args(["filter", "--input", "evidence.parquet", "--output", "flagged.parquet"])
 
 
-def test_compact_and_gc_cache_cli(tmp_path, capsys) -> None:
+def test_legacy_local_compaction_and_gc_cache_commands_no_longer_parse() -> None:
     parser = build_parser()
 
-    predictions = tmp_path / "predictions"
-    predictions.mkdir()
-    pl.DataFrame({"flickr_photo_id": ["1"]}).write_parquet(predictions / "part.parquet")
-    compacted_path = tmp_path / "compacted.parquet"
-    args = parser.parse_args(["compact-parquet", "--input-root", str(predictions), "--output", str(compacted_path)])
-    assert run(args) == 0
-    compact_payload = json.loads(capsys.readouterr().out)
-    assert compact_payload["input_parquet_files"] == 1
-    assert compact_payload["rows"] == 1
-    assert compacted_path.exists()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["compact-parquet", "--input-root", "predictions", "--output", "compacted.parquet"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["gc-cache", "--cache-root", "data/cache", "--delete"])
 
 
 def test_comments_enrichment_cli(tmp_path, capsys) -> None:
@@ -2057,18 +2053,6 @@ def test_comments_enrichment_cli(tmp_path, capsys) -> None:
     assert payload["comment_fetch_scope"] == "selected_candidate_records_only"
     assert payload["photo_ids_requested"] == ["1"]
     assert payload["queued_comment_candidates_added"] == 1
-
-
-def test_gc_cache_reports_deleted_files(tmp_path, capsys) -> None:
-    parser = build_parser()
-    cache_root = tmp_path / "cache"
-    cache_root.mkdir()
-    (cache_root / "image.jpg").write_bytes(b"abc")
-    args = parser.parse_args(["gc-cache", "--cache-root", str(cache_root), "--delete"])
-    assert run(args) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["files_seen"] == 1
-    assert payload["deleted_files"] == 1
 
 
 def test_export_bucket_views_cli_writes_derived_parquet_files(tmp_path, capsys) -> None:
