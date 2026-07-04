@@ -140,7 +140,7 @@ The active implementation covers:
 - deterministic atomic Flickr query compilation;
 - fixed upload-date Flickr search slicing;
 - bounded metadata polling with a shared SQLite ledger;
-- metadata keyword flagging for review evidence;
+- in-memory metadata text hints for review evidence, without a path-backed anti-keyword config;
 - temporary image caching and deletion;
 - BioCLIP 2.5 register-based classification helpers;
 - evidence buckets and category/life-stage fields;
