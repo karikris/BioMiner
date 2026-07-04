@@ -17,6 +17,9 @@ REVIEW_REASON_PRECEDENCE = (
     "tattoo",
     "museum_specimen",
     "ai_generated",
+    "logo_or_brand",
+    "textile_or_pattern",
+    "object_or_product",
     "non_target_order",
     "species_conflict",
     "multiple_species",
@@ -42,8 +45,12 @@ METADATA_FLAG_REASON_COLUMNS = {
     "artwork_hint": "artwork",
     "museum_specimen_hint": "museum_specimen",
     "ai_generated_hint": "ai_generated",
+    "logo_or_brand_hint": "logo_or_brand",
+    "textile_or_pattern_hint": "textile_or_pattern",
+    "object_or_product_hint": "object_or_product",
     "other_insect_hint": "non_target_order",
 }
+METADATA_ONLY_REVIEW_CATEGORIES = {"logo_or_brand", "textile_or_pattern", "object_or_product"}
 
 
 def bucket_evidence_frame(evidence: pl.DataFrame) -> pl.DataFrame:
@@ -122,7 +129,7 @@ def review_reasons_for_evidence(row: dict[str, Any]) -> list[str]:
     if image_category in {"not_lepidoptera", "other_insect"} or bool(row.get("non_target_order_detected")) or _has_review_flag(row, "non_target_order_context"):
         candidates.append("non_target_order")
     if not _strong_visual_target_positive(row):
-        candidates.extend(_metadata_flag_review_reasons(row))
+        candidates.extend(_metadata_flag_review_reasons(row, category=category))
     if species_agreement_is_conflict(row):
         candidates.append("species_conflict")
     if _multiple_species_detected(row):
@@ -204,11 +211,14 @@ def _has_any_review_flag(row: dict[str, Any], flags: set[str]) -> bool:
     return bool(set(row.get("review_flags") or []) & flags)
 
 
-def _metadata_flag_review_reasons(row: dict[str, Any]) -> list[str]:
+def _metadata_flag_review_reasons(row: dict[str, Any], *, category: dict[str, str | None]) -> list[str]:
     reasons = [reason for column, reason in METADATA_FLAG_REASON_COLUMNS.items() if bool(row.get(column))]
     metadata_reason = str(row.get("metadata_negative_reason_hint") or "")
-    if metadata_reason in {"artwork", "tattoo", "museum_specimen", "ai_generated", "non_target_order"}:
+    if metadata_reason in {"artwork", "tattoo", "museum_specimen", "ai_generated", "logo_or_brand", "textile_or_pattern", "object_or_product", "non_target_order"}:
         reasons.append(metadata_reason)
+    image_category = str(category.get("image_category") or "")
+    if image_category in METADATA_ONLY_REVIEW_CATEGORIES:
+        reasons.append(image_category)
     if bool(row.get("hard_negative_text_hint")) and not reasons:
         reasons.append("ambiguous_classification")
     return reasons

@@ -120,6 +120,9 @@ def test_metadata_flags_do_not_demote_strong_visual_target_evidence() -> None:
     result = classify_evidence_row(
         _row(
             artwork_hint=True,
+            logo_or_brand_hint=True,
+            textile_or_pattern_hint=True,
+            object_or_product_hint=True,
             hard_negative_text_hint=True,
             matched_keyword_groups=["artwork"],
             matched_keywords=["illustration"],
@@ -144,6 +147,42 @@ def test_metadata_flags_are_review_context_when_visual_scoring_is_missing() -> N
 
     assert result["publication_state"] == "in_review"
     assert "artwork" in result["review_reason"]
+    assert "missing_bioclip" in result["review_reason"]
+
+
+def test_all_metadata_hard_negative_hints_are_review_context_when_visual_scoring_is_missing() -> None:
+    result = classify_evidence_row(
+        _row(
+            bioclip_top1_score=None,
+            logo_or_brand_hint=True,
+            textile_or_pattern_hint=True,
+            object_or_product_hint=True,
+            hard_negative_text_hint=True,
+            matched_keyword_groups=["logo_or_brand", "textile_or_pattern", "object_or_product"],
+            matched_keywords=["logo", "pattern", "toy"],
+        )
+    )
+
+    assert result["publication_state"] == "in_review"
+    assert "logo_or_brand" in result["review_reason"]
+    assert "textile_or_pattern" in result["review_reason"]
+    assert "object_or_product" in result["review_reason"]
+    assert "missing_bioclip" in result["review_reason"]
+
+
+def test_inferred_metadata_object_categories_are_review_context_not_hard_drops() -> None:
+    result = classify_evidence_row(
+        _row(
+            raw_title="Danaus plexippus butterfly sticker logo",
+            bioclip_top1_score=None,
+            hard_negative_text_hint=True,
+            metadata_negative_reason_hint="logo_or_brand",
+        )
+    )
+
+    assert result["publication_state"] == "in_review"
+    assert result["image_category"] == "logo_or_brand"
+    assert "logo_or_brand" in result["review_reason"]
     assert "missing_bioclip" in result["review_reason"]
 
 
