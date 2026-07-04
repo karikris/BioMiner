@@ -49,8 +49,6 @@ from biominer.registry.enrichment import INATURALIST_DAILY_REQUEST_LIMIT, build_
 from biominer.registry.gbif import GBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
-from biominer.reports.buckets import export_bucket_views
-from biominer.reports.name_evidence import build_name_evidence_report, write_name_evidence_report
 from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR, YOLOE26_DIR
 from biominer.run import ProductionRunOrchestrator, ProductionRunRequest, RunStage
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES
@@ -382,21 +380,6 @@ def build_parser() -> argparse.ArgumentParser:
     poll_once_parser.add_argument("--evidence-stage", default="poll_once")
     poll_once_parser.add_argument("--no-compact", action="store_true")
     poll_once_parser.add_argument("--config")
-    qa_rate_limit = subparsers.add_parser("qa-rate-limit")
-    qa_rate_limit.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
-    qa_rate_limit.add_argument("--ledger-path", dest="state_db")
-    qa_summary = subparsers.add_parser("qa-summary")
-    qa_summary.add_argument("--report", required=True)
-    export_views = subparsers.add_parser("export-bucket-views")
-    export_views.add_argument("--input", required=True)
-    export_views.add_argument("--output-dir", required=True)
-    name_evidence = subparsers.add_parser("report-name-evidence")
-    name_evidence.add_argument("--metadata-output", required=True)
-    name_evidence.add_argument("--bioclip-output", required=True)
-    name_evidence.add_argument("--keywords-json", required=True)
-    name_evidence.add_argument("--target-species", required=True)
-    name_evidence.add_argument("--score-threshold", type=float, default=0.9)
-    name_evidence.add_argument("--output", required=True)
     return parser
 
 
@@ -679,26 +662,6 @@ def run(args: argparse.Namespace) -> int:
         )
         print(json.dumps({**result.__dict__, "state_db": str(result.state_db)}, indent=2, sort_keys=True))
         return 0
-    if args.command == "qa-rate-limit":
-        print(json.dumps(MetadataPollState(args.state_db).api_budget_summary(), indent=2, sort_keys=True))
-        return 0
-    if args.command == "qa-summary":
-        print(json.dumps(_summarize_report(Path(args.report)), indent=2, sort_keys=True))
-        return 0
-    if args.command == "export-bucket-views":
-        print(json.dumps(export_bucket_views(args.input, args.output_dir), indent=2, sort_keys=True))
-        return 0
-    if args.command == "report-name-evidence":
-        report = build_name_evidence_report(
-            metadata_path=args.metadata_output,
-            bioclip_output_path=args.bioclip_output,
-            keywords_json=args.keywords_json,
-            target_species=args.target_species,
-            score_threshold=args.score_threshold,
-        )
-        write_name_evidence_report(args.output, report)
-        print(json.dumps({"output": args.output, **report}, indent=2, sort_keys=True))
-        return 0
     return 2
 
 
@@ -878,26 +841,6 @@ def _storage_base_uri(*, storage: object, config: object) -> str:
     if getattr(storage_config, "backend") == "s3" and getattr(storage_config, "bucket"):
         return join_uri(f"s3://{storage_config.bucket}", str(getattr(storage_config, "prefix", "") or ""))
     return str(getattr(storage_config, "prefix", "."))
-
-
-def _summarize_report(report_path: Path) -> dict[str, object]:
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    storage = report.get("storage_artifacts", {})
-    memory = report.get("memory_artifacts", {})
-    compute = report.get("compute_artifacts", {})
-    return {
-        "report": str(report_path),
-        "species": report.get("species"),
-        "region": report.get("region"),
-        "target_record_count": report.get("target_record_count"),
-        "actual_unique_records": report.get("actual_unique_records"),
-        "api_calls_made": report.get("api_calls_made", report.get("work_items_called")),
-        "step_timings_seconds": report.get("step_timings_seconds", {}),
-        "total_artifact_bytes": storage.get("total_artifact_bytes"),
-        "peak_traced_bytes": memory.get("peak_traced_bytes"),
-        "max_rss_kb": memory.get("max_rss_kb"),
-        "vision_model_loaded": compute.get("vision_model_loaded"),
-    }
 
 
 def _run_production_command(args: argparse.Namespace) -> int:

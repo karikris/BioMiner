@@ -31,6 +31,10 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert "apply-rules" not in commands
     assert "compact-parquet" not in commands
     assert "gc-cache" not in commands
+    assert "qa-rate-limit" not in commands
+    assert "qa-summary" not in commands
+    assert "export-bucket-views" not in commands
+    assert "report-name-evidence" not in commands
     assert "build-papilio-demoleus-query-plan" not in commands
     assert "fetch" not in commands
     assert "fetch-live" not in commands
@@ -1980,52 +1984,6 @@ def test_cli_help_does_not_describe_old_gold_silver_bronze_logic(capsys) -> None
     assert "bioclip_positive_without_human_verification" not in help_text
 
 
-def test_qa_rate_limit_outputs_limiter_status_json(tmp_path, capsys) -> None:
-    state = tmp_path / "poller.sqlite"
-    from biominer.flickr_fetch.metadata_poller import MetadataPollState
-
-    poll_state = MetadataPollState(state)
-    poll_state.log_api_call(work_item_id="work-1", endpoint="flickr.photos.search", status="ok")
-    parser = build_parser()
-    args = parser.parse_args(["qa-rate-limit", "--state-db", str(state)])
-
-    assert run(args) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["api_calls_in_window"] == 1
-    assert payload["photo_records_in_window"] == "not_instrumented"
-    assert payload["soft_api_calls_per_hour"] == 3500
-    assert payload["hard_api_calls_per_hour"] == 3600
-
-
-def test_qa_summary_outputs_report_summary(tmp_path, capsys) -> None:
-    report_path = tmp_path / "report.json"
-    report_path.write_text(
-        json.dumps(
-            {
-                "species": "Papilio demoleus",
-                "actual_unique_records": 16,
-                "api_calls_made": 0,
-                "step_timings_seconds": {"vision_classification": 84.9},
-                "storage_artifacts": {"total_artifact_bytes": 1234},
-                "memory_artifacts": {"peak_traced_bytes": 4567},
-                "compute_artifacts": {"vision_model_loaded": True},
-            }
-        ),
-        encoding="utf-8",
-    )
-    parser = build_parser()
-    args = parser.parse_args(["qa-summary", "--report", str(report_path)])
-
-    assert run(args) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["species"] == "Papilio demoleus"
-    assert payload["actual_unique_records"] == 16
-    assert payload["vision_model_loaded"] is True
-    assert payload["total_artifact_bytes"] == 1234
-
-
 def test_removed_filter_and_apply_rules_commands_no_longer_parse() -> None:
     parser = build_parser()
 
@@ -2044,6 +2002,14 @@ def test_legacy_local_compaction_and_gc_cache_commands_no_longer_parse() -> None
         parser.parse_args(["gc-cache", "--cache-root", "data/cache", "--delete"])
 
 
+def test_legacy_ad_hoc_report_commands_no_longer_parse() -> None:
+    parser = build_parser()
+
+    for command in ("qa-rate-limit", "qa-summary", "export-bucket-views", "report-name-evidence"):
+        with pytest.raises(SystemExit):
+            parser.parse_args([command])
+
+
 def test_comments_enrichment_cli(tmp_path, capsys) -> None:
     parser = build_parser()
     args = parser.parse_args(["fetch-comments", "--photo-id", "1", "--state-db", str(tmp_path / "comments.sqlite"), "--dry-run"])
@@ -2053,28 +2019,6 @@ def test_comments_enrichment_cli(tmp_path, capsys) -> None:
     assert payload["comment_fetch_scope"] == "selected_candidate_records_only"
     assert payload["photo_ids_requested"] == ["1"]
     assert payload["queued_comment_candidates_added"] == 1
-
-
-def test_export_bucket_views_cli_writes_derived_parquet_files(tmp_path, capsys) -> None:
-    input_path = tmp_path / "bucketed_records.parquet"
-    output_dir = tmp_path / "views"
-    pl.DataFrame(
-        [
-            {"flickr_photo_id": "1", "occurrence_bin": "gold"},
-            {"flickr_photo_id": "2", "occurrence_bin": "silver"},
-            {"flickr_photo_id": "3", "occurrence_bin": "bronze"},
-            {"flickr_photo_id": "4", "occurrence_bin": "bin"},
-        ]
-    ).write_parquet(input_path)
-
-    assert run(build_parser().parse_args(["export-bucket-views", "--input", str(input_path), "--output-dir", str(output_dir)])) == 0
-    payload = json.loads(capsys.readouterr().out)
-
-    assert set(payload) == {"gold", "silver", "bronze", "bin"}
-    assert (output_dir / "gold_records.parquet").exists()
-    assert (output_dir / "silver_records.parquet").exists()
-    assert (output_dir / "bronze_records.parquet").exists()
-    assert (output_dir / "bin_records.parquet").exists()
 
 
 def _fake_cloud_config() -> BioMinerConfig:
