@@ -104,3 +104,28 @@ def test_production_workflow_docs_exist_and_match_current_surface() -> None:
         "--workstore-backend sqlite",
     ):
         assert expected in storage
+
+
+def test_production_examples_cover_family_genus_species_runs() -> None:
+    path = Path("examples/production_workflow.md")
+    assert path.exists()
+
+    text = path.read_text(encoding="utf-8")
+    for expected in (
+        "BIOMINER_S3_ENDPOINT_URL",
+        "BIOMINER_WORKSTORE_DSN",
+        "FLICKR_API_KEY",
+        "--taxon \"Papilio demoleus\"",
+        "--rank species",
+        "--taxon \"Papilio\"",
+        "--rank genus",
+        "--taxon \"Papilionidae\"",
+        "--rank family",
+        "--storage-backend s3",
+        "--workstore-backend postgres",
+        "--vision-backend yoloe26",
+        "imageomics/bioclip-2.5-vith14",
+    ):
+        assert expected in text
+    assert "broad seed" not in text.lower()
+    assert "YOLO species" not in text

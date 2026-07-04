@@ -1,0 +1,86 @@
+# Production Workflow Examples
+
+These examples use the production defaults: S3-compatible artifact storage and a Postgres workstore. Run them from `./BioMiner`.
+
+Set the required environment before live runs:
+
+```bash
+export BIOMINER_STORAGE_BACKEND=s3
+export BIOMINER_WORKSTORE_BACKEND=postgres
+export BIOMINER_S3_ENDPOINT_URL="https://s3.<region>.backblazeb2.com"
+export BIOMINER_S3_ACCESS_KEY_ID="<access-key-id>"
+export BIOMINER_S3_SECRET_ACCESS_KEY="<secret-access-key>"
+export BIOMINER_S3_REGION="<region>"
+export BIOMINER_S3_BUCKET="biominer"
+export BIOMINER_S3_PREFIX="biominer"
+export BIOMINER_WORKSTORE_DSN="postgresql://user:password@host:5432/postgres"
+export BIOMINER_WORKER_ID="worker-001"
+export FLICKR_API_KEY="<flickr-api-key>"
+```
+
+`FLICKR_SECRET_KEY` can be present for future signed Flickr operations, but current metadata polling uses `FLICKR_API_KEY`.
+
+## Species Run
+
+Use `--rank species` when the requested taxon is one accepted species. The run expands to one species context and compiles Flickr query definitions from enabled registry names for that species.
+
+```bash
+uv run biominer run \
+  --taxon "Papilio demoleus" \
+  --rank species \
+  --registry-dir s3://biominer/biominer/registry/current \
+  --output-prefix s3://biominer/biominer/runs/papilio_demoleus \
+  --storage-backend s3 \
+  --workstore-backend postgres \
+  --vision-backend yoloe26 \
+  --bioclip-model imageomics/bioclip-2.5-vith14
+```
+
+## Genus Run
+
+Use `--rank genus` when the requested taxon should expand to every species under the accepted genus in the registry.
+
+```bash
+uv run biominer run \
+  --taxon "Papilio" \
+  --rank genus \
+  --registry-dir s3://biominer/biominer/registry/current \
+  --output-prefix s3://biominer/biominer/runs/papilio \
+  --storage-backend s3 \
+  --workstore-backend postgres \
+  --vision-backend yoloe26 \
+  --bioclip-model imageomics/bioclip-2.5-vith14
+```
+
+## Family Run
+
+Use `--rank family` when the requested taxon should expand to every species under the accepted family in the registry.
+
+```bash
+uv run biominer run \
+  --taxon "Papilionidae" \
+  --rank family \
+  --registry-dir s3://biominer/biominer/registry/current \
+  --output-prefix s3://biominer/biominer/runs/papilionidae \
+  --storage-backend s3 \
+  --workstore-backend postgres \
+  --vision-backend yoloe26 \
+  --bioclip-model imageomics/bioclip-2.5-vith14
+```
+
+## Bounded Smoke Run
+
+Use limits during first live checks. Limits are operational bounds, not changes to query semantics.
+
+```bash
+uv run biominer run \
+  --taxon "Papilio demoleus" \
+  --rank species \
+  --registry-dir s3://biominer/biominer/registry/current \
+  --output-prefix s3://biominer/biominer/runs/papilio_demoleus_smoke \
+  --storage-backend s3 \
+  --workstore-backend postgres \
+  --limit-records 10
+```
+
+Local filesystem and SQLite are only explicit development overrides. Use `--storage-backend local --workstore-backend sqlite --dry-run` for parser or manifest checks that must not touch production services.
