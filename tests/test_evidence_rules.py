@@ -5,7 +5,13 @@ from types import SimpleNamespace
 
 import polars as pl
 
-from biominer.evidence.buckets import classify_evidence_frame, classify_evidence_row, object_occurrence_bucket, photo_bucket_and_reason
+from biominer.evidence.buckets import (
+    classify_evidence_frame,
+    classify_evidence_row,
+    object_metadata_review_reason,
+    object_occurrence_bucket,
+    photo_bucket_and_reason,
+)
 
 
 def _row(**overrides: object) -> dict[str, object]:
@@ -67,9 +73,19 @@ def test_object_occurrence_bucket_policy_lives_in_evidence_package() -> None:
         margin=0.25,
         geo=SimpleNamespace(route_to_review=True, reason="geospatial_conflict"),
     ) == ("in_review", "geospatial_conflict")
-    assert object_occurrence_bucket(item={"image_category": "artwork"}, target_score=0.99, target_rank=1, margin=0.5, geo=SimpleNamespace(route_to_review=False)) == (
+    assert object_occurrence_bucket(
+        item={"image_category": "artwork", "latitude": 45.0, "longitude": -93.0, "date_taken": "2024-07-01"},
+        target_score=0.99,
+        target_rank=1,
+        margin=0.5,
+        geo=SimpleNamespace(route_to_review=False),
+    ) == (
+        "gold",
+        "target_species_score_ge_070",
+    )
+    assert object_occurrence_bucket(item={"detector_label": "hard_negative"}, target_score=0.99, target_rank=1, margin=0.5, geo=SimpleNamespace(route_to_review=False)) == (
         "bin",
-        "negative_material_artwork",
+        "negative_material_hard_negative_object",
     )
 
 
@@ -80,10 +96,20 @@ def test_photo_bucket_policy_lives_in_evidence_package() -> None:
     ]
 
     assert photo_bucket_and_reason(rows, {}) == ("in_review", "geospatial_conflict")
-    assert photo_bucket_and_reason(rows, {"is_negative_material": True, "negative_filter_reason": "artwork"}) == (
-        "bin",
-        "negative_material_artwork",
-    )
+    assert photo_bucket_and_reason(rows, {"is_negative_material": True, "negative_filter_reason": "artwork"}) == ("in_review", "geospatial_conflict")
+
+
+def test_object_metadata_hints_are_review_context_not_hard_negative_bins() -> None:
+    assert object_metadata_review_reason({"is_negative_material": True, "negative_filter_reason": "artwork"}) == "artwork"
+    assert object_metadata_review_reason({"artwork_hint": True}) == "artwork"
+    assert object_metadata_review_reason({"metadata_negative_reason_hint": "other_insect"}) == "non_target_order"
+    assert object_occurrence_bucket(
+        item={"artwork_hint": True, "latitude": "", "longitude": "", "date_taken": ""},
+        target_score=0.2,
+        target_rank=1,
+        margin=0.1,
+        geo=SimpleNamespace(route_to_review=False),
+    ) == ("in_review", "artwork")
 
 
 def test_silver_score_035_to_070_target_positive() -> None:

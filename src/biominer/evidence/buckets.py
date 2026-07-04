@@ -80,6 +80,7 @@ def object_occurrence_bucket(
     hard_negative_reason = object_hard_negative_reason(item)
     if hard_negative_reason:
         return "bin", hard_negative_reason
+    metadata_review_reason = object_metadata_review_reason(item)
     if bool(getattr(geo, "route_to_review", False)):
         return "in_review", str(getattr(geo, "reason", "") or "geospatial_conflict")
     if target_rank is not None and target_rank != 1 and target_score >= DEFAULT_BUCKET_POLICY.silver_species_threshold:
@@ -98,6 +99,8 @@ def object_occurrence_bucket(
         if not _has_event_date(item):
             return "silver", "missing_event_date"
         return "silver", "target_species_score_ge_035"
+    if metadata_review_reason:
+        return "in_review", metadata_review_reason
     return "bronze", "weak_species_score"
 
 
@@ -132,15 +135,31 @@ def photo_bucket_reason(bucket: str, rows: list[dict[str, Any]]) -> str:
 
 
 def object_hard_negative_reason(record: dict[str, Any]) -> str | None:
-    category = str(record.get("image_category") or "")
-    reason = str(record.get("negative_filter_reason") or "")
-    if _truthy(record.get("is_negative_material")):
-        return _object_negative_material_reason(category=category, reason=reason)
-    if category in BIN_CATEGORIES:
-        return _object_negative_material_reason(category=category, reason=reason)
+    label = str(record.get("detector_label") or "")
+    reason = str(record.get("failure_reason") or record.get("negative_filter_reason") or "")
+    if label == "hard_negative":
+        return _object_negative_material_reason(category=label, reason=reason)
+    if str(record.get("triage_group_top") or "") == "hard_negative":
+        return _object_negative_material_reason(category="hard_negative", reason=reason)
     for field, field_reason in NEGATIVE_RECORD_FIELDS:
         if _truthy(record.get(field)):
             return _object_negative_material_reason(category=field_reason, reason=reason)
+    return None
+
+
+def object_metadata_review_reason(record: dict[str, Any]) -> str | None:
+    for column, reason in METADATA_FLAG_REASON_COLUMNS.items():
+        if _truthy(record.get(column)):
+            return reason
+    metadata_reason = str(record.get("metadata_negative_reason_hint") or "")
+    if metadata_reason:
+        return _metadata_review_reason(metadata_reason)
+    category = str(record.get("image_category") or "")
+    reason = str(record.get("negative_filter_reason") or "")
+    if _truthy(record.get("is_negative_material")) or category in BIN_CATEGORIES:
+        return _metadata_review_reason(reason or category)
+    if _truthy(record.get("hard_negative_text_hint")):
+        return "ambiguous_classification"
     return None
 
 
@@ -325,9 +344,28 @@ def _negative_material_reason(row: dict[str, Any], reasons: list[str], category:
 
 def _object_negative_material_reason(*, category: str, reason: str) -> str:
     value = reason or category or "image_material"
+    if value in {"hard_negative", "no_butterfly_like_object"}:
+        value = "hard_negative_object"
     if value in {"non_target_order", "other_order", "not_butterfly", "not_lepidoptera", "other_insect"}:
         value = "non_target_order"
     return f"negative_material_{value}"
+
+
+def _metadata_review_reason(value: str) -> str:
+    if value in {"not_butterfly", "not_lepidoptera", "other_insect", "other_order"}:
+        return "non_target_order"
+    if value in {
+        "artwork",
+        "tattoo",
+        "museum_specimen",
+        "ai_generated",
+        "logo_or_brand",
+        "textile_or_pattern",
+        "object_or_product",
+        "non_target_order",
+    }:
+        return value
+    return "ambiguous_classification"
 
 
 def _truthy(value: Any) -> bool:
@@ -409,6 +447,7 @@ __all__ = [
     "classify_evidence_row",
     "classify_evidence_rows",
     "object_hard_negative_reason",
+    "object_metadata_review_reason",
     "object_occurrence_bucket",
     "photo_bucket",
     "photo_bucket_and_reason",

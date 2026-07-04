@@ -632,11 +632,8 @@ def _score_detection(
         visual_score=top1_score if top1_candidate is not None else target_score,
         geo_prior_table=geo_prior_table,
     )
+    bucket, reason = _bucket(item=item, target_score=target_score, target_rank=target_rank, margin=margin, geo=geo)
     negative_reason = _hard_negative_photo_reason(item)
-    if negative_reason:
-        bucket, reason = "bin", negative_reason
-    else:
-        bucket, reason = _bucket(item=item, target_score=target_score, target_rank=target_rank, margin=margin, geo=geo)
     return {
         "source": str(item.get("source") or ""),
         "flickr_photo_id": str(item.get("flickr_photo_id") or ""),
