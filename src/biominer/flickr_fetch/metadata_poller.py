@@ -431,6 +431,26 @@ class MetadataPollState:
                 (FAILED, _timestamp(), error, work_item_id),
             )
 
+    def work_items_snapshot(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT work_item_id, status, query_json, error, records_returned
+                FROM flickr_work_items
+                ORDER BY created_at, work_item_id
+                """
+            ).fetchall()
+        return [
+            {
+                "work_item_id": str(row["work_item_id"]),
+                "status": str(row["status"]),
+                "query": _query_from_json(str(row["query_json"])),
+                "error": row["error"],
+                "records_returned": row["records_returned"],
+            }
+            for row in rows
+        ]
+
     def insert_source_records(self, records: list[dict[str, Any]], *, source_query: FlickrQuery) -> tuple[int, int, int, int, int]:
         inserted = 0
         unique_records = deduplicate_photo_records(records)
@@ -873,6 +893,7 @@ def poll_once(
     compact_after_run: bool = True,
     storage: CloudStorage | None = None,
     work_store: WorkStore | None = None,
+    claim_once: bool = False,
 ) -> PollOnceResult:
     state = MetadataPollState(state_db)
     effective_run_id = run_id or _default_run_id()
@@ -1076,6 +1097,8 @@ def poll_once(
                                 "http_status": None,
                             },
                         )
+            if claim_once:
+                break
 
     if compact_after_run and not is_cloud_uri(evidence_output):
         evidence_rows_total = state.export_canonical_evidence(evidence_output)

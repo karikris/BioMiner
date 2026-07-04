@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,10 +11,11 @@ import tempfile
 from typing import Any
 
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
+from biominer.common.status import CLAIMED, COMPLETED, FAILED, PENDING
 from biominer.evidence.join import build_object_evidence_frames, write_object_evidence_outputs
 from biominer.evidence.metrics import build_review_queue, evidence_count_metrics
 from biominer.storage.parquet import write_parquet
-from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
+from biominer.flickr_fetch.metadata_poller import DEFAULT_STALE_CLAIM_SECONDS, SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries, load_registry_flickr_queries_from_frame, query_hash
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import RunArtifactUris, RunPaths
@@ -380,7 +382,7 @@ class ProductionRunOrchestrator:
 
     def _run_poll_flickr_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if is_cloud_uri(self.request.output_root) or self.request.storage_backend != "local" or self.request.workstore_backend != "sqlite":
-            return StageExecutionResult(status=StageStatus.FAILED, message="poll_flickr_requires_local_sqlite_until_workstore_claiming_is_wired")
+            return self._run_cloud_poll_flickr_stage(plan)
         queries = self._load_flickr_work_queries()
         plan.paths.ensure_directories()
         state_db = plan.paths.run_root / "state" / "flickr_poller.sqlite"
@@ -424,6 +426,119 @@ class ProductionRunOrchestrator:
                 "state_db": str(state.path),
                 "raw_root": str(plan.paths.run_root / "raw"),
                 "source_records": str(plan.paths.source_records_path),
+            },
+        )
+
+    def _run_cloud_poll_flickr_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
+        if self.storage is None:
+            return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_poll_flickr")
+        if self.workstore is None:
+            return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_poll_flickr")
+        registry_version = plan.manifest.taxon_scope.registry_version
+        worker_id = os.environ.get("BIOMINER_WORKER_ID") or "local"
+        stale_requeued = self.workstore.requeue_stale_claims(
+            job_name=PRODUCTION_JOB_NAME,
+            stage=RunStage.POLL_FLICKR.value,
+            registry_version=registry_version,
+            stale_after_seconds=int(self.request.limits.get("stale_claim_seconds") or DEFAULT_STALE_CLAIM_SECONDS),
+        )
+        pending_preview = self.workstore.list_work_items(
+            job_name=PRODUCTION_JOB_NAME,
+            stage=RunStage.POLL_FLICKR.value,
+            registry_version=registry_version,
+            statuses=[PENDING],
+            limit=1,
+        )
+        if not pending_preview:
+            return StageExecutionResult(
+                metrics={
+                    "seeded_work_items": 0,
+                    "work_items_claimed": 0,
+                    "api_calls_made": 0,
+                    "workstore_stale_claims_requeued": stale_requeued,
+                },
+                outputs={"workstore_stage": RunStage.POLL_FLICKR.value},
+            )
+        api_key = self.flickr_api_key or os.environ.get("FLICKR_API_KEY")
+        if self.metadata_fetcher is None and not api_key:
+            return StageExecutionResult(status=StageStatus.FAILED, message="flickr_fetcher_or_api_key_required_for_poll_flickr")
+        claim_limit = _cloud_poll_claim_limit(self.request.limits)
+        claimed = self.workstore.claim_next_batch(
+            worker_id,
+            claim_limit,
+            job_name=PRODUCTION_JOB_NAME,
+            stage=RunStage.POLL_FLICKR.value,
+            registry_version=registry_version,
+        )
+        if not claimed:
+            return StageExecutionResult(
+                metrics={
+                    "seeded_work_items": 0,
+                    "work_items_claimed": 0,
+                    "api_calls_made": 0,
+                    "workstore_stale_claims_requeued": stale_requeued,
+                },
+                outputs={"workstore_stage": RunStage.POLL_FLICKR.value},
+            )
+        with tempfile.TemporaryDirectory(prefix="biominer-poll-") as tmp_dir:
+            state = MetadataPollState(Path(tmp_dir) / "flickr_poller.sqlite")
+            local_work_keys: dict[str, str] = {}
+            for item in claimed:
+                query = _flickr_query_from_work_item(item)
+                state.enqueue_work_item(query)
+                local_work_keys[_poller_work_item_id(query)] = str(item["work_key"])
+            result = poll_once(
+                state_db=state.path,
+                raw_root=join_uri(plan.artifact_uris.staging_uri, "raw"),
+                evidence_output=plan.artifact_uris.source_records_uri,
+                max_api_calls=int(self.request.limits.get("api_calls") or SOFT_API_CALLS_PER_HOUR),
+                api_key=api_key,
+                fetch_metadata=self.metadata_fetcher,
+                workers=max(1, min(int(self.request.limits.get("workers") or 1), len(claimed))),
+                run_id=plan.manifest.run_id,
+                worker_id=worker_id,
+                storage_backend=self.request.storage_backend,
+                storage_prefix=plan.artifact_uris.staging_uri,
+                evidence_stage=RunStage.POLL_FLICKR.value,
+                compact_after_run=False,
+                storage=self.storage,
+                work_store=self.workstore,
+                claim_once=True,
+            )
+            source_frame = state.canonical_source_records_frame()
+            source_records_uri = self.storage.write_parquet_shard(plan.artifact_uris.source_records_uri, source_frame)
+            mirror = _mirror_cloud_poll_state_to_workstore(
+                workstore=self.workstore,
+                snapshot=state.work_items_snapshot(),
+                local_work_keys=local_work_keys,
+                run_id=plan.manifest.run_id,
+                registry_version=registry_version,
+                output_uri=source_records_uri,
+            )
+        return StageExecutionResult(
+            metrics={
+                "seeded_work_items": len(claimed),
+                "raw_responses_written": result.raw_responses_written,
+                "evidence_rows_written": result.evidence_rows_written,
+                "evidence_rows_total": result.evidence_rows_total,
+                "source_records_inserted": result.source_records_inserted,
+                "duplicate_records_skipped": result.duplicate_records_skipped,
+                "query_terms_added": result.query_hits_inserted,
+                "duplicate_query_terms": result.duplicate_query_hits_skipped,
+                "image_urls_queued": result.image_urls_queued,
+                "work_items_claimed": result.work_items_claimed,
+                "api_calls_made": result.api_calls_made,
+                "remaining_soft_budget": result.remaining_soft_budget,
+                "remaining_hard_budget": result.remaining_hard_budget,
+                "stale_claims_requeued": result.stale_claims_requeued,
+                "workstore_stale_claims_requeued": stale_requeued,
+                **mirror,
+            },
+            outputs={
+                "workstore_stage": RunStage.POLL_FLICKR.value,
+                "raw_prefix": join_uri(plan.artifact_uris.staging_uri, "source=flickr"),
+                "evidence_prefix": join_uri(plan.artifact_uris.staging_uri, "evidence"),
+                "source_records": source_records_uri,
             },
         )
 
@@ -751,6 +866,90 @@ def _flickr_query_work_item(query: FlickrQuery, *, run_id: str) -> dict[str, Any
         "work_key": f"{run_id}:flickr:{query_hash(query)}",
         "run_id": run_id,
         "query": query.__dict__,
+    }
+
+
+def _flickr_query_from_work_item(item: dict[str, Any]) -> FlickrQuery:
+    payload = item.get("payload")
+    if not isinstance(payload, dict):
+        raise ValueError(f"work item {item.get('work_key')} has invalid payload")
+    query_payload = payload.get("query")
+    if isinstance(query_payload, FlickrQuery):
+        return query_payload
+    if not isinstance(query_payload, dict):
+        raise ValueError(f"work item {item.get('work_key')} has no Flickr query payload")
+    return FlickrQuery(**query_payload)
+
+
+def _poller_work_item_id(query: FlickrQuery) -> str:
+    payload = json.dumps(asdict(query), sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _cloud_poll_claim_limit(limits: dict[str, int]) -> int:
+    candidates = [
+        int(limits.get("api_calls") or SOFT_API_CALLS_PER_HOUR),
+        int(limits.get("workers") or 1),
+    ]
+    records_limit = int(limits.get("records") or 0)
+    if records_limit > 0:
+        candidates.append(records_limit)
+    return max(1, min(value for value in candidates if value > 0))
+
+
+def _mirror_cloud_poll_state_to_workstore(
+    *,
+    workstore: WorkStore,
+    snapshot: list[dict[str, Any]],
+    local_work_keys: dict[str, str],
+    run_id: str,
+    registry_version: str | None,
+    output_uri: str,
+) -> dict[str, int]:
+    completed = 0
+    failed = 0
+    unfinished_claimed = 0
+    followup_enqueued = 0
+    for row in snapshot:
+        local_id = str(row["work_item_id"])
+        status = str(row["status"])
+        query = row["query"]
+        work_key = local_work_keys.get(local_id)
+        if work_key:
+            if status == COMPLETED:
+                workstore.mark_completed(
+                    work_key,
+                    output_uri=output_uri,
+                    checksum=None,
+                    row_count=int(row["records_returned"] or 0),
+                )
+                completed += 1
+            elif status == FAILED:
+                workstore.mark_failed(work_key, str(row["error"] or "flickr_poll_failed"))
+                failed += 1
+            else:
+                workstore.mark_failed(work_key, f"flickr_poll_left_work_item_{status}")
+                unfinished_claimed += 1
+            continue
+        if status == PENDING:
+            followup_enqueued += workstore.enqueue_work(
+                PRODUCTION_JOB_NAME,
+                registry_version,
+                [_flickr_query_work_item(query, run_id=run_id)],
+                stage=RunStage.POLL_FLICKR.value,
+            )
+        elif status in {CLAIMED, COMPLETED, FAILED}:
+            followup_enqueued += workstore.enqueue_work(
+                PRODUCTION_JOB_NAME,
+                registry_version,
+                [_flickr_query_work_item(query, run_id=run_id)],
+                stage=RunStage.POLL_FLICKR.value,
+            )
+    return {
+        "workstore_work_items_completed": completed,
+        "workstore_work_items_failed": failed,
+        "workstore_unfinished_claimed_items": unfinished_claimed,
+        "workstore_followup_work_items_enqueued": followup_enqueued,
     }
 
 

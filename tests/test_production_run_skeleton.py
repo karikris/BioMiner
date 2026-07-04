@@ -461,21 +461,74 @@ def test_orchestrator_poll_stage_requires_fetcher_or_api_key(tmp_path, monkeypat
     assert result.manifest.stages[0].message == "flickr_fetcher_or_api_key_required_for_poll_flickr"
 
 
-def test_orchestrator_poll_stage_refuses_cloud_until_workstore_claiming_is_wired(tmp_path) -> None:
+def test_orchestrator_poll_stage_claims_workstore_and_writes_cloud_source_records(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("FLICKR_API_KEY", raising=False)
     registry = _write_rank_registry(tmp_path / "registry")
     _write_query_definitions(registry)
+    storage = _FakeRunStorage()
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
     request = ProductionRunRequest(
         taxon="Papilio demoleus",
         rank="species",
         registry_dir=str(registry),
         output_root="s3://biominer/runs",
-        stages=(RunStage.POLL_FLICKR,),
+        storage_backend="s3",
+        workstore_backend="postgres",
+        stages=(RunStage.ENQUEUE_FLICKR_WORK, RunStage.POLL_FLICKR),
+        limits={"records": 1, "api_calls": 5},
     )
 
-    result = ProductionRunOrchestrator(request, metadata_fetcher=_fake_flickr_fetch).run()
+    result = ProductionRunOrchestrator(request, storage=storage, workstore=workstore, metadata_fetcher=_fake_flickr_fetch).run()
 
-    assert result.manifest.status == "failed"
-    assert result.manifest.stages[0].message == "poll_flickr_requires_local_sqlite_until_workstore_claiming_is_wired"
+    assert result.manifest.status == "complete"
+    assert result.manifest.query_counts["enqueued_work_items"] == 1
+    assert result.manifest.query_counts["polled_work_items"] == 1
+    poll_stage = result.manifest.stages[1]
+    assert poll_stage.metrics["workstore_work_items_completed"] == 1
+    assert poll_stage.outputs["source_records"] == result.artifact_uris.source_records_uri
+    assert result.artifact_uris.source_records_uri in storage.parquet_payloads
+    row = storage.parquet_payloads[result.artifact_uris.source_records_uri].to_dicts()[0]
+    assert row["flickr_photo_id"] == "poll-photo-1"
+    assert row["tag_search_terms"] == ["Papilio demoleus"]
+    work_items = workstore.list_work_items(
+        job_name="biominer_production_run",
+        stage=RunStage.POLL_FLICKR.value,
+        registry_version="rank-registry-v1",
+    )
+    assert [item["status"] for item in work_items] == ["completed"]
+    assert work_items[0]["output_uri"] == result.artifact_uris.source_records_uri
+
+
+def test_orchestrator_cloud_poll_reenqueues_reported_followup_pages(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("FLICKR_API_KEY", raising=False)
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_query_definitions(registry)
+    storage = _FakeRunStorage()
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root="s3://biominer/runs",
+        storage_backend="s3",
+        workstore_backend="postgres",
+        stages=(RunStage.ENQUEUE_FLICKR_WORK, RunStage.POLL_FLICKR),
+        limits={"records": 1, "api_calls": 5},
+    )
+
+    result = ProductionRunOrchestrator(request, storage=storage, workstore=workstore, metadata_fetcher=_fake_flickr_fetch_two_pages).run()
+
+    assert result.manifest.status == "complete"
+    poll_stage = result.manifest.stages[1]
+    assert poll_stage.metrics["workstore_work_items_completed"] == 1
+    assert poll_stage.metrics["workstore_followup_work_items_enqueued"] == 1
+    work_items = workstore.list_work_items(
+        job_name="biominer_production_run",
+        stage=RunStage.POLL_FLICKR.value,
+        registry_version="rank-registry-v1",
+    )
+    statuses_by_page = {item["payload"]["query"]["page"]: item["status"] for item in work_items}
+    assert statuses_by_page == {1: "completed", 2: "pending"}
 
 
 def test_orchestrator_joins_evidence_and_writes_summary_metrics(tmp_path) -> None:
@@ -1146,6 +1199,25 @@ def _fake_flickr_fetch(_query: object) -> dict[str, object]:
         "photos": {
             "total": "1",
             "pages": "1",
+            "page": "1",
+            "perpage": "500",
+            "photo": [
+                {
+                    "id": "poll-photo-1",
+                    "title": "Papilio demoleus on citrus",
+                    "url_l": "https://live.staticflickr.com/poll-photo-1.jpg",
+                    "datetaken": "2025-03-01 10:30:00",
+                }
+            ],
+        }
+    }
+
+
+def _fake_flickr_fetch_two_pages(_query: object) -> dict[str, object]:
+    return {
+        "photos": {
+            "total": "501",
+            "pages": "2",
             "page": "1",
             "perpage": "500",
             "photo": [
