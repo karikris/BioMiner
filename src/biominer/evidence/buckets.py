@@ -6,10 +6,18 @@ from typing import Any
 import polars as pl
 
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
+from biominer.bioclip.triage import BIN_CATEGORIES, NEGATIVE_RECORD_FIELDS
 from biominer.filter.category_model import infer_category_from_record
 
 
 PUBLICATION_STATES = ("gold", "silver", "bronze", "in_review")
+PHOTO_REVIEW_REASONS = {
+    "geospatial_conflict",
+    "ambiguous_species_margin",
+    "species_conflict",
+    "taxonomy_inconsistent",
+    "detected_object_without_bioclip_score",
+}
 REVIEW_REASON_PRECEDENCE = (
     "missing_image",
     "missing_bioclip",
@@ -59,6 +67,81 @@ def bucket_evidence_frame(evidence: pl.DataFrame) -> pl.DataFrame:
 
 def bucket_evidence_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return classify_evidence_rows(rows)
+
+
+def object_occurrence_bucket(
+    *,
+    item: dict[str, Any],
+    target_score: float,
+    target_rank: int | None,
+    margin: float | None,
+    geo: object,
+) -> tuple[str, str]:
+    hard_negative_reason = object_hard_negative_reason(item)
+    if hard_negative_reason:
+        return "bin", hard_negative_reason
+    if bool(getattr(geo, "route_to_review", False)):
+        return "in_review", str(getattr(geo, "reason", "") or "geospatial_conflict")
+    if target_rank is not None and target_rank != 1 and target_score >= DEFAULT_BUCKET_POLICY.silver_species_threshold:
+        return "in_review", "species_conflict"
+    if (
+        target_score >= DEFAULT_BUCKET_POLICY.gold_species_threshold
+        and margin is not None
+        and margin < DEFAULT_BUCKET_POLICY.ambiguous_margin_threshold
+    ):
+        return "in_review", "ambiguous_species_margin"
+    if target_score >= DEFAULT_BUCKET_POLICY.gold_species_threshold and _has_geo(item) and _has_event_date(item):
+        return "gold", "target_species_score_ge_070"
+    if target_score >= DEFAULT_BUCKET_POLICY.silver_species_threshold:
+        if not _has_geo(item):
+            return "silver", "missing_geo"
+        if not _has_event_date(item):
+            return "silver", "missing_event_date"
+        return "silver", "target_species_score_ge_035"
+    return "bronze", "weak_species_score"
+
+
+def photo_bucket_and_reason(rows: list[dict[str, Any]], canonical_record: dict[str, Any]) -> tuple[str, str]:
+    hard_negative_reason = object_hard_negative_reason(canonical_record)
+    if hard_negative_reason:
+        return "bin", hard_negative_reason
+    bucket = photo_bucket(rows)
+    return bucket, photo_bucket_reason(bucket, rows)
+
+
+def photo_bucket(rows: list[dict[str, Any]]) -> str:
+    buckets = [str(row.get("occurrence_bin") or "") for row in rows]
+    if any(bucket == "in_review" and str(row.get("bin_reason") or "") in PHOTO_REVIEW_REASONS for row, bucket in zip(rows, buckets, strict=True)):
+        return "in_review"
+    for bucket in ("gold", "silver", "bronze", "in_review", "bin"):
+        if bucket in buckets:
+            return bucket
+    return "in_review"
+
+
+def photo_bucket_reason(bucket: str, rows: list[dict[str, Any]]) -> str:
+    if bucket == "in_review":
+        for row in rows:
+            reason = str(row.get("bin_reason") or "")
+            if str(row.get("occurrence_bin") or "") == bucket and reason in PHOTO_REVIEW_REASONS:
+                return reason
+    for row in rows:
+        if str(row.get("occurrence_bin") or "") == bucket:
+            return str(row.get("bin_reason") or "")
+    return str(rows[0].get("bin_reason") or "") if rows else ""
+
+
+def object_hard_negative_reason(record: dict[str, Any]) -> str | None:
+    category = str(record.get("image_category") or "")
+    reason = str(record.get("negative_filter_reason") or "")
+    if _truthy(record.get("is_negative_material")):
+        return _object_negative_material_reason(category=category, reason=reason)
+    if category in BIN_CATEGORIES:
+        return _object_negative_material_reason(category=category, reason=reason)
+    for field, field_reason in NEGATIVE_RECORD_FIELDS:
+        if _truthy(record.get(field)):
+            return _object_negative_material_reason(category=field_reason, reason=reason)
+    return None
 
 
 def classify_evidence_frame(evidence: pl.DataFrame) -> pl.DataFrame:
@@ -240,6 +323,27 @@ def _negative_material_reason(row: dict[str, Any], reasons: list[str], category:
     return None
 
 
+def _object_negative_material_reason(*, category: str, reason: str) -> str:
+    value = reason or category or "image_material"
+    if value in {"non_target_order", "other_order", "not_butterfly", "not_lepidoptera", "other_insect"}:
+        value = "non_target_order"
+    return f"negative_material_{value}"
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().casefold() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
+def _has_geo(item: dict[str, Any]) -> bool:
+    return item.get("latitude") not in (None, "") and item.get("longitude") not in (None, "")
+
+
+def _has_event_date(item: dict[str, Any]) -> bool:
+    return bool(item.get("date_taken") or item.get("datetaken") or item.get("captured_at") or item.get("eventDate") or item.get("event_date"))
+
+
 def _has_explicit_negative_evidence(row: dict[str, Any], reason: str) -> bool:
     if reason == "artwork":
         return bool(row.get("artwork_detected")) or _has_review_flag(row, "artwork_context")
@@ -304,6 +408,11 @@ __all__ = [
     "classify_evidence_frame",
     "classify_evidence_row",
     "classify_evidence_rows",
+    "object_hard_negative_reason",
+    "object_occurrence_bucket",
+    "photo_bucket",
+    "photo_bucket_and_reason",
+    "photo_bucket_reason",
     "review_reasons_for_evidence",
     "species_agreement_is_conflict",
     "species_agreement_is_positive",

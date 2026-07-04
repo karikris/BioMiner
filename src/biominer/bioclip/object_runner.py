@@ -12,7 +12,6 @@ import polars as pl
 
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
-from biominer.bioclip.triage import BIN_CATEGORIES, NEGATIVE_RECORD_FIELDS
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage
 from biominer.detection.schema import DETECTION_OUTPUT_SCHEMA
@@ -30,13 +29,6 @@ from biominer.storage.parquet import write_parquet
 PRIMARY_VISUAL_CLASSIFIER = "bioclip_object"
 OBJECT_VISUAL_MODES: tuple[str, ...] = ("whole_image", "detector_crop", "detector_crop_segmentation")
 AblationMode = Literal["whole_image", "detector_crop", "detector_crop_segmentation"]
-PHOTO_REVIEW_REASONS = {
-    "geospatial_conflict",
-    "ambiguous_species_margin",
-    "species_conflict",
-    "taxonomy_inconsistent",
-    "detected_object_without_bioclip_score",
-}
 OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "source": pl.String,
     "flickr_photo_id": pl.String,
@@ -760,25 +752,15 @@ def _bucket(
     margin: float | None,
     geo: GeospatialPrior,
 ) -> tuple[str, str]:
-    if geo.route_to_review:
-        return "in_review", geo.reason
-    if target_rank is not None and target_rank != 1 and target_score >= DEFAULT_BUCKET_POLICY.silver_species_threshold:
-        return "in_review", "species_conflict"
-    if (
-        target_score >= DEFAULT_BUCKET_POLICY.gold_species_threshold
-        and margin is not None
-        and margin < DEFAULT_BUCKET_POLICY.ambiguous_margin_threshold
-    ):
-        return "in_review", "ambiguous_species_margin"
-    if target_score >= DEFAULT_BUCKET_POLICY.gold_species_threshold and _has_geo(item) and _has_event_date(item):
-        return "gold", "target_species_score_ge_070"
-    if target_score >= DEFAULT_BUCKET_POLICY.silver_species_threshold:
-        if not _has_geo(item):
-            return "silver", "missing_geo"
-        if not _has_event_date(item):
-            return "silver", "missing_event_date"
-        return "silver", "target_species_score_ge_035"
-    return "bronze", "weak_species_score"
+    from biominer.evidence.buckets import object_occurrence_bucket
+
+    return object_occurrence_bucket(
+        item=item,
+        target_score=target_score,
+        target_rank=target_rank,
+        margin=margin,
+        geo=geo,
+    )
 
 
 def _photo_summary(
@@ -954,59 +936,15 @@ def _has_columns(frame: pl.DataFrame, columns: Iterable[str]) -> bool:
 
 
 def _photo_bucket_and_reason(rows: list[dict[str, Any]], canonical_record: dict[str, Any]) -> tuple[str, str]:
-    hard_negative_reason = _hard_negative_photo_reason(canonical_record)
-    if hard_negative_reason:
-        return "bin", hard_negative_reason
-    bucket = _photo_bucket(rows)
-    return bucket, _photo_bucket_reason(bucket, rows)
+    from biominer.evidence.buckets import photo_bucket_and_reason
 
-
-def _photo_bucket(rows: list[dict[str, Any]]) -> str:
-    buckets = [str(row.get("occurrence_bin") or "") for row in rows]
-    if any(bucket == "in_review" and str(row.get("bin_reason") or "") in PHOTO_REVIEW_REASONS for row, bucket in zip(rows, buckets, strict=True)):
-        return "in_review"
-    for bucket in ("gold", "silver", "bronze", "in_review", "bin"):
-        if bucket in buckets:
-            return bucket
-    return "in_review"
-
-
-def _photo_bucket_reason(bucket: str, rows: list[dict[str, Any]]) -> str:
-    if bucket == "in_review":
-        for row in rows:
-            reason = str(row.get("bin_reason") or "")
-            if str(row.get("occurrence_bin") or "") == bucket and reason in PHOTO_REVIEW_REASONS:
-                return reason
-    for row in rows:
-        if str(row.get("occurrence_bin") or "") == bucket:
-            return str(row.get("bin_reason") or "")
-    return str(rows[0].get("bin_reason") or "") if rows else ""
+    return photo_bucket_and_reason(rows, canonical_record)
 
 
 def _hard_negative_photo_reason(record: dict[str, Any]) -> str | None:
-    category = str(record.get("image_category") or "")
-    reason = str(record.get("negative_filter_reason") or "")
-    if _truthy(record.get("is_negative_material")):
-        return _negative_material_reason(category=category, reason=reason)
-    if category in BIN_CATEGORIES:
-        return _negative_material_reason(category=category, reason=reason)
-    for field, field_reason in NEGATIVE_RECORD_FIELDS:
-        if _truthy(record.get(field)):
-            return _negative_material_reason(category=field_reason, reason=reason)
-    return None
+    from biominer.evidence.buckets import object_hard_negative_reason
 
-
-def _negative_material_reason(*, category: str, reason: str) -> str:
-    value = reason or category or "image_material"
-    if value in {"non_target_order", "other_order", "not_butterfly", "not_lepidoptera", "other_insect"}:
-        value = "non_target_order"
-    return f"negative_material_{value}"
-
-
-def _truthy(value: Any) -> bool:
-    if isinstance(value, str):
-        return value.strip().casefold() in {"1", "true", "yes", "y"}
-    return bool(value)
+    return object_hard_negative_reason(record)
 
 
 def _target_score(ranked: list[tuple[str, float]], target: str) -> float:
@@ -1130,14 +1068,6 @@ def _unique(values: Iterable[Any]) -> list[str]:
             seen.add(key)
             output.append(cleaned)
     return output
-
-
-def _has_geo(row: dict[str, Any]) -> bool:
-    return row.get("latitude") not in (None, "") and row.get("longitude") not in (None, "")
-
-
-def _has_event_date(row: dict[str, Any]) -> bool:
-    return bool(row.get("date_taken") or row.get("datetaken") or row.get("captured_at") or row.get("eventDate"))
 
 
 def _optional_float(value: object) -> float | None:

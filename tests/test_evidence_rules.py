@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+from types import SimpleNamespace
 
 import polars as pl
 
-from biominer.evidence.buckets import classify_evidence_frame, classify_evidence_row
+from biominer.evidence.buckets import classify_evidence_frame, classify_evidence_row, object_occurrence_bucket, photo_bucket_and_reason
 
 
 def _row(**overrides: object) -> dict[str, object]:
@@ -46,6 +47,43 @@ def test_gold_score_gte_070_target_positive() -> None:
     assert result["image_category"] == "adult_butterfly"
     assert result["life_stage"] == "adult_butterfly"
     assert result["review_reason"] == []
+
+
+def test_object_occurrence_bucket_policy_lives_in_evidence_package() -> None:
+    item = {"latitude": 45.0, "longitude": -93.0, "date_taken": "2024-07-01"}
+
+    assert object_occurrence_bucket(item=item, target_score=0.72, target_rank=1, margin=0.25, geo=SimpleNamespace(route_to_review=False)) == (
+        "gold",
+        "target_species_score_ge_070",
+    )
+    assert object_occurrence_bucket(item=item, target_score=0.72, target_rank=2, margin=0.25, geo=SimpleNamespace(route_to_review=False)) == (
+        "in_review",
+        "species_conflict",
+    )
+    assert object_occurrence_bucket(
+        item=item,
+        target_score=0.72,
+        target_rank=1,
+        margin=0.25,
+        geo=SimpleNamespace(route_to_review=True, reason="geospatial_conflict"),
+    ) == ("in_review", "geospatial_conflict")
+    assert object_occurrence_bucket(item={"image_category": "artwork"}, target_score=0.99, target_rank=1, margin=0.5, geo=SimpleNamespace(route_to_review=False)) == (
+        "bin",
+        "negative_material_artwork",
+    )
+
+
+def test_photo_bucket_policy_lives_in_evidence_package() -> None:
+    rows = [
+        {"occurrence_bin": "gold", "bin_reason": "target_species_score_ge_070"},
+        {"occurrence_bin": "in_review", "bin_reason": "geospatial_conflict"},
+    ]
+
+    assert photo_bucket_and_reason(rows, {}) == ("in_review", "geospatial_conflict")
+    assert photo_bucket_and_reason(rows, {"is_negative_material": True, "negative_filter_reason": "artwork"}) == (
+        "bin",
+        "negative_material_artwork",
+    )
 
 
 def test_silver_score_035_to_070_target_positive() -> None:
