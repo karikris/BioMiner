@@ -23,6 +23,7 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert "poll-once" in commands
     assert "run" in commands
     assert "vision" in commands
+    assert "evidence" in commands
     assert "bioclip" in commands
     assert "species" in commands
     assert "dev" in commands
@@ -814,6 +815,24 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "photo_evidence_summary.parquet",
         ]
     )
+    evidence_join = parser.parse_args(
+        [
+            "evidence",
+            "join",
+            "--species-context",
+            "species_context.json",
+            "--input",
+            "filtered.parquet",
+            "--detections",
+            "object_detections.parquet",
+            "--scores",
+            "object_bioclip_scores.parquet",
+            "--joined-output",
+            "object_evidence_joined.parquet",
+            "--photo-summary-output",
+            "photo_evidence_summary.parquet",
+        ]
+    )
 
     assert screen.bioclip_command == "screen-objects"
     assert screen.ablation_mode == "detector_crop"
@@ -852,6 +871,9 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert vision_join.command == "vision"
     assert vision_join.vision_command == "join"
     assert vision_join.species_context == "species_context.json"
+    assert evidence_join.command == "evidence"
+    assert evidence_join.evidence_command == "join"
+    assert evidence_join.species_context == "species_context.json"
     for removed in ("detect", "bioclip-objects", "ablate-objects", "join-object-evidence"):
         with pytest.raises(SystemExit):
             parser.parse_args(["species", removed])
@@ -1231,7 +1253,7 @@ def test_bioclip_ablate_objects_forwards_parquet_batch_rows(tmp_path, capsys, mo
     assert calls["candidate_set"]["geo_prior_table"] is None
 
 
-def test_bioclip_join_object_evidence_cli_writes_join_tables(tmp_path, capsys, monkeypatch) -> None:
+def test_evidence_join_cli_writes_join_tables(tmp_path, capsys, monkeypatch) -> None:
     context_path = tmp_path / "species_context.json"
     context_path.write_text(
         json.dumps(
@@ -1267,8 +1289,8 @@ def test_bioclip_join_object_evidence_cli_writes_join_tables(tmp_path, capsys, m
     parser = build_parser()
     args = parser.parse_args(
         [
-            "bioclip",
-            "join-object-evidence",
+            "evidence",
+            "join",
             "--input",
             str(input_path),
             "--detections",

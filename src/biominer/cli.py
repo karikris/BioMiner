@@ -240,6 +240,11 @@ def build_parser() -> argparse.ArgumentParser:
     vision_join = vision_subparsers.add_parser("join")
     _add_object_evidence_join_args(vision_join)
     vision_join.add_argument("--species-context")
+    evidence = subparsers.add_parser("evidence")
+    evidence_subparsers = evidence.add_subparsers(dest="evidence_command")
+    evidence_join = evidence_subparsers.add_parser("join")
+    _add_object_evidence_join_args(evidence_join)
+    evidence_join.add_argument("--species-context")
     detect = subparsers.add_parser("detect")
     detect_subparsers = detect.add_subparsers(dest="detect_command")
     detect_boxes = detect_subparsers.add_parser("boxes")
@@ -525,6 +530,10 @@ def run(args: argparse.Namespace) -> int:
         if args.vision_command == "ablate":
             return _run_bioclip_ablate_objects(args)
         if args.vision_command == "join":
+            return _run_bioclip_join_object_evidence(args)
+        return 2
+    if args.command == "evidence":
+        if args.evidence_command == "join":
             return _run_bioclip_join_object_evidence(args)
         return 2
     if args.command == "detect":
