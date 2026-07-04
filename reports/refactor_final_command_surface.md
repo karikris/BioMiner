@@ -4,7 +4,7 @@ Recorded: 2026-07-05
 
 Current branch: `main`
 
-Current HEAD at this audit report refresh: `67fb888`
+Latest audited base before this report edit: `593fc84`
 
 Note: the original refactor plan named branch `cleanup/production-workflow-postgres-s3`; a later operator instruction changed the working branch to `main`, and the cleanup commits are being pushed directly to `main`.
 
@@ -187,7 +187,6 @@ Confirmed current behavior:
 - Production run polling uses the validated `RuntimeConfig.worker_id` / `BIOMINER_WORKER_ID` instead of falling back to an ambient local worker ID.
 - Production validation treats the default `local` worker id as missing for Postgres-backed runs; `BIOMINER_WORKER_ID` must be configured outside explicit local/SQLite dev mode.
 - Vision runtime checks, prefetch, smoke/prototype, crop preview, and evaluation utilities are dev-only.
-- Exact tracked-source searches for `anti_keywords`, `anti-keyword`, `anti keyword`, and `config/anti` return no matches.
 
 Known remaining debug surfaces:
 
@@ -211,11 +210,10 @@ uv run --extra test biominer dev registry --help
 uv run --extra test biominer dev comments --help
 uv run --extra test biominer dev flickr --help
 uv run --extra test pytest -q
-rg -n "anti_keywords|anti-keywords|anti keyword|anti-keyword|config/anti" README.md docs src tests config examples .gitignore pyproject.toml
 ```
 
 Latest full-suite result:
 
 ```text
-510 passed
+512 passed
 ```

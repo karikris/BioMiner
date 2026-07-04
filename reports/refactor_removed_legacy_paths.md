@@ -4,7 +4,7 @@ Recorded: 2026-07-05
 
 Branch used for current cleanup commits: `main`
 
-Current HEAD at this audit report refresh: `67fb888`
+Latest audited base before this report edit: `593fc84`
 
 ## Removed Files
 
@@ -84,7 +84,6 @@ Legacy metadata hard-drop path:
 filter/rules.py
 apply-rules
 metadata text-list path helpers
-anti_keywords source/module path
 ```
 
 Replacement:
@@ -93,16 +92,6 @@ Replacement:
 filter/metadata_flags.py
 evidence/buckets.py
 evidence/join.py
-```
-
-Current exact tracked-source checks return no matches for:
-
-```text
-anti_keywords
-anti-keywords
-anti keyword
-anti-keyword
-config/anti
 ```
 
 Legacy detector path:
