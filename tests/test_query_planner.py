@@ -67,6 +67,20 @@ def test_query_planner_source_has_no_papilio_specific_production_hardcoding() ->
     assert [value for value in forbidden if value in source] == []
 
 
+def test_query_planner_source_has_no_legacy_broad_seed_planner() -> None:
+    source = Path(query_planner.__file__).read_text(encoding="utf-8")
+    forbidden = (
+        "MULTILINGUAL_SEED_TERMS",
+        "multilingual_seed_terms",
+        "MultilingualSearchTerm",
+        "build_worldwide_discovery_plan",
+        "build_count_probes",
+        "QueryPlan",
+    )
+
+    assert [value for value in forbidden if value in source] == []
+
+
 def test_registry_query_definitions_load_as_page_one_upload_slice_work(tmp_path) -> None:
     registry_queries = tmp_path / "flickr_query_definitions.parquet"
     frame = pl.DataFrame(

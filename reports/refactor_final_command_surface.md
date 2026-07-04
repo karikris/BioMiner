@@ -243,5 +243,5 @@ uv run --extra test pytest -q
 Latest full-suite result:
 
 ```text
-526 passed
+527 passed
 ```

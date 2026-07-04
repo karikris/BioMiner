@@ -20,7 +20,7 @@ the active goal is marked complete.
 | Old public command families removed | `tests/test_cli_dry_run.py` asserts removed commands do not parse, including `species ...`, `bioclip screen`, `apply-rules`, `compact-parquet`, `gc-cache`, and low-level public registry commands. | Implemented |
 | Production storage/workstore defaults | `src/biominer/config/__init__.py` defaults to `StorageConfig.backend = "s3"` and `WorkStoreConfig.backend = "postgres"`; `tests/test_storage_config.py` covers defaults and explicit local overrides. | Implemented |
 | Local filesystem/SQLite are explicit dev/test overrides | `src/biominer/cli.py` validates `--storage-backend local --workstore-backend sqlite` as a paired local mode; mixed local/cloud modes fail. | Implemented |
-| Broad multilingual seed production path removed | `tests/test_query_planner.py` asserts legacy broad seed helpers are not exported; `MetadataPollState` has no `ensure_seed_work_items`; `tests/test_metadata_poller.py` verifies an empty state does not seed broad probes. | Implemented |
+| Broad multilingual seed production path removed | `tests/test_query_planner.py` asserts legacy broad seed helpers are not exported and that `query_planner.py` contains no legacy broad-seed planner symbols; `MetadataPollState` has no `ensure_seed_work_items`; `tests/test_metadata_poller.py` verifies an empty state does not seed broad probes. | Implemented |
 | T5 generated translations are enabled as accepted registry name evidence and enter Flickr retrieval | `tests/test_registry_enrichment.py` verifies T5 translations enter `names.parquet`, produce normal query definitions, and expose `enabled_t5_name_rows` / `t5_query_definition_rows` manifest counters; `tests/test_query_planner.py`, `tests/test_production_run_skeleton.py`, and `tests/test_metadata_poller.py` verify T5 query definitions become Flickr retrieval work and API search params. | Implemented |
 | Metadata keyword logic is flags, not hard pre-visual drop | `src/biominer/filter/metadata_flags.py` is retained; `src/biominer/filter/rules.py` is removed; `tests/test_metadata_flags.py`, `tests/test_evidence_rules.py`, and `tests/test_image_triage.py` cover soft metadata behavior. | Implemented |
 | Object evidence buckets are the rule engine | `src/biominer/evidence/buckets.py` and `src/biominer/evidence/join.py` are retained; legacy `apply-rules` no longer parses. | Implemented |
@@ -69,7 +69,7 @@ Latest full-suite result:
 
 ```text
 uv run --extra test pytest -q
-526 passed
+527 passed
 ```
 
 ## Remaining Caution
