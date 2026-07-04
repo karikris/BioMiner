@@ -1,0 +1,205 @@
+# BioMiner Removed Legacy Workflow Paths
+
+Recorded: 2026-07-04
+
+Branch used for current cleanup commits: `main`
+
+Base HEAD before this audit report commit: `77c077e`
+
+## Removed Files
+
+Recently removed workflow modules and tests:
+
+```text
+src/biominer/config/keywords.py
+src/biominer/filter/anti_keywords.py
+src/biominer/filter/rules.py
+src/biominer/reports/buckets.py
+src/biominer/reports/name_evidence.py
+src/biominer/detection/yolo_detector.py
+src/biominer/species/query_compile.py
+src/biominer/species/workflow.py
+tests/test_filter_anti_keywords.py
+tests/test_name_evidence_report.py
+```
+
+Older cleanup history also removed the pre-BioMiner package namespace and obsolete benchmark/publication/storage paths under `src/flickr_bio_occurrence/`.
+
+## Removed Or Demoted Commands
+
+Removed from the public command surface:
+
+```text
+biominer apply-rules
+biominer compact-parquet
+biominer gc-cache
+biominer qa-rate-limit
+biominer qa-summary
+biominer export-bucket-views
+biominer report-name-evidence
+biominer species ...
+biominer bioclip screen
+biominer registry fetch-taxonomy
+biominer registry compile-fixture
+biominer registry compile-enriched
+biominer registry enrich-sources
+biominer registry seed-flickr-queries
+```
+
+Demoted to dev/debug:
+
+```text
+biominer dev registry fetch-taxonomy
+biominer dev registry compile-fixture
+biominer dev registry compile-enriched
+biominer dev registry enrich-sources
+biominer dev registry seed-flickr-queries
+biominer dev flickr poll-once
+biominer dev comments fetch
+biominer dev comments queue
+biominer dev comments review-once
+biominer dev comments apply-decisions
+```
+
+## Workflow Replacements
+
+Legacy path:
+
+```text
+species run / species aliases / bioclip screen / apply-rules
+```
+
+Replacement:
+
+```text
+biominer run --taxon <name> --rank auto|family|genus|species ...
+biominer vision detect
+biominer vision score
+biominer evidence join
+```
+
+Legacy metadata hard-drop path:
+
+```text
+filter/anti_keywords.py
+filter/rules.py
+apply-rules
+metadata keyword JSON path helpers
+```
+
+Replacement:
+
+```text
+filter/metadata_flags.py
+evidence/buckets.py
+evidence/join.py
+```
+
+Legacy detector path:
+
+```text
+detection/yolo_detector.py
+YOLOv8 default backend
+```
+
+Replacement:
+
+```text
+detection/yoloe26_detector.py
+detection/yolo26_detector.py
+detection/detector_base.py coarse-label contract
+```
+
+Legacy broad seed path:
+
+```text
+MULTILINGUAL_SEED_TERMS
+multilingual_seed_terms()
+build_count_probes()
+build_worldwide_discovery_plan()
+config/papilio_demoleus_multilingual_keywords.json
+src/biominer/config/keywords.py
+```
+
+Replacement:
+
+```text
+registry compiler output: flickr_query_definitions.parquet
+MetadataPollState.ensure_seed_work_items(explicit_queries)
+biominer dev registry seed-flickr-queries --query-definitions ...
+```
+
+Production polling no longer creates broad Flickr work items from an empty state.
+
+## Tests Removed Or Rewritten
+
+Tests now assert removed public commands do not parse:
+
+```text
+tests/test_cli_dry_run.py
+tests/test_compaction.py
+tests/test_evidence_rules.py
+tests/test_query_planner.py
+tests/test_metadata_flags.py
+```
+
+Tests cover replacement behavior:
+
+```text
+tests/test_production_run_skeleton.py
+tests/test_metadata_poller.py
+tests/test_object_bioclip_pipeline.py
+tests/test_detection_pipeline.py
+tests/test_yoloe26_detector.py
+tests/test_yolo26_detector.py
+tests/test_registry_enrichment.py
+tests/test_storage_config.py
+tests/test_workstore.py
+```
+
+Current full-suite result after the last code cleanup:
+
+```text
+uv run --extra test python -m pytest -q
+460 passed
+```
+
+The latest documentation-only audit commit was additionally checked with:
+
+```text
+uv run --extra test python -m pytest -q tests/test_cli_dry_run.py
+42 passed
+```
+
+## Remaining Non-Production Compatibility Surfaces
+
+These are intentionally retained for internal implementation, tests, or debug workflows:
+
+```text
+src/biominer/bioclip/register_runner.py
+src/biominer/bioclip/bioclip.py compatibility output columns
+src/biominer/storage/compaction.py internal immutable shard compaction helpers
+src/biominer/species/context.py shared SpeciesContext data model
+src/biominer/species/registry_refresh.py registry-to-SpeciesContext resolver
+src/biominer/flickr_fetch/metadata_poller.py legacy query-hit migration fallback
+```
+
+These are not public production commands. The public production entry point is `biominer run`.
+
+## Known Follow-Up Tasks
+
+- Decide whether `vision yoloe26-prototype-run`, runtime checks, prefetch commands, crop preview, and eval should remain public debug commands or move under `biominer dev vision`.
+- Consider moving `SpeciesContext` from `biominer.species.context` into `biominer.run` or a neutral common schema module if the package name remains confusing after the public `species` CLI removal.
+- Continue replacing skipped orchestrator placeholders with real cloud-backed stages where production S3/Postgres IO is not yet fully wired.
+- Keep `bioclip/register_runner.py` non-public unless a later benchmark/debug command needs it explicitly.
+- Review `README.md` examples that still use `staging/species_runs/...` debug paths and decide whether to move them into docs/examples only.
+
+## MCP Limitations Encountered
+
+Recorded in `reports/refactor_mcp_environment.md`:
+
+```text
+Morph MCP was unavailable/rate-limited during this cleanup and was recorded once.
+GitHub and local shell tooling were used for repo inspection, commits, pushes, and verification.
+```
+
