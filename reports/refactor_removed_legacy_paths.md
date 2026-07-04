@@ -166,7 +166,7 @@ Current full-suite result after the last code cleanup:
 
 ```text
 uv run --extra test pytest -q
-528 passed
+529 passed
 ```
 
 The latest command-surface and workflow cleanup was additionally checked with:

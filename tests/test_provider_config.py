@@ -13,6 +13,7 @@ from biominer.config import (
     create_workstore,
     load_biominer_config,
     redact_config,
+    redact_text,
     validate_config,
 )
 from biominer.storage.local import LocalStorageBackend
@@ -171,9 +172,45 @@ def test_redaction_hides_secrets() -> None:
     rendered = repr(redacted)
 
     assert "super-secret" not in rendered
+    assert "fake-key-id" not in rendered
     assert "password" not in rendered
+    assert redacted["storage"]["access_key_id"] == "<redacted>"
     assert redacted["storage"]["secret_access_key"] == "<redacted>"
     assert redacted["workstore"]["dsn"] == "<redacted>"
+
+
+def test_redact_text_hides_cloud_credentials_and_postgres_password() -> None:
+    config = BioMinerConfig(
+        storage=StorageConfig(
+            backend="s3",
+            bucket="biominer",
+            prefix="prod",
+            endpoint_url="https://s3.example.test",
+            access_key_id="AKIA_TEST_ACCESS_KEY",
+            secret_access_key="super-secret-s3-key",
+        ),
+        workstore=WorkStoreConfig(
+            backend="postgres",
+            dsn="postgresql://biominer:db-password@example.test:5432/biominer",
+        ),
+        runtime=RuntimeConfig(worker_id="worker-001"),
+    )
+    raw = (
+        "failed with AKIA_TEST_ACCESS_KEY / super-secret-s3-key "
+        "against postgresql://biominer:db-password@example.test:5432/biominer "
+        "because password db-password was rejected"
+    )
+
+    redacted = redact_text(raw, config)
+
+    for secret in (
+        "AKIA_TEST_ACCESS_KEY",
+        "super-secret-s3-key",
+        "postgresql://biominer:db-password@example.test:5432/biominer",
+        "db-password",
+    ):
+        assert secret not in redacted
+    assert redacted.count("<redacted>") >= 4
 
 
 def test_factories_local(tmp_path) -> None:

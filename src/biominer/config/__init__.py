@@ -295,9 +295,7 @@ def _production_worker_id(value: str | None) -> str:
 def _redact_access_key(value: str | None) -> str | None:
     if not value:
         return None
-    if len(value) <= 4:
-        return "<redacted>"
-    return f"{value[:2]}...<redacted>"
+    return "<redacted>"
 
 
 def _dsn_password(dsn: str | None) -> str | None:

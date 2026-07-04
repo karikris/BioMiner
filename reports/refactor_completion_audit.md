@@ -18,7 +18,7 @@ the active goal is marked complete.
 | Public production workflow is rank-aware | `uv run --extra test biominer run --help` exposes `--taxon` and `--rank auto|family|genus|species`; `tests/test_production_run_skeleton.py` covers species, genus, and family scope expansion. | Implemented |
 | Public registry surface is production-only | `uv run --extra test biominer registry --help` exposes only `build` and `audit`. Low-level registry commands are under `uv run --extra test biominer dev registry --help`. | Implemented |
 | Old public command families removed | `tests/test_cli_dry_run.py` asserts removed commands do not parse, including `species ...`, `bioclip screen`, `apply-rules`, `compact-parquet`, `gc-cache`, and low-level public registry commands. | Implemented |
-| Production storage/workstore defaults | `src/biominer/config/__init__.py` defaults to `StorageConfig.backend = "s3"` and `WorkStoreConfig.backend = "postgres"`; `tests/test_storage_config.py` covers defaults and explicit local overrides. | Implemented |
+| Production storage/workstore defaults | `src/biominer/config/__init__.py` defaults to `StorageConfig.backend = "s3"` and `WorkStoreConfig.backend = "postgres"`; `tests/test_storage_config.py` covers defaults and explicit local overrides; `tests/test_provider_config.py` covers redaction of S3 access keys, S3 secrets, Postgres DSNs, and DSN passwords. | Implemented |
 | Local filesystem/SQLite are explicit dev/test overrides | `src/biominer/cli.py` validates `--storage-backend local --workstore-backend sqlite` as a paired local mode; mixed local/cloud modes fail. | Implemented |
 | Broad multilingual seed production path removed | `tests/test_query_planner.py` asserts legacy broad seed helpers are not exported and that `query_planner.py` contains no legacy broad-seed planner symbols; `MetadataPollState` has no `ensure_seed_work_items`; `tests/test_metadata_poller.py` verifies an empty state does not seed broad probes. | Implemented |
 | T5 generated translations are enabled as accepted registry name evidence and enter Flickr retrieval | `tests/test_registry_enrichment.py` verifies T5 translations enter `names.parquet`, produce normal query definitions, and expose `enabled_t5_name_rows` / `t5_query_definition_rows` manifest counters; `tests/test_query_planner.py`, `tests/test_production_run_skeleton.py`, and `tests/test_metadata_poller.py` verify T5 query definitions become Flickr retrieval work and API search params. | Implemented |
@@ -69,7 +69,7 @@ Latest full-suite result:
 
 ```text
 uv run --extra test pytest -q
-528 passed
+529 passed
 ```
 
 ## Remaining Caution
