@@ -1,10 +1,10 @@
 # BioMiner Removed Legacy Workflow Paths
 
-Recorded: 2026-07-04
+Recorded: 2026-07-05
 
 Branch used for current cleanup commits: `main`
 
-Base HEAD before this audit report commit: `77c077e`
+Current HEAD before this audit report refresh: `9fd2b9e`
 
 ## Removed Files
 
@@ -124,11 +124,12 @@ Replacement:
 
 ```text
 registry compiler output: flickr_query_definitions.parquet
-MetadataPollState.ensure_seed_work_items(explicit_queries)
+MetadataPollState.enqueue_initial_work_items(explicit_registry_queries)
 biominer dev registry seed-flickr-queries --query-definitions ...
 ```
 
 Production polling no longer creates broad Flickr work items from an empty state.
+Production run polling now uses the validated runtime worker ID from config rather than an ambient fallback.
 
 ## Tests Removed Or Rewritten
 
@@ -160,14 +161,17 @@ Current full-suite result after the last code cleanup:
 
 ```text
 uv run --extra test pytest -q
-488 passed
+510 passed
 ```
 
-The latest command-surface cleanup was additionally checked with:
+The latest command-surface and workflow cleanup was additionally checked with:
 
 ```text
-uv run --extra test pytest -q tests/test_cli_dry_run.py tests/test_config_assets.py
-52 passed
+uv run --extra test biominer --help
+uv run --extra test biominer run --help
+uv run --extra test biominer registry --help
+uv run --extra test biominer vision --help
+uv run --extra test biominer evidence --help
 ```
 
 ## Remaining Non-Production Compatibility Surfaces

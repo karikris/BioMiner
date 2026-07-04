@@ -1,10 +1,10 @@
 # BioMiner Refactor Command Surface Audit
 
-Recorded: 2026-07-04
+Recorded: 2026-07-05
 
 Current branch: `main`
 
-Base HEAD before this audit report commit: `22e6cd9`
+Current HEAD before this audit report refresh: `9fd2b9e`
 
 Note: the original refactor plan named branch `cleanup/production-workflow-postgres-s3`; a later operator instruction changed the working branch to `main`, and the cleanup commits are being pushed directly to `main`.
 
@@ -171,12 +171,13 @@ Confirmed current behavior:
 - The public workflow is rank-aware through `biominer run --rank auto|family|genus|species`.
 - Registry build/audit are the only public registry commands.
 - Registry-derived Flickr query definitions are the production discovery input.
-- The implicit broad seed fallback is removed from `MetadataPollState.ensure_seed_work_items()`.
+- The implicit broad seed fallback is removed; `MetadataPollState` now exposes only explicit `enqueue_initial_work_items(queries)` for registry-derived query definitions.
 - Built-in multilingual seed terms and the broad discovery seed planner were removed from `flickr_fetch.query_planner`.
 - Metadata text matching is a flag/review signal, not a public hard-drop path.
 - Object detection emits BioMiner coarse labels only.
 - YOLOE-26 and YOLO26 adapters are object proposal backends, not species classifiers.
 - BioCLIP object scoring remains the species scorer.
+- Production run polling uses the validated `RuntimeConfig.worker_id` / `BIOMINER_WORKER_ID` instead of falling back to an ambient local worker ID.
 - Vision runtime checks, prefetch, smoke/prototype, crop preview, and evaluation utilities are dev-only.
 
 Known remaining debug surfaces:
