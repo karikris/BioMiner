@@ -673,8 +673,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     parser = build_parser()
     screen = parser.parse_args(
         [
-            "bioclip",
-            "screen-objects",
+            "vision",
+            "score",
             "--input",
             "filtered.parquet",
             "--detections",
@@ -701,8 +701,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     )
     ablate = parser.parse_args(
         [
-            "bioclip",
-            "ablate-objects",
+            "vision",
+            "ablate",
             "--input",
             "filtered.parquet",
             "--detections",
@@ -798,7 +798,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
         ]
     )
 
-    assert screen.bioclip_command == "screen-objects"
+    assert screen.command == "vision"
+    assert screen.vision_command == "score"
     assert screen.ablation_mode == "detector_crop"
     assert screen.geo_prior_table == "geo_prior.parquet"
     assert screen.parquet_batch_rows == 7
@@ -806,7 +807,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert screen.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert screen.object_image_embedding_cache == "object_image_embeddings.parquet"
     assert screen.segmenter == "none"
-    assert ablate.bioclip_command == "ablate-objects"
+    assert ablate.command == "vision"
+    assert ablate.vision_command == "ablate"
     assert ablate.modes == "whole_image,detector_crop,detector_crop_segmentation"
     assert ablate.geo_prior_table == "geo_prior.parquet"
     assert ablate.parquet_batch_rows == 11
@@ -837,6 +839,10 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
         parser.parse_args(["bioclip", "join-object-evidence"])
     with pytest.raises(SystemExit):
         parser.parse_args(["vision", "join"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["bioclip", "screen-objects"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["bioclip", "ablate-objects"])
     for removed in ("detect", "bioclip-objects", "ablate-objects", "join-object-evidence"):
         with pytest.raises(SystemExit):
             parser.parse_args(["species", removed])
@@ -1065,8 +1071,8 @@ def test_bioclip_screen_objects_uses_embedding_caches_for_detector_crop_scoring(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "bioclip",
-            "screen-objects",
+            "vision",
+            "score",
             "--input",
             str(input_path),
             "--detections",
@@ -1184,8 +1190,8 @@ def test_bioclip_ablate_objects_forwards_parquet_batch_rows(tmp_path, capsys, mo
     parser = build_parser()
     args = parser.parse_args(
         [
-            "bioclip",
-            "ablate-objects",
+            "vision",
+            "ablate",
             "--input",
             str(input_path),
             "--detections",
