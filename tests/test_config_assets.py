@@ -87,6 +87,7 @@ def test_production_workflow_docs_exist_and_match_current_surface() -> None:
         "biominer dev vision yoloe26-runtime-check",
         "BioCLIP",
         "object finder",
+        "user-provided coarse-object checkpoint",
         "detector_crop_segmentation",
         "--species-candidates data/registry/current/species_candidates.parquet",
     ):

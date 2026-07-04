@@ -60,7 +60,7 @@ canonical source records
   -> reports/review_queue.parquet for Bronze and InReview photo summaries
 ```
 
-The core Python 3.14 environment keeps heavy vision dependencies optional. `vision detect --backend fake` is available for offline tests and deterministic local plumbing. YOLOE-26 and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent. The YOLOE-26 prototype treats YOLOE only as an object finder; BioCLIP 2.5 Huge remains the biological classifier and species scorer.
+The core Python 3.14 environment keeps heavy vision dependencies optional. `vision detect --backend fake` is available for offline tests and deterministic local plumbing. YOLOE-26, explicit YOLO26 inference checkpoints, and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent. YOLOE/YOLO26 are object finders only; BioCLIP 2.5 Huge remains the biological classifier and species scorer.
 
 Example command shape:
 
@@ -80,6 +80,13 @@ uv run biominer vision detect \
   --conf 0.20 \
   --iou 0.50 \
   --max-det 8
+
+uv run biominer vision detect \
+  --input staging/species_runs/example/canonical_source_records.parquet \
+  --output staging/species_runs/example/object_detections_yolo26.parquet \
+  --backend yolo26 \
+  --runtime-python "../YOLO26/venv/bin/python" \
+  --checkpoint "../YOLO26/models/coarse-objects.pt"
 
 uv run biominer vision score \
   --input staging/species_runs/example/canonical_source_records.parquet \

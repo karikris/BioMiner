@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import importlib
+import json
+from types import SimpleNamespace
 
 import pytest
 
-from biominer.detection.yolo26_detector import detections_from_yolo26_result, yolo26_coarse_label
+from biominer.detection.detector_base import DecodedImage, DetectionCandidate
+from biominer.detection.yolo26_detector import Yolo26SidecarObjectDetector, detections_from_yolo26_result, yolo26_coarse_label
 
 
 def test_yolo26_module_imports_without_ultralytics_runtime() -> None:
@@ -53,6 +56,65 @@ def test_yolo26_result_conversion_rejects_species_classifier_labels() -> None:
 
     with pytest.raises(ValueError, match="taxonomic"):
         detections_from_yolo26_result(result)
+
+
+def test_yolo26_sidecar_detector_serializes_rgb_images_without_importing_ultralytics(tmp_path, monkeypatch) -> None:
+    runtime_python = tmp_path / "YOLO26" / "venv" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("# fake python", encoding="utf-8")
+    calls: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors subprocess.run.
+        calls["command"] = command
+        calls["payload"] = json.loads(kwargs["input"])
+        calls["env"] = kwargs["env"]
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "metadata": {
+                        "backend": "yolo26",
+                        "model_id": "yolo26:coarse-objects",
+                        "model_version": "ultralytics:test",
+                        "checkpoint": "coarse-objects.pt",
+                    },
+                    "detections": [
+                        [
+                            {
+                                "label": "butterfly_like",
+                                "score": 0.91,
+                                "bbox_xyxy": [0.0, 0.0, 4.0, 2.0],
+                                "objectness_score": 0.88,
+                            }
+                        ]
+                    ],
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("biominer.detection.yolo26_detector.subprocess.run", fake_run)
+    detector = Yolo26SidecarObjectDetector(
+        runtime_python=str(runtime_python),
+        checkpoint="coarse-objects.pt",
+        device="mps",
+    )
+
+    image = DecodedImage(width=4, height=2, mode="RGB", data=bytes([255, 255, 255] * 8), source_uri="memory://wide")
+    detections = detector.detect_batch([image])
+
+    payload = calls["payload"]
+    assert calls["command"] == [str(runtime_python), "-m", "biominer.detection.yolo26_detector"]
+    assert payload["device"] == "mps"
+    assert payload["checkpoint"] == "coarse-objects.pt"
+    assert payload["images"][0]["width"] == 4
+    assert payload["images"][0]["height"] == 2
+    assert "src" in calls["env"]["PYTHONPATH"]
+    assert detector.model_id == "yolo26:coarse-objects"
+    assert detector.model_version == "ultralytics:test"
+    assert detections == [
+        [DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 2.0), objectness_score=0.88)]
+    ]
 
 
 class _FakeResult:

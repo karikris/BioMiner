@@ -24,6 +24,19 @@ uv run biominer vision ablate --help
 
 Detection writes rows using the stable detection schema with source/photo join keys and object-level IDs. Scoring reads canonical records plus detections and writes BioCLIP object score rows. Ablation compares visual modes over the same input.
 
+`vision detect` defaults to `--backend yoloe26`. The optional `--backend yolo26` path is inference-only compatibility for a user-provided coarse-object checkpoint:
+
+```bash
+uv run biominer vision detect \
+  --input staging/species_runs/example/canonical_source_records.parquet \
+  --output staging/species_runs/example/object_detections_yolo26.parquet \
+  --backend yolo26 \
+  --runtime-python "../YOLO26/venv/bin/python" \
+  --checkpoint "../YOLO26/models/coarse-objects.pt"
+```
+
+YOLO26 checkpoints must emit BioMiner coarse object labels or known legacy object aliases. Species-class checkpoints are rejected rather than remapped.
+
 Supported visual modes are:
 
 ```text

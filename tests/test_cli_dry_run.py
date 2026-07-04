@@ -316,6 +316,45 @@ def test_detect_boxes_cli_accepts_yoloe26_arguments() -> None:
     assert args.include_hard_negative_prompts is False
 
 
+def test_detect_boxes_cli_accepts_explicit_yolo26_checkpoint() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "vision",
+            "detect",
+            "--input",
+            "filtered.parquet",
+            "--output",
+            "object_detections.parquet",
+            "--backend",
+            "yolo26",
+            "--runtime-python",
+            "/runtime-base/YOLO26/venv/bin/python",
+            "--checkpoint",
+            "coarse-objects.pt",
+            "--device",
+            "mps",
+            "--imgsz",
+            "768",
+            "--conf",
+            "0.15",
+            "--iou",
+            "0.55",
+            "--max-det",
+            "12",
+        ]
+    )
+
+    assert args.backend == "yolo26"
+    assert args.runtime_python == "/runtime-base/YOLO26/venv/bin/python"
+    assert args.checkpoint == "coarse-objects.pt"
+    assert args.device == "mps"
+    assert args.imgsz == 768
+    assert args.conf == 0.15
+    assert args.iou == 0.55
+    assert args.max_det == 12
+
+
 def test_detect_boxes_cli_forwards_detection_and_run_policies(tmp_path, capsys, monkeypatch) -> None:
     input_path = tmp_path / "filtered.parquet"
     output_path = tmp_path / "object_detections.parquet"
@@ -1440,6 +1479,92 @@ def test_detect_boxes_yoloe26_backend_uses_sidecar_runtime(tmp_path, monkeypatch
             "sign",
             "museum label",
         ),
+    }
+
+
+def test_detect_boxes_yolo26_backend_requires_explicit_checkpoint(tmp_path) -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "vision",
+            "detect",
+            "--input",
+            str(tmp_path / "filtered.parquet"),
+            "--output",
+            str(tmp_path / "object_detections.parquet"),
+            "--backend",
+            "yolo26",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="user-provided coarse object checkpoint"):
+        _detect_boxes_backend(args, [])
+
+
+def test_detect_boxes_yolo26_backend_uses_sidecar_runtime(tmp_path, monkeypatch) -> None:
+    runtime_python = tmp_path / "YOLO26" / "venv" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("# fake python", encoding="utf-8")
+    calls: dict[str, object] = {}
+
+    class FakeYolo26SidecarDetector:
+        backend = "yolo26"
+        model_id = "fake-yolo26-sidecar"
+        model_version = "sidecar-test"
+        checkpoint = "coarse-objects.pt"
+
+        def __init__(self, **kwargs):  # noqa: ANN003 - mirrors sidecar init.
+            calls["sidecar_init"] = kwargs
+
+        def detect_batch(self, images):  # noqa: ANN001, ANN201 - mirrors ObjectDetector protocol.
+            return [[] for _image in images]
+
+    class InProcessYolo26Detector:
+        def __init__(self, **kwargs):  # noqa: ANN003, ANN204 - should not be called.
+            raise AssertionError(f"in-process YOLO26 should not be used when sidecar exists: {kwargs}")
+
+    monkeypatch.setattr("biominer.detection.yolo26_detector.Yolo26SidecarObjectDetector", FakeYolo26SidecarDetector)
+    monkeypatch.setattr("biominer.detection.yolo26_detector.Yolo26ObjectDetector", InProcessYolo26Detector)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "vision",
+            "detect",
+            "--input",
+            str(tmp_path / "filtered.parquet"),
+            "--output",
+            str(tmp_path / "object_detections.parquet"),
+            "--backend",
+            "yolo26",
+            "--runtime-python",
+            str(runtime_python),
+            "--device",
+            "mps",
+            "--checkpoint",
+            "coarse-objects.pt",
+            "--imgsz",
+            "640",
+            "--conf",
+            "0.2",
+            "--iou",
+            "0.5",
+            "--max-det",
+            "8",
+        ]
+    )
+
+    detector, image_loader = _detect_boxes_backend(args, [])
+
+    assert detector.backend == "yolo26"
+    assert image_loader is load_decoded_image_from_record
+    assert calls["sidecar_init"] == {
+        "runtime_python": str(runtime_python),
+        "checkpoint": "coarse-objects.pt",
+        "device": "mps",
+        "imgsz": 640,
+        "conf": 0.2,
+        "iou": 0.5,
+        "max_det": 8,
     }
 
 

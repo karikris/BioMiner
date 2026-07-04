@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     vision_detect = vision_subparsers.add_parser("detect")
     vision_detect.add_argument("--input", required=True)
     vision_detect.add_argument("--output", required=True)
-    vision_detect.add_argument("--backend", default="yoloe26", choices=("yoloe26", "fake"))
+    vision_detect.add_argument("--backend", default="yoloe26", choices=("yoloe26", "yolo26", "fake"))
     vision_detect.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
     vision_detect.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
     vision_detect.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
@@ -1193,7 +1193,28 @@ def _detect_boxes_backend(args: argparse.Namespace, records: list[dict[str, obje
         if _use_vision_sidecar(args.runtime_python):
             return YoloE26SidecarObjectDetector(runtime_python=args.runtime_python, **kwargs), load_decoded_image_from_record
         return YoloE26ObjectDetector(**kwargs), load_decoded_image_from_record
+    if args.backend == "yolo26":
+        from biominer.detection.yolo26_detector import Yolo26ObjectDetector, Yolo26SidecarObjectDetector
+
+        kwargs = {
+            "checkpoint": _explicit_yolo26_checkpoint(args),
+            "device": args.device,
+            "imgsz": args.imgsz,
+            "conf": args.conf,
+            "iou": args.iou,
+            "max_det": args.max_det,
+        }
+        if _use_vision_sidecar(args.runtime_python):
+            return Yolo26SidecarObjectDetector(runtime_python=args.runtime_python, **kwargs), load_decoded_image_from_record
+        return Yolo26ObjectDetector(**kwargs), load_decoded_image_from_record
     raise RuntimeError(f"unsupported detection backend: {args.backend}")
+
+
+def _explicit_yolo26_checkpoint(args: argparse.Namespace) -> str:
+    checkpoint = str(getattr(args, "checkpoint", "") or "").strip()
+    if not checkpoint or checkpoint == "yoloe-26s-seg.pt":
+        raise ValueError("YOLO26 inference requires --checkpoint pointing to a user-provided coarse object checkpoint")
+    return checkpoint
 
 
 def _yoloe26_prompt_classes(args: argparse.Namespace) -> tuple[str, ...]:
