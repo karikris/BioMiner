@@ -28,8 +28,8 @@ Recorded before adding the BioMiner YOLOE-26 prototype code, using GitHub `origi
 - Branch: `feature/yoloe26-prototype`
 - Base: `origin/main`
 - Base commit: `52f5b83 infra: scope cloud doctor work item`
-- Existing detector CLI: `uv run biominer detect --help` exposes `boxes`, `crop-preview`, and `eval`
-- Existing BioCLIP CLI: `uv run biominer bioclip --help` exposes `runtime-check`, `prefetch-model`, `screen`, `screen-objects`, `ablate-objects`, and `join-object-evidence`
+- Historical audit note: at prototype start, detector helpers lived under `uv run biominer detect --help` and BioCLIP helpers lived under `uv run biominer bioclip --help`.
+- Current cleanup direction: model runtime and detector debug helpers are consolidated under `uv run biominer vision --help`.
 
 ## External Runtime Layout
 

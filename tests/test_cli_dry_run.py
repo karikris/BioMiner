@@ -27,7 +27,8 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert "evidence" in commands
     assert "storage" in commands
     assert "workstore" in commands
-    assert "bioclip" in commands
+    assert "bioclip" not in commands
+    assert "detect" not in commands
     assert "species" not in commands
     assert "dev" in commands
     assert "cloud" not in commands
@@ -204,8 +205,8 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
     parser = build_parser()
     args = parser.parse_args(
         [
+            "vision",
             "detect",
-            "boxes",
             "--input",
             "filtered.parquet",
             "--output",
@@ -247,8 +248,8 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
         ]
     )
 
-    assert args.command == "detect"
-    assert args.detect_command == "boxes"
+    assert args.command == "vision"
+    assert args.vision_command == "detect"
     assert args.input == "filtered.parquet"
     assert args.output == "object_detections.parquet"
     assert args.backend == "yoloe26"
@@ -273,8 +274,8 @@ def test_detect_boxes_cli_accepts_yoloe26_arguments() -> None:
     parser = build_parser()
     args = parser.parse_args(
         [
+            "vision",
             "detect",
-            "boxes",
             "--input",
             "filtered.parquet",
             "--output",
@@ -343,8 +344,8 @@ def test_detect_boxes_cli_forwards_detection_and_run_policies(tmp_path, capsys, 
     parser = build_parser()
     args = parser.parse_args(
         [
+            "vision",
             "detect",
-            "boxes",
             "--input",
             str(input_path),
             "--output",
@@ -412,8 +413,8 @@ def test_detect_boxes_cli_applies_runtime_profile_with_explicit_overrides(tmp_pa
     parser = build_parser()
     args = parser.parse_args(
         [
+            "vision",
             "detect",
-            "boxes",
             "--input",
             str(input_path),
             "--output",
@@ -476,8 +477,8 @@ def test_detect_boxes_cli_uses_runtime_profile_defaults_when_not_overridden(tmp_
     parser = build_parser()
     args = parser.parse_args(
         [
+            "vision",
             "detect",
-            "boxes",
             "--input",
             str(input_path),
             "--output",
@@ -540,7 +541,7 @@ def test_detect_eval_cli_forwards_xie_thresholds(tmp_path, capsys, monkeypatch) 
     parser = build_parser()
     args = parser.parse_args(
         [
-            "detect",
+            "vision",
             "eval",
             "--predictions",
             str(predictions),
@@ -599,7 +600,7 @@ def test_detect_crop_preview_writes_html_artifact_without_image_archive(tmp_path
         ]
     ).write_parquet(detections)
     parser = build_parser()
-    args = parser.parse_args(["detect", "crop-preview", "--detections", str(detections), "--output", str(output)])
+    args = parser.parse_args(["vision", "crop-preview", "--detections", str(detections), "--output", str(output)])
 
     assert run(args) == 0
 
@@ -815,8 +816,8 @@ def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch
     parser = build_parser()
     args = parser.parse_args(
         [
-            "bioclip",
-            "runtime-check",
+            "vision",
+            "bioclip-runtime-check",
             "--runtime-python",
             str(runtime_python),
             "--hf-cache-dir",
@@ -852,8 +853,8 @@ def test_bioclip_prefetch_model_uses_snapshot_download_sidecar(tmp_path, capsys,
     parser = build_parser()
     args = parser.parse_args(
         [
-            "bioclip",
-            "prefetch-model",
+            "vision",
+            "bioclip-prefetch-model",
             "--runtime-python",
             str(runtime_python),
             "--hf-cache-dir",
@@ -1255,8 +1256,8 @@ def test_detect_boxes_fake_backend_writes_crop_metadata(tmp_path, capsys) -> Non
     parser = build_parser()
     args = parser.parse_args(
         [
+            "vision",
             "detect",
-            "boxes",
             "--input",
             str(input_path),
             "--output",
@@ -1282,8 +1283,8 @@ def test_detect_boxes_public_backend_excludes_legacy_yolo() -> None:
     with pytest.raises(SystemExit):
         parser.parse_args(
             [
+                "vision",
                 "detect",
-                "boxes",
                 "--input",
                 "filtered.parquet",
                 "--output",
@@ -1321,8 +1322,8 @@ def test_detect_boxes_yoloe26_backend_uses_sidecar_runtime(tmp_path, monkeypatch
     parser = build_parser()
     args = parser.parse_args(
         [
+            "vision",
             "detect",
-            "boxes",
             "--input",
             str(tmp_path / "filtered.parquet"),
             "--output",
@@ -1386,12 +1387,12 @@ def test_detect_boxes_yoloe26_backend_uses_sidecar_runtime(tmp_path, monkeypatch
 def test_yoloe26_runtime_commands_parse_with_applications_defaults() -> None:
     parser = build_parser()
 
-    runtime = parser.parse_args(["detect", "yoloe26-runtime-check", "--device", "mps"])
-    prefetch = parser.parse_args(["detect", "yoloe26-prefetch", "--checkpoint", "yoloe-26s-seg.pt"])
-    smoke = parser.parse_args(["detect", "yoloe26-smoke", "--image", "manual.jpg"])
+    runtime = parser.parse_args(["vision", "yoloe26-runtime-check", "--device", "mps"])
+    prefetch = parser.parse_args(["vision", "yoloe26-prefetch", "--checkpoint", "yoloe-26s-seg.pt"])
+    smoke = parser.parse_args(["vision", "yoloe26-smoke", "--image", "manual.jpg"])
     prototype = parser.parse_args(
         [
-            "detect",
+            "vision",
             "yoloe26-prototype-run",
             "--input",
             "filtered.parquet",
@@ -1404,7 +1405,7 @@ def test_yoloe26_runtime_commands_parse_with_applications_defaults() -> None:
         ]
     )
 
-    assert runtime.detect_command == "yoloe26-runtime-check"
+    assert runtime.vision_command == "yoloe26-runtime-check"
     assert runtime.runtime_python.endswith("/YOLO26/venv/bin/python")
     assert prefetch.checkpoint == "yoloe-26s-seg.pt"
     assert smoke.image == "manual.jpg"
@@ -1435,7 +1436,7 @@ def test_yoloe26_smoke_resolves_paths_before_sidecar_run(tmp_path, capsys, monke
     parser = build_parser()
     args = parser.parse_args(
         [
-            "detect",
+            "vision",
             "yoloe26-smoke",
             "--runtime-python",
             str(runtime_python),

@@ -112,18 +112,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config")
     parser.add_argument("--version", action="store_true")
     subparsers = parser.add_subparsers(dest="command")
-    bioclip = subparsers.add_parser("bioclip")
-    bioclip_subparsers = bioclip.add_subparsers(dest="bioclip_command")
-    bioclip_runtime = bioclip_subparsers.add_parser("runtime-check")
-    bioclip_runtime.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
-    bioclip_runtime.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    bioclip_runtime.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
-    bioclip_prefetch = bioclip_subparsers.add_parser("prefetch-model")
-    bioclip_prefetch.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
-    bioclip_prefetch.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
-    bioclip_prefetch.add_argument("--model-name", default=BIOCLIP_25_HUGE_REPO_ID)
-    bioclip_prefetch.add_argument("--revision", default=BIOCLIP_25_HUGE_REVISION)
-    bioclip_prefetch.add_argument("--max-workers", type=int, default=8)
     vision = subparsers.add_parser("vision")
     vision_subparsers = vision.add_subparsers(dest="vision_command")
     vision_detect = vision_subparsers.add_parser("detect")
@@ -187,37 +175,31 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_join = evidence_subparsers.add_parser("join")
     _add_object_evidence_join_args(evidence_join)
     evidence_join.add_argument("--species-context")
-    detect = subparsers.add_parser("detect")
-    detect_subparsers = detect.add_subparsers(dest="detect_command")
-    detect_boxes = detect_subparsers.add_parser("boxes")
-    detect_boxes.add_argument("--input", required=True)
-    detect_boxes.add_argument("--output", required=True)
-    detect_boxes.add_argument("--backend", default="yoloe26", choices=("yoloe26", "fake"))
-    detect_boxes.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
-    detect_boxes.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    detect_boxes.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
-    detect_boxes.add_argument("--imgsz", type=int, default=640)
-    detect_boxes.add_argument("--conf", type=float, default=0.20)
-    detect_boxes.add_argument("--iou", type=float, default=0.50)
-    detect_boxes.add_argument("--max-det", type=int, default=8)
-    detect_boxes.add_argument("--prompt-class", action="append", default=[])
-    detect_boxes.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
-    _add_detection_policy_args(detect_boxes)
-    yoloe26_runtime = detect_subparsers.add_parser("yoloe26-runtime-check")
+    bioclip_runtime = vision_subparsers.add_parser("bioclip-runtime-check")
+    bioclip_runtime.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    bioclip_runtime.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    bioclip_runtime.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
+    bioclip_prefetch = vision_subparsers.add_parser("bioclip-prefetch-model")
+    bioclip_prefetch.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    bioclip_prefetch.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
+    bioclip_prefetch.add_argument("--model-name", default=BIOCLIP_25_HUGE_REPO_ID)
+    bioclip_prefetch.add_argument("--revision", default=BIOCLIP_25_HUGE_REVISION)
+    bioclip_prefetch.add_argument("--max-workers", type=int, default=8)
+    yoloe26_runtime = vision_subparsers.add_parser("yoloe26-runtime-check")
     yoloe26_runtime.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
     yoloe26_runtime.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
     yoloe26_runtime.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
-    yoloe26_prefetch = detect_subparsers.add_parser("yoloe26-prefetch")
+    yoloe26_prefetch = vision_subparsers.add_parser("yoloe26-prefetch")
     yoloe26_prefetch.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
     yoloe26_prefetch.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
     yoloe26_prefetch.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
-    yoloe26_smoke = detect_subparsers.add_parser("yoloe26-smoke")
+    yoloe26_smoke = vision_subparsers.add_parser("yoloe26-smoke")
     yoloe26_smoke.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
     yoloe26_smoke.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
     yoloe26_smoke.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
     yoloe26_smoke.add_argument("--image")
     yoloe26_smoke.add_argument("--output-dir", default="reports/yoloe26_smoke")
-    yoloe26_prototype = detect_subparsers.add_parser("yoloe26-prototype-run")
+    yoloe26_prototype = vision_subparsers.add_parser("yoloe26-prototype-run")
     yoloe26_prototype.add_argument("--input", required=True)
     yoloe26_prototype.add_argument("--species-context", required=True)
     yoloe26_prototype.add_argument("--species-candidates")
@@ -240,11 +222,11 @@ def build_parser() -> argparse.ArgumentParser:
     yoloe26_prototype.add_argument("--max-det", type=int, default=8)
     yoloe26_prototype.add_argument("--prompt-class", action="append", default=[])
     yoloe26_prototype.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
-    detect_crop_preview = detect_subparsers.add_parser("crop-preview")
+    detect_crop_preview = vision_subparsers.add_parser("crop-preview")
     detect_crop_preview.add_argument("--detections", required=True)
     detect_crop_preview.add_argument("--output", required=True)
     detect_crop_preview.add_argument("--limit", type=int, default=200)
-    detect_eval = detect_subparsers.add_parser("eval")
+    detect_eval = vision_subparsers.add_parser("eval")
     detect_eval.add_argument("--predictions", required=True)
     detect_eval.add_argument("--ground-truth")
     detect_eval.add_argument("--output", required=True)
@@ -402,12 +384,6 @@ def run(args: argparse.Namespace) -> int:
     if args.version:
         print("biominer 0.1.0")
         return 0
-    if args.command == "bioclip":
-        if args.bioclip_command == "runtime-check":
-            return _run_bioclip_runtime_check(args)
-        if args.bioclip_command == "prefetch-model":
-            return _run_bioclip_prefetch_model(args)
-        return 2
     if args.command == "vision":
         if args.vision_command == "detect":
             return _run_detect_boxes(args)
@@ -415,26 +391,26 @@ def run(args: argparse.Namespace) -> int:
             return _run_bioclip_screen_objects(args)
         if args.vision_command == "ablate":
             return _run_bioclip_ablate_objects(args)
+        if args.vision_command == "bioclip-runtime-check":
+            return _run_bioclip_runtime_check(args)
+        if args.vision_command == "bioclip-prefetch-model":
+            return _run_bioclip_prefetch_model(args)
+        if args.vision_command == "yoloe26-runtime-check":
+            return _run_yoloe26_runtime_check(args)
+        if args.vision_command == "yoloe26-prefetch":
+            return _run_yoloe26_prefetch(args)
+        if args.vision_command == "yoloe26-smoke":
+            return _run_yoloe26_smoke(args)
+        if args.vision_command == "yoloe26-prototype-run":
+            return _run_yoloe26_prototype_run(args)
+        if args.vision_command == "crop-preview":
+            return _run_detect_crop_preview(args)
+        if args.vision_command == "eval":
+            return _run_detect_eval(args)
         return 2
     if args.command == "evidence":
         if args.evidence_command == "join":
             return _run_bioclip_join_object_evidence(args)
-        return 2
-    if args.command == "detect":
-        if args.detect_command == "boxes":
-            return _run_detect_boxes(args)
-        if args.detect_command == "yoloe26-runtime-check":
-            return _run_yoloe26_runtime_check(args)
-        if args.detect_command == "yoloe26-prefetch":
-            return _run_yoloe26_prefetch(args)
-        if args.detect_command == "yoloe26-smoke":
-            return _run_yoloe26_smoke(args)
-        if args.detect_command == "yoloe26-prototype-run":
-            return _run_yoloe26_prototype_run(args)
-        if args.detect_command == "crop-preview":
-            return _run_detect_crop_preview(args)
-        if args.detect_command == "eval":
-            return _run_detect_eval(args)
         return 2
     if args.command == "storage":
         return _run_storage_command(args)

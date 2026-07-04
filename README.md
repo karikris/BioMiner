@@ -778,7 +778,7 @@ bash scripts/setup_bioclip25_user_py312.sh
 Verify the sidecar runtime without loading the model:
 
 ```bash
-uv run biominer bioclip runtime-check \
+uv run biominer vision bioclip-runtime-check \
   --runtime-python "../BioCLIP25/venv/bin/python" \
   --hf-cache-dir "../BioCLIP25/cache/huggingface" \
   --device auto
@@ -787,7 +787,7 @@ uv run biominer bioclip runtime-check \
 Prefetch the BioCLIP 2.5 Huge safetensors snapshot:
 
 ```bash
-uv run biominer bioclip prefetch-model \
+uv run biominer vision bioclip-prefetch-model \
   --runtime-python "../BioCLIP25/venv/bin/python" \
   --hf-cache-dir "../BioCLIP25/cache/huggingface"
 ```
