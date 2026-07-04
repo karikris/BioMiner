@@ -4,7 +4,7 @@ Recorded: 2026-07-04
 
 Current branch: `main`
 
-Base HEAD before this audit report commit: `93cdf5c`
+Base HEAD before this audit report commit: `22e6cd9`
 
 Note: the original refactor plan named branch `cleanup/production-workflow-postgres-s3`; a later operator instruction changed the working branch to `main`, and the cleanup commits are being pushed directly to `main`.
 
@@ -36,17 +36,17 @@ biominer storage doctor
 biominer workstore doctor
 ```
 
-Vision runtime and QA/debug commands still exposed under `vision`:
+Vision runtime and QA/debug commands moved under `dev vision`:
 
 ```text
-biominer vision bioclip-runtime-check
-biominer vision bioclip-prefetch-model
-biominer vision yoloe26-runtime-check
-biominer vision yoloe26-prefetch
-biominer vision yoloe26-smoke
-biominer vision yoloe26-prototype-run
-biominer vision crop-preview
-biominer vision eval
+biominer dev vision bioclip-runtime-check
+biominer dev vision bioclip-prefetch-model
+biominer dev vision yoloe26-runtime-check
+biominer dev vision yoloe26-prefetch
+biominer dev vision yoloe26-smoke
+biominer dev vision yoloe26-prototype-run
+biominer dev vision crop-preview
+biominer dev vision eval
 ```
 
 Dev-only internal command groups:
@@ -62,6 +62,7 @@ biominer dev comments queue
 biominer dev comments review-once
 biominer dev comments apply-decisions
 biominer dev flickr poll-once
+biominer dev vision ...
 ```
 
 ## Removed Public Commands
@@ -176,10 +177,10 @@ Confirmed current behavior:
 - Object detection emits BioMiner coarse labels only.
 - YOLOE-26 and YOLO26 adapters are object proposal backends, not species classifiers.
 - BioCLIP object scoring remains the species scorer.
+- Vision runtime checks, prefetch, smoke/prototype, crop preview, and evaluation utilities are dev-only.
 
 Known remaining debug surfaces:
 
-- `vision yoloe26-prototype-run`, runtime checks, prefetch commands, crop preview, and eval are still public `vision` subcommands. They are operationally useful, but they are debug/runtime tools rather than the single production workflow.
 - Shared `biominer.species.context` remains in use as the data model for species context across run, BioCLIP, evidence, and comment review. It is not a public `biominer species` workflow command.
 
 ## Verification Commands
@@ -191,6 +192,7 @@ uv run --extra test biominer --help
 uv run --extra test biominer registry --help
 uv run --extra test biominer run --help
 uv run --extra test biominer vision --help
+uv run --extra test biominer dev vision --help
 uv run --extra test biominer evidence --help
 uv run --extra test biominer storage --help
 uv run --extra test biominer workstore --help

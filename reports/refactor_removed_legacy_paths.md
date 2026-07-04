@@ -159,15 +159,15 @@ tests/test_workstore.py
 Current full-suite result after the last code cleanup:
 
 ```text
-uv run --extra test python -m pytest -q
-460 passed
+uv run --extra test pytest -q
+488 passed
 ```
 
-The latest documentation-only audit commit was additionally checked with:
+The latest command-surface cleanup was additionally checked with:
 
 ```text
-uv run --extra test python -m pytest -q tests/test_cli_dry_run.py
-42 passed
+uv run --extra test pytest -q tests/test_cli_dry_run.py tests/test_config_assets.py
+52 passed
 ```
 
 ## Remaining Non-Production Compatibility Surfaces
@@ -186,7 +186,6 @@ These are not public production commands. The public production entry point is `
 
 ## Known Follow-Up Tasks
 
-- Decide whether `vision yoloe26-prototype-run`, runtime checks, prefetch commands, crop preview, and eval should remain public debug commands or move under `biominer dev vision`.
 - Consider moving `SpeciesContext` from `biominer.species.context` into `biominer.run` or a neutral common schema module if the package name remains confusing after the public `species` CLI removal.
 - Continue replacing skipped orchestrator placeholders with real cloud-backed stages where production S3/Postgres IO is not yet fully wired.
 - Keep `bioclip/register_runner.py` non-public unless a later benchmark/debug command needs it explicitly.
