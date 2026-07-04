@@ -107,6 +107,89 @@ def build_candidate_set(
     )
 
 
+def build_candidate_set_for_taxon_scope(
+    taxon_scope: Any,
+    *,
+    target_context: SpeciesContext | None = None,
+    species_candidate_path: str | Path | None = None,
+    records: list[dict[str, Any]] | None = None,
+    geospatial_scope: str | None = None,
+    geo_prior_table: pl.DataFrame | None = None,
+    allow_single_target_fixture: bool = False,
+) -> CandidateSet:
+    contexts = tuple(getattr(taxon_scope, "species_contexts", ()) or ())
+    if not contexts:
+        raise ValueError("taxon_scope must include at least one SpeciesContext")
+    for context in contexts:
+        if not isinstance(context, SpeciesContext):
+            raise TypeError("taxon_scope.species_contexts must contain SpeciesContext instances")
+    scope_rank = str(getattr(taxon_scope, "accepted_rank", "species") or "species").casefold()
+    if scope_rank not in {"family", "genus", "species"}:
+        raise ValueError("taxon_scope.accepted_rank must be family, genus, or species")
+    target = target_context or contexts[0]
+    if target not in contexts and not any(_norm(context.accepted_taxon_key) == _norm(target.accepted_taxon_key) for context in contexts):
+        raise ValueError("target_context must belong to taxon_scope.species_contexts")
+
+    candidate_rows = _candidate_rows(species_candidate_path) if species_candidate_path else []
+    geo_prior_rows = geo_prior_table.to_dicts() if geo_prior_table is not None and not geo_prior_table.is_empty() else []
+    source_evidence = [f"taxon_scope:{scope_rank}"]
+    if geospatial_scope:
+        source_evidence.append(f"geospatial_scope:{geospatial_scope}")
+    if candidate_rows:
+        source_evidence.append(str(species_candidate_path))
+    if geo_prior_rows:
+        source_evidence.append("geospatial_prior_table")
+
+    if scope_rank in {"family", "genus"}:
+        species = [_target_candidate(context) for context in contexts]
+        species.extend(_scope_candidate_rows(taxon_scope, rows=candidate_rows))
+    else:
+        species = _species_candidates(target, candidate_rows)
+        if len(_dedupe_taxa(species)) <= 1 and not allow_single_target_fixture:
+            raise ValueError(
+                "species candidate set requires registry-derived same-genus/same-family candidates; "
+                "pass allow_single_target_fixture=True only for explicit tests"
+            )
+
+    species = _dedupe_taxa(species)
+    species, _ = _add_geospatial_prior_candidates(species, target, geo_prior_rows)
+    species, query_provenance_added = _add_query_provenance_candidates(
+        species,
+        records or [],
+        candidate_lookup=_candidate_lookup(candidate_rows),
+        group_lookup=_candidate_group_lookup(candidate_rows),
+    )
+    if query_provenance_added:
+        source_evidence.append("query_provenance")
+    species, metadata_text_added = _add_metadata_text_candidates(species, records or [])
+    if metadata_text_added:
+        source_evidence.append("metadata_text")
+    species, comment_added = _add_comment_candidates(species, records or [])
+    if comment_added:
+        source_evidence.append("comments")
+    species = _dedupe_taxa(species)
+    genus = tuple(candidate for candidate in species if candidate.genus)
+    family = tuple(candidate for candidate in species if candidate.family)
+    return CandidateSet(
+        candidate_set_id=_candidate_set_id_for_scope(
+            registry_version=str(getattr(taxon_scope, "registry_version", target.registry_version) or target.registry_version),
+            target_accepted_taxon_key=str(getattr(taxon_scope, "accepted_taxon_key", target.accepted_taxon_key) or target.accepted_taxon_key),
+            target_scientific_name=str(getattr(taxon_scope, "accepted_scientific_name", target.scientific_name) or target.scientific_name),
+            species=species,
+            geospatial_scope=geospatial_scope,
+        ),
+        registry_version=str(getattr(taxon_scope, "registry_version", target.registry_version) or target.registry_version),
+        target_accepted_taxon_key=str(getattr(taxon_scope, "accepted_taxon_key", target.accepted_taxon_key) or target.accepted_taxon_key),
+        target_scientific_name=str(getattr(taxon_scope, "accepted_scientific_name", target.scientific_name) or target.scientific_name),
+        family_candidates=family,
+        genus_candidates=genus,
+        species_candidates=tuple(species),
+        prompt_variant_version=PROMPT_VARIANT_VERSION,
+        geospatial_scope=geospatial_scope,
+        source_evidence=tuple(_unique(source_evidence)),
+    )
+
+
 def _target_candidate(context: SpeciesContext) -> CandidateTaxon:
     return CandidateTaxon(
         scientific_name=context.scientific_name,
@@ -133,6 +216,28 @@ def _species_candidates(context: SpeciesContext, rows: list[dict[str, Any]]) -> 
             continue
         candidates.append(candidate)
     return candidates
+
+
+def _scope_candidate_rows(taxon_scope: Any, *, rows: list[dict[str, Any]]) -> list[CandidateTaxon]:
+    scope_rank = str(getattr(taxon_scope, "accepted_rank", "") or "").casefold()
+    scope_key = _norm(getattr(taxon_scope, "accepted_taxon_key", ""))
+    scope_name = _norm(getattr(taxon_scope, "accepted_scientific_name", ""))
+    candidates: list[CandidateTaxon] = []
+    for row in rows:
+        candidate = _candidate_from_row(row)
+        if candidate is None:
+            continue
+        if scope_rank == "family":
+            row_key = _norm(_first_text(row, "family_key"))
+            row_name = _norm(candidate.family)
+        elif scope_rank == "genus":
+            row_key = _norm(_first_text(row, "genus_key"))
+            row_name = _norm(candidate.genus)
+        else:
+            continue
+        if (scope_key and row_key == scope_key) or (scope_name and row_name == scope_name):
+            candidates.append(candidate)
+    return _dedupe_taxa(candidates)
 
 
 def _add_geospatial_prior_candidates(
@@ -347,6 +452,35 @@ def _candidate_set_id(*, context: SpeciesContext, species: list[CandidateTaxon],
     payload = {
         "registry_version": context.registry_version,
         "target": context.accepted_taxon_key,
+        "species": [
+            {
+                "accepted_taxon_key": candidate.accepted_taxon_key,
+                "scientific_name": candidate.scientific_name,
+                "rank": candidate.rank,
+                "family": candidate.family,
+                "genus": candidate.genus,
+                "common_names": candidate.common_names,
+            }
+            for candidate in species
+        ],
+        "prompt_variant_version": PROMPT_VARIANT_VERSION,
+        "geospatial_scope": geospatial_scope,
+    }
+    return "sha256:" + hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _candidate_set_id_for_scope(
+    *,
+    registry_version: str,
+    target_accepted_taxon_key: str,
+    target_scientific_name: str,
+    species: list[CandidateTaxon],
+    geospatial_scope: str | None,
+) -> str:
+    payload = {
+        "registry_version": registry_version,
+        "target": target_accepted_taxon_key,
+        "target_scientific_name": target_scientific_name,
         "species": [
             {
                 "accepted_taxon_key": candidate.accepted_taxon_key,

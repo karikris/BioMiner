@@ -7,7 +7,7 @@ import polars as pl
 import pytest
 
 from biominer.bioclip.ablation import build_ablation_report, run_object_ablations
-from biominer.bioclip.candidate_sets import CandidateTaxon, build_candidate_set
+from biominer.bioclip.candidate_sets import CandidateTaxon, build_candidate_set, build_candidate_set_for_taxon_scope
 from biominer.bioclip.object_runner import (
     CachedObjectEmbeddingScorer,
     EphemeralCropBioClipScorer,
@@ -23,6 +23,7 @@ from biominer.bioclip.object_runner import (
 from biominer.detection.detector_base import DecodedImage
 from biominer.detection.segmentation import make_segmenter
 from biominer.detection.schema import DETECTION_OUTPUT_SCHEMA, empty_detection_frame
+from biominer.run.taxon_scope import TaxonScope
 from biominer.species.context import CommonName, RegionHint, SpeciesContext
 
 
@@ -40,6 +41,31 @@ def _context() -> SpeciesContext:
         synonyms=("Anosia plexippus",),
         common_names=(CommonName(name="monarch butterfly", language="en", source="gbif"),),
         regions=(RegionHint(region="North America", bbox="-170.0,5.0,-50.0,75.0", source="fixture"),),
+    )
+
+
+def _species_context(
+    scientific_name: str,
+    accepted_taxon_key: str,
+    *,
+    family: str = "Nymphalidae",
+    genus: str = "Danaus",
+    family_key: str = "gbif:7017",
+    genus_key: str = "gbif:1927164",
+) -> SpeciesContext:
+    return SpeciesContext(
+        scientific_name=scientific_name,
+        accepted_taxon_key=accepted_taxon_key,
+        canonical_name=scientific_name,
+        family=family,
+        genus=genus,
+        family_key=family_key,
+        genus_key=genus_key,
+        species_key=accepted_taxon_key,
+        registry_version="registry-v1",
+        synonyms=(),
+        common_names=(),
+        regions=(),
     )
 
 
@@ -170,6 +196,138 @@ def test_candidate_set_uses_species_context_and_same_genus_family_candidates(tmp
     assert [candidate.scientific_name for candidate in candidate_set.genus_candidates] == ["Danaus plexippus", "Danaus gilippus"]
     assert "a photo of Danaus plexippus" in candidate_set.prompt_labels("species")
     assert "monarch butterfly" in candidate_set.prompt_labels("species")
+
+
+def test_candidate_set_for_family_scope_uses_all_scope_species(tmp_path) -> None:
+    candidates = tmp_path / "species_candidates.parquet"
+    pl.DataFrame(
+        [
+            {
+                "scientific_name": "Limenitis arthemis",
+                "accepted_taxon_key": "gbif:1900002",
+                "family": "Nymphalidae",
+                "family_key": "gbif:7017",
+                "genus": "Limenitis",
+                "genus_key": "gbif:1910000",
+            },
+            {
+                "scientific_name": "Papilio polyxenes",
+                "accepted_taxon_key": "gbif:1900001",
+                "family": "Papilionidae",
+                "family_key": "gbif:5506",
+                "genus": "Papilio",
+                "genus_key": "gbif:1920000",
+            },
+        ]
+    ).write_parquet(candidates)
+    scope = TaxonScope(
+        input_name="Nymphalidae",
+        input_rank="family",
+        accepted_taxon_key="gbif:7017",
+        accepted_scientific_name="Nymphalidae",
+        accepted_rank="family",
+        registry_version="registry-v1",
+        species_contexts=(
+            _context(),
+            _species_context("Limenitis archippus", "gbif:1900000", genus="Limenitis", genus_key="gbif:1910000"),
+        ),
+    )
+
+    candidate_set = build_candidate_set_for_taxon_scope(scope, species_candidate_path=candidates)
+
+    assert candidate_set.target_scientific_name == "Nymphalidae"
+    assert candidate_set.target_accepted_taxon_key == "gbif:7017"
+    assert [candidate.scientific_name for candidate in candidate_set.species_candidates] == [
+        "Danaus plexippus",
+        "Limenitis archippus",
+        "Limenitis arthemis",
+    ]
+    assert "Papilio polyxenes" not in [candidate.scientific_name for candidate in candidate_set.species_candidates]
+    assert "taxon_scope:family" in candidate_set.source_evidence
+
+
+def test_candidate_set_for_genus_scope_uses_all_scope_species_and_genus_rows(tmp_path) -> None:
+    candidates = tmp_path / "species_candidates.parquet"
+    pl.DataFrame(
+        [
+            {
+                "scientific_name": "Danaus eresimus",
+                "accepted_taxon_key": "gbif:1900003",
+                "family": "Nymphalidae",
+                "family_key": "gbif:7017",
+                "genus": "Danaus",
+                "genus_key": "gbif:1927164",
+            },
+            {
+                "scientific_name": "Limenitis archippus",
+                "accepted_taxon_key": "gbif:1900000",
+                "family": "Nymphalidae",
+                "family_key": "gbif:7017",
+                "genus": "Limenitis",
+                "genus_key": "gbif:1910000",
+            },
+        ]
+    ).write_parquet(candidates)
+    scope = TaxonScope(
+        input_name="Danaus",
+        input_rank="genus",
+        accepted_taxon_key="gbif:1927164",
+        accepted_scientific_name="Danaus",
+        accepted_rank="genus",
+        registry_version="registry-v1",
+        species_contexts=(
+            _context(),
+            _species_context("Danaus gilippus", "gbif:5131655"),
+        ),
+    )
+
+    candidate_set = build_candidate_set_for_taxon_scope(scope, species_candidate_path=candidates)
+
+    assert candidate_set.target_scientific_name == "Danaus"
+    assert [candidate.scientific_name for candidate in candidate_set.species_candidates] == [
+        "Danaus plexippus",
+        "Danaus gilippus",
+        "Danaus eresimus",
+    ]
+    assert "Limenitis archippus" not in [candidate.scientific_name for candidate in candidate_set.species_candidates]
+    assert "taxon_scope:genus" in candidate_set.source_evidence
+
+
+def test_candidate_set_for_species_scope_requires_registry_expansion_unless_fixture_mode(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_context())
+
+    with pytest.raises(ValueError, match="registry-derived"):
+        build_candidate_set_for_taxon_scope(scope)
+
+    fixture = build_candidate_set_for_taxon_scope(scope, allow_single_target_fixture=True)
+    assert [candidate.scientific_name for candidate in fixture.species_candidates] == ["Danaus plexippus"]
+
+    candidates = tmp_path / "species_candidates.parquet"
+    pl.DataFrame(
+        [
+            {
+                "scientific_name": "Danaus gilippus",
+                "accepted_taxon_key": "gbif:5131655",
+                "family": "Nymphalidae",
+                "genus": "Danaus",
+            },
+            {
+                "scientific_name": "Limenitis archippus",
+                "accepted_taxon_key": "gbif:1900000",
+                "family": "Nymphalidae",
+                "genus": "Limenitis",
+            },
+        ]
+    ).write_parquet(candidates)
+
+    candidate_set = build_candidate_set_for_taxon_scope(scope, species_candidate_path=candidates)
+
+    assert [candidate.scientific_name for candidate in candidate_set.species_candidates] == [
+        "Danaus plexippus",
+        "Danaus gilippus",
+        "Limenitis archippus",
+    ]
+    assert "taxon_scope:species" in candidate_set.source_evidence
 
 
 def test_candidate_set_reads_list_valued_common_names_from_candidate_parquet(tmp_path) -> None:
