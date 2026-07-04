@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -1378,6 +1379,7 @@ def test_detect_boxes_fake_backend_writes_crop_metadata(tmp_path, capsys) -> Non
 
 def test_detect_boxes_public_backend_excludes_legacy_yolo() -> None:
     parser = build_parser()
+    detection_dir = Path("src/biominer/detection")
     with pytest.raises(SystemExit):
         parser.parse_args(
             [
@@ -1391,6 +1393,9 @@ def test_detect_boxes_public_backend_excludes_legacy_yolo() -> None:
                 "yolo",
             ]
         )
+    assert importlib.util.find_spec("biominer.detection.yolo_detector") is None
+    assert not (detection_dir / "yolo_detector.py").exists()
+    assert not any("yolov8n.pt" in path.read_text(encoding="utf-8") for path in detection_dir.glob("*.py"))
 
 
 def test_detect_boxes_yoloe26_backend_uses_sidecar_runtime(tmp_path, monkeypatch) -> None:
