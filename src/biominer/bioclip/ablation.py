@@ -35,6 +35,9 @@ def run_object_ablations(
     base.mkdir(parents=True, exist_ok=True)
     frames: list[pl.DataFrame] = []
     score_batches_by_mode: dict[str, int] = {}
+    segmentation_status_by_mode: dict[str, str | None] = {}
+    segmentation_unavailable_count_by_mode: dict[str, int] = {}
+    segmentation_unavailable_reason_by_mode: dict[str, str | None] = {}
     for mode in modes:
         result = screen_object_detections(
             canonical_records=canonical_records,
@@ -49,11 +52,17 @@ def run_object_ablations(
         )
         frames.append(result.frame)
         score_batches_by_mode[mode] = result.score_batches_written
+        segmentation_status_by_mode[mode] = result.segmentation_status
+        segmentation_unavailable_count_by_mode[mode] = result.segmentation_unavailable_count
+        segmentation_unavailable_reason_by_mode[mode] = result.segmentation_unavailable_reason
     combined = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
     report = build_ablation_report(combined, canonical_records=canonical_records, detections=detections)
     report["ablation_mode"] = list(modes)
     report["score_batches_written_by_mode"] = score_batches_by_mode
     report["score_batches_written"] = sum(score_batches_by_mode.values())
+    report["segmentation_status_by_mode"] = segmentation_status_by_mode
+    report["segmentation_unavailable_count_by_mode"] = segmentation_unavailable_count_by_mode
+    report["segmentation_unavailable_reason_by_mode"] = segmentation_unavailable_reason_by_mode
     (base / "ablation_report.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     return AblationRunReport(output_dir=base, modes=modes, report=report)
 

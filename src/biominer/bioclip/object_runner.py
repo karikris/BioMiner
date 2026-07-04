@@ -16,7 +16,13 @@ from biominer.bioclip.triage import BIN_CATEGORIES, NEGATIVE_RECORD_FIELDS
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage
 from biominer.detection.schema import DETECTION_OUTPUT_SCHEMA
-from biominer.detection.segmentation import NoneSegmenter, Segmenter
+from biominer.detection.segmentation import (
+    NoneSegmenter,
+    SegmentationUnavailable,
+    Segmenter,
+    detector_crop_mask_available,
+    detector_masked_crop_bytes,
+)
 from biominer.species.context import SpeciesContext
 from biominer.storage.parquet import write_parquet
 
@@ -131,6 +137,9 @@ class ObjectScreenResult:
     detections_seen: int
     crops_scored: int
     score_batches_written: int = 0
+    segmentation_unavailable_count: int = 0
+    segmentation_unavailable_reason: str | None = None
+    segmentation_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -205,6 +214,9 @@ class EphemeralCropBioClipScorer:
             if not self._should_retain_debug_crop():
                 crop_path.unlink(missing_ok=True)
 
+    def supports_detector_crop_segmentation(self, item: dict[str, Any]) -> bool:
+        return detector_crop_mask_available(item) or not isinstance(self._segmenter, NoneSegmenter)
+
     def _visual_input_for_mode(self, *, item: dict[str, Any], image: DecodedImage, mode: AblationMode) -> tuple[bytes, int, int, str]:
         if mode == "whole_image":
             return image.data, image.width, image.height, _bytes_hash(image.data)
@@ -221,9 +233,13 @@ class EphemeralCropBioClipScorer:
         if mode == "detector_crop":
             return crop.encoded_bytes, crop.crop_width, crop.crop_height, crop.crop_hash
 
+        masked = detector_masked_crop_bytes(item, crop)
+        if masked is not None:
+            return masked, crop.crop_width, crop.crop_height, _bytes_hash(masked)
+
         segmented = self._segmenter.segment_crop(crop)
         if segmented is None:
-            return crop.encoded_bytes, crop.crop_width, crop.crop_height, crop.crop_hash
+            raise SegmentationUnavailable("detector_masks_missing")
         return segmented, crop.crop_width, crop.crop_height, _bytes_hash(segmented)
 
     def _write_temp_ppm(self, data: bytes, *, width: int, height: int, crop_hash: str) -> Path:
@@ -370,6 +386,8 @@ def screen_object_detections(
     row_buffer: list[dict[str, Any]] = []
     batch_paths: list[Path] = []
     crops_scored = 0
+    segmentation_unavailable_count = 0
+    segmentation_unavailable_reason: str | None = None
     try:
         for detection in detections.to_dicts():
             if str(detection.get("detection_status") or "") != "detected":
@@ -377,14 +395,25 @@ def screen_object_detections(
             key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
             record = _canonical_record_for_detection(records_by_photo, key=key)
             item = {**detection, **record, "ablation_mode": ablation_mode}
-            score_row = _score_detection(
-                item=item,
-                context=species_context,
-                candidate_set=candidate_set,
-                scorer=scorer,
-                ablation_mode=ablation_mode,
-                geo_prior_table=geo_prior_table,
-            )
+            if ablation_mode == "detector_crop_segmentation" and not _scorer_supports_detector_crop_segmentation(scorer, item):
+                segmentation_unavailable_count += 1
+                segmentation_unavailable_reason = segmentation_unavailable_reason or "detector_masks_missing"
+                continue
+            try:
+                score_row = _score_detection(
+                    item=item,
+                    context=species_context,
+                    candidate_set=candidate_set,
+                    scorer=scorer,
+                    ablation_mode=ablation_mode,
+                    geo_prior_table=geo_prior_table,
+                )
+            except SegmentationUnavailable as exc:
+                if ablation_mode != "detector_crop_segmentation":
+                    raise
+                segmentation_unavailable_count += 1
+                segmentation_unavailable_reason = segmentation_unavailable_reason or str(exc) or "detector_masks_missing"
+                continue
             crops_scored += 1
             if output is None or batch_dir is None:
                 rows.append(score_row)
@@ -409,6 +438,13 @@ def screen_object_detections(
             detections_seen=detections.height,
             crops_scored=crops_scored,
             score_batches_written=len(batch_paths),
+            segmentation_unavailable_count=segmentation_unavailable_count,
+            segmentation_unavailable_reason=segmentation_unavailable_reason,
+            segmentation_status=_segmentation_status(
+                mode=ablation_mode,
+                crops_scored=crops_scored,
+                unavailable_count=segmentation_unavailable_count,
+            ),
         )
     finally:
         if batch_dir is not None and batch_dir.exists():
@@ -1109,6 +1145,25 @@ def _ablation_mode(item: dict[str, Any]) -> AblationMode:
     if mode not in {"whole_image", "detector_crop", "detector_crop_segmentation"}:
         raise ValueError(f"unsupported object BioCLIP ablation mode: {mode}")
     return mode  # type: ignore[return-value]
+
+
+def _scorer_supports_detector_crop_segmentation(scorer: ObjectBioClipScorer, item: dict[str, Any]) -> bool:
+    supports = getattr(scorer, "supports_detector_crop_segmentation", None)
+    if callable(supports):
+        return bool(supports(item))
+    return False
+
+
+def _segmentation_status(*, mode: AblationMode, crops_scored: int, unavailable_count: int) -> str | None:
+    if mode != "detector_crop_segmentation":
+        return None
+    if crops_scored and unavailable_count:
+        return "partial"
+    if crops_scored:
+        return "available"
+    if unavailable_count:
+        return "unavailable"
+    return "not_requested"
 
 
 def _bytes_hash(data: bytes) -> str:

@@ -539,6 +539,40 @@ def test_ephemeral_scorer_uses_distinct_visual_inputs_for_ablation_modes(tmp_pat
     assert list(tmp_path.iterdir()) == []
 
 
+def test_ephemeral_scorer_uses_detector_crop_mask_without_persisting_artifacts(tmp_path) -> None:
+    seen: list[bytes] = []
+
+    def scorer(path: Path, labels: tuple[str, ...]) -> dict[str, float]:
+        _header1, _header2, _header3, body = path.read_bytes().split(b"\n", 3)
+        seen.append(body)
+        return {label: 0.5 for label in labels}
+
+    crop_scorer = EphemeralCropBioClipScorer(
+        scorer=scorer,
+        image_loader=lambda item: _decoded_image(),
+        temp_dir=tmp_path,
+        crop_target_px=3,
+        model_id="bioclip2_5",
+        model_version="bioclip2_5_huge",
+        model_checkpoint="checkpoint-a",
+    )
+    item = {
+        "source": "flickr",
+        "flickr_photo_id": "photo-1",
+        "detection_id": "det-1",
+        "bbox_xyxy": [0.0, 0.0, 3.0, 3.0],
+        "ablation_mode": "detector_crop_segmentation",
+        "detector_crop_mask": [1, 0, 1, 0, 1, 0, 1, 0, 1],
+    }
+
+    crop_scorer.score(item, ("a photo of Danaus plexippus",))
+
+    assert seen
+    assert seen[0][3:6] == b"\x00\x00\x00"
+    assert any(byte != 0 for byte in seen[0][12:15])
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_object_bioclip_runner_can_score_detector_crops_with_ephemeral_scorer(tmp_path) -> None:
     candidate_set = build_candidate_set(_context())
 
@@ -1061,18 +1095,22 @@ def test_ablation_modes_write_rows_with_shared_photo_join_keys(tmp_path) -> None
     )
 
     frames = [pl.read_parquet(tmp_path / f"object_bioclip_scores_{mode}.parquet") for mode in report.modes]
-    rows = pl.concat(frames).sort("ablation_mode").to_dicts()
+    combined = pl.concat(frames, how="diagonal_relaxed")
+    rows = combined.sort("ablation_mode").to_dicts()
 
-    assert {row["ablation_mode"] for row in rows} == {"whole_image", "detector_crop", "detector_crop_segmentation"}
+    assert {row["ablation_mode"] for row in rows} == {"whole_image", "detector_crop"}
     assert {row["source"] for row in rows} == {"flickr"}
     assert {row["flickr_photo_id"] for row in rows} == {"photo-1"}
     assert report.report["score_batches_written_by_mode"] == {
         "detector_crop": 1,
-        "detector_crop_segmentation": 1,
+        "detector_crop_segmentation": 0,
         "whole_image": 1,
     }
-    assert build_ablation_report(pl.concat(frames))["crops_scored"] == 3
-    assert build_ablation_report(pl.concat(frames))["gold_count"] == 3
+    assert report.report["segmentation_status_by_mode"]["detector_crop_segmentation"] == "unavailable"
+    assert report.report["segmentation_unavailable_count_by_mode"]["detector_crop_segmentation"] == 1
+    assert report.report["segmentation_unavailable_reason_by_mode"]["detector_crop_segmentation"] == "detector_masks_missing"
+    assert build_ablation_report(combined)["crops_scored"] == 2
+    assert build_ablation_report(combined)["gold_count"] == 2
 
 
 def test_ablation_report_uses_objective_disagreement_field_names() -> None:
