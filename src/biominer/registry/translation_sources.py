@@ -7,6 +7,8 @@ from typing import Iterable, Literal
 
 import polars as pl
 
+from biominer.registry.trust_policy import decide_name_trust
+
 
 TRANSLATION_CANDIDATES_FILE = "translation_candidates.parquet"
 TranslationSourceKind = Literal["generated", "dictionary"]
@@ -27,6 +29,7 @@ class TranslationCandidate:
     review_state: str = "candidate"
     confidence: str = "low"
     precision_tier: str = "low"
+    corroborated: bool = False
 
     def to_row(self) -> dict[str, object]:
         row = asdict(self)
@@ -105,6 +108,7 @@ def translation_candidate_schema() -> dict[str, pl.DataType]:
         "review_state": pl.String,
         "confidence": pl.String,
         "precision_tier": pl.String,
+        "corroborated": pl.Boolean,
     }
 
 
@@ -125,6 +129,18 @@ def translation_candidate_id_parts(*parts: object) -> str:
 
 
 def _normalize_candidate_row(row: dict[str, object]) -> dict[str, object]:
+    review_state = _clean_text(row.get("review_state") or "candidate")
+    confidence = _clean_text(row.get("confidence") or "low")
+    corroborated = _boolish(row.get("corroborated", False))
+    decision = decide_name_trust(
+        source=_clean_text(row.get("source")),
+        name_class="generated_translation",
+        trust_tier="T5",
+        confidence=confidence,
+        collision_status=_clean_text(row.get("collision_status")),
+        review_state=review_state,
+        corroborated=corroborated,
+    )
     normalized = {
         "source": _clean_text(row.get("source")),
         "source_record_id": _clean_text(row.get("source_record_id")),
@@ -133,15 +149,18 @@ def _normalize_candidate_row(row: dict[str, object]) -> dict[str, object]:
         "source_name": _clean_text(row.get("source_name")),
         "translated_name": _clean_text(row.get("translated_name")),
         "accepted_taxon_key": _clean_text(row.get("accepted_taxon_key")),
-        "trust_tier": "T5",
-        "enabled": bool(row.get("enabled", False)) and str(row.get("review_state") or "").casefold() in {"accepted", "reviewed"},
-        "disabled_reason": _clean_text(row.get("disabled_reason") or "generated_translation_requires_review"),
-        "review_state": _clean_text(row.get("review_state") or "candidate"),
-        "confidence": _clean_text(row.get("confidence") or "low"),
+        "trust_tier": decision.trust_tier.value,
+        "enabled": decision.enabled,
+        "disabled_reason": _clean_text(row.get("disabled_reason") or decision.disabled_reason),
+        "review_state": review_state,
+        "confidence": confidence,
         "precision_tier": _clean_text(row.get("precision_tier") or "low"),
+        "corroborated": corroborated,
     }
     if not normalized["enabled"] and not normalized["disabled_reason"]:
         normalized["disabled_reason"] = "generated_translation_requires_review"
+    if normalized["enabled"]:
+        normalized["disabled_reason"] = ""
     normalized["candidate_id"] = _clean_text(row.get("candidate_id")) or translation_candidate_id_parts(
         normalized["source"],
         normalized["accepted_taxon_key"],
@@ -155,6 +174,12 @@ def _normalize_candidate_row(row: dict[str, object]) -> dict[str, object]:
 
 def _clean_text(value: object) -> str:
     return " ".join(str(value or "").split())
+
+
+def _boolish(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "accepted", "reviewed", "corroborated"}
 
 
 __all__ = [
