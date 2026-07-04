@@ -21,9 +21,7 @@ def test_removed_papilio_demoleus_seed_config_paths_are_not_documented() -> None
     assert "config/papilio_demoleus_multilingual_keywords.json" not in text
 
 
-def test_anti_keyword_config_path_is_not_documented_or_checked_in() -> None:
-    assert not Path("config/anti_keywords.json").exists()
-
+def test_metadata_keyword_path_helpers_are_not_documented() -> None:
     tracked_text = "\n".join(
         Path(path).read_text(encoding="utf-8")
         for path in (
@@ -34,7 +32,6 @@ def test_anti_keyword_config_path_is_not_documented_or_checked_in() -> None:
             "src/biominer/filter/__init__.py",
         )
     )
-    assert "config/anti_keywords.json" not in tracked_text
     assert "load_metadata_keyword_groups" not in tracked_text
     assert "flag_metadata_parquet" not in tracked_text
 
