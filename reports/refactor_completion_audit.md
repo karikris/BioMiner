@@ -2,7 +2,11 @@
 
 Recorded: 2026-07-05
 
-Last verified HEAD: `1fa50e32d1d5`
+Last verified implementation base: `1fa50e32d1d5`
+
+This report-only audit refresh was committed after verifying that
+implementation base; it does not change production code, tests, or command
+surface.
 
 Branch used for current cleanup commits: `main`
 
