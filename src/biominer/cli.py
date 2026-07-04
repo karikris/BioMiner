@@ -176,9 +176,6 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_ablate_objects.add_argument("--candidate-text-embedding-cache")
     bioclip_ablate_objects.add_argument("--object-image-embedding-cache")
     bioclip_ablate_objects.add_argument("--segmenter", default="none", choices=("none", "sam", "sam2"))
-    bioclip_join_objects = bioclip_subparsers.add_parser("join-object-evidence")
-    _add_object_evidence_join_args(bioclip_join_objects)
-    bioclip_join_objects.add_argument("--species-context")
     vision = subparsers.add_parser("vision")
     vision_subparsers = vision.add_subparsers(dest="vision_command")
     vision_detect = vision_subparsers.add_parser("detect")
@@ -237,9 +234,6 @@ def build_parser() -> argparse.ArgumentParser:
     vision_ablate.add_argument("--candidate-text-embedding-cache")
     vision_ablate.add_argument("--object-image-embedding-cache")
     vision_ablate.add_argument("--segmenter", default="none", choices=("none", "sam", "sam2"))
-    vision_join = vision_subparsers.add_parser("join")
-    _add_object_evidence_join_args(vision_join)
-    vision_join.add_argument("--species-context")
     evidence = subparsers.add_parser("evidence")
     evidence_subparsers = evidence.add_subparsers(dest="evidence_command")
     evidence_join = evidence_subparsers.add_parser("join")
@@ -519,8 +513,6 @@ def run(args: argparse.Namespace) -> int:
             return _run_bioclip_screen_objects(args)
         if args.bioclip_command == "ablate-objects":
             return _run_bioclip_ablate_objects(args)
-        if args.bioclip_command == "join-object-evidence":
-            return _run_bioclip_join_object_evidence(args)
         return 2
     if args.command == "vision":
         if args.vision_command == "detect":
@@ -529,8 +521,6 @@ def run(args: argparse.Namespace) -> int:
             return _run_bioclip_screen_objects(args)
         if args.vision_command == "ablate":
             return _run_bioclip_ablate_objects(args)
-        if args.vision_command == "join":
-            return _run_bioclip_join_object_evidence(args)
         return 2
     if args.command == "evidence":
         if args.evidence_command == "join":
