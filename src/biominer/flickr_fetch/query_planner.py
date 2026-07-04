@@ -172,7 +172,7 @@ def multilingual_seed_terms() -> tuple[MultilingualSearchTerm, ...]:
 
 def build_count_probes(
     *,
-    terms: Iterable[MultilingualSearchTerm] | None = None,
+    terms: Iterable[MultilingualSearchTerm],
     search_fields: Iterable[SearchField] = ("text", "tags"),
 ) -> tuple[FlickrQuery, ...]:
     return tuple(
@@ -188,7 +188,7 @@ def build_count_probes(
             term_confidence=term.term_confidence,
             notes=term.notes,
         )
-        for term in (terms or multilingual_seed_terms())
+        for term in terms
         for field in search_fields
     )
 
@@ -466,8 +466,8 @@ def split_high_volume_query(
     return _sort_queries(_split_with_narrower_terms(probe, total=total, narrower_terms=tuple(narrower_terms)))
 
 
-def build_worldwide_discovery_plan() -> QueryPlan:
-    probes = build_count_probes()
+def build_worldwide_discovery_plan(*, terms: Iterable[MultilingualSearchTerm]) -> QueryPlan:
+    probes = build_count_probes(terms=terms)
     return QueryPlan(count_probes=probes, page_queries=())
 
 

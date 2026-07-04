@@ -72,14 +72,23 @@ def test_multilingual_seed_terms_are_seeded_once_and_include_lifestages() -> Non
         assert expected in values
 
 
-def test_count_probes_are_recorded_for_text_and_tags() -> None:
-    plan = build_worldwide_discovery_plan()
+def test_count_probes_are_recorded_for_text_and_tags_when_terms_are_explicit() -> None:
+    plan = build_worldwide_discovery_plan(terms=multilingual_seed_terms())
 
     assert plan.page_queries == ()
     assert plan.count_probes
     assert {probe.search_field for probe in plan.count_probes} == {"text", "tags"}
     assert {probe.per_page for probe in plan.count_probes} == {COUNT_PROBE_PAGE_SIZE}
     assert all(probe.lane == "count_probe" for probe in plan.count_probes)
+
+
+def test_worldwide_discovery_plan_requires_explicit_terms() -> None:
+    try:
+        build_worldwide_discovery_plan()  # type: ignore[call-arg]
+    except TypeError as exc:
+        assert "terms" in str(exc)
+    else:  # pragma: no cover - defensive guard against implicit broad seed fallback returning.
+        raise AssertionError("build_worldwide_discovery_plan must not use implicit multilingual seed terms")
 
 
 def test_registry_query_definitions_load_as_page_one_upload_slice_work(tmp_path) -> None:
