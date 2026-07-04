@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import tempfile
 from typing import Any
 
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
@@ -382,7 +383,35 @@ class ProductionRunOrchestrator:
 
     def _run_detect_objects_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if is_cloud_uri(self.request.output_root):
-            return StageExecutionResult(status=StageStatus.FAILED, message="detect_objects_requires_local_artifacts_until_storage_io_is_wired")
+            if self.storage is None:
+                return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_detect_objects")
+            missing = _missing_uris(self.storage, plan.artifact_uris.source_records_uri)
+            if missing:
+                return StageExecutionResult(status=StageStatus.FAILED, message="missing_detection_inputs: " + ", ".join(missing))
+            if self.object_detector is None or self.image_loader is None:
+                return StageExecutionResult(status=StageStatus.FAILED, message="detector_runtime_required_for_detect_objects")
+            from biominer.detection.pipeline import run_detection_pipeline
+
+            records = self.storage.read_parquet(plan.artifact_uris.source_records_uri).to_dicts()
+            with tempfile.TemporaryDirectory(prefix="biominer-detect-") as tmp_dir:
+                result = run_detection_pipeline(
+                    records=records,
+                    detector=self.object_detector,
+                    output_path=Path(tmp_dir) / "object_detections.parquet",
+                    image_loader=self.image_loader,
+                )
+            output_uri = self.storage.write_parquet_shard(plan.artifact_uris.object_detections_uri, result.frame)
+            return StageExecutionResult(
+                metrics={
+                    "records_seen": result.records_seen,
+                    "images_loaded": result.images_loaded,
+                    "image_failures": result.image_failures,
+                    "detections_written": result.detections_written,
+                    "crops_created": result.crops_created,
+                    "parquet_batches_written": result.parquet_batches_written,
+                },
+                outputs={"object_detections": output_uri},
+            )
         missing = _missing_paths(plan.paths.source_records_path)
         if missing:
             return StageExecutionResult(status=StageStatus.FAILED, message="missing_detection_inputs: " + ", ".join(missing))

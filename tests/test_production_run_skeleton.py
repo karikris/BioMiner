@@ -706,6 +706,64 @@ def test_orchestrator_runs_local_detection_and_object_scoring_with_injected_fake
     assert result.manifest.stages[1].outputs["object_scores"] == str(result.paths.object_scores_path)
 
 
+def test_orchestrator_detects_objects_from_cloud_storage() -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    storage = _FakeRunStorage()
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root="s3://biominer/runs",
+        stages=(RunStage.DETECT_OBJECTS,),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
+    canonical, _, _ = _join_stage_input_frames()
+    storage.parquet_payloads[plan.artifact_uris.source_records_uri] = canonical
+    detector = FakeObjectDetector(
+        [[DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 4.0), objectness_score=0.91)]]
+    )
+
+    result = ProductionRunOrchestrator(
+        request,
+        taxon_scope=scope,
+        storage=storage,
+        object_detector=detector,
+        image_loader=lambda _record: _tiny_rgb_image(),
+    ).run()
+
+    assert result.manifest.status == "complete"
+    assert result.manifest.detection_counts == {
+        "images_seen": 1,
+        "detections": 1,
+        "crops_created": 1,
+        "images_loaded": 1,
+        "image_failures": 0,
+    }
+    assert result.manifest.stages[0].outputs["object_detections"] == plan.artifact_uris.object_detections_uri
+    detections = storage.parquet_payloads[plan.artifact_uris.object_detections_uri]
+    assert detections.select("detector_label").to_series().to_list() == ["butterfly_like"]
+    assert storage.json_payloads[plan.artifact_uris.manifest_uri]["detection_counts"]["detections"] == 1
+
+
+def test_orchestrator_cloud_detect_requires_storage_backend() -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root="s3://biominer/runs",
+        stages=(RunStage.DETECT_OBJECTS,),
+    )
+
+    result = ProductionRunOrchestrator(
+        request,
+        taxon_scope=scope,
+        object_detector=FakeObjectDetector(),
+        image_loader=lambda _record: _tiny_rgb_image(),
+    ).run()
+
+    assert result.manifest.status == "failed"
+    assert result.manifest.stages[0].message == "storage_backend_required_for_detect_objects"
+
+
 def test_orchestrator_detect_stage_fails_without_detector_runtime(tmp_path) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
