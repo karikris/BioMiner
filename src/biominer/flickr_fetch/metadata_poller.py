@@ -98,15 +98,13 @@ class MetadataPollState:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def ensure_seed_work_items(self, queries: tuple[FlickrQuery, ...] | None = None) -> int:
+    def enqueue_initial_work_items(self, queries: tuple[FlickrQuery, ...]) -> int:
         if self.work_item_count() > 0:
             return 0
-        if queries is None:
-            return 0
-        seeded = 0
+        inserted = 0
         for query in queries:
-            seeded += self.enqueue_work_item(query)
-        return seeded
+            inserted += self.enqueue_work_item(query)
+        return inserted
 
     def work_item_count(self) -> int:
         with self._connect() as conn:

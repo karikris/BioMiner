@@ -86,17 +86,17 @@ def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
     }.issubset(source_columns)
 
 
-def test_seed_work_items_requires_explicit_queries(tmp_path) -> None:
+def test_initial_work_items_require_explicit_registry_queries(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
 
-    assert state.ensure_seed_work_items() == 0
+    assert not hasattr(state, "ensure_seed_work_items")
     assert state.work_item_count() == 0
 
     query = FlickrQuery(term="Papilio demoleus", language="la", search_field="text", lane="normal_page", page=1, per_page=250)
 
-    assert state.ensure_seed_work_items((query,)) == 1
+    assert state.enqueue_initial_work_items((query,)) == 1
     assert state.work_item_count() == 1
-    assert state.ensure_seed_work_items((query,)) == 0
+    assert state.enqueue_initial_work_items((query,)) == 0
 
 
 def test_poll_once_empty_state_does_not_seed_broad_multilingual_probes(tmp_path) -> None:

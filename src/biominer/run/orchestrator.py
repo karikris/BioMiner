@@ -388,7 +388,7 @@ class ProductionRunOrchestrator:
         state_db = plan.paths.run_root / "state" / "flickr_poller.sqlite"
         state_db.parent.mkdir(parents=True, exist_ok=True)
         state = MetadataPollState(state_db)
-        seeded = state.ensure_seed_work_items(queries)
+        initial_work_items_enqueued = state.enqueue_initial_work_items(queries)
         api_key = self.flickr_api_key or os.environ.get("FLICKR_API_KEY")
         if state.work_item_count() > 0 and self.metadata_fetcher is None and not api_key:
             return StageExecutionResult(status=StageStatus.FAILED, message="flickr_fetcher_or_api_key_required_for_poll_flickr")
@@ -407,7 +407,7 @@ class ProductionRunOrchestrator:
         )
         return StageExecutionResult(
             metrics={
-                "seeded_work_items": seeded,
+                "initial_work_items_enqueued": initial_work_items_enqueued,
                 "raw_responses_written": result.raw_responses_written,
                 "evidence_rows_written": result.evidence_rows_written,
                 "evidence_rows_total": result.evidence_rows_total,
@@ -452,7 +452,7 @@ class ProductionRunOrchestrator:
         if not pending_preview:
             return StageExecutionResult(
                 metrics={
-                    "seeded_work_items": 0,
+                    "initial_work_items_enqueued": 0,
                     "work_items_claimed": 0,
                     "api_calls_made": 0,
                     "workstore_stale_claims_requeued": stale_requeued,
@@ -473,7 +473,7 @@ class ProductionRunOrchestrator:
         if not claimed:
             return StageExecutionResult(
                 metrics={
-                    "seeded_work_items": 0,
+                    "initial_work_items_enqueued": 0,
                     "work_items_claimed": 0,
                     "api_calls_made": 0,
                     "workstore_stale_claims_requeued": stale_requeued,
@@ -517,7 +517,7 @@ class ProductionRunOrchestrator:
             )
         return StageExecutionResult(
             metrics={
-                "seeded_work_items": len(claimed),
+                "initial_work_items_enqueued": len(claimed),
                 "raw_responses_written": result.raw_responses_written,
                 "evidence_rows_written": result.evidence_rows_written,
                 "evidence_rows_total": result.evidence_rows_total,

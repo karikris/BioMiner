@@ -620,7 +620,7 @@ data/registry/current/flickr_query_definitions.parquet
 ```
 
 It fetches Flickr metadata only.
-Production polling does not seed generic multilingual searches automatically; work items must be created from registry-derived query definitions.
+Production polling does not create generic multilingual searches automatically; work items must be created from registry-derived query definitions.
 
 Outputs include:
 
