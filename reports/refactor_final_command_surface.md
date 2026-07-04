@@ -4,7 +4,7 @@ Recorded: 2026-07-05
 
 Current branch: `main`
 
-Latest audited base before this report edit: `593fc84`
+Latest audited base before this report edit: `ab0d354`
 
 Note: the original refactor plan named branch `cleanup/production-workflow-postgres-s3`; a later operator instruction changed the working branch to `main`, and the cleanup commits are being pushed directly to `main`.
 
@@ -184,6 +184,10 @@ Confirmed current behavior:
 - When segmentation masks are unavailable, the production scorer records
   `detector_crop_segmentation` as unavailable and continues with whole-image
   plus detector-crop scores.
+- Production registry reuse now requires `flickr_query_definitions.parquet` in
+  addition to `taxa.parquet`, `names.parquet`, and `manifest.json`; missing
+  registry-derived Flickr queries fail the run stage clearly instead of falling
+  back to broad seed search.
 - Production run polling uses the validated `RuntimeConfig.worker_id` / `BIOMINER_WORKER_ID` instead of falling back to an ambient local worker ID.
 - Production validation treats the default `local` worker id as missing for Postgres-backed runs; `BIOMINER_WORKER_ID` must be configured outside explicit local/SQLite dev mode.
 - Vision runtime checks, prefetch, smoke/prototype, crop preview, and evaluation utilities are dev-only.
@@ -215,5 +219,5 @@ uv run --extra test pytest -q
 Latest full-suite result:
 
 ```text
-512 passed
+514 passed
 ```

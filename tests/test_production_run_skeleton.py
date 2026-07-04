@@ -190,6 +190,7 @@ def test_run_manifest_stage_status_and_count_roundtrip() -> None:
 
 def test_orchestrator_resolves_scope_and_runs_stage_subset_with_fake_handlers(tmp_path) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
+    _write_query_definitions(registry)
     calls: list[int] = []
 
     def fake_compile(plan):  # noqa: ANN001 - test double mirrors the stage handler protocol.
@@ -391,6 +392,48 @@ def test_orchestrator_build_registry_stage_fails_when_registry_artifacts_are_mis
     assert result.manifest.stages[0].message is not None
     assert "missing_registry_inputs:" in result.manifest.stages[0].message
     assert "taxa.parquet" in result.manifest.stages[0].message
+
+
+def test_orchestrator_build_registry_stage_requires_registry_query_definitions(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.BUILD_REGISTRY,),
+    )
+
+    result = ProductionRunOrchestrator(request).run()
+
+    assert result.manifest.status == "failed"
+    assert result.manifest.stages[0].status is StageStatus.FAILED
+    assert result.manifest.stages[0].message is not None
+    assert "missing_registry_inputs:" in result.manifest.stages[0].message
+    assert "flickr_query_definitions.parquet" in result.manifest.stages[0].message
+
+
+def test_orchestrator_compile_queries_fails_cleanly_when_registry_query_definitions_missing(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.COMPILE_QUERIES,),
+    )
+
+    result = ProductionRunOrchestrator(request).run()
+
+    assert result.manifest.status == "failed"
+    assert result.manifest.stages[0].status is StageStatus.FAILED
+    assert result.manifest.stages[0].message is not None
+    assert result.manifest.stages[0].message.startswith("missing_registry_query_definitions:")
+    assert "flickr_query_definitions.parquet" in result.manifest.stages[0].message
 
 
 def test_orchestrator_enqueue_is_idempotent_for_same_run_and_registry_queries(tmp_path) -> None:

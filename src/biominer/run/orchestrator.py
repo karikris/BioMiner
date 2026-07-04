@@ -30,6 +30,12 @@ from biominer.workstore.base import WorkStore
 DEFAULT_BIOCLIP_MODEL = "imageomics/bioclip-2.5-vith14"
 DEFAULT_VISION_BACKEND = "yoloe26"
 PRODUCTION_JOB_NAME = "biominer_production_run"
+REQUIRED_REGISTRY_ARTIFACTS = (
+    "taxa.parquet",
+    "names.parquet",
+    "manifest.json",
+    "flickr_query_definitions.parquet",
+)
 
 
 @dataclass(frozen=True)
@@ -270,27 +276,22 @@ class ProductionRunOrchestrator:
         if self._registry_is_cloud():
             if self.storage is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_build_registry")
-            required = (
-                self._registry_artifact_uri("taxa.parquet"),
-                self._registry_artifact_uri("names.parquet"),
-                self._registry_artifact_uri("manifest.json"),
-            )
+            required = tuple(self._registry_artifact_uri(filename) for filename in REQUIRED_REGISTRY_ARTIFACTS)
             missing = _missing_uris(self.storage, *required)
             if missing:
                 return StageExecutionResult(status=StageStatus.FAILED, message="missing_registry_inputs: " + ", ".join(missing))
             taxa = self.storage.read_parquet(self._registry_artifact_uri("taxa.parquet"))
             names = self.storage.read_parquet(self._registry_artifact_uri("names.parquet"))
             query_definitions_uri = self._registry_artifact_uri("flickr_query_definitions.parquet")
-            query_definition_rows = self.storage.read_parquet(query_definitions_uri).height if self.storage.exists(query_definitions_uri) else 0
+            query_definition_rows = self.storage.read_parquet(query_definitions_uri).height
             manifest = self.storage.read_json(self._registry_artifact_uri("manifest.json"))
             outputs = {
                 "registry_dir": str(self.request.registry_dir),
                 "manifest": self._registry_artifact_uri("manifest.json"),
                 "taxa": self._registry_artifact_uri("taxa.parquet"),
                 "names": self._registry_artifact_uri("names.parquet"),
+                "query_definitions": query_definitions_uri,
             }
-            if self.storage.exists(query_definitions_uri):
-                outputs["query_definitions"] = query_definitions_uri
             return StageExecutionResult(
                 metrics={
                     "registry_reused": True,
@@ -303,11 +304,7 @@ class ProductionRunOrchestrator:
                 outputs=outputs,
             )
         registry = self._registry_dir_path(stage_name="build_registry")
-        required = (
-            registry / "taxa.parquet",
-            registry / "names.parquet",
-            registry / "manifest.json",
-        )
+        required = tuple(registry / filename for filename in REQUIRED_REGISTRY_ARTIFACTS)
         missing = _missing_paths(*required)
         if missing:
             return StageExecutionResult(status=StageStatus.FAILED, message="missing_registry_inputs: " + ", ".join(missing))
@@ -325,14 +322,16 @@ class ProductionRunOrchestrator:
             "manifest": str(registry / "manifest.json"),
             "taxa": str(registry / "taxa.parquet"),
             "names": str(registry / "names.parquet"),
+            "query_definitions": str(query_definitions),
         }
-        if query_definitions.exists():
-            outputs["query_definitions"] = str(query_definitions)
         return StageExecutionResult(metrics=metrics, outputs=outputs)
 
     def _run_compile_queries_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
-        source_frame, source_ref, source_path = self._registry_query_definitions_source()
-        queries = self._load_flickr_work_queries()
+        try:
+            source_frame, source_ref, source_path = self._registry_query_definitions_source()
+            queries = self._load_flickr_work_queries()
+        except FileNotFoundError as exc:
+            return StageExecutionResult(status=StageStatus.FAILED, message=f"missing_registry_query_definitions: {exc}")
         outputs = {
             "source_query_definitions": source_ref,
             "query_definitions": plan.artifact_uris.query_definitions_uri,
