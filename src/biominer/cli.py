@@ -54,12 +54,6 @@ from biominer.run import ProductionRunOrchestrator, ProductionRunRequest, RunSta
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES
 from biominer.secrets_loader import load_runtime_secrets_env
 from biominer.species.context import SpeciesContext
-from biominer.species.registry_refresh import resolve_species_context, write_species_registry_outputs
-from biominer.species.query_compile import write_species_flickr_queries
-from biominer.species.workflow import (
-    build_species_comment_queue,
-    fetch_species_flickr,
-)
 from biominer.config import ConfigError, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
 from biominer.storage.factory import create_storage_backend
 from biominer.storage.uri import join_uri
@@ -338,26 +332,6 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--dry-run", action="store_true")
     production_run.add_argument("--limit-species", type=int, default=0)
     production_run.add_argument("--limit-records", type=int, default=0)
-    species = subparsers.add_parser("species")
-    species_subparsers = species.add_subparsers(dest="species_command")
-    species_resolve = species_subparsers.add_parser("resolve")
-    _add_species_context_args(species_resolve)
-    species_refresh = species_subparsers.add_parser("refresh-registry")
-    _add_species_context_args(species_refresh)
-    species_compile = species_subparsers.add_parser("compile-flickr-queries")
-    _add_species_context_args(species_compile)
-    species_fetch = species_subparsers.add_parser("fetch-flickr")
-    species_fetch.add_argument("--state-db", required=True)
-    species_fetch.add_argument("--output-root", required=True)
-    species_fetch.add_argument("--workers", type=int, default=8)
-    species_fetch.add_argument("--max-api-calls", type=int, default=SOFT_API_CALLS_PER_HOUR)
-    species_fetch.add_argument("--api-key-env", default="FLICKR_API_KEY")
-    species_review = species_subparsers.add_parser("review-comments")
-    species_review.add_argument("--context-json", required=True)
-    species_review.add_argument("--input")
-    species_review.add_argument("--state-db", required=True)
-    species_review.add_argument("--max-api-calls", type=int, default=300)
-    species_review.add_argument("--api-key-env", default="FLICKR_API_KEY")
     build_comment_queue = subparsers.add_parser("build-comment-review-queue")
     build_comment_queue.add_argument("--input", required=True)
     build_comment_queue.add_argument("--state-db", default="data/state/comment_review.sqlite")
@@ -385,13 +359,6 @@ def build_parser() -> argparse.ArgumentParser:
     poll_once_parser.add_argument("--no-compact", action="store_true")
     poll_once_parser.add_argument("--config")
     return parser
-
-
-def _add_species_context_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--scientific-name")
-    parser.add_argument("--accepted-taxon-key")
-    parser.add_argument("--registry-dir", required=True)
-    parser.add_argument("--output-root", required=True)
 
 
 def _add_object_evidence_join_args(parser: argparse.ArgumentParser) -> None:
@@ -507,8 +474,6 @@ def run(args: argparse.Namespace) -> int:
         return _run_workstore_command(args)
     if args.command == "run":
         return _run_production_command(args)
-    if args.command == "species":
-        return _run_species_command(args)
     if args.command == "registry" or (args.command == "dev" and args.dev_command == "registry"):
         if args.registry_command == "fetch-taxonomy":
             retrieved_at = args.retrieved_at or datetime.now(UTC).isoformat()
@@ -879,62 +844,6 @@ def _parse_run_stages(value: str | None) -> tuple[RunStage, ...]:
         if stage not in stages:
             stages.append(stage)
     return tuple(stages) or DEFAULT_PRODUCTION_STAGES
-
-
-def _run_species_command(args: argparse.Namespace) -> int:
-    if args.species_command in {"resolve", "refresh-registry", "compile-flickr-queries"}:
-        try:
-            context = resolve_species_context(
-                scientific_name=args.scientific_name,
-                accepted_taxon_key=args.accepted_taxon_key,
-                registry_dir=args.registry_dir,
-            )
-        except ValueError as exc:
-            print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-            return 2
-        report = write_species_registry_outputs(context=context, registry_dir=args.registry_dir, output_root=args.output_root)
-        payload: dict[str, object] = {
-            "scientific_name": context.scientific_name,
-            "accepted_taxon_key": context.accepted_taxon_key,
-            "registry_version": context.registry_version,
-            "output_root": args.output_root,
-            "species_context": str(Path(args.output_root) / "species_context.json"),
-            "registry_refresh_report": report.get("report"),
-        }
-        if args.species_command == "compile-flickr-queries":
-            query_result = write_species_flickr_queries(context, Path(args.output_root) / "flickr_query_definitions.parquet")
-            payload.update({"query_definitions": str(query_result.output_path), "query_definition_rows": query_result.rows})
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
-    if args.species_command == "fetch-flickr":
-        api_key = os.environ.get(args.api_key_env)
-        if not api_key:
-            print(json.dumps({"error": f"{args.api_key_env} is required for species fetch-flickr"}, indent=2, sort_keys=True))
-            return 2
-        result = fetch_species_flickr(
-            state_db=args.state_db,
-            output_root=args.output_root,
-            max_api_calls=args.max_api_calls,
-            api_key=api_key,
-            workers=args.workers,
-        )
-        print(json.dumps({**result.__dict__, "state_db": str(result.state_db)}, indent=2, sort_keys=True))
-        return 0
-    if args.species_command == "review-comments":
-        context = SpeciesContext.read_json(args.context_json)
-        if args.input:
-            payload = build_species_comment_queue(context=context, input_path=args.input, state_db=args.state_db)
-            print(json.dumps(payload, indent=2, sort_keys=True))
-            return 0
-        api_key = os.environ.get(args.api_key_env)
-        if not api_key:
-            print(json.dumps({"error": f"{args.api_key_env} is required for species review-comments without --input"}, indent=2, sort_keys=True))
-            return 2
-        state = CommentReviewState(args.state_db, species_context=context)
-        result = state.process_pending(fetch_comments=fetch_flickr_comments(api_key=api_key), max_api_calls=args.max_api_calls)
-        print(json.dumps({**state.summary(), **result}, indent=2, sort_keys=True))
-        return 0
-    return 2
 
 
 def _run_bioclip_runtime_check(args: argparse.Namespace) -> int:

@@ -27,7 +27,7 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert "storage" in commands
     assert "workstore" in commands
     assert "bioclip" in commands
-    assert "species" in commands
+    assert "species" not in commands
     assert "dev" in commands
     assert "cloud" not in commands
     assert "filter" not in commands
@@ -61,15 +61,26 @@ def test_registry_public_cli_exposes_only_build_and_audit() -> None:
         assert internal in dev_registry_choices
 
 
-def test_species_cli_no_longer_exposes_legacy_run_command() -> None:
+def test_species_cli_removed_from_public_surface() -> None:
     parser = build_parser()
     commands = parser._subparsers._group_actions[0].choices  # noqa: SLF001
-    species_choices = commands["species"]._subparsers._group_actions[0].choices  # noqa: SLF001
 
-    assert "run" not in species_choices
-    for removed in {"detect", "bioclip-funnel", "bioclip-objects", "ablate-objects", "join-object-evidence"}:
-        assert removed not in species_choices
+    assert "species" not in commands
     assert "run" in commands
+    for removed in {
+        "resolve",
+        "refresh-registry",
+        "compile-flickr-queries",
+        "fetch-flickr",
+        "review-comments",
+        "detect",
+        "bioclip-funnel",
+        "bioclip-objects",
+        "ablate-objects",
+        "join-object-evidence",
+    }:
+        with pytest.raises(SystemExit):
+            parser.parse_args(["species", removed])
 
 
 def test_cloud_cli_removed_from_public_surface() -> None:
