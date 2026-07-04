@@ -566,7 +566,7 @@ def test_compile_enriched_registry_keeps_conflicting_source_name_disabled(tmp_pa
     assert {"severity": "warning", "code": "enrichment_name_without_base_taxon", "subject": "col:name:bad"} in qa.to_dicts()
 
 
-def test_compile_enriched_registry_preserves_t5_translations_as_disabled_candidates_and_retrieval_queries(tmp_path) -> None:
+def test_compile_enriched_registry_enables_t5_translations_as_name_evidence(tmp_path) -> None:
     registry, scope = _write_base_registry(tmp_path)
     write_enrichment_sources(
         registry,
@@ -600,18 +600,19 @@ def test_compile_enriched_registry_preserves_t5_translations_as_disabled_candida
     candidates = pl.read_parquet(registry / "name_candidates.parquet")
     queries = pl.read_parquet(registry / "flickr_query_definitions.parquet")
 
-    assert "Translated Lime" not in names["display_name"].to_list()
-    assert "Translated Lime" in candidates["display_name"].to_list()
-    assert candidates.select("trust_tier").to_series().to_list() == ["T5"]
-    assert candidates.select("enabled").to_series().to_list() == [False]
-    assert candidates.select("disabled_reason").to_series().to_list() == ["generated_translation_requires_review"]
+    assert "Translated Lime" in names["display_name"].to_list()
+    assert "Translated Lime" not in candidates["display_name"].to_list()
+    t5_names = names.filter(pl.col("normalized_match_key") == "translated lime")
+    assert t5_names.select("enabled").to_series().to_list() == [True]
+    assert t5_names.select("trust_tier").to_series().to_list() == ["T5"]
+    assert t5_names.select("disabled_reason").to_series().to_list() == [""]
     t5_queries = queries.filter(pl.col("normalized_match_key") == "translated lime").sort("search_field")
     assert t5_queries.height == 2
     assert t5_queries.select("search_field").to_series().to_list() == ["tags", "text"]
     assert t5_queries.select("enabled").to_series().to_list() == [True, True]
     assert t5_queries.select("trust_tier").to_series().to_list() == ["T5", "T5"]
     assert t5_queries.select("name_class").to_series().to_list() == ["generated_translation", "generated_translation"]
-    assert manifest["t5_retrieval_query_definition_rows"] == 2
+    assert manifest["t5_retrieval_query_definition_rows"] == 0
     assert manifest["query_definition_rows"] == queries.height
 
 

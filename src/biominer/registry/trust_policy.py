@@ -98,7 +98,7 @@ def should_enable_name_by_default(
     if tier == TrustTier.T4:
         return confidence_key not in LOW_CONFIDENCE_VALUES
     if tier == TrustTier.T5:
-        return corroborated
+        return True
     return False
 
 
@@ -127,8 +127,6 @@ def disabled_reason_for_candidate(
         return "wikidata_name_requires_confident_taxon_link"
     if tier == TrustTier.T4:
         return "weak_or_community_name_requires_review"
-    if tier == TrustTier.T5:
-        return "generated_translation_requires_review"
     return "name_requires_review"
 
 

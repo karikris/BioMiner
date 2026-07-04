@@ -3,7 +3,7 @@ from __future__ import annotations
 from biominer.registry.translation_sources import generated_translation_candidate, translation_candidates_frame
 
 
-def test_generated_translation_candidates_default_to_disabled_t5() -> None:
+def test_generated_translation_candidates_default_to_enabled_t5() -> None:
     frame = translation_candidates_frame(
         [
             generated_translation_candidate(
@@ -19,13 +19,13 @@ def test_generated_translation_candidates_default_to_disabled_t5() -> None:
 
     row = frame.to_dicts()[0]
     assert row["trust_tier"] == "T5"
-    assert row["enabled"] is False
-    assert row["disabled_reason"] == "generated_translation_requires_review"
-    assert row["review_state"] == "candidate"
+    assert row["enabled"] is True
+    assert row["disabled_reason"] == ""
+    assert row["review_state"] == "accepted"
     assert row["corroborated"] is False
 
 
-def test_dictionary_translation_candidates_default_to_corroboration_required() -> None:
+def test_dictionary_translation_candidates_default_to_enabled_t5() -> None:
     frame = translation_candidates_frame(
         [
             generated_translation_candidate(
@@ -42,8 +42,8 @@ def test_dictionary_translation_candidates_default_to_corroboration_required() -
 
     row = frame.to_dicts()[0]
     assert row["trust_tier"] == "T5"
-    assert row["enabled"] is False
-    assert row["disabled_reason"] == "dictionary_translation_requires_corroboration"
+    assert row["enabled"] is True
+    assert row["disabled_reason"] == ""
 
 
 def test_reviewed_or_corroborated_t5_translation_candidates_can_enable() -> None:

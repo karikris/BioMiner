@@ -78,7 +78,7 @@ def test_production_workflow_docs_exist_and_match_current_surface() -> None:
         assert expected in production
 
     registry = Path("docs/registry_trust_tiers.md").read_text(encoding="utf-8")
-    for expected in ("T1", "T5", "disabled", "query_definition_id"):
+    for expected in ("T1", "T5", "enabled", "query_definition_id"):
         assert expected in registry
     assert "T3  Wikidata labels and aliases with confident external taxon links" in registry
     assert "external taxon linkage is confident" in registry
@@ -152,7 +152,7 @@ def test_completion_audit_records_current_refactor_invariants() -> None:
     for expected in (
         "Public production workflow is rank-aware",
         "Production storage/workstore defaults",
-        "T5 generated translations stay disabled as name evidence but enter Flickr retrieval",
+        "T5 generated translations are enabled as accepted registry name evidence and enter Flickr retrieval",
         "Metadata keyword logic is flags, not hard pre-visual drop",
         "YOLOE/YOLO26 are object proposal backends only",
         "BioCLIP remains the species scorer",
@@ -195,8 +195,8 @@ def test_readme_keeps_broad_probe_recipe_out_of_production_workflow() -> None:
     ):
         assert removed_phrase not in text
     assert "work items must be created from registry-derived query definitions" in text
-    assert "disabled experimental translation candidates retained for review and used only as T5 retrieval expansion" in text
-    assert "retrieval-only Flickr query definitions with `trust_tier = T5`" in text
+    assert "T5 generated/dictionary translation names retained with low-trust provenance" in text
+    assert "enabled T5 generated/dictionary translations" in text
     assert "register-based processing" not in text
     assert "register-based classification helpers" not in text
     assert "object-first scoring" in text

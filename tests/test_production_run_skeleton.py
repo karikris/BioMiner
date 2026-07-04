@@ -273,7 +273,7 @@ def test_orchestrator_compiles_registry_queries_and_enqueues_flickr_work(tmp_pat
     assert work_items[0]["payload"]["query"]["accepted_taxon_key"] == "gbif:100"
 
 
-def test_orchestrator_enqueues_t5_retrieval_queries_for_flickr_api(tmp_path, monkeypatch) -> None:
+def test_orchestrator_enqueues_t5_registry_queries_for_flickr_api(tmp_path, monkeypatch) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     _write_t5_query_definitions(registry)
     workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
@@ -613,7 +613,7 @@ def test_orchestrator_polls_flickr_with_local_sqlite_and_fake_fetcher(tmp_path, 
     assert row["query_hit_count"] == 1
 
 
-def test_orchestrator_polls_t5_retrieval_queries_through_flickr_api(tmp_path, monkeypatch) -> None:
+def test_orchestrator_polls_t5_registry_queries_through_flickr_api(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("FLICKR_API_KEY", raising=False)
     registry = _write_rank_registry(tmp_path / "registry")
     _write_t5_query_definitions(registry)
@@ -1360,14 +1360,14 @@ def test_trust_policy_default_tiers_and_enablement() -> None:
     assert should_enable_name_by_default(TrustTier.T3, "high", "none") is False
     assert should_enable_name_by_default(TrustTier.T4, "medium", "none") is True
     assert should_enable_name_by_default(TrustTier.T4, "low", "none") is False
-    assert should_enable_name_by_default(TrustTier.T5, "high", "none") is False
+    assert should_enable_name_by_default(TrustTier.T5, "high", "none") is True
     assert should_enable_name_by_default(TrustTier.T5, "high", "none", review_state="accepted") is True
 
 
 def test_trust_policy_disabled_reasons() -> None:
     assert disabled_reason_for_candidate(TrustTier.T3, "high", "none") == "wikidata_name_requires_confident_taxon_link"
     assert disabled_reason_for_candidate(TrustTier.T4, "medium", "ambiguous") == "name_collision_requires_review"
-    assert disabled_reason_for_candidate(TrustTier.T5, "high", "none") == "generated_translation_requires_review"
+    assert disabled_reason_for_candidate(TrustTier.T5, "high", "none") == ""
     assert decide_name_trust(source="Wikidata", name_class="vernacular", confidence="high", collision_status="none").enabled is False
 
 

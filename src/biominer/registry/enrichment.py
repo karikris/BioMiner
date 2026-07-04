@@ -18,7 +18,7 @@ from typing import Any
 
 import polars as pl
 
-from biominer.registry.compiler import compile_registry_fixture, query_definitions_from_names
+from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.normalize import normalize_language_code, normalize_name_key
 from biominer.registry.trust_policy import decide_name_trust
 
@@ -733,13 +733,6 @@ def compile_enriched_registry(
         scope_path=scope_path,
     )
     candidate_output = candidates.filter(~(pl.col("enabled") & (pl.col("disabled_reason") == "")))
-    t5_retrieval_rows = _append_t5_retrieval_queries(
-        output=output,
-        taxa=taxa,
-        candidates=candidate_output,
-        registry_version=registry_version,
-        accepted_keys=accepted_keys,
-    )
     candidate_output.write_parquet(output / NAME_CANDIDATES_FILE)
     assertions.write_parquet(output / SOURCE_ASSERTIONS_FILE)
     external_links.write_parquet(output / EXTERNAL_LINKS_FILE)
@@ -768,7 +761,7 @@ def compile_enriched_registry(
             "enrichment_name_assertion_rows": assertions.height,
             "enabled_enrichment_name_rows": enabled_enrichment.height,
             "name_candidate_rows": candidate_output.height,
-            "t5_retrieval_query_definition_rows": t5_retrieval_rows,
+            "t5_retrieval_query_definition_rows": 0,
             "query_definition_rows": int(pl.read_parquet(output / "flickr_query_definitions.parquet").height),
             "external_taxon_link_rows": external_links.height,
             "source_error_rows": source_errors.height,
@@ -778,74 +771,6 @@ def compile_enriched_registry(
     )
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     return manifest
-
-
-def _append_t5_retrieval_queries(
-    *,
-    output: Path,
-    taxa: pl.DataFrame,
-    candidates: pl.DataFrame,
-    registry_version: str,
-    accepted_keys: set[str],
-) -> int:
-    if candidates.is_empty():
-        return 0
-    t5_candidates = candidates.filter(
-        (pl.col("trust_tier") == "T5")
-        & pl.col("accepted_taxon_key").is_in(sorted(accepted_keys))
-        & (pl.col("display_name").str.strip_chars() != "")
-    )
-    if t5_candidates.is_empty():
-        return 0
-    candidate_names = _t5_candidate_names_frame(t5_candidates, registry_version=registry_version)
-    candidate_queries = query_definitions_from_names(candidate_names, taxa, registry_version=registry_version)
-    if candidate_queries.is_empty():
-        return 0
-    query_path = output / "flickr_query_definitions.parquet"
-    existing = pl.read_parquet(query_path) if query_path.exists() else pl.DataFrame()
-    combined = (
-        pl.concat([existing, candidate_queries], how="diagonal_relaxed")
-        if not existing.is_empty()
-        else candidate_queries
-    )
-    combined = combined.unique(subset=["query_definition_id"], keep="first").sort(
-        ["search_priority", "normalized_match_key", "query_definition_id"]
-    )
-    combined.write_parquet(query_path)
-    candidate_ids = set(candidate_queries.select("query_definition_id").to_series().to_list())
-    return combined.filter(pl.col("query_definition_id").is_in(candidate_ids)).height
-
-
-def _t5_candidate_names_frame(candidates: pl.DataFrame, *, registry_version: str) -> pl.DataFrame:
-    rows = []
-    for row in candidates.to_dicts():
-        accepted_taxon_key = str(row.get("accepted_taxon_key") or "")
-        display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
-        language = normalize_language_code(row.get("language"))
-        source_record_id = str(row.get("source_record_id") or "")
-        rows.append(
-            {
-                "name_id": _stable_id("t5-retrieval", registry_version, accepted_taxon_key, display_name, language, source_record_id),
-                "registry_version": registry_version,
-                "accepted_taxon_key": accepted_taxon_key,
-                "verbatim_name": str(row.get("verbatim_name") or display_name),
-                "display_name": display_name,
-                "normalized_match_key": normalize_name_key(display_name),
-                "language": language,
-                "script": str(row.get("script") or ""),
-                "region": str(row.get("region") or ""),
-                "bbox": str(row.get("bbox") or ""),
-                "name_class": str(row.get("name_class") or "generated_translation"),
-                "source": str(row.get("source") or "Translation"),
-                "source_record_id": source_record_id,
-                "trust_tier": "T5",
-                "precision_tier": str(row.get("precision_tier") or "low"),
-                "confidence": str(row.get("confidence") or "low"),
-                "enabled": True,
-                "disabled_reason": "",
-            }
-        )
-    return pl.DataFrame(rows)
 
 
 def _read_or_empty(path: Path, schema: dict[str, pl.DataType]) -> pl.DataFrame:

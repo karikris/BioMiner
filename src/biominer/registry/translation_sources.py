@@ -24,9 +24,9 @@ class TranslationCandidate:
     translated_name: str
     accepted_taxon_key: str
     trust_tier: str = "T5"
-    enabled: bool = False
-    disabled_reason: str = "generated_translation_requires_review"
-    review_state: str = "candidate"
+    enabled: bool = True
+    disabled_reason: str = ""
+    review_state: str = "accepted"
     confidence: str = "low"
     precision_tier: str = "low"
     corroborated: bool = False
@@ -48,11 +48,6 @@ def generated_translation_candidate(
     source_record_id: str | None = None,
     source_kind: TranslationSourceKind = "generated",
 ) -> TranslationCandidate:
-    disabled_reason = (
-        "dictionary_translation_requires_corroboration"
-        if source_kind == "dictionary"
-        else "generated_translation_requires_review"
-    )
     record_id = source_record_id or translation_candidate_id_parts(
         source,
         accepted_taxon_key,
@@ -69,7 +64,6 @@ def generated_translation_candidate(
         source_name=source_name,
         translated_name=translated_name,
         accepted_taxon_key=accepted_taxon_key,
-        disabled_reason=disabled_reason,
     )
 
 
@@ -158,7 +152,7 @@ def _normalize_candidate_row(row: dict[str, object]) -> dict[str, object]:
         "corroborated": corroborated,
     }
     if not normalized["enabled"] and not normalized["disabled_reason"]:
-        normalized["disabled_reason"] = "generated_translation_requires_review"
+        normalized["disabled_reason"] = "translation_name_requires_review"
     if normalized["enabled"]:
         normalized["disabled_reason"] = ""
     normalized["candidate_id"] = _clean_text(row.get("candidate_id")) or translation_candidate_id_parts(

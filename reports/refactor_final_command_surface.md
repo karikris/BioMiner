@@ -185,12 +185,12 @@ Confirmed current behavior:
 - `biominer registry build` defaults to enrichment sources:
   `col`, `inaturalist`, `itis`, `tmd_de`, and `wikidata`.
 - Registry-derived Flickr query definitions are the production discovery input.
-- Disabled T5 translation candidates are not promoted into `names.parquet`, but
-  they now produce retrieval-only Flickr query definitions with `trust_tier=T5`
-  so generated/dictionary translations can be sent to the Flickr API without
-  becoming accepted vernacular evidence.
+- T5 generated/dictionary translations are promoted into `names.parquet` as
+  enabled accepted registry name evidence with `trust_tier=T5` provenance.
+- Their normal registry query definitions are sent to the Flickr API; no
+  separate retrieval-only T5 query path is used.
 - Production Flickr work items retain the compiled query `trust_tier`, so T5
-  retrieval-only terms remain auditable when they enter the API polling queue.
+  terms remain auditable when they enter the API polling queue.
 - Production `compile_queries` writes a scoped query-definition artifact for
   the resolved taxon scope, so species runs only use that species and
   family/genus runs only use the expanded species contexts under that scope.

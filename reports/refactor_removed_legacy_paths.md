@@ -130,7 +130,7 @@ biominer dev registry seed-flickr-queries --query-definitions ...
 
 Production polling no longer creates broad Flickr work items from an empty state.
 Production run polling now uses the validated runtime worker ID from config rather than an ambient fallback.
-Production Flickr work items preserve the compiled query `trust_tier`, including retrieval-only
+Production Flickr work items preserve the compiled query `trust_tier`, including enabled
 T5 generated-translation terms, so query provenance remains auditable at API polling time.
 Production BioCLIP scoring now emits combined object score outputs for available visual modes and records
 `detector_crop_segmentation` as unavailable when masks are absent, instead of treating the third visual mode

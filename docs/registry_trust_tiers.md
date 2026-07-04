@@ -12,7 +12,7 @@ T4  unreviewed community/source enrichment that is useful for discovery but need
 T5  generated or machine-translated candidates
 ```
 
-T1 and reviewed T2 assertions are the preferred basis for evidence matching. T3 assertions can support discovery only when the external taxon linkage is confident or the assertion has been explicitly accepted by review. T4 can support discovery when its source and review state make that safe for the current registry policy. T5 records are disabled as accepted name evidence by default, but may still be used as retrieval-only Flickr search expansion terms with explicit T5 provenance.
+T1 and reviewed T2 assertions are the preferred basis for evidence matching. T3 assertions can support discovery only when the external taxon linkage is confident or the assertion has been explicitly accepted by review. T4 can support discovery when its source and review state make that safe for the current registry policy. T5 generated and dictionary translations are enabled as accepted registry name evidence by default, but they keep explicit low-trust provenance and do not replace the GBIF accepted taxonomic spine.
 
 ## Enablement
 
@@ -33,19 +33,19 @@ source_taxon_key or accepted_taxon_key
 registry_version
 ```
 
-Generated translations must remain:
+Generated translations are retained as:
 
 ```text
 trust_tier = T5
-enabled = false
-review_state = needs_review
+enabled = true
+review_state = accepted
 ```
 
-They can become accepted name evidence only after explicit review or independent corroboration by source-backed evidence. A generated name should never be treated as accepted vernacular evidence merely because it was useful for search expansion.
+They are accepted registry name evidence for discovery and matching, with their source and confidence retained for audit. A generated name must not replace the accepted GBIF taxon identity.
 
 ## Query Generation
 
-Flickr query definitions are compiled from enabled registry names plus retrieval-only T5 translation candidates. Tags and text searches remain separate atomic query definitions, and each definition preserves:
+Flickr query definitions are compiled from enabled registry names, including enabled T5 generated/dictionary translations. Tags and text searches remain separate atomic query definitions, and each definition preserves:
 
 ```text
 query_definition_id
@@ -61,7 +61,7 @@ source evidence fields
 review_state
 ```
 
-Retrieval-only T5 rows keep `trust_tier = T5` and `name_class = generated_translation` in `flickr_query_definitions.parquet`, but they do not enter `names.parquet` as enabled vernacular evidence until reviewed or corroborated.
+T5 rows keep `trust_tier = T5` and `name_class = generated_translation` in both `names.parquet` and `flickr_query_definitions.parquet`.
 
 When Flickr rediscoveries hit the same photo, those query definitions are folded into the canonical source record provenance arrays. The registry remains the source of term provenance; Flickr title, tags, description, and comments are discovery or review evidence, not taxonomic authority.
 
