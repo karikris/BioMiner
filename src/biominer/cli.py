@@ -56,7 +56,7 @@ from biominer.secrets_loader import load_runtime_secrets_env
 from biominer.species.context import SpeciesContext
 from biominer.config import ConfigError, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
 from biominer.storage.factory import create_storage_backend
-from biominer.storage.uri import join_uri
+from biominer.storage.uri import is_cloud_uri, join_uri
 
 
 BIOCLIP_25_HUGE_REPO_ID = "imageomics/bioclip-2.5-vith14"
@@ -799,7 +799,8 @@ def _run_production_command(args: argparse.Namespace) -> int:
         validate_config(config, require_cloud_credentials=not allow_local, allow_local_backends=allow_local)
         stages = _parse_run_stages(args.stages)
         storage = None
-        if not args.dry_run and args.storage_backend != "local":
+        registry_dir_is_cloud = is_cloud_uri(args.registry_dir)
+        if args.storage_backend != "local" and (not args.dry_run or registry_dir_is_cloud):
             storage = create_storage_backend(config.storage)
         workstore = None
         if not args.dry_run and RunStage.ENQUEUE_FLICKR_WORK in stages:

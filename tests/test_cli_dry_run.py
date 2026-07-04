@@ -1639,6 +1639,72 @@ def test_production_run_requires_cloud_config_by_default(tmp_path, capsys, monke
     assert payload["config"]["storage"]["secret_access_key"] is None
 
 
+def test_production_run_dry_run_reads_cloud_registry(capsys, monkeypatch) -> None:
+    fake_storage = _FakeCloudStorage()
+    registry_uri = "s3://biominer/registry/current"
+    fake_storage.parquet_payloads[f"{registry_uri}/taxa.parquet"] = pl.DataFrame(
+        [
+            {
+                "accepted_taxon_key": "gbif:100",
+                "scientific_name": "Papilio demoleus",
+                "rank": "SPECIES",
+                "family_key": "gbif:10",
+                "family": "Papilionidae",
+                "genus_key": "gbif:90",
+                "genus": "Papilio",
+                "species_key": "gbif:100",
+                "species": "Papilio demoleus",
+                "parent_key": "gbif:90",
+            }
+        ]
+    )
+    fake_storage.parquet_payloads[f"{registry_uri}/names.parquet"] = pl.DataFrame(
+        [
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Papilio demoleus",
+                "name_class": "accepted_scientific",
+                "language": "la",
+                "source": "GBIF",
+                "trust_tier": "T1",
+                "enabled": True,
+                "disabled_reason": "",
+            }
+        ]
+    )
+    fake_storage.json_payloads[f"{registry_uri}/manifest.json"] = {"registry_version": "registry-v1"}
+    config = _fake_cloud_config()
+    monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
+    monkeypatch.setattr("biominer.cli.create_storage_backend", lambda storage_config: fake_storage)
+
+    def fail_create_workstore(_workstore_config):  # noqa: ANN001, ANN202
+        raise AssertionError("dry-run registry resolution should not open the workstore")
+
+    monkeypatch.setattr("biominer.cli.create_workstore", fail_create_workstore)
+
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--taxon",
+            "Papilio demoleus",
+            "--rank",
+            "species",
+            "--registry-dir",
+            registry_uri,
+            "--output-prefix",
+            "s3://biominer/runs",
+            "--dry-run",
+        ]
+    )
+
+    assert run(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    manifest_uri = "s3://biominer/runs/run_id=species_papilio_demoleus/run_manifest.json"
+    assert payload["manifest"]["taxon_scope"]["accepted_taxon_key"] == "gbif:100"
+    assert payload["manifest"]["taxon_scope"]["registry_version"] == "registry-v1"
+    assert fake_storage.json_payloads[manifest_uri]["status"] == "complete"
+
+
 def test_production_run_compile_stage_uses_configured_cloud_storage(tmp_path, capsys, monkeypatch) -> None:
     registry = tmp_path / "registry"
     registry.mkdir()

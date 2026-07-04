@@ -271,6 +271,33 @@ def test_orchestrator_compiles_registry_queries_and_enqueues_flickr_work(tmp_pat
     assert work_items[0]["payload"]["query"]["accepted_taxon_key"] == "gbif:100"
 
 
+def test_orchestrator_reads_registry_inputs_from_cloud_storage(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_query_definitions(registry)
+    storage = _FakeRunStorage()
+    registry_uri = "s3://biominer/registry/current"
+    _seed_cloud_registry(storage, registry_uri, registry)
+    request = ProductionRunRequest(
+        taxon="Papilio",
+        rank="genus",
+        registry_dir=registry_uri,
+        output_root="s3://biominer/runs",
+        stages=(RunStage.RESOLVE_TAXON_SCOPE, RunStage.BUILD_REGISTRY, RunStage.COMPILE_QUERIES),
+        limits={"records": 1},
+    )
+
+    plan = ProductionRunOrchestrator(request, storage=storage).run()
+
+    assert plan.manifest.status == "complete"
+    assert plan.manifest.taxon_scope.accepted_rank == "genus"
+    assert plan.manifest.taxon_scope.species_names == ("Papilio demoleus", "Papilio machaon")
+    assert plan.manifest.stages[1].outputs["taxa"] == f"{registry_uri}/taxa.parquet"
+    assert plan.manifest.stages[1].metrics["registry_version"] == "rank-registry-v1"
+    assert plan.manifest.stages[2].outputs["source_query_definitions"] == f"{registry_uri}/flickr_query_definitions.parquet"
+    assert plan.manifest.query_counts["flickr_work_items"] == 1
+    assert storage.parquet_payloads[plan.artifact_uris.query_definitions_uri].height == 2
+
+
 def test_orchestrator_writes_compiled_queries_to_cloud_storage(tmp_path) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     _write_query_definitions(registry)
@@ -1153,6 +1180,9 @@ class _FakeRunStorage:
     def read_parquet(self, uri: str) -> pl.DataFrame:
         return self.parquet_payloads[uri]
 
+    def read_json(self, uri: str) -> dict[str, object]:
+        return self.json_payloads[uri]
+
     def write_parquet_shard(self, uri: str, frame: pl.DataFrame) -> str:
         self.parquet_payloads[uri] = frame
         return uri
@@ -1163,6 +1193,16 @@ class _FakeRunStorage:
 
     def exists(self, uri: str) -> bool:
         return uri in self.parquet_payloads or uri in self.json_payloads
+
+
+def _seed_cloud_registry(storage: _FakeRunStorage, registry_uri: str, registry: Path) -> None:
+    storage.parquet_payloads[f"{registry_uri}/taxa.parquet"] = pl.read_parquet(registry / "taxa.parquet")
+    storage.parquet_payloads[f"{registry_uri}/names.parquet"] = pl.read_parquet(registry / "names.parquet")
+    storage.parquet_payloads[f"{registry_uri}/source_snapshots.parquet"] = pl.read_parquet(registry / "source_snapshots.parquet")
+    query_definitions = registry / "flickr_query_definitions.parquet"
+    if query_definitions.exists():
+        storage.parquet_payloads[f"{registry_uri}/flickr_query_definitions.parquet"] = pl.read_parquet(query_definitions)
+    storage.json_payloads[f"{registry_uri}/manifest.json"] = json.loads((registry / "manifest.json").read_text(encoding="utf-8"))
 
 
 def _query_definition_row(query_definition_id: str, source_term: str, search_field: str, search_priority: int) -> dict[str, object]:

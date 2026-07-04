@@ -14,14 +14,14 @@ from biominer.evidence.join import build_object_evidence_frames, write_object_ev
 from biominer.evidence.metrics import build_review_queue, evidence_count_metrics
 from biominer.storage.parquet import write_parquet
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
-from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries, query_hash
+from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries, load_registry_flickr_queries_from_frame, query_hash
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import RunArtifactUris, RunPaths
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES, RunStage, StageStatus, default_stage_records
-from biominer.run.taxon_scope import InputRank, TaxonScope, resolve_taxon_scope_from_registry
+from biominer.run.taxon_scope import InputRank, TaxonScope, resolve_taxon_scope_from_registry, resolve_taxon_scope_from_registry_frames
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.paths import safe_path_component
-from biominer.storage.uri import is_cloud_uri
+from biominer.storage.uri import is_cloud_uri, join_uri
 from biominer.workstore.base import WorkStore
 
 
@@ -211,11 +211,21 @@ class ProductionRunOrchestrator:
             return self.taxon_scope
         if not self.request.registry_dir:
             raise ValueError("registry_dir is required when taxon_scope is not provided")
-        self.taxon_scope = resolve_taxon_scope_from_registry(
-            registry_dir=self.request.registry_dir,
-            input_name=self.request.taxon,
-            input_rank=self.request.rank,
-        )
+        if is_cloud_uri(str(self.request.registry_dir)):
+            self.taxon_scope = resolve_taxon_scope_from_registry_frames(
+                taxa=self._read_registry_parquet("taxa.parquet"),
+                names=self._read_registry_optional_parquet("names.parquet"),
+                source_snapshots=self._read_registry_optional_parquet("source_snapshots.parquet"),
+                manifest=self._read_registry_manifest(),
+                input_name=self.request.taxon,
+                input_rank=self.request.rank,
+            )
+        else:
+            self.taxon_scope = resolve_taxon_scope_from_registry(
+                registry_dir=self.request.registry_dir,
+                input_name=self.request.taxon,
+                input_rank=self.request.rank,
+            )
         return self.taxon_scope
 
     def _run_stage(self, plan: ProductionRunPlan, stage: RunStage) -> StageExecutionResult:
@@ -250,6 +260,41 @@ class ProductionRunOrchestrator:
         return StageExecutionResult(status=StageStatus.SKIPPED, message="stage_not_implemented")
 
     def _run_build_registry_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
+        if self._registry_is_cloud():
+            if self.storage is None:
+                return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_build_registry")
+            required = (
+                self._registry_artifact_uri("taxa.parquet"),
+                self._registry_artifact_uri("names.parquet"),
+                self._registry_artifact_uri("manifest.json"),
+            )
+            missing = _missing_uris(self.storage, *required)
+            if missing:
+                return StageExecutionResult(status=StageStatus.FAILED, message="missing_registry_inputs: " + ", ".join(missing))
+            taxa = self.storage.read_parquet(self._registry_artifact_uri("taxa.parquet"))
+            names = self.storage.read_parquet(self._registry_artifact_uri("names.parquet"))
+            query_definitions_uri = self._registry_artifact_uri("flickr_query_definitions.parquet")
+            query_definition_rows = self.storage.read_parquet(query_definitions_uri).height if self.storage.exists(query_definitions_uri) else 0
+            manifest = self.storage.read_json(self._registry_artifact_uri("manifest.json"))
+            outputs = {
+                "registry_dir": str(self.request.registry_dir),
+                "manifest": self._registry_artifact_uri("manifest.json"),
+                "taxa": self._registry_artifact_uri("taxa.parquet"),
+                "names": self._registry_artifact_uri("names.parquet"),
+            }
+            if self.storage.exists(query_definitions_uri):
+                outputs["query_definitions"] = query_definitions_uri
+            return StageExecutionResult(
+                metrics={
+                    "registry_reused": True,
+                    "taxa_rows": taxa.height,
+                    "name_rows": names.height,
+                    "query_definition_rows": query_definition_rows,
+                    "expanded_species_count": plan.manifest.taxon_scope.species_count,
+                    "registry_version": str(manifest.get("registry_version") or ""),
+                },
+                outputs=outputs,
+            )
         registry = self._registry_dir_path(stage_name="build_registry")
         required = (
             registry / "taxa.parquet",
@@ -279,27 +324,28 @@ class ProductionRunOrchestrator:
         return StageExecutionResult(metrics=metrics, outputs=outputs)
 
     def _run_compile_queries_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
-        source_path = self._registry_query_definitions_path()
+        source_frame, source_ref, source_path = self._registry_query_definitions_source()
         queries = self._load_flickr_work_queries()
         outputs = {
-            "source_query_definitions": str(source_path),
+            "source_query_definitions": source_ref,
             "query_definitions": plan.artifact_uris.query_definitions_uri,
         }
         if not is_cloud_uri(self.request.output_root):
             plan.paths.ensure_directories()
-            if source_path.resolve() != plan.paths.query_definitions_path.resolve():
+            if source_path is not None and source_path.resolve() != plan.paths.query_definitions_path.resolve():
                 shutil.copyfile(source_path, plan.paths.query_definitions_path)
+            else:
+                write_parquet(source_frame, plan.paths.query_definitions_path)
             outputs["local_query_definitions"] = str(plan.paths.query_definitions_path)
         else:
             if self.storage is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_compile_queries")
-            import polars as pl
 
-            uri = self.storage.write_parquet_shard(plan.artifact_uris.query_definitions_uri, pl.read_parquet(source_path))
+            uri = self.storage.write_parquet_shard(plan.artifact_uris.query_definitions_uri, source_frame)
             outputs["query_definitions"] = uri
         return StageExecutionResult(
             metrics={
-                "registry_query_definition_rows": _parquet_row_count(source_path),
+                "registry_query_definition_rows": source_frame.height,
                 "flickr_work_items": len(queries),
             },
             outputs=outputs,
@@ -512,6 +558,15 @@ class ProductionRunOrchestrator:
             outputs={"object_scores": str(result.output_path or plan.paths.object_scores_path)},
         )
 
+    def _registry_query_definitions_source(self) -> tuple[Any, str, Path | None]:
+        if self._registry_is_cloud():
+            uri = self._registry_artifact_uri("flickr_query_definitions.parquet")
+            return self._read_registry_parquet("flickr_query_definitions.parquet"), uri, None
+        path = self._registry_query_definitions_path()
+        import polars as pl
+
+        return pl.read_parquet(path), str(path), path
+
     def _registry_query_definitions_path(self) -> Path:
         registry = self._registry_dir_path(stage_name="compile_queries")
         path = registry / "flickr_query_definitions.parquet"
@@ -528,9 +583,65 @@ class ProductionRunOrchestrator:
         return Path(registry_dir)
 
     def _load_flickr_work_queries(self) -> tuple[FlickrQuery, ...]:
-        queries = load_registry_flickr_queries(self._registry_query_definitions_path())
+        if self._registry_is_cloud():
+            queries = load_registry_flickr_queries_from_frame(self._read_registry_parquet("flickr_query_definitions.parquet"))
+        else:
+            queries = load_registry_flickr_queries(self._registry_query_definitions_path())
         limit = int(self.request.limits.get("records") or 0)
         return tuple(queries[:limit]) if limit > 0 else queries
+
+    def _registry_is_cloud(self) -> bool:
+        return bool(self.request.registry_dir and is_cloud_uri(str(self.request.registry_dir)))
+
+    def _registry_artifact_uri(self, filename: str) -> str:
+        if not self.request.registry_dir:
+            raise ValueError("registry_dir is required")
+        return join_uri(str(self.request.registry_dir), filename)
+
+    def _read_registry_parquet(self, filename: str) -> Any:
+        if not self._registry_is_cloud():
+            import polars as pl
+
+            return pl.read_parquet(self._registry_dir_path(stage_name="registry_read") / filename)
+        if self.storage is None:
+            raise ValueError("storage_backend_required_for_registry_reads")
+        uri = self._registry_artifact_uri(filename)
+        if not self.storage.exists(uri):
+            raise FileNotFoundError(uri)
+        return self.storage.read_parquet(uri)
+
+    def _read_registry_optional_parquet(self, filename: str) -> Any:
+        if not self._registry_is_cloud():
+            path = self._registry_dir_path(stage_name="registry_read") / filename
+            if not path.exists():
+                import polars as pl
+
+                return pl.DataFrame()
+            import polars as pl
+
+            return pl.read_parquet(path)
+        if self.storage is None:
+            raise ValueError("storage_backend_required_for_registry_reads")
+        uri = self._registry_artifact_uri(filename)
+        if not self.storage.exists(uri):
+            import polars as pl
+
+            return pl.DataFrame()
+        return self.storage.read_parquet(uri)
+
+    def _read_registry_manifest(self) -> dict[str, Any]:
+        if not self._registry_is_cloud():
+            path = self._registry_dir_path(stage_name="registry_read") / "manifest.json"
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return {}
+        if self.storage is None:
+            raise ValueError("storage_backend_required_for_registry_reads")
+        uri = self._registry_artifact_uri("manifest.json")
+        if not self.storage.exists(uri):
+            return {}
+        return self.storage.read_json(uri)
 
     def _run_join_evidence_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if is_cloud_uri(self.request.output_root):
