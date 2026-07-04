@@ -272,6 +272,61 @@ def test_orchestrator_enqueue_is_idempotent_for_same_run_and_registry_queries(tm
     assert second.manifest.stages[1].metrics["duplicate_work_items"] == 1
 
 
+def test_orchestrator_joins_evidence_and_writes_summary_metrics(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
+    _write_join_stage_inputs(plan.paths)
+
+    result = ProductionRunOrchestrator(request, taxon_scope=scope).run()
+
+    assert result.manifest.status == "complete"
+    assert result.paths.object_evidence_path.exists()
+    assert result.paths.photo_summary_path.exists()
+    assert result.paths.metrics_path.exists()
+    assert result.manifest.evidence_counts == {"object_evidence_rows": 1, "photo_summary_rows": 1}
+    assert result.manifest.metrics["object_occurrence_bin_counts"] == {"gold": 1}
+    assert result.manifest.metrics["photo_occurrence_bin_counts"] == {"gold": 1}
+    assert result.manifest.stages[0].outputs == {
+        "object_evidence": str(result.paths.object_evidence_path),
+        "photo_summary": str(result.paths.photo_summary_path),
+    }
+    assert result.manifest.stages[1].outputs == {"metrics": str(result.paths.metrics_path)}
+    assert json.loads(result.paths.metrics_path.read_text(encoding="utf-8")) == {
+        "object_evidence_rows": 1,
+        "object_occurrence_bin_counts": {"gold": 1},
+        "photo_occurrence_bin_counts": {"gold": 1},
+        "photo_summary_rows": 1,
+    }
+
+
+def test_orchestrator_join_evidence_fails_when_local_inputs_are_missing(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.JOIN_EVIDENCE,),
+    )
+
+    result = ProductionRunOrchestrator(request, taxon_scope=scope).run()
+
+    assert result.manifest.status == "failed"
+    assert result.manifest.stages[0].status is StageStatus.FAILED
+    assert result.manifest.stages[0].message is not None
+    assert result.manifest.stages[0].message.startswith("missing_join_inputs:")
+    assert "canonical_source_records.parquet" in result.manifest.stages[0].message
+
+
 def test_run_paths_are_stable(tmp_path) -> None:
     paths = RunPaths.from_root(tmp_path, run_id="Family: Papilionidae")
 
@@ -370,6 +425,92 @@ def _write_query_definitions(registry: Path) -> None:
             _query_definition_row("q-text", "Lime butterfly", "text", 20),
         ]
     ).write_parquet(registry / "flickr_query_definitions.parquet")
+
+
+def _write_join_stage_inputs(paths: RunPaths) -> None:
+    paths.ensure_directories()
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "source_record_hash": "sha256:source-1",
+                "image_url": "https://live.staticflickr.com/photo-1.jpg",
+                "photo_page_url": "https://www.flickr.com/photos/u/photo-1",
+                "title": "Monarch butterfly",
+                "description": "Danaus plexippus on milkweed",
+                "tags": ["monarch", "butterfly"],
+                "latitude": 42.1,
+                "longitude": -83.0,
+                "date_taken": "2025-07-01",
+            }
+        ]
+    ).write_parquet(paths.source_records_path)
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "detection_id": "det-1",
+                "crop_hash": "sha256:crop-1",
+                "bbox_xyxy": [10.0, 12.0, 100.0, 120.0],
+                "bbox_xyxyn": [0.1, 0.12, 0.8, 0.9],
+                "detector_label": "butterfly_like",
+                "detector_score": 0.91,
+                "objectness_score": 0.91,
+                "detection_status": "detected",
+                "backend": "fake",
+                "model_id": "fake-detector",
+                "model_version": "test",
+                "checkpoint": "none",
+            }
+        ]
+    ).write_parquet(paths.object_detections_path)
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "detection_id": "det-1",
+                "crop_hash": "sha256:crop-1",
+                "model_id": "fake-bioclip",
+                "model_version": "test",
+                "model_checkpoint": "fake-checkpoint",
+                "candidate_set_id": "fixture",
+                "classified_at": "2026-01-01T00:00:00Z",
+                "ablation_mode": "detector_crop",
+                "family_top3": ["Nymphalidae"],
+                "family_top1": "Nymphalidae",
+                "family_top1_score": 0.95,
+                "family_margin": 0.40,
+                "genus_top8": ["Danaus"],
+                "genus_top1": "Danaus",
+                "genus_top1_score": 0.90,
+                "genus_margin": 0.35,
+                "species_top20": ["Danaus plexippus"],
+                "species_top20_accepted_taxon_keys": ["gbif:5130"],
+                "species_top5": ["Danaus plexippus"],
+                "species_top5_accepted_taxon_keys": ["gbif:5130"],
+                "species_top1": "Danaus plexippus",
+                "species_top1_scientific_name": "Danaus plexippus",
+                "species_top1_accepted_taxon_key": "gbif:5130",
+                "accepted_taxon_key": "gbif:5130",
+                "species_top1_score": 0.82,
+                "species_top1_margin": 0.31,
+                "target_accepted_taxon_key": "gbif:5130",
+                "target_species_score": 0.82,
+                "target_species_rank": 1,
+                "geospatial_prior_score": 0.10,
+                "geospatial_prior_reason": "within_context_region",
+                "text_evidence_score": 0.50,
+                "comment_evidence_score": 0.0,
+                "is_target_positive": True,
+                "is_negative_material": False,
+                "occurrence_bin": "gold",
+                "bin_reason": "target_species_score_ge_070",
+            }
+        ]
+    ).write_parquet(paths.object_scores_path)
 
 
 def _query_definition_row(query_definition_id: str, source_term: str, search_field: str, search_priority: int) -> dict[str, object]:

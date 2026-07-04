@@ -7,6 +7,8 @@ import shutil
 from typing import Any
 
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
+from biominer.evidence.join import write_object_evidence_outputs
+from biominer.evidence.metrics import evidence_count_metrics
 from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries, query_hash
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import RunArtifactUris, RunPaths
@@ -209,6 +211,10 @@ class ProductionRunOrchestrator:
             return self._run_compile_queries_stage(plan)
         if stage == RunStage.ENQUEUE_FLICKR_WORK:
             return self._run_enqueue_flickr_work_stage(plan)
+        if stage == RunStage.JOIN_EVIDENCE:
+            return self._run_join_evidence_stage(plan)
+        if stage == RunStage.SUMMARIZE:
+            return self._run_summarize_stage(plan)
         return StageExecutionResult(status=StageStatus.SKIPPED, message="stage_not_implemented")
 
     def _run_compile_queries_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
@@ -274,6 +280,49 @@ class ProductionRunOrchestrator:
         limit = int(self.request.limits.get("records") or 0)
         return tuple(queries[:limit]) if limit > 0 else queries
 
+    def _run_join_evidence_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
+        if is_cloud_uri(self.request.output_root):
+            return StageExecutionResult(status=StageStatus.FAILED, message="join_evidence_requires_local_artifacts_until_storage_io_is_wired")
+        missing = _missing_paths(plan.paths.source_records_path, plan.paths.object_detections_path, plan.paths.object_scores_path)
+        if missing:
+            return StageExecutionResult(status=StageStatus.FAILED, message="missing_join_inputs: " + ", ".join(missing))
+        import polars as pl
+
+        plan.paths.ensure_directories()
+        outputs = write_object_evidence_outputs(
+            canonical_source_records=pl.read_parquet(plan.paths.source_records_path),
+            object_detections=pl.read_parquet(plan.paths.object_detections_path),
+            object_scores=pl.read_parquet(plan.paths.object_scores_path),
+            joined_output_path=plan.paths.object_evidence_path,
+            photo_summary_output_path=plan.paths.photo_summary_path,
+        )
+        joined = pl.read_parquet(outputs.object_evidence_joined)
+        photo_summary = pl.read_parquet(outputs.photo_evidence_summary)
+        metrics = evidence_count_metrics(joined, photo_summary)
+        return StageExecutionResult(
+            metrics=metrics,
+            outputs={
+                "object_evidence": str(outputs.object_evidence_joined),
+                "photo_summary": str(outputs.photo_evidence_summary),
+            },
+        )
+
+    def _run_summarize_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
+        if is_cloud_uri(self.request.output_root):
+            return StageExecutionResult(status=StageStatus.FAILED, message="summarize_requires_local_artifacts_until_storage_io_is_wired")
+        missing = _missing_paths(plan.paths.object_evidence_path, plan.paths.photo_summary_path)
+        if missing:
+            return StageExecutionResult(status=StageStatus.FAILED, message="missing_summary_inputs: " + ", ".join(missing))
+        import json
+        import polars as pl
+
+        joined = pl.read_parquet(plan.paths.object_evidence_path)
+        photo_summary = pl.read_parquet(plan.paths.photo_summary_path)
+        metrics = evidence_count_metrics(joined, photo_summary)
+        plan.paths.reports_dir.mkdir(parents=True, exist_ok=True)
+        plan.paths.metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
+        return StageExecutionResult(metrics=metrics, outputs={"metrics": str(plan.paths.metrics_path)})
+
     def _write_manifest_if_local(self, plan: ProductionRunPlan) -> Path | None:
         if is_cloud_uri(self.request.output_root):
             return None
@@ -295,6 +344,10 @@ def _parquet_row_count(path: Path) -> int:
     return pl.scan_parquet(path).select(pl.len()).collect().item()
 
 
+def _missing_paths(*paths: Path) -> list[str]:
+    return [str(path) for path in paths if not path.exists()]
+
+
 def _merge_stage_counts(manifest: RunManifest, *, stage: RunStage, result: StageExecutionResult) -> RunManifest:
     if stage == RunStage.COMPILE_QUERIES and result.status == StageStatus.COMPLETE:
         return replace(
@@ -312,5 +365,15 @@ def _merge_stage_counts(manifest: RunManifest, *, stage: RunStage, result: Stage
                 **manifest.query_counts,
                 "enqueued_work_items": int(result.metrics.get("enqueued_work_items", 0)),
             },
+        )
+    if stage in {RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE} and result.status == StageStatus.COMPLETE:
+        return replace(
+            manifest,
+            evidence_counts={
+                **manifest.evidence_counts,
+                "object_evidence_rows": int(result.metrics.get("object_evidence_rows", manifest.evidence_counts.get("object_evidence_rows", 0))),
+                "photo_summary_rows": int(result.metrics.get("photo_summary_rows", manifest.evidence_counts.get("photo_summary_rows", 0))),
+            },
+            metrics={**manifest.metrics, **result.metrics},
         )
     return manifest
