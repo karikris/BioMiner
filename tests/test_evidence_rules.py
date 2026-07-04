@@ -102,6 +102,8 @@ def test_photo_bucket_policy_lives_in_evidence_package() -> None:
 def test_object_metadata_hints_are_review_context_not_hard_negative_bins() -> None:
     assert object_metadata_review_reason({"is_negative_material": True, "negative_filter_reason": "artwork"}) == "artwork"
     assert object_metadata_review_reason({"artwork_hint": True}) == "artwork"
+    assert object_metadata_review_reason({"artwork_detected": True}) == "artwork"
+    assert object_metadata_review_reason({"specimen_detected": True}) == "museum_specimen"
     assert object_metadata_review_reason({"metadata_negative_reason_hint": "other_insect"}) == "non_target_order"
     assert object_occurrence_bucket(
         item={"artwork_hint": True, "latitude": "", "longitude": "", "date_taken": ""},
@@ -122,10 +124,10 @@ def test_silver_score_035_to_070_target_positive() -> None:
 
 def test_bronze_negative_material_museum_art_ai_other_insect() -> None:
     cases = [
-        (_row(museum_detected=True), "negative_material_museum_specimen"),
-        (_row(artwork_detected=True), "negative_material_artwork"),
-        (_row(ai_generated_detected=True), "negative_material_ai_generated"),
-        (_row(non_target_order_detected=True), "negative_material_non_target_order"),
+        (_row(museum_detected=True, bioclip_top1_score=0.2, bioclip_top1_label="a photo of a butterfly"), "negative_material_museum_specimen"),
+        (_row(artwork_detected=True, bioclip_top1_score=0.2, bioclip_top1_label="a photo of a butterfly"), "negative_material_artwork"),
+        (_row(ai_generated_detected=True, bioclip_top1_score=0.2, bioclip_top1_label="a photo of a butterfly"), "negative_material_ai_generated"),
+        (_row(non_target_order_detected=True, bioclip_top1_score=0.2, bioclip_top1_label="a photo of a butterfly"), "negative_material_non_target_order"),
         (_row(bioclip_top1_label="a photo of a moth", bioclip_species_agreement_status="text_vision_conflict"), "negative_material_non_butterfly"),
     ]
 
@@ -145,11 +147,11 @@ def test_existing_art_tattoo_museum_logic_uses_image_category() -> None:
     museum = classify_evidence_row(_row(museum_detected=True))
 
     assert artwork["image_category"] == "artwork"
-    assert artwork["publication_state_reason"] == "negative_material_artwork"
+    assert artwork["publication_state_reason"] == "target_positive_score_gte_070"
     assert tattoo["image_category"] == "tattoo"
-    assert tattoo["publication_state_reason"] == "negative_material_tattoo"
+    assert tattoo["publication_state_reason"] == "target_positive_score_gte_070"
     assert museum["image_category"] == "museum_specimen"
-    assert museum["publication_state_reason"] == "negative_material_museum_specimen"
+    assert museum["publication_state_reason"] == "target_positive_score_gte_070"
 
 
 def test_bronze_is_not_bioclip_positive_without_negative_material() -> None:
@@ -172,11 +174,11 @@ def test_generic_butterfly_label_goes_to_bronze_not_gold() -> None:
     assert result["publication_state_reason"] == "below_50"
 
 
-def test_hard_exclusion_flags_force_bronze_even_when_otherwise_gold() -> None:
+def test_metadata_negative_flags_do_not_demote_strong_visual_target_evidence() -> None:
     result = classify_evidence_row(_row(artwork_detected=True))
 
-    assert result["publication_state"] == "bronze"
-    assert result["publication_state_reason"] == "negative_material_artwork"
+    assert result["publication_state"] == "gold"
+    assert result["publication_state_reason"] == "target_positive_score_gte_070"
     assert result["review_reason"] == []
 
 
@@ -295,8 +297,8 @@ def test_classify_evidence_frame_adds_exactly_one_state_per_row() -> None:
         pl.DataFrame(
             [
                 _row(flickr_photo_id="gold"),
-                    _row(flickr_photo_id="silver", bioclip_top1_score=0.49),
-                _row(flickr_photo_id="bronze", artwork_detected=True),
+                _row(flickr_photo_id="silver", bioclip_top1_score=0.49),
+                _row(flickr_photo_id="bronze", artwork_detected=True, bioclip_top1_score=0.2, bioclip_top1_label="a photo of a butterfly"),
                 _row(flickr_photo_id="review", image_url=None),
             ]
         )

@@ -141,9 +141,6 @@ def object_hard_negative_reason(record: dict[str, Any]) -> str | None:
         return _object_negative_material_reason(category=label, reason=reason)
     if str(record.get("triage_group_top") or "") == "hard_negative":
         return _object_negative_material_reason(category="hard_negative", reason=reason)
-    for field, field_reason in NEGATIVE_RECORD_FIELDS:
-        if _truthy(record.get(field)):
-            return _object_negative_material_reason(category=field_reason, reason=reason)
     return None
 
 
@@ -151,6 +148,9 @@ def object_metadata_review_reason(record: dict[str, Any]) -> str | None:
     for column, reason in METADATA_FLAG_REASON_COLUMNS.items():
         if _truthy(record.get(column)):
             return reason
+    for field, field_reason in NEGATIVE_RECORD_FIELDS:
+        if _truthy(record.get(field)):
+            return _metadata_review_reason(field_reason)
     metadata_reason = str(record.get("metadata_negative_reason_hint") or "")
     if metadata_reason:
         return _metadata_review_reason(metadata_reason)
@@ -176,6 +176,11 @@ def classify_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
     category = infer_category_from_record(row)
     reasons = review_reasons_for_evidence(row)
     negative_reason = _negative_material_reason(row, reasons, category)
+    visual_hard_negative_reason = object_hard_negative_reason(row)
+    if visual_hard_negative_reason:
+        negative_reason = visual_hard_negative_reason
+    elif negative_reason and _strong_visual_target_positive(row):
+        negative_reason = None
     if negative_reason and not category.get("negative_filter_reason"):
         category = {**category, "negative_filter_reason": negative_reason.removeprefix("negative_material_")}
     score = _bioclip_top1_score(row)
@@ -354,6 +359,8 @@ def _object_negative_material_reason(*, category: str, reason: str) -> str:
 def _metadata_review_reason(value: str) -> str:
     if value in {"not_butterfly", "not_lepidoptera", "other_insect", "other_order"}:
         return "non_target_order"
+    if value == "pinned_specimen":
+        return "museum_specimen"
     if value in {
         "artwork",
         "tattoo",
