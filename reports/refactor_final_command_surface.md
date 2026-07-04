@@ -4,7 +4,7 @@ Recorded: 2026-07-05
 
 Current branch: `main`
 
-Latest audited base before this report edit: `3371ec3`
+Latest audited base before this report edit: `0c1c1f2`
 
 Note: the original refactor plan named branch `cleanup/production-workflow-postgres-s3`; a later operator instruction changed the working branch to `main`, and the cleanup commits are being pushed directly to `main`.
 
