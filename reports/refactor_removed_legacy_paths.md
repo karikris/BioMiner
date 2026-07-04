@@ -12,14 +12,12 @@ Recently removed workflow modules and tests:
 
 ```text
 src/biominer/config/keywords.py
-src/biominer/filter/anti_keywords.py
 src/biominer/filter/rules.py
 src/biominer/reports/buckets.py
 src/biominer/reports/name_evidence.py
 src/biominer/detection/yolo_detector.py
 src/biominer/species/query_compile.py
 src/biominer/species/workflow.py
-tests/test_filter_anti_keywords.py
 tests/test_name_evidence_report.py
 ```
 
@@ -81,10 +79,9 @@ biominer evidence join
 Legacy metadata hard-drop path:
 
 ```text
-filter/anti_keywords.py
 filter/rules.py
 apply-rules
-metadata keyword JSON path helpers
+metadata text-list path helpers
 ```
 
 Replacement:
@@ -202,4 +199,3 @@ Recorded in `reports/refactor_mcp_environment.md`:
 Morph MCP was unavailable/rate-limited during this cleanup and was recorded once.
 GitHub and local shell tooling were used for repo inspection, commits, pushes, and verification.
 ```
-

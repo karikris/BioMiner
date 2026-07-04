@@ -23,7 +23,7 @@ Intentional markdown audit documents under `reports/*.md` may be committed. Gene
 - Do not make YOLO or YOLOE a species classifier; they are object proposal backends only.
 - Do not store reviewed YOLOE boxes for later training in this cleanup path.
 - Do not expose low-level registry internals as normal user workflow commands.
-- Treat metadata text hints as flags/review evidence, not as a hard pre-visual drop or external keyword file path.
+- Treat metadata text hints as flags/review evidence, not as a hard pre-visual drop or external text-list path.
 - Use object evidence bucket logic as the single source of truth for production bucket assignment.
 
 ## Verification Rules

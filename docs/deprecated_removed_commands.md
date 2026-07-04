@@ -34,4 +34,4 @@ biominer workstore doctor
 
 Debug-only registry, Flickr, and comment utilities live under `biominer dev`.
 
-The removed `report-name-evidence` path depended on ad hoc keyword JSON files. Registry name evidence now belongs in the versioned registry outputs, and discovery/query provenance is folded into canonical Flickr source records.
+The removed `report-name-evidence` path depended on ad hoc text-list inputs. Registry name evidence now belongs in the versioned registry outputs, and discovery/query provenance is folded into canonical Flickr source records.

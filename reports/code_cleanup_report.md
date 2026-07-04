@@ -92,10 +92,10 @@ Generated: 2026-06-07T11:11:00.135875+00:00
 - Generated artifacts excluded: no bucket parquet outputs, live-run data, caches, images, model weights, or virtual environments were added.
 - Remaining cleanup recommendation: add a model-backed CLI wrapper once BioCLIP runtime dependencies are available in the target environment.
 
-## Phase 2: Metadata Anti-Keyword Filter
+## Phase 2: Metadata Flag Filter
 
 - Files changed: `src/biominer/filter/`, `src/biominer/cli.py`, filter/evidence tests, and this cleanup report.
-- Tests added or updated: added anti-keyword tests for dropping non-biodiversity records, keeping butterfly life stages, grouped JSON loading, and kept/dropped parquet outputs.
+- Tests added or updated: added metadata flag tests for dropping non-biodiversity records, keeping butterfly life stages, grouped JSON loading, and kept/dropped parquet outputs.
 - Redundant code removed: none; this phase adds the previously missing explicit filter stage.
 - Compatibility shims retained: none.
 - Generated artifacts excluded: no operator keyword lists, live-run data, parquet outputs, caches, images, model weights, or virtual environments were added.
@@ -135,7 +135,7 @@ Generated: 2026-06-07T11:11:00.135875+00:00
 - Redundant code removed: removed `url_o` from active pipeline config extras; no parallel legacy pagination path was retained.
 - Compatibility shims retained: non-geo Flickr search can still use `per_page=500`, while geotagged/bbox Papilio discovery uses `per_page=250` to match Flickr `photos.search` behaviour.
 - Generated artifacts excluded: raw Flickr data, local config helper files, caches, virtual environments, image files, parquet, and DuckDB outputs remain ignored.
-- Remaining cleanup recommendation: keep the ignored local Papilio keyword JSON as an operator input unless it is deliberately converted into a reviewed, tracked seed asset.
+- Remaining cleanup recommendation: keep local Papilio seed inputs ignored unless they are deliberately converted into reviewed, tracked registry assets.
 
 ## Persistent BioCLIP Register Runner
 

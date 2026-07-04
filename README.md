@@ -738,7 +738,7 @@ Inputs:
 staging/evidence/poll_once_evidence.parquet
 ```
 
-Metadata text hints are retained as review and evidence-bucket flags rather than exposed as a public hard-drop command or external keyword file path. Flag obvious non-biodiversity material:
+Metadata text hints are retained as review and evidence-bucket flags rather than exposed as a public hard-drop command or external text-list path. Flag obvious non-biodiversity material:
 
 ```text
 artwork

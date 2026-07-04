@@ -247,7 +247,7 @@ These are directly named in the refactor objective or are implicated by current 
 | `species ablate-objects` | Duplicate alias for object ablations. |
 | `species join-object-evidence` | Duplicate alias for object evidence join. |
 | `apply-rules` | Legacy bucket source separate from object evidence bucket logic. |
-| `filter` | Metadata anti-keyword hard-drop command; should become metadata flags only. |
+| `filter` | Legacy metadata hard-drop command; should become metadata flags only. |
 | `compact-parquet` | Legacy local compaction exposed publicly. |
 | `report-name-evidence` | Needs removal if dependent on ad hoc keywords JSON rather than registry evidence. |
 
@@ -256,7 +256,7 @@ These are directly named in the refactor objective or are implicated by current 
 - Public command surface still has multiple competing workflows instead of one `run`-oriented production path.
 - Storage/workstore defaults remain `local` + `sqlite`.
 - Local state defaults appear in public commands, especially `poll-once`, comment review, and registry seed commands.
-- Metadata anti-keywords are still exposed as `filter` and `apply-rules` workflow stages.
+- Metadata hard-drop behavior is still exposed as `filter` and `apply-rules` workflow stages.
 - No `run/` orchestration package exists yet.
 - No `evidence/` package exists yet.
 - Translation/trust-policy modules are not present under `registry/`.
@@ -268,4 +268,3 @@ These are directly named in the refactor objective or are implicated by current 
 2. Add `docs/refactor_guardrails.md` to document artifact and workflow cleanup guardrails.
 3. In Phase 1, add `src/biominer/run/` skeleton without live API calls.
 4. In later phases, change production config defaults and then remove legacy public commands in small commits with tests updated immediately.
-
