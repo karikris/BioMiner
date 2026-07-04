@@ -272,6 +272,61 @@ def test_orchestrator_compiles_registry_queries_and_enqueues_flickr_work(tmp_pat
     assert work_items[0]["payload"]["query"]["accepted_taxon_key"] == "gbif:100"
 
 
+def test_orchestrator_compile_queries_filters_registry_definitions_to_species_scope(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_query_definitions_with_out_of_scope_taxa(registry)
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.COMPILE_QUERIES,),
+    )
+
+    plan = ProductionRunOrchestrator(request).run()
+    compiled = pl.read_parquet(plan.paths.query_definitions_path).sort("query_definition_id")
+
+    assert plan.manifest.status == "complete"
+    assert plan.manifest.stages[0].metrics["registry_query_definition_source_rows"] == 4
+    assert plan.manifest.stages[0].metrics["registry_query_definition_rows"] == 2
+    assert compiled.select("query_definition_id").to_series().to_list() == ["q-demoleus-tags", "q-demoleus-text"]
+    assert compiled.select("accepted_taxon_key").to_series().unique().to_list() == ["gbif:100"]
+
+
+def test_orchestrator_genus_run_enqueues_only_expanded_species_query_definitions(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_query_definitions_with_out_of_scope_taxa(registry)
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+    request = ProductionRunRequest(
+        taxon="Papilio",
+        rank="genus",
+        registry_dir=str(registry),
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.COMPILE_QUERIES, RunStage.ENQUEUE_FLICKR_WORK),
+        limits={"records": 3},
+    )
+
+    plan = ProductionRunOrchestrator(request, workstore=workstore).run()
+    work_items = workstore.list_work_items(
+        job_name="biominer_production_run",
+        stage=RunStage.POLL_FLICKR.value,
+        registry_version="rank-registry-v1",
+    )
+
+    assert plan.manifest.status == "complete"
+    assert plan.manifest.taxon_scope.species_names == ("Papilio demoleus", "Papilio machaon")
+    assert plan.manifest.query_counts == {"compiled_definitions": 3, "flickr_work_items": 3, "enqueued_work_items": 3}
+    compiled = pl.read_parquet(plan.paths.query_definitions_path)
+    assert sorted(compiled.select("accepted_taxon_key").to_series().to_list()) == ["gbif:100", "gbif:100", "gbif:101"]
+    queued_keys = {item["payload"]["query"]["accepted_taxon_key"] for item in work_items}
+    assert queued_keys <= {"gbif:100", "gbif:101"}
+    assert "gbif:200" not in queued_keys
+
+
 def test_orchestrator_reads_registry_inputs_from_cloud_storage(tmp_path) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     _write_query_definitions(registry)
@@ -1232,6 +1287,39 @@ def _write_query_definitions(registry: Path) -> None:
     ).write_parquet(registry / "flickr_query_definitions.parquet")
 
 
+def _write_query_definitions_with_out_of_scope_taxa(registry: Path) -> None:
+    pl.DataFrame(
+        [
+            _query_definition_row("q-demoleus-tags", "Papilio demoleus", "tags", 10),
+            _query_definition_row("q-demoleus-text", "Lime butterfly", "text", 20),
+            _query_definition_row(
+                "q-machaon-tags",
+                "Papilio machaon",
+                "tags",
+                10,
+                accepted_taxon_key="gbif:101",
+                accepted_scientific_name="Papilio machaon",
+                species_key="gbif:101",
+                species="Papilio machaon",
+            ),
+            _query_definition_row(
+                "q-danaus-tags",
+                "Danaus plexippus",
+                "tags",
+                10,
+                accepted_taxon_key="gbif:200",
+                accepted_scientific_name="Danaus plexippus",
+                family_key="gbif:20",
+                family="Nymphalidae",
+                genus_key="gbif:190",
+                genus="Danaus",
+                species_key="gbif:200",
+                species="Danaus plexippus",
+            ),
+        ]
+    ).write_parquet(registry / "flickr_query_definitions.parquet")
+
+
 def _write_source_records(paths: RunPaths) -> None:
     paths.ensure_directories()
     canonical, _, _ = _join_stage_input_frames()
@@ -1419,15 +1507,32 @@ def _seed_cloud_registry(storage: _FakeRunStorage, registry_uri: str, registry: 
     storage.json_payloads[f"{registry_uri}/manifest.json"] = json.loads((registry / "manifest.json").read_text(encoding="utf-8"))
 
 
-def _query_definition_row(query_definition_id: str, source_term: str, search_field: str, search_priority: int) -> dict[str, object]:
+def _query_definition_row(
+    query_definition_id: str,
+    source_term: str,
+    search_field: str,
+    search_priority: int,
+    *,
+    accepted_taxon_key: str = "gbif:100",
+    accepted_scientific_name: str = "Papilio demoleus",
+    family_key: str = "gbif:10",
+    family: str = "Papilionidae",
+    genus_key: str = "gbif:90",
+    genus: str = "Papilio",
+    species_key: str = "gbif:100",
+    species: str = "Papilio demoleus",
+) -> dict[str, object]:
     return {
         "query_definition_id": query_definition_id,
         "registry_version": "rank-registry-v1",
-        "accepted_taxon_key": "gbif:100",
-        "accepted_scientific_name": "Papilio demoleus",
-        "family_key": "gbif:10",
-        "genus_key": "gbif:90",
-        "species_key": "gbif:100",
+        "accepted_taxon_key": accepted_taxon_key,
+        "accepted_scientific_name": accepted_scientific_name,
+        "family_key": family_key,
+        "family": family,
+        "genus_key": genus_key,
+        "genus": genus,
+        "species_key": species_key,
+        "species": species,
         "source_term": source_term,
         "language": "en",
         "search_field": search_field,

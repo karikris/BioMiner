@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import tempfile
 from typing import Any
 
@@ -328,9 +327,20 @@ class ProductionRunOrchestrator:
 
     def _run_compile_queries_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         try:
-            source_frame, source_ref, source_path = self._registry_query_definitions_source()
-            queries = self._load_flickr_work_queries()
-        except FileNotFoundError as exc:
+            source_frame, source_ref, _source_path = self._registry_query_definitions_source()
+            scoped_frame = _query_definitions_for_taxon_scope(source_frame, plan.manifest.taxon_scope)
+            if scoped_frame.is_empty():
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message=f"no_registry_query_definitions_for_scope: {plan.manifest.taxon_scope.accepted_scientific_name}",
+                    metrics={
+                        "registry_query_definition_source_rows": source_frame.height,
+                        "registry_query_definition_rows": 0,
+                    },
+                    outputs={"source_query_definitions": source_ref},
+                )
+            queries = self._load_flickr_work_queries(scoped_frame)
+        except (FileNotFoundError, ValueError) as exc:
             return StageExecutionResult(status=StageStatus.FAILED, message=f"missing_registry_query_definitions: {exc}")
         outputs = {
             "source_query_definitions": source_ref,
@@ -338,20 +348,18 @@ class ProductionRunOrchestrator:
         }
         if not is_cloud_uri(self.request.output_root):
             plan.paths.ensure_directories()
-            if source_path is not None and source_path.resolve() != plan.paths.query_definitions_path.resolve():
-                shutil.copyfile(source_path, plan.paths.query_definitions_path)
-            else:
-                write_parquet(source_frame, plan.paths.query_definitions_path)
+            write_parquet(scoped_frame, plan.paths.query_definitions_path)
             outputs["local_query_definitions"] = str(plan.paths.query_definitions_path)
         else:
             if self.storage is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_compile_queries")
 
-            uri = self.storage.write_parquet_shard(plan.artifact_uris.query_definitions_uri, source_frame)
+            uri = self.storage.write_parquet_shard(plan.artifact_uris.query_definitions_uri, scoped_frame)
             outputs["query_definitions"] = uri
         return StageExecutionResult(
             metrics={
-                "registry_query_definition_rows": source_frame.height,
+                "registry_query_definition_source_rows": source_frame.height,
+                "registry_query_definition_rows": scoped_frame.height,
                 "flickr_work_items": len(queries),
             },
             outputs=outputs,
@@ -701,11 +709,16 @@ class ProductionRunOrchestrator:
             raise ValueError(f"registry_dir is a cloud URI for {stage_name}; read registry artifacts through the configured storage backend")
         return Path(registry_dir)
 
-    def _load_flickr_work_queries(self) -> tuple[FlickrQuery, ...]:
-        if self._registry_is_cloud():
-            queries = load_registry_flickr_queries_from_frame(self._read_registry_parquet("flickr_query_definitions.parquet"))
-        else:
-            queries = load_registry_flickr_queries(self._registry_query_definitions_path())
+    def _load_flickr_work_queries(self, query_definitions: Any | None = None) -> tuple[FlickrQuery, ...]:
+        if query_definitions is None:
+            if self._registry_is_cloud():
+                frame = self._read_registry_parquet("flickr_query_definitions.parquet")
+            else:
+                import polars as pl
+
+                frame = pl.read_parquet(self._registry_query_definitions_path())
+            query_definitions = _query_definitions_for_taxon_scope(frame, self._resolve_taxon_scope())
+        queries = load_registry_flickr_queries_from_frame(query_definitions)
         limit = int(self.request.limits.get("records") or 0)
         return tuple(queries[:limit]) if limit > 0 else queries
 
@@ -961,6 +974,36 @@ def _parquet_row_count(path: Path) -> int:
     import polars as pl
 
     return pl.scan_parquet(path).select(pl.len()).collect().item()
+
+
+def _query_definitions_for_taxon_scope(frame: Any, taxon_scope: TaxonScope) -> Any:
+    if frame.is_empty():
+        return frame
+    scope_keys = sorted(
+        {
+            str(context.accepted_taxon_key or "")
+            for context in taxon_scope.species_contexts
+            if str(context.accepted_taxon_key or "")
+        }
+        | {
+            str(context.species_key or "")
+            for context in taxon_scope.species_contexts
+            if str(context.species_key or "")
+        }
+    )
+    if not scope_keys:
+        return frame.head(0)
+    predicates = []
+    if "accepted_taxon_key" in frame.columns:
+        predicates.append(frame["accepted_taxon_key"].is_in(scope_keys))
+    if "species_key" in frame.columns:
+        predicates.append(frame["species_key"].is_in(scope_keys))
+    if not predicates:
+        raise ValueError("registry query definitions must include accepted_taxon_key or species_key for scoped production runs")
+    predicate = predicates[0]
+    for extra in predicates[1:]:
+        predicate = predicate | extra
+    return frame.filter(predicate)
 
 
 def _registry_manifest_version(registry: Path) -> str:
