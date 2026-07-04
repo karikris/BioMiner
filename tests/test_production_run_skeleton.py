@@ -29,6 +29,7 @@ from biominer.run import (
     StageStatus,
     TaxonScope,
     resolve_taxon_scope_from_registry,
+    resolve_taxon_scope_from_registry_frames,
 )
 from biominer.species.context import CommonName, SpeciesContext
 from biominer.workstore.sqlite import SQLiteWorkStore
@@ -87,6 +88,22 @@ def test_resolve_taxon_scope_from_registry_expands_species_genus_and_family(tmp_
     assert family_scope.species_names == ("Papilio demoleus", "Papilio machaon", "Shared name")
     assert auto_scope.accepted_rank == "genus"
     assert auto_scope.species_count == 2
+
+
+def test_resolve_taxon_scope_from_registry_frames_matches_path_resolver(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+
+    path_scope = resolve_taxon_scope_from_registry(registry_dir=registry, input_name="Papilio", input_rank="genus")
+    frame_scope = resolve_taxon_scope_from_registry_frames(
+        taxa=pl.read_parquet(registry / "taxa.parquet"),
+        names=pl.read_parquet(registry / "names.parquet"),
+        source_snapshots=pl.read_parquet(registry / "source_snapshots.parquet"),
+        manifest=json.loads((registry / "manifest.json").read_text(encoding="utf-8")),
+        input_name="Papilio",
+        input_rank="genus",
+    )
+
+    assert frame_scope == path_scope
 
 
 def test_resolve_taxon_scope_reports_ambiguous_or_empty_registry_matches(tmp_path) -> None:

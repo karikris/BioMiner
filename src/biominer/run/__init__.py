@@ -4,7 +4,13 @@ from biominer.run.manifest import RunManifest
 from biominer.run.orchestrator import ProductionRunOrchestrator, ProductionRunPlan, ProductionRunRequest, StageExecutionResult, build_run_plan
 from biominer.run.paths import RunArtifactUris, RunPaths
 from biominer.run.stages import RunStage, StageRecord, StageStatus
-from biominer.run.taxon_scope import TaxonScope, resolve_species_context_from_registry, resolve_taxon_scope_from_registry
+from biominer.run.taxon_scope import (
+    TaxonScope,
+    resolve_species_context_from_registry,
+    resolve_species_context_from_registry_frames,
+    resolve_taxon_scope_from_registry,
+    resolve_taxon_scope_from_registry_frames,
+)
 
 __all__ = [
     "ProductionRunOrchestrator",
@@ -20,5 +26,7 @@ __all__ = [
     "TaxonScope",
     "build_run_plan",
     "resolve_species_context_from_registry",
+    "resolve_species_context_from_registry_frames",
     "resolve_taxon_scope_from_registry",
+    "resolve_taxon_scope_from_registry_frames",
 ]

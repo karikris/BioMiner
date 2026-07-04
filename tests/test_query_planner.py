@@ -18,6 +18,7 @@ from biominer.flickr_fetch.query_planner import (
     fixed_upload_date_slices,
     flickr_search_params,
     load_registry_flickr_queries,
+    load_registry_flickr_queries_from_frame,
     page_size_for_query,
     plan_fixed_upload_slice_pages,
     plan_queries_from_count,
@@ -68,7 +69,7 @@ def test_query_planner_source_has_no_papilio_specific_production_hardcoding() ->
 
 def test_registry_query_definitions_load_as_page_one_upload_slice_work(tmp_path) -> None:
     registry_queries = tmp_path / "flickr_query_definitions.parquet"
-    pl.DataFrame(
+    frame = pl.DataFrame(
         [
             {
                 "query_definition_id": "q-text",
@@ -107,14 +108,21 @@ def test_registry_query_definitions_load_as_page_one_upload_slice_work(tmp_path)
                 "enabled": True,
             },
         ]
-    ).write_parquet(registry_queries)
+    )
+    frame.write_parquet(registry_queries)
 
     queries = load_registry_flickr_queries(
         registry_queries,
         start_date="2026-01-01",
         end_date="2026-01-05",
     )
+    frame_queries = load_registry_flickr_queries_from_frame(
+        frame,
+        start_date="2026-01-01",
+        end_date="2026-01-05",
+    )
 
+    assert frame_queries == queries
     assert [query.search_field for query in queries] == ["tags", "text"]
     assert {query.lane for query in queries} == {"normal_page"}
     assert {query.page for query in queries} == {1}

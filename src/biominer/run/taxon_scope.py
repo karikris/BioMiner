@@ -114,18 +114,48 @@ def resolve_taxon_scope_from_registry(
     """Resolve a family/genus/species production scope from registry Parquet files."""
 
     registry = Path(registry_dir)
+    return resolve_taxon_scope_from_registry_frames(
+        taxa=_read_taxa(registry),
+        names=_read_optional_parquet(registry / "names.parquet"),
+        source_snapshots=_read_optional_parquet(registry / "source_snapshots.parquet"),
+        manifest=_read_manifest(registry / "manifest.json"),
+        input_name=input_name,
+        input_rank=input_rank,
+    )
+
+
+def resolve_taxon_scope_from_registry_frames(
+    *,
+    taxa: pl.DataFrame,
+    names: pl.DataFrame | None = None,
+    source_snapshots: pl.DataFrame | None = None,
+    manifest: dict[str, Any] | None = None,
+    input_name: str,
+    input_rank: InputRank = "auto",
+) -> TaxonScope:
+    """Resolve a family/genus/species production scope from registry frames."""
+
     rank = _normalize_rank(input_rank, INPUT_RANKS, "input_rank")
-    taxa = _read_taxa(registry)
+    taxa = _validate_taxa_frame(taxa)
+    names = names if names is not None else pl.DataFrame()
+    source_snapshots = source_snapshots if source_snapshots is not None else pl.DataFrame()
+    manifest = dict(manifest or {})
     taxon = _resolve_taxon_row(taxa, input_name=input_name, input_rank=rank)
     accepted_rank = _accepted_rank_from_row(taxon)
     species_rows = _species_rows_for_scope(taxa, taxon, accepted_rank=accepted_rank)
     if not species_rows:
         raise ValueError(f"no species found under {accepted_rank}: {taxon['scientific_name']}")
     species_contexts = tuple(
-        resolve_species_context_from_registry(registry_dir=registry, accepted_taxon_key=str(row["accepted_taxon_key"]))
+        resolve_species_context_from_registry_frames(
+            taxa=taxa,
+            names=names,
+            source_snapshots=source_snapshots,
+            manifest=manifest,
+            accepted_taxon_key=str(row["accepted_taxon_key"]),
+        )
         for row in species_rows
     )
-    registry_version = _registry_version(registry) or species_contexts[0].registry_version
+    registry_version = str(manifest.get("registry_version") or species_contexts[0].registry_version)
     return TaxonScope(
         input_name=input_name,
         input_rank=rank,
@@ -146,11 +176,31 @@ def resolve_species_context_from_registry(
     """Build a species scoring context from canonical registry parquet files."""
 
     registry = Path(registry_dir)
-    taxa = _read_taxa(registry)
-    names = _read_optional_parquet(registry / "names.parquet")
-    snapshots = _read_optional_parquet(registry / "source_snapshots.parquet")
-    manifest = _read_manifest(registry / "manifest.json")
+    return resolve_species_context_from_registry_frames(
+        taxa=_read_taxa(registry),
+        names=_read_optional_parquet(registry / "names.parquet"),
+        source_snapshots=_read_optional_parquet(registry / "source_snapshots.parquet"),
+        manifest=_read_manifest(registry / "manifest.json"),
+        scientific_name=scientific_name,
+        accepted_taxon_key=accepted_taxon_key,
+    )
 
+
+def resolve_species_context_from_registry_frames(
+    *,
+    taxa: pl.DataFrame,
+    names: pl.DataFrame | None = None,
+    source_snapshots: pl.DataFrame | None = None,
+    manifest: dict[str, Any] | None = None,
+    scientific_name: str | None = None,
+    accepted_taxon_key: str | None = None,
+) -> SpeciesContext:
+    """Build a species scoring context from canonical registry frames."""
+
+    taxa = _validate_taxa_frame(taxa)
+    names = names if names is not None else pl.DataFrame()
+    snapshots = source_snapshots if source_snapshots is not None else pl.DataFrame()
+    manifest = dict(manifest or {})
     species = _find_species_row(taxa, scientific_name=scientific_name, accepted_taxon_key=accepted_taxon_key)
     key = str(species["accepted_taxon_key"])
     registry_version = str(manifest.get("registry_version") or _first_value(names, "registry_version") or "")
@@ -220,7 +270,10 @@ def _read_taxa(registry: Path) -> pl.DataFrame:
     path = registry / "taxa.parquet"
     if not path.exists():
         raise FileNotFoundError(f"registry taxa parquet not found: {path}")
-    taxa = pl.read_parquet(path)
+    return _validate_taxa_frame(pl.read_parquet(path))
+
+
+def _validate_taxa_frame(taxa: pl.DataFrame) -> pl.DataFrame:
     if taxa.is_empty():
         raise ValueError("registry taxa.parquet is empty")
     return taxa

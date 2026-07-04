@@ -82,7 +82,21 @@ def load_registry_flickr_queries(
     end_date: str = DEFAULT_FIXED_SLICE_END_DATE,
     slice_days: int = DEFAULT_FIXED_SLICE_DAYS,
 ) -> tuple[FlickrQuery, ...]:
-    frame = pl.read_parquet(path)
+    return load_registry_flickr_queries_from_frame(
+        pl.read_parquet(path),
+        start_date=start_date,
+        end_date=end_date,
+        slice_days=slice_days,
+    )
+
+
+def load_registry_flickr_queries_from_frame(
+    frame: pl.DataFrame,
+    *,
+    start_date: str = DEFAULT_FIXED_SLICE_START_DATE,
+    end_date: str = DEFAULT_FIXED_SLICE_END_DATE,
+    slice_days: int = DEFAULT_FIXED_SLICE_DAYS,
+) -> tuple[FlickrQuery, ...]:
     if frame.is_empty():
         return ()
     if "normalized_match_key" not in frame.columns:
