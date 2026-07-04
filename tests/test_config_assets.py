@@ -131,6 +131,18 @@ def test_production_examples_cover_family_genus_species_runs() -> None:
     assert "YOLO species" not in text
 
 
+def test_final_command_surface_audit_includes_migration_notes() -> None:
+    text = Path("reports/refactor_final_command_surface.md").read_text(encoding="utf-8")
+
+    for expected in (
+        "## Migration Notes",
+        "biominer run --taxon <name> --rank auto|family|genus|species",
+        "flickr_query_definitions.parquet",
+        "--storage-backend local --workstore-backend sqlite --dry-run",
+    ):
+        assert expected in text
+
+
 def test_yoloe26_docs_do_not_recommend_training_dataset_storage() -> None:
     text = Path("docs/yoloe26_prototype.md").read_text(encoding="utf-8")
 

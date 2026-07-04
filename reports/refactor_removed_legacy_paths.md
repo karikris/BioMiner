@@ -4,7 +4,7 @@ Recorded: 2026-07-05
 
 Branch used for current cleanup commits: `main`
 
-Latest audited base before this report edit: `0c1c1f2`
+Latest audited base before this report edit: `874fdd0`
 
 ## Removed Files
 
@@ -166,7 +166,7 @@ Current full-suite result after the last code cleanup:
 
 ```text
 uv run --extra test pytest -q
-518 passed
+519 passed
 ```
 
 The latest command-surface and workflow cleanup was additionally checked with:

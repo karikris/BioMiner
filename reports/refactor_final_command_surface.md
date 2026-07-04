@@ -4,7 +4,7 @@ Recorded: 2026-07-05
 
 Current branch: `main`
 
-Latest audited base before this report edit: `0c1c1f2`
+Latest audited base before this report edit: `874fdd0`
 
 Note: the original refactor plan named branch `cleanup/production-workflow-postgres-s3`; a later operator instruction changed the working branch to `main`, and the cleanup commits are being pushed directly to `main`.
 
@@ -135,6 +135,17 @@ uv run biominer run \
   --dry-run
 ```
 
+## Migration Notes
+
+Use these replacements when moving old workflow scripts to the production surface:
+
+- Replace `biominer species ...` and `biominer bioclip screen` scripts with `biominer run --taxon <name> --rank auto|family|genus|species`.
+- Replace low-level public registry scripts with `biominer registry build` and `biominer registry audit`; internal fixture/enrichment/debug commands live under `biominer dev registry ...`.
+- Replace broad seed or multilingual keyword config inputs with versioned `flickr_query_definitions.parquet` produced by the registry compiler.
+- Replace pre-visual metadata hard drops with metadata flag fields consumed by object evidence bucket logic.
+- Replace old YOLO/whole-image classifier assumptions with detector-first object proposals plus BioCLIP object scoring.
+- Configure production runs with S3/Postgres environment variables; use `--storage-backend local --workstore-backend sqlite --dry-run` only for explicit local/dev checks.
+
 ## Storage And Workstore Defaults
 
 Default production config values in `src/biominer/config/__init__.py`:
@@ -232,5 +243,5 @@ uv run --extra test pytest -q
 Latest full-suite result:
 
 ```text
-518 passed
+519 passed
 ```
