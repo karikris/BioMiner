@@ -12,6 +12,7 @@ from biominer.bioclip.object_runner import (
     CachedObjectEmbeddingScorer,
     EphemeralCropBioClipScorer,
     FakeObjectBioClipScorer,
+    OBJECT_VISUAL_MODES,
     OBJECT_SCORE_OUTPUT_SCHEMA,
     PRIMARY_VISUAL_CLASSIFIER,
     apply_geospatial_soft_prior,
@@ -46,6 +47,27 @@ def _context() -> SpeciesContext:
 
 def _fixture_candidate_set():
     return build_candidate_set(_context(), allow_single_target_fixture=True)
+
+
+def test_object_visual_modes_are_segmentation_not_enhancement() -> None:
+    assert OBJECT_VISUAL_MODES == ("whole_image", "detector_crop", "detector_crop_segmentation")
+
+    source_paths = (
+        Path("src/biominer/bioclip/object_runner.py"),
+        Path("src/biominer/bioclip/ablation.py"),
+        Path("src/biominer/detection/segmentation.py"),
+        Path("src/biominer/cli.py"),
+    )
+    forbidden_terms = ("enhancement", "enhance", "superres", "super-res", "super_resolution", "sharpen")
+
+    violations: dict[str, list[str]] = {}
+    for path in source_paths:
+        source = path.read_text(encoding="utf-8").casefold()
+        matches = [term for term in forbidden_terms if term in source]
+        if matches:
+            violations[str(path)] = matches
+
+    assert violations == {}
 
 
 def _species_context(
