@@ -4,7 +4,7 @@ Recorded: 2026-07-05
 
 Current branch: `main`
 
-Latest audited base before this report edit: `59d026a`
+Latest audited base before this report edit: `6a4a838`
 
 Note: the original refactor plan named branch `cleanup/production-workflow-postgres-s3`; a later operator instruction changed the working branch to `main`, and the cleanup commits are being pushed directly to `main`.
 
@@ -177,6 +177,8 @@ Confirmed current behavior:
   they now produce retrieval-only Flickr query definitions with `trust_tier=T5`
   so generated/dictionary translations can be sent to the Flickr API without
   becoming accepted vernacular evidence.
+- Production Flickr work items retain the compiled query `trust_tier`, so T5
+  retrieval-only terms remain auditable when they enter the API polling queue.
 - Production `compile_queries` writes a scoped query-definition artifact for
   the resolved taxon scope, so species runs only use that species and
   family/genus runs only use the expanded species contexts under that scope.
@@ -229,5 +231,5 @@ uv run --extra test pytest -q
 Latest full-suite result:
 
 ```text
-517 passed
+518 passed
 ```

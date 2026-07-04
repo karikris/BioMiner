@@ -6,6 +6,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+import biominer.run.orchestrator as run_orchestrator_module
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.evidence import build_object_evidence_frames, build_review_queue, evidence_count_metrics
@@ -270,6 +271,49 @@ def test_orchestrator_compiles_registry_queries_and_enqueues_flickr_work(tmp_pat
     assert len(work_items) == 2
     assert work_items[0]["payload"]["run_id"] == "species_papilio_demoleus"
     assert work_items[0]["payload"]["query"]["accepted_taxon_key"] == "gbif:100"
+
+
+def test_orchestrator_enqueues_t5_retrieval_queries_for_flickr_api(tmp_path, monkeypatch) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_t5_query_definitions(registry)
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+    real_query_loader = run_orchestrator_module.load_registry_flickr_queries_from_frame
+
+    def one_day_query_window(frame):  # noqa: ANN001 - test double mirrors the query loader signature used by the orchestrator.
+        return real_query_loader(
+            frame,
+            start_date="2026-01-01",
+            end_date="2026-01-01",
+            slice_days=1,
+        )
+
+    monkeypatch.setattr(run_orchestrator_module, "load_registry_flickr_queries_from_frame", one_day_query_window)
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.COMPILE_QUERIES, RunStage.ENQUEUE_FLICKR_WORK),
+        limits={"records": 2},
+    )
+
+    plan = ProductionRunOrchestrator(request, workstore=workstore).run()
+    work_items = workstore.list_work_items(
+        job_name="biominer_production_run",
+        stage=RunStage.POLL_FLICKR.value,
+        registry_version="rank-registry-v1",
+    )
+    queued_queries = sorted((item["payload"]["query"] for item in work_items), key=lambda query: query["search_field"])
+
+    assert plan.manifest.status == "complete"
+    assert plan.manifest.query_counts == {"compiled_definitions": 2, "flickr_work_items": 2, "enqueued_work_items": 2}
+    assert [query["term"] for query in queued_queries] == ["Translated Lime", "Translated Lime"]
+    assert [query["search_field"] for query in queued_queries] == ["tags", "text"]
+    assert [query["term_type"] for query in queued_queries] == ["generated_translation", "generated_translation"]
+    assert [query["trust_tier"] for query in queued_queries] == ["T5", "T5"]
+    assert [query["query_definition_id"] for query in queued_queries] == ["q-t5-tags", "q-t5-text"]
 
 
 def test_orchestrator_compile_queries_filters_registry_definitions_to_species_scope(tmp_path) -> None:
@@ -1313,6 +1357,31 @@ def _write_query_definitions(registry: Path) -> None:
     ).write_parquet(registry / "flickr_query_definitions.parquet")
 
 
+def _write_t5_query_definitions(registry: Path) -> None:
+    pl.DataFrame(
+        [
+            _query_definition_row(
+                "q-t5-tags",
+                "Translated Lime",
+                "tags",
+                5,
+                name_class="generated_translation",
+                confidence="low",
+                trust_tier="T5",
+            ),
+            _query_definition_row(
+                "q-t5-text",
+                "Translated Lime",
+                "text",
+                5,
+                name_class="generated_translation",
+                confidence="low",
+                trust_tier="T5",
+            ),
+        ]
+    ).write_parquet(registry / "flickr_query_definitions.parquet")
+
+
 def _write_query_definitions_with_out_of_scope_taxa(registry: Path) -> None:
     pl.DataFrame(
         [
@@ -1547,6 +1616,9 @@ def _query_definition_row(
     genus: str = "Papilio",
     species_key: str = "gbif:100",
     species: str = "Papilio demoleus",
+    name_class: str | None = None,
+    confidence: str = "high",
+    trust_tier: str = "T1",
 ) -> dict[str, object]:
     return {
         "query_definition_id": query_definition_id,
@@ -1565,8 +1637,9 @@ def _query_definition_row(
         "search_priority": search_priority,
         "bbox": "",
         "region": "",
-        "name_class": "accepted_scientific" if search_field == "tags" else "vernacular",
-        "confidence": "high",
+        "name_class": name_class or ("accepted_scientific" if search_field == "tags" else "vernacular"),
+        "confidence": confidence,
+        "trust_tier": trust_tier,
         "enabled": True,
     }
 

@@ -61,6 +61,7 @@ class FlickrQuery:
     region: str | None = None
     term_type: str | None = None
     term_confidence: str | None = None
+    trust_tier: str | None = None
     notes: str | None = None
     parent_query_hash: str | None = None
     split_depth: int = 0
@@ -129,6 +130,7 @@ def load_registry_flickr_queries_from_frame(
                     region=str(row.get("region") or "") or None,
                     term_type=str(row.get("name_class") or "") or None,
                     term_confidence=str(row.get("confidence") or "") or None,
+                    trust_tier=str(row.get("trust_tier") or "") or None,
                     split_depth=1,
                     slice_index=slice_index,
                     registry_version=str(row.get("registry_version") or "") or None,
@@ -411,6 +413,7 @@ def _page_query(probe: FlickrQuery, *, page: int, per_page: int, lane: QueryLane
         region=probe.region,
         term_type=probe.term_type,
         term_confidence=probe.term_confidence,
+        trust_tier=probe.trust_tier,
         notes=probe.notes,
         parent_query_hash=probe.parent_query_hash,
         split_depth=probe.split_depth,
@@ -456,6 +459,7 @@ def _split_probe(
         region=probe.region,
         term_type=probe.term_type,
         term_confidence=probe.term_confidence,
+        trust_tier=probe.trust_tier,
         notes=probe.notes,
         parent_query_hash=probe.parent_query_hash or _query_hash(probe),
         split_depth=probe.split_depth + 1,
@@ -478,6 +482,7 @@ def _copy_registry_provenance(query: FlickrQuery, source: FlickrQuery) -> Flickr
         query_definition_id=source.query_definition_id,
         accepted_taxon_key=source.accepted_taxon_key,
         accepted_scientific_name=source.accepted_scientific_name,
+        trust_tier=source.trust_tier,
         family_key=source.family_key,
         genus_key=source.genus_key,
         species_key=source.species_key,
