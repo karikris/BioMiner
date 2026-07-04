@@ -2,7 +2,7 @@
 
 Recorded: 2026-07-05
 
-Audited base: `a03d495`
+Last verified HEAD: `1fa50e32d1d5`
 
 Branch used for current cleanup commits: `main`
 
@@ -11,16 +11,28 @@ refactor. It does not replace the source files, tests, or command output as
 authority; it points to the current evidence that should be rechecked before
 the active goal is marked complete.
 
+## Operator Overrides
+
+- The original refactor plan named branch
+  `cleanup/production-workflow-postgres-s3`; later operator instructions
+  changed the source of truth to `main` and required cleanup commits to be
+  pushed there.
+- The original plan disabled T5 generated/dictionary translations unless
+  corroborated or reviewed; later operator instructions explicitly enabled T5
+  as accepted names. Current implementation keeps `trust_tier = T5`
+  provenance while enabling those names and compiling them into normal Flickr
+  query definitions.
+
 ## Current Evidence Summary
 
 | Requirement area | Current evidence | Status |
 | --- | --- | --- |
 | Public production workflow is rank-aware | `uv run --extra test biominer run --help` exposes `--taxon` and `--rank auto|family|genus|species`; `tests/test_production_run_skeleton.py` covers species, genus, and family scope expansion. | Implemented |
 | Public registry surface is production-only | `uv run --extra test biominer registry --help` exposes only `build` and `audit`. Low-level registry commands are under `uv run --extra test biominer dev registry --help`. | Implemented |
-| Old public command families removed | `tests/test_cli_dry_run.py` asserts removed commands do not parse, including `species ...`, `bioclip screen`, `apply-rules`, `compact-parquet`, `gc-cache`, and low-level public registry commands. | Implemented |
+| Old public command families removed | `tests/test_cli_dry_run.py` asserts removed commands do not parse, including `species ...`, `bioclip screen`, `apply-rules`, `compact-parquet`, `gc-cache`, and low-level public registry commands. Focused current tests include `test_cli_exposes_only_lean_pipeline_commands`, `test_registry_public_cli_exposes_only_build_and_audit`, `test_species_cli_removed_from_public_surface`, `test_whole_image_register_bioclip_commands_are_removed_from_public_cli`, `test_removed_filter_and_apply_rules_commands_no_longer_parse`, `test_legacy_local_compaction_and_gc_cache_commands_no_longer_parse`, and `test_legacy_ad_hoc_report_commands_no_longer_parse`. | Implemented |
 | Production storage/workstore defaults | `src/biominer/config/__init__.py` defaults to `StorageConfig.backend = "s3"` and `WorkStoreConfig.backend = "postgres"`; `tests/test_storage_config.py` covers defaults and explicit local overrides; `tests/test_provider_config.py` covers redaction of S3 access keys, S3 secrets, Postgres DSNs, and DSN passwords. | Implemented |
 | Local filesystem/SQLite are explicit dev/test overrides | `src/biominer/cli.py` validates `--storage-backend local --workstore-backend sqlite` as a paired local mode; mixed local/cloud modes fail. | Implemented |
-| Broad multilingual seed production path removed | `tests/test_query_planner.py` asserts legacy broad seed helpers are not exported and that `query_planner.py` contains no legacy broad-seed planner symbols; `MetadataPollState` has no `ensure_seed_work_items`; `tests/test_metadata_poller.py` verifies an empty state does not seed broad probes. | Implemented |
+| Broad multilingual seed production path removed | `tests/test_query_planner.py::test_query_planner_source_has_no_legacy_broad_seed_planner` asserts `query_planner.py` contains no legacy broad-seed planner symbols; `tests/test_metadata_poller.py::test_initial_work_items_require_explicit_registry_queries` verifies explicit registry queries are required; `tests/test_metadata_poller.py::test_poll_once_empty_state_does_not_seed_broad_multilingual_probes` verifies an empty state does not seed broad probes. | Implemented |
 | T5 generated translations are enabled as accepted registry name evidence and enter Flickr retrieval | `tests/test_registry_enrichment.py` verifies T5 translations enter `names.parquet`, produce normal query definitions, and expose `enabled_t5_name_rows` / `t5_query_definition_rows` manifest counters; `tests/test_query_planner.py`, `tests/test_production_run_skeleton.py`, and `tests/test_metadata_poller.py` verify T5 query definitions become Flickr retrieval work and API search params. | Implemented |
 | Metadata keyword logic is flags, not hard pre-visual drop | `src/biominer/filter/metadata_flags.py` is retained; `src/biominer/filter/rules.py` is removed; `tests/test_metadata_flags.py`, `tests/test_evidence_rules.py`, and `tests/test_image_triage.py` cover soft metadata behavior. | Implemented |
 | Object evidence buckets are the rule engine | `src/biominer/evidence/buckets.py` and `src/biominer/evidence/join.py` are retained; legacy `apply-rules` no longer parses. | Implemented |
@@ -61,9 +73,24 @@ uv run --extra test biominer dev registry --help
 uv run --extra test biominer dev vision --help
 git ls-files src/biominer/config/keywords.py src/biominer/filter/rules.py src/biominer/reports/name_evidence.py src/biominer/detection/yolo_detector.py src/biominer/species/registry_refresh.py src/biominer/species/query_compile.py src/biominer/species/workflow.py tests/test_species_workflow.py tests/test_name_evidence_report.py
 git ls-files '*__pycache__*' '*.pyc' '.venv*' 'data/*' 'staging/*' '*.sqlite' '*.parquet' '*.pt' '*.safetensors'
+uv run --extra test pytest --collect-only -q tests/test_cli_dry_run.py tests/test_query_planner.py tests/test_metadata_poller.py tests/test_detection_pipeline.py tests/test_object_bioclip_pipeline.py tests/test_provider_config.py
 ```
 
-The removed-file checks returned no tracked paths.
+The command help checks matched the target public surface:
+
+```text
+biominer {vision,evidence,registry,dev,storage,workstore,run}
+biominer registry {build,audit}
+biominer vision {detect,score,ablate}
+biominer evidence {join}
+biominer storage {doctor}
+biominer workstore {doctor}
+```
+
+The removed-file and generated-artifact `git ls-files` checks returned no
+tracked paths. The focused collection check found 220 current tests covering
+the command surface, registry query planning, metadata polling, detector
+contract, object BioCLIP pipeline, and provider config invariants.
 
 Latest full-suite result:
 
