@@ -55,6 +55,7 @@ class ProductionRunRequest:
     vision_backend: str = DEFAULT_VISION_BACKEND
     bioclip_model: str = DEFAULT_BIOCLIP_MODEL
     bioclip_ablation_mode: str = "detector_crop"
+    worker_id: str = "local"
     stages: tuple[RunStage, ...] = DEFAULT_PRODUCTION_STAGES
     dry_run: bool = False
     limits: dict[str, int] = field(default_factory=dict)
@@ -85,6 +86,7 @@ class ProductionRunPlan:
                 "vision_backend": self.request.vision_backend,
                 "bioclip_model": self.request.bioclip_model,
                 "bioclip_ablation_mode": self.request.bioclip_ablation_mode,
+                "worker_id": self.request.worker_id,
                 "stages": [stage.value for stage in self.request.stages],
                 "dry_run": self.request.dry_run,
                 "limits": dict(self.request.limits),
@@ -401,7 +403,7 @@ class ProductionRunOrchestrator:
             fetch_metadata=self.metadata_fetcher,
             workers=int(self.request.limits.get("workers") or 1),
             run_id=plan.manifest.run_id,
-            worker_id=os.environ.get("BIOMINER_WORKER_ID") or "local",
+            worker_id=self.request.worker_id,
             storage_backend="local",
             compact_after_run=True,
         )
@@ -435,7 +437,7 @@ class ProductionRunOrchestrator:
         if self.workstore is None:
             return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_poll_flickr")
         registry_version = plan.manifest.taxon_scope.registry_version
-        worker_id = os.environ.get("BIOMINER_WORKER_ID") or "local"
+        worker_id = self.request.worker_id
         stale_requeued = self.workstore.requeue_stale_claims(
             job_name=PRODUCTION_JOB_NAME,
             stage=RunStage.POLL_FLICKR.value,

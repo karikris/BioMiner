@@ -826,6 +826,7 @@ def _run_production_command(args: argparse.Namespace) -> int:
             workstore_backend=args.workstore_backend,
             vision_backend=args.vision_backend,
             bioclip_model=args.bioclip_model,
+            worker_id=config.runtime.worker_id or ("local" if allow_local else ""),
             stages=stages,
             dry_run=args.dry_run,
             limits=limits,

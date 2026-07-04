@@ -480,6 +480,7 @@ def test_orchestrator_poll_stage_claims_workstore_and_writes_cloud_source_record
         output_root="s3://biominer/runs",
         storage_backend="s3",
         workstore_backend="postgres",
+        worker_id="worker-from-request",
         stages=(RunStage.ENQUEUE_FLICKR_WORK, RunStage.POLL_FLICKR),
         limits={"records": 1, "api_calls": 5},
     )
@@ -502,6 +503,7 @@ def test_orchestrator_poll_stage_claims_workstore_and_writes_cloud_source_record
         registry_version="rank-registry-v1",
     )
     assert [item["status"] for item in work_items] == ["completed"]
+    assert work_items[0]["claimed_by"] == "worker-from-request"
     assert work_items[0]["output_uri"] == result.artifact_uris.source_records_uri
 
 

@@ -1805,6 +1805,7 @@ def test_production_run_cli_resolves_registry_and_writes_dry_run_manifest(tmp_pa
     assert payload["request"]["taxon"] == "Papilio demoleus"
     assert payload["request"]["storage_backend"] == "local"
     assert payload["request"]["workstore_backend"] == "sqlite"
+    assert payload["request"]["worker_id"] == "local"
     assert manifest["taxon_scope"]["accepted_taxon_key"] == "gbif:100"
     assert manifest["taxon_scope"]["accepted_rank"] == "species"
     assert manifest["stages"][0]["stage"] == "resolve_taxon_scope"
@@ -2307,6 +2308,7 @@ def test_production_run_enqueue_stage_uses_configured_workstore(tmp_path, capsys
 
     assert run(args) == 0
     payload = json.loads(capsys.readouterr().out)
+    assert payload["request"]["worker_id"] == "worker-1"
     assert payload["manifest"]["query_counts"]["enqueued_work_items"] == 1
     queued = SQLiteWorkStore(workstore_path).list_work_items(
         job_name="biominer_production_run",
