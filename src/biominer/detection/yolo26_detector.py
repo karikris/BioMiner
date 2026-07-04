@@ -89,10 +89,7 @@ def detections_from_yolo26_result(result: object) -> list[DetectionCandidate]:
 
 
 def yolo26_coarse_label(label: object) -> str:
-    try:
-        return normalize_detector_label(label)
-    except ValueError:
-        return "insect_like"
+    return normalize_detector_label(label)
 
 
 def _decoded_image_to_pil(image: DecodedImage) -> object:

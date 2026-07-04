@@ -582,7 +582,7 @@ def test_detect_crop_preview_writes_html_artifact_without_image_archive(tmp_path
                 "crop_hash": "sha256:crop-1",
                 "bbox_xyxyn": [0.1, 0.2, 0.6, 0.8],
                 "bbox_xyxy": [10.0, 20.0, 60.0, 80.0],
-                "detector_label": "butterfly",
+                "detector_label": "butterfly_like",
                 "detector_score": 0.91,
                 "detection_status": "detected",
             },

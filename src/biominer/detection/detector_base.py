@@ -79,12 +79,12 @@ def normalize_detector_label(label: object) -> str:
     mapped = LEGACY_DETECTOR_LABEL_MAP.get(normalized) or LEGACY_DETECTOR_LABEL_MAP.get(str(label or "").strip().casefold())
     if mapped:
         return mapped
-    if _looks_like_taxon_name(label):
+    if detector_label_is_taxon_like(label):
         raise ValueError(f"detector label appears taxonomic, not coarse object class: {label!r}")
     raise ValueError(f"detector label must be a BioMiner coarse object label, got {label!r}")
 
 
-def _looks_like_taxon_name(label: object) -> bool:
+def detector_label_is_taxon_like(label: object) -> bool:
     parts = [part for part in str(label or "").strip().split() if part]
     if len(parts) < 2:
         return False

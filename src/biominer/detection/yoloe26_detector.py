@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 from typing import Any, Sequence
 
-from biominer.detection.detector_base import DecodedImage, DetectionCandidate
+from biominer.detection.detector_base import DecodedImage, DetectionCandidate, detector_label_is_taxon_like
 from biominer.runtime_paths import YOLOE26_DIR
 
 
@@ -72,7 +72,12 @@ def default_yoloe26_prompts(*, include_hard_negative_prompts: bool = True) -> tu
 
 
 def yoloe26_coarse_label(prompt: str) -> str:
-    return YOLOE26_PROMPT_LABEL_MAP.get(_normalise_prompt(prompt), "insect_like")
+    mapped = YOLOE26_PROMPT_LABEL_MAP.get(_normalise_prompt(prompt))
+    if mapped:
+        return mapped
+    if detector_label_is_taxon_like(prompt):
+        raise ValueError(f"YOLOE-26 prompts must be object proposals, not taxon labels: {prompt!r}")
+    return "insect_like"
 
 
 class YoloE26ObjectDetector:

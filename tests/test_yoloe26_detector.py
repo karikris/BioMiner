@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 
+import pytest
+
 from biominer.detection.detector_base import COARSE_DETECTOR_LABELS
 from biominer.detection.yoloe26_detector import (
     DEFAULT_YOLOE26_PROMPTS,
@@ -49,9 +51,9 @@ def test_yoloe26_result_conversion_maps_prompts_to_detection_candidates() -> Non
     assert detections[0].objectness_score == 0.87
 
 
-def test_yoloe26_result_conversion_keeps_taxonomic_custom_prompts_coarse() -> None:
+def test_yoloe26_result_conversion_keeps_nontaxonomic_custom_prompts_coarse() -> None:
     result = _FakeResult(
-        names={0: "Papilio demoleus"},
+        names={0: "custom proposal"},
         boxes=[_FakeBox(xyxy=[[1.0, 2.0, 9.0, 12.0]], cls=[0], conf=[0.87])],
     )
 
@@ -59,6 +61,16 @@ def test_yoloe26_result_conversion_keeps_taxonomic_custom_prompts_coarse() -> No
 
     assert [item.label for item in detections] == ["insect_like"]
     assert set(item.label for item in detections).issubset(set(COARSE_DETECTOR_LABELS))
+
+
+def test_yoloe26_result_conversion_rejects_taxonomic_custom_prompts() -> None:
+    result = _FakeResult(
+        names={0: "Papilio demoleus"},
+        boxes=[_FakeBox(xyxy=[[1.0, 2.0, 9.0, 12.0]], cls=[0], conf=[0.87])],
+    )
+
+    with pytest.raises(ValueError, match="object proposals"):
+        detections_from_yoloe_result(result)
 
 
 class _FakeResult:
