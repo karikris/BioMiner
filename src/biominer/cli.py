@@ -799,7 +799,7 @@ def _run_production_command(args: argparse.Namespace) -> int:
         validate_config(config, require_cloud_credentials=not allow_local, allow_local_backends=allow_local)
         stages = _parse_run_stages(args.stages)
         storage = None
-        storage_required_stages = {RunStage.COMPILE_QUERIES, RunStage.SUMMARIZE}
+        storage_required_stages = {RunStage.COMPILE_QUERIES, RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE}
         if not args.dry_run and storage_required_stages.intersection(stages) and args.storage_backend != "local":
             storage = create_storage_backend(config.storage)
         workstore = None

@@ -8,7 +8,7 @@ import pytest
 
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
-from biominer.evidence import build_review_queue, evidence_count_metrics
+from biominer.evidence import build_object_evidence_frames, build_review_queue, evidence_count_metrics
 from biominer.evidence.join import write_object_evidence_outputs
 from biominer.registry.trust_policy import (
     TrustTier,
@@ -476,6 +476,50 @@ def test_orchestrator_joins_evidence_and_writes_summary_metrics(tmp_path) -> Non
     }
 
 
+def test_orchestrator_joins_evidence_from_cloud_storage() -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    storage = _FakeRunStorage()
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root="s3://biominer/runs",
+        stages=(RunStage.JOIN_EVIDENCE,),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
+    canonical, detections, scores = _join_stage_input_frames()
+    storage.parquet_payloads[plan.artifact_uris.source_records_uri] = canonical
+    storage.parquet_payloads[plan.artifact_uris.object_detections_uri] = detections
+    storage.parquet_payloads[plan.artifact_uris.object_scores_uri] = scores
+
+    result = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).run()
+
+    assert result.manifest.status == "complete"
+    assert result.manifest.evidence_counts == {"object_evidence_rows": 1, "photo_summary_rows": 1, "review_queue_rows": 0}
+    assert result.manifest.stages[0].outputs == {
+        "object_evidence": plan.artifact_uris.object_evidence_uri,
+        "photo_summary": plan.artifact_uris.photo_summary_uri,
+    }
+    joined = storage.parquet_payloads[plan.artifact_uris.object_evidence_uri]
+    summary = storage.parquet_payloads[plan.artifact_uris.photo_summary_uri]
+    assert joined.select("flickr_photo_id").to_series().to_list() == ["photo-1"]
+    assert summary.select("photo_occurrence_bin").to_series().to_list() == ["gold"]
+
+
+def test_orchestrator_cloud_join_requires_storage_backend() -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root="s3://biominer/runs",
+        stages=(RunStage.JOIN_EVIDENCE,),
+    )
+
+    result = ProductionRunOrchestrator(request, taxon_scope=scope).run()
+
+    assert result.manifest.status == "failed"
+    assert result.manifest.stages[0].message == "storage_backend_required_for_join_evidence"
+
+
 def test_orchestrator_join_evidence_fails_when_local_inputs_are_missing(tmp_path) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
@@ -701,6 +745,7 @@ def test_evidence_package_imports_and_metrics(tmp_path) -> None:
         "photo_occurrence_bin_counts": {"gold": 1},
     }
     assert callable(write_object_evidence_outputs)
+    assert callable(build_object_evidence_frames)
     assert callable(build_review_queue)
 
 
@@ -835,7 +880,20 @@ def _write_query_definitions(registry: Path) -> None:
 
 def _write_source_records(paths: RunPaths) -> None:
     paths.ensure_directories()
-    pl.DataFrame(
+    canonical, _, _ = _join_stage_input_frames()
+    canonical.write_parquet(paths.source_records_path)
+
+
+def _write_join_stage_inputs(paths: RunPaths) -> None:
+    paths.ensure_directories()
+    canonical, detections, scores = _join_stage_input_frames()
+    canonical.write_parquet(paths.source_records_path)
+    detections.write_parquet(paths.object_detections_path)
+    scores.write_parquet(paths.object_scores_path)
+
+
+def _join_stage_input_frames() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    canonical = pl.DataFrame(
         [
             {
                 "source": "flickr",
@@ -851,13 +909,8 @@ def _write_source_records(paths: RunPaths) -> None:
                 "date_taken": "2025-07-01",
             }
         ]
-    ).write_parquet(paths.source_records_path)
-
-
-def _write_join_stage_inputs(paths: RunPaths) -> None:
-    paths.ensure_directories()
-    _write_source_records(paths)
-    pl.DataFrame(
+    )
+    detections = pl.DataFrame(
         [
             {
                 "source": "flickr",
@@ -876,8 +929,8 @@ def _write_join_stage_inputs(paths: RunPaths) -> None:
                 "checkpoint": "none",
             }
         ]
-    ).write_parquet(paths.object_detections_path)
-    pl.DataFrame(
+    )
+    scores = pl.DataFrame(
         [
             {
                 "source": "flickr",
@@ -921,7 +974,8 @@ def _write_join_stage_inputs(paths: RunPaths) -> None:
                 "bin_reason": "target_species_score_ge_070",
             }
         ]
-    ).write_parquet(paths.object_scores_path)
+    )
+    return canonical, detections, scores
 
 
 def _tiny_rgb_image() -> DecodedImage:

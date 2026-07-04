@@ -9,7 +9,7 @@ import shutil
 from typing import Any
 
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
-from biominer.evidence.join import write_object_evidence_outputs
+from biominer.evidence.join import build_object_evidence_frames, write_object_evidence_outputs
 from biominer.evidence.metrics import build_review_queue, evidence_count_metrics
 from biominer.storage.parquet import write_parquet
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
@@ -480,7 +480,31 @@ class ProductionRunOrchestrator:
 
     def _run_join_evidence_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if is_cloud_uri(self.request.output_root):
-            return StageExecutionResult(status=StageStatus.FAILED, message="join_evidence_requires_local_artifacts_until_storage_io_is_wired")
+            if self.storage is None:
+                return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_join_evidence")
+            missing = _missing_uris(
+                self.storage,
+                plan.artifact_uris.source_records_uri,
+                plan.artifact_uris.object_detections_uri,
+                plan.artifact_uris.object_scores_uri,
+            )
+            if missing:
+                return StageExecutionResult(status=StageStatus.FAILED, message="missing_join_inputs: " + ", ".join(missing))
+            joined, photo_summary = build_object_evidence_frames(
+                canonical_source_records=self.storage.read_parquet(plan.artifact_uris.source_records_uri),
+                object_detections=self.storage.read_parquet(plan.artifact_uris.object_detections_uri),
+                object_scores=self.storage.read_parquet(plan.artifact_uris.object_scores_uri),
+            )
+            object_evidence_uri = self.storage.write_parquet_shard(plan.artifact_uris.object_evidence_uri, joined)
+            photo_summary_uri = self.storage.write_parquet_shard(plan.artifact_uris.photo_summary_uri, photo_summary)
+            metrics = evidence_count_metrics(joined, photo_summary)
+            return StageExecutionResult(
+                metrics=metrics,
+                outputs={
+                    "object_evidence": object_evidence_uri,
+                    "photo_summary": photo_summary_uri,
+                },
+            )
         missing = _missing_paths(plan.paths.source_records_path, plan.paths.object_detections_path, plan.paths.object_scores_path)
         if missing:
             return StageExecutionResult(status=StageStatus.FAILED, message="missing_join_inputs: " + ", ".join(missing))

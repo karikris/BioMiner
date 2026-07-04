@@ -16,6 +16,29 @@ from biominer.species.context import SpeciesContext
 from biominer.storage.parquet import write_parquet
 
 
+def build_object_evidence_frames(
+    *,
+    canonical_source_records: pl.DataFrame,
+    object_detections: pl.DataFrame,
+    object_scores: pl.DataFrame,
+    species_context: SpeciesContext | None = None,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Return joined object evidence and photo summary frames."""
+
+    joined = _object_evidence_joined(
+        canonical=canonical_source_records,
+        detections=object_detections,
+        scores=object_scores,
+    )
+    summary = _photo_summary(
+        object_scores,
+        canonical=canonical_source_records,
+        detections=object_detections,
+        species_context=species_context,
+    )
+    return joined, summary
+
+
 def write_object_evidence_outputs(
     *,
     canonical_source_records: pl.DataFrame,
@@ -32,15 +55,10 @@ def write_object_evidence_outputs(
     the BioCLIP object runner's path-oriented helper.
     """
 
-    joined = _object_evidence_joined(
-        canonical=canonical_source_records,
-        detections=object_detections,
-        scores=object_scores,
-    )
-    summary = _photo_summary(
-        object_scores,
-        canonical=canonical_source_records,
-        detections=object_detections,
+    joined, summary = build_object_evidence_frames(
+        canonical_source_records=canonical_source_records,
+        object_detections=object_detections,
+        object_scores=object_scores,
         species_context=species_context,
     )
     joined_path = write_parquet(joined, joined_output_path)
@@ -52,6 +70,7 @@ __all__ = [
     "OBJECT_EVIDENCE_JOINED_SCHEMA",
     "PHOTO_EVIDENCE_SUMMARY_SCHEMA",
     "ObjectEvidenceOutputs",
+    "build_object_evidence_frames",
     "empty_photo_summary_frame",
     "write_object_evidence_outputs",
 ]

@@ -1735,6 +1735,117 @@ def test_production_run_compile_stage_uses_configured_cloud_storage(tmp_path, ca
     assert fake_storage.parquet_payloads[expected_uri].height == 1
 
 
+def test_production_run_join_stage_uses_configured_cloud_storage(tmp_path, capsys, monkeypatch) -> None:
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    pl.DataFrame(
+        [
+            {
+                "accepted_taxon_key": "gbif:100",
+                "scientific_name": "Papilio demoleus",
+                "rank": "SPECIES",
+                "family_key": "gbif:10",
+                "family": "Papilionidae",
+                "genus_key": "gbif:90",
+                "genus": "Papilio",
+                "species_key": "gbif:100",
+                "species": "Papilio demoleus",
+                "parent_key": "gbif:90",
+            }
+        ]
+    ).write_parquet(registry / "taxa.parquet")
+    pl.DataFrame(
+        [
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Papilio demoleus",
+                "name_class": "accepted_scientific",
+                "language": "la",
+                "source": "GBIF",
+                "trust_tier": "T1",
+                "enabled": True,
+                "disabled_reason": "",
+            }
+        ]
+    ).write_parquet(registry / "names.parquet")
+    (registry / "manifest.json").write_text(json.dumps({"registry_version": "registry-v1"}), encoding="utf-8")
+    fake_storage = _FakeCloudStorage()
+    run_root = "s3://biominer/runs/run_id=species_papilio_demoleus"
+    fake_storage.parquet_payloads[f"{run_root}/staging/canonical_source_records.parquet"] = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "image_url": "memory://photo-1",
+                "title": "Papilio demoleus",
+            }
+        ]
+    )
+    fake_storage.parquet_payloads[f"{run_root}/staging/object_detections.parquet"] = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "detection_id": "det-1",
+                "crop_hash": "sha256:crop-1",
+                "detector_label": "butterfly_like",
+                "detector_score": 0.91,
+                "objectness_score": 0.91,
+            }
+        ]
+    )
+    fake_storage.parquet_payloads[f"{run_root}/staging/object_bioclip_scores.parquet"] = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "detection_id": "det-1",
+                "crop_hash": "sha256:crop-1",
+                "species_top1": "Papilio demoleus",
+                "species_top1_scientific_name": "Papilio demoleus",
+                "species_top1_score": 0.82,
+                "target_species_score": 0.82,
+                "is_target_positive": True,
+                "occurrence_bin": "gold",
+                "bin_reason": "target_species_score_ge_070",
+            }
+        ]
+    )
+    config = _fake_cloud_config()
+    calls: dict[str, int] = {"workstore": 0}
+    monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
+    monkeypatch.setattr("biominer.cli.create_storage_backend", lambda storage_config: fake_storage)
+
+    def fail_create_workstore(_workstore_config):  # noqa: ANN001, ANN202
+        calls["workstore"] += 1
+        raise AssertionError("join should not open the workstore")
+
+    monkeypatch.setattr("biominer.cli.create_workstore", fail_create_workstore)
+
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--taxon",
+            "Papilio demoleus",
+            "--rank",
+            "species",
+            "--registry-dir",
+            str(registry),
+            "--output-prefix",
+            "s3://biominer/runs",
+            "--stages",
+            "join",
+        ]
+    )
+
+    assert run(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert calls["workstore"] == 0
+    assert payload["manifest"]["evidence_counts"]["object_evidence_rows"] == 1
+    assert fake_storage.parquet_payloads[f"{run_root}/staging/object_evidence_joined.parquet"].height == 1
+    assert fake_storage.parquet_payloads[f"{run_root}/staging/photo_evidence_summary.parquet"].height == 1
+
+
 def test_production_run_summarize_stage_uses_configured_cloud_storage(tmp_path, capsys, monkeypatch) -> None:
     registry = tmp_path / "registry"
     registry.mkdir()
