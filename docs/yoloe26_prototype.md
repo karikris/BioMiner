@@ -133,4 +133,4 @@ Without `--image`, the command uses a synthetic placeholder and only validates r
 - Metrics from `yoloe26-prototype-run` are labelled heuristic unless reviewed ground truth is supplied.
 - Model files, caches, downloaded Flickr images, and generated Parquet outputs must not be committed.
 
-The next data-engineering step is to use YOLOE-26 boxes plus BioCLIP object scores to build a reviewed box dataset for later supervised YOLO fine-tuning.
+The next data-engineering step is to review YOLOE-26 proposal quality through object evidence summaries, tune prompt/confidence policy, and keep any manual review decisions in evidence QA outputs rather than detector training artifacts.

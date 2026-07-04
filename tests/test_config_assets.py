@@ -132,6 +132,19 @@ def test_production_examples_cover_family_genus_species_runs() -> None:
     assert "YOLO species" not in text
 
 
+def test_yoloe26_docs_do_not_recommend_training_dataset_storage() -> None:
+    text = Path("docs/yoloe26_prototype.md").read_text(encoding="utf-8")
+
+    for forbidden in (
+        "reviewed box dataset",
+        "supervised YOLO",
+        "fine-tuning",
+        "training dataset",
+    ):
+        assert forbidden not in text
+    assert "rather than detector training artifacts" in text
+
+
 def test_readme_keeps_broad_probe_recipe_out_of_production_workflow() -> None:
     text = Path("README.md").read_text(encoding="utf-8")
 
