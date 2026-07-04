@@ -317,10 +317,6 @@ def build_parser() -> argparse.ArgumentParser:
     registry_seed.add_argument("--start-date", default="2004-02-10")
     registry_seed.add_argument("--end-date", default=datetime.now(UTC).date().isoformat())
     registry_seed.add_argument("--slice-days", type=int, default=5)
-    cloud = subparsers.add_parser("cloud")
-    cloud_subparsers = cloud.add_subparsers(dest="cloud_command")
-    cloud_subparsers.add_parser("init")
-    cloud_subparsers.add_parser("doctor")
     storage = subparsers.add_parser("storage")
     storage_subparsers = storage.add_subparsers(dest="storage_command")
     storage_doctor = storage_subparsers.add_parser("doctor")
@@ -505,8 +501,6 @@ def run(args: argparse.Namespace) -> int:
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
-    if args.command == "cloud":
-        return _run_cloud_command(args)
     if args.command == "storage":
         return _run_storage_command(args)
     if args.command == "workstore":
@@ -701,64 +695,6 @@ def _run_workstore_command(args: argparse.Namespace) -> int:
     return 0 if payload.get("status") == "ok" else 2
 
 
-def _run_cloud_command(args: argparse.Namespace) -> int:
-    if args.cloud_command == "init":
-        config = load_biominer_config(args.config)
-        try:
-            validate_config(config, require_cloud_credentials=True)
-            storage = create_storage_backend(config.storage)
-            workstore = create_workstore(config.workstore)
-            _init_workstore_schema(workstore)
-            timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-            manifest_uri = join_uri(_storage_base_uri(storage=storage, config=config), "manifests", "cloud_init", f"{timestamp}.json")
-            manifest = {
-                "status": "ok",
-                "command": "cloud init",
-                "created_at": datetime.now(UTC).isoformat(),
-                "storage_backend": config.storage.backend,
-                "workstore_backend": config.workstore.backend,
-                "config": redact_config(config),
-            }
-            storage.write_json(manifest_uri, manifest)
-            print(
-                json.dumps(
-                    {
-                        "status": "ok",
-                        "command": "cloud init",
-                        "workstore_backend": config.workstore.backend,
-                        "manifest_uri": manifest_uri,
-                        "config": redact_config(config),
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
-        except Exception as exc:  # noqa: BLE001 - cloud init reports redacted diagnostics.
-            print(
-                json.dumps(
-                    {
-                        "status": "error",
-                        "command": "cloud init",
-                        "error": redact_text(str(exc), config),
-                        "config": redact_config(config),
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 2
-    if args.cloud_command == "doctor":
-        try:
-            payload = _run_cloud_doctor(args)
-        except Exception as exc:  # pragma: no cover - exercised by live doctor runs.
-            print(json.dumps({"status": "error", "error": _redact_cloud_error(str(exc), args)}, indent=2, sort_keys=True))
-            return 2
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0 if payload.get("status") == "ok" else 2
-    return 2
-
-
 def _run_storage_doctor(args: argparse.Namespace) -> dict[str, object]:
     config = load_biominer_config(args.config)
     storage = create_storage_backend(config.storage)
@@ -839,101 +775,6 @@ def _run_workstore_doctor(args: argparse.Namespace) -> dict[str, object]:
             row_count=parquet_rows,
             byte_count=None,
             metadata={"kind": "workstore_doctor"},
-        )
-        shards = workstore.list_committed_shards(job_name=job_name, stage=stage, registry_version=None, run_id=run_id)
-        payload["workstore"] = {
-            "backend": config.workstore.backend,
-            "schema_initialized": True,
-            "work_items_inserted": inserted,
-            "claimed_work_key": claimed_work_key,
-            "completed_keys": [work_key] if work_key in workstore.completed_keys(job_name, None, stage=stage) else [],
-            "registered_shards": len(shards),
-        }
-    except Exception as exc:  # noqa: BLE001 - doctor reports partial diagnostics.
-        payload["status"] = "error"
-        workstore_payload = dict(payload["workstore"]) if isinstance(payload["workstore"], dict) else {}
-        payload["workstore"] = {**workstore_payload, "error": redact_text(str(exc), config)}
-    return payload
-
-
-def _run_cloud_doctor(args: argparse.Namespace) -> dict[str, object]:
-    config = load_biominer_config(args.config)
-    validate_config(config, require_cloud_credentials=True)
-    storage = create_storage_backend(config.storage)
-    workstore = create_workstore(config.workstore)
-    run_id = f"cloud-doctor-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}"
-    base_uri = _storage_base_uri(storage=storage, config=config)
-    doctor_prefix = join_uri(base_uri, "doctor", f"run_id={run_id}")
-    payload: dict[str, object] = {
-        "status": "ok",
-        "command": "cloud doctor",
-        "config": redact_config(config),
-        "storage": {
-            "backend": config.storage.backend,
-            "json_roundtrip": False,
-            "json_deleted": False,
-            "json_uri": None,
-            "parquet_uri": None,
-            "parquet_rows": 0,
-        },
-        "workstore": {
-            "backend": config.workstore.backend,
-            "schema_initialized": False,
-            "work_items_inserted": 0,
-            "claimed_work_key": None,
-            "completed_keys": [],
-            "registered_shards": 0,
-        },
-    }
-
-    json_uri = join_uri(doctor_prefix, "probe.json")
-    json_payload = {"run_id": run_id, "probe": "json"}
-    storage.write_json(json_uri, json_payload)
-    json_roundtrip = storage.read_json(json_uri) == json_payload
-    json_deleted = storage.delete(json_uri)
-
-    parquet_uri = join_uri(doctor_prefix, "probe.parquet")
-    parquet_frame = pl.DataFrame({"probe": ["a", "b"], "value": [1, 2]})
-    storage.write_parquet_shard(parquet_uri, parquet_frame)
-    parquet_rows = storage.scan_parquet(parquet_uri).collect().height
-    payload["storage"] = {
-        "backend": config.storage.backend,
-        "json_roundtrip": json_roundtrip,
-        "json_deleted": json_deleted,
-        "json_uri": json_uri,
-        "parquet_uri": parquet_uri,
-        "parquet_rows": parquet_rows,
-    }
-
-    job_name = "cloud_doctor"
-    stage = "doctor"
-    work_key = f"cloud-doctor-work:{run_id}"
-    try:
-        _init_workstore_schema(workstore)
-        workstore.get_or_create_run(
-            job_name=job_name,
-            stage=stage,
-            run_id=run_id,
-            registry_version=None,
-            config={"command": "cloud doctor"},
-        )
-        inserted = workstore.enqueue_work(job_name, None, [{"work_key": work_key, "probe": "workstore"}], stage=stage)
-        claimed = workstore.claim_next_batch(config.runtime.worker_id, 1, job_name=job_name, stage=stage, registry_version=None)
-        claimed_work_key = str(claimed[0]["work_key"]) if claimed else None
-        if claimed_work_key:
-            workstore.mark_completed(claimed_work_key, parquet_uri, None, parquet_rows)
-        workstore.register_shard(
-            shard_id=f"{run_id}-probe",
-            job_name=job_name,
-            registry_version=None,
-            stage=stage,
-            run_id=run_id,
-            worker_id=config.runtime.worker_id,
-            uri=parquet_uri,
-            checksum=None,
-            row_count=parquet_rows,
-            byte_count=None,
-            metadata={"kind": "cloud_doctor"},
         )
         shards = workstore.list_committed_shards(job_name=job_name, stage=stage, registry_version=None, run_id=run_id)
         payload["workstore"] = {
