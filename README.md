@@ -114,6 +114,14 @@ The active package is `biominer` under `src/`. Run commands through:
 uv run biominer
 ```
 
+## Production Docs
+
+- `docs/production_workflow.md` describes the single `biominer run` workflow, rank handling, stages, and production data rules.
+- `docs/registry_trust_tiers.md` defines registry trust tiers and generated-name enablement policy.
+- `docs/vision_workflow.md` documents the public vision commands, dev-only runtime utilities, and YOLOE/YOLO26 object-finder boundary.
+- `docs/storage_postgres_s3.md` summarizes S3 artifact storage, Postgres workstore state, and explicit local overrides.
+- `docs/deprecated_removed_commands.md` records removed public commands and their replacements.
+
 ## Core invariants
 
 1. **Step 0 is mandatory before Flickr query generation.**

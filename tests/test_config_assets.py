@@ -55,3 +55,52 @@ def test_papilio_species_example_documents_generic_object_pipeline() -> None:
     assert "--image-max-side-px" in text
     assert "fetch_papilio_demoleus_multilingual_metadata.py" not in text
     assert "classify_papilio_demoleus" not in text
+
+
+def test_production_workflow_docs_exist_and_match_current_surface() -> None:
+    required_docs = (
+        Path("docs/production_workflow.md"),
+        Path("docs/registry_trust_tiers.md"),
+        Path("docs/vision_workflow.md"),
+        Path("docs/storage_postgres_s3.md"),
+    )
+    for path in required_docs:
+        assert path.exists(), path
+
+    production = Path("docs/production_workflow.md").read_text(encoding="utf-8")
+    for expected in (
+        "biominer run",
+        "auto",
+        "family",
+        "genus",
+        "species",
+        "S3",
+        "Postgres",
+        "metadata flags",
+    ):
+        assert expected in production
+
+    registry = Path("docs/registry_trust_tiers.md").read_text(encoding="utf-8")
+    for expected in ("T1", "T5", "disabled", "query_definition_id"):
+        assert expected in registry
+
+    vision = Path("docs/vision_workflow.md").read_text(encoding="utf-8")
+    for expected in (
+        "biominer vision detect",
+        "biominer dev vision yoloe26-runtime-check",
+        "BioCLIP",
+        "object finder",
+        "detector_crop_segmentation",
+    ):
+        assert expected in vision
+    assert "YOLOE/YOLO26 output must not be interpreted as species classification" in vision
+    assert "does not store reviewed boxes" in vision
+
+    storage = Path("docs/storage_postgres_s3.md").read_text(encoding="utf-8")
+    for expected in (
+        "BIOMINER_S3_ENDPOINT_URL",
+        "BIOMINER_WORKSTORE_DSN",
+        "--storage-backend local",
+        "--workstore-backend sqlite",
+    ):
+        assert expected in storage
