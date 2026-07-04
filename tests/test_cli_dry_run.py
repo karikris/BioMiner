@@ -1104,6 +1104,11 @@ def test_bioclip_screen_objects_uses_embedding_caches_for_detector_crop_scoring(
             detections_seen=1,
             crops_scored=1,
             score_batches_written=3,
+            visual_classifier="bioclip_object",
+            visual_mode="detector_crop",
+            visual_mode_status="available",
+            segmentation_unavailable_count=0,
+            segmentation_unavailable_reason=None,
         )
 
     def fake_build_candidate_set(context, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors build_candidate_set.
@@ -1177,6 +1182,9 @@ def test_bioclip_screen_objects_uses_embedding_caches_for_detector_crop_scoring(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["rows"] == 1
+    assert payload["primary_visual_classifier"] == "bioclip_object"
+    assert payload["visual_mode"] == "detector_crop"
+    assert payload["visual_mode_status"] == "available"
     assert payload["scorer"] == "cached_object_embedding"
     assert payload["score_batches_written"] == 3
     assert payload["candidate_text_embedding_cache"]["embeddings_computed"] == 4

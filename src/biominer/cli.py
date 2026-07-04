@@ -22,6 +22,7 @@ from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
 from biominer.bioclip.object_runner import (
     CachedObjectEmbeddingScorer,
     EphemeralCropBioClipScorer,
+    PRIMARY_VISUAL_CLASSIFIER,
     materialize_detector_crop_inputs,
     screen_object_detections,
     write_object_evidence_outputs,
@@ -2075,6 +2076,11 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
                 "detections_seen": result.detections_seen,
                 "crops_scored": result.crops_scored,
                 "score_batches_written": result.score_batches_written,
+                "primary_visual_classifier": result.visual_classifier,
+                "visual_mode": result.visual_mode,
+                "visual_mode_status": result.visual_mode_status,
+                "segmentation_unavailable_count": result.segmentation_unavailable_count,
+                "segmentation_unavailable_reason": result.segmentation_unavailable_reason,
                 "candidate_set_id": candidate_set.candidate_set_id,
                 "scorer": "cached_object_embedding" if object_cache_payload is not None else "ephemeral_crop_bioclip",
                 **({"candidate_text_embedding_cache": text_cache_payload} if text_cache_payload is not None else {}),
@@ -2140,6 +2146,7 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
         json.dumps(
             {
                 "output_dir": str(report.output_dir),
+                "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
                 **report.report,
                 **({"candidate_text_embedding_cache": text_cache_payload} if text_cache_payload is not None else {}),
                 **({"object_image_embedding_cache": object_cache_payload} if object_cache_payload is not None else {}),

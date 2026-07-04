@@ -13,6 +13,7 @@ from biominer.bioclip.object_runner import (
     EphemeralCropBioClipScorer,
     FakeObjectBioClipScorer,
     OBJECT_SCORE_OUTPUT_SCHEMA,
+    PRIMARY_VISUAL_CLASSIFIER,
     apply_geospatial_soft_prior,
     empty_object_score_frame,
     materialize_detector_crop_inputs,
@@ -603,6 +604,10 @@ def test_object_bioclip_runner_can_score_detector_crops_with_ephemeral_scorer(tm
     row = result.frame.to_dicts()[0]
     assert row["model_id"] == "bioclip2_5"
     assert row["model_checkpoint"] == "checkpoint-a"
+    assert result.visual_classifier == PRIMARY_VISUAL_CLASSIFIER
+    assert result.visual_mode == "detector_crop"
+    assert result.visual_mode_status == "available"
+    assert row["species_top1"] == "Danaus plexippus"
     assert row["species_top1_scientific_name"] == "Danaus plexippus"
     assert row["target_species_score"] == 0.83
     assert row["occurrence_bin"] == "gold"
@@ -704,6 +709,7 @@ def test_object_bioclip_empty_scores_write_stable_schema(tmp_path) -> None:
         "genus_margin",
         "species_top20",
         "species_top5",
+        "species_top1",
         "species_top1_scientific_name",
         "species_top1_score",
         "species_top1_margin",
@@ -1109,6 +1115,14 @@ def test_ablation_modes_write_rows_with_shared_photo_join_keys(tmp_path) -> None
         "detector_crop": 1,
         "detector_crop_segmentation": 0,
         "whole_image": 1,
+    }
+    assert report.report["primary_visual_classifier"] == PRIMARY_VISUAL_CLASSIFIER
+    assert report.report["visual_modes_requested"] == ["whole_image", "detector_crop", "detector_crop_segmentation"]
+    assert report.report["visual_modes_scored"] == ["detector_crop", "whole_image"]
+    assert report.report["visual_mode_status_by_mode"] == {
+        "detector_crop": "available",
+        "detector_crop_segmentation": "unavailable",
+        "whole_image": "available",
     }
     assert report.report["segmentation_status_by_mode"]["detector_crop_segmentation"] == "unavailable"
     assert report.report["segmentation_unavailable_count_by_mode"]["detector_crop_segmentation"] == 1

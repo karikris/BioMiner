@@ -27,6 +27,8 @@ from biominer.species.context import SpeciesContext
 from biominer.storage.parquet import write_parquet
 
 
+PRIMARY_VISUAL_CLASSIFIER = "bioclip_object"
+OBJECT_VISUAL_MODES: tuple[str, ...] = ("whole_image", "detector_crop", "detector_crop_segmentation")
 AblationMode = Literal["whole_image", "detector_crop", "detector_crop_segmentation"]
 PHOTO_REVIEW_REASONS = {
     "geospatial_conflict",
@@ -60,6 +62,7 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "species_top20_accepted_taxon_keys": pl.List(pl.String),
     "species_top5": pl.List(pl.String),
     "species_top5_accepted_taxon_keys": pl.List(pl.String),
+    "species_top1": pl.String,
     "species_top1_scientific_name": pl.String,
     "species_top1_accepted_taxon_key": pl.String,
     "accepted_taxon_key": pl.String,
@@ -140,6 +143,9 @@ class ObjectScreenResult:
     segmentation_unavailable_count: int = 0
     segmentation_unavailable_reason: str | None = None
     segmentation_status: str | None = None
+    visual_classifier: str = PRIMARY_VISUAL_CLASSIFIER
+    visual_mode: str | None = None
+    visual_mode_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -445,6 +451,12 @@ def screen_object_detections(
                 crops_scored=crops_scored,
                 unavailable_count=segmentation_unavailable_count,
             ),
+            visual_mode=ablation_mode,
+            visual_mode_status=_visual_mode_status(
+                mode=ablation_mode,
+                crops_scored=crops_scored,
+                unavailable_count=segmentation_unavailable_count,
+            ),
         )
     finally:
         if batch_dir is not None and batch_dir.exists():
@@ -658,6 +670,7 @@ def _score_detection(
         "species_top20_accepted_taxon_keys": [_taxon_key_for_name(taxon_key_by_name, name) for name in species_top20],
         "species_top5": species_top5,
         "species_top5_accepted_taxon_keys": [_taxon_key_for_name(taxon_key_by_name, name) for name in species_top5],
+        "species_top1": top1_name,
         "species_top1_scientific_name": top1_name,
         "species_top1_accepted_taxon_key": top1_taxon_key,
         "accepted_taxon_key": top1_taxon_key,
@@ -1142,7 +1155,7 @@ def _ppm_bytes(data: bytes, *, width: int, height: int) -> bytes:
 
 def _ablation_mode(item: dict[str, Any]) -> AblationMode:
     mode = str(item.get("ablation_mode") or "detector_crop")
-    if mode not in {"whole_image", "detector_crop", "detector_crop_segmentation"}:
+    if mode not in set(OBJECT_VISUAL_MODES):
         raise ValueError(f"unsupported object BioCLIP ablation mode: {mode}")
     return mode  # type: ignore[return-value]
 
@@ -1164,6 +1177,13 @@ def _segmentation_status(*, mode: AblationMode, crops_scored: int, unavailable_c
     if unavailable_count:
         return "unavailable"
     return "not_requested"
+
+
+def _visual_mode_status(*, mode: AblationMode, crops_scored: int, unavailable_count: int) -> str:
+    segmentation = _segmentation_status(mode=mode, crops_scored=crops_scored, unavailable_count=unavailable_count)
+    if segmentation is not None:
+        return segmentation
+    return "available" if crops_scored else "no_scored_detections"
 
 
 def _bytes_hash(data: bytes) -> str:

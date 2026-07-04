@@ -6,6 +6,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
 from biominer.evidence import evidence_count_metrics
 from biominer.evidence.join import write_object_evidence_outputs
 from biominer.registry.trust_policy import (
@@ -113,9 +114,11 @@ def test_run_paths_and_dry_run_manifest(tmp_path) -> None:
     assert manifest.storage_backend == "s3"
     assert manifest.workstore_backend == "postgres"
     assert manifest.taxon_scope == scope
+    assert manifest.model_configs["primary_visual_classifier"] == PRIMARY_VISUAL_CLASSIFIER
+    assert manifest.model_configs["visual_modes"] == list(OBJECT_VISUAL_MODES)
     assert manifest.query_counts == {"compiled_definitions": 0, "enqueued_work_items": 0}
     assert manifest.detection_counts == {"images_seen": 0, "detections": 0, "crops_created": 0}
-    assert manifest.bioclip_counts == {"objects_scored": 0, "whole_images_scored": 0}
+    assert manifest.bioclip_counts == {"objects_scored": 0, "whole_images_scored": 0, "segmentation_crops_scored": 0}
     assert manifest.evidence_counts == {"object_evidence_rows": 0, "photo_summary_rows": 0}
     assert manifest.outputs["manifest"].endswith("/run_manifest.json")
     assert [stage.stage for stage in manifest.stages][:3] == [

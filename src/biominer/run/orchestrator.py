@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import RunArtifactUris, RunPaths
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES, RunStage, StageStatus, default_stage_records
@@ -109,11 +110,12 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
         model_configs={
             "vision_backend": request.vision_backend,
             "bioclip_model": request.bioclip_model,
-            "visual_modes": ["whole_image", "detector_crop", "detector_crop_segmentation"],
+            "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
+            "visual_modes": list(OBJECT_VISUAL_MODES),
         },
         query_counts={"compiled_definitions": 0, "enqueued_work_items": 0},
         detection_counts={"images_seen": 0, "detections": 0, "crops_created": 0},
-        bioclip_counts={"objects_scored": 0, "whole_images_scored": 0},
+        bioclip_counts={"objects_scored": 0, "whole_images_scored": 0, "segmentation_crops_scored": 0},
         evidence_counts={"object_evidence_rows": 0, "photo_summary_rows": 0},
         metrics={"expanded_species_count": taxon_scope.species_count},
         outputs=artifact_uris.to_dict(),
