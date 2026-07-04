@@ -17,6 +17,7 @@ from biominer.flickr_fetch.query_planner import (
     NORMAL_PAGE_SIZE,
     FlickrQuery,
     fixed_upload_date_slices,
+    flickr_search_params,
 )
 from biominer.flickr_fetch.metadata_poller import MetadataPollState, _payload_page, _payload_pages, _payload_perpage, _work_item_id, poll_once
 from biominer.workstore.sqlite import SQLiteWorkStore
@@ -63,6 +64,11 @@ def test_metadata_poller_creates_required_state_tables(tmp_path) -> None:
         "bbox_index",
         "bbox_label",
         "term",
+        "search_field",
+        "query_language",
+        "term_type",
+        "term_confidence",
+        "trust_tier",
         "query_hash",
         "registry_version",
         "query_definition_id",
@@ -118,6 +124,90 @@ def test_poll_once_empty_state_does_not_seed_broad_multilingual_probes(tmp_path)
 
     with sqlite3.connect(result.state_db) as conn:
         assert conn.execute("SELECT count(*) FROM flickr_work_items").fetchone()[0] == 0
+
+
+def test_t5_work_items_are_claimed_for_flickr_api_retrieval(tmp_path) -> None:
+    state = MetadataPollState(tmp_path / "poller.sqlite")
+    queries = (
+        FlickrQuery(
+            term="Translated Lime",
+            language="eng",
+            search_field="tags",
+            lane="normal_page",
+            page=1,
+            per_page=NORMAL_PAGE_SIZE,
+            has_geo=0,
+            term_type="generated_translation",
+            term_confidence="low",
+            trust_tier="T5",
+            registry_version="registry-v1",
+            query_definition_id="q-t5-tags",
+            accepted_taxon_key="gbif:100",
+            accepted_scientific_name="Papilio demoleus",
+            family_key="gbif:10",
+            genus_key="gbif:90",
+            species_key="gbif:100",
+        ),
+        FlickrQuery(
+            term="Translated Lime",
+            language="eng",
+            search_field="text",
+            lane="normal_page",
+            page=1,
+            per_page=NORMAL_PAGE_SIZE,
+            has_geo=0,
+            term_type="generated_translation",
+            term_confidence="low",
+            trust_tier="T5",
+            registry_version="registry-v1",
+            query_definition_id="q-t5-text",
+            accepted_taxon_key="gbif:100",
+            accepted_scientific_name="Papilio demoleus",
+            family_key="gbif:10",
+            genus_key="gbif:90",
+            species_key="gbif:100",
+        ),
+    )
+    assert state.enqueue_initial_work_items(queries) == 2
+
+    with sqlite3.connect(state.path) as conn:
+        rows = conn.execute(
+            """
+            SELECT search_field, query_language, term_type, term_confidence, trust_tier, query_definition_id
+            FROM flickr_work_items
+            ORDER BY search_field
+            """
+        ).fetchall()
+
+    assert rows == [
+        ("tags", "eng", "generated_translation", "low", "T5", "q-t5-tags"),
+        ("text", "eng", "generated_translation", "low", "T5", "q-t5-text"),
+    ]
+
+    captured: list[FlickrQuery] = []
+
+    def fake_fetch(query: FlickrQuery) -> dict[str, object]:
+        captured.append(query)
+        return {"photos": {"total": "0", "pages": 1, "page": query.page, "perpage": query.per_page, "photo": []}}
+
+    result = poll_once(
+        state_db=state.path,
+        raw_root=tmp_path / "raw",
+        evidence_output=tmp_path / "evidence" / "canonical.parquet",
+        max_api_calls=10,
+        fetch_metadata=fake_fetch,
+    )
+
+    assert result.work_items_claimed == 2
+    assert result.api_calls_made == 2
+    assert result.evidence_rows_total == 0
+    captured_by_field = {query.search_field: query for query in captured}
+    assert set(captured_by_field) == {"tags", "text"}
+    assert captured_by_field["tags"].trust_tier == "T5"
+    assert captured_by_field["text"].trust_tier == "T5"
+    assert captured_by_field["tags"].term_type == "generated_translation"
+    assert flickr_search_params(captured_by_field["tags"])["tags"] == "Translated Lime"
+    assert flickr_search_params(captured_by_field["text"])["text"] == "Translated Lime"
 
 
 def test_metadata_poller_migrates_existing_source_records_and_reads_legacy_query_hits(tmp_path) -> None:
