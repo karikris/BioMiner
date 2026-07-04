@@ -156,3 +156,6 @@ def test_readme_keeps_broad_probe_recipe_out_of_production_workflow() -> None:
         assert removed_phrase not in text
     assert "work items must be created from registry-derived query definitions" in text
     assert "disabled experimental translation candidates retained for review, not production search" in text
+    assert "register-based processing" not in text
+    assert "register-based classification helpers" not in text
+    assert "object-first scoring" in text

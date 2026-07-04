@@ -58,7 +58,7 @@ Stage responsibilities:
 - `enqueue_flickr_work`: writes resumable Flickr work items into the workstore.
 - `poll_flickr`: fetches Flickr metadata, stores raw JSON audit payloads when configured, and writes canonical source records.
 - `detect_objects`: runs YOLOE/YOLO26-style object proposals over temporary image loads.
-- `score_bioclip`: scores whole-image and detector-crop visual evidence with BioCLIP 2.5.
+- `score_bioclip`: scores whole-image, detector-crop, and detector-crop-segmentation visual evidence with BioCLIP 2.5 when the requested mode is available.
 - `join_evidence`: joins canonical records, detections, and BioCLIP scores into object and photo evidence outputs.
 - `summarize`: writes run metrics, review queues, and report artifacts.
 

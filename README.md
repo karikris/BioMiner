@@ -160,7 +160,7 @@ The active implementation covers:
 - bounded metadata polling with a shared SQLite ledger;
 - in-memory metadata text hints for review evidence;
 - temporary image caching and deletion;
-- BioCLIP 2.5 register-based classification helpers;
+- BioCLIP 2.5 object-first scoring helpers for whole-image, detector-crop, and detector-crop-segmentation modes;
 - evidence buckets and category/life-stage fields;
 - targeted Flickr comment review;
 - compact JSON, Markdown, Parquet, and DuckDB-based QA.
@@ -758,9 +758,9 @@ chrysalis
 
 Step 2 does not make final species decisions.
 
-# Step 3 — BioCLIP 2.5 screening
+# Step 3 — BioCLIP 2.5 object scoring
 
-BioCLIP uses temporary image downloads and register-based processing.
+BioCLIP uses temporary image downloads and object-first scoring against registry-derived species contexts and candidate sets. YOLOE/YOLO26 provides coarse object proposals only; BioCLIP remains the biological family, genus, and species scorer.
 
 BioCLIP 2.5 Huge runs through a separate Python 3.12 sidecar environment:
 
@@ -804,7 +804,7 @@ Rules:
 
 - use one persistent model worker per run;
 - download an image temporarily;
-- score whole-image/object-crop visual modes through BioCLIP object scoring;
+- score whole-image, detector-crop, and detector-crop-segmentation visual modes through BioCLIP object scoring;
 - write object score rows;
 - delete the staged image;
 - idempotently skip successful records by source/photo/image/model/checkpoint;
