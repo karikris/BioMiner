@@ -14,11 +14,11 @@ def test_env_example_contains_only_variable_names() -> None:
     assert "FLICKR_API_KEY=your_flickr_api_key_here" in text
 
 
-def test_local_papilio_demoleus_config_files_are_ignored() -> None:
+def test_removed_papilio_demoleus_seed_config_paths_are_not_documented() -> None:
     text = Path(".gitignore").read_text(encoding="utf-8")
 
-    assert "config/papilio_demoleus_flickr_estimator.sh2" in text
-    assert "config/papilio_demoleus_multilingual_keywords.json" in text
+    assert "config/papilio_demoleus_flickr_estimator.sh2" not in text
+    assert "config/papilio_demoleus_multilingual_keywords.json" not in text
 
 
 def test_papilio_species_example_documents_generic_object_pipeline() -> None:
