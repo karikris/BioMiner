@@ -55,7 +55,7 @@ def test_species_cli_no_longer_exposes_legacy_run_command() -> None:
     species_choices = commands["species"]._subparsers._group_actions[0].choices  # noqa: SLF001
 
     assert "run" not in species_choices
-    for removed in {"detect", "bioclip-objects", "ablate-objects", "join-object-evidence"}:
+    for removed in {"detect", "bioclip-funnel", "bioclip-objects", "ablate-objects", "join-object-evidence"}:
         assert removed not in species_choices
     assert "run" in commands
 
@@ -929,85 +929,12 @@ def test_bioclip_prefetch_model_uses_snapshot_download_sidecar(tmp_path, capsys,
     assert calls[0]["env"]["HUGGINGFACE_HUB_CACHE"] == str((tmp_path / "hf" / "hub").resolve())
 
 
-def test_bioclip_screen_wires_register_runner_with_sidecar_runtime(tmp_path, capsys, monkeypatch) -> None:
-    runtime_python = tmp_path / "runtime" / "bin" / "python"
-    runtime_python.parent.mkdir(parents=True)
-    runtime_python.write_text("# fake python", encoding="utf-8")
-    input_path = tmp_path / "filtered.parquet"
-    candidates_path = tmp_path / "candidates.tsv"
-    output_path = tmp_path / "classified.parquet"
-    candidates_path.write_text("scientific_name\trank\nPapilio demoleus\tspecies\n", encoding="utf-8")
-    pl.DataFrame(
-        [
-            {
-                "source_record_id": "1",
-                "flickr_photo_id": "1",
-                "image_url": "https://live.staticflickr.com/1.jpg",
-                "title": "Papilio demoleus",
-            }
-        ]
-    ).write_parquet(input_path)
-    calls: dict[str, object] = {}
-
-    class FakeScorer:
-        def __init__(self, *, runtime, hf_cache_dir, device):  # noqa: ANN001 - mirrors scorer init.
-            calls["scorer"] = {"runtime": runtime, "hf_cache_dir": hf_cache_dir, "device": device}
-
-        def close(self) -> None:
-            calls["closed"] = True
-
-    class FakeClassifier:
-        def __init__(self, *, runtime, scorer):  # noqa: ANN001 - mirrors classifier init.
-            calls["classifier"] = {"runtime": runtime, "scorer": scorer}
-
-    def fake_process(records, **kwargs):  # noqa: ANN001 - mirrors register runner call.
-        calls["records"] = records
-        calls["runner_kwargs"] = kwargs
-        return SimpleNamespace(
-            frame=pl.DataFrame([{"classification_status": "success"}]),
-            output_path=Path(kwargs["output_path"]),
-            records_seen=1,
-            records_classified=1,
-            records_skipped_existing=0,
-            download_failures=0,
-            bioclip_failures=0,
-            images_deleted_after_classification=1,
-            max_staged_images=1,
-            register_count=kwargs["register_count"],
-            register_size=kwargs["register_size"],
-        )
-
-    monkeypatch.setattr("biominer.cli.PersistentBioClipScorer", FakeScorer)
-    monkeypatch.setattr("biominer.cli.BioClipClassifier", FakeClassifier)
-    monkeypatch.setattr("biominer.cli.process_records_with_registers", fake_process)
+def test_whole_image_register_bioclip_commands_are_removed_from_public_cli() -> None:
     parser = build_parser()
-    args = parser.parse_args(
-        [
-            "bioclip",
-            "screen",
-            "--input",
-            str(input_path),
-            "--species-candidates",
-            str(candidates_path),
-            "--output",
-            str(output_path),
-            "--runtime-python",
-            str(runtime_python),
-            "--device",
-            "mps",
-        ]
-    )
-
-    assert run(args) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["records_classified"] == 1
-    assert payload["register_count"] == 2
-    assert payload["register_size"] == 4
-    assert calls["closed"] is True
-    assert calls["records"][0]["flickr_photo_id"] == "1"
-    assert calls["scorer"]["device"] == "mps"
-    assert calls["runner_kwargs"]["model_checkpoint"] == "191d741545e4c741cdef4b22c6eb69c945c1e592"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["bioclip", "screen"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["species", "bioclip-funnel"])
 
 
 def test_bioclip_screen_objects_uses_embedding_caches_for_detector_crop_scoring(tmp_path, capsys, monkeypatch) -> None:

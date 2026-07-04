@@ -14,7 +14,7 @@ import sys
 
 import polars as pl
 
-from biominer.bioclip.bioclip import BioClipClassifier, PersistentBioClipScorer
+from biominer.bioclip.bioclip import PersistentBioClipScorer
 from biominer.bioclip.ablation import run_object_ablations
 from biominer.bioclip.candidate_sets import build_candidate_set
 from biominer.bioclip.embedding_cache import read_embedding_cache, prepare_candidate_text_embedding_cache, prepare_object_image_embedding_cache
@@ -27,8 +27,6 @@ from biominer.bioclip.object_runner import (
     screen_object_detections,
     write_object_evidence_outputs,
 )
-from biominer.bioclip.register_runner import process_records_with_registers
-from biominer.bioclip.species_candidates import DEFAULT_SPECIES_CANDIDATE_LIMIT, load_species_candidates
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.detection.evaluate import evaluate_xie_style
 from biominer.detection.image_io import load_decoded_image_from_record
@@ -65,7 +63,6 @@ from biominer.species.query_compile import write_species_flickr_queries
 from biominer.species.workflow import (
     build_species_comment_queue,
     fetch_species_flickr,
-    species_candidates_from_context,
 )
 from biominer.storage.compaction import compact_parquet_shards
 from biominer.config import ConfigError, StorageConfig, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
@@ -139,20 +136,6 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_prefetch.add_argument("--model-name", default=BIOCLIP_25_HUGE_REPO_ID)
     bioclip_prefetch.add_argument("--revision", default=BIOCLIP_25_HUGE_REVISION)
     bioclip_prefetch.add_argument("--max-workers", type=int, default=8)
-    bioclip_screen = bioclip_subparsers.add_parser("screen")
-    bioclip_screen.add_argument("--input", required=True)
-    bioclip_screen.add_argument("--species-candidates", required=True)
-    bioclip_screen.add_argument("--output", required=True)
-    bioclip_screen.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
-    bioclip_screen.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
-    bioclip_screen.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    bioclip_screen.add_argument("--cache-root", default="data/cache/images")
-    bioclip_screen.add_argument("--register-count", type=int, default=2)
-    bioclip_screen.add_argument("--register-size", type=int, default=4)
-    bioclip_screen.add_argument("--download-workers", type=int, default=4)
-    bioclip_screen.add_argument("--candidate-limit", type=int, default=DEFAULT_SPECIES_CANDIDATE_LIMIT)
-    bioclip_screen.add_argument("--target-species")
-    bioclip_screen.add_argument("--bucket-views-dir")
     bioclip_screen_objects = bioclip_subparsers.add_parser("screen-objects")
     bioclip_screen_objects.add_argument("--input", required=True)
     bioclip_screen_objects.add_argument("--detections", required=True)
@@ -414,18 +397,6 @@ def build_parser() -> argparse.ArgumentParser:
     species_fetch.add_argument("--workers", type=int, default=8)
     species_fetch.add_argument("--max-api-calls", type=int, default=SOFT_API_CALLS_PER_HOUR)
     species_fetch.add_argument("--api-key-env", default="FLICKR_API_KEY")
-    species_bioclip = species_subparsers.add_parser("bioclip-funnel")
-    species_bioclip.add_argument("--context-json", required=True)
-    species_bioclip.add_argument("--input", required=True)
-    species_bioclip.add_argument("--species-candidates")
-    species_bioclip.add_argument("--output", required=True)
-    species_bioclip.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
-    species_bioclip.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
-    species_bioclip.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    species_bioclip.add_argument("--cache-root", default="data/cache/images")
-    species_bioclip.add_argument("--register-count", type=int, default=4)
-    species_bioclip.add_argument("--register-size", type=int, default=20)
-    species_bioclip.add_argument("--download-workers", type=int, default=4)
     species_review = species_subparsers.add_parser("review-comments")
     species_review.add_argument("--context-json", required=True)
     species_review.add_argument("--input")
@@ -549,8 +520,6 @@ def run(args: argparse.Namespace) -> int:
             return _run_bioclip_runtime_check(args)
         if args.bioclip_command == "prefetch-model":
             return _run_bioclip_prefetch_model(args)
-        if args.bioclip_command == "screen":
-            return _run_bioclip_screen(args)
         if args.bioclip_command == "screen-objects":
             return _run_bioclip_screen_objects(args)
         if args.bioclip_command == "ablate-objects":
@@ -1189,39 +1158,6 @@ def _run_species_command(args: argparse.Namespace) -> int:
         )
         print(json.dumps({**result.__dict__, "state_db": str(result.state_db)}, indent=2, sort_keys=True))
         return 0
-    if args.species_command == "bioclip-funnel":
-        context = SpeciesContext.read_json(args.context_json)
-        runtime_python = Path(args.runtime_python)
-        if not runtime_python.exists():
-            print(json.dumps({"error": f"BioCLIP runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
-            return 2
-        runtime = _bioclip_runtime(runtime_python=runtime_python)
-        scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
-        try:
-            classifier = BioClipClassifier(runtime=runtime, scorer=scorer)
-            records = pl.read_parquet(args.input).to_dicts()
-            species_candidates = (
-                load_species_candidates(args.species_candidates, target_species=context.scientific_name)
-                if args.species_candidates
-                else species_candidates_from_context(context)
-            )
-            result = process_records_with_registers(
-                records,
-                classifier=classifier,
-                species_candidates=species_candidates,
-                output_path=args.output,
-                cache_root=args.cache_root,
-                register_count=args.register_count,
-                register_size=args.register_size,
-                download_workers=args.download_workers,
-                model_id="bioclip2_5",
-                model_version="bioclip2_5_huge",
-                model_checkpoint=BIOCLIP_25_HUGE_REVISION,
-            )
-        finally:
-            scorer.close()
-        print(json.dumps({"output": str(result.output_path), "rows": result.frame.height}, indent=2, sort_keys=True))
-        return 0
     if args.species_command == "review-comments":
         context = SpeciesContext.read_json(args.context_json)
         if args.input:
@@ -1321,64 +1257,6 @@ def _run_bioclip_prefetch_model(args: argparse.Namespace) -> int:
         print(json.dumps({"error": result.stderr.strip() or result.stdout.strip()}, indent=2, sort_keys=True))
         return 2
     print(result.stdout.strip())
-    return 0
-
-
-def _run_bioclip_screen(args: argparse.Namespace) -> int:
-    runtime_python = Path(args.runtime_python)
-    if not runtime_python.exists():
-        print(json.dumps({"error": f"BioCLIP runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
-        return 2
-
-    runtime = _bioclip_runtime(runtime_python=runtime_python)
-    scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
-    try:
-        classifier = BioClipClassifier(runtime=runtime, scorer=scorer)
-        records = pl.read_parquet(args.input).to_dicts()
-        species_candidates = load_species_candidates(
-            args.species_candidates,
-            limit=args.candidate_limit,
-            target_species=args.target_species,
-        )
-        result = process_records_with_registers(
-            records,
-            classifier=classifier,
-            species_candidates=species_candidates,
-            output_path=args.output,
-            cache_root=args.cache_root,
-            register_count=args.register_count,
-            register_size=args.register_size,
-            download_workers=args.download_workers,
-            model_id="bioclip2_5",
-            model_version="bioclip2_5_huge",
-            model_checkpoint=BIOCLIP_25_HUGE_REVISION,
-            bucket_views_dir=args.bucket_views_dir,
-        )
-    finally:
-        scorer.close()
-
-    print(
-        json.dumps(
-            {
-                "output": str(result.output_path),
-                "rows": result.frame.height,
-                "records_seen": result.records_seen,
-                "records_classified": result.records_classified,
-                "records_skipped_existing": result.records_skipped_existing,
-                "download_failures": result.download_failures,
-                "bioclip_failures": result.bioclip_failures,
-                "images_deleted_after_classification": result.images_deleted_after_classification,
-                "max_staged_images": result.max_staged_images,
-                "register_count": result.register_count,
-                "register_size": result.register_size,
-                "model_name": BIOCLIP_25_HUGE_REPO_ID,
-                "model_revision": BIOCLIP_25_HUGE_REVISION,
-                "device": args.device,
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
     return 0
 
 

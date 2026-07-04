@@ -801,29 +801,27 @@ uv run biominer bioclip prefetch-model \
   --hf-cache-dir "../BioCLIP25/cache/huggingface"
 ```
 
-Run local screening:
+Run object-first scoring after `vision detect` has produced object detections:
 
 ```bash
-uv run biominer bioclip screen \
+uv run biominer vision score \
   --input staging/evidence/filtered.parquet \
-  --species-candidates data/registry/current/taxa.parquet \
-  --output staging/evidence/classified.parquet \
+  --detections staging/evidence/object_detections.parquet \
+  --species-context staging/evidence/species_context.json \
+  --species-candidates data/registry/current/species_candidates.parquet \
+  --output staging/evidence/object_bioclip_scores.parquet \
   --runtime-python "../BioCLIP25/venv/bin/python" \
   --hf-cache-dir "../BioCLIP25/cache/huggingface" \
   --device auto \
-  --register-count 2 \
-  --register-size 4 \
-  --download-workers 4
+  --ablation-mode detector_crop
 ```
 
 Rules:
 
 - use one persistent model worker per run;
-- default local `register_count=2`;
-- default local `register_size=4`;
 - download an image temporarily;
-- classify;
-- write the prediction row;
+- score whole-image/object-crop visual modes through BioCLIP object scoring;
+- write object score rows;
 - delete the staged image;
 - idempotently skip successful records by source/photo/image/model/checkpoint;
 - use fake classifiers in tests.
