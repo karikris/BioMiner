@@ -14,6 +14,7 @@ from biominer.config import BioMinerConfig, RuntimeConfig, StorageConfig, WorkSt
 from biominer.cli import _detect_boxes_backend, _yoloe26_metrics, build_parser, load_decoded_image_from_record, run
 from biominer.detection.detector_base import DetectionCandidate
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
+from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES
 
 
 def test_cli_exposes_only_lean_pipeline_commands() -> None:
@@ -69,6 +70,23 @@ def test_registry_public_cli_exposes_only_build_and_audit() -> None:
     for internal in {"fetch-taxonomy", "compile-fixture", "compile-enriched", "enrich-sources", "seed-flickr-queries"}:
         assert internal not in registry_choices
         assert internal in dev_registry_choices
+
+
+def test_registry_build_defaults_to_production_enrichment_sources() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "registry",
+            "build",
+            "--output-dir",
+            "data/registry/v1",
+            "--registry-version",
+            "v1",
+        ]
+    )
+
+    assert args.enrichment_sources == ",".join(DEFAULT_ENRICHMENT_SOURCES)
 
 
 def test_species_cli_removed_from_public_surface() -> None:

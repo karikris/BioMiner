@@ -923,11 +923,12 @@ def test_inaturalist_source_is_limited_to_one_concurrent_query(tmp_path) -> None
         "col": ConcurrencyTrackingClient("CoL", delay_seconds=0.03),
         "inaturalist": ConcurrencyTrackingClient("iNaturalist", delay_seconds=0.03),
         "itis": ConcurrencyTrackingClient("ITIS", delay_seconds=0.06),
+        "wikidata": ConcurrencyTrackingClient("Wikidata", delay_seconds=0.03),
     }
 
     manifest = build_enrichment_sources_from_registry(
         registry_dir=registry,
-        sources=("col", "inaturalist", "itis"),
+        sources=("col", "inaturalist", "itis", "wikidata"),
         clients=trackers,
         workers=4,
         progress_every=4,
@@ -938,14 +939,15 @@ def test_inaturalist_source_is_limited_to_one_concurrent_query(tmp_path) -> None
     assert trackers["col"].max_active > 1
     assert trackers["itis"].max_active > 1
     assert trackers["inaturalist"].max_active == 1
-    assert manifest["source_worker_limits"] == {"col": 4, "inaturalist": 1, "itis": 4}
+    assert trackers["wikidata"].max_active == 1
+    assert manifest["source_worker_limits"] == {"col": 4, "inaturalist": 1, "itis": 4, "wikidata": 1}
 
 
-def test_default_enrichment_clients_do_not_include_wikidata() -> None:
+def test_default_enrichment_clients_include_wikidata() -> None:
     clients = default_enrichment_clients(max_retries=0)
 
-    assert list(clients) == ["col", "inaturalist", "tmd_de", "itis"]
-    assert "wikidata" not in clients
+    assert list(clients) == ["col", "inaturalist", "itis", "tmd_de", "wikidata"]
+    assert clients["wikidata"].__class__.__name__ == "WikidataClient"
 
 
 def test_inaturalist_daily_budget_writes_ledger_and_stops_cleanly(tmp_path) -> None:

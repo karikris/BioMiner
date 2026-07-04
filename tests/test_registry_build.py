@@ -109,6 +109,7 @@ class RecordingSourceClient:
         self.contexts.append(context)
         if self.raise_error:
             raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        is_wikidata = self.source == "Wikidata"
         return {
             "name_assertions": [
                 {
@@ -117,10 +118,10 @@ class RecordingSourceClient:
                     "language": "eng",
                     "script": "Latn",
                     "region": "",
-                    "name_class": "vernacular",
+                    "name_class": "vernacular_alias" if is_wikidata else "vernacular",
                     "source": self.source,
                     "source_record_id": f"{self.source}:name:{context.accepted_taxon_key}",
-                    "trust_tier": "T2",
+                    "trust_tier": "T3" if is_wikidata else "T2",
                     "precision_tier": "medium",
                     "confidence": "high",
                     "enabled": True,
@@ -207,7 +208,7 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
         "itis": RecordingSourceClient("ITIS", "Lime Butterfly"),
         "inaturalist": RecordingSourceClient("iNaturalist", "Chequered Swallowtail"),
         "tmd_de": RecordingTMDClient(),
-        "wikidata": RecordingSourceClient("Wikidata", "Stale Wikidata Name"),
+        "wikidata": RecordingSourceClient("Wikidata", "Wikidata Lime"),
     }
     monkeypatch.setattr("biominer.registry.enrichment.default_enrichment_clients", lambda max_retries=5: clients)
 
@@ -229,13 +230,15 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
     manifest = json.loads((registry / "manifest.json").read_text(encoding="utf-8"))
 
     assert result["manifest"]["qa_status"] == "passed"
-    assert manifest["enrichment_sources"] == ["col", "inaturalist", "tmd_de", "itis"]
-    assert {"Lime Swallowtail", "Lime Butterfly", "Chequered Swallowtail", "Zitronen-Schwalbenschwanz"}.issubset(
+    assert manifest["enrichment_sources"] == ["col", "inaturalist", "itis", "tmd_de", "wikidata"]
+    assert {"Lime Swallowtail", "Lime Butterfly", "Chequered Swallowtail", "Zitronen-Schwalbenschwanz", "Wikidata Lime"}.issubset(
         set(names["display_name"].to_list())
     )
-    assert "Stale Wikidata Name" not in names["display_name"].to_list()
-    assert "Stale Wikidata Name" not in assertions["display_name"].to_list()
+    wikidata_row = assertions.filter(pl.col("source") == "Wikidata").to_dicts()[0]
+    assert wikidata_row["display_name"] == "Wikidata Lime"
+    assert wikidata_row["trust_tier"] == "T3"
     assert "Lime Swallowtail" in queries["normalized_query_term"].to_list()
+    assert "Wikidata Lime" in queries["normalized_query_term"].to_list()
     assert errors.is_empty()
 
 
@@ -249,6 +252,7 @@ def test_registry_build_quarantines_source_errors_without_siloing_successful_nam
         "itis": RecordingSourceClient("ITIS", "Broken ITIS", raise_error=True),
         "inaturalist": RecordingSourceClient("iNaturalist", "Chequered Swallowtail"),
         "tmd_de": RecordingTMDClient(),
+        "wikidata": RecordingSourceClient("Wikidata", "Wikidata Lime"),
     }
     monkeypatch.setattr("biominer.registry.enrichment.default_enrichment_clients", lambda max_retries=5: clients)
 

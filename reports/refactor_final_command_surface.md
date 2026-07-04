@@ -170,6 +170,8 @@ Confirmed current behavior:
 
 - The public workflow is rank-aware through `biominer run --rank auto|family|genus|species`.
 - Registry build/audit are the only public registry commands.
+- `biominer registry build` defaults to enrichment sources:
+  `col`, `inaturalist`, `itis`, `tmd_de`, and `wikidata`.
 - Registry-derived Flickr query definitions are the production discovery input.
 - The implicit broad seed fallback is removed; `MetadataPollState` now exposes only explicit `enqueue_initial_work_items(queries)` for registry-derived query definitions.
 - Built-in multilingual seed terms and the broad discovery seed planner were removed from `flickr_fetch.query_planner`.

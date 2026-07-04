@@ -18,8 +18,8 @@ BioCLIP output is screening evidence only. BioMiner does not claim taxonomic val
 Step 0: taxonomic registry
   GBIF accepted spine
   + synonyms and vernacular names
-  + optional CoL/iNaturalist/ITIS/EOL evidence
-  + reviewed translation candidates
+  + CoL/iNaturalist/ITIS/TMD/Wikidata evidence
+  + disabled generated translation candidates
   -> versioned registry Parquet
   -> atomic Flickr tags/text query definitions
 
@@ -165,7 +165,7 @@ The active implementation covers:
 - targeted Flickr comment review;
 - compact JSON, Markdown, Parquet, and DuckDB-based QA.
 
-Supplementary Catalogue of Life, iNaturalist, ITIS, EOL, and generated-translation adapters remain lower-trust enrichment layers and must not replace GBIF accepted identities.
+Supplementary Catalogue of Life, iNaturalist, ITIS, TMD, Wikidata, and generated-translation adapters remain provenance-carrying enrichment layers and must not replace GBIF accepted identities.
 
 ## Repository layout
 
@@ -538,10 +538,11 @@ Supplementary sources:
 | Catalogue of Life | accepted/synonym evidence, vernacular evidence, discrepancy QA |
 | iNaturalist | regional preferred and place-linked names |
 | ITIS | common names and source taxon links |
-| EOL | optional additional vernacular evidence |
+| TMD | German common-name evidence where source mappings are unambiguous |
+| Wikidata | labels and aliases only with confident external taxon links |
 | Translation providers | disabled candidate translations only |
 
-iNaturalist and ITIS names must first be linked to an accepted GBIF taxon and must not replace GBIF accepted identity.
+iNaturalist, ITIS, TMD, and Wikidata names must first be linked to an accepted GBIF taxon and must not replace GBIF accepted identity.
 
 Regional names retain geographic scope. An Australian preferred name must not be promoted to a global name without preserving that scope.
 

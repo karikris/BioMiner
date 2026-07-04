@@ -45,7 +45,7 @@ from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, Metad
 from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry
 from biominer.registry.compiler import compile_registry_fixture
-from biominer.registry.enrichment import INATURALIST_DAILY_REQUEST_LIMIT, build_enrichment_sources_from_registry, compile_enriched_registry
+from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST_DAILY_REQUEST_LIMIT, build_enrichment_sources_from_registry, compile_enriched_registry
 from biominer.registry.gbif import GBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
@@ -189,7 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--progress-every", type=int, default=100)
     registry_build.add_argument("--checkpoint-every", type=int, default=500)
     registry_build.add_argument("--max-retries", type=int, default=5)
-    registry_build.add_argument("--enrichment-sources", default="col,inaturalist,tmd_de,itis")
+    registry_build.add_argument("--enrichment-sources", default=",".join(DEFAULT_ENRICHMENT_SOURCES))
     registry_build.add_argument("--inaturalist-daily-request-limit", type=int, default=INATURALIST_DAILY_REQUEST_LIMIT)
     registry_build.add_argument("--skip-enrichment", action="store_true")
     registry_audit = registry_subparsers.add_parser("audit")
@@ -216,7 +216,7 @@ def build_parser() -> argparse.ArgumentParser:
     registry_fetch_taxonomy.add_argument("--retrieved-at")
     registry_enrich_sources = dev_registry_subparsers.add_parser("enrich-sources")
     registry_enrich_sources.add_argument("--registry-dir", required=True)
-    registry_enrich_sources.add_argument("--sources", default="col,inaturalist,tmd_de,itis")
+    registry_enrich_sources.add_argument("--sources", default=",".join(DEFAULT_ENRICHMENT_SOURCES))
     registry_enrich_sources.add_argument("--workers", type=int, default=8)
     registry_enrich_sources.add_argument("--progress-every", type=int, default=100)
     registry_enrich_sources.add_argument("--checkpoint-every", type=int, default=500)

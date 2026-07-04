@@ -32,18 +32,27 @@ SOURCE_WORK_LEDGER_FILE = "source_work_ledger.parquet"
 FINAL_SOURCE_SNAPSHOTS_FILE = "source_snapshots.parquet"
 NAME_CANDIDATES_FILE = "name_candidates.parquet"
 ENRICHMENT_MANIFEST_FILE = "enrichment_manifest.json"
-DEFAULT_ENRICHMENT_SOURCES = ("col", "inaturalist", "tmd_de", "itis")
+DEFAULT_ENRICHMENT_SOURCES = ("col", "inaturalist", "itis", "tmd_de", "wikidata")
 BULK_ENRICHMENT_SOURCES = frozenset({"tmd_de"})
 BULK_REGISTRY_WORK_KEY = "__registry__"
 INATURALIST_DAILY_REQUEST_LIMIT = 10000
 INATURALIST_WORKER_LIMIT = 1
 INATURALIST_REQUESTS_PER_SPECIES = 1
+WIKIDATA_WORKER_LIMIT = 1
 
 
 logger = logging.getLogger(__name__)
 ClientBundleFactory = Callable[[], dict[str, Any]]
 _worker_local = threading.local()
-_source_semaphores = {"inaturalist": threading.BoundedSemaphore(INATURALIST_WORKER_LIMIT)}
+_source_semaphores = {
+    "inaturalist": threading.BoundedSemaphore(INATURALIST_WORKER_LIMIT),
+    "wikidata": threading.BoundedSemaphore(WIKIDATA_WORKER_LIMIT),
+}
+SOURCE_WORKER_LIMITS = {
+    "inaturalist": INATURALIST_WORKER_LIMIT,
+    "tmd_de": 1,
+    "wikidata": WIKIDATA_WORKER_LIMIT,
+}
 
 
 @dataclass(frozen=True)
@@ -284,13 +293,14 @@ def build_enrichment_sources_from_registry(
 
 
 def default_enrichment_clients(*, max_retries: int = 5) -> dict[str, Any]:
-    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, INaturalistClient, ITISClient, TMDGermanClient
+    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, INaturalistClient, ITISClient, TMDGermanClient, WikidataClient
 
     return {
         "col": CatalogueOfLifeClient(max_retries=max_retries),
         "inaturalist": INaturalistClient(max_retries=max_retries),
-        "tmd_de": TMDGermanClient(max_retries=max_retries),
         "itis": ITISClient(max_retries=max_retries),
+        "tmd_de": TMDGermanClient(max_retries=max_retries),
+        "wikidata": WikidataClient(max_retries=max_retries),
     }
 
 
@@ -518,7 +528,7 @@ def _run_bulk_enrichment_sources(
 
 
 def _source_worker_limits(sources: tuple[str, ...], workers: int) -> dict[str, int]:
-    return {source: (INATURALIST_WORKER_LIMIT if source in {"inaturalist", "tmd_de"} else workers) for source in sources}
+    return {source: SOURCE_WORKER_LIMITS.get(source, workers) for source in sources}
 
 
 def _source_query_limit(source: str):
