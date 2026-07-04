@@ -146,6 +146,21 @@ def test_final_command_surface_audit_includes_migration_notes() -> None:
         assert expected in text
 
 
+def test_completion_audit_records_current_refactor_invariants() -> None:
+    text = Path("reports/refactor_completion_audit.md").read_text(encoding="utf-8")
+
+    for expected in (
+        "Public production workflow is rank-aware",
+        "Production storage/workstore defaults",
+        "T5 generated translations stay disabled as name evidence but enter Flickr retrieval",
+        "Metadata keyword logic is flags, not hard pre-visual drop",
+        "YOLOE/YOLO26 are object proposal backends only",
+        "BioCLIP remains the species scorer",
+        "Generated artifacts are not tracked",
+    ):
+        assert expected in text
+
+
 def test_mcp_environment_report_uses_generic_runtime_layout() -> None:
     text = Path("reports/refactor_mcp_environment.md").read_text(encoding="utf-8")
 
