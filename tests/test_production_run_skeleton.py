@@ -550,6 +550,63 @@ def test_orchestrator_summarize_writes_review_queue_for_ambiguous_photos(tmp_pat
     assert queue.select("flickr_photo_id").to_series().to_list() == ["review-1", "bronze-1"]
 
 
+def test_orchestrator_summarize_reads_and_writes_cloud_storage() -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    storage = _FakeRunStorage()
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root="s3://biominer/runs",
+        stages=(RunStage.SUMMARIZE,),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
+    storage.parquet_payloads[plan.artifact_uris.object_evidence_uri] = pl.DataFrame([{"occurrence_bin": "in_review"}])
+    storage.parquet_payloads[plan.artifact_uris.photo_summary_uri] = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "review-1",
+                "best_detection_id": "det-r",
+                "detection_count": 1,
+                "best_object_occurrence_bin": "in_review",
+                "best_object_species_top1": "Danaus plexippus",
+                "best_object_score": 0.42,
+                "photo_occurrence_bin": "in_review",
+                "photo_bin_reason": "ambiguous_species_margin",
+                "all_detection_ids": ["det-r"],
+                "all_candidate_species": ["Danaus plexippus", "Danaus eresimus"],
+            }
+        ]
+    )
+
+    result = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).run()
+
+    assert result.manifest.status == "complete"
+    assert result.manifest.evidence_counts == {"object_evidence_rows": 1, "photo_summary_rows": 1, "review_queue_rows": 1}
+    assert result.manifest.stages[0].outputs == {
+        "metrics": plan.artifact_uris.metrics_uri,
+        "review_queue": plan.artifact_uris.review_queue_uri,
+    }
+    assert storage.json_payloads[plan.artifact_uris.metrics_uri]["review_queue_bin_counts"] == {"in_review": 1}
+    queue = storage.parquet_payloads[plan.artifact_uris.review_queue_uri]
+    assert queue.select("flickr_photo_id").to_series().to_list() == ["review-1"]
+
+
+def test_orchestrator_cloud_summarize_requires_storage_backend() -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root="s3://biominer/runs",
+        stages=(RunStage.SUMMARIZE,),
+    )
+
+    result = ProductionRunOrchestrator(request, taxon_scope=scope).run()
+
+    assert result.manifest.status == "failed"
+    assert result.manifest.stages[0].message == "storage_backend_required_for_summarize"
+
+
 def test_orchestrator_runs_local_detection_and_object_scoring_with_injected_fakes(tmp_path) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
@@ -905,10 +962,21 @@ class _ConstantObjectScorer:
 class _FakeRunStorage:
     def __init__(self) -> None:
         self.parquet_payloads: dict[str, pl.DataFrame] = {}
+        self.json_payloads: dict[str, dict[str, object]] = {}
+
+    def read_parquet(self, uri: str) -> pl.DataFrame:
+        return self.parquet_payloads[uri]
 
     def write_parquet_shard(self, uri: str, frame: pl.DataFrame) -> str:
         self.parquet_payloads[uri] = frame
         return uri
+
+    def write_json(self, uri: str, payload: dict[str, object]) -> str:
+        self.json_payloads[uri] = payload
+        return uri
+
+    def exists(self, uri: str) -> bool:
+        return uri in self.parquet_payloads or uri in self.json_payloads
 
 
 def _query_definition_row(query_definition_id: str, source_term: str, search_field: str, search_priority: int) -> dict[str, object]:

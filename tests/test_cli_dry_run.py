@@ -1735,6 +1735,101 @@ def test_production_run_compile_stage_uses_configured_cloud_storage(tmp_path, ca
     assert fake_storage.parquet_payloads[expected_uri].height == 1
 
 
+def test_production_run_summarize_stage_uses_configured_cloud_storage(tmp_path, capsys, monkeypatch) -> None:
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    pl.DataFrame(
+        [
+            {
+                "accepted_taxon_key": "gbif:100",
+                "scientific_name": "Papilio demoleus",
+                "rank": "SPECIES",
+                "family_key": "gbif:10",
+                "family": "Papilionidae",
+                "genus_key": "gbif:90",
+                "genus": "Papilio",
+                "species_key": "gbif:100",
+                "species": "Papilio demoleus",
+                "parent_key": "gbif:90",
+            }
+        ]
+    ).write_parquet(registry / "taxa.parquet")
+    pl.DataFrame(
+        [
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Papilio demoleus",
+                "name_class": "accepted_scientific",
+                "language": "la",
+                "source": "GBIF",
+                "trust_tier": "T1",
+                "enabled": True,
+                "disabled_reason": "",
+            }
+        ]
+    ).write_parquet(registry / "names.parquet")
+    (registry / "manifest.json").write_text(json.dumps({"registry_version": "registry-v1"}), encoding="utf-8")
+    fake_storage = _FakeCloudStorage()
+    run_root = "s3://biominer/runs/run_id=species_papilio_demoleus"
+    fake_storage.parquet_payloads[f"{run_root}/staging/object_evidence_joined.parquet"] = pl.DataFrame(
+        [{"occurrence_bin": "bronze"}]
+    )
+    fake_storage.parquet_payloads[f"{run_root}/staging/photo_evidence_summary.parquet"] = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "bronze-1",
+                "best_detection_id": "det-b",
+                "detection_count": 1,
+                "best_object_occurrence_bin": "bronze",
+                "best_object_species_top1": "Papilio demoleus",
+                "best_object_score": 0.35,
+                "photo_occurrence_bin": "bronze",
+                "photo_bin_reason": "weak_species_score",
+                "all_detection_ids": ["det-b"],
+                "all_candidate_species": ["Papilio demoleus"],
+            }
+        ]
+    )
+    config = _fake_cloud_config()
+    calls: dict[str, int] = {"workstore": 0}
+    monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
+    monkeypatch.setattr("biominer.cli.create_storage_backend", lambda storage_config: fake_storage)
+
+    def fail_create_workstore(_workstore_config):  # noqa: ANN001, ANN202
+        calls["workstore"] += 1
+        raise AssertionError("summary should not open the workstore")
+
+    monkeypatch.setattr("biominer.cli.create_workstore", fail_create_workstore)
+
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--taxon",
+            "Papilio demoleus",
+            "--rank",
+            "species",
+            "--registry-dir",
+            str(registry),
+            "--output-prefix",
+            "s3://biominer/runs",
+            "--stages",
+            "summarize",
+        ]
+    )
+
+    assert run(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert calls["workstore"] == 0
+    assert payload["manifest"]["evidence_counts"] == {
+        "object_evidence_rows": 1,
+        "photo_summary_rows": 1,
+        "review_queue_rows": 1,
+    }
+    assert fake_storage.json_payloads[f"{run_root}/reports/run_metrics.json"]["review_queue_bin_counts"] == {"bronze": 1}
+    assert fake_storage.parquet_payloads[f"{run_root}/reports/review_queue.parquet"].height == 1
+
+
 def test_production_run_enqueue_stage_uses_configured_workstore(tmp_path, capsys, monkeypatch) -> None:
     from biominer.workstore.sqlite import SQLiteWorkStore
 
@@ -2213,8 +2308,14 @@ class _FakeCloudStorage:
         self.parquet_payloads[uri] = frame
         return uri
 
+    def read_parquet(self, uri: str) -> pl.DataFrame:
+        return self.parquet_payloads[uri]
+
     def scan_parquet(self, uri: str) -> pl.LazyFrame:
         return self.parquet_payloads[uri].lazy()
+
+    def exists(self, uri: str) -> bool:
+        return uri in self.parquet_payloads or uri in self.json_payloads
 
 
 class _FakeCloudWorkStore:

@@ -507,7 +507,24 @@ class ProductionRunOrchestrator:
 
     def _run_summarize_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if is_cloud_uri(self.request.output_root):
-            return StageExecutionResult(status=StageStatus.FAILED, message="summarize_requires_local_artifacts_until_storage_io_is_wired")
+            if self.storage is None:
+                return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_summarize")
+            missing = _missing_uris(
+                self.storage,
+                plan.artifact_uris.object_evidence_uri,
+                plan.artifact_uris.photo_summary_uri,
+            )
+            if missing:
+                return StageExecutionResult(status=StageStatus.FAILED, message="missing_summary_inputs: " + ", ".join(missing))
+            joined = self.storage.read_parquet(plan.artifact_uris.object_evidence_uri)
+            photo_summary = self.storage.read_parquet(plan.artifact_uris.photo_summary_uri)
+            review_queue = build_review_queue(photo_summary)
+            metrics = evidence_count_metrics(joined, photo_summary)
+            metrics["review_queue_rows"] = review_queue.height
+            metrics["review_queue_bin_counts"] = _value_counts(review_queue, "review_bucket")
+            metrics_uri = self.storage.write_json(plan.artifact_uris.metrics_uri, metrics)
+            review_queue_uri = self.storage.write_parquet_shard(plan.artifact_uris.review_queue_uri, review_queue)
+            return StageExecutionResult(metrics=metrics, outputs={"metrics": metrics_uri, "review_queue": review_queue_uri})
         missing = _missing_paths(plan.paths.object_evidence_path, plan.paths.photo_summary_path)
         if missing:
             return StageExecutionResult(status=StageStatus.FAILED, message="missing_summary_inputs: " + ", ".join(missing))
@@ -561,6 +578,10 @@ def _registry_manifest_version(registry: Path) -> str:
 
 def _missing_paths(*paths: Path) -> list[str]:
     return [str(path) for path in paths if not path.exists()]
+
+
+def _missing_uris(storage: CloudStorage, *uris: str) -> list[str]:
+    return [uri for uri in uris if not storage.exists(uri)]
 
 
 def _merge_stage_counts(manifest: RunManifest, *, stage: RunStage, result: StageExecutionResult) -> RunManifest:
