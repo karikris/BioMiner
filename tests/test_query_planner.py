@@ -14,13 +14,13 @@ from biominer.flickr_fetch.query_planner import (
     NORMAL_PAGE_SIZE,
     STABLE_RESULT_THRESHOLD,
     FlickrQuery,
+    MultilingualSearchTerm,
     build_count_probes,
     build_worldwide_discovery_plan,
     deduplicate_photo_records,
     fixed_upload_date_slices,
     flickr_search_params,
     load_registry_flickr_queries,
-    multilingual_seed_terms,
     page_size_for_query,
     plan_fixed_upload_slice_pages,
     plan_queries_from_count,
@@ -42,6 +42,8 @@ def test_query_planner_does_not_export_legacy_species_json_or_region_helpers() -
         "build_papilio_demoleus_count_probes_from_json",
         "papilio_demoleus_known_region_for_coordinate",
         "outside_known_papilio_demoleus_regions",
+        "MULTILINGUAL_SEED_TERMS",
+        "multilingual_seed_terms",
     )
     assert [name for name in removed_exports if hasattr(query_planner, name)] == []
 
@@ -63,23 +65,21 @@ def test_query_planner_source_has_no_papilio_specific_production_hardcoding() ->
     assert [value for value in forbidden if value in source] == []
 
 
-def test_multilingual_seed_terms_are_seeded_once_and_include_lifestages() -> None:
-    terms = multilingual_seed_terms()
-    values = [term.term for term in terms]
-
-    assert len(values) == len({value.casefold() for value in values})
-    for expected in ("butterfly", "caterpillar", "chrysalis", "pupa", "egg", "蝴蝶", "oruga", "فراشة", "kupu-kupu", "borboleta", "papillon", "蝶", "бабочка", "Schmetterling"):
-        assert expected in values
-
-
 def test_count_probes_are_recorded_for_text_and_tags_when_terms_are_explicit() -> None:
-    plan = build_worldwide_discovery_plan(terms=multilingual_seed_terms())
+    terms = (
+        MultilingualSearchTerm(language="la", term="Papilio demoleus", term_type="accepted_scientific"),
+        MultilingualSearchTerm(language="en", term="lime butterfly", term_type="vernacular"),
+    )
+
+    plan = build_worldwide_discovery_plan(terms=terms)
 
     assert plan.page_queries == ()
-    assert plan.count_probes
+    assert len(plan.count_probes) == 4
+    assert {probe.term for probe in plan.count_probes} == {"Papilio demoleus", "lime butterfly"}
     assert {probe.search_field for probe in plan.count_probes} == {"text", "tags"}
     assert {probe.per_page for probe in plan.count_probes} == {COUNT_PROBE_PAGE_SIZE}
     assert all(probe.lane == "count_probe" for probe in plan.count_probes)
+    assert {probe.term_type for probe in plan.count_probes} == {"accepted_scientific", "vernacular"}
 
 
 def test_worldwide_discovery_plan_requires_explicit_terms() -> None:
@@ -87,8 +87,8 @@ def test_worldwide_discovery_plan_requires_explicit_terms() -> None:
         build_worldwide_discovery_plan()  # type: ignore[call-arg]
     except TypeError as exc:
         assert "terms" in str(exc)
-    else:  # pragma: no cover - defensive guard against implicit broad seed fallback returning.
-        raise AssertionError("build_worldwide_discovery_plan must not use implicit multilingual seed terms")
+    else:  # pragma: no cover - defensive guard against implicit seed fallback returning.
+        raise AssertionError("build_worldwide_discovery_plan must require caller-provided terms")
 
 
 def test_registry_query_definitions_load_as_page_one_upload_slice_work(tmp_path) -> None:

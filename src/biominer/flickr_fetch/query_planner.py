@@ -42,72 +42,6 @@ DEFAULT_COARSE_SLICE_END_DATE: str | None = None
 DEFAULT_COARSE_SLICE_DAYS: int | None = None
 DEFAULT_FIXED_SLICE_DAYS = 5
 
-MULTILINGUAL_SEED_TERMS: tuple[tuple[str, str], ...] = (
-    ("en", "butterfly"),
-    ("en", "butterflies"),
-    ("en", "lepidoptera"),
-    ("en", "swallowtail"),
-    ("en", "moth"),
-    ("en", "caterpillar"),
-    ("en", "chrysalis"),
-    ("en", "pupa"),
-    ("en", "egg"),
-    ("zh", "蝴蝶"),
-    ("zh", "凤蝶"),
-    ("zh", "鳞翅目"),
-    ("zh", "毛虫"),
-    ("zh", "蛹"),
-    ("zh", "卵"),
-    ("es", "mariposa"),
-    ("es", "mariposas"),
-    ("es", "lepidóptero"),
-    ("es", "oruga"),
-    ("es", "crisálida"),
-    ("es", "pupa"),
-    ("es", "huevo"),
-    ("ar", "فراشة"),
-    ("ar", "فراشات"),
-    ("ar", "يرقة"),
-    ("ar", "شرنقة"),
-    ("ar", "بيضة"),
-    ("id", "kupu-kupu"),
-    ("id", "kupukupu"),
-    ("id", "ulat"),
-    ("id", "kepompong"),
-    ("id", "telur"),
-    ("pt", "borboleta"),
-    ("pt", "borboletas"),
-    ("pt", "lagarta"),
-    ("pt", "crisálida"),
-    ("pt", "pupa"),
-    ("pt", "ovo"),
-    ("fr", "papillon"),
-    ("fr", "papillons"),
-    ("fr", "chenille"),
-    ("fr", "chrysalide"),
-    ("fr", "œuf"),
-    ("ja", "蝶"),
-    ("ja", "チョウ"),
-    ("ja", "蝶々"),
-    ("ja", "アゲハチョウ"),
-    ("ja", "毛虫"),
-    ("ja", "蛹"),
-    ("ja", "卵"),
-    ("ru", "бабочка"),
-    ("ru", "бабочки"),
-    ("ru", "чешуекрылые"),
-    ("ru", "гусеница"),
-    ("ru", "куколка"),
-    ("ru", "яйцо"),
-    ("de", "Schmetterling"),
-    ("de", "Schmetterlinge"),
-    ("de", "Tagfalter"),
-    ("de", "Raupe"),
-    ("de", "Puppe"),
-    ("de", "Ei"),
-)
-
-
 @dataclass(frozen=True)
 class MultilingualSearchTerm:
     language: str
@@ -156,18 +90,6 @@ class FlickrQuery:
 class QueryPlan:
     count_probes: tuple[FlickrQuery, ...]
     page_queries: tuple[FlickrQuery, ...]
-
-
-def multilingual_seed_terms() -> tuple[MultilingualSearchTerm, ...]:
-    seen: set[str] = set()
-    terms: list[MultilingualSearchTerm] = []
-    for language, term in MULTILINGUAL_SEED_TERMS:
-        key = term.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        terms.append(MultilingualSearchTerm(language=language, term=term))
-    return tuple(terms)
 
 
 def build_count_probes(
