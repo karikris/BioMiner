@@ -2,7 +2,7 @@
 
 Recorded: 2026-07-05
 
-Audited base: `4210788`
+Audited base: `a03d495`
 
 Branch used for current cleanup commits: `main`
 
@@ -25,6 +25,7 @@ the active goal is marked complete.
 | Metadata keyword logic is flags, not hard pre-visual drop | `src/biominer/filter/metadata_flags.py` is retained; `src/biominer/filter/rules.py` is removed; `tests/test_metadata_flags.py`, `tests/test_evidence_rules.py`, and `tests/test_image_triage.py` cover soft metadata behavior. | Implemented |
 | Object evidence buckets are the rule engine | `src/biominer/evidence/buckets.py` and `src/biominer/evidence/join.py` are retained; legacy `apply-rules` no longer parses. | Implemented |
 | YOLOE/YOLO26 are object proposal backends only | `src/biominer/detection/yoloe26_detector.py` and `src/biominer/detection/yolo26_detector.py` map detector prompts/classes to coarse labels; detector tests cover the coarse-label contract. | Implemented |
+| Reviewed YOLOE/YOLO26 boxes are not stored for later training | `tests/test_detection_pipeline.py::test_detection_and_run_sources_do_not_create_reviewed_box_training_artifacts` scans detection, run, object-scoring, and CLI source for reviewed-box/training artifact paths. | Implemented |
 | BioCLIP remains the species scorer | `src/biominer/bioclip/object_runner.py` is used for object scoring; `tests/test_object_bioclip_pipeline.py` and production run tests cover object scoring and joined evidence. | Implemented |
 | Third visual mode is segmentation, not enhancement | `detector_crop_segmentation` is an accepted mode; production scoring records unavailable segmentation when masks are absent; no enhancement mode is documented for production. | Implemented |
 | Generated artifacts are not tracked | `.gitignore` excludes caches, virtualenvs, Parquet, SQLite, model weights, and `__pycache__/`; `git ls-files '*__pycache__*' '*.pyc' '.venv*' 'data/*' 'staging/*' '*.sqlite' '*.parquet' '*.pt' '*.safetensors'` returned no tracked generated artifacts. | Implemented |
@@ -68,7 +69,7 @@ Latest full-suite result:
 
 ```text
 uv run --extra test pytest -q
-525 passed
+526 passed
 ```
 
 ## Remaining Caution

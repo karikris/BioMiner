@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import polars as pl
@@ -44,6 +45,46 @@ def test_detection_policy_defaults_match_object_pipeline_profile() -> None:
     assert run_policy.detector_workers == 1
     assert run_policy.max_inflight_images == 32
     assert run_policy.crop_batch_size == 24
+
+
+def test_detection_and_run_sources_do_not_create_reviewed_box_training_artifacts() -> None:
+    source_paths = (
+        *sorted(Path("src/biominer/detection").glob("*.py")),
+        *sorted(Path("src/biominer/run").glob("*.py")),
+        Path("src/biominer/bioclip/object_runner.py"),
+        Path("src/biominer/cli.py"),
+    )
+    forbidden_tokens = (
+        "reviewed_boxes",
+        "reviewed-boxes",
+        "reviewed_box_dataset",
+        "reviewed box dataset",
+        "training_dataset",
+        "training-dataset",
+        "training dataset",
+        "fine_tune",
+        "fine-tune",
+        "finetune",
+        "fine tuning",
+        "yolo_train",
+        "train_yolo",
+        "label_studio",
+        "label-studio",
+        "cvat",
+        "/annotations",
+        "annotations/",
+        "/labels",
+        "labels/",
+    )
+
+    violations: dict[str, list[str]] = {}
+    for path in source_paths:
+        text = path.read_text(encoding="utf-8").casefold()
+        matches = [token for token in forbidden_tokens if token in text]
+        if matches:
+            violations[str(path)] = matches
+
+    assert violations == {}
 
 
 def test_detection_candidate_contract_normalizes_legacy_labels_and_rejects_taxa() -> None:
