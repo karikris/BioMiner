@@ -61,7 +61,7 @@ uv run biominer vision detect \
   --backend yoloe26 \
   --runtime-python "../YOLO26/venv/bin/python" \
   --checkpoint yoloe-26s-seg.pt \
-  --input staging/species_runs/example/filtered.parquet \
+  --input staging/species_runs/example/canonical_source_records.parquet \
   --output staging/species_runs/example/object_detections_yoloe26.parquet \
   --device auto \
   --conf 0.20 \
@@ -86,7 +86,7 @@ Run a bounded 10-image detector-crop prototype:
 
 ```bash
 uv run biominer vision yoloe26-prototype-run \
-  --input staging/species_runs/example/filtered.parquet \
+  --input staging/species_runs/example/canonical_source_records.parquet \
   --species-context staging/species_runs/example/species_context.json \
   --output-dir reports/yoloe26_prototype/example \
   --vision-runtime-python "../YOLO26/venv/bin/python" \

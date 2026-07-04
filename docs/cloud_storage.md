@@ -9,7 +9,7 @@ BioMiner production runs default to S3-compatible object storage plus a Postgres
 - immutable Parquet shards;
 - compact JSON manifests and reports;
 - raw Flickr JSON payloads if retained;
-- registry, filtered, and classified evidence outputs.
+- registry, canonical source-record, metadata-flag, and classified evidence outputs.
 
 `WorkStore` owns operational state:
 

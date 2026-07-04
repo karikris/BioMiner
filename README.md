@@ -66,12 +66,12 @@ Example command shape:
 
 ```bash
 uv run biominer vision detect \
-  --input staging/species_runs/example/filtered.parquet \
+  --input staging/species_runs/example/canonical_source_records.parquet \
   --output staging/species_runs/example/object_detections.parquet \
   --backend fake
 
 uv run biominer vision detect \
-  --input staging/species_runs/example/filtered.parquet \
+  --input staging/species_runs/example/canonical_source_records.parquet \
   --output staging/species_runs/example/object_detections_yoloe26.parquet \
   --backend yoloe26 \
   --runtime-python "../YOLO26/venv/bin/python" \
@@ -82,21 +82,21 @@ uv run biominer vision detect \
   --max-det 8
 
 uv run biominer vision score \
-  --input staging/species_runs/example/filtered.parquet \
+  --input staging/species_runs/example/canonical_source_records.parquet \
   --detections staging/species_runs/example/object_detections.parquet \
   --species-context staging/species_runs/example/species_context.json \
   --output staging/species_runs/example/object_bioclip_scores.parquet \
   --ablation-mode detector_crop
 
 uv run biominer vision ablate \
-  --input staging/species_runs/example/filtered.parquet \
+  --input staging/species_runs/example/canonical_source_records.parquet \
   --detections staging/species_runs/example/object_detections.parquet \
   --species-context staging/species_runs/example/species_context.json \
   --output-dir staging/species_runs/example/ablations \
   --modes whole_image,detector_crop,detector_crop_segmentation
 
 uv run biominer evidence join \
-  --input staging/species_runs/example/filtered.parquet \
+  --input staging/species_runs/example/canonical_source_records.parquet \
   --detections staging/species_runs/example/object_detections.parquet \
   --scores staging/species_runs/example/object_bioclip_scores.parquet \
   --joined-output staging/species_runs/example/object_evidence_joined.parquet \
@@ -162,6 +162,9 @@ src/biominer/
     scope.py
     audit.py
     ...
+  run/
+  evidence/
+  detection/
   flickr_fetch/
   filter/
   bioclip/
@@ -797,7 +800,7 @@ Run object-first scoring after `vision detect` has produced object detections:
 
 ```bash
 uv run biominer vision score \
-  --input staging/evidence/filtered.parquet \
+  --input staging/evidence/canonical_source_records.parquet \
   --detections staging/evidence/object_detections.parquet \
   --species-context staging/evidence/species_context.json \
   --species-candidates data/registry/current/species_candidates.parquet \
@@ -1065,7 +1068,7 @@ reports/registry_build_<version>.md
 reports/registry_audit_<version>.json
 reports/api_budget_profile.json
 reports/fetch_profile.json
-reports/filter_profile.json
+reports/metadata_flag_profile.json
 reports/bioclip_profile.json
 reports/occurrence_bin_profile.json
 reports/comment_review_profile.json
@@ -1111,7 +1114,7 @@ Flickr endpoint constraints
 API-budget enforcement
 fixed upload-date slicing
 deterministic resume order
-metadata filter rules
+metadata flag rules
 category/life-stage rules
 BioCLIP worker behavior with fakes
 temporary image deletion
