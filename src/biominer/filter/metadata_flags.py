@@ -65,7 +65,7 @@ HARD_NEGATIVE_GROUPS = {
 
 def load_metadata_keyword_groups(path: str | Path) -> dict[str, tuple[str, ...]]:
     data = load_json_config(path)
-    raw_groups = data.get("metadata_keywords", data.get("anti_keywords", data))
+    raw_groups = data.get("metadata_keywords", data)
     if not isinstance(raw_groups, dict):
         raise ValueError("Metadata keyword config must be an object or contain a metadata_keywords object")
     groups: dict[str, tuple[str, ...]] = {}

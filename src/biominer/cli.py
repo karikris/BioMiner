@@ -41,8 +41,6 @@ from biominer.flickr_comments.comment_review import (
     review_comments_once,
 )
 from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState, fetch_flickr_comments
-from biominer.evidence.buckets import classify_evidence_frame
-from biominer.filter.metadata_flags import flag_metadata_parquet
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry
@@ -429,13 +427,6 @@ def build_parser() -> argparse.ArgumentParser:
     poll_once_parser.add_argument("--evidence-stage", default="poll_once")
     poll_once_parser.add_argument("--no-compact", action="store_true")
     poll_once_parser.add_argument("--config")
-    apply_rules = subparsers.add_parser("apply-rules")
-    apply_rules.add_argument("--evidence", required=True)
-    apply_rules.add_argument("--output", required=True)
-    filter_parser = subparsers.add_parser("filter")
-    filter_parser.add_argument("--input", required=True)
-    filter_parser.add_argument("--metadata-keywords-json", required=True)
-    filter_parser.add_argument("--output", required=True)
     gc_cache = subparsers.add_parser("gc-cache")
     gc_cache.add_argument("--cache-root", required=True)
     gc_cache.add_argument("--delete", action="store_true")
@@ -756,21 +747,6 @@ def run(args: argparse.Namespace) -> int:
             work_store=work_store,
         )
         print(json.dumps({**result.__dict__, "state_db": str(result.state_db)}, indent=2, sort_keys=True))
-        return 0
-    if args.command == "apply-rules":
-        classified = classify_evidence_frame(pl.read_parquet(args.evidence))
-        output_path = Path(args.output)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        classified.write_parquet(output_path)
-        print(json.dumps(_publication_state_summary(classified, output_path), indent=2, sort_keys=True))
-        return 0
-    if args.command == "filter":
-        payload = flag_metadata_parquet(
-            input_path=args.input,
-            keywords_json=args.metadata_keywords_json,
-            output_path=args.output,
-        )
-        print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     if args.command == "gc-cache":
         print(json.dumps(_cache_gc_summary(Path(args.cache_root), delete=args.delete), indent=2, sort_keys=True))

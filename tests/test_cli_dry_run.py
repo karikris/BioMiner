@@ -26,6 +26,8 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert "bioclip" in commands
     assert "species" in commands
     assert "dev" in commands
+    assert "filter" not in commands
+    assert "apply-rules" not in commands
     assert "build-papilio-demoleus-query-plan" not in commands
     assert "fetch" not in commands
     assert "fetch-live" not in commands
@@ -2098,26 +2100,17 @@ def test_qa_summary_outputs_report_summary(tmp_path, capsys) -> None:
     assert payload["total_artifact_bytes"] == 1234
 
 
-def test_apply_rules_compact_and_gc_cache_cli(tmp_path, capsys) -> None:
+def test_removed_filter_and_apply_rules_commands_no_longer_parse() -> None:
     parser = build_parser()
-    evidence_path = tmp_path / "evidence.parquet"
-    pl.DataFrame(
-        {
-            "flickr_photo_id": ["1"],
-            "image_url": ["https://live.staticflickr.com/large.jpg"],
-            "bioclip_top1_label": ["a photo of Papilio demoleus"],
-            "bioclip_top1_score": [0.9],
-            "bioclip_species_agreement_status": ["exact_species_agreement"],
-        }
-    ).write_parquet(evidence_path)
 
-    classified_path = tmp_path / "classified.parquet"
-    args = parser.parse_args(["apply-rules", "--evidence", str(evidence_path), "--output", str(classified_path)])
-    assert run(args) == 0
-    rules_payload = json.loads(capsys.readouterr().out)
-    assert rules_payload["rows"] == 1
-    assert sum(rules_payload["publication_state_counts"].values()) == 1
-    assert rules_payload["in_review_without_reason"] == 0
+    with pytest.raises(SystemExit):
+        parser.parse_args(["apply-rules", "--evidence", "evidence.parquet", "--output", "classified.parquet"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["filter", "--input", "evidence.parquet", "--output", "flagged.parquet"])
+
+
+def test_compact_and_gc_cache_cli(tmp_path, capsys) -> None:
+    parser = build_parser()
 
     predictions = tmp_path / "predictions"
     predictions.mkdir()
