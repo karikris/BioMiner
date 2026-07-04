@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
-
 import polars as pl
+import pytest
 
-from biominer.cli import build_parser, run
+from biominer.cli import build_parser
 from biominer.storage.compaction import (
     MB,
     CompactionCandidate,
@@ -292,34 +291,11 @@ def test_report_written(tmp_path) -> None:
     assert report["dry_run"] is False
 
 
-def test_compact_cli_local_cloud_compatible_mode(tmp_path, capsys) -> None:
-    storage = LocalStorageBackend()
+def test_compact_parquet_cli_removed_from_public_surface() -> None:
     parser = build_parser()
-    source_prefix = tmp_path / "staging" / "evidence" / "stage=poll_once"
-    output_prefix = tmp_path / "staging"
-    _write_source_shards(storage, source_prefix, count=1)
 
-    args = parser.parse_args(
-        [
-            "compact-parquet",
-            "--input-prefix",
-            str(source_prefix),
-            "--output-prefix",
-            str(output_prefix),
-            "--source-stage",
-            "poll_once",
-            "--registry-version",
-            "registry-v1",
-            "--compaction-run-id",
-            "compact-1",
-        ]
-    )
-
-    assert run(args) == 0
-    payload = json.loads(capsys.readouterr().out)
-    output_uri = build_compacted_evidence_uri(output_prefix, source_stage="poll_once", registry_version="registry-v1", compaction_run_id="compact-1", part_id=1)
-    assert payload["output_shards_written"] == 1
-    assert storage.exists(output_uri)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["compact-parquet", "--input-prefix", "in", "--output-prefix", "out"])
 
 
 def _write_source_shards(

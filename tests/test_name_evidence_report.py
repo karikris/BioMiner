@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 
 import polars as pl
+import pytest
 
-from biominer.cli import build_parser, run
-from biominer.reports.name_evidence import accepted_name_terms_from_keyword_json, build_name_evidence_report
+from biominer.cli import build_parser
+from biominer.reports.name_evidence import accepted_name_terms_from_keyword_json, build_name_evidence_report, write_name_evidence_report
 
 
 def test_accepted_name_terms_from_keyword_json_excludes_broad_discovery_terms(tmp_path) -> None:
@@ -157,7 +158,7 @@ def test_name_evidence_report_falls_back_to_single_query_term_columns(tmp_path) 
     assert report["accepted_name_in_any_query"] == 1
 
 
-def test_report_name_evidence_cli_writes_json(tmp_path, capsys) -> None:
+def test_name_evidence_report_writer_writes_json_and_cli_is_removed(tmp_path) -> None:
     metadata = tmp_path / "metadata.parquet"
     bioclip = tmp_path / "bioclip.parquet"
     keywords = tmp_path / "keywords.json"
@@ -173,25 +174,15 @@ def test_report_name_evidence_cli_writes_json(tmp_path, capsys) -> None:
         [{"flickr_photo_id": "1", "occurrence_bin": "gold", "species_top1_scientific_name": "Papilio demoleus", "species_top1_score": 0.95}]
     ).write_parquet(bioclip)
 
-    args = build_parser().parse_args(
-        [
-            "report-name-evidence",
-            "--metadata-output",
-            str(metadata),
-            "--bioclip-output",
-            str(bioclip),
-            "--keywords-json",
-            str(keywords),
-            "--target-species",
-            "Papilio demoleus",
-            "--score-threshold",
-            "0.9",
-            "--output",
-            str(output),
-        ]
+    report = build_name_evidence_report(
+        metadata_path=metadata,
+        bioclip_output_path=bioclip,
+        keywords_json=keywords,
+        target_species="Papilio demoleus",
+        score_threshold=0.9,
     )
-    assert run(args) == 0
+    write_name_evidence_report(output, report)
 
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["output"] == str(output)
     assert json.loads(output.read_text(encoding="utf-8"))["candidate_dwc_tier_count"] == 1
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["report-name-evidence", "--metadata-output", str(metadata)])
