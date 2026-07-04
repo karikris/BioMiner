@@ -531,6 +531,78 @@ def test_orchestrator_cloud_poll_reenqueues_reported_followup_pages(tmp_path, mo
     assert statuses_by_page == {1: "completed", 2: "pending"}
 
 
+def test_orchestrator_runs_fake_backed_cloud_workflow_end_to_end(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("FLICKR_API_KEY", raising=False)
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_query_definitions(registry)
+    storage = _FakeRunStorage()
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+    detector = FakeObjectDetector(
+        [[DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 4.0), objectness_score=0.91)]]
+    )
+    scorer = _ConstantObjectScorer(
+        {
+            "Papilio demoleus": 0.84,
+            "a photo of Papilio demoleus": 0.83,
+            "Lime butterfly": 0.61,
+            "Papilionidae": 0.91,
+            "Papilio": 0.88,
+        }
+    )
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root="s3://biominer/runs",
+        storage_backend="s3",
+        workstore_backend="postgres",
+        stages=(
+            RunStage.COMPILE_QUERIES,
+            RunStage.ENQUEUE_FLICKR_WORK,
+            RunStage.POLL_FLICKR,
+            RunStage.DETECT_OBJECTS,
+            RunStage.SCORE_BIOCLIP,
+            RunStage.JOIN_EVIDENCE,
+            RunStage.SUMMARIZE,
+        ),
+        limits={"records": 1, "api_calls": 5},
+    )
+
+    result = ProductionRunOrchestrator(
+        request,
+        storage=storage,
+        workstore=workstore,
+        metadata_fetcher=_fake_flickr_fetch,
+        object_detector=detector,
+        image_loader=lambda _record: _tiny_rgb_image(),
+        object_scorer=scorer,
+        allow_single_target_fixture=True,
+    ).run()
+
+    assert result.manifest.status == "complete"
+    assert result.manifest.query_counts["compiled_definitions"] == 2
+    assert result.manifest.query_counts["enqueued_work_items"] == 1
+    assert result.manifest.query_counts["polled_work_items"] == 1
+    assert result.manifest.detection_counts["detections"] == 1
+    assert result.manifest.bioclip_counts["objects_scored"] == 1
+    assert result.manifest.evidence_counts["object_evidence_rows"] == 1
+    assert result.manifest.evidence_counts["photo_summary_rows"] == 1
+    for uri in (
+        result.artifact_uris.query_definitions_uri,
+        result.artifact_uris.source_records_uri,
+        result.artifact_uris.object_detections_uri,
+        result.artifact_uris.object_scores_uri,
+        result.artifact_uris.object_evidence_uri,
+        result.artifact_uris.photo_summary_uri,
+        result.artifact_uris.review_queue_uri,
+    ):
+        assert uri in storage.parquet_payloads
+    assert storage.json_payloads[result.artifact_uris.manifest_uri]["status"] == "complete"
+    summary = storage.parquet_payloads[result.artifact_uris.photo_summary_uri].to_dicts()[0]
+    assert summary["flickr_photo_id"] == "poll-photo-1"
+    assert summary["best_object_species_top1"] == "Papilio demoleus"
+
+
 def test_orchestrator_joins_evidence_and_writes_summary_metrics(tmp_path) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(

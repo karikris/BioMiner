@@ -107,6 +107,8 @@ def extract_photo_evidence(photo: dict[str, Any], *, species_query: str) -> dict
     )
 
     return {
+        "source": str(photo.get("source") or "flickr"),
+        "source_record_hash": str(photo.get("source_record_hash") or ""),
         "flickr_photo_id": str(photo.get("id", "")),
         "owner_id": photo.get("owner"),
         "owner_name": photo.get("ownername"),
@@ -290,6 +292,8 @@ def _contains_museum_specimen_context(text: str) -> bool:
 def _empty_evidence_frame() -> pl.DataFrame:
     return pl.DataFrame(
         schema={
+            "source": pl.String,
+            "source_record_hash": pl.String,
             "flickr_photo_id": pl.String,
             "owner_id": pl.String,
             "owner_name": pl.String,

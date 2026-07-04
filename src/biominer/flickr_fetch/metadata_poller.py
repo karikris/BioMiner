@@ -615,6 +615,7 @@ class MetadataPollState:
                     flickr_photo_id,
                     image_url,
                     image_url_kind,
+                    source_record_hash,
                     query_field,
                     query_term,
                     query_language,
@@ -658,6 +659,8 @@ class MetadataPollState:
                         _append_unique(tag_terms, term)
             evidence.update(
                 {
+                    "source": row["source"],
+                    "source_record_hash": row["source_record_hash"],
                     "first_query_field": row["query_field"],
                     "first_query_term": row["query_term"],
                     "first_query_language": row["query_language"],
