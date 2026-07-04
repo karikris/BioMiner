@@ -62,56 +62,41 @@ canonical source records
 
 The core Python 3.14 environment keeps heavy vision dependencies optional. `vision detect --backend fake` is available for offline tests and deterministic local plumbing. YOLOE-26, explicit YOLO26 inference checkpoints, and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent. YOLOE/YOLO26 are object finders only; BioCLIP 2.5 Huge remains the biological classifier and species scorer.
 
-Example command shape:
+Production command shape:
 
 ```bash
-uv run biominer vision detect \
-  --input staging/species_runs/example/canonical_source_records.parquet \
-  --output staging/species_runs/example/object_detections.parquet \
-  --backend fake
+uv run biominer run \
+  --taxon "Papilio demoleus" \
+  --rank species \
+  --registry-dir s3://biominer/biominer/registry/current \
+  --output-prefix s3://biominer/biominer/runs/papilio_demoleus \
+  --storage-backend s3 \
+  --workstore-backend postgres \
+  --vision-backend yoloe26 \
+  --bioclip-model imageomics/bioclip-2.5-vith14
 
-uv run biominer vision detect \
-  --input staging/species_runs/example/canonical_source_records.parquet \
-  --output staging/species_runs/example/object_detections_yoloe26.parquet \
-  --backend yoloe26 \
-  --runtime-python "../YOLO26/venv/bin/python" \
-  --checkpoint yoloe-26s-seg.pt \
-  --device auto \
-  --conf 0.20 \
-  --iou 0.50 \
-  --max-det 8
+uv run biominer run \
+  --taxon "Papilio" \
+  --rank genus \
+  --registry-dir s3://biominer/biominer/registry/current \
+  --output-prefix s3://biominer/biominer/runs/papilio \
+  --storage-backend s3 \
+  --workstore-backend postgres \
+  --vision-backend yoloe26 \
+  --bioclip-model imageomics/bioclip-2.5-vith14
 
-uv run biominer vision detect \
-  --input staging/species_runs/example/canonical_source_records.parquet \
-  --output staging/species_runs/example/object_detections_yolo26.parquet \
-  --backend yolo26 \
-  --runtime-python "../YOLO26/venv/bin/python" \
-  --checkpoint "../YOLO26/models/coarse-objects.pt"
-
-uv run biominer vision score \
-  --input staging/species_runs/example/canonical_source_records.parquet \
-  --detections staging/species_runs/example/object_detections.parquet \
-  --species-context staging/species_runs/example/species_context.json \
-  --species-candidates data/registry/current/species_candidates.parquet \
-  --output staging/species_runs/example/object_bioclip_scores.parquet \
-  --ablation-mode detector_crop
-
-uv run biominer vision ablate \
-  --input staging/species_runs/example/canonical_source_records.parquet \
-  --detections staging/species_runs/example/object_detections.parquet \
-  --species-context staging/species_runs/example/species_context.json \
-  --species-candidates data/registry/current/species_candidates.parquet \
-  --output-dir staging/species_runs/example/ablations \
-  --modes whole_image,detector_crop,detector_crop_segmentation
-
-uv run biominer evidence join \
-  --input staging/species_runs/example/canonical_source_records.parquet \
-  --detections staging/species_runs/example/object_detections.parquet \
-  --scores staging/species_runs/example/object_bioclip_scores.parquet \
-  --joined-output staging/species_runs/example/object_evidence_joined.parquet \
-  --photo-summary-output staging/species_runs/example/photo_evidence_summary.parquet \
-  --species-context staging/species_runs/example/species_context.json
+uv run biominer run \
+  --taxon "Papilionidae" \
+  --rank family \
+  --registry-dir s3://biominer/biominer/registry/current \
+  --output-prefix s3://biominer/biominer/runs/papilionidae \
+  --storage-backend s3 \
+  --workstore-backend postgres \
+  --vision-backend yoloe26 \
+  --bioclip-model imageomics/bioclip-2.5-vith14
 ```
+
+Individual `vision detect`, `vision score`, `vision ablate`, and `evidence join` commands are available for local stage debugging. They are not the production entry point; see `docs/vision_workflow.md` and `examples/species/papilio_demoleus/object_pipeline.md`.
 
 Object-level tables are not standalone silos. Every detection and score row keeps `source`, `flickr_photo_id`, and object-level `detection_id`/`crop_hash` where applicable. Geography is recorded as a soft prior and can route strong visual conflicts to review; it is not an absolute discard rule.
 

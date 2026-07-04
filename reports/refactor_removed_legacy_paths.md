@@ -4,7 +4,7 @@ Recorded: 2026-07-05
 
 Branch used for current cleanup commits: `main`
 
-Latest audited base before this report edit: `548934a`
+Latest audited base before this report edit: `3371ec3`
 
 ## Removed Files
 
@@ -198,7 +198,7 @@ These are not public production commands. The public production entry point is `
 - Consider moving `SpeciesContext` from `biominer.species.context` into `biominer.run` or a neutral common schema module if the package name remains confusing after the public `species` CLI removal.
 - Continue exercising the cloud-backed production stages with fake S3/Postgres fixtures as new stage behavior is added.
 - Keep `bioclip/register_runner.py` non-public unless a later benchmark/debug command needs it explicitly.
-- Review `README.md` examples that still use `staging/species_runs/...` debug paths and decide whether to move them into docs/examples only.
+- Keep top-level README examples focused on `biominer run`; local stage examples belong in docs and examples under explicit debug paths.
 
 ## MCP Limitations Encountered
 

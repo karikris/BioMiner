@@ -4,7 +4,7 @@ Recorded: 2026-07-05
 
 Current branch: `main`
 
-Latest audited base before this report edit: `6a4a838`
+Latest audited base before this report edit: `3371ec3`
 
 Note: the original refactor plan named branch `cleanup/production-workflow-postgres-s3`; a later operator instruction changed the working branch to `main`, and the cleanup commits are being pushed directly to `main`.
 
@@ -169,6 +169,7 @@ Validation redacts configured secrets and rejects mixed local/cloud modes such a
 Confirmed current behavior:
 
 - The public workflow is rank-aware through `biominer run --rank auto|family|genus|species`.
+- Top-level README examples now show `biominer run` species, genus, and family commands with S3/Postgres defaults; individual `vision` and `evidence` stage examples are documented as local debug paths.
 - Registry build/audit are the only public registry commands.
 - `biominer registry build` defaults to enrichment sources:
   `col`, `inaturalist`, `itis`, `tmd_de`, and `wikidata`.

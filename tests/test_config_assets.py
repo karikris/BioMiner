@@ -48,7 +48,7 @@ def test_papilio_species_example_documents_generic_object_pipeline() -> None:
         "biominer evidence join",
     ):
         assert command in text
-    assert '--species-context staging/species_runs/papilio_demoleus/species_context.json' in text
+    assert '--species-context runs/local_debug/papilio_demoleus/species_context.json' in text
     assert "--image-max-side-px" in text
     assert "fetch_papilio_demoleus_multilingual_metadata.py" not in text
     assert "classify_papilio_demoleus" not in text
@@ -90,6 +90,7 @@ def test_production_workflow_docs_exist_and_match_current_surface() -> None:
         "user-provided coarse-object checkpoint",
         "detector_crop_segmentation",
         "--species-candidates data/registry/current/species_candidates.parquet",
+        "runs/local_debug/papilio_demoleus",
     ):
         assert expected in vision
     assert "YOLOE/YOLO26 output must not be interpreted as species classification" in vision

@@ -24,12 +24,12 @@ uv run biominer vision ablate --help
 
 Detection writes rows using the stable detection schema with source/photo join keys and object-level IDs. Scoring reads canonical records plus detections and writes BioCLIP object score rows. Ablation compares visual modes over the same input.
 
-`vision detect` defaults to `--backend yoloe26`. The optional `--backend yolo26` path is inference-only compatibility for a user-provided coarse-object checkpoint:
+`vision detect` defaults to `--backend yoloe26`. The optional `--backend yolo26` path is inference-only compatibility for a user-provided coarse-object checkpoint. These stage commands are for local debugging; production runs are coordinated by `biominer run`.
 
 ```bash
 uv run biominer vision detect \
-  --input staging/species_runs/example/canonical_source_records.parquet \
-  --output staging/species_runs/example/object_detections_yolo26.parquet \
+  --input runs/local_debug/papilio_demoleus/canonical_source_records.parquet \
+  --output runs/local_debug/papilio_demoleus/object_detections_yolo26.parquet \
   --backend yolo26 \
   --runtime-python "../YOLO26/venv/bin/python" \
   --checkpoint "../YOLO26/models/coarse-objects.pt"
@@ -64,8 +64,8 @@ uv run biominer dev vision bioclip-runtime-check \
   --device auto
 
 uv run biominer dev vision yoloe26-prototype-run \
-  --input staging/species_runs/example/canonical_source_records.parquet \
-  --species-context staging/species_runs/example/species_context.json \
+  --input runs/local_debug/papilio_demoleus/canonical_source_records.parquet \
+  --species-context runs/local_debug/papilio_demoleus/species_context.json \
   --species-candidates data/registry/current/species_candidates.parquet \
   --output-dir reports/yoloe26_prototype/example \
   --vision-runtime-python "../YOLO26/venv/bin/python" \

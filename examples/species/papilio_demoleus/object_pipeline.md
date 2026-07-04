@@ -9,7 +9,7 @@ uv run biominer run \
   --taxon "Papilio demoleus" \
   --rank species \
   --registry-dir data/registry/current \
-  --output-prefix staging/species_runs/papilio_demoleus \
+  --output-prefix runs/local_debug/papilio_demoleus \
   --storage-backend local \
   --workstore-backend sqlite \
   --stages resolve \
@@ -20,8 +20,8 @@ Run object detection on the filtered canonical records:
 
 ```bash
 uv run biominer vision detect \
-  --input staging/species_runs/papilio_demoleus/filtered.parquet \
-  --output staging/species_runs/papilio_demoleus/object_detections.parquet \
+  --input runs/local_debug/papilio_demoleus/filtered.parquet \
+  --output runs/local_debug/papilio_demoleus/object_detections.parquet \
   --backend yoloe26 \
   --runtime-python ./YOLO26/venv/bin/python \
   --checkpoint yoloe-26s-seg.pt \
@@ -36,11 +36,11 @@ Score detector crops with BioCLIP against registry-derived candidate labels:
 
 ```bash
 uv run biominer vision score \
-  --species-context staging/species_runs/papilio_demoleus/species_context.json \
-  --input staging/species_runs/papilio_demoleus/filtered.parquet \
-  --detections staging/species_runs/papilio_demoleus/object_detections.parquet \
+  --species-context runs/local_debug/papilio_demoleus/species_context.json \
+  --input runs/local_debug/papilio_demoleus/filtered.parquet \
+  --detections runs/local_debug/papilio_demoleus/object_detections.parquet \
   --species-candidates data/registry/current/species_candidates.parquet \
-  --output staging/species_runs/papilio_demoleus/object_bioclip_scores.parquet \
+  --output runs/local_debug/papilio_demoleus/object_bioclip_scores.parquet \
   --ablation-mode detector_crop \
   --device auto \
   --parquet-batch-rows 10000
@@ -50,11 +50,11 @@ Run the whole-image, detector-crop, and crop-plus-segmentation ablations:
 
 ```bash
 uv run biominer vision ablate \
-  --species-context staging/species_runs/papilio_demoleus/species_context.json \
-  --input staging/species_runs/papilio_demoleus/filtered.parquet \
-  --detections staging/species_runs/papilio_demoleus/object_detections.parquet \
+  --species-context runs/local_debug/papilio_demoleus/species_context.json \
+  --input runs/local_debug/papilio_demoleus/filtered.parquet \
+  --detections runs/local_debug/papilio_demoleus/object_detections.parquet \
   --species-candidates data/registry/current/species_candidates.parquet \
-  --output-dir staging/species_runs/papilio_demoleus/ablations \
+  --output-dir runs/local_debug/papilio_demoleus/ablations \
   --modes whole_image,detector_crop,detector_crop_segmentation \
   --device auto \
   --parquet-batch-rows 10000
@@ -64,12 +64,12 @@ Join canonical records, object detections, and object BioCLIP scores:
 
 ```bash
 uv run biominer evidence join \
-  --species-context staging/species_runs/papilio_demoleus/species_context.json \
-  --input staging/species_runs/papilio_demoleus/filtered.parquet \
-  --detections staging/species_runs/papilio_demoleus/object_detections.parquet \
-  --scores staging/species_runs/papilio_demoleus/object_bioclip_scores.parquet \
-  --joined-output staging/species_runs/papilio_demoleus/object_evidence_joined.parquet \
-  --photo-summary-output staging/species_runs/papilio_demoleus/photo_evidence_summary.parquet
+  --species-context runs/local_debug/papilio_demoleus/species_context.json \
+  --input runs/local_debug/papilio_demoleus/filtered.parquet \
+  --detections runs/local_debug/papilio_demoleus/object_detections.parquet \
+  --scores runs/local_debug/papilio_demoleus/object_bioclip_scores.parquet \
+  --joined-output runs/local_debug/papilio_demoleus/object_evidence_joined.parquet \
+  --photo-summary-output runs/local_debug/papilio_demoleus/photo_evidence_summary.parquet
 ```
 
 The same commands work for another species by changing the `--scientific-name`, `--species-context`, and run directory paths.
