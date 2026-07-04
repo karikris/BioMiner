@@ -58,17 +58,17 @@ canonical source records
   -> object_evidence_joined.parquet and photo_evidence_summary.parquet
 ```
 
-The core Python 3.14 environment keeps heavy vision dependencies optional. `detect boxes --backend fake` is available for offline tests and deterministic local plumbing. YOLOE-26, YOLO, and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent. The YOLOE-26 prototype treats YOLOE only as an object finder; BioCLIP 2.5 Huge remains the biological classifier and species scorer.
+The core Python 3.14 environment keeps heavy vision dependencies optional. `vision detect --backend fake` is available for offline tests and deterministic local plumbing. YOLOE-26 and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent. The YOLOE-26 prototype treats YOLOE only as an object finder; BioCLIP 2.5 Huge remains the biological classifier and species scorer.
 
 Example command shape:
 
 ```bash
-uv run biominer detect boxes \
+uv run biominer vision detect \
   --input staging/species_runs/example/filtered.parquet \
   --output staging/species_runs/example/object_detections.parquet \
   --backend fake
 
-uv run biominer detect boxes \
+uv run biominer vision detect \
   --input staging/species_runs/example/filtered.parquet \
   --output staging/species_runs/example/object_detections_yoloe26.parquet \
   --backend yoloe26 \
@@ -79,21 +79,21 @@ uv run biominer detect boxes \
   --iou 0.50 \
   --max-det 8
 
-uv run biominer bioclip screen-objects \
+uv run biominer vision score \
   --input staging/species_runs/example/filtered.parquet \
   --detections staging/species_runs/example/object_detections.parquet \
   --species-context staging/species_runs/example/species_context.json \
   --output staging/species_runs/example/object_bioclip_scores.parquet \
   --ablation-mode detector_crop
 
-uv run biominer bioclip ablate-objects \
+uv run biominer vision ablate \
   --input staging/species_runs/example/filtered.parquet \
   --detections staging/species_runs/example/object_detections.parquet \
   --species-context staging/species_runs/example/species_context.json \
   --output-dir staging/species_runs/example/ablations \
   --modes whole_image,detector_crop,detector_crop_segmentation
 
-uv run biominer bioclip join-object-evidence \
+uv run biominer vision join \
   --input staging/species_runs/example/filtered.parquet \
   --detections staging/species_runs/example/object_detections.parquet \
   --scores staging/species_runs/example/object_bioclip_scores.parquet \

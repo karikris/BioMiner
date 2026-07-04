@@ -14,11 +14,12 @@ uv run biominer species resolve \
 Run object detection on the filtered canonical records:
 
 ```bash
-uv run biominer species detect \
+uv run biominer vision detect \
   --input staging/species_runs/papilio_demoleus/filtered.parquet \
   --output staging/species_runs/papilio_demoleus/object_detections.parquet \
-  --backend yolo \
-  --runtime-python .venv-vision-py312/bin/python \
+  --backend yoloe26 \
+  --runtime-python ./YOLO26/venv/bin/python \
+  --checkpoint yoloe-26s-seg.pt \
   --device auto \
   --image-max-side-px 1280 \
   --detector-batch-size 4 \
@@ -29,8 +30,8 @@ uv run biominer species detect \
 Score detector crops with BioCLIP against registry-derived candidate labels:
 
 ```bash
-uv run biominer species bioclip-objects \
-  --context-json staging/species_runs/papilio_demoleus/species_context.json \
+uv run biominer vision score \
+  --species-context staging/species_runs/papilio_demoleus/species_context.json \
   --input staging/species_runs/papilio_demoleus/filtered.parquet \
   --detections staging/species_runs/papilio_demoleus/object_detections.parquet \
   --species-candidates data/registry/current/species_candidates.parquet \
@@ -43,8 +44,8 @@ uv run biominer species bioclip-objects \
 Run the whole-image, detector-crop, and crop-plus-segmentation ablations:
 
 ```bash
-uv run biominer species ablate-objects \
-  --context-json staging/species_runs/papilio_demoleus/species_context.json \
+uv run biominer vision ablate \
+  --species-context staging/species_runs/papilio_demoleus/species_context.json \
   --input staging/species_runs/papilio_demoleus/filtered.parquet \
   --detections staging/species_runs/papilio_demoleus/object_detections.parquet \
   --species-candidates data/registry/current/species_candidates.parquet \
@@ -57,8 +58,8 @@ uv run biominer species ablate-objects \
 Join canonical records, object detections, and object BioCLIP scores:
 
 ```bash
-uv run biominer species join-object-evidence \
-  --context-json staging/species_runs/papilio_demoleus/species_context.json \
+uv run biominer vision join \
+  --species-context staging/species_runs/papilio_demoleus/species_context.json \
   --input staging/species_runs/papilio_demoleus/filtered.parquet \
   --detections staging/species_runs/papilio_demoleus/object_detections.parquet \
   --scores staging/species_runs/papilio_demoleus/object_bioclip_scores.parquet \
@@ -66,4 +67,4 @@ uv run biominer species join-object-evidence \
   --photo-summary-output staging/species_runs/papilio_demoleus/photo_evidence_summary.parquet
 ```
 
-The same commands work for another species by changing the `--scientific-name`, `--context-json`, and run directory paths.
+The same commands work for another species by changing the `--scientific-name`, `--species-context`, and run directory paths.

@@ -22,6 +22,7 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
 
     assert "poll-once" in commands
     assert "run" in commands
+    assert "vision" in commands
     assert "bioclip" in commands
     assert "species" in commands
     assert "dev" in commands
@@ -54,6 +55,8 @@ def test_species_cli_no_longer_exposes_legacy_run_command() -> None:
     species_choices = commands["species"]._subparsers._group_actions[0].choices  # noqa: SLF001
 
     assert "run" not in species_choices
+    for removed in {"detect", "bioclip-objects", "ablate-objects", "join-object-evidence"}:
+        assert removed not in species_choices
     assert "run" in commands
 
 
@@ -276,16 +279,14 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
             "0.2",
         ]
     )
-    species_args = parser.parse_args(
+    vision_args = parser.parse_args(
         [
-            "species",
+            "vision",
             "detect",
             "--input",
             "filtered.parquet",
             "--output",
             "object_detections.parquet",
-            "--backend",
-            "fake",
             "--profile",
             "mac_m5pro_64gb",
             "--parquet-batch-rows",
@@ -309,10 +310,12 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
     assert args.crop_target_px == 224
     assert args.image_max_side_px == 960
     assert args.crop_padding_ratio == 0.2
-    assert species_args.species_command == "detect"
-    assert species_args.profile == "mac_m5pro_64gb"
-    assert species_args.parquet_batch_rows == 6
-    assert species_args.image_max_side_px == 1024
+    assert vision_args.command == "vision"
+    assert vision_args.vision_command == "detect"
+    assert vision_args.backend == "yoloe26"
+    assert vision_args.profile == "mac_m5pro_64gb"
+    assert vision_args.parquet_batch_rows == 6
+    assert vision_args.image_max_side_px == 1024
 
 
 def test_detect_boxes_cli_accepts_yoloe26_arguments() -> None:
@@ -721,11 +724,11 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "none",
         ]
     )
-    species_screen = parser.parse_args(
+    vision_score = parser.parse_args(
         [
-            "species",
-            "bioclip-objects",
-            "--context-json",
+            "vision",
+            "score",
+            "--species-context",
             "species_context.json",
             "--input",
             "filtered.parquet",
@@ -747,11 +750,11 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "none",
         ]
     )
-    species_ablate = parser.parse_args(
+    vision_ablate = parser.parse_args(
         [
-            "species",
-            "ablate-objects",
-            "--context-json",
+            "vision",
+            "ablate",
+            "--species-context",
             "species_context.json",
             "--input",
             "filtered.parquet",
@@ -791,11 +794,11 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "species_context.json",
         ]
     )
-    species_join = parser.parse_args(
+    vision_join = parser.parse_args(
         [
-            "species",
-            "join-object-evidence",
-            "--context-json",
+            "vision",
+            "join",
+            "--species-context",
             "species_context.json",
             "--input",
             "filtered.parquet",
@@ -826,24 +829,30 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert ablate.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert ablate.object_image_embedding_cache == "object_image_embeddings.parquet"
     assert ablate.segmenter == "none"
-    assert species_screen.species_command == "bioclip-objects"
-    assert species_screen.geo_prior_table == "geo_prior.parquet"
-    assert species_screen.parquet_batch_rows == 9
-    assert species_screen.text_embedding_batch_size == 4
-    assert species_screen.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
-    assert species_screen.object_image_embedding_cache == "object_image_embeddings.parquet"
-    assert species_screen.segmenter == "none"
-    assert species_ablate.species_command == "ablate-objects"
-    assert species_ablate.geo_prior_table == "geo_prior.parquet"
-    assert species_ablate.parquet_batch_rows == 13
-    assert species_ablate.text_embedding_batch_size == 5
-    assert species_ablate.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
-    assert species_ablate.object_image_embedding_cache == "object_image_embeddings.parquet"
-    assert species_ablate.segmenter == "none"
+    assert vision_score.command == "vision"
+    assert vision_score.vision_command == "score"
+    assert vision_score.geo_prior_table == "geo_prior.parquet"
+    assert vision_score.parquet_batch_rows == 9
+    assert vision_score.text_embedding_batch_size == 4
+    assert vision_score.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
+    assert vision_score.object_image_embedding_cache == "object_image_embeddings.parquet"
+    assert vision_score.segmenter == "none"
+    assert vision_ablate.command == "vision"
+    assert vision_ablate.vision_command == "ablate"
+    assert vision_ablate.geo_prior_table == "geo_prior.parquet"
+    assert vision_ablate.parquet_batch_rows == 13
+    assert vision_ablate.text_embedding_batch_size == 5
+    assert vision_ablate.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
+    assert vision_ablate.object_image_embedding_cache == "object_image_embeddings.parquet"
+    assert vision_ablate.segmenter == "none"
     assert join.bioclip_command == "join-object-evidence"
     assert join.scores == "object_bioclip_scores.parquet"
-    assert species_join.species_command == "join-object-evidence"
-    assert species_join.context_json == "species_context.json"
+    assert vision_join.command == "vision"
+    assert vision_join.vision_command == "join"
+    assert vision_join.species_context == "species_context.json"
+    for removed in ("detect", "bioclip-objects", "ablate-objects", "join-object-evidence"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["species", removed])
 
 
 def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch) -> None:
@@ -1352,7 +1361,7 @@ def test_bioclip_join_object_evidence_cli_writes_join_tables(tmp_path, capsys, m
     assert kwargs["species_context"].scientific_name == "Danaus plexippus"
 
 
-def test_species_join_object_evidence_cli_writes_join_tables(tmp_path, capsys, monkeypatch) -> None:
+def test_vision_join_cli_writes_join_tables(tmp_path, capsys, monkeypatch) -> None:
     context_path = tmp_path / "species_context.json"
     context_path.write_text(
         json.dumps(
@@ -1388,9 +1397,9 @@ def test_species_join_object_evidence_cli_writes_join_tables(tmp_path, capsys, m
     parser = build_parser()
     args = parser.parse_args(
         [
-            "species",
-            "join-object-evidence",
-            "--context-json",
+            "vision",
+            "join",
+            "--species-context",
             str(context_path),
             "--input",
             str(input_path),

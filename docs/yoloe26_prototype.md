@@ -57,7 +57,7 @@ uv run biominer bioclip prefetch-model \
 ## Run Detection Only
 
 ```bash
-uv run biominer detect boxes \
+uv run biominer vision detect \
   --backend yoloe26 \
   --runtime-python "../YOLO26/venv/bin/python" \
   --checkpoint yoloe-26s-seg.pt \

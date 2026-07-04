@@ -27,13 +27,13 @@ def test_papilio_species_example_documents_generic_object_pipeline() -> None:
 
     text = path.read_text(encoding="utf-8")
     for command in (
-        "biominer species detect",
-        "biominer species bioclip-objects",
-        "biominer species ablate-objects",
-        "biominer species join-object-evidence",
+        "biominer vision detect",
+        "biominer vision score",
+        "biominer vision ablate",
+        "biominer vision join",
     ):
         assert command in text
-    assert '--context-json staging/species_runs/papilio_demoleus/species_context.json' in text
+    assert '--species-context staging/species_runs/papilio_demoleus/species_context.json' in text
     assert "--image-max-side-px" in text
     assert "fetch_papilio_demoleus_multilingual_metadata.py" not in text
     assert "classify_papilio_demoleus" not in text
