@@ -78,7 +78,14 @@ def test_production_workflow_docs_exist_and_match_current_surface() -> None:
         assert expected in production
 
     registry = Path("docs/registry_trust_tiers.md").read_text(encoding="utf-8")
-    for expected in ("T1", "T5", "enabled", "query_definition_id"):
+    for expected in (
+        "T1",
+        "T5",
+        "enabled",
+        "query_definition_id",
+        "enabled_t5_name_rows",
+        "t5_query_definition_rows",
+    ):
         assert expected in registry
     assert "T3  Wikidata labels and aliases with confident external taxon links" in registry
     assert "external taxon linkage is confident" in registry

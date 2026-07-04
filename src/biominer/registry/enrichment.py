@@ -752,6 +752,11 @@ def compile_enriched_registry(
         manifest["qa_warning_count"] = qa.filter(pl.col("severity") == "warning").height
         manifest["qa_status"] = "failed" if fatal_count else "passed"
 
+    final_names = pl.read_parquet(output / "names.parquet")
+    query_definitions = pl.read_parquet(output / "flickr_query_definitions.parquet")
+    enabled_t5_name_rows = _enabled_t5_name_count(final_names)
+    t5_query_definition_rows = _t5_query_definition_count(query_definitions)
+
     manifest.update(
         {
             "base_registry_dir": str(base),
@@ -760,9 +765,11 @@ def compile_enriched_registry(
             "enrichment_schema_version": ENRICHMENT_SCHEMA_VERSION,
             "enrichment_name_assertion_rows": assertions.height,
             "enabled_enrichment_name_rows": enabled_enrichment.height,
+            "enabled_t5_name_rows": enabled_t5_name_rows,
             "name_candidate_rows": candidate_output.height,
             "t5_retrieval_query_definition_rows": 0,
-            "query_definition_rows": int(pl.read_parquet(output / "flickr_query_definitions.parquet").height),
+            "t5_query_definition_rows": t5_query_definition_rows,
+            "query_definition_rows": int(query_definitions.height),
             "external_taxon_link_rows": external_links.height,
             "source_error_rows": source_errors.height,
             "source_work_rows": source_work.height,
@@ -771,6 +778,18 @@ def compile_enriched_registry(
     )
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     return manifest
+
+
+def _enabled_t5_name_count(names: pl.DataFrame) -> int:
+    if names.is_empty() or "trust_tier" not in names.columns or "enabled" not in names.columns:
+        return 0
+    return names.filter((pl.col("trust_tier") == "T5") & pl.col("enabled")).height
+
+
+def _t5_query_definition_count(queries: pl.DataFrame) -> int:
+    if queries.is_empty() or "trust_tier" not in queries.columns:
+        return 0
+    return queries.filter(pl.col("trust_tier") == "T5").height
 
 
 def _read_or_empty(path: Path, schema: dict[str, pl.DataType]) -> pl.DataFrame:

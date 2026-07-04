@@ -612,6 +612,8 @@ def test_compile_enriched_registry_enables_t5_translations_as_name_evidence(tmp_
     assert t5_queries.select("enabled").to_series().to_list() == [True, True]
     assert t5_queries.select("trust_tier").to_series().to_list() == ["T5", "T5"]
     assert t5_queries.select("name_class").to_series().to_list() == ["generated_translation", "generated_translation"]
+    assert manifest["enabled_t5_name_rows"] == 1
+    assert manifest["t5_query_definition_rows"] == 2
     assert manifest["t5_retrieval_query_definition_rows"] == 0
     assert manifest["query_definition_rows"] == queries.height
 

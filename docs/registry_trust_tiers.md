@@ -62,6 +62,7 @@ review_state
 ```
 
 T5 rows keep `trust_tier = T5` and `name_class = generated_translation` in both `names.parquet` and `flickr_query_definitions.parquet`.
+Registry manifests record `enabled_t5_name_rows` and `t5_query_definition_rows` so enabled T5 evidence remains auditable without relying on the legacy retrieval-only metric.
 
 When Flickr rediscoveries hit the same photo, those query definitions are folded into the canonical source record provenance arrays. The registry remains the source of term provenance; Flickr title, tags, description, and comments are discovery or review evidence, not taxonomic authority.
 

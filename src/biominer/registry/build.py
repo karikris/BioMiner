@@ -206,6 +206,8 @@ def _build_report(
         "inaturalist_daily_request_limit": inaturalist_daily_request_limit if not skip_enrichment else None,
         "enrichment_name_assertion_rows": manifest.get("enrichment_name_assertion_rows"),
         "enabled_enrichment_name_rows": manifest.get("enabled_enrichment_name_rows"),
+        "enabled_t5_name_rows": manifest.get("enabled_t5_name_rows"),
+        "t5_query_definition_rows": manifest.get("t5_query_definition_rows"),
         "name_candidate_rows": manifest.get("name_candidate_rows"),
         "external_taxon_link_rows": manifest.get("external_taxon_link_rows"),
         "source_error_rows": manifest.get("source_error_rows"),
@@ -243,6 +245,8 @@ def _report_markdown(report: dict[str, Any]) -> str:
             f"- Enrichment sources: {', '.join(report['enrichment_sources'])}",
             f"- iNaturalist daily request limit: {report['inaturalist_daily_request_limit']}",
             f"- Enabled enrichment names: {report['enabled_enrichment_name_rows']}",
+            f"- Enabled T5 names: {report['enabled_t5_name_rows']}",
+            f"- T5 query definitions: {report['t5_query_definition_rows']}",
             f"- Source errors: {report['source_error_rows']}",
             "",
         ]
