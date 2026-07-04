@@ -4,7 +4,10 @@ Recorded: 2026-07-05
 
 Current branch: `main`
 
-Latest audited base before this report edit: `4210788`
+Latest verified implementation base: `e6a498b93ba9`
+
+This report records the implementation surface at that base. Later edits to
+audit Markdown do not change production code or command behavior.
 
 Note: the original refactor plan named branch `cleanup/production-workflow-postgres-s3`; a later operator instruction changed the working branch to `main`, and the cleanup commits are being pushed directly to `main`.
 

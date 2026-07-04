@@ -4,7 +4,10 @@ Recorded: 2026-07-05
 
 Branch used for current cleanup commits: `main`
 
-Latest audited base before this report edit: `4210788`
+Latest verified implementation base: `e6a498b93ba9`
+
+This report records removed paths and replacements at that base. Later edits
+to audit Markdown do not change production code or command behavior.
 
 ## Removed Files
 

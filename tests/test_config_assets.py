@@ -168,6 +168,22 @@ def test_completion_audit_records_current_refactor_invariants() -> None:
         assert expected in text
 
 
+def test_refactor_phase_commit_map_records_pushed_main_phases() -> None:
+    text = Path("reports/refactor_phase_commit_map.md").read_text(encoding="utf-8")
+
+    for expected in (
+        "Current branch: `main`",
+        "All commits listed below are present on",
+        "Phase 0 - Repository and environment audit",
+        "Phase 10 - Final audits and PR readiness evidence",
+        "`f28aa84` chore: audit refactor environment and workflow surface",
+        "`e6a498b` docs: clarify verified refactor audit base",
+        "T5 translations",
+        "operator instructions explicitly enabled T5 as accepted names",
+    ):
+        assert expected in text
+
+
 def test_mcp_environment_report_uses_generic_runtime_layout() -> None:
     text = Path("reports/refactor_mcp_environment.md").read_text(encoding="utf-8")
 
