@@ -85,6 +85,7 @@ uv run biominer vision score \
   --input staging/species_runs/example/canonical_source_records.parquet \
   --detections staging/species_runs/example/object_detections.parquet \
   --species-context staging/species_runs/example/species_context.json \
+  --species-candidates data/registry/current/species_candidates.parquet \
   --output staging/species_runs/example/object_bioclip_scores.parquet \
   --ablation-mode detector_crop
 
@@ -92,6 +93,7 @@ uv run biominer vision ablate \
   --input staging/species_runs/example/canonical_source_records.parquet \
   --detections staging/species_runs/example/object_detections.parquet \
   --species-context staging/species_runs/example/species_context.json \
+  --species-candidates data/registry/current/species_candidates.parquet \
   --output-dir staging/species_runs/example/ablations \
   --modes whole_image,detector_crop,detector_crop_segmentation
 

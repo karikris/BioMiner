@@ -53,6 +53,7 @@ uv run biominer dev vision bioclip-runtime-check \
 uv run biominer dev vision yoloe26-prototype-run \
   --input staging/species_runs/example/canonical_source_records.parquet \
   --species-context staging/species_runs/example/species_context.json \
+  --species-candidates data/registry/current/species_candidates.parquet \
   --output-dir reports/yoloe26_prototype/example \
   --vision-runtime-python "../YOLO26/venv/bin/python" \
   --bioclip-runtime-python "../BioCLIP25/venv/bin/python" \

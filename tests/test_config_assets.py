@@ -91,6 +91,7 @@ def test_production_workflow_docs_exist_and_match_current_surface() -> None:
         "BioCLIP",
         "object finder",
         "detector_crop_segmentation",
+        "--species-candidates data/registry/current/species_candidates.parquet",
     ):
         assert expected in vision
     assert "YOLOE/YOLO26 output must not be interpreted as species classification" in vision

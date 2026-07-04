@@ -1174,6 +1174,62 @@ def test_bioclip_ablate_objects_forwards_parquet_batch_rows(tmp_path, capsys, mo
     assert calls["candidate_set"]["geo_prior_table"] is None
 
 
+def test_bioclip_score_reports_missing_candidate_expansion(tmp_path, capsys) -> None:
+    runtime_python, context_path, input_path, detections_path = _write_candidate_expansion_error_inputs(tmp_path)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "vision",
+            "score",
+            "--input",
+            str(input_path),
+            "--detections",
+            str(detections_path),
+            "--species-context",
+            str(context_path),
+            "--output",
+            str(tmp_path / "scores.parquet"),
+            "--runtime-python",
+            str(runtime_python),
+        ]
+    )
+
+    assert run(args) == 2
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "vision score"
+    assert "registry-derived same-genus/same-family candidates" in payload["error"]
+    assert "--species-candidates" in payload["hint"]
+
+
+def test_bioclip_ablate_reports_missing_candidate_expansion(tmp_path, capsys) -> None:
+    runtime_python, context_path, input_path, detections_path = _write_candidate_expansion_error_inputs(tmp_path)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "vision",
+            "ablate",
+            "--input",
+            str(input_path),
+            "--detections",
+            str(detections_path),
+            "--species-context",
+            str(context_path),
+            "--output-dir",
+            str(tmp_path / "ablations"),
+            "--runtime-python",
+            str(runtime_python),
+        ]
+    )
+
+    assert run(args) == 2
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "vision ablate"
+    assert "registry-derived same-genus/same-family candidates" in payload["error"]
+    assert "--species-candidates" in payload["hint"]
+
+
 def test_evidence_join_cli_writes_join_tables(tmp_path, capsys, monkeypatch) -> None:
     context_path = tmp_path / "species_context.json"
     context_path.write_text(
@@ -2469,6 +2525,36 @@ def test_comments_enrichment_cli(tmp_path, capsys) -> None:
     assert payload["comment_fetch_scope"] == "selected_candidate_records_only"
     assert payload["photo_ids_requested"] == ["1"]
     assert payload["queued_comment_candidates_added"] == 1
+
+
+def _write_candidate_expansion_error_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    runtime_python = tmp_path / "runtime" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("# fake python", encoding="utf-8")
+    context_path = tmp_path / "species_context.json"
+    context_path.write_text(
+        json.dumps(
+            {
+                "scientific_name": "Danaus plexippus",
+                "accepted_taxon_key": "gbif:1",
+                "canonical_name": "Danaus plexippus",
+                "family": "Nymphalidae",
+                "genus": "Danaus",
+                "family_key": "gbif:f",
+                "genus_key": "gbif:g",
+                "species_key": "gbif:1",
+                "registry_version": "registry-v1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    input_path = tmp_path / "filtered.parquet"
+    detections_path = tmp_path / "detections.parquet"
+    pl.DataFrame([{"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "https://example.test/1.jpg"}]).write_parquet(input_path)
+    pl.DataFrame([{"source": "flickr", "flickr_photo_id": "photo-1", "detection_id": "det-1", "detection_status": "detected"}]).write_parquet(
+        detections_path
+    )
+    return runtime_python, context_path, input_path, detections_path
 
 
 def _fake_cloud_config() -> BioMinerConfig:

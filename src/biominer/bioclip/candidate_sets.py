@@ -60,6 +60,7 @@ def build_candidate_set(
     records: list[dict[str, Any]] | None = None,
     geospatial_scope: str | None = None,
     geo_prior_table: pl.DataFrame | None = None,
+    allow_single_target_fixture: bool = False,
 ) -> CandidateSet:
     target = _target_candidate(context)
     source_evidence = ["species_context"]
@@ -90,6 +91,13 @@ def build_candidate_set(
     if not any(_norm(candidate.scientific_name) == _norm(context.scientific_name) for candidate in species):
         species.insert(0, target)
     species = _dedupe_taxa(species)
+    if len(species) <= 1 and not allow_single_target_fixture:
+        raise ValueError(
+            "species candidate set requires registry-derived same-genus/same-family candidates; "
+            "pass allow_single_target_fixture=True only for explicit tests"
+        )
+    if len(species) <= 1:
+        source_evidence.append("single_target_fixture")
     genus = tuple(candidate for candidate in species if _norm(candidate.genus) == _norm(context.genus))
     family = tuple(candidate for candidate in species if candidate.family)
     candidate_set_id = _candidate_set_id(context=context, species=species, geospatial_scope=geospatial_scope)

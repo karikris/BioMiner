@@ -44,6 +44,10 @@ def _context() -> SpeciesContext:
     )
 
 
+def _fixture_candidate_set():
+    return build_candidate_set(_context(), allow_single_target_fixture=True)
+
+
 def _species_context(
     scientific_name: str,
     accepted_taxon_key: str,
@@ -196,6 +200,16 @@ def test_candidate_set_uses_species_context_and_same_genus_family_candidates(tmp
     assert [candidate.scientific_name for candidate in candidate_set.genus_candidates] == ["Danaus plexippus", "Danaus gilippus"]
     assert "a photo of Danaus plexippus" in candidate_set.prompt_labels("species")
     assert "monarch butterfly" in candidate_set.prompt_labels("species")
+
+
+def test_candidate_set_requires_expansion_unless_fixture_mode() -> None:
+    with pytest.raises(ValueError, match="registry-derived"):
+        build_candidate_set(_context())
+
+    candidate_set = build_candidate_set(_context(), allow_single_target_fixture=True)
+
+    assert [candidate.scientific_name for candidate in candidate_set.species_candidates] == ["Danaus plexippus"]
+    assert "single_target_fixture" in candidate_set.source_evidence
 
 
 def test_candidate_set_for_family_scope_uses_all_scope_species(tmp_path) -> None:
@@ -379,7 +393,7 @@ def test_candidate_set_id_changes_when_prompt_common_names_change(tmp_path) -> N
 
 
 def test_candidate_set_records_geospatial_scope_source_evidence() -> None:
-    candidate_set = build_candidate_set(_context(), geospatial_scope="geo_prior.parquet")
+    candidate_set = build_candidate_set(_context(), geospatial_scope="geo_prior.parquet", allow_single_target_fixture=True)
 
     assert candidate_set.geospatial_scope == "geo_prior.parquet"
     assert "geospatial_scope:geo_prior.parquet" in candidate_set.source_evidence
@@ -648,7 +662,7 @@ def test_screen_object_detections_passes_ablation_mode_to_scorer(tmp_path) -> No
         canonical_records=_canonical_records(),
         detections=_detections().head(1),
         species_context=_context(),
-        candidate_set=build_candidate_set(_context()),
+        candidate_set=_fixture_candidate_set(),
         scorer=scorer,
         output_path=tmp_path / "scores.parquet",
         ablation_mode="whole_image",
@@ -737,7 +751,7 @@ def test_ephemeral_scorer_uses_detector_crop_mask_without_persisting_artifacts(t
 
 
 def test_object_bioclip_runner_can_score_detector_crops_with_ephemeral_scorer(tmp_path) -> None:
-    candidate_set = build_candidate_set(_context())
+    candidate_set = _fixture_candidate_set()
 
     crop_scorer = EphemeralCropBioClipScorer(
         scorer=lambda path, labels: {label: (0.83 if label == "a photo of Danaus plexippus" else 0.05) for label in labels},
@@ -773,7 +787,7 @@ def test_object_bioclip_runner_can_score_detector_crops_with_ephemeral_scorer(tm
 
 
 def test_object_bioclip_scores_detection_crops_with_join_keys(tmp_path) -> None:
-    candidate_set = build_candidate_set(_context())
+    candidate_set = _fixture_candidate_set()
     scorer = FakeObjectBioClipScorer(
         scores_by_crop={
             "sha256:crop-1": {
@@ -835,7 +849,7 @@ def test_object_bioclip_empty_scores_write_stable_schema(tmp_path) -> None:
         canonical_records=_canonical_records(),
         detections=detections,
         species_context=_context(),
-        candidate_set=build_candidate_set(_context()),
+        candidate_set=_fixture_candidate_set(),
         scorer=FakeObjectBioClipScorer({}),
         output_path=output,
         ablation_mode="detector_crop",
@@ -890,7 +904,7 @@ def test_object_bioclip_scores_flush_to_parquet_batches(tmp_path) -> None:
         canonical_records=_canonical_records(),
         detections=_detections(),
         species_context=_context(),
-        candidate_set=build_candidate_set(_context()),
+        candidate_set=_fixture_candidate_set(),
         scorer=FakeObjectBioClipScorer(
             {
                 "sha256:crop-1": {"a photo of Danaus plexippus": 0.82},
@@ -911,7 +925,7 @@ def test_object_bioclip_scores_flush_to_parquet_batches(tmp_path) -> None:
 
 
 def test_object_bioclip_score_marks_hard_negative_image_material(tmp_path) -> None:
-    candidate_set = build_candidate_set(_context())
+    candidate_set = _fixture_candidate_set()
     canonical = _canonical_records().with_columns(
         pl.lit("artwork").alias("image_category"),
         pl.lit("artwork").alias("negative_filter_reason"),
@@ -972,7 +986,7 @@ def test_object_bioclip_routes_non_top1_target_species_to_review(tmp_path) -> No
 
 
 def test_object_bioclip_rejects_detections_without_canonical_source_record(tmp_path) -> None:
-    candidate_set = build_candidate_set(_context())
+    candidate_set = _fixture_candidate_set()
     detections = _detections().head(1).with_columns(pl.lit("photo-missing").alias("flickr_photo_id"))
 
     with pytest.raises(ValueError, match="no canonical source record"):
@@ -1250,7 +1264,7 @@ def test_geography_soft_prior_accepts_candidate_specific_geo_prior_table() -> No
 
 
 def test_ablation_modes_write_rows_with_shared_photo_join_keys(tmp_path) -> None:
-    candidate_set = build_candidate_set(_context())
+    candidate_set = _fixture_candidate_set()
     report = run_object_ablations(
         canonical_records=_canonical_records(),
         detections=_detections().head(1),
@@ -1346,7 +1360,7 @@ def test_ablation_report_counts_no_detection_records(tmp_path) -> None:
         canonical_records=_canonical_records(),
         detections=detections,
         species_context=_context(),
-        candidate_set=build_candidate_set(_context()),
+        candidate_set=_fixture_candidate_set(),
         scorer=FakeObjectBioClipScorer({}),
         output_dir=tmp_path,
         modes=("detector_crop",),
@@ -1363,7 +1377,7 @@ def test_ablation_report_counts_no_detection_records(tmp_path) -> None:
 
 
 def test_object_evidence_join_and_photo_summary_outputs(tmp_path) -> None:
-    candidate_set = build_candidate_set(_context())
+    candidate_set = _fixture_candidate_set()
     scores = screen_object_detections(
         canonical_records=_canonical_records(),
         detections=_detections(),

@@ -1093,11 +1093,14 @@ def _run_yoloe26_prototype_run(args: argparse.Namespace) -> int:
     )
 
     context = SpeciesContext.read_json(args.species_context)
-    candidate_set = build_candidate_set(
+    candidate_set = _build_candidate_set_for_cli(
         context,
+        command="dev vision yoloe26-prototype-run",
         species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None,
         records=records.to_dicts(),
     )
+    if isinstance(candidate_set, int):
+        return candidate_set
     runtime = _bioclip_runtime(runtime_python=bioclip_python)
     scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
     try:
@@ -1554,13 +1557,16 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
     records = pl.read_parquet(args.input)
     detections = pl.read_parquet(args.detections)
     geo_prior_table = _optional_parquet(getattr(args, "geo_prior_table", None))
-    candidate_set = build_candidate_set(
+    candidate_set = _build_candidate_set_for_cli(
         context,
+        command="vision score",
         species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None,
         records=records.to_dicts(),
         geospatial_scope=str(args.geo_prior_table) if getattr(args, "geo_prior_table", None) else None,
         geo_prior_table=geo_prior_table,
     )
+    if isinstance(candidate_set, int):
+        return candidate_set
     runtime = _bioclip_runtime(runtime_python=runtime_python)
     scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
     try:
@@ -1628,13 +1634,16 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
     records = pl.read_parquet(args.input)
     detections = pl.read_parquet(args.detections)
     geo_prior_table = _optional_parquet(getattr(args, "geo_prior_table", None))
-    candidate_set = build_candidate_set(
+    candidate_set = _build_candidate_set_for_cli(
         context,
+        command="vision ablate",
         species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None,
         records=records.to_dicts(),
         geospatial_scope=str(args.geo_prior_table) if getattr(args, "geo_prior_table", None) else None,
         geo_prior_table=geo_prior_table,
     )
+    if isinstance(candidate_set, int):
+        return candidate_set
     modes = tuple(part.strip() for part in args.modes.split(",") if part.strip())
     runtime = _bioclip_runtime(runtime_python=runtime_python)
     scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
@@ -1705,6 +1714,39 @@ def _run_bioclip_join_object_evidence(args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
+def _build_candidate_set_for_cli(
+    context: SpeciesContext,
+    *,
+    command: str,
+    species_candidate_path: str | Path | None = None,
+    records: list[dict[str, Any]] | None = None,
+    geospatial_scope: str | None = None,
+    geo_prior_table: pl.DataFrame | None = None,
+):
+    try:
+        return build_candidate_set(
+            context,
+            species_candidate_path=species_candidate_path,
+            records=records,
+            geospatial_scope=geospatial_scope,
+            geo_prior_table=geo_prior_table,
+        )
+    except ValueError as exc:
+        print(
+            json.dumps(
+                {
+                    "error": str(exc),
+                    "command": command,
+                    "hint": "Provide --species-candidates with same-genus/same-family registry candidates, "
+                    "or include query/geospatial provenance that expands beyond the target species.",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
 
 
 def _optional_parquet(path: str | Path | None) -> pl.DataFrame | None:
