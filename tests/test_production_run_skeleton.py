@@ -327,6 +327,32 @@ def test_orchestrator_genus_run_enqueues_only_expanded_species_query_definitions
     assert "gbif:200" not in queued_keys
 
 
+def test_orchestrator_limit_species_bounds_resolved_scope_and_compiled_queries(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_query_definitions_with_out_of_scope_taxa(registry)
+    request = ProductionRunRequest(
+        taxon="Papilio",
+        rank="genus",
+        registry_dir=str(registry),
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.RESOLVE_TAXON_SCOPE, RunStage.COMPILE_QUERIES),
+        limits={"species": 1, "records": 2},
+    )
+
+    plan = ProductionRunOrchestrator(request).run()
+    compiled = pl.read_parquet(plan.paths.query_definitions_path).sort("query_definition_id")
+
+    assert plan.manifest.status == "complete"
+    assert plan.manifest.taxon_scope.species_names == ("Papilio demoleus",)
+    assert plan.manifest.metrics["expanded_species_count"] == 1
+    assert plan.manifest.query_counts["compiled_definitions"] == 2
+    assert plan.manifest.query_counts["flickr_work_items"] == 2
+    assert compiled.select("query_definition_id").to_series().to_list() == ["q-demoleus-tags", "q-demoleus-text"]
+    assert compiled.select("accepted_taxon_key").to_series().unique().to_list() == ["gbif:100"]
+
+
 def test_orchestrator_reads_registry_inputs_from_cloud_storage(tmp_path) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     _write_query_definitions(registry)

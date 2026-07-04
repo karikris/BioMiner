@@ -220,11 +220,12 @@ class ProductionRunOrchestrator:
 
     def _resolve_taxon_scope(self) -> TaxonScope:
         if self.taxon_scope is not None:
+            self.taxon_scope = _limit_taxon_scope(self.taxon_scope, self.request.limits)
             return self.taxon_scope
         if not self.request.registry_dir:
             raise ValueError("registry_dir is required when taxon_scope is not provided")
         if is_cloud_uri(str(self.request.registry_dir)):
-            self.taxon_scope = resolve_taxon_scope_from_registry_frames(
+            resolved = resolve_taxon_scope_from_registry_frames(
                 taxa=self._read_registry_parquet("taxa.parquet"),
                 names=self._read_registry_optional_parquet("names.parquet"),
                 source_snapshots=self._read_registry_optional_parquet("source_snapshots.parquet"),
@@ -233,11 +234,12 @@ class ProductionRunOrchestrator:
                 input_rank=self.request.rank,
             )
         else:
-            self.taxon_scope = resolve_taxon_scope_from_registry(
+            resolved = resolve_taxon_scope_from_registry(
                 registry_dir=self.request.registry_dir,
                 input_name=self.request.taxon,
                 input_rank=self.request.rank,
             )
+        self.taxon_scope = _limit_taxon_scope(resolved, self.request.limits)
         return self.taxon_scope
 
     def _run_stage(self, plan: ProductionRunPlan, stage: RunStage) -> StageExecutionResult:
@@ -1004,6 +1006,13 @@ def _query_definitions_for_taxon_scope(frame: Any, taxon_scope: TaxonScope) -> A
     for extra in predicates[1:]:
         predicate = predicate | extra
     return frame.filter(predicate)
+
+
+def _limit_taxon_scope(taxon_scope: TaxonScope, limits: Mapping[str, int]) -> TaxonScope:
+    limit = int(limits.get("species") or 0)
+    if limit <= 0 or taxon_scope.species_count <= limit:
+        return taxon_scope
+    return replace(taxon_scope, species_contexts=taxon_scope.species_contexts[:limit])
 
 
 def _registry_manifest_version(registry: Path) -> str:

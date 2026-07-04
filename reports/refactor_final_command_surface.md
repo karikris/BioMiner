@@ -4,7 +4,7 @@ Recorded: 2026-07-05
 
 Current branch: `main`
 
-Latest audited base before this report edit: `ba18ad5`
+Latest audited base before this report edit: `59d026a`
 
 Note: the original refactor plan named branch `cleanup/production-workflow-postgres-s3`; a later operator instruction changed the working branch to `main`, and the cleanup commits are being pushed directly to `main`.
 
@@ -180,6 +180,9 @@ Confirmed current behavior:
 - Production `compile_queries` writes a scoped query-definition artifact for
   the resolved taxon scope, so species runs only use that species and
   family/genus runs only use the expanded species contexts under that scope.
+- `--limit-species` now bounds the resolved species contexts before manifest
+  creation and query compilation, so bounded family/genus runs do not enqueue
+  out-of-limit species.
 - The implicit broad seed fallback is removed; `MetadataPollState` now exposes only explicit `enqueue_initial_work_items(queries)` for registry-derived query definitions.
 - Built-in multilingual seed terms and the broad discovery seed planner were removed from `flickr_fetch.query_planner`.
 - Metadata text matching is a flag/review signal, not a public hard-drop path.
@@ -226,5 +229,5 @@ uv run --extra test pytest -q
 Latest full-suite result:
 
 ```text
-516 passed
+517 passed
 ```
