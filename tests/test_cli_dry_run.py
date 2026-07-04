@@ -1639,6 +1639,106 @@ def test_production_run_requires_cloud_config_by_default(tmp_path, capsys, monke
     assert payload["config"]["storage"]["secret_access_key"] is None
 
 
+def test_production_run_enqueue_stage_uses_configured_workstore(tmp_path, capsys, monkeypatch) -> None:
+    from biominer.workstore.sqlite import SQLiteWorkStore
+
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    pl.DataFrame(
+        [
+            {
+                "accepted_taxon_key": "gbif:100",
+                "scientific_name": "Papilio demoleus",
+                "rank": "SPECIES",
+                "family_key": "gbif:10",
+                "family": "Papilionidae",
+                "genus_key": "gbif:90",
+                "genus": "Papilio",
+                "species_key": "gbif:100",
+                "species": "Papilio demoleus",
+                "parent_key": "gbif:90",
+            }
+        ]
+    ).write_parquet(registry / "taxa.parquet")
+    pl.DataFrame(
+        [
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Papilio demoleus",
+                "name_class": "accepted_scientific",
+                "language": "la",
+                "source": "GBIF",
+                "trust_tier": "T1",
+                "enabled": True,
+                "disabled_reason": "",
+            }
+        ]
+    ).write_parquet(registry / "names.parquet")
+    pl.DataFrame(
+        [
+            {
+                "query_definition_id": "q-1",
+                "registry_version": "registry-v1",
+                "accepted_taxon_key": "gbif:100",
+                "accepted_scientific_name": "Papilio demoleus",
+                "family_key": "gbif:10",
+                "genus_key": "gbif:90",
+                "species_key": "gbif:100",
+                "source_term": "Papilio demoleus",
+                "language": "la",
+                "search_field": "text",
+                "search_priority": 10,
+                "bbox": "",
+                "region": "",
+                "name_class": "accepted_scientific",
+                "confidence": "high",
+                "enabled": True,
+            }
+        ]
+    ).write_parquet(registry / "flickr_query_definitions.parquet")
+    (registry / "manifest.json").write_text(json.dumps({"registry_version": "registry-v1"}), encoding="utf-8")
+    workstore_path = tmp_path / "workstore.sqlite"
+    config = BioMinerConfig(
+        storage=StorageConfig(backend="local", prefix=str(tmp_path / "artifacts")),
+        workstore=WorkStoreConfig(backend="sqlite", sqlite_path=str(workstore_path), dsn_env=None),
+        runtime=RuntimeConfig(worker_id="worker-1"),
+    )
+    monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
+
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--taxon",
+            "Papilio demoleus",
+            "--rank",
+            "species",
+            "--registry-dir",
+            str(registry),
+            "--output-prefix",
+            str(tmp_path / "runs"),
+            "--storage-backend",
+            "local",
+            "--workstore-backend",
+            "sqlite",
+            "--stages",
+            "resolve,enqueue",
+            "--limit-records",
+            "1",
+        ]
+    )
+
+    assert run(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["manifest"]["query_counts"]["enqueued_work_items"] == 1
+    queued = SQLiteWorkStore(workstore_path).list_work_items(
+        job_name="biominer_production_run",
+        stage="poll_flickr",
+        registry_version="registry-v1",
+    )
+    assert len(queued) == 1
+    assert queued[0]["payload"]["query"]["query_definition_id"] == "q-1"
+
+
 def test_registry_compile_fixture_cli_writes_registry_outputs(tmp_path, capsys) -> None:
     source = tmp_path / "registry_source.json"
     source.write_text(

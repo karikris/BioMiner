@@ -30,6 +30,7 @@ from biominer.run import (
     resolve_taxon_scope_from_registry,
 )
 from biominer.species.context import CommonName, SpeciesContext
+from biominer.workstore.sqlite import SQLiteWorkStore
 
 
 def test_taxon_scope_construction_and_roundtrip() -> None:
@@ -218,6 +219,59 @@ def test_orchestrator_dry_run_marks_unimplemented_stages_skipped(tmp_path) -> No
     assert plan.paths.manifest_path.exists()
 
 
+def test_orchestrator_compiles_registry_queries_and_enqueues_flickr_work(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_query_definitions(registry)
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.RESOLVE_TAXON_SCOPE, RunStage.COMPILE_QUERIES, RunStage.ENQUEUE_FLICKR_WORK),
+        limits={"records": 2},
+    )
+
+    plan = ProductionRunOrchestrator(request, workstore=workstore).run()
+
+    assert plan.manifest.status == "complete"
+    assert plan.manifest.query_counts == {"compiled_definitions": 2, "flickr_work_items": 2, "enqueued_work_items": 2}
+    assert plan.manifest.stages[1].outputs["local_query_definitions"].endswith("/registry/flickr_query_definitions.parquet")
+    work_items = workstore.list_work_items(
+        job_name="biominer_production_run",
+        stage=RunStage.POLL_FLICKR.value,
+        registry_version="rank-registry-v1",
+    )
+    assert len(work_items) == 2
+    assert work_items[0]["payload"]["run_id"] == "species_papilio_demoleus"
+    assert work_items[0]["payload"]["query"]["accepted_taxon_key"] == "gbif:100"
+
+
+def test_orchestrator_enqueue_is_idempotent_for_same_run_and_registry_queries(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_query_definitions(registry)
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.RESOLVE_TAXON_SCOPE, RunStage.ENQUEUE_FLICKR_WORK),
+        limits={"records": 1},
+    )
+
+    first = ProductionRunOrchestrator(request, workstore=workstore).run()
+    second = ProductionRunOrchestrator(request, workstore=workstore).run()
+
+    assert first.manifest.query_counts["enqueued_work_items"] == 1
+    assert second.manifest.query_counts["enqueued_work_items"] == 0
+    assert second.manifest.stages[1].metrics["duplicate_work_items"] == 1
+
+
 def test_run_paths_are_stable(tmp_path) -> None:
     paths = RunPaths.from_root(tmp_path, run_id="Family: Papilionidae")
 
@@ -307,6 +361,36 @@ def _write_rank_registry(registry: Path) -> Path:
     pl.DataFrame([{"source": "GBIF", "source_version": "fixture", "retrieved_at": "2026-01-01T00:00:00Z"}]).write_parquet(registry / "source_snapshots.parquet")
     (registry / "manifest.json").write_text(json.dumps({"registry_version": "rank-registry-v1"}), encoding="utf-8")
     return registry
+
+
+def _write_query_definitions(registry: Path) -> None:
+    pl.DataFrame(
+        [
+            _query_definition_row("q-tags", "Papilio demoleus", "tags", 10),
+            _query_definition_row("q-text", "Lime butterfly", "text", 20),
+        ]
+    ).write_parquet(registry / "flickr_query_definitions.parquet")
+
+
+def _query_definition_row(query_definition_id: str, source_term: str, search_field: str, search_priority: int) -> dict[str, object]:
+    return {
+        "query_definition_id": query_definition_id,
+        "registry_version": "rank-registry-v1",
+        "accepted_taxon_key": "gbif:100",
+        "accepted_scientific_name": "Papilio demoleus",
+        "family_key": "gbif:10",
+        "genus_key": "gbif:90",
+        "species_key": "gbif:100",
+        "source_term": source_term,
+        "language": "en",
+        "search_field": search_field,
+        "search_priority": search_priority,
+        "bbox": "",
+        "region": "",
+        "name_class": "accepted_scientific" if search_field == "tags" else "vernacular",
+        "confidence": "high",
+        "enabled": True,
+    }
 
 
 def _taxon_row(

@@ -760,6 +760,12 @@ def _init_workstore_schema(workstore: object) -> None:
     init_schema()
 
 
+def _init_workstore_schema_if_supported(workstore: object) -> None:
+    init_schema = getattr(workstore, "init_schema", None)
+    if callable(init_schema):
+        init_schema()
+
+
 def _redact_cloud_error(error: str, args: argparse.Namespace) -> str:
     try:
         config = load_biominer_config(args.config)
@@ -791,6 +797,11 @@ def _run_production_command(args: argparse.Namespace) -> int:
         if (args.storage_backend == "local") != (args.workstore_backend == "sqlite"):
             raise ConfigError("local dev mode requires --storage-backend local --workstore-backend sqlite")
         validate_config(config, require_cloud_credentials=not allow_local, allow_local_backends=allow_local)
+        stages = _parse_run_stages(args.stages)
+        workstore = None
+        if not args.dry_run and RunStage.ENQUEUE_FLICKR_WORK in stages:
+            workstore = create_workstore(config.workstore)
+            _init_workstore_schema_if_supported(workstore)
         limits = {
             key: value
             for key, value in {"species": args.limit_species, "records": args.limit_records}.items()
@@ -805,11 +816,11 @@ def _run_production_command(args: argparse.Namespace) -> int:
             workstore_backend=args.workstore_backend,
             vision_backend=args.vision_backend,
             bioclip_model=args.bioclip_model,
-            stages=_parse_run_stages(args.stages),
+            stages=stages,
             dry_run=args.dry_run,
             limits=limits,
         )
-        plan = ProductionRunOrchestrator(request).run()
+        plan = ProductionRunOrchestrator(request, workstore=workstore).run()
     except (ConfigError, FileNotFoundError, ValueError) as exc:
         payload: dict[str, object] = {"error": redact_text(str(exc), config) if config else str(exc)}
         if config is not None:
