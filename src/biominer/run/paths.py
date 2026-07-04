@@ -43,6 +43,10 @@ class RunArtifactUris:
         return join_uri(self.reports_uri, "run_metrics.json")
 
     @property
+    def review_queue_uri(self) -> str:
+        return join_uri(self.reports_uri, "review_queue.parquet")
+
+    @property
     def query_definitions_uri(self) -> str:
         return join_uri(self.registry_uri, "flickr_query_definitions.parquet")
 
@@ -80,6 +84,7 @@ class RunArtifactUris:
             "run_root": self.run_root_uri,
             "manifest": self.manifest_uri,
             "metrics": self.metrics_uri,
+            "review_queue": self.review_queue_uri,
             "query_definitions": self.query_definitions_uri,
             "source_records": self.source_records_uri,
             "object_detections": self.object_detections_uri,
@@ -123,6 +128,10 @@ class RunPaths:
     @property
     def metrics_path(self) -> Path:
         return self.reports_dir / "run_metrics.json"
+
+    @property
+    def review_queue_path(self) -> Path:
+        return self.reports_dir / "review_queue.parquet"
 
     @property
     def query_definitions_path(self) -> Path:

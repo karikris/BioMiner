@@ -8,7 +8,7 @@ import pytest
 
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
-from biominer.evidence import evidence_count_metrics
+from biominer.evidence import build_review_queue, evidence_count_metrics
 from biominer.evidence.join import write_object_evidence_outputs
 from biominer.registry.trust_policy import (
     TrustTier,
@@ -121,8 +121,9 @@ def test_run_paths_and_dry_run_manifest(tmp_path) -> None:
     assert manifest.query_counts == {"compiled_definitions": 0, "enqueued_work_items": 0}
     assert manifest.detection_counts == {"images_seen": 0, "detections": 0, "crops_created": 0}
     assert manifest.bioclip_counts == {"objects_scored": 0, "whole_images_scored": 0, "segmentation_crops_scored": 0}
-    assert manifest.evidence_counts == {"object_evidence_rows": 0, "photo_summary_rows": 0}
+    assert manifest.evidence_counts == {"object_evidence_rows": 0, "photo_summary_rows": 0, "review_queue_rows": 0}
     assert manifest.outputs["manifest"].endswith("/run_manifest.json")
+    assert manifest.outputs["review_queue"].endswith("/reports/review_queue.parquet")
     assert [stage.stage for stage in manifest.stages][:3] == [
         RunStage.RESOLVE_TAXON_SCOPE,
         RunStage.BUILD_REGISTRY,
@@ -136,6 +137,7 @@ def test_run_artifact_uris_are_s3_safe_and_species_scoped() -> None:
 
     assert uris.run_root_uri == "s3://biominer/runs/run_id=family_papilionidae"
     assert uris.manifest_uri == "s3://biominer/runs/run_id=family_papilionidae/run_manifest.json"
+    assert uris.review_queue_uri == "s3://biominer/runs/run_id=family_papilionidae/reports/review_queue.parquet"
     assert uris.query_definitions_uri == "s3://biominer/runs/run_id=family_papilionidae/registry/flickr_query_definitions.parquet"
     assert uris.object_detections_uri == "s3://biominer/runs/run_id=family_papilionidae/staging/object_detections.parquet"
     assert uris.species_uri("Papilio demoleus") == "s3://biominer/runs/run_id=family_papilionidae/species/papilio_demoleus"
@@ -410,19 +412,27 @@ def test_orchestrator_joins_evidence_and_writes_summary_metrics(tmp_path) -> Non
     assert result.paths.object_evidence_path.exists()
     assert result.paths.photo_summary_path.exists()
     assert result.paths.metrics_path.exists()
-    assert result.manifest.evidence_counts == {"object_evidence_rows": 1, "photo_summary_rows": 1}
+    assert result.paths.review_queue_path.exists()
+    assert pl.read_parquet(result.paths.review_queue_path).height == 0
+    assert result.manifest.evidence_counts == {"object_evidence_rows": 1, "photo_summary_rows": 1, "review_queue_rows": 0}
     assert result.manifest.metrics["object_occurrence_bin_counts"] == {"gold": 1}
     assert result.manifest.metrics["photo_occurrence_bin_counts"] == {"gold": 1}
+    assert result.manifest.metrics["review_queue_bin_counts"] == {}
     assert result.manifest.stages[0].outputs == {
         "object_evidence": str(result.paths.object_evidence_path),
         "photo_summary": str(result.paths.photo_summary_path),
     }
-    assert result.manifest.stages[1].outputs == {"metrics": str(result.paths.metrics_path)}
+    assert result.manifest.stages[1].outputs == {
+        "metrics": str(result.paths.metrics_path),
+        "review_queue": str(result.paths.review_queue_path),
+    }
     assert json.loads(result.paths.metrics_path.read_text(encoding="utf-8")) == {
         "object_evidence_rows": 1,
         "object_occurrence_bin_counts": {"gold": 1},
         "photo_occurrence_bin_counts": {"gold": 1},
         "photo_summary_rows": 1,
+        "review_queue_bin_counts": {},
+        "review_queue_rows": 0,
     }
 
 
@@ -444,6 +454,60 @@ def test_orchestrator_join_evidence_fails_when_local_inputs_are_missing(tmp_path
     assert result.manifest.stages[0].message is not None
     assert result.manifest.stages[0].message.startswith("missing_join_inputs:")
     assert "canonical_source_records.parquet" in result.manifest.stages[0].message
+
+
+def test_orchestrator_summarize_writes_review_queue_for_ambiguous_photos(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.SUMMARIZE,),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
+    plan.paths.ensure_directories()
+    pl.DataFrame([{"occurrence_bin": "in_review"}]).write_parquet(plan.paths.object_evidence_path)
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "review-1",
+                "best_detection_id": "det-r",
+                "detection_count": 1,
+                "best_object_occurrence_bin": "in_review",
+                "best_object_species_top1": "Danaus plexippus",
+                "best_object_score": 0.42,
+                "photo_occurrence_bin": "in_review",
+                "photo_bin_reason": "ambiguous_species_margin",
+                "all_detection_ids": ["det-r"],
+                "all_candidate_species": ["Danaus plexippus", "Danaus eresimus"],
+            },
+            {
+                "source": "flickr",
+                "flickr_photo_id": "bronze-1",
+                "best_detection_id": "det-b",
+                "detection_count": 1,
+                "best_object_occurrence_bin": "bronze",
+                "best_object_species_top1": "Danaus plexippus",
+                "best_object_score": 0.25,
+                "photo_occurrence_bin": "bronze",
+                "photo_bin_reason": "weak_species_score",
+                "all_detection_ids": ["det-b"],
+                "all_candidate_species": ["Danaus plexippus"],
+            },
+        ]
+    ).write_parquet(plan.paths.photo_summary_path)
+
+    result = ProductionRunOrchestrator(request, taxon_scope=scope).run()
+    queue = pl.read_parquet(result.paths.review_queue_path)
+
+    assert result.manifest.status == "complete"
+    assert result.manifest.evidence_counts["review_queue_rows"] == 2
+    assert result.manifest.metrics["review_queue_bin_counts"] == {"bronze": 1, "in_review": 1}
+    assert result.manifest.stages[0].outputs["review_queue"] == str(result.paths.review_queue_path)
+    assert queue.select("flickr_photo_id").to_series().to_list() == ["review-1", "bronze-1"]
 
 
 def test_orchestrator_runs_local_detection_and_object_scoring_with_injected_fakes(tmp_path) -> None:
@@ -525,6 +589,7 @@ def test_run_paths_are_stable(tmp_path) -> None:
     assert paths.query_definitions_path.name == "flickr_query_definitions.parquet"
     assert paths.object_evidence_path.name == "object_evidence_joined.parquet"
     assert paths.photo_summary_path.name == "photo_evidence_summary.parquet"
+    assert paths.review_queue_path.name == "review_queue.parquet"
     assert paths.species_dir("Danaus plexippus") == paths.run_root / "species" / "danaus_plexippus"
 
 
@@ -539,6 +604,59 @@ def test_evidence_package_imports_and_metrics(tmp_path) -> None:
         "photo_occurrence_bin_counts": {"gold": 1},
     }
     assert callable(write_object_evidence_outputs)
+    assert callable(build_review_queue)
+
+
+def test_review_queue_keeps_bronze_and_review_photo_summaries() -> None:
+    summary = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "gold-1",
+                "best_detection_id": "det-g",
+                "detection_count": 1,
+                "best_object_occurrence_bin": "gold",
+                "best_object_species_top1": "Danaus plexippus",
+                "best_object_score": 0.9,
+                "photo_occurrence_bin": "gold",
+                "photo_bin_reason": "target_species_score_ge_070",
+                "all_detection_ids": ["det-g"],
+                "all_candidate_species": ["Danaus plexippus"],
+            },
+            {
+                "source": "flickr",
+                "flickr_photo_id": "review-1",
+                "best_detection_id": "det-r",
+                "detection_count": 1,
+                "best_object_occurrence_bin": "in_review",
+                "best_object_species_top1": "Danaus plexippus",
+                "best_object_score": 0.42,
+                "photo_occurrence_bin": "in_review",
+                "photo_bin_reason": "ambiguous_species_margin",
+                "all_detection_ids": ["det-r"],
+                "all_candidate_species": ["Danaus plexippus", "Danaus eresimus"],
+            },
+            {
+                "source": "flickr",
+                "flickr_photo_id": "bronze-1",
+                "best_detection_id": "det-b",
+                "detection_count": 1,
+                "best_object_occurrence_bin": "bronze",
+                "best_object_species_top1": "Danaus plexippus",
+                "best_object_score": 0.25,
+                "photo_occurrence_bin": "bronze",
+                "photo_bin_reason": "weak_species_score",
+                "all_detection_ids": ["det-b"],
+                "all_candidate_species": ["Danaus plexippus"],
+            },
+        ]
+    )
+
+    queue = build_review_queue(summary)
+
+    assert queue.select("flickr_photo_id").to_series().to_list() == ["review-1", "bronze-1"]
+    assert queue.select("review_priority").to_series().to_list() == [10, 20]
+    assert queue.select("review_reason").to_series().to_list() == ["ambiguous_species_margin", "weak_species_score"]
 
 
 def test_trust_policy_default_tiers_and_enablement() -> None:

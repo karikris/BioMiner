@@ -57,6 +57,7 @@ canonical source records
   -> BioCLIP object scores against SpeciesContext/candidate-set labels
   -> whole-image, detector-crop, and detector-crop-segmentation rows when masks are available
   -> object_evidence_joined.parquet and photo_evidence_summary.parquet
+  -> reports/review_queue.parquet for Bronze and InReview photo summaries
 ```
 
 The core Python 3.14 environment keeps heavy vision dependencies optional. `vision detect --backend fake` is available for offline tests and deterministic local plumbing. YOLOE-26 and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent. The YOLOE-26 prototype treats YOLOE only as an object finder; BioCLIP 2.5 Huge remains the biological classifier and species scorer.
@@ -984,6 +985,8 @@ Validate production configuration:
 uv run biominer storage doctor
 uv run biominer workstore doctor
 ```
+
+Local production runs write `run_manifest.json`, `reports/run_metrics.json`, and `reports/review_queue.parquet` under the run directory. The review queue contains Bronze and InReview photo summaries for targeted human/comment review.
 
 Run object detection and BioCLIP scoring as debug subcommands:
 

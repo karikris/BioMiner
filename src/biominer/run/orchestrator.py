@@ -10,7 +10,8 @@ from typing import Any
 
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
 from biominer.evidence.join import write_object_evidence_outputs
-from biominer.evidence.metrics import evidence_count_metrics
+from biominer.evidence.metrics import build_review_queue, evidence_count_metrics
+from biominer.storage.parquet import write_parquet
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries, query_hash
 from biominer.run.manifest import RunManifest, utc_now_iso
@@ -128,7 +129,7 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
         query_counts={"compiled_definitions": 0, "enqueued_work_items": 0},
         detection_counts={"images_seen": 0, "detections": 0, "crops_created": 0},
         bioclip_counts={"objects_scored": 0, "whole_images_scored": 0, "segmentation_crops_scored": 0},
-        evidence_counts={"object_evidence_rows": 0, "photo_summary_rows": 0},
+        evidence_counts={"object_evidence_rows": 0, "photo_summary_rows": 0, "review_queue_rows": 0},
         metrics={"expanded_species_count": taxon_scope.species_count},
         outputs=artifact_uris.to_dict(),
     )
@@ -505,10 +506,20 @@ class ProductionRunOrchestrator:
 
         joined = pl.read_parquet(plan.paths.object_evidence_path)
         photo_summary = pl.read_parquet(plan.paths.photo_summary_path)
+        review_queue = build_review_queue(photo_summary)
         metrics = evidence_count_metrics(joined, photo_summary)
+        metrics["review_queue_rows"] = review_queue.height
+        metrics["review_queue_bin_counts"] = _value_counts(review_queue, "review_bucket")
         plan.paths.reports_dir.mkdir(parents=True, exist_ok=True)
         plan.paths.metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
-        return StageExecutionResult(metrics=metrics, outputs={"metrics": str(plan.paths.metrics_path)})
+        write_parquet(review_queue, plan.paths.review_queue_path)
+        return StageExecutionResult(
+            metrics=metrics,
+            outputs={
+                "metrics": str(plan.paths.metrics_path),
+                "review_queue": str(plan.paths.review_queue_path),
+            },
+        )
 
     def _write_manifest_if_local(self, plan: ProductionRunPlan) -> Path | None:
         if is_cloud_uri(self.request.output_root):
@@ -603,7 +614,15 @@ def _merge_stage_counts(manifest: RunManifest, *, stage: RunStage, result: Stage
                 **manifest.evidence_counts,
                 "object_evidence_rows": int(result.metrics.get("object_evidence_rows", manifest.evidence_counts.get("object_evidence_rows", 0))),
                 "photo_summary_rows": int(result.metrics.get("photo_summary_rows", manifest.evidence_counts.get("photo_summary_rows", 0))),
+                "review_queue_rows": int(result.metrics.get("review_queue_rows", manifest.evidence_counts.get("review_queue_rows", 0))),
             },
             metrics={**manifest.metrics, **result.metrics},
         )
     return manifest
+
+
+def _value_counts(frame: Any, column: str) -> dict[str, int]:
+    if frame.is_empty() or column not in frame.columns:
+        return {}
+    counts = frame.group_by(column).len(name="count").sort(column).to_dicts()
+    return {str(row[column] or ""): int(row["count"]) for row in counts}
