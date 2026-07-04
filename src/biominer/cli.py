@@ -1164,13 +1164,6 @@ def _run_yoloe26_prototype_run(args: argparse.Namespace) -> int:
 def _detect_boxes_backend(args: argparse.Namespace, records: list[dict[str, object]]):
     if args.backend == "fake":
         return FakeObjectDetector([_fake_detections_for_record(record) for record in records]), _blank_decoded_image
-    if args.backend == "yolo":
-        # Legacy dev-only adapter. Public CLI choices route production detector runs to YOLOE-26.
-        from biominer.detection.yolo_detector import YoloObjectDetector, YoloSidecarObjectDetector
-
-        if _use_vision_sidecar(args.runtime_python):
-            return YoloSidecarObjectDetector(runtime_python=args.runtime_python, device=args.device), load_decoded_image_from_record
-        return YoloObjectDetector(device=args.device), load_decoded_image_from_record
     if args.backend == "yoloe26":
         from biominer.detection.yoloe26_detector import YoloE26ObjectDetector, YoloE26SidecarObjectDetector
 
