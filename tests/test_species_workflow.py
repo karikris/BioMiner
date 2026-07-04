@@ -8,8 +8,7 @@ import polars as pl
 from biominer.flickr_comments.comment_review import review_comments_for_record
 from biominer.flickr_fetch.metadata_poller import MetadataPollState, poll_once
 from biominer.flickr_fetch.query_planner import FlickrQuery, plan_pages_from_count, plan_queries_from_count
-from biominer.species.context import CommonName, SpeciesContext, SpeciesSearchTerm
-from biominer.species.query_compile import compile_species_flickr_queries
+from biominer.species.context import CommonName, SpeciesContext
 from biominer.species.registry_refresh import resolve_species_context
 
 
@@ -115,48 +114,16 @@ def _write_registry_fixture(base: Path) -> None:
     (base / "manifest.json").write_text(json.dumps({"registry_version": "registry-v1"}), encoding="utf-8")
 
 
-def test_species_context_resolves_papilio_fixture_and_compiles_queries(tmp_path) -> None:
+def test_species_context_resolves_papilio_fixture_from_registry_names(tmp_path) -> None:
     registry = tmp_path / "registry"
     _write_registry_fixture(registry)
 
     context = resolve_species_context(scientific_name="Papilio demoleus", registry_dir=registry)
-    queries = compile_species_flickr_queries(
-        context.with_search_terms((SpeciesSearchTerm(term="butterfly", language="en", term_class="broad_butterfly", trust_tier="T2"),))
-    )
 
     assert context.accepted_taxon_key == "gbif:100"
     assert context.synonyms == ("Papilio erithonius",)
     assert [name.name for name in context.common_names] == ["lime butterfly"]
-    assert {row["source_term"] for row in queries.to_dicts()} >= {
-        "Papilio demoleus",
-        "Papilio erithonius",
-        "lime butterfly",
-        "Papilio demoleus butterfly",
-    }
-    assert {row["search_field"] for row in queries.to_dicts()} == {"tags", "text"}
-
-
-def test_species_query_compilation_is_not_papilio_specific() -> None:
-    context = SpeciesContext(
-        scientific_name="Danaus plexippus",
-        accepted_taxon_key="gbif:5133240",
-        canonical_name="Danaus plexippus",
-        family="Nymphalidae",
-        genus="Danaus",
-        family_key="gbif:7017",
-        genus_key="gbif:5133234",
-        species_key="gbif:5133240",
-        registry_version="registry-v1",
-        synonyms=("Danaus archippus",),
-        common_names=(CommonName(name="monarch butterfly", language="en", source="fixture", trust_tier="T2"),),
-        search_terms=(SpeciesSearchTerm(term="butterfly", language="en", term_class="broad_butterfly", trust_tier="T2"),),
-    )
-
-    frame = compile_species_flickr_queries(context)
-
-    assert "Danaus plexippus butterfly" in set(frame["source_term"].to_list())
-    assert "monarch butterfly" in set(frame["source_term"].to_list())
-    assert {row["accepted_scientific_name"] for row in frame.to_dicts()} == {"Danaus plexippus"}
+    assert [term.term for term in context.search_terms] == ["Papilio demoleus", "Papilio erithonius", "lime butterfly"]
 
 
 def test_query_planner_preserves_registry_provenance_through_pages_and_slices() -> None:
