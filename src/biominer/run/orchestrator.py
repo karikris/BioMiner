@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
+import os
 from pathlib import Path
 import shutil
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
 from biominer.evidence.join import write_object_evidence_outputs
 from biominer.evidence.metrics import evidence_count_metrics
+from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries, query_hash
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import RunArtifactUris, RunPaths
@@ -133,11 +135,10 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
 
 
 class ProductionRunOrchestrator:
-    """Non-executing shell for the production run workflow.
+    """Rank-aware production run coordinator.
 
-    Later phases will connect this class to registry compilation, cloud workstores,
-    object detection, BioCLIP scoring, and evidence aggregation. This first
-    skeleton deliberately only builds a plan and dry-run manifest.
+    Cloud-backed stages still fail clearly where S3/Postgres IO is not fully
+    wired, while local/dev runs can execute the implemented stages with fakes.
     """
 
     def __init__(
@@ -149,6 +150,8 @@ class ProductionRunOrchestrator:
         object_detector: Any | None = None,
         image_loader: Callable[[dict[str, Any]], Any] | None = None,
         object_scorer: Any | None = None,
+        metadata_fetcher: Callable[[FlickrQuery], dict[str, Any]] | None = None,
+        flickr_api_key: str | None = None,
         species_candidate_path: str | Path | None = None,
         allow_single_target_fixture: bool = False,
         stage_handlers: Mapping[RunStage, StageHandler] | None = None,
@@ -159,6 +162,8 @@ class ProductionRunOrchestrator:
         self.object_detector = object_detector
         self.image_loader = image_loader
         self.object_scorer = object_scorer
+        self.metadata_fetcher = metadata_fetcher
+        self.flickr_api_key = flickr_api_key
         self.species_candidate_path = species_candidate_path
         self.allow_single_target_fixture = allow_single_target_fixture
         self.stage_handlers = dict(stage_handlers or {})
@@ -224,6 +229,8 @@ class ProductionRunOrchestrator:
             return self._run_compile_queries_stage(plan)
         if stage == RunStage.ENQUEUE_FLICKR_WORK:
             return self._run_enqueue_flickr_work_stage(plan)
+        if stage == RunStage.POLL_FLICKR:
+            return self._run_poll_flickr_stage(plan)
         if stage == RunStage.DETECT_OBJECTS:
             return self._run_detect_objects_stage(plan)
         if stage == RunStage.SCORE_BIOCLIP:
@@ -279,6 +286,55 @@ class ProductionRunOrchestrator:
                 "duplicate_work_items": len(queries) - inserted,
             },
             outputs={"workstore_stage": RunStage.POLL_FLICKR.value},
+        )
+
+    def _run_poll_flickr_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
+        if is_cloud_uri(self.request.output_root) or self.request.storage_backend != "local" or self.request.workstore_backend != "sqlite":
+            return StageExecutionResult(status=StageStatus.FAILED, message="poll_flickr_requires_local_sqlite_until_workstore_claiming_is_wired")
+        queries = self._load_flickr_work_queries()
+        plan.paths.ensure_directories()
+        state_db = plan.paths.run_root / "state" / "flickr_poller.sqlite"
+        state_db.parent.mkdir(parents=True, exist_ok=True)
+        state = MetadataPollState(state_db)
+        seeded = state.ensure_seed_work_items(queries)
+        api_key = self.flickr_api_key or os.environ.get("FLICKR_API_KEY")
+        if state.work_item_count() > 0 and self.metadata_fetcher is None and not api_key:
+            return StageExecutionResult(status=StageStatus.FAILED, message="flickr_fetcher_or_api_key_required_for_poll_flickr")
+        result = poll_once(
+            state_db=state.path,
+            raw_root=plan.paths.run_root / "raw",
+            evidence_output=plan.paths.source_records_path,
+            max_api_calls=int(self.request.limits.get("api_calls") or SOFT_API_CALLS_PER_HOUR),
+            api_key=api_key,
+            fetch_metadata=self.metadata_fetcher,
+            workers=int(self.request.limits.get("workers") or 1),
+            run_id=plan.manifest.run_id,
+            worker_id=os.environ.get("BIOMINER_WORKER_ID") or "local",
+            storage_backend="local",
+            compact_after_run=True,
+        )
+        return StageExecutionResult(
+            metrics={
+                "seeded_work_items": seeded,
+                "raw_responses_written": result.raw_responses_written,
+                "evidence_rows_written": result.evidence_rows_written,
+                "evidence_rows_total": result.evidence_rows_total,
+                "source_records_inserted": result.source_records_inserted,
+                "duplicate_records_skipped": result.duplicate_records_skipped,
+                "query_terms_added": result.query_hits_inserted,
+                "duplicate_query_terms": result.duplicate_query_hits_skipped,
+                "image_urls_queued": result.image_urls_queued,
+                "work_items_claimed": result.work_items_claimed,
+                "api_calls_made": result.api_calls_made,
+                "remaining_soft_budget": result.remaining_soft_budget,
+                "remaining_hard_budget": result.remaining_hard_budget,
+                "stale_claims_requeued": result.stale_claims_requeued,
+            },
+            outputs={
+                "state_db": str(state.path),
+                "raw_root": str(plan.paths.run_root / "raw"),
+                "source_records": str(plan.paths.source_records_path),
+            },
         )
 
     def _run_detect_objects_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
@@ -460,6 +516,16 @@ def _merge_stage_counts(manifest: RunManifest, *, stage: RunStage, result: Stage
                 **manifest.query_counts,
                 "enqueued_work_items": int(result.metrics.get("enqueued_work_items", 0)),
             },
+        )
+    if stage == RunStage.POLL_FLICKR and result.status == StageStatus.COMPLETE:
+        return replace(
+            manifest,
+            query_counts={
+                **manifest.query_counts,
+                "polled_work_items": int(result.metrics.get("work_items_claimed", 0)),
+                "api_calls_made": int(result.metrics.get("api_calls_made", 0)),
+            },
+            metrics={**manifest.metrics, **result.metrics},
         )
     if stage == RunStage.DETECT_OBJECTS and result.status == StageStatus.COMPLETE:
         return replace(

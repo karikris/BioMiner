@@ -185,7 +185,7 @@ def test_orchestrator_resolves_scope_and_runs_stage_subset_with_fake_handlers(tm
         rank="genus",
         registry_dir=str(registry),
         output_root=tmp_path / "runs",
-        stages=(RunStage.RESOLVE_TAXON_SCOPE, RunStage.COMPILE_QUERIES, RunStage.POLL_FLICKR),
+        stages=(RunStage.RESOLVE_TAXON_SCOPE, RunStage.COMPILE_QUERIES, RunStage.BUILD_REGISTRY),
     )
     plan = ProductionRunOrchestrator(
         request,
@@ -197,7 +197,7 @@ def test_orchestrator_resolves_scope_and_runs_stage_subset_with_fake_handlers(tm
     assert [(stage.stage, stage.status, stage.message) for stage in plan.manifest.stages] == [
         (RunStage.RESOLVE_TAXON_SCOPE, StageStatus.COMPLETE, None),
         (RunStage.COMPILE_QUERIES, StageStatus.COMPLETE, None),
-        (RunStage.POLL_FLICKR, StageStatus.SKIPPED, "stage_not_implemented"),
+        (RunStage.BUILD_REGISTRY, StageStatus.SKIPPED, "stage_not_implemented"),
     ]
     assert plan.manifest.stages[1].metrics == {"compiled_definitions": 4}
     assert plan.paths.manifest_path.exists()
@@ -271,6 +271,74 @@ def test_orchestrator_enqueue_is_idempotent_for_same_run_and_registry_queries(tm
     assert first.manifest.query_counts["enqueued_work_items"] == 1
     assert second.manifest.query_counts["enqueued_work_items"] == 0
     assert second.manifest.stages[1].metrics["duplicate_work_items"] == 1
+
+
+def test_orchestrator_polls_flickr_with_local_sqlite_and_fake_fetcher(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("FLICKR_API_KEY", raising=False)
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_query_definitions(registry)
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.POLL_FLICKR,),
+        limits={"records": 1, "api_calls": 5},
+    )
+
+    result = ProductionRunOrchestrator(request, metadata_fetcher=_fake_flickr_fetch).run()
+
+    assert result.manifest.status == "complete"
+    assert result.paths.source_records_path.exists()
+    assert result.manifest.query_counts["polled_work_items"] == 1
+    assert result.manifest.query_counts["api_calls_made"] == 1
+    assert result.manifest.metrics["source_records_inserted"] == 1
+    assert result.manifest.stages[0].outputs["source_records"] == str(result.paths.source_records_path)
+    row = pl.read_parquet(result.paths.source_records_path).to_dicts()[0]
+    assert row["flickr_photo_id"] == "poll-photo-1"
+    assert row["tag_search_terms"] == ["Papilio demoleus"]
+    assert row["query_hit_count"] == 1
+
+
+def test_orchestrator_poll_stage_requires_fetcher_or_api_key(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("FLICKR_API_KEY", raising=False)
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_query_definitions(registry)
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.POLL_FLICKR,),
+        limits={"records": 1},
+    )
+
+    result = ProductionRunOrchestrator(request).run()
+
+    assert result.manifest.status == "failed"
+    assert result.manifest.stages[0].status is StageStatus.FAILED
+    assert result.manifest.stages[0].message == "flickr_fetcher_or_api_key_required_for_poll_flickr"
+
+
+def test_orchestrator_poll_stage_refuses_cloud_until_workstore_claiming_is_wired(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    _write_query_definitions(registry)
+    request = ProductionRunRequest(
+        taxon="Papilio demoleus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root="s3://biominer/runs",
+        stages=(RunStage.POLL_FLICKR,),
+    )
+
+    result = ProductionRunOrchestrator(request, metadata_fetcher=_fake_flickr_fetch).run()
+
+    assert result.manifest.status == "failed"
+    assert result.manifest.stages[0].message == "poll_flickr_requires_local_sqlite_until_workstore_claiming_is_wired"
 
 
 def test_orchestrator_joins_evidence_and_writes_summary_metrics(tmp_path) -> None:
@@ -593,6 +661,25 @@ def _write_join_stage_inputs(paths: RunPaths) -> None:
 
 def _tiny_rgb_image() -> DecodedImage:
     return DecodedImage(width=4, height=4, mode="RGB", data=bytes([255, 255, 255] * 16), source_uri="memory://photo-1")
+
+
+def _fake_flickr_fetch(_query: object) -> dict[str, object]:
+    return {
+        "photos": {
+            "total": "1",
+            "pages": "1",
+            "page": "1",
+            "perpage": "500",
+            "photo": [
+                {
+                    "id": "poll-photo-1",
+                    "title": "Papilio demoleus on citrus",
+                    "url_l": "https://live.staticflickr.com/poll-photo-1.jpg",
+                    "datetaken": "2025-03-01 10:30:00",
+                }
+            ],
+        }
+    }
 
 
 class _ConstantObjectScorer:
