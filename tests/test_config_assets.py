@@ -129,3 +129,18 @@ def test_production_examples_cover_family_genus_species_runs() -> None:
         assert expected in text
     assert "broad seed" not in text.lower()
     assert "YOLO species" not in text
+
+
+def test_readme_keeps_broad_probe_recipe_out_of_production_workflow() -> None:
+    text = Path("README.md").read_text(encoding="utf-8")
+
+    for removed_phrase in (
+        "Explicit broad-probe coverage",
+        "reviewed anchored broad terms",
+        "Broad probes are not implicit production seeds",
+        "Broad searches do not recursively count-probe",
+        "A broad term such as `butterfly`",
+    ):
+        assert removed_phrase not in text
+    assert "work items must be created from registry-derived query definitions" in text
+    assert "disabled experimental translation candidates retained for review, not production search" in text

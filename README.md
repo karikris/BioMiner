@@ -564,9 +564,7 @@ Priority order:
 | 50 | species scientific name — text |
 | 60 | species common name — text |
 | 70 | genus/family — text |
-| 80 | reviewed anchored broad terms — tags |
-| 90 | reviewed anchored broad terms — text |
-| 100+ | disabled experimental translation candidates |
+| 80+ | disabled experimental translation candidates retained for review, not production search |
 
 Each definition retains:
 
@@ -613,7 +611,7 @@ data/registry/current/flickr_query_definitions.parquet
 ```
 
 It fetches Flickr metadata only.
-Production polling does not seed generic multilingual searches automatically; work items must be created from registry-derived query definitions. Broad probes such as `butterfly` are explicit dev/review workflows and must remain anchored to accepted taxa before they can enter production discovery.
+Production polling does not seed generic multilingual searches automatically; work items must be created from registry-derived query definitions.
 
 Outputs include:
 
@@ -658,8 +656,6 @@ For each photo BioMiner supports:
 - query-derived candidate taxonomy;
 - metadata-derived keyword matches from title, description, tags, machine tags, and comments.
 
-A broad term such as `butterfly` must not imply a family, genus, or species by itself.
-
 ## Flickr result and rate limits
 
 Keep these separate:
@@ -702,31 +698,6 @@ count probes: per_page=1
 normal pages: per_page=500
 bbox/geotagged pages: per_page=250
 ```
-
-## Explicit broad-probe coverage
-
-Broad probes are not implicit production seeds. When retained for dev QA or a reviewed broad-query experiment, they use deterministic upload-date slices:
-
-```text
-start: 2004-02-10
-slice length: 5 days
-end: current date
-initial page: 1
-per_page: 500
-accessible pages: at most 8
-```
-
-Workflow:
-
-1. enqueue page 1 for each five-day slice;
-2. fetch and store the real page-1 metadata;
-3. read `photos.total`, `photos.pages`, `photos.page`, and `photos.perpage`;
-4. enqueue pages 2 through `min(photos.pages, 8)`;
-5. mark a slice saturated when page 8 returns 500 rows;
-6. stop cleanly when the API budget is exhausted;
-7. resume pending work in deterministic SQLite order.
-
-Broad searches do not recursively count-probe the full time range.
 
 ## Metadata polling
 
@@ -985,8 +956,8 @@ Run the rank-aware production workflow:
 uv run biominer run \
   --taxon "Papilio demoleus" \
   --rank species \
-  --registry-dir data/registry/current \
-  --output-prefix s3://biominer/runs \
+  --registry-dir s3://biominer/biominer/registry/current \
+  --output-prefix s3://biominer/biominer/runs/papilio_demoleus \
   --storage-backend s3 \
   --workstore-backend postgres
 ```
@@ -998,7 +969,7 @@ uv run biominer storage doctor
 uv run biominer workstore doctor
 ```
 
-Local production runs write `run_manifest.json`, `reports/run_metrics.json`, and `reports/review_queue.parquet` under the run directory. The review queue contains Bronze and InReview photo summaries for targeted human/comment review.
+Production runs write a run manifest, run metrics, evidence summaries, and review outputs under the configured artifact prefix. The review queue contains Bronze and InReview photo summaries for targeted human/comment review. Use `--storage-backend local --workstore-backend sqlite --dry-run` only for explicit development checks.
 
 Run object detection and BioCLIP scoring as debug subcommands:
 
