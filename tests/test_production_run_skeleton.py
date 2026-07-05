@@ -930,9 +930,10 @@ def test_orchestrator_joins_evidence_and_writes_summary_metrics(tmp_path) -> Non
     }
 
 
-def test_orchestrator_joins_evidence_from_cloud_storage() -> None:
+def test_orchestrator_joins_evidence_from_cloud_shard_inventory(tmp_path) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     storage = _FakeRunStorage()
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
     request = ProductionRunRequest(
         taxon="Danaus plexippus",
         rank="species",
@@ -941,23 +942,46 @@ def test_orchestrator_joins_evidence_from_cloud_storage() -> None:
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
     canonical, detections, scores = _join_stage_input_frames()
-    storage.parquet_payloads[plan.artifact_uris.source_records_uri] = canonical
-    storage.parquet_payloads[plan.artifact_uris.object_detections_uri] = detections
-    storage.parquet_payloads[plan.artifact_uris.object_scores_uri] = scores
+    source_uri = plan.artifact_uris.staging_uri + "/evidence/stage=poll_flickr/run_id=species_danaus_plexippus/worker=poller/batch=001.parquet"
+    detection_uri = plan.artifact_uris.staging_uri + "/evidence/stage=detect_objects/run_id=species_danaus_plexippus/worker=detector/batch=001.parquet"
+    score_uri = plan.artifact_uris.staging_uri + "/evidence/stage=score_bioclip/run_id=species_danaus_plexippus/worker=bioclip/batch=001.parquet"
+    storage.parquet_payloads[source_uri] = canonical
+    storage.parquet_payloads[detection_uri] = detections
+    storage.parquet_payloads[score_uri] = scores
+    for stage, uri, frame, worker_id in (
+        (RunStage.POLL_FLICKR.value, source_uri, canonical, "poller"),
+        (RunStage.DETECT_OBJECTS.value, detection_uri, detections, "detector"),
+        (RunStage.SCORE_BIOCLIP.value, score_uri, scores, "bioclip"),
+    ):
+        workstore.register_shard(
+            job_name="biominer_production_run",
+            registry_version=scope.registry_version,
+            stage=stage,
+            run_id=plan.manifest.run_id,
+            worker_id=worker_id,
+            uri=uri,
+            checksum=None,
+            row_count=frame.height,
+        )
 
-    result = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).run()
+    result = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage, workstore=workstore).run()
 
     assert result.manifest.status == "complete"
-    assert result.manifest.evidence_counts == {"object_evidence_rows": 1, "photo_summary_rows": 1, "review_queue_rows": 0}
-    assert result.manifest.stages[0].outputs == {
-        "object_evidence": plan.artifact_uris.object_evidence_uri,
-        "photo_summary": plan.artifact_uris.photo_summary_uri,
-    }
+    assert result.manifest.evidence_counts == {"object_evidence_rows": 1, "photo_summary_rows": 0, "review_queue_rows": 0}
+    object_evidence_uri = result.manifest.stages[0].outputs["object_evidence"]
+    assert object_evidence_uri.startswith(plan.artifact_uris.staging_uri + "/evidence/stage=join_evidence/")
+    assert plan.artifact_uris.object_evidence_uri not in storage.parquet_payloads
+    assert plan.artifact_uris.photo_summary_uri not in storage.parquet_payloads
     assert storage.json_payloads[plan.artifact_uris.manifest_uri]["evidence_counts"]["object_evidence_rows"] == 1
-    joined = storage.parquet_payloads[plan.artifact_uris.object_evidence_uri]
-    summary = storage.parquet_payloads[plan.artifact_uris.photo_summary_uri]
+    joined = storage.parquet_payloads[object_evidence_uri]
     assert joined.select("flickr_photo_id").to_series().to_list() == ["photo-1"]
-    assert summary.select("photo_occurrence_bin").to_series().to_list() == ["gold"]
+    join_shards = workstore.list_committed_shards(
+        job_name="biominer_production_run",
+        stage=RunStage.JOIN_EVIDENCE.value,
+        registry_version=scope.registry_version,
+        run_id=plan.manifest.run_id,
+    )
+    assert [shard["uri"] for shard in join_shards] == [object_evidence_uri]
 
 
 def test_orchestrator_cloud_join_requires_storage_backend() -> None:

@@ -39,6 +39,21 @@ def build_object_evidence_frames(
     return joined, summary
 
 
+def build_joined_object_evidence_frame(
+    *,
+    canonical_source_records: pl.DataFrame,
+    object_detections: pl.DataFrame,
+    object_scores: pl.DataFrame,
+) -> pl.DataFrame:
+    """Return object-level joined evidence without aggregating photo summaries."""
+
+    return _object_evidence_joined(
+        canonical=canonical_source_records,
+        detections=object_detections,
+        scores=object_scores,
+    )
+
+
 def write_object_evidence_outputs(
     *,
     canonical_source_records: pl.DataFrame,
@@ -70,6 +85,7 @@ __all__ = [
     "OBJECT_EVIDENCE_JOINED_SCHEMA",
     "PHOTO_EVIDENCE_SUMMARY_SCHEMA",
     "ObjectEvidenceOutputs",
+    "build_joined_object_evidence_frame",
     "build_object_evidence_frames",
     "empty_photo_summary_frame",
     "write_object_evidence_outputs",

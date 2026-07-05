@@ -18,7 +18,8 @@ from biominer.detection.cloud_work import (
     enqueue_detection_work_from_source_shards,
     run_cloud_detection_batch,
 )
-from biominer.evidence.join import build_object_evidence_frames, write_object_evidence_outputs
+from biominer.evidence.cloud_work import join_evidence_batch_id, join_object_evidence_from_cloud_shards
+from biominer.evidence.join import write_object_evidence_outputs
 from biominer.evidence.metrics import build_review_queue, evidence_count_metrics
 from biominer.flickr_comments.comment_review import CommentReviewState
 from biominer.flickr_comments.comments_enrichment import fetch_flickr_comments
@@ -904,28 +905,67 @@ class ProductionRunOrchestrator:
         if is_cloud_uri(self.request.output_root):
             if self.storage is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_join_evidence")
-            missing = _missing_uris(
-                self.storage,
-                plan.artifact_uris.object_detections_uri,
-                plan.artifact_uris.object_scores_uri,
-            )
-            if not _cloud_source_records_available(self.storage, self.workstore, plan):
+            if self.workstore is None:
+                return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_join_evidence")
+            missing = []
+            if not _cloud_stage_shard_uris(self.workstore, plan, RunStage.POLL_FLICKR.value):
                 missing.append("source_records")
+            if not _cloud_stage_shard_uris(self.workstore, plan, RunStage.DETECT_OBJECTS.value):
+                missing.append("object_detections")
+            if not _cloud_stage_shard_uris(self.workstore, plan, RunStage.SCORE_BIOCLIP.value):
+                missing.append("object_scores")
             if missing:
                 return StageExecutionResult(status=StageStatus.FAILED, message="missing_join_inputs: " + ", ".join(missing))
-            joined, photo_summary = build_object_evidence_frames(
-                canonical_source_records=_read_cloud_source_records(self.storage, self.workstore, plan),
-                object_detections=self.storage.read_parquet(plan.artifact_uris.object_detections_uri),
-                object_scores=self.storage.read_parquet(plan.artifact_uris.object_scores_uri),
+            result = join_object_evidence_from_cloud_shards(
+                storage=self.storage,
+                workstore=self.workstore,
+                job_name=PRODUCTION_JOB_NAME,
+                registry_version=plan.manifest.taxon_scope.registry_version,
+                run_id=plan.manifest.run_id,
+                source_stage=RunStage.POLL_FLICKR.value,
+                detection_stage=RunStage.DETECT_OBJECTS.value,
+                score_stage=RunStage.SCORE_BIOCLIP.value,
             )
-            object_evidence_uri = self.storage.write_parquet_shard(plan.artifact_uris.object_evidence_uri, joined)
-            photo_summary_uri = self.storage.write_parquet_shard(plan.artifact_uris.photo_summary_uri, photo_summary)
-            metrics = evidence_count_metrics(joined, photo_summary)
+            object_evidence_uri = self.storage.write_parquet_shard(
+                build_evidence_shard_uri(
+                    plan.artifact_uris.staging_uri,
+                    stage=RunStage.JOIN_EVIDENCE.value,
+                    run_id=plan.manifest.run_id,
+                    worker_id=self.request.worker_id,
+                    batch_id=join_evidence_batch_id(result),
+                ),
+                result.frame,
+            )
+            self.workstore.register_shard(
+                job_name=PRODUCTION_JOB_NAME,
+                registry_version=plan.manifest.taxon_scope.registry_version,
+                stage=RunStage.JOIN_EVIDENCE.value,
+                run_id=plan.manifest.run_id,
+                worker_id=self.request.worker_id,
+                uri=object_evidence_uri,
+                checksum=None,
+                row_count=result.frame.height,
+                metadata={
+                    "source_shards_seen": result.source_shards_seen,
+                    "detection_shards_seen": result.detection_shards_seen,
+                    "score_shards_seen": result.score_shards_seen,
+                },
+            )
+            metrics = {
+                "object_evidence_rows": result.frame.height,
+                "object_occurrence_bin_counts": _value_counts(result.frame, "occurrence_bin"),
+                "source_record_shards": result.source_shards_seen,
+                "detection_shards": result.detection_shards_seen,
+                "score_shards": result.score_shards_seen,
+                "source_records_seen": result.source_records_seen,
+                "detections_seen": result.detections_seen,
+                "scores_seen": result.scores_seen,
+                "object_evidence_shards": 1,
+            }
             return StageExecutionResult(
                 metrics=metrics,
                 outputs={
                     "object_evidence": object_evidence_uri,
-                    "photo_summary": photo_summary_uri,
                 },
             )
         missing = _missing_paths(plan.paths.source_records_path, plan.paths.object_detections_path, plan.paths.object_scores_path)
@@ -1115,23 +1155,19 @@ def _read_cloud_source_records(storage: CloudStorage, workstore: WorkStore | Non
 
 
 def _cloud_source_record_shard_uris(workstore: WorkStore | None, plan: ProductionRunPlan) -> list[str]:
-    if workstore is None:
-        return []
-    shards = workstore.list_committed_shards(
-        job_name=PRODUCTION_JOB_NAME,
-        stage=RunStage.POLL_FLICKR.value,
-        registry_version=plan.manifest.taxon_scope.registry_version,
-        run_id=plan.manifest.run_id,
-    )
-    return [str(shard["uri"]) for shard in shards]
+    return _cloud_stage_shard_uris(workstore, plan, RunStage.POLL_FLICKR.value)
 
 
 def _cloud_detection_shard_uris(workstore: WorkStore | None, plan: ProductionRunPlan) -> list[str]:
+    return _cloud_stage_shard_uris(workstore, plan, RunStage.DETECT_OBJECTS.value)
+
+
+def _cloud_stage_shard_uris(workstore: WorkStore | None, plan: ProductionRunPlan, stage: str) -> list[str]:
     if workstore is None:
         return []
     shards = workstore.list_committed_shards(
         job_name=PRODUCTION_JOB_NAME,
-        stage=RunStage.DETECT_OBJECTS.value,
+        stage=stage,
         registry_version=plan.manifest.taxon_scope.registry_version,
         run_id=plan.manifest.run_id,
     )
