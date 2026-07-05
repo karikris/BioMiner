@@ -104,6 +104,11 @@ RUN_STAGE_ALIASES = {
     "join_evidence": RunStage.JOIN_EVIDENCE,
     "summarize": RunStage.SUMMARIZE,
     "summary": RunStage.SUMMARIZE,
+    "queue_comments": RunStage.QUEUE_COMMENT_REVIEW,
+    "queue_comment_review": RunStage.QUEUE_COMMENT_REVIEW,
+    "review_comments": RunStage.REVIEW_COMMENTS,
+    "apply_comments": RunStage.APPLY_COMMENT_REVIEW,
+    "apply_comment_review": RunStage.APPLY_COMMENT_REVIEW,
 }
 
 
@@ -275,8 +280,10 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--bioclip-model", default=BIOCLIP_25_HUGE_REPO_ID)
     production_run.add_argument("--stages")
     production_run.add_argument("--dry-run", action="store_true")
+    production_run.add_argument("--build-registry-if-missing", action="store_true")
     production_run.add_argument("--limit-species", type=int, default=0)
     production_run.add_argument("--limit-records", type=int, default=0)
+    production_run.add_argument("--comments-max-api-calls", type=int, default=300)
     return parser
 
 
@@ -814,7 +821,11 @@ def _run_production_command(args: argparse.Namespace) -> int:
             _init_workstore_schema_if_supported(workstore)
         limits = {
             key: value
-            for key, value in {"species": args.limit_species, "records": args.limit_records}.items()
+            for key, value in {
+                "species": args.limit_species,
+                "records": args.limit_records,
+                "comment_api_calls": args.comments_max_api_calls,
+            }.items()
             if value and value > 0
         }
         request = ProductionRunRequest(
@@ -829,6 +840,7 @@ def _run_production_command(args: argparse.Namespace) -> int:
             worker_id=config.runtime.worker_id or ("local" if allow_local else ""),
             stages=stages,
             dry_run=args.dry_run,
+            build_registry_if_missing=args.build_registry_if_missing,
             limits=limits,
         )
         plan = ProductionRunOrchestrator(request, storage=storage, workstore=workstore).run()

@@ -15,6 +15,9 @@ class RunStage(StrEnum):
     SCORE_BIOCLIP = "score_bioclip"
     JOIN_EVIDENCE = "join_evidence"
     SUMMARIZE = "summarize"
+    QUEUE_COMMENT_REVIEW = "queue_comment_review"
+    REVIEW_COMMENTS = "review_comments"
+    APPLY_COMMENT_REVIEW = "apply_comment_review"
 
 
 class StageStatus(StrEnum):
@@ -35,6 +38,9 @@ DEFAULT_PRODUCTION_STAGES: tuple[RunStage, ...] = (
     RunStage.SCORE_BIOCLIP,
     RunStage.JOIN_EVIDENCE,
     RunStage.SUMMARIZE,
+    RunStage.QUEUE_COMMENT_REVIEW,
+    RunStage.REVIEW_COMMENTS,
+    RunStage.APPLY_COMMENT_REVIEW,
 )
 
 

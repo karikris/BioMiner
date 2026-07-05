@@ -89,6 +89,32 @@ def test_registry_build_defaults_to_production_enrichment_sources() -> None:
     assert args.enrichment_sources == ",".join(DEFAULT_ENRICHMENT_SOURCES)
 
 
+def test_run_cli_exposes_comment_and_registry_build_controls() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "run",
+            "--taxon",
+            "Danaus plexippus",
+            "--registry-dir",
+            "data/registry/current",
+            "--output-prefix",
+            "runs/danaus",
+            "--storage-backend",
+            "local",
+            "--workstore-backend",
+            "sqlite",
+            "--build-registry-if-missing",
+            "--comments-max-api-calls",
+            "17",
+        ]
+    )
+
+    assert args.build_registry_if_missing is True
+    assert args.comments_max_api_calls == 17
+
+
 def test_species_cli_removed_from_public_surface() -> None:
     parser = build_parser()
     commands = parser._subparsers._group_actions[0].choices  # noqa: SLF001

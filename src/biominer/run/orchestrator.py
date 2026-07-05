@@ -13,6 +13,8 @@ from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_C
 from biominer.common.status import CLAIMED, COMPLETED, FAILED, PENDING
 from biominer.evidence.join import build_object_evidence_frames, write_object_evidence_outputs
 from biominer.evidence.metrics import build_review_queue, evidence_count_metrics
+from biominer.flickr_comments.comment_review import CommentReviewState
+from biominer.flickr_comments.comments_enrichment import fetch_flickr_comments
 from biominer.storage.parquet import write_parquet
 from biominer.flickr_fetch.metadata_poller import DEFAULT_STALE_CLAIM_SECONDS, SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries, load_registry_flickr_queries_from_frame, query_hash
@@ -65,6 +67,7 @@ class ProductionRunRequest:
     stages: tuple[RunStage, ...] = DEFAULT_PRODUCTION_STAGES
     dry_run: bool = False
     limits: dict[str, int] = field(default_factory=dict)
+    build_registry_if_missing: bool = False
 
     def resolved_run_id(self) -> str:
         if self.run_id:
@@ -97,6 +100,7 @@ class ProductionRunPlan:
                 "stages": [stage.value for stage in self.request.stages],
                 "dry_run": self.request.dry_run,
                 "limits": dict(self.request.limits),
+                "build_registry_if_missing": self.request.build_registry_if_missing,
             },
             "paths": {
                 "run_root": str(self.paths.run_root),
@@ -168,6 +172,8 @@ class ProductionRunOrchestrator:
         image_loader: Callable[[dict[str, Any]], Any] | None = None,
         object_scorer: Any | None = None,
         metadata_fetcher: Callable[[FlickrQuery], dict[str, Any]] | None = None,
+        comment_fetcher: Callable[[str], list[dict[str, Any]]] | None = None,
+        registry_builder: Callable[[Path], dict[str, Any]] | None = None,
         flickr_api_key: str | None = None,
         species_candidate_path: str | Path | None = None,
         allow_single_target_fixture: bool = False,
@@ -181,6 +187,8 @@ class ProductionRunOrchestrator:
         self.image_loader = image_loader
         self.object_scorer = object_scorer
         self.metadata_fetcher = metadata_fetcher
+        self.comment_fetcher = comment_fetcher
+        self.registry_builder = registry_builder
         self.flickr_api_key = flickr_api_key
         self.species_candidate_path = species_candidate_path
         self.allow_single_target_fixture = allow_single_target_fixture
@@ -271,6 +279,12 @@ class ProductionRunOrchestrator:
             return self._run_join_evidence_stage(plan)
         if stage == RunStage.SUMMARIZE:
             return self._run_summarize_stage(plan)
+        if stage == RunStage.QUEUE_COMMENT_REVIEW:
+            return self._run_queue_comment_review_stage(plan)
+        if stage == RunStage.REVIEW_COMMENTS:
+            return self._run_review_comments_stage(plan)
+        if stage == RunStage.APPLY_COMMENT_REVIEW:
+            return self._run_apply_comment_review_stage(plan)
         return StageExecutionResult(status=StageStatus.SKIPPED, message="stage_not_implemented")
 
     def _run_build_registry_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
@@ -307,11 +321,20 @@ class ProductionRunOrchestrator:
         registry = self._registry_dir_path(stage_name="build_registry")
         required = tuple(registry / filename for filename in REQUIRED_REGISTRY_ARTIFACTS)
         missing = _missing_paths(*required)
+        built_registry = False
         if missing:
-            return StageExecutionResult(status=StageStatus.FAILED, message="missing_registry_inputs: " + ", ".join(missing))
+            if not self.request.build_registry_if_missing:
+                return StageExecutionResult(status=StageStatus.FAILED, message="missing_registry_inputs: " + ", ".join(missing))
+            if self.registry_builder is None:
+                return StageExecutionResult(status=StageStatus.FAILED, message="registry_builder_required_for_build_registry_if_missing")
+            self.registry_builder(registry)
+            built_registry = True
+            missing = _missing_paths(*required)
+            if missing:
+                return StageExecutionResult(status=StageStatus.FAILED, message="missing_registry_inputs_after_build: " + ", ".join(missing))
         query_definitions = registry / "flickr_query_definitions.parquet"
         metrics = {
-            "registry_reused": True,
+            "registry_reused": not built_registry,
             "taxa_rows": _parquet_row_count(registry / "taxa.parquet"),
             "name_rows": _parquet_row_count(registry / "names.parquet"),
             "query_definition_rows": _parquet_row_count(query_definitions) if query_definitions.exists() else 0,
@@ -871,6 +894,73 @@ class ProductionRunOrchestrator:
             },
         )
 
+    def _run_queue_comment_review_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
+        target_context = plan.manifest.taxon_scope.species_contexts[0]
+        if is_cloud_uri(self.request.output_root):
+            return StageExecutionResult(status=StageStatus.FAILED, message="cloud_comment_review_state_not_implemented")
+        missing = _missing_paths(plan.paths.object_evidence_path)
+        if missing:
+            return StageExecutionResult(status=StageStatus.FAILED, message="missing_comment_review_inputs: " + ", ".join(missing))
+        import polars as pl
+
+        plan.paths.ensure_directories()
+        frame = pl.read_parquet(plan.paths.object_evidence_path)
+        state = CommentReviewState(plan.paths.comment_review_state_path, species_context=target_context)
+        created = state.enqueue_records(frame.to_dicts())
+        metrics = {**state.summary(), "comment_review_queue_created": created}
+        return StageExecutionResult(
+            metrics=metrics,
+            outputs={"comment_review_state": str(plan.paths.comment_review_state_path)},
+        )
+
+    def _run_review_comments_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
+        target_context = plan.manifest.taxon_scope.species_contexts[0]
+        if is_cloud_uri(self.request.output_root):
+            return StageExecutionResult(status=StageStatus.FAILED, message="cloud_comment_review_state_not_implemented")
+        if not plan.paths.comment_review_state_path.exists():
+            return StageExecutionResult(status=StageStatus.FAILED, message=f"missing_comment_review_state: {plan.paths.comment_review_state_path}")
+        fetcher = self.comment_fetcher
+        api_key = self.flickr_api_key or os.environ.get("FLICKR_API_KEY")
+        if fetcher is None:
+            if not api_key:
+                return StageExecutionResult(status=StageStatus.FAILED, message="flickr_fetcher_or_api_key_required_for_review_comments")
+            fetcher = fetch_flickr_comments(api_key=api_key)
+        state = CommentReviewState(plan.paths.comment_review_state_path, species_context=target_context)
+        result = state.process_pending(
+            fetch_comments=fetcher,
+            max_api_calls=int(self.request.limits.get("comment_api_calls") or 300),
+        )
+        metrics = {**state.summary(), **result}
+        return StageExecutionResult(
+            metrics=metrics,
+            outputs={"comment_review_state": str(plan.paths.comment_review_state_path)},
+        )
+
+    def _run_apply_comment_review_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
+        target_context = plan.manifest.taxon_scope.species_contexts[0]
+        if is_cloud_uri(self.request.output_root):
+            return StageExecutionResult(status=StageStatus.FAILED, message="cloud_comment_review_state_not_implemented")
+        missing = _missing_paths(plan.paths.object_evidence_path, plan.paths.comment_review_state_path)
+        if missing:
+            return StageExecutionResult(status=StageStatus.FAILED, message="missing_comment_review_apply_inputs: " + ", ".join(missing))
+        import polars as pl
+
+        frame = pl.read_parquet(plan.paths.object_evidence_path)
+        state = CommentReviewState(plan.paths.comment_review_state_path, species_context=target_context)
+        rows = state.apply_decisions_to_records(frame.to_dicts())
+        output = write_parquet(pl.DataFrame(rows), plan.paths.reviewed_object_evidence_path)
+        moved_gold = sum(1 for row in rows if row.get("comment_review_decision") == "move_to_gold")
+        moved_silver = sum(1 for row in rows if row.get("comment_review_decision") == "move_to_silver")
+        return StageExecutionResult(
+            metrics={
+                **state.summary(),
+                "records_moved_to_gold": moved_gold,
+                "records_moved_to_silver": moved_silver,
+                "reviewed_object_evidence_rows": len(rows),
+            },
+            outputs={"reviewed_object_evidence": str(output)},
+        )
+
     def _write_manifest_if_local(self, plan: ProductionRunPlan) -> Path | str | None:
         if is_cloud_uri(self.request.output_root):
             if self.storage is not None:
@@ -1162,6 +1252,8 @@ def _merge_stage_counts(manifest: RunManifest, *, stage: RunStage, result: Stage
             },
             metrics={**manifest.metrics, **result.metrics},
         )
+    if stage in {RunStage.QUEUE_COMMENT_REVIEW, RunStage.REVIEW_COMMENTS, RunStage.APPLY_COMMENT_REVIEW} and result.status == StageStatus.COMPLETE:
+        return replace(manifest, metrics={**manifest.metrics, **result.metrics})
     return manifest
 
 

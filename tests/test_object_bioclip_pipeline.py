@@ -22,6 +22,7 @@ from biominer.bioclip.object_runner import (
     write_object_evidence_outputs,
 )
 from biominer.detection.detector_base import DecodedImage
+from biominer.detection.policy import DetectionPolicy
 from biominer.detection.segmentation import make_segmenter
 from biominer.detection.schema import DETECTION_OUTPUT_SCHEMA, empty_detection_frame
 from biominer.run.taxon_scope import TaxonScope
@@ -852,6 +853,32 @@ def test_object_bioclip_scores_detection_crops_with_join_keys(tmp_path) -> None:
     assert row["is_target_positive"] is True
 
 
+def test_object_bioclip_skips_non_butterfly_detector_labels(tmp_path) -> None:
+    class FailingScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def score(self, item, labels):  # noqa: ANN001, ANN202 - mirrors scorer protocol.
+            raise AssertionError(f"non-butterfly detection was sent to BioCLIP: {item.get('detector_label')}")
+
+    detections = _detections().with_columns(pl.lit("moth_like").alias("detector_label"))
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=detections,
+        species_context=_context(),
+        candidate_set=_fixture_candidate_set(),
+        scorer=FailingScorer(),
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+        detection_policy=DetectionPolicy(bioclip_eligible_labels=("butterfly_like",)),
+    )
+
+    assert result.crops_scored == 0
+    assert result.frame.is_empty()
+    assert pl.read_parquet(tmp_path / "object_scores.parquet").is_empty()
+
+
 def test_object_bioclip_empty_scores_write_stable_schema(tmp_path) -> None:
     output = tmp_path / "object_bioclip_scores.parquet"
     detections = pl.DataFrame(
@@ -973,6 +1000,7 @@ def test_object_bioclip_score_keeps_metadata_negative_hint_as_review_context(tmp
 
 def test_object_bioclip_score_bins_visual_hard_negative_object(tmp_path) -> None:
     detection = _detections().head(1).with_columns(pl.lit("hard_negative").alias("detector_label"))
+    scores_path = tmp_path / "object_scores.parquet"
 
     result = screen_object_detections(
         canonical_records=_canonical_records(),
@@ -980,15 +1008,24 @@ def test_object_bioclip_score_bins_visual_hard_negative_object(tmp_path) -> None
         species_context=_context(),
         candidate_set=_fixture_candidate_set(),
         scorer=FakeObjectBioClipScorer({"sha256:crop-1": {"a photo of Danaus plexippus": 0.82}}),
-        output_path=tmp_path / "object_scores.parquet",
+        output_path=scores_path,
         ablation_mode="detector_crop",
     )
 
-    row = result.frame.to_dicts()[0]
-    assert row["occurrence_bin"] == "bin"
-    assert row["bin_reason"] == "negative_material_hard_negative_object"
-    assert row["is_negative_material"] is True
-    assert row["is_target_positive"] is False
+    assert result.frame.is_empty()
+    _canonical_records().write_parquet(tmp_path / "canonical.parquet")
+    detection.write_parquet(tmp_path / "detections.parquet")
+    outputs = write_object_evidence_outputs(
+        canonical_records_path=tmp_path / "canonical.parquet",
+        detections_path=tmp_path / "detections.parquet",
+        scores_path=scores_path,
+        joined_output_path=tmp_path / "joined.parquet",
+        photo_summary_output_path=tmp_path / "summary.parquet",
+        species_context=_context(),
+    )
+    summary = pl.read_parquet(outputs.photo_evidence_summary).to_dicts()[0]
+    assert summary["photo_occurrence_bin"] == "bin"
+    assert summary["photo_bin_reason"] == "negative_material_hard_negative_object"
 
 
 def test_object_bioclip_routes_non_top1_target_species_to_review(tmp_path) -> None:

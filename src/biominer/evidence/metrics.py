@@ -4,6 +4,8 @@ from typing import Any
 
 import polars as pl
 
+from biominer.evidence.review_policy import REVIEW_QUEUE_BUCKETS, comment_review_is_actionable
+
 
 REVIEW_QUEUE_SCHEMA: dict[str, pl.DataType] = {
     "source": pl.String,
@@ -19,9 +21,6 @@ REVIEW_QUEUE_SCHEMA: dict[str, pl.DataType] = {
     "all_detection_ids": pl.List(pl.String),
     "all_candidate_species": pl.List(pl.String),
 }
-REVIEW_QUEUE_BUCKETS = {"bronze", "in_review"}
-
-
 def evidence_count_metrics(joined: pl.DataFrame, photo_summary: pl.DataFrame | None = None) -> dict[str, Any]:
     """Return small deterministic metrics for joined object evidence outputs."""
 
@@ -43,7 +42,8 @@ def build_review_queue(photo_summary: pl.DataFrame) -> pl.DataFrame:
     rows: list[dict[str, Any]] = []
     for row in photo_summary.to_dicts():
         bucket = str(row.get("photo_occurrence_bin") or "")
-        if bucket not in REVIEW_QUEUE_BUCKETS:
+        reason = str(row.get("photo_bin_reason") or bucket)
+        if bucket not in REVIEW_QUEUE_BUCKETS or not comment_review_is_actionable(bucket=bucket, reason=reason):
             continue
         rows.append(
             {
@@ -51,7 +51,7 @@ def build_review_queue(photo_summary: pl.DataFrame) -> pl.DataFrame:
                 "flickr_photo_id": str(row.get("flickr_photo_id") or ""),
                 "review_bucket": bucket,
                 "review_priority": _review_priority(bucket),
-                "review_reason": str(row.get("photo_bin_reason") or bucket),
+                "review_reason": reason,
                 "best_detection_id": str(row.get("best_detection_id") or ""),
                 "detection_count": int(row.get("detection_count") or 0),
                 "best_object_occurrence_bin": str(row.get("best_object_occurrence_bin") or ""),

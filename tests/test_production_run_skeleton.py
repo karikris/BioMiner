@@ -147,6 +147,11 @@ def test_run_paths_and_dry_run_manifest(tmp_path) -> None:
         RunStage.BUILD_REGISTRY,
         RunStage.COMPILE_QUERIES,
     ]
+    assert [stage.stage for stage in manifest.stages][-3:] == [
+        RunStage.QUEUE_COMMENT_REVIEW,
+        RunStage.REVIEW_COMMENTS,
+        RunStage.APPLY_COMMENT_REVIEW,
+    ]
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["species_count"] == 1
 
 
@@ -517,6 +522,35 @@ def test_orchestrator_build_registry_stage_fails_when_registry_artifacts_are_mis
     assert result.manifest.stages[0].message is not None
     assert "missing_registry_inputs:" in result.manifest.stages[0].message
     assert "taxa.parquet" in result.manifest.stages[0].message
+
+
+def test_orchestrator_build_registry_stage_can_build_missing_registry_when_enabled(tmp_path) -> None:
+    registry = tmp_path / "built-registry"
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        registry_dir=str(registry),
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.BUILD_REGISTRY,),
+        build_registry_if_missing=True,
+    )
+    calls: list[Path] = []
+
+    def fake_build(target: Path) -> dict[str, object]:
+        calls.append(target)
+        _write_rank_registry(target)
+        _write_query_definitions(target)
+        return {"registry_version": "rank-registry-v1"}
+
+    result = ProductionRunOrchestrator(request, taxon_scope=scope, registry_builder=fake_build).run()
+
+    assert result.manifest.status == "complete"
+    assert calls == [registry]
+    assert result.manifest.stages[0].metrics["registry_reused"] is False
+    assert result.manifest.stages[0].metrics["query_definition_rows"] == 2
 
 
 def test_orchestrator_build_registry_stage_requires_registry_query_definitions(tmp_path) -> None:
@@ -1052,6 +1086,58 @@ def test_orchestrator_summarize_reads_and_writes_cloud_storage() -> None:
     assert storage.json_payloads[plan.artifact_uris.metrics_uri]["review_queue_bin_counts"] == {"in_review": 1}
     queue = storage.parquet_payloads[plan.artifact_uris.review_queue_uri]
     assert queue.select("flickr_photo_id").to_series().to_list() == ["review-1"]
+
+
+def test_orchestrator_local_comment_review_stages_process_and_apply_promotions(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        stages=(RunStage.QUEUE_COMMENT_REVIEW, RunStage.REVIEW_COMMENTS, RunStage.APPLY_COMMENT_REVIEW),
+    )
+    orchestrator = ProductionRunOrchestrator(
+        request,
+        taxon_scope=scope,
+        comment_fetcher=lambda photo_id: [{"author": "u1", "_content": "Confirmed Danaus plexippus at -27.4698, 153.0251"}],
+    )
+    plan = orchestrator.plan()
+    plan.paths.ensure_directories()
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "source_record_id": "bronze-1",
+                "source_record_hash": "sha256:bronze-1",
+                "flickr_photo_id": "bronze-1",
+                "photo_page_url": "https://www.flickr.com/photos/example/bronze-1",
+                "image_url": "https://live.staticflickr.com/bronze-1.jpg",
+                "raw_title": "Danaus plexippus",
+                "raw_tags": "Danaus plexippus monarch",
+                "bioclip_top1_label": "a photo of Danaus plexippus",
+                "species_top1_score": 0.92,
+                "bioclip_top1_score": 0.92,
+                "is_target_positive": True,
+                "occurrence_bin": "bronze",
+                "triage_bin": "bronze",
+                "image_category": "adult_butterfly",
+                "life_stage": "adult_butterfly",
+                "date_taken": "2024-01-15",
+                "latitude": None,
+                "longitude": None,
+            }
+        ]
+    ).write_parquet(plan.paths.object_evidence_path)
+
+    result = orchestrator.run()
+
+    reviewed = pl.read_parquet(result.paths.reviewed_object_evidence_path)
+    assert result.manifest.status == "complete"
+    assert result.manifest.metrics["comment_review_queue_created"] == 1
+    assert result.manifest.metrics["records_moved_to_gold"] == 1
+    assert reviewed.select("occurrence_bin").to_series().to_list() == ["gold"]
 
 
 def test_orchestrator_cloud_summarize_requires_storage_backend() -> None:

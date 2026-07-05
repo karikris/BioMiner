@@ -60,6 +60,22 @@ def test_comment_review_queue_only_selected_records_and_skips_duplicates(tmp_pat
     assert state.pending_count() == 1
 
 
+def test_comment_review_queue_accepts_actionable_in_review_records(tmp_path) -> None:
+    state = CommentReviewState(tmp_path / "comments.sqlite")
+
+    assert state.enqueue_record(
+        _base_record(
+            source_record_hash="sha256:in-review",
+            occurrence_bin="in_review",
+            triage_bin="in_review",
+            bin_reason="ambiguous_species_margin",
+            latitude=-27.0,
+            longitude=153.0,
+        )
+    ) == 1
+    assert state.pending_count() == 1
+
+
 def test_comment_review_reasons_include_conflict_missing_data_unknown_and_low_score() -> None:
     record = _base_record(
         raw_tags="Papilio demoleus",

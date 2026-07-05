@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterable
 import polars as pl
 
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
+from biominer.evidence.review_policy import comment_review_is_actionable
 from biominer.filter.category_model import infer_life_stage_from_text
 from biominer.filter.extractor import SCIENTIFIC_NAME_PATTERN
 from biominer.flickr_comments.comments_enrichment import fetch_flickr_comments, mine_comment_terms
@@ -477,9 +478,13 @@ def apply_comment_review_decisions_to_parquet(*, input_path: str | Path, output_
 
 def comment_review_reasons(record: dict[str, Any], *, species_context: SpeciesContext | None = None) -> list[str]:
     reasons: list[str] = []
-    if str(record.get("occurrence_bin") or record.get("triage_bin") or "") != "bronze":
+    bucket = str(record.get("occurrence_bin") or record.get("triage_bin") or "")
+    bin_reason = str(record.get("bin_reason") or record.get("photo_bin_reason") or "")
+    if not comment_review_is_actionable(bucket=bucket, reason=bin_reason):
         return reasons
-    reasons.append("bronze_comment_review")
+    reasons.append("bronze_comment_review" if bucket == "bronze" else "in_review_comment_review")
+    if bucket == "in_review" and bin_reason:
+        reasons.append(bin_reason)
     flickr_candidate = flickr_text_species_candidate(record, species_context=species_context)
     bioclip_candidate = bioclip_species_candidate(record, species_context=species_context)
     conflict = _truthy(record.get("bioclip_tag_conflict")) or _truthy(record.get("bioclip_species_conflict")) or _species_conflict(

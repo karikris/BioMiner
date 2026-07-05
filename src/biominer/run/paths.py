@@ -47,6 +47,10 @@ class RunArtifactUris:
         return join_uri(self.reports_uri, "review_queue.parquet")
 
     @property
+    def reviewed_object_evidence_uri(self) -> str:
+        return join_uri(self.staging_uri, "object_evidence_reviewed.parquet")
+
+    @property
     def query_definitions_uri(self) -> str:
         return join_uri(self.registry_uri, "flickr_query_definitions.parquet")
 
@@ -85,6 +89,7 @@ class RunArtifactUris:
             "manifest": self.manifest_uri,
             "metrics": self.metrics_uri,
             "review_queue": self.review_queue_uri,
+            "reviewed_object_evidence": self.reviewed_object_evidence_uri,
             "query_definitions": self.query_definitions_uri,
             "source_records": self.source_records_uri,
             "object_detections": self.object_detections_uri,
@@ -134,6 +139,14 @@ class RunPaths:
         return self.reports_dir / "review_queue.parquet"
 
     @property
+    def comment_review_state_path(self) -> Path:
+        return self.run_root / "state" / "comment_review.sqlite"
+
+    @property
+    def reviewed_object_evidence_path(self) -> Path:
+        return self.staging_dir / "object_evidence_reviewed.parquet"
+
+    @property
     def query_definitions_path(self) -> Path:
         return self.registry_dir / "flickr_query_definitions.parquet"
 
@@ -161,5 +174,5 @@ class RunPaths:
         return self.run_root / "species" / safe_path_component(scientific_name)
 
     def ensure_directories(self) -> None:
-        for path in (self.registry_dir, self.staging_dir, self.reports_dir, self.run_root / "species"):
+        for path in (self.registry_dir, self.staging_dir, self.reports_dir, self.run_root / "species", self.run_root / "state"):
             path.mkdir(parents=True, exist_ok=True)

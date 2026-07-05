@@ -14,6 +14,7 @@ from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage
+from biominer.detection.policy import DetectionPolicy, detection_is_bioclip_eligible
 from biominer.detection.schema import DETECTION_OUTPUT_SCHEMA
 from biominer.detection.segmentation import (
     NoneSegmenter,
@@ -310,6 +311,7 @@ def materialize_detector_crop_inputs(
     detections: pl.DataFrame,
     image_loader: Any,
     temp_dir: str | Path,
+    detection_policy: DetectionPolicy | None = None,
     crop_padding_ratio: float = 0.12,
     crop_target_px: int = 336,
 ) -> MaterializedCropInputs:
@@ -325,7 +327,7 @@ def materialize_detector_crop_inputs(
     crop_path_by_hash: dict[str, Path] = {}
     try:
         for detection in detections.to_dicts():
-            if str(detection.get("detection_status") or "") != "detected":
+            if not detection_is_bioclip_eligible(detection, detection_policy):
                 continue
             key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
             record = _canonical_record_for_detection(records_by_photo, key=key)
@@ -371,6 +373,7 @@ def screen_object_detections(
     scorer: ObjectBioClipScorer,
     output_path: str | Path | None = None,
     ablation_mode: AblationMode = "detector_crop",
+    detection_policy: DetectionPolicy | None = None,
     geo_prior_table: pl.DataFrame | None = None,
     parquet_batch_rows: int = 10000,
 ) -> ObjectScreenResult:
@@ -388,7 +391,7 @@ def screen_object_detections(
     segmentation_unavailable_reason: str | None = None
     try:
         for detection in detections.to_dicts():
-            if str(detection.get("detection_status") or "") != "detected":
+            if not detection_is_bioclip_eligible(detection, detection_policy):
                 continue
             key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
             record = _canonical_record_for_detection(records_by_photo, key=key)
@@ -823,7 +826,7 @@ def _unscored_photo_summary(
     detection_rows: list[dict[str, Any]],
     species_context: SpeciesContext | None,
 ) -> dict[str, Any] | None:
-    detections = [row for row in detection_rows if str(row.get("detection_status") or "") == "detected"]
+    detections = [row for row in detection_rows if detection_is_bioclip_eligible(row)]
     detection_ids = _unique(row.get("detection_id") for row in detections)
     if detection_ids:
         return {
@@ -837,6 +840,22 @@ def _unscored_photo_summary(
             "photo_occurrence_bin": "in_review",
             "photo_bin_reason": "detected_object_without_bioclip_score",
             "all_detection_ids": detection_ids,
+            "all_candidate_species": [],
+        }
+
+    visual_negative_reason = _noneligible_detection_reason(detection_rows)
+    if visual_negative_reason:
+        return {
+            "source": str(record.get("source") or ""),
+            "flickr_photo_id": str(record.get("flickr_photo_id") or ""),
+            "best_detection_id": None,
+            "detection_count": 0,
+            "best_object_occurrence_bin": None,
+            "best_object_species_top1": None,
+            "best_object_score": None,
+            "photo_occurrence_bin": "bin",
+            "photo_bin_reason": visual_negative_reason,
+            "all_detection_ids": [],
             "all_candidate_species": [],
         }
 
@@ -872,6 +891,23 @@ def _unscored_photo_summary(
         "all_detection_ids": [],
         "all_candidate_species": [species_context.scientific_name] if strong_text_evidence and species_context is not None else [],
     }
+
+
+def _noneligible_detection_reason(detection_rows: list[dict[str, Any]]) -> str | None:
+    labels = {
+        str(row.get("detector_label") or "")
+        for row in detection_rows
+        if str(row.get("detection_status") or "") == "detected"
+    }
+    if not labels:
+        return None
+    if "hard_negative" in labels:
+        return "negative_material_hard_negative_object"
+    if labels <= {"moth_like", "insect_like"}:
+        return "negative_material_non_target_order"
+    if not any(label == "butterfly_like" for label in labels):
+        return "negative_material_non_butterfly"
+    return None
 
 
 def _no_detection_failure_reason(detection_rows: list[dict[str, Any]]) -> str:
