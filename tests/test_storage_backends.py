@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+import tempfile
 
 import polars as pl
 
@@ -127,6 +128,31 @@ def test_s3_storage_writes_parquet_without_materializing_payload(monkeypatch) ->
     assert stream.bytes_written > 0
 
 
+def test_s3_storage_parquet_writes_do_not_require_local_temp_files(monkeypatch) -> None:
+    backend = S3StorageBackend(bucket="biominer", prefix="biominer")
+    stream = _FakeOutputStream()
+    filesystem = _FakeS3Filesystem(stream)
+
+    def fail_temp_file(*_args, **_kwargs):  # noqa: ANN202
+        raise AssertionError("S3 parquet writes must not create local temporary parquet files")
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", fail_temp_file)
+    monkeypatch.setattr(backend, "_filesystem_and_path", lambda uri: (filesystem, "biominer/biominer/evidence/part.parquet"))
+    large_frame = pl.DataFrame({"photo_id": [str(index) for index in range(10_000)], "score": [0.42] * 10_000})
+
+    backend.write_parquet_shard("s3://biominer/biominer/evidence/part.parquet", large_frame)
+    backend.write_parquet_batches(
+        "s3://biominer/biominer/evidence/part.parquet",
+        (large_frame.slice(0, 5_000), large_frame.slice(5_000, 5_000)),
+    )
+
+    assert filesystem.paths == [
+        "biominer/biominer/evidence/part.parquet",
+        "biominer/biominer/evidence/part.parquet",
+    ]
+    assert stream.bytes_written > 0
+
+
 def test_uri_helpers_classify_and_join_paths(tmp_path) -> None:
     assert is_cloud_uri("s3://biominer/prefix/file.parquet")
     assert is_s3_uri("s3://biominer/prefix/file.parquet")
@@ -222,19 +248,31 @@ class _FakeS3Filesystem:
 
     def open_output_stream(self, path: str) -> "_FakeOutputStream":
         self.paths.append(path)
+        self.stream.closed = False
         return self.stream
 
 
 class _FakeOutputStream:
     def __init__(self) -> None:
         self.bytes_written = 0
+        self.closed = False
 
     def __enter__(self) -> "_FakeOutputStream":
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+        self.close()
         return None
 
     def write(self, data: bytes) -> int:
         self.bytes_written += len(data)
         return len(data)
+
+    def writable(self) -> bool:
+        return not self.closed
+
+    def flush(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
