@@ -15,7 +15,7 @@ from biominer.registry.gbif_production import ProductionGBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
 from biominer.storage.cloud import CloudStorage
-from biominer.storage.paths import build_registry_version_uri, safe_path_component
+from biominer.storage.paths import build_registry_current_pointer, build_registry_current_uri, build_registry_version_uri, safe_path_component
 from biominer.storage.uri import is_cloud_uri, join_uri
 
 
@@ -120,6 +120,18 @@ def build_cloud_registry(
         )
     manifest_uri = build_registry_version_uri(base_prefix, registry_version=registry_version, filename="manifest.json")
     storage.write_json(manifest_uri, manifest)
+    current_pointer_uri = None
+    if manifest.get("qa_status") == "passed":
+        current_pointer_uri = build_registry_current_uri(base_prefix, filename="manifest.json")
+        storage.write_json(
+            current_pointer_uri,
+            build_registry_current_pointer(
+                registry_version=registry_version,
+                registry_prefix=registry_prefix,
+                manifest_uri=manifest_uri,
+                promoted_at=datetime.now(UTC).isoformat(),
+            ),
+        )
     report = _build_report(
         manifest=manifest,
         source_payload=source_payload,
@@ -145,6 +157,7 @@ def build_cloud_registry(
         "output_dir": registry_prefix,
         "registry_prefix": registry_prefix,
         "manifest_uri": manifest_uri,
+        "current_pointer_uri": current_pointer_uri,
         "manifest": manifest,
         **report_paths,
     }

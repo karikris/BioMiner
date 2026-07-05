@@ -297,6 +297,12 @@ def test_cloud_registry_build_writes_canonical_artifacts_to_s3_version_prefix(tm
     assert storage.json_payloads[f"{registry_prefix}/manifest.json"]["registry_version"] == "cloud-test"
     assert storage.json_payloads[f"{registry_prefix}/gbif_source_snapshot.json"]["source"] == "GBIF"
     assert storage.json_payloads["s3://biominer/biominer/reports/registry_build_cloud-test.json"]["status"] == "passed"
+    current_pointer = storage.json_payloads["s3://biominer/biominer/registry/current/manifest.json"]
+    assert current_pointer["registry_version"] == "cloud-test"
+    assert current_pointer["registry_prefix"] == registry_prefix
+    assert current_pointer["manifest_uri"] == f"{registry_prefix}/manifest.json"
+    assert "promoted_at" in current_pointer
+    assert "s3://biominer/biominer/registry/current/taxa.parquet" not in storage.parquet_payloads
     assert not (tmp_path / "s3:").exists()
 
 
