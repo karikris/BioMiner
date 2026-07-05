@@ -126,7 +126,7 @@ def test_species_context_resolves_papilio_fixture_from_registry_names(tmp_path) 
     assert [term.term for term in context.search_terms] == ["Papilio demoleus", "Papilio erithonius", "lime butterfly"]
 
 
-def test_query_planner_preserves_registry_provenance_through_pages_and_slices() -> None:
+def test_query_planner_preserves_registry_provenance_through_pages_and_accessible_window() -> None:
     probe = FlickrQuery(
         term="Danaus plexippus",
         language="la",
@@ -143,9 +143,9 @@ def test_query_planner_preserves_registry_provenance_through_pages_and_slices() 
     )
 
     page = plan_pages_from_count(probe, total=1)[0]
-    sliced = plan_queries_from_count(probe, total=4001)[0]
+    capped = plan_queries_from_count(probe, total=4001)[0]
 
-    for query in (page, sliced):
+    for query in (page, capped):
         assert query.registry_version == "registry-v1"
         assert query.query_definition_id == "q-danaus-text"
         assert query.accepted_taxon_key == "gbif:5133240"

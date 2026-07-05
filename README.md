@@ -25,7 +25,8 @@ Step 0: taxonomic registry
 
 Step 1: Flickr metadata discovery
   registry query definitions
-  -> fixed upload-date slices
+  -> one unsliced page-1 search per enabled name/field
+  -> Flickr-reported pagination up to the 4,000-result accessible window
   -> Flickr photos.search metadata
   -> one canonical evidence row per photo with folded query-term provenance
 
@@ -141,7 +142,7 @@ The active implementation covers:
 - bounded concurrent species enrichment;
 - retry, progress, and checkpoint controls;
 - deterministic atomic Flickr query compilation;
-- fixed upload-date Flickr search slicing;
+- unsliced Flickr page-1 discovery with bounded pagination;
 - bounded metadata polling with a shared SQLite ledger;
 - in-memory metadata text hints for review evidence;
 - temporary image caching and deletion;
@@ -1087,7 +1088,7 @@ registry query compilation
 registry fatal QA gates
 Flickr endpoint constraints
 API-budget enforcement
-fixed upload-date slicing
+unsliced page-1 discovery and 4,000-result pagination caps
 deterministic resume order
 metadata flag rules
 category/life-stage rules

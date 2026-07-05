@@ -229,7 +229,7 @@ def _query_definitions_frame(names: pl.DataFrame, taxa: pl.DataFrame, *, registr
     joined = enabled_names.join(taxa_lookup, on="accepted_taxon_key", how="left").to_dicts()
     for item in joined:
         for field in ("tags", "text"):
-            priority = _search_priority(str(item["name_class"]), field)
+            priority = _search_priority(item, field)
             rows.append(
                 {
                     "query_definition_id": _stable_id(
@@ -391,12 +391,21 @@ def _source_hash(payload: dict[str, Any], source_ref: str | Path) -> str:
     return _payload_hash(payload)
 
 
-def _search_priority(name_class: str, field: str) -> int:
-    field_offset = 0 if field == "tags" else 40
-    if name_class in {"accepted_scientific", "canonical_scientific", "scientific_synonym"}:
+def _search_priority(name: dict[str, Any], field: str) -> int:
+    field_offset = 0 if field == "tags" else 1
+    name_class = str(name.get("name_class") or "")
+    language = str(name.get("language") or "").casefold()
+    trust_tier = str(name.get("trust_tier") or "").casefold()
+    if name_class in {"accepted_scientific", "canonical_scientific"}:
         return 10 + field_offset
-    if name_class in {"vernacular", "vernacular_alias"}:
+    if name_class in {"vernacular", "vernacular_alias"} and language in {"en", "eng"} and trust_tier in {"t1", "t2", "t3"}:
         return 20 + field_offset
+    if name_class == "scientific_synonym":
+        return 30 + field_offset
+    if name_class in {"vernacular", "vernacular_alias"}:
+        return 40 + field_offset
+    if name_class == "generated_translation" or trust_tier == "t5":
+        return 80 + field_offset
     return 100 + field_offset
 
 

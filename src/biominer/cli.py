@@ -232,9 +232,6 @@ def build_parser() -> argparse.ArgumentParser:
     registry_seed = dev_registry_subparsers.add_parser("seed-flickr-queries")
     registry_seed.add_argument("--query-definitions", required=True)
     registry_seed.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
-    registry_seed.add_argument("--start-date", default="2004-02-10")
-    registry_seed.add_argument("--end-date", default=datetime.now(UTC).date().isoformat())
-    registry_seed.add_argument("--slice-days", type=int, default=5)
     dev_comments = dev_subparsers.add_parser("comments")
     dev_comments_subparsers = dev_comments.add_subparsers(dest="comments_command")
     comments_fetch = dev_comments_subparsers.add_parser("fetch")
@@ -525,12 +522,7 @@ def run(args: argparse.Namespace) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
         if args.registry_command == "seed-flickr-queries":
-            queries = load_registry_flickr_queries(
-                args.query_definitions,
-                start_date=args.start_date,
-                end_date=args.end_date,
-                slice_days=args.slice_days,
-            )
+            queries = load_registry_flickr_queries(args.query_definitions)
             state = MetadataPollState(args.state_db)
             inserted = sum(state.enqueue_work_item(query) for query in queries)
             print(

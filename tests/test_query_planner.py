@@ -81,7 +81,7 @@ def test_query_planner_source_has_no_legacy_broad_seed_planner() -> None:
     assert [value for value in forbidden if value in source] == []
 
 
-def test_registry_query_definitions_load_as_page_one_upload_slice_work(tmp_path) -> None:
+def test_registry_query_definitions_load_as_single_unsliced_page_one_work(tmp_path) -> None:
     registry_queries = tmp_path / "flickr_query_definitions.parquet"
     frame = pl.DataFrame(
         [
@@ -143,11 +143,12 @@ def test_registry_query_definitions_load_as_page_one_upload_slice_work(tmp_path)
     assert {query.per_page for query in queries} == {NORMAL_PAGE_SIZE}
     assert {query.has_geo for query in queries} == {0}
     assert queries[0].query_definition_id == "q-tags"
+    assert queries[0].query_priority == 10
     assert queries[0].registry_version == "registry-v1"
     assert queries[0].accepted_taxon_key == "gbif:100"
     assert queries[0].accepted_scientific_name == "Papilio demoleus"
-    assert queries[0].min_upload_date == "2026-01-01"
-    assert queries[0].max_upload_date == "2026-01-05"
+    assert queries[0].min_upload_date is None
+    assert queries[0].max_upload_date is None
 
 
 def test_t5_query_definitions_become_flickr_api_search_params(tmp_path) -> None:
@@ -209,6 +210,8 @@ def test_t5_query_definitions_become_flickr_api_search_params(tmp_path) -> None:
     assert by_field["tags"].query_definition_id == "q-t5-tags"
     assert flickr_search_params(by_field["tags"])["tags"] == "Translated Lime"
     assert flickr_search_params(by_field["text"])["text"] == "Translated Lime"
+    assert "min_upload_date" not in flickr_search_params(by_field["tags"])
+    assert "max_upload_date" not in flickr_search_params(by_field["tags"])
 
 
 def test_geo_pages_use_250_and_non_geo_pages_use_500_records() -> None:
@@ -230,8 +233,8 @@ def test_geo_pages_use_250_and_non_geo_pages_use_500_records() -> None:
     assert [page.lane for page in bbox_pages] == ["bbox_page", "bbox_page", "bbox_page"]
 
 
-def test_high_volume_queries_use_fixed_upload_slice_pages() -> None:
-    probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe")
+def test_high_volume_queries_are_capped_to_first_accessible_result_window_without_date_slices() -> None:
+    probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)
 
     pages = plan_queries_from_count(
         probe,
@@ -242,11 +245,12 @@ def test_high_volume_queries_use_fixed_upload_slice_pages() -> None:
         narrower_terms=["swallowtail"],
     )
 
+    assert len(pages) == 8
     assert {item.lane for item in pages} == {"normal_page"}
     assert {item.per_page for item in pages} == {NORMAL_PAGE_SIZE}
     assert not any(item.lane == "count_probe" for item in pages)
-    assert pages[0].min_upload_date == "2004-02-10"
-    assert pages[0].max_upload_date == "2004-02-14"
+    assert not any(page.min_upload_date or page.max_upload_date for page in pages)
+    assert [page.page for page in pages] == list(range(1, 9))
 
 
 def test_stable_threshold_matches_flickr_result_window() -> None:
@@ -286,7 +290,7 @@ def test_total_4000_creates_bbox_pages_for_geo_leaf() -> None:
     assert {page.per_page for page in pages} == {BBOX_PAGE_SIZE}
 
 
-def test_total_4001_returns_fixed_upload_slice_pages_only() -> None:
+def test_total_4001_returns_first_accessible_pages_only() -> None:
     probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)
 
     pages = plan_queries_from_count(
@@ -300,9 +304,11 @@ def test_total_4001_returns_fixed_upload_slice_pages_only() -> None:
     assert {query.lane for query in pages} == {"normal_page"}
     assert not any(query.lane == "count_probe" for query in pages)
     assert {query.per_page for query in pages} == {NORMAL_PAGE_SIZE}
+    assert [query.page for query in pages] == list(range(1, 9))
+    assert not any(query.min_upload_date or query.max_upload_date for query in pages)
 
 
-def test_fixed_slice_metadata_carries_upload_dates_depth_and_index() -> None:
+def test_over_threshold_probe_does_not_carry_upload_dates_depth_or_slice_index() -> None:
     probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)
 
     pages = plan_queries_from_count(
@@ -312,14 +318,14 @@ def test_fixed_slice_metadata_carries_upload_dates_depth_and_index() -> None:
     )
 
     assert [(query.split_reason, query.split_depth, query.slice_index) for query in pages[:2]] == [
-        ("upload_date", 1, 0),
-        ("upload_date", 1, 1),
+        (None, 0, None),
+        (None, 0, None),
     ]
-    assert pages[0].min_upload_date == "2004-02-10"
-    assert pages[0].max_upload_date == "2004-02-14"
+    assert pages[0].min_upload_date is None
+    assert pages[0].max_upload_date is None
 
 
-def test_over_threshold_probe_with_upload_bounds_uses_fixed_slices_within_bounds() -> None:
+def test_over_threshold_probe_with_upload_bounds_discards_bounds_for_unsliced_fetch() -> None:
     probe = FlickrQuery(
         term="butterfly",
         language="en",
@@ -332,10 +338,11 @@ def test_over_threshold_probe_with_upload_bounds_uses_fixed_slices_within_bounds
 
     pages = plan_queries_from_count(probe, total=4001)
 
-    assert len(pages) == 2
-    assert pages[0].min_upload_date == "2021-01-01"
-    assert pages[0].max_upload_date == "2021-01-05"
-    assert pages[-1].max_upload_date == "2021-01-10"
+    assert len(pages) == 8
+    assert pages[0].min_upload_date is None
+    assert pages[0].max_upload_date is None
+    assert pages[-1].min_upload_date is None
+    assert pages[-1].max_upload_date is None
 
 
 def test_planned_work_is_sorted_deterministically() -> None:
@@ -344,9 +351,9 @@ def test_planned_work_is_sorted_deterministically() -> None:
     pages = plan_queries_from_count(probe, total=4001)
 
     assert [(query.slice_index, query.min_upload_date, query.max_upload_date, query.page) for query in pages[:3]] == [
-        (0, "2004-02-10", "2004-02-14", 1),
-        (1, "2004-02-15", "2004-02-19", 1),
-        (2, "2004-02-20", "2004-02-24", 1),
+        (None, None, None, 1),
+        (None, None, None, 2),
+        (None, None, None, 3),
     ]
 
 
@@ -360,16 +367,17 @@ def test_query_inside_result_window_creates_250_record_geo_pages() -> None:
     assert all(page.page < 4000 for page in pages)
 
 
-def test_query_over_result_window_uses_fixed_slice_pages_not_count_probes() -> None:
+def test_query_over_result_window_uses_accessible_pages_not_date_slices_or_count_probes() -> None:
     probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe")
 
     pages = plan_queries_from_count(probe, total=MAX_ACCESSIBLE_RESULTS_PER_QUERY * GEO_PAGE_SIZE + 1)
 
     assert pages
     assert {query.lane for query in pages} == {"normal_page"}
-    assert {query.split_reason for query in pages} == {"upload_date"}
+    assert {query.split_reason for query in pages} == {None}
     assert not any(query.lane == "count_probe" for query in pages)
-    assert all(query.per_page == NORMAL_PAGE_SIZE for query in pages)
+    assert all(query.per_page == GEO_PAGE_SIZE for query in pages)
+    assert len(pages) == 16
 
 
 def test_flickr_search_params_use_text_or_tags_and_url_l_url_m_only() -> None:

@@ -2278,10 +2278,6 @@ def test_registry_seed_flickr_queries_cli_loads_query_definitions_into_state(tmp
             str(query_definitions),
             "--state-db",
             str(state_db),
-            "--start-date",
-            "2026-01-01",
-            "--end-date",
-            "2026-01-05",
         ]
     )
 

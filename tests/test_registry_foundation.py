@@ -4,6 +4,7 @@ import json
 
 import polars as pl
 
+from biominer.flickr_fetch.query_planner import load_registry_flickr_queries_from_frame
 from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.scope import load_scope
 
@@ -161,7 +162,7 @@ def test_compile_registry_fixture_writes_normalized_parquet_and_manifest(tmp_pat
     ]
 
 
-def test_compile_registry_fixture_emits_atomic_flickr_queries_with_tags_before_text(tmp_path) -> None:
+def test_compile_registry_fixture_emits_atomic_flickr_queries_in_name_priority_order(tmp_path) -> None:
     source = tmp_path / "source.json"
     output = tmp_path / "registry"
     _write_fixture(source)
@@ -169,15 +170,50 @@ def test_compile_registry_fixture_emits_atomic_flickr_queries_with_tags_before_t
     compile_registry_fixture(source, output, registry_version="test-registry")
 
     queries = pl.read_parquet(output / "flickr_query_definitions.parquet").sort("search_priority")
-    assert queries.select("search_field").to_series().to_list() == ["tags", "tags", "text", "text"]
+    assert queries.select("search_field").to_series().to_list() == ["tags", "text", "tags", "text"]
     assert queries.select("normalized_query_term").to_series().to_list() == [
         "Papilio demoleus",
-        "Lime Butterfly",
         "Papilio demoleus",
+        "Lime Butterfly",
         "Lime Butterfly",
     ]
     assert queries.select("query_definition_id").to_series().n_unique() == 4
     assert queries.select(["normalized_query_term", "search_field", "region"]).unique().height == 4
+
+
+def test_accepted_scientific_queries_schedule_before_synonyms(tmp_path) -> None:
+    source = tmp_path / "source.json"
+    output = tmp_path / "registry"
+    _write_fixture(source)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["names"].append(
+        {
+            "accepted_taxon_key": "gbif:100",
+            "verbatim_name": "Papilio annamiticus",
+            "display_name": "Papilio annamiticus",
+            "language": "la",
+            "script": "Latn",
+            "region": "",
+            "bbox": "",
+            "name_class": "scientific_synonym",
+            "source": "GBIF",
+            "source_record_id": "gbif:synonym:1",
+            "trust_tier": "T1",
+            "precision_tier": "high",
+            "confidence": "high",
+            "enabled": True,
+        }
+    )
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    compile_registry_fixture(source, output, registry_version="test-registry")
+
+    queries = load_registry_flickr_queries_from_frame(pl.read_parquet(output / "flickr_query_definitions.parquet"))
+    assert [(query.term, query.search_field) for query in queries[:2]] == [
+        ("Papilio demoleus", "tags"),
+        ("Papilio demoleus", "text"),
+    ]
+    assert all(query.min_upload_date is None and query.max_upload_date is None for query in queries)
 
 
 def test_compile_registry_fixture_marks_missing_configured_family_as_fatal(tmp_path) -> None:

@@ -13,10 +13,8 @@ import polars as pl
 from biominer.flickr_fetch.query_planner import (
     BBOX_PAGE_SIZE,
     COUNT_PROBE_PAGE_SIZE,
-    DEFAULT_FIXED_SLICE_END_DATE,
     NORMAL_PAGE_SIZE,
     FlickrQuery,
-    fixed_upload_date_slices,
     flickr_search_params,
 )
 from biominer.flickr_fetch.metadata_poller import MetadataPollState, _payload_page, _payload_pages, _payload_perpage, _work_item_id, poll_once
@@ -844,7 +842,7 @@ def test_poll_once_enqueues_pages_for_count_probe_inside_result_window(tmp_path)
     assert pending == 15
 
 
-def test_poll_once_plans_fixed_slice_pages_over_stable_result_threshold(tmp_path) -> None:
+def test_poll_once_caps_count_probe_over_result_window_without_date_slices(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     state.enqueue_work_item(FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", per_page=1))
 
@@ -857,21 +855,15 @@ def test_poll_once_plans_fixed_slice_pages_over_stable_result_threshold(tmp_path
     )
 
     with sqlite3.connect(state.path) as conn:
-        rows = conn.execute("SELECT lane, per_page, json_extract(query_json, '$.split_reason') FROM flickr_work_items WHERE status = 'pending' LIMIT 20").fetchall()
+        rows = conn.execute("SELECT lane, page, per_page, json_extract(query_json, '$.split_reason') FROM flickr_work_items WHERE status = 'pending' ORDER BY page").fetchall()
         pending_count = conn.execute("SELECT count(*) FROM flickr_work_items WHERE status = 'pending'").fetchone()[0]
 
     assert rows
-    expected_slices = fixed_upload_date_slices(
-        start_date="2004-02-10",
-        end_date=DEFAULT_FIXED_SLICE_END_DATE,
-        slice_days=5,
-        coarse_end_date=None,
-        coarse_slice_days=None,
-    )
-    assert pending_count == len(expected_slices)
+    assert pending_count == 16
     assert {row[0] for row in rows} == {"normal_page"}
-    assert {row[1] for row in rows} == {NORMAL_PAGE_SIZE}
-    assert {row[2] for row in rows} == {"upload_date"}
+    assert [row[1] for row in rows] == list(range(1, 17))
+    assert {row[2] for row in rows} == {250}
+    assert {row[3] for row in rows} == {None}
 
 
 def test_poll_once_enqueues_all_pages_for_4000_record_bbox_leaf(tmp_path) -> None:

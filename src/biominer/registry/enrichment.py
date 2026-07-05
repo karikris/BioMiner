@@ -20,6 +20,7 @@ import polars as pl
 
 from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.normalize import normalize_language_code, normalize_name_key
+from biominer.registry.translation_sources import TRANSLATION_CANDIDATES_FILE, translation_candidate_schema
 from biominer.registry.trust_policy import decide_name_trust
 
 
@@ -704,6 +705,7 @@ def compile_enriched_registry(
     base_names = pl.read_parquet(base / "names.parquet")
     base_snapshots = pl.read_parquet(base / "source_snapshots.parquet") if (base / "source_snapshots.parquet").exists() else pl.DataFrame(schema=_source_snapshot_schema())
     assertions = _read_or_empty(enrichment / SOURCE_ASSERTIONS_FILE, _name_assertion_schema())
+    translation_assertions = _translation_candidate_assertions(enrichment / TRANSLATION_CANDIDATES_FILE)
     external_links = _read_or_empty(enrichment / EXTERNAL_LINKS_FILE, _external_link_schema())
     enrichment_snapshots = _read_or_empty(enrichment / ENRICHMENT_SOURCE_SNAPSHOTS_FILE, _source_snapshot_schema())
     source_errors = _read_or_empty(enrichment / SOURCE_ERRORS_FILE, _source_error_schema())
@@ -712,6 +714,8 @@ def compile_enriched_registry(
     allowed_sources = _source_display_names(effective_sources)
     allowed_error_sources = tuple(dict.fromkeys((*effective_sources, *allowed_sources)))
     assertions = assertions.filter(pl.col("source").is_in(allowed_sources))
+    if not translation_assertions.is_empty():
+        assertions = pl.concat([assertions, translation_assertions], how="vertical")
     external_links = external_links.filter(pl.col("source").is_in(allowed_sources))
     enrichment_snapshots = enrichment_snapshots.filter(pl.col("source").is_in(allowed_sources))
     source_errors = source_errors.filter(pl.col("source").is_in(allowed_error_sources))
@@ -764,6 +768,7 @@ def compile_enriched_registry(
             "enrichment_dir": str(enrichment),
             "enrichment_schema_version": ENRICHMENT_SCHEMA_VERSION,
             "enrichment_name_assertion_rows": assertions.height,
+            "translation_candidate_rows": translation_assertions.height,
             "enabled_enrichment_name_rows": enabled_enrichment.height,
             "enabled_t5_name_rows": enabled_t5_name_rows,
             "name_candidate_rows": candidate_output.height,
@@ -922,6 +927,53 @@ def _name_assertions_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
     return pl.DataFrame(normalized, schema=_name_assertion_schema()) if normalized else pl.DataFrame(schema=_name_assertion_schema())
 
 
+def _translation_candidate_assertions(path: Path) -> pl.DataFrame:
+    candidates = _read_or_empty(path, translation_candidate_schema())
+    if candidates.is_empty():
+        return pl.DataFrame(schema=_name_assertion_schema())
+    rows: list[dict[str, Any]] = []
+    for row in candidates.to_dicts():
+        translated_name = str(row.get("translated_name") or "").strip()
+        accepted_taxon_key = str(row.get("accepted_taxon_key") or "").strip()
+        if not translated_name or not accepted_taxon_key:
+            continue
+        source = str(row.get("source") or "Translation").strip() or "Translation"
+        candidate_id = str(row.get("candidate_id") or row.get("source_record_id") or "").strip()
+        source_record_id = str(row.get("source_record_id") or candidate_id).strip() or _stable_id(
+            "translation",
+            source,
+            accepted_taxon_key,
+            row.get("target_language"),
+            translated_name,
+        )
+        rows.append(
+            {
+                "assertion_id": _stable_id("translation-assertion", source, source_record_id, accepted_taxon_key, translated_name),
+                "accepted_taxon_key": accepted_taxon_key,
+                "verbatim_name": translated_name,
+                "display_name": translated_name,
+                "normalized_match_key": normalize_name_key(translated_name),
+                "language": normalize_language_code(row.get("target_language")),
+                "script": "",
+                "region": "",
+                "bbox": "",
+                "name_class": "generated_translation",
+                "source": source,
+                "source_record_id": source_record_id,
+                "source_taxon_id": "",
+                "trust_tier": str(row.get("trust_tier") or "T5"),
+                "precision_tier": str(row.get("precision_tier") or "low"),
+                "confidence": str(row.get("confidence") or "low"),
+                "enabled": _boolish(row.get("enabled", True)),
+                "review_state": str(row.get("review_state") or "accepted"),
+                "disabled_reason": str(row.get("disabled_reason") or ""),
+                "retrieved_at": "",
+                "licence": "",
+            }
+        )
+    return pl.DataFrame(rows, schema=_name_assertion_schema()) if rows else pl.DataFrame(schema=_name_assertion_schema())
+
+
 def _normalize_assertion(row: dict[str, Any]) -> dict[str, Any]:
     display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
     source = str(row.get("source") or "")
@@ -963,6 +1015,12 @@ def _normalize_assertion(row: dict[str, Any]) -> dict[str, Any]:
         "retrieved_at": str(row.get("retrieved_at") or ""),
         "licence": str(row.get("licence") or ""),
     }
+
+
+def _boolish(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "accepted", "enabled"}
 
 
 def _candidate_frame(assertions: pl.DataFrame, accepted_keys: set[str]) -> pl.DataFrame:

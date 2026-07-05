@@ -270,6 +270,8 @@ class MetadataPollState:
                 FROM flickr_work_items
                 WHERE status = ?
                 ORDER BY
+                    CASE lane WHEN 'count_probe' THEN 0 WHEN 'normal_page' THEN 1 WHEN 'bbox_page' THEN 1 ELSE 99 END,
+                    COALESCE(query_priority, 999999),
                     COALESCE(split_depth, 0),
                     COALESCE(split_priority, 99),
                     COALESCE(date_kind, ''),
@@ -278,9 +280,9 @@ class MetadataPollState:
                     COALESCE(slice_index, 999999),
                     COALESCE(bbox_index, 999999),
                     COALESCE(bbox_label, ''),
-                    COALESCE(term, ''),
-                    CASE lane WHEN 'count_probe' THEN 0 WHEN 'normal_page' THEN 1 WHEN 'bbox_page' THEN 1 ELSE 99 END,
                     page,
+                    COALESCE(term, ''),
+                    COALESCE(search_field, ''),
                     COALESCE(query_hash, work_item_id)
                 LIMIT ?
                 """,
@@ -721,6 +723,7 @@ class MetadataPollState:
                     family_key TEXT,
                     genus_key TEXT,
                     species_key TEXT,
+                    query_priority INTEGER,
                     claimed_at TEXT,
                     completed_at TEXT,
                     error TEXT,
@@ -816,6 +819,7 @@ class MetadataPollState:
             "family_key": "TEXT",
             "genus_key": "TEXT",
             "species_key": "TEXT",
+            "query_priority": "INTEGER",
             "records_returned": "INTEGER",
             "response_total": "INTEGER",
             "response_pages": "INTEGER",
@@ -1509,11 +1513,11 @@ def _insert_work_item(conn: sqlite3.Connection, query: FlickrQuery) -> sqlite3.C
             slice_index, bbox_label, term, search_field, query_language,
             term_type, term_confidence, trust_tier, query_hash, registry_version,
             query_definition_id, accepted_taxon_key, accepted_scientific_name,
-            family_key, genus_key, species_key, claimed_at,
+            family_key, genus_key, species_key, query_priority, claimed_at,
             completed_at, error, records_returned, response_total,
             response_pages, response_page, response_perpage, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?)
         """,
         (
             work_item_id,
@@ -1547,6 +1551,7 @@ def _insert_work_item(conn: sqlite3.Connection, query: FlickrQuery) -> sqlite3.C
             query.family_key,
             query.genus_key,
             query.species_key,
+            query.query_priority,
             _timestamp(),
         ),
     )
@@ -1610,6 +1615,7 @@ def _source_record_hash(record: dict[str, Any]) -> str:
 
 def _query_from_json(payload: str) -> FlickrQuery:
     data = json.loads(payload)
+    data.setdefault("query_priority", 999999)
     return FlickrQuery(**data)
 
 

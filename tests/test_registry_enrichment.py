@@ -20,6 +20,7 @@ from biominer.registry.enrichment import (
 )
 from biominer.registry.enrichment_sources import ITISClient, _json_get
 from biominer.registry.enrichment_sources import TMDGermanClient
+from biominer.registry.translation_sources import generated_translation_candidate, write_translation_candidates
 
 
 def _write_base_registry(tmp_path, species_names: tuple[str, ...] = ("Papilio demoleus",)):
@@ -616,6 +617,43 @@ def test_compile_enriched_registry_enables_t5_translations_as_name_evidence(tmp_
     assert manifest["t5_query_definition_rows"] == 2
     assert manifest["t5_retrieval_query_definition_rows"] == 0
     assert manifest["query_definition_rows"] == queries.height
+
+
+def test_compile_enriched_registry_promotes_translation_candidate_file_to_t5_queries(tmp_path) -> None:
+    registry, scope = _write_base_registry(tmp_path)
+    write_translation_candidates(
+        [
+            generated_translation_candidate(
+                source="LibreTranslate",
+                source_language="eng",
+                target_language="deu",
+                source_name="Lime Butterfly",
+                translated_name="Limettenfalter",
+                accepted_taxon_key="gbif:100",
+            )
+        ],
+        registry,
+    )
+
+    manifest = compile_enriched_registry(
+        registry_dir=registry,
+        registry_version="enriched",
+        scope_path=scope,
+    )
+
+    names = pl.read_parquet(registry / "names.parquet")
+    queries = pl.read_parquet(registry / "flickr_query_definitions.parquet")
+    t5_names = names.filter(pl.col("normalized_match_key") == "limettenfalter")
+    t5_queries = queries.filter(pl.col("normalized_match_key") == "limettenfalter").sort("search_field")
+
+    assert t5_names.height == 1
+    assert t5_names.select("trust_tier").to_series().to_list() == ["T5"]
+    assert t5_names.select("name_class").to_series().to_list() == ["generated_translation"]
+    assert t5_queries.select("search_field").to_series().to_list() == ["tags", "text"]
+    assert t5_queries.select("trust_tier").to_series().to_list() == ["T5", "T5"]
+    assert manifest["translation_candidate_rows"] == 1
+    assert manifest["enabled_t5_name_rows"] == 1
+    assert manifest["t5_query_definition_rows"] == 2
 
 
 def test_compile_enriched_registry_disables_unreviewed_cross_taxon_collisions(tmp_path) -> None:
