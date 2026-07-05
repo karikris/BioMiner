@@ -1320,6 +1320,55 @@ def test_orchestrator_scores_bioclip_from_cloud_storage() -> None:
     assert storage.json_payloads[plan.artifact_uris.manifest_uri]["bioclip_counts"]["objects_scored"] == 2
 
 
+def test_production_cloud_run_does_not_write_durable_local_artifacts(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    scope = TaxonScope.from_species_context(_species_context())
+    storage = _FakeRunStorage()
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root="s3://biominer/runs",
+        stages=(RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP, RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
+    canonical, _, _ = _join_stage_input_frames()
+    storage.parquet_payloads[plan.artifact_uris.source_records_uri] = canonical
+    detector = FakeObjectDetector(
+        [[DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 4.0), objectness_score=0.91)]]
+    )
+    scorer = _ConstantObjectScorer(
+        {
+            "Danaus plexippus": 0.82,
+            "a photo of Danaus plexippus": 0.81,
+            "Monarch": 0.50,
+            "Nymphalidae": 0.93,
+            "Danaus": 0.90,
+        }
+    )
+
+    before = _durable_local_artifacts(tmp_path)
+    _install_forbidden_local_write_guard(monkeypatch, root=tmp_path)
+    result = ProductionRunOrchestrator(
+        request,
+        taxon_scope=scope,
+        storage=storage,
+        object_detector=detector,
+        image_loader=lambda _record: _tiny_rgb_image(),
+        object_scorer=scorer,
+        allow_single_target_fixture=True,
+    ).run()
+    after = _durable_local_artifacts(tmp_path)
+
+    assert result.manifest.status == "complete"
+    assert after == before == set()
+    assert plan.artifact_uris.object_detections_uri in storage.parquet_payloads
+    assert plan.artifact_uris.object_scores_uri in storage.parquet_payloads
+    assert plan.artifact_uris.object_evidence_uri in storage.parquet_payloads
+    assert plan.artifact_uris.photo_summary_uri in storage.parquet_payloads
+    assert plan.artifact_uris.metrics_uri in storage.json_payloads
+    assert plan.artifact_uris.manifest_uri in storage.json_payloads
+
+
 def test_orchestrator_cloud_score_requires_storage_backend() -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
@@ -1743,6 +1792,49 @@ class _FakeRunStorage:
 
     def exists(self, uri: str) -> bool:
         return uri in self.parquet_payloads or uri in self.json_payloads
+
+
+def _install_forbidden_local_write_guard(monkeypatch, *, root: Path) -> None:  # noqa: ANN001 - pytest monkeypatch fixture.
+    for method_name in ("write_text", "write_bytes", "mkdir", "touch"):
+        original = getattr(Path, method_name)
+
+        def guarded_path_method(self, *args, _original=original, _method_name=method_name, **kwargs):  # noqa: ANN001, ANN202
+            if _is_forbidden_local_artifact(self, root=root):
+                raise AssertionError(f"production cloud mode attempted local {_method_name}: {self}")
+            return _original(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, method_name, guarded_path_method)
+
+    original_write_parquet = pl.DataFrame.write_parquet
+
+    def guarded_write_parquet(self, file=None, *args, **kwargs):  # noqa: ANN001, ANN202
+        if isinstance(file, str | Path) and _is_forbidden_local_artifact(Path(file), root=root):
+            raise AssertionError(f"production cloud mode attempted local parquet write: {file}")
+        return original_write_parquet(self, file, *args, **kwargs)
+
+    monkeypatch.setattr(pl.DataFrame, "write_parquet", guarded_write_parquet)
+
+
+def _durable_local_artifacts(root: Path) -> set[str]:
+    if not root.exists():
+        return set()
+    return {
+        str(path.relative_to(root))
+        for path in root.rglob("*")
+        if _is_forbidden_local_artifact(path, root=root)
+    }
+
+
+def _is_forbidden_local_artifact(path: str | Path, *, root: Path) -> bool:
+    candidate = Path(path)
+    absolute = candidate if candidate.is_absolute() else root / candidate
+    try:
+        relative = absolute.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    if relative.suffix == ".sqlite":
+        return True
+    return bool(relative.parts and relative.parts[0] in {"data", "staging", "reports", "runs"})
 
 
 def _seed_cloud_registry(storage: _FakeRunStorage, registry_uri: str, registry: Path) -> None:
