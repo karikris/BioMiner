@@ -19,9 +19,11 @@ from biominer.detection.cloud_work import (
     run_cloud_detection_batch,
 )
 from biominer.evidence.cloud_work import (
+    build_review_queue_from_cloud_summary_shards,
     join_evidence_batch_id,
     join_object_evidence_from_cloud_shards,
     photo_summary_batch_id,
+    review_queue_batch_id,
     summarize_photo_evidence_from_cloud_shards,
 )
 from biominer.evidence.join import write_object_evidence_outputs
@@ -1003,51 +1005,94 @@ class ProductionRunOrchestrator:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_summarize")
             if self.workstore is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_summarize")
-            if not _cloud_stage_shard_uris(self.workstore, plan, RunStage.JOIN_EVIDENCE.value):
-                return StageExecutionResult(status=StageStatus.FAILED, message="missing_summary_inputs: object_evidence")
-            result = summarize_photo_evidence_from_cloud_shards(
+            outputs: dict[str, str] = {}
+            summary_result = None
+            if _cloud_stage_shard_uris(self.workstore, plan, RunStage.JOIN_EVIDENCE.value):
+                summary_result = summarize_photo_evidence_from_cloud_shards(
+                    storage=self.storage,
+                    workstore=self.workstore,
+                    job_name=PRODUCTION_JOB_NAME,
+                    registry_version=plan.manifest.taxon_scope.registry_version,
+                    run_id=plan.manifest.run_id,
+                    joined_stage=RunStage.JOIN_EVIDENCE.value,
+                    species_context=plan.manifest.taxon_scope.species_contexts[0],
+                )
+                photo_summary_uri = self.storage.write_parquet_shard(
+                    build_evidence_shard_uri(
+                        plan.artifact_uris.staging_uri,
+                        stage="photo_summary",
+                        run_id=plan.manifest.run_id,
+                        worker_id=self.request.worker_id,
+                        batch_id=photo_summary_batch_id(summary_result),
+                    ),
+                    summary_result.frame,
+                )
+                self.workstore.register_shard(
+                    job_name=PRODUCTION_JOB_NAME,
+                    registry_version=plan.manifest.taxon_scope.registry_version,
+                    stage="photo_summary",
+                    run_id=plan.manifest.run_id,
+                    worker_id=self.request.worker_id,
+                    uri=photo_summary_uri,
+                    checksum=None,
+                    row_count=summary_result.frame.height,
+                    metadata={
+                        "joined_shards_seen": summary_result.joined_shards_seen,
+                        "object_evidence_rows_seen": summary_result.object_evidence_rows_seen,
+                    },
+                )
+                outputs["photo_summary"] = photo_summary_uri
+            if not _cloud_stage_shard_uris(self.workstore, plan, "photo_summary"):
+                return StageExecutionResult(status=StageStatus.FAILED, message="missing_summary_inputs: object_evidence, photo_summary")
+            queue_result = build_review_queue_from_cloud_summary_shards(
                 storage=self.storage,
                 workstore=self.workstore,
                 job_name=PRODUCTION_JOB_NAME,
                 registry_version=plan.manifest.taxon_scope.registry_version,
                 run_id=plan.manifest.run_id,
-                joined_stage=RunStage.JOIN_EVIDENCE.value,
-                species_context=plan.manifest.taxon_scope.species_contexts[0],
+                summary_stage="photo_summary",
             )
-            photo_summary_uri = self.storage.write_parquet_shard(
+            review_queue_uri = self.storage.write_parquet_shard(
                 build_evidence_shard_uri(
                     plan.artifact_uris.staging_uri,
-                    stage="photo_summary",
+                    stage="review_queue",
                     run_id=plan.manifest.run_id,
                     worker_id=self.request.worker_id,
-                    batch_id=photo_summary_batch_id(result),
+                    batch_id=review_queue_batch_id(queue_result),
                 ),
-                result.frame,
+                queue_result.frame,
             )
             self.workstore.register_shard(
                 job_name=PRODUCTION_JOB_NAME,
                 registry_version=plan.manifest.taxon_scope.registry_version,
-                stage="photo_summary",
+                stage="review_queue",
                 run_id=plan.manifest.run_id,
                 worker_id=self.request.worker_id,
-                uri=photo_summary_uri,
+                uri=review_queue_uri,
                 checksum=None,
-                row_count=result.frame.height,
-                metadata={
-                    "joined_shards_seen": result.joined_shards_seen,
-                    "object_evidence_rows_seen": result.object_evidence_rows_seen,
-                },
+                row_count=queue_result.frame.height,
+                metadata={"summary_shards_seen": queue_result.summary_shards_seen},
             )
             metrics = {
-                "object_evidence_rows": result.object_evidence_rows_seen,
-                "photo_summary_rows": result.frame.height,
-                "object_occurrence_bin_counts": result.object_occurrence_bin_counts,
-                "photo_occurrence_bin_counts": _value_counts(result.frame, "photo_occurrence_bin"),
-                "joined_evidence_shards": result.joined_shards_seen,
-                "photo_summary_shards": 1,
+                "photo_summary_rows": queue_result.photo_summary_rows_seen,
+                "photo_occurrence_bin_counts": queue_result.photo_occurrence_bin_counts,
+                "review_queue_rows": queue_result.frame.height,
+                "review_queue_bin_counts": _value_counts(queue_result.frame, "review_bucket"),
+                "summary_shards": queue_result.summary_shards_seen,
+                "review_queue_shards": 1,
             }
+            if summary_result is not None:
+                metrics.update(
+                    {
+                        "object_evidence_rows": summary_result.object_evidence_rows_seen,
+                        "object_occurrence_bin_counts": summary_result.object_occurrence_bin_counts,
+                        "joined_evidence_shards": summary_result.joined_shards_seen,
+                        "photo_summary_shards": 1,
+                    }
+                )
             metrics_uri = self.storage.write_json(plan.artifact_uris.metrics_uri, metrics)
-            return StageExecutionResult(metrics=metrics, outputs={"metrics": metrics_uri, "photo_summary": photo_summary_uri})
+            outputs.update({"metrics": metrics_uri, "review_queue": review_queue_uri})
+            return StageExecutionResult(metrics=metrics, outputs=outputs)
         missing = _missing_paths(plan.paths.object_evidence_path, plan.paths.photo_summary_path)
         if missing:
             return StageExecutionResult(status=StageStatus.FAILED, message="missing_summary_inputs: " + ", ".join(missing))

@@ -8,6 +8,7 @@ from typing import Any
 import polars as pl
 
 from biominer.evidence.join import build_joined_object_evidence_frame, build_photo_summary_from_joined_evidence
+from biominer.evidence.metrics import build_review_queue
 from biominer.species.context import SpeciesContext
 from biominer.storage.cloud import CloudStorage
 from biominer.workstore.base import WorkStore
@@ -46,6 +47,18 @@ class CloudPhotoSummaryResult:
     @property
     def joined_shards_seen(self) -> int:
         return len(self.joined_shards)
+
+
+@dataclass(frozen=True)
+class CloudReviewQueueResult:
+    frame: pl.DataFrame
+    summary_shards: tuple[dict[str, Any], ...]
+    photo_summary_rows_seen: int
+    photo_occurrence_bin_counts: dict[str, int]
+
+    @property
+    def summary_shards_seen(self) -> int:
+        return len(self.summary_shards)
 
 
 def join_object_evidence_from_cloud_shards(
@@ -111,6 +124,36 @@ def join_object_evidence_from_cloud_shards(
     )
 
 
+def build_review_queue_from_cloud_summary_shards(
+    *,
+    storage: CloudStorage,
+    workstore: WorkStore,
+    job_name: str,
+    registry_version: str | None,
+    run_id: str,
+    summary_stage: str,
+) -> CloudReviewQueueResult:
+    """Build a comment-review queue from committed photo-summary shards."""
+
+    summary_shards = _candidate_shards(
+        workstore,
+        job_name=job_name,
+        stage=summary_stage,
+        registry_version=registry_version,
+        run_id=run_id,
+    )
+    if not summary_shards:
+        raise FileNotFoundError("photo_summary")
+    photo_summary = _read_shards(storage, summary_shards)
+    queue = build_review_queue(photo_summary)
+    return CloudReviewQueueResult(
+        frame=queue,
+        summary_shards=tuple(summary_shards),
+        photo_summary_rows_seen=photo_summary.height,
+        photo_occurrence_bin_counts=_value_counts(photo_summary, "photo_occurrence_bin"),
+    )
+
+
 def summarize_photo_evidence_from_cloud_shards(
     *,
     storage: CloudStorage,
@@ -156,6 +199,10 @@ def photo_summary_batch_id(result: CloudPhotoSummaryResult) -> str:
     return _stable_hash({"joined": _shard_identities(result.joined_shards)})
 
 
+def review_queue_batch_id(result: CloudReviewQueueResult) -> str:
+    return _stable_hash({"summary": _shard_identities(result.summary_shards)})
+
+
 def _candidate_shards(
     workstore: WorkStore,
     *,
@@ -196,8 +243,11 @@ def _stable_hash(payload: dict[str, Any]) -> str:
 __all__ = [
     "CloudObjectEvidenceJoinResult",
     "CloudPhotoSummaryResult",
+    "CloudReviewQueueResult",
+    "build_review_queue_from_cloud_summary_shards",
     "join_evidence_batch_id",
     "join_object_evidence_from_cloud_shards",
     "photo_summary_batch_id",
+    "review_queue_batch_id",
     "summarize_photo_evidence_from_cloud_shards",
 ]

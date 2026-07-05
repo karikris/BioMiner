@@ -872,17 +872,27 @@ def test_orchestrator_runs_fake_backed_cloud_workflow_end_to_end(tmp_path, monke
     poll_shard_uri = result.manifest.stages[2].outputs["source_records"]
     assert poll_shard_uri.startswith(result.artifact_uris.staging_uri + "/evidence/stage=poll_flickr/")
     assert poll_shard_uri in storage.parquet_payloads
+    detection_uri = result.manifest.stages[3].outputs["object_detections"]
+    score_uri = result.manifest.stages[4].outputs["object_scores"]
+    object_evidence_uri = result.manifest.stages[5].outputs["object_evidence"]
+    photo_summary_uri = result.manifest.stages[6].outputs["photo_summary"]
+    review_queue_uri = result.manifest.stages[6].outputs["review_queue"]
     for uri in (
         result.artifact_uris.query_definitions_uri,
-        result.artifact_uris.object_detections_uri,
-        result.artifact_uris.object_scores_uri,
-        result.artifact_uris.object_evidence_uri,
-        result.artifact_uris.photo_summary_uri,
-        result.artifact_uris.review_queue_uri,
+        detection_uri,
+        score_uri,
+        object_evidence_uri,
+        photo_summary_uri,
+        review_queue_uri,
     ):
         assert uri in storage.parquet_payloads
+    assert detection_uri.startswith(result.artifact_uris.staging_uri + "/evidence/stage=detect_objects/")
+    assert score_uri.startswith(result.artifact_uris.staging_uri + "/evidence/stage=score_bioclip/")
+    assert object_evidence_uri.startswith(result.artifact_uris.staging_uri + "/evidence/stage=join_evidence/")
+    assert photo_summary_uri.startswith(result.artifact_uris.staging_uri + "/evidence/stage=photo_summary/")
+    assert review_queue_uri.startswith(result.artifact_uris.staging_uri + "/evidence/stage=review_queue/")
     assert storage.json_payloads[result.artifact_uris.manifest_uri]["status"] == "complete"
-    summary = storage.parquet_payloads[result.artifact_uris.photo_summary_uri].to_dicts()[0]
+    summary = storage.parquet_payloads[photo_summary_uri].to_dicts()[0]
     assert summary["flickr_photo_id"] == "poll-photo-1"
     assert summary["best_object_species_top1"] == "Papilio demoleus"
 
@@ -1123,6 +1133,78 @@ def test_orchestrator_summarizes_photo_evidence_from_cloud_join_shards(tmp_path)
         run_id=plan.manifest.run_id,
     )
     assert [shard["uri"] for shard in summary_shards] == [photo_summary_uri]
+
+
+def test_orchestrator_builds_review_queue_from_cloud_summary_shards(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    storage = _FakeRunStorage()
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root="s3://biominer/runs",
+        stages=(RunStage.SUMMARIZE,),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
+    summary_uri = plan.artifact_uris.staging_uri + "/evidence/stage=photo_summary/run_id=species_danaus_plexippus/worker=summarizer/batch=001.parquet"
+    storage.parquet_payloads[summary_uri] = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "review-1",
+                "best_detection_id": "det-r",
+                "detection_count": 1,
+                "best_object_occurrence_bin": "in_review",
+                "best_object_species_top1": "Danaus plexippus",
+                "best_object_score": 0.42,
+                "photo_occurrence_bin": "in_review",
+                "photo_bin_reason": "ambiguous_species_margin",
+                "all_detection_ids": ["det-r"],
+                "all_candidate_species": ["Danaus plexippus", "Danaus eresimus"],
+            },
+            {
+                "source": "flickr",
+                "flickr_photo_id": "gold-1",
+                "best_detection_id": "det-g",
+                "detection_count": 1,
+                "best_object_occurrence_bin": "gold",
+                "best_object_species_top1": "Danaus plexippus",
+                "best_object_score": 0.82,
+                "photo_occurrence_bin": "gold",
+                "photo_bin_reason": "target_species_score_ge_070",
+                "all_detection_ids": ["det-g"],
+                "all_candidate_species": ["Danaus plexippus"],
+            },
+        ]
+    )
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        stage="photo_summary",
+        run_id=plan.manifest.run_id,
+        worker_id="summarizer",
+        uri=summary_uri,
+        checksum=None,
+        row_count=2,
+    )
+
+    result = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage, workstore=workstore).run()
+
+    assert result.manifest.status == "complete"
+    assert result.manifest.evidence_counts == {"object_evidence_rows": 0, "photo_summary_rows": 2, "review_queue_rows": 1}
+    review_queue_uri = result.manifest.stages[0].outputs["review_queue"]
+    assert review_queue_uri.startswith(plan.artifact_uris.staging_uri + "/evidence/stage=review_queue/")
+    assert plan.artifact_uris.review_queue_uri not in storage.parquet_payloads
+    assert storage.json_payloads[plan.artifact_uris.metrics_uri]["review_queue_bin_counts"] == {"in_review": 1}
+    queue = storage.parquet_payloads[review_queue_uri]
+    assert queue.select("flickr_photo_id").to_series().to_list() == ["review-1"]
+    queue_shards = workstore.list_committed_shards(
+        job_name="biominer_production_run",
+        stage="review_queue",
+        registry_version=scope.registry_version,
+        run_id=plan.manifest.run_id,
+    )
+    assert [shard["uri"] for shard in queue_shards] == [review_queue_uri]
 
 
 def test_orchestrator_local_comment_review_stages_process_and_apply_promotions(tmp_path) -> None:
@@ -1430,6 +1512,7 @@ def test_production_cloud_run_does_not_write_durable_local_artifacts(monkeypatch
     monkeypatch.chdir(tmp_path)
     scope = TaxonScope.from_species_context(_species_context())
     storage = _FakeRunStorage()
+    workstore = SQLiteWorkStore(tmp_path.parent / f"{tmp_path.name}-workstore.sqlite")
     request = ProductionRunRequest(
         taxon="Danaus plexippus",
         rank="species",
@@ -1438,7 +1521,18 @@ def test_production_cloud_run_does_not_write_durable_local_artifacts(monkeypatch
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
     canonical, _, _ = _join_stage_input_frames()
-    storage.parquet_payloads[plan.artifact_uris.source_records_uri] = canonical
+    source_uri = plan.artifact_uris.staging_uri + "/evidence/stage=poll_flickr/run_id=species_danaus_plexippus/worker=poller/batch=001.parquet"
+    storage.parquet_payloads[source_uri] = canonical
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        stage=RunStage.POLL_FLICKR.value,
+        run_id=plan.manifest.run_id,
+        worker_id="poller",
+        uri=source_uri,
+        checksum=None,
+        row_count=canonical.height,
+    )
     detector = FakeObjectDetector(
         [[DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 4.0), objectness_score=0.91)]]
     )
@@ -1458,6 +1552,7 @@ def test_production_cloud_run_does_not_write_durable_local_artifacts(monkeypatch
         request,
         taxon_scope=scope,
         storage=storage,
+        workstore=workstore,
         object_detector=detector,
         image_loader=lambda _record: _tiny_rgb_image(),
         object_scorer=scorer,
@@ -1467,10 +1562,11 @@ def test_production_cloud_run_does_not_write_durable_local_artifacts(monkeypatch
 
     assert result.manifest.status == "complete"
     assert after == before == set()
-    assert plan.artifact_uris.object_detections_uri in storage.parquet_payloads
-    assert plan.artifact_uris.object_scores_uri in storage.parquet_payloads
-    assert plan.artifact_uris.object_evidence_uri in storage.parquet_payloads
-    assert plan.artifact_uris.photo_summary_uri in storage.parquet_payloads
+    assert result.manifest.stages[0].outputs["object_detections"] in storage.parquet_payloads
+    assert result.manifest.stages[1].outputs["object_scores"] in storage.parquet_payloads
+    assert result.manifest.stages[2].outputs["object_evidence"] in storage.parquet_payloads
+    assert result.manifest.stages[3].outputs["photo_summary"] in storage.parquet_payloads
+    assert result.manifest.stages[3].outputs["review_queue"] in storage.parquet_payloads
     assert plan.artifact_uris.metrics_uri in storage.json_payloads
     assert plan.artifact_uris.manifest_uri in storage.json_payloads
 
