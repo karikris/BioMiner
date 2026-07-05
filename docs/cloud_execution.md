@@ -178,14 +178,8 @@ The current local SQLite comment review state is a dev/local implementation unti
 
 Compaction reads candidate shard inventory from Postgres, scans source shards from S3, writes new immutable compacted shards to S3, and records source-to-output lineage in `biominer_compaction_inputs`. It must not delete or rewrite source shards as part of normal execution.
 
-## Current Audit Findings
+## Current Cloud-Centric Status
 
-Phase 1 guard tests intentionally track current local-first implementation leaks that later phases must remove:
+The production cloud path now claims work from `WorkStore`, writes immutable S3-compatible Parquet shards, and uses shard inventory for detection, BioCLIP scoring, joins, photo summaries, and review queue generation.
 
-- cloud Flickr polling bridges through a temporary local `MetadataPollState` SQLite database;
-- cloud detection and BioCLIP stages use local temporary final files before uploading;
-- cloud detection and BioCLIP stages eager-read full Parquet outputs and materialize rows into Python dicts;
-- cloud join and summary stages eager-read full run artifacts rather than consuming shard inventory;
-- cloud comment review state is not implemented and currently exists only as local SQLite.
-
-These findings define the cleanup backlog. Until they are fixed, production cloud mode should be treated as partially cloud-backed rather than fully cloud-native.
+Local filesystem and SQLite support remains intentionally available for explicit dev/test overrides. The remaining production gap is comment review execution: cloud review queue shards are written, but the comment-fetch/review/promotion state machine still has a local SQLite implementation until it is moved onto the cloud control plane.
