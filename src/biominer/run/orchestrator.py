@@ -5,9 +5,13 @@ from dataclasses import dataclass, field, replace
 import json
 import os
 from pathlib import Path
-import tempfile
 from typing import Any
 
+from biominer.bioclip.cloud_work import (
+    bioclip_score_batch_id,
+    enqueue_bioclip_work_from_detection_shards,
+    run_cloud_bioclip_batch,
+)
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
 from biominer.detection.cloud_work import (
     detection_batch_id,
@@ -673,7 +677,11 @@ class ProductionRunOrchestrator:
         if is_cloud_uri(self.request.output_root):
             if self.storage is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_score_bioclip")
-            missing = _missing_uris(self.storage, plan.artifact_uris.object_detections_uri)
+            if self.workstore is None:
+                return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_score_bioclip")
+            missing: list[str] = []
+            if not _cloud_detection_shard_uris(self.workstore, plan):
+                missing.append("object_detections")
             if not _cloud_source_records_available(self.storage, self.workstore, plan):
                 missing.append("source_records")
             if missing:
@@ -682,27 +690,90 @@ class ProductionRunOrchestrator:
                 return StageExecutionResult(status=StageStatus.FAILED, message="bioclip_runtime_required_for_score_bioclip")
             from biominer.bioclip.candidate_sets import build_candidate_set_for_taxon_scope
 
-            canonical = _read_cloud_source_records(self.storage, self.workstore, plan)
-            detections = self.storage.read_parquet(plan.artifact_uris.object_detections_uri)
             target_context = plan.manifest.taxon_scope.species_contexts[0]
             candidate_set = build_candidate_set_for_taxon_scope(
                 plan.manifest.taxon_scope,
                 target_context=target_context,
                 species_candidate_path=self.species_candidate_path,
-                records=canonical.to_dicts(),
                 allow_single_target_fixture=self.allow_single_target_fixture,
             )
-            with tempfile.TemporaryDirectory(prefix="biominer-score-") as tmp_dir:
-                frame, metrics = _score_object_visual_modes(
-                    canonical_records=canonical,
-                    detections=detections,
+            plan_result = enqueue_bioclip_work_from_detection_shards(
+                storage=self.storage,
+                workstore=self.workstore,
+                job_name=PRODUCTION_JOB_NAME,
+                registry_version=plan.manifest.taxon_scope.registry_version,
+                run_id=plan.manifest.run_id,
+                detection_stage=RunStage.DETECT_OBJECTS.value,
+                score_stage=RunStage.SCORE_BIOCLIP.value,
+                model_id=self.object_scorer.model_id,
+                model_version=self.object_scorer.model_version,
+                model_checkpoint=self.object_scorer.model_checkpoint,
+                candidate_set_id=candidate_set.candidate_set_id,
+                ablation_modes=_request_bioclip_modes(self.request),
+                limit=int(self.request.limits.get("score_work_items") or 0) or None,
+            )
+            claimed = self.workstore.claim_next_batch(
+                self.request.worker_id,
+                _cloud_bioclip_claim_limit(self.request.limits),
+                job_name=PRODUCTION_JOB_NAME,
+                stage=RunStage.SCORE_BIOCLIP.value,
+                registry_version=plan.manifest.taxon_scope.registry_version,
+            )
+            if not claimed:
+                return StageExecutionResult(
+                    metrics={
+                        "score_work_items_enqueued": plan_result.enqueued_work_items,
+                        "duplicate_score_work_items": plan_result.duplicate_work_items,
+                        "work_items_claimed": 0,
+                        "workstore_work_items_completed": 0,
+                    },
+                    outputs={"workstore_stage": RunStage.SCORE_BIOCLIP.value},
+                )
+            try:
+                result = run_cloud_bioclip_batch(
+                    work_items=claimed,
                     species_context=target_context,
                     candidate_set=candidate_set,
                     scorer=self.object_scorer,
-                    output_dir=Path(tmp_dir),
-                    modes=_request_bioclip_modes(self.request),
                 )
-            output_uri = self.storage.write_parquet_shard(plan.artifact_uris.object_scores_uri, frame)
+                output_uri = self.storage.write_parquet_shard(
+                    build_evidence_shard_uri(
+                        plan.artifact_uris.staging_uri,
+                        stage=RunStage.SCORE_BIOCLIP.value,
+                        run_id=plan.manifest.run_id,
+                        worker_id=self.request.worker_id,
+                        batch_id=bioclip_score_batch_id(claimed),
+                    ),
+                    result.frame,
+                )
+                self.workstore.register_shard(
+                    job_name=PRODUCTION_JOB_NAME,
+                    registry_version=plan.manifest.taxon_scope.registry_version,
+                    stage=RunStage.SCORE_BIOCLIP.value,
+                    run_id=plan.manifest.run_id,
+                    worker_id=self.request.worker_id,
+                    uri=output_uri,
+                    checksum=None,
+                    row_count=result.frame.height,
+                    metadata={"claimed_work_items": len(claimed), "candidate_set_id": candidate_set.candidate_set_id},
+                )
+                for item in claimed:
+                    self.workstore.mark_completed(str(item["work_key"]), output_uri=output_uri, checksum=None, row_count=result.frame.height)
+            except Exception as exc:  # noqa: BLE001 - claimed work must not remain claimed after batch failure.
+                for item in claimed:
+                    self.workstore.mark_failed(str(item.get("work_key") or ""), str(exc) or exc.__class__.__name__)
+                return StageExecutionResult(status=StageStatus.FAILED, message=f"score_bioclip_failed: {exc}")
+            metrics = _cloud_bioclip_metrics(result)
+            metrics.update(
+                {
+                    "score_work_items_enqueued": plan_result.enqueued_work_items,
+                    "duplicate_score_work_items": plan_result.duplicate_work_items,
+                    "work_items_claimed": len(claimed),
+                    "workstore_work_items_completed": len(claimed),
+                    "score_shards": 1,
+                    "score_batches_written": 1,
+                }
+            )
             return StageExecutionResult(metrics=metrics, outputs={"object_scores": output_uri})
         missing = _missing_paths(plan.paths.source_records_path, plan.paths.object_detections_path)
         if missing:
@@ -1018,6 +1089,13 @@ def _cloud_detection_claim_limit(limits: dict[str, int]) -> int:
     return min(candidates) if candidates else 1
 
 
+def _cloud_bioclip_claim_limit(limits: dict[str, int]) -> int:
+    score_limit = int(limits.get("score_work_items") or 0)
+    worker_limit = int(limits.get("workers") or 0)
+    candidates = [value for value in (score_limit, worker_limit) if value > 0]
+    return min(candidates) if candidates else 100
+
+
 def _cloud_source_records_available(storage: CloudStorage, workstore: WorkStore | None, plan: ProductionRunPlan) -> bool:
     if storage.exists(plan.artifact_uris.source_records_uri):
         return True
@@ -1046,6 +1124,40 @@ def _cloud_source_record_shard_uris(workstore: WorkStore | None, plan: Productio
         run_id=plan.manifest.run_id,
     )
     return [str(shard["uri"]) for shard in shards]
+
+
+def _cloud_detection_shard_uris(workstore: WorkStore | None, plan: ProductionRunPlan) -> list[str]:
+    if workstore is None:
+        return []
+    shards = workstore.list_committed_shards(
+        job_name=PRODUCTION_JOB_NAME,
+        stage=RunStage.DETECT_OBJECTS.value,
+        registry_version=plan.manifest.taxon_scope.registry_version,
+        run_id=plan.manifest.run_id,
+    )
+    return [str(shard["uri"]) for shard in shards]
+
+
+def _cloud_bioclip_metrics(result: Any) -> dict[str, Any]:
+    frame = result.frame
+    return {
+        "records_seen": result.detections_seen,
+        "detections_seen": result.detections_seen,
+        "crops_scored": result.crops_scored,
+        "objects_scored": result.crops_scored,
+        "whole_images_scored": _mode_row_count(frame, "whole_image"),
+        "detector_crops_scored": _mode_row_count(frame, "detector_crop"),
+        "segmentation_crops_scored": _mode_row_count(frame, "detector_crop_segmentation"),
+        "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
+        "visual_modes_requested": list(result.visual_modes_requested),
+        "visual_modes_scored": list(result.visual_modes_scored),
+        "visual_mode_status_by_mode": dict(result.visual_mode_status_by_mode),
+        "segmentation_status_by_mode": dict(result.segmentation_status_by_mode),
+        "segmentation_unavailable_count_by_mode": dict(result.segmentation_unavailable_count_by_mode),
+        "segmentation_unavailable_reason_by_mode": dict(result.segmentation_unavailable_reason_by_mode),
+        "segmentation_unavailable_count": result.segmentation_unavailable_count,
+        "segmentation_unavailable_reason": result.segmentation_unavailable_reason,
+    }
 
 
 def _parquet_row_count(path: Path) -> int:

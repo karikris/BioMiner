@@ -1306,9 +1306,10 @@ def test_orchestrator_cloud_detect_requires_storage_backend() -> None:
     assert result.manifest.stages[0].message == "storage_backend_required_for_detect_objects"
 
 
-def test_orchestrator_scores_bioclip_from_cloud_storage() -> None:
+def test_orchestrator_scores_bioclip_from_cloud_storage(tmp_path) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     storage = _FakeRunStorage()
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
     request = ProductionRunRequest(
         taxon="Danaus plexippus",
         rank="species",
@@ -1317,8 +1318,30 @@ def test_orchestrator_scores_bioclip_from_cloud_storage() -> None:
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
     canonical, detections, _ = _join_stage_input_frames()
-    storage.parquet_payloads[plan.artifact_uris.source_records_uri] = canonical
-    storage.parquet_payloads[plan.artifact_uris.object_detections_uri] = detections
+    source_uri = plan.artifact_uris.staging_uri + "/evidence/stage=poll_flickr/run_id=species_danaus_plexippus/worker=poller/batch=001.parquet"
+    detection_uri = plan.artifact_uris.staging_uri + "/evidence/stage=detect_objects/run_id=species_danaus_plexippus/worker=detector/batch=001.parquet"
+    storage.parquet_payloads[source_uri] = canonical
+    storage.parquet_payloads[detection_uri] = detections
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        stage=RunStage.POLL_FLICKR.value,
+        run_id=plan.manifest.run_id,
+        worker_id="poller",
+        uri=source_uri,
+        checksum=None,
+        row_count=canonical.height,
+    )
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        stage=RunStage.DETECT_OBJECTS.value,
+        run_id=plan.manifest.run_id,
+        worker_id="detector",
+        uri=detection_uri,
+        checksum=None,
+        row_count=detections.height,
+    )
     scorer = _ConstantObjectScorer(
         {
             "Danaus plexippus": 0.82,
@@ -1333,11 +1356,14 @@ def test_orchestrator_scores_bioclip_from_cloud_storage() -> None:
         request,
         taxon_scope=scope,
         storage=storage,
+        workstore=workstore,
         object_scorer=scorer,
         allow_single_target_fixture=True,
     ).run()
 
     assert result.manifest.status == "complete"
+    assert result.manifest.stages[0].metrics["score_work_items_enqueued"] == 3
+    assert result.manifest.stages[0].metrics["workstore_work_items_completed"] == 3
     assert result.manifest.bioclip_counts["objects_scored"] == 2
     assert result.manifest.bioclip_counts["whole_images_scored"] == 1
     assert result.manifest.bioclip_counts["detector_crops_scored"] == 1
@@ -1345,12 +1371,26 @@ def test_orchestrator_scores_bioclip_from_cloud_storage() -> None:
     assert result.manifest.metrics["visual_modes_requested"] == list(OBJECT_VISUAL_MODES)
     assert result.manifest.metrics["visual_modes_scored"] == ["detector_crop", "whole_image"]
     assert result.manifest.metrics["visual_mode_status_by_mode"]["detector_crop_segmentation"] == "unavailable"
-    assert result.manifest.stages[0].outputs["object_scores"] == plan.artifact_uris.object_scores_uri
-    scores = storage.parquet_payloads[plan.artifact_uris.object_scores_uri].sort("ablation_mode")
+    score_uri = result.manifest.stages[0].outputs["object_scores"]
+    assert score_uri.startswith(plan.artifact_uris.staging_uri + "/evidence/stage=score_bioclip/")
+    scores = storage.parquet_payloads[score_uri].sort("ablation_mode")
     assert scores.height == 2
     assert scores.select("ablation_mode").to_series().to_list() == ["detector_crop", "whole_image"]
     assert scores.select("species_top1_scientific_name").to_series().to_list() == ["Danaus plexippus", "Danaus plexippus"]
     assert storage.json_payloads[plan.artifact_uris.manifest_uri]["bioclip_counts"]["objects_scored"] == 2
+    work_items = workstore.list_work_items(
+        job_name="biominer_production_run",
+        stage=RunStage.SCORE_BIOCLIP.value,
+        registry_version=scope.registry_version,
+    )
+    assert [item["status"] for item in work_items] == ["completed", "completed", "completed"]
+    shards = workstore.list_committed_shards(
+        job_name="biominer_production_run",
+        stage=RunStage.SCORE_BIOCLIP.value,
+        registry_version=scope.registry_version,
+        run_id=plan.manifest.run_id,
+    )
+    assert [shard["uri"] for shard in shards] == [score_uri]
 
 
 def test_production_cloud_run_does_not_write_durable_local_artifacts(monkeypatch, tmp_path) -> None:

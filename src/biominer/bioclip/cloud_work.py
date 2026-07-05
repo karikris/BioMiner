@@ -5,7 +5,21 @@ import hashlib
 import json
 from typing import Any
 
+import polars as pl
+
+from biominer.bioclip.candidate_sets import CandidateSet
+from biominer.bioclip.object_runner import (
+    OBJECT_VISUAL_MODES,
+    ObjectBioClipScorer,
+    empty_object_score_frame,
+    _score_detection,
+    _scorer_supports_detector_crop_segmentation,
+    _segmentation_status,
+    _visual_mode_status,
+)
 from biominer.detection.policy import DetectionPolicy, detection_is_bioclip_eligible
+from biominer.detection.segmentation import SegmentationUnavailable
+from biominer.species.context import SpeciesContext
 from biominer.storage.cloud import CloudStorage
 from biominer.workstore.base import WorkStore
 
@@ -17,6 +31,22 @@ class BioClipWorkPlanResult:
     eligible_detections_seen: int
     enqueued_work_items: int
     duplicate_work_items: int
+
+
+@dataclass(frozen=True)
+class CloudBioClipBatchResult:
+    frame: pl.DataFrame
+    work_items_seen: int
+    detections_seen: int
+    crops_scored: int
+    segmentation_unavailable_count: int
+    segmentation_unavailable_reason: str | None
+    visual_modes_requested: tuple[str, ...]
+    visual_modes_scored: tuple[str, ...]
+    visual_mode_status_by_mode: dict[str, str]
+    segmentation_status_by_mode: dict[str, str | None]
+    segmentation_unavailable_count_by_mode: dict[str, int]
+    segmentation_unavailable_reason_by_mode: dict[str, str | None]
 
 
 def enqueue_bioclip_work_from_detection_shards(
@@ -136,9 +166,117 @@ def detection_from_bioclip_work_item(item: dict[str, Any]) -> dict[str, Any]:
     return dict(detection)
 
 
+def run_cloud_bioclip_batch(
+    *,
+    work_items: list[dict[str, Any]],
+    species_context: SpeciesContext,
+    candidate_set: CandidateSet,
+    scorer: ObjectBioClipScorer,
+    geo_prior_table: pl.DataFrame | None = None,
+) -> CloudBioClipBatchResult:
+    rows: list[dict[str, Any]] = []
+    requested_modes: list[str] = []
+    scored_by_mode: dict[str, int] = {}
+    unavailable_by_mode: dict[str, int] = {}
+    unavailable_reason_by_mode: dict[str, str | None] = {}
+    detection_keys: set[tuple[str, str, str]] = set()
+    for item in work_items:
+        payload = item.get("payload")
+        if not isinstance(payload, dict):
+            raise ValueError(f"work item {item.get('work_key')} has invalid payload")
+        mode = str(payload.get("ablation_mode") or "detector_crop")
+        if mode not in set(OBJECT_VISUAL_MODES):
+            raise ValueError(f"unsupported BioCLIP ablation mode: {mode}")
+        requested_modes.append(mode)
+        detection = detection_from_bioclip_work_item(item)
+        detection_keys.add(
+            (
+                str(detection.get("source") or ""),
+                str(detection.get("flickr_photo_id") or ""),
+                str(detection.get("detection_id") or ""),
+            )
+        )
+        score_item = {**detection, "ablation_mode": mode}
+        if mode == "detector_crop_segmentation" and not _scorer_supports_detector_crop_segmentation(scorer, score_item):
+            _mark_unavailable(
+                mode,
+                reason="detector_masks_missing",
+                unavailable_by_mode=unavailable_by_mode,
+                unavailable_reason_by_mode=unavailable_reason_by_mode,
+            )
+            continue
+        try:
+            score_row = _score_detection(
+                item=score_item,
+                context=species_context,
+                candidate_set=candidate_set,
+                scorer=scorer,
+                ablation_mode=mode,  # type: ignore[arg-type]
+                geo_prior_table=geo_prior_table,
+            )
+        except SegmentationUnavailable as exc:
+            if mode != "detector_crop_segmentation":
+                raise
+            _mark_unavailable(
+                mode,
+                reason=str(exc) or "detector_masks_missing",
+                unavailable_by_mode=unavailable_by_mode,
+                unavailable_reason_by_mode=unavailable_reason_by_mode,
+            )
+            continue
+        rows.append(score_row)
+        scored_by_mode[mode] = scored_by_mode.get(mode, 0) + 1
+    frame = pl.DataFrame(rows) if rows else empty_object_score_frame()
+    modes_requested = tuple(_unique(requested_modes))
+    modes_scored = tuple(sorted(scored_by_mode))
+    visual_status = {
+        mode: _visual_mode_status(
+            mode=mode,  # type: ignore[arg-type]
+            crops_scored=scored_by_mode.get(mode, 0),
+            unavailable_count=unavailable_by_mode.get(mode, 0),
+        )
+        for mode in modes_requested
+    }
+    segmentation_status = {
+        mode: _segmentation_status(
+            mode=mode,  # type: ignore[arg-type]
+            crops_scored=scored_by_mode.get(mode, 0),
+            unavailable_count=unavailable_by_mode.get(mode, 0),
+        )
+        for mode in modes_requested
+    }
+    unavailable_total = sum(unavailable_by_mode.values())
+    first_unavailable_reason = next((reason for reason in unavailable_reason_by_mode.values() if reason), None)
+    return CloudBioClipBatchResult(
+        frame=frame,
+        work_items_seen=len(work_items),
+        detections_seen=len(detection_keys),
+        crops_scored=frame.height,
+        segmentation_unavailable_count=unavailable_total,
+        segmentation_unavailable_reason=first_unavailable_reason,
+        visual_modes_requested=modes_requested,
+        visual_modes_scored=modes_scored,
+        visual_mode_status_by_mode=visual_status,
+        segmentation_status_by_mode=segmentation_status,
+        segmentation_unavailable_count_by_mode=unavailable_by_mode,
+        segmentation_unavailable_reason_by_mode=unavailable_reason_by_mode,
+    )
+
+
 def bioclip_score_batch_id(work_items: list[dict[str, Any]]) -> str:
     work_keys = [str(item.get("work_key") or "") for item in work_items]
     return _stable_hash({"work_keys": work_keys})
+
+
+def _mark_unavailable(
+    mode: str,
+    *,
+    reason: str,
+    unavailable_by_mode: dict[str, int],
+    unavailable_reason_by_mode: dict[str, str | None],
+) -> None:
+    unavailable_by_mode[mode] = unavailable_by_mode.get(mode, 0) + 1
+    unavailable_reason_by_mode.setdefault(mode, reason)
 
 
 def _detection_is_scoreable(
@@ -174,10 +312,23 @@ def _jsonable_value(value: Any) -> Any:
     return str(value)
 
 
+def _unique(values: list[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        output.append(value)
+    return tuple(output)
+
+
 __all__ = [
     "BioClipWorkPlanResult",
+    "CloudBioClipBatchResult",
     "bioclip_score_batch_id",
     "bioclip_score_work_item",
     "detection_from_bioclip_work_item",
     "enqueue_bioclip_work_from_detection_shards",
+    "run_cloud_bioclip_batch",
 ]
