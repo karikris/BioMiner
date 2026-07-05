@@ -14,10 +14,74 @@ from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST
 from biominer.registry.gbif_production import ProductionGBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
+from biominer.storage.cloud import CloudStorage
+from biominer.storage.uri import is_cloud_uri
 
 
 logger = logging.getLogger(__name__)
 def build_registry(
+    *,
+    output_dir: str | Path,
+    registry_version: str,
+    scope_path: str | Path = "config/butterfly_scope.json",
+    source_json: str | Path | None = None,
+    reuse_source_json: bool = False,
+    report_dir: str | Path = "reports",
+    retrieved_at: str | None = None,
+    workers: int = 8,
+    progress_every: int = 100,
+    checkpoint_every: int = 500,
+    max_retries: int = 5,
+    enrichment_sources: tuple[str, ...] = DEFAULT_ENRICHMENT_SOURCES,
+    inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
+    skip_enrichment: bool = False,
+    storage: CloudStorage | None = None,
+) -> dict[str, Any]:
+    options = {
+        "output_dir": output_dir,
+        "registry_version": registry_version,
+        "scope_path": scope_path,
+        "source_json": source_json,
+        "reuse_source_json": reuse_source_json,
+        "report_dir": report_dir,
+        "retrieved_at": retrieved_at,
+        "workers": workers,
+        "progress_every": progress_every,
+        "checkpoint_every": checkpoint_every,
+        "max_retries": max_retries,
+        "enrichment_sources": enrichment_sources,
+        "inaturalist_daily_request_limit": inaturalist_daily_request_limit,
+        "skip_enrichment": skip_enrichment,
+    }
+    if is_cloud_uri(str(output_dir)):
+        if storage is None:
+            raise ValueError("storage_backend_required_for_cloud_registry")
+        return build_cloud_registry(storage=storage, **options)
+    return build_local_registry(**options)
+
+
+def build_cloud_registry(
+    *,
+    output_dir: str | Path,
+    registry_version: str,
+    storage: CloudStorage,
+    scope_path: str | Path = "config/butterfly_scope.json",
+    source_json: str | Path | None = None,
+    reuse_source_json: bool = False,
+    report_dir: str | Path = "reports",
+    retrieved_at: str | None = None,
+    workers: int = 8,
+    progress_every: int = 100,
+    checkpoint_every: int = 500,
+    max_retries: int = 5,
+    enrichment_sources: tuple[str, ...] = DEFAULT_ENRICHMENT_SOURCES,
+    inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
+    skip_enrichment: bool = False,
+) -> dict[str, Any]:
+    raise NotImplementedError("cloud_registry_build_not_implemented")
+
+
+def build_local_registry(
     *,
     output_dir: str | Path,
     registry_version: str,

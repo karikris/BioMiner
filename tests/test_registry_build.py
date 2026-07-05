@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import polars as pl
+import pytest
 
 from biominer.registry.build import build_registry
 
@@ -240,6 +241,26 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
     assert "Lime Swallowtail" in queries["normalized_query_term"].to_list()
     assert "Wikidata Lime" in queries["normalized_query_term"].to_list()
     assert errors.is_empty()
+
+
+def test_registry_build_requires_storage_backend_for_cloud_output(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    scope = tmp_path / "scope.json"
+    _scope(scope)
+    source = tmp_path / "gbif.json"
+    source.write_text(json.dumps(_gbif_snapshot()), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="storage_backend_required_for_cloud_registry"):
+        build_registry(
+            output_dir="s3://biominer/registry/version=test",
+            registry_version="test",
+            scope_path=scope,
+            source_json=source,
+            reuse_source_json=True,
+            skip_enrichment=True,
+        )
+
+    assert not (tmp_path / "s3:").exists()
 
 
 def test_registry_build_quarantines_source_errors_without_siloing_successful_names(tmp_path, monkeypatch) -> None:
