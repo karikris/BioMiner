@@ -263,6 +263,43 @@ def test_registry_build_requires_storage_backend_for_cloud_output(tmp_path, monk
     assert not (tmp_path / "s3:").exists()
 
 
+def test_cloud_registry_build_writes_canonical_artifacts_to_s3_version_prefix(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    scope = tmp_path / "scope.json"
+    _scope(scope)
+    source = tmp_path / "gbif.json"
+    source.write_text(json.dumps(_gbif_snapshot()), encoding="utf-8")
+    storage = _FakeRegistryStorage()
+
+    result = build_registry(
+        output_dir="s3://biominer/biominer",
+        registry_version="cloud-test",
+        scope_path=scope,
+        source_json=source,
+        reuse_source_json=True,
+        report_dir="s3://biominer/biominer/reports",
+        skip_enrichment=True,
+        storage=storage,
+    )
+
+    registry_prefix = "s3://biominer/biominer/registry/version=cloud-test"
+    assert result["registry_prefix"] == registry_prefix
+    for filename in (
+        "taxa.parquet",
+        "taxon_relations.parquet",
+        "names.parquet",
+        "name_evidence.parquet",
+        "source_snapshots.parquet",
+        "flickr_query_definitions.parquet",
+        "qa_findings.parquet",
+    ):
+        assert f"{registry_prefix}/{filename}" in storage.parquet_payloads
+    assert storage.json_payloads[f"{registry_prefix}/manifest.json"]["registry_version"] == "cloud-test"
+    assert storage.json_payloads[f"{registry_prefix}/gbif_source_snapshot.json"]["source"] == "GBIF"
+    assert storage.json_payloads["s3://biominer/biominer/reports/registry_build_cloud-test.json"]["status"] == "passed"
+    assert not (tmp_path / "s3:").exists()
+
+
 def test_registry_build_quarantines_source_errors_without_siloing_successful_names(tmp_path, monkeypatch) -> None:
     scope = tmp_path / "scope.json"
     _scope(scope)
@@ -298,3 +335,17 @@ def test_registry_build_quarantines_source_errors_without_siloing_successful_nam
     assert errors.select("source").to_series().to_list() == ["itis"]
     assert errors.select("error_class").to_series().to_list() == ["UnicodeDecodeError"]
     assert {"severity": "warning", "code": "source_enrichment_error", "subject": "itis:gbif:100:UnicodeDecodeError"} in qa.to_dicts()
+
+
+class _FakeRegistryStorage:
+    def __init__(self) -> None:
+        self.parquet_payloads: dict[str, pl.DataFrame] = {}
+        self.json_payloads: dict[str, dict[str, object]] = {}
+
+    def write_parquet_shard(self, uri: str, frame: pl.DataFrame) -> str:
+        self.parquet_payloads[uri] = frame
+        return uri
+
+    def write_json(self, uri: str, payload: dict[str, object]) -> str:
+        self.json_payloads[uri] = payload
+        return uri

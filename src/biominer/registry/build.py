@@ -9,13 +9,14 @@ import shutil
 import subprocess
 from typing import Any
 
-from biominer.registry.compiler import compile_registry_fixture
+from biominer.registry.compiler import compile_registry_fixture, compile_registry_frames
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST_DAILY_REQUEST_LIMIT, build_enrichment_sources_from_registry, compile_enriched_registry
 from biominer.registry.gbif_production import ProductionGBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
 from biominer.storage.cloud import CloudStorage
-from biominer.storage.uri import is_cloud_uri
+from biominer.storage.paths import build_registry_version_uri, safe_path_component
+from biominer.storage.uri import is_cloud_uri, join_uri
 
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,75 @@ def build_cloud_registry(
     inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
     skip_enrichment: bool = False,
 ) -> dict[str, Any]:
-    raise NotImplementedError("cloud_registry_build_not_implemented")
+    if not skip_enrichment:
+        raise NotImplementedError("cloud_registry_enrichment_not_implemented")
+    base_prefix = str(output_dir).rstrip("/")
+    registry_prefix = join_uri(base_prefix, "registry", f"version={safe_path_component(registry_version)}")
+    retrieved = retrieved_at or datetime.now(UTC).isoformat()
+    if reuse_source_json:
+        if source_json is None:
+            raise FileNotFoundError("--reuse-source-json requires --source-json for cloud registry builds")
+        source_path = Path(source_json)
+        if not source_path.exists():
+            raise FileNotFoundError(f"--reuse-source-json requires an existing source JSON: {source_path}")
+        source_payload = json.loads(source_path.read_text(encoding="utf-8"))
+    else:
+        with ProductionGBIFClient(max_retries=max_retries, max_connections=workers) as client:
+            source_payload = build_gbif_source_snapshot(
+                client,
+                load_scope(scope_path),
+                retrieved_at=retrieved,
+                checkpoint_dir=None,
+                workers=workers,
+                progress_every=progress_every,
+                checkpoint_every=checkpoint_every,
+                max_retries=max_retries,
+                client_factory=lambda: ProductionGBIFClient(max_retries=max_retries, max_connections=workers),
+            )
+    source_uri = build_registry_version_uri(base_prefix, registry_version=registry_version, filename="gbif_source_snapshot.json")
+    storage.write_json(source_uri, source_payload)
+    frames, manifest = compile_registry_frames(
+        source_payload,
+        source_ref=source_uri,
+        output_ref=registry_prefix,
+        registry_version=registry_version,
+        scope_path=scope_path,
+    )
+    for filename, frame in frames.items():
+        storage.write_parquet_shard(
+            build_registry_version_uri(base_prefix, registry_version=registry_version, filename=filename),
+            frame,
+        )
+    manifest_uri = build_registry_version_uri(base_prefix, registry_version=registry_version, filename="manifest.json")
+    storage.write_json(manifest_uri, manifest)
+    report = _build_report(
+        manifest=manifest,
+        source_payload=source_payload,
+        source_path=source_uri,
+        output_dir=registry_prefix,
+        registry_version=registry_version,
+        retrieved_at=retrieved,
+        enrichment_sources=enrichment_sources,
+        inaturalist_daily_request_limit=inaturalist_daily_request_limit,
+        skip_enrichment=skip_enrichment,
+        enrichment_manifest=None,
+    )
+    report_paths = _write_cloud_reports(
+        report,
+        storage=storage,
+        report_dir=str(report_dir),
+        output_dir=base_prefix,
+        registry_version=registry_version,
+    )
+    return {
+        "registry_version": registry_version,
+        "source_json": source_uri,
+        "output_dir": registry_prefix,
+        "registry_prefix": registry_prefix,
+        "manifest_uri": manifest_uri,
+        "manifest": manifest,
+        **report_paths,
+    }
 
 
 def build_local_registry(
@@ -291,6 +360,21 @@ def _write_reports(report: dict[str, Any], *, report_dir: Path, registry_version
     json_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     md_path.write_text(_report_markdown(report), encoding="utf-8")
     return {"report_json": str(json_path), "report_md": str(md_path)}
+
+
+def _write_cloud_reports(
+    report: dict[str, Any],
+    *,
+    storage: CloudStorage,
+    report_dir: str,
+    output_dir: str,
+    registry_version: str,
+) -> dict[str, str]:
+    report_base = report_dir.rstrip("/") if is_cloud_uri(report_dir) else join_uri(output_dir, "reports")
+    stem = f"registry_build_{safe_path_component(registry_version)}"
+    json_uri = join_uri(report_base, f"{stem}.json")
+    storage.write_json(json_uri, report)
+    return {"report_json": json_uri}
 
 
 def _report_markdown(report: dict[str, Any]) -> str:

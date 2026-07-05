@@ -28,15 +28,45 @@ def compile_registry_fixture(
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     payload = json.loads(source.read_text(encoding="utf-8"))
-    scope = load_scope(scope_path)
+    frames, manifest = compile_registry_frames(
+        payload,
+        source_ref=source,
+        output_ref=output,
+        registry_version=registry_version,
+        scope_path=scope_path,
+    )
 
-    taxa = _taxa_frame(payload.get("taxa", []), scope_id=scope.scope_id)
-    names = _names_frame(payload.get("names", []), registry_version=registry_version)
-    evidence = _name_evidence_frame(payload.get("names", []), registry_version=registry_version, source_payload=payload)
-    snapshots = _source_snapshots_frame(payload, source_path=source)
+    for filename, frame in frames.items():
+        write_parquet(frame, output / filename)
+    (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    return manifest
+
+
+def compile_registry_frames(
+    source_payload: dict[str, Any],
+    *,
+    source_ref: str | Path,
+    output_ref: str | Path,
+    registry_version: str,
+    scope_path: str | Path = "config/butterfly_scope.json",
+) -> tuple[dict[str, pl.DataFrame], dict[str, Any]]:
+    scope = load_scope(scope_path)
+    taxa = _taxa_frame(source_payload.get("taxa", []), scope_id=scope.scope_id)
+    names = _names_frame(source_payload.get("names", []), registry_version=registry_version)
+    evidence = _name_evidence_frame(source_payload.get("names", []), registry_version=registry_version, source_payload=source_payload)
+    snapshots = _source_snapshots_frame(source_payload, source_ref=source_ref)
     queries = _query_definitions_frame(names, taxa, registry_version=registry_version)
     qa_findings = _qa_findings(taxa, names, queries, scope)
     qa = pl.DataFrame(qa_findings) if qa_findings else _empty_qa_frame()
+    frames = {
+        "taxa.parquet": taxa,
+        "taxon_relations.parquet": _taxon_relations_frame(taxa),
+        "names.parquet": names,
+        "name_evidence.parquet": evidence,
+        "source_snapshots.parquet": snapshots,
+        "flickr_query_definitions.parquet": queries,
+        "qa_findings.parquet": qa,
+    }
     manifest = _manifest(
         registry_version=registry_version,
         scope_id=scope.scope_id,
@@ -44,19 +74,11 @@ def compile_registry_fixture(
         names=names,
         queries=queries,
         qa=qa,
-        source_path=source,
-        output_dir=output,
+        source_ref=source_ref,
+        output_ref=output_ref,
+        source_hash=_source_hash(source_payload, source_ref),
     )
-
-    write_parquet(taxa, output / "taxa.parquet")
-    write_parquet(_taxon_relations_frame(taxa), output / "taxon_relations.parquet")
-    write_parquet(names, output / "names.parquet")
-    write_parquet(evidence, output / "name_evidence.parquet")
-    write_parquet(snapshots, output / "source_snapshots.parquet")
-    write_parquet(queries, output / "flickr_query_definitions.parquet")
-    write_parquet(qa, output / "qa_findings.parquet")
-    (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-    return manifest
+    return frames, manifest
 
 
 def query_definitions_from_names(names: pl.DataFrame, taxa: pl.DataFrame, *, registry_version: str) -> pl.DataFrame:
@@ -165,14 +187,14 @@ def _name_evidence_frame(rows: list[dict[str, Any]], *, registry_version: str, s
     return pl.DataFrame(evidence_rows, schema=_evidence_schema())
 
 
-def _source_snapshots_frame(payload: dict[str, Any], *, source_path: Path) -> pl.DataFrame:
+def _source_snapshots_frame(payload: dict[str, Any], *, source_ref: str | Path) -> pl.DataFrame:
     return pl.DataFrame(
         [
             {
                 "source": str(payload.get("source") or ""),
                 "source_version": str(payload.get("source_version") or ""),
                 "retrieved_at": str(payload.get("retrieved_at") or ""),
-                "source_path": str(source_path),
+                "source_path": str(source_ref),
                 "source_response_hash": _payload_hash(payload),
                 "licence": str(payload.get("licence") or ""),
             }
@@ -337,8 +359,9 @@ def _manifest(
     names: pl.DataFrame,
     queries: pl.DataFrame,
     qa: pl.DataFrame,
-    source_path: Path,
-    output_dir: Path,
+    source_ref: str | Path,
+    output_ref: str | Path,
+    source_hash: str,
 ) -> dict[str, Any]:
     fatal_count = qa.filter(pl.col("severity") == "fatal").height if not qa.is_empty() else 0
     warning_count = qa.filter(pl.col("severity") == "warning").height if not qa.is_empty() else 0
@@ -348,8 +371,8 @@ def _manifest(
         "compiler_version": COMPILER_VERSION,
         "scope_id": scope_id,
         "build_time": datetime.now(UTC).isoformat(),
-        "source_path": str(source_path),
-        "output_dir": str(output_dir),
+        "source_path": str(source_ref),
+        "output_dir": str(output_ref),
         "taxa_rows": taxa.height,
         "name_rows": names.height,
         "query_definition_rows": queries.height,
@@ -357,8 +380,15 @@ def _manifest(
         "qa_fatal_count": fatal_count,
         "qa_warning_count": warning_count,
         "qa_status": "failed" if fatal_count else "passed",
-        "source_hash": _file_hash(source_path),
+        "source_hash": source_hash,
     }
+
+
+def _source_hash(payload: dict[str, Any], source_ref: str | Path) -> str:
+    path = Path(source_ref)
+    if path.exists():
+        return _file_hash(path)
+    return _payload_hash(payload)
 
 
 def _search_priority(name_class: str, field: str) -> int:
