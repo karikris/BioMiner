@@ -1073,9 +1073,10 @@ def test_orchestrator_summarize_writes_review_queue_for_ambiguous_photos(tmp_pat
     assert queue.select("flickr_photo_id").to_series().to_list() == ["review-1", "bronze-1"]
 
 
-def test_orchestrator_summarize_reads_and_writes_cloud_storage() -> None:
+def test_orchestrator_summarizes_photo_evidence_from_cloud_join_shards(tmp_path) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     storage = _FakeRunStorage()
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
     request = ProductionRunRequest(
         taxon="Danaus plexippus",
         rank="species",
@@ -1083,37 +1084,45 @@ def test_orchestrator_summarize_reads_and_writes_cloud_storage() -> None:
         stages=(RunStage.SUMMARIZE,),
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
-    storage.parquet_payloads[plan.artifact_uris.object_evidence_uri] = pl.DataFrame([{"occurrence_bin": "in_review"}])
-    storage.parquet_payloads[plan.artifact_uris.photo_summary_uri] = pl.DataFrame(
-        [
-            {
-                "source": "flickr",
-                "flickr_photo_id": "review-1",
-                "best_detection_id": "det-r",
-                "detection_count": 1,
-                "best_object_occurrence_bin": "in_review",
-                "best_object_species_top1": "Danaus plexippus",
-                "best_object_score": 0.42,
-                "photo_occurrence_bin": "in_review",
-                "photo_bin_reason": "ambiguous_species_margin",
-                "all_detection_ids": ["det-r"],
-                "all_candidate_species": ["Danaus plexippus", "Danaus eresimus"],
-            }
-        ]
+    canonical, detections, scores = _join_stage_input_frames()
+    joined, _summary = build_object_evidence_frames(
+        canonical_source_records=canonical,
+        object_detections=detections,
+        object_scores=scores,
+    )
+    joined_uri = plan.artifact_uris.staging_uri + "/evidence/stage=join_evidence/run_id=species_danaus_plexippus/worker=joiner/batch=001.parquet"
+    storage.parquet_payloads[joined_uri] = joined
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        stage=RunStage.JOIN_EVIDENCE.value,
+        run_id=plan.manifest.run_id,
+        worker_id="joiner",
+        uri=joined_uri,
+        checksum=None,
+        row_count=joined.height,
     )
 
-    result = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).run()
+    result = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage, workstore=workstore).run()
 
     assert result.manifest.status == "complete"
-    assert result.manifest.evidence_counts == {"object_evidence_rows": 1, "photo_summary_rows": 1, "review_queue_rows": 1}
-    assert result.manifest.stages[0].outputs == {
-        "metrics": plan.artifact_uris.metrics_uri,
-        "review_queue": plan.artifact_uris.review_queue_uri,
-    }
-    assert storage.json_payloads[plan.artifact_uris.manifest_uri]["evidence_counts"]["review_queue_rows"] == 1
-    assert storage.json_payloads[plan.artifact_uris.metrics_uri]["review_queue_bin_counts"] == {"in_review": 1}
-    queue = storage.parquet_payloads[plan.artifact_uris.review_queue_uri]
-    assert queue.select("flickr_photo_id").to_series().to_list() == ["review-1"]
+    assert result.manifest.evidence_counts == {"object_evidence_rows": 1, "photo_summary_rows": 1, "review_queue_rows": 0}
+    photo_summary_uri = result.manifest.stages[0].outputs["photo_summary"]
+    assert result.manifest.stages[0].outputs["metrics"] == plan.artifact_uris.metrics_uri
+    assert photo_summary_uri.startswith(plan.artifact_uris.staging_uri + "/evidence/stage=photo_summary/")
+    assert plan.artifact_uris.photo_summary_uri not in storage.parquet_payloads
+    assert storage.json_payloads[plan.artifact_uris.manifest_uri]["evidence_counts"]["photo_summary_rows"] == 1
+    assert storage.json_payloads[plan.artifact_uris.metrics_uri]["photo_occurrence_bin_counts"] == {"gold": 1}
+    summary = storage.parquet_payloads[photo_summary_uri]
+    assert summary.select("flickr_photo_id").to_series().to_list() == ["photo-1"]
+    assert summary.select("photo_occurrence_bin").to_series().to_list() == ["gold"]
+    summary_shards = workstore.list_committed_shards(
+        job_name="biominer_production_run",
+        stage="photo_summary",
+        registry_version=scope.registry_version,
+        run_id=plan.manifest.run_id,
+    )
+    assert [shard["uri"] for shard in summary_shards] == [photo_summary_uri]
 
 
 def test_orchestrator_local_comment_review_stages_process_and_apply_promotions(tmp_path) -> None:

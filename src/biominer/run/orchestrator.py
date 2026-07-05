@@ -18,7 +18,12 @@ from biominer.detection.cloud_work import (
     enqueue_detection_work_from_source_shards,
     run_cloud_detection_batch,
 )
-from biominer.evidence.cloud_work import join_evidence_batch_id, join_object_evidence_from_cloud_shards
+from biominer.evidence.cloud_work import (
+    join_evidence_batch_id,
+    join_object_evidence_from_cloud_shards,
+    photo_summary_batch_id,
+    summarize_photo_evidence_from_cloud_shards,
+)
 from biominer.evidence.join import write_object_evidence_outputs
 from biominer.evidence.metrics import build_review_queue, evidence_count_metrics
 from biominer.flickr_comments.comment_review import CommentReviewState
@@ -996,22 +1001,53 @@ class ProductionRunOrchestrator:
         if is_cloud_uri(self.request.output_root):
             if self.storage is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_summarize")
-            missing = _missing_uris(
-                self.storage,
-                plan.artifact_uris.object_evidence_uri,
-                plan.artifact_uris.photo_summary_uri,
+            if self.workstore is None:
+                return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_summarize")
+            if not _cloud_stage_shard_uris(self.workstore, plan, RunStage.JOIN_EVIDENCE.value):
+                return StageExecutionResult(status=StageStatus.FAILED, message="missing_summary_inputs: object_evidence")
+            result = summarize_photo_evidence_from_cloud_shards(
+                storage=self.storage,
+                workstore=self.workstore,
+                job_name=PRODUCTION_JOB_NAME,
+                registry_version=plan.manifest.taxon_scope.registry_version,
+                run_id=plan.manifest.run_id,
+                joined_stage=RunStage.JOIN_EVIDENCE.value,
+                species_context=plan.manifest.taxon_scope.species_contexts[0],
             )
-            if missing:
-                return StageExecutionResult(status=StageStatus.FAILED, message="missing_summary_inputs: " + ", ".join(missing))
-            joined = self.storage.read_parquet(plan.artifact_uris.object_evidence_uri)
-            photo_summary = self.storage.read_parquet(plan.artifact_uris.photo_summary_uri)
-            review_queue = build_review_queue(photo_summary)
-            metrics = evidence_count_metrics(joined, photo_summary)
-            metrics["review_queue_rows"] = review_queue.height
-            metrics["review_queue_bin_counts"] = _value_counts(review_queue, "review_bucket")
+            photo_summary_uri = self.storage.write_parquet_shard(
+                build_evidence_shard_uri(
+                    plan.artifact_uris.staging_uri,
+                    stage="photo_summary",
+                    run_id=plan.manifest.run_id,
+                    worker_id=self.request.worker_id,
+                    batch_id=photo_summary_batch_id(result),
+                ),
+                result.frame,
+            )
+            self.workstore.register_shard(
+                job_name=PRODUCTION_JOB_NAME,
+                registry_version=plan.manifest.taxon_scope.registry_version,
+                stage="photo_summary",
+                run_id=plan.manifest.run_id,
+                worker_id=self.request.worker_id,
+                uri=photo_summary_uri,
+                checksum=None,
+                row_count=result.frame.height,
+                metadata={
+                    "joined_shards_seen": result.joined_shards_seen,
+                    "object_evidence_rows_seen": result.object_evidence_rows_seen,
+                },
+            )
+            metrics = {
+                "object_evidence_rows": result.object_evidence_rows_seen,
+                "photo_summary_rows": result.frame.height,
+                "object_occurrence_bin_counts": result.object_occurrence_bin_counts,
+                "photo_occurrence_bin_counts": _value_counts(result.frame, "photo_occurrence_bin"),
+                "joined_evidence_shards": result.joined_shards_seen,
+                "photo_summary_shards": 1,
+            }
             metrics_uri = self.storage.write_json(plan.artifact_uris.metrics_uri, metrics)
-            review_queue_uri = self.storage.write_parquet_shard(plan.artifact_uris.review_queue_uri, review_queue)
-            return StageExecutionResult(metrics=metrics, outputs={"metrics": metrics_uri, "review_queue": review_queue_uri})
+            return StageExecutionResult(metrics=metrics, outputs={"metrics": metrics_uri, "photo_summary": photo_summary_uri})
         missing = _missing_paths(plan.paths.object_evidence_path, plan.paths.photo_summary_path)
         if missing:
             return StageExecutionResult(status=StageStatus.FAILED, message="missing_summary_inputs: " + ", ".join(missing))

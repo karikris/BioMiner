@@ -54,6 +54,28 @@ def build_joined_object_evidence_frame(
     )
 
 
+def build_photo_summary_from_joined_evidence(
+    joined_evidence: pl.DataFrame,
+    *,
+    species_context: SpeciesContext | None = None,
+) -> pl.DataFrame:
+    """Return one photo summary row per photo from joined object evidence."""
+
+    if joined_evidence.is_empty():
+        return empty_photo_summary_frame()
+    scores = (
+        joined_evidence.filter(pl.col("target_species_score").is_not_null())
+        if "target_species_score" in joined_evidence.columns
+        else joined_evidence.head(0)
+    )
+    return _photo_summary(
+        scores,
+        canonical=joined_evidence,
+        detections=joined_evidence,
+        species_context=species_context,
+    )
+
+
 def write_object_evidence_outputs(
     *,
     canonical_source_records: pl.DataFrame,
@@ -87,6 +109,7 @@ __all__ = [
     "ObjectEvidenceOutputs",
     "build_joined_object_evidence_frame",
     "build_object_evidence_frames",
+    "build_photo_summary_from_joined_evidence",
     "empty_photo_summary_frame",
     "write_object_evidence_outputs",
 ]
