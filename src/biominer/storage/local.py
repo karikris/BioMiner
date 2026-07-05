@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 import json
 from pathlib import Path
@@ -24,6 +25,11 @@ class LocalStorageBackend:
         output = normalize_local_uri(uri)
         write_parquet(frame, output)
         return _preserve_uri_string(uri)
+
+    def write_parquet_batches(self, uri: str | Path, batches: Iterable[pl.DataFrame]) -> str:
+        frames = [frame for frame in batches if not frame.is_empty()]
+        frame = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+        return self.write_parquet_shard(uri, frame)
 
     def list_shards(self, prefix: str | Path) -> list[str]:
         root = normalize_local_uri(prefix)

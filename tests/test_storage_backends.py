@@ -6,6 +6,7 @@ from pathlib import Path
 import polars as pl
 
 import biominer.storage.s3 as s3_module
+from biominer.storage.cloud import CloudStorage
 from biominer.storage.local import LocalStorageBackend
 from biominer.storage.paths import (
     build_evidence_shard_uri,
@@ -55,6 +56,26 @@ def test_local_storage_writes_reads_and_scans_parquet_shards(tmp_path) -> None:
     lazy = storage.scan_parquet(target)
     assert isinstance(lazy, pl.LazyFrame)
     assert lazy.collect().to_dicts() == frame.to_dicts()
+
+
+def test_local_storage_writes_parquet_batches(tmp_path) -> None:
+    storage = LocalStorageBackend()
+    target = tmp_path / "evidence" / "stage=poll_once" / "batch=000001.parquet"
+
+    written = storage.write_parquet_batches(
+        target,
+        (
+            pl.DataFrame({"photo_id": ["1"], "score": [0.7]}),
+            pl.DataFrame({"photo_id": ["2"], "score": [0.4]}),
+        ),
+    )
+
+    assert isinstance(storage, CloudStorage)
+    assert written == str(target)
+    assert storage.read_parquet(target).to_dicts() == [
+        {"photo_id": "1", "score": 0.7},
+        {"photo_id": "2", "score": 0.4},
+    ]
 
 
 def test_local_storage_lists_shards_deterministically(tmp_path) -> None:

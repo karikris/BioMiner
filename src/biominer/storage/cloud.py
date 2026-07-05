@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any, Protocol, runtime_checkable
 
 import polars as pl
@@ -14,6 +15,9 @@ class CloudStorage(Protocol):
         ...
 
     def write_parquet_shard(self, uri: str, frame: pl.DataFrame) -> str:
+        ...
+
+    def write_parquet_batches(self, uri: str, batches: Iterable[pl.DataFrame]) -> str:
         ...
 
     def list_shards(self, prefix: str) -> list[str]:

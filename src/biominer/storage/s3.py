@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 import json
 import os
@@ -54,6 +55,11 @@ class S3StorageBackend:
                 except FileNotFoundError:
                     pass
         return uri
+
+    def write_parquet_batches(self, uri: str, batches: Iterable[pl.DataFrame]) -> str:
+        frames = [frame for frame in batches if not frame.is_empty()]
+        frame = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+        return self.write_parquet_shard(uri, frame)
 
     def list_shards(self, prefix: str) -> list[str]:
         filesystem, path = self._filesystem_and_path(prefix)
