@@ -761,9 +761,11 @@ def test_orchestrator_poll_stage_claims_workstore_and_writes_cloud_source_record
     assert result.manifest.query_counts["polled_work_items"] == 1
     poll_stage = result.manifest.stages[1]
     assert poll_stage.metrics["workstore_work_items_completed"] == 1
-    assert poll_stage.outputs["source_records"] == result.artifact_uris.source_records_uri
-    assert result.artifact_uris.source_records_uri in storage.parquet_payloads
-    row = storage.parquet_payloads[result.artifact_uris.source_records_uri].to_dicts()[0]
+    assert poll_stage.metrics["source_record_shards"] == 1
+    source_records_uri = poll_stage.outputs["source_records"]
+    assert source_records_uri.startswith(result.artifact_uris.staging_uri + "/evidence/stage=poll_flickr/")
+    assert source_records_uri in storage.parquet_payloads
+    row = storage.parquet_payloads[source_records_uri].to_dicts()[0]
     assert row["flickr_photo_id"] == "poll-photo-1"
     assert row["tag_search_terms"] == ["Papilio demoleus"]
     work_items = workstore.list_work_items(
@@ -773,7 +775,7 @@ def test_orchestrator_poll_stage_claims_workstore_and_writes_cloud_source_record
     )
     assert [item["status"] for item in work_items] == ["completed"]
     assert work_items[0]["claimed_by"] == "worker-from-request"
-    assert work_items[0]["output_uri"] == result.artifact_uris.source_records_uri
+    assert work_items[0]["output_uri"] == source_records_uri
 
 
 def test_orchestrator_cloud_poll_reenqueues_reported_followup_pages(tmp_path, monkeypatch) -> None:
@@ -867,9 +869,11 @@ def test_orchestrator_runs_fake_backed_cloud_workflow_end_to_end(tmp_path, monke
     assert result.manifest.bioclip_counts["segmentation_crops_scored"] == 0
     assert result.manifest.evidence_counts["object_evidence_rows"] == 2
     assert result.manifest.evidence_counts["photo_summary_rows"] == 1
+    poll_shard_uri = result.manifest.stages[2].outputs["source_records"]
+    assert poll_shard_uri.startswith(result.artifact_uris.staging_uri + "/evidence/stage=poll_flickr/")
+    assert poll_shard_uri in storage.parquet_payloads
     for uri in (
         result.artifact_uris.query_definitions_uri,
-        result.artifact_uris.source_records_uri,
         result.artifact_uris.object_detections_uri,
         result.artifact_uris.object_scores_uri,
         result.artifact_uris.object_evidence_uri,

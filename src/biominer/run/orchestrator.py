@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass, field, replace
-import hashlib
+from dataclasses import dataclass, field, replace
 import json
 import os
 from pathlib import Path
@@ -10,14 +9,14 @@ import tempfile
 from typing import Any
 
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
-from biominer.common.status import CLAIMED, COMPLETED, FAILED, PENDING
 from biominer.evidence.join import build_object_evidence_frames, write_object_evidence_outputs
 from biominer.evidence.metrics import build_review_queue, evidence_count_metrics
 from biominer.flickr_comments.comment_review import CommentReviewState
 from biominer.flickr_comments.comments_enrichment import fetch_flickr_comments
+from biominer.flickr_fetch.cloud_poller import CloudMetadataPoller, flickr_query_work_item
 from biominer.storage.parquet import write_parquet
 from biominer.flickr_fetch.metadata_poller import DEFAULT_STALE_CLAIM_SECONDS, SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
-from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries, load_registry_flickr_queries_from_frame, query_hash
+from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries, load_registry_flickr_queries_from_frame
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import RunArtifactUris, RunPaths
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES, RunStage, StageStatus, default_stage_records
@@ -405,7 +404,7 @@ class ProductionRunOrchestrator:
         inserted = self.workstore.enqueue_work(
             PRODUCTION_JOB_NAME,
             registry_version,
-            [_flickr_query_work_item(query, run_id=plan.manifest.run_id) for query in queries],
+            [flickr_query_work_item(query, run_id=plan.manifest.run_id) for query in queries],
             stage=RunStage.POLL_FLICKR.value,
         )
         return StageExecutionResult(
@@ -483,7 +482,7 @@ class ProductionRunOrchestrator:
             job_name=PRODUCTION_JOB_NAME,
             stage=RunStage.POLL_FLICKR.value,
             registry_version=registry_version,
-            statuses=[PENDING],
+            statuses=["pending"],
             limit=1,
         )
         if not pending_preview:
@@ -500,61 +499,25 @@ class ProductionRunOrchestrator:
         if self.metadata_fetcher is None and not api_key:
             return StageExecutionResult(status=StageStatus.FAILED, message="flickr_fetcher_or_api_key_required_for_poll_flickr")
         claim_limit = _cloud_poll_claim_limit(self.request.limits)
-        claimed = self.workstore.claim_next_batch(
-            worker_id,
-            claim_limit,
+        poller = CloudMetadataPoller(
+            storage=self.storage,
+            workstore=self.workstore,
             job_name=PRODUCTION_JOB_NAME,
             stage=RunStage.POLL_FLICKR.value,
             registry_version=registry_version,
+            run_id=plan.manifest.run_id,
+            worker_id=worker_id,
+            storage_prefix=plan.artifact_uris.staging_uri,
+            fetch_metadata=self.metadata_fetcher,
+            api_key=api_key,
+            max_api_calls=int(self.request.limits.get("api_calls") or SOFT_API_CALLS_PER_HOUR),
         )
-        if not claimed:
-            return StageExecutionResult(
-                metrics={
-                    "initial_work_items_enqueued": 0,
-                    "work_items_claimed": 0,
-                    "api_calls_made": 0,
-                    "workstore_stale_claims_requeued": stale_requeued,
-                },
-                outputs={"workstore_stage": RunStage.POLL_FLICKR.value},
-            )
-        with tempfile.TemporaryDirectory(prefix="biominer-poll-") as tmp_dir:
-            state = MetadataPollState(Path(tmp_dir) / "flickr_poller.sqlite")
-            local_work_keys: dict[str, str] = {}
-            for item in claimed:
-                query = _flickr_query_from_work_item(item)
-                state.enqueue_work_item(query)
-                local_work_keys[_poller_work_item_id(query)] = str(item["work_key"])
-            result = poll_once(
-                state_db=state.path,
-                raw_root=join_uri(plan.artifact_uris.staging_uri, "raw"),
-                evidence_output=plan.artifact_uris.source_records_uri,
-                max_api_calls=int(self.request.limits.get("api_calls") or SOFT_API_CALLS_PER_HOUR),
-                api_key=api_key,
-                fetch_metadata=self.metadata_fetcher,
-                workers=max(1, min(int(self.request.limits.get("workers") or 1), len(claimed))),
-                run_id=plan.manifest.run_id,
-                worker_id=worker_id,
-                storage_backend=self.request.storage_backend,
-                storage_prefix=plan.artifact_uris.staging_uri,
-                evidence_stage=RunStage.POLL_FLICKR.value,
-                compact_after_run=False,
-                storage=self.storage,
-                work_store=self.workstore,
-                claim_once=True,
-            )
-            source_frame = state.canonical_source_records_frame()
-            source_records_uri = self.storage.write_parquet_shard(plan.artifact_uris.source_records_uri, source_frame)
-            mirror = _mirror_cloud_poll_state_to_workstore(
-                workstore=self.workstore,
-                snapshot=state.work_items_snapshot(),
-                local_work_keys=local_work_keys,
-                run_id=plan.manifest.run_id,
-                registry_version=registry_version,
-                output_uri=source_records_uri,
-            )
+        result = poller.run_once(claim_limit=claim_limit)
+        source_record_shards = result.source_record_shard_uris
+        source_records_output = source_record_shards[0] if source_record_shards else ""
         return StageExecutionResult(
             metrics={
-                "initial_work_items_enqueued": len(claimed),
+                "initial_work_items_enqueued": result.work_items_claimed,
                 "raw_responses_written": result.raw_responses_written,
                 "evidence_rows_written": result.evidence_rows_written,
                 "evidence_rows_total": result.evidence_rows_total,
@@ -567,15 +530,19 @@ class ProductionRunOrchestrator:
                 "api_calls_made": result.api_calls_made,
                 "remaining_soft_budget": result.remaining_soft_budget,
                 "remaining_hard_budget": result.remaining_hard_budget,
-                "stale_claims_requeued": result.stale_claims_requeued,
+                "stale_claims_requeued": 0,
                 "workstore_stale_claims_requeued": stale_requeued,
-                **mirror,
+                "workstore_work_items_completed": result.workstore_work_items_completed,
+                "workstore_work_items_failed": result.workstore_work_items_failed,
+                "workstore_followup_work_items_enqueued": result.workstore_followup_work_items_enqueued,
+                "source_record_shards": len(source_record_shards),
             },
             outputs={
                 "workstore_stage": RunStage.POLL_FLICKR.value,
-                "raw_prefix": join_uri(plan.artifact_uris.staging_uri, "source=flickr"),
+                "raw_prefix": join_uri(plan.artifact_uris.staging_uri, "raw", "source=flickr"),
                 "evidence_prefix": join_uri(plan.artifact_uris.staging_uri, "evidence"),
-                "source_records": source_records_uri,
+                "source_records": source_records_output,
+                "source_record_shards": ",".join(source_record_shards),
             },
         )
 
@@ -583,14 +550,13 @@ class ProductionRunOrchestrator:
         if is_cloud_uri(self.request.output_root):
             if self.storage is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_detect_objects")
-            missing = _missing_uris(self.storage, plan.artifact_uris.source_records_uri)
-            if missing:
-                return StageExecutionResult(status=StageStatus.FAILED, message="missing_detection_inputs: " + ", ".join(missing))
+            if not _cloud_source_records_available(self.storage, self.workstore, plan):
+                return StageExecutionResult(status=StageStatus.FAILED, message="missing_detection_inputs: source_records")
             if self.object_detector is None or self.image_loader is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="detector_runtime_required_for_detect_objects")
             from biominer.detection.pipeline import run_detection_pipeline
 
-            records = self.storage.read_parquet(plan.artifact_uris.source_records_uri).to_dicts()
+            records = _read_cloud_source_records(self.storage, self.workstore, plan).to_dicts()
             with tempfile.TemporaryDirectory(prefix="biominer-detect-") as tmp_dir:
                 result = run_detection_pipeline(
                     records=records,
@@ -642,18 +608,16 @@ class ProductionRunOrchestrator:
         if is_cloud_uri(self.request.output_root):
             if self.storage is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_score_bioclip")
-            missing = _missing_uris(
-                self.storage,
-                plan.artifact_uris.source_records_uri,
-                plan.artifact_uris.object_detections_uri,
-            )
+            missing = _missing_uris(self.storage, plan.artifact_uris.object_detections_uri)
+            if not _cloud_source_records_available(self.storage, self.workstore, plan):
+                missing.append("source_records")
             if missing:
                 return StageExecutionResult(status=StageStatus.FAILED, message="missing_score_inputs: " + ", ".join(missing))
             if self.object_scorer is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="bioclip_runtime_required_for_score_bioclip")
             from biominer.bioclip.candidate_sets import build_candidate_set_for_taxon_scope
 
-            canonical = self.storage.read_parquet(plan.artifact_uris.source_records_uri)
+            canonical = _read_cloud_source_records(self.storage, self.workstore, plan)
             detections = self.storage.read_parquet(plan.artifact_uris.object_detections_uri)
             target_context = plan.manifest.taxon_scope.species_contexts[0]
             candidate_set = build_candidate_set_for_taxon_scope(
@@ -806,14 +770,15 @@ class ProductionRunOrchestrator:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_join_evidence")
             missing = _missing_uris(
                 self.storage,
-                plan.artifact_uris.source_records_uri,
                 plan.artifact_uris.object_detections_uri,
                 plan.artifact_uris.object_scores_uri,
             )
+            if not _cloud_source_records_available(self.storage, self.workstore, plan):
+                missing.append("source_records")
             if missing:
                 return StageExecutionResult(status=StageStatus.FAILED, message="missing_join_inputs: " + ", ".join(missing))
             joined, photo_summary = build_object_evidence_frames(
-                canonical_source_records=self.storage.read_parquet(plan.artifact_uris.source_records_uri),
+                canonical_source_records=_read_cloud_source_records(self.storage, self.workstore, plan),
                 object_detections=self.storage.read_parquet(plan.artifact_uris.object_detections_uri),
                 object_scores=self.storage.read_parquet(plan.artifact_uris.object_scores_uri),
             )
@@ -970,31 +935,6 @@ class ProductionRunOrchestrator:
         return plan.manifest.write_json(plan.paths.manifest_path)
 
 
-def _flickr_query_work_item(query: FlickrQuery, *, run_id: str) -> dict[str, Any]:
-    return {
-        "work_key": f"{run_id}:flickr:{query_hash(query)}",
-        "run_id": run_id,
-        "query": query.__dict__,
-    }
-
-
-def _flickr_query_from_work_item(item: dict[str, Any]) -> FlickrQuery:
-    payload = item.get("payload")
-    if not isinstance(payload, dict):
-        raise ValueError(f"work item {item.get('work_key')} has invalid payload")
-    query_payload = payload.get("query")
-    if isinstance(query_payload, FlickrQuery):
-        return query_payload
-    if not isinstance(query_payload, dict):
-        raise ValueError(f"work item {item.get('work_key')} has no Flickr query payload")
-    return FlickrQuery(**query_payload)
-
-
-def _poller_work_item_id(query: FlickrQuery) -> str:
-    payload = json.dumps(asdict(query), sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
 def _cloud_poll_claim_limit(limits: dict[str, int]) -> int:
     candidates = [
         int(limits.get("api_calls") or SOFT_API_CALLS_PER_HOUR),
@@ -1006,60 +946,34 @@ def _cloud_poll_claim_limit(limits: dict[str, int]) -> int:
     return max(1, min(value for value in candidates if value > 0))
 
 
-def _mirror_cloud_poll_state_to_workstore(
-    *,
-    workstore: WorkStore,
-    snapshot: list[dict[str, Any]],
-    local_work_keys: dict[str, str],
-    run_id: str,
-    registry_version: str | None,
-    output_uri: str,
-) -> dict[str, int]:
-    completed = 0
-    failed = 0
-    unfinished_claimed = 0
-    followup_enqueued = 0
-    for row in snapshot:
-        local_id = str(row["work_item_id"])
-        status = str(row["status"])
-        query = row["query"]
-        work_key = local_work_keys.get(local_id)
-        if work_key:
-            if status == COMPLETED:
-                workstore.mark_completed(
-                    work_key,
-                    output_uri=output_uri,
-                    checksum=None,
-                    row_count=int(row["records_returned"] or 0),
-                )
-                completed += 1
-            elif status == FAILED:
-                workstore.mark_failed(work_key, str(row["error"] or "flickr_poll_failed"))
-                failed += 1
-            else:
-                workstore.mark_failed(work_key, f"flickr_poll_left_work_item_{status}")
-                unfinished_claimed += 1
-            continue
-        if status == PENDING:
-            followup_enqueued += workstore.enqueue_work(
-                PRODUCTION_JOB_NAME,
-                registry_version,
-                [_flickr_query_work_item(query, run_id=run_id)],
-                stage=RunStage.POLL_FLICKR.value,
-            )
-        elif status in {CLAIMED, COMPLETED, FAILED}:
-            followup_enqueued += workstore.enqueue_work(
-                PRODUCTION_JOB_NAME,
-                registry_version,
-                [_flickr_query_work_item(query, run_id=run_id)],
-                stage=RunStage.POLL_FLICKR.value,
-            )
-    return {
-        "workstore_work_items_completed": completed,
-        "workstore_work_items_failed": failed,
-        "workstore_unfinished_claimed_items": unfinished_claimed,
-        "workstore_followup_work_items_enqueued": followup_enqueued,
-    }
+def _cloud_source_records_available(storage: CloudStorage, workstore: WorkStore | None, plan: ProductionRunPlan) -> bool:
+    if storage.exists(plan.artifact_uris.source_records_uri):
+        return True
+    return bool(_cloud_source_record_shard_uris(workstore, plan))
+
+
+def _read_cloud_source_records(storage: CloudStorage, workstore: WorkStore | None, plan: ProductionRunPlan) -> Any:
+    if storage.exists(plan.artifact_uris.source_records_uri):
+        return storage.read_parquet(plan.artifact_uris.source_records_uri)
+    shard_uris = _cloud_source_record_shard_uris(workstore, plan)
+    if not shard_uris:
+        raise FileNotFoundError("source_records")
+    import polars as pl
+
+    frames = [storage.read_parquet(uri) for uri in shard_uris]
+    return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+
+
+def _cloud_source_record_shard_uris(workstore: WorkStore | None, plan: ProductionRunPlan) -> list[str]:
+    if workstore is None:
+        return []
+    shards = workstore.list_committed_shards(
+        job_name=PRODUCTION_JOB_NAME,
+        stage=RunStage.POLL_FLICKR.value,
+        registry_version=plan.manifest.taxon_scope.registry_version,
+        run_id=plan.manifest.run_id,
+    )
+    return [str(shard["uri"]) for shard in shards]
 
 
 def _parquet_row_count(path: Path) -> int:
