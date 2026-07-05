@@ -1219,9 +1219,10 @@ def test_orchestrator_runs_local_detection_and_object_scoring_with_injected_fake
     assert result.manifest.stages[1].outputs["object_scores"] == str(result.paths.object_scores_path)
 
 
-def test_orchestrator_detects_objects_from_cloud_storage() -> None:
+def test_orchestrator_detects_objects_from_cloud_storage(tmp_path) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     storage = _FakeRunStorage()
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
     request = ProductionRunRequest(
         taxon="Danaus plexippus",
         rank="species",
@@ -1230,7 +1231,18 @@ def test_orchestrator_detects_objects_from_cloud_storage() -> None:
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
     canonical, _, _ = _join_stage_input_frames()
-    storage.parquet_payloads[plan.artifact_uris.source_records_uri] = canonical
+    source_uri = plan.artifact_uris.staging_uri + "/evidence/stage=poll_flickr/run_id=species_danaus_plexippus/worker=poller/batch=001.parquet"
+    storage.parquet_payloads[source_uri] = canonical
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        stage=RunStage.POLL_FLICKR.value,
+        run_id=plan.manifest.run_id,
+        worker_id="poller",
+        uri=source_uri,
+        checksum=None,
+        row_count=canonical.height,
+    )
     detector = FakeObjectDetector(
         [[DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 4.0), objectness_score=0.91)]]
     )
@@ -1239,11 +1251,14 @@ def test_orchestrator_detects_objects_from_cloud_storage() -> None:
         request,
         taxon_scope=scope,
         storage=storage,
+        workstore=workstore,
         object_detector=detector,
         image_loader=lambda _record: _tiny_rgb_image(),
     ).run()
 
     assert result.manifest.status == "complete"
+    assert result.manifest.stages[0].metrics["detection_work_items_enqueued"] == 1
+    assert result.manifest.stages[0].metrics["workstore_work_items_completed"] == 1
     assert result.manifest.detection_counts == {
         "images_seen": 1,
         "detections": 1,
@@ -1251,10 +1266,24 @@ def test_orchestrator_detects_objects_from_cloud_storage() -> None:
         "images_loaded": 1,
         "image_failures": 0,
     }
-    assert result.manifest.stages[0].outputs["object_detections"] == plan.artifact_uris.object_detections_uri
-    detections = storage.parquet_payloads[plan.artifact_uris.object_detections_uri]
+    detection_uri = result.manifest.stages[0].outputs["object_detections"]
+    assert detection_uri.startswith(plan.artifact_uris.staging_uri + "/evidence/stage=detect_objects/")
+    detections = storage.parquet_payloads[detection_uri]
     assert detections.select("detector_label").to_series().to_list() == ["butterfly_like"]
     assert storage.json_payloads[plan.artifact_uris.manifest_uri]["detection_counts"]["detections"] == 1
+    work_items = workstore.list_work_items(
+        job_name="biominer_production_run",
+        stage=RunStage.DETECT_OBJECTS.value,
+        registry_version=scope.registry_version,
+    )
+    assert [item["status"] for item in work_items] == ["completed"]
+    shards = workstore.list_committed_shards(
+        job_name="biominer_production_run",
+        stage=RunStage.DETECT_OBJECTS.value,
+        registry_version=scope.registry_version,
+        run_id=plan.manifest.run_id,
+    )
+    assert [shard["uri"] for shard in shards] == [detection_uri]
 
 
 def test_orchestrator_cloud_detect_requires_storage_backend() -> None:

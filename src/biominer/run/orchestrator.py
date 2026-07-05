@@ -9,6 +9,11 @@ import tempfile
 from typing import Any
 
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
+from biominer.detection.cloud_work import (
+    detection_batch_id,
+    enqueue_detection_work_from_source_shards,
+    run_cloud_detection_batch,
+)
 from biominer.evidence.join import build_object_evidence_frames, write_object_evidence_outputs
 from biominer.evidence.metrics import build_review_queue, evidence_count_metrics
 from biominer.flickr_comments.comment_review import CommentReviewState
@@ -22,7 +27,7 @@ from biominer.run.paths import RunArtifactUris, RunPaths
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES, RunStage, StageStatus, default_stage_records
 from biominer.run.taxon_scope import InputRank, TaxonScope, resolve_taxon_scope_from_registry, resolve_taxon_scope_from_registry_frames
 from biominer.storage.cloud import CloudStorage
-from biominer.storage.paths import safe_path_component
+from biominer.storage.paths import build_evidence_shard_uri, safe_path_component
 from biominer.storage.uri import is_cloud_uri, join_uri
 from biominer.workstore.base import WorkStore
 
@@ -550,21 +555,76 @@ class ProductionRunOrchestrator:
         if is_cloud_uri(self.request.output_root):
             if self.storage is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_detect_objects")
+            if self.workstore is None:
+                return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_detect_objects")
             if not _cloud_source_records_available(self.storage, self.workstore, plan):
                 return StageExecutionResult(status=StageStatus.FAILED, message="missing_detection_inputs: source_records")
             if self.object_detector is None or self.image_loader is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="detector_runtime_required_for_detect_objects")
-            from biominer.detection.pipeline import run_detection_pipeline
-
-            records = _read_cloud_source_records(self.storage, self.workstore, plan).to_dicts()
-            with tempfile.TemporaryDirectory(prefix="biominer-detect-") as tmp_dir:
-                result = run_detection_pipeline(
-                    records=records,
+            plan_result = enqueue_detection_work_from_source_shards(
+                storage=self.storage,
+                workstore=self.workstore,
+                job_name=PRODUCTION_JOB_NAME,
+                registry_version=plan.manifest.taxon_scope.registry_version,
+                run_id=plan.manifest.run_id,
+                source_stage=RunStage.POLL_FLICKR.value,
+                detection_stage=RunStage.DETECT_OBJECTS.value,
+                detector_backend=self.object_detector.backend,
+                detector_model_id=self.object_detector.model_id,
+                detector_model_version=self.object_detector.model_version,
+                detector_checkpoint=self.object_detector.checkpoint,
+                limit=int(self.request.limits.get("records") or 0) or None,
+            )
+            claimed = self.workstore.claim_next_batch(
+                self.request.worker_id,
+                _cloud_detection_claim_limit(self.request.limits),
+                job_name=PRODUCTION_JOB_NAME,
+                stage=RunStage.DETECT_OBJECTS.value,
+                registry_version=plan.manifest.taxon_scope.registry_version,
+            )
+            if not claimed:
+                return StageExecutionResult(
+                    metrics={
+                        "detection_work_items_enqueued": plan_result.enqueued_work_items,
+                        "duplicate_detection_work_items": plan_result.duplicate_work_items,
+                        "work_items_claimed": 0,
+                        "workstore_work_items_completed": 0,
+                    },
+                    outputs={"workstore_stage": RunStage.DETECT_OBJECTS.value},
+                )
+            try:
+                result = run_cloud_detection_batch(
+                    work_items=claimed,
                     detector=self.object_detector,
-                    output_path=Path(tmp_dir) / "object_detections.parquet",
                     image_loader=self.image_loader,
                 )
-            output_uri = self.storage.write_parquet_shard(plan.artifact_uris.object_detections_uri, result.frame)
+                output_uri = self.storage.write_parquet_shard(
+                    build_evidence_shard_uri(
+                        plan.artifact_uris.staging_uri,
+                        stage=RunStage.DETECT_OBJECTS.value,
+                        run_id=plan.manifest.run_id,
+                        worker_id=self.request.worker_id,
+                        batch_id=detection_batch_id(claimed),
+                    ),
+                    result.frame,
+                )
+                self.workstore.register_shard(
+                    job_name=PRODUCTION_JOB_NAME,
+                    registry_version=plan.manifest.taxon_scope.registry_version,
+                    stage=RunStage.DETECT_OBJECTS.value,
+                    run_id=plan.manifest.run_id,
+                    worker_id=self.request.worker_id,
+                    uri=output_uri,
+                    checksum=None,
+                    row_count=result.frame.height,
+                    metadata={"claimed_work_items": len(claimed)},
+                )
+                for item in claimed:
+                    self.workstore.mark_completed(str(item["work_key"]), output_uri=output_uri, checksum=None, row_count=result.frame.height)
+            except Exception as exc:  # noqa: BLE001 - claimed work must not remain claimed after batch failure.
+                for item in claimed:
+                    self.workstore.mark_failed(str(item.get("work_key") or ""), str(exc) or exc.__class__.__name__)
+                return StageExecutionResult(status=StageStatus.FAILED, message=f"detect_objects_failed: {exc}")
             return StageExecutionResult(
                 metrics={
                     "records_seen": result.records_seen,
@@ -572,7 +632,12 @@ class ProductionRunOrchestrator:
                     "image_failures": result.image_failures,
                     "detections_written": result.detections_written,
                     "crops_created": result.crops_created,
-                    "parquet_batches_written": result.parquet_batches_written,
+                    "parquet_batches_written": 1,
+                    "detection_work_items_enqueued": plan_result.enqueued_work_items,
+                    "duplicate_detection_work_items": plan_result.duplicate_work_items,
+                    "work_items_claimed": len(claimed),
+                    "workstore_work_items_completed": len(claimed),
+                    "detection_shards": 1,
                 },
                 outputs={"object_detections": output_uri},
             )
@@ -944,6 +1009,13 @@ def _cloud_poll_claim_limit(limits: dict[str, int]) -> int:
     if records_limit > 0:
         candidates.append(records_limit)
     return max(1, min(value for value in candidates if value > 0))
+
+
+def _cloud_detection_claim_limit(limits: dict[str, int]) -> int:
+    records_limit = int(limits.get("records") or 0)
+    worker_limit = int(limits.get("workers") or 0)
+    candidates = [value for value in (records_limit, worker_limit) if value > 0]
+    return min(candidates) if candidates else 1
 
 
 def _cloud_source_records_available(storage: CloudStorage, workstore: WorkStore | None, plan: ProductionRunPlan) -> bool:

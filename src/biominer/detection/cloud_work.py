@@ -5,6 +5,12 @@ import hashlib
 import json
 from typing import Any
 
+import polars as pl
+
+from biominer.detection.detector_base import DecodedImage, ObjectDetector
+from biominer.detection.pipeline import ImageLoader, _image_failure_row, _resize_image_to_max_side, _with_crop_metadata
+from biominer.detection.policy import DetectionPolicy
+from biominer.detection.schema import build_detection_rows, empty_detection_frame
 from biominer.storage.cloud import CloudStorage
 from biominer.workstore.base import WorkStore
 
@@ -15,6 +21,16 @@ class DetectionWorkPlanResult:
     source_records_seen: int
     enqueued_work_items: int
     duplicate_work_items: int
+
+
+@dataclass(frozen=True)
+class CloudDetectionBatchResult:
+    frame: pl.DataFrame
+    records_seen: int
+    images_loaded: int
+    image_failures: int
+    detections_written: int
+    crops_created: int
 
 
 def enqueue_detection_work_from_source_shards(
@@ -76,6 +92,73 @@ def enqueue_detection_work_from_source_shards(
         enqueued_work_items=inserted,
         duplicate_work_items=len(items) - inserted,
     )
+
+
+def run_cloud_detection_batch(
+    *,
+    work_items: list[dict[str, Any]],
+    detector: ObjectDetector,
+    image_loader: ImageLoader,
+    detection_policy: DetectionPolicy | None = None,
+) -> CloudDetectionBatchResult:
+    policy = detection_policy or DetectionPolicy(backend=detector.backend)
+    rows: list[dict[str, Any]] = []
+    records_seen = 0
+    images_loaded = 0
+    image_failures = 0
+    crops_created = 0
+    loaded: list[tuple[dict[str, Any], DecodedImage]] = []
+    for item in work_items:
+        record = source_record_from_detection_work_item(item)
+        records_seen += 1
+        try:
+            image = _resize_image_to_max_side(image_loader(record), policy.image_max_side_px)
+        except Exception as exc:  # noqa: BLE001 - image failures become durable detection rows.
+            image_failures += 1
+            rows.append(_image_failure_row(_LoadedFailure(record=record, failure_reason=str(exc)), detector=detector))
+            continue
+        images_loaded += 1
+        loaded.append((record, image))
+    if loaded:
+        detections_by_image = detector.detect_batch([image for _record, image in loaded])
+        for (record, image), detections in zip(loaded, detections_by_image, strict=True):
+            detection_rows = build_detection_rows(
+                record=record,
+                image=image,
+                detections=detections,
+                detector_backend=detector.backend,
+                detector_model_id=detector.model_id,
+                detector_model_version=detector.model_version,
+                detector_checkpoint=detector.checkpoint,
+                policy=policy,
+            )
+            for row in detection_rows:
+                enriched = _with_crop_metadata(row, image=image, policy=policy, debug_writer=None)
+                if enriched.get("crop_hash"):
+                    crops_created += 1
+                rows.append(enriched)
+    frame = pl.DataFrame(rows) if rows else empty_detection_frame()
+    detections_written = frame.filter(pl.col("detection_status") == "detected").height if frame.height else 0
+    return CloudDetectionBatchResult(
+        frame=frame,
+        records_seen=records_seen,
+        images_loaded=images_loaded,
+        image_failures=image_failures,
+        detections_written=detections_written,
+        crops_created=crops_created,
+    )
+
+
+@dataclass(frozen=True)
+class _LoadedFailure:
+    record: dict[str, Any]
+    image: None = None
+    failure_reason: str | None = None
+
+
+def detection_batch_id(work_items: list[dict[str, Any]]) -> str:
+    work_keys = [str(item.get("work_key") or "") for item in work_items]
+    return _stable_hash({"work_keys": work_keys})
 
 
 def detection_work_item(
@@ -144,8 +227,11 @@ def _jsonable_value(value: Any) -> Any:
 
 
 __all__ = [
+    "CloudDetectionBatchResult",
     "DetectionWorkPlanResult",
+    "detection_batch_id",
     "detection_work_item",
     "enqueue_detection_work_from_source_shards",
+    "run_cloud_detection_batch",
     "source_record_from_detection_work_item",
 ]
