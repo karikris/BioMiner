@@ -83,7 +83,9 @@ def build_cloud_registry(
         raise NotImplementedError("cloud_registry_enrichment_not_implemented")
     base_prefix = str(output_dir).rstrip("/")
     registry_prefix = join_uri(base_prefix, "registry", f"version={safe_path_component(registry_version)}")
+    source_uri = build_registry_version_uri(base_prefix, registry_version=registry_version, filename="gbif_source_snapshot.json")
     retrieved = retrieved_at or datetime.now(UTC).isoformat()
+    source_from_storage = False
     if reuse_source_json:
         if source_json is None:
             raise FileNotFoundError("--reuse-source-json requires --source-json for cloud registry builds")
@@ -91,6 +93,10 @@ def build_cloud_registry(
         if not source_path.exists():
             raise FileNotFoundError(f"--reuse-source-json requires an existing source JSON: {source_path}")
         source_payload = json.loads(source_path.read_text(encoding="utf-8"))
+    elif storage.exists(source_uri):
+        logger.info("registry.build.resume.source_snapshot source=%s", source_uri)
+        source_payload = storage.read_json(source_uri)
+        source_from_storage = True
     else:
         with ProductionGBIFClient(max_retries=max_retries, max_connections=workers) as client:
             source_payload = build_gbif_source_snapshot(
@@ -104,8 +110,8 @@ def build_cloud_registry(
                 max_retries=max_retries,
                 client_factory=lambda: ProductionGBIFClient(max_retries=max_retries, max_connections=workers),
             )
-    source_uri = build_registry_version_uri(base_prefix, registry_version=registry_version, filename="gbif_source_snapshot.json")
-    storage.write_json(source_uri, source_payload)
+    if not source_from_storage:
+        storage.write_json(source_uri, source_payload)
     frames, manifest = compile_registry_frames(
         source_payload,
         source_ref=source_uri,

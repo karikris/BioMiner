@@ -306,6 +306,35 @@ def test_cloud_registry_build_writes_canonical_artifacts_to_s3_version_prefix(tm
     assert not (tmp_path / "s3:").exists()
 
 
+def test_cloud_registry_build_resumes_from_existing_source_snapshot(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    scope = tmp_path / "scope.json"
+    _scope(scope)
+    storage = _FakeRegistryStorage()
+    source_uri = "s3://biominer/biominer/registry/version=cloud-resume/gbif_source_snapshot.json"
+    storage.json_payloads[source_uri] = _gbif_snapshot()
+
+    def fail_gbif_client(*args, **kwargs):  # noqa: ANN001, ANN202 - should not be called during resume.
+        raise AssertionError("cloud registry resume should reuse existing source snapshot")
+
+    monkeypatch.setattr("biominer.registry.build.ProductionGBIFClient", fail_gbif_client)
+
+    result = build_registry(
+        output_dir="s3://biominer/biominer",
+        registry_version="cloud-resume",
+        scope_path=scope,
+        report_dir="s3://biominer/biominer/reports",
+        skip_enrichment=True,
+        storage=storage,
+    )
+
+    registry_prefix = "s3://biominer/biominer/registry/version=cloud-resume"
+    assert result["source_json"] == source_uri
+    assert result["registry_prefix"] == registry_prefix
+    assert storage.json_payloads[f"{registry_prefix}/manifest.json"]["qa_status"] == "passed"
+    assert f"{registry_prefix}/taxa.parquet" in storage.parquet_payloads
+
+
 def test_registry_build_quarantines_source_errors_without_siloing_successful_names(tmp_path, monkeypatch) -> None:
     scope = tmp_path / "scope.json"
     _scope(scope)
@@ -355,3 +384,9 @@ class _FakeRegistryStorage:
     def write_json(self, uri: str, payload: dict[str, object]) -> str:
         self.json_payloads[uri] = payload
         return uri
+
+    def read_json(self, uri: str) -> dict[str, object]:
+        return self.json_payloads[uri]
+
+    def exists(self, uri: str) -> bool:
+        return uri in self.parquet_payloads or uri in self.json_payloads
