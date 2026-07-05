@@ -210,7 +210,7 @@ def test_t5_work_items_are_claimed_for_flickr_api_retrieval(tmp_path) -> None:
     assert flickr_search_params(captured_by_field["text"])["text"] == "Translated Lime"
 
 
-def test_metadata_poller_migrates_existing_source_records_and_reads_legacy_query_hits(tmp_path) -> None:
+def test_metadata_poller_migrates_existing_source_records_without_legacy_query_hit_fallback(tmp_path) -> None:
     db_path = tmp_path / "poller.sqlite"
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -301,9 +301,10 @@ def test_metadata_poller_migrates_existing_source_records_and_reads_legacy_query
     row = state.source_records_with_query_provenance().to_dicts()[0]
 
     assert "all_query_labels_json" in source_columns
-    assert row["all_query_labels"] == ["tags:Papilionidae"]
-    assert row["tag_search_terms"] == ["Papilionidae"]
-    assert row["query_hit_count"] == 1
+    assert row["first_query_label"] == "text:Papilio"
+    assert row["all_query_labels"] == []
+    assert row["tag_search_terms"] == []
+    assert row["query_hit_count"] == 0
 
 
 def test_metadata_state_persists_registry_query_provenance_idempotently(tmp_path) -> None:

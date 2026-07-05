@@ -558,21 +558,12 @@ class MetadataPollState:
                 ORDER BY source, flickr_photo_id
                 """
             ).fetchall()
-            fallback_hits = _legacy_query_hits_by_photo(conn)
         output: list[dict[str, Any]] = []
         for row in rows:
             first_query_label = f"{row['first_query_field']}:{row['first_query_term']}"
             text_terms = _json_list(row["text_search_terms_json"])
             tag_terms = _json_list(row["tag_search_terms_json"])
             labels = _json_list(row["all_query_labels_json"])
-            if not labels:
-                legacy = fallback_hits.get((str(row["source"]), str(row["flickr_photo_id"])), [])
-                for field, term in legacy:
-                    _append_unique(labels, f"{field}:{term}")
-                    if field == "text":
-                        _append_unique(text_terms, term)
-                    if field == "tags":
-                        _append_unique(tag_terms, term)
             all_terms = [*text_terms, *tag_terms]
             output.append(
                 {
@@ -636,7 +627,6 @@ class MetadataPollState:
                 """,
                 params,
             ).fetchall()
-            fallback_hits = _legacy_query_hits_by_photo(conn)
         evidence_rows: list[dict[str, Any]] = []
         for row in rows:
             try:
@@ -647,14 +637,6 @@ class MetadataPollState:
             text_terms = _json_list(row["text_search_terms_json"])
             tag_terms = _json_list(row["tag_search_terms_json"])
             labels = _json_list(row["all_query_labels_json"])
-            if not labels:
-                legacy = fallback_hits.get((str(row["source"]), str(row["flickr_photo_id"])), [])
-                for field, term in legacy:
-                    _append_unique(labels, f"{field}:{term}")
-                    if field == "text":
-                        _append_unique(text_terms, term)
-                    if field == "tags":
-                        _append_unique(tag_terms, term)
             evidence.update(
                 {
                     "source": row["source"],
@@ -1285,25 +1267,6 @@ def _query_fields_from_labels(labels: list[str]) -> list[str]:
         if separator:
             fields.append(field)
     return fields
-
-
-def _legacy_query_hits_by_photo(conn: sqlite3.Connection) -> dict[tuple[str, str], list[tuple[str, str]]]:
-    tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
-    if "source_record_query_hits" not in tables:
-        return {}
-    rows = conn.execute(
-        """
-        SELECT source, flickr_photo_id, query_field, query_term
-        FROM source_record_query_hits
-        ORDER BY source, flickr_photo_id, first_seen_at, query_field, query_term
-        """
-    ).fetchall()
-    grouped: dict[tuple[str, str], list[tuple[str, str]]] = {}
-    for row in rows:
-        grouped.setdefault((str(row["source"]), str(row["flickr_photo_id"])), []).append(
-            (str(row["query_field"]), str(row["query_term"]))
-        )
-    return grouped
 
 
 def _progress(callback: ProgressCallback | None, event: dict[str, Any]) -> None:
