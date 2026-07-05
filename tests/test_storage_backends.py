@@ -235,5 +235,6 @@ class _FakeOutputStream:
     def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
         return None
 
-    def write(self, data: bytes) -> None:
+    def write(self, data: bytes) -> int:
         self.bytes_written += len(data)
+        return len(data)

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import ExitStack
 from typing import Any
 import json
-import os
-import tempfile
 
 import polars as pl
 
@@ -40,26 +39,36 @@ class S3StorageBackend:
 
     def write_parquet_shard(self, uri: str, frame: pl.DataFrame) -> str:
         filesystem, path = self._filesystem_and_path(uri)
-        tmp_path: str | None = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
-                tmp_path = tmp.name
-            frame.write_parquet(tmp_path)
-            with open(tmp_path, "rb") as payload, filesystem.open_output_stream(path) as stream:
-                while chunk := payload.read(8 * 1024 * 1024):
-                    stream.write(chunk)
-        finally:
-            if tmp_path:
-                try:
-                    os.unlink(tmp_path)
-                except FileNotFoundError:
-                    pass
+        with filesystem.open_output_stream(path) as stream:
+            frame.write_parquet(stream)
         return uri
 
     def write_parquet_batches(self, uri: str, batches: Iterable[pl.DataFrame]) -> str:
-        frames = [frame for frame in batches if not frame.is_empty()]
-        frame = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
-        return self.write_parquet_shard(uri, frame)
+        filesystem, path = self._filesystem_and_path(uri)
+        writer = None
+        wrote_any = False
+        try:
+            with ExitStack() as stack:
+                for frame in batches:
+                    if frame.is_empty():
+                        continue
+                    table = frame.to_arrow()
+                    if writer is None:
+                        import pyarrow.parquet as pq
+
+                        stream = stack.enter_context(filesystem.open_output_stream(path))
+                        writer = pq.ParquetWriter(stream, table.schema, compression="zstd")
+                    writer.write_table(table)
+                    wrote_any = True
+                if writer is not None:
+                    writer.close()
+                    writer = None
+        finally:
+            if writer is not None:
+                writer.close()
+        if not wrote_any:
+            return self.write_parquet_shard(uri, pl.DataFrame())
+        return uri
 
     def list_shards(self, prefix: str) -> list[str]:
         filesystem, path = self._filesystem_and_path(prefix)
