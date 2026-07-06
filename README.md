@@ -19,13 +19,13 @@ Step 0: taxonomic registry
   GBIF accepted spine
   + synonyms and vernacular names
   + CoL/iNaturalist/ITIS/TMD/Wikidata evidence
-  + enabled T5 generated/dictionary translation name evidence
+  + low-trust generated/dictionary translation candidates
   -> versioned registry Parquet
-  -> atomic Flickr tags/text query definitions
+  -> query-eligible atomic Flickr tags/text definitions
 
 Step 1: Flickr metadata discovery
   registry query definitions
-  -> one unsliced page-1 search per enabled name/field
+  -> one unsliced page-1 search per query-eligible name/field
   -> Flickr-reported pagination up to the 4,000-result accessible window
   -> Flickr photos.search metadata
   -> one canonical evidence row per photo with folded query-term provenance
@@ -127,7 +127,7 @@ uv run biominer
 5. **Flickr metadata is retained even when an image is never downloaded.**
 6. **Downloaded Flickr images are temporary and deleted after classification.**
 7. **BioCLIP is screening evidence, not taxonomic authority.**
-8. **T5 generated and dictionary translations are enabled as accepted registry name evidence while preserving `trust_tier = T5` provenance.**
+8. **Generated and dictionary translations are retained with low-trust provenance but become Flickr queries only when explicitly query-eligible.**
 9. **Fatal registry QA blocks promotion to `data/registry/current`.**
 10. **Long-running API work must be resumable, bounded, and observable.**
 
@@ -526,7 +526,7 @@ Supplementary sources:
 | ITIS | common names and source taxon links |
 | TMD | German common-name evidence where source mappings are unambiguous |
 | Wikidata | labels and aliases only with confident external taxon links |
-| Translation providers | enabled T5 generated/dictionary translation name evidence |
+| Translation providers | low-trust generated/dictionary translation candidates for audit/review |
 
 iNaturalist, ITIS, TMD, and Wikidata names must first be linked to an accepted GBIF taxon and must not replace GBIF accepted identity.
 
@@ -543,11 +543,11 @@ Default trust policy:
 | iNaturalist or other community names | T4 unless reviewed |
 | Dictionary or generated translation candidates | T5 |
 
-T5 translation candidates are enabled as accepted registry name evidence by default while preserving `trust_tier = T5`, source, confidence, and precision provenance. They do not replace the GBIF accepted taxonomic spine.
+T5 translation candidates are retained as registry name evidence while preserving `trust_tier = T5`, source, confidence, and precision provenance. They do not replace the GBIF accepted taxonomic spine, and they do not become Flickr queries unless review, corroboration, or same-taxon language-source evidence makes them query-eligible.
 
 ## Step 0C — Flickr query compilation
 
-Each enabled registry name, including enabled T5 generated/dictionary translations, is compiled into separate atomic Flickr definitions.
+Each query-eligible registry name is compiled into separate atomic Flickr definitions. Enabled names that are generic, collided across taxa, or low-trust generated translations remain available for audit and matching but are not emitted as Flickr search terms.
 
 Priority order:
 
@@ -560,12 +560,12 @@ Priority order:
 | 50 | species scientific name — text |
 | 60 | species common name — text |
 | 70 | genus/family — text |
-| 80+ | T5 generated/dictionary translation names retained with low-trust provenance |
+| 80+ | reviewed/corroborated translation names retained with low-trust provenance |
 
 Registry enrichment also harvests multilingual discovery terms before compiling the final query definitions:
 
 - Wikimedia interlanguage article titles are retained as source-backed aliases with `source = Wikimedia`.
-- MyMemory dictionary/translation-memory matches are written to `translation_candidates.parquet` and promoted as enabled T5 names by default.
+- MyMemory dictionary/translation-memory matches are written to `translation_candidates.parquet` and retained as enabled T5 name evidence, but remain query-ineligible until review or corroboration.
 - MyMemory uses translation-memory mode (`mt=0`) unless `--mymemory-allow-machine-translation` is explicitly supplied.
 - Translation terms expand Flickr discovery queries only; they are not taxonomic validation.
 

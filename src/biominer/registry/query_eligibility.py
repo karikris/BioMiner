@@ -25,12 +25,21 @@ GENERIC_SINGLE_TOKENS = {
     "borboletas",
     "blue",
     "cabbage",
+    "admiral",
+    "admirals",
+    "brown",
     "copper",
+    "comma",
+    "commas",
     "farfalla",
     "farfalle",
     "fjäril",
+    "gray",
+    "grey",
     "metalmark",
     "orange",
+    "queen",
+    "queens",
     "schmetterling",
     "schwalbenschwanz",
     "skipper",
@@ -100,13 +109,14 @@ def assess_name_query_eligibility(row: dict[str, Any]) -> QueryEligibilityDecisi
     generated_translation_approved = _generated_translation_query_approved(row, source=source) if generated_translation else False
     if generated_translation and not generated_translation_approved:
         return QueryEligibilityDecision(False, "generated_translation_requires_review_or_corroboration", min(score, 0.45))
-    if _is_generic_single_token(tokens):
+    generic_single_token_query_approved = _generic_single_token_query_approved(row) if _is_generic_single_token(tokens) else False
+    if _is_generic_single_token(tokens) and not generic_single_token_query_approved:
         return QueryEligibilityDecision(False, "generic_single_token", min(score, 0.25))
     if _is_plural_group_name(tokens):
         return QueryEligibilityDecision(False, "plural_group_name", min(score, 0.3))
     if normalized in GENERIC_GROUP_PHRASES:
         return QueryEligibilityDecision(False, "generic_group_phrase", min(score, 0.35))
-    if generated_translation_approved:
+    if generated_translation_approved or generic_single_token_query_approved:
         score = max(score, 0.55)
     if score < 0.5:
         return QueryEligibilityDecision(False, "low_species_specificity", score)
@@ -139,6 +149,12 @@ def _generated_translation_query_approved(row: dict[str, Any], *, source: str) -
         return True
     review_state = "_".join(str(row.get("review_state") or "").casefold().split())
     return review_state in MANUAL_REVIEW_STATES or _boolish(row.get("corroborated", False))
+
+
+def _generic_single_token_query_approved(row: dict[str, Any]) -> bool:
+    review_state = "_".join(str(row.get("review_state") or "").casefold().split())
+    precision_tier = str(row.get("precision_tier") or "").casefold()
+    return review_state == "query_approved" and precision_tier == "high"
 
 
 def _is_generated_translation(*, name_class: str, trust_tier: str, source: str) -> bool:

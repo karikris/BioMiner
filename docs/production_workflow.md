@@ -54,7 +54,7 @@ Stage responsibilities:
 
 - `resolve_taxon_scope`: resolves the input family, genus, or species against `taxa.parquet`.
 - `build_registry`: records registry availability and version metadata for the selected taxon scope.
-- `compile_queries`: compiles deterministic Flickr text and tag query definitions from enabled registry names, including enabled T5 generated/dictionary translations.
+- `compile_queries`: compiles deterministic Flickr text and tag query definitions from enabled, query-eligible registry names; generic/collided/generated terms remain retained evidence unless review or corroboration makes them eligible.
 - `enqueue_flickr_work`: writes resumable Flickr work items into the workstore.
 - `poll_flickr`: fetches Flickr metadata, stores raw JSON audit payloads when configured, and writes canonical source records.
 - `detect_objects`: runs YOLOE/YOLO26-style object proposals over temporary image loads.

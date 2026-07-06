@@ -12,7 +12,7 @@ T4  unreviewed community/source enrichment that is useful for discovery but need
 T5  generated or machine-translated candidates
 ```
 
-T1 and reviewed T2 assertions are the preferred basis for evidence matching. T3 assertions can support discovery only when the external taxon linkage is confident or the assertion has been explicitly accepted by review. T4 can support discovery when its source and review state make that safe for the current registry policy. T5 generated and dictionary translations are enabled as accepted registry name evidence by default, but they keep explicit low-trust provenance and do not replace the GBIF accepted taxonomic spine.
+T1 and reviewed T2 assertions are the preferred basis for evidence matching. T3 assertions can support discovery only when the external taxon linkage is confident or the assertion has been explicitly accepted by review. T4 can support discovery when its source and review state make that safe for the current registry policy. T5 generated and dictionary translations are retained as low-trust registry name evidence for audit and matching, but they do not replace the GBIF accepted taxonomic spine and do not become Flickr queries unless separately query-eligible.
 
 ## Enablement
 
@@ -45,7 +45,7 @@ They are accepted registry name evidence for discovery and matching, with their 
 
 ## Query Generation
 
-Flickr query definitions are compiled from enabled registry names, including enabled T5 generated/dictionary translations. Tags and text searches remain separate atomic query definitions, and each definition preserves:
+Flickr query definitions are compiled from names where `enabled = true` and `query_eligible = true`. Tags and text searches remain separate atomic query definitions, and each definition preserves:
 
 ```text
 query_definition_id
@@ -59,10 +59,13 @@ species_key
 registry_version
 source evidence fields
 review_state
+query_eligible
+query_disabled_reason
+species_specificity_score
 ```
 
-T5 rows keep `trust_tier = T5` and `name_class = generated_translation` in both `names.parquet` and `flickr_query_definitions.parquet`.
-Registry manifests record `enabled_t5_name_rows` and `t5_query_definition_rows` so enabled T5 evidence remains auditable without relying on the legacy retrieval-only metric.
+T5 rows keep `trust_tier = T5` and `name_class = generated_translation` in `names.parquet`. They appear in `flickr_query_definitions.parquet` only after manual review, corroboration, or exact same-taxon language-source support makes them query-eligible.
+Registry manifests record `enabled_t5_name_rows`, `t5_query_definition_rows`, and query-eligible/query-ineligible name counts so retained low-trust evidence remains auditable without becoming broad Flickr search traffic.
 
 When Flickr rediscoveries hit the same photo, those query definitions are folded into the canonical source record provenance arrays. The registry remains the source of term provenance; Flickr title, tags, description, and comments are discovery or review evidence, not taxonomic authority.
 

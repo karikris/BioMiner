@@ -159,7 +159,7 @@ def test_completion_audit_records_current_refactor_invariants() -> None:
     for expected in (
         "Public production workflow is rank-aware",
         "Production storage/workstore defaults",
-        "T5 generated translations are enabled as accepted registry name evidence and enter Flickr retrieval",
+        "T5 generated translations are retained as name evidence and query-gated before Flickr retrieval",
         "Metadata keyword logic is flags, not hard pre-visual drop",
         "YOLOE/YOLO26 are object proposal backends only",
         "BioCLIP remains the species scorer",
@@ -179,7 +179,7 @@ def test_refactor_phase_commit_map_records_pushed_main_phases() -> None:
         "`f28aa84` chore: audit refactor environment and workflow surface",
         "`e6a498b` docs: clarify verified refactor audit base",
         "T5 translations",
-        "operator instructions explicitly enabled T5 as accepted names",
+        "requiring query eligibility",
     ):
         assert expected in text
 
@@ -218,8 +218,8 @@ def test_readme_keeps_broad_probe_recipe_out_of_production_workflow() -> None:
     ):
         assert removed_phrase not in text
     assert "work items must be created from registry-derived query definitions" in text
-    assert "T5 generated/dictionary translation names retained with low-trust provenance" in text
-    assert "enabled T5 generated/dictionary translations" in text
+    assert "reviewed/corroborated translation names retained with low-trust provenance" in text
+    assert "query-eligible registry name" in text
     assert "register-based processing" not in text
     assert "register-based classification helpers" not in text
     assert "object-first scoring" in text

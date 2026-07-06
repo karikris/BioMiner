@@ -22,10 +22,10 @@ the active goal is marked complete.
   changed the source of truth to `main` and required cleanup commits to be
   pushed there.
 - The original plan disabled T5 generated/dictionary translations unless
-  corroborated or reviewed; later operator instructions explicitly enabled T5
-  as accepted names. Current implementation keeps `trust_tier = T5`
-  provenance while enabling those names and compiling them into normal Flickr
-  query definitions.
+  corroborated or reviewed; later operator instructions retained T5 as
+  accepted name evidence. Current implementation keeps `trust_tier = T5`
+  provenance while applying `query_eligible` before any generated term becomes
+  a Flickr query definition.
 
 ## Current Evidence Summary
 
@@ -37,7 +37,7 @@ the active goal is marked complete.
 | Production storage/workstore defaults | `src/biominer/config/__init__.py` defaults to `StorageConfig.backend = "s3"` and `WorkStoreConfig.backend = "postgres"`; `tests/test_storage_config.py` covers defaults and explicit local overrides; `tests/test_provider_config.py` covers redaction of S3 access keys, S3 secrets, Postgres DSNs, and DSN passwords. | Implemented |
 | Local filesystem/SQLite are explicit dev/test overrides | `src/biominer/cli.py` validates `--storage-backend local --workstore-backend sqlite` as a paired local mode; mixed local/cloud modes fail. | Implemented |
 | Broad multilingual seed production path removed | `tests/test_query_planner.py::test_query_planner_source_has_no_legacy_broad_seed_planner` asserts `query_planner.py` contains no legacy broad-seed planner symbols; `tests/test_metadata_poller.py::test_initial_work_items_require_explicit_registry_queries` verifies explicit registry queries are required; `tests/test_metadata_poller.py::test_poll_once_empty_state_does_not_seed_broad_multilingual_probes` verifies an empty state does not seed broad probes. | Implemented |
-| T5 generated translations are enabled as accepted registry name evidence and enter Flickr retrieval | `tests/test_registry_enrichment.py` verifies T5 translations enter `names.parquet`, produce normal query definitions, and expose `enabled_t5_name_rows` / `t5_query_definition_rows` manifest counters; `tests/test_query_planner.py`, `tests/test_production_run_skeleton.py`, and `tests/test_metadata_poller.py` verify T5 query definitions become Flickr retrieval work and API search params. | Implemented |
+| T5 generated translations are retained as name evidence and query-gated before Flickr retrieval | `tests/test_registry_enrichment.py` verifies T5 translations enter `names.parquet` while unreviewed generated translations stay query-ineligible; `tests/test_query_planner.py`, `tests/test_production_run_skeleton.py`, and `tests/test_metadata_poller.py` verify only explicit query definitions become Flickr retrieval work and API search params. | Implemented |
 | Metadata keyword logic is flags, not hard pre-visual drop | `src/biominer/filter/metadata_flags.py` is retained; `src/biominer/filter/rules.py` is removed; `tests/test_metadata_flags.py`, `tests/test_evidence_rules.py`, and `tests/test_image_triage.py` cover soft metadata behavior. | Implemented |
 | Object evidence buckets are the rule engine | `src/biominer/evidence/buckets.py` and `src/biominer/evidence/join.py` are retained; legacy `apply-rules` no longer parses. | Implemented |
 | YOLOE/YOLO26 are object proposal backends only | `src/biominer/detection/yoloe26_detector.py` and `src/biominer/detection/yolo26_detector.py` map detector prompts/classes to coarse labels; detector tests cover the coarse-label contract. | Implemented |

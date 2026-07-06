@@ -214,6 +214,7 @@ commit and is expected to appear after the implementation base in `git log`.
 - Branching: cleanup was completed and pushed on `main` after later operator
   instructions superseded the original cleanup branch requirement.
 - T5 translations: the original plan disabled T5 by default, but later
-  operator instructions explicitly enabled T5 as accepted names. Current code
-  keeps `trust_tier = T5` provenance, compiles enabled T5 names into normal
-  Flickr query definitions, and records enabled T5 metrics.
+  guardrails retained T5 as accepted names while requiring query eligibility
+  before Flickr retrieval. Current code keeps `trust_tier = T5` provenance,
+  compiles only query-eligible T5 names into Flickr query definitions, and
+  records enabled/query-eligible name metrics.
