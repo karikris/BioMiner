@@ -151,7 +151,7 @@ def test_registry_query_definitions_load_as_single_unsliced_page_one_work(tmp_pa
     assert queries[0].max_upload_date is None
 
 
-def test_t5_query_definitions_become_flickr_api_search_params(tmp_path) -> None:
+def test_explicitly_query_eligible_t5_definitions_become_flickr_api_search_params(tmp_path) -> None:
     registry_queries = tmp_path / "flickr_query_definitions.parquet"
     frame = pl.DataFrame(
         [
@@ -173,6 +173,7 @@ def test_t5_query_definitions_become_flickr_api_search_params(tmp_path) -> None:
                 "confidence": "low",
                 "trust_tier": "T5",
                 "enabled": True,
+                "query_eligible": True,
             },
             {
                 "query_definition_id": "q-t5-text",
@@ -192,6 +193,7 @@ def test_t5_query_definitions_become_flickr_api_search_params(tmp_path) -> None:
                 "confidence": "low",
                 "trust_tier": "T5",
                 "enabled": True,
+                "query_eligible": True,
             },
         ]
     )
@@ -212,6 +214,58 @@ def test_t5_query_definitions_become_flickr_api_search_params(tmp_path) -> None:
     assert flickr_search_params(by_field["text"])["text"] == "Translated Lime"
     assert "min_upload_date" not in flickr_search_params(by_field["tags"])
     assert "max_upload_date" not in flickr_search_params(by_field["tags"])
+
+
+def test_registry_query_loader_skips_generated_definitions_without_query_eligible_field(tmp_path) -> None:
+    registry_queries = tmp_path / "flickr_query_definitions.parquet"
+    frame = pl.DataFrame(
+        [
+            {
+                "query_definition_id": "q-scientific",
+                "registry_version": "registry-v1",
+                "accepted_taxon_key": "gbif:100",
+                "accepted_scientific_name": "Papilio demoleus",
+                "family_key": "gbif:10",
+                "genus_key": "gbif:90",
+                "species_key": "gbif:100",
+                "source_term": "Papilio demoleus",
+                "language": "la",
+                "search_field": "tags",
+                "search_priority": 10,
+                "bbox": "",
+                "region": "",
+                "name_class": "accepted_scientific",
+                "confidence": "high",
+                "trust_tier": "T1",
+                "enabled": True,
+            },
+            {
+                "query_definition_id": "q-generated",
+                "registry_version": "registry-v1",
+                "accepted_taxon_key": "gbif:100",
+                "accepted_scientific_name": "Papilio demoleus",
+                "family_key": "gbif:10",
+                "genus_key": "gbif:90",
+                "species_key": "gbif:100",
+                "source_term": "Translated Lime",
+                "language": "en",
+                "search_field": "text",
+                "search_priority": 40,
+                "bbox": "",
+                "region": "",
+                "name_class": "generated_translation",
+                "confidence": "low",
+                "trust_tier": "T5",
+                "enabled": True,
+            },
+        ]
+    )
+    frame.write_parquet(registry_queries)
+
+    queries = load_registry_flickr_queries(registry_queries)
+
+    assert [query.query_definition_id for query in queries] == ["q-scientific"]
+    assert [query.term for query in queries] == ["Papilio demoleus"]
 
 
 def test_registry_query_loader_skips_query_ineligible_definitions(tmp_path) -> None:

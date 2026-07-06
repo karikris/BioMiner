@@ -1772,6 +1772,7 @@ def _write_t5_query_definitions(registry: Path) -> None:
                 name_class="generated_translation",
                 confidence="low",
                 trust_tier="T5",
+                query_eligible=True,
             ),
             _query_definition_row(
                 "q-t5-text",
@@ -1781,6 +1782,7 @@ def _write_t5_query_definitions(registry: Path) -> None:
                 name_class="generated_translation",
                 confidence="low",
                 trust_tier="T5",
+                query_eligible=True,
             ),
         ]
     ).write_parquet(registry / "flickr_query_definitions.parquet")
@@ -2066,8 +2068,9 @@ def _query_definition_row(
     name_class: str | None = None,
     confidence: str = "high",
     trust_tier: str = "T1",
+    query_eligible: bool | None = None,
 ) -> dict[str, object]:
-    return {
+    row: dict[str, object] = {
         "query_definition_id": query_definition_id,
         "registry_version": "rank-registry-v1",
         "accepted_taxon_key": accepted_taxon_key,
@@ -2089,6 +2092,9 @@ def _query_definition_row(
         "trust_tier": trust_tier,
         "enabled": True,
     }
+    if query_eligible is not None:
+        row["query_eligible"] = query_eligible
+    return row
 
 
 def _taxon_row(
