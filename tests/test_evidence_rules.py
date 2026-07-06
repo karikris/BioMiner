@@ -50,8 +50,8 @@ def test_gold_score_gte_070_target_positive() -> None:
     assert result["publication_state_reason"] == "target_positive_score_gte_070"
     assert result["occurrence_bin"] == "gold"
     assert result["bin_reason"] == "target_positive_score_gte_070"
-    assert result["image_category"] == "adult_butterfly"
-    assert result["life_stage"] == "adult_butterfly"
+    assert result["image_category"] == "unknown"
+    assert result["life_stage"] == "unknown"
     assert result["review_reason"] == []
 
 

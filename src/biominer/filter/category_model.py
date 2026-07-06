@@ -101,8 +101,6 @@ def infer_category_from_record(row: dict[str, Any]) -> dict[str, str | None]:
         ai_generated_detected=bool(row.get("ai_generated_detected")),
         non_target_order_detected=bool(row.get("non_target_order_detected")),
     )
-    if category["image_category"] == "unknown" and _has_visual_species_evidence(row):
-        return _category("adult_butterfly", "adult_butterfly", None)
     return category
 
 
@@ -152,16 +150,3 @@ def _has_any(text: str, terms: tuple[str, ...]) -> bool:
 def _normalize(value: object) -> str:
     return " ".join(str(value or "").casefold().split())
 
-
-def _has_visual_species_evidence(row: dict[str, Any]) -> bool:
-    if row.get("bioclip_species_agreement_status") in {"exact_species_agreement", "accepted_species_agreement"}:
-        return True
-    if row.get("is_target_positive") is True:
-        return True
-    label = str(row.get("bioclip_top1_label") or row.get("top1_label") or "")
-    return _looks_like_binomial(label)
-
-
-def _looks_like_binomial(value: str) -> bool:
-    parts = value.split()
-    return any(left[:1].isupper() and right[:1].islower() for left, right in zip(parts, parts[1:]))

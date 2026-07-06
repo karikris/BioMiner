@@ -4,6 +4,7 @@ import polars as pl
 
 import biominer.filter as filter_api
 import biominer.filter.metadata_flags as metadata_flags
+from biominer.filter.category_model import infer_category_from_record
 from biominer.filter.metadata_flags import flag_metadata_records
 
 
@@ -45,6 +46,21 @@ def test_metadata_keyword_flags_do_not_drop_non_biodiversity_hints() -> None:
     assert row_by_id["2"]["matched_keyword_groups"] == ["artwork"]
     assert row_by_id["3"]["object_or_product_hint"] is True
     assert row_by_id["3"]["matched_keywords"] == ["toy", "sticker"]
+
+
+def test_species_bioclip_metadata_fields_do_not_infer_adult_visual_category() -> None:
+    category = infer_category_from_record(
+        {
+            "raw_title": "Papilio demoleus from Flickr metadata",
+            "bioclip_top1_label": "a photo of Papilio demoleus",
+            "bioclip_species_agreement_status": "exact_species_agreement",
+            "is_target_positive": True,
+        }
+    )
+
+    assert category["image_category"] == "unknown"
+    assert category["life_stage"] == "unknown"
+    assert category["negative_filter_reason"] is None
 
 
 def test_metadata_flags_preserve_life_stage_hints() -> None:
