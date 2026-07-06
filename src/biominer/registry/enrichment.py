@@ -1106,6 +1106,7 @@ def _combine_names(base_names: pl.DataFrame, enabled_enrichment: pl.DataFrame) -
             str(row["accepted_taxon_key"]),
             normalize_name_key(row["display_name"]),
             str(row["language"]),
+            str(row["script"]),
             str(row["region"]),
             str(row["name_class"]),
         )
@@ -1183,8 +1184,11 @@ def _write_enriched_evidence(output: Path, *, registry_version: str, source_payl
     source_hash = _payload_hash(source_payload)
     for row in assertions.to_dicts():
         display_name = str(row.get("display_name") or "")
-        language = normalize_language_code(row.get("language"))
-        name_id = _stable_id("name", registry_version, row.get("accepted_taxon_key"), display_name, language, row.get("region"))
+        language_tag = parse_language_tag(row.get("language"))
+        language = language_tag.language
+        script = str(row.get("script") or language_tag.script)
+        region = str(row.get("region") or language_tag.region)
+        name_id = _stable_id("name", registry_version, row.get("accepted_taxon_key"), display_name, language, script, region)
         evidence_id = _stable_id("evidence", registry_version, row.get("accepted_taxon_key"), display_name, row.get("source"), row.get("source_record_id"))
         if evidence_id in seen_evidence_ids:
             continue

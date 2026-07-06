@@ -742,6 +742,59 @@ def test_compile_enriched_registry_preserves_translation_locale_script_and_regio
     assert (zh_query["language"], zh_query["script"], zh_query["region"]) == ("zho", "Hant", "")
 
 
+def test_compile_enriched_registry_keeps_same_label_script_variants_distinct(tmp_path) -> None:
+    registry, scope = _write_base_registry(tmp_path)
+    write_translation_candidates(
+        [
+            {
+                "source": "MyMemory",
+                "source_language": "eng",
+                "target_language": "zh-Hans",
+                "source_name": "Lime Butterfly",
+                "translated_name": "青鳳蝶",
+                "accepted_taxon_key": "gbif:100",
+                "review_state": "reviewed",
+                "confidence": "medium",
+                "precision_tier": "medium",
+                "enabled": True,
+            },
+            {
+                "source": "MyMemory",
+                "source_language": "eng",
+                "target_language": "zh-Hant",
+                "source_name": "Lime Butterfly",
+                "translated_name": "青鳳蝶",
+                "accepted_taxon_key": "gbif:100",
+                "review_state": "reviewed",
+                "confidence": "medium",
+                "precision_tier": "medium",
+                "enabled": True,
+            },
+        ],
+        registry,
+    )
+
+    compile_enriched_registry(
+        registry_dir=registry,
+        registry_version="enriched",
+        scope_path=scope,
+    )
+
+    names = pl.read_parquet(registry / "names.parquet")
+    queries = pl.read_parquet(registry / "flickr_query_definitions.parquet")
+    script_names = names.filter(pl.col("normalized_match_key") == "青鳳蝶").sort("script")
+    script_queries = queries.filter(pl.col("normalized_match_key") == "青鳳蝶").sort(["script", "search_field"])
+
+    assert script_names.height == 2
+    assert script_names.select("script").to_series().to_list() == ["Hans", "Hant"]
+    assert script_queries.select(["script", "search_field"]).to_dicts() == [
+        {"script": "Hans", "search_field": "tags"},
+        {"script": "Hans", "search_field": "text"},
+        {"script": "Hant", "search_field": "tags"},
+        {"script": "Hant", "search_field": "text"},
+    ]
+
+
 def test_compile_enriched_registry_disables_unreviewed_cross_taxon_collisions(tmp_path) -> None:
     registry, scope = _write_base_registry(tmp_path, species_names=("Papilio demoleus", "Papilio machaon"))
     write_enrichment_sources(

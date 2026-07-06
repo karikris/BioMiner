@@ -144,7 +144,7 @@ def _names_frame(rows: list[dict[str, Any]], *, registry_version: str) -> pl.Dat
         language = language_tag.language
         script = str(row.get("script") or language_tag.script)
         region = str(row.get("region") or language_tag.region)
-        name_id = _stable_id("name", registry_version, accepted_taxon_key, display_name, language, region)
+        name_id = _stable_id("name", registry_version, accepted_taxon_key, display_name, language, script, region)
         enabled = bool(row.get("enabled", True))
         name_row = {
             "name_id": name_id,
@@ -187,11 +187,14 @@ def _name_evidence_frame(rows: list[dict[str, Any]], *, registry_version: str, s
     for row in rows:
         display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
         accepted_taxon_key = str(row.get("accepted_taxon_key") or "")
-        language = normalize_language_code(row.get("language"))
+        language_tag = parse_language_tag(row.get("language"))
+        language = language_tag.language
+        script = str(row.get("script") or language_tag.script)
+        region = str(row.get("region") or language_tag.region)
         evidence_rows.append(
             {
                 "evidence_id": _stable_id("evidence", registry_version, accepted_taxon_key, display_name, row.get("source"), row.get("source_record_id")),
-                "name_id": _stable_id("name", registry_version, accepted_taxon_key, display_name, language, row.get("region")),
+                "name_id": _stable_id("name", registry_version, accepted_taxon_key, display_name, language, script, region),
                 "registry_version": registry_version,
                 "accepted_taxon_key": accepted_taxon_key,
                 "source": str(row.get("source") or ""),
