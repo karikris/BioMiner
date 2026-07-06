@@ -200,7 +200,12 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--translation-target-locales-json", default=DEFAULT_TRANSLATION_TARGET_LOCALES_JSON)
     registry_build.add_argument("--skip-translations", action="store_true")
     registry_build.add_argument("--translation-daily-request-limit", type=int, default=10000)
-    registry_build.add_argument("--max-translation-candidates-per-name", type=int, default=3)
+    registry_build.add_argument(
+        "--max-translation-candidates-per-name",
+        type=int,
+        default=0,
+        help="Maximum MyMemory candidates to keep per source name and target language; 0 keeps all returned candidates.",
+    )
     registry_build.add_argument("--mymemory-email")
     registry_build.add_argument("--mymemory-key")
     registry_build.add_argument("--mymemory-allow-machine-translation", action="store_true")

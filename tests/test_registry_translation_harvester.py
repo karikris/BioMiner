@@ -271,6 +271,30 @@ def test_mymemory_provider_uses_translation_memory_mode_by_default() -> None:
     ]
 
 
+def test_mymemory_provider_keeps_all_candidates_when_uncapped() -> None:
+    def fake_get(path, params):  # noqa: ANN001, ANN202 - provider test double.
+        return {
+            "responseData": {"translatedText": "Limettenfalter"},
+            "matches": [
+                {"translation": "Limettenfalter"},
+                {"translation": "Zitronenschwalbenschwanz"},
+                {"translation": "Zitrusfalter"},
+            ],
+        }
+
+    provider = MyMemoryTranslationProvider(http_get=fake_get)
+
+    translations, request_count = provider.translate(
+        source_name="Lime Swallowtail",
+        source_language="eng",
+        target_language="deu",
+        max_candidates=0,
+    )
+
+    assert request_count == 1
+    assert translations == ["Limettenfalter", "Zitronenschwalbenschwanz", "Zitrusfalter"]
+
+
 def test_mymemory_provider_can_enable_machine_translation() -> None:
     requests = []
 
@@ -305,6 +329,7 @@ def test_wikimedia_provider_follows_langlink_continuation() -> None:
     assert request_count == 2
     assert page_title == "Papilio demoleus"
     assert [link.title for link in links] == ["Zitronenfalter", "Papillon du citronnier"]
+    assert requests[0][1]["lllimit"] == "max"
     assert requests[1][1]["llcontinue"] == "123|fr"
 
 
@@ -334,7 +359,7 @@ def test_translation_harvester_writes_wikimedia_and_mymemory_outputs(tmp_path) -
     assert candidates.select("source").to_series().to_list() == ["MyMemory"]
     assert candidates.select("translated_name").to_series().to_list() == ["Limettenfalter"]
     assert wiki.titles == ["Papilio demoleus", "Lime Swallowtail"]
-    assert mymemory.calls == [{"source_name": "Lime Swallowtail", "source_language": "en", "target_language": "de", "max_candidates": "3"}]
+    assert mymemory.calls == [{"source_name": "Lime Swallowtail", "source_language": "en", "target_language": "de", "max_candidates": "0"}]
     assert set(work.select("source").to_series().to_list()) == {"wikimedia", "mymemory"}
 
 

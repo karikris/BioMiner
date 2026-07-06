@@ -261,9 +261,9 @@ class MyMemoryTranslationProvider:
                 if not isinstance(match, dict):
                     continue
                 _append_translation(candidates, match.get("translation"), source_name=source_name)
-                if len(candidates) >= max_candidates:
+                if max_candidates > 0 and len(candidates) >= max_candidates:
                     break
-        return candidates[:max_candidates], 1
+        return candidates[:max_candidates] if max_candidates > 0 else candidates, 1
 
 
 def build_translation_candidates_from_registry(
@@ -275,7 +275,7 @@ def build_translation_candidates_from_registry(
     providers: dict[str, Any] | None = None,
     max_retries: int = 5,
     daily_request_limit: int = 10000,
-    max_candidates_per_name: int = 3,
+    max_candidates_per_name: int = 0,
     mymemory_email: str | None = None,
     mymemory_key: str | None = None,
     mymemory_allow_machine_translation: bool = False,
