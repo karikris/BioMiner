@@ -27,8 +27,11 @@ GENERIC_SINGLE_TOKENS = {
     "farfalle",
     "fjäril",
     "schmetterling",
+    "schwalbenschwanz",
+    "svalstjärt",
     "vlinder",
     "vlinders",
+    "zwaluwstaart",
     "蝴蝶",
 }
 GENERIC_GROUP_PHRASES = {

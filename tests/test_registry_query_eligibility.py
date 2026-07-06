@@ -27,6 +27,14 @@ def test_multilingual_generic_butterfly_words_are_not_species_queries() -> None:
         assert decision.query_disabled_reason == "generic_single_token"
 
 
+def test_multilingual_generic_group_words_are_not_species_queries() -> None:
+    for term in ("Schwalbenschwanz", "zwaluwstaart", "svalstjärt"):
+        decision = assess_name_query_eligibility(_name_row(term, trust_tier="T2"))
+
+        assert decision.query_eligible is False
+        assert decision.query_disabled_reason == "generic_single_token"
+
+
 def test_generic_family_group_phrases_are_not_species_queries() -> None:
     for term in ("Swallowtail Butterfly", "Skipper Butterfly", "White Butterflies", "Metalmark Butterfly"):
         decision = assess_name_query_eligibility(_name_row(term, trust_tier="T2"))
