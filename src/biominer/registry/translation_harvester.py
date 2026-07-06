@@ -193,6 +193,177 @@ class TranslationRequestBudget:
         return True
 
 
+class TranslationCheckpointWriter:
+    def __init__(
+        self,
+        output: Path,
+        *,
+        source_order: tuple[str, ...],
+        target_locales: tuple[str, ...],
+        daily_request_limit: int,
+        max_candidates_per_name: int,
+        mymemory_allow_machine_translation: bool,
+        started_at: float,
+        checkpoint_every: int,
+        checkpoint_seconds: float,
+    ) -> None:
+        self.output = output
+        self.source_order = source_order
+        self.target_locales = target_locales
+        self.daily_request_limit = daily_request_limit
+        self.max_candidates_per_name = max_candidates_per_name
+        self.mymemory_allow_machine_translation = mymemory_allow_machine_translation
+        self.started_at = started_at
+        self.checkpoint_every = max(1, checkpoint_every)
+        self.checkpoint_seconds = checkpoint_seconds
+        self.last_flush_at = monotonic()
+        self.existing_assertions = _read_or_empty(output / SOURCE_ASSERTIONS_FILE, _name_assertion_schema()).to_dicts()
+        self.existing_candidates = _read_or_empty(output / TRANSLATION_CANDIDATES_FILE, translation_candidate_schema()).to_dicts()
+        self.existing_snapshots = _read_or_empty(output / ENRICHMENT_SOURCE_SNAPSHOTS_FILE, _source_snapshot_schema()).to_dicts()
+        self.existing_errors = _read_or_empty(output / SOURCE_ERRORS_FILE, _source_error_schema()).to_dicts()
+        self.existing_source_work = _read_or_empty(output / SOURCE_WORK_LEDGER_FILE, _source_work_schema()).to_dicts()
+        self.existing_translation_work = _read_or_empty(output / TRANSLATION_WORK_LEDGER_FILE, _translation_work_schema()).to_dicts()
+        self.buffered_assertions: list[dict[str, Any]] = []
+        self.buffered_candidates: list[dict[str, Any]] = []
+        self.buffered_snapshots: list[dict[str, Any]] = []
+        self.buffered_errors: list[dict[str, Any]] = []
+        self.buffered_source_work: list[dict[str, Any]] = []
+        self.buffered_translation_work: list[dict[str, Any]] = []
+        self.buffered_work_count = 0
+        self.request_counts: Counter[str] = Counter()
+        self.candidate_counts: Counter[str] = Counter()
+        self.assertion_counts: Counter[str] = Counter()
+        self.manifest = _read_json_or_empty(output / ENRICHMENT_MANIFEST_FILE)
+
+    def append(self, batch: TranslationBatch) -> None:
+        self.buffered_assertions.extend(batch.name_assertions)
+        self.buffered_candidates.extend(batch.translation_candidates)
+        self.buffered_snapshots.extend(batch.source_snapshots)
+        self.buffered_errors.extend(batch.errors)
+        self.buffered_source_work.extend(batch.source_work)
+        self.buffered_translation_work.extend(batch.translation_work)
+        self.buffered_work_count += len(batch.translation_work)
+        source_key = _batch_source_key(batch)
+        if source_key and batch.request_count:
+            self.request_counts[source_key] += batch.request_count
+        for row in batch.translation_candidates:
+            self.candidate_counts[_source_counter_key(row.get("source"))] += 1
+        for row in batch.name_assertions:
+            self.assertion_counts[_source_counter_key(row.get("source"))] += 1
+
+    def should_flush(self) -> bool:
+        if not self._has_buffered_rows():
+            return False
+        if self.buffered_work_count >= self.checkpoint_every:
+            return True
+        if self.checkpoint_seconds <= 0:
+            return True
+        return monotonic() - self.last_flush_at >= self.checkpoint_seconds
+
+    def flush(self, *, status: str, force: bool = False) -> dict[str, Any]:
+        if not force and not self._has_buffered_rows():
+            return self.manifest
+        frames = _translation_output_frames(
+            existing_assertions=self.existing_assertions,
+            new_assertions=self.buffered_assertions,
+            existing_candidates=self.existing_candidates,
+            new_candidates=self.buffered_candidates,
+            existing_snapshots=self.existing_snapshots,
+            new_snapshots=self.buffered_snapshots,
+            existing_errors=self.existing_errors,
+            new_errors=self.buffered_errors,
+            existing_source_work=self.existing_source_work,
+            new_source_work=self.buffered_source_work,
+            existing_translation_work=self.existing_translation_work,
+            new_translation_work=self.buffered_translation_work,
+        )
+        _write_parquet_atomic(frames["assertions"], self.output / SOURCE_ASSERTIONS_FILE)
+        _write_parquet_atomic(frames["candidates"], self.output / TRANSLATION_CANDIDATES_FILE)
+        _write_parquet_atomic(frames["snapshots"], self.output / ENRICHMENT_SOURCE_SNAPSHOTS_FILE)
+        _write_parquet_atomic(frames["errors"], self.output / SOURCE_ERRORS_FILE)
+        _write_parquet_atomic(frames["source_work"], self.output / SOURCE_WORK_LEDGER_FILE)
+        _write_parquet_atomic(frames["translation_work"], self.output / TRANSLATION_WORK_LEDGER_FILE)
+        self.manifest = self._manifest_payload(status=status, frames=frames)
+        _write_json_atomic(self.manifest, self.output / ENRICHMENT_MANIFEST_FILE)
+        self.existing_assertions = frames["assertions"].to_dicts()
+        self.existing_candidates = frames["candidates"].to_dicts()
+        self.existing_snapshots = frames["snapshots"].to_dicts()
+        self.existing_errors = frames["errors"].to_dicts()
+        self.existing_source_work = frames["source_work"].to_dicts()
+        self.existing_translation_work = frames["translation_work"].to_dicts()
+        self._clear_buffers()
+        self.last_flush_at = monotonic()
+        return self.manifest
+
+    def completion_status(self, *, budget_exhausted: bool) -> str:
+        if budget_exhausted:
+            return "budget_exhausted"
+        work_rows = [*self.existing_translation_work, *self.buffered_translation_work]
+        if self.existing_errors or self.buffered_errors or any(str(row.get("status") or "") == "error" for row in work_rows):
+            return "complete_with_errors"
+        return "complete"
+
+    def _manifest_payload(self, *, status: str, frames: dict[str, pl.DataFrame]) -> dict[str, Any]:
+        errors = frames["errors"].to_dicts()
+        assertion_counts = _frame_source_counts(frames["assertions"], "source")
+        candidate_counts = _frame_source_counts(frames["candidates"], "source")
+        request_counts = _translation_request_counts_from_source_work_frame(frames["source_work"])
+        manifest = dict(self.manifest)
+        manifest.update(
+            {
+                "translation_sources": list(self.source_order),
+                "translation_source_display_names": list(translation_source_display_names(self.source_order)),
+                "translation_target_locale_count": len(self.target_locales),
+                "translation_target_locales": list(self.target_locales),
+                "translation_status": status,
+                "translation_daily_request_limit": self.daily_request_limit,
+                "translation_max_candidates_per_name": self.max_candidates_per_name,
+                "mymemory_allow_machine_translation": self.mymemory_allow_machine_translation,
+                "wikimedia_assertion_rows": assertion_counts.get("wikimedia", 0),
+                "mymemory_candidate_rows": candidate_counts.get("mymemory", 0),
+                "translation_request_rows": sum(request_counts.values()),
+                "translation_request_counts_by_source": dict(sorted(request_counts.items())),
+                "translation_current_run_request_rows": sum(self.request_counts.values()),
+                "translation_current_run_request_counts_by_source": dict(sorted(self.request_counts.items())),
+                "translation_assertion_counts_by_source": dict(sorted(assertion_counts.items())),
+                "translation_candidate_counts_by_source": dict(sorted(candidate_counts.items())),
+                "translation_error_rows": frames["errors"].height,
+                "translation_work_rows": frames["translation_work"].height,
+                "translation_error_counts_by_source": dict(
+                    sorted(Counter(_source_counter_key(error.get("source")) for error in errors if _source_counter_key(error.get("source"))).items())
+                ),
+                "translation_elapsed_seconds": round(monotonic() - self.started_at, 6),
+                "files": {
+                    **manifest.get("files", {}),
+                    "translation_candidates": TRANSLATION_CANDIDATES_FILE,
+                    "translation_work_ledger": TRANSLATION_WORK_LEDGER_FILE,
+                },
+            }
+        )
+        return manifest
+
+    def _has_buffered_rows(self) -> bool:
+        return any(
+            (
+                self.buffered_assertions,
+                self.buffered_candidates,
+                self.buffered_snapshots,
+                self.buffered_errors,
+                self.buffered_source_work,
+                self.buffered_translation_work,
+            )
+        )
+
+    def _clear_buffers(self) -> None:
+        self.buffered_assertions.clear()
+        self.buffered_candidates.clear()
+        self.buffered_snapshots.clear()
+        self.buffered_errors.clear()
+        self.buffered_source_work.clear()
+        self.buffered_translation_work.clear()
+        self.buffered_work_count = 0
+
+
 class WikimediaLanglinksProvider:
     source_key = "wikimedia"
     source_name = "Wikimedia"
@@ -315,6 +486,8 @@ def build_translation_candidates_from_registry(
     mymemory_email: str | None = None,
     mymemory_key: str | None = None,
     mymemory_allow_machine_translation: bool = False,
+    translation_checkpoint_every: int = 100,
+    translation_checkpoint_seconds: float = 60.0,
     limit: int = 0,
 ) -> dict[str, Any]:
     started = monotonic()
@@ -336,22 +509,27 @@ def build_translation_candidates_from_registry(
         for row in species_rows
     ]
 
-    existing_assertions = _read_or_empty(output / SOURCE_ASSERTIONS_FILE, _name_assertion_schema()).to_dicts()
-    existing_candidates = _read_or_empty(output / TRANSLATION_CANDIDATES_FILE, translation_candidate_schema()).to_dicts()
-    existing_snapshots = _read_or_empty(output / ENRICHMENT_SOURCE_SNAPSHOTS_FILE, _source_snapshot_schema()).to_dicts()
-    existing_errors = _read_or_empty(output / SOURCE_ERRORS_FILE, _source_error_schema()).to_dicts()
-    existing_source_work = _read_or_empty(output / SOURCE_WORK_LEDGER_FILE, _source_work_schema()).to_dicts()
-    existing_translation_work = _read_or_empty(output / TRANSLATION_WORK_LEDGER_FILE, _translation_work_schema()).to_dicts()
+    checkpoint_writer = TranslationCheckpointWriter(
+        output,
+        source_order=source_order,
+        target_locales=target_locales,
+        daily_request_limit=daily_request_limit,
+        max_candidates_per_name=max_candidates_per_name,
+        mymemory_allow_machine_translation=mymemory_allow_machine_translation,
+        started_at=started,
+        checkpoint_every=translation_checkpoint_every,
+        checkpoint_seconds=translation_checkpoint_seconds,
+    )
 
     names = pl.read_parquet(registry / "names.parquet")
-    seeds_by_taxon = _seed_names_by_taxon(taxa=taxa, names=names, source_assertions=existing_assertions)
+    seeds_by_taxon = _seed_names_by_taxon(taxa=taxa, names=names, source_assertions=checkpoint_writer.existing_assertions)
     wikidata_items_by_taxon = _wikidata_items_by_taxon(registry, output)
     completed_work = {
         str(row.get("work_key") or "")
-        for row in existing_translation_work
+        for row in checkpoint_writer.existing_translation_work
         if str(row.get("status") or "") == "complete"
     }
-    budget = TranslationRequestBudget(daily_limit=daily_request_limit, existing_work=existing_translation_work)
+    budget = TranslationRequestBudget(daily_limit=daily_request_limit, existing_work=checkpoint_writer.existing_translation_work)
     provider_bundle = providers or _default_translation_providers(
         max_retries=max_retries,
         mymemory_email=mymemory_email,
@@ -359,112 +537,95 @@ def build_translation_candidates_from_registry(
         mymemory_allow_machine_translation=mymemory_allow_machine_translation,
     )
 
-    new_assertions: list[dict[str, Any]] = []
-    new_candidates: list[dict[str, Any]] = []
-    new_snapshots: list[dict[str, Any]] = []
-    new_errors: list[dict[str, Any]] = []
-    new_source_work: list[dict[str, Any]] = []
-    new_translation_work: list[dict[str, Any]] = []
-    request_counts: Counter[str] = Counter()
-    candidate_counts: Counter[str] = Counter()
-    assertion_counts: Counter[str] = Counter()
-
     logger.info(
-        "registry.translation.start registry=%s enrichment_dir=%s species=%d sources=%s target_locales=%d daily_request_limit=%d",
+        "registry.translation.start registry=%s enrichment_dir=%s species=%d sources=%s target_locales=%d daily_request_limit=%d checkpoint_every=%d checkpoint_seconds=%.1f",
         registry,
         output,
         len(contexts),
         ",".join(source_order),
         len(target_locales),
         daily_request_limit,
+        translation_checkpoint_every,
+        translation_checkpoint_seconds,
     )
     for index, context in enumerate(contexts, start=1):
         seeds = seeds_by_taxon.get(context.accepted_taxon_key, [])
         if "wikimedia" in source_order:
-            result = _harvest_wikimedia_context(
-                context=context,
-                seeds=_wikimedia_seeds(context, seeds),
-                provider=provider_bundle.get("wikimedia"),
-                target_locales=target_locales,
-                expected_wikidata_items=wikidata_items_by_taxon.get(context.accepted_taxon_key, set()),
-                completed_work=completed_work,
-                config_hash=_translation_config_hash("wikimedia", target_locales, max_candidates_per_name=0, allow_machine_translation=False),
-                budget=budget,
+            batch = _batch_from_source_result(
+                _harvest_wikimedia_context(
+                    context=context,
+                    seeds=_wikimedia_seeds(context, seeds),
+                    provider=provider_bundle.get("wikimedia"),
+                    target_locales=target_locales,
+                    expected_wikidata_items=wikidata_items_by_taxon.get(context.accepted_taxon_key, set()),
+                    completed_work=completed_work,
+                    config_hash=_translation_config_hash("wikimedia", target_locales, max_candidates_per_name=0, allow_machine_translation=False),
+                    budget=budget,
+                )
             )
-            new_assertions.extend(result["name_assertions"])
-            new_snapshots.extend(result["source_snapshots"])
-            new_errors.extend(result["errors"])
-            new_translation_work.extend(result["translation_work"])
-            new_source_work.extend(result["source_work"])
-            request_counts["wikimedia"] += result["request_count"]
-            assertion_counts["wikimedia"] += len(result["name_assertions"])
+            checkpoint_writer.append(batch)
+            completed_work.update(str(row.get("work_key") or "") for row in batch.translation_work if str(row.get("status") or "") == "complete")
+            if checkpoint_writer.should_flush():
+                checkpoint_writer.flush(status="running")
         if "mymemory" in source_order:
-            result = _harvest_mymemory_context(
-                context=context,
-                seeds=_mymemory_seeds(seeds),
-                provider=provider_bundle.get("mymemory"),
-                target_locales=target_locales,
-                completed_work=completed_work,
-                config_hash=_translation_config_hash(
-                    "mymemory",
-                    target_locales,
-                    max_candidates_per_name=max_candidates_per_name,
-                    allow_machine_translation=mymemory_allow_machine_translation,
-                ),
-                budget=budget,
+            mymemory_config_hash = _translation_config_hash(
+                "mymemory",
+                target_locales,
                 max_candidates_per_name=max_candidates_per_name,
+                allow_machine_translation=mymemory_allow_machine_translation,
             )
-            new_candidates.extend(result["translation_candidates"])
-            new_snapshots.extend(result["source_snapshots"])
-            new_errors.extend(result["errors"])
-            new_translation_work.extend(result["translation_work"])
-            new_source_work.extend(result["source_work"])
-            request_counts["mymemory"] += result["request_count"]
-            candidate_counts["mymemory"] += len(result["translation_candidates"])
+            mymemory_provider = provider_bundle.get("mymemory")
+            if mymemory_provider is None:
+                batch = _batch_from_source_result(
+                    _harvest_mymemory_context(
+                        context=context,
+                        seeds=_mymemory_seeds(seeds),
+                        provider=None,
+                        target_locales=target_locales,
+                        completed_work=completed_work,
+                        config_hash=mymemory_config_hash,
+                        budget=budget,
+                        max_candidates_per_name=max_candidates_per_name,
+                    )
+                )
+                checkpoint_writer.append(batch)
+                if checkpoint_writer.should_flush():
+                    checkpoint_writer.flush(status="running")
+            else:
+                for unit in _mymemory_work_units(
+                    context,
+                    _mymemory_seeds(seeds),
+                    target_locales=target_locales,
+                    completed_work=completed_work,
+                    config_hash=mymemory_config_hash,
+                ):
+                    batch = _harvest_single_mymemory_unit(
+                        unit,
+                        provider=mymemory_provider,
+                        budget=budget,
+                        max_candidates_per_name=max_candidates_per_name,
+                    )
+                    checkpoint_writer.append(batch)
+                    completed_work.update(str(row.get("work_key") or "") for row in batch.translation_work if str(row.get("status") or "") == "complete")
+                    if checkpoint_writer.should_flush():
+                        checkpoint_writer.flush(status="running")
+                    if budget.exhausted:
+                        break
         if index % 100 == 0 or index == len(contexts):
             logger.info(
                 "registry.translation.progress completed=%d/%d wikimedia_assertions=%d mymemory_candidates=%d requests=%d elapsed_seconds=%.1f",
                 index,
                 len(contexts),
-                assertion_counts["wikimedia"],
-                candidate_counts["mymemory"],
-                sum(request_counts.values()),
+                checkpoint_writer.assertion_counts["wikimedia"],
+                checkpoint_writer.candidate_counts["mymemory"],
+                sum(checkpoint_writer.request_counts.values()),
                 monotonic() - started,
             )
         if budget.exhausted:
             logger.info("registry.translation.budget_exhausted completed=%d/%d request_limit=%d", index, len(contexts), daily_request_limit)
             break
 
-    _write_translation_outputs(
-        output,
-        existing_assertions=existing_assertions,
-        new_assertions=new_assertions,
-        existing_candidates=existing_candidates,
-        new_candidates=new_candidates,
-        existing_snapshots=existing_snapshots,
-        new_snapshots=new_snapshots,
-        existing_errors=existing_errors,
-        new_errors=new_errors,
-        existing_source_work=existing_source_work,
-        new_source_work=new_source_work,
-        existing_translation_work=existing_translation_work,
-        new_translation_work=new_translation_work,
-    )
-    manifest = _update_translation_manifest(
-        output,
-        source_order=source_order,
-        target_locales=target_locales,
-        request_counts=request_counts,
-        assertion_counts=assertion_counts,
-        candidate_counts=candidate_counts,
-        errors=new_errors,
-        work_rows=new_translation_work,
-        elapsed_seconds=monotonic() - started,
-        status="budget_exhausted" if budget.exhausted else "complete",
-        daily_request_limit=daily_request_limit,
-        max_candidates_per_name=max_candidates_per_name,
-        mymemory_allow_machine_translation=mymemory_allow_machine_translation,
-    )
+    manifest = checkpoint_writer.flush(status=checkpoint_writer.completion_status(budget_exhausted=budget.exhausted), force=True)
     logger.info("registry.translation.complete registry=%s enrichment_dir=%s status=%s", registry, output, manifest.get("translation_status"))
     return manifest
 
@@ -536,6 +697,7 @@ def _harvest_wikimedia_context(
             links, request_count, page_title = provider.langlinks(seed.source_name, target_locales=target_locales)
         except Exception as exc:  # noqa: BLE001 - source errors are recorded and the registry build continues.
             error_class = type(exc).__name__
+            request_count_total += 1
             errors.append(_source_error(display_source, context, error_class, retryable=_is_retryable_error(error_class)))
             translation_work.append(
                 _translation_work_row(
@@ -755,6 +917,191 @@ def _mymemory_work_units(
     return tuple(units)
 
 
+def _batch_from_source_result(result: dict[str, Any]) -> TranslationBatch:
+    return TranslationBatch(
+        name_assertions=tuple(result.get("name_assertions") or ()),
+        translation_candidates=tuple(result.get("translation_candidates") or ()),
+        source_snapshots=tuple(result.get("source_snapshots") or ()),
+        errors=tuple(result.get("errors") or ()),
+        translation_work=tuple(result.get("translation_work") or ()),
+        source_work=tuple(result.get("source_work") or ()),
+        request_count=int(result.get("request_count") or 0),
+    )
+
+
+def _harvest_single_mymemory_unit(
+    unit: TranslationWorkUnit,
+    *,
+    provider: Any,
+    budget: TranslationRequestBudget,
+    max_candidates_per_name: int,
+) -> TranslationBatch:
+    display_source = "MyMemory"
+    candidates: list[dict[str, Any]] = []
+    snapshots: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    translation_work: list[dict[str, Any]] = []
+    request_count_total = 0
+    if provider is None:
+        errors.append(_source_error(display_source, unit.context, "missing_client", retryable=False))
+        return TranslationBatch(errors=tuple(errors))
+    started_at = datetime.now(UTC).isoformat()
+    if not budget.reserve(1):
+        translation_work.append(
+            _translation_work_row(
+                source=unit.source,
+                context=unit.context,
+                seed=unit.seed,
+                target_language=unit.target_language,
+                work_key=unit.work_key,
+                provider_config_hash=unit.provider_config_hash,
+                status="budget_exhausted",
+                started_at=started_at,
+                request_count=0,
+            )
+        )
+        return TranslationBatch(
+            translation_work=tuple(translation_work),
+            source_work=(_aggregate_source_work(unit.source, unit.context, request_count_total, status="budget_exhausted"),),
+        )
+    source_language = _api_language_code(unit.seed.source_language or "en")
+    try:
+        translated_names, request_count = provider.translate(
+            source_name=unit.seed.source_name,
+            source_language=source_language,
+            target_language=unit.target_api_language,
+            max_candidates=max_candidates_per_name,
+        )
+    except Exception as exc:  # noqa: BLE001 - source errors are recorded and the registry build continues.
+        error_class = type(exc).__name__
+        errors.append(_source_error(display_source, unit.context, error_class, retryable=_is_retryable_error(error_class)))
+        translation_work.append(
+            _translation_work_row(
+                source=unit.source,
+                context=unit.context,
+                seed=unit.seed,
+                target_language=unit.target_language,
+                work_key=unit.work_key,
+                provider_config_hash=unit.provider_config_hash,
+                status="error",
+                started_at=started_at,
+                request_count=1,
+                error_class=error_class,
+                retryable=_is_retryable_error(error_class),
+            )
+        )
+        return TranslationBatch(
+            errors=tuple(errors),
+            translation_work=tuple(translation_work),
+            source_work=(_aggregate_source_work(unit.source, unit.context, 1, status="error", error_class=error_class),),
+            request_count=1,
+        )
+    request_count_total += request_count
+    for translated_name in translated_names:
+        candidates.append(
+            generated_translation_candidate(
+                source=display_source,
+                source_language=normalize_language_code(source_language),
+                target_language=parse_language_tag(unit.target_language).bcp47,
+                source_name=unit.seed.source_name,
+                translated_name=translated_name,
+                accepted_taxon_key=unit.context.accepted_taxon_key,
+                source_record_id=_translation_record_id(
+                    display_source,
+                    unit.context.accepted_taxon_key,
+                    source_language,
+                    unit.target_language,
+                    unit.seed.source_name,
+                    translated_name,
+                ),
+                source_kind="dictionary",
+            ).to_row()
+        )
+    snapshots.append(
+        _source_snapshot(
+            display_source,
+            MYMEMORY_SOURCE_VERSION,
+            source_path=f"{source_language}|{unit.target_api_language};target={unit.target_language}:{unit.seed.source_name}",
+            payload={"translations": translated_names},
+        )
+    )
+    translation_work.append(
+        _translation_work_row(
+            source=unit.source,
+            context=unit.context,
+            seed=unit.seed,
+            target_language=unit.target_language,
+            work_key=unit.work_key,
+            provider_config_hash=unit.provider_config_hash,
+            status="complete",
+            started_at=started_at,
+            request_count=request_count,
+        )
+    )
+    return TranslationBatch(
+        translation_candidates=tuple(candidates),
+        source_snapshots=tuple(snapshots),
+        translation_work=tuple(translation_work),
+        source_work=(_aggregate_source_work(unit.source, unit.context, request_count_total, status="complete"),),
+        request_count=request_count_total,
+    )
+
+
+def _write_parquet_atomic(frame: pl.DataFrame, path: Path) -> None:
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    try:
+        frame.write_parquet(tmp_path)
+        tmp_path.replace(path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _write_json_atomic(payload: dict[str, Any], path: Path) -> None:
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        tmp_path.replace(path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _translation_output_frames(
+    *,
+    existing_assertions: list[dict[str, Any]],
+    new_assertions: list[dict[str, Any]],
+    existing_candidates: list[dict[str, Any]],
+    new_candidates: list[dict[str, Any]],
+    existing_snapshots: list[dict[str, Any]],
+    new_snapshots: list[dict[str, Any]],
+    existing_errors: list[dict[str, Any]],
+    new_errors: list[dict[str, Any]],
+    existing_source_work: list[dict[str, Any]],
+    new_source_work: list[dict[str, Any]],
+    existing_translation_work: list[dict[str, Any]],
+    new_translation_work: list[dict[str, Any]],
+) -> dict[str, pl.DataFrame]:
+    return {
+        "assertions": _name_assertions_frame(
+            _deduplicate_dicts(
+                [*existing_assertions, *new_assertions],
+                keys=("accepted_taxon_key", "source", "source_record_id", "display_name"),
+            )
+        ),
+        "candidates": translation_candidates_frame([*existing_candidates, *new_candidates]),
+        "snapshots": _source_snapshots_frame(
+            _deduplicate_dicts(
+                [*existing_snapshots, *new_snapshots],
+                keys=("source", "source_version", "source_path", "source_response_hash"),
+            )
+        ),
+        "errors": _source_errors_frame([*existing_errors, *new_errors]),
+        "source_work": _source_work_frame(_aggregate_source_work_rows([*existing_source_work, *new_source_work])),
+        "translation_work": _translation_work_frame(_deduplicate_latest_dicts([*existing_translation_work, *new_translation_work], keys=("work_key",))),
+    }
+
+
 def _write_translation_outputs(
     output: Path,
     *,
@@ -771,28 +1118,26 @@ def _write_translation_outputs(
     existing_translation_work: list[dict[str, Any]],
     new_translation_work: list[dict[str, Any]],
 ) -> None:
-    assertions = _name_assertions_frame(
-        _deduplicate_dicts(
-            [*existing_assertions, *new_assertions],
-            keys=("accepted_taxon_key", "source", "source_record_id", "display_name"),
-        )
+    frames = _translation_output_frames(
+        existing_assertions=existing_assertions,
+        new_assertions=new_assertions,
+        existing_candidates=existing_candidates,
+        new_candidates=new_candidates,
+        existing_snapshots=existing_snapshots,
+        new_snapshots=new_snapshots,
+        existing_errors=existing_errors,
+        new_errors=new_errors,
+        existing_source_work=existing_source_work,
+        new_source_work=new_source_work,
+        existing_translation_work=existing_translation_work,
+        new_translation_work=new_translation_work,
     )
-    candidates = translation_candidates_frame([*existing_candidates, *new_candidates])
-    snapshots = _source_snapshots_frame(
-        _deduplicate_dicts(
-            [*existing_snapshots, *new_snapshots],
-            keys=("source", "source_version", "source_path", "source_response_hash"),
-        )
-    )
-    errors = _source_errors_frame([*existing_errors, *new_errors])
-    source_work = _source_work_frame(_deduplicate_latest_dicts([*existing_source_work, *new_source_work], keys=("source", "accepted_taxon_key")))
-    translation_work = _translation_work_frame(_deduplicate_latest_dicts([*existing_translation_work, *new_translation_work], keys=("work_key",)))
-    assertions.write_parquet(output / SOURCE_ASSERTIONS_FILE)
-    candidates.write_parquet(output / TRANSLATION_CANDIDATES_FILE)
-    snapshots.write_parquet(output / ENRICHMENT_SOURCE_SNAPSHOTS_FILE)
-    errors.write_parquet(output / SOURCE_ERRORS_FILE)
-    source_work.write_parquet(output / SOURCE_WORK_LEDGER_FILE)
-    translation_work.write_parquet(output / TRANSLATION_WORK_LEDGER_FILE)
+    _write_parquet_atomic(frames["assertions"], output / SOURCE_ASSERTIONS_FILE)
+    _write_parquet_atomic(frames["candidates"], output / TRANSLATION_CANDIDATES_FILE)
+    _write_parquet_atomic(frames["snapshots"], output / ENRICHMENT_SOURCE_SNAPSHOTS_FILE)
+    _write_parquet_atomic(frames["errors"], output / SOURCE_ERRORS_FILE)
+    _write_parquet_atomic(frames["source_work"], output / SOURCE_WORK_LEDGER_FILE)
+    _write_parquet_atomic(frames["translation_work"], output / TRANSLATION_WORK_LEDGER_FILE)
 
 
 def _update_translation_manifest(
@@ -812,7 +1157,7 @@ def _update_translation_manifest(
     mymemory_allow_machine_translation: bool,
 ) -> dict[str, Any]:
     manifest_path = output / ENRICHMENT_MANIFEST_FILE
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    manifest = _read_json_or_empty(manifest_path)
     manifest.update(
         {
             "translation_sources": list(source_order),
@@ -837,7 +1182,7 @@ def _update_translation_manifest(
             },
         }
     )
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    _write_json_atomic(manifest, manifest_path)
     return manifest
 
 
@@ -1100,6 +1445,76 @@ def _read_or_empty(path: Path, schema: dict[str, pl.DataType]) -> pl.DataFrame:
     if path.exists():
         return pl.read_parquet(path)
     return pl.DataFrame(schema=schema)
+
+
+def _read_json_or_empty(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _source_counter_key(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    if text in {"wikimedia", "mymemory"}:
+        return text
+    if text == "my memory":
+        return "mymemory"
+    return {"wikimedia": "wikimedia", "mymemory": "mymemory", "my memory": "mymemory"}.get(text, text)
+
+
+def _batch_source_key(batch: TranslationBatch) -> str:
+    for rows in (batch.translation_work, batch.source_work, batch.translation_candidates, batch.name_assertions, batch.errors):
+        for row in rows:
+            source = _source_counter_key(row.get("source"))
+            if source:
+                return source
+    return ""
+
+
+def _frame_source_counts(frame: pl.DataFrame, column: str) -> dict[str, int]:
+    if frame.is_empty() or column not in frame.columns:
+        return {}
+    counts: Counter[str] = Counter()
+    for value in frame.select(column).to_series().to_list():
+        key = _source_counter_key(value)
+        if key:
+            counts[key] += 1
+    return dict(sorted(counts.items()))
+
+
+def _translation_request_counts_from_source_work_frame(frame: pl.DataFrame) -> dict[str, int]:
+    if frame.is_empty() or not {"source", "request_count"}.issubset(frame.columns):
+        return {}
+    counts: Counter[str] = Counter()
+    for row in frame.select(["source", "request_count"]).to_dicts():
+        source = _source_counter_key(row.get("source"))
+        if source:
+            counts[source] += int(row.get("request_count") or 0)
+    return dict(sorted(counts.items()))
+
+
+def _aggregate_source_work_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        source = str(row.get("source") or "")
+        accepted_taxon_key = str(row.get("accepted_taxon_key") or "")
+        key = (source, accepted_taxon_key)
+        if key not in grouped:
+            grouped[key] = dict(row)
+            grouped[key]["request_count"] = int(row.get("request_count") or 0)
+            grouped[key]["attempts"] = int(row.get("attempts") or 0)
+            continue
+        current = grouped[key]
+        current["request_count"] = int(current.get("request_count") or 0) + int(row.get("request_count") or 0)
+        current["attempts"] = int(current.get("attempts") or 0) + int(row.get("attempts") or 0)
+        if str(row.get("started_at") or "") and (
+            not str(current.get("started_at") or "") or str(row.get("started_at") or "") < str(current.get("started_at") or "")
+        ):
+            current["started_at"] = row.get("started_at")
+        if str(row.get("finished_at") or "") >= str(current.get("finished_at") or ""):
+            for field in ("accepted_scientific_name", "status", "finished_at", "error_class", "request_day"):
+                current[field] = row.get(field, current.get(field))
+    return list(grouped.values())
 
 
 def _append_translation(candidates: list[str], value: object, *, source_name: str) -> None:

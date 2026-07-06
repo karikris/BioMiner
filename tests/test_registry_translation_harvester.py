@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import polars as pl
+import pytest
 
 from biominer.registry import translation_harvester as harvester
 from biominer.registry.build import build_registry
@@ -282,6 +283,40 @@ class FakeMyMemoryProvider:
         return ["Limettenfalter"], 1
 
 
+class InterruptingMyMemoryProvider:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def translate(self, *, source_name, source_language, target_language, max_candidates):  # noqa: ANN001, ANN202 - test double.
+        self.calls.append(target_language)
+        if target_language == "sv":
+            raise KeyboardInterrupt
+        return ["Limettenfalter"], 1
+
+
+class FailingIfCalledMyMemoryProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def translate(self, **kwargs):  # noqa: ANN003, ANN202 - should not be called.
+        self.calls += 1
+        raise AssertionError("completed translation work should be skipped")
+
+
+class MultiCandidateMyMemoryProvider:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def translate(self, *, source_name, source_language, target_language, max_candidates):  # noqa: ANN001, ANN202 - test double.
+        self.calls.append(target_language)
+        return ["Limettenfalter", "Zitrusfalter"], 1
+
+
+class RuntimeErrorMyMemoryProvider:
+    def translate(self, *, source_name, source_language, target_language, max_candidates):  # noqa: ANN001, ANN202 - test double.
+        raise RuntimeError("translation backend unavailable")
+
+
 def test_mymemory_work_units_are_keyed_by_language_and_skip_completed(tmp_path) -> None:
     registry = tmp_path / "registry"
     _write_registry(registry)
@@ -519,6 +554,212 @@ def test_translation_harvester_preserves_mymemory_bcp47_work_ledger(tmp_path) ->
     assert work.select("work_key").to_series().n_unique() == 3
     assert [call["target_language"] for call in mymemory.calls] == ["pt", "pt", "zh"]
     assert candidates.select("target_language").to_series().to_list() == ["pt", "pt-BR", "zh-Hant"]
+
+
+def test_translation_harvester_checkpoints_mymemory_unit_before_interrupt(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["de", "sv"]), encoding="utf-8")
+    mymemory = InterruptingMyMemoryProvider()
+
+    with pytest.raises(KeyboardInterrupt):
+        build_translation_candidates_from_registry(
+            registry_dir=registry,
+            enrichment_dir=registry / "enrichment",
+            translation_sources=("mymemory",),
+            target_locales_json=locales,
+            providers={"mymemory": mymemory},
+            translation_checkpoint_every=1,
+        )
+
+    candidates_path = registry / "enrichment" / "translation_candidates.parquet"
+    work_path = registry / "enrichment" / "translation_work_ledger.parquet"
+    assert candidates_path.exists()
+    assert work_path.exists()
+
+    candidates = pl.read_parquet(candidates_path)
+    work = pl.read_parquet(work_path)
+    assert "Limettenfalter" in candidates.select("translated_name").to_series().to_list()
+    assert (
+        work.filter((pl.col("target_language") == "de") & (pl.col("status") == "complete"))
+        .select("work_key")
+        .height
+        == 1
+    )
+
+
+def test_translation_manifest_request_rows_remain_cumulative_after_resume(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["de"]), encoding="utf-8")
+    enrichment = registry / "enrichment"
+
+    manifest = build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=enrichment,
+        translation_sources=("mymemory",),
+        target_locales_json=locales,
+        providers={"mymemory": FakeMyMemoryProvider()},
+    )
+    work = pl.read_parquet(enrichment / "translation_work_ledger.parquet")
+    assert manifest["translation_request_rows"] == 1
+    assert work.select(pl.col("request_count").sum()).item() == 1
+
+    failing_provider = FailingIfCalledMyMemoryProvider()
+    manifest = build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=enrichment,
+        translation_sources=("mymemory",),
+        target_locales_json=locales,
+        providers={"mymemory": failing_provider},
+    )
+    work = pl.read_parquet(enrichment / "translation_work_ledger.parquet")
+
+    assert failing_provider.calls == 0
+    assert work.select(pl.col("request_count").sum()).item() == 1
+    assert manifest["translation_request_rows"] == 1
+
+
+def test_translation_checkpoint_every_batches_flushes_until_threshold(tmp_path, monkeypatch) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["de", "sv"]), encoding="utf-8")
+    flush_calls: list[dict[str, object]] = []
+    original_flush = harvester.TranslationCheckpointWriter.flush
+
+    def counted_flush(self, *, status, force=False):  # noqa: ANN001, ANN202 - monkeypatch wrapper.
+        flush_calls.append({"status": status, "force": force})
+        return original_flush(self, status=status, force=force)
+
+    monkeypatch.setattr(harvester.TranslationCheckpointWriter, "flush", counted_flush)
+
+    manifest = build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=registry / "enrichment",
+        translation_sources=("mymemory",),
+        target_locales_json=locales,
+        providers={"mymemory": MultiCandidateMyMemoryProvider()},
+        translation_checkpoint_every=2,
+    )
+
+    assert (registry / "enrichment" / "translation_candidates.parquet").exists()
+    assert manifest["translation_status"] == "complete"
+    assert manifest["mymemory_candidate_rows"] == 4
+    assert flush_calls == [
+        {"status": "running", "force": False},
+        {"status": "complete", "force": True},
+    ]
+
+
+def test_translation_source_work_sums_mymemory_unit_request_counts(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["de", "sv"]), encoding="utf-8")
+
+    manifest = build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=registry / "enrichment",
+        translation_sources=("mymemory",),
+        target_locales_json=locales,
+        providers={"mymemory": FakeMyMemoryProvider()},
+        translation_checkpoint_every=2,
+    )
+
+    translation_work = pl.read_parquet(registry / "enrichment" / "translation_work_ledger.parquet")
+    source_work = pl.read_parquet(registry / "enrichment" / "source_work_ledger.parquet")
+    mymemory_source_work = source_work.filter(pl.col("source") == "mymemory")
+
+    assert translation_work.select(pl.col("request_count").sum()).item() == 2
+    assert mymemory_source_work.select("request_count").to_series().to_list() == [2]
+    assert manifest["translation_request_rows"] == 2
+
+
+def test_translation_source_work_counts_mymemory_error_requests(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["de"]), encoding="utf-8")
+
+    manifest = build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=registry / "enrichment",
+        translation_sources=("mymemory",),
+        target_locales_json=locales,
+        providers={"mymemory": RuntimeErrorMyMemoryProvider()},
+        translation_checkpoint_every=1,
+    )
+
+    translation_work = pl.read_parquet(registry / "enrichment" / "translation_work_ledger.parquet")
+    source_work = pl.read_parquet(registry / "enrichment" / "source_work_ledger.parquet")
+    mymemory_source_work = source_work.filter(pl.col("source") == "mymemory")
+
+    assert translation_work.select("status").to_series().to_list() == ["error"]
+    assert translation_work.select("request_count").to_series().to_list() == [1]
+    assert mymemory_source_work.select("request_count").to_series().to_list() == [1]
+    assert manifest["translation_request_rows"] == 1
+
+
+def test_translation_manifest_reports_complete_with_errors_for_provider_failures(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["de"]), encoding="utf-8")
+
+    manifest = build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=registry / "enrichment",
+        translation_sources=("mymemory",),
+        target_locales_json=locales,
+        providers={"mymemory": RuntimeErrorMyMemoryProvider()},
+        translation_checkpoint_every=1,
+    )
+
+    assert manifest["translation_status"] == "complete_with_errors"
+    assert manifest["translation_error_counts_by_source"] == {"mymemory": 1}
+    assert manifest["translation_current_run_request_rows"] == 1
+
+
+def test_translation_manifest_counts_error_then_success_resume_requests(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["de"]), encoding="utf-8")
+    enrichment = registry / "enrichment"
+
+    manifest = build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=enrichment,
+        translation_sources=("mymemory",),
+        target_locales_json=locales,
+        providers={"mymemory": RuntimeErrorMyMemoryProvider()},
+        translation_checkpoint_every=1,
+    )
+    source_work = pl.read_parquet(enrichment / "source_work_ledger.parquet")
+    mymemory_source_work = source_work.filter(pl.col("source") == "mymemory")
+    assert manifest["translation_request_rows"] == 1
+    assert mymemory_source_work.select("request_count").to_series().to_list() == [1]
+
+    manifest = build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=enrichment,
+        translation_sources=("mymemory",),
+        target_locales_json=locales,
+        providers={"mymemory": FakeMyMemoryProvider()},
+        translation_checkpoint_every=1,
+    )
+    source_work = pl.read_parquet(enrichment / "source_work_ledger.parquet")
+    translation_work = pl.read_parquet(enrichment / "translation_work_ledger.parquet")
+    candidates = pl.read_parquet(enrichment / "translation_candidates.parquet")
+    mymemory_source_work = source_work.filter(pl.col("source") == "mymemory")
+
+    assert manifest["translation_request_rows"] == 2
+    assert mymemory_source_work.select("request_count").to_series().to_list() == [2]
+    assert translation_work.select("status").to_series().to_list() == ["complete"]
+    assert "Limettenfalter" in candidates.select("translated_name").to_series().to_list()
 
 
 def test_translation_harvester_writes_wikimedia_and_mymemory_outputs(tmp_path) -> None:
