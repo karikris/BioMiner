@@ -140,10 +140,7 @@ def _names_frame(rows: list[dict[str, Any]], *, registry_version: str) -> pl.Dat
     for row in rows:
         display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
         accepted_taxon_key = str(row.get("accepted_taxon_key") or "")
-        language_tag = parse_language_tag(row.get("language"))
-        language = language_tag.language
-        script = str(row.get("script") or language_tag.script)
-        region = str(row.get("region") or language_tag.region)
+        language, api_language_code, script, region, bcp47 = _language_fields(row)
         name_id = _stable_id("name", registry_version, accepted_taxon_key, display_name, language, script, region)
         enabled = bool(row.get("enabled", True))
         name_row = {
@@ -154,8 +151,10 @@ def _names_frame(rows: list[dict[str, Any]], *, registry_version: str) -> pl.Dat
             "display_name": display_name,
             "normalized_match_key": normalize_name_key(display_name),
             "language": language,
+            "api_language_code": api_language_code,
             "script": script,
             "region": region,
+            "bcp47": bcp47,
             "bbox": str(row.get("bbox") or ""),
             "name_class": str(row.get("name_class") or ""),
             "source": str(row.get("source") or ""),
@@ -187,10 +186,7 @@ def _name_evidence_frame(rows: list[dict[str, Any]], *, registry_version: str, s
     for row in rows:
         display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
         accepted_taxon_key = str(row.get("accepted_taxon_key") or "")
-        language_tag = parse_language_tag(row.get("language"))
-        language = language_tag.language
-        script = str(row.get("script") or language_tag.script)
-        region = str(row.get("region") or language_tag.region)
+        language, _, script, region, _ = _language_fields(row)
         evidence_rows.append(
             {
                 "evidence_id": _stable_id("evidence", registry_version, accepted_taxon_key, display_name, row.get("source"), row.get("source_record_id")),
@@ -287,8 +283,10 @@ def _query_definitions_frame(names: pl.DataFrame, taxa: pl.DataFrame, *, registr
                     "normalized_query_term": item["display_name"],
                     "normalized_match_key": item["normalized_match_key"],
                     "language": item["language"],
+                    "api_language_code": item["api_language_code"],
                     "script": item["script"],
                     "region": item["region"],
+                    "bcp47": item["bcp47"],
                     "bbox": item["bbox"],
                     "name_class": item["name_class"],
                     "source": item["source"],
@@ -539,8 +537,10 @@ def _names_schema() -> dict[str, pl.DataType]:
         "display_name": pl.String,
         "normalized_match_key": pl.String,
         "language": pl.String,
+        "api_language_code": pl.String,
         "script": pl.String,
         "region": pl.String,
+        "bcp47": pl.String,
         "bbox": pl.String,
         "name_class": pl.String,
         "source": pl.String,
@@ -612,8 +612,10 @@ def _query_schema() -> dict[str, pl.DataType]:
         "normalized_query_term": pl.String,
         "normalized_match_key": pl.String,
         "language": pl.String,
+        "api_language_code": pl.String,
         "script": pl.String,
         "region": pl.String,
+        "bcp47": pl.String,
         "bbox": pl.String,
         "name_class": pl.String,
         "source": pl.String,
@@ -648,6 +650,28 @@ def _ensure_query_eligibility_columns(names: pl.DataFrame) -> pl.DataFrame:
             }
         )
     return pl.DataFrame(rows)
+
+
+def _language_fields(row: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    language_tag = parse_language_tag(row.get("bcp47") or row.get("language"))
+    language = language_tag.language
+    api_language_code = str(row.get("api_language_code") or language_tag.api_language_code)
+    script = str(row.get("script") or language_tag.script)
+    region = str(row.get("region") or language_tag.region)
+    bcp47 = str(row.get("bcp47") or _format_bcp47(api_language_code, script, region))
+    return language, api_language_code, script, region, bcp47
+
+
+def _format_bcp47(api_language_code: str, script: str, region: str) -> str:
+    if not api_language_code:
+        return ""
+    default_script = parse_language_tag(api_language_code).script
+    parts = [api_language_code]
+    if script and script != default_script:
+        parts.append(script)
+    if region:
+        parts.append(region)
+    return "-".join(parts)
 
 
 def _boolish(value: object) -> bool:

@@ -95,6 +95,8 @@ def test_registry_query_definitions_load_as_single_unsliced_page_one_work(tmp_pa
                 "species_key": "gbif:100",
                 "source_term": "Papilio demoleus",
                 "language": "la",
+                "api_language_code": "la",
+                "bcp47": "la",
                 "search_field": "text",
                 "search_priority": 50,
                 "bbox": "",
@@ -113,6 +115,8 @@ def test_registry_query_definitions_load_as_single_unsliced_page_one_work(tmp_pa
                 "species_key": "gbif:100",
                 "source_term": "Papilio demoleus",
                 "language": "la",
+                "api_language_code": "la",
+                "bcp47": "la",
                 "search_field": "tags",
                 "search_priority": 10,
                 "bbox": "",
@@ -147,8 +151,31 @@ def test_registry_query_definitions_load_as_single_unsliced_page_one_work(tmp_pa
     assert queries[0].registry_version == "registry-v1"
     assert queries[0].accepted_taxon_key == "gbif:100"
     assert queries[0].accepted_scientific_name == "Papilio demoleus"
+    assert queries[0].api_language_code == "la"
+    assert queries[0].bcp47 == "la"
     assert queries[0].min_upload_date is None
     assert queries[0].max_upload_date is None
+
+
+def test_query_hash_ignores_language_provenance_that_does_not_change_flickr_request() -> None:
+    base = FlickrQuery(
+        term="Borboleta lima",
+        language="por",
+        search_field="tags",
+        lane="normal_page",
+        query_definition_id="q-pt-br",
+    )
+    with_language_provenance = FlickrQuery(
+        term="Borboleta lima",
+        language="por",
+        api_language_code="pt",
+        bcp47="pt-BR",
+        search_field="tags",
+        lane="normal_page",
+        query_definition_id="q-pt-br",
+    )
+
+    assert query_planner.query_hash(with_language_provenance) == query_planner.query_hash(base)
 
 
 def test_explicitly_query_eligible_t5_definitions_become_flickr_api_search_params(tmp_path) -> None:

@@ -975,8 +975,10 @@ def _translation_candidate_assertions(path: Path, *, allowed_sources: set[str] |
                 "display_name": translated_name,
                 "normalized_match_key": normalize_name_key(translated_name),
                 "language": language_tag.language,
+                "api_language_code": language_tag.api_language_code,
                 "script": language_tag.script,
                 "region": language_tag.region,
+                "bcp47": language_tag.bcp47,
                 "bbox": "",
                 "name_class": "generated_translation",
                 "source": source,
@@ -999,8 +1001,7 @@ def _normalize_assertion(row: dict[str, Any]) -> dict[str, Any]:
     display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
     source = str(row.get("source") or "")
     source_record_id = str(row.get("source_record_id") or "")
-    language_tag = parse_language_tag(row.get("language"))
-    language = language_tag.language
+    language, api_language_code, script, region, bcp47 = _language_fields(row)
     decision = decide_name_trust(
         source=source,
         name_class=str(row.get("name_class") or "vernacular"),
@@ -1021,8 +1022,10 @@ def _normalize_assertion(row: dict[str, Any]) -> dict[str, Any]:
         "display_name": display_name,
         "normalized_match_key": normalize_name_key(display_name),
         "language": language,
-        "script": str(row.get("script") or language_tag.script),
-        "region": str(row.get("region") or language_tag.region),
+        "api_language_code": api_language_code,
+        "script": script,
+        "region": region,
+        "bcp47": bcp47,
         "bbox": str(row.get("bbox") or ""),
         "name_class": str(row.get("name_class") or "vernacular"),
         "source": source,
@@ -1037,6 +1040,28 @@ def _normalize_assertion(row: dict[str, Any]) -> dict[str, Any]:
         "retrieved_at": str(row.get("retrieved_at") or ""),
         "licence": str(row.get("licence") or ""),
     }
+
+
+def _language_fields(row: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    language_tag = parse_language_tag(row.get("bcp47") or row.get("language"))
+    language = language_tag.language
+    api_language_code = str(row.get("api_language_code") or language_tag.api_language_code)
+    script = str(row.get("script") or language_tag.script)
+    region = str(row.get("region") or language_tag.region)
+    bcp47 = str(row.get("bcp47") or _format_bcp47(api_language_code, script, region))
+    return language, api_language_code, script, region, bcp47
+
+
+def _format_bcp47(api_language_code: str, script: str, region: str) -> str:
+    if not api_language_code:
+        return ""
+    default_script = parse_language_tag(api_language_code).script
+    parts = [api_language_code]
+    if script and script != default_script:
+        parts.append(script)
+    if region:
+        parts.append(region)
+    return "-".join(parts)
 
 
 def _boolish(value: object) -> bool:
@@ -1120,16 +1145,17 @@ def _source_rank(source: str) -> int:
 
 def _source_name_row(row: dict[str, Any]) -> dict[str, Any]:
     display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
-    language_tag = parse_language_tag(row.get("language"))
-    language = language_tag.language
+    language, api_language_code, script, region, bcp47 = _language_fields(row)
     enabled = bool(row.get("enabled", True))
     return {
         "accepted_taxon_key": str(row.get("accepted_taxon_key") or ""),
         "verbatim_name": str(row.get("verbatim_name") or display_name),
         "display_name": display_name,
         "language": language,
-        "script": str(row.get("script") or language_tag.script),
-        "region": str(row.get("region") or language_tag.region),
+        "api_language_code": api_language_code,
+        "script": script,
+        "region": region,
+        "bcp47": bcp47,
         "bbox": str(row.get("bbox") or ""),
         "name_class": str(row.get("name_class") or ""),
         "source": str(row.get("source") or ""),
@@ -1384,8 +1410,10 @@ def _name_assertion_schema() -> dict[str, pl.DataType]:
         "display_name": pl.String,
         "normalized_match_key": pl.String,
         "language": pl.String,
+        "api_language_code": pl.String,
         "script": pl.String,
         "region": pl.String,
+        "bcp47": pl.String,
         "bbox": pl.String,
         "name_class": pl.String,
         "source": pl.String,

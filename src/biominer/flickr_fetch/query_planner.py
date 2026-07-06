@@ -49,6 +49,8 @@ class FlickrQuery:
     language: str
     search_field: SearchField
     lane: QueryLane
+    api_language_code: str | None = None
+    bcp47: str | None = None
     page: int = 1
     per_page: int = COUNT_PROBE_PAGE_SIZE
     has_geo: int = 1
@@ -120,6 +122,8 @@ def load_registry_flickr_queries_from_frame(
             FlickrQuery(
                 term=str(row.get("source_term") or row.get("normalized_query_term") or ""),
                 language=str(row.get("language") or "und"),
+                api_language_code=str(row.get("api_language_code") or "") or None,
+                bcp47=str(row.get("bcp47") or "") or None,
                 search_field=field,
                 lane="bbox_page" if bbox else "normal_page",
                 page=1,
@@ -404,6 +408,8 @@ def _page_query(probe: FlickrQuery, *, page: int, per_page: int, lane: QueryLane
     return FlickrQuery(
         term=probe.term,
         language=probe.language,
+        api_language_code=probe.api_language_code,
+        bcp47=probe.bcp47,
         search_field=probe.search_field,
         lane=lane,
         page=page,
@@ -452,6 +458,8 @@ def _split_probe(
     return FlickrQuery(
         term=term or probe.term,
         language=probe.language,
+        api_language_code=probe.api_language_code,
+        bcp47=probe.bcp47,
         search_field=probe.search_field,
         lane="count_probe",
         per_page=COUNT_PROBE_PAGE_SIZE,
@@ -490,6 +498,8 @@ def _copy_registry_provenance(query: FlickrQuery, source: FlickrQuery) -> Flickr
         query_definition_id=source.query_definition_id,
         accepted_taxon_key=source.accepted_taxon_key,
         accepted_scientific_name=source.accepted_scientific_name,
+        api_language_code=source.api_language_code,
+        bcp47=source.bcp47,
         trust_tier=source.trust_tier,
         family_key=source.family_key,
         genus_key=source.genus_key,
@@ -501,7 +511,12 @@ def _copy_registry_provenance(query: FlickrQuery, source: FlickrQuery) -> Flickr
 def _query_hash(query: FlickrQuery) -> str:
     import hashlib
 
-    payload = json.dumps(query.__dict__, sort_keys=True, ensure_ascii=False)
+    payload_dict = {
+        key: value
+        for key, value in query.__dict__.items()
+        if key not in {"api_language_code", "bcp47"}
+    }
+    payload = json.dumps(payload_dict, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

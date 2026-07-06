@@ -736,10 +736,24 @@ def test_compile_enriched_registry_preserves_translation_locale_script_and_regio
     pt_query = queries.filter((pl.col("normalized_match_key") == "borboleta lima") & (pl.col("search_field") == "tags")).row(0, named=True)
     zh_query = queries.filter((pl.col("normalized_match_key") == "鳳蝶") & (pl.col("search_field") == "tags")).row(0, named=True)
 
-    assert (pt_name["language"], pt_name["script"], pt_name["region"], pt_name["query_eligible"]) == ("por", "Latn", "BR", True)
-    assert (zh_name["language"], zh_name["script"], zh_name["region"], zh_name["query_eligible"]) == ("zho", "Hant", "", True)
-    assert (pt_query["language"], pt_query["script"], pt_query["region"]) == ("por", "Latn", "BR")
-    assert (zh_query["language"], zh_query["script"], zh_query["region"]) == ("zho", "Hant", "")
+    assert (pt_name["language"], pt_name["api_language_code"], pt_name["script"], pt_name["region"], pt_name["bcp47"], pt_name["query_eligible"]) == (
+        "por",
+        "pt",
+        "Latn",
+        "BR",
+        "pt-BR",
+        True,
+    )
+    assert (zh_name["language"], zh_name["api_language_code"], zh_name["script"], zh_name["region"], zh_name["bcp47"], zh_name["query_eligible"]) == (
+        "zho",
+        "zh",
+        "Hant",
+        "",
+        "zh-Hant",
+        True,
+    )
+    assert (pt_query["language"], pt_query["api_language_code"], pt_query["script"], pt_query["region"], pt_query["bcp47"]) == ("por", "pt", "Latn", "BR", "pt-BR")
+    assert (zh_query["language"], zh_query["api_language_code"], zh_query["script"], zh_query["region"], zh_query["bcp47"]) == ("zho", "zh", "Hant", "", "zh-Hant")
 
 
 def test_compile_enriched_registry_keeps_same_label_script_variants_distinct(tmp_path) -> None:
