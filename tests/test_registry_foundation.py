@@ -174,11 +174,17 @@ def test_compile_registry_fixture_emits_atomic_flickr_queries_in_name_priority_o
 
     queries = pl.read_parquet(output / "flickr_query_definitions.parquet").sort("search_priority")
     assert queries.select("search_field").to_series().to_list() == ["tags", "text", "tags", "text"]
+    assert queries.select("source_term").to_series().to_list() == [
+        "Papilio demoleus",
+        "Papilio demoleus",
+        "Lime Butterfly",
+        "Lime Butterfly",
+    ]
     assert queries.select("normalized_query_term").to_series().to_list() == [
-        "Papilio demoleus",
-        "Papilio demoleus",
-        "Lime Butterfly",
-        "Lime Butterfly",
+        "papilio demoleus",
+        "papilio demoleus",
+        "lime butterfly",
+        "lime butterfly",
     ]
     assert queries.select("query_definition_id").to_series().n_unique() == 4
     assert queries.select(["normalized_query_term", "search_field", "region"]).unique().height == 4
@@ -289,7 +295,7 @@ def test_compile_registry_fixture_stores_enabled_but_query_ineligible_weak_names
         assert by_name[weak_name]["enabled"] is True
         assert by_name[weak_name]["query_eligible"] is False
         assert by_name[weak_name]["query_disabled_reason"]
-    assert "Common Lime Butterfly" in queries["normalized_query_term"].to_list()
+    assert "Common Lime Butterfly" in queries["source_term"].to_list()
     assert not {"lime", "swallowtails", "swallowtail butterfly", "papillon"} & set(queries["normalized_match_key"].to_list())
     assert manifest["query_eligible_name_rows"] == names.filter(pl.col("query_eligible")).height
     assert manifest["query_ineligible_name_rows"] == names.filter(pl.col("enabled") & ~pl.col("query_eligible")).height

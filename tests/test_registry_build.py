@@ -239,8 +239,8 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
     wikidata_row = assertions.filter(pl.col("source") == "Wikidata").to_dicts()[0]
     assert wikidata_row["display_name"] == "Wikidata Lime"
     assert wikidata_row["trust_tier"] == "T3"
-    assert "Lime Swallowtail" in queries["normalized_query_term"].to_list()
-    assert "Wikidata Lime" in queries["normalized_query_term"].to_list()
+    assert "Lime Swallowtail" in queries["source_term"].to_list()
+    assert "Wikidata Lime" in queries["source_term"].to_list()
     assert errors.is_empty()
 
 

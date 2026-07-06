@@ -280,7 +280,7 @@ def _query_definitions_frame(names: pl.DataFrame, taxa: pl.DataFrame, *, registr
                     "species": item.get("species") or "",
                     "name_id": item["name_id"],
                     "source_term": item["display_name"],
-                    "normalized_query_term": item["display_name"],
+                    "normalized_query_term": item["normalized_match_key"],
                     "normalized_match_key": item["normalized_match_key"],
                     "language": item["language"],
                     "api_language_code": item["api_language_code"],

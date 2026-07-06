@@ -544,8 +544,8 @@ def test_registry_build_promotes_translation_outputs(tmp_path, monkeypatch) -> N
 
     assert result["manifest"]["qa_status"] == "passed"
     assert {"Zitronenfalter", "Limettenfalter"}.issubset(set(names["display_name"].to_list()))
-    assert "Zitronenfalter" in set(queries["normalized_query_term"].to_list())
-    assert "Limettenfalter" not in set(queries["normalized_query_term"].to_list())
+    assert "Zitronenfalter" in set(queries["source_term"].to_list())
+    assert "Limettenfalter" not in set(queries["source_term"].to_list())
     assert names.filter(pl.col("normalized_match_key") == "limettenfalter").select("query_eligible").to_series().to_list() == [False]
     assert manifest["translation_sources"] == ["wikimedia", "mymemory"]
     assert manifest["enabled_t5_name_rows"] == 1

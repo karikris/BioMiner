@@ -235,7 +235,7 @@ def test_compile_enriched_registry_adds_enabled_names_and_preserves_candidates(t
     assert "Lime butterfly" in names["display_name"].to_list()
     assert "Citrus butterfly" not in names["display_name"].to_list()
     assert "Citrus butterfly" in candidates["display_name"].to_list()
-    assert "Citrus butterfly" not in queries["normalized_query_term"].to_list()
+    assert "Citrus butterfly" not in queries["source_term"].to_list()
     assert evidence.filter(pl.col("source") == "ITIS").height == 1
     assert evidence.filter(pl.col("source") == "iNaturalist").height == 2
     assert links.select("source_taxon_id").to_series().to_list() == ["1"]
