@@ -392,6 +392,80 @@ def test_compile_registry_fixture_disables_cross_species_common_name_collisions(
     assert manifest["query_blocking_name_collision_rows"] == 1
 
 
+def test_compile_registry_fixture_does_not_warn_for_cross_language_same_text(tmp_path) -> None:
+    source = tmp_path / "source.json"
+    output = tmp_path / "registry"
+    _write_fixture(source)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["taxa"].append(
+        {
+            "accepted_taxon_key": "gbif:200",
+            "scientific_name": "Danaus plexippus",
+            "rank": "SPECIES",
+            "parent_key": "gbif:190",
+            "family_key": "gbif:20",
+            "family": "Nymphalidae",
+            "genus_key": "gbif:190",
+            "genus": "Danaus",
+            "species_key": "gbif:200",
+            "species": "Danaus plexippus",
+        }
+    )
+    payload["names"].extend(
+        [
+            {
+                "accepted_taxon_key": "gbif:200",
+                "verbatim_name": "Danaus plexippus",
+                "display_name": "Danaus plexippus",
+                "language": "la",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "accepted_scientific",
+                "source": "GBIF",
+                "source_record_id": "gbif:200",
+                "trust_tier": "T1",
+                "precision_tier": "high",
+                "confidence": "high",
+                "enabled": True,
+            },
+            {
+                "accepted_taxon_key": "gbif:200",
+                "verbatim_name": "Lime Butterfly",
+                "display_name": "Lime Butterfly",
+                "language": "es",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "vernacular",
+                "source": "fixture",
+                "source_record_id": "fixture:name:danaus-lime-es",
+                "trust_tier": "T2",
+                "precision_tier": "medium",
+                "confidence": "medium",
+                "enabled": True,
+            },
+        ]
+    )
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = compile_registry_fixture(source, output, registry_version="test-registry")
+
+    names = pl.read_parquet(output / "names.parquet")
+    queries = pl.read_parquet(output / "flickr_query_definitions.parquet")
+    ledger = pl.read_parquet(output / "name_collision_ledger.parquet")
+    qa = pl.read_parquet(output / "qa_findings.parquet").to_dicts()
+    lime_names = names.filter(pl.col("normalized_match_key") == "lime butterfly").sort("accepted_taxon_key")
+
+    assert lime_names.select("language").to_series().to_list() == ["eng", "spa"]
+    assert lime_names.select("query_eligible").to_series().to_list() == [True, True]
+    assert ledger.is_empty()
+    assert queries.filter(pl.col("normalized_match_key") == "lime butterfly").height == 4
+    assert not any(row["code"] == "normalized_name_collision" and row["subject"] == "lime butterfly" for row in qa)
+    assert manifest["name_collision_ledger_rows"] == 0
+    assert manifest["query_blocking_name_collision_rows"] == 0
+
+
 def test_compile_registry_fixture_blocks_reviewed_collision_without_species_specific_signal(tmp_path) -> None:
     source = tmp_path / "source.json"
     output = tmp_path / "registry"
@@ -638,6 +712,6 @@ def test_compile_registry_fixture_keeps_query_ids_unique_for_repeated_name_ids(t
     assert manifest["qa_status"] == "passed"
     assert queries.select("query_definition_id").to_series().n_unique() == queries.height
     assert not any(row["code"] == "duplicate_query_definition_id" for row in qa)
-    assert {"severity": "warning", "code": "normalized_name_collision", "subject": "lime butterfly"} in qa
+    assert not any(row["code"] == "normalized_name_collision" and row["subject"] == "lime butterfly" for row in qa)
     assert {"severity": "warning", "code": "weak_language_or_script_metadata", "subject": "Lime Butterfly"} in qa
     assert {"severity": "warning", "code": "missing_name_source_evidence", "subject": "Lime Butterfly"} in qa

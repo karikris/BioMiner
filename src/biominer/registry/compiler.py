@@ -413,7 +413,7 @@ def _qa_findings(taxa: pl.DataFrame, names: pl.DataFrame, queries: pl.DataFrame,
         enabled = names.filter(pl.col("enabled"))
         query_ineligible = enabled.filter(~pl.col("query_eligible")) if "query_eligible" in enabled.columns else pl.DataFrame()
         collisions = (
-            enabled.group_by("normalized_match_key")
+            enabled.group_by(["normalized_match_key", "language"])
             .agg(pl.col("accepted_taxon_key").n_unique().alias("taxon_count"))
             .filter((pl.col("normalized_match_key") != "") & (pl.col("taxon_count") > 1))
             .select("normalized_match_key")
