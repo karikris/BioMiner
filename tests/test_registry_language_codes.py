@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from biominer.registry.normalize import parse_language_tag
@@ -28,3 +29,21 @@ def test_checked_in_language_metadata_covers_regional_and_scripted_locales() -> 
     text = table.read_text(encoding="utf-8")
     assert '"bcp47": "pt-BR"' in text
     assert '"bcp47": "zh-Hant"' in text
+
+
+def test_checked_in_language_metadata_covers_configured_translation_locales() -> None:
+    target_locales = json.loads(Path("config/name_translation_target_locales.json").read_text(encoding="utf-8"))
+    metadata = json.loads(Path("src/biominer/registry/language_code_metadata.json").read_text(encoding="utf-8"))
+
+    rows_by_locale = {str(row["bcp47"]).casefold(): row for row in metadata}
+    missing = [locale for locale in target_locales if str(locale).casefold() not in rows_by_locale]
+
+    assert missing == []
+    for locale in target_locales:
+        row = rows_by_locale[str(locale).casefold()]
+        assert row["bcp47"] == locale
+        assert row["language"]
+        assert row["api_language_code"]
+        assert "script" in row
+        assert "region" in row
+        assert row["provider_support"]
