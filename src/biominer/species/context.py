@@ -66,8 +66,8 @@ class SpeciesContext:
 
     def target_terms(self) -> tuple[str, ...]:
         terms = [self.scientific_name, self.canonical_name, *self.synonyms]
-        terms.extend(name.name for name in self.common_names)
-        terms.extend(term.term for term in self.search_terms if term.enabled and term.review_state in {None, "", "accepted", "reviewed"})
+        terms.extend(name.name for name in self.common_names if _review_state_allows_term(name.review_state))
+        terms.extend(term.term for term in self.search_terms if term.enabled and _review_state_allows_term(term.review_state))
         return _unique_texts(terms)
 
     def to_dict(self) -> dict[str, Any]:
@@ -114,3 +114,8 @@ def _unique_texts(values: list[str]) -> tuple[str, ...]:
         seen.add(key)
         output.append(cleaned)
     return tuple(output)
+
+
+def _review_state_allows_term(value: object) -> bool:
+    normalized = "_".join(str(value or "").casefold().split())
+    return normalized in {"", "accepted", "reviewed", "query_approved", "curator_reviewed", "manual_reviewed"}

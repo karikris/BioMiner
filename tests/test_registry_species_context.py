@@ -87,6 +87,31 @@ def _write_registry_fixture(base: Path) -> None:
                 "confidence": "high",
                 "enabled": True,
                 "disabled_reason": "",
+                "query_eligible": True,
+                "query_disabled_reason": "",
+                "species_specificity_score": 0.95,
+            },
+            {
+                "name_id": "name:weak",
+                "registry_version": "registry-v1",
+                "accepted_taxon_key": "gbif:100",
+                "verbatim_name": "lime",
+                "display_name": "lime",
+                "language": "en",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "vernacular_alias",
+                "source": "gbif",
+                "source_record_id": "gbif:vernacular:weak",
+                "trust_tier": "T2",
+                "precision_tier": "low",
+                "confidence": "low",
+                "enabled": True,
+                "disabled_reason": "",
+                "query_eligible": False,
+                "query_disabled_reason": "generic_single_token",
+                "species_specificity_score": 0.25,
             },
         ]
     ).write_parquet(base / "names.parquet")
@@ -124,6 +149,7 @@ def test_species_context_resolves_papilio_fixture_from_registry_names(tmp_path) 
     assert context.synonyms == ("Papilio erithonius",)
     assert [name.name for name in context.common_names] == ["lime butterfly"]
     assert [term.term for term in context.search_terms] == ["Papilio demoleus", "Papilio erithonius", "lime butterfly"]
+    assert "lime" not in context.target_terms()
 
 
 def test_query_planner_preserves_registry_provenance_through_pages_and_accessible_window() -> None:
@@ -228,6 +254,26 @@ def test_comment_review_uses_species_context_terms_for_common_names() -> None:
     assert result.flickr_text_species_candidate == "Danaus plexippus"
     assert result.comment_species_candidate == "Danaus plexippus"
     assert result.comment_review_decision == "move_to_gold"
+
+
+def test_species_context_target_terms_skip_query_ineligible_common_names() -> None:
+    context = SpeciesContext(
+        scientific_name="Papilio demoleus",
+        accepted_taxon_key="gbif:100",
+        canonical_name="Papilio demoleus",
+        family="Papilionidae",
+        genus="Papilio",
+        family_key="gbif:10",
+        genus_key="gbif:90",
+        species_key="gbif:100",
+        registry_version="registry-v1",
+        common_names=(
+            CommonName(name="lime butterfly", language="en", review_state="accepted"),
+            CommonName(name="lime", language="en", review_state="query_ineligible"),
+        ),
+    )
+
+    assert context.target_terms() == ("Papilio demoleus", "lime butterfly")
 
 
 def test_production_modules_do_not_hardcode_papilio_species() -> None:

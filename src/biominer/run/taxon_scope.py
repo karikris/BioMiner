@@ -205,18 +205,19 @@ def resolve_species_context_from_registry_frames(
     key = str(species["accepted_taxon_key"])
     registry_version = str(manifest.get("registry_version") or _first_value(names, "registry_version") or "")
     species_names = _species_names(names, key)
+    usable_species_names = [row for row in species_names if _is_context_term_row(row)]
 
-    common_names = tuple(_common_name_from_row(row) for row in species_names if _is_common_name(row))
+    common_names = tuple(_common_name_from_row(row) for row in usable_species_names if _is_common_name(row))
     synonyms = tuple(
         _unique_texts(
             [
                 str(row.get("display_name") or row.get("verbatim_name") or "")
-                for row in species_names
+                for row in usable_species_names
                 if str(row.get("name_class") or "") == "scientific_synonym"
             ]
         )
     )
-    search_terms = tuple(_search_term_from_row(row) for row in species_names if bool(row.get("enabled", True)))
+    search_terms = tuple(_search_term_from_row(row) for row in usable_species_names)
     regions = tuple(
         RegionHint(
             region=str(row.get("region") or ""),
@@ -224,7 +225,7 @@ def resolve_species_context_from_registry_frames(
             source=str(row.get("source") or "") or None,
             confidence=str(row.get("confidence") or "") or None,
         )
-        for row in species_names
+        for row in usable_species_names
         if row.get("region")
     )
     source_versions = {
@@ -402,6 +403,22 @@ def _search_term_from_row(row: dict[str, Any]) -> SpeciesSearchTerm:
 
 def _is_common_name(row: dict[str, Any]) -> bool:
     return str(row.get("name_class") or "") in {"vernacular", "vernacular_alias", "common_name", "regional_common_name"}
+
+
+def _is_context_term_row(row: dict[str, Any]) -> bool:
+    if not _boolish(row.get("enabled", True), default=True):
+        return False
+    if "query_eligible" not in row or row.get("query_eligible") is None:
+        return True
+    return _boolish(row.get("query_eligible"), default=False)
+
+
+def _boolish(value: object, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value in (None, ""):
+        return default
+    return str(value).strip().casefold() in {"1", "true", "yes", "y", "accepted", "enabled", "reviewed", "query_approved"}
 
 
 def _read_optional_parquet(path: Path) -> pl.DataFrame:
