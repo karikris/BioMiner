@@ -31,6 +31,24 @@ GENERIC_SINGLE_TOKENS = {
     "vlinders",
     "蝴蝶",
 }
+GENERIC_GROUP_PHRASES = {
+    "brush footed butterfly",
+    "brush footed butterflies",
+    "blue butterfly",
+    "blue butterflies",
+    "copper butterfly",
+    "copper butterflies",
+    "hairstreak butterfly",
+    "hairstreak butterflies",
+    "metalmark butterfly",
+    "metalmark butterflies",
+    "skipper butterfly",
+    "skipper butterflies",
+    "swallowtail butterfly",
+    "swallowtail butterflies",
+    "white butterfly",
+    "white butterflies",
+}
 GENERATED_TRANSLATION_SOURCES = {"mymemory", "translation", "libretranslate", "t5", "machine_translation"}
 SAME_TAXON_LANGUAGE_SOURCES = {"wikimedia", "wikidata"}
 MANUAL_REVIEW_STATES = {"reviewed", "curator_reviewed", "manual_reviewed", "query_approved"}
@@ -75,6 +93,8 @@ def assess_name_query_eligibility(row: dict[str, Any]) -> QueryEligibilityDecisi
         return QueryEligibilityDecision(False, "generic_single_token", min(score, 0.25))
     if _is_plural_group_name(tokens):
         return QueryEligibilityDecision(False, "plural_group_name", min(score, 0.3))
+    if normalized in GENERIC_GROUP_PHRASES:
+        return QueryEligibilityDecision(False, "generic_group_phrase", min(score, 0.35))
     if generated_translation_approved:
         score = max(score, 0.55)
     if score < 0.5:

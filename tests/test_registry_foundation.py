@@ -241,6 +241,22 @@ def test_compile_registry_fixture_stores_enabled_but_query_ineligible_weak_names
             },
             {
                 "accepted_taxon_key": "gbif:100",
+                "verbatim_name": "Swallowtail Butterfly",
+                "display_name": "Swallowtail Butterfly",
+                "language": "en",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "vernacular_alias",
+                "source": "fixture",
+                "source_record_id": "fixture:name:swallowtail-butterfly",
+                "trust_tier": "T2",
+                "precision_tier": "low",
+                "confidence": "low",
+                "enabled": True,
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
                 "verbatim_name": "papillon",
                 "display_name": "papillon",
                 "language": "fr",
@@ -269,12 +285,12 @@ def test_compile_registry_fixture_stores_enabled_but_query_ineligible_weak_names
     assert by_name["common lime butterfly"]["enabled"] is True
     assert by_name["common lime butterfly"]["query_eligible"] is True
     assert by_name["common lime butterfly"]["species_specificity_score"] > by_name["lime"]["species_specificity_score"]
-    for weak_name in ("lime", "swallowtails", "papillon"):
+    for weak_name in ("lime", "swallowtails", "swallowtail butterfly", "papillon"):
         assert by_name[weak_name]["enabled"] is True
         assert by_name[weak_name]["query_eligible"] is False
         assert by_name[weak_name]["query_disabled_reason"]
     assert "Common Lime Butterfly" in queries["normalized_query_term"].to_list()
-    assert not {"lime", "swallowtails", "papillon"} & set(queries["normalized_match_key"].to_list())
+    assert not {"lime", "swallowtails", "swallowtail butterfly", "papillon"} & set(queries["normalized_match_key"].to_list())
     assert manifest["query_eligible_name_rows"] == names.filter(pl.col("query_eligible")).height
     assert manifest["query_ineligible_name_rows"] == names.filter(pl.col("enabled") & ~pl.col("query_eligible")).height
 
