@@ -381,7 +381,10 @@ def _name_collision_blocks_query(row: dict[str, Any]) -> bool:
     if str(row.get("name_class") or "").casefold() in SCIENTIFIC_NAME_CLASSES:
         return False
     review_state = "_".join(str(row.get("review_state") or "").casefold().split())
-    if review_state in COLLISION_REVIEW_STATES and str(row.get("precision_tier") or "").casefold() != "broad":
+    precision_tier = str(row.get("precision_tier") or "").casefold()
+    if review_state == "query_approved" and precision_tier != "broad":
+        return False
+    if review_state in COLLISION_REVIEW_STATES and precision_tier == "high":
         return False
     return True
 

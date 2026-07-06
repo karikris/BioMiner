@@ -392,6 +392,152 @@ def test_compile_registry_fixture_disables_cross_species_common_name_collisions(
     assert manifest["query_blocking_name_collision_rows"] == 1
 
 
+def test_compile_registry_fixture_blocks_reviewed_collision_without_species_specific_signal(tmp_path) -> None:
+    source = tmp_path / "source.json"
+    output = tmp_path / "registry"
+    _write_fixture(source)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    for name in payload["names"]:
+        if name["display_name"] == "Lime Butterfly":
+            name["review_state"] = "reviewed"
+            name["precision_tier"] = "medium"
+    payload["taxa"].append(
+        {
+            "accepted_taxon_key": "gbif:200",
+            "scientific_name": "Danaus plexippus",
+            "rank": "SPECIES",
+            "parent_key": "gbif:190",
+            "family_key": "gbif:20",
+            "family": "Nymphalidae",
+            "genus_key": "gbif:190",
+            "genus": "Danaus",
+            "species_key": "gbif:200",
+            "species": "Danaus plexippus",
+        }
+    )
+    payload["names"].extend(
+        [
+            {
+                "accepted_taxon_key": "gbif:200",
+                "verbatim_name": "Danaus plexippus",
+                "display_name": "Danaus plexippus",
+                "language": "la",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "accepted_scientific",
+                "source": "GBIF",
+                "source_record_id": "gbif:200",
+                "trust_tier": "T1",
+                "precision_tier": "high",
+                "confidence": "high",
+                "enabled": True,
+            },
+            {
+                "accepted_taxon_key": "gbif:200",
+                "verbatim_name": "Lime Butterfly",
+                "display_name": "Lime Butterfly",
+                "language": "en",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "vernacular",
+                "source": "fixture",
+                "source_record_id": "fixture:name:danaus-reviewed-lime",
+                "trust_tier": "T2",
+                "precision_tier": "medium",
+                "confidence": "high",
+                "enabled": True,
+                "review_state": "reviewed",
+            },
+        ]
+    )
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    compile_registry_fixture(source, output, registry_version="test-registry")
+
+    names = pl.read_parquet(output / "names.parquet")
+    queries = pl.read_parquet(output / "flickr_query_definitions.parquet")
+    lime_names = names.filter(pl.col("normalized_match_key") == "lime butterfly").sort("accepted_taxon_key")
+
+    assert lime_names.select("query_eligible").to_series().to_list() == [False, False]
+    assert lime_names.select("query_disabled_reason").to_series().to_list() == ["normalized_name_language_collision", "normalized_name_language_collision"]
+    assert queries.filter(pl.col("normalized_match_key") == "lime butterfly").is_empty()
+
+
+def test_compile_registry_fixture_allows_query_approved_species_specific_collision(tmp_path) -> None:
+    source = tmp_path / "source.json"
+    output = tmp_path / "registry"
+    _write_fixture(source)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    for name in payload["names"]:
+        if name["display_name"] == "Lime Butterfly":
+            name["review_state"] = "query_approved"
+            name["precision_tier"] = "high"
+    payload["taxa"].append(
+        {
+            "accepted_taxon_key": "gbif:200",
+            "scientific_name": "Danaus plexippus",
+            "rank": "SPECIES",
+            "parent_key": "gbif:190",
+            "family_key": "gbif:20",
+            "family": "Nymphalidae",
+            "genus_key": "gbif:190",
+            "genus": "Danaus",
+            "species_key": "gbif:200",
+            "species": "Danaus plexippus",
+        }
+    )
+    payload["names"].extend(
+        [
+            {
+                "accepted_taxon_key": "gbif:200",
+                "verbatim_name": "Danaus plexippus",
+                "display_name": "Danaus plexippus",
+                "language": "la",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "accepted_scientific",
+                "source": "GBIF",
+                "source_record_id": "gbif:200",
+                "trust_tier": "T1",
+                "precision_tier": "high",
+                "confidence": "high",
+                "enabled": True,
+            },
+            {
+                "accepted_taxon_key": "gbif:200",
+                "verbatim_name": "Lime Butterfly",
+                "display_name": "Lime Butterfly",
+                "language": "en",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "vernacular",
+                "source": "fixture",
+                "source_record_id": "fixture:name:danaus-approved-lime",
+                "trust_tier": "T2",
+                "precision_tier": "high",
+                "confidence": "high",
+                "enabled": True,
+                "review_state": "query_approved",
+            },
+        ]
+    )
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    compile_registry_fixture(source, output, registry_version="test-registry")
+
+    names = pl.read_parquet(output / "names.parquet")
+    queries = pl.read_parquet(output / "flickr_query_definitions.parquet")
+    lime_names = names.filter(pl.col("normalized_match_key") == "lime butterfly").sort("accepted_taxon_key")
+
+    assert lime_names.select("query_eligible").to_series().to_list() == [True, True]
+    assert lime_names.select("query_disabled_reason").to_series().to_list() == ["", ""]
+    assert queries.filter(pl.col("normalized_match_key") == "lime butterfly").height == 4
+
+
 def test_accepted_scientific_queries_schedule_before_synonyms(tmp_path) -> None:
     source = tmp_path / "source.json"
     output = tmp_path / "registry"
