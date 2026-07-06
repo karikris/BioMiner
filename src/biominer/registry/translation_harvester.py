@@ -150,6 +150,28 @@ class TranslationWorkRecord:
         return row
 
 
+@dataclass(frozen=True)
+class TranslationWorkUnit:
+    source: str
+    context: SpeciesTranslationContext
+    seed: TranslationSeed
+    target_language: str
+    target_api_language: str
+    work_key: str
+    provider_config_hash: str
+
+
+@dataclass(frozen=True)
+class TranslationBatch:
+    name_assertions: tuple[dict[str, Any], ...] = ()
+    translation_candidates: tuple[dict[str, Any], ...] = ()
+    source_snapshots: tuple[dict[str, Any], ...] = ()
+    errors: tuple[dict[str, Any], ...] = ()
+    translation_work: tuple[dict[str, Any], ...] = ()
+    source_work: tuple[dict[str, Any], ...] = ()
+    request_count: int = 0
+
+
 class TranslationRequestBudget:
     def __init__(self, *, daily_limit: int, existing_work: list[dict[str, Any]]) -> None:
         self.daily_limit = daily_limit
@@ -692,6 +714,45 @@ def _harvest_mymemory_context(
             break
     source_work = [_aggregate_source_work(source_key, context, request_count_total, status="complete")] if translation_work else []
     return _source_result([], candidates, snapshots, errors, translation_work, source_work, request_count_total)
+
+
+def _mymemory_work_units(
+    context: SpeciesTranslationContext,
+    seeds: list[TranslationSeed],
+    target_locales: tuple[str, ...],
+    completed_work: set[str],
+    config_hash: str,
+) -> tuple[TranslationWorkUnit, ...]:
+    source_key = "mymemory"
+    units: list[TranslationWorkUnit] = []
+    for seed in seeds:
+        source_language = _api_language_code(seed.source_language or "en")
+        for target_language in target_locales:
+            target_api_language = _api_language_code(target_language)
+            if target_api_language == source_language:
+                continue
+            work_key = _translation_work_key(
+                source_key,
+                context.accepted_taxon_key,
+                seed.source_name,
+                source_language,
+                target_language,
+                config_hash,
+            )
+            if work_key in completed_work:
+                continue
+            units.append(
+                TranslationWorkUnit(
+                    source=source_key,
+                    context=context,
+                    seed=seed,
+                    target_language=target_language,
+                    target_api_language=target_api_language,
+                    work_key=work_key,
+                    provider_config_hash=config_hash,
+                )
+            )
+    return tuple(units)
 
 
 def _write_translation_outputs(

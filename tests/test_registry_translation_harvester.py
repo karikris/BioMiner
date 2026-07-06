@@ -4,11 +4,16 @@ import json
 
 import polars as pl
 
+from biominer.registry import translation_harvester as harvester
 from biominer.registry.build import build_registry
 from biominer.registry.translation_harvester import (
     MyMemoryTranslationProvider,
+    SpeciesTranslationContext,
     WikimediaLanglink,
     WikimediaLanglinksProvider,
+    _seed_names_by_taxon,
+    _translation_config_hash,
+    _translation_work_key,
     build_translation_candidates_from_registry,
     load_translation_target_locales,
 )
@@ -277,6 +282,75 @@ class FakeMyMemoryProvider:
         return ["Limettenfalter"], 1
 
 
+def test_mymemory_work_units_are_keyed_by_language_and_skip_completed(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    taxa = pl.read_parquet(registry / "taxa.parquet")
+    names = pl.read_parquet(registry / "names.parquet")
+    seeds = _seed_names_by_taxon(taxa=taxa, names=names, source_assertions=[])["gbif:100"]
+    context = SpeciesTranslationContext("gbif:100", "Papilio demoleus")
+    config_hash = _translation_config_hash(
+        "mymemory",
+        ("de", "sv", "fi"),
+        max_candidates_per_name=1,
+        allow_machine_translation=False,
+    )
+    completed = {
+        _translation_work_key(
+            "mymemory",
+            "gbif:100",
+            "Lime Swallowtail",
+            "en",
+            "de",
+            config_hash,
+        )
+    }
+
+    units = harvester._mymemory_work_units(
+        context,
+        seeds,
+        target_locales=("de", "sv", "fi"),
+        completed_work=completed,
+        config_hash=config_hash,
+    )
+
+    assert [(unit.seed.source_name, unit.target_language) for unit in units] == [
+        ("Lime Swallowtail", "sv"),
+        ("Lime Swallowtail", "fi"),
+    ]
+
+
+def test_mymemory_work_units_preserve_bcp47_target_locales_and_api_codes(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    taxa = pl.read_parquet(registry / "taxa.parquet")
+    names = pl.read_parquet(registry / "names.parquet")
+    seeds = _seed_names_by_taxon(taxa=taxa, names=names, source_assertions=[])["gbif:100"]
+    context = SpeciesTranslationContext("gbif:100", "Papilio demoleus")
+    target_locales = ("pt", "pt-BR", "zh-Hant")
+    config_hash = _translation_config_hash(
+        "mymemory",
+        target_locales,
+        max_candidates_per_name=1,
+        allow_machine_translation=False,
+    )
+
+    units = harvester._mymemory_work_units(
+        context,
+        seeds,
+        target_locales=target_locales,
+        completed_work=set(),
+        config_hash=config_hash,
+    )
+
+    assert [unit.target_language for unit in units] == ["pt", "pt-BR", "zh-Hant"]
+    assert [unit.target_api_language for unit in units] == ["pt", "pt", "zh"]
+    assert [unit.work_key for unit in units] == [
+        _translation_work_key("mymemory", "gbif:100", "Lime Swallowtail", "en", target_language, config_hash)
+        for target_language in target_locales
+    ]
+
+
 def test_mymemory_provider_uses_translation_memory_mode_by_default() -> None:
     requests = []
 
@@ -421,6 +495,30 @@ def test_translation_harvester_preserves_wikimedia_bcp47_variant_languages(tmp_p
     assert assertions.select("script").to_series().to_list() == ["Latn", "Hant"]
     assert assertions.select("region").to_series().to_list() == ["BR", ""]
     assert assertions.select("display_name").to_series().to_list() == ["Borboleta lima", "青鳳蝶"]
+
+
+def test_translation_harvester_preserves_mymemory_bcp47_work_ledger(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["pt", "pt-BR", "zh-Hant"]), encoding="utf-8")
+    mymemory = FakeMyMemoryProvider()
+
+    build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=registry / "enrichment",
+        translation_sources=("mymemory",),
+        target_locales_json=locales,
+        providers={"mymemory": mymemory},
+    )
+
+    work = pl.read_parquet(registry / "enrichment" / "translation_work_ledger.parquet").sort("target_language")
+    candidates = pl.read_parquet(registry / "enrichment" / "translation_candidates.parquet").sort("target_language")
+
+    assert work.select("target_language").to_series().to_list() == ["pt", "pt-BR", "zh-Hant"]
+    assert work.select("work_key").to_series().n_unique() == 3
+    assert [call["target_language"] for call in mymemory.calls] == ["pt", "pt", "zh"]
+    assert candidates.select("target_language").to_series().to_list() == ["pt", "pt-BR", "zh-Hant"]
 
 
 def test_translation_harvester_writes_wikimedia_and_mymemory_outputs(tmp_path) -> None:
