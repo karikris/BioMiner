@@ -33,6 +33,7 @@ from biominer.registry.enrichment import (
 )
 from biominer.registry.enrichment_sources import HTTPGet, USER_AGENT, _json_get
 from biominer.registry.normalize import parse_language_tag, normalize_language_code, normalize_name_key
+from biominer.registry.query_eligibility import assess_name_query_eligibility
 from biominer.registry.translation_sources import (
     DEFAULT_TRANSLATION_SOURCES,
     DEFAULT_TRANSLATION_TARGET_LOCALES_JSON,
@@ -804,6 +805,8 @@ def _seed_names_by_taxon(*, taxa: pl.DataFrame, names: pl.DataFrame, source_asse
         trust_tier = str(row.get("trust_tier") or "")
         if trust_tier == "T5":
             continue
+        if not _translation_seed_query_eligible(row):
+            continue
         key = (accepted_taxon_key, normalize_name_key(display_name), language)
         if key in seen:
             continue
@@ -837,6 +840,12 @@ def _wikimedia_seeds(context: SpeciesTranslationContext, common_seeds: list[Tran
 
 def _mymemory_seeds(common_seeds: list[TranslationSeed]) -> list[TranslationSeed]:
     return common_seeds
+
+
+def _translation_seed_query_eligible(row: dict[str, Any]) -> bool:
+    if "query_eligible" in row and row.get("query_eligible") is not None:
+        return _boolish(row.get("query_eligible"))
+    return assess_name_query_eligibility(row).query_eligible
 
 
 def _default_translation_providers(

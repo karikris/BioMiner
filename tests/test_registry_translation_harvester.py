@@ -456,6 +456,56 @@ def test_translation_harvester_writes_wikimedia_and_mymemory_outputs(tmp_path) -
     assert set(work.select("source").to_series().to_list()) == {"wikimedia", "mymemory"}
 
 
+def test_translation_harvester_skips_query_ineligible_phrase_fragments(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    names = pl.read_parquet(registry / "names.parquet")
+    names = pl.concat(
+        [
+            names,
+            pl.DataFrame(
+                [
+                    {
+                        "accepted_taxon_key": "gbif:100",
+                        "verbatim_name": "lime",
+                        "display_name": "lime",
+                        "language": "eng",
+                        "script": "Latn",
+                        "region": "",
+                        "bbox": "",
+                        "name_class": "vernacular",
+                        "source": "fixture",
+                        "source_record_id": "fixture:fragment:lime",
+                        "trust_tier": "T2",
+                        "precision_tier": "low",
+                        "confidence": "medium",
+                        "enabled": True,
+                        "query_eligible": False,
+                        "query_disabled_reason": "generic_single_token",
+                        "species_specificity_score": 0.25,
+                    }
+                ],
+                schema=names.schema | {"query_eligible": pl.Boolean, "query_disabled_reason": pl.String, "species_specificity_score": pl.Float64},
+            ),
+        ],
+        how="diagonal_relaxed",
+    )
+    names.write_parquet(registry / "names.parquet")
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["de"]), encoding="utf-8")
+    mymemory = FakeMyMemoryProvider()
+
+    build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=registry / "enrichment",
+        translation_sources=("mymemory",),
+        target_locales_json=locales,
+        providers={"mymemory": mymemory},
+    )
+
+    assert mymemory.calls == [{"source_name": "Lime Swallowtail", "source_language": "en", "target_language": "de", "max_candidates": "0"}]
+
+
 def test_translation_harvester_disables_unbound_wikimedia_langlinks(tmp_path) -> None:
     registry = tmp_path / "registry"
     _write_registry(registry)
