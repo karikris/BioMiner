@@ -37,6 +37,8 @@ GENERIC_SINGLE_TOKENS = {
     "gray",
     "grey",
     "metalmark",
+    "monarch",
+    "monarchs",
     "orange",
     "queen",
     "queens",

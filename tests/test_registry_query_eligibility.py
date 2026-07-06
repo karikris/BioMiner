@@ -44,7 +44,7 @@ def test_generic_family_group_phrases_are_not_species_queries() -> None:
 
 
 def test_unapproved_single_token_common_nouns_are_not_species_queries() -> None:
-    for term in ("Orange", "Blue", "Skipper", "Metalmark", "Cabbage", "Queen", "Admiral", "Comma", "Brown", "Grey"):
+    for term in ("Orange", "Blue", "Skipper", "Metalmark", "Cabbage", "Queen", "Admiral", "Comma", "Brown", "Grey", "Monarch"):
         decision = assess_name_query_eligibility(_name_row(term, trust_tier="T2", precision_tier="medium"))
 
         assert decision.query_eligible is False
