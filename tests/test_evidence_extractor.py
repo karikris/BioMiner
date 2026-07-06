@@ -58,8 +58,8 @@ def test_extracts_text_comment_verification_and_species_evidence() -> None:
     assert "human_verification_phrase" in row["review_flags"]
     assert row["occurrence_bin"] == "in_review"
     assert row["bin_reason"] == "unclassified_evidence"
-    assert row["image_category"] == "adult_butterfly"
-    assert row["life_stage"] == "adult_butterfly"
+    assert row["image_category"] == "unknown"
+    assert row["life_stage"] == "unknown"
     assert row["negative_filter_reason"] is None
 
 
@@ -88,7 +88,7 @@ def test_extracts_museum_artwork_specimen_collection_captive_and_non_target_indi
     assert row["artwork_detected"] is True
     assert row["specimen_detected"] is True
     assert row["image_category"] == "museum_specimen"
-    assert row["life_stage"] == "adult_butterfly"
+    assert row["life_stage"] == "unknown"
     assert row["negative_filter_reason"] == "museum_specimen"
     assert row["collection_detected"] is True
     assert row["captive_detected"] is True
@@ -118,6 +118,34 @@ def test_missing_image_url_and_comments_are_represented_explicitly() -> None:
     assert "missing_image_url" in row["review_flags"]
 
 
+def test_metadata_butterfly_words_do_not_assert_adult_visual_category() -> None:
+    frame = build_evidence_frame(
+        [
+            {
+                "photos": {
+                    "photo": [
+                        {
+                            "id": "8",
+                            "title": "Papilio demoleus butterfly in garden",
+                            "description": {"_content": "expert confirmed lime swallowtail"},
+                            "tags": "butterflies swallowtails",
+                            "url_l": "https://live.staticflickr.com/large.jpg",
+                        }
+                    ]
+                }
+            }
+        ],
+        species_query="Papilio demoleus",
+    )
+    row = frame.to_dicts()[0]
+
+    assert row["species_text_match"] is True
+    assert row["human_verification_detected"] is True
+    assert row["image_category"] == "unknown"
+    assert row["life_stage"] == "unknown"
+    assert row["negative_filter_reason"] is None
+
+
 def test_evidence_schema_defaults_to_unknown_category_without_visual_or_text_evidence() -> None:
     frame = build_evidence_frame(
         [{"photos": {"photo": [{"id": "5", "title": "Papilio demoleus", "url_l": "https://live.staticflickr.com/large.jpg"}]}}],
@@ -142,7 +170,7 @@ def test_evidence_schema_maps_tattoo_and_life_stage_to_image_category() -> None:
 
     assert tattoo["tattoo_detected"] is True
     assert tattoo["image_category"] == "tattoo"
-    assert tattoo["life_stage"] == "adult_butterfly"
+    assert tattoo["life_stage"] == "unknown"
     assert caterpillar["image_category"] == "life_stage_non_adult"
     assert caterpillar["life_stage"] == "caterpillar"
 

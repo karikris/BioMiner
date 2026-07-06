@@ -36,16 +36,6 @@ _LIFE_STAGE_TERMS = (
     ("pupa", "pupa"),
     ("egg", "egg"),
 )
-_ADULT_BUTTERFLY_TERMS = (
-    "adult butterfly",
-    "adult butterflies",
-    "butterfly",
-    "butterflies",
-    "swallowtail",
-    "swallowtails",
-)
-
-
 def category_defaults() -> dict[str, str | None]:
     return {
         "image_category": DEFAULT_IMAGE_CATEGORY,
@@ -66,26 +56,24 @@ def infer_category_from_text(
 ) -> dict[str, str | None]:
     normalized = _normalize(text)
     if museum_detected or specimen_detected:
-        return _category("museum_specimen", "adult_butterfly", "museum_specimen")
+        return _category("museum_specimen", DEFAULT_LIFE_STAGE, "museum_specimen")
     if artwork_detected:
-        return _category("artwork", "adult_butterfly", "artwork")
+        return _category("artwork", DEFAULT_LIFE_STAGE, "artwork")
     if tattoo_detected:
-        return _category("tattoo", "adult_butterfly", "tattoo")
+        return _category("tattoo", DEFAULT_LIFE_STAGE, "tattoo")
     if ai_generated_detected or _has_any(normalized, ("ai generated", "ai-generated")):
-        return _category("ai_generated", "adult_butterfly", "ai_generated")
+        return _category("ai_generated", DEFAULT_LIFE_STAGE, "ai_generated")
     if _has_any(normalized, ("logo", "brand", "emblem")):
-        return _category("logo_or_brand", "adult_butterfly", "logo_or_brand")
+        return _category("logo_or_brand", DEFAULT_LIFE_STAGE, "logo_or_brand")
     if _has_any(normalized, ("textile", "fabric", "pattern")):
-        return _category("textile_or_pattern", "adult_butterfly", "textile_or_pattern")
+        return _category("textile_or_pattern", DEFAULT_LIFE_STAGE, "textile_or_pattern")
     if _has_any(normalized, ("object", "product", "toy", "sticker")):
-        return _category("object_or_product", "adult_butterfly", "object_or_product")
+        return _category("object_or_product", DEFAULT_LIFE_STAGE, "object_or_product")
     life_stage = infer_life_stage_from_text(normalized)
     if life_stage != DEFAULT_LIFE_STAGE:
         return _category("life_stage_non_adult", life_stage, f"life_stage_{life_stage}")
     if non_target_order_detected:
         return _category("not_lepidoptera", "unknown", "non_target_order")
-    if _has_any(normalized, _ADULT_BUTTERFLY_TERMS):
-        return _category("adult_butterfly", "adult_butterfly", None)
     return category_defaults()
 
 
@@ -123,13 +111,13 @@ def category_from_negative_reason(reason: str | None) -> dict[str, str | None]:
         return category_defaults()
     normalized = _normalize(reason)
     if "museum" in normalized or "specimen" in normalized or "pinned" in normalized:
-        return _category("museum_specimen", "adult_butterfly", reason)
+        return _category("museum_specimen", DEFAULT_LIFE_STAGE, reason)
     if "artwork" in normalized or "illustration" in normalized:
-        return _category("artwork", "adult_butterfly", reason)
+        return _category("artwork", DEFAULT_LIFE_STAGE, reason)
     if "tattoo" in normalized:
-        return _category("tattoo", "adult_butterfly", reason)
+        return _category("tattoo", DEFAULT_LIFE_STAGE, reason)
     if "ai" in normalized and "generated" in normalized:
-        return _category("ai_generated", "adult_butterfly", reason)
+        return _category("ai_generated", DEFAULT_LIFE_STAGE, reason)
     if "caterpillar" in normalized:
         return _category("life_stage_non_adult", "caterpillar", reason)
     if "chrysalis" in normalized:
@@ -141,11 +129,11 @@ def category_from_negative_reason(reason: str | None) -> dict[str, str | None]:
     if "egg" in normalized:
         return _category("life_stage_non_adult", "egg", reason)
     if "moth" in normalized or "not_lepidoptera" in normalized or "not_butterfly" in normalized or "non_target_order" in normalized or "other_order" in normalized:
-        return _category("not_lepidoptera", "adult_butterfly", reason)
+        return _category("not_lepidoptera", DEFAULT_LIFE_STAGE, reason)
     if "other_insect" in normalized or "beetle" in normalized or "fly" in normalized or "wasp" in normalized:
-        return _category("other_insect", "adult_butterfly", reason)
+        return _category("other_insect", DEFAULT_LIFE_STAGE, reason)
     if "object" in normalized or "background" in normalized or "product" in normalized:
-        return _category("object_or_product", "adult_butterfly", reason)
+        return _category("object_or_product", DEFAULT_LIFE_STAGE, reason)
     return _category("unknown", "unknown", reason)
 
 

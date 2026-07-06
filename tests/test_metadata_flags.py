@@ -39,6 +39,8 @@ def test_metadata_keyword_flags_do_not_drop_non_biodiversity_hints() -> None:
     assert "filter_reason" not in flagged.columns
     row_by_id = {row["flickr_photo_id"]: row for row in flagged.to_dicts()}
     assert row_by_id["1"]["hard_negative_text_hint"] is False
+    assert row_by_id["1"]["metadata_image_category_hint"] == "unknown"
+    assert row_by_id["1"]["metadata_life_stage_hint"] == "unknown"
     assert row_by_id["2"]["artwork_hint"] is True
     assert row_by_id["2"]["matched_keyword_groups"] == ["artwork"]
     assert row_by_id["3"]["object_or_product_hint"] is True
