@@ -45,7 +45,7 @@ They are accepted registry name evidence for discovery and matching, with their 
 
 ## Query Generation
 
-Flickr query definitions are compiled from names where `enabled = true` and `query_eligible = true`. Tags and text searches remain separate atomic query definitions, and each definition preserves:
+Flickr query definitions are compiled from species-level names where `enabled = true` and `query_eligible = true`. Bare genus, family, and root scientific names remain registry lineage/provenance evidence but are query-ineligible for single-species Flickr searches. One-word common-name terms with eight or more letters can pass the generic single-token gate; shorter generic one-word terms require explicit query approval. Tags and text searches remain separate atomic query definitions, and each definition preserves:
 
 ```text
 query_definition_id

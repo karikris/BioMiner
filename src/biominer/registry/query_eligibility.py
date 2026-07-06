@@ -78,6 +78,7 @@ SAME_TAXON_LANGUAGE_SOURCES = {"wikimedia", "wikidata"}
 MANUAL_REVIEW_STATES = {"reviewed", "curator_reviewed", "manual_reviewed", "query_approved"}
 SCIENTIFIC_NAME_CLASSES = {"accepted_scientific", "canonical_scientific", "scientific_synonym", "scientific", "scientific_name", "synonym"}
 COMMON_NAME_CLASSES = {"vernacular", "vernacular_alias", "common_name", "common_name_alias", "generated_translation"}
+MIN_ONE_WORD_QUERY_LENGTH = 8
 _TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
 
@@ -106,6 +107,8 @@ def assess_name_query_eligibility(row: dict[str, Any]) -> QueryEligibilityDecisi
     if not normalized:
         return QueryEligibilityDecision(False, "empty_name", 0.0)
     if name_class in SCIENTIFIC_NAME_CLASSES:
+        if not _is_species_level_scientific_name(tokens):
+            return QueryEligibilityDecision(False, "broad_scientific_name", min(score, 0.45))
         return QueryEligibilityDecision(True, "", max(score, 0.95))
     if name_class not in COMMON_NAME_CLASSES:
         return QueryEligibilityDecision(False, "unsupported_name_class_for_query", score)
@@ -114,13 +117,14 @@ def assess_name_query_eligibility(row: dict[str, Any]) -> QueryEligibilityDecisi
     if generated_translation and not generated_translation_approved:
         return QueryEligibilityDecision(False, "generated_translation_requires_review_or_corroboration", min(score, 0.45))
     generic_single_token_query_approved = _generic_single_token_query_approved(row) if _is_generic_single_token(tokens) else False
-    if _is_generic_single_token(tokens) and not generic_single_token_query_approved:
+    long_one_word_query = _is_long_one_word_query(tokens)
+    if _is_generic_single_token(tokens) and not generic_single_token_query_approved and not long_one_word_query:
         return QueryEligibilityDecision(False, "generic_single_token", min(score, 0.25))
     if _is_plural_group_name(tokens):
         return QueryEligibilityDecision(False, "plural_group_name", min(score, 0.3))
     if normalized in GENERIC_GROUP_PHRASES:
         return QueryEligibilityDecision(False, "generic_group_phrase", min(score, 0.35))
-    if generated_translation_approved or generic_single_token_query_approved:
+    if generated_translation_approved or generic_single_token_query_approved or long_one_word_query:
         score = max(score, 0.55)
     if score < 0.5:
         return QueryEligibilityDecision(False, "low_species_specificity", score)
@@ -173,7 +177,15 @@ def _is_plural_group_name(tokens: list[str]) -> bool:
     if len(tokens) != 1:
         return False
     token = tokens[0]
-    return token.endswith("s") and token in GENERIC_SINGLE_TOKENS
+    return token.endswith("s") and token in GENERIC_SINGLE_TOKENS and not _is_long_one_word_query(tokens)
+
+
+def _is_species_level_scientific_name(tokens: list[str]) -> bool:
+    return len(tokens) >= 2
+
+
+def _is_long_one_word_query(tokens: list[str]) -> bool:
+    return len(tokens) == 1 and len(tokens[0]) >= MIN_ONE_WORD_QUERY_LENGTH
 
 
 def _tokens(normalized_name: str) -> list[str]:

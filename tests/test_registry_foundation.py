@@ -190,6 +190,74 @@ def test_compile_registry_fixture_emits_atomic_flickr_queries_in_name_priority_o
     assert queries.select(["normalized_query_term", "search_field", "region"]).unique().height == 4
 
 
+def test_compile_registry_fixture_keeps_broad_scientific_names_out_of_queries(tmp_path) -> None:
+    source = tmp_path / "source.json"
+    output = tmp_path / "registry"
+    _write_fixture(source)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["taxa"].append(
+        {
+            "accepted_taxon_key": "gbif:90",
+            "scientific_name": "Papilio",
+            "rank": "GENUS",
+            "parent_key": "gbif:10",
+            "family_key": "gbif:10",
+            "family": "Papilionidae",
+            "genus_key": "gbif:90",
+            "genus": "Papilio",
+            "species_key": "",
+            "species": "",
+        }
+    )
+    payload["names"].extend(
+        [
+            {
+                "accepted_taxon_key": "gbif:fam:Papilionidae",
+                "verbatim_name": "Papilionidae",
+                "display_name": "Papilionidae",
+                "language": "la",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "accepted_scientific",
+                "source": "GBIF",
+                "source_record_id": "gbif:fam:Papilionidae",
+                "trust_tier": "T1",
+                "precision_tier": "high",
+                "confidence": "high",
+                "enabled": True,
+            },
+            {
+                "accepted_taxon_key": "gbif:90",
+                "verbatim_name": "Papilio",
+                "display_name": "Papilio",
+                "language": "la",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "accepted_scientific",
+                "source": "GBIF",
+                "source_record_id": "gbif:90",
+                "trust_tier": "T1",
+                "precision_tier": "high",
+                "confidence": "high",
+                "enabled": True,
+            },
+        ]
+    )
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    compile_registry_fixture(source, output, registry_version="test-registry")
+
+    names = pl.read_parquet(output / "names.parquet")
+    queries = pl.read_parquet(output / "flickr_query_definitions.parquet")
+    broad_names = names.filter(pl.col("display_name").is_in(["Papilionidae", "Papilio"])).sort("display_name")
+
+    assert broad_names.select("query_eligible").to_series().to_list() == [False, False]
+    assert broad_names.select("query_disabled_reason").to_series().to_list() == ["broad_scientific_name", "broad_scientific_name"]
+    assert not set(queries.select("source_term").to_series().to_list()) & {"Papilionidae", "Papilio"}
+
+
 def test_compile_registry_fixture_stores_enabled_but_query_ineligible_weak_names(tmp_path) -> None:
     source = tmp_path / "source.json"
     output = tmp_path / "registry"
@@ -291,12 +359,14 @@ def test_compile_registry_fixture_stores_enabled_but_query_ineligible_weak_names
     assert by_name["common lime butterfly"]["enabled"] is True
     assert by_name["common lime butterfly"]["query_eligible"] is True
     assert by_name["common lime butterfly"]["species_specificity_score"] > by_name["lime"]["species_specificity_score"]
-    for weak_name in ("lime", "swallowtails", "swallowtail butterfly", "papillon"):
+    assert by_name["swallowtails"]["query_eligible"] is True
+    for weak_name in ("lime", "swallowtail butterfly", "papillon"):
         assert by_name[weak_name]["enabled"] is True
         assert by_name[weak_name]["query_eligible"] is False
         assert by_name[weak_name]["query_disabled_reason"]
     assert "Common Lime Butterfly" in queries["source_term"].to_list()
-    assert not {"lime", "swallowtails", "swallowtail butterfly", "papillon"} & set(queries["normalized_match_key"].to_list())
+    assert "swallowtails" in set(queries["normalized_match_key"].to_list())
+    assert not {"lime", "swallowtail butterfly", "papillon"} & set(queries["normalized_match_key"].to_list())
     assert manifest["query_eligible_name_rows"] == names.filter(pl.col("query_eligible")).height
     assert manifest["query_ineligible_name_rows"] == names.filter(pl.col("enabled") & ~pl.col("query_eligible")).height
 

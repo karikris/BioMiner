@@ -547,7 +547,9 @@ T5 translation candidates are retained as registry name evidence while preservin
 
 ## Step 0C — Flickr query compilation
 
-Each query-eligible registry name is compiled into separate atomic Flickr definitions. Enabled names that are generic, collided across taxa, or low-trust generated translations remain available for audit and matching but are not emitted as Flickr search terms.
+Each query-eligible species-level registry name is compiled into separate atomic Flickr definitions. Enabled names that are collided across taxa, broad scientific monomials such as genus/family/root names, or low-trust generated translations remain available for audit, lineage, and matching but are not emitted as bare Flickr search terms.
+
+One-word common-name terms with eight or more letters can be emitted when the row otherwise passes eligibility checks. Shorter one-word generic terms remain query-ineligible unless explicitly query-approved.
 
 Priority order:
 
@@ -555,12 +557,11 @@ Priority order:
 |---:|---|
 | 10 | species scientific name — tags |
 | 20 | species common name — tags |
-| 30 | genus scientific name — tags |
-| 40 | family scientific/common name — tags |
 | 50 | species scientific name — text |
 | 60 | species common name — text |
-| 70 | genus/family — text |
 | 80+ | reviewed/corroborated translation names retained with low-trust provenance |
+
+Family, genus, and root scientific names stay in the registry as taxonomic provenance. They are too broad for a single-species Flickr search unless a later species workflow emits an explicitly species-anchored broad term such as `<accepted species> <reviewed term>`.
 
 Registry enrichment also harvests multilingual discovery terms before compiling the final query definitions:
 
@@ -575,7 +576,7 @@ Each definition retains:
 - deterministic query-definition ID;
 - accepted GBIF taxon key;
 - accepted scientific name;
-- rank and lineage keys;
+- accepted rank and lineage keys;
 - source term and normalized query term;
 - language, script, region, and bbox;
 - term class;
