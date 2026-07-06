@@ -18,8 +18,7 @@ from biominer.registry.enrichment import (
     default_enrichment_clients,
     write_enrichment_sources,
 )
-from biominer.registry.enrichment_sources import ITISClient, _json_get
-from biominer.registry.enrichment_sources import TMDGermanClient
+from biominer.registry.enrichment_sources import CatalogueOfLifeClient, INaturalistClient, ITISClient, TMDGermanClient, _json_get
 from biominer.registry.translation_sources import generated_translation_candidate, write_translation_candidates
 
 
@@ -122,6 +121,18 @@ def _write_base_registry(tmp_path, species_names: tuple[str, ...] = ("Papilio de
     registry = tmp_path / "registry"
     compile_registry_fixture(source, registry, registry_version="base", scope_path=scope)
     return registry, scope
+
+
+def _species_context() -> SpeciesContext:
+    return SpeciesContext(
+        accepted_taxon_key="gbif:100",
+        accepted_scientific_name="Papilio demoleus",
+        family_key="gbif:10",
+        family="Papilionidae",
+        genus_key="gbif:90",
+        genus="Papilio",
+        current_names=("Papilio demoleus",),
+    )
 
 
 def test_compile_enriched_registry_adds_enabled_names_and_preserves_candidates(tmp_path) -> None:
@@ -229,6 +240,32 @@ def test_compile_enriched_registry_adds_enabled_names_and_preserves_candidates(t
     assert evidence.filter(pl.col("source") == "iNaturalist").height == 2
     assert links.select("source_taxon_id").to_series().to_list() == ["1"]
     assert snapshots.select("source").to_series().to_list() == ["GBIF", "iNaturalist"]
+
+
+def test_catalogue_of_life_source_uses_non_truncating_search_limit() -> None:
+    requests = []
+
+    def fake_get(path, params):  # noqa: ANN001, ANN202 - source test double.
+        requests.append((path, dict(params)))
+        return {"result": []}
+
+    client = CatalogueOfLifeClient(http_get=fake_get)
+    client.enrich_species(_species_context())
+
+    assert requests == [("/dataset/3/nameusage/search", {"q": "Papilio demoleus", "limit": 1000})]
+
+
+def test_inaturalist_source_uses_non_truncating_taxa_page_size() -> None:
+    requests = []
+
+    def fake_get(path, params):  # noqa: ANN001, ANN202 - source test double.
+        requests.append((path, dict(params)))
+        return {"results": []}
+
+    client = INaturalistClient(http_get=fake_get)
+    client.enrich_species(_species_context())
+
+    assert requests == [("/v1/taxa", {"q": "Papilio demoleus", "rank": "species", "per_page": 200})]
 
 
 def test_english_language_variants_normalize_and_deduplicate(tmp_path) -> None:

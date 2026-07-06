@@ -27,6 +27,8 @@ TMD_GERMAN_PROJECT_ID = "410"
 TMD_SOURCE_VERSION = "tmd-taxonomy-graphql-projects-407-410"
 WIKIDATA_WDQS_URL = "https://query.wikidata.org"
 WIKIDATA_SOURCE_VERSION = "wikidata-wdqs-p225-p846-p1843-labels-aliases"
+COL_NAME_USAGE_SEARCH_LIMIT = 1000
+INATURALIST_TAXA_PER_PAGE = 200
 
 
 class CatalogueOfLifeClient:
@@ -34,7 +36,7 @@ class CatalogueOfLifeClient:
         self._http_get = http_get or _json_get("https://api.checklistbank.org", max_retries=max_retries)
 
     def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
-        payload = self._http_get("/dataset/3/nameusage/search", {"q": context.accepted_scientific_name, "limit": 10})
+        payload = self._http_get("/dataset/3/nameusage/search", {"q": context.accepted_scientific_name, "limit": COL_NAME_USAGE_SEARCH_LIMIT})
         rows = _result_rows(payload)
         assertions: list[dict[str, Any]] = []
         links: list[dict[str, Any]] = []
@@ -113,7 +115,7 @@ class INaturalistClient:
             {
                 "q": context.accepted_scientific_name,
                 "rank": "species",
-                "per_page": 10,
+                "per_page": INATURALIST_TAXA_PER_PAGE,
             },
         )
         assertions: list[dict[str, Any]] = []
