@@ -636,9 +636,6 @@ def _ensure_query_eligibility_columns(names: pl.DataFrame) -> pl.DataFrame:
     if names.is_empty():
         return names
     rows: list[dict[str, Any]] = []
-    needs_rebuild = not {"query_eligible", "query_disabled_reason", "species_specificity_score"}.issubset(names.columns)
-    if not needs_rebuild:
-        return names
     for row in names.to_dicts():
         decision = assess_name_query_eligibility(row)
         rows.append(
