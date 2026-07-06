@@ -221,6 +221,7 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
         reuse_source_json=True,
         report_dir=tmp_path / "reports",
         workers=1,
+        skip_translations=True,
     )
 
     registry = tmp_path / "registry"
@@ -357,6 +358,7 @@ def test_registry_build_quarantines_source_errors_without_siloing_successful_nam
         reuse_source_json=True,
         report_dir=tmp_path / "reports",
         workers=1,
+        skip_translations=True,
     )
 
     registry = tmp_path / "registry"

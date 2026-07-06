@@ -49,6 +49,7 @@ from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST
 from biominer.registry.gbif import GBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
+from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES, DEFAULT_TRANSLATION_TARGET_LOCALES_JSON
 from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR, YOLOE26_DIR
 from biominer.run import ProductionRunOrchestrator, ProductionRunRequest, RunStage
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES
@@ -195,6 +196,14 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--checkpoint-every", type=int, default=500)
     registry_build.add_argument("--max-retries", type=int, default=5)
     registry_build.add_argument("--enrichment-sources", default=",".join(DEFAULT_ENRICHMENT_SOURCES))
+    registry_build.add_argument("--translation-sources", default=",".join(DEFAULT_TRANSLATION_SOURCES))
+    registry_build.add_argument("--translation-target-locales-json", default=DEFAULT_TRANSLATION_TARGET_LOCALES_JSON)
+    registry_build.add_argument("--skip-translations", action="store_true")
+    registry_build.add_argument("--translation-daily-request-limit", type=int, default=10000)
+    registry_build.add_argument("--max-translation-candidates-per-name", type=int, default=3)
+    registry_build.add_argument("--mymemory-email")
+    registry_build.add_argument("--mymemory-key")
+    registry_build.add_argument("--mymemory-allow-machine-translation", action="store_true")
     registry_build.add_argument("--inaturalist-daily-request-limit", type=int, default=INATURALIST_DAILY_REQUEST_LIMIT)
     registry_build.add_argument("--skip-enrichment", action="store_true")
     registry_audit = registry_subparsers.add_parser("audit")
@@ -513,6 +522,14 @@ def run(args: argparse.Namespace) -> int:
                     checkpoint_every=args.checkpoint_every,
                     max_retries=args.max_retries,
                     enrichment_sources=tuple(part.strip() for part in args.enrichment_sources.split(",") if part.strip()),
+                    translation_sources=tuple(part.strip() for part in args.translation_sources.split(",") if part.strip()),
+                    translation_target_locales_json=args.translation_target_locales_json,
+                    skip_translations=args.skip_translations,
+                    translation_daily_request_limit=args.translation_daily_request_limit,
+                    max_translation_candidates_per_name=args.max_translation_candidates_per_name,
+                    mymemory_email=args.mymemory_email,
+                    mymemory_key=args.mymemory_key,
+                    mymemory_allow_machine_translation=args.mymemory_allow_machine_translation,
                     inaturalist_daily_request_limit=args.inaturalist_daily_request_limit,
                     skip_enrichment=args.skip_enrichment,
                 )

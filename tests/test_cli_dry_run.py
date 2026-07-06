@@ -15,6 +15,7 @@ from biominer.cli import _detect_boxes_backend, _yoloe26_metrics, build_parser, 
 from biominer.detection.detector_base import DetectionCandidate
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES
+from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES
 
 
 def test_cli_exposes_only_lean_pipeline_commands() -> None:
@@ -87,6 +88,8 @@ def test_registry_build_defaults_to_production_enrichment_sources() -> None:
     )
 
     assert args.enrichment_sources == ",".join(DEFAULT_ENRICHMENT_SOURCES)
+    assert args.translation_sources == ",".join(DEFAULT_TRANSLATION_SOURCES)
+    assert args.skip_translations is False
 
 
 def test_run_cli_exposes_comment_and_registry_build_controls() -> None:

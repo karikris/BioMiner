@@ -11,7 +11,17 @@ from biominer.registry.trust_policy import decide_name_trust
 
 
 TRANSLATION_CANDIDATES_FILE = "translation_candidates.parquet"
+DEFAULT_TRANSLATION_SOURCES = ("wikimedia", "mymemory")
+DEFAULT_TRANSLATION_TARGET_LOCALES_JSON = "config/name_translation_target_locales.json"
 TranslationSourceKind = Literal["generated", "dictionary"]
+
+
+def translation_source_display_names(sources: tuple[str, ...]) -> tuple[str, ...]:
+    mapping = {
+        "mymemory": "MyMemory",
+        "wikimedia": "Wikimedia",
+    }
+    return tuple(mapping.get(source, source) for source in sources)
 
 
 @dataclass(frozen=True)
@@ -177,11 +187,14 @@ def _boolish(value: object) -> bool:
 
 
 __all__ = [
+    "DEFAULT_TRANSLATION_SOURCES",
+    "DEFAULT_TRANSLATION_TARGET_LOCALES_JSON",
     "TRANSLATION_CANDIDATES_FILE",
     "TranslationCandidate",
     "generated_translation_candidate",
     "translation_candidate_schema",
     "translation_candidates_frame",
     "translation_candidate_id",
+    "translation_source_display_names",
     "write_translation_candidates",
 ]

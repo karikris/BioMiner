@@ -14,6 +14,8 @@ from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST
 from biominer.registry.gbif_production import ProductionGBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
+from biominer.registry.translation_harvester import build_translation_candidates_from_registry
+from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES, DEFAULT_TRANSLATION_TARGET_LOCALES_JSON
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.paths import build_registry_current_pointer, build_registry_current_uri, build_registry_version_uri, safe_path_component
 from biominer.storage.uri import is_cloud_uri, join_uri
@@ -34,6 +36,14 @@ def build_registry(
     checkpoint_every: int = 500,
     max_retries: int = 5,
     enrichment_sources: tuple[str, ...] = DEFAULT_ENRICHMENT_SOURCES,
+    translation_sources: tuple[str, ...] = DEFAULT_TRANSLATION_SOURCES,
+    translation_target_locales_json: str | Path = DEFAULT_TRANSLATION_TARGET_LOCALES_JSON,
+    skip_translations: bool = False,
+    translation_daily_request_limit: int = 10000,
+    max_translation_candidates_per_name: int = 3,
+    mymemory_email: str | None = None,
+    mymemory_key: str | None = None,
+    mymemory_allow_machine_translation: bool = False,
     inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
     skip_enrichment: bool = False,
     storage: CloudStorage | None = None,
@@ -51,6 +61,14 @@ def build_registry(
         "checkpoint_every": checkpoint_every,
         "max_retries": max_retries,
         "enrichment_sources": enrichment_sources,
+        "translation_sources": translation_sources,
+        "translation_target_locales_json": translation_target_locales_json,
+        "skip_translations": skip_translations,
+        "translation_daily_request_limit": translation_daily_request_limit,
+        "max_translation_candidates_per_name": max_translation_candidates_per_name,
+        "mymemory_email": mymemory_email,
+        "mymemory_key": mymemory_key,
+        "mymemory_allow_machine_translation": mymemory_allow_machine_translation,
         "inaturalist_daily_request_limit": inaturalist_daily_request_limit,
         "skip_enrichment": skip_enrichment,
     }
@@ -76,6 +94,14 @@ def build_cloud_registry(
     checkpoint_every: int = 500,
     max_retries: int = 5,
     enrichment_sources: tuple[str, ...] = DEFAULT_ENRICHMENT_SOURCES,
+    translation_sources: tuple[str, ...] = DEFAULT_TRANSLATION_SOURCES,
+    translation_target_locales_json: str | Path = DEFAULT_TRANSLATION_TARGET_LOCALES_JSON,
+    skip_translations: bool = False,
+    translation_daily_request_limit: int = 10000,
+    max_translation_candidates_per_name: int = 3,
+    mymemory_email: str | None = None,
+    mymemory_key: str | None = None,
+    mymemory_allow_machine_translation: bool = False,
     inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
     skip_enrichment: bool = False,
 ) -> dict[str, Any]:
@@ -146,6 +172,7 @@ def build_cloud_registry(
         registry_version=registry_version,
         retrieved_at=retrieved,
         enrichment_sources=enrichment_sources,
+        translation_sources=(),
         inaturalist_daily_request_limit=inaturalist_daily_request_limit,
         skip_enrichment=skip_enrichment,
         enrichment_manifest=None,
@@ -183,6 +210,14 @@ def build_local_registry(
     checkpoint_every: int = 500,
     max_retries: int = 5,
     enrichment_sources: tuple[str, ...] = DEFAULT_ENRICHMENT_SOURCES,
+    translation_sources: tuple[str, ...] = DEFAULT_TRANSLATION_SOURCES,
+    translation_target_locales_json: str | Path = DEFAULT_TRANSLATION_TARGET_LOCALES_JSON,
+    skip_translations: bool = False,
+    translation_daily_request_limit: int = 10000,
+    max_translation_candidates_per_name: int = 3,
+    mymemory_email: str | None = None,
+    mymemory_key: str | None = None,
+    mymemory_allow_machine_translation: bool = False,
     inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
     skip_enrichment: bool = False,
 ) -> dict[str, Any]:
@@ -263,6 +298,36 @@ def build_local_registry(
             inaturalist_daily_request_limit=inaturalist_daily_request_limit,
             report_dir=report_dir,
         )
+        effective_translation_sources = () if skip_translations else tuple(source for source in translation_sources if source)
+        if effective_translation_sources:
+            logger.info(
+                "registry.build.translation.start base_dir=%s enrichment_dir=%s sources=%s",
+                base_dir,
+                enrichment_dir,
+                ",".join(effective_translation_sources),
+            )
+            translation_manifest = build_translation_candidates_from_registry(
+                registry_dir=base_dir,
+                enrichment_dir=enrichment_dir,
+                translation_sources=effective_translation_sources,
+                target_locales_json=translation_target_locales_json,
+                max_retries=max_retries,
+                daily_request_limit=translation_daily_request_limit,
+                max_candidates_per_name=max_translation_candidates_per_name,
+                mymemory_email=mymemory_email,
+                mymemory_key=mymemory_key,
+                mymemory_allow_machine_translation=mymemory_allow_machine_translation,
+            )
+            enrichment_manifest = {**enrichment_manifest, **translation_manifest}
+            logger.info(
+                "registry.build.translation.complete status=%s wikimedia_assertions=%s mymemory_candidates=%s requests=%s",
+                translation_manifest.get("translation_status"),
+                translation_manifest.get("wikimedia_assertion_rows"),
+                translation_manifest.get("mymemory_candidate_rows"),
+                translation_manifest.get("translation_request_rows"),
+            )
+        else:
+            logger.info("registry.build.translation.skip output=%s", enrichment_dir)
         logger.info(
             "registry.build.compile_enriched.start base_dir=%s enrichment_dir=%s output=%s",
             base_dir,
@@ -277,6 +342,7 @@ def build_local_registry(
             registry_version=registry_version,
             scope_path=scope_path,
             requested_sources=enrichment_sources,
+            requested_translation_sources=effective_translation_sources,
         )
         logger.info(
             "registry.build.compile_enriched.complete status=%s taxa=%s names=%s queries=%s enrichment_names=%s source_errors=%s",
@@ -302,6 +368,7 @@ def build_local_registry(
         registry_version=registry_version,
         retrieved_at=retrieved,
         enrichment_sources=enrichment_sources,
+        translation_sources=effective_translation_sources if not skip_enrichment else (),
         inaturalist_daily_request_limit=inaturalist_daily_request_limit,
         skip_enrichment=skip_enrichment,
         enrichment_manifest=enrichment_manifest,
@@ -326,6 +393,7 @@ def _build_report(
     registry_version: str,
     retrieved_at: str,
     enrichment_sources: tuple[str, ...],
+    translation_sources: tuple[str, ...],
     inaturalist_daily_request_limit: int,
     skip_enrichment: bool,
     enrichment_manifest: dict[str, Any] | None,
@@ -355,6 +423,12 @@ def _build_report(
         "qa_warning_count": manifest.get("qa_warning_count"),
         "enrichment_enabled": not skip_enrichment,
         "enrichment_sources": list(enrichment_sources) if not skip_enrichment else [],
+        "translation_sources": list(translation_sources) if not skip_enrichment else [],
+        "translation_target_locale_count": (enrichment_manifest or {}).get("translation_target_locale_count"),
+        "translation_request_rows": (enrichment_manifest or {}).get("translation_request_rows"),
+        "wikimedia_assertion_rows": (enrichment_manifest or {}).get("wikimedia_assertion_rows"),
+        "mymemory_candidate_rows": (enrichment_manifest or {}).get("mymemory_candidate_rows"),
+        "translation_error_rows": (enrichment_manifest or {}).get("translation_error_rows"),
         "inaturalist_daily_request_limit": inaturalist_daily_request_limit if not skip_enrichment else None,
         "enrichment_name_assertion_rows": manifest.get("enrichment_name_assertion_rows"),
         "enabled_enrichment_name_rows": manifest.get("enabled_enrichment_name_rows"),
@@ -410,6 +484,11 @@ def _report_markdown(report: dict[str, Any]) -> str:
             f"- QA warning: {report['qa_warning_count']}",
             f"- Enrichment enabled: {report['enrichment_enabled']}",
             f"- Enrichment sources: {', '.join(report['enrichment_sources'])}",
+            f"- Translation sources: {', '.join(report['translation_sources'])}",
+            f"- Translation target locales: {report['translation_target_locale_count']}",
+            f"- Translation requests: {report['translation_request_rows']}",
+            f"- Wikimedia assertion rows: {report['wikimedia_assertion_rows']}",
+            f"- MyMemory candidate rows: {report['mymemory_candidate_rows']}",
             f"- iNaturalist daily request limit: {report['inaturalist_daily_request_limit']}",
             f"- Enabled enrichment names: {report['enabled_enrichment_name_rows']}",
             f"- Enabled T5 names: {report['enabled_t5_name_rows']}",
@@ -449,6 +528,8 @@ def _canonical_registry_files() -> tuple[str, ...]:
         "external_taxon_links.parquet",
         "source_error_records.parquet",
         "source_work_ledger.parquet",
+        "translation_candidates.parquet",
+        "translation_work_ledger.parquet",
         "name_candidates.parquet",
         "combined_source_snapshot.json",
         "enrichment_coverage.json",

@@ -11,6 +11,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import threading
 from time import monotonic
@@ -20,7 +21,7 @@ import polars as pl
 
 from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.normalize import normalize_language_code, normalize_name_key
-from biominer.registry.translation_sources import TRANSLATION_CANDIDATES_FILE, translation_candidate_schema
+from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES, TRANSLATION_CANDIDATES_FILE, translation_candidate_schema, translation_source_display_names
 from biominer.registry.trust_policy import decide_name_trust
 
 
@@ -33,6 +34,7 @@ SOURCE_WORK_LEDGER_FILE = "source_work_ledger.parquet"
 FINAL_SOURCE_SNAPSHOTS_FILE = "source_snapshots.parquet"
 NAME_CANDIDATES_FILE = "name_candidates.parquet"
 ENRICHMENT_MANIFEST_FILE = "enrichment_manifest.json"
+TRANSLATION_WORK_LEDGER_FILE = "translation_work_ledger.parquet"
 DEFAULT_ENRICHMENT_SOURCES = ("col", "inaturalist", "itis", "tmd_de", "wikidata")
 BULK_ENRICHMENT_SOURCES = frozenset({"tmd_de"})
 BULK_REGISTRY_WORK_KEY = "__registry__"
@@ -694,6 +696,7 @@ def compile_enriched_registry(
     enrichment_dir: str | Path | None = None,
     output_dir: str | Path | None = None,
     requested_sources: tuple[str, ...] | None = None,
+    requested_translation_sources: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     registry = Path(registry_dir) if registry_dir is not None else Path(base_registry_dir or "")
     base = Path(base_registry_dir) if base_registry_dir is not None else registry
@@ -705,21 +708,31 @@ def compile_enriched_registry(
     base_names = pl.read_parquet(base / "names.parquet")
     base_snapshots = pl.read_parquet(base / "source_snapshots.parquet") if (base / "source_snapshots.parquet").exists() else pl.DataFrame(schema=_source_snapshot_schema())
     assertions = _read_or_empty(enrichment / SOURCE_ASSERTIONS_FILE, _name_assertion_schema())
-    translation_assertions = _translation_candidate_assertions(enrichment / TRANSLATION_CANDIDATES_FILE)
+    candidate_translation_source_names = None if requested_translation_sources is None else set(translation_source_display_names(requested_translation_sources))
+    translation_source_names = set(translation_source_display_names(requested_translation_sources if requested_translation_sources is not None else DEFAULT_TRANSLATION_SOURCES))
+    translation_candidates = _read_or_empty(enrichment / TRANSLATION_CANDIDATES_FILE, translation_candidate_schema())
+    if candidate_translation_source_names is None:
+        pass
+    elif candidate_translation_source_names:
+        translation_candidates = translation_candidates.filter(pl.col("source").is_in(candidate_translation_source_names))
+    else:
+        translation_candidates = pl.DataFrame(schema=translation_candidate_schema())
+    translation_assertions = _translation_candidate_assertions(enrichment / TRANSLATION_CANDIDATES_FILE, allowed_sources=candidate_translation_source_names)
     external_links = _read_or_empty(enrichment / EXTERNAL_LINKS_FILE, _external_link_schema())
     enrichment_snapshots = _read_or_empty(enrichment / ENRICHMENT_SOURCE_SNAPSHOTS_FILE, _source_snapshot_schema())
     source_errors = _read_or_empty(enrichment / SOURCE_ERRORS_FILE, _source_error_schema())
     source_work = _read_or_empty(enrichment / SOURCE_WORK_LEDGER_FILE, _source_work_schema())
     effective_sources = requested_sources or DEFAULT_ENRICHMENT_SOURCES
-    allowed_sources = _source_display_names(effective_sources)
-    allowed_error_sources = tuple(dict.fromkeys((*effective_sources, *allowed_sources)))
+    effective_translation_sources = requested_translation_sources if requested_translation_sources is not None else DEFAULT_TRANSLATION_SOURCES
+    allowed_sources = tuple(dict.fromkeys((*_source_display_names(effective_sources), *translation_source_names)))
+    allowed_error_sources = tuple(dict.fromkeys((*effective_sources, *effective_translation_sources, *allowed_sources)))
     assertions = assertions.filter(pl.col("source").is_in(allowed_sources))
     if not translation_assertions.is_empty():
         assertions = pl.concat([assertions, translation_assertions], how="vertical")
     external_links = external_links.filter(pl.col("source").is_in(allowed_sources))
     enrichment_snapshots = enrichment_snapshots.filter(pl.col("source").is_in(allowed_sources))
     source_errors = source_errors.filter(pl.col("source").is_in(allowed_error_sources))
-    source_work = source_work.filter(pl.col("source").is_in(effective_sources))
+    source_work = source_work.filter(pl.col("source").is_in(tuple(dict.fromkeys((*effective_sources, *effective_translation_sources)))))
     assertions = _name_assertions_frame(assertions.to_dicts())
 
     accepted_keys = set(taxa["accepted_taxon_key"].to_list())
@@ -738,6 +751,10 @@ def compile_enriched_registry(
     )
     candidate_output = candidates.filter(~(pl.col("enabled") & (pl.col("disabled_reason") == "")))
     candidate_output.write_parquet(output / NAME_CANDIDATES_FILE)
+    translation_candidates.write_parquet(output / TRANSLATION_CANDIDATES_FILE)
+    translation_work_source = enrichment / TRANSLATION_WORK_LEDGER_FILE
+    if translation_work_source.exists() and effective_translation_sources:
+        shutil.copy2(translation_work_source, output / TRANSLATION_WORK_LEDGER_FILE)
     assertions.write_parquet(output / SOURCE_ASSERTIONS_FILE)
     external_links.write_parquet(output / EXTERNAL_LINKS_FILE)
     source_errors.write_parquet(output / SOURCE_ERRORS_FILE)
@@ -779,6 +796,7 @@ def compile_enriched_registry(
             "source_error_rows": source_errors.height,
             "source_work_rows": source_work.height,
             "enrichment_sources": list(effective_sources),
+            "translation_sources": list(effective_translation_sources),
         }
     )
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
@@ -927,7 +945,7 @@ def _name_assertions_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
     return pl.DataFrame(normalized, schema=_name_assertion_schema()) if normalized else pl.DataFrame(schema=_name_assertion_schema())
 
 
-def _translation_candidate_assertions(path: Path) -> pl.DataFrame:
+def _translation_candidate_assertions(path: Path, *, allowed_sources: set[str] | None = None) -> pl.DataFrame:
     candidates = _read_or_empty(path, translation_candidate_schema())
     if candidates.is_empty():
         return pl.DataFrame(schema=_name_assertion_schema())
@@ -938,6 +956,8 @@ def _translation_candidate_assertions(path: Path) -> pl.DataFrame:
         if not translated_name or not accepted_taxon_key:
             continue
         source = str(row.get("source") or "Translation").strip() or "Translation"
+        if allowed_sources is not None and source not in allowed_sources:
+            continue
         candidate_id = str(row.get("candidate_id") or row.get("source_record_id") or "").strip()
         source_record_id = str(row.get("source_record_id") or candidate_id).strip() or _stable_id(
             "translation",
@@ -1334,7 +1354,16 @@ def _registry_artifact_hash(registry: Path) -> str:
 
 
 def _source_display_names(sources: tuple[str, ...]) -> tuple[str, ...]:
-    mapping = {"col": "CoL", "itis": "ITIS", "inaturalist": "iNaturalist", "tmd_de": "TMD", "wikidata": "Wikidata", "translation": "Translation"}
+    mapping = {
+        "col": "CoL",
+        "itis": "ITIS",
+        "inaturalist": "iNaturalist",
+        "mymemory": "MyMemory",
+        "tmd_de": "TMD",
+        "wikidata": "Wikidata",
+        "wikimedia": "Wikimedia",
+        "translation": "Translation",
+    }
     return tuple(mapping.get(source, source) for source in sources)
 
 

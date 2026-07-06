@@ -562,6 +562,13 @@ Priority order:
 | 70 | genus/family — text |
 | 80+ | T5 generated/dictionary translation names retained with low-trust provenance |
 
+Registry enrichment also harvests multilingual discovery terms before compiling the final query definitions:
+
+- Wikimedia interlanguage article titles are retained as source-backed aliases with `source = Wikimedia`.
+- MyMemory dictionary/translation-memory matches are written to `translation_candidates.parquet` and promoted as enabled T5 names by default.
+- MyMemory uses translation-memory mode (`mt=0`) unless `--mymemory-allow-machine-translation` is explicitly supplied.
+- Translation terms expand Flickr discovery queries only; they are not taxonomic validation.
+
 Each definition retains:
 
 - registry version;
