@@ -150,9 +150,12 @@ def test_compile_registry_fixture_writes_normalized_parquet_and_manifest(tmp_pat
     assert manifest["qa_warning_count"] == 1
     assert (output / "taxa.parquet").exists()
     assert (output / "names.parquet").exists()
+    assert (output / "name_collision_ledger.parquet").exists()
     assert (output / "name_evidence.parquet").exists()
     assert (output / "source_snapshots.parquet").exists()
     assert json.loads((output / "manifest.json").read_text(encoding="utf-8")) == manifest
+    assert manifest["name_collision_ledger_rows"] == 0
+    assert manifest["query_blocking_name_collision_rows"] == 0
 
     names = pl.read_parquet(output / "names.parquet")
     assert names.select("normalized_match_key").to_series().to_list() == [
@@ -310,6 +313,83 @@ def test_compile_registry_fixture_allows_reviewed_generated_translation_queries(
 
     assert reviewed.select("query_eligible").to_series().to_list() == [True]
     assert queries.filter(pl.col("normalized_match_key") == "limettenfalter").select("search_field").to_series().to_list() == ["tags", "text"]
+
+
+def test_compile_registry_fixture_disables_cross_species_common_name_collisions(tmp_path) -> None:
+    source = tmp_path / "source.json"
+    output = tmp_path / "registry"
+    _write_fixture(source)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["taxa"].append(
+        {
+            "accepted_taxon_key": "gbif:200",
+            "scientific_name": "Danaus plexippus",
+            "rank": "SPECIES",
+            "parent_key": "gbif:190",
+            "family_key": "gbif:20",
+            "family": "Nymphalidae",
+            "genus_key": "gbif:190",
+            "genus": "Danaus",
+            "species_key": "gbif:200",
+            "species": "Danaus plexippus",
+        }
+    )
+    payload["names"].extend(
+        [
+            {
+                "accepted_taxon_key": "gbif:200",
+                "verbatim_name": "Danaus plexippus",
+                "display_name": "Danaus plexippus",
+                "language": "la",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "accepted_scientific",
+                "source": "GBIF",
+                "source_record_id": "gbif:200",
+                "trust_tier": "T1",
+                "precision_tier": "high",
+                "confidence": "high",
+                "enabled": True,
+            },
+            {
+                "accepted_taxon_key": "gbif:200",
+                "verbatim_name": "Lime Butterfly",
+                "display_name": "Lime Butterfly",
+                "language": "en",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "vernacular",
+                "source": "fixture",
+                "source_record_id": "fixture:name:danaus-lime",
+                "trust_tier": "T2",
+                "precision_tier": "medium",
+                "confidence": "medium",
+                "enabled": True,
+            },
+        ]
+    )
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = compile_registry_fixture(source, output, registry_version="test-registry")
+
+    names = pl.read_parquet(output / "names.parquet")
+    queries = pl.read_parquet(output / "flickr_query_definitions.parquet")
+    ledger = pl.read_parquet(output / "name_collision_ledger.parquet")
+    lime_names = names.filter(pl.col("normalized_match_key") == "lime butterfly").sort("accepted_taxon_key")
+
+    assert lime_names.select("query_eligible").to_series().to_list() == [False, False]
+    assert lime_names.select("query_disabled_reason").to_series().to_list() == ["normalized_name_language_collision", "normalized_name_language_collision"]
+    assert not queries.filter(pl.col("normalized_match_key") == "lime butterfly").height
+    assert set(queries["normalized_match_key"].to_list()) == {"papilio demoleus", "danaus plexippus"}
+    assert ledger.height == 1
+    assert ledger.row(0, named=True)["normalized_match_key"] == "lime butterfly"
+    assert ledger.row(0, named=True)["language"] == "eng"
+    assert ledger.row(0, named=True)["accepted_taxon_keys"] == ["gbif:100", "gbif:200"]
+    assert ledger.row(0, named=True)["collision_status"] == "query_blocking"
+    assert manifest["name_collision_ledger_rows"] == 1
+    assert manifest["query_blocking_name_collision_rows"] == 1
 
 
 def test_accepted_scientific_queries_schedule_before_synonyms(tmp_path) -> None:

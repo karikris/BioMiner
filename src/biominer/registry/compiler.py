@@ -9,13 +9,14 @@ from typing import Any
 import polars as pl
 
 from biominer.registry.normalize import normalize_language_code, normalize_name_key
-from biominer.registry.query_eligibility import assess_name_query_eligibility
+from biominer.registry.query_eligibility import SCIENTIFIC_NAME_CLASSES, assess_name_query_eligibility
 from biominer.registry.scope import load_scope
 from biominer.storage.parquet import write_parquet
 
 
 REGISTRY_SCHEMA_VERSION = "registry-foundation-v1"
 COMPILER_VERSION = "registry-compiler-v1"
+COLLISION_REVIEW_STATES = {"reviewed", "curator_reviewed", "manual_reviewed", "query_approved"}
 
 
 def compile_registry_fixture(
@@ -54,6 +55,8 @@ def compile_registry_frames(
     scope = load_scope(scope_path)
     taxa = _taxa_frame(source_payload.get("taxa", []), scope_id=scope.scope_id)
     names = _names_frame(source_payload.get("names", []), registry_version=registry_version)
+    name_collision_ledger = _name_collision_ledger_frame(names, registry_version=registry_version)
+    names = _apply_name_collision_policy(names, name_collision_ledger)
     evidence = _name_evidence_frame(source_payload.get("names", []), registry_version=registry_version, source_payload=source_payload)
     snapshots = _source_snapshots_frame(source_payload, source_ref=source_ref)
     queries = _query_definitions_frame(names, taxa, registry_version=registry_version)
@@ -63,6 +66,7 @@ def compile_registry_frames(
         "taxa.parquet": taxa,
         "taxon_relations.parquet": _taxon_relations_frame(taxa),
         "names.parquet": names,
+        "name_collision_ledger.parquet": name_collision_ledger,
         "name_evidence.parquet": evidence,
         "source_snapshots.parquet": snapshots,
         "flickr_query_definitions.parquet": queries,
@@ -73,6 +77,7 @@ def compile_registry_frames(
         scope_id=scope.scope_id,
         taxa=taxa,
         names=names,
+        name_collision_ledger=name_collision_ledger,
         queries=queries,
         qa=qa,
         source_ref=source_ref,
@@ -236,6 +241,7 @@ def _query_definitions_frame(names: pl.DataFrame, taxa: pl.DataFrame, *, registr
         "species",
     )
     names = _ensure_query_eligibility_columns(names)
+    names = _apply_name_collision_policy(names, _name_collision_ledger_frame(names, registry_version=registry_version))
     enabled_names = names.filter(pl.col("enabled") & pl.col("query_eligible"))
     rows: list[dict[str, Any]] = []
     joined = enabled_names.join(taxa_lookup, on="accepted_taxon_key", how="left").to_dicts()
@@ -310,6 +316,73 @@ def _taxon_relations_frame(taxa: pl.DataFrame) -> pl.DataFrame:
     return pl.DataFrame(rows, schema={"accepted_taxon_key": pl.String, "related_taxon_key": pl.String, "relation_type": pl.String})
 
 
+def _name_collision_ledger_frame(names: pl.DataFrame, *, registry_version: str) -> pl.DataFrame:
+    if names.is_empty():
+        return pl.DataFrame([], schema=_name_collision_ledger_schema())
+    buckets: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in names.filter((pl.col("enabled")) & (pl.col("normalized_match_key") != "")).to_dicts():
+        key = (str(row.get("normalized_match_key") or ""), str(row.get("language") or ""))
+        buckets.setdefault(key, []).append(row)
+    rows: list[dict[str, Any]] = []
+    for (normalized_match_key, language), bucket in sorted(buckets.items()):
+        accepted_taxon_keys = sorted({str(row.get("accepted_taxon_key") or "") for row in bucket if row.get("accepted_taxon_key")})
+        if len(accepted_taxon_keys) <= 1:
+            continue
+        query_blocking = [row for row in bucket if _name_collision_blocks_query(row)]
+        rows.append(
+            {
+                "registry_version": registry_version,
+                "normalized_match_key": normalized_match_key,
+                "language": language,
+                "taxon_count": len(accepted_taxon_keys),
+                "enabled_name_count": len(bucket),
+                "query_blocking_name_count": len(query_blocking),
+                "accepted_taxon_keys": accepted_taxon_keys,
+                "name_ids": sorted({str(row.get("name_id") or "") for row in bucket if row.get("name_id")}),
+                "display_names": sorted({str(row.get("display_name") or "") for row in bucket if row.get("display_name")}),
+                "name_classes": sorted({str(row.get("name_class") or "") for row in bucket if row.get("name_class")}),
+                "sources": sorted({str(row.get("source") or "") for row in bucket if row.get("source")}),
+                "collision_status": "query_blocking" if query_blocking else "reviewed_or_scientific",
+                "query_disabled_reason": "normalized_name_language_collision" if query_blocking else "",
+            }
+        )
+    return pl.DataFrame(rows, schema=_name_collision_ledger_schema())
+
+
+def _apply_name_collision_policy(names: pl.DataFrame, collision_ledger: pl.DataFrame) -> pl.DataFrame:
+    if names.is_empty() or collision_ledger.is_empty():
+        return names
+    blocking_keys = {
+        (str(row["normalized_match_key"]), str(row["language"]))
+        for row in collision_ledger.filter(pl.col("collision_status") == "query_blocking").to_dicts()
+    }
+    if not blocking_keys:
+        return names
+    rows: list[dict[str, Any]] = []
+    for row in names.to_dicts():
+        key = (str(row.get("normalized_match_key") or ""), str(row.get("language") or ""))
+        if key in blocking_keys and _name_collision_blocks_query(row):
+            row = {
+                **row,
+                "query_eligible": False,
+                "query_disabled_reason": "normalized_name_language_collision",
+                "species_specificity_score": min(float(row.get("species_specificity_score") or 0.0), 0.45),
+            }
+        rows.append(row)
+    return pl.DataFrame(rows, schema=names.schema)
+
+
+def _name_collision_blocks_query(row: dict[str, Any]) -> bool:
+    if not bool(row.get("enabled")) or not bool(row.get("query_eligible")):
+        return False
+    if str(row.get("name_class") or "").casefold() in SCIENTIFIC_NAME_CLASSES:
+        return False
+    review_state = "_".join(str(row.get("review_state") or "").casefold().split())
+    if review_state in COLLISION_REVIEW_STATES and str(row.get("precision_tier") or "").casefold() != "broad":
+        return False
+    return True
+
+
 def _qa_findings(taxa: pl.DataFrame, names: pl.DataFrame, queries: pl.DataFrame, scope) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     if taxa.filter((pl.col("scientific_name") == scope.root_scientific_name) & (pl.col("rank") == scope.root_rank)).is_empty():
@@ -375,6 +448,7 @@ def _manifest(
     scope_id: str,
     taxa: pl.DataFrame,
     names: pl.DataFrame,
+    name_collision_ledger: pl.DataFrame,
     queries: pl.DataFrame,
     qa: pl.DataFrame,
     source_ref: str | Path,
@@ -395,6 +469,10 @@ def _manifest(
         "name_rows": names.height,
         "query_eligible_name_rows": names.filter(pl.col("query_eligible")).height if "query_eligible" in names.columns else None,
         "query_ineligible_name_rows": names.filter(pl.col("enabled") & ~pl.col("query_eligible")).height if "query_eligible" in names.columns else None,
+        "name_collision_ledger_rows": name_collision_ledger.height,
+        "query_blocking_name_collision_rows": (
+            name_collision_ledger.filter(pl.col("collision_status") == "query_blocking").height if "collision_status" in name_collision_ledger.columns else 0
+        ),
         "query_definition_rows": queries.height,
         "qa_finding_rows": qa.height,
         "qa_fatal_count": fatal_count,
@@ -484,6 +562,24 @@ def _evidence_schema() -> dict[str, pl.DataType]:
         "licence": pl.String,
         "trust_tier": pl.String,
         "review_state": pl.String,
+    }
+
+
+def _name_collision_ledger_schema() -> dict[str, pl.DataType]:
+    return {
+        "registry_version": pl.String,
+        "normalized_match_key": pl.String,
+        "language": pl.String,
+        "taxon_count": pl.Int64,
+        "enabled_name_count": pl.Int64,
+        "query_blocking_name_count": pl.Int64,
+        "accepted_taxon_keys": pl.List(pl.String),
+        "name_ids": pl.List(pl.String),
+        "display_names": pl.List(pl.String),
+        "name_classes": pl.List(pl.String),
+        "sources": pl.List(pl.String),
+        "collision_status": pl.String,
+        "query_disabled_reason": pl.String,
     }
 
 
