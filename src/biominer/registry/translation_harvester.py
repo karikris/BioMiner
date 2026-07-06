@@ -535,7 +535,8 @@ def _harvest_wikimedia_context(
             title = " ".join(link.title.split())
             if not title or normalize_name_key(title) in {normalize_name_key(seed.source_name), normalize_name_key(context.accepted_scientific_name)}:
                 continue
-            assertion_key = (normalize_language_code(link.language), normalize_name_key(title))
+            language = parse_language_tag(link.language).bcp47
+            assertion_key = (language, normalize_name_key(title))
             if assertion_key in seen_assertions:
                 continue
             seen_assertions.add(assertion_key)
@@ -545,7 +546,7 @@ def _harvest_wikimedia_context(
                 {
                     "accepted_taxon_key": context.accepted_taxon_key,
                     "display_name": title,
-                    "language": normalize_language_code(link.language),
+                    "language": language,
                     "script": "",
                     "region": "",
                     "name_class": "vernacular_alias",

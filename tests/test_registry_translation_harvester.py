@@ -252,6 +252,15 @@ class FakeWikimediaProvider:
         return [WikimediaLanglink(language="de", title="Zitronenfalter", page_id="123", page_title=title, wikidata_item=self.wikidata_item)], 1, title
 
 
+class LocaleVariantWikimediaProvider:
+    def langlinks(self, title, *, target_locales):  # noqa: ANN001, ANN202 - test double.
+        assert target_locales == ("pt-BR", "zh-Hant")
+        return [
+            WikimediaLanglink(language="pt-BR", title="Borboleta lima", page_id="123", page_title=title, wikidata_item="Q123"),
+            WikimediaLanglink(language="zh-Hant", title="青鳳蝶", page_id="123", page_title=title, wikidata_item="Q123"),
+        ], 1, title
+
+
 class FakeMyMemoryProvider:
     def __init__(self) -> None:
         self.calls: list[dict[str, str]] = []
@@ -389,6 +398,29 @@ def test_load_translation_target_locales_preserves_bcp47_variants(tmp_path) -> N
     locales.write_text(json.dumps(["pt", "pt-BR", "zh", "zh-Hant"]), encoding="utf-8")
 
     assert load_translation_target_locales(locales) == ("pt", "pt-BR", "zh", "zh-Hant")
+
+
+def test_translation_harvester_preserves_wikimedia_bcp47_variant_languages(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    _write_wikidata_link(registry, qid="Q123")
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["pt-BR", "zh-Hant"]), encoding="utf-8")
+
+    build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=registry / "enrichment",
+        translation_sources=("wikimedia",),
+        target_locales_json=locales,
+        providers={"wikimedia": LocaleVariantWikimediaProvider()},
+    )
+
+    assertions = pl.read_parquet(registry / "enrichment" / "source_name_assertions.parquet").sort("language")
+
+    assert assertions.select("language").to_series().to_list() == ["por", "zho"]
+    assert assertions.select("script").to_series().to_list() == ["Latn", "Hant"]
+    assert assertions.select("region").to_series().to_list() == ["BR", ""]
+    assert assertions.select("display_name").to_series().to_list() == ["Borboleta lima", "青鳳蝶"]
 
 
 def test_translation_harvester_writes_wikimedia_and_mymemory_outputs(tmp_path) -> None:
