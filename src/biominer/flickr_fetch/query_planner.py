@@ -104,7 +104,9 @@ def load_registry_flickr_queries_from_frame(
         return ()
     if "normalized_match_key" not in frame.columns:
         frame = frame.with_columns(pl.col("source_term").str.to_lowercase().alias("normalized_match_key"))
-    rows = frame.filter(pl.col("enabled") if "enabled" in frame.columns else pl.lit(True)).sort(
+    enabled_filter = pl.col("enabled") if "enabled" in frame.columns else pl.lit(True)
+    query_eligible_filter = pl.col("query_eligible") if "query_eligible" in frame.columns else pl.lit(True)
+    rows = frame.filter(enabled_filter & query_eligible_filter).sort(
         ["search_priority", "normalized_match_key", "query_definition_id"]
     ).to_dicts()
     queries: list[FlickrQuery] = []

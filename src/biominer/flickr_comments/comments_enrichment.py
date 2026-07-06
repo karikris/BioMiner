@@ -10,7 +10,7 @@ from typing import Any, Callable, Iterable
 import httpx
 
 from biominer.common.status import COMPLETED, FAILED, PENDING
-from biominer.filter.category_model import infer_life_stage_from_text
+from biominer.filter.category_model import DEFAULT_LIFE_STAGE, infer_life_stage_from_text
 from biominer.filter.extractor import SCIENTIFIC_NAME_PATTERN
 from biominer.flickr_fetch.endpoints import FLICKR_REST_BASE_URL
 from biominer.flickr_fetch.query_planner import COUNT_PROBE_PAGE_SIZE, FlickrQuery
@@ -314,7 +314,7 @@ def mine_comment_terms(text: str, *, common_name_terms: Iterable[str] = ()) -> t
             terms.add(CommentTerm(term=common_name, term_kind="common_name"))
             occupied_spans.append(match.span())
     life_stage = infer_life_stage_from_text(text)
-    if life_stage != "adult_butterfly":
+    if life_stage != DEFAULT_LIFE_STAGE:
         terms.add(CommentTerm(term=life_stage, term_kind="life_stage"))
     return tuple(sorted(terms, key=lambda item: (item.term_kind, item.term.casefold())))
 

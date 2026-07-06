@@ -214,6 +214,59 @@ def test_t5_query_definitions_become_flickr_api_search_params(tmp_path) -> None:
     assert "max_upload_date" not in flickr_search_params(by_field["tags"])
 
 
+def test_registry_query_loader_skips_query_ineligible_definitions(tmp_path) -> None:
+    registry_queries = tmp_path / "flickr_query_definitions.parquet"
+    frame = pl.DataFrame(
+        [
+            {
+                "query_definition_id": "q-good",
+                "registry_version": "registry-v1",
+                "accepted_taxon_key": "gbif:100",
+                "accepted_scientific_name": "Papilio demoleus",
+                "family_key": "gbif:10",
+                "genus_key": "gbif:90",
+                "species_key": "gbif:100",
+                "source_term": "Papilio demoleus",
+                "language": "la",
+                "search_field": "tags",
+                "search_priority": 10,
+                "bbox": "",
+                "region": "",
+                "name_class": "accepted_scientific",
+                "confidence": "high",
+                "enabled": True,
+                "query_eligible": True,
+            },
+            {
+                "query_definition_id": "q-weak",
+                "registry_version": "registry-v1",
+                "accepted_taxon_key": "gbif:100",
+                "accepted_scientific_name": "Papilio demoleus",
+                "family_key": "gbif:10",
+                "genus_key": "gbif:90",
+                "species_key": "gbif:100",
+                "source_term": "lime",
+                "language": "en",
+                "search_field": "text",
+                "search_priority": 40,
+                "bbox": "",
+                "region": "",
+                "name_class": "vernacular_alias",
+                "confidence": "low",
+                "enabled": True,
+                "query_eligible": False,
+                "query_disabled_reason": "generic_single_token",
+            },
+        ]
+    )
+    frame.write_parquet(registry_queries)
+
+    queries = load_registry_flickr_queries(registry_queries)
+
+    assert [query.query_definition_id for query in queries] == ["q-good"]
+    assert [query.term for query in queries] == ["Papilio demoleus"]
+
+
 def test_geo_pages_use_250_and_non_geo_pages_use_500_records() -> None:
     geo_probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe")
     non_geo_probe = FlickrQuery(term="butterfly", language="en", search_field="text", lane="count_probe", has_geo=0)

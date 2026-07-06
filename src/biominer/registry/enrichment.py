@@ -1119,6 +1119,7 @@ def _source_rank(source: str) -> int:
 def _source_name_row(row: dict[str, Any]) -> dict[str, Any]:
     display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
     language = normalize_language_code(row.get("language"))
+    enabled = bool(row.get("enabled", True))
     return {
         "accepted_taxon_key": str(row.get("accepted_taxon_key") or ""),
         "verbatim_name": str(row.get("verbatim_name") or display_name),
@@ -1133,8 +1134,10 @@ def _source_name_row(row: dict[str, Any]) -> dict[str, Any]:
         "trust_tier": str(row.get("trust_tier") or ""),
         "precision_tier": str(row.get("precision_tier") or ""),
         "confidence": str(row.get("confidence") or ""),
-        "enabled": bool(row.get("enabled", True)),
+        "enabled": enabled,
         "disabled_reason": str(row.get("disabled_reason") or ""),
+        "review_state": str(row.get("review_state") or ("accepted" if enabled else "disabled")),
+        "corroborated": bool(row.get("corroborated", False)),
         "licence": str(row.get("licence") or ""),
     }
 

@@ -181,6 +181,137 @@ def test_compile_registry_fixture_emits_atomic_flickr_queries_in_name_priority_o
     assert queries.select(["normalized_query_term", "search_field", "region"]).unique().height == 4
 
 
+def test_compile_registry_fixture_stores_enabled_but_query_ineligible_weak_names(tmp_path) -> None:
+    source = tmp_path / "source.json"
+    output = tmp_path / "registry"
+    _write_fixture(source)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["names"].extend(
+        [
+            {
+                "accepted_taxon_key": "gbif:100",
+                "verbatim_name": "Common Lime Butterfly",
+                "display_name": "Common Lime Butterfly",
+                "language": "en",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "vernacular",
+                "source": "fixture",
+                "source_record_id": "fixture:name:phrase",
+                "trust_tier": "T2",
+                "precision_tier": "medium",
+                "confidence": "high",
+                "enabled": True,
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "verbatim_name": "lime",
+                "display_name": "lime",
+                "language": "en",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "vernacular_alias",
+                "source": "fixture",
+                "source_record_id": "fixture:name:lime",
+                "trust_tier": "T2",
+                "precision_tier": "low",
+                "confidence": "low",
+                "enabled": True,
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "verbatim_name": "swallowtails",
+                "display_name": "swallowtails",
+                "language": "en",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "vernacular_alias",
+                "source": "fixture",
+                "source_record_id": "fixture:name:swallowtails",
+                "trust_tier": "T2",
+                "precision_tier": "low",
+                "confidence": "low",
+                "enabled": True,
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "verbatim_name": "papillon",
+                "display_name": "papillon",
+                "language": "fr",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "generated_translation",
+                "source": "MyMemory",
+                "source_record_id": "mymemory:papillon",
+                "trust_tier": "T5",
+                "precision_tier": "low",
+                "confidence": "low",
+                "enabled": True,
+                "review_state": "candidate",
+            },
+        ]
+    )
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = compile_registry_fixture(source, output, registry_version="test-registry")
+
+    names = pl.read_parquet(output / "names.parquet")
+    queries = pl.read_parquet(output / "flickr_query_definitions.parquet")
+    by_name = {row["normalized_match_key"]: row for row in names.to_dicts()}
+
+    assert by_name["common lime butterfly"]["enabled"] is True
+    assert by_name["common lime butterfly"]["query_eligible"] is True
+    assert by_name["common lime butterfly"]["species_specificity_score"] > by_name["lime"]["species_specificity_score"]
+    for weak_name in ("lime", "swallowtails", "papillon"):
+        assert by_name[weak_name]["enabled"] is True
+        assert by_name[weak_name]["query_eligible"] is False
+        assert by_name[weak_name]["query_disabled_reason"]
+    assert "Common Lime Butterfly" in queries["normalized_query_term"].to_list()
+    assert not {"lime", "swallowtails", "papillon"} & set(queries["normalized_match_key"].to_list())
+    assert manifest["query_eligible_name_rows"] == names.filter(pl.col("query_eligible")).height
+    assert manifest["query_ineligible_name_rows"] == names.filter(pl.col("enabled") & ~pl.col("query_eligible")).height
+
+
+def test_compile_registry_fixture_allows_reviewed_generated_translation_queries(tmp_path) -> None:
+    source = tmp_path / "source.json"
+    output = tmp_path / "registry"
+    _write_fixture(source)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["names"].append(
+        {
+            "accepted_taxon_key": "gbif:100",
+            "verbatim_name": "Limettenfalter",
+            "display_name": "Limettenfalter",
+            "language": "de",
+            "script": "Latn",
+            "region": "",
+            "bbox": "",
+            "name_class": "generated_translation",
+            "source": "MyMemory",
+            "source_record_id": "mymemory:reviewed",
+            "trust_tier": "T5",
+            "precision_tier": "medium",
+            "confidence": "medium",
+            "enabled": True,
+            "review_state": "reviewed",
+        }
+    )
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    compile_registry_fixture(source, output, registry_version="test-registry")
+
+    names = pl.read_parquet(output / "names.parquet")
+    queries = pl.read_parquet(output / "flickr_query_definitions.parquet")
+    reviewed = names.filter(pl.col("normalized_match_key") == "limettenfalter")
+
+    assert reviewed.select("query_eligible").to_series().to_list() == [True]
+    assert queries.filter(pl.col("normalized_match_key") == "limettenfalter").select("search_field").to_series().to_list() == ["tags", "text"]
+
+
 def test_accepted_scientific_queries_schedule_before_synonyms(tmp_path) -> None:
     source = tmp_path / "source.json"
     output = tmp_path / "registry"

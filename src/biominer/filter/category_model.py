@@ -26,8 +26,8 @@ ALLOWED_LIFE_STAGES = (
     "chrysalis",
     "unknown",
 )
-DEFAULT_IMAGE_CATEGORY = "adult_butterfly"
-DEFAULT_LIFE_STAGE = "adult_butterfly"
+DEFAULT_IMAGE_CATEGORY = "unknown"
+DEFAULT_LIFE_STAGE = "unknown"
 
 _LIFE_STAGE_TERMS = (
     ("chrysalis", "chrysalis"),
@@ -35,6 +35,14 @@ _LIFE_STAGE_TERMS = (
     ("larva", "larva"),
     ("pupa", "pupa"),
     ("egg", "egg"),
+)
+_ADULT_BUTTERFLY_TERMS = (
+    "adult butterfly",
+    "adult butterflies",
+    "butterfly",
+    "butterflies",
+    "swallowtail",
+    "swallowtails",
 )
 
 
@@ -75,7 +83,9 @@ def infer_category_from_text(
     if life_stage != DEFAULT_LIFE_STAGE:
         return _category("life_stage_non_adult", life_stage, f"life_stage_{life_stage}")
     if non_target_order_detected:
-        return _category("not_lepidoptera", "adult_butterfly", "non_target_order")
+        return _category("not_lepidoptera", "unknown", "non_target_order")
+    if _has_any(normalized, _ADULT_BUTTERFLY_TERMS):
+        return _category("adult_butterfly", "adult_butterfly", None)
     return category_defaults()
 
 
@@ -94,7 +104,7 @@ def infer_category_from_record(row: dict[str, Any]) -> dict[str, str | None]:
             "life_stage": str(row.get("life_stage") or DEFAULT_LIFE_STAGE),
             "negative_filter_reason": row.get("negative_filter_reason"),
         }
-    return infer_category_from_text(
+    category = infer_category_from_text(
         " ".join(str(row.get(key) or "") for key in ("raw_title", "raw_description", "raw_tags", "machine_tags", "comments_text", "bioclip_top1_label", "top1_label")),
         museum_detected=bool(row.get("museum_detected") or row.get("specimen_detected")),
         specimen_detected=bool(row.get("specimen_detected")),
@@ -103,6 +113,9 @@ def infer_category_from_record(row: dict[str, Any]) -> dict[str, str | None]:
         ai_generated_detected=bool(row.get("ai_generated_detected")),
         non_target_order_detected=bool(row.get("non_target_order_detected")),
     )
+    if category["image_category"] == "unknown" and _has_visual_species_evidence(row):
+        return _category("adult_butterfly", "adult_butterfly", None)
+    return category
 
 
 def category_from_negative_reason(reason: str | None) -> dict[str, str | None]:
@@ -150,3 +163,17 @@ def _has_any(text: str, terms: tuple[str, ...]) -> bool:
 
 def _normalize(value: object) -> str:
     return " ".join(str(value or "").casefold().split())
+
+
+def _has_visual_species_evidence(row: dict[str, Any]) -> bool:
+    if row.get("bioclip_species_agreement_status") in {"exact_species_agreement", "accepted_species_agreement"}:
+        return True
+    if row.get("is_target_positive") is True:
+        return True
+    label = str(row.get("bioclip_top1_label") or row.get("top1_label") or "")
+    return _looks_like_binomial(label)
+
+
+def _looks_like_binomial(value: str) -> bool:
+    parts = value.split()
+    return any(left[:1].isupper() and right[:1].islower() for left, right in zip(parts, parts[1:]))

@@ -9,6 +9,7 @@ from typing import Any
 import polars as pl
 
 from biominer.registry.normalize import normalize_language_code, normalize_name_key
+from biominer.registry.query_eligibility import assess_name_query_eligibility
 from biominer.registry.scope import load_scope
 from biominer.storage.parquet import write_parquet
 
@@ -136,27 +137,37 @@ def _names_frame(rows: list[dict[str, Any]], *, registry_version: str) -> pl.Dat
         accepted_taxon_key = str(row.get("accepted_taxon_key") or "")
         language = normalize_language_code(row.get("language"))
         name_id = _stable_id("name", registry_version, accepted_taxon_key, display_name, language, row.get("region"))
+        enabled = bool(row.get("enabled", True))
+        name_row = {
+            "name_id": name_id,
+            "registry_version": registry_version,
+            "accepted_taxon_key": accepted_taxon_key,
+            "verbatim_name": str(row.get("verbatim_name") or display_name),
+            "display_name": display_name,
+            "normalized_match_key": normalize_name_key(display_name),
+            "language": language,
+            "script": str(row.get("script") or ""),
+            "region": str(row.get("region") or ""),
+            "bbox": str(row.get("bbox") or ""),
+            "name_class": str(row.get("name_class") or ""),
+            "source": str(row.get("source") or ""),
+            "source_record_id": str(row.get("source_record_id") or ""),
+            "trust_tier": str(row.get("trust_tier") or ""),
+            "precision_tier": str(row.get("precision_tier") or ""),
+            "confidence": str(row.get("confidence") or ""),
+            "enabled": enabled,
+            "disabled_reason": str(row.get("disabled_reason") or ""),
+            "review_state": str(row.get("review_state") or ("accepted" if enabled else "disabled")),
+            "corroborated": _boolish(row.get("corroborated", False)),
+        }
+        query_decision = assess_name_query_eligibility(name_row)
         normalized_rows.setdefault(
             name_id,
             {
-                "name_id": name_id,
-                "registry_version": registry_version,
-                "accepted_taxon_key": accepted_taxon_key,
-                "verbatim_name": str(row.get("verbatim_name") or display_name),
-                "display_name": display_name,
-                "normalized_match_key": normalize_name_key(display_name),
-                "language": language,
-                "script": str(row.get("script") or ""),
-                "region": str(row.get("region") or ""),
-                "bbox": str(row.get("bbox") or ""),
-                "name_class": str(row.get("name_class") or ""),
-                "source": str(row.get("source") or ""),
-                "source_record_id": str(row.get("source_record_id") or ""),
-                "trust_tier": str(row.get("trust_tier") or ""),
-                "precision_tier": str(row.get("precision_tier") or ""),
-                "confidence": str(row.get("confidence") or ""),
-                "enabled": bool(row.get("enabled", True)),
-                "disabled_reason": str(row.get("disabled_reason") or ""),
+                **name_row,
+                "query_eligible": query_decision.query_eligible,
+                "query_disabled_reason": query_decision.query_disabled_reason,
+                "species_specificity_score": query_decision.species_specificity_score,
             },
         )
     return pl.DataFrame(list(normalized_rows.values()), schema=_names_schema())
@@ -224,7 +235,8 @@ def _query_definitions_frame(names: pl.DataFrame, taxa: pl.DataFrame, *, registr
         "species_key",
         "species",
     )
-    enabled_names = names.filter(pl.col("enabled"))
+    names = _ensure_query_eligibility_columns(names)
+    enabled_names = names.filter(pl.col("enabled") & pl.col("query_eligible"))
     rows: list[dict[str, Any]] = []
     joined = enabled_names.join(taxa_lookup, on="accepted_taxon_key", how="left").to_dicts()
     for item in joined:
@@ -275,6 +287,9 @@ def _query_definitions_frame(names: pl.DataFrame, taxa: pl.DataFrame, *, registr
                     "search_priority": priority,
                     "enabled": True,
                     "disabled_reason": "",
+                    "query_eligible": item["query_eligible"],
+                    "query_disabled_reason": item["query_disabled_reason"],
+                    "species_specificity_score": item["species_specificity_score"],
                 }
             )
     return pl.DataFrame(rows, schema=_query_schema()).sort(["search_priority", "normalized_match_key", "query_definition_id"])
@@ -314,6 +329,7 @@ def _qa_findings(taxa: pl.DataFrame, names: pl.DataFrame, queries: pl.DataFrame,
             findings.append(_finding("fatal", "query_without_accepted_taxon_lineage", str(missing_lineage)))
     if not names.is_empty():
         enabled = names.filter(pl.col("enabled"))
+        query_ineligible = enabled.filter(~pl.col("query_eligible")) if "query_eligible" in enabled.columns else pl.DataFrame()
         collisions = (
             enabled.group_by("normalized_match_key")
             .agg(pl.col("accepted_taxon_key").n_unique().alias("taxon_count"))
@@ -340,6 +356,8 @@ def _qa_findings(taxa: pl.DataFrame, names: pl.DataFrame, queries: pl.DataFrame,
         disabled_count = names.filter(~pl.col("enabled")).height
         if disabled_count:
             findings.append(_finding("warning", "disabled_names_excluded_from_queries", str(disabled_count)))
+        if not query_ineligible.is_empty():
+            findings.append(_finding("warning", "query_ineligible_names_excluded_from_queries", str(query_ineligible.height)))
     return findings
 
 
@@ -375,6 +393,8 @@ def _manifest(
         "output_dir": str(output_ref),
         "taxa_rows": taxa.height,
         "name_rows": names.height,
+        "query_eligible_name_rows": names.filter(pl.col("query_eligible")).height if "query_eligible" in names.columns else None,
+        "query_ineligible_name_rows": names.filter(pl.col("enabled") & ~pl.col("query_eligible")).height if "query_eligible" in names.columns else None,
         "query_definition_rows": queries.height,
         "qa_finding_rows": qa.height,
         "qa_fatal_count": fatal_count,
@@ -443,6 +463,11 @@ def _names_schema() -> dict[str, pl.DataType]:
         "confidence": pl.String,
         "enabled": pl.Boolean,
         "disabled_reason": pl.String,
+        "review_state": pl.String,
+        "corroborated": pl.Boolean,
+        "query_eligible": pl.Boolean,
+        "query_disabled_reason": pl.String,
+        "species_specificity_score": pl.Float64,
     }
 
 
@@ -494,4 +519,33 @@ def _query_schema() -> dict[str, pl.DataType]:
         "search_priority": pl.Int64,
         "enabled": pl.Boolean,
         "disabled_reason": pl.String,
+        "query_eligible": pl.Boolean,
+        "query_disabled_reason": pl.String,
+        "species_specificity_score": pl.Float64,
     }
+
+
+def _ensure_query_eligibility_columns(names: pl.DataFrame) -> pl.DataFrame:
+    if names.is_empty():
+        return names
+    rows: list[dict[str, Any]] = []
+    needs_rebuild = not {"query_eligible", "query_disabled_reason", "species_specificity_score"}.issubset(names.columns)
+    if not needs_rebuild:
+        return names
+    for row in names.to_dicts():
+        decision = assess_name_query_eligibility(row)
+        rows.append(
+            {
+                **row,
+                "query_eligible": decision.query_eligible,
+                "query_disabled_reason": decision.query_disabled_reason,
+                "species_specificity_score": decision.species_specificity_score,
+            }
+        )
+    return pl.DataFrame(rows)
+
+
+def _boolish(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "accepted", "enabled", "reviewed", "corroborated"}

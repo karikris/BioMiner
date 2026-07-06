@@ -567,7 +567,7 @@ def test_compile_enriched_registry_keeps_conflicting_source_name_disabled(tmp_pa
     assert {"severity": "warning", "code": "enrichment_name_without_base_taxon", "subject": "col:name:bad"} in qa.to_dicts()
 
 
-def test_compile_enriched_registry_enables_t5_translations_as_name_evidence(tmp_path) -> None:
+def test_compile_enriched_registry_keeps_unreviewed_t5_translations_as_audit_only_name_evidence(tmp_path) -> None:
     registry, scope = _write_base_registry(tmp_path)
     write_enrichment_sources(
         registry,
@@ -607,19 +607,17 @@ def test_compile_enriched_registry_enables_t5_translations_as_name_evidence(tmp_
     assert t5_names.select("enabled").to_series().to_list() == [True]
     assert t5_names.select("trust_tier").to_series().to_list() == ["T5"]
     assert t5_names.select("disabled_reason").to_series().to_list() == [""]
+    assert t5_names.select("query_eligible").to_series().to_list() == [False]
+    assert t5_names.select("query_disabled_reason").to_series().to_list() == ["generated_translation_requires_review_or_corroboration"]
     t5_queries = queries.filter(pl.col("normalized_match_key") == "translated lime").sort("search_field")
-    assert t5_queries.height == 2
-    assert t5_queries.select("search_field").to_series().to_list() == ["tags", "text"]
-    assert t5_queries.select("enabled").to_series().to_list() == [True, True]
-    assert t5_queries.select("trust_tier").to_series().to_list() == ["T5", "T5"]
-    assert t5_queries.select("name_class").to_series().to_list() == ["generated_translation", "generated_translation"]
+    assert t5_queries.height == 0
     assert manifest["enabled_t5_name_rows"] == 1
-    assert manifest["t5_query_definition_rows"] == 2
+    assert manifest["t5_query_definition_rows"] == 0
     assert manifest["t5_retrieval_query_definition_rows"] == 0
     assert manifest["query_definition_rows"] == queries.height
 
 
-def test_compile_enriched_registry_promotes_translation_candidate_file_to_t5_queries(tmp_path) -> None:
+def test_compile_enriched_registry_keeps_translation_candidate_file_off_flickr_queries_by_default(tmp_path) -> None:
     registry, scope = _write_base_registry(tmp_path)
     write_translation_candidates(
         [
@@ -649,11 +647,11 @@ def test_compile_enriched_registry_promotes_translation_candidate_file_to_t5_que
     assert t5_names.height == 1
     assert t5_names.select("trust_tier").to_series().to_list() == ["T5"]
     assert t5_names.select("name_class").to_series().to_list() == ["generated_translation"]
-    assert t5_queries.select("search_field").to_series().to_list() == ["tags", "text"]
-    assert t5_queries.select("trust_tier").to_series().to_list() == ["T5", "T5"]
+    assert t5_names.select("query_eligible").to_series().to_list() == [False]
+    assert t5_queries.is_empty()
     assert manifest["translation_candidate_rows"] == 1
     assert manifest["enabled_t5_name_rows"] == 1
-    assert manifest["t5_query_definition_rows"] == 2
+    assert manifest["t5_query_definition_rows"] == 0
 
 
 def test_compile_enriched_registry_disables_unreviewed_cross_taxon_collisions(tmp_path) -> None:

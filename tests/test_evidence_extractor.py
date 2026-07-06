@@ -118,15 +118,15 @@ def test_missing_image_url_and_comments_are_represented_explicitly() -> None:
     assert "missing_image_url" in row["review_flags"]
 
 
-def test_evidence_schema_defaults_to_adult_butterfly_category() -> None:
+def test_evidence_schema_defaults_to_unknown_category_without_visual_or_text_evidence() -> None:
     frame = build_evidence_frame(
         [{"photos": {"photo": [{"id": "5", "title": "Papilio demoleus", "url_l": "https://live.staticflickr.com/large.jpg"}]}}],
         species_query="Papilio demoleus",
     )
     row = frame.to_dicts()[0]
 
-    assert row["image_category"] == "adult_butterfly"
-    assert row["life_stage"] == "adult_butterfly"
+    assert row["image_category"] == "unknown"
+    assert row["life_stage"] == "unknown"
     assert row["negative_filter_reason"] is None
 
 

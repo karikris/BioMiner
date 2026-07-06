@@ -8,7 +8,12 @@ from typing import Any
 
 import polars as pl
 
-from biominer.filter.category_model import category_defaults, category_from_negative_reason, infer_life_stage_from_text
+from biominer.filter.category_model import (
+    DEFAULT_LIFE_STAGE,
+    category_defaults,
+    category_from_negative_reason,
+    infer_life_stage_from_text,
+)
 from biominer.common.species import species_text_matches
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
 
@@ -244,6 +249,12 @@ def _failure_row(
 def _category_for_prediction(*, top1_label: str, negative_reason: str | None) -> dict[str, str | None]:
     if negative_reason:
         return category_from_negative_reason(negative_reason)
+    if _is_visual_adult_butterfly_label(top1_label):
+        return {
+            "image_category": "adult_butterfly",
+            "life_stage": "adult_butterfly",
+            "negative_filter_reason": None,
+        }
     return category_defaults()
 
 
@@ -266,7 +277,7 @@ def _negative_reason(record: dict[str, Any], top1_label: str) -> str | None:
     if "not butterfly" in normalized or "non-butterfly" in normalized:
         return "not_butterfly"
     life_stage = infer_life_stage_from_text(top1_label)
-    if life_stage != "adult_butterfly":
+    if life_stage != DEFAULT_LIFE_STAGE:
         return life_stage
     return None
 
@@ -373,6 +384,19 @@ def _timestamp(now: datetime | None) -> str:
 
 def _normalize(value: str) -> str:
     return " ".join(value.casefold().split())
+
+
+def _is_visual_adult_butterfly_label(label: str) -> bool:
+    normalized = _normalize(label)
+    if any(term in normalized for term in ("adult butterfly", "butterfly", "butterflies", "swallowtail", "swallowtails")):
+        return True
+    species_name = _species_name_from_label(label) or label
+    return _looks_like_binomial(species_name)
+
+
+def _looks_like_binomial(value: str) -> bool:
+    parts = value.split()
+    return any(left[:1].isupper() and right[:1].islower() for left, right in zip(parts, parts[1:]))
 
 
 def _species_name_from_label(label: str) -> str | None:

@@ -13,7 +13,7 @@ import polars as pl
 
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
 from biominer.evidence.review_policy import comment_review_is_actionable
-from biominer.filter.category_model import infer_life_stage_from_text
+from biominer.filter.category_model import DEFAULT_LIFE_STAGE, infer_life_stage_from_text
 from biominer.filter.extractor import SCIENTIFIC_NAME_PATTERN
 from biominer.flickr_comments.comments_enrichment import fetch_flickr_comments, mine_comment_terms
 from biominer.flickr_fetch.metadata_poller import PENDING
@@ -694,7 +694,7 @@ def _context_common_name_terms(species_context: SpeciesContext | None) -> tuple[
 
 def _life_stage_from_text(text: str) -> str | None:
     value = infer_life_stage_from_text(text)
-    return None if value == "adult_butterfly" else value
+    return None if value == DEFAULT_LIFE_STAGE else value
 
 
 def _date_evidence_from_text(text: str) -> str | None:
