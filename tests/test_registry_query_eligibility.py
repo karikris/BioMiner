@@ -43,6 +43,28 @@ def test_generic_family_group_phrases_are_not_species_queries() -> None:
         assert decision.query_disabled_reason == "generic_group_phrase"
 
 
+def test_unapproved_single_token_common_nouns_are_not_species_queries() -> None:
+    for term in ("Orange", "Blue", "Skipper", "Metalmark", "Cabbage"):
+        decision = assess_name_query_eligibility(_name_row(term, trust_tier="T2", precision_tier="medium"))
+
+        assert decision.query_eligible is False
+        assert decision.query_disabled_reason == "generic_single_token"
+
+
+def test_query_approved_single_token_common_name_can_remain_queryable() -> None:
+    decision = assess_name_query_eligibility(
+        _name_row(
+            "Monarch",
+            trust_tier="T2",
+            precision_tier="high",
+            review_state="query_approved",
+        )
+    )
+
+    assert decision.query_eligible is True
+    assert decision.query_disabled_reason == ""
+
+
 def test_specific_single_token_reviewed_translation_can_remain_queryable() -> None:
     decision = assess_name_query_eligibility(
         _name_row(
