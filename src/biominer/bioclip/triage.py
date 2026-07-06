@@ -63,6 +63,12 @@ NEGATIVE_RECORD_FIELDS = (
     ("non_target_order_detected", "other_order"),
     ("not_butterfly_detected", "not_butterfly"),
 )
+VISUAL_ADULT_BUTTERFLY_LABELS = {
+    "a photo of an adult butterfly",
+    "adult butterfly",
+    "a photo of a butterfly",
+    "a photo of a swallowtail butterfly",
+}
 
 
 def classify_bioclip_triage(*, record: dict[str, Any], prediction: dict[str, object]) -> dict[str, object]:
@@ -96,6 +102,15 @@ def classify_bioclip_triage(*, record: dict[str, Any], prediction: dict[str, obj
         return _bucket_result(category, bucket="bronze", reason=str(category["life_stage"]), text_species_match=text_species_match, is_target_positive=is_species_supported, is_negative_material=False)
     if _taxonomy_inconsistent(prediction):
         return _bucket_result(category, bucket="in_review", reason="taxonomy_inconsistent", text_species_match=text_species_match, is_target_positive=False, is_negative_material=False)
+    if category["image_category"] == "unknown" and is_species_supported:
+        return _bucket_result(
+            category,
+            bucket="in_review",
+            reason="missing_visual_butterfly_evidence",
+            text_species_match=text_species_match,
+            is_target_positive=is_species_supported,
+            is_negative_material=False,
+        )
     if category["image_category"] == "adult_butterfly" and text_species_match:
         if not _has_image_url(record):
             return _bucket_result(category, bucket="in_review", reason="missing_image_url", text_species_match=text_species_match, is_target_positive=is_species_supported, is_negative_material=False)
@@ -388,15 +403,7 @@ def _normalize(value: str) -> str:
 
 def _is_visual_adult_butterfly_label(label: str) -> bool:
     normalized = _normalize(label)
-    if any(term in normalized for term in ("adult butterfly", "butterfly", "butterflies", "swallowtail", "swallowtails")):
-        return True
-    species_name = _species_name_from_label(label) or label
-    return _looks_like_binomial(species_name)
-
-
-def _looks_like_binomial(value: str) -> bool:
-    parts = value.split()
-    return any(left[:1].isupper() and right[:1].islower() for left, right in zip(parts, parts[1:]))
+    return normalized in VISUAL_ADULT_BUTTERFLY_LABELS
 
 
 def _species_name_from_label(label: str) -> str | None:

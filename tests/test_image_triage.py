@@ -25,7 +25,13 @@ def _record(**overrides: object) -> dict[str, object]:
 def test_gold_score_gt_070_with_text_species_match() -> None:
     result = classify_bioclip_triage(
         record=_record(),
-        prediction={"top1_label": "a photo of Papilio demoleus", "top1_score": 0.71, "topk_json": []},
+        prediction={
+            "species_top1_label": "a photo of Papilio demoleus",
+            "species_top1_scientific_name": "Papilio demoleus",
+            "species_top1_score": 0.71,
+            "triage_top1_label": "a photo of an adult butterfly",
+            "triage_top1_score": 0.88,
+        },
     )
 
     assert result["triage_bin"] == "gold"
@@ -46,6 +52,25 @@ def test_generic_butterfly_label_goes_to_bronze_not_gold() -> None:
     assert result["triage_bin"] == "bronze"
     assert result["triage_reason"] == "below_50"
     assert result["is_target_positive"] is False
+
+
+def test_species_label_without_visual_triage_does_not_assert_adult_butterfly() -> None:
+    result = classify_bioclip_triage(
+        record=_record(title="Papilio demoleus lime butterfly"),
+        prediction={
+            "bioclip_top1_label": "a photo of lime butterfly",
+            "bioclip_top1_score": 0.93,
+            "species_top1_label": "a photo of lime butterfly",
+            "species_top1_scientific_name": "Papilio demoleus",
+            "species_top1_score": 0.93,
+        },
+    )
+
+    assert result["triage_bin"] == "in_review"
+    assert result["triage_reason"] == "missing_visual_butterfly_evidence"
+    assert result["image_category"] == "unknown"
+    assert result["life_stage"] == "unknown"
+    assert result["is_butterfly_life_stage"] is False
 
 
 def test_other_species_label_goes_to_bronze_not_gold() -> None:
@@ -84,7 +109,13 @@ def test_target_species_below_silver_threshold_goes_to_bronze() -> None:
 def test_missing_date_goes_to_silver() -> None:
     result = classify_bioclip_triage(
         record=_record(date_taken=None, date_upload=None, captured_at=None),
-        prediction={"top1_label": "a photo of Papilio demoleus", "top1_score": 0.99, "topk_json": []},
+        prediction={
+            "species_top1_label": "a photo of Papilio demoleus",
+            "species_top1_scientific_name": "Papilio demoleus",
+            "species_top1_score": 0.99,
+            "triage_top1_label": "a photo of an adult butterfly",
+            "triage_top1_score": 0.88,
+        },
     )
 
     assert result["triage_bin"] == "silver"
@@ -94,7 +125,13 @@ def test_missing_date_goes_to_silver() -> None:
 def test_missing_geo_goes_to_in_review_no_geo() -> None:
     result = classify_bioclip_triage(
         record=_record(latitude=None, longitude=None),
-        prediction={"top1_label": "a photo of Papilio demoleus", "top1_score": 0.99, "topk_json": []},
+        prediction={
+            "species_top1_label": "a photo of Papilio demoleus",
+            "species_top1_scientific_name": "Papilio demoleus",
+            "species_top1_score": 0.99,
+            "triage_top1_label": "a photo of an adult butterfly",
+            "triage_top1_score": 0.88,
+        },
     )
 
     assert result["occurrence_bin"] == "silver"
@@ -126,7 +163,13 @@ def test_bronze_negative_material_museum_art_ai_other_insect() -> None:
 def test_metadata_negative_flags_do_not_override_strong_species_prediction() -> None:
     result = classify_bioclip_triage(
         record=_record(museum_detected=True, artwork_detected=True, ai_generated_detected=True, other_insect_detected=True),
-        prediction={"top1_label": "a photo of Papilio demoleus", "top1_score": 0.99, "topk_json": []},
+        prediction={
+            "species_top1_label": "a photo of Papilio demoleus",
+            "species_top1_scientific_name": "Papilio demoleus",
+            "species_top1_score": 0.99,
+            "triage_top1_label": "a photo of an adult butterfly",
+            "triage_top1_score": 0.88,
+        },
     )
 
     assert result["triage_bin"] == "gold"
