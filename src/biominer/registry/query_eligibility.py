@@ -21,13 +21,22 @@ GENERIC_SINGLE_TOKENS = {
     "papillons",
     "mariposa",
     "mariposas",
+    "borboleta",
+    "borboletas",
+    "farfalla",
+    "farfalle",
+    "fjäril",
+    "schmetterling",
+    "vlinder",
+    "vlinders",
+    "蝴蝶",
 }
 GENERATED_TRANSLATION_SOURCES = {"mymemory", "translation", "libretranslate", "t5", "machine_translation"}
 SAME_TAXON_LANGUAGE_SOURCES = {"wikimedia", "wikidata"}
 MANUAL_REVIEW_STATES = {"reviewed", "curator_reviewed", "manual_reviewed", "query_approved"}
 SCIENTIFIC_NAME_CLASSES = {"accepted_scientific", "canonical_scientific", "scientific_synonym", "scientific", "scientific_name", "synonym"}
 COMMON_NAME_CLASSES = {"vernacular", "vernacular_alias", "common_name", "common_name_alias", "generated_translation"}
-_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
 
 @dataclass(frozen=True)
