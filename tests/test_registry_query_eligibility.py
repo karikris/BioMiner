@@ -28,7 +28,7 @@ def test_multilingual_generic_butterfly_words_are_not_species_queries() -> None:
 
 
 def test_multilingual_generic_group_words_are_not_species_queries() -> None:
-    for term in ("Schwalbenschwanz", "zwaluwstaart", "svalstjärt"):
+    for term in ("Schwalbenschwanz", "zwaluwstaart", "svalstjärt", "鳳蝶", "凤蝶"):
         decision = assess_name_query_eligibility(_name_row(term, trust_tier="T2"))
 
         assert decision.query_eligible is False

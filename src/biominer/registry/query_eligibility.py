@@ -49,6 +49,8 @@ GENERIC_SINGLE_TOKENS = {
     "white",
     "yellow",
     "zwaluwstaart",
+    "凤蝶",
+    "鳳蝶",
     "蝴蝶",
 }
 GENERIC_GROUP_PHRASES = {
