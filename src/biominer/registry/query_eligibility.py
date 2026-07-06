@@ -75,6 +75,7 @@ GENERIC_GROUP_PHRASES = {
 }
 GENERATED_TRANSLATION_SOURCES = {"mymemory", "translation", "libretranslate", "t5", "machine_translation"}
 SAME_TAXON_LANGUAGE_SOURCES = {"wikimedia", "wikidata"}
+SOURCE_BOUND_NAME_SOURCES = {"wikimedia", "wikidata"}
 MANUAL_REVIEW_STATES = {"reviewed", "curator_reviewed", "manual_reviewed", "query_approved"}
 SCIENTIFIC_NAME_CLASSES = {"accepted_scientific", "canonical_scientific", "scientific_synonym", "scientific", "scientific_name", "synonym"}
 COMMON_NAME_CLASSES = {"vernacular", "vernacular_alias", "common_name", "common_name_alias", "generated_translation"}
@@ -112,6 +113,8 @@ def assess_name_query_eligibility(row: dict[str, Any]) -> QueryEligibilityDecisi
         return QueryEligibilityDecision(True, "", max(score, 0.95))
     if name_class not in COMMON_NAME_CLASSES:
         return QueryEligibilityDecision(False, "unsupported_name_class_for_query", score)
+    if source in SOURCE_BOUND_NAME_SOURCES and not _same_taxon_source_bound(row):
+        return QueryEligibilityDecision(False, "source_binding_required", min(score, 0.45))
     generated_translation = _is_generated_translation(name_class=name_class, trust_tier=trust_tier, source=source)
     generated_translation_approved = _generated_translation_query_approved(row, source=source) if generated_translation else False
     if generated_translation and not generated_translation_approved:
@@ -163,6 +166,20 @@ def _generic_single_token_query_approved(row: dict[str, Any]) -> bool:
     review_state = "_".join(str(row.get("review_state") or "").casefold().split())
     precision_tier = str(row.get("precision_tier") or "").casefold()
     return review_state == "query_approved" and precision_tier == "high"
+
+
+def _same_taxon_source_bound(row: dict[str, Any]) -> bool:
+    source_taxon_id = str(row.get("source_taxon_id") or row.get("wikidata_item") or "")
+    if not source_taxon_id:
+        return False
+    lineage_check = "_".join(str(row.get("lineage_check") or "").casefold().split())
+    match_confidence = "_".join(str(row.get("match_confidence") or row.get("external_taxon_link_confidence") or "").casefold().split())
+    return (
+        lineage_check in {"accepted_taxon_key", "same_taxon", "confident"}
+        or match_confidence in {"high", "confident", "accepted"}
+        or _boolish(row.get("external_taxon_link_confident", False))
+        or _boolish(row.get("source_binding_confident", False))
+    )
 
 
 def _is_generated_translation(*, name_class: str, trust_tier: str, source: str) -> bool:

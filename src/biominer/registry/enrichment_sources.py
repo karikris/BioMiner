@@ -200,6 +200,8 @@ class WikidataClient:
                         name,
                         source="Wikidata",
                         source_record_id=f"wikidata:{qid}:{field}:{language}:{name}",
+                        source_taxon_id=qid,
+                        lineage_check="accepted_taxon_key",
                         language=language,
                         script="",
                         name_class="vernacular" if field == "P1843" else "vernacular_alias",
@@ -643,6 +645,8 @@ def _name_assertion(
     enabled: bool = True,
     review_state: str = "accepted",
     disabled_reason: str = "",
+    source_taxon_id: str = "",
+    lineage_check: str = "",
 ) -> dict[str, Any]:
     return {
         "accepted_taxon_key": context.accepted_taxon_key,
@@ -655,6 +659,8 @@ def _name_assertion(
         "name_class": name_class,
         "source": source,
         "source_record_id": source_record_id,
+        "source_taxon_id": source_taxon_id,
+        "lineage_check": lineage_check,
         "trust_tier": trust_tier,
         "precision_tier": precision_tier,
         "confidence": confidence,

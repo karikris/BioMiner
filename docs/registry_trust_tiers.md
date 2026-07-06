@@ -58,6 +58,8 @@ genus_key
 species_key
 registry_version
 source evidence fields
+source_taxon_id
+lineage_check
 review_state
 query_eligible
 query_disabled_reason

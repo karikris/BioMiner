@@ -111,6 +111,7 @@ class RecordingSourceClient:
         if self.raise_error:
             raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
         is_wikidata = self.source == "Wikidata"
+        source_taxon_id = f"{self.source}:taxon:{context.accepted_taxon_key}"
         return {
             "name_assertions": [
                 {
@@ -122,6 +123,8 @@ class RecordingSourceClient:
                     "name_class": "vernacular_alias" if is_wikidata else "vernacular",
                     "source": self.source,
                     "source_record_id": f"{self.source}:name:{context.accepted_taxon_key}",
+                    "source_taxon_id": source_taxon_id if is_wikidata else "",
+                    "lineage_check": "accepted_taxon_key" if is_wikidata else "",
                     "trust_tier": "T3" if is_wikidata else "T2",
                     "precision_tier": "medium",
                     "confidence": "high",
@@ -133,7 +136,7 @@ class RecordingSourceClient:
                 {
                     "accepted_taxon_key": context.accepted_taxon_key,
                     "source": self.source,
-                    "source_taxon_id": f"{self.source}:taxon:{context.accepted_taxon_key}",
+                    "source_taxon_id": source_taxon_id,
                     "match_method": "scientific_name",
                     "match_confidence": "high",
                     "lineage_check": "accepted_taxon_key",

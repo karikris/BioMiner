@@ -578,6 +578,7 @@ Each definition retains:
 - accepted scientific name;
 - accepted rank and lineage keys;
 - source term and normalized query term;
+- source taxon ID and same-taxon lineage check where available;
 - language, script, region, and bbox;
 - term class;
 - trust and precision tier;

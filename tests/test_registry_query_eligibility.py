@@ -9,7 +9,7 @@ def _name_row(display_name: str, **overrides: object) -> dict[str, object]:
         "verbatim_name": display_name,
         "enabled": True,
         "name_class": "vernacular_alias",
-        "source": "Wikimedia",
+        "source": "fixture",
         "trust_tier": "T3",
         "precision_tier": "medium",
         "confidence": "high",
@@ -119,6 +119,38 @@ def test_binomial_scientific_names_remain_species_queries() -> None:
             source="GBIF",
             trust_tier="T1",
             precision_tier="high",
+        )
+    )
+
+    assert decision.query_eligible is True
+    assert decision.query_disabled_reason == ""
+
+
+def test_wikimedia_alias_requires_same_taxon_binding_for_queries() -> None:
+    decision = assess_name_query_eligibility(
+        _name_row(
+            "Zitronenfalter",
+            source="Wikimedia",
+            trust_tier="T3",
+            confidence="high",
+            review_state="accepted",
+        )
+    )
+
+    assert decision.query_eligible is False
+    assert decision.query_disabled_reason == "source_binding_required"
+
+
+def test_wikimedia_alias_with_same_taxon_binding_can_be_queryable() -> None:
+    decision = assess_name_query_eligibility(
+        _name_row(
+            "Zitronenfalter",
+            source="Wikimedia",
+            source_taxon_id="Q123",
+            lineage_check="accepted_taxon_key",
+            trust_tier="T3",
+            confidence="high",
+            review_state="accepted",
         )
     )
 

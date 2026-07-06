@@ -554,6 +554,7 @@ def _harvest_wikimedia_context(
                     "source": display_source,
                     "source_record_id": f"wikimedia:{link.page_id}:{link.wikidata_item}:{link.language}:{title}",
                     "source_taxon_id": link.wikidata_item if bound_to_same_taxon else "",
+                    "lineage_check": "accepted_taxon_key" if bound_to_same_taxon else "",
                     "trust_tier": "T3" if bound_to_same_taxon else "T4",
                     "precision_tier": "medium",
                     "confidence": "high" if bound_to_same_taxon else "low",

@@ -18,7 +18,7 @@ from biominer.registry.enrichment import (
     default_enrichment_clients,
     write_enrichment_sources,
 )
-from biominer.registry.enrichment_sources import CatalogueOfLifeClient, INaturalistClient, ITISClient, TMDGermanClient, _json_get
+from biominer.registry.enrichment_sources import CatalogueOfLifeClient, INaturalistClient, ITISClient, TMDGermanClient, WikidataClient, _json_get
 from biominer.registry.translation_sources import generated_translation_candidate, write_translation_candidates
 
 
@@ -266,6 +266,28 @@ def test_inaturalist_source_uses_non_truncating_taxa_page_size() -> None:
     client.enrich_species(_species_context())
 
     assert requests == [("/v1/taxa", {"q": "Papilio demoleus", "rank": "species", "per_page": 200})]
+
+
+def test_wikidata_source_name_assertions_preserve_same_taxon_binding() -> None:
+    def fake_get(path, params):  # noqa: ANN001, ANN202 - source test double.
+        return {
+            "results": {
+                "bindings": [
+                    {
+                        "taxon": {"value": "http://www.wikidata.org/entity/Q123"},
+                        "gbifId": {"value": "100"},
+                        "commonName": {"value": "Zitronenfalter", "xml:lang": "de"},
+                        "commonNameLang": {"value": "de"},
+                    }
+                ]
+            }
+        }
+
+    result = WikidataClient(http_get=fake_get).enrich_species(_species_context())
+    assertion = result["name_assertions"][0]
+
+    assert assertion["source_taxon_id"] == "Q123"
+    assert assertion["lineage_check"] == "accepted_taxon_key"
 
 
 def test_english_language_variants_normalize_and_deduplicate(tmp_path) -> None:
@@ -654,6 +676,59 @@ def test_compile_enriched_registry_keeps_unreviewed_t5_translations_as_audit_onl
     assert manifest["query_definition_rows"] == queries.height
 
 
+def test_compile_enriched_registry_requires_wikimedia_binding_for_queries(tmp_path) -> None:
+    registry, scope = _write_base_registry(tmp_path)
+    write_enrichment_sources(
+        registry,
+        name_assertions=[
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Zitronenfalter",
+                "language": "de",
+                "script": "Latn",
+                "region": "",
+                "name_class": "vernacular_alias",
+                "source": "Wikimedia",
+                "source_record_id": "wikimedia:123:Q123:de:Zitronenfalter",
+                "source_taxon_id": "Q123",
+                "lineage_check": "accepted_taxon_key",
+                "trust_tier": "T3",
+                "precision_tier": "medium",
+                "confidence": "high",
+                "enabled": True,
+                "review_state": "accepted",
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Unbound Butterfly",
+                "language": "de",
+                "script": "Latn",
+                "region": "",
+                "name_class": "vernacular_alias",
+                "source": "Wikimedia",
+                "source_record_id": "wikimedia:999:Q999:de:Unbound_Butterfly",
+                "trust_tier": "T3",
+                "precision_tier": "medium",
+                "confidence": "high",
+                "enabled": True,
+                "review_state": "accepted",
+            },
+        ],
+    )
+
+    compile_enriched_registry(
+        registry_dir=registry,
+        registry_version="enriched",
+        scope_path=scope,
+        requested_sources=("wikimedia",),
+    )
+
+    queries = pl.read_parquet(registry / "flickr_query_definitions.parquet")
+
+    assert "Zitronenfalter" in queries["source_term"].to_list()
+    assert "Unbound Butterfly" not in queries["source_term"].to_list()
+
+
 def test_compile_enriched_registry_keeps_translation_candidate_file_off_flickr_queries_by_default(tmp_path) -> None:
     registry, scope = _write_base_registry(tmp_path)
     write_translation_candidates(
@@ -1030,6 +1105,7 @@ class RecordingEnrichmentClient:
 
     def enrich_species(self, context):  # noqa: ANN001 - test double checks context shape.
         self.contexts.append(context)
+        source_taxon_id = f"{self.source}:taxon:{context.accepted_taxon_key}"
         return {
             "name_assertions": [
                 {
@@ -1041,6 +1117,8 @@ class RecordingEnrichmentClient:
                     "name_class": "vernacular",
                     "source": self.source,
                     "source_record_id": f"{self.source}:name:{context.accepted_taxon_key}",
+                    "source_taxon_id": source_taxon_id if self.source == "Wikidata" else "",
+                    "lineage_check": "accepted_taxon_key" if self.source == "Wikidata" else "",
                     "trust_tier": "T2",
                     "precision_tier": "medium",
                     "confidence": "high",
@@ -1053,7 +1131,7 @@ class RecordingEnrichmentClient:
                 {
                     "accepted_taxon_key": context.accepted_taxon_key,
                     "source": self.source,
-                    "source_taxon_id": f"{self.source}:taxon:{context.accepted_taxon_key}",
+                    "source_taxon_id": source_taxon_id,
                     "match_method": "scientific_name",
                     "match_confidence": "high",
                     "lineage_check": "accepted_taxon_key",
