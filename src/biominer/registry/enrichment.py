@@ -1079,8 +1079,8 @@ def _external_link_confident(row: dict[str, Any]) -> bool:
     return confidence in {"high", "confident", "accepted"} or lineage in {"accepted_taxon_key", "confident"} or bool(source_taxon_id)
 
 
-def _collision_keys(assertions: pl.DataFrame) -> set[tuple[str, str, str]]:
-    grouped: dict[tuple[str, str, str], set[str]] = {}
+def _collision_keys(assertions: pl.DataFrame) -> set[tuple[str, str]]:
+    grouped: dict[tuple[str, str], set[str]] = {}
     for row in assertions.to_dicts():
         key = _candidate_collision_key(row)
         if not key[0]:
@@ -1089,11 +1089,10 @@ def _collision_keys(assertions: pl.DataFrame) -> set[tuple[str, str, str]]:
     return {key for key, taxa in grouped.items() if len(taxa) > 1}
 
 
-def _candidate_collision_key(row: dict[str, Any]) -> tuple[str, str, str]:
+def _candidate_collision_key(row: dict[str, Any]) -> tuple[str, str]:
     return (
         str(row.get("normalized_match_key") or normalize_name_key(row.get("display_name") or row.get("verbatim_name"))),
         str(row.get("language") or ""),
-        str(row.get("name_class") or ""),
     )
 
 
