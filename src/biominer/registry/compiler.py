@@ -8,7 +8,7 @@ from typing import Any
 
 import polars as pl
 
-from biominer.registry.normalize import normalize_language_code, normalize_name_key
+from biominer.registry.normalize import parse_language_tag, normalize_language_code, normalize_name_key
 from biominer.registry.query_eligibility import SCIENTIFIC_NAME_CLASSES, assess_name_query_eligibility
 from biominer.registry.scope import load_scope
 from biominer.storage.parquet import write_parquet
@@ -140,8 +140,11 @@ def _names_frame(rows: list[dict[str, Any]], *, registry_version: str) -> pl.Dat
     for row in rows:
         display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
         accepted_taxon_key = str(row.get("accepted_taxon_key") or "")
-        language = normalize_language_code(row.get("language"))
-        name_id = _stable_id("name", registry_version, accepted_taxon_key, display_name, language, row.get("region"))
+        language_tag = parse_language_tag(row.get("language"))
+        language = language_tag.language
+        script = str(row.get("script") or language_tag.script)
+        region = str(row.get("region") or language_tag.region)
+        name_id = _stable_id("name", registry_version, accepted_taxon_key, display_name, language, region)
         enabled = bool(row.get("enabled", True))
         name_row = {
             "name_id": name_id,
@@ -151,8 +154,8 @@ def _names_frame(rows: list[dict[str, Any]], *, registry_version: str) -> pl.Dat
             "display_name": display_name,
             "normalized_match_key": normalize_name_key(display_name),
             "language": language,
-            "script": str(row.get("script") or ""),
-            "region": str(row.get("region") or ""),
+            "script": script,
+            "region": region,
             "bbox": str(row.get("bbox") or ""),
             "name_class": str(row.get("name_class") or ""),
             "source": str(row.get("source") or ""),

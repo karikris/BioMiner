@@ -20,7 +20,7 @@ from typing import Any
 import polars as pl
 
 from biominer.registry.compiler import compile_registry_fixture
-from biominer.registry.normalize import normalize_language_code, normalize_name_key
+from biominer.registry.normalize import parse_language_tag, normalize_language_code, normalize_name_key
 from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES, TRANSLATION_CANDIDATES_FILE, translation_candidate_schema, translation_source_display_names
 from biominer.registry.trust_policy import decide_name_trust
 
@@ -966,6 +966,7 @@ def _translation_candidate_assertions(path: Path, *, allowed_sources: set[str] |
             row.get("target_language"),
             translated_name,
         )
+        language_tag = parse_language_tag(row.get("target_language"))
         rows.append(
             {
                 "assertion_id": _stable_id("translation-assertion", source, source_record_id, accepted_taxon_key, translated_name),
@@ -973,9 +974,9 @@ def _translation_candidate_assertions(path: Path, *, allowed_sources: set[str] |
                 "verbatim_name": translated_name,
                 "display_name": translated_name,
                 "normalized_match_key": normalize_name_key(translated_name),
-                "language": normalize_language_code(row.get("target_language")),
-                "script": "",
-                "region": "",
+                "language": language_tag.language,
+                "script": language_tag.script,
+                "region": language_tag.region,
                 "bbox": "",
                 "name_class": "generated_translation",
                 "source": source,
@@ -998,7 +999,8 @@ def _normalize_assertion(row: dict[str, Any]) -> dict[str, Any]:
     display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
     source = str(row.get("source") or "")
     source_record_id = str(row.get("source_record_id") or "")
-    language = normalize_language_code(row.get("language"))
+    language_tag = parse_language_tag(row.get("language"))
+    language = language_tag.language
     decision = decide_name_trust(
         source=source,
         name_class=str(row.get("name_class") or "vernacular"),
@@ -1019,8 +1021,8 @@ def _normalize_assertion(row: dict[str, Any]) -> dict[str, Any]:
         "display_name": display_name,
         "normalized_match_key": normalize_name_key(display_name),
         "language": language,
-        "script": str(row.get("script") or ""),
-        "region": str(row.get("region") or ""),
+        "script": str(row.get("script") or language_tag.script),
+        "region": str(row.get("region") or language_tag.region),
         "bbox": str(row.get("bbox") or ""),
         "name_class": str(row.get("name_class") or "vernacular"),
         "source": source,
@@ -1118,15 +1120,16 @@ def _source_rank(source: str) -> int:
 
 def _source_name_row(row: dict[str, Any]) -> dict[str, Any]:
     display_name = str(row.get("display_name") or row.get("verbatim_name") or "")
-    language = normalize_language_code(row.get("language"))
+    language_tag = parse_language_tag(row.get("language"))
+    language = language_tag.language
     enabled = bool(row.get("enabled", True))
     return {
         "accepted_taxon_key": str(row.get("accepted_taxon_key") or ""),
         "verbatim_name": str(row.get("verbatim_name") or display_name),
         "display_name": display_name,
         "language": language,
-        "script": str(row.get("script") or ""),
-        "region": str(row.get("region") or ""),
+        "script": str(row.get("script") or language_tag.script),
+        "region": str(row.get("region") or language_tag.region),
         "bbox": str(row.get("bbox") or ""),
         "name_class": str(row.get("name_class") or ""),
         "source": str(row.get("source") or ""),

@@ -654,6 +654,57 @@ def test_compile_enriched_registry_keeps_translation_candidate_file_off_flickr_q
     assert manifest["t5_query_definition_rows"] == 0
 
 
+def test_compile_enriched_registry_preserves_translation_locale_script_and_region_in_queries(tmp_path) -> None:
+    registry, scope = _write_base_registry(tmp_path)
+    write_translation_candidates(
+        [
+            {
+                "source": "MyMemory",
+                "source_language": "eng",
+                "target_language": "pt-BR",
+                "source_name": "Lime Butterfly",
+                "translated_name": "Borboleta lima",
+                "accepted_taxon_key": "gbif:100",
+                "review_state": "reviewed",
+                "confidence": "medium",
+                "precision_tier": "medium",
+                "enabled": True,
+            },
+            {
+                "source": "MyMemory",
+                "source_language": "eng",
+                "target_language": "zh-Hant",
+                "source_name": "Lime Butterfly",
+                "translated_name": "鳳蝶",
+                "accepted_taxon_key": "gbif:100",
+                "review_state": "reviewed",
+                "confidence": "medium",
+                "precision_tier": "medium",
+                "enabled": True,
+            },
+        ],
+        registry,
+    )
+
+    compile_enriched_registry(
+        registry_dir=registry,
+        registry_version="enriched",
+        scope_path=scope,
+    )
+
+    names = pl.read_parquet(registry / "names.parquet")
+    queries = pl.read_parquet(registry / "flickr_query_definitions.parquet")
+    pt_name = names.filter(pl.col("normalized_match_key") == "borboleta lima").row(0, named=True)
+    zh_name = names.filter(pl.col("normalized_match_key") == "鳳蝶").row(0, named=True)
+    pt_query = queries.filter((pl.col("normalized_match_key") == "borboleta lima") & (pl.col("search_field") == "tags")).row(0, named=True)
+    zh_query = queries.filter((pl.col("normalized_match_key") == "鳳蝶") & (pl.col("search_field") == "tags")).row(0, named=True)
+
+    assert (pt_name["language"], pt_name["script"], pt_name["region"], pt_name["query_eligible"]) == ("por", "Latn", "BR", True)
+    assert (zh_name["language"], zh_name["script"], zh_name["region"], zh_name["query_eligible"]) == ("zho", "Hant", "", True)
+    assert (pt_query["language"], pt_query["script"], pt_query["region"]) == ("por", "Latn", "BR")
+    assert (zh_query["language"], zh_query["script"], zh_query["region"]) == ("zho", "Hant", "")
+
+
 def test_compile_enriched_registry_disables_unreviewed_cross_taxon_collisions(tmp_path) -> None:
     registry, scope = _write_base_registry(tmp_path, species_names=("Papilio demoleus", "Papilio machaon"))
     write_enrichment_sources(

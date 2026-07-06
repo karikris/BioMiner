@@ -1,0 +1,16 @@
+[
+  {"bcp47": "de", "language": "deu", "api_language_code": "de", "script": "Latn", "region": "", "provider_support": ["wikimedia", "mymemory"]},
+  {"bcp47": "en", "language": "eng", "api_language_code": "en", "script": "Latn", "region": "", "provider_support": ["wikimedia", "mymemory"]},
+  {"bcp47": "es", "language": "spa", "api_language_code": "es", "script": "Latn", "region": "", "provider_support": ["wikimedia", "mymemory"]},
+  {"bcp47": "fr", "language": "fra", "api_language_code": "fr", "script": "Latn", "region": "", "provider_support": ["wikimedia", "mymemory"]},
+  {"bcp47": "it", "language": "ita", "api_language_code": "it", "script": "Latn", "region": "", "provider_support": ["wikimedia", "mymemory"]},
+  {"bcp47": "ja", "language": "jpn", "api_language_code": "ja", "script": "Jpan", "region": "", "provider_support": ["wikimedia", "mymemory"]},
+  {"bcp47": "ko", "language": "kor", "api_language_code": "ko", "script": "Kore", "region": "", "provider_support": ["wikimedia", "mymemory"]},
+  {"bcp47": "nl", "language": "nld", "api_language_code": "nl", "script": "Latn", "region": "", "provider_support": ["wikimedia", "mymemory"]},
+  {"bcp47": "pt", "language": "por", "api_language_code": "pt", "script": "Latn", "region": "", "provider_support": ["wikimedia", "mymemory"]},
+  {"bcp47": "pt-BR", "language": "por", "api_language_code": "pt", "script": "Latn", "region": "BR", "provider_support": ["wikimedia", "mymemory"]},
+  {"bcp47": "ru", "language": "rus", "api_language_code": "ru", "script": "Cyrl", "region": "", "provider_support": ["wikimedia", "mymemory"]},
+  {"bcp47": "zh", "language": "zho", "api_language_code": "zh", "script": "Hans", "region": "", "provider_support": ["wikimedia", "mymemory"]},
+  {"bcp47": "zh-Hans", "language": "zho", "api_language_code": "zh", "script": "Hans", "region": "", "provider_support": ["wikimedia", "mymemory"]},
+  {"bcp47": "zh-Hant", "language": "zho", "api_language_code": "zh", "script": "Hant", "region": "", "provider_support": ["wikimedia", "mymemory"]}
+]

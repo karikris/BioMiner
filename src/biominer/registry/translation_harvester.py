@@ -32,7 +32,7 @@ from biominer.registry.enrichment import (
     _source_work_schema,
 )
 from biominer.registry.enrichment_sources import HTTPGet, USER_AGENT, _json_get
-from biominer.registry.normalize import normalize_language_code, normalize_name_key
+from biominer.registry.normalize import parse_language_tag, normalize_language_code, normalize_name_key
 from biominer.registry.translation_sources import (
     DEFAULT_TRANSLATION_SOURCES,
     DEFAULT_TRANSLATION_TARGET_LOCALES_JSON,
@@ -461,7 +461,7 @@ def load_translation_target_locales(path: str | Path) -> tuple[str, ...]:
             value = str(item.get("locale") or item.get("code") or item.get("language") or "")
         else:
             value = ""
-        code = _api_language_code(value)
+        code = parse_language_tag(value).bcp47
         if code and code not in locales:
             locales.append(code)
     return tuple(locales)
@@ -604,6 +604,7 @@ def _harvest_mymemory_context(
         for target_language in target_locales:
             if normalize_language_code(target_language) == normalize_language_code(source_language):
                 continue
+            target_api_language = _api_language_code(target_language)
             work_key = _translation_work_key(source_key, context.accepted_taxon_key, seed.source_name, source_language, target_language, config_hash)
             if work_key in completed_work:
                 continue
@@ -627,7 +628,7 @@ def _harvest_mymemory_context(
                 translated_names, request_count = provider.translate(
                     source_name=seed.source_name,
                     source_language=source_language,
-                    target_language=target_language,
+                    target_language=target_api_language,
                     max_candidates=max_candidates_per_name,
                 )
             except Exception as exc:  # noqa: BLE001 - source errors are recorded and the registry build continues.
@@ -655,7 +656,7 @@ def _harvest_mymemory_context(
                     generated_translation_candidate(
                         source=display_source,
                         source_language=normalize_language_code(source_language),
-                        target_language=normalize_language_code(target_language),
+                        target_language=parse_language_tag(target_language).bcp47,
                         source_name=seed.source_name,
                         translated_name=translated_name,
                         accepted_taxon_key=context.accepted_taxon_key,
@@ -1041,11 +1042,10 @@ def _append_translation(candidates: list[str], value: object, *, source_name: st
 
 
 def _api_language_code(value: object) -> str:
-    text = str(value or "").strip().replace("_", "-").split("-", 1)[0].casefold()
-    if not text:
+    tag = parse_language_tag(value)
+    if not tag.api_language_code:
         return ""
-    normalized = normalize_language_code(text)
-    return API_LANGUAGE_CODES.get(normalized, API_LANGUAGE_CODES.get(text, text))
+    return API_LANGUAGE_CODES.get(tag.language, API_LANGUAGE_CODES.get(tag.api_language_code, tag.api_language_code))
 
 
 def _translation_config_hash(source: str, target_locales: tuple[str, ...], *, max_candidates_per_name: int, allow_machine_translation: bool) -> str:

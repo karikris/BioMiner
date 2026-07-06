@@ -10,6 +10,7 @@ from biominer.registry.translation_harvester import (
     WikimediaLanglink,
     WikimediaLanglinksProvider,
     build_translation_candidates_from_registry,
+    load_translation_target_locales,
 )
 
 
@@ -381,6 +382,13 @@ def test_wikimedia_provider_follows_langlink_continuation() -> None:
     assert requests[0][1]["ppprop"] == "wikibase_item"
     assert requests[0][1]["lllimit"] == "max"
     assert requests[1][1]["llcontinue"] == "123|fr"
+
+
+def test_load_translation_target_locales_preserves_bcp47_variants(tmp_path) -> None:
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["pt", "pt-BR", "zh", "zh-Hant"]), encoding="utf-8")
+
+    assert load_translation_target_locales(locales) == ("pt", "pt-BR", "zh", "zh-Hant")
 
 
 def test_translation_harvester_writes_wikimedia_and_mymemory_outputs(tmp_path) -> None:
