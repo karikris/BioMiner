@@ -64,6 +64,22 @@ def _write_registry(registry) -> None:  # noqa: ANN001 - pathlib fixture helper.
     ).write_parquet(registry / "names.parquet")
 
 
+def _write_wikidata_link(registry, *, qid: str = "Q123") -> None:  # noqa: ANN001 - pathlib fixture helper.
+    pl.DataFrame(
+        [
+            {
+                "accepted_taxon_key": "gbif:100",
+                "source": "Wikidata",
+                "source_taxon_id": qid,
+                "match_method": "P225+P846",
+                "match_confidence": "high",
+                "lineage_check": "accepted_taxon_key",
+                "retrieved_at": "2026-06-20T00:00:00+00:00",
+            }
+        ]
+    ).write_parquet(registry / "external_taxon_links.parquet")
+
+
 def _scope(path) -> None:  # noqa: ANN001 - pathlib fixture helper.
     path.write_text(
         json.dumps(
@@ -180,7 +196,19 @@ class RecordingSourceClient:
                     "review_state": "accepted",
                 }
             ],
-            "external_links": [],
+            "external_links": [
+                {
+                    "accepted_taxon_key": context.accepted_taxon_key,
+                    "source": "Wikidata",
+                    "source_taxon_id": "Q123",
+                    "match_method": "P225+P846",
+                    "match_confidence": "high",
+                    "lineage_check": "accepted_taxon_key",
+                    "retrieved_at": "2026-06-20T00:00:00+00:00",
+                }
+            ]
+            if is_wikidata
+            else [],
             "source_snapshots": [],
         }
 
@@ -213,13 +241,14 @@ class RecordingTMDClient:
 
 
 class FakeWikimediaProvider:
-    def __init__(self) -> None:
+    def __init__(self, *, wikidata_item: str = "Q123") -> None:
         self.titles: list[str] = []
+        self.wikidata_item = wikidata_item
 
     def langlinks(self, title, *, target_locales):  # noqa: ANN001, ANN202 - test double.
         self.titles.append(title)
         assert target_locales == ("de",)
-        return [WikimediaLanglink(language="de", title="Zitronenfalter", page_id="123", page_title=title)], 1, title
+        return [WikimediaLanglink(language="de", title="Zitronenfalter", page_id="123", page_title=title, wikidata_item=self.wikidata_item)], 1, title
 
 
 class FakeMyMemoryProvider:
@@ -315,11 +344,29 @@ def test_wikimedia_provider_follows_langlink_continuation() -> None:
         requests.append((path, dict(params)))
         if len(requests) == 1:
             return {
-                "query": {"pages": {"123": {"pageid": 123, "title": "Papilio demoleus", "langlinks": [{"lang": "de", "*": "Zitronenfalter"}]}}},
+                "query": {
+                    "pages": {
+                        "123": {
+                            "pageid": 123,
+                            "title": "Papilio demoleus",
+                            "pageprops": {"wikibase_item": "Q123"},
+                            "langlinks": [{"lang": "de", "*": "Zitronenfalter"}],
+                        }
+                    }
+                },
                 "continue": {"llcontinue": "123|fr", "continue": "||"},
             }
         return {
-            "query": {"pages": {"123": {"pageid": 123, "title": "Papilio demoleus", "langlinks": [{"lang": "fr", "*": "Papillon du citronnier"}]}}},
+            "query": {
+                "pages": {
+                    "123": {
+                        "pageid": 123,
+                        "title": "Papilio demoleus",
+                        "pageprops": {"wikibase_item": "Q123"},
+                        "langlinks": [{"lang": "fr", "*": "Papillon du citronnier"}],
+                    }
+                }
+            },
         }
 
     provider = WikimediaLanglinksProvider(http_get=fake_get)
@@ -329,6 +376,9 @@ def test_wikimedia_provider_follows_langlink_continuation() -> None:
     assert request_count == 2
     assert page_title == "Papilio demoleus"
     assert [link.title for link in links] == ["Zitronenfalter", "Papillon du citronnier"]
+    assert [link.wikidata_item for link in links] == ["Q123", "Q123"]
+    assert "pageprops" in requests[0][1]["prop"]
+    assert requests[0][1]["ppprop"] == "wikibase_item"
     assert requests[0][1]["lllimit"] == "max"
     assert requests[1][1]["llcontinue"] == "123|fr"
 
@@ -336,6 +386,7 @@ def test_wikimedia_provider_follows_langlink_continuation() -> None:
 def test_translation_harvester_writes_wikimedia_and_mymemory_outputs(tmp_path) -> None:
     registry = tmp_path / "registry"
     _write_registry(registry)
+    _write_wikidata_link(registry, qid="Q123")
     locales = tmp_path / "locales.json"
     locales.write_text(json.dumps(["de"]), encoding="utf-8")
     wiki = FakeWikimediaProvider()
@@ -356,11 +407,38 @@ def test_translation_harvester_writes_wikimedia_and_mymemory_outputs(tmp_path) -
     assert manifest["mymemory_candidate_rows"] == 1
     assert assertions.select("source").to_series().to_list() == ["Wikimedia"]
     assert assertions.select("display_name").to_series().to_list() == ["Zitronenfalter"]
+    assert assertions.select("source_taxon_id").to_series().to_list() == ["Q123"]
+    assert assertions.select("enabled").to_series().to_list() == [True]
     assert candidates.select("source").to_series().to_list() == ["MyMemory"]
     assert candidates.select("translated_name").to_series().to_list() == ["Limettenfalter"]
     assert wiki.titles == ["Papilio demoleus", "Lime Swallowtail"]
     assert mymemory.calls == [{"source_name": "Lime Swallowtail", "source_language": "en", "target_language": "de", "max_candidates": "0"}]
     assert set(work.select("source").to_series().to_list()) == {"wikimedia", "mymemory"}
+
+
+def test_translation_harvester_disables_unbound_wikimedia_langlinks(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    _write_wikidata_link(registry, qid="Q123")
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["de"]), encoding="utf-8")
+
+    manifest = build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=registry / "enrichment",
+        translation_sources=("wikimedia",),
+        target_locales_json=locales,
+        providers={"wikimedia": FakeWikimediaProvider(wikidata_item="Q999")},
+    )
+
+    assertions = pl.read_parquet(registry / "enrichment" / "source_name_assertions.parquet")
+
+    assert manifest["wikimedia_assertion_rows"] == 1
+    assert assertions.select("display_name").to_series().to_list() == ["Zitronenfalter"]
+    assert assertions.select("enabled").to_series().to_list() == [False]
+    assert assertions.select("review_state").to_series().to_list() == ["candidate"]
+    assert assertions.select("source_taxon_id").to_series().to_list() == [""]
+    assert assertions.select("disabled_reason").to_series().to_list() == ["wikimedia_page_not_bound_to_accepted_taxon"]
 
 
 def test_harvester_does_not_translate_scientific_names_with_mymemory(tmp_path) -> None:

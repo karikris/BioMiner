@@ -16,6 +16,7 @@ import polars as pl
 from biominer.registry.enrichment import (
     ENRICHMENT_MANIFEST_FILE,
     ENRICHMENT_SOURCE_SNAPSHOTS_FILE,
+    EXTERNAL_LINKS_FILE,
     SOURCE_ASSERTIONS_FILE,
     SOURCE_ERRORS_FILE,
     SOURCE_WORK_LEDGER_FILE,
@@ -69,7 +70,7 @@ DEFAULT_TRANSLATION_TARGET_LOCALES = (
     "hi",
 )
 MYMEMORY_SOURCE_VERSION = "mymemory-get-v1"
-WIKIMEDIA_SOURCE_VERSION = "mediawiki-langlinks-v1"
+WIKIMEDIA_SOURCE_VERSION = "mediawiki-langlinks-pageprops-v2"
 MYMEMORY_BASE_URL = "https://api.mymemory.translated.net"
 WIKIPEDIA_API_BASE_URL = "https://en.wikipedia.org"
 COMMON_NAME_CLASSES = {"vernacular", "vernacular_alias", "common_name", "common_name_alias"}
@@ -120,6 +121,7 @@ class WikimediaLanglink:
     title: str
     page_id: str
     page_title: str
+    wikidata_item: str = ""
 
 
 @dataclass(frozen=True)
@@ -180,7 +182,8 @@ class WikimediaLanglinksProvider:
         params: dict[str, object] = {
             "action": "query",
             "format": "json",
-            "prop": "langlinks",
+            "prop": "langlinks|pageprops",
+            "ppprop": "wikibase_item",
             "titles": title,
             "lllimit": "max",
             "redirects": "1",
@@ -199,13 +202,23 @@ class WikimediaLanglinksProvider:
                         continue
                     page_id = str(page.get("pageid") or page_key or "")
                     page_title = str(page.get("title") or page_title)
+                    pageprops = page.get("pageprops") if isinstance(page.get("pageprops"), dict) else {}
+                    wikidata_item = str(pageprops.get("wikibase_item") or "") if isinstance(pageprops, dict) else ""
                     for item in page.get("langlinks") or []:
                         if not isinstance(item, dict):
                             continue
                         language = str(item.get("lang") or "")
                         linked_title = str(item.get("*") or item.get("title") or "")
                         if language in target_api_codes and linked_title:
-                            links.append(WikimediaLanglink(language=language, title=linked_title, page_id=page_id, page_title=page_title))
+                            links.append(
+                                WikimediaLanglink(
+                                    language=language,
+                                    title=linked_title,
+                                    page_id=page_id,
+                                    page_title=page_title,
+                                    wikidata_item=wikidata_item,
+                                )
+                            )
             continuation = payload.get("continue")
             if not isinstance(continuation, dict) or not continuation.get("llcontinue"):
                 break
@@ -309,6 +322,7 @@ def build_translation_candidates_from_registry(
 
     names = pl.read_parquet(registry / "names.parquet")
     seeds_by_taxon = _seed_names_by_taxon(taxa=taxa, names=names, source_assertions=existing_assertions)
+    wikidata_items_by_taxon = _wikidata_items_by_taxon(registry, output)
     completed_work = {
         str(row.get("work_key") or "")
         for row in existing_translation_work
@@ -349,6 +363,7 @@ def build_translation_candidates_from_registry(
                 seeds=_wikimedia_seeds(context, seeds),
                 provider=provider_bundle.get("wikimedia"),
                 target_locales=target_locales,
+                expected_wikidata_items=wikidata_items_by_taxon.get(context.accepted_taxon_key, set()),
                 completed_work=completed_work,
                 config_hash=_translation_config_hash("wikimedia", target_locales, max_candidates_per_name=0, allow_machine_translation=False),
                 budget=budget,
@@ -458,6 +473,7 @@ def _harvest_wikimedia_context(
     seeds: list[TranslationSeed],
     provider: Any,
     target_locales: tuple[str, ...],
+    expected_wikidata_items: set[str],
     completed_work: set[str],
     config_hash: str,
     budget: TranslationRequestBudget,
@@ -523,6 +539,8 @@ def _harvest_wikimedia_context(
             if assertion_key in seen_assertions:
                 continue
             seen_assertions.add(assertion_key)
+            disabled_reason = _wikimedia_binding_disabled_reason(link, expected_wikidata_items)
+            bound_to_same_taxon = not disabled_reason
             assertions.append(
                 {
                     "accepted_taxon_key": context.accepted_taxon_key,
@@ -532,13 +550,14 @@ def _harvest_wikimedia_context(
                     "region": "",
                     "name_class": "vernacular_alias",
                     "source": display_source,
-                    "source_record_id": f"wikimedia:{link.page_id}:{link.language}:{title}",
-                    "source_taxon_id": link.page_id,
-                    "trust_tier": "T4",
+                    "source_record_id": f"wikimedia:{link.page_id}:{link.wikidata_item}:{link.language}:{title}",
+                    "source_taxon_id": link.wikidata_item if bound_to_same_taxon else "",
+                    "trust_tier": "T3" if bound_to_same_taxon else "T4",
                     "precision_tier": "medium",
-                    "confidence": "medium",
-                    "enabled": True,
-                    "review_state": "accepted",
+                    "confidence": "high" if bound_to_same_taxon else "low",
+                    "enabled": bound_to_same_taxon,
+                    "review_state": "accepted" if bound_to_same_taxon else "candidate",
+                    "disabled_reason": disabled_reason,
                 }
             )
         snapshots.append(_source_snapshot(display_source, WIKIMEDIA_SOURCE_VERSION, source_path=f"enwiki:{page_title}", payload={"links": [link.__dict__ for link in links]}))
@@ -834,6 +853,35 @@ def _default_translation_providers(
             allow_machine_translation=mymemory_allow_machine_translation,
         ),
     }
+
+
+def _wikidata_items_by_taxon(*roots: Path) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = {}
+    for root in dict.fromkeys(roots):
+        path = root / EXTERNAL_LINKS_FILE
+        if not path.exists():
+            continue
+        links = pl.read_parquet(path)
+        if links.is_empty() or not {"accepted_taxon_key", "source", "source_taxon_id"}.issubset(links.columns):
+            continue
+        for row in links.to_dicts():
+            if str(row.get("source") or "").casefold() != "wikidata":
+                continue
+            accepted_taxon_key = str(row.get("accepted_taxon_key") or "")
+            source_taxon_id = str(row.get("source_taxon_id") or "")
+            if accepted_taxon_key and source_taxon_id:
+                result.setdefault(accepted_taxon_key, set()).add(source_taxon_id)
+    return result
+
+
+def _wikimedia_binding_disabled_reason(link: WikimediaLanglink, expected_wikidata_items: set[str]) -> str:
+    if not expected_wikidata_items:
+        return "wikimedia_source_binding_missing"
+    if not link.wikidata_item:
+        return "wikimedia_page_missing_wikidata_item"
+    if link.wikidata_item not in expected_wikidata_items:
+        return "wikimedia_page_not_bound_to_accepted_taxon"
+    return ""
 
 
 def _translation_work_schema() -> dict[str, pl.DataType]:
