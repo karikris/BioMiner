@@ -1,0 +1,98 @@
+{
+  "schema_version": "range-seed-v1",
+  "accepted_taxon_key": "gbif:1938069",
+  "scientific_name": "Papilio demoleus",
+  "regions": [
+    {
+      "region": "South Asia",
+      "range_status": "native_or_long_established",
+      "countries": [
+        {"code": "BD", "name": "Bangladesh"},
+        {"code": "BT", "name": "Bhutan"},
+        {"code": "IN", "name": "India"},
+        {"code": "LK", "name": "Sri Lanka"},
+        {"code": "NP", "name": "Nepal"},
+        {"code": "PK", "name": "Pakistan"}
+      ]
+    },
+    {
+      "region": "Middle East / West Asia",
+      "range_status": "occurrence_supported",
+      "countries": [
+        {"code": "AE", "name": "United Arab Emirates"},
+        {"code": "BH", "name": "Bahrain"},
+        {"code": "IQ", "name": "Iraq"},
+        {"code": "IR", "name": "Iran"},
+        {"code": "KW", "name": "Kuwait"},
+        {"code": "OM", "name": "Oman"},
+        {"code": "QA", "name": "Qatar"},
+        {"code": "SA", "name": "Saudi Arabia"},
+        {"code": "SY", "name": "Syria"},
+        {"code": "TR", "name": "Turkey"}
+      ]
+    },
+    {
+      "region": "East Asia",
+      "range_status": "occurrence_supported",
+      "countries": [
+        {"code": "CN", "name": "China"},
+        {"code": "HK", "name": "Hong Kong"},
+        {"code": "JP", "name": "Japan"},
+        {"code": "MO", "name": "Macau"},
+        {"code": "TW", "name": "Taiwan"}
+      ]
+    },
+    {
+      "region": "Mainland Southeast Asia",
+      "range_status": "native_or_long_established",
+      "countries": [
+        {"code": "KH", "name": "Cambodia"},
+        {"code": "LA", "name": "Laos"},
+        {"code": "MM", "name": "Myanmar"},
+        {"code": "TH", "name": "Thailand"},
+        {"code": "VN", "name": "Vietnam"}
+      ]
+    },
+    {
+      "region": "Maritime Southeast Asia",
+      "range_status": "native_or_long_established",
+      "countries": [
+        {"code": "BN", "name": "Brunei"},
+        {"code": "ID", "name": "Indonesia"},
+        {"code": "MY", "name": "Malaysia"},
+        {"code": "PH", "name": "Philippines"},
+        {"code": "SG", "name": "Singapore"},
+        {"code": "TL", "name": "Timor-Leste"}
+      ]
+    },
+    {
+      "region": "Caribbean introduced range",
+      "range_status": "introduced_established",
+      "requires_occurrence_support": true,
+      "countries": [
+        {"code": "CU", "name": "Cuba"},
+        {"code": "DO", "name": "Dominican Republic"},
+        {"code": "HT", "name": "Haiti"},
+        {"code": "JM", "name": "Jamaica"},
+        {"code": "PR", "name": "Puerto Rico"}
+      ]
+    },
+    {
+      "region": "Seychelles / Indian Ocean spread watch",
+      "range_status": "occurrence_supported",
+      "requires_occurrence_support": true,
+      "countries": [
+        {"code": "SC", "name": "Seychelles"}
+      ]
+    },
+    {
+      "region": "Australia/New Guinea taxonomic caution",
+      "range_status": "taxonomically_cautionary",
+      "taxonomic_caution": true,
+      "countries": [
+        {"code": "AU", "name": "Australia"},
+        {"code": "PG", "name": "Papua New Guinea"}
+      ]
+    }
+  ]
+}
