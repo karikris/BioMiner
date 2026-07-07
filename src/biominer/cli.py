@@ -218,6 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--skip-enrichment", action="store_true")
     registry_audit = registry_subparsers.add_parser("audit")
     registry_audit.add_argument("--registry-dir", required=True)
+    registry_audit.add_argument("--report-dir", default="reports")
     dev = subparsers.add_parser("dev")
     dev_subparsers = dev.add_subparsers(dest="dev_command")
     dev_vision = dev_subparsers.add_parser("vision")
@@ -573,7 +574,7 @@ def run(args: argparse.Namespace) -> int:
             )
             return 0
         if args.registry_command == "audit":
-            print(json.dumps(audit_registry(args.registry_dir), indent=2, sort_keys=True))
+            print(json.dumps(audit_registry(args.registry_dir, report_dir=args.report_dir), indent=2, sort_keys=True))
             return 0
         return 2
     return 2

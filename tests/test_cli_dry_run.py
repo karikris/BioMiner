@@ -2410,7 +2410,8 @@ def test_registry_audit_cli_summarizes_registry_parquet_with_duckdb(tmp_path, ca
     ).write_parquet(registry / "qa_findings.parquet")
 
     parser = build_parser()
-    args = parser.parse_args(["registry", "audit", "--registry-dir", str(registry)])
+    report_dir = tmp_path / "reports"
+    args = parser.parse_args(["registry", "audit", "--registry-dir", str(registry), "--report-dir", str(report_dir)])
 
     assert run(args) == 0
 
@@ -2420,6 +2421,8 @@ def test_registry_audit_cli_summarizes_registry_parquet_with_duckdb(tmp_path, ca
     assert payload["enabled_names_by_class"] == {"accepted_scientific": 1, "vernacular": 1}
     assert payload["flickr_queries_by_field"] == {"tags": 1, "text": 1}
     assert payload["qa_by_severity"] == {"warning": 1}
+    assert payload["language_target_coverage_report"].startswith(str(report_dir))
+    assert payload["curated_vernacular_gap_report"].startswith(str(report_dir))
 
 
 def test_cli_help_does_not_describe_old_gold_silver_bronze_logic(capsys) -> None:
