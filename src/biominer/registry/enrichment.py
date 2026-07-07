@@ -35,8 +35,19 @@ FINAL_SOURCE_SNAPSHOTS_FILE = "source_snapshots.parquet"
 NAME_CANDIDATES_FILE = "name_candidates.parquet"
 ENRICHMENT_MANIFEST_FILE = "enrichment_manifest.json"
 TRANSLATION_WORK_LEDGER_FILE = "translation_work_ledger.parquet"
-DEFAULT_ENRICHMENT_SOURCES = ("col", "inaturalist", "itis", "tmd_de", "wikidata", "gbif_vernacular", "taxref_fr")
-BULK_ENRICHMENT_SOURCES = frozenset({"gbif_vernacular", "taxref_fr", "tmd_de"})
+DEFAULT_ENRICHMENT_SOURCES = (
+    "col",
+    "inaturalist",
+    "itis",
+    "tmd_de",
+    "wikidata",
+    "gbif_vernacular",
+    "taxref_fr",
+    "boi_india_en",
+    "bharat_ki_titliya_hi",
+    "karnataka_chitte_kn",
+)
+BULK_ENRICHMENT_SOURCES = frozenset({"gbif_vernacular", "taxref_fr", "tmd_de", "boi_india_en", "bharat_ki_titliya_hi", "karnataka_chitte_kn"})
 BULK_REGISTRY_WORK_KEY = "__registry__"
 INATURALIST_DAILY_REQUEST_LIMIT = 10000
 INATURALIST_WORKER_LIMIT = 1
@@ -53,7 +64,10 @@ _source_semaphores = {
 }
 SOURCE_WORKER_LIMITS = {
     "gbif_vernacular": 1,
+    "boi_india_en": 1,
+    "bharat_ki_titliya_hi": 1,
     "inaturalist": INATURALIST_WORKER_LIMIT,
+    "karnataka_chitte_kn": 1,
     "taxref_fr": 1,
     "tmd_de": 1,
     "wikidata": WIKIDATA_WORKER_LIMIT,
@@ -298,7 +312,7 @@ def build_enrichment_sources_from_registry(
 
 
 def default_enrichment_clients(*, max_retries: int = 5) -> dict[str, Any]:
-    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, GBIFVernacularClient, INaturalistClient, ITISClient, TAXREFFrenchClient, TMDGermanClient, WikidataClient
+    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, GBIFVernacularClient, INaturalistClient, ITISClient, StaticVernacularSourceClient, TAXREFFrenchClient, TMDGermanClient, WikidataClient
 
     return {
         "col": CatalogueOfLifeClient(max_retries=max_retries),
@@ -308,6 +322,9 @@ def default_enrichment_clients(*, max_retries: int = 5) -> dict[str, Any]:
         "wikidata": WikidataClient(max_retries=max_retries),
         "gbif_vernacular": GBIFVernacularClient(),
         "taxref_fr": TAXREFFrenchClient(max_retries=max_retries),
+        "boi_india_en": StaticVernacularSourceClient.from_config_path("config/vernacular_sources/boi_india_en.json"),
+        "bharat_ki_titliya_hi": StaticVernacularSourceClient.from_config_path("config/vernacular_sources/bharat_ki_titliya_hi.json"),
+        "karnataka_chitte_kn": StaticVernacularSourceClient.from_config_path("config/vernacular_sources/karnataka_chitte_kn.json"),
     }
 
 
@@ -1209,7 +1226,13 @@ def _source_taxon_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _merged_source_snapshots(base_snapshots: pl.DataFrame, enrichment_snapshots: pl.DataFrame) -> pl.DataFrame:
-    return pl.concat([base_snapshots, enrichment_snapshots], how="vertical_relaxed")
+    return pl.concat(
+        [
+            _source_snapshots_frame(base_snapshots.to_dicts()),
+            _source_snapshots_frame(enrichment_snapshots.to_dicts()),
+        ],
+        how="vertical_relaxed",
+    )
 
 
 def _write_enriched_evidence(output: Path, *, registry_version: str, source_payload: dict[str, Any], assertions: pl.DataFrame) -> None:
@@ -1300,6 +1323,8 @@ def _source_snapshots_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
             "source_path": str(row.get("source_path") or ""),
             "source_response_hash": str(row.get("source_response_hash") or ""),
             "licence": str(row.get("licence") or ""),
+            "source_url": str(row.get("source_url") or ""),
+            "citation": str(row.get("citation") or ""),
         }
         for row in rows
     ]
@@ -1400,10 +1425,13 @@ def _registry_artifact_hash(registry: Path) -> str:
 
 def _source_display_names(sources: tuple[str, ...]) -> tuple[str, ...]:
     mapping = {
+        "bharat_ki_titliya_hi": "Bharat Ki Titliya",
+        "boi_india_en": "Butterflies of India",
         "col": "CoL",
         "gbif_vernacular": "GBIF",
         "itis": "ITIS",
         "inaturalist": "iNaturalist",
+        "karnataka_chitte_kn": "Karnataka Chitte",
         "mymemory": "MyMemory",
         "taxref_fr": "TAXREF",
         "tmd_de": "TMD",
@@ -1467,6 +1495,8 @@ def _source_snapshot_schema() -> dict[str, pl.DataType]:
         "source_path": pl.String,
         "source_response_hash": pl.String,
         "licence": pl.String,
+        "source_url": pl.String,
+        "citation": pl.String,
     }
 
 

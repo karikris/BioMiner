@@ -1,0 +1,15 @@
+{
+  "source_key": "boi_india_en",
+  "source_name": "Butterflies of India",
+  "source_version": "2026-07-static-v1",
+  "snapshot_path": "data/source_snapshots/boi_india_en/2026-07-static-v1.csv",
+  "country_code": "IN",
+  "language": "eng",
+  "script": "Latn",
+  "region": "IN",
+  "trust_tier": "T2",
+  "precision_tier": "high",
+  "source_url": "https://www.ifoundbutterflies.org/",
+  "citation": "Butterflies of India, National Centre for Biological Sciences, Bengaluru; BioMiner curated static snapshot 2026-07-static-v1.",
+  "licence": "not_configured"
+}

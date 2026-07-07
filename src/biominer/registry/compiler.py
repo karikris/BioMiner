@@ -244,6 +244,8 @@ def _source_snapshots_frame(payload: dict[str, Any], *, source_ref: str | Path) 
                 "source_path": str(source_ref),
                 "source_response_hash": _payload_hash(payload),
                 "licence": str(payload.get("licence") or ""),
+                "source_url": str(payload.get("source_url") or ""),
+                "citation": str(payload.get("citation") or ""),
             }
         ],
         schema={
@@ -253,6 +255,8 @@ def _source_snapshots_frame(payload: dict[str, Any], *, source_ref: str | Path) 
             "source_path": pl.String,
             "source_response_hash": pl.String,
             "licence": pl.String,
+            "source_url": pl.String,
+            "citation": pl.String,
         },
     )
 

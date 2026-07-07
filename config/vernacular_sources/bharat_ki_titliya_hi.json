@@ -1,0 +1,15 @@
+{
+  "source_key": "bharat_ki_titliya_hi",
+  "source_name": "Bharat Ki Titliya",
+  "source_version": "2026-07-static-v1",
+  "snapshot_path": "data/source_snapshots/bharat_ki_titliya_hi/2026-07-static-v1.csv",
+  "country_code": "IN",
+  "language": "hin",
+  "script": "Deva",
+  "region": "IN",
+  "trust_tier": "T2",
+  "precision_tier": "high",
+  "source_url": "",
+  "citation": "Bharat Ki Titliya; BioMiner curated static snapshot 2026-07-static-v1.",
+  "licence": "not_configured"
+}

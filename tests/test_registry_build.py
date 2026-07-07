@@ -203,6 +203,28 @@ class RecordingTMDClient:
         }
 
 
+class EmptyStaticClient:
+    def __init__(self, source: str) -> None:
+        self.source = source
+
+    def enrich_registry(self, *, taxa_rows, name_rows):  # noqa: ANN001 - test double.
+        return {
+            "name_assertions": [],
+            "external_links": [],
+            "source_snapshots": [
+                {
+                    "source": self.source,
+                    "source_version": "fixture",
+                    "retrieved_at": "2026-06-20T00:00:00+00:00",
+                    "source_path": f"memory://{self.source}",
+                    "source_response_hash": f"sha256:{self.source}",
+                    "licence": "",
+                }
+            ],
+            "coverage": {"name_assertions": 0, "request_count": 0},
+        }
+
+
 def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_path, monkeypatch) -> None:
     scope = tmp_path / "scope.json"
     _scope(scope)
@@ -216,6 +238,9 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
         "taxref_fr": TAXREFFrenchClient(taxref_rows=[]),
         "tmd_de": RecordingTMDClient(),
         "wikidata": RecordingSourceClient("Wikidata", "Wikidata Lime"),
+        "boi_india_en": EmptyStaticClient("Butterflies of India"),
+        "bharat_ki_titliya_hi": EmptyStaticClient("Bharat Ki Titliya"),
+        "karnataka_chitte_kn": EmptyStaticClient("Karnataka Chitte"),
     }
     monkeypatch.setattr("biominer.registry.enrichment.default_enrichment_clients", lambda max_retries=5: clients)
 
@@ -238,7 +263,18 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
     manifest = json.loads((registry / "manifest.json").read_text(encoding="utf-8"))
 
     assert result["manifest"]["qa_status"] == "passed"
-    assert manifest["enrichment_sources"] == ["col", "inaturalist", "itis", "tmd_de", "wikidata", "gbif_vernacular", "taxref_fr"]
+    assert manifest["enrichment_sources"] == [
+        "col",
+        "inaturalist",
+        "itis",
+        "tmd_de",
+        "wikidata",
+        "gbif_vernacular",
+        "taxref_fr",
+        "boi_india_en",
+        "bharat_ki_titliya_hi",
+        "karnataka_chitte_kn",
+    ]
     assert {"Lime Swallowtail", "Lime Butterfly", "Chequered Swallowtail", "Zitronen-Schwalbenschwanz", "Wikidata Lime"}.issubset(
         set(names["display_name"].to_list())
     )
@@ -355,6 +391,9 @@ def test_registry_build_quarantines_source_errors_without_siloing_successful_nam
         "taxref_fr": TAXREFFrenchClient(taxref_rows=[]),
         "tmd_de": RecordingTMDClient(),
         "wikidata": RecordingSourceClient("Wikidata", "Wikidata Lime"),
+        "boi_india_en": EmptyStaticClient("Butterflies of India"),
+        "bharat_ki_titliya_hi": EmptyStaticClient("Bharat Ki Titliya"),
+        "karnataka_chitte_kn": EmptyStaticClient("Karnataka Chitte"),
     }
     monkeypatch.setattr("biominer.registry.enrichment.default_enrichment_clients", lambda max_retries=5: clients)
 

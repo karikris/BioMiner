@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import threading
@@ -7,6 +8,7 @@ import time
 
 import httpx
 import polars as pl
+import pytest
 
 from biominer.cli import build_parser, run
 from biominer.registry.compiler import compile_registry_fixture, compile_registry_frames
@@ -18,7 +20,17 @@ from biominer.registry.enrichment import (
     default_enrichment_clients,
     write_enrichment_sources,
 )
-from biominer.registry.enrichment_sources import CatalogueOfLifeClient, GBIFVernacularClient, INaturalistClient, ITISClient, TAXREFFrenchClient, TMDGermanClient, WikidataClient, _json_get
+from biominer.registry.enrichment_sources import (
+    CatalogueOfLifeClient,
+    GBIFVernacularClient,
+    INaturalistClient,
+    ITISClient,
+    StaticVernacularSourceClient,
+    TAXREFFrenchClient,
+    TMDGermanClient,
+    WikidataClient,
+    _json_get,
+)
 from biominer.registry.translation_sources import generated_translation_candidate, write_translation_candidates
 
 
@@ -133,6 +145,61 @@ def _species_context() -> SpeciesContext:
         genus="Papilio",
         current_names=("Papilio demoleus",),
     )
+
+
+def _write_static_source(
+    tmp_path,
+    *,
+    source_key: str = "boi_india_en",
+    rows: list[dict[str, str]] | None = None,
+    config_updates: dict[str, str] | None = None,
+    fieldnames: list[str] | None = None,
+):
+    snapshot = tmp_path / f"{source_key}.csv"
+    csv_fieldnames = fieldnames or [
+        "source_key",
+        "source_name",
+        "source_version",
+        "country_code",
+        "admin1_code",
+        "scientific_name",
+        "source_taxon_id",
+        "accepted_name_usage",
+        "vernacular_name",
+        "language",
+        "script",
+        "region",
+        "rank",
+        "licence",
+        "source_url",
+        "citation",
+        "name_class",
+    ]
+    with snapshot.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=csv_fieldnames)
+        writer.writeheader()
+        for row in rows or []:
+            writer.writerow({field: row.get(field, "") for field in csv_fieldnames})
+    config = {
+        "source_key": source_key,
+        "source_name": "Butterflies of India",
+        "source_version": "test-static-v1",
+        "snapshot_path": str(snapshot),
+        "country_code": "IN",
+        "language": "eng",
+        "script": "Latn",
+        "region": "IN",
+        "trust_tier": "T2",
+        "precision_tier": "high",
+        "source_url": "https://www.ifoundbutterflies.org/",
+        "citation": "Fixture citation",
+        "licence": "fixture licence",
+    }
+    if config_updates:
+        config.update(config_updates)
+    config_path = tmp_path / f"{source_key}.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    return config_path
 
 
 def test_compile_enriched_registry_adds_enabled_names_and_preserves_candidates(tmp_path) -> None:
@@ -852,6 +919,326 @@ def test_taxref_french_client_maps_accepted_synonym_territory_and_rejects_ambigu
     assert result["source_snapshots"][0]["source_version"] == "taxref-web-api-taxa-search"
     assert result["source_snapshots"][0]["source_path"] == "https://taxref.mnhn.fr/taxref-web/api/taxa/search"
     assert result["source_snapshots"][0]["source_response_hash"].startswith("sha256:")
+
+
+def test_static_vernacular_source_client_ingests_csv_and_maps_names_with_metadata(tmp_path) -> None:
+    config_path = _write_static_source(
+        tmp_path,
+        rows=[
+            {
+                "source_key": "boi_india_en",
+                "source_name": "Butterflies of India",
+                "source_version": "test-static-v1",
+                "country_code": "IN",
+                "admin1_code": "",
+                "scientific_name": "Papilio demoleus",
+                "source_taxon_id": "boi:papilio-demoleus",
+                "accepted_name_usage": "Papilio demoleus",
+                "vernacular_name": "Lime Swallowtail",
+                "language": "eng",
+                "script": "Latn",
+                "region": "IN",
+                "rank": "species",
+                "licence": "CC-BY fixture",
+                "source_url": "https://www.ifoundbutterflies.org/",
+                "citation": "Fixture citation, Butterflies of India",
+            },
+            {
+                "source_key": "boi_india_en",
+                "source_name": "Butterflies of India",
+                "source_version": "test-static-v1",
+                "country_code": "IN",
+                "admin1_code": "",
+                "scientific_name": "Princeps demoleus",
+                "source_taxon_id": "boi:princeps-demoleus",
+                "accepted_name_usage": "",
+                "vernacular_name": "Lime Butterfly",
+                "language": "eng",
+                "script": "Latn",
+                "region": "IN",
+                "rank": "species",
+                "licence": "CC-BY fixture",
+                "source_url": "https://www.ifoundbutterflies.org/",
+                "citation": "Fixture citation, Butterflies of India",
+                "name_class": "vernacular_alias",
+            },
+            {
+                "source_key": "boi_india_en",
+                "source_name": "Butterflies of India",
+                "source_version": "test-static-v1",
+                "country_code": "IN",
+                "admin1_code": "",
+                "scientific_name": "Papilio demoleus",
+                "source_taxon_id": "boi:duplicate",
+                "accepted_name_usage": "Papilio demoleus",
+                "vernacular_name": "Lime Swallowtail",
+                "language": "eng",
+                "script": "Latn",
+                "region": "IN",
+                "rank": "species",
+                "licence": "CC-BY fixture",
+                "source_url": "https://www.ifoundbutterflies.org/",
+                "citation": "Fixture citation, Butterflies of India",
+            },
+            {
+                "source_key": "boi_india_en",
+                "source_name": "Butterflies of India",
+                "source_version": "test-static-v1",
+                "country_code": "IN",
+                "admin1_code": "",
+                "scientific_name": "Shared synonym",
+                "source_taxon_id": "boi:ambiguous",
+                "accepted_name_usage": "",
+                "vernacular_name": "Ambiguous Lime",
+                "language": "eng",
+                "script": "Latn",
+                "region": "IN",
+                "rank": "species",
+                "licence": "CC-BY fixture",
+                "source_url": "https://www.ifoundbutterflies.org/",
+                "citation": "Fixture citation, Butterflies of India",
+            },
+            {
+                "source_key": "boi_india_en",
+                "source_name": "Butterflies of India",
+                "source_version": "test-static-v1",
+                "country_code": "IN",
+                "admin1_code": "",
+                "scientific_name": "Papilio outscope",
+                "source_taxon_id": "boi:outscope",
+                "accepted_name_usage": "",
+                "vernacular_name": "Outscope Butterfly",
+                "language": "eng",
+                "script": "Latn",
+                "region": "IN",
+                "rank": "species",
+                "licence": "CC-BY fixture",
+                "source_url": "https://www.ifoundbutterflies.org/",
+                "citation": "Fixture citation, Butterflies of India",
+            },
+            {
+                "source_key": "boi_india_en",
+                "source_name": "Butterflies of India",
+                "source_version": "test-static-v1",
+                "country_code": "IN",
+                "admin1_code": "",
+                "scientific_name": "Papilio demoleus",
+                "source_taxon_id": "boi:blank",
+                "accepted_name_usage": "Papilio demoleus",
+                "vernacular_name": "",
+                "language": "eng",
+                "script": "Latn",
+                "region": "IN",
+                "rank": "species",
+                "licence": "CC-BY fixture",
+                "source_url": "https://www.ifoundbutterflies.org/",
+                "citation": "Fixture citation, Butterflies of India",
+            },
+        ],
+        config_updates={"licence": "CC-BY fixture", "citation": "Fixture citation, Butterflies of India"},
+    )
+
+    result = StaticVernacularSourceClient.from_config_path(config_path).enrich_registry(
+        taxa_rows=[{"accepted_taxon_key": "gbif:100", "rank": "SPECIES", "scientific_name": "Papilio demoleus"}],
+        name_rows=[
+            {"accepted_taxon_key": "gbif:100", "display_name": "Princeps demoleus", "name_class": "scientific_synonym"},
+            {"accepted_taxon_key": "gbif:100", "display_name": "Shared synonym", "name_class": "scientific_synonym"},
+            {"accepted_taxon_key": "gbif:101", "display_name": "Shared synonym", "name_class": "scientific_synonym"},
+        ],
+    )
+
+    assertions = result["name_assertions"]
+    assert [
+        (
+            row["display_name"],
+            row["source"],
+            row["language"],
+            row["script"],
+            row["region"],
+            row["name_class"],
+            row["trust_tier"],
+            row["confidence"],
+            row["lineage_check"],
+            row["licence"],
+        )
+        for row in assertions
+    ] == [
+        ("Lime Butterfly", "Butterflies of India", "eng", "Latn", "IN", "vernacular_alias", "T2", "medium", "scientific_synonym", "CC-BY fixture"),
+        ("Lime Swallowtail", "Butterflies of India", "eng", "Latn", "IN", "vernacular", "T2", "high", "accepted_scientific_name", "CC-BY fixture"),
+    ]
+    assert result["external_links"] == [
+        {
+            "accepted_taxon_key": "gbif:100",
+            "source": "Butterflies of India",
+            "source_taxon_id": "boi:papilio-demoleus",
+            "match_method": "scientific_name",
+            "match_confidence": "high",
+            "lineage_check": "accepted_scientific_name",
+        },
+        {
+            "accepted_taxon_key": "gbif:100",
+            "source": "Butterflies of India",
+            "source_taxon_id": "boi:princeps-demoleus",
+            "match_method": "scientific_synonym",
+            "match_confidence": "medium",
+            "lineage_check": "scientific_synonym",
+        },
+    ]
+    assert result["coverage"] == {
+        "rows_read": 6,
+        "rows_with_vernacular": 5,
+        "name_assertions": 2,
+        "mapped_source_id_rows": 0,
+        "mapped_accepted_name_rows": 2,
+        "mapped_synonym_rows": 1,
+        "out_of_scope_rows": 1,
+        "ambiguous_synonym_rows": 1,
+        "duplicate_rows": 1,
+        "rows_without_vernacular": 1,
+        "missing_source_name_rows": 0,
+        "request_count": 0,
+    }
+    assert result["source_snapshots"][0]["source"] == "Butterflies of India"
+    assert result["source_snapshots"][0]["source_version"] == "test-static-v1"
+    assert result["source_snapshots"][0]["source_path"] == str(config_path.with_suffix(".csv"))
+    assert result["source_snapshots"][0]["source_response_hash"].startswith("sha256:")
+    assert result["source_snapshots"][0]["licence"] == "CC-BY fixture"
+    assert result["source_snapshots"][0]["source_url"] == "https://www.ifoundbutterflies.org/"
+    assert result["source_snapshots"][0]["citation"] == "Fixture citation, Butterflies of India"
+
+
+def test_static_vernacular_source_client_validates_config_and_csv_headers(tmp_path) -> None:
+    config_path = _write_static_source(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    del config["source_key"]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="source_key"):
+        StaticVernacularSourceClient.from_config_path(config_path)
+
+    bad_header_config = _write_static_source(
+        tmp_path,
+        source_key="bad_header",
+        fieldnames=[
+            "source_key",
+            "source_name",
+            "source_version",
+            "country_code",
+            "admin1_code",
+            "scientific_name",
+            "source_taxon_id",
+            "accepted_name_usage",
+            "vernacular_name",
+            "language",
+            "script",
+            "region",
+            "rank",
+            "licence",
+            "source_url",
+        ],
+    )
+    with pytest.raises(ValueError, match="citation"):
+        StaticVernacularSourceClient.from_config_path(bad_header_config).enrich_registry(taxa_rows=[], name_rows=[])
+
+
+def test_static_vernacular_source_client_preserves_regional_language_script_and_reports_missing_names(tmp_path) -> None:
+    kannada_config = _write_static_source(
+        tmp_path,
+        source_key="karnataka_chitte_kn",
+        rows=[
+            {
+                "source_key": "karnataka_chitte_kn",
+                "source_name": "Karnataka Chitte",
+                "source_version": "test-static-v1",
+                "country_code": "IN",
+                "admin1_code": "KA",
+                "scientific_name": "Papilio demoleus",
+                "source_taxon_id": "karnataka-chitte:papilio-demoleus",
+                "accepted_name_usage": "Papilio demoleus",
+                "vernacular_name": "Fixture Kannada Source Name",
+                "language": "kan",
+                "script": "Knda",
+                "region": "IN-KA",
+                "rank": "species",
+                "licence": "fixture licence",
+                "source_url": "",
+                "citation": "Fixture Kannada citation",
+            }
+        ],
+        config_updates={"source_name": "Karnataka Chitte", "language": "kan", "script": "Knda", "region": "IN-KA"},
+    )
+
+    kannada_result = StaticVernacularSourceClient.from_config_path(kannada_config).enrich_registry(
+        taxa_rows=[{"accepted_taxon_key": "gbif:100", "rank": "SPECIES", "scientific_name": "Papilio demoleus"}],
+        name_rows=[],
+    )
+
+    assert kannada_result["name_assertions"][0]["source"] == "Karnataka Chitte"
+    assert kannada_result["name_assertions"][0]["language"] == "kan"
+    assert kannada_result["name_assertions"][0]["script"] == "Knda"
+    assert kannada_result["name_assertions"][0]["region"] == "IN-KA"
+
+    hindi_config = _write_static_source(
+        tmp_path,
+        source_key="bharat_ki_titliya_hi",
+        rows=[],
+        config_updates={"source_name": "Bharat Ki Titliya", "language": "hin", "script": "Deva", "region": "IN"},
+    )
+    hindi_result = StaticVernacularSourceClient.from_config_path(hindi_config).enrich_registry(
+        taxa_rows=[{"accepted_taxon_key": "gbif:100", "rank": "SPECIES", "scientific_name": "Papilio demoleus"}],
+        name_rows=[],
+    )
+
+    assert hindi_result["name_assertions"] == []
+    assert hindi_result["coverage"]["missing_source_name_rows"] == 1
+    assert hindi_result["coverage"]["name_assertions"] == 0
+
+
+def test_build_enrichment_sources_runs_static_source_as_bulk_source(tmp_path) -> None:
+    registry, _scope = _write_base_registry(tmp_path)
+    config_path = _write_static_source(
+        tmp_path,
+        rows=[
+            {
+                "source_key": "boi_india_en",
+                "source_name": "Butterflies of India",
+                "source_version": "test-static-v1",
+                "country_code": "IN",
+                "admin1_code": "",
+                "scientific_name": "Papilio demoleus",
+                "source_taxon_id": "boi:papilio-demoleus",
+                "accepted_name_usage": "Papilio demoleus",
+                "vernacular_name": "Lime Swallowtail",
+                "language": "eng",
+                "script": "Latn",
+                "region": "IN",
+                "rank": "species",
+                "licence": "fixture licence",
+                "source_url": "https://www.ifoundbutterflies.org/",
+                "citation": "Fixture citation",
+            }
+        ],
+    )
+
+    manifest = build_enrichment_sources_from_registry(
+        registry_dir=registry,
+        sources=("boi_india_en",),
+        clients={"boi_india_en": StaticVernacularSourceClient.from_config_path(config_path)},
+        report_dir=tmp_path / "reports",
+    )
+
+    assertions = pl.read_parquet(registry / "source_name_assertions.parquet")
+    work = pl.read_parquet(registry / SOURCE_WORK_LEDGER_FILE)
+    coverage = json.loads((registry / "enrichment_coverage.json").read_text(encoding="utf-8"))
+
+    assert manifest["source_order"] == ["boi_india_en"]
+    assert assertions.select(["source", "display_name", "language", "region"]).to_dicts() == [
+        {"source": "Butterflies of India", "display_name": "Lime Swallowtail", "language": "eng", "region": "IN"}
+    ]
+    assert work.select(["source", "accepted_taxon_key", "request_count"]).to_dicts() == [
+        {"source": "boi_india_en", "accepted_taxon_key": "__registry__", "request_count": 0}
+    ]
+    assert coverage["bulk_sources"]["Butterflies of India"]["name_assertions"] == 1
 
 
 def test_build_enrichment_sources_runs_taxref_fr_as_bulk_source(tmp_path) -> None:
@@ -1806,9 +2193,23 @@ def test_inaturalist_source_is_limited_to_one_concurrent_query(tmp_path) -> None
 def test_default_enrichment_clients_include_wikidata_gbif_vernacular_and_taxref() -> None:
     clients = default_enrichment_clients(max_retries=0)
 
-    assert list(clients) == ["col", "inaturalist", "itis", "tmd_de", "wikidata", "gbif_vernacular", "taxref_fr"]
+    assert list(clients) == [
+        "col",
+        "inaturalist",
+        "itis",
+        "tmd_de",
+        "wikidata",
+        "gbif_vernacular",
+        "taxref_fr",
+        "boi_india_en",
+        "bharat_ki_titliya_hi",
+        "karnataka_chitte_kn",
+    ]
     assert clients["gbif_vernacular"].__class__.__name__ == "GBIFVernacularClient"
     assert clients["taxref_fr"].__class__.__name__ == "TAXREFFrenchClient"
+    assert clients["boi_india_en"].__class__.__name__ == "StaticVernacularSourceClient"
+    assert clients["bharat_ki_titliya_hi"].__class__.__name__ == "StaticVernacularSourceClient"
+    assert clients["karnataka_chitte_kn"].__class__.__name__ == "StaticVernacularSourceClient"
     assert clients["wikidata"].__class__.__name__ == "WikidataClient"
 
 

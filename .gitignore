@@ -4,7 +4,10 @@ AGENTS.md
 .agents/
 skills-lock.json
 *:Zone.Identifier
-data/
+data/*
+!data/source_snapshots/
+!data/source_snapshots/**/
+!data/source_snapshots/**/*.csv
 data/cache/
 data/raw/
 data/state/

@@ -1,0 +1,15 @@
+{
+  "source_key": "karnataka_chitte_kn",
+  "source_name": "Karnataka Chitte",
+  "source_version": "2026-07-static-v1",
+  "snapshot_path": "data/source_snapshots/karnataka_chitte_kn/2026-07-static-v1.csv",
+  "country_code": "IN",
+  "language": "kan",
+  "script": "Knda",
+  "region": "IN-KA",
+  "trust_tier": "T2",
+  "precision_tier": "high",
+  "source_url": "",
+  "citation": "Karnataka Chitte; BioMiner curated static snapshot 2026-07-static-v1.",
+  "licence": "not_configured"
+}

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import datetime
-from email.utils import parsedate_to_datetime
+import csv
 import hashlib
 import json
 import logging
 import random
+from collections.abc import Callable
+from datetime import datetime
+from email.utils import parsedate_to_datetime
+from pathlib import Path
 from time import sleep as default_sleep
 from typing import Any
 
@@ -36,6 +38,39 @@ WIKIDATA_SOURCE_VERSION = "wikidata-wdqs-p225-p846-p1843-labels-aliases"
 COL_NAME_USAGE_SEARCH_LIMIT = 1000
 INATURALIST_TAXA_PER_PAGE = 200
 TAXREF_SEARCH_ROWS_PER_TAXON = 50
+STATIC_VERNACULAR_REQUIRED_FIELDS = (
+    "source_key",
+    "source_name",
+    "source_version",
+    "country_code",
+    "admin1_code",
+    "scientific_name",
+    "source_taxon_id",
+    "accepted_name_usage",
+    "vernacular_name",
+    "language",
+    "script",
+    "region",
+    "rank",
+    "licence",
+    "source_url",
+    "citation",
+)
+STATIC_VERNACULAR_CONFIG_REQUIRED_FIELDS = (
+    "source_key",
+    "source_name",
+    "source_version",
+    "snapshot_path",
+    "country_code",
+    "language",
+    "script",
+    "region",
+    "trust_tier",
+    "precision_tier",
+    "source_url",
+    "citation",
+    "licence",
+)
 TAXREF_TERRITORY_FIELDS = (
     ("fr", "FR"),
     ("gf", "GF"),
@@ -384,6 +419,239 @@ class TAXREFFrenchClient:
                     seen_cd_nom.add(cd_nom)
                 rows.append(row)
         return rows, request_count
+
+
+class StaticVernacularSourceClient:
+    def __init__(
+        self,
+        *,
+        source_key: str,
+        source_name: str,
+        source_version: str,
+        snapshot_path: str | Path,
+        country_code: str = "",
+        language: str = "",
+        script: str = "",
+        region: str = "",
+        trust_tier: str = "T2",
+        precision_tier: str = "high",
+        source_url: str = "",
+        citation: str = "",
+        licence: str = "",
+    ) -> None:
+        self.source_key = source_key
+        self.source_name = source_name
+        self.source_version = source_version
+        self.snapshot_path = Path(snapshot_path)
+        self.country_code = country_code
+        self.language = language
+        self.script = script
+        self.region = region
+        self.trust_tier = trust_tier
+        self.precision_tier = precision_tier
+        self.source_url = source_url
+        self.citation = citation
+        self.licence = licence
+
+    @classmethod
+    def from_config_path(cls, config_path: str | Path) -> StaticVernacularSourceClient:
+        path = Path(config_path)
+        config = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(config, dict):
+            raise ValueError(f"Static vernacular source config must be a JSON object: {path}")
+        missing = [field for field in STATIC_VERNACULAR_CONFIG_REQUIRED_FIELDS if field not in config]
+        if missing:
+            raise ValueError(f"Static vernacular source config missing required fields: {', '.join(missing)}")
+        snapshot_path = _resolve_static_snapshot_path(path, str(config.get("snapshot_path") or ""))
+        return cls(
+            source_key=str(config.get("source_key") or "").strip(),
+            source_name=str(config.get("source_name") or "").strip(),
+            source_version=str(config.get("source_version") or "").strip(),
+            snapshot_path=snapshot_path,
+            country_code=str(config.get("country_code") or "").strip(),
+            language=str(config.get("language") or "").strip(),
+            script=str(config.get("script") or "").strip(),
+            region=str(config.get("region") or "").strip(),
+            trust_tier=str(config.get("trust_tier") or "T2").strip(),
+            precision_tier=str(config.get("precision_tier") or "high").strip(),
+            source_url=str(config.get("source_url") or "").strip(),
+            citation=str(config.get("citation") or "").strip(),
+            licence=str(config.get("licence") or "").strip(),
+        )
+
+    def enrich_registry(self, *, taxa_rows: list[dict[str, Any]], name_rows: list[dict[str, Any]]) -> dict[str, Any]:
+        rows = self._load_rows()
+        accepted_lookup = _accepted_species_lookup(taxa_rows)
+        synonym_lookup, ambiguous_synonym_keys = _scientific_synonym_lookup_with_ambiguity(name_rows)
+        source_id_lookup = _source_taxon_id_lookup(name_rows, source=self.source_name)
+        coverage = {
+            "rows_read": len(rows),
+            "rows_with_vernacular": 0,
+            "name_assertions": 0,
+            "mapped_source_id_rows": 0,
+            "mapped_accepted_name_rows": 0,
+            "mapped_synonym_rows": 0,
+            "out_of_scope_rows": 0,
+            "ambiguous_synonym_rows": 0,
+            "duplicate_rows": 0,
+            "rows_without_vernacular": 0,
+            "missing_source_name_rows": 0,
+            "request_count": 0,
+        }
+        assertions: list[dict[str, Any]] = []
+        links: list[dict[str, Any]] = []
+        seen_assertions: set[tuple[str, str, str, str, str]] = set()
+        seen_links: set[tuple[str, str, str]] = set()
+        taxa_with_assertions: set[str] = set()
+
+        for row in rows:
+            if _static_value(row, "source_key", self.source_key) != self.source_key:
+                coverage["out_of_scope_rows"] += 1
+                continue
+            vernacular_name = _static_value(row, "vernacular_name")
+            if not vernacular_name:
+                coverage["rows_without_vernacular"] += 1
+                continue
+            coverage["rows_with_vernacular"] += 1
+
+            source_taxon_id = _static_value(row, "source_taxon_id")
+            scientific_name = _static_value(row, "accepted_name_usage") or _static_value(row, "scientific_name")
+            match_key = normalize_name_key(scientific_name)
+            accepted_taxon_key = ""
+            match_method = ""
+            match_confidence = ""
+            lineage_check = ""
+            if source_taxon_id and source_taxon_id in source_id_lookup:
+                accepted_taxon_key = source_id_lookup[source_taxon_id]
+                match_method = "source_taxon_id"
+                match_confidence = "high"
+                lineage_check = "source_taxon_id"
+                coverage["mapped_source_id_rows"] += 1
+            elif match_key in accepted_lookup:
+                accepted_taxon_key = accepted_lookup[match_key]
+                match_method = "scientific_name"
+                match_confidence = "high"
+                lineage_check = "accepted_scientific_name"
+                coverage["mapped_accepted_name_rows"] += 1
+            elif match_key in ambiguous_synonym_keys:
+                coverage["ambiguous_synonym_rows"] += 1
+                continue
+            elif match_key in synonym_lookup:
+                accepted_taxon_key = synonym_lookup[match_key]
+                match_method = "scientific_synonym"
+                match_confidence = "medium"
+                lineage_check = "scientific_synonym"
+                coverage["mapped_synonym_rows"] += 1
+            else:
+                coverage["out_of_scope_rows"] += 1
+                continue
+
+            language = _static_value(row, "language", self.language)
+            script = _static_value(row, "script", self.script)
+            region = _static_value(row, "region", self.region)
+            name_class = _static_value(row, "name_class") or ("vernacular_alias" if match_method == "scientific_synonym" else "vernacular")
+            dedupe_key = (accepted_taxon_key, normalize_name_key(vernacular_name), language, region, name_class)
+            if dedupe_key in seen_assertions:
+                coverage["duplicate_rows"] += 1
+                continue
+            seen_assertions.add(dedupe_key)
+
+            disabled_reasons = []
+            if not language:
+                disabled_reasons.append("missing_language")
+            if not region:
+                disabled_reasons.append("missing_region")
+            enabled = not disabled_reasons
+            source_record_id = _static_source_record_id(self.source_key, source_taxon_id, vernacular_name)
+            licence = _static_value(row, "licence", self.licence)
+            assertions.append(
+                {
+                    "accepted_taxon_key": accepted_taxon_key,
+                    "verbatim_name": vernacular_name,
+                    "display_name": vernacular_name,
+                    "language": language,
+                    "script": script,
+                    "region": region,
+                    "bbox": "",
+                    "name_class": name_class,
+                    "source": self.source_name,
+                    "source_record_id": source_record_id,
+                    "source_taxon_id": source_taxon_id,
+                    "lineage_check": lineage_check,
+                    "trust_tier": self.trust_tier,
+                    "precision_tier": self.precision_tier,
+                    "confidence": match_confidence,
+                    "enabled": enabled,
+                    "review_state": "accepted" if enabled else "candidate",
+                    "disabled_reason": ";".join(disabled_reasons),
+                    "licence": licence,
+                }
+            )
+            coverage["name_assertions"] += 1
+            taxa_with_assertions.add(accepted_taxon_key)
+
+            link_key = (accepted_taxon_key, source_taxon_id, match_method)
+            if source_taxon_id and link_key not in seen_links:
+                seen_links.add(link_key)
+                links.append(
+                    {
+                        "accepted_taxon_key": accepted_taxon_key,
+                        "source": self.source_name,
+                        "source_taxon_id": source_taxon_id,
+                        "match_method": match_method,
+                        "match_confidence": match_confidence,
+                        "lineage_check": lineage_check,
+                    }
+                )
+
+        species_keys = {
+            str(row.get("accepted_taxon_key") or "")
+            for row in taxa_rows
+            if str(row.get("rank") or "") == "SPECIES" and row.get("accepted_taxon_key")
+        }
+        coverage["missing_source_name_rows"] = len(species_keys - taxa_with_assertions)
+        assertions.sort(key=lambda item: (str(item["display_name"]).casefold(), str(item["accepted_taxon_key"]), str(item["source_record_id"])))
+        links.sort(key=lambda item: (str(item["source_taxon_id"]), str(item["accepted_taxon_key"]), str(item["match_method"])))
+        return {
+            "name_assertions": assertions,
+            "external_links": links,
+            "source_snapshots": [
+                {
+                    "source": self.source_name,
+                    "source_version": self.source_version,
+                    "retrieved_at": "",
+                    "source_path": str(self.snapshot_path),
+                    "source_response_hash": _payload_hash(
+                        {
+                            "source_key": self.source_key,
+                            "source_name": self.source_name,
+                            "source_version": self.source_version,
+                            "source_url": self.source_url,
+                            "citation": self.citation,
+                            "rows": rows,
+                        }
+                    ),
+                    "licence": self.licence,
+                    "source_url": self.source_url,
+                    "citation": self.citation,
+                }
+            ],
+            "coverage": coverage,
+        }
+
+    def _load_rows(self) -> list[dict[str, str]]:
+        if not self.snapshot_path.exists():
+            raise FileNotFoundError(f"Static vernacular source snapshot not found: {self.snapshot_path}")
+        with self.snapshot_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = set(reader.fieldnames or [])
+            missing = [field for field in STATIC_VERNACULAR_REQUIRED_FIELDS if field not in fieldnames]
+            if missing:
+                raise ValueError(f"Static vernacular source CSV missing required fields: {', '.join(missing)}")
+            return [
+                {str(key): str(value or "").strip() for key, value in row.items() if key is not None}
+                for row in reader
+            ]
 
 
 class CatalogueOfLifeClient:
@@ -1100,6 +1368,31 @@ def _is_tmd_complex(row: dict[str, Any]) -> bool:
     species = str(row.get("species") or "")
     author = str(row.get("author") or "")
     return ui_label.startswith("#") or "/" in species or "Komplex" in author
+
+
+def _resolve_static_snapshot_path(config_path: Path, snapshot_path: str) -> Path:
+    raw = Path(snapshot_path)
+    if raw.is_absolute():
+        return raw
+    cwd_path = Path.cwd() / raw
+    if cwd_path.exists():
+        return cwd_path
+    config_relative = config_path.parent / raw
+    if config_relative.exists():
+        return config_relative
+    repo_relative = Path(__file__).resolve().parents[3] / raw
+    return repo_relative
+
+
+def _static_value(row: dict[str, Any], field: str, default: str = "") -> str:
+    value = str(row.get(field) or "").strip()
+    return value if value else default
+
+
+def _static_source_record_id(source_key: str, source_taxon_id: str, vernacular_name: str) -> str:
+    if source_taxon_id:
+        return f"{source_key}:{source_taxon_id}:vernacular:{vernacular_name}"
+    return f"{source_key}:vernacular:{vernacular_name}"
 
 
 def _payload_hash(payload: dict[str, Any]) -> str:
