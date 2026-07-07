@@ -27,10 +27,33 @@ TMD_GERMAN_PROJECT_ID = "410"
 TMD_SOURCE_VERSION = "tmd-taxonomy-graphql-projects-407-410"
 GBIF_VERNACULAR_SOURCE_VERSION = "gbif-vernacular-from-registry-v1"
 GBIF_VERNACULAR_SOURCE_PATH = "registry:names.parquet"
+TAXREF_BASE_URL = "https://taxref.mnhn.fr/taxref-web"
+TAXREF_TAXA_SEARCH_PATH = "/api/taxa/search"
+TAXREF_SOURCE_PATH = f"{TAXREF_BASE_URL}{TAXREF_TAXA_SEARCH_PATH}"
+TAXREF_SOURCE_VERSION = "taxref-web-api-taxa-search"
 WIKIDATA_WDQS_URL = "https://query.wikidata.org"
 WIKIDATA_SOURCE_VERSION = "wikidata-wdqs-p225-p846-p1843-labels-aliases"
 COL_NAME_USAGE_SEARCH_LIMIT = 1000
 INATURALIST_TAXA_PER_PAGE = 200
+TAXREF_SEARCH_ROWS_PER_TAXON = 50
+TAXREF_TERRITORY_FIELDS = (
+    ("fr", "FR"),
+    ("gf", "GF"),
+    ("mar", "MAR"),
+    ("gua", "GUA"),
+    ("sm", "SM"),
+    ("sb", "SB"),
+    ("spm", "SPM"),
+    ("epa", "EPA"),
+    ("may", "MAY"),
+    ("reu", "REU"),
+    ("sa", "SA"),
+    ("ta", "TA"),
+    ("nc", "NC"),
+    ("wf", "WF"),
+    ("pf", "PF"),
+    ("cli", "CLI"),
+)
 
 
 class GBIFVernacularClient:
@@ -182,6 +205,185 @@ class GBIFVernacularClient:
             ],
             "coverage": coverage,
         }
+
+
+class TAXREFFrenchClient:
+    def __init__(
+        self,
+        *,
+        http_get: HTTPGet | None = None,
+        max_retries: int = 5,
+        taxref_rows: list[dict[str, Any]] | None = None,
+        source_path: str = TAXREF_SOURCE_PATH,
+        source_version: str = TAXREF_SOURCE_VERSION,
+    ) -> None:
+        self._http_get = http_get or _json_get(TAXREF_BASE_URL, max_retries=max_retries)
+        self._taxref_rows = taxref_rows
+        self._source_path = source_path
+        self._source_version = source_version
+
+    def enrich_registry(self, *, taxa_rows: list[dict[str, Any]], name_rows: list[dict[str, Any]]) -> dict[str, Any]:
+        rows, request_count = self._load_rows(taxa_rows)
+        accepted_lookup = _accepted_species_lookup(taxa_rows)
+        synonym_lookup, ambiguous_synonym_keys = _scientific_synonym_lookup_with_ambiguity(name_rows)
+        source_id_lookup = _source_taxon_id_lookup(name_rows, source="TAXREF")
+        coverage = {
+            "rows_fetched": len(rows),
+            "vernacular_names_extracted": 0,
+            "mapped_source_id_rows": 0,
+            "mapped_accepted_name_rows": 0,
+            "mapped_synonym_rows": 0,
+            "out_of_scope_rows": 0,
+            "ambiguous_synonym_rows": 0,
+            "disabled_candidate_rows": 0,
+            "rows_without_vernacular": 0,
+            "territory_rows": 0,
+            "request_count": request_count,
+        }
+        assertions: list[dict[str, Any]] = []
+        links: list[dict[str, Any]] = []
+        seen_assertions: set[tuple[str, str, str, str]] = set()
+        seen_links: set[tuple[str, str, str]] = set()
+
+        for row in rows:
+            vernacular_names = _taxref_vernacular_values(row)
+            if not vernacular_names:
+                coverage["rows_without_vernacular"] += 1
+                continue
+            scientific_name = _first_string(row, "lbNom", "nomComplet", "scientificName", "name").strip()
+            source_taxon_id = _taxref_source_taxon_id(row)
+            source_ref_id = _taxref_source_ref_id(row)
+            name_key = normalize_name_key(scientific_name)
+            accepted_taxon_key = ""
+            match_method = ""
+            match_confidence = ""
+            lineage_check = ""
+            if source_taxon_id and source_taxon_id in source_id_lookup:
+                accepted_taxon_key = source_id_lookup[source_taxon_id]
+                match_method = "source_taxon_id"
+                match_confidence = "high"
+                lineage_check = "source_taxon_id"
+                coverage["mapped_source_id_rows"] += 1
+            elif source_ref_id and source_ref_id in source_id_lookup:
+                accepted_taxon_key = source_id_lookup[source_ref_id]
+                match_method = "source_taxon_id"
+                match_confidence = "high"
+                lineage_check = "source_taxon_id"
+                coverage["mapped_source_id_rows"] += 1
+            elif name_key in accepted_lookup:
+                accepted_taxon_key = accepted_lookup[name_key]
+                match_method = "scientific_name"
+                match_confidence = "high"
+                lineage_check = "accepted_scientific_name"
+                coverage["mapped_accepted_name_rows"] += 1
+            elif name_key in ambiguous_synonym_keys:
+                coverage["ambiguous_synonym_rows"] += 1
+                continue
+            elif name_key in synonym_lookup:
+                accepted_taxon_key = synonym_lookup[name_key]
+                match_method = "scientific_synonym"
+                match_confidence = "medium"
+                lineage_check = "scientific_synonym"
+                coverage["mapped_synonym_rows"] += 1
+            else:
+                coverage["out_of_scope_rows"] += 1
+                continue
+
+            region = _taxref_region(row)
+            if region:
+                coverage["territory_rows"] += 1
+            enabled = bool(region)
+            disabled_reason = "" if enabled else "missing_taxref_territory"
+            for vernacular_name in vernacular_names:
+                dedupe_key = (accepted_taxon_key, normalize_name_key(vernacular_name), region, source_taxon_id)
+                if dedupe_key in seen_assertions:
+                    continue
+                seen_assertions.add(dedupe_key)
+                if not enabled:
+                    coverage["disabled_candidate_rows"] += 1
+                coverage["vernacular_names_extracted"] += 1
+                assertions.append(
+                    {
+                        "accepted_taxon_key": accepted_taxon_key,
+                        "verbatim_name": vernacular_name,
+                        "display_name": vernacular_name,
+                        "language": "fra",
+                        "script": "Latn",
+                        "region": region,
+                        "bbox": "",
+                        "name_class": "vernacular",
+                        "source": "TAXREF",
+                        "source_record_id": f"taxref:{source_taxon_id}:vernacular:{vernacular_name}",
+                        "source_taxon_id": source_taxon_id,
+                        "lineage_check": lineage_check,
+                        "trust_tier": "T2",
+                        "precision_tier": "high",
+                        "confidence": match_confidence,
+                        "enabled": enabled,
+                        "review_state": "accepted" if enabled else "candidate",
+                        "disabled_reason": disabled_reason,
+                    }
+                )
+            link_key = (accepted_taxon_key, source_taxon_id, match_method)
+            if source_taxon_id and link_key not in seen_links:
+                seen_links.add(link_key)
+                links.append(
+                    {
+                        "accepted_taxon_key": accepted_taxon_key,
+                        "source": "TAXREF",
+                        "source_taxon_id": source_taxon_id,
+                        "match_method": match_method,
+                        "match_confidence": match_confidence,
+                        "lineage_check": lineage_check,
+                    }
+                )
+
+        assertions.sort(key=lambda item: (str(item["display_name"]).casefold(), str(item["accepted_taxon_key"]), str(item["source_taxon_id"])))
+        links.sort(key=lambda item: (str(item["source_taxon_id"]), str(item["accepted_taxon_key"]), str(item["match_method"])))
+        return {
+            "name_assertions": assertions,
+            "external_links": links,
+            "source_snapshots": [
+                {
+                    "source": "TAXREF",
+                    "source_version": self._source_version,
+                    "retrieved_at": "",
+                    "source_path": self._source_path,
+                    "source_response_hash": _payload_hash({"taxref_rows": rows}),
+                    "licence": "",
+                }
+            ],
+            "coverage": coverage,
+        }
+
+    def _load_rows(self, taxa_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+        if self._taxref_rows is not None:
+            return [dict(row) for row in self._taxref_rows], 0
+        rows: list[dict[str, Any]] = []
+        request_count = 0
+        seen_cd_nom: set[str] = set()
+        species_names = sorted(
+            {
+                str(row.get("scientific_name") or "").strip()
+                for row in taxa_rows
+                if str(row.get("rank") or "") == "SPECIES" and row.get("scientific_name")
+            }
+        )
+        for scientific_name in species_names:
+            payload = self._http_get(
+                TAXREF_TAXA_SEARCH_PATH,
+                {"nomComplet": scientific_name, "rang.rang": "ES", "nbRows": TAXREF_SEARCH_ROWS_PER_TAXON},
+            )
+            request_count += 1
+            payload_rows = _result_rows(payload) if isinstance(payload, dict) else [item for item in payload if isinstance(item, dict)]
+            for row in payload_rows:
+                cd_nom = _taxref_source_taxon_id(row)
+                if cd_nom and cd_nom in seen_cd_nom:
+                    continue
+                if cd_nom:
+                    seen_cd_nom.add(cd_nom)
+                rows.append(row)
+        return rows, request_count
 
 
 class CatalogueOfLifeClient:
@@ -763,6 +965,43 @@ def _unambiguous_synonym_lookup(name_rows: list[dict[str, Any]]) -> dict[str, st
     return {key: next(iter(values)) for key, values in grouped.items() if len(values) == 1}
 
 
+def _scientific_synonym_lookup_with_ambiguity(name_rows: list[dict[str, Any]]) -> tuple[dict[str, str], set[str]]:
+    grouped: dict[str, set[str]] = {}
+    for row in name_rows:
+        if str(row.get("name_class") or "") != "scientific_synonym":
+            continue
+        key = normalize_name_key(row.get("display_name") or row.get("verbatim_name"))
+        accepted_key = str(row.get("accepted_taxon_key") or "")
+        if key and accepted_key:
+            grouped.setdefault(key, set()).add(accepted_key)
+    unambiguous = {key: next(iter(values)) for key, values in grouped.items() if len(values) == 1}
+    ambiguous = {key for key, values in grouped.items() if len(values) > 1}
+    return unambiguous, ambiguous
+
+
+def _source_taxon_id_lookup(name_rows: list[dict[str, Any]], *, source: str) -> dict[str, str]:
+    grouped: dict[str, set[str]] = {}
+    expected_source = source.casefold()
+    for row in name_rows:
+        if str(row.get("source") or "").casefold() != expected_source:
+            continue
+        accepted_key = str(row.get("accepted_taxon_key") or "")
+        source_taxon_id = str(row.get("source_taxon_id") or "").strip()
+        if not source_taxon_id:
+            source_taxon_id = _source_taxon_id_from_record(str(row.get("source_record_id") or ""), source=source)
+        if accepted_key and source_taxon_id:
+            grouped.setdefault(source_taxon_id, set()).add(accepted_key)
+    return {source_taxon_id: next(iter(values)) for source_taxon_id, values in grouped.items() if len(values) == 1}
+
+
+def _source_taxon_id_from_record(source_record_id: str, *, source: str) -> str:
+    prefix = f"{source.casefold()}:"
+    if not source_record_id.casefold().startswith(prefix):
+        return ""
+    parts = source_record_id.split(":")
+    return parts[1] if len(parts) > 1 else ""
+
+
 def _gbif_synonym_source_lookup(name_rows: list[dict[str, Any]]) -> tuple[dict[str, str], set[str]]:
     grouped: dict[str, set[str]] = {}
     for row in name_rows:
@@ -805,6 +1044,47 @@ def _full_gbif_key(value: object) -> str:
     if text.startswith("gbif:"):
         return text
     return f"gbif:{text}"
+
+
+def _taxref_vernacular_values(row: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in ("nomVernFr", "nomVern", "nomVernaculaire", "vernacularName", "frenchVernacularName"):
+        value = row.get(key)
+        if isinstance(value, list):
+            raw_items = value
+        elif value is None:
+            raw_items = []
+        else:
+            raw_items = [part for chunk in str(value).split("|") for part in chunk.split(";")]
+        for item in raw_items:
+            if isinstance(item, dict):
+                name = _first_string(item, "name", "vernacularName", "nomVernFr", "nomVern")
+            else:
+                name = str(item or "")
+            name = name.strip()
+            if name and name not in values:
+                values.append(name)
+    return values
+
+
+def _taxref_region(row: dict[str, Any]) -> str:
+    explicit = str(row.get("region") or row.get("territory") or row.get("territoire") or "").strip().upper()
+    if explicit:
+        return explicit
+    regions: list[str] = []
+    for field, region in TAXREF_TERRITORY_FIELDS:
+        status = str(row.get(field) or "").strip().upper()
+        if status and status != "A":
+            regions.append(region)
+    return ";".join(regions)
+
+
+def _taxref_source_taxon_id(row: dict[str, Any]) -> str:
+    return str(row.get("cdNom") or row.get("cd_nom") or row.get("id") or "").strip()
+
+
+def _taxref_source_ref_id(row: dict[str, Any]) -> str:
+    return str(row.get("cdRef") or row.get("cd_ref") or "").strip()
 
 
 def _tmd_scientific_name(row: dict[str, Any]) -> str:

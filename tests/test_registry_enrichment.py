@@ -18,7 +18,7 @@ from biominer.registry.enrichment import (
     default_enrichment_clients,
     write_enrichment_sources,
 )
-from biominer.registry.enrichment_sources import CatalogueOfLifeClient, GBIFVernacularClient, INaturalistClient, ITISClient, TMDGermanClient, WikidataClient, _json_get
+from biominer.registry.enrichment_sources import CatalogueOfLifeClient, GBIFVernacularClient, INaturalistClient, ITISClient, TAXREFFrenchClient, TMDGermanClient, WikidataClient, _json_get
 from biominer.registry.translation_sources import generated_translation_candidate, write_translation_candidates
 
 
@@ -725,6 +725,171 @@ def test_build_enrichment_sources_runs_gbif_vernacular_as_zero_request_bulk_sour
         {"source": "gbif_vernacular", "accepted_taxon_key": "__registry__", "request_count": 0}
     ]
     assert coverage["bulk_sources"]["GBIF"]["request_count"] == 0
+
+
+def test_taxref_french_client_maps_accepted_synonym_territory_and_rejects_ambiguous_rows() -> None:
+    result = TAXREFFrenchClient(
+        taxref_rows=[
+            {
+                "cdNom": 654792,
+                "cdRef": 654792,
+                "lbNom": "Papilio demoleus",
+                "validite": "NR",
+                "rang": {"rang": "ES"},
+                "nomVernFr": "Papillon du citron",
+                "fr": "P",
+            },
+            {
+                "cdNom": 700001,
+                "cdRef": 654792,
+                "lbNom": "Princeps demoleus",
+                "validite": "SY",
+                "rang": {"rang": "ES"},
+                "nomVernFr": "Grand papillon citron",
+                "sm": "I",
+                "sb": "I",
+            },
+            {
+                "cdNom": 700002,
+                "cdRef": 700002,
+                "lbNom": "Out of scope",
+                "validite": "NR",
+                "rang": {"rang": "ES"},
+                "nomVernFr": "Hors champ",
+                "fr": "P",
+            },
+            {
+                "cdNom": 700003,
+                "cdRef": 700003,
+                "lbNom": "Shared synonym",
+                "validite": "SY",
+                "rang": {"rang": "ES"},
+                "nomVernFr": "Nom ambigu",
+                "fr": "P",
+            },
+            {
+                "cdNom": 700004,
+                "cdRef": 700004,
+                "lbNom": "Papilio demoleus",
+                "validite": "NR",
+                "rang": {"rang": "ES"},
+                "nomVernFr": "Nom sans territoire",
+            },
+        ]
+    ).enrich_registry(
+        taxa_rows=[
+            {"accepted_taxon_key": "gbif:100", "rank": "SPECIES", "scientific_name": "Papilio demoleus"},
+            {"accepted_taxon_key": "gbif:101", "rank": "SPECIES", "scientific_name": "Papilio machaon"},
+        ],
+        name_rows=[
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Princeps demoleus",
+                "name_class": "scientific_synonym",
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Shared synonym",
+                "name_class": "scientific_synonym",
+            },
+            {
+                "accepted_taxon_key": "gbif:101",
+                "display_name": "Shared synonym",
+                "name_class": "scientific_synonym",
+            },
+        ],
+    )
+
+    assertions = result["name_assertions"]
+    assert [(row["accepted_taxon_key"], row["display_name"], row["region"], row["confidence"], row["enabled"], row["disabled_reason"]) for row in assertions] == [
+        ("gbif:100", "Grand papillon citron", "SM;SB", "medium", True, ""),
+        ("gbif:100", "Nom sans territoire", "", "high", False, "missing_taxref_territory"),
+        ("gbif:100", "Papillon du citron", "FR", "high", True, ""),
+    ]
+    assert {row["source"] for row in assertions} == {"TAXREF"}
+    assert {row["language"] for row in assertions} == {"fra"}
+    assert {row["trust_tier"] for row in assertions} == {"T2"}
+    assert result["external_links"] == [
+        {
+            "accepted_taxon_key": "gbif:100",
+            "source": "TAXREF",
+            "source_taxon_id": "654792",
+            "match_method": "scientific_name",
+            "match_confidence": "high",
+            "lineage_check": "accepted_scientific_name",
+        },
+        {
+            "accepted_taxon_key": "gbif:100",
+            "source": "TAXREF",
+            "source_taxon_id": "700001",
+            "match_method": "scientific_synonym",
+            "match_confidence": "medium",
+            "lineage_check": "scientific_synonym",
+        },
+        {
+            "accepted_taxon_key": "gbif:100",
+            "source": "TAXREF",
+            "source_taxon_id": "700004",
+            "match_method": "scientific_name",
+            "match_confidence": "high",
+            "lineage_check": "accepted_scientific_name",
+        },
+    ]
+    assert result["coverage"] == {
+        "rows_fetched": 5,
+        "vernacular_names_extracted": 3,
+        "mapped_source_id_rows": 0,
+        "mapped_accepted_name_rows": 2,
+        "mapped_synonym_rows": 1,
+        "out_of_scope_rows": 1,
+        "ambiguous_synonym_rows": 1,
+        "disabled_candidate_rows": 1,
+        "rows_without_vernacular": 0,
+        "territory_rows": 2,
+        "request_count": 0,
+    }
+    assert result["source_snapshots"][0]["source"] == "TAXREF"
+    assert result["source_snapshots"][0]["source_version"] == "taxref-web-api-taxa-search"
+    assert result["source_snapshots"][0]["source_path"] == "https://taxref.mnhn.fr/taxref-web/api/taxa/search"
+    assert result["source_snapshots"][0]["source_response_hash"].startswith("sha256:")
+
+
+def test_build_enrichment_sources_runs_taxref_fr_as_bulk_source(tmp_path) -> None:
+    registry, _scope = _write_base_registry(tmp_path)
+
+    manifest = build_enrichment_sources_from_registry(
+        registry_dir=registry,
+        sources=("taxref_fr",),
+        clients={
+            "taxref_fr": TAXREFFrenchClient(
+                taxref_rows=[
+                    {
+                        "cdNom": 654792,
+                        "cdRef": 654792,
+                        "lbNom": "Papilio demoleus",
+                        "validite": "NR",
+                        "rang": {"rang": "ES"},
+                        "nomVernFr": "Papillon du citron",
+                        "fr": "P",
+                    }
+                ]
+            )
+        },
+        report_dir=tmp_path / "reports",
+    )
+
+    assertions = pl.read_parquet(registry / "source_name_assertions.parquet")
+    work = pl.read_parquet(registry / SOURCE_WORK_LEDGER_FILE)
+    coverage = json.loads((registry / "enrichment_coverage.json").read_text(encoding="utf-8"))
+
+    assert manifest["source_order"] == ["taxref_fr"]
+    assert assertions.select(["source", "display_name", "language", "region"]).to_dicts() == [
+        {"source": "TAXREF", "display_name": "Papillon du citron", "language": "fra", "region": "FR"}
+    ]
+    assert work.select(["source", "accepted_taxon_key", "request_count"]).to_dicts() == [
+        {"source": "taxref_fr", "accepted_taxon_key": "__registry__", "request_count": 0}
+    ]
+    assert coverage["bulk_sources"]["TAXREF"]["vernacular_names_extracted"] == 1
 
 
 def test_build_enrichment_sources_runs_tmd_de_as_bulk_source(tmp_path) -> None:
@@ -1638,11 +1803,12 @@ def test_inaturalist_source_is_limited_to_one_concurrent_query(tmp_path) -> None
     assert manifest["source_worker_limits"] == {"col": 4, "inaturalist": 1, "itis": 4, "wikidata": 1}
 
 
-def test_default_enrichment_clients_include_wikidata_and_gbif_vernacular() -> None:
+def test_default_enrichment_clients_include_wikidata_gbif_vernacular_and_taxref() -> None:
     clients = default_enrichment_clients(max_retries=0)
 
-    assert list(clients) == ["col", "inaturalist", "itis", "tmd_de", "wikidata", "gbif_vernacular"]
+    assert list(clients) == ["col", "inaturalist", "itis", "tmd_de", "wikidata", "gbif_vernacular", "taxref_fr"]
     assert clients["gbif_vernacular"].__class__.__name__ == "GBIFVernacularClient"
+    assert clients["taxref_fr"].__class__.__name__ == "TAXREFFrenchClient"
     assert clients["wikidata"].__class__.__name__ == "WikidataClient"
 
 

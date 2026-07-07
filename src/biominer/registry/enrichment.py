@@ -35,8 +35,8 @@ FINAL_SOURCE_SNAPSHOTS_FILE = "source_snapshots.parquet"
 NAME_CANDIDATES_FILE = "name_candidates.parquet"
 ENRICHMENT_MANIFEST_FILE = "enrichment_manifest.json"
 TRANSLATION_WORK_LEDGER_FILE = "translation_work_ledger.parquet"
-DEFAULT_ENRICHMENT_SOURCES = ("col", "inaturalist", "itis", "tmd_de", "wikidata", "gbif_vernacular")
-BULK_ENRICHMENT_SOURCES = frozenset({"gbif_vernacular", "tmd_de"})
+DEFAULT_ENRICHMENT_SOURCES = ("col", "inaturalist", "itis", "tmd_de", "wikidata", "gbif_vernacular", "taxref_fr")
+BULK_ENRICHMENT_SOURCES = frozenset({"gbif_vernacular", "taxref_fr", "tmd_de"})
 BULK_REGISTRY_WORK_KEY = "__registry__"
 INATURALIST_DAILY_REQUEST_LIMIT = 10000
 INATURALIST_WORKER_LIMIT = 1
@@ -54,6 +54,7 @@ _source_semaphores = {
 SOURCE_WORKER_LIMITS = {
     "gbif_vernacular": 1,
     "inaturalist": INATURALIST_WORKER_LIMIT,
+    "taxref_fr": 1,
     "tmd_de": 1,
     "wikidata": WIKIDATA_WORKER_LIMIT,
 }
@@ -297,7 +298,7 @@ def build_enrichment_sources_from_registry(
 
 
 def default_enrichment_clients(*, max_retries: int = 5) -> dict[str, Any]:
-    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, GBIFVernacularClient, INaturalistClient, ITISClient, TMDGermanClient, WikidataClient
+    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, GBIFVernacularClient, INaturalistClient, ITISClient, TAXREFFrenchClient, TMDGermanClient, WikidataClient
 
     return {
         "col": CatalogueOfLifeClient(max_retries=max_retries),
@@ -306,6 +307,7 @@ def default_enrichment_clients(*, max_retries: int = 5) -> dict[str, Any]:
         "tmd_de": TMDGermanClient(max_retries=max_retries),
         "wikidata": WikidataClient(max_retries=max_retries),
         "gbif_vernacular": GBIFVernacularClient(),
+        "taxref_fr": TAXREFFrenchClient(max_retries=max_retries),
     }
 
 
@@ -1403,6 +1405,7 @@ def _source_display_names(sources: tuple[str, ...]) -> tuple[str, ...]:
         "itis": "ITIS",
         "inaturalist": "iNaturalist",
         "mymemory": "MyMemory",
+        "taxref_fr": "TAXREF",
         "tmd_de": "TMD",
         "wikidata": "Wikidata",
         "wikimedia": "Wikimedia",

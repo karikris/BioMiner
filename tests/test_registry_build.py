@@ -6,7 +6,7 @@ import polars as pl
 import pytest
 
 from biominer.registry.build import build_registry
-from biominer.registry.enrichment_sources import GBIFVernacularClient
+from biominer.registry.enrichment_sources import GBIFVernacularClient, TAXREFFrenchClient
 
 
 def _gbif_snapshot() -> dict[str, object]:
@@ -213,6 +213,7 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
         "gbif_vernacular": GBIFVernacularClient(),
         "itis": RecordingSourceClient("ITIS", "Lime Butterfly"),
         "inaturalist": RecordingSourceClient("iNaturalist", "Chequered Swallowtail"),
+        "taxref_fr": TAXREFFrenchClient(taxref_rows=[]),
         "tmd_de": RecordingTMDClient(),
         "wikidata": RecordingSourceClient("Wikidata", "Wikidata Lime"),
     }
@@ -237,7 +238,7 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
     manifest = json.loads((registry / "manifest.json").read_text(encoding="utf-8"))
 
     assert result["manifest"]["qa_status"] == "passed"
-    assert manifest["enrichment_sources"] == ["col", "inaturalist", "itis", "tmd_de", "wikidata", "gbif_vernacular"]
+    assert manifest["enrichment_sources"] == ["col", "inaturalist", "itis", "tmd_de", "wikidata", "gbif_vernacular", "taxref_fr"]
     assert {"Lime Swallowtail", "Lime Butterfly", "Chequered Swallowtail", "Zitronen-Schwalbenschwanz", "Wikidata Lime"}.issubset(
         set(names["display_name"].to_list())
     )
@@ -351,6 +352,7 @@ def test_registry_build_quarantines_source_errors_without_siloing_successful_nam
         "gbif_vernacular": GBIFVernacularClient(),
         "itis": RecordingSourceClient("ITIS", "Broken ITIS", raise_error=True),
         "inaturalist": RecordingSourceClient("iNaturalist", "Chequered Swallowtail"),
+        "taxref_fr": TAXREFFrenchClient(taxref_rows=[]),
         "tmd_de": RecordingTMDClient(),
         "wikidata": RecordingSourceClient("Wikidata", "Wikidata Lime"),
     }
