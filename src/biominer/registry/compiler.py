@@ -526,6 +526,9 @@ def _manifest(
             name_collision_ledger.filter(pl.col("collision_status") == "query_blocking").height if "collision_status" in name_collision_ledger.columns else 0
         ),
         "query_definition_rows": queries.height,
+        "query_definition_unique_term_count": _query_unique_term_count(queries),
+        "query_definition_rows_by_source": _query_rows_by_source(queries),
+        "query_definition_unique_term_counts_by_source": _query_unique_term_counts_by_source(queries),
         "query_curation_rule_count": query_curation_rule_count,
         "qa_finding_rows": qa.height,
         "qa_fatal_count": fatal_count,
@@ -533,6 +536,32 @@ def _manifest(
         "qa_status": "failed" if fatal_count else "passed",
         "source_hash": source_hash,
     }
+
+
+def _query_unique_term_count(queries: pl.DataFrame) -> int:
+    if queries.is_empty() or "normalized_query_term" not in queries.columns:
+        return 0
+    return int(queries.select("normalized_query_term").n_unique())
+
+
+def _query_rows_by_source(queries: pl.DataFrame) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    if queries.is_empty() or "source" not in queries.columns:
+        return counts
+    for row in queries.select("source").to_dicts():
+        source = str(row.get("source") or "unknown")
+        counts[source] = counts.get(source, 0) + 1
+    return {source: counts[source] for source in sorted(counts)}
+
+
+def _query_unique_term_counts_by_source(queries: pl.DataFrame) -> dict[str, int]:
+    buckets: dict[str, set[str]] = {}
+    if queries.is_empty() or not {"source", "normalized_query_term"}.issubset(queries.columns):
+        return {}
+    for row in queries.select(["source", "normalized_query_term"]).to_dicts():
+        source = str(row.get("source") or "unknown")
+        buckets.setdefault(source, set()).add(str(row.get("normalized_query_term") or ""))
+    return {source: len(buckets[source]) for source in sorted(buckets)}
 
 
 def _source_hash(payload: dict[str, Any], source_ref: str | Path) -> str:
