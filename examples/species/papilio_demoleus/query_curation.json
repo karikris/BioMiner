@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "rules": [
+    {
+      "accepted_taxon_key": "gbif:1938069",
+      "normalized_match_key": "dingy swallowtail",
+      "source": "GBIF",
+      "action": "disable_query",
+      "reason": "misapplied_common_name_conflicts_with_other_species"
+    },
+    {
+      "accepted_taxon_key": "gbif:1938069",
+      "normalized_match_key": "small citrus butterfly",
+      "source": "GBIF",
+      "action": "disable_query",
+      "reason": "misapplied_common_name_conflicts_with_other_species"
+    },
+    {
+      "accepted_taxon_key": "gbif:1938069",
+      "normalized_match_key": "swallowtails",
+      "source": "GBIF",
+      "action": "disable_query",
+      "reason": "broad_group_name_not_species_specific"
+    }
+  ]
+}

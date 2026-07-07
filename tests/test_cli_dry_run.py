@@ -120,6 +120,39 @@ def test_registry_build_parses_translation_worker_checkpoint_controls() -> None:
     assert args.translation_language_shards == 3
 
 
+def test_registry_commands_parse_query_curation_json() -> None:
+    parser = build_parser()
+
+    build_args = parser.parse_args(
+        [
+            "registry",
+            "build",
+            "--output-dir",
+            "data/registry/v1",
+            "--registry-version",
+            "v1",
+            "--query-curation-json",
+            "examples/species/papilio_demoleus/query_curation.json",
+        ]
+    )
+    compile_args = parser.parse_args(
+        [
+            "dev",
+            "registry",
+            "compile-enriched",
+            "--registry-dir",
+            "data/registry/v1",
+            "--registry-version",
+            "v1",
+            "--query-curation-json",
+            "examples/species/papilio_demoleus/query_curation.json",
+        ]
+    )
+
+    assert build_args.query_curation_json == "examples/species/papilio_demoleus/query_curation.json"
+    assert compile_args.query_curation_json == "examples/species/papilio_demoleus/query_curation.json"
+
+
 def test_run_cli_exposes_comment_and_registry_build_controls() -> None:
     parser = build_parser()
 

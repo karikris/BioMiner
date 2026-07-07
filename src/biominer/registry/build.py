@@ -48,6 +48,7 @@ def build_registry(
     translation_checkpoint_every: int = 100,
     translation_checkpoint_seconds: float = 60.0,
     translation_language_shards: int = 0,
+    query_curation_json: str | Path | None = None,
     inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
     skip_enrichment: bool = False,
     storage: CloudStorage | None = None,
@@ -77,6 +78,7 @@ def build_registry(
         "translation_checkpoint_every": translation_checkpoint_every,
         "translation_checkpoint_seconds": translation_checkpoint_seconds,
         "translation_language_shards": translation_language_shards,
+        "query_curation_json": query_curation_json,
         "inaturalist_daily_request_limit": inaturalist_daily_request_limit,
         "skip_enrichment": skip_enrichment,
     }
@@ -114,6 +116,7 @@ def build_cloud_registry(
     translation_checkpoint_every: int = 100,
     translation_checkpoint_seconds: float = 60.0,
     translation_language_shards: int = 0,
+    query_curation_json: str | Path | None = None,
     inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
     skip_enrichment: bool = False,
 ) -> dict[str, Any]:
@@ -156,6 +159,7 @@ def build_cloud_registry(
         output_ref=registry_prefix,
         registry_version=registry_version,
         scope_path=scope_path,
+        query_curation_json=query_curation_json,
     )
     for filename, frame in frames.items():
         storage.write_parquet_shard(
@@ -234,6 +238,7 @@ def build_local_registry(
     translation_checkpoint_every: int = 100,
     translation_checkpoint_seconds: float = 60.0,
     translation_language_shards: int = 0,
+    query_curation_json: str | Path | None = None,
     inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
     skip_enrichment: bool = False,
 ) -> dict[str, Any]:
@@ -277,6 +282,7 @@ def build_local_registry(
         base_dir,
         registry_version=registry_version,
         scope_path=scope_path,
+        query_curation_json=query_curation_json,
     )
     logger.info(
         "registry.build.compile_base.complete status=%s taxa=%s names=%s queries=%s",
@@ -293,6 +299,7 @@ def build_local_registry(
             output,
             registry_version=registry_version,
             scope_path=scope_path,
+            query_curation_json=query_curation_json,
         )
     else:
         run_id = _run_id(retrieved)
@@ -363,6 +370,7 @@ def build_local_registry(
             scope_path=scope_path,
             requested_sources=enrichment_sources,
             requested_translation_sources=effective_translation_sources,
+            query_curation_json=query_curation_json,
         )
         logger.info(
             "registry.build.compile_enriched.complete status=%s taxa=%s names=%s queries=%s enrichment_names=%s source_errors=%s",

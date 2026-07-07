@@ -9,6 +9,7 @@ from typing import Any
 import polars as pl
 
 from biominer.registry.normalize import parse_language_tag, normalize_language_code, normalize_name_key
+from biominer.registry.query_curation import QueryCurationRule, apply_query_curation, load_query_curation_rules
 from biominer.registry.query_eligibility import SCIENTIFIC_NAME_CLASSES, assess_name_query_eligibility
 from biominer.registry.scope import load_scope
 from biominer.storage.parquet import write_parquet
@@ -26,6 +27,8 @@ def compile_registry_fixture(
     registry_version: str,
     scope_path: str | Path = "config/butterfly_scope.json",
     global_names_for_collision: pl.DataFrame | None = None,
+    query_curation_json: str | Path | None = None,
+    query_curation_rules: tuple[QueryCurationRule, ...] = (),
 ) -> dict[str, Any]:
     source = Path(source_path)
     output = Path(output_dir)
@@ -38,6 +41,8 @@ def compile_registry_fixture(
         registry_version=registry_version,
         scope_path=scope_path,
         global_names_for_collision=global_names_for_collision,
+        query_curation_json=query_curation_json,
+        query_curation_rules=query_curation_rules,
     )
 
     for filename, frame in frames.items():
@@ -54,16 +59,20 @@ def compile_registry_frames(
     registry_version: str,
     scope_path: str | Path = "config/butterfly_scope.json",
     global_names_for_collision: pl.DataFrame | None = None,
+    query_curation_json: str | Path | None = None,
+    query_curation_rules: tuple[QueryCurationRule, ...] = (),
 ) -> tuple[dict[str, pl.DataFrame], dict[str, Any]]:
     scope = load_scope(scope_path)
     taxa = _taxa_frame(source_payload.get("taxa", []), scope_id=scope.scope_id)
     names = _names_frame(source_payload.get("names", []), registry_version=registry_version)
+    query_curation = query_curation_rules or load_query_curation_rules(query_curation_json)
     collision_names = _ensure_query_eligibility_columns(global_names_for_collision) if global_names_for_collision is not None else names
     name_collision_ledger = _name_collision_ledger_frame(collision_names, registry_version=registry_version)
     names = _apply_name_collision_policy(names, name_collision_ledger)
+    names = apply_query_curation(names, query_curation)
     evidence = _name_evidence_frame(source_payload.get("names", []), registry_version=registry_version, source_payload=source_payload)
     snapshots = _source_snapshots_frame(source_payload, source_ref=source_ref)
-    queries = _query_definitions_frame(names, taxa, registry_version=registry_version)
+    queries = _query_definitions_frame(names, taxa, registry_version=registry_version, query_curation_rules=query_curation)
     qa_findings = _qa_findings(taxa, names, queries, scope)
     qa = pl.DataFrame(qa_findings) if qa_findings else _empty_qa_frame()
     frames = {
@@ -87,6 +96,7 @@ def compile_registry_frames(
         source_ref=source_ref,
         output_ref=output_ref,
         source_hash=_source_hash(source_payload, source_ref),
+        query_curation_rule_count=len(query_curation),
     )
     return frames, manifest
 
@@ -97,6 +107,7 @@ def query_definitions_from_names(
     *,
     registry_version: str,
     global_names_for_collision: pl.DataFrame | None = None,
+    query_curation_rules: tuple[QueryCurationRule, ...] = (),
 ) -> pl.DataFrame:
     """Build Flickr query definitions from names-shaped rows.
 
@@ -104,7 +115,13 @@ def query_definitions_from_names(
     candidate terms without duplicating the registry query schema.
     """
 
-    return _query_definitions_frame(names, taxa, registry_version=registry_version, global_names_for_collision=global_names_for_collision)
+    return _query_definitions_frame(
+        names,
+        taxa,
+        registry_version=registry_version,
+        global_names_for_collision=global_names_for_collision,
+        query_curation_rules=query_curation_rules,
+    )
 
 
 def _taxa_frame(rows: list[dict[str, Any]], *, scope_id: str) -> pl.DataFrame:
@@ -246,6 +263,7 @@ def _query_definitions_frame(
     *,
     registry_version: str,
     global_names_for_collision: pl.DataFrame | None = None,
+    query_curation_rules: tuple[QueryCurationRule, ...] = (),
 ) -> pl.DataFrame:
     if names.is_empty():
         return pl.DataFrame([], schema=_query_schema())
@@ -263,6 +281,7 @@ def _query_definitions_frame(
     names = _ensure_query_eligibility_columns(names)
     collision_names = _ensure_query_eligibility_columns(global_names_for_collision) if global_names_for_collision is not None else names
     names = _apply_name_collision_policy(names, _name_collision_ledger_frame(collision_names, registry_version=registry_version))
+    names = apply_query_curation(names, query_curation_rules)
     enabled_names = names.filter(pl.col("enabled") & pl.col("query_eligible"))
     rows: list[dict[str, Any]] = []
     joined = enabled_names.join(taxa_lookup, on="accepted_taxon_key", how="left").to_dicts()
@@ -486,6 +505,7 @@ def _manifest(
     source_ref: str | Path,
     output_ref: str | Path,
     source_hash: str,
+    query_curation_rule_count: int = 0,
 ) -> dict[str, Any]:
     fatal_count = qa.filter(pl.col("severity") == "fatal").height if not qa.is_empty() else 0
     warning_count = qa.filter(pl.col("severity") == "warning").height if not qa.is_empty() else 0
@@ -506,6 +526,7 @@ def _manifest(
             name_collision_ledger.filter(pl.col("collision_status") == "query_blocking").height if "collision_status" in name_collision_ledger.columns else 0
         ),
         "query_definition_rows": queries.height,
+        "query_curation_rule_count": query_curation_rule_count,
         "qa_finding_rows": qa.height,
         "qa_fatal_count": fatal_count,
         "qa_warning_count": warning_count,

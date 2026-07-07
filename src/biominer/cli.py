@@ -213,6 +213,7 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--translation-checkpoint-every", type=int, default=100)
     registry_build.add_argument("--translation-checkpoint-seconds", type=float, default=60.0)
     registry_build.add_argument("--translation-language-shards", type=int, default=0)
+    registry_build.add_argument("--query-curation-json")
     registry_build.add_argument("--inaturalist-daily-request-limit", type=int, default=INATURALIST_DAILY_REQUEST_LIMIT)
     registry_build.add_argument("--skip-enrichment", action="store_true")
     registry_audit = registry_subparsers.add_parser("audit")
@@ -233,6 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
     registry_compile_enriched.add_argument("--registry-dir", required=True)
     registry_compile_enriched.add_argument("--registry-version", required=True)
     registry_compile_enriched.add_argument("--scope-json", default="config/butterfly_scope.json")
+    registry_compile_enriched.add_argument("--query-curation-json")
     registry_fetch_taxonomy = dev_registry_subparsers.add_parser("fetch-taxonomy")
     registry_fetch_taxonomy.add_argument("--output-json", required=True)
     registry_fetch_taxonomy.add_argument("--scope-json", default="config/butterfly_scope.json")
@@ -489,6 +491,7 @@ def run(args: argparse.Namespace) -> int:
                 registry_dir=args.registry_dir,
                 registry_version=args.registry_version,
                 scope_path=args.scope_json,
+                query_curation_json=args.query_curation_json,
             )
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
@@ -543,6 +546,7 @@ def run(args: argparse.Namespace) -> int:
                     translation_checkpoint_every=args.translation_checkpoint_every,
                     translation_checkpoint_seconds=args.translation_checkpoint_seconds,
                     translation_language_shards=args.translation_language_shards,
+                    query_curation_json=args.query_curation_json,
                     inaturalist_daily_request_limit=args.inaturalist_daily_request_limit,
                     skip_enrichment=args.skip_enrichment,
                 )
