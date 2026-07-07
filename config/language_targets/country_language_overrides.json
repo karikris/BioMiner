@@ -1,0 +1,53 @@
+{
+  "schema_version": "country-language-overrides-v1",
+  "source": "country_language_overrides",
+  "source_version": "2026-07-07",
+  "countries": [
+    {
+      "country_code": "AU",
+      "country_name": "Australia",
+      "languages": [
+        {"language": "eng", "language_name": "English", "priority": 10}
+      ]
+    },
+    {
+      "country_code": "IN",
+      "country_name": "India",
+      "languages": [
+        {"language": "eng", "language_name": "English", "priority": 10},
+        {"language": "hin", "language_name": "Hindi", "priority": 20},
+        {"language": "ben", "language_name": "Bengali", "priority": 30},
+        {"language": "urd", "language_name": "Urdu", "priority": 40},
+        {"language": "pan", "language_name": "Punjabi", "priority": 50},
+        {"language": "tam", "language_name": "Tamil", "priority": 60},
+        {"language": "tel", "language_name": "Telugu", "priority": 70},
+        {"language": "kan", "language_name": "Kannada", "priority": 80},
+        {"language": "mal", "language_name": "Malayalam", "priority": 90},
+        {"language": "mar", "language_name": "Marathi", "priority": 100},
+        {"language": "guj", "language_name": "Gujarati", "priority": 110},
+        {"language": "ori", "language_name": "Odia", "priority": 120},
+        {"language": "asm", "language_name": "Assamese", "priority": 130}
+      ],
+      "admin1_languages": [
+        {
+          "admin1_code": "IN-KA",
+          "admin1_name": "Karnataka",
+          "languages": [
+            {"language": "kan", "language_name": "Kannada", "priority": 15},
+            {"language": "eng", "language_name": "English", "priority": 16}
+          ]
+        }
+      ]
+    },
+    {
+      "country_code": "SG",
+      "country_name": "Singapore",
+      "languages": [
+        {"language": "eng", "language_name": "English", "priority": 10},
+        {"language": "zho-Hans", "language_name": "Simplified Chinese", "priority": 20},
+        {"language": "msa", "language_name": "Malay", "priority": 30},
+        {"language": "tam", "language_name": "Tamil", "priority": 40}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,94 @@
+{
+  "schema_version": "species-region-language-targets-v1",
+  "accepted_taxon_key": "gbif:1938069",
+  "scientific_name": "Papilio demoleus",
+  "source": "papilio_demoleus_region_language_targets",
+  "source_version": "2026-07-07",
+  "regions": [
+    {
+      "region": "South Asia",
+      "languages": [
+        {"language": "eng", "language_name": "English", "priority": 10},
+        {"language": "hin", "language_name": "Hindi", "priority": 20},
+        {"language": "ben", "language_name": "Bengali", "priority": 30},
+        {"language": "urd", "language_name": "Urdu", "priority": 40},
+        {"language": "pan", "language_name": "Punjabi", "priority": 50},
+        {"language": "nep", "language_name": "Nepali", "priority": 60},
+        {"language": "sin", "language_name": "Sinhala", "priority": 70},
+        {"language": "tam", "language_name": "Tamil", "priority": 80},
+        {"language": "tel", "language_name": "Telugu", "priority": 90},
+        {"language": "kan", "language_name": "Kannada", "priority": 100},
+        {"language": "mal", "language_name": "Malayalam", "priority": 110},
+        {"language": "mar", "language_name": "Marathi", "priority": 120},
+        {"language": "guj", "language_name": "Gujarati", "priority": 130},
+        {"language": "ori", "language_name": "Odia", "priority": 140},
+        {"language": "asm", "language_name": "Assamese", "priority": 150}
+      ]
+    },
+    {
+      "region": "Middle East / West Asia",
+      "languages": [
+        {"language": "ara", "language_name": "Arabic", "priority": 10},
+        {"language": "fas", "language_name": "Persian", "priority": 20},
+        {"language": "kur", "language_name": "Kurdish", "priority": 30},
+        {"language": "tur", "language_name": "Turkish", "priority": 40},
+        {"language": "eng", "language_name": "English", "priority": 50}
+      ]
+    },
+    {
+      "region": "East Asia",
+      "languages": [
+        {"language": "zho-Hans", "language_name": "Simplified Chinese", "priority": 10},
+        {"language": "zho-Hant", "language_name": "Traditional Chinese", "priority": 20},
+        {"language": "jpn", "language_name": "Japanese", "priority": 30},
+        {"language": "eng", "language_name": "English", "priority": 40}
+      ]
+    },
+    {
+      "region": "Mainland Southeast Asia",
+      "languages": [
+        {"language": "mya", "language_name": "Burmese", "priority": 10},
+        {"language": "tha", "language_name": "Thai", "priority": 20},
+        {"language": "lao", "language_name": "Lao", "priority": 30},
+        {"language": "khm", "language_name": "Khmer", "priority": 40},
+        {"language": "vie", "language_name": "Vietnamese", "priority": 50},
+        {"language": "eng", "language_name": "English", "priority": 60}
+      ]
+    },
+    {
+      "region": "Maritime Southeast Asia",
+      "languages": [
+        {"language": "msa", "language_name": "Malay", "priority": 10},
+        {"language": "ind", "language_name": "Indonesian", "priority": 20},
+        {"language": "eng", "language_name": "English", "priority": 30},
+        {"language": "tgl", "language_name": "Tagalog", "priority": 40},
+        {"language": "por", "language_name": "Portuguese", "priority": 50}
+      ]
+    },
+    {
+      "region": "Caribbean introduced range",
+      "languages": [
+        {"language": "spa", "language_name": "Spanish", "priority": 10},
+        {"language": "eng", "language_name": "English", "priority": 20},
+        {"language": "hat", "language_name": "Haitian Creole", "priority": 30},
+        {"language": "fra", "language_name": "French", "priority": 40},
+        {"language": "nld", "language_name": "Dutch", "priority": 50},
+        {"language": "pap", "language_name": "Papiamento", "priority": 60}
+      ]
+    },
+    {
+      "region": "Seychelles / Indian Ocean spread watch",
+      "languages": [
+        {"language": "crs", "language_name": "Seychellois Creole", "priority": 10},
+        {"language": "eng", "language_name": "English", "priority": 20},
+        {"language": "fra", "language_name": "French", "priority": 30}
+      ]
+    },
+    {
+      "region": "Australia/New Guinea taxonomic caution",
+      "languages": [
+        {"language": "eng", "language_name": "English", "priority": 10}
+      ]
+    }
+  ]
+}
