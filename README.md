@@ -139,6 +139,8 @@ The active implementation covers:
 - seven pinned butterfly-family identities;
 - accepted family, genus, and species traversal;
 - species synonyms and vernacular names;
+- occurrence-driven regional language targets;
+- curated static vernacular source snapshots;
 - bounded concurrent species enrichment;
 - retry, progress, and checkpoint controls;
 - deterministic atomic Flickr query compilation;
@@ -526,6 +528,7 @@ Supplementary sources:
 | ITIS | common names and source taxon links |
 | TMD | German common-name evidence where source mappings are unambiguous |
 | Wikidata | labels and aliases only with confident external taxon links |
+| Curated static CSV sources | source-backed regional vernacular snapshots without stable APIs |
 | Translation providers | low-trust generated/dictionary translation candidates for audit/review |
 
 iNaturalist, ITIS, TMD, and Wikidata names must first be linked to an accepted GBIF taxon and must not replace GBIF accepted identity.
@@ -544,6 +547,10 @@ Default trust policy:
 | Dictionary or generated translation candidates | T5 |
 
 T5 translation candidates are retained as registry name evidence while preserving `trust_tier = T5`, source, confidence, and precision provenance. They do not replace the GBIF accepted taxonomic spine, and they do not become Flickr queries unless review, corroboration, or same-taxon language-source evidence makes them query-eligible.
+
+Occurrence-driven language discovery is documented in [registry_multilingual_sources.md](docs/registry_multilingual_sources.md). The current Papilio demoleus regional source and language plan is documented in [papilio_demoleus_language_discovery.md](docs/papilio_demoleus_language_discovery.md).
+
+ALA and Swedish/SLU/Artdatabanken providers are intentionally not included in this implementation. ALA requires dedicated taxonomic-caution handling for the Australia/New Guinea Papilio demoleus context before its names can safely affect queries. Swedish providers are outside the configured Papilio demoleus regional target set and need the same source metadata, licence/citation, adapter or static-loader tests, and regional query policy before use.
 
 ## Step 0C — Flickr query compilation
 
@@ -569,6 +576,22 @@ Registry enrichment also harvests multilingual discovery terms before compiling 
 - MyMemory dictionary/translation-memory matches are written to `translation_candidates.parquet` and retained as enabled T5 name evidence, but remain query-ineligible until review or corroboration.
 - MyMemory uses translation-memory mode (`mt=0`) unless `--mymemory-allow-machine-translation` is explicitly supplied.
 - Translation terms expand Flickr discovery queries only; they are not taxonomic validation.
+
+Papilio demoleus curated-only multilingual build example:
+
+```bash
+uv run biominer registry build \
+  --output-dir data/registry/papilio_demoleus_curated \
+  --registry-version 2026-07-papilio-demoleus-curated-v1 \
+  --scope-json config/butterfly_scope.json \
+  --enrichment-sources col,inaturalist,itis,tmd_de,wikidata,gbif_vernacular,taxref_fr,boi_india_en,bharat_ki_titliya_hi,karnataka_chitte_kn \
+  --range-discovery-source gbif \
+  --range-seed-json config/range_seed/papilio_demoleus.json \
+  --language-targets-json config/language_targets/papilio_demoleus_region_language_targets.json \
+  --curated-static-source-config-dir config/vernacular_sources \
+  --curated-static-source-snapshot-dir data/source_snapshots \
+  --skip-translations
+```
 
 Each definition retains:
 
