@@ -19,32 +19,31 @@ def _name_row(display_name: str, **overrides: object) -> dict[str, object]:
     return row
 
 
-def test_one_word_terms_with_eight_or_more_letters_are_species_queries() -> None:
-    for term in ("Butterfly", "Schmetterling", "borboleta", "farfalla", "papillon", "mariposa", "metalmark"):
+def test_specific_one_word_terms_with_thirteen_or_more_letters_are_species_queries() -> None:
+    for term in ("Schmetterling", "Schwalbenschwanz"):
         decision = assess_name_query_eligibility(_name_row(term))
 
         assert decision.query_eligible is True
         assert decision.query_disabled_reason == ""
 
 
-def test_short_multilingual_generic_butterfly_words_are_not_species_queries() -> None:
-    for term in ("vlinder", "fjäril", "蝴蝶"):
+def test_one_word_terms_under_thirteen_letters_stay_blocked() -> None:
+    for term in ("Butterfly", "borboleta", "farfalla", "papillon", "mariposa", "metalmark", "zwaluwstaart", "svalstjärt"):
         decision = assess_name_query_eligibility(_name_row(term))
 
         assert decision.query_eligible is False
         assert decision.query_disabled_reason == "generic_single_token"
 
 
-def test_one_word_group_terms_with_eight_or_more_letters_are_species_queries() -> None:
-    for term in ("Schwalbenschwanz", "zwaluwstaart", "svalstjärt", "swallowtails"):
-        decision = assess_name_query_eligibility(_name_row(term, trust_tier="T2"))
+def test_plural_group_terms_are_not_species_queries_even_when_long() -> None:
+    decision = assess_name_query_eligibility(_name_row("swallowtails", trust_tier="T2"))
 
-        assert decision.query_eligible is True
-        assert decision.query_disabled_reason == ""
+    assert decision.query_eligible is False
+    assert decision.query_disabled_reason == "plural_group_name"
 
 
 def test_short_multilingual_group_words_are_not_species_queries() -> None:
-    for term in ("鳳蝶", "凤蝶"):
+    for term in ("vlinder", "fjäril", "蝴蝶", "鳳蝶", "凤蝶"):
         decision = assess_name_query_eligibility(_name_row(term, trust_tier="T2"))
 
         assert decision.query_eligible is False
