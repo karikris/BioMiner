@@ -170,3 +170,135 @@ def test_specific_single_token_reviewed_translation_can_remain_queryable() -> No
 
     assert decision.query_eligible is True
     assert decision.query_disabled_reason == ""
+
+
+def test_curated_hindi_and_kannada_source_backed_names_can_be_queryable() -> None:
+    rows = [
+        _name_row(
+            "नींबू तितली",
+            name_class="vernacular",
+            source="Bharat Ki Titliya",
+            trust_tier="T2",
+            language="hin",
+            region="IN",
+        ),
+        _name_row(
+            "ನಿಂಬೆ ಚಿಟ್ಟೆ",
+            name_class="vernacular",
+            source="Karnataka Chitte",
+            trust_tier="T2",
+            language="kan",
+            region="IN-KA",
+        ),
+    ]
+
+    decisions = [assess_name_query_eligibility(row) for row in rows]
+
+    assert [decision.query_eligible for decision in decisions] == [True, True]
+    assert [decision.query_disabled_reason for decision in decisions] == ["", ""]
+
+
+def test_generated_hindi_and_kannada_translations_are_not_queryable_by_default() -> None:
+    rows = [
+        _name_row(
+            "नींबू तितली",
+            name_class="generated_translation",
+            source="MyMemory",
+            trust_tier="T5",
+            language="hin",
+            review_state="candidate",
+        ),
+        _name_row(
+            "ನಿಂಬೆ ಚಿಟ್ಟೆ",
+            name_class="generated_translation",
+            source="MyMemory",
+            trust_tier="T5",
+            language="kan",
+            review_state="candidate",
+        ),
+    ]
+
+    decisions = [assess_name_query_eligibility(row) for row in rows]
+
+    assert [decision.query_eligible for decision in decisions] == [False, False]
+    assert [decision.query_disabled_reason for decision in decisions] == [
+        "generated_translation_requires_review_or_corroboration",
+        "generated_translation_requires_review_or_corroboration",
+    ]
+
+
+def test_t4_names_require_review_or_corroboration_for_queries() -> None:
+    candidate = assess_name_query_eligibility(
+        _name_row(
+            "Community Lime Butterfly",
+            source="iNaturalist",
+            trust_tier="T4",
+            review_state="candidate",
+            corroborated=False,
+        )
+    )
+    reviewed = assess_name_query_eligibility(
+        _name_row(
+            "Reviewed Lime Butterfly",
+            source="iNaturalist",
+            trust_tier="T4",
+            review_state="reviewed",
+            corroborated=False,
+        )
+    )
+    corroborated = assess_name_query_eligibility(
+        _name_row(
+            "Corroborated Lime Butterfly",
+            source="iNaturalist",
+            trust_tier="T4",
+            review_state="candidate",
+            corroborated=True,
+        )
+    )
+
+    assert candidate.query_eligible is False
+    assert candidate.query_disabled_reason == "weak_or_community_name_requires_review_or_corroboration"
+    assert reviewed.query_eligible is True
+    assert reviewed.query_disabled_reason == ""
+    assert corroborated.query_eligible is True
+    assert corroborated.query_disabled_reason == ""
+
+
+def test_taxonomic_caution_regions_require_explicit_accepted_taxon_resolution() -> None:
+    unbound = assess_name_query_eligibility(
+        _name_row(
+            "Caution Lime Butterfly",
+            source="Cautionary Checklist",
+            trust_tier="T2",
+            region="Australia/New Guinea taxonomic caution",
+        )
+    )
+    bound = assess_name_query_eligibility(
+        _name_row(
+            "Resolved Caution Lime Butterfly",
+            source="Cautionary Checklist",
+            trust_tier="T2",
+            region="Australia/New Guinea taxonomic caution",
+            source_taxon_id="gbif:100",
+            lineage_check="accepted_taxon_key",
+        )
+    )
+
+    assert unbound.query_eligible is False
+    assert unbound.query_disabled_reason == "taxonomic_caution_region_requires_accepted_taxon_resolution"
+    assert bound.query_eligible is True
+    assert bound.query_disabled_reason == ""
+
+
+def test_ambiguous_common_name_disabled_reason_blocks_queries_even_when_enabled() -> None:
+    decision = assess_name_query_eligibility(
+        _name_row(
+            "Lime Butterfly",
+            source="Butterflies of India",
+            trust_tier="T2",
+            disabled_reason="ambiguous_common_name",
+        )
+    )
+
+    assert decision.query_eligible is False
+    assert decision.query_disabled_reason == "ambiguous_common_name"

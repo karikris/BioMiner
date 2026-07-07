@@ -76,7 +76,9 @@ GENERIC_GROUP_PHRASES = {
 GENERATED_TRANSLATION_SOURCES = {"mymemory", "translation", "libretranslate", "t5", "machine_translation"}
 SAME_TAXON_LANGUAGE_SOURCES = {"wikimedia", "wikidata"}
 SOURCE_BOUND_NAME_SOURCES = {"wikimedia", "wikidata"}
-MANUAL_REVIEW_STATES = {"reviewed", "curator_reviewed", "manual_reviewed", "query_approved"}
+MANUAL_REVIEW_STATES = {"accepted", "enabled", "reviewed", "curator_reviewed", "manual_reviewed", "query_approved"}
+TRANSLATION_QUERY_REVIEW_STATES = {"reviewed", "curator_reviewed", "manual_reviewed", "query_approved"}
+QUERY_BLOCKING_DISABLED_REASON_TERMS = ("ambiguous", "collision", "taxonomic_caution")
 SCIENTIFIC_NAME_CLASSES = {"accepted_scientific", "canonical_scientific", "scientific_synonym", "scientific", "scientific_name", "synonym"}
 COMMON_NAME_CLASSES = {"vernacular", "vernacular_alias", "common_name", "common_name_alias", "generated_translation"}
 MIN_ONE_WORD_QUERY_LENGTH = 13
@@ -107,6 +109,8 @@ def assess_name_query_eligibility(row: dict[str, Any]) -> QueryEligibilityDecisi
         return QueryEligibilityDecision(False, disabled_reason or "name_disabled", score)
     if not normalized:
         return QueryEligibilityDecision(False, "empty_name", 0.0)
+    if _query_blocking_disabled_reason(disabled_reason):
+        return QueryEligibilityDecision(False, disabled_reason, min(score, 0.45))
     if name_class in SCIENTIFIC_NAME_CLASSES:
         if not _is_species_level_scientific_name(tokens):
             return QueryEligibilityDecision(False, "broad_scientific_name", min(score, 0.45))
@@ -119,6 +123,10 @@ def assess_name_query_eligibility(row: dict[str, Any]) -> QueryEligibilityDecisi
     generated_translation_approved = _generated_translation_query_approved(row, source=source) if generated_translation else False
     if generated_translation and not generated_translation_approved:
         return QueryEligibilityDecision(False, "generated_translation_requires_review_or_corroboration", min(score, 0.45))
+    if trust_tier == "T4" and not _reviewed_or_corroborated(row):
+        return QueryEligibilityDecision(False, "weak_or_community_name_requires_review_or_corroboration", min(score, 0.45))
+    if _is_taxonomic_caution_region(row) and not _same_taxon_source_bound(row):
+        return QueryEligibilityDecision(False, "taxonomic_caution_region_requires_accepted_taxon_resolution", min(score, 0.45))
     generic_single_token_query_approved = _generic_single_token_query_approved(row) if _is_generic_single_token(tokens) else False
     long_one_word_query = _is_long_one_word_query(tokens)
     if _is_plural_group_name(tokens):
@@ -159,6 +167,11 @@ def _generated_translation_query_approved(row: dict[str, Any], *, source: str) -
     if source in SAME_TAXON_LANGUAGE_SOURCES:
         return True
     review_state = "_".join(str(row.get("review_state") or "").casefold().split())
+    return review_state in TRANSLATION_QUERY_REVIEW_STATES or _boolish(row.get("corroborated", False))
+
+
+def _reviewed_or_corroborated(row: dict[str, Any]) -> bool:
+    review_state = "_".join(str(row.get("review_state") or "").casefold().split())
     return review_state in MANUAL_REVIEW_STATES or _boolish(row.get("corroborated", False))
 
 
@@ -184,6 +197,16 @@ def _same_taxon_source_bound(row: dict[str, Any]) -> bool:
 
 def _is_generated_translation(*, name_class: str, trust_tier: str, source: str) -> bool:
     return name_class == "generated_translation" or trust_tier == "T5" or source in GENERATED_TRANSLATION_SOURCES
+
+
+def _is_taxonomic_caution_region(row: dict[str, Any]) -> bool:
+    region = "_".join(str(row.get("region") or "").casefold().split())
+    return "taxonomic_caution" in region
+
+
+def _query_blocking_disabled_reason(reason: str) -> bool:
+    normalized = "_".join(str(reason or "").casefold().split())
+    return any(term in normalized for term in QUERY_BLOCKING_DISABLED_REASON_TERMS)
 
 
 def _is_generic_single_token(tokens: list[str]) -> bool:
