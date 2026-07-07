@@ -25,6 +25,7 @@ def compile_registry_fixture(
     *,
     registry_version: str,
     scope_path: str | Path = "config/butterfly_scope.json",
+    global_names_for_collision: pl.DataFrame | None = None,
 ) -> dict[str, Any]:
     source = Path(source_path)
     output = Path(output_dir)
@@ -36,6 +37,7 @@ def compile_registry_fixture(
         output_ref=output,
         registry_version=registry_version,
         scope_path=scope_path,
+        global_names_for_collision=global_names_for_collision,
     )
 
     for filename, frame in frames.items():
@@ -51,11 +53,13 @@ def compile_registry_frames(
     output_ref: str | Path,
     registry_version: str,
     scope_path: str | Path = "config/butterfly_scope.json",
+    global_names_for_collision: pl.DataFrame | None = None,
 ) -> tuple[dict[str, pl.DataFrame], dict[str, Any]]:
     scope = load_scope(scope_path)
     taxa = _taxa_frame(source_payload.get("taxa", []), scope_id=scope.scope_id)
     names = _names_frame(source_payload.get("names", []), registry_version=registry_version)
-    name_collision_ledger = _name_collision_ledger_frame(names, registry_version=registry_version)
+    collision_names = _ensure_query_eligibility_columns(global_names_for_collision) if global_names_for_collision is not None else names
+    name_collision_ledger = _name_collision_ledger_frame(collision_names, registry_version=registry_version)
     names = _apply_name_collision_policy(names, name_collision_ledger)
     evidence = _name_evidence_frame(source_payload.get("names", []), registry_version=registry_version, source_payload=source_payload)
     snapshots = _source_snapshots_frame(source_payload, source_ref=source_ref)
@@ -87,14 +91,20 @@ def compile_registry_frames(
     return frames, manifest
 
 
-def query_definitions_from_names(names: pl.DataFrame, taxa: pl.DataFrame, *, registry_version: str) -> pl.DataFrame:
+def query_definitions_from_names(
+    names: pl.DataFrame,
+    taxa: pl.DataFrame,
+    *,
+    registry_version: str,
+    global_names_for_collision: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     """Build Flickr query definitions from names-shaped rows.
 
     This public wrapper lets enrichment append retrieval-only query rows for
     candidate terms without duplicating the registry query schema.
     """
 
-    return _query_definitions_frame(names, taxa, registry_version=registry_version)
+    return _query_definitions_frame(names, taxa, registry_version=registry_version, global_names_for_collision=global_names_for_collision)
 
 
 def _taxa_frame(rows: list[dict[str, Any]], *, scope_id: str) -> pl.DataFrame:
@@ -230,7 +240,13 @@ def _source_snapshots_frame(payload: dict[str, Any], *, source_ref: str | Path) 
     )
 
 
-def _query_definitions_frame(names: pl.DataFrame, taxa: pl.DataFrame, *, registry_version: str) -> pl.DataFrame:
+def _query_definitions_frame(
+    names: pl.DataFrame,
+    taxa: pl.DataFrame,
+    *,
+    registry_version: str,
+    global_names_for_collision: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     if names.is_empty():
         return pl.DataFrame([], schema=_query_schema())
     taxa_lookup = taxa.select(
@@ -245,7 +261,8 @@ def _query_definitions_frame(names: pl.DataFrame, taxa: pl.DataFrame, *, registr
         "species",
     )
     names = _ensure_query_eligibility_columns(names)
-    names = _apply_name_collision_policy(names, _name_collision_ledger_frame(names, registry_version=registry_version))
+    collision_names = _ensure_query_eligibility_columns(global_names_for_collision) if global_names_for_collision is not None else names
+    names = _apply_name_collision_policy(names, _name_collision_ledger_frame(collision_names, registry_version=registry_version))
     enabled_names = names.filter(pl.col("enabled") & pl.col("query_eligible"))
     rows: list[dict[str, Any]] = []
     joined = enabled_names.join(taxa_lookup, on="accepted_taxon_key", how="left").to_dicts()
@@ -336,7 +353,7 @@ def _name_collision_ledger_frame(names: pl.DataFrame, *, registry_version: str) 
         accepted_taxon_keys = sorted({str(row.get("accepted_taxon_key") or "") for row in bucket if row.get("accepted_taxon_key")})
         if len(accepted_taxon_keys) <= 1:
             continue
-        query_blocking = [row for row in bucket if _name_collision_blocks_query(row)]
+        query_blocking = [row for row in bucket if _name_collision_blocks_query(row) or _row_has_blocking_collision_reason(row)]
         rows.append(
             {
                 "registry_version": registry_version,
@@ -392,6 +409,10 @@ def _name_collision_blocks_query(row: dict[str, Any]) -> bool:
     if review_state in COLLISION_REVIEW_STATES and precision_tier == "high":
         return False
     return True
+
+
+def _row_has_blocking_collision_reason(row: dict[str, Any]) -> bool:
+    return str(row.get("query_disabled_reason") or "") == "normalized_name_language_collision"
 
 
 def _qa_findings(taxa: pl.DataFrame, names: pl.DataFrame, queries: pl.DataFrame, scope) -> list[dict[str, Any]]:
@@ -645,6 +666,9 @@ def _ensure_query_eligibility_columns(names: pl.DataFrame) -> pl.DataFrame:
         return names
     rows: list[dict[str, Any]] = []
     for row in names.to_dicts():
+        if _row_has_blocking_collision_reason(row):
+            rows.append(row)
+            continue
         decision = assess_name_query_eligibility(row)
         rows.append(
             {

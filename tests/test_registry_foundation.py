@@ -359,14 +359,14 @@ def test_compile_registry_fixture_stores_enabled_but_query_ineligible_weak_names
     assert by_name["common lime butterfly"]["enabled"] is True
     assert by_name["common lime butterfly"]["query_eligible"] is True
     assert by_name["common lime butterfly"]["species_specificity_score"] > by_name["lime"]["species_specificity_score"]
-    assert by_name["swallowtails"]["query_eligible"] is True
-    for weak_name in ("lime", "swallowtail butterfly", "papillon"):
+    assert by_name["swallowtails"]["query_eligible"] is False
+    assert by_name["swallowtails"]["query_disabled_reason"] == "plural_group_name"
+    for weak_name in ("lime", "swallowtails", "swallowtail butterfly", "papillon"):
         assert by_name[weak_name]["enabled"] is True
         assert by_name[weak_name]["query_eligible"] is False
         assert by_name[weak_name]["query_disabled_reason"]
     assert "Common Lime Butterfly" in queries["source_term"].to_list()
-    assert "swallowtails" in set(queries["normalized_match_key"].to_list())
-    assert not {"lime", "swallowtail butterfly", "papillon"} & set(queries["normalized_match_key"].to_list())
+    assert not {"lime", "swallowtails", "swallowtail butterfly", "papillon"} & set(queries["normalized_match_key"].to_list())
     assert manifest["query_eligible_name_rows"] == names.filter(pl.col("query_eligible")).height
     assert manifest["query_ineligible_name_rows"] == names.filter(pl.col("enabled") & ~pl.col("query_eligible")).height
 

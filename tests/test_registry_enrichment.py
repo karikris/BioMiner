@@ -9,7 +9,7 @@ import httpx
 import polars as pl
 
 from biominer.cli import build_parser, run
-from biominer.registry.compiler import compile_registry_fixture
+from biominer.registry.compiler import compile_registry_fixture, compile_registry_frames
 from biominer.registry.enrichment import (
     SOURCE_WORK_LEDGER_FILE,
     SpeciesContext,
@@ -994,6 +994,159 @@ def test_compile_enriched_registry_collision_ignores_name_class_differences(tmp_
     assert candidates.select("enabled").to_series().to_list() == [False, False]
     assert candidates.select("disabled_reason").to_series().to_list() == ["name_collision_requires_review", "name_collision_requires_review"]
     assert "shared lime" not in queries["normalized_query_term"].to_list()
+
+
+def test_species_slice_keeps_full_registry_name_collisions_blocked(tmp_path) -> None:
+    scope = tmp_path / "scope.json"
+    scope.write_text(
+        json.dumps(
+            {
+                "scope_id": "test-scope",
+                "root": {"scientific_name": "Papilionoidea", "rank": "SUPERFAMILY"},
+                "included_families": ["Papilionidae"],
+                "gbif_family_taxon_keys": {"Papilionidae": 10},
+            }
+        ),
+        encoding="utf-8",
+    )
+    lineage = [
+        {
+            "accepted_taxon_key": "gbif:1",
+            "scientific_name": "Papilionoidea",
+            "rank": "SUPERFAMILY",
+            "parent_key": "",
+            "family_key": "",
+            "family": "",
+            "genus_key": "",
+            "genus": "",
+            "species_key": "",
+            "species": "",
+        },
+        {
+            "accepted_taxon_key": "gbif:10",
+            "scientific_name": "Papilionidae",
+            "rank": "FAMILY",
+            "parent_key": "gbif:1",
+            "family_key": "gbif:10",
+            "family": "Papilionidae",
+            "genus_key": "",
+            "genus": "",
+            "species_key": "",
+            "species": "",
+        },
+        {
+            "accepted_taxon_key": "gbif:90",
+            "scientific_name": "Papilio",
+            "rank": "GENUS",
+            "parent_key": "gbif:10",
+            "family_key": "gbif:10",
+            "family": "Papilionidae",
+            "genus_key": "gbif:90",
+            "genus": "Papilio",
+            "species_key": "",
+            "species": "",
+        },
+    ]
+    species = [
+        ("gbif:100", "Papilio demoleus"),
+        ("gbif:101", "Papilio machaon"),
+    ]
+
+    def species_taxa(selected: list[tuple[str, str]]) -> list[dict[str, object]]:
+        return [
+            {
+                "accepted_taxon_key": key,
+                "scientific_name": scientific_name,
+                "rank": "SPECIES",
+                "parent_key": "gbif:90",
+                "family_key": "gbif:10",
+                "family": "Papilionidae",
+                "genus_key": "gbif:90",
+                "genus": "Papilio",
+                "species_key": key,
+                "species": scientific_name,
+            }
+            for key, scientific_name in selected
+        ]
+
+    def names(selected: list[tuple[str, str]]) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for key, scientific_name in selected:
+            rows.append(
+                {
+                    "accepted_taxon_key": key,
+                    "verbatim_name": scientific_name,
+                    "display_name": scientific_name,
+                    "language": "la",
+                    "script": "Latn",
+                    "name_class": "accepted_scientific",
+                    "source": "GBIF",
+                    "source_record_id": key,
+                    "trust_tier": "T1",
+                    "precision_tier": "high",
+                    "confidence": "high",
+                    "enabled": True,
+                }
+            )
+            for display_name in ("Dingy Swallowtail", "Small Citrus Butterfly"):
+                rows.append(
+                    {
+                        "accepted_taxon_key": key,
+                        "verbatim_name": display_name,
+                        "display_name": display_name,
+                        "language": "eng",
+                        "script": "Latn",
+                        "name_class": "vernacular",
+                        "source": "GBIF",
+                        "source_record_id": f"{key}:{display_name}",
+                        "trust_tier": "T2",
+                        "precision_tier": "medium",
+                        "confidence": "high",
+                        "enabled": True,
+                    }
+                )
+        return rows
+
+    full_payload = {
+        "source": "GBIF",
+        "source_version": "fixture",
+        "retrieved_at": "2026-07-07T00:00:00+00:00",
+        "taxa": [*lineage, *species_taxa(species)],
+        "names": names(species),
+    }
+    full_frames, _ = compile_registry_frames(
+        full_payload,
+        source_ref="memory://full",
+        output_ref="memory://full",
+        registry_version="full",
+        scope_path=scope,
+    )
+    slice_payload = {
+        **full_payload,
+        "taxa": [*lineage, *species_taxa([species[0]])],
+        "names": names([species[0]]),
+    }
+
+    slice_frames, _ = compile_registry_frames(
+        slice_payload,
+        source_ref="memory://slice",
+        output_ref="memory://slice",
+        registry_version="slice",
+        scope_path=scope,
+        global_names_for_collision=full_frames["names.parquet"],
+    )
+
+    names_frame = slice_frames["names.parquet"]
+    collision_names = names_frame.filter(pl.col("display_name").is_in(["Dingy Swallowtail", "Small Citrus Butterfly"])).sort("display_name")
+    queries = slice_frames["flickr_query_definitions.parquet"]
+
+    assert collision_names.select("query_eligible").to_series().to_list() == [False, False]
+    assert collision_names.select("query_disabled_reason").to_series().to_list() == [
+        "normalized_name_language_collision",
+        "normalized_name_language_collision",
+    ]
+    assert {"Dingy Swallowtail", "Small Citrus Butterfly"}.issubset(set(names_frame["display_name"].to_list()))
+    assert not {"dingy swallowtail", "small citrus butterfly"} & set(queries["normalized_query_term"].to_list())
 
 
 def test_registry_compile_enriched_cli_writes_expanded_outputs(tmp_path, capsys) -> None:
