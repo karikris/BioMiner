@@ -251,12 +251,18 @@ class RecordingTMDClient:
 class FakeWikimediaProvider:
     def __init__(self, *, wikidata_item: str = "Q123") -> None:
         self.titles: list[str] = []
+        self.vernacular_titles: list[str] = []
         self.wikidata_item = wikidata_item
 
     def langlinks(self, title, *, target_locales):  # noqa: ANN001, ANN202 - test double.
         self.titles.append(title)
         assert target_locales == ("de",)
         return [WikimediaLanglink(language="de", title="Zitronenfalter", page_id="123", page_title=title, wikidata_item=self.wikidata_item)], 1, title
+
+    def vernacular_names(self, title, *, target_locales):  # noqa: ANN001, ANN202 - test double.
+        self.vernacular_titles.append(title)
+        assert target_locales == ("de",)
+        return [], 0, title
 
 
 class LocaleVariantWikimediaProvider:
@@ -626,6 +632,59 @@ def test_wikimedia_provider_follows_langlink_continuation() -> None:
     assert requests[1][1]["llcontinue"] == "123|fr"
 
 
+def test_wikimedia_provider_extracts_wikispecies_vernacular_names() -> None:
+    requests = []
+
+    def fake_get(path, params):  # noqa: ANN001, ANN202 - provider test double.
+        requests.append((path, dict(params)))
+        return {
+            "parse": {
+                "pageid": 52929,
+                "title": "Papilio demoleus",
+                "wikitext": {
+                    "*": """
+=={{int:Vernacular names}}==
+{{VN
+|as=নেমুটেঙা পখিলা
+|bn=সাত ডোরা, রুরু
+|hu=Citruspillangó
+|zh = 達摩鳳蝶
+|en=Lime Butterfly
+|ta=எலுமிச்சை அழகி
+|te= నిమ్మ చిలుక
+}}
+
+{{Taxonbar|from=Q285314}}
+"""
+                },
+            }
+        }
+
+    provider = WikimediaLanglinksProvider(http_get=fake_get)
+
+    links, request_count, page_title = provider.vernacular_names(
+        "Papilio demoleus",
+        target_locales=("as", "bn", "en", "hu", "ta", "te", "zh"),
+    )
+
+    assert request_count == 1
+    assert page_title == "Papilio demoleus"
+    assert [(link.language, link.title, link.wikidata_item) for link in links] == [
+        ("as", "নেমুটেঙা পখিলা", "Q285314"),
+        ("bn", "সাত ডোরা", "Q285314"),
+        ("bn", "রুরু", "Q285314"),
+        ("hu", "Citruspillangó", "Q285314"),
+        ("zh", "達摩鳳蝶", "Q285314"),
+        ("en", "Lime Butterfly", "Q285314"),
+        ("ta", "எலுமிச்சை அழகி", "Q285314"),
+        ("te", "నిమ్మ చిలుక", "Q285314"),
+    ]
+    assert requests[0][0] == "/w/api.php"
+    assert requests[0][1]["action"] == "parse"
+    assert requests[0][1]["page"] == "Papilio demoleus"
+    assert requests[0][1]["prop"] == "wikitext"
+
+
 def test_load_translation_target_locales_preserves_bcp47_variants(tmp_path) -> None:
     locales = tmp_path / "locales.json"
     locales.write_text(json.dumps(["pt", "pt-BR", "zh", "zh-Hant"]), encoding="utf-8")
@@ -917,6 +976,58 @@ def test_translation_harvester_writes_wikimedia_and_mymemory_outputs(tmp_path) -
     assert wiki.titles == ["Papilio demoleus", "Lime Swallowtail"]
     assert mymemory.calls == [{"source_name": "Lime Swallowtail", "source_language": "en", "target_language": "de", "max_candidates": "0"}]
     assert set(work.select("source").to_series().to_list()) == {"wikimedia", "mymemory"}
+
+
+def test_translation_harvester_writes_wikispecies_vernacular_assertions(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    _write_wikidata_link(registry, qid="Q285314")
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["as", "bn", "en", "hu", "ta", "te", "zh"]), encoding="utf-8")
+
+    class WikispeciesProvider:
+        def langlinks(self, title, *, target_locales):  # noqa: ANN001, ANN202 - test double.
+            return [], 0, title
+
+        def vernacular_names(self, title, *, target_locales):  # noqa: ANN001, ANN202 - test double.
+            assert title == "Papilio demoleus"
+            assert target_locales == ("as", "bn", "en", "hu", "ta", "te", "zh")
+            return [
+                WikimediaLanglink(language="as", title="নেমুটেঙা পখিলা", page_id="wikispecies:52929", page_title=title, wikidata_item="Q285314"),
+                WikimediaLanglink(language="bn", title="সাত ডোরা", page_id="wikispecies:52929", page_title=title, wikidata_item="Q285314"),
+                WikimediaLanglink(language="bn", title="রুরু", page_id="wikispecies:52929", page_title=title, wikidata_item="Q285314"),
+                WikimediaLanglink(language="hu", title="Citruspillangó", page_id="wikispecies:52929", page_title=title, wikidata_item="Q285314"),
+                WikimediaLanglink(language="zh", title="達摩鳳蝶", page_id="wikispecies:52929", page_title=title, wikidata_item="Q285314"),
+                WikimediaLanglink(language="en", title="Lime Butterfly", page_id="wikispecies:52929", page_title=title, wikidata_item="Q285314"),
+                WikimediaLanglink(language="ta", title="எலுமிச்சை அழகி", page_id="wikispecies:52929", page_title=title, wikidata_item="Q285314"),
+                WikimediaLanglink(language="te", title="నిమ్మ చిలుక", page_id="wikispecies:52929", page_title=title, wikidata_item="Q285314"),
+            ], 1, title
+
+    manifest = build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=registry / "enrichment",
+        translation_sources=("wikimedia",),
+        target_locales_json=locales,
+        providers={"wikimedia": WikispeciesProvider()},
+    )
+
+    assertions = pl.read_parquet(registry / "enrichment" / "source_name_assertions.parquet").sort(["language", "display_name"])
+
+    assert manifest["wikimedia_assertion_rows"] == 8
+    assert assertions.select("display_name").to_series().to_list() == [
+        "নেমুটেঙা পখিলা",
+        "রুরু",
+        "সাত ডোরা",
+        "Lime Butterfly",
+        "Citruspillangó",
+        "எலுமிச்சை அழகி",
+        "నిమ్మ చిలుక",
+        "達摩鳳蝶",
+    ]
+    assert assertions.select("source").to_series().to_list() == ["Wikimedia"] * 8
+    assert assertions.select("source_taxon_id").to_series().to_list() == ["Q285314"] * 8
+    assert assertions.select("enabled").to_series().to_list() == [True] * 8
+    assert all("wikispecies:52929" in value for value in assertions.select("source_record_id").to_series().to_list())
 
 
 def test_translation_harvester_skips_query_ineligible_phrase_fragments(tmp_path) -> None:

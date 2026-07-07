@@ -9,6 +9,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import threading
 from time import monotonic
 from typing import Any, Callable
@@ -77,9 +78,10 @@ MYMEMORY_MONTHLY_INPUT_WORD_LIMIT = 10_000
 MYMEMORY_MONTHLY_BANDWIDTH_MB_LIMIT = 10_240
 MYMEMORY_RESPONSE_BYTE_RESERVATION = 1_048_576
 MYMEMORY_SOURCE_VERSION = "mymemory-get-v1"
-WIKIMEDIA_SOURCE_VERSION = "mediawiki-langlinks-pageprops-v2"
+WIKIMEDIA_SOURCE_VERSION = "mediawiki-langlinks-pageprops-wikispecies-v3"
 MYMEMORY_BASE_URL = "https://api.mymemory.translated.net"
 WIKIPEDIA_API_BASE_URL = "https://en.wikipedia.org"
+WIKISPECIES_API_BASE_URL = "https://species.wikimedia.org"
 COMMON_NAME_CLASSES = {"vernacular", "vernacular_alias", "common_name", "common_name_alias"}
 SCIENTIFIC_NAME_CLASSES = {"accepted_scientific", "scientific", "scientific_name", "scientific_synonym", "synonym"}
 ENGLISH_LANGUAGE_CODES = {"eng", "en", "english"}
@@ -482,8 +484,9 @@ class WikimediaLanglinksProvider:
     source_key = "wikimedia"
     source_name = "Wikimedia"
 
-    def __init__(self, *, http_get: HTTPGet | None = None, max_retries: int = 5) -> None:
+    def __init__(self, *, http_get: HTTPGet | None = None, wikispecies_http_get: HTTPGet | None = None, max_retries: int = 5) -> None:
         self._http_get = http_get or _json_get(WIKIPEDIA_API_BASE_URL, max_retries=max_retries)
+        self._wikispecies_http_get = wikispecies_http_get or (http_get if http_get is not None else _json_get(WIKISPECIES_API_BASE_URL, max_retries=max_retries))
 
     def langlinks(self, title: str, *, target_locales: tuple[str, ...]) -> tuple[list[WikimediaLanglink], int, str]:
         request_count = 0
@@ -532,6 +535,36 @@ class WikimediaLanglinksProvider:
                 break
             params = {**params, **continuation}
         return links, request_count, page_title
+
+    def vernacular_names(self, title: str, *, target_locales: tuple[str, ...]) -> tuple[list[WikimediaLanglink], int, str]:
+        params: dict[str, object] = {
+            "action": "parse",
+            "format": "json",
+            "page": title,
+            "prop": "wikitext",
+            "redirects": "1",
+        }
+        payload = self._wikispecies_http_get("/w/api.php", params)
+        parsed = payload.get("parse", {}) if isinstance(payload, dict) else {}
+        if not isinstance(parsed, dict):
+            return [], 1, title
+        page_title = str(parsed.get("title") or title)
+        page_id = str(parsed.get("pageid") or "")
+        wikitext = parsed.get("wikitext", {})
+        if isinstance(wikitext, dict):
+            wikitext_value = str(wikitext.get("*") or "")
+        else:
+            wikitext_value = str(wikitext or "")
+        target_api_codes = {_api_language_code(locale) for locale in target_locales}
+        wikidata_item = _wikispecies_taxonbar_item(wikitext_value)
+        links = _wikispecies_vernacular_links(
+            wikitext_value,
+            target_api_codes=target_api_codes,
+            page_id=f"wikispecies:{page_id}" if page_id else "wikispecies",
+            page_title=page_title,
+            wikidata_item=wikidata_item,
+        )
+        return links, 1, page_title
 
 
 class MyMemoryTranslationProvider:
@@ -839,6 +872,78 @@ def _harvest_wikimedia_context(
     if provider is None:
         errors.append(_source_error(display_source, context, "missing_client", retryable=False))
         return _source_result(assertions, [], snapshots, errors, translation_work, [], request_count_total)
+    wikispecies_seed = TranslationSeed(
+        accepted_taxon_key=context.accepted_taxon_key,
+        accepted_scientific_name=context.accepted_scientific_name,
+        source_name=context.accepted_scientific_name,
+        source_language="mul",
+        source="Wikispecies",
+        name_class="vernacular",
+        trust_tier="T3",
+    )
+    wikispecies_work_key = _translation_work_key(source_key, context.accepted_taxon_key, context.accepted_scientific_name, "wikispecies", "*", config_hash)
+    if wikispecies_work_key not in completed_work and hasattr(provider, "vernacular_names"):
+        started_at = datetime.now(UTC).isoformat()
+        if budget.reserve(1):
+            try:
+                links, request_count, page_title = provider.vernacular_names(context.accepted_scientific_name, target_locales=target_locales)
+            except Exception as exc:  # noqa: BLE001 - source errors are recorded and the registry build continues.
+                error_class = type(exc).__name__
+                request_count_total += 1
+                errors.append(_source_error(display_source, context, error_class, retryable=_is_retryable_error(error_class)))
+                translation_work.append(
+                    _translation_work_row(
+                        source=source_key,
+                        context=context,
+                        seed=wikispecies_seed,
+                        target_language="*",
+                        work_key=wikispecies_work_key,
+                        provider_config_hash=config_hash,
+                        status="error",
+                        started_at=started_at,
+                        request_count=1,
+                        error_class=error_class,
+                        retryable=_is_retryable_error(error_class),
+                    )
+                )
+            else:
+                request_count_total += request_count
+                _append_wikimedia_assertions(
+                    assertions=assertions,
+                    seen_assertions=seen_assertions,
+                    links=links,
+                    context=context,
+                    expected_wikidata_items=expected_wikidata_items,
+                    skip_names={context.accepted_scientific_name},
+                )
+                snapshots.append(_source_snapshot(display_source, WIKIMEDIA_SOURCE_VERSION, source_path=f"wikispecies:{page_title}", payload={"links": [link.__dict__ for link in links]}))
+                translation_work.append(
+                    _translation_work_row(
+                        source=source_key,
+                        context=context,
+                        seed=wikispecies_seed,
+                        target_language="*",
+                        work_key=wikispecies_work_key,
+                        provider_config_hash=config_hash,
+                        status="complete",
+                        started_at=started_at,
+                        request_count=request_count,
+                    )
+                )
+        else:
+            translation_work.append(
+                _translation_work_row(
+                    source=source_key,
+                    context=context,
+                    seed=wikispecies_seed,
+                    target_language="*",
+                    work_key=wikispecies_work_key,
+                    provider_config_hash=config_hash,
+                    status="budget_exhausted",
+                    started_at=started_at,
+                    request_count=0,
+                )
+            )
     for seed in seeds:
         work_key = _translation_work_key(source_key, context.accepted_taxon_key, seed.source_name, seed.source_language, "*", config_hash)
         if work_key in completed_work:
@@ -882,37 +987,14 @@ def _harvest_wikimedia_context(
             )
             continue
         request_count_total += request_count
-        for link in links:
-            title = " ".join(link.title.split())
-            if not title or normalize_name_key(title) in {normalize_name_key(seed.source_name), normalize_name_key(context.accepted_scientific_name)}:
-                continue
-            language = parse_language_tag(link.language).bcp47
-            assertion_key = (language, normalize_name_key(title))
-            if assertion_key in seen_assertions:
-                continue
-            seen_assertions.add(assertion_key)
-            disabled_reason = _wikimedia_binding_disabled_reason(link, expected_wikidata_items)
-            bound_to_same_taxon = not disabled_reason
-            assertions.append(
-                {
-                    "accepted_taxon_key": context.accepted_taxon_key,
-                    "display_name": title,
-                    "language": language,
-                    "script": "",
-                    "region": "",
-                    "name_class": "vernacular_alias",
-                    "source": display_source,
-                    "source_record_id": f"wikimedia:{link.page_id}:{link.wikidata_item}:{link.language}:{title}",
-                    "source_taxon_id": link.wikidata_item if bound_to_same_taxon else "",
-                    "lineage_check": "accepted_taxon_key" if bound_to_same_taxon else "",
-                    "trust_tier": "T3" if bound_to_same_taxon else "T4",
-                    "precision_tier": "medium",
-                    "confidence": "high" if bound_to_same_taxon else "low",
-                    "enabled": bound_to_same_taxon,
-                    "review_state": "accepted" if bound_to_same_taxon else "candidate",
-                    "disabled_reason": disabled_reason,
-                }
-            )
+        _append_wikimedia_assertions(
+            assertions=assertions,
+            seen_assertions=seen_assertions,
+            links=links,
+            context=context,
+            expected_wikidata_items=expected_wikidata_items,
+            skip_names={seed.source_name, context.accepted_scientific_name},
+        )
         snapshots.append(_source_snapshot(display_source, WIKIMEDIA_SOURCE_VERSION, source_path=f"enwiki:{page_title}", payload={"links": [link.__dict__ for link in links]}))
         translation_work.append(
             _translation_work_row(
@@ -1622,6 +1704,88 @@ def _wikimedia_binding_disabled_reason(link: WikimediaLanglink, expected_wikidat
     if link.wikidata_item not in expected_wikidata_items:
         return "wikimedia_page_not_bound_to_accepted_taxon"
     return ""
+
+
+def _append_wikimedia_assertions(
+    *,
+    assertions: list[dict[str, Any]],
+    seen_assertions: set[tuple[str, str]],
+    links: list[WikimediaLanglink],
+    context: SpeciesTranslationContext,
+    expected_wikidata_items: set[str],
+    skip_names: set[str],
+) -> None:
+    skip_name_keys = {normalize_name_key(name) for name in skip_names if name}
+    for link in links:
+        title = " ".join(link.title.split())
+        if not title or normalize_name_key(title) in skip_name_keys:
+            continue
+        language = parse_language_tag(link.language).bcp47
+        assertion_key = (language, normalize_name_key(title))
+        if assertion_key in seen_assertions:
+            continue
+        seen_assertions.add(assertion_key)
+        disabled_reason = _wikimedia_binding_disabled_reason(link, expected_wikidata_items)
+        bound_to_same_taxon = not disabled_reason
+        assertions.append(
+            {
+                "accepted_taxon_key": context.accepted_taxon_key,
+                "display_name": title,
+                "language": language,
+                "script": "",
+                "region": "",
+                "name_class": "vernacular_alias",
+                "source": "Wikimedia",
+                "source_record_id": f"wikimedia:{link.page_id}:{link.wikidata_item}:{link.language}:{title}",
+                "source_taxon_id": link.wikidata_item if bound_to_same_taxon else "",
+                "lineage_check": "accepted_taxon_key" if bound_to_same_taxon else "",
+                "trust_tier": "T3" if bound_to_same_taxon else "T4",
+                "precision_tier": "medium",
+                "confidence": "high" if bound_to_same_taxon else "low",
+                "enabled": bound_to_same_taxon,
+                "review_state": "accepted" if bound_to_same_taxon else "candidate",
+                "disabled_reason": disabled_reason,
+            }
+        )
+
+
+def _wikispecies_taxonbar_item(wikitext: str) -> str:
+    match = re.search(r"\{\{\s*Taxonbar\b[^{}]*\|\s*from\s*=\s*(Q\d+)", wikitext, flags=re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def _wikispecies_vernacular_links(
+    wikitext: str,
+    *,
+    target_api_codes: set[str],
+    page_id: str,
+    page_title: str,
+    wikidata_item: str,
+) -> list[WikimediaLanglink]:
+    match = re.search(r"\{\{\s*VN\b(?P<body>.*?)\n\s*\}\}", wikitext, flags=re.DOTALL | re.IGNORECASE)
+    if not match:
+        return []
+    links: list[WikimediaLanglink] = []
+    seen: set[tuple[str, str]] = set()
+    for line in match.group("body").splitlines():
+        row = re.match(r"\s*\|\s*(?P<language>[A-Za-z][A-Za-z0-9-]*)\s*=\s*(?P<names>.+?)\s*$", line)
+        if row is None:
+            continue
+        language = row.group("language").strip()
+        if language not in target_api_codes:
+            continue
+        for raw_name in re.split(r"[,;]", row.group("names")):
+            name = " ".join(raw_name.split())
+            if not name:
+                continue
+            key = (language, normalize_name_key(name))
+            if key in seen:
+                continue
+            seen.add(key)
+            links.append(WikimediaLanglink(language=language, title=name, page_id=page_id, page_title=page_title, wikidata_item=wikidata_item))
+    return links
 
 
 def _translation_work_schema() -> dict[str, pl.DataType]:
