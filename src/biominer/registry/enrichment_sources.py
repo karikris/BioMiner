@@ -59,13 +59,19 @@ STATIC_VERNACULAR_REQUIRED_FIELDS = (
 STATIC_VERNACULAR_CONFIG_REQUIRED_FIELDS = (
     "source_key",
     "source_name",
+    "source_display_name",
+    "source_type",
     "source_version",
+    "snapshot_version",
     "snapshot_path",
     "country_code",
+    "country_scope",
     "language",
+    "language_scope",
     "script",
     "region",
     "trust_tier",
+    "source_reliability_tier",
     "precision_tier",
     "source_url",
     "citation",
@@ -429,11 +435,16 @@ class StaticVernacularSourceClient:
         source_name: str,
         source_version: str,
         snapshot_path: str | Path,
+        source_type: str = "static_csv",
+        snapshot_version: str = "",
         country_code: str = "",
+        country_scope: tuple[str, ...] = (),
         language: str = "",
+        language_scope: tuple[str, ...] = (),
         script: str = "",
         region: str = "",
         trust_tier: str = "T2",
+        source_reliability_tier: str = "",
         precision_tier: str = "high",
         source_url: str = "",
         citation: str = "",
@@ -443,11 +454,16 @@ class StaticVernacularSourceClient:
         self.source_name = source_name
         self.source_version = source_version
         self.snapshot_path = Path(snapshot_path)
+        self.source_type = source_type
+        self.snapshot_version = snapshot_version or source_version
         self.country_code = country_code
+        self.country_scope = country_scope
         self.language = language
+        self.language_scope = language_scope
         self.script = script
         self.region = region
-        self.trust_tier = trust_tier
+        self.trust_tier = source_reliability_tier or trust_tier
+        self.source_reliability_tier = source_reliability_tier or trust_tier
         self.precision_tier = precision_tier
         self.source_url = source_url
         self.citation = citation
@@ -462,17 +478,33 @@ class StaticVernacularSourceClient:
         missing = [field for field in STATIC_VERNACULAR_CONFIG_REQUIRED_FIELDS if field not in config]
         if missing:
             raise ValueError(f"Static vernacular source config missing required fields: {', '.join(missing)}")
+        source_type = str(config.get("source_type") or "").strip()
+        if source_type != "static_csv":
+            raise ValueError("Static vernacular source config source_type must be static_csv")
+        country_scope = _static_list_config(config, "country_scope")
+        if not country_scope:
+            raise ValueError("Static vernacular source config country_scope must not be empty")
+        language_scope = _static_list_config(config, "language_scope")
+        if not language_scope:
+            raise ValueError("Static vernacular source config language_scope must not be empty")
         snapshot_path = _resolve_static_snapshot_path(path, str(config.get("snapshot_path") or ""))
+        source_version = str(config.get("source_version") or config.get("snapshot_version") or "").strip()
+        source_display_name = str(config.get("source_display_name") or "").strip()
         return cls(
             source_key=str(config.get("source_key") or "").strip(),
-            source_name=str(config.get("source_name") or "").strip(),
-            source_version=str(config.get("source_version") or "").strip(),
+            source_name=source_display_name,
+            source_version=source_version,
             snapshot_path=snapshot_path,
+            source_type=source_type,
+            snapshot_version=str(config.get("snapshot_version") or source_version).strip(),
             country_code=str(config.get("country_code") or "").strip(),
+            country_scope=country_scope,
             language=str(config.get("language") or "").strip(),
+            language_scope=language_scope,
             script=str(config.get("script") or "").strip(),
             region=str(config.get("region") or "").strip(),
             trust_tier=str(config.get("trust_tier") or "T2").strip(),
+            source_reliability_tier=str(config.get("source_reliability_tier") or config.get("trust_tier") or "T2").strip(),
             precision_tier=str(config.get("precision_tier") or "high").strip(),
             source_url=str(config.get("source_url") or "").strip(),
             citation=str(config.get("citation") or "").strip(),
@@ -496,6 +528,9 @@ class StaticVernacularSourceClient:
             "duplicate_rows": 0,
             "rows_without_vernacular": 0,
             "missing_source_name_rows": 0,
+            "rejected_rank_rows": 0,
+            "taxonomic_caution_rows": 0,
+            "disabled_candidate_rows": 0,
             "request_count": 0,
         }
         assertions: list[dict[str, Any]] = []
@@ -513,6 +548,9 @@ class StaticVernacularSourceClient:
                 coverage["rows_without_vernacular"] += 1
                 continue
             coverage["rows_with_vernacular"] += 1
+            if _static_rejected_rank_row(row):
+                coverage["rejected_rank_rows"] += 1
+                continue
 
             source_taxon_id = _static_value(row, "source_taxon_id")
             scientific_name = _static_value(row, "accepted_name_usage") or _static_value(row, "scientific_name")
@@ -561,8 +599,14 @@ class StaticVernacularSourceClient:
                 disabled_reasons.append("missing_language")
             if not region:
                 disabled_reasons.append("missing_region")
+            taxonomic_caution_reason = _static_taxonomic_caution_reason(row)
+            if taxonomic_caution_reason:
+                disabled_reasons.append(f"taxonomic_caution:{taxonomic_caution_reason}")
+                coverage["taxonomic_caution_rows"] += 1
             enabled = not disabled_reasons
-            source_record_id = _static_source_record_id(self.source_key, source_taxon_id, vernacular_name)
+            if not enabled:
+                coverage["disabled_candidate_rows"] += 1
+            source_record_id = _static_source_record_id(self.source_key, self.source_version, source_taxon_id, vernacular_name)
             licence = _static_value(row, "licence", self.licence)
             assertions.append(
                 {
@@ -625,7 +669,12 @@ class StaticVernacularSourceClient:
                         {
                             "source_key": self.source_key,
                             "source_name": self.source_name,
+                            "source_type": self.source_type,
                             "source_version": self.source_version,
+                            "snapshot_version": self.snapshot_version,
+                            "country_scope": self.country_scope,
+                            "language_scope": self.language_scope,
+                            "source_reliability_tier": self.source_reliability_tier,
                             "source_url": self.source_url,
                             "citation": self.citation,
                             "rows": rows,
@@ -1389,10 +1438,37 @@ def _static_value(row: dict[str, Any], field: str, default: str = "") -> str:
     return value if value else default
 
 
-def _static_source_record_id(source_key: str, source_taxon_id: str, vernacular_name: str) -> str:
+def _static_list_config(config: dict[str, Any], field: str) -> tuple[str, ...]:
+    value = config.get(field)
+    if isinstance(value, list):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, str):
+        return tuple(part.strip() for part in value.split(",") if part.strip())
+    return ()
+
+
+def _static_rejected_rank_row(row: dict[str, Any]) -> bool:
+    rank = _static_value(row, "rank").casefold().replace("-", "_").replace(" ", "_")
+    scientific_name = _static_value(row, "scientific_name").casefold()
+    if rank in {"family", "subfamily", "superfamily", "genus", "subgenus", "species_complex", "species_group", "complex", "group"}:
+        return True
+    return " complex" in scientific_name or " group" in scientific_name or "/" in scientific_name
+
+
+def _static_taxonomic_caution_reason(row: dict[str, Any]) -> str:
+    reason = _static_value(row, "taxonomic_caution_reason")
+    caution = _static_value(row, "taxonomic_caution").casefold()
+    if reason:
+        return reason
+    if caution in {"1", "true", "yes", "y", "caution", "taxonomic_caution"}:
+        return "taxonomic_caution"
+    return ""
+
+
+def _static_source_record_id(source_key: str, source_version: str, source_taxon_id: str, vernacular_name: str) -> str:
     if source_taxon_id:
-        return f"{source_key}:{source_taxon_id}:vernacular:{vernacular_name}"
-    return f"{source_key}:vernacular:{vernacular_name}"
+        return f"{source_key}:{source_version}:{source_taxon_id}:vernacular:{vernacular_name}"
+    return f"{source_key}:{source_version}:vernacular:{vernacular_name}"
 
 
 def _payload_hash(payload: dict[str, Any]) -> str:

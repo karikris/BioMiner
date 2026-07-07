@@ -174,6 +174,8 @@ def _write_static_source(
         "source_url",
         "citation",
         "name_class",
+        "taxonomic_caution",
+        "taxonomic_caution_reason",
     ]
     with snapshot.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=csv_fieldnames)
@@ -183,13 +185,19 @@ def _write_static_source(
     config = {
         "source_key": source_key,
         "source_name": "Butterflies of India",
+        "source_display_name": "Butterflies of India",
+        "source_type": "static_csv",
         "source_version": "test-static-v1",
+        "snapshot_version": "test-static-v1",
         "snapshot_path": str(snapshot),
         "country_code": "IN",
+        "country_scope": ["IN"],
         "language": "eng",
+        "language_scope": ["eng"],
         "script": "Latn",
         "region": "IN",
         "trust_tier": "T2",
+        "source_reliability_tier": "T2",
         "precision_tier": "high",
         "source_url": "https://www.ifoundbutterflies.org/",
         "citation": "Fixture citation",
@@ -1096,6 +1104,9 @@ def test_static_vernacular_source_client_ingests_csv_and_maps_names_with_metadat
         "duplicate_rows": 1,
         "rows_without_vernacular": 1,
         "missing_source_name_rows": 0,
+        "rejected_rank_rows": 0,
+        "taxonomic_caution_rows": 0,
+        "disabled_candidate_rows": 0,
         "request_count": 0,
     }
     assert result["source_snapshots"][0]["source"] == "Butterflies of India"
@@ -1141,6 +1152,234 @@ def test_static_vernacular_source_client_validates_config_and_csv_headers(tmp_pa
         StaticVernacularSourceClient.from_config_path(bad_header_config).enrich_registry(taxa_rows=[], name_rows=[])
 
 
+def test_static_vernacular_source_client_validates_reusable_config_metadata(tmp_path) -> None:
+    config_path = _write_static_source(tmp_path, source_key="future_source")
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    del config["source_display_name"]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="source_display_name"):
+        StaticVernacularSourceClient.from_config_path(config_path)
+
+    config_path = _write_static_source(tmp_path, source_key="bad_type")
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["source_type"] = "web_scrape"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="source_type"):
+        StaticVernacularSourceClient.from_config_path(config_path)
+
+    config_path = _write_static_source(tmp_path, source_key="bad_scope")
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["country_scope"] = []
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="country_scope"):
+        StaticVernacularSourceClient.from_config_path(config_path)
+
+
+def test_static_vernacular_source_client_preserves_same_vernacular_across_regions_and_source_versions(tmp_path) -> None:
+    v1_config = _write_static_source(
+        tmp_path,
+        source_key="regional_checklist_v1",
+        rows=[
+            {
+                "source_key": "regional_checklist_v1",
+                "source_name": "Regional Checklist",
+                "source_version": "v1",
+                "country_code": "IN",
+                "admin1_code": "",
+                "scientific_name": "Papilio demoleus",
+                "source_taxon_id": "regional:v1:papilio-demoleus-in",
+                "accepted_name_usage": "Papilio demoleus",
+                "vernacular_name": "Lime Butterfly",
+                "language": "eng",
+                "script": "Latn",
+                "region": "IN",
+                "rank": "species",
+                "licence": "fixture licence v1",
+                "source_url": "https://example.invalid/regional",
+                "citation": "Regional Checklist v1",
+            },
+            {
+                "source_key": "regional_checklist_v1",
+                "source_name": "Regional Checklist",
+                "source_version": "v1",
+                "country_code": "LK",
+                "admin1_code": "",
+                "scientific_name": "Papilio demoleus",
+                "source_taxon_id": "regional:v1:papilio-demoleus-lk",
+                "accepted_name_usage": "Papilio demoleus",
+                "vernacular_name": "Lime Butterfly",
+                "language": "eng",
+                "script": "Latn",
+                "region": "LK",
+                "rank": "species",
+                "licence": "fixture licence v1",
+                "source_url": "https://example.invalid/regional",
+                "citation": "Regional Checklist v1",
+            },
+        ],
+        config_updates={
+            "source_name": "Regional Checklist",
+            "source_display_name": "Regional Checklist",
+            "source_version": "v1",
+            "snapshot_version": "v1",
+            "country_scope": ["IN", "LK"],
+            "language_scope": ["eng"],
+            "licence": "fixture licence v1",
+            "citation": "Regional Checklist v1",
+        },
+    )
+    v2_config = _write_static_source(
+        tmp_path,
+        source_key="regional_checklist_v2",
+        rows=[
+            {
+                "source_key": "regional_checklist_v2",
+                "source_name": "Regional Checklist",
+                "source_version": "v2",
+                "country_code": "IN",
+                "admin1_code": "",
+                "scientific_name": "Papilio demoleus",
+                "source_taxon_id": "regional:v2:papilio-demoleus",
+                "accepted_name_usage": "Papilio demoleus",
+                "vernacular_name": "Lime Butterfly",
+                "language": "eng",
+                "script": "Latn",
+                "region": "IN",
+                "rank": "species",
+                "licence": "fixture licence v2",
+                "source_url": "https://example.invalid/regional",
+                "citation": "Regional Checklist v2",
+            }
+        ],
+        config_updates={
+            "source_name": "Regional Checklist",
+            "source_display_name": "Regional Checklist",
+            "source_version": "v2",
+            "snapshot_version": "v2",
+            "country_scope": ["IN"],
+            "language_scope": ["eng"],
+            "licence": "fixture licence v2",
+            "citation": "Regional Checklist v2",
+        },
+    )
+
+    taxa_rows = [{"accepted_taxon_key": "gbif:100", "rank": "SPECIES", "scientific_name": "Papilio demoleus"}]
+    v1_result = StaticVernacularSourceClient.from_config_path(v1_config).enrich_registry(taxa_rows=taxa_rows, name_rows=[])
+    v2_result = StaticVernacularSourceClient.from_config_path(v2_config).enrich_registry(taxa_rows=taxa_rows, name_rows=[])
+
+    assert [row["region"] for row in v1_result["name_assertions"]] == ["IN", "LK"]
+    assert {row["source"] for row in [*v1_result["name_assertions"], *v2_result["name_assertions"]]} == {"Regional Checklist"}
+    assert [row["source_version"] for row in [v1_result["source_snapshots"][0], v2_result["source_snapshots"][0]]] == ["v1", "v2"]
+    assert {row["licence"] for row in v1_result["name_assertions"]} == {"fixture licence v1"}
+    assert v1_result["name_assertions"][0]["source_record_id"] != v2_result["name_assertions"][0]["source_record_id"]
+
+
+def test_static_vernacular_source_client_rejects_broad_rank_rows_and_disables_taxonomic_caution(tmp_path) -> None:
+    config_path = _write_static_source(
+        tmp_path,
+        source_key="cautionary_static",
+        rows=[
+            {
+                "source_key": "cautionary_static",
+                "source_name": "Cautionary Checklist",
+                "source_version": "v1",
+                "country_code": "IN",
+                "admin1_code": "",
+                "scientific_name": "Papilio demoleus",
+                "source_taxon_id": "cautionary:papilio-demoleus",
+                "accepted_name_usage": "Papilio demoleus",
+                "vernacular_name": "Lime Butterfly",
+                "language": "eng",
+                "script": "Latn",
+                "region": "IN",
+                "rank": "species",
+                "licence": "fixture licence",
+                "source_url": "",
+                "citation": "Cautionary Checklist",
+            },
+            {
+                "source_key": "cautionary_static",
+                "source_name": "Cautionary Checklist",
+                "source_version": "v1",
+                "country_code": "AU",
+                "admin1_code": "",
+                "scientific_name": "Papilio demoleus",
+                "source_taxon_id": "cautionary:papilio-demoleus-au",
+                "accepted_name_usage": "Papilio demoleus",
+                "vernacular_name": "Caution Lime",
+                "language": "eng",
+                "script": "Latn",
+                "region": "AU",
+                "rank": "species",
+                "licence": "fixture licence",
+                "source_url": "",
+                "citation": "Cautionary Checklist",
+                "taxonomic_caution": "true",
+                "taxonomic_caution_reason": "demoleus_sthenelus_unresolved",
+            },
+            {
+                "source_key": "cautionary_static",
+                "source_name": "Cautionary Checklist",
+                "source_version": "v1",
+                "country_code": "IN",
+                "admin1_code": "",
+                "scientific_name": "Papilio",
+                "source_taxon_id": "cautionary:papilio",
+                "accepted_name_usage": "",
+                "vernacular_name": "Papilio broad name",
+                "language": "eng",
+                "script": "Latn",
+                "region": "IN",
+                "rank": "genus",
+                "licence": "fixture licence",
+                "source_url": "",
+                "citation": "Cautionary Checklist",
+            },
+            {
+                "source_key": "cautionary_static",
+                "source_name": "Cautionary Checklist",
+                "source_version": "v1",
+                "country_code": "IN",
+                "admin1_code": "",
+                "scientific_name": "Papilio demoleus complex",
+                "source_taxon_id": "cautionary:papilio-demoleus-complex",
+                "accepted_name_usage": "",
+                "vernacular_name": "Complex Lime",
+                "language": "eng",
+                "script": "Latn",
+                "region": "IN",
+                "rank": "species_complex",
+                "licence": "fixture licence",
+                "source_url": "",
+                "citation": "Cautionary Checklist",
+            },
+        ],
+        config_updates={
+            "source_name": "Cautionary Checklist",
+            "source_display_name": "Cautionary Checklist",
+            "country_scope": ["IN", "AU"],
+            "language_scope": ["eng"],
+        },
+    )
+
+    result = StaticVernacularSourceClient.from_config_path(config_path).enrich_registry(
+        taxa_rows=[{"accepted_taxon_key": "gbif:100", "rank": "SPECIES", "scientific_name": "Papilio demoleus"}],
+        name_rows=[],
+    )
+
+    assert [(row["display_name"], row["enabled"], row["review_state"], row["disabled_reason"]) for row in result["name_assertions"]] == [
+        ("Caution Lime", False, "candidate", "taxonomic_caution:demoleus_sthenelus_unresolved"),
+        ("Lime Butterfly", True, "accepted", ""),
+    ]
+    assert result["coverage"]["name_assertions"] == 2
+    assert result["coverage"]["rejected_rank_rows"] == 2
+    assert result["coverage"]["taxonomic_caution_rows"] == 1
+    assert result["coverage"]["disabled_candidate_rows"] == 1
+
+
 def test_static_vernacular_source_client_preserves_regional_language_script_and_reports_missing_names(tmp_path) -> None:
     kannada_config = _write_static_source(
         tmp_path,
@@ -1165,7 +1404,14 @@ def test_static_vernacular_source_client_preserves_regional_language_script_and_
                 "citation": "Fixture Kannada citation",
             }
         ],
-        config_updates={"source_name": "Karnataka Chitte", "language": "kan", "script": "Knda", "region": "IN-KA"},
+        config_updates={
+            "source_name": "Karnataka Chitte",
+            "source_display_name": "Karnataka Chitte",
+            "language": "kan",
+            "language_scope": ["kan"],
+            "script": "Knda",
+            "region": "IN-KA",
+        },
     )
 
     kannada_result = StaticVernacularSourceClient.from_config_path(kannada_config).enrich_registry(
@@ -1182,7 +1428,14 @@ def test_static_vernacular_source_client_preserves_regional_language_script_and_
         tmp_path,
         source_key="bharat_ki_titliya_hi",
         rows=[],
-        config_updates={"source_name": "Bharat Ki Titliya", "language": "hin", "script": "Deva", "region": "IN"},
+        config_updates={
+            "source_name": "Bharat Ki Titliya",
+            "source_display_name": "Bharat Ki Titliya",
+            "language": "hin",
+            "language_scope": ["hin"],
+            "script": "Deva",
+            "region": "IN",
+        },
     )
     hindi_result = StaticVernacularSourceClient.from_config_path(hindi_config).enrich_registry(
         taxa_rows=[{"accepted_taxon_key": "gbif:100", "rank": "SPECIES", "scientific_name": "Papilio demoleus"}],
