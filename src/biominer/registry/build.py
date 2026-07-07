@@ -44,6 +44,10 @@ def build_registry(
     mymemory_email: str | None = None,
     mymemory_key: str | None = None,
     mymemory_allow_machine_translation: bool = False,
+    translation_workers: int = 1,
+    translation_checkpoint_every: int = 100,
+    translation_checkpoint_seconds: float = 60.0,
+    translation_language_shards: int = 0,
     inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
     skip_enrichment: bool = False,
     storage: CloudStorage | None = None,
@@ -69,6 +73,10 @@ def build_registry(
         "mymemory_email": mymemory_email,
         "mymemory_key": mymemory_key,
         "mymemory_allow_machine_translation": mymemory_allow_machine_translation,
+        "translation_workers": translation_workers,
+        "translation_checkpoint_every": translation_checkpoint_every,
+        "translation_checkpoint_seconds": translation_checkpoint_seconds,
+        "translation_language_shards": translation_language_shards,
         "inaturalist_daily_request_limit": inaturalist_daily_request_limit,
         "skip_enrichment": skip_enrichment,
     }
@@ -102,6 +110,10 @@ def build_cloud_registry(
     mymemory_email: str | None = None,
     mymemory_key: str | None = None,
     mymemory_allow_machine_translation: bool = False,
+    translation_workers: int = 1,
+    translation_checkpoint_every: int = 100,
+    translation_checkpoint_seconds: float = 60.0,
+    translation_language_shards: int = 0,
     inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
     skip_enrichment: bool = False,
 ) -> dict[str, Any]:
@@ -218,6 +230,10 @@ def build_local_registry(
     mymemory_email: str | None = None,
     mymemory_key: str | None = None,
     mymemory_allow_machine_translation: bool = False,
+    translation_workers: int = 1,
+    translation_checkpoint_every: int = 100,
+    translation_checkpoint_seconds: float = 60.0,
+    translation_language_shards: int = 0,
     inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
     skip_enrichment: bool = False,
 ) -> dict[str, Any]:
@@ -317,6 +333,10 @@ def build_local_registry(
                 mymemory_email=mymemory_email,
                 mymemory_key=mymemory_key,
                 mymemory_allow_machine_translation=mymemory_allow_machine_translation,
+                translation_workers=translation_workers,
+                translation_checkpoint_every=translation_checkpoint_every,
+                translation_checkpoint_seconds=translation_checkpoint_seconds,
+                translation_language_shards=translation_language_shards,
             )
             enrichment_manifest = {**enrichment_manifest, **translation_manifest}
             logger.info(

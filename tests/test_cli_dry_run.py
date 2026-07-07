@@ -92,6 +92,34 @@ def test_registry_build_defaults_to_production_enrichment_sources() -> None:
     assert args.skip_translations is False
 
 
+def test_registry_build_parses_translation_worker_checkpoint_controls() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "registry",
+            "build",
+            "--output-dir",
+            "data/registry/v1",
+            "--registry-version",
+            "v1",
+            "--translation-workers",
+            "4",
+            "--translation-checkpoint-every",
+            "25",
+            "--translation-checkpoint-seconds",
+            "2.5",
+            "--translation-language-shards",
+            "3",
+        ]
+    )
+
+    assert args.translation_workers == 4
+    assert args.translation_checkpoint_every == 25
+    assert args.translation_checkpoint_seconds == 2.5
+    assert args.translation_language_shards == 3
+
+
 def test_run_cli_exposes_comment_and_registry_build_controls() -> None:
     parser = build_parser()
 

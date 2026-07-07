@@ -209,6 +209,10 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--mymemory-email")
     registry_build.add_argument("--mymemory-key")
     registry_build.add_argument("--mymemory-allow-machine-translation", action="store_true")
+    registry_build.add_argument("--translation-workers", type=int, default=1)
+    registry_build.add_argument("--translation-checkpoint-every", type=int, default=100)
+    registry_build.add_argument("--translation-checkpoint-seconds", type=float, default=60.0)
+    registry_build.add_argument("--translation-language-shards", type=int, default=0)
     registry_build.add_argument("--inaturalist-daily-request-limit", type=int, default=INATURALIST_DAILY_REQUEST_LIMIT)
     registry_build.add_argument("--skip-enrichment", action="store_true")
     registry_audit = registry_subparsers.add_parser("audit")
@@ -535,6 +539,10 @@ def run(args: argparse.Namespace) -> int:
                     mymemory_email=args.mymemory_email,
                     mymemory_key=args.mymemory_key,
                     mymemory_allow_machine_translation=args.mymemory_allow_machine_translation,
+                    translation_workers=args.translation_workers,
+                    translation_checkpoint_every=args.translation_checkpoint_every,
+                    translation_checkpoint_seconds=args.translation_checkpoint_seconds,
+                    translation_language_shards=args.translation_language_shards,
                     inaturalist_daily_request_limit=args.inaturalist_daily_request_limit,
                     skip_enrichment=args.skip_enrichment,
                 )

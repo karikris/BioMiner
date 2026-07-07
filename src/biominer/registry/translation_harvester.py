@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
@@ -8,6 +9,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import threading
 from time import monotonic
 from typing import Any, Callable
 
@@ -182,15 +184,17 @@ class TranslationRequestBudget:
             if str(row.get("request_day") or "") == self.day
         )
         self.exhausted = False
+        self._lock = threading.Lock()
 
     def reserve(self, count: int = 1) -> bool:
-        if self.daily_limit <= 0:
+        with self._lock:
+            if self.daily_limit <= 0:
+                return True
+            if self.used + count > self.daily_limit:
+                self.exhausted = True
+                return False
+            self.used += count
             return True
-        if self.used + count > self.daily_limit:
-            self.exhausted = True
-            return False
-        self.used += count
-        return True
 
 
 class TranslationCheckpointWriter:
@@ -488,6 +492,8 @@ def build_translation_candidates_from_registry(
     mymemory_allow_machine_translation: bool = False,
     translation_checkpoint_every: int = 100,
     translation_checkpoint_seconds: float = 60.0,
+    translation_workers: int = 1,
+    translation_language_shards: int = 0,
     limit: int = 0,
 ) -> dict[str, Any]:
     started = monotonic()
@@ -496,6 +502,8 @@ def build_translation_candidates_from_registry(
     output.mkdir(parents=True, exist_ok=True)
     source_order = tuple(source for source in translation_sources if source)
     target_locales = load_translation_target_locales(target_locales_json)
+    translation_worker_count = max(1, translation_workers)
+    language_shard_count = max(1, translation_language_shards or translation_worker_count)
 
     taxa = pl.read_parquet(registry / "taxa.parquet")
     species_rows = taxa.filter(pl.col("rank") == "SPECIES").sort(["family", "genus", "scientific_name"]).to_dicts()
@@ -536,9 +544,17 @@ def build_translation_candidates_from_registry(
         mymemory_key=mymemory_key,
         mymemory_allow_machine_translation=mymemory_allow_machine_translation,
     )
+    mymemory_provider_spec = provider_bundle.get("mymemory") if "mymemory" in source_order else None
+    mymemory_config_hash = _translation_config_hash(
+        "mymemory",
+        target_locales,
+        max_candidates_per_name=max_candidates_per_name,
+        allow_machine_translation=mymemory_allow_machine_translation,
+    )
+    mymemory_units: list[TranslationWorkUnit] = []
 
     logger.info(
-        "registry.translation.start registry=%s enrichment_dir=%s species=%d sources=%s target_locales=%d daily_request_limit=%d checkpoint_every=%d checkpoint_seconds=%.1f",
+        "registry.translation.start registry=%s enrichment_dir=%s species=%d sources=%s target_locales=%d daily_request_limit=%d checkpoint_every=%d checkpoint_seconds=%.1f translation_workers=%d translation_language_shards=%d",
         registry,
         output,
         len(contexts),
@@ -547,6 +563,8 @@ def build_translation_candidates_from_registry(
         daily_request_limit,
         translation_checkpoint_every,
         translation_checkpoint_seconds,
+        translation_worker_count,
+        language_shard_count,
     )
     for index, context in enumerate(contexts, start=1):
         seeds = seeds_by_taxon.get(context.accepted_taxon_key, [])
@@ -568,14 +586,7 @@ def build_translation_candidates_from_registry(
             if checkpoint_writer.should_flush():
                 checkpoint_writer.flush(status="running")
         if "mymemory" in source_order:
-            mymemory_config_hash = _translation_config_hash(
-                "mymemory",
-                target_locales,
-                max_candidates_per_name=max_candidates_per_name,
-                allow_machine_translation=mymemory_allow_machine_translation,
-            )
-            mymemory_provider = provider_bundle.get("mymemory")
-            if mymemory_provider is None:
+            if mymemory_provider_spec is None:
                 batch = _batch_from_source_result(
                     _harvest_mymemory_context(
                         context=context,
@@ -592,25 +603,15 @@ def build_translation_candidates_from_registry(
                 if checkpoint_writer.should_flush():
                     checkpoint_writer.flush(status="running")
             else:
-                for unit in _mymemory_work_units(
-                    context,
-                    _mymemory_seeds(seeds),
-                    target_locales=target_locales,
-                    completed_work=completed_work,
-                    config_hash=mymemory_config_hash,
-                ):
-                    batch = _harvest_single_mymemory_unit(
-                        unit,
-                        provider=mymemory_provider,
-                        budget=budget,
-                        max_candidates_per_name=max_candidates_per_name,
+                mymemory_units.extend(
+                    _mymemory_work_units(
+                        context,
+                        _mymemory_seeds(seeds),
+                        target_locales=target_locales,
+                        completed_work=completed_work,
+                        config_hash=mymemory_config_hash,
                     )
-                    checkpoint_writer.append(batch)
-                    completed_work.update(str(row.get("work_key") or "") for row in batch.translation_work if str(row.get("status") or "") == "complete")
-                    if checkpoint_writer.should_flush():
-                        checkpoint_writer.flush(status="running")
-                    if budget.exhausted:
-                        break
+                )
         if index % 100 == 0 or index == len(contexts):
             logger.info(
                 "registry.translation.progress completed=%d/%d wikimedia_assertions=%d mymemory_candidates=%d requests=%d elapsed_seconds=%.1f",
@@ -624,6 +625,42 @@ def build_translation_candidates_from_registry(
         if budget.exhausted:
             logger.info("registry.translation.budget_exhausted completed=%d/%d request_limit=%d", index, len(contexts), daily_request_limit)
             break
+
+    if mymemory_units and not budget.exhausted:
+        logger.info(
+            "registry.translation.mymemory.start units=%d translation_workers=%d language_shards=%d",
+            len(mymemory_units),
+            translation_worker_count,
+            language_shard_count,
+        )
+        if translation_worker_count <= 1 or len(mymemory_units) <= 1:
+            mymemory_provider = _new_mymemory_provider(mymemory_provider_spec)
+            mymemory_batches = (
+                _harvest_single_mymemory_unit(
+                    unit,
+                    provider=mymemory_provider,
+                    budget=budget,
+                    max_candidates_per_name=max_candidates_per_name,
+                )
+                for unit in mymemory_units
+            )
+        else:
+            mymemory_batches = _harvest_mymemory_units_parallel(
+                tuple(mymemory_units),
+                target_locales=target_locales,
+                language_shards=language_shard_count,
+                max_workers=translation_worker_count,
+                provider_spec=mymemory_provider_spec,
+                budget=budget,
+                max_candidates_per_name=max_candidates_per_name,
+            )
+        for batch in mymemory_batches:
+            checkpoint_writer.append(batch)
+            completed_work.update(str(row.get("work_key") or "") for row in batch.translation_work if str(row.get("status") or "") == "complete")
+            if checkpoint_writer.should_flush():
+                checkpoint_writer.flush(status="running")
+            if budget.exhausted:
+                break
 
     manifest = checkpoint_writer.flush(status=checkpoint_writer.completion_status(budget_exhausted=budget.exhausted), force=True)
     logger.info("registry.translation.complete registry=%s enrichment_dir=%s status=%s", registry, output, manifest.get("translation_status"))
@@ -915,6 +952,79 @@ def _mymemory_work_units(
                 )
             )
     return tuple(units)
+
+
+def _partition_languages(target_locales: tuple[str, ...], shard_count: int) -> tuple[tuple[str, ...], ...]:
+    shards: list[list[str]] = [[] for _ in range(max(1, shard_count))]
+    for index, locale in enumerate(target_locales):
+        shards[index % len(shards)].append(locale)
+    return tuple(tuple(shard) for shard in shards if shard)
+
+
+def _new_mymemory_provider(provider_spec: Any) -> Any:
+    if provider_spec is None:
+        return None
+    if callable(provider_spec) and not hasattr(provider_spec, "translate"):
+        return provider_spec()
+    return provider_spec
+
+
+def _harvest_mymemory_units(
+    units: tuple[TranslationWorkUnit, ...],
+    *,
+    provider_spec: Any,
+    budget: TranslationRequestBudget,
+    max_candidates_per_name: int,
+) -> tuple[TranslationBatch, ...]:
+    provider = _new_mymemory_provider(provider_spec)
+    batches: list[TranslationBatch] = []
+    for unit in units:
+        batches.append(
+            _harvest_single_mymemory_unit(
+                unit,
+                provider=provider,
+                budget=budget,
+                max_candidates_per_name=max_candidates_per_name,
+            )
+        )
+        if budget.exhausted:
+            break
+    return tuple(batches)
+
+
+def _harvest_mymemory_units_parallel(
+    units: tuple[TranslationWorkUnit, ...],
+    *,
+    target_locales: tuple[str, ...],
+    language_shards: int,
+    max_workers: int,
+    provider_spec: Any,
+    budget: TranslationRequestBudget,
+    max_candidates_per_name: int,
+) -> tuple[TranslationBatch, ...]:
+    shards = _partition_languages(target_locales, language_shards)
+    unit_groups: list[tuple[TranslationWorkUnit, ...]] = []
+    for shard in shards:
+        shard_languages = set(shard)
+        shard_units = tuple(unit for unit in units if unit.target_language in shard_languages)
+        if shard_units:
+            unit_groups.append(shard_units)
+    if not unit_groups:
+        return ()
+    worker_count = min(max(1, max_workers), len(unit_groups))
+    batches: list[TranslationBatch] = []
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        for shard_batches in executor.map(
+            lambda shard_units: _harvest_mymemory_units(
+                shard_units,
+                provider_spec=provider_spec,
+                budget=budget,
+                max_candidates_per_name=max_candidates_per_name,
+            ),
+            unit_groups,
+        ):
+            batches.extend(shard_batches)
+    return tuple(batches)
 
 
 def _batch_from_source_result(result: dict[str, Any]) -> TranslationBatch:
@@ -1264,7 +1374,7 @@ def _default_translation_providers(
 ) -> dict[str, Any]:
     return {
         "wikimedia": WikimediaLanglinksProvider(max_retries=max_retries),
-        "mymemory": MyMemoryTranslationProvider(
+        "mymemory": lambda: MyMemoryTranslationProvider(
             max_retries=max_retries,
             email=mymemory_email,
             api_key=mymemory_key,

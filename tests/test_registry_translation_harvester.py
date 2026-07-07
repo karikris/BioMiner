@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 
 import polars as pl
@@ -317,6 +318,15 @@ class RuntimeErrorMyMemoryProvider:
         raise RuntimeError("translation backend unavailable")
 
 
+class RecordingMyMemoryProvider:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def translate(self, *, source_name, source_language, target_language, max_candidates):  # noqa: ANN001, ANN202 - test double.
+        self.calls.append(target_language)
+        return [f"{target_language} translation"], 1
+
+
 def test_mymemory_work_units_are_keyed_by_language_and_skip_completed(tmp_path) -> None:
     registry = tmp_path / "registry"
     _write_registry(registry)
@@ -353,6 +363,47 @@ def test_mymemory_work_units_are_keyed_by_language_and_skip_completed(tmp_path) 
         ("Lime Swallowtail", "sv"),
         ("Lime Swallowtail", "fi"),
     ]
+
+
+def test_mymemory_parallelism_partitions_languages_not_keywords() -> None:
+    shards = harvester._partition_languages(("de", "sv", "fi", "fr", "es", "pt", "nl", "da"), 4)
+    assert shards == (("de", "es"), ("sv", "pt"), ("fi", "nl"), ("fr", "da"))
+
+
+def test_translation_request_budget_is_thread_safe() -> None:
+    budget = harvester.TranslationRequestBudget(daily_limit=10, existing_work=[])
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        reservations = list(executor.map(lambda _: budget.reserve(1), range(200)))
+
+    assert sum(reservations) == 10
+    assert budget.used == 10
+
+
+def test_mymemory_parallel_workers_create_provider_per_language_shard(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["de", "sv", "fi", "fr"]), encoding="utf-8")
+    providers: list[RecordingMyMemoryProvider] = []
+
+    def provider_factory() -> RecordingMyMemoryProvider:
+        provider = RecordingMyMemoryProvider()
+        providers.append(provider)
+        return provider
+
+    build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=registry / "enrichment",
+        translation_sources=("mymemory",),
+        target_locales_json=locales,
+        providers={"mymemory": provider_factory},
+        translation_workers=2,
+        translation_language_shards=2,
+    )
+
+    assert len(providers) == 2
+    assert sorted(tuple(provider.calls) for provider in providers) == [("de", "fi"), ("sv", "fr")]
 
 
 def test_mymemory_work_units_preserve_bcp47_target_locales_and_api_codes(tmp_path) -> None:
