@@ -25,10 +25,163 @@ TMD_TAXONOMY_GRAPHQL_URL = "https://web.app.ufz.de/biome-taxonomy-api/graphql"
 TMD_SCIENTIFIC_PROJECT_ID = "407"
 TMD_GERMAN_PROJECT_ID = "410"
 TMD_SOURCE_VERSION = "tmd-taxonomy-graphql-projects-407-410"
+GBIF_VERNACULAR_SOURCE_VERSION = "gbif-vernacular-from-registry-v1"
+GBIF_VERNACULAR_SOURCE_PATH = "registry:names.parquet"
 WIKIDATA_WDQS_URL = "https://query.wikidata.org"
 WIKIDATA_SOURCE_VERSION = "wikidata-wdqs-p225-p846-p1843-labels-aliases"
 COL_NAME_USAGE_SEARCH_LIMIT = 1000
 INATURALIST_TAXA_PER_PAGE = 200
+
+
+class GBIFVernacularClient:
+    def enrich_registry(self, *, taxa_rows: list[dict[str, Any]], name_rows: list[dict[str, Any]]) -> dict[str, Any]:
+        species_keys = {
+            _full_gbif_key(row.get("accepted_taxon_key"))
+            for row in taxa_rows
+            if str(row.get("rank") or "") == "SPECIES" and row.get("accepted_taxon_key")
+        }
+        synonym_lookup, ambiguous_synonym_keys = _gbif_synonym_source_lookup(name_rows)
+        candidate_rows = [
+            row
+            for row in name_rows
+            if _is_gbif_source(row) and str(row.get("name_class") or "") in {"vernacular", "vernacular_alias"}
+        ]
+        coverage = {
+            "rows_inspected": len(candidate_rows),
+            "names_extracted": 0,
+            "names_with_language": 0,
+            "names_without_language": 0,
+            "accepted_matches": 0,
+            "synonym_matches": 0,
+            "ambiguous_matches": 0,
+            "duplicate_names": 0,
+            "out_of_scope_rows": 0,
+            "disabled_names": 0,
+            "request_count": 0,
+        }
+        assertions: list[dict[str, Any]] = []
+        links: list[dict[str, Any]] = []
+        seen_assertions: set[tuple[str, str, str, str, str]] = set()
+        seen_links: set[tuple[str, str, str]] = set()
+
+        for row in candidate_rows:
+            display_name = str(row.get("display_name") or row.get("verbatim_name") or "").strip()
+            if not display_name:
+                continue
+            row_taxon_key = _full_gbif_key(row.get("accepted_taxon_key"))
+            source_taxon_id = _gbif_source_taxon_id(row) or row_taxon_key
+            accepted_taxon_key = ""
+            match_method = ""
+            match_confidence = ""
+            lineage_check = ""
+            if row_taxon_key in species_keys:
+                accepted_taxon_key = row_taxon_key
+                match_method = "accepted_taxon_key"
+                match_confidence = "high"
+                lineage_check = "accepted_taxon_key"
+                coverage["accepted_matches"] += 1
+            elif source_taxon_id in species_keys:
+                accepted_taxon_key = source_taxon_id
+                match_method = "accepted_taxon_key"
+                match_confidence = "high"
+                lineage_check = "accepted_taxon_key"
+                coverage["accepted_matches"] += 1
+            elif source_taxon_id in ambiguous_synonym_keys or row_taxon_key in ambiguous_synonym_keys:
+                coverage["ambiguous_matches"] += 1
+                continue
+            elif source_taxon_id in synonym_lookup:
+                accepted_taxon_key = synonym_lookup[source_taxon_id]
+                match_method = "scientific_synonym"
+                match_confidence = "medium"
+                lineage_check = "scientific_synonym"
+                coverage["synonym_matches"] += 1
+            elif row_taxon_key in synonym_lookup:
+                source_taxon_id = row_taxon_key
+                accepted_taxon_key = synonym_lookup[row_taxon_key]
+                match_method = "scientific_synonym"
+                match_confidence = "medium"
+                lineage_check = "scientific_synonym"
+                coverage["synonym_matches"] += 1
+            else:
+                coverage["out_of_scope_rows"] += 1
+                continue
+
+            language = str(row.get("language") or "").strip()
+            script = str(row.get("script") or "").strip()
+            region = str(row.get("region") or row.get("country") or "").strip()
+            name_class = "vernacular_alias" if match_method == "scientific_synonym" else str(row.get("name_class") or "vernacular")
+            dedupe_key = (accepted_taxon_key, normalize_name_key(display_name), language, region, name_class)
+            if dedupe_key in seen_assertions:
+                coverage["duplicate_names"] += 1
+                continue
+            seen_assertions.add(dedupe_key)
+
+            enabled = bool(language)
+            disabled_reason = "" if enabled else "missing_language"
+            if language:
+                coverage["names_with_language"] += 1
+            else:
+                coverage["names_without_language"] += 1
+                coverage["disabled_names"] += 1
+            coverage["names_extracted"] += 1
+
+            source_record_id = str(row.get("source_record_id") or "").strip()
+            if not source_record_id:
+                source_record_id = f"gbif:vernacular:{source_taxon_id}:{display_name}"
+            assertions.append(
+                {
+                    "accepted_taxon_key": accepted_taxon_key,
+                    "verbatim_name": str(row.get("verbatim_name") or display_name),
+                    "display_name": display_name,
+                    "language": language,
+                    "script": script,
+                    "region": region,
+                    "bbox": str(row.get("bbox") or ""),
+                    "name_class": name_class,
+                    "source": "GBIF",
+                    "source_record_id": f"gbif_vernacular:{source_record_id}",
+                    "source_taxon_id": source_taxon_id,
+                    "lineage_check": lineage_check,
+                    "trust_tier": "T3",
+                    "precision_tier": str(row.get("precision_tier") or "medium"),
+                    "confidence": match_confidence,
+                    "enabled": enabled,
+                    "review_state": "accepted" if enabled else "candidate",
+                    "disabled_reason": disabled_reason,
+                    "licence": str(row.get("licence") or "GBIF.org"),
+                }
+            )
+            link_key = (accepted_taxon_key, source_taxon_id, match_method)
+            if link_key not in seen_links:
+                seen_links.add(link_key)
+                links.append(
+                    {
+                        "accepted_taxon_key": accepted_taxon_key,
+                        "source": "GBIF",
+                        "source_taxon_id": source_taxon_id,
+                        "match_method": match_method,
+                        "match_confidence": match_confidence,
+                        "lineage_check": lineage_check,
+                    }
+                )
+
+        assertions.sort(key=lambda item: (str(item["display_name"]).casefold(), str(item["accepted_taxon_key"]), str(item["source_record_id"])))
+        links.sort(key=lambda item: (str(item["source_taxon_id"]), str(item["accepted_taxon_key"]), str(item["match_method"])))
+        return {
+            "name_assertions": assertions,
+            "external_links": links,
+            "source_snapshots": [
+                {
+                    "source": "GBIF",
+                    "source_version": GBIF_VERNACULAR_SOURCE_VERSION,
+                    "retrieved_at": "",
+                    "source_path": GBIF_VERNACULAR_SOURCE_PATH,
+                    "source_response_hash": _payload_hash({"vernacular_name_rows": candidate_rows}),
+                    "licence": "GBIF.org",
+                }
+            ],
+            "coverage": coverage,
+        }
 
 
 class CatalogueOfLifeClient:
@@ -608,6 +761,50 @@ def _unambiguous_synonym_lookup(name_rows: list[dict[str, Any]]) -> dict[str, st
         if key and accepted_key:
             grouped.setdefault(key, set()).add(accepted_key)
     return {key: next(iter(values)) for key, values in grouped.items() if len(values) == 1}
+
+
+def _gbif_synonym_source_lookup(name_rows: list[dict[str, Any]]) -> tuple[dict[str, str], set[str]]:
+    grouped: dict[str, set[str]] = {}
+    for row in name_rows:
+        if not _is_gbif_source(row) or str(row.get("name_class") or "") != "scientific_synonym":
+            continue
+        source_taxon_id = _gbif_source_taxon_id(row)
+        accepted_key = _full_gbif_key(row.get("accepted_taxon_key"))
+        if source_taxon_id and accepted_key:
+            grouped.setdefault(source_taxon_id, set()).add(accepted_key)
+    unambiguous = {source_key: next(iter(accepted_keys)) for source_key, accepted_keys in grouped.items() if len(accepted_keys) == 1}
+    ambiguous = {source_key for source_key, accepted_keys in grouped.items() if len(accepted_keys) > 1}
+    return unambiguous, ambiguous
+
+
+def _is_gbif_source(row: dict[str, Any]) -> bool:
+    return str(row.get("source") or "").strip().casefold() == "gbif"
+
+
+def _gbif_source_taxon_id(row: dict[str, Any]) -> str:
+    explicit = _full_gbif_key(row.get("source_taxon_id"))
+    if explicit:
+        return explicit
+    source_record_id = str(row.get("source_record_id") or "").strip()
+    if not source_record_id.startswith("gbif:"):
+        return ""
+    parts = source_record_id.split(":")
+    if len(parts) >= 4 and parts[1] == "vernacular" and parts[2] == "gbif":
+        return _full_gbif_key(parts[3])
+    if len(parts) >= 3 and parts[1] == "vernacular":
+        return _full_gbif_key(parts[2])
+    if len(parts) >= 2:
+        return _full_gbif_key(parts[1])
+    return ""
+
+
+def _full_gbif_key(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("gbif:"):
+        return text
+    return f"gbif:{text}"
 
 
 def _tmd_scientific_name(row: dict[str, Any]) -> str:

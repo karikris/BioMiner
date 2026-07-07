@@ -18,7 +18,7 @@ from biominer.registry.enrichment import (
     default_enrichment_clients,
     write_enrichment_sources,
 )
-from biominer.registry.enrichment_sources import CatalogueOfLifeClient, INaturalistClient, ITISClient, TMDGermanClient, WikidataClient, _json_get
+from biominer.registry.enrichment_sources import CatalogueOfLifeClient, GBIFVernacularClient, INaturalistClient, ITISClient, TMDGermanClient, WikidataClient, _json_get
 from biominer.registry.translation_sources import generated_translation_candidate, write_translation_candidates
 
 
@@ -518,6 +518,213 @@ def test_tmd_german_client_maps_unambiguous_synonyms_with_lower_confidence() -> 
     assert result["name_assertions"][0]["confidence"] == "medium"
     assert result["external_links"][0]["match_method"] == "scientific_synonym"
     assert result["coverage"]["mapped_synonym_rows"] == 1
+
+
+def test_gbif_vernacular_client_reuses_existing_names_for_accepted_and_synonym_matches() -> None:
+    result = GBIFVernacularClient().enrich_registry(
+        taxa_rows=[
+            {"accepted_taxon_key": "gbif:100", "rank": "SPECIES", "scientific_name": "Papilio demoleus"},
+            {"accepted_taxon_key": "gbif:101", "rank": "SPECIES", "scientific_name": "Papilio machaon"},
+        ],
+        name_rows=[
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Papilio demoleus",
+                "name_class": "accepted_scientific",
+                "source": "GBIF",
+                "source_record_id": "gbif:100",
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Princeps demoleus",
+                "name_class": "scientific_synonym",
+                "source": "GBIF",
+                "source_record_id": "gbif:900",
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Shared synonym",
+                "name_class": "scientific_synonym",
+                "source": "GBIF",
+                "source_record_id": "gbif:901",
+            },
+            {
+                "accepted_taxon_key": "gbif:101",
+                "display_name": "Shared synonym",
+                "name_class": "scientific_synonym",
+                "source": "GBIF",
+                "source_record_id": "gbif:901",
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Lime Butterfly",
+                "language": "eng",
+                "script": "Latn",
+                "region": "IN",
+                "name_class": "vernacular",
+                "source": "GBIF",
+                "source_record_id": "gbif:vernacular:100:Lime Butterfly",
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Lime Butterfly",
+                "language": "eng",
+                "script": "Latn",
+                "region": "IN",
+                "name_class": "vernacular",
+                "source": "GBIF",
+                "source_record_id": "gbif:vernacular:100:Lime Butterfly duplicate",
+            },
+            {
+                "accepted_taxon_key": "gbif:900",
+                "display_name": "Citrus Swallowtail",
+                "language": "eng",
+                "script": "Latn",
+                "region": "",
+                "name_class": "vernacular",
+                "source": "GBIF",
+                "source_record_id": "gbif:vernacular:900:Citrus Swallowtail",
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "No Language Butterfly",
+                "language": "",
+                "script": "",
+                "region": "",
+                "name_class": "vernacular",
+                "source": "GBIF",
+                "source_record_id": "gbif:vernacular:100:No Language Butterfly",
+            },
+            {
+                "accepted_taxon_key": "gbif:999",
+                "display_name": "Out of Scope Butterfly",
+                "language": "eng",
+                "name_class": "vernacular",
+                "source": "GBIF",
+                "source_record_id": "gbif:vernacular:999:Out of Scope Butterfly",
+            },
+            {
+                "accepted_taxon_key": "gbif:901",
+                "display_name": "Ambiguous Butterfly",
+                "language": "eng",
+                "name_class": "vernacular",
+                "source": "GBIF",
+                "source_record_id": "gbif:vernacular:901:Ambiguous Butterfly",
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "display_name": "Non GBIF Name",
+                "language": "eng",
+                "name_class": "vernacular",
+                "source": "CoL",
+                "source_record_id": "col:vernacular:1",
+            },
+        ],
+    )
+
+    assertions = result["name_assertions"]
+    assert [(row["accepted_taxon_key"], row["display_name"], row["enabled"], row["disabled_reason"]) for row in assertions] == [
+        ("gbif:100", "Citrus Swallowtail", True, ""),
+        ("gbif:100", "Lime Butterfly", True, ""),
+        ("gbif:100", "No Language Butterfly", False, "missing_language"),
+    ]
+    assert [row["name_class"] for row in assertions] == ["vernacular_alias", "vernacular", "vernacular"]
+    assert {row["source"] for row in assertions} == {"GBIF"}
+    assert {row["trust_tier"] for row in assertions} == {"T3"}
+    assert result["external_links"] == [
+        {
+            "accepted_taxon_key": "gbif:100",
+            "source": "GBIF",
+            "source_taxon_id": "gbif:100",
+            "match_method": "accepted_taxon_key",
+            "match_confidence": "high",
+            "lineage_check": "accepted_taxon_key",
+        },
+        {
+            "accepted_taxon_key": "gbif:100",
+            "source": "GBIF",
+            "source_taxon_id": "gbif:900",
+            "match_method": "scientific_synonym",
+            "match_confidence": "medium",
+            "lineage_check": "scientific_synonym",
+        },
+    ]
+    assert result["coverage"] == {
+        "rows_inspected": 6,
+        "names_extracted": 3,
+        "names_with_language": 2,
+        "names_without_language": 1,
+        "accepted_matches": 3,
+        "synonym_matches": 1,
+        "ambiguous_matches": 1,
+        "duplicate_names": 1,
+        "out_of_scope_rows": 1,
+        "disabled_names": 1,
+        "request_count": 0,
+    }
+    assert result["source_snapshots"][0]["source"] == "GBIF"
+    assert result["source_snapshots"][0]["source_version"] == "gbif-vernacular-from-registry-v1"
+    assert result["source_snapshots"][0]["source_path"] == "registry:names.parquet"
+    assert result["source_snapshots"][0]["source_response_hash"].startswith("sha256:")
+
+
+def test_build_enrichment_sources_runs_gbif_vernacular_as_zero_request_bulk_source(tmp_path) -> None:
+    registry, _scope = _write_base_registry(tmp_path)
+    names = pl.read_parquet(registry / "names.parquet")
+    names = pl.concat(
+        [
+            names,
+            pl.DataFrame(
+                [
+                    {
+                        "accepted_taxon_key": "gbif:100",
+                        "verbatim_name": "Lime Butterfly",
+                        "display_name": "Lime Butterfly",
+                        "language": "eng",
+                        "api_language_code": "en",
+                        "script": "Latn",
+                        "region": "",
+                        "bcp47": "en-Latn",
+                        "bbox": "",
+                        "name_class": "vernacular",
+                        "source": "GBIF",
+                        "source_record_id": "gbif:vernacular:100:Lime Butterfly",
+                        "trust_tier": "T2",
+                        "precision_tier": "medium",
+                        "confidence": "medium",
+                        "enabled": True,
+                        "review_state": "accepted",
+                        "corroborated": False,
+                        "disabled_reason": "",
+                        "query_eligible": True,
+                        "query_eligibility_reason": "eligible",
+                        "query_eligibility_score": 1.0,
+                    }
+                ],
+                schema=names.schema,
+            ),
+        ],
+        how="vertical",
+    )
+    names.write_parquet(registry / "names.parquet")
+
+    manifest = build_enrichment_sources_from_registry(
+        registry_dir=registry,
+        sources=("gbif_vernacular",),
+        report_dir=tmp_path / "reports",
+    )
+
+    assertions = pl.read_parquet(registry / "source_name_assertions.parquet")
+    work = pl.read_parquet(registry / SOURCE_WORK_LEDGER_FILE)
+    coverage = json.loads((registry / "enrichment_coverage.json").read_text(encoding="utf-8"))
+
+    assert manifest["source_order"] == ["gbif_vernacular"]
+    assert assertions.select("source").to_series().to_list() == ["GBIF"]
+    assert assertions.select("display_name").to_series().to_list() == ["Lime Butterfly"]
+    assert work.select(["source", "accepted_taxon_key", "request_count"]).to_dicts() == [
+        {"source": "gbif_vernacular", "accepted_taxon_key": "__registry__", "request_count": 0}
+    ]
+    assert coverage["bulk_sources"]["GBIF"]["request_count"] == 0
 
 
 def test_build_enrichment_sources_runs_tmd_de_as_bulk_source(tmp_path) -> None:
@@ -1431,10 +1638,11 @@ def test_inaturalist_source_is_limited_to_one_concurrent_query(tmp_path) -> None
     assert manifest["source_worker_limits"] == {"col": 4, "inaturalist": 1, "itis": 4, "wikidata": 1}
 
 
-def test_default_enrichment_clients_include_wikidata() -> None:
+def test_default_enrichment_clients_include_wikidata_and_gbif_vernacular() -> None:
     clients = default_enrichment_clients(max_retries=0)
 
-    assert list(clients) == ["col", "inaturalist", "itis", "tmd_de", "wikidata"]
+    assert list(clients) == ["col", "inaturalist", "itis", "tmd_de", "wikidata", "gbif_vernacular"]
+    assert clients["gbif_vernacular"].__class__.__name__ == "GBIFVernacularClient"
     assert clients["wikidata"].__class__.__name__ == "WikidataClient"
 
 
