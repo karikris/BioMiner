@@ -15,6 +15,12 @@ from biominer.cli import _detect_boxes_backend, _yoloe26_metrics, build_parser, 
 from biominer.detection.detector_base import DetectionCandidate
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES
+from biominer.registry.translation_harvester import (
+    MYMEMORY_MONTHLY_BANDWIDTH_MB_LIMIT,
+    MYMEMORY_MONTHLY_INPUT_WORD_LIMIT,
+    MYMEMORY_MONTHLY_REQUEST_LIMIT,
+    MYMEMORY_RESPONSE_BYTE_RESERVATION,
+)
 from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES
 
 
@@ -98,6 +104,10 @@ def test_registry_build_defaults_to_production_enrichment_sources() -> None:
     assert args.skip_range_discovery is False
     assert args.skip_language_targets is False
     assert args.skip_curated_static_sources is False
+    assert args.mymemory_monthly_request_limit == MYMEMORY_MONTHLY_REQUEST_LIMIT
+    assert args.mymemory_monthly_input_word_limit == MYMEMORY_MONTHLY_INPUT_WORD_LIMIT
+    assert args.mymemory_monthly_bandwidth_mb_limit == MYMEMORY_MONTHLY_BANDWIDTH_MB_LIMIT
+    assert args.mymemory_response_byte_reservation == MYMEMORY_RESPONSE_BYTE_RESERVATION
 
 
 def test_registry_build_source_defaults_exclude_blocked_providers() -> None:
@@ -131,6 +141,14 @@ def test_registry_build_parses_regional_and_static_source_options() -> None:
             "config/vernacular_sources",
             "--curated-static-source-snapshot-dir",
             "data/source_snapshots",
+            "--mymemory-monthly-request-limit",
+            "321",
+            "--mymemory-monthly-input-word-limit",
+            "654",
+            "--mymemory-monthly-bandwidth-mb-limit",
+            "987",
+            "--mymemory-response-byte-reservation",
+            "12345",
             "--skip-range-discovery",
             "--skip-language-targets",
             "--skip-curated-static-sources",
@@ -174,6 +192,14 @@ def test_registry_build_cli_forwards_regional_and_static_source_options(monkeypa
             "config/vernacular_sources",
             "--curated-static-source-snapshot-dir",
             "data/source_snapshots",
+            "--mymemory-monthly-request-limit",
+            "321",
+            "--mymemory-monthly-input-word-limit",
+            "654",
+            "--mymemory-monthly-bandwidth-mb-limit",
+            "987",
+            "--mymemory-response-byte-reservation",
+            "12345",
             "--skip-range-discovery",
             "--skip-language-targets",
             "--skip-curated-static-sources",
@@ -189,6 +215,10 @@ def test_registry_build_cli_forwards_regional_and_static_source_options(monkeypa
     assert recorded["language_targets_json"] == "config/language_targets/papilio_demoleus_region_language_targets.json"
     assert recorded["curated_static_source_config_dir"] == "config/vernacular_sources"
     assert recorded["curated_static_source_snapshot_dir"] == "data/source_snapshots"
+    assert recorded["mymemory_monthly_request_limit"] == 321
+    assert recorded["mymemory_monthly_input_word_limit"] == 654
+    assert recorded["mymemory_monthly_bandwidth_mb_limit"] == 987
+    assert recorded["mymemory_response_byte_reservation"] == 12345
     assert recorded["skip_range_discovery"] is True
     assert recorded["skip_language_targets"] is True
     assert recorded["skip_curated_static_sources"] is True
@@ -220,6 +250,34 @@ def test_registry_build_parses_translation_worker_checkpoint_controls() -> None:
     assert args.translation_checkpoint_every == 25
     assert args.translation_checkpoint_seconds == 2.5
     assert args.translation_language_shards == 3
+
+
+def test_registry_build_parses_mymemory_monthly_budget_controls() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "registry",
+            "build",
+            "--output-dir",
+            "data/registry/v1",
+            "--registry-version",
+            "v1",
+            "--mymemory-monthly-request-limit",
+            "10000",
+            "--mymemory-monthly-input-word-limit",
+            "10000",
+            "--mymemory-monthly-bandwidth-mb-limit",
+            "10240",
+            "--mymemory-response-byte-reservation",
+            "1048576",
+        ]
+    )
+
+    assert args.mymemory_monthly_request_limit == 10000
+    assert args.mymemory_monthly_input_word_limit == 10000
+    assert args.mymemory_monthly_bandwidth_mb_limit == 10240
+    assert args.mymemory_response_byte_reservation == 1048576
 
 
 def test_registry_commands_parse_query_curation_json() -> None:

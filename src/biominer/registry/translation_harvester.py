@@ -72,6 +72,10 @@ DEFAULT_TRANSLATION_TARGET_LOCALES = (
     "vi",
     "hi",
 )
+MYMEMORY_MONTHLY_REQUEST_LIMIT = 10_000
+MYMEMORY_MONTHLY_INPUT_WORD_LIMIT = 10_000
+MYMEMORY_MONTHLY_BANDWIDTH_MB_LIMIT = 10_240
+MYMEMORY_RESPONSE_BYTE_RESERVATION = 1_048_576
 MYMEMORY_SOURCE_VERSION = "mymemory-get-v1"
 WIKIMEDIA_SOURCE_VERSION = "mediawiki-langlinks-pageprops-v2"
 MYMEMORY_BASE_URL = "https://api.mymemory.translated.net"
@@ -145,11 +149,114 @@ class TranslationWorkRecord:
     error_class: str = ""
     retryable: str = "false"
     request_day: str = ""
+    input_word_count: int = 0
+    response_byte_count: int = 0
+    bandwidth_reserved_byte_count: int = 0
+    budget_exhausted_reason: str = ""
 
     def to_row(self) -> dict[str, object]:
         row = self.__dict__.copy()
         row["request_day"] = self.request_day or datetime.now(UTC).date().isoformat()
         return row
+
+
+@dataclass(frozen=True)
+class MyMemoryBudgetReservation:
+    allowed: bool
+    reason: str = ""
+    request_count: int = 0
+    input_word_count: int = 0
+    bandwidth_reserved_byte_count: int = 0
+
+
+class MyMemoryMonthlyBudget:
+    def __init__(
+        self,
+        *,
+        request_limit: int,
+        input_word_limit: int,
+        bandwidth_byte_limit: int,
+        response_byte_reservation: int,
+        existing_work: list[dict[str, Any]],
+    ) -> None:
+        self.month = datetime.now(UTC).strftime("%Y-%m")
+        self.request_limit = max(0, int(request_limit))
+        self.input_word_limit = max(0, int(input_word_limit))
+        self.bandwidth_byte_limit = max(0, int(bandwidth_byte_limit))
+        self.response_byte_reservation = max(0, int(response_byte_reservation))
+        self.requests_used = 0
+        self.input_words_used = 0
+        self.bandwidth_reserved_bytes = 0
+        self.response_bytes_observed = 0
+        self.exhausted = False
+        self.exhausted_reason = ""
+        self._lock = threading.Lock()
+        for row in existing_work:
+            if str(row.get("source") or "").casefold() != "mymemory":
+                continue
+            if not str(row.get("request_day") or "").startswith(self.month):
+                continue
+            request_count = int(row.get("request_count") or 0)
+            self.requests_used += request_count
+            self.input_words_used += int(row.get("input_word_count") or 0) or request_count * _input_word_count(row.get("source_name"))
+            self.bandwidth_reserved_bytes += int(row.get("bandwidth_reserved_byte_count") or 0) or request_count * self.response_byte_reservation
+            self.response_bytes_observed += int(row.get("response_byte_count") or 0)
+
+    def reserve(self, seed: TranslationSeed) -> MyMemoryBudgetReservation:
+        input_words = _input_word_count(seed.source_name)
+        with self._lock:
+            checks = (
+                (self.requests_used + 1 > self.request_limit, "mymemory_monthly_request_limit"),
+                (self.input_words_used + input_words > self.input_word_limit, "mymemory_monthly_input_word_limit"),
+                (
+                    self.bandwidth_reserved_bytes + self.response_byte_reservation > self.bandwidth_byte_limit,
+                    "mymemory_monthly_bandwidth_limit",
+                ),
+            )
+            for failed, reason in checks:
+                if failed:
+                    self.exhausted = True
+                    self.exhausted_reason = reason
+                    return MyMemoryBudgetReservation(allowed=False, reason=reason)
+            self.requests_used += 1
+            self.input_words_used += input_words
+            self.bandwidth_reserved_bytes += self.response_byte_reservation
+            return MyMemoryBudgetReservation(
+                allowed=True,
+                request_count=1,
+                input_word_count=input_words,
+                bandwidth_reserved_byte_count=self.response_byte_reservation,
+            )
+
+    def release(self, reservation: MyMemoryBudgetReservation) -> None:
+        if not reservation.allowed:
+            return
+        with self._lock:
+            self.requests_used = max(0, self.requests_used - reservation.request_count)
+            self.input_words_used = max(0, self.input_words_used - reservation.input_word_count)
+            self.bandwidth_reserved_bytes = max(0, self.bandwidth_reserved_bytes - reservation.bandwidth_reserved_byte_count)
+
+    def record_response(self, response_byte_count: int) -> None:
+        with self._lock:
+            self.response_bytes_observed += max(0, int(response_byte_count))
+            if self.response_bytes_observed > self.bandwidth_byte_limit:
+                self.exhausted = True
+                self.exhausted_reason = "mymemory_monthly_observed_bandwidth_limit"
+
+    def manifest_metrics(self) -> dict[str, Any]:
+        return {
+            "mymemory_monthly_budget_month": self.month,
+            "mymemory_monthly_request_limit": self.request_limit,
+            "mymemory_monthly_requests_used": self.requests_used,
+            "mymemory_monthly_input_word_limit": self.input_word_limit,
+            "mymemory_monthly_input_words_used": self.input_words_used,
+            "mymemory_monthly_bandwidth_byte_limit": self.bandwidth_byte_limit,
+            "mymemory_monthly_bandwidth_reserved_bytes": self.bandwidth_reserved_bytes,
+            "mymemory_monthly_response_bytes_observed": self.response_bytes_observed,
+            "mymemory_response_byte_reservation": self.response_byte_reservation,
+            "mymemory_budget_exhausted": self.exhausted,
+            "mymemory_budget_exhausted_reason": self.exhausted_reason,
+        }
 
 
 @dataclass(frozen=True)
@@ -238,6 +345,7 @@ class TranslationCheckpointWriter:
         self.candidate_counts: Counter[str] = Counter()
         self.assertion_counts: Counter[str] = Counter()
         self.manifest = _read_json_or_empty(output / ENRICHMENT_MANIFEST_FILE)
+        self.mymemory_budget: MyMemoryMonthlyBudget | None = None
 
     def append(self, batch: TranslationBatch) -> None:
         self.buffered_assertions.extend(batch.name_assertions)
@@ -344,6 +452,8 @@ class TranslationCheckpointWriter:
                 },
             }
         )
+        if self.mymemory_budget is not None:
+            manifest.update(self.mymemory_budget.manifest_metrics())
         return manifest
 
     def _has_buffered_rows(self) -> bool:
@@ -449,7 +559,7 @@ class MyMemoryTranslationProvider:
         source_language: str,
         target_language: str,
         max_candidates: int,
-    ) -> tuple[list[str], int]:
+    ) -> tuple[list[str], int, int]:
         source_api = _api_language_code(source_language)
         target_api = _api_language_code(target_language)
         params: dict[str, object] = {
@@ -474,7 +584,8 @@ class MyMemoryTranslationProvider:
                 _append_translation(candidates, match.get("translation"), source_name=source_name)
                 if max_candidates > 0 and len(candidates) >= max_candidates:
                     break
-        return candidates[:max_candidates] if max_candidates > 0 else candidates, 1
+        response_byte_count = len(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+        return candidates[:max_candidates] if max_candidates > 0 else candidates, 1, response_byte_count
 
 
 def build_translation_candidates_from_registry(
@@ -490,6 +601,10 @@ def build_translation_candidates_from_registry(
     mymemory_email: str | None = None,
     mymemory_key: str | None = None,
     mymemory_allow_machine_translation: bool = False,
+    mymemory_monthly_request_limit: int = MYMEMORY_MONTHLY_REQUEST_LIMIT,
+    mymemory_monthly_input_word_limit: int = MYMEMORY_MONTHLY_INPUT_WORD_LIMIT,
+    mymemory_monthly_bandwidth_mb_limit: int = MYMEMORY_MONTHLY_BANDWIDTH_MB_LIMIT,
+    mymemory_response_byte_reservation: int = MYMEMORY_RESPONSE_BYTE_RESERVATION,
     translation_checkpoint_every: int = 100,
     translation_checkpoint_seconds: float = 60.0,
     translation_workers: int = 1,
@@ -528,6 +643,14 @@ def build_translation_candidates_from_registry(
         checkpoint_every=translation_checkpoint_every,
         checkpoint_seconds=translation_checkpoint_seconds,
     )
+    mymemory_budget = MyMemoryMonthlyBudget(
+        request_limit=mymemory_monthly_request_limit,
+        input_word_limit=mymemory_monthly_input_word_limit,
+        bandwidth_byte_limit=mymemory_monthly_bandwidth_mb_limit * 1024 * 1024,
+        response_byte_reservation=mymemory_response_byte_reservation,
+        existing_work=checkpoint_writer.existing_translation_work,
+    )
+    checkpoint_writer.mymemory_budget = mymemory_budget
 
     names = pl.read_parquet(registry / "names.parquet")
     seeds_by_taxon = _seed_names_by_taxon(taxa=taxa, names=names, source_assertions=checkpoint_writer.existing_assertions)
@@ -596,6 +719,7 @@ def build_translation_candidates_from_registry(
                         completed_work=completed_work,
                         config_hash=mymemory_config_hash,
                         budget=budget,
+                        mymemory_budget=mymemory_budget,
                         max_candidates_per_name=max_candidates_per_name,
                     )
                 )
@@ -622,11 +746,11 @@ def build_translation_candidates_from_registry(
                 sum(checkpoint_writer.request_counts.values()),
                 monotonic() - started,
             )
-        if budget.exhausted:
+        if budget.exhausted or mymemory_budget.exhausted:
             logger.info("registry.translation.budget_exhausted completed=%d/%d request_limit=%d", index, len(contexts), daily_request_limit)
             break
 
-    if mymemory_units and not budget.exhausted:
+    if mymemory_units and not budget.exhausted and not mymemory_budget.exhausted:
         logger.info(
             "registry.translation.mymemory.start units=%d translation_workers=%d language_shards=%d",
             len(mymemory_units),
@@ -640,6 +764,7 @@ def build_translation_candidates_from_registry(
                     unit,
                     provider=mymemory_provider,
                     budget=budget,
+                    mymemory_budget=mymemory_budget,
                     max_candidates_per_name=max_candidates_per_name,
                 )
                 for unit in mymemory_units
@@ -652,6 +777,7 @@ def build_translation_candidates_from_registry(
                 max_workers=translation_worker_count,
                 provider_spec=mymemory_provider_spec,
                 budget=budget,
+                mymemory_budget=mymemory_budget,
                 max_candidates_per_name=max_candidates_per_name,
             )
         for batch in mymemory_batches:
@@ -659,10 +785,13 @@ def build_translation_candidates_from_registry(
             completed_work.update(str(row.get("work_key") or "") for row in batch.translation_work if str(row.get("status") or "") == "complete")
             if checkpoint_writer.should_flush():
                 checkpoint_writer.flush(status="running")
-            if budget.exhausted:
+            if budget.exhausted or mymemory_budget.exhausted:
                 break
 
-    manifest = checkpoint_writer.flush(status=checkpoint_writer.completion_status(budget_exhausted=budget.exhausted), force=True)
+    manifest = checkpoint_writer.flush(
+        status=checkpoint_writer.completion_status(budget_exhausted=budget.exhausted or mymemory_budget.exhausted),
+        force=True,
+    )
     logger.info("registry.translation.complete registry=%s enrichment_dir=%s status=%s", registry, output, manifest.get("translation_status"))
     return manifest
 
@@ -811,6 +940,7 @@ def _harvest_mymemory_context(
     completed_work: set[str],
     config_hash: str,
     budget: TranslationRequestBudget,
+    mymemory_budget: MyMemoryMonthlyBudget,
     max_candidates_per_name: int,
 ) -> dict[str, Any]:
     source_key = "mymemory"
@@ -833,7 +963,8 @@ def _harvest_mymemory_context(
             if work_key in completed_work:
                 continue
             started_at = datetime.now(UTC).isoformat()
-            if not budget.reserve(1):
+            mymemory_reservation = mymemory_budget.reserve(seed)
+            if not mymemory_reservation.allowed:
                 translation_work.append(
                     _translation_work_row(
                         source=source_key,
@@ -845,11 +976,30 @@ def _harvest_mymemory_context(
                         status="budget_exhausted",
                         started_at=started_at,
                         request_count=0,
+                        budget_exhausted_reason=mymemory_reservation.reason,
+                    )
+                )
+                break
+            if not budget.reserve(1):
+                mymemory_budget.release(mymemory_reservation)
+                translation_work.append(
+                    _translation_work_row(
+                        source=source_key,
+                        context=context,
+                        seed=seed,
+                        target_language=target_language,
+                        work_key=work_key,
+                        provider_config_hash=config_hash,
+                        status="budget_exhausted",
+                        started_at=started_at,
+                        request_count=0,
+                        budget_exhausted_reason="translation_daily_request_limit",
                     )
                 )
                 break
             try:
-                translated_names, request_count = provider.translate(
+                translated_names, request_count, response_byte_count = _call_mymemory_provider(
+                    provider,
                     source_name=seed.source_name,
                     source_language=source_language,
                     target_language=target_api_language,
@@ -871,9 +1021,12 @@ def _harvest_mymemory_context(
                         request_count=1,
                         error_class=error_class,
                         retryable=_is_retryable_error(error_class),
+                        input_word_count=mymemory_reservation.input_word_count,
+                        bandwidth_reserved_byte_count=mymemory_reservation.bandwidth_reserved_byte_count,
                     )
                 )
                 continue
+            mymemory_budget.record_response(response_byte_count)
             request_count_total += request_count
             for translated_name in translated_names:
                 candidates.append(
@@ -907,9 +1060,12 @@ def _harvest_mymemory_context(
                     status="complete",
                     started_at=started_at,
                     request_count=request_count,
+                    input_word_count=mymemory_reservation.input_word_count,
+                    response_byte_count=response_byte_count,
+                    bandwidth_reserved_byte_count=mymemory_reservation.bandwidth_reserved_byte_count,
                 )
             )
-        if budget.exhausted:
+        if budget.exhausted or mymemory_budget.exhausted:
             break
     source_work = [_aggregate_source_work(source_key, context, request_count_total, status="complete")] if translation_work else []
     return _source_result([], candidates, snapshots, errors, translation_work, source_work, request_count_total)
@@ -969,11 +1125,34 @@ def _new_mymemory_provider(provider_spec: Any) -> Any:
     return provider_spec
 
 
+def _call_mymemory_provider(
+    provider: Any,
+    *,
+    source_name: str,
+    source_language: str,
+    target_language: str,
+    max_candidates: int,
+) -> tuple[list[str], int, int]:
+    result = provider.translate(
+        source_name=source_name,
+        source_language=source_language,
+        target_language=target_language,
+        max_candidates=max_candidates,
+    )
+    if not isinstance(result, tuple) or len(result) not in {2, 3}:
+        raise TypeError("mymemory provider translate() must return (translations, request_count[, response_byte_count])")
+    translations = [str(item) for item in (result[0] or [])]
+    request_count = int(result[1] or 0)
+    response_byte_count = int(result[2] or 0) if len(result) == 3 else 0
+    return translations, request_count, response_byte_count
+
+
 def _harvest_mymemory_units(
     units: tuple[TranslationWorkUnit, ...],
     *,
     provider_spec: Any,
     budget: TranslationRequestBudget,
+    mymemory_budget: MyMemoryMonthlyBudget,
     max_candidates_per_name: int,
 ) -> tuple[TranslationBatch, ...]:
     provider = _new_mymemory_provider(provider_spec)
@@ -984,10 +1163,11 @@ def _harvest_mymemory_units(
                 unit,
                 provider=provider,
                 budget=budget,
+                mymemory_budget=mymemory_budget,
                 max_candidates_per_name=max_candidates_per_name,
             )
         )
-        if budget.exhausted:
+        if budget.exhausted or mymemory_budget.exhausted:
             break
     return tuple(batches)
 
@@ -1000,6 +1180,7 @@ def _harvest_mymemory_units_parallel(
     max_workers: int,
     provider_spec: Any,
     budget: TranslationRequestBudget,
+    mymemory_budget: MyMemoryMonthlyBudget,
     max_candidates_per_name: int,
 ) -> tuple[TranslationBatch, ...]:
     shards = _partition_languages(target_locales, language_shards)
@@ -1019,6 +1200,7 @@ def _harvest_mymemory_units_parallel(
                 shard_units,
                 provider_spec=provider_spec,
                 budget=budget,
+                mymemory_budget=mymemory_budget,
                 max_candidates_per_name=max_candidates_per_name,
             ),
             unit_groups,
@@ -1044,6 +1226,7 @@ def _harvest_single_mymemory_unit(
     *,
     provider: Any,
     budget: TranslationRequestBudget,
+    mymemory_budget: MyMemoryMonthlyBudget,
     max_candidates_per_name: int,
 ) -> TranslationBatch:
     display_source = "MyMemory"
@@ -1056,7 +1239,8 @@ def _harvest_single_mymemory_unit(
         errors.append(_source_error(display_source, unit.context, "missing_client", retryable=False))
         return TranslationBatch(errors=tuple(errors))
     started_at = datetime.now(UTC).isoformat()
-    if not budget.reserve(1):
+    mymemory_reservation = mymemory_budget.reserve(unit.seed)
+    if not mymemory_reservation.allowed:
         translation_work.append(
             _translation_work_row(
                 source=unit.source,
@@ -1068,6 +1252,27 @@ def _harvest_single_mymemory_unit(
                 status="budget_exhausted",
                 started_at=started_at,
                 request_count=0,
+                budget_exhausted_reason=mymemory_reservation.reason,
+            )
+        )
+        return TranslationBatch(
+            translation_work=tuple(translation_work),
+            source_work=(_aggregate_source_work(unit.source, unit.context, request_count_total, status="budget_exhausted"),),
+        )
+    if not budget.reserve(1):
+        mymemory_budget.release(mymemory_reservation)
+        translation_work.append(
+            _translation_work_row(
+                source=unit.source,
+                context=unit.context,
+                seed=unit.seed,
+                target_language=unit.target_language,
+                work_key=unit.work_key,
+                provider_config_hash=unit.provider_config_hash,
+                status="budget_exhausted",
+                started_at=started_at,
+                request_count=0,
+                budget_exhausted_reason="translation_daily_request_limit",
             )
         )
         return TranslationBatch(
@@ -1076,7 +1281,8 @@ def _harvest_single_mymemory_unit(
         )
     source_language = _api_language_code(unit.seed.source_language or "en")
     try:
-        translated_names, request_count = provider.translate(
+        translated_names, request_count, response_byte_count = _call_mymemory_provider(
+            provider,
             source_name=unit.seed.source_name,
             source_language=source_language,
             target_language=unit.target_api_language,
@@ -1098,6 +1304,8 @@ def _harvest_single_mymemory_unit(
                 request_count=1,
                 error_class=error_class,
                 retryable=_is_retryable_error(error_class),
+                input_word_count=mymemory_reservation.input_word_count,
+                bandwidth_reserved_byte_count=mymemory_reservation.bandwidth_reserved_byte_count,
             )
         )
         return TranslationBatch(
@@ -1106,6 +1314,7 @@ def _harvest_single_mymemory_unit(
             source_work=(_aggregate_source_work(unit.source, unit.context, 1, status="error", error_class=error_class),),
             request_count=1,
         )
+    mymemory_budget.record_response(response_byte_count)
     request_count_total += request_count
     for translated_name in translated_names:
         candidates.append(
@@ -1146,6 +1355,9 @@ def _harvest_single_mymemory_unit(
             status="complete",
             started_at=started_at,
             request_count=request_count,
+            input_word_count=mymemory_reservation.input_word_count,
+            response_byte_count=response_byte_count,
+            bandwidth_reserved_byte_count=mymemory_reservation.bandwidth_reserved_byte_count,
         )
     )
     return TranslationBatch(
@@ -1427,6 +1639,10 @@ def _translation_work_schema() -> dict[str, pl.DataType]:
         "started_at": pl.String,
         "finished_at": pl.String,
         "request_count": pl.Int64,
+        "input_word_count": pl.Int64,
+        "response_byte_count": pl.Int64,
+        "bandwidth_reserved_byte_count": pl.Int64,
+        "budget_exhausted_reason": pl.String,
         "error_class": pl.String,
         "retryable": pl.String,
         "request_day": pl.String,
@@ -1449,6 +1665,10 @@ def _translation_work_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
             "started_at": str(row.get("started_at") or ""),
             "finished_at": str(row.get("finished_at") or ""),
             "request_count": int(row.get("request_count") or 0),
+            "input_word_count": int(row.get("input_word_count") or 0),
+            "response_byte_count": int(row.get("response_byte_count") or 0),
+            "bandwidth_reserved_byte_count": int(row.get("bandwidth_reserved_byte_count") or 0),
+            "budget_exhausted_reason": str(row.get("budget_exhausted_reason") or ""),
             "error_class": str(row.get("error_class") or ""),
             "retryable": str(row.get("retryable") or "false"),
             "request_day": str(row.get("request_day") or ""),
@@ -1471,6 +1691,10 @@ def _translation_work_row(
     request_count: int,
     error_class: str = "",
     retryable: bool = False,
+    input_word_count: int = 0,
+    response_byte_count: int = 0,
+    bandwidth_reserved_byte_count: int = 0,
+    budget_exhausted_reason: str = "",
 ) -> dict[str, object]:
     now = datetime.now(UTC).isoformat()
     return TranslationWorkRecord(
@@ -1487,6 +1711,10 @@ def _translation_work_row(
         started_at=started_at,
         finished_at=now,
         request_count=request_count,
+        input_word_count=input_word_count,
+        response_byte_count=response_byte_count,
+        bandwidth_reserved_byte_count=bandwidth_reserved_byte_count,
+        budget_exhausted_reason=budget_exhausted_reason,
         error_class=error_class,
         retryable=str(retryable).casefold(),
     ).to_row()
@@ -1636,6 +1864,10 @@ def _append_translation(candidates: list[str], value: object, *, source_name: st
     if normalize_name_key(text) in {normalize_name_key(existing) for existing in candidates}:
         return
     candidates.append(text)
+
+
+def _input_word_count(value: object) -> int:
+    return len(str(value or "").split())
 
 
 def _api_language_code(value: object) -> str:

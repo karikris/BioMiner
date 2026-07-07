@@ -49,6 +49,12 @@ from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST
 from biominer.registry.gbif import GBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
+from biominer.registry.translation_harvester import (
+    MYMEMORY_MONTHLY_BANDWIDTH_MB_LIMIT,
+    MYMEMORY_MONTHLY_INPUT_WORD_LIMIT,
+    MYMEMORY_MONTHLY_REQUEST_LIMIT,
+    MYMEMORY_RESPONSE_BYTE_RESERVATION,
+)
 from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES, DEFAULT_TRANSLATION_TARGET_LOCALES_JSON
 from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR, YOLOE26_DIR
 from biominer.run import ProductionRunOrchestrator, ProductionRunRequest, RunStage
@@ -209,6 +215,10 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--mymemory-email")
     registry_build.add_argument("--mymemory-key")
     registry_build.add_argument("--mymemory-allow-machine-translation", action="store_true")
+    registry_build.add_argument("--mymemory-monthly-request-limit", type=int, default=MYMEMORY_MONTHLY_REQUEST_LIMIT)
+    registry_build.add_argument("--mymemory-monthly-input-word-limit", type=int, default=MYMEMORY_MONTHLY_INPUT_WORD_LIMIT)
+    registry_build.add_argument("--mymemory-monthly-bandwidth-mb-limit", type=int, default=MYMEMORY_MONTHLY_BANDWIDTH_MB_LIMIT)
+    registry_build.add_argument("--mymemory-response-byte-reservation", type=int, default=MYMEMORY_RESPONSE_BYTE_RESERVATION)
     registry_build.add_argument("--translation-workers", type=int, default=1)
     registry_build.add_argument("--translation-checkpoint-every", type=int, default=100)
     registry_build.add_argument("--translation-checkpoint-seconds", type=float, default=60.0)
@@ -551,6 +561,10 @@ def run(args: argparse.Namespace) -> int:
                     mymemory_email=args.mymemory_email,
                     mymemory_key=args.mymemory_key,
                     mymemory_allow_machine_translation=args.mymemory_allow_machine_translation,
+                    mymemory_monthly_request_limit=args.mymemory_monthly_request_limit,
+                    mymemory_monthly_input_word_limit=args.mymemory_monthly_input_word_limit,
+                    mymemory_monthly_bandwidth_mb_limit=args.mymemory_monthly_bandwidth_mb_limit,
+                    mymemory_response_byte_reservation=args.mymemory_response_byte_reservation,
                     translation_workers=args.translation_workers,
                     translation_checkpoint_every=args.translation_checkpoint_every,
                     translation_checkpoint_seconds=args.translation_checkpoint_seconds,

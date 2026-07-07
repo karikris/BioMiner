@@ -284,6 +284,16 @@ class FakeMyMemoryProvider:
         return ["Limettenfalter"], 1
 
 
+class ByteCountingMyMemoryProvider:
+    def __init__(self, *, response_bytes: int) -> None:
+        self.response_bytes = response_bytes
+        self.calls: list[str] = []
+
+    def translate(self, *, source_name, source_language, target_language, max_candidates):  # noqa: ANN001, ANN202 - test double.
+        self.calls.append(target_language)
+        return [f"{target_language} translation"], 1, self.response_bytes
+
+
 class InterruptingMyMemoryProvider:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -380,6 +390,67 @@ def test_translation_request_budget_is_thread_safe() -> None:
     assert budget.used == 10
 
 
+def test_mymemory_monthly_input_word_limit_blocks_excess_before_request(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["de", "sv", "fi"]), encoding="utf-8")
+    mymemory = ByteCountingMyMemoryProvider(response_bytes=12)
+
+    manifest = build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=registry / "enrichment",
+        translation_sources=("mymemory",),
+        target_locales_json=locales,
+        providers={"mymemory": mymemory},
+        mymemory_monthly_input_word_limit=3,
+        mymemory_monthly_request_limit=100,
+        mymemory_monthly_bandwidth_mb_limit=100,
+        mymemory_response_byte_reservation=1,
+        translation_checkpoint_every=1,
+    )
+
+    work = pl.read_parquet(registry / "enrichment" / "translation_work_ledger.parquet").sort("target_language")
+
+    assert mymemory.calls == ["de"]
+    assert manifest["translation_status"] == "budget_exhausted"
+    assert manifest["mymemory_monthly_input_words_used"] == 2
+    assert work.select(["target_language", "status", "request_count", "input_word_count"]).to_dicts() == [
+        {"target_language": "de", "status": "complete", "request_count": 1, "input_word_count": 2},
+        {"target_language": "sv", "status": "budget_exhausted", "request_count": 0, "input_word_count": 0},
+    ]
+
+
+def test_mymemory_monthly_bandwidth_reservation_blocks_request_before_provider_call(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["de"]), encoding="utf-8")
+    mymemory = ByteCountingMyMemoryProvider(response_bytes=12)
+
+    manifest = build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=registry / "enrichment",
+        translation_sources=("mymemory",),
+        target_locales_json=locales,
+        providers={"mymemory": mymemory},
+        mymemory_monthly_input_word_limit=100,
+        mymemory_monthly_request_limit=100,
+        mymemory_monthly_bandwidth_mb_limit=0,
+        mymemory_response_byte_reservation=1,
+        translation_checkpoint_every=1,
+    )
+
+    work = pl.read_parquet(registry / "enrichment" / "translation_work_ledger.parquet")
+
+    assert mymemory.calls == []
+    assert manifest["translation_status"] == "budget_exhausted"
+    assert manifest["mymemory_monthly_bandwidth_reserved_bytes"] == 0
+    assert work.select(["target_language", "status", "request_count", "bandwidth_reserved_byte_count"]).to_dicts() == [
+        {"target_language": "de", "status": "budget_exhausted", "request_count": 0, "bandwidth_reserved_byte_count": 0}
+    ]
+
+
 def test_mymemory_parallel_workers_create_provider_per_language_shard(tmp_path) -> None:
     registry = tmp_path / "registry"
     _write_registry(registry)
@@ -449,7 +520,7 @@ def test_mymemory_provider_uses_translation_memory_mode_by_default() -> None:
 
     provider = MyMemoryTranslationProvider(http_get=fake_get)
 
-    translations, request_count = provider.translate(
+    translations, request_count, response_byte_count = provider.translate(
         source_name="Lime Swallowtail",
         source_language="eng",
         target_language="deu",
@@ -458,6 +529,7 @@ def test_mymemory_provider_uses_translation_memory_mode_by_default() -> None:
 
     assert translations == ["Limettenfalter"]
     assert request_count == 1
+    assert response_byte_count > 0
     assert requests == [
         (
             "/get",
@@ -483,7 +555,7 @@ def test_mymemory_provider_keeps_all_candidates_when_uncapped() -> None:
 
     provider = MyMemoryTranslationProvider(http_get=fake_get)
 
-    translations, request_count = provider.translate(
+    translations, request_count, response_byte_count = provider.translate(
         source_name="Lime Swallowtail",
         source_language="eng",
         target_language="deu",
@@ -491,6 +563,7 @@ def test_mymemory_provider_keeps_all_candidates_when_uncapped() -> None:
     )
 
     assert request_count == 1
+    assert response_byte_count > 0
     assert translations == ["Limettenfalter", "Zitronenschwalbenschwanz", "Zitrusfalter"]
 
 
