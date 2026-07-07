@@ -470,7 +470,7 @@ class StaticVernacularSourceClient:
         self.licence = licence
 
     @classmethod
-    def from_config_path(cls, config_path: str | Path) -> StaticVernacularSourceClient:
+    def from_config_path(cls, config_path: str | Path, *, snapshot_root: str | Path | None = None) -> StaticVernacularSourceClient:
         path = Path(config_path)
         config = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(config, dict):
@@ -487,11 +487,14 @@ class StaticVernacularSourceClient:
         language_scope = _static_list_config(config, "language_scope")
         if not language_scope:
             raise ValueError("Static vernacular source config language_scope must not be empty")
+        source_key = str(config.get("source_key") or "").strip()
         snapshot_path = _resolve_static_snapshot_path(path, str(config.get("snapshot_path") or ""))
+        if snapshot_root is not None:
+            snapshot_path = _resolve_static_snapshot_root(Path(snapshot_root), source_key=source_key, configured_path=snapshot_path)
         source_version = str(config.get("source_version") or config.get("snapshot_version") or "").strip()
         source_display_name = str(config.get("source_display_name") or "").strip()
         return cls(
-            source_key=str(config.get("source_key") or "").strip(),
+            source_key=source_key,
             source_name=source_display_name,
             source_version=source_version,
             snapshot_path=snapshot_path,
@@ -1431,6 +1434,12 @@ def _resolve_static_snapshot_path(config_path: Path, snapshot_path: str) -> Path
         return config_relative
     repo_relative = Path(__file__).resolve().parents[3] / raw
     return repo_relative
+
+
+def _resolve_static_snapshot_root(snapshot_root: Path, *, source_key: str, configured_path: Path) -> Path:
+    if source_key:
+        return snapshot_root / source_key / configured_path.name
+    return snapshot_root / configured_path.name
 
 
 def _static_value(row: dict[str, Any], field: str, default: str = "") -> str:

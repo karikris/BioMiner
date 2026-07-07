@@ -90,6 +90,108 @@ def test_registry_build_defaults_to_production_enrichment_sources() -> None:
     assert args.enrichment_sources == ",".join(DEFAULT_ENRICHMENT_SOURCES)
     assert args.translation_sources == ",".join(DEFAULT_TRANSLATION_SOURCES)
     assert args.skip_translations is False
+    assert args.range_discovery_source == "gbif"
+    assert args.range_seed_json is None
+    assert args.language_targets_json is None
+    assert args.curated_static_source_config_dir == "config/vernacular_sources"
+    assert args.curated_static_source_snapshot_dir == "data/source_snapshots"
+    assert args.skip_range_discovery is False
+    assert args.skip_language_targets is False
+    assert args.skip_curated_static_sources is False
+
+
+def test_registry_build_source_defaults_exclude_blocked_providers() -> None:
+    source_names = {source.casefold() for source in DEFAULT_ENRICHMENT_SOURCES}
+
+    assert "ala" not in source_names
+    assert "atlas_of_living_australia" not in source_names
+    assert "slu" not in source_names
+    assert "artdatabanken" not in source_names
+    assert "swedish" not in source_names
+
+
+def test_registry_build_parses_regional_and_static_source_options() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "registry",
+            "build",
+            "--output-dir",
+            "data/registry/papilio",
+            "--registry-version",
+            "papilio-v1",
+            "--range-discovery-source",
+            "gbif",
+            "--range-seed-json",
+            "config/range_seed/papilio_demoleus.json",
+            "--language-targets-json",
+            "config/language_targets/papilio_demoleus_region_language_targets.json",
+            "--curated-static-source-config-dir",
+            "config/vernacular_sources",
+            "--curated-static-source-snapshot-dir",
+            "data/source_snapshots",
+            "--skip-range-discovery",
+            "--skip-language-targets",
+            "--skip-curated-static-sources",
+        ]
+    )
+
+    assert args.range_discovery_source == "gbif"
+    assert args.range_seed_json == "config/range_seed/papilio_demoleus.json"
+    assert args.language_targets_json == "config/language_targets/papilio_demoleus_region_language_targets.json"
+    assert args.curated_static_source_config_dir == "config/vernacular_sources"
+    assert args.curated_static_source_snapshot_dir == "data/source_snapshots"
+    assert args.skip_range_discovery is True
+    assert args.skip_language_targets is True
+    assert args.skip_curated_static_sources is True
+
+
+def test_registry_build_cli_forwards_regional_and_static_source_options(monkeypatch, tmp_path, capsys) -> None:
+    recorded: dict[str, Any] = {}
+
+    def fake_build_registry(**kwargs: Any) -> dict[str, Any]:
+        recorded.update(kwargs)
+        return {"registry_version": kwargs["registry_version"], "manifest": {"qa_status": "passed"}}
+
+    monkeypatch.setattr("biominer.cli.build_registry", fake_build_registry)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "registry",
+            "build",
+            "--output-dir",
+            str(tmp_path / "registry"),
+            "--registry-version",
+            "regional-v1",
+            "--range-discovery-source",
+            "gbif",
+            "--range-seed-json",
+            "config/range_seed/papilio_demoleus.json",
+            "--language-targets-json",
+            "config/language_targets/papilio_demoleus_region_language_targets.json",
+            "--curated-static-source-config-dir",
+            "config/vernacular_sources",
+            "--curated-static-source-snapshot-dir",
+            "data/source_snapshots",
+            "--skip-range-discovery",
+            "--skip-language-targets",
+            "--skip-curated-static-sources",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["registry_version"] == "regional-v1"
+    assert recorded["range_discovery_source"] == "gbif"
+    assert recorded["range_seed_json"] == "config/range_seed/papilio_demoleus.json"
+    assert recorded["language_targets_json"] == "config/language_targets/papilio_demoleus_region_language_targets.json"
+    assert recorded["curated_static_source_config_dir"] == "config/vernacular_sources"
+    assert recorded["curated_static_source_snapshot_dir"] == "data/source_snapshots"
+    assert recorded["skip_range_discovery"] is True
+    assert recorded["skip_language_targets"] is True
+    assert recorded["skip_curated_static_sources"] is True
 
 
 def test_registry_build_parses_translation_worker_checkpoint_controls() -> None:

@@ -215,6 +215,14 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--translation-language-shards", type=int, default=0)
     registry_build.add_argument("--query-curation-json")
     registry_build.add_argument("--inaturalist-daily-request-limit", type=int, default=INATURALIST_DAILY_REQUEST_LIMIT)
+    registry_build.add_argument("--range-discovery-source", default="gbif", choices=("gbif",))
+    registry_build.add_argument("--range-seed-json")
+    registry_build.add_argument("--language-targets-json")
+    registry_build.add_argument("--curated-static-source-config-dir", default="config/vernacular_sources")
+    registry_build.add_argument("--curated-static-source-snapshot-dir", default="data/source_snapshots")
+    registry_build.add_argument("--skip-range-discovery", action="store_true")
+    registry_build.add_argument("--skip-language-targets", action="store_true")
+    registry_build.add_argument("--skip-curated-static-sources", action="store_true")
     registry_build.add_argument("--skip-enrichment", action="store_true")
     registry_audit = registry_subparsers.add_parser("audit")
     registry_audit.add_argument("--registry-dir", required=True)
@@ -549,6 +557,14 @@ def run(args: argparse.Namespace) -> int:
                     translation_language_shards=args.translation_language_shards,
                     query_curation_json=args.query_curation_json,
                     inaturalist_daily_request_limit=args.inaturalist_daily_request_limit,
+                    range_discovery_source=args.range_discovery_source,
+                    range_seed_json=args.range_seed_json,
+                    language_targets_json=args.language_targets_json,
+                    curated_static_source_config_dir=args.curated_static_source_config_dir,
+                    curated_static_source_snapshot_dir=args.curated_static_source_snapshot_dir,
+                    skip_range_discovery=args.skip_range_discovery,
+                    skip_language_targets=args.skip_language_targets,
+                    skip_curated_static_sources=args.skip_curated_static_sources,
                     skip_enrichment=args.skip_enrichment,
                 )
             except FileNotFoundError as exc:

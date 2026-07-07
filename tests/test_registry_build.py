@@ -7,6 +7,7 @@ import pytest
 
 from biominer.registry.build import build_registry
 from biominer.registry.enrichment_sources import GBIFVernacularClient, TAXREFFrenchClient
+from biominer.registry.range_discovery import OccurrenceCountryDetails, OccurrenceCountryFacet
 
 
 def _gbif_snapshot() -> dict[str, object]:
@@ -225,6 +226,26 @@ class EmptyStaticClient:
         }
 
 
+class RecordingRangeClient:
+    def __init__(self) -> None:
+        self.facet_keys: list[str] = []
+        self.detail_requests: list[tuple[str, str]] = []
+
+    def country_facets(self, accepted_taxon_key: str, *, facet_limit: int = 300) -> tuple[OccurrenceCountryFacet, ...]:
+        self.facet_keys.append(accepted_taxon_key)
+        return (OccurrenceCountryFacet(country_code="IN", occurrence_count=4),)
+
+    def country_details(self, accepted_taxon_key: str, country_code: str) -> OccurrenceCountryDetails:
+        self.detail_requests.append((accepted_taxon_key, country_code))
+        return OccurrenceCountryDetails(
+            country_code=country_code,
+            georeferenced_count=3,
+            basis_of_record_counts={"HUMAN_OBSERVATION": 4},
+            first_year=2010,
+            last_year=2024,
+        )
+
+
 def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_path, monkeypatch) -> None:
     scope = tmp_path / "scope.json"
     _scope(scope)
@@ -284,6 +305,122 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
     assert "Lime Swallowtail" in queries["source_term"].to_list()
     assert "Wikidata Lime" in queries["source_term"].to_list()
     assert errors.is_empty()
+
+
+def test_registry_build_writes_range_and_language_targets_when_configured(tmp_path, monkeypatch) -> None:
+    scope = tmp_path / "scope.json"
+    _scope(scope)
+    source = tmp_path / "gbif.json"
+    source.write_text(json.dumps(_gbif_snapshot()), encoding="utf-8")
+    range_seed = tmp_path / "range_seed.json"
+    range_seed.write_text(
+        json.dumps(
+            {
+                "schema_version": "range-seed-v1",
+                "accepted_taxon_key": "gbif:100",
+                "scientific_name": "Papilio demoleus",
+                "regions": [
+                    {
+                        "region": "South Asia",
+                        "range_status": "native_or_long_established",
+                        "countries": [{"code": "IN", "name": "India"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    language_targets = tmp_path / "language_targets.json"
+    language_targets.write_text(
+        json.dumps(
+            {
+                "schema_version": "species-region-language-targets-v1",
+                "source": "fixture_region_languages",
+                "source_version": "fixture-v1",
+                "regions": [
+                    {
+                        "region": "South Asia",
+                        "languages": [
+                            {"language": "eng", "language_name": "English", "priority": 10},
+                            {"language": "hin", "language_name": "Hindi", "priority": 20},
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    range_client = RecordingRangeClient()
+    monkeypatch.setattr("biominer.registry.build.GBIFOccurrenceCountryClient", lambda: range_client)
+
+    result = build_registry(
+        output_dir=tmp_path / "registry",
+        registry_version="regional",
+        scope_path=scope,
+        source_json=source,
+        reuse_source_json=True,
+        report_dir=tmp_path / "reports",
+        range_seed_json=range_seed,
+        language_targets_json=language_targets,
+        skip_enrichment=True,
+    )
+
+    registry = tmp_path / "registry"
+    range_rows = pl.read_parquet(registry / "range_countries.parquet").to_dicts()
+    target_rows = pl.read_parquet(registry / "country_language_targets.parquet").sort("language_code").to_dicts()
+
+    assert result["manifest"]["range_country_rows"] == 1
+    assert result["manifest"]["language_target_rows"] == 2
+    assert range_client.facet_keys == ["gbif:100"]
+    assert range_client.detail_requests == [("gbif:100", "IN")]
+    assert range_rows[0]["country_name"] == "India"
+    assert range_rows[0]["region"] == "South Asia"
+    assert [row["language_code"] for row in target_rows] == ["eng", "hin"]
+
+
+def test_registry_build_skip_flags_disable_regional_outputs(tmp_path, monkeypatch) -> None:
+    scope = tmp_path / "scope.json"
+    _scope(scope)
+    source = tmp_path / "gbif.json"
+    source.write_text(json.dumps(_gbif_snapshot()), encoding="utf-8")
+    range_seed = tmp_path / "range_seed.json"
+    range_seed.write_text(
+        json.dumps(
+            {
+                "schema_version": "range-seed-v1",
+                "accepted_taxon_key": "gbif:100",
+                "scientific_name": "Papilio demoleus",
+                "regions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    language_targets = tmp_path / "language_targets.json"
+    language_targets.write_text(
+        json.dumps({"schema_version": "species-region-language-targets-v1", "regions": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("biominer.registry.build.GBIFOccurrenceCountryClient", lambda: pytest.fail("range discovery should be skipped"))
+
+    result = build_registry(
+        output_dir=tmp_path / "registry",
+        registry_version="regional-skip",
+        scope_path=scope,
+        source_json=source,
+        reuse_source_json=True,
+        report_dir=tmp_path / "reports",
+        range_seed_json=range_seed,
+        language_targets_json=language_targets,
+        skip_range_discovery=True,
+        skip_language_targets=True,
+        skip_enrichment=True,
+    )
+
+    registry = tmp_path / "registry"
+    assert result["manifest"]["range_country_rows"] == 0
+    assert result["manifest"]["language_target_rows"] == 0
+    assert not (registry / "range_countries.parquet").exists()
+    assert not (registry / "country_language_targets.parquet").exists()
 
 
 def test_registry_build_requires_storage_backend_for_cloud_output(tmp_path, monkeypatch) -> None:

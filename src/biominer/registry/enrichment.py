@@ -47,6 +47,7 @@ DEFAULT_ENRICHMENT_SOURCES = (
     "bharat_ki_titliya_hi",
     "karnataka_chitte_kn",
 )
+STATIC_VERNACULAR_SOURCE_KEYS = ("boi_india_en", "bharat_ki_titliya_hi", "karnataka_chitte_kn")
 BULK_ENRICHMENT_SOURCES = frozenset({"gbif_vernacular", "taxref_fr", "tmd_de", "boi_india_en", "bharat_ki_titliya_hi", "karnataka_chitte_kn"})
 BULK_REGISTRY_WORK_KEY = "__registry__"
 INATURALIST_DAILY_REQUEST_LIMIT = 10000
@@ -311,10 +312,16 @@ def build_enrichment_sources_from_registry(
     return manifest
 
 
-def default_enrichment_clients(*, max_retries: int = 5) -> dict[str, Any]:
+def default_enrichment_clients(
+    *,
+    max_retries: int = 5,
+    static_source_config_dir: str | Path = "config/vernacular_sources",
+    static_source_snapshot_dir: str | Path | None = "data/source_snapshots",
+    include_static_sources: bool = True,
+) -> dict[str, Any]:
     from biominer.registry.enrichment_sources import CatalogueOfLifeClient, GBIFVernacularClient, INaturalistClient, ITISClient, StaticVernacularSourceClient, TAXREFFrenchClient, TMDGermanClient, WikidataClient
 
-    return {
+    clients: dict[str, Any] = {
         "col": CatalogueOfLifeClient(max_retries=max_retries),
         "inaturalist": INaturalistClient(max_retries=max_retries),
         "itis": ITISClient(max_retries=max_retries),
@@ -322,10 +329,19 @@ def default_enrichment_clients(*, max_retries: int = 5) -> dict[str, Any]:
         "wikidata": WikidataClient(max_retries=max_retries),
         "gbif_vernacular": GBIFVernacularClient(),
         "taxref_fr": TAXREFFrenchClient(max_retries=max_retries),
-        "boi_india_en": StaticVernacularSourceClient.from_config_path("config/vernacular_sources/boi_india_en.json"),
-        "bharat_ki_titliya_hi": StaticVernacularSourceClient.from_config_path("config/vernacular_sources/bharat_ki_titliya_hi.json"),
-        "karnataka_chitte_kn": StaticVernacularSourceClient.from_config_path("config/vernacular_sources/karnataka_chitte_kn.json"),
     }
+    if include_static_sources:
+        config_dir = Path(static_source_config_dir)
+        clients.update(
+            {
+                source_key: StaticVernacularSourceClient.from_config_path(
+                    config_dir / f"{source_key}.json",
+                    snapshot_root=static_source_snapshot_dir,
+                )
+                for source_key in STATIC_VERNACULAR_SOURCE_KEYS
+            }
+        )
+    return clients
 
 
 def write_enrichment_sources(

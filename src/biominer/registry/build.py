@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import inspect
 import json
 import logging
 import os
@@ -9,10 +10,21 @@ import shutil
 import subprocess
 from typing import Any
 
+import polars as pl
+
+from biominer.registry import enrichment as registry_enrichment
 from biominer.registry.compiler import compile_registry_fixture, compile_registry_frames
-from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST_DAILY_REQUEST_LIMIT, build_enrichment_sources_from_registry, compile_enriched_registry
+from biominer.registry.enrichment import (
+    DEFAULT_ENRICHMENT_SOURCES,
+    INATURALIST_DAILY_REQUEST_LIMIT,
+    STATIC_VERNACULAR_SOURCE_KEYS,
+    build_enrichment_sources_from_registry,
+    compile_enriched_registry,
+)
 from biominer.registry.gbif_production import ProductionGBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
+from biominer.registry.language_targets import COUNTRY_LANGUAGE_TARGETS_FILE, generate_language_targets, write_language_targets
+from biominer.registry.range_discovery import GBIFOccurrenceCountryClient, RANGE_COUNTRIES_FILE, discover_range_countries, load_range_seed, write_range_countries
 from biominer.registry.scope import load_scope
 from biominer.registry.translation_harvester import build_translation_candidates_from_registry
 from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES, DEFAULT_TRANSLATION_TARGET_LOCALES_JSON
@@ -50,6 +62,14 @@ def build_registry(
     translation_language_shards: int = 0,
     query_curation_json: str | Path | None = None,
     inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
+    range_discovery_source: str = "gbif",
+    range_seed_json: str | Path | None = None,
+    language_targets_json: str | Path | None = None,
+    curated_static_source_config_dir: str | Path = "config/vernacular_sources",
+    curated_static_source_snapshot_dir: str | Path | None = "data/source_snapshots",
+    skip_range_discovery: bool = False,
+    skip_language_targets: bool = False,
+    skip_curated_static_sources: bool = False,
     skip_enrichment: bool = False,
     storage: CloudStorage | None = None,
 ) -> dict[str, Any]:
@@ -80,6 +100,14 @@ def build_registry(
         "translation_language_shards": translation_language_shards,
         "query_curation_json": query_curation_json,
         "inaturalist_daily_request_limit": inaturalist_daily_request_limit,
+        "range_discovery_source": range_discovery_source,
+        "range_seed_json": range_seed_json,
+        "language_targets_json": language_targets_json,
+        "curated_static_source_config_dir": curated_static_source_config_dir,
+        "curated_static_source_snapshot_dir": curated_static_source_snapshot_dir,
+        "skip_range_discovery": skip_range_discovery,
+        "skip_language_targets": skip_language_targets,
+        "skip_curated_static_sources": skip_curated_static_sources,
         "skip_enrichment": skip_enrichment,
     }
     if is_cloud_uri(str(output_dir)):
@@ -118,6 +146,14 @@ def build_cloud_registry(
     translation_language_shards: int = 0,
     query_curation_json: str | Path | None = None,
     inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
+    range_discovery_source: str = "gbif",
+    range_seed_json: str | Path | None = None,
+    language_targets_json: str | Path | None = None,
+    curated_static_source_config_dir: str | Path = "config/vernacular_sources",
+    curated_static_source_snapshot_dir: str | Path | None = "data/source_snapshots",
+    skip_range_discovery: bool = False,
+    skip_language_targets: bool = False,
+    skip_curated_static_sources: bool = False,
     skip_enrichment: bool = False,
 ) -> dict[str, Any]:
     if not skip_enrichment:
@@ -190,6 +226,12 @@ def build_cloud_registry(
         enrichment_sources=enrichment_sources,
         translation_sources=(),
         inaturalist_daily_request_limit=inaturalist_daily_request_limit,
+        range_discovery_source=range_discovery_source,
+        range_seed_json=range_seed_json,
+        language_targets_json=language_targets_json,
+        skip_range_discovery=skip_range_discovery,
+        skip_language_targets=skip_language_targets,
+        skip_curated_static_sources=skip_curated_static_sources,
         skip_enrichment=skip_enrichment,
         enrichment_manifest=None,
     )
@@ -240,12 +282,24 @@ def build_local_registry(
     translation_language_shards: int = 0,
     query_curation_json: str | Path | None = None,
     inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
+    range_discovery_source: str = "gbif",
+    range_seed_json: str | Path | None = None,
+    language_targets_json: str | Path | None = None,
+    curated_static_source_config_dir: str | Path = "config/vernacular_sources",
+    curated_static_source_snapshot_dir: str | Path | None = "data/source_snapshots",
+    skip_range_discovery: bool = False,
+    skip_language_targets: bool = False,
+    skip_curated_static_sources: bool = False,
     skip_enrichment: bool = False,
 ) -> dict[str, Any]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     source_path = Path(source_json) if source_json else output / "gbif_source_snapshot.json"
     retrieved = retrieved_at or datetime.now(UTC).isoformat()
+    effective_enrichment_sources = _effective_enrichment_sources(
+        enrichment_sources,
+        skip_curated_static_sources=skip_curated_static_sources,
+    )
     logger.info(
         "registry.build.start version=%s output=%s workers=%d progress_every=%d checkpoint_every=%d max_retries=%d",
         registry_version,
@@ -292,6 +346,7 @@ def build_local_registry(
         manifest.get("query_definition_rows"),
     )
     enrichment_manifest: dict[str, Any] | None = None
+    effective_translation_sources = () if skip_translations else tuple(source for source in translation_sources if source)
     if skip_enrichment:
         logger.info("registry.build.enrichment.skip output=%s", output)
         manifest = compile_registry_fixture(
@@ -301,6 +356,16 @@ def build_local_registry(
             scope_path=scope_path,
             query_curation_json=query_curation_json,
         )
+        manifest = _add_regional_outputs(
+            registry_dir=output,
+            manifest=manifest,
+            range_discovery_source=range_discovery_source,
+            range_seed_json=range_seed_json,
+            language_targets_json=language_targets_json,
+            skip_range_discovery=skip_range_discovery,
+            skip_language_targets=skip_language_targets,
+            retrieved_at=retrieved,
+        )
     else:
         run_id = _run_id(retrieved)
         enrichment_dir = output / "checkpoints" / "enrichment" / run_id
@@ -308,12 +373,18 @@ def build_local_registry(
             "registry.build.enrichment.start base_dir=%s enrichment_dir=%s sources=%s",
             base_dir,
             enrichment_dir,
-            ",".join(enrichment_sources),
+            ",".join(effective_enrichment_sources),
         )
         enrichment_manifest = build_enrichment_sources_from_registry(
             registry_dir=base_dir,
             enrichment_dir=enrichment_dir,
-            sources=enrichment_sources,
+            sources=effective_enrichment_sources,
+            client_factory=lambda: _default_enrichment_clients(
+                max_retries=max_retries,
+                static_source_config_dir=curated_static_source_config_dir,
+                static_source_snapshot_dir=curated_static_source_snapshot_dir,
+                include_static_sources=not skip_curated_static_sources,
+            ),
             workers=workers,
             progress_every=progress_every,
             checkpoint_every=checkpoint_every,
@@ -321,7 +392,6 @@ def build_local_registry(
             inaturalist_daily_request_limit=inaturalist_daily_request_limit,
             report_dir=report_dir,
         )
-        effective_translation_sources = () if skip_translations else tuple(source for source in translation_sources if source)
         if effective_translation_sources:
             logger.info(
                 "registry.build.translation.start base_dir=%s enrichment_dir=%s sources=%s",
@@ -368,9 +438,19 @@ def build_local_registry(
             output_dir=canonical_dir,
             registry_version=registry_version,
             scope_path=scope_path,
-            requested_sources=enrichment_sources,
+            requested_sources=effective_enrichment_sources,
             requested_translation_sources=effective_translation_sources,
             query_curation_json=query_curation_json,
+        )
+        manifest = _add_regional_outputs(
+            registry_dir=canonical_dir,
+            manifest=manifest,
+            range_discovery_source=range_discovery_source,
+            range_seed_json=range_seed_json,
+            language_targets_json=language_targets_json,
+            skip_range_discovery=skip_range_discovery,
+            skip_language_targets=skip_language_targets,
+            retrieved_at=retrieved,
         )
         logger.info(
             "registry.build.compile_enriched.complete status=%s taxa=%s names=%s queries=%s enrichment_names=%s source_errors=%s",
@@ -395,9 +475,15 @@ def build_local_registry(
         output_dir=output,
         registry_version=registry_version,
         retrieved_at=retrieved,
-        enrichment_sources=enrichment_sources,
+        enrichment_sources=effective_enrichment_sources,
         translation_sources=effective_translation_sources if not skip_enrichment else (),
         inaturalist_daily_request_limit=inaturalist_daily_request_limit,
+        range_discovery_source=range_discovery_source,
+        range_seed_json=range_seed_json,
+        language_targets_json=language_targets_json,
+        skip_range_discovery=skip_range_discovery,
+        skip_language_targets=skip_language_targets,
+        skip_curated_static_sources=skip_curated_static_sources,
         skip_enrichment=skip_enrichment,
         enrichment_manifest=enrichment_manifest,
     )
@@ -412,6 +498,136 @@ def build_local_registry(
     }
 
 
+def _effective_enrichment_sources(sources: tuple[str, ...], *, skip_curated_static_sources: bool) -> tuple[str, ...]:
+    if not skip_curated_static_sources:
+        return sources
+    return tuple(source for source in sources if source not in STATIC_VERNACULAR_SOURCE_KEYS)
+
+
+def _default_enrichment_clients(
+    *,
+    max_retries: int,
+    static_source_config_dir: str | Path,
+    static_source_snapshot_dir: str | Path | None,
+    include_static_sources: bool,
+) -> dict[str, Any]:
+    factory = registry_enrichment.default_enrichment_clients
+    signature = inspect.signature(factory)
+    accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
+    kwargs: dict[str, Any] = {"max_retries": max_retries}
+    if accepts_kwargs or "static_source_config_dir" in signature.parameters:
+        kwargs["static_source_config_dir"] = static_source_config_dir
+    if accepts_kwargs or "static_source_snapshot_dir" in signature.parameters:
+        kwargs["static_source_snapshot_dir"] = static_source_snapshot_dir
+    if accepts_kwargs or "include_static_sources" in signature.parameters:
+        kwargs["include_static_sources"] = include_static_sources
+    return factory(**kwargs)
+
+
+def _add_regional_outputs(
+    *,
+    registry_dir: Path,
+    manifest: dict[str, Any],
+    range_discovery_source: str,
+    range_seed_json: str | Path | None,
+    language_targets_json: str | Path | None,
+    skip_range_discovery: bool,
+    skip_language_targets: bool,
+    retrieved_at: str,
+) -> dict[str, Any]:
+    regional_manifest = _write_regional_outputs(
+        registry_dir=registry_dir,
+        range_discovery_source=range_discovery_source,
+        range_seed_json=range_seed_json,
+        language_targets_json=language_targets_json,
+        skip_range_discovery=skip_range_discovery,
+        skip_language_targets=skip_language_targets,
+        retrieved_at=retrieved_at,
+    )
+    updated = {**manifest, **regional_manifest}
+    (registry_dir / "manifest.json").write_text(json.dumps(updated, indent=2, sort_keys=True), encoding="utf-8")
+    return updated
+
+
+def _write_regional_outputs(
+    *,
+    registry_dir: Path,
+    range_discovery_source: str,
+    range_seed_json: str | Path | None,
+    language_targets_json: str | Path | None,
+    skip_range_discovery: bool,
+    skip_language_targets: bool,
+    retrieved_at: str,
+) -> dict[str, Any]:
+    range_frame = pl.DataFrame()
+    range_path = registry_dir / RANGE_COUNTRIES_FILE
+    range_enabled = bool(range_seed_json) and not skip_range_discovery
+    if range_enabled:
+        if range_discovery_source != "gbif":
+            raise ValueError(f"unsupported range discovery source: {range_discovery_source}")
+        taxa = pl.read_parquet(registry_dir / "taxa.parquet")
+        client = GBIFOccurrenceCountryClient()
+        frames = [
+            discover_range_countries(
+                accepted_taxon_key=str(row["accepted_taxon_key"]),
+                scientific_name=str(row["scientific_name"]),
+                client=client,
+                seed_json=range_seed_json,
+                retrieved_at=retrieved_at,
+            )
+            for row in _range_discovery_species_rows(taxa, range_seed_json=range_seed_json)
+        ]
+        range_frame = _concat_nonempty_frames(frames)
+        if not range_frame.is_empty():
+            write_range_countries(range_frame, registry_dir)
+            logger.info("registry.build.range_discovery.complete output=%s rows=%d source=%s", range_path, range_frame.height, range_discovery_source)
+    elif range_path.exists() and not skip_range_discovery:
+        range_frame = pl.read_parquet(range_path)
+
+    target_frame = pl.DataFrame()
+    target_path = registry_dir / COUNTRY_LANGUAGE_TARGETS_FILE
+    if language_targets_json and not skip_language_targets and not range_frame.is_empty():
+        target_frame = generate_language_targets(
+            range_frame,
+            species_region_language_targets_json=language_targets_json,
+        )
+        if not target_frame.is_empty():
+            write_language_targets(target_frame, registry_dir)
+            logger.info("registry.build.language_targets.complete output=%s rows=%d", target_path, target_frame.height)
+    elif target_path.exists() and not skip_language_targets:
+        target_frame = pl.read_parquet(target_path)
+
+    return {
+        "range_discovery_source": range_discovery_source,
+        "range_seed_json": str(range_seed_json) if range_seed_json else None,
+        "language_targets_json": str(language_targets_json) if language_targets_json else None,
+        "range_discovery_skipped": bool(skip_range_discovery or not range_seed_json),
+        "language_targets_skipped": bool(skip_language_targets or not language_targets_json or range_frame.is_empty()),
+        "range_country_rows": int(range_frame.height),
+        "language_target_rows": int(target_frame.height),
+    }
+
+
+def _range_discovery_species_rows(taxa: pl.DataFrame, *, range_seed_json: str | Path | None) -> list[dict[str, Any]]:
+    species = taxa.filter(pl.col("rank") == "SPECIES")
+    sort_columns = [column for column in ("family", "genus", "scientific_name") if column in species.columns]
+    if range_seed_json is None:
+        return species.sort(sort_columns).to_dicts() if sort_columns else species.to_dicts()
+    seed = load_range_seed(range_seed_json)
+    if seed.accepted_taxon_key:
+        species = species.filter(pl.col("accepted_taxon_key") == seed.accepted_taxon_key)
+    elif seed.scientific_name:
+        species = species.filter(pl.col("scientific_name") == seed.scientific_name)
+    if species.is_empty():
+        raise ValueError(f"range seed taxon is absent from registry taxa: {range_seed_json}")
+    return species.sort(sort_columns).to_dicts() if sort_columns else species.to_dicts()
+
+
+def _concat_nonempty_frames(frames: list[pl.DataFrame]) -> pl.DataFrame:
+    nonempty = [frame for frame in frames if not frame.is_empty()]
+    return pl.concat(nonempty, how="vertical") if nonempty else pl.DataFrame()
+
+
 def _build_report(
     *,
     manifest: dict[str, Any],
@@ -423,6 +639,12 @@ def _build_report(
     enrichment_sources: tuple[str, ...],
     translation_sources: tuple[str, ...],
     inaturalist_daily_request_limit: int,
+    range_discovery_source: str,
+    range_seed_json: str | Path | None,
+    language_targets_json: str | Path | None,
+    skip_range_discovery: bool,
+    skip_language_targets: bool,
+    skip_curated_static_sources: bool,
     skip_enrichment: bool,
     enrichment_manifest: dict[str, Any] | None,
 ) -> dict[str, Any]:
@@ -455,7 +677,15 @@ def _build_report(
         "qa_warning_count": manifest.get("qa_warning_count"),
         "enrichment_enabled": not skip_enrichment,
         "enrichment_sources": list(enrichment_sources) if not skip_enrichment else [],
+        "curated_static_sources_enabled": not skip_curated_static_sources and not skip_enrichment,
         "translation_sources": list(translation_sources) if not skip_enrichment else [],
+        "range_discovery_source": range_discovery_source,
+        "range_seed_json": str(range_seed_json) if range_seed_json else None,
+        "language_targets_json": str(language_targets_json) if language_targets_json else None,
+        "range_discovery_enabled": bool(range_seed_json) and not skip_range_discovery,
+        "language_targets_enabled": bool(language_targets_json) and not skip_language_targets,
+        "range_country_rows": manifest.get("range_country_rows"),
+        "language_target_rows": manifest.get("language_target_rows"),
         "translation_target_locale_count": (enrichment_manifest or {}).get("translation_target_locale_count"),
         "translation_request_rows": (enrichment_manifest or {}).get("translation_request_rows"),
         "wikimedia_assertion_rows": (enrichment_manifest or {}).get("wikimedia_assertion_rows"),
@@ -520,6 +750,10 @@ def _report_markdown(report: dict[str, Any]) -> str:
             f"- QA warning: {report['qa_warning_count']}",
             f"- Enrichment enabled: {report['enrichment_enabled']}",
             f"- Enrichment sources: {', '.join(report['enrichment_sources'])}",
+            f"- Curated static sources enabled: {report['curated_static_sources_enabled']}",
+            f"- Range discovery source: {report['range_discovery_source']}",
+            f"- Range country rows: {report['range_country_rows']}",
+            f"- Language target rows: {report['language_target_rows']}",
             f"- Translation sources: {', '.join(report['translation_sources'])}",
             f"- Translation target locales: {report['translation_target_locale_count']}",
             f"- Translation requests: {report['translation_request_rows']}",
@@ -567,6 +801,8 @@ def _canonical_registry_files() -> tuple[str, ...]:
         "translation_candidates.parquet",
         "translation_work_ledger.parquet",
         "name_candidates.parquet",
+        "range_countries.parquet",
+        "country_language_targets.parquet",
         "combined_source_snapshot.json",
         "enrichment_coverage.json",
         "enrichment_coverage.md",
