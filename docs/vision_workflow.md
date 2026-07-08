@@ -10,13 +10,16 @@ canonical Flickr source records
 -> joined object evidence and photo summaries
 ```
 
-YOLOE/YOLO26 is only an object finder. BioCLIP remains the biological classifier and family, genus, and species scorer.
+YOLOE/YOLO26 is only an object finder. Production sends only `butterfly_like` detections with `detection_status=detected` to BioCLIP; moth, caterpillar, pupa, generic insect, hard-negative, no-detection, and failed-image rows remain evidence but are not species-scored. BioCLIP remains the biological classifier and family, genus, and species scorer.
+
+The production default visual mode is `detector_crop`. Whole-image BioCLIP is available only through explicit ablation/debug commands because it spends model budget on background, host plants, labels, hands, and other non-target content.
 
 ## Public Commands
 
 The public stage tools are:
 
 ```bash
+uv run biominer vision screen --help
 uv run biominer vision detect --help
 uv run biominer vision score --help
 uv run biominer vision ablate --help
@@ -37,6 +40,8 @@ uv run biominer vision detect \
 
 YOLO26 checkpoints must emit BioMiner coarse object labels or known legacy object aliases. Species-class checkpoints are rejected rather than remapped.
 
+For a local detector-first run that keeps each stage as durable zstd part files, use `vision screen`. It runs one persistent YOLOE sidecar and one persistent BioCLIP sidecar, writes canonical/detection/score/joined/summary part directories, and deletes cached images only after the relevant outputs commit.
+
 Supported visual modes are:
 
 ```text
@@ -54,14 +59,14 @@ There is no image-enhancement mode in production, and BioMiner does not store re
 Runtime checks, model prefetch, smoke tests, previews, evaluations, and prototype wrappers live under `biominer dev vision`:
 
 ```bash
-uv run biominer dev vision yoloe26-runtime-check \
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision yoloe26-runtime-check \
   --runtime-python "../YOLO26/venv/bin/python" \
   --checkpoint yoloe-26s-seg.pt \
-  --device auto
+  --device mps
 
-uv run biominer dev vision bioclip-runtime-check \
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision bioclip-runtime-check \
   --runtime-python "../BioCLIP25/venv/bin/python" \
-  --device auto
+  --device mps
 
 uv run biominer dev vision yoloe26-prototype-run \
   --input runs/local_debug/papilio_demoleus/canonical_source_records.parquet \
@@ -90,6 +95,8 @@ The main BioMiner package stays on Python 3.14. Heavy vision libraries run from 
 ```
 
 Set `BIOMINER_BASE_PATH=/path/to/base` on macOS, WSL, or Ubuntu when the sibling folders are not next to the repository.
+
+The Mac M5 Pro / 64 GB profile is `mac_m5pro_64gb`. It uses Apple MPS, YOLOE checkpoint `yoloe-26s-seg.pt`, YOLO image size `768`, detector batch size `16`, crop batch size `24`, crop target `336`, crop padding `0.08`, zstd Parquet part outputs, and delete-after-commit image cleanup. Use `PYTORCH_ENABLE_MPS_FALLBACK=1` for runtime checks and sidecar runs.
 
 Unit tests use fake detectors and fake scorers and must not require Ultralytics, CUDA, MPS, model downloads, or network access.
 

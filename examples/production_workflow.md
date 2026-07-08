@@ -16,6 +16,7 @@ export BIOMINER_S3_PREFIX="biominer"
 export BIOMINER_WORKSTORE_DSN="postgresql://user:password@host:5432/postgres"
 export BIOMINER_WORKER_ID="worker-001"
 export FLICKR_API_KEY="<flickr-api-key>"
+export PYTORCH_ENABLE_MPS_FALLBACK=1
 ```
 
 `FLICKR_SECRET_KEY` can be present for future signed Flickr operations, but current metadata polling uses `FLICKR_API_KEY`.
@@ -33,7 +34,10 @@ uv run biominer run \
   --storage-backend s3 \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
-  --bioclip-model imageomics/bioclip-2.5-vith14
+  --vision-profile mac_m5pro_64gb \
+  --device mps \
+  --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
+  --delete-images-after-commit
 ```
 
 ## Genus Run
@@ -49,7 +53,10 @@ uv run biominer run \
   --storage-backend s3 \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
-  --bioclip-model imageomics/bioclip-2.5-vith14
+  --vision-profile mac_m5pro_64gb \
+  --device mps \
+  --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
+  --delete-images-after-commit
 ```
 
 ## Family Run
@@ -65,7 +72,10 @@ uv run biominer run \
   --storage-backend s3 \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
-  --bioclip-model imageomics/bioclip-2.5-vith14
+  --vision-profile mac_m5pro_64gb \
+  --device mps \
+  --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
+  --delete-images-after-commit
 ```
 
 ## Bounded Smoke Run
@@ -80,6 +90,7 @@ uv run biominer run \
   --output-prefix s3://biominer/biominer/runs/papilio_demoleus_smoke \
   --storage-backend s3 \
   --workstore-backend postgres \
+  --vision-profile mac_m5pro_64gb \
   --limit-records 10
 ```
 

@@ -29,15 +29,15 @@ Commands below are run from `./BioMiner`. Set `BIOMINER_BASE_PATH=/path/to/base`
 ## Runtime Checks
 
 ```bash
-uv run biominer dev vision yoloe26-runtime-check \
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision yoloe26-runtime-check \
   --runtime-python "../YOLO26/venv/bin/python" \
   --checkpoint yoloe-26s-seg.pt \
-  --device auto
+  --device mps
 
-uv run biominer dev vision bioclip-runtime-check \
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision bioclip-runtime-check \
   --runtime-python "../BioCLIP25/venv/bin/python" \
   --hf-cache-dir "../BioCLIP25/cache/huggingface" \
-  --device auto
+  --device mps
 ```
 
 ## Prefetch
@@ -82,7 +82,22 @@ flower, leaf, person, hand, drawing, painting, logo, text, sign, museum label ->
 
 ## One-Command Prototype Run
 
-Run a bounded 10-image detector-crop prototype:
+Run an integrated local detector-crop screen with the Mac M5 Pro profile:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer vision screen \
+  --input runs/local_debug/papilio_demoleus/canonical_source_records.parquet \
+  --output-dir runs/local_debug/papilio_demoleus/vision_screen \
+  --species-context runs/local_debug/papilio_demoleus/species_context.json \
+  --species-candidates data/registry/current/species_candidates.parquet \
+  --vision-profile mac_m5pro_64gb \
+  --device mps \
+  --delete-images-after-commit
+```
+
+This writes zstd part files under `canonical_source_records/`, `object_detections/`, `object_bioclip_scores/`, `object_evidence_joined/`, and `photo_evidence_summary/`. Cached images are deleted only after the relevant committed parts exist.
+
+The older dev wrapper remains useful for bounded prototype debugging:
 
 ```bash
 uv run biominer dev vision yoloe26-prototype-run \
@@ -129,7 +144,9 @@ Without `--image`, the command uses a synthetic placeholder and only validates r
 
 - YOLOE-26 is zero-shot/open-vocabulary. It can miss butterflies and can confuse leaf, flower, textile, or label regions with insects.
 - YOLOE-26 is not taxonomic validation. It only proposes object boxes.
+- Only YOLOE `butterfly_like` detections are sent to BioCLIP in the production detector-first path.
 - BioCLIP 2.5 Huge remains the family/genus/species scorer.
+- Whole-image BioCLIP is an explicit ablation/debug mode, not the production default.
 - Metrics from `yoloe26-prototype-run` are labelled heuristic unless reviewed ground truth is supplied.
 - Model files, caches, downloaded Flickr images, and generated Parquet outputs must not be committed.
 

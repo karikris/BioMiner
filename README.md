@@ -2,7 +2,7 @@
 
 BioMiner is a taxonomically grounded Flickr butterfly-discovery and image-triage pipeline.
 
-It builds a reviewed multilingual butterfly name registry, compiles deterministic Flickr search definitions, fetches Flickr metadata, records metadata review flags, finds candidate objects with YOLOE/YOLO26-style coarse detectors, scores temporary whole images and crops with BioCLIP 2.5, assigns evidence buckets, and uses targeted Flickr comment review to strengthen ambiguous records.
+It builds a reviewed multilingual butterfly name registry, compiles deterministic Flickr search definitions, fetches Flickr metadata, records metadata review flags, finds candidate objects with YOLOE/YOLO26-style coarse detectors, scores eligible detector crops with BioCLIP 2.5, assigns evidence buckets, and uses targeted Flickr comment review to strengthen ambiguous records.
 
 BioMiner separates three forms of evidence:
 
@@ -37,9 +37,9 @@ Step 2: metadata flagging
 Step 3: detector-first BioCLIP screening
   temporary image download
   -> YOLOE/YOLO26 coarse object proposals
-  -> BioCLIP 2.5 whole-image, detector-crop, and segmentation-crop scoring
+  -> BioCLIP 2.5 detector-crop scoring for butterfly_like detections
   -> Gold/Silver/Bronze/Bin/InReview
-  -> delete temporary image
+  -> delete temporary image after committed outputs
 
 Step 4: targeted comment review
   Bronze/ambiguous records
@@ -56,10 +56,14 @@ canonical source records
   -> object detections with source + flickr_photo_id join keys
   -> ephemeral detector crops
   -> BioCLIP object scores against SpeciesContext/candidate-set labels
-  -> whole-image, detector-crop, and detector-crop-segmentation rows when masks are available
+  -> detector-crop rows for YOLOE butterfly_like detections
   -> object_evidence_joined.parquet and photo_evidence_summary.parquet
   -> reports/review_queue.parquet for Bronze and InReview photo summaries
 ```
+
+The production default is `detector_crop` only. Whole-image BioCLIP and detector-crop segmentation remain explicit ablation/debug modes because whole-image scoring spends model time on backgrounds, labels, people, host plants, and other non-target content. YOLOE/YOLO26 output must first pass the coarse `butterfly_like` gate before BioCLIP species scoring runs.
+
+The Mac M5 Pro / 64 GB profile is `mac_m5pro_64gb`: `device=mps`, YOLOE checkpoint `yoloe-26s-seg.pt`, YOLO image size `768`, detector batch size `16`, crop batch size `24`, crop target `336`, crop padding `0.08`, zstd Parquet parts, and delete-after-commit image cleanup. Production visual parts are written as immutable zstd Parquet objects such as `evidence/stage=detect_objects/run_id=<run_id>/worker=<worker_id>/part=<part_id>.parquet`.
 
 The core Python 3.14 environment keeps heavy vision dependencies optional. `vision detect --backend fake` is available for offline tests and deterministic local plumbing. YOLOE-26, explicit YOLO26 inference checkpoints, and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent. YOLOE/YOLO26 are object finders only; BioCLIP 2.5 Huge remains the biological classifier and species scorer.
 
@@ -74,7 +78,10 @@ uv run biominer run \
   --storage-backend s3 \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
-  --bioclip-model imageomics/bioclip-2.5-vith14
+  --vision-profile mac_m5pro_64gb \
+  --device mps \
+  --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
+  --delete-images-after-commit
 
 uv run biominer run \
   --taxon "Papilio" \
@@ -84,7 +91,10 @@ uv run biominer run \
   --storage-backend s3 \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
-  --bioclip-model imageomics/bioclip-2.5-vith14
+  --vision-profile mac_m5pro_64gb \
+  --device mps \
+  --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
+  --delete-images-after-commit
 
 uv run biominer run \
   --taxon "Papilionidae" \
@@ -94,7 +104,10 @@ uv run biominer run \
   --storage-backend s3 \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
-  --bioclip-model imageomics/bioclip-2.5-vith14
+  --vision-profile mac_m5pro_64gb \
+  --device mps \
+  --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
+  --delete-images-after-commit
 ```
 
 Individual `vision detect`, `vision score`, `vision ablate`, and `evidence join` commands are available for local stage debugging. They are not the production entry point; see `docs/vision_workflow.md` and `examples/species/papilio_demoleus/object_pipeline.md`.
@@ -202,7 +215,7 @@ BioMiner separates durable artifact storage from operational work state:
 - Postgres workstore rows for queues, API-call ledgers, completed keys, run state, shard inventory, and resume state;
 - explicit local filesystem and SQLite backends for tests and isolated development only.
 
-Production defaults are `BIOMINER_STORAGE_BACKEND=s3` and `BIOMINER_WORKSTORE_BACKEND=postgres`. Local filesystem + SQLite must be selected explicitly with local/dev config or `--storage-backend local --workstore-backend sqlite`. Workers write unique immutable Parquet shards such as `evidence/stage=poll_once/run_id=<run_id>/worker=<worker_id>/batch=<batch_id>.parquet`. See `docs/cloud_storage.md`.
+Production defaults are `BIOMINER_STORAGE_BACKEND=s3` and `BIOMINER_WORKSTORE_BACKEND=postgres`. Local filesystem + SQLite must be selected explicitly with local/dev config or `--storage-backend local --workstore-backend sqlite`. Workers write unique immutable Parquet shards such as `evidence/stage=poll_once/run_id=<run_id>/worker=<worker_id>/batch=<batch_id>.parquet`; visual detector and BioCLIP stages write zstd `part=<part_id>.parquet` outputs and register shards only after successful writes. See `docs/cloud_storage.md`.
 
 ## Requirements
 
@@ -213,7 +226,7 @@ Production defaults are `BIOMINER_STORAGE_BACKEND=s3` and `BIOMINER_WORKSTORE_BA
 - BioCLIP/OpenCLIP/PyTorch runtime only for Step 3.
 
 The standard GIL-enabled CPython 3.14 build is sufficient. Step 0 concurrency is network-I/O concurrency and does not require free-threaded Python.
-PyTorch is intentionally kept out of the main Python 3.14 BioMiner environment. Step 3 uses a separate Python 3.12 BioCLIP worker environment.
+PyTorch is intentionally kept out of the main Python 3.14 BioMiner environment. Step 3 uses separate Python 3.12 YOLOE-26 and BioCLIP worker environments.
 
 ## Installation
 
@@ -787,13 +800,13 @@ BioCLIP 2.5 Huge runs through a separate Python 3.12 sidecar environment:
 bash scripts/setup_bioclip25_user_py312.sh
 ```
 
-Verify the sidecar runtime without loading the model:
+Verify the sidecar runtime and BioCLIP model load:
 
 ```bash
-uv run biominer dev vision bioclip-runtime-check \
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision bioclip-runtime-check \
   --runtime-python "../BioCLIP25/venv/bin/python" \
   --hf-cache-dir "../BioCLIP25/cache/huggingface" \
-  --device auto
+  --device mps
 ```
 
 Prefetch the BioCLIP 2.5 Huge safetensors snapshot:
@@ -807,7 +820,7 @@ uv run biominer dev vision bioclip-prefetch-model \
 Run object-first scoring after `vision detect` has produced object detections:
 
 ```bash
-uv run biominer vision score \
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer vision score \
   --input staging/evidence/canonical_source_records.parquet \
   --detections staging/evidence/object_detections.parquet \
   --species-context staging/evidence/species_context.json \
@@ -815,7 +828,7 @@ uv run biominer vision score \
   --output staging/evidence/object_bioclip_scores.parquet \
   --runtime-python "../BioCLIP25/venv/bin/python" \
   --hf-cache-dir "../BioCLIP25/cache/huggingface" \
-  --device auto \
+  --device mps \
   --ablation-mode detector_crop
 ```
 
@@ -823,9 +836,9 @@ Rules:
 
 - use one persistent model worker per run;
 - download an image temporarily;
-- score whole-image, detector-crop, and detector-crop-segmentation visual modes through BioCLIP object scoring;
+- score detector-crop visual evidence through BioCLIP object scoring in production;
 - write object score rows;
-- delete the staged image;
+- delete the staged image only after committed detection, score, and evidence part outputs;
 - idempotently skip successful records by source/photo/image/model/checkpoint;
 - use fake classifiers in tests.
 

@@ -7,7 +7,9 @@ uv run biominer run \
   --taxon "Papilio demoleus" \
   --rank species \
   --registry-dir s3://biominer/biominer/registry/current \
-  --output-prefix s3://biominer/biominer/runs/papilio_demoleus
+  --output-prefix s3://biominer/biominer/runs/papilio_demoleus \
+  --vision-profile mac_m5pro_64gb \
+  --device mps
 ```
 
 `--rank` accepts `auto`, `family`, `genus`, or `species`. The run resolver reads the registry, resolves the accepted taxon, expands the species scope for family and genus runs, and writes that scope into the run manifest. Broad seed search is not a production mode; query work is compiled from the versioned registry.
@@ -58,7 +60,7 @@ Stage responsibilities:
 - `enqueue_flickr_work`: writes resumable Flickr work items into the workstore.
 - `poll_flickr`: fetches Flickr metadata, stores raw JSON audit payloads when configured, and writes canonical source records.
 - `detect_objects`: runs YOLOE/YOLO26-style object proposals over temporary image loads.
-- `score_bioclip`: scores whole-image, detector-crop, and detector-crop-segmentation visual evidence with BioCLIP 2.5 when the requested mode is available.
+- `score_bioclip`: scores BioCLIP 2.5 detector crops for `butterfly_like` detections. Whole-image and segmentation modes are explicit ablation/debug modes, not the production default.
 - `join_evidence`: joins canonical records, detections, and BioCLIP scores into object and photo evidence outputs.
 - `summarize`: writes run metrics, review queues, and report artifacts.
 
@@ -69,6 +71,8 @@ Canonical source records are keyed by `source` and `flickr_photo_id`. Repeated d
 Metadata filtering records metadata flags for review and routing. It does not perform final biological classification. Metadata flags are kept as evidence fields and cannot override hard-negative visual triage.
 
 BioCLIP is screening evidence only. The GBIF accepted taxonomic spine remains the production taxonomic identity, and geography is a candidate prior rather than validation.
+
+The Mac M5 Pro / 64 GB production profile is `mac_m5pro_64gb`. It uses `device=mps`, YOLOE checkpoint `yoloe-26s-seg.pt`, YOLO image size `768`, detector batch size `16`, BioCLIP crop batch size `24`, crop target `336`, crop padding `0.08`, zstd Parquet part files, and delete-after-commit cached image cleanup. Set `PYTORCH_ENABLE_MPS_FALLBACK=1` when running MPS sidecars.
 
 ## Outputs
 
@@ -88,4 +92,11 @@ stage statuses
 output artifact URIs
 ```
 
-Production artifacts are written as immutable Parquet and JSON objects under the configured S3 prefix. Workers must write unique shard paths rather than append to shared cloud files.
+Production artifacts are written as immutable Parquet and JSON objects under the configured S3 prefix. Workers must write unique shard paths rather than append to shared cloud files. Visual stages write zstd parts such as:
+
+```text
+evidence/stage=detect_objects/run_id=<run_id>/worker=<worker_id>/part=<part_id>.parquet
+evidence/stage=score_bioclip/run_id=<run_id>/worker=<worker_id>/part=<part_id>.parquet
+```
+
+The workstore registers only successfully written parts. Cached Flickr images are deleted after committed detection, score, and evidence outputs; failed score or part writes leave the cached image retryable.
