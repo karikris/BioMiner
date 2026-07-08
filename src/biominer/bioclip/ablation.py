@@ -30,6 +30,7 @@ def run_object_ablations(
     modes: tuple[AblationMode, ...],
     geo_prior_table: pl.DataFrame | None = None,
     parquet_batch_rows: int = 10000,
+    bioclip_batch_size: int = 24,
 ) -> AblationRunReport:
     base = Path(output_dir)
     base.mkdir(parents=True, exist_ok=True)
@@ -50,6 +51,7 @@ def run_object_ablations(
             ablation_mode=mode,
             geo_prior_table=geo_prior_table,
             parquet_batch_rows=parquet_batch_rows,
+            bioclip_batch_size=bioclip_batch_size,
         )
         frames.append(result.frame)
         score_batches_by_mode[mode] = result.score_batches_written

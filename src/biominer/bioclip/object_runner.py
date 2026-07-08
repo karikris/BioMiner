@@ -6,7 +6,7 @@ import hashlib
 from pathlib import Path
 from shutil import rmtree
 import tempfile
-from typing import Any, Iterable, Iterator, Literal, Protocol
+from typing import Any, Iterable, Iterator, Literal, Mapping, Protocol, Sequence
 
 import polars as pl
 
@@ -148,6 +148,13 @@ class ObjectEvidenceOutputs:
 
 
 @dataclass(frozen=True)
+class _ObjectScoringLabels:
+    family: tuple[str, ...]
+    genus: tuple[str, ...]
+    species: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class MaterializedCropInputs:
     rows: list[dict[str, Any]]
     crop_path_by_hash: dict[str, Path]
@@ -187,6 +194,16 @@ class FakeObjectBioClipScorer:
         scores = self.scores_by_crop.get(str(item.get("crop_hash") or ""), {})
         return {label: float(scores.get(label, 0.0)) for label in labels}
 
+    def score_label_sets_batch(
+        self,
+        items: Sequence[dict[str, Any]],
+        label_sets: Mapping[str, Sequence[str]],
+    ) -> dict[str, list[dict[str, float]]]:
+        return {
+            str(name): [self.score(item, tuple(str(label) for label in labels)) for item in items]
+            for name, labels in label_sets.items()
+        }
+
 
 class EphemeralCropBioClipScorer:
     def __init__(
@@ -223,12 +240,58 @@ class EphemeralCropBioClipScorer:
             raise TypeError("image_loader must return a DecodedImage")
         mode = _ablation_mode(item)
         data, width, height, content_hash = self._visual_input_for_mode(item=item, image=image, mode=mode)
-        crop_path = self._write_temp_ppm(data, width=width, height=height, crop_hash=f"{mode}:{content_hash}")
+        crop_path, retained = self._write_temp_ppm_for_score(data, width=width, height=height, crop_hash=f"{mode}:{content_hash}")
         try:
             return {str(label): float(score) for label, score in dict(self._scorer(crop_path, labels)).items()}
         finally:
-            if not self._should_retain_debug_crop():
+            if not retained:
                 crop_path.unlink(missing_ok=True)
+
+    def score_label_sets_batch(
+        self,
+        items: Sequence[dict[str, Any]],
+        label_sets: Mapping[str, Sequence[str]],
+    ) -> dict[str, list[dict[str, float]]]:
+        crop_paths: list[Path] = []
+        retained_paths: set[Path] = set()
+        try:
+            for item in items:
+                image = self._image_loader(item)
+                if not isinstance(image, DecodedImage):
+                    raise TypeError("image_loader must return a DecodedImage")
+                mode = _ablation_mode(item)
+                data, width, height, content_hash = self._visual_input_for_mode(item=item, image=image, mode=mode)
+                crop_path, retained = self._write_temp_ppm_for_score(
+                    data,
+                    width=width,
+                    height=height,
+                    crop_hash=f"{mode}:{content_hash}",
+                )
+                crop_paths.append(crop_path)
+                if retained:
+                    retained_paths.add(crop_path)
+
+            label_sets_by_name = {str(name): tuple(str(label) for label in labels) for name, labels in label_sets.items()}
+            batch_scorer = getattr(self._scorer, "score_label_sets_batch", None)
+            if callable(batch_scorer):
+                return _coerce_label_set_batch_scores(batch_scorer(crop_paths, label_sets_by_name), label_sets_by_name, len(crop_paths))
+            score_batch = getattr(self._scorer, "score_batch", None)
+            if callable(score_batch):
+                return {
+                    name: _coerce_score_batch(score_batch(crop_paths, labels), expected_count=len(crop_paths))
+                    for name, labels in label_sets_by_name.items()
+                }
+            return {
+                name: [
+                    {str(label): float(score) for label, score in dict(self._scorer(path, labels)).items()}
+                    for path in crop_paths
+                ]
+                for name, labels in label_sets_by_name.items()
+            }
+        finally:
+            for crop_path in crop_paths:
+                if crop_path not in retained_paths:
+                    crop_path.unlink(missing_ok=True)
 
     def supports_detector_crop_segmentation(self, item: dict[str, Any]) -> bool:
         return detector_crop_mask_available(item) or not isinstance(self._segmenter, NoneSegmenter)
@@ -259,17 +322,21 @@ class EphemeralCropBioClipScorer:
         return segmented, crop.crop_width, crop.crop_height, _bytes_hash(segmented)
 
     def _write_temp_ppm(self, data: bytes, *, width: int, height: int, crop_hash: str) -> Path:
+        path, _retained = self._write_temp_ppm_for_score(data, width=width, height=height, crop_hash=crop_hash)
+        return path
+
+    def _write_temp_ppm_for_score(self, data: bytes, *, width: int, height: int, crop_hash: str) -> tuple[Path, bool]:
         self._temp_dir.mkdir(parents=True, exist_ok=True)
         safe_hash = crop_hash.replace(":", "_").replace("/", "_")
         if self._should_retain_debug_crop():
             path = self._temp_dir / f"{safe_hash}.ppm"
             path.write_bytes(_ppm_bytes(data, width=width, height=height))
             self._debug_crops_written += 1
-            return path
+            return path, True
         handle = tempfile.NamedTemporaryFile(prefix=f"{safe_hash}_", suffix=".ppm", dir=self._temp_dir, delete=False)
         try:
             handle.write(_ppm_bytes(data, width=width, height=height))
-            return Path(handle.name)
+            return Path(handle.name), False
         finally:
             handle.close()
 
@@ -552,7 +619,10 @@ def screen_object_detections(
     detection_policy: DetectionPolicy | None = None,
     geo_prior_table: pl.DataFrame | None = None,
     parquet_batch_rows: int = 10000,
+    bioclip_batch_size: int = 24,
 ) -> ObjectScreenResult:
+    if bioclip_batch_size <= 0:
+        raise ValueError("bioclip_batch_size must be positive")
     records_by_photo = {
         (str(row.get("source") or ""), str(row.get("flickr_photo_id") or "")): row
         for row in canonical_records.to_dicts()
@@ -565,6 +635,43 @@ def screen_object_detections(
     crops_scored = 0
     segmentation_unavailable_count = 0
     segmentation_unavailable_reason: str | None = None
+    score_items: list[dict[str, Any]] = []
+    active_bioclip_batch_size = 1 if ablation_mode == "detector_crop_segmentation" else max(1, bioclip_batch_size)
+
+    def flush_score_items() -> None:
+        nonlocal crops_scored, segmentation_unavailable_count, segmentation_unavailable_reason
+        if not score_items:
+            return
+        items = list(score_items)
+        score_items.clear()
+        try:
+            score_rows = _score_detection_batch(
+                items=items,
+                context=species_context,
+                candidate_set=candidate_set,
+                scorer=scorer,
+                ablation_mode=ablation_mode,
+                geo_prior_table=geo_prior_table,
+            )
+        except SegmentationUnavailable as exc:
+            if ablation_mode != "detector_crop_segmentation":
+                raise
+            segmentation_unavailable_count += len(items)
+            segmentation_unavailable_reason = segmentation_unavailable_reason or str(exc) or "detector_masks_missing"
+            return
+        crops_scored += len(score_rows)
+        if output is None or batch_dir is None:
+            rows.extend(score_rows)
+            return
+        for score_row in score_rows:
+            _buffer_score_rows(
+                [score_row],
+                row_buffer=row_buffer,
+                batch_paths=batch_paths,
+                batch_dir=batch_dir,
+                parquet_batch_rows=parquet_batch_rows,
+            )
+
     try:
         for detection in detections.to_dicts():
             if not detection_is_bioclip_eligible(detection, detection_policy):
@@ -576,32 +683,10 @@ def screen_object_detections(
                 segmentation_unavailable_count += 1
                 segmentation_unavailable_reason = segmentation_unavailable_reason or "detector_masks_missing"
                 continue
-            try:
-                score_row = _score_detection(
-                    item=item,
-                    context=species_context,
-                    candidate_set=candidate_set,
-                    scorer=scorer,
-                    ablation_mode=ablation_mode,
-                    geo_prior_table=geo_prior_table,
-                )
-            except SegmentationUnavailable as exc:
-                if ablation_mode != "detector_crop_segmentation":
-                    raise
-                segmentation_unavailable_count += 1
-                segmentation_unavailable_reason = segmentation_unavailable_reason or str(exc) or "detector_masks_missing"
-                continue
-            crops_scored += 1
-            if output is None or batch_dir is None:
-                rows.append(score_row)
-            else:
-                _buffer_score_rows(
-                    [score_row],
-                    row_buffer=row_buffer,
-                    batch_paths=batch_paths,
-                    batch_dir=batch_dir,
-                    parquet_batch_rows=parquet_batch_rows,
-                )
+            score_items.append(item)
+            if len(score_items) >= active_bioclip_batch_size:
+                flush_score_items()
+        flush_score_items()
         if output is not None and batch_dir is not None:
             _flush_score_row_buffer(row_buffer=row_buffer, batch_paths=batch_paths, batch_dir=batch_dir)
             frame = _read_score_batches(batch_paths)
@@ -769,20 +854,10 @@ def _score_detection(
     ablation_mode: AblationMode,
     geo_prior_table: pl.DataFrame | None = None,
 ) -> dict[str, Any]:
-    species_labels = candidate_set.prompt_labels("species")
-    family_labels = tuple(_unique(candidate.family for candidate in candidate_set.family_candidates if candidate.family))
-    genus_labels = tuple(
-        _unique(
-            candidate.genus
-            for candidate in (*candidate_set.genus_candidates, *candidate_set.family_candidates)
-            if candidate.genus
-        )
-    )
-    family_scores = scorer.score(item, family_labels) if family_labels else {}
-    genus_scores = scorer.score(item, genus_labels) if genus_labels else {}
-    species_scores = scorer.score(item, species_labels)
-    ranked_families = _rank_labels(family_labels, family_scores)
-    ranked_genera = _rank_labels(genus_labels, genus_scores)
+    labels = _object_scoring_labels(candidate_set)
+    family_scores = scorer.score(item, labels.family) if labels.family else {}
+    genus_scores = scorer.score(item, labels.genus) if labels.genus else {}
+    species_scores = scorer.score(item, labels.species)
     ranked_species_top20 = _rank_species(candidate_set.species_candidates, species_scores)[:20]
     rerank_candidates = _species_rerank_candidates(
         candidate_set.species_candidates,
@@ -790,6 +865,109 @@ def _score_detection(
         target_scientific_name=context.scientific_name,
     )
     rerank_scores = scorer.score(item, _species_prompt_labels(rerank_candidates)) if rerank_candidates else {}
+    return _score_detection_from_scores(
+        item=item,
+        context=context,
+        candidate_set=candidate_set,
+        scorer=scorer,
+        ablation_mode=ablation_mode,
+        labels=labels,
+        family_scores=family_scores,
+        genus_scores=genus_scores,
+        ranked_species_top20=ranked_species_top20,
+        rerank_candidates=rerank_candidates,
+        rerank_scores=rerank_scores,
+        geo_prior_table=geo_prior_table,
+    )
+
+
+def _score_detection_batch(
+    *,
+    items: list[dict[str, Any]],
+    context: SpeciesContext,
+    candidate_set: CandidateSet,
+    scorer: ObjectBioClipScorer,
+    ablation_mode: AblationMode,
+    geo_prior_table: pl.DataFrame | None = None,
+) -> list[dict[str, Any]]:
+    if not items:
+        return []
+    labels = _object_scoring_labels(candidate_set)
+    initial_label_sets: dict[str, tuple[str, ...]] = {}
+    if labels.family:
+        initial_label_sets["family"] = labels.family
+    if labels.genus:
+        initial_label_sets["genus"] = labels.genus
+    initial_label_sets["species"] = labels.species
+    initial_scores = _score_label_sets_for_items(scorer, items, initial_label_sets)
+    ranked_species_top20_by_index: list[list[tuple[str, float]]] = []
+    rerank_candidates_by_index: list[tuple[CandidateTaxon, ...]] = []
+    rerank_scores_by_index: list[dict[str, float]] = [{} for _item in items]
+
+    for index, _item in enumerate(items):
+        ranked_species_top20 = _rank_species(candidate_set.species_candidates, initial_scores["species"][index])[:20]
+        ranked_species_top20_by_index.append(ranked_species_top20)
+        rerank_candidates_by_index.append(
+            _species_rerank_candidates(
+                candidate_set.species_candidates,
+                ranked_species_top20,
+                target_scientific_name=context.scientific_name,
+            )
+        )
+
+    rerank_groups: dict[tuple[str, ...], list[int]] = {}
+    for index, rerank_candidates in enumerate(rerank_candidates_by_index):
+        rerank_labels = _species_prompt_labels(rerank_candidates)
+        if rerank_labels:
+            rerank_groups.setdefault(rerank_labels, []).append(index)
+
+    for rerank_labels, indices in rerank_groups.items():
+        rerank_items = [items[index] for index in indices]
+        rerank_scores = _score_label_sets_for_items(scorer, rerank_items, {"rerank": rerank_labels})["rerank"]
+        for index, scores in zip(indices, rerank_scores, strict=True):
+            rerank_scores_by_index[index] = scores
+
+    rows: list[dict[str, Any]] = []
+    empty_scores = [{} for _item in items]
+    family_scores = initial_scores.get("family", empty_scores)
+    genus_scores = initial_scores.get("genus", empty_scores)
+    for index, item in enumerate(items):
+        rows.append(
+            _score_detection_from_scores(
+                item=item,
+                context=context,
+                candidate_set=candidate_set,
+                scorer=scorer,
+                ablation_mode=ablation_mode,
+                labels=labels,
+                family_scores=family_scores[index],
+                genus_scores=genus_scores[index],
+                ranked_species_top20=ranked_species_top20_by_index[index],
+                rerank_candidates=rerank_candidates_by_index[index],
+                rerank_scores=rerank_scores_by_index[index],
+                geo_prior_table=geo_prior_table,
+            )
+        )
+    return rows
+
+
+def _score_detection_from_scores(
+    *,
+    item: dict[str, Any],
+    context: SpeciesContext,
+    candidate_set: CandidateSet,
+    scorer: ObjectBioClipScorer,
+    ablation_mode: AblationMode,
+    labels: _ObjectScoringLabels,
+    family_scores: dict[str, float],
+    genus_scores: dict[str, float],
+    ranked_species_top20: list[tuple[str, float]],
+    rerank_candidates: tuple[CandidateTaxon, ...],
+    rerank_scores: dict[str, float],
+    geo_prior_table: pl.DataFrame | None,
+) -> dict[str, Any]:
+    ranked_families = _rank_labels(labels.family, family_scores)
+    ranked_genera = _rank_labels(labels.genus, genus_scores)
     ranked_species = _rank_species(rerank_candidates, rerank_scores) if rerank_candidates else ranked_species_top20
     target_score = _target_score(ranked_species, context.scientific_name)
     top1_name = ranked_species[0][0] if ranked_species else None
@@ -856,6 +1034,57 @@ def _score_detection(
         "occurrence_bin": bucket,
         "bin_reason": reason,
     }
+
+
+def _object_scoring_labels(candidate_set: CandidateSet) -> _ObjectScoringLabels:
+    return _ObjectScoringLabels(
+        family=tuple(_unique(candidate.family for candidate in candidate_set.family_candidates if candidate.family)),
+        genus=tuple(
+            _unique(
+                candidate.genus
+                for candidate in (*candidate_set.genus_candidates, *candidate_set.family_candidates)
+                if candidate.genus
+            )
+        ),
+        species=candidate_set.prompt_labels("species"),
+    )
+
+
+def _score_label_sets_for_items(
+    scorer: ObjectBioClipScorer,
+    items: Sequence[dict[str, Any]],
+    label_sets: Mapping[str, Sequence[str]],
+) -> dict[str, list[dict[str, float]]]:
+    label_sets_by_name = {str(name): tuple(str(label) for label in labels) for name, labels in label_sets.items()}
+    batch_scorer = getattr(scorer, "score_label_sets_batch", None)
+    if callable(batch_scorer):
+        return _coerce_label_set_batch_scores(batch_scorer(items, label_sets_by_name), label_sets_by_name, len(items))
+    return {
+        name: [scorer.score(item, labels) for item in items]
+        for name, labels in label_sets_by_name.items()
+    }
+
+
+def _coerce_label_set_batch_scores(
+    scores_by_label_set: Mapping[str, Sequence[Mapping[str, Any]]],
+    label_sets: Mapping[str, Sequence[str]],
+    expected_count: int,
+) -> dict[str, list[dict[str, float]]]:
+    output: dict[str, list[dict[str, float]]] = {}
+    for name in label_sets:
+        try:
+            raw_scores = list(scores_by_label_set[name])
+        except KeyError as exc:
+            raise ValueError(f"BioCLIP batch scorer did not return label set {name!r}") from exc
+        output[name] = _coerce_score_batch(raw_scores, expected_count=expected_count)
+    return output
+
+
+def _coerce_score_batch(scores_by_item: Sequence[Mapping[str, Any]], *, expected_count: int) -> list[dict[str, float]]:
+    scores = list(scores_by_item)
+    if len(scores) != expected_count:
+        raise ValueError(f"BioCLIP batch scorer returned {len(scores)} rows for {expected_count} images")
+    return [{str(label): float(score) for label, score in dict(row).items()} for row in scores]
 
 
 def _rank_species(candidates: tuple[CandidateTaxon, ...], scores: dict[str, float]) -> list[tuple[str, float]]:

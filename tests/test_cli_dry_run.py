@@ -1031,6 +1031,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "detector_crop",
             "--parquet-batch-rows",
             "7",
+            "--bioclip-batch",
+            "17",
             "--text-embedding-batch-size",
             "2",
             "--candidate-text-embedding-cache",
@@ -1059,6 +1061,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "whole_image,detector_crop,detector_crop_segmentation",
             "--parquet-batch-rows",
             "11",
+            "--bioclip-batch",
+            "19",
             "--text-embedding-batch-size",
             "3",
             "--candidate-text-embedding-cache",
@@ -1085,6 +1089,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "object_bioclip_scores.parquet",
             "--parquet-batch-rows",
             "9",
+            "--bioclip-batch",
+            "23",
             "--text-embedding-batch-size",
             "4",
             "--candidate-text-embedding-cache",
@@ -1111,6 +1117,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "ablations",
             "--parquet-batch-rows",
             "13",
+            "--bioclip-batch",
+            "29",
             "--text-embedding-batch-size",
             "5",
             "--candidate-text-embedding-cache",
@@ -1145,6 +1153,7 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert screen.ablation_mode == "detector_crop"
     assert screen.geo_prior_table == "geo_prior.parquet"
     assert screen.parquet_batch_rows == 7
+    assert screen.bioclip_batch == 17
     assert screen.text_embedding_batch_size == 2
     assert screen.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert screen.object_image_embedding_cache == "object_image_embeddings.parquet"
@@ -1154,6 +1163,7 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert ablate.modes == "whole_image,detector_crop,detector_crop_segmentation"
     assert ablate.geo_prior_table == "geo_prior.parquet"
     assert ablate.parquet_batch_rows == 11
+    assert ablate.bioclip_batch == 19
     assert ablate.text_embedding_batch_size == 3
     assert ablate.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert ablate.object_image_embedding_cache == "object_image_embeddings.parquet"
@@ -1162,6 +1172,7 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert vision_score.vision_command == "score"
     assert vision_score.geo_prior_table == "geo_prior.parquet"
     assert vision_score.parquet_batch_rows == 9
+    assert vision_score.bioclip_batch == 23
     assert vision_score.text_embedding_batch_size == 4
     assert vision_score.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert vision_score.object_image_embedding_cache == "object_image_embeddings.parquet"
@@ -1170,6 +1181,7 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert vision_ablate.vision_command == "ablate"
     assert vision_ablate.geo_prior_table == "geo_prior.parquet"
     assert vision_ablate.parquet_batch_rows == 13
+    assert vision_ablate.bioclip_batch == 29
     assert vision_ablate.text_embedding_batch_size == 5
     assert vision_ablate.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert vision_ablate.object_image_embedding_cache == "object_image_embeddings.parquet"
@@ -1433,6 +1445,8 @@ def test_bioclip_screen_objects_uses_embedding_caches_for_detector_crop_scoring(
             "mps",
             "--parquet-batch-rows",
             "3",
+            "--bioclip-batch",
+            "5",
             "--text-embedding-batch-size",
             "2",
             "--candidate-text-embedding-cache",
@@ -1466,6 +1480,7 @@ def test_bioclip_screen_objects_uses_embedding_caches_for_detector_crop_scoring(
     assert calls["screen"]["scorer"].model_id == "bioclip2_5"
     assert calls["screen"]["ablation_mode"] == "detector_crop"
     assert calls["screen"]["parquet_batch_rows"] == 3
+    assert calls["screen"]["bioclip_batch_size"] == 5
     assert calls["screen"]["geo_prior_table"].height == 1
     assert calls["candidate_set"]["geospatial_scope"] == str(geo_prior_path)
     assert calls["candidate_set"]["geo_prior_table"].height == 1
@@ -1550,6 +1565,8 @@ def test_bioclip_ablate_objects_forwards_parquet_batch_rows(tmp_path, capsys, mo
             "detector_crop",
             "--parquet-batch-rows",
             "2",
+            "--bioclip-batch",
+            "6",
             "--segmenter",
             "none",
         ]
@@ -1561,6 +1578,7 @@ def test_bioclip_ablate_objects_forwards_parquet_batch_rows(tmp_path, capsys, mo
     assert payload["score_batches_written"] == 2
     assert calls["closed"] is True
     assert calls["ablation"]["parquet_batch_rows"] == 2
+    assert calls["ablation"]["bioclip_batch_size"] == 6
     assert calls["ablation"]["modes"] == ("detector_crop",)
     assert calls["crop_scorer"]["segmenter"].backend == "none"
     assert calls["candidate_set"]["geo_prior_table"] is None

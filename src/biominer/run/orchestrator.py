@@ -818,6 +818,7 @@ class ProductionRunOrchestrator:
             scorer=self.object_scorer,
             output_dir=mode_output_dir,
             modes=_request_bioclip_modes(self.request),
+            bioclip_batch_size=self.request.vision_settings.crop_batch_size,
         )
         write_parquet(frame, plan.paths.object_scores_path)
         return StageExecutionResult(
@@ -1362,6 +1363,7 @@ def _score_object_visual_modes(
     scorer: Any,
     output_dir: Path,
     modes: tuple[Any, ...],
+    bioclip_batch_size: int = 24,
 ) -> tuple[Any, dict[str, Any]]:
     import polars as pl
     from biominer.bioclip.ablation import run_object_ablations
@@ -1374,6 +1376,7 @@ def _score_object_visual_modes(
         scorer=scorer,
         output_dir=output_dir,
         modes=modes,  # type: ignore[arg-type]
+        bioclip_batch_size=bioclip_batch_size,
     )
     frames = [
         pl.read_parquet(path)

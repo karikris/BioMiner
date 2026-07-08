@@ -155,6 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
     vision_score.add_argument("--crop-temp-dir", default="data/cache/object_crops")
     vision_score.add_argument("--crop-target-px", type=int, default=336)
     vision_score.add_argument("--crop-padding-ratio", type=float, default=0.12)
+    vision_score.add_argument("--bioclip-batch", type=int, default=24)
     vision_score.add_argument("--parquet-batch-rows", type=int, default=10000)
     vision_score.add_argument("--retain-debug-crops", action="store_true")
     vision_score.add_argument("--text-embedding-batch-size", type=int, default=256)
@@ -176,6 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
     vision_ablate.add_argument("--crop-temp-dir", default="data/cache/object_crops")
     vision_ablate.add_argument("--crop-target-px", type=int, default=336)
     vision_ablate.add_argument("--crop-padding-ratio", type=float, default=0.12)
+    vision_ablate.add_argument("--bioclip-batch", type=int, default=24)
     vision_ablate.add_argument("--parquet-batch-rows", type=int, default=10000)
     vision_ablate.add_argument("--retain-debug-crops", action="store_true")
     vision_ablate.add_argument("--text-embedding-batch-size", type=int, default=256)
@@ -1238,6 +1240,7 @@ def _run_yoloe26_prototype_run(args: argparse.Namespace) -> int:
             output_path=scores_path,
             ablation_mode=args.ablation_mode,
             parquet_batch_rows=args.parquet_batch_rows,
+            bioclip_batch_size=getattr(args, "bioclip_batch", 24),
         )
     finally:
         scorer.close()
@@ -1730,6 +1733,7 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
             ablation_mode=args.ablation_mode,
             geo_prior_table=geo_prior_table,
             parquet_batch_rows=args.parquet_batch_rows,
+            bioclip_batch_size=args.bioclip_batch,
         )
     finally:
         scorer.close()
@@ -1808,6 +1812,7 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
             modes=modes,  # type: ignore[arg-type]
             geo_prior_table=geo_prior_table,
             parquet_batch_rows=args.parquet_batch_rows,
+            bioclip_batch_size=args.bioclip_batch,
         )
     finally:
         scorer.close()

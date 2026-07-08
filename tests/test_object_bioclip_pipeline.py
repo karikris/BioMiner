@@ -600,6 +600,63 @@ def test_ephemeral_crop_bioclip_scorer_scores_temp_crop_and_deletes_file(tmp_pat
     assert list(tmp_path.iterdir()) == []
 
 
+def test_ephemeral_crop_bioclip_scorer_batches_label_sets_and_deletes_files(tmp_path) -> None:
+    calls: list[dict[str, object]] = []
+
+    class BatchPathScorer:
+        def score_label_sets_batch(self, image_paths, label_sets):  # noqa: ANN001, ANN202 - mirrors persistent scorer API.
+            paths = [Path(path) for path in image_paths]
+            calls.append(
+                {
+                    "paths": paths,
+                    "existing": [path.exists() for path in paths],
+                    "label_sets": {name: tuple(labels) for name, labels in label_sets.items()},
+                }
+            )
+            return {
+                name: [
+                    {label: (0.9 if label == "a photo of Danaus plexippus" else 0.1) for label in labels}
+                    for _path in paths
+                ]
+                for name, labels in label_sets.items()
+            }
+
+    crop_scorer = EphemeralCropBioClipScorer(
+        scorer=BatchPathScorer(),
+        image_loader=lambda item: _decoded_image(),
+        temp_dir=tmp_path,
+        crop_target_px=3,
+        model_id="bioclip2_5",
+        model_version="bioclip2_5_huge",
+        model_checkpoint="checkpoint-a",
+    )
+    items = [
+        {
+            "source": "flickr",
+            "flickr_photo_id": "photo-1",
+            "detection_id": "det-1",
+            "bbox_xyxy": [0.0, 0.0, 3.0, 3.0],
+        },
+        {
+            "source": "flickr",
+            "flickr_photo_id": "photo-1",
+            "detection_id": "det-2",
+            "bbox_xyxy": [1.0, 1.0, 4.0, 4.0],
+        },
+    ]
+
+    scores = crop_scorer.score_label_sets_batch(
+        items,
+        {"species": ("a photo of Danaus plexippus", "a photo of Danaus gilippus")},
+    )
+
+    assert scores["species"][0]["a photo of Danaus plexippus"] == 0.9
+    assert len(calls) == 1
+    assert calls[0]["existing"] == [True, True]
+    assert calls[0]["label_sets"] == {"species": ("a photo of Danaus plexippus", "a photo of Danaus gilippus")}
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_cached_object_embedding_scorer_scores_from_text_and_crop_embeddings() -> None:
     scorer = CachedObjectEmbeddingScorer(
         text_embeddings=pl.DataFrame(
@@ -951,6 +1008,86 @@ def test_object_bioclip_scores_detection_crops_with_join_keys(tmp_path) -> None:
     assert row["target_species_score"] == 0.82
     assert row["occurrence_bin"] == "gold"
     assert row["is_target_positive"] is True
+
+
+def test_object_bioclip_batches_label_set_scoring_by_crop_batch_size(tmp_path) -> None:
+    class BatchOnlyScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+
+        def score(self, item, labels):  # noqa: ANN001, ANN202 - proves the batch path is used.
+            raise AssertionError("object scoring should use score_label_sets_batch")
+
+        def score_label_sets_batch(self, items, label_sets):  # noqa: ANN001, ANN202 - mirrors object batch scorer API.
+            detection_ids = tuple(str(item["detection_id"]) for item in items)
+            self.calls.append((detection_ids, tuple(label_sets)))
+            return {
+                name: [
+                    {
+                        label: (
+                            0.82
+                            if label == "a photo of Danaus plexippus" and item["detection_id"] == "det-1"
+                            else 0.44
+                            if label == "a photo of Danaus plexippus"
+                            else 0.1
+                        )
+                        for label in labels
+                    }
+                    for item in items
+                ]
+                for name, labels in label_sets.items()
+            }
+
+    scorer = BatchOnlyScorer()
+
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections(),
+        species_context=_context(),
+        candidate_set=_fixture_candidate_set(),
+        scorer=scorer,
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+        bioclip_batch_size=2,
+    )
+
+    assert result.crops_scored == 2
+    assert result.frame.height == 2
+    assert scorer.calls == [
+        (("det-1", "det-2"), ("family", "genus", "species")),
+        (("det-1", "det-2"), ("rerank",)),
+    ]
+
+
+def test_object_bioclip_respects_bioclip_batch_size_for_label_set_scoring(tmp_path) -> None:
+    class BatchRecordingScorer(FakeObjectBioClipScorer):
+        def __init__(self) -> None:
+            super().__init__({"sha256:crop-1": {"a photo of Danaus plexippus": 0.82}})
+            self.initial_batches: list[tuple[str, ...]] = []
+
+        def score_label_sets_batch(self, items, label_sets):  # noqa: ANN001, ANN202 - mirrors object batch scorer API.
+            if "species" in label_sets:
+                self.initial_batches.append(tuple(str(item["detection_id"]) for item in items))
+            return super().score_label_sets_batch(items, label_sets)
+
+    scorer = BatchRecordingScorer()
+
+    screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections(),
+        species_context=_context(),
+        candidate_set=_fixture_candidate_set(),
+        scorer=scorer,
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+        bioclip_batch_size=1,
+    )
+
+    assert scorer.initial_batches == [("det-1",), ("det-2",)]
 
 
 def test_object_bioclip_skips_non_butterfly_detector_labels(tmp_path) -> None:

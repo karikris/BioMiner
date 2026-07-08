@@ -13,6 +13,7 @@ from biominer.bioclip.object_runner import (
     ObjectBioClipScorer,
     empty_object_score_frame,
     _score_detection,
+    _score_detection_batch,
     _scorer_supports_detector_crop_segmentation,
     _segmentation_status,
     _visual_mode_status,
@@ -180,6 +181,7 @@ def run_cloud_bioclip_batch(
     unavailable_by_mode: dict[str, int] = {}
     unavailable_reason_by_mode: dict[str, str | None] = {}
     detection_keys: set[tuple[str, str, str]] = set()
+    score_items_by_mode: dict[str, list[dict[str, Any]]] = {}
     for item in work_items:
         payload = item.get("payload")
         if not isinstance(payload, dict):
@@ -205,27 +207,44 @@ def run_cloud_bioclip_batch(
                 unavailable_reason_by_mode=unavailable_reason_by_mode,
             )
             continue
+        score_items_by_mode.setdefault(mode, []).append(score_item)
+
+    for mode, score_items in score_items_by_mode.items():
+        if mode == "detector_crop_segmentation":
+            for score_item in score_items:
+                try:
+                    score_row = _score_detection(
+                        item=score_item,
+                        context=species_context,
+                        candidate_set=candidate_set,
+                        scorer=scorer,
+                        ablation_mode=mode,  # type: ignore[arg-type]
+                        geo_prior_table=geo_prior_table,
+                    )
+                except SegmentationUnavailable as exc:
+                    _mark_unavailable(
+                        mode,
+                        reason=str(exc) or "detector_masks_missing",
+                        unavailable_by_mode=unavailable_by_mode,
+                        unavailable_reason_by_mode=unavailable_reason_by_mode,
+                    )
+                    continue
+                rows.append(score_row)
+                scored_by_mode[mode] = scored_by_mode.get(mode, 0) + 1
+            continue
         try:
-            score_row = _score_detection(
-                item=score_item,
+            score_rows = _score_detection_batch(
+                items=score_items,
                 context=species_context,
                 candidate_set=candidate_set,
                 scorer=scorer,
                 ablation_mode=mode,  # type: ignore[arg-type]
                 geo_prior_table=geo_prior_table,
             )
-        except SegmentationUnavailable as exc:
-            if mode != "detector_crop_segmentation":
-                raise
-            _mark_unavailable(
-                mode,
-                reason=str(exc) or "detector_masks_missing",
-                unavailable_by_mode=unavailable_by_mode,
-                unavailable_reason_by_mode=unavailable_reason_by_mode,
-            )
-            continue
-        rows.append(score_row)
-        scored_by_mode[mode] = scored_by_mode.get(mode, 0) + 1
+        except SegmentationUnavailable:
+            raise
+        rows.extend(score_rows)
+        scored_by_mode[mode] = scored_by_mode.get(mode, 0) + len(score_rows)
     frame = pl.DataFrame(rows) if rows else empty_object_score_frame()
     modes_requested = tuple(_unique(requested_modes))
     modes_scored = tuple(sorted(scored_by_mode))
