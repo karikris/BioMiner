@@ -17,6 +17,7 @@ if command -v sudo >/dev/null 2>&1 && [[ "${1:-}" == "sudo" ]]; then
 fi
 
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+  echo "WARNING: Python 3.12 was not found on PATH." >&2
   echo "Python 3.12 is required. Set PYTHON_BIN=/path/to/python3.12 if it is not on PATH." >&2
   exit 2
 fi
@@ -30,6 +31,7 @@ fi
 export HF_HOME="${CACHE}/huggingface"
 export HUGGINGFACE_HUB_CACHE="${CACHE}/huggingface/hub"
 export TORCH_HOME="${CACHE}/torch"
+export PYTORCH_ENABLE_MPS_FALLBACK="${PYTORCH_ENABLE_MPS_FALLBACK:-1}"
 
 "${VENV}/bin/python" -m pip install --upgrade pip wheel setuptools
 
@@ -65,12 +67,19 @@ Runtime base path:
 Runtime python:
   ${VENV}/bin/python
 
+Cache directories:
+  HF_HOME=${HF_HOME}
+  HUGGINGFACE_HUB_CACHE=${HUGGINGFACE_HUB_CACHE}
+  TORCH_HOME=${TORCH_HOME}
+  model dir=${MODELS}
+
 Environment hints:
   export HF_HOME="${HF_HOME}"
   export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE}"
   export TORCH_HOME="${TORCH_HOME}"
   export BIOMINER_BIOCLIP25_MODEL_DIR="${MODELS}"
   export BIOMINER_BASE_PATH="${BASE_PATH}"
+  export PYTORCH_ENABLE_MPS_FALLBACK="${PYTORCH_ENABLE_MPS_FALLBACK}"
 
 EOF
 
@@ -81,13 +90,17 @@ import importlib.metadata
 import platform
 import torch
 
+mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
 print("python", platform.python_version())
+print("runtime_python", __import__("sys").executable)
 print("torch", torch.__version__)
 print("cuda_available", torch.cuda.is_available())
-print("mps_available", hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
+print("mps_available", mps_available)
 for package in ("open_clip_torch", "huggingface_hub", "hf_xet"):
     try:
         print(package, importlib.metadata.version(package))
     except importlib.metadata.PackageNotFoundError:
         print(package, "not_installed")
+if platform.system() == "Darwin" and not mps_available:
+    print("WARNING: MPS is unavailable in this BioCLIP 2.5 runtime. Use --device cpu or fix the Python/PyTorch installation.")
 PY

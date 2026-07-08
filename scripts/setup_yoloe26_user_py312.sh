@@ -17,6 +17,7 @@ if command -v sudo >/dev/null 2>&1 && [[ "${1:-}" == "sudo" ]]; then
 fi
 
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+  echo "WARNING: Python 3.12 was not found on PATH." >&2
   echo "Python 3.12 is required. Set PYTHON_BIN=/path/to/python3.12 if it is not on PATH." >&2
   exit 2
 fi
@@ -31,6 +32,7 @@ export HF_HOME="${CACHE}/huggingface"
 export HUGGINGFACE_HUB_CACHE="${CACHE}/huggingface/hub"
 export TORCH_HOME="${CACHE}/torch"
 export YOLO_CONFIG_DIR="${CACHE}/ultralytics"
+export PYTORCH_ENABLE_MPS_FALLBACK="${PYTORCH_ENABLE_MPS_FALLBACK:-1}"
 
 "${VENV}/bin/python" -m pip install --upgrade pip wheel setuptools
 
@@ -67,6 +69,15 @@ Runtime base path:
 Runtime python:
   ${VENV}/bin/python
 
+Cache directories:
+  HF_HOME=${HF_HOME}
+  HUGGINGFACE_HUB_CACHE=${HUGGINGFACE_HUB_CACHE}
+  TORCH_HOME=${TORCH_HOME}
+  YOLO_CONFIG_DIR=${YOLO_CONFIG_DIR}
+  image cache=${CACHE}/images
+  object crop cache=${CACHE}/object_crops
+  model dir=${MODELS}
+
 Environment hints:
   export HF_HOME="${HF_HOME}"
   export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE}"
@@ -74,6 +85,7 @@ Environment hints:
   export YOLO_CONFIG_DIR="${YOLO_CONFIG_DIR}"
   export BIOMINER_YOLO26_MODEL_DIR="${MODELS}"
   export BIOMINER_BASE_PATH="${BASE_PATH}"
+  export PYTORCH_ENABLE_MPS_FALLBACK="${PYTORCH_ENABLE_MPS_FALLBACK}"
 
 EOF
 
@@ -84,12 +96,16 @@ import importlib.metadata
 import platform
 import torch
 
+mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
 print("python", platform.python_version())
+print("runtime_python", __import__("sys").executable)
 print("torch", torch.__version__)
 print("cuda_available", torch.cuda.is_available())
-print("mps_available", hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
+print("mps_available", mps_available)
 try:
     print("ultralytics", importlib.metadata.version("ultralytics"))
 except importlib.metadata.PackageNotFoundError:
     print("ultralytics", "not_installed")
+if platform.system() == "Darwin" and not mps_available:
+    print("WARNING: MPS is unavailable in this YOLOE-26 runtime. Use --device cpu or fix the Python/PyTorch installation.")
 PY

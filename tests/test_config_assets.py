@@ -116,6 +116,23 @@ def test_production_workflow_docs_exist_and_match_current_surface() -> None:
         assert expected in storage
 
 
+def test_mac_vision_setup_scripts_report_runtime_and_mps_contracts() -> None:
+    for script_path in (
+        Path("scripts/setup_yoloe26_user_py312.sh"),
+        Path("scripts/setup_bioclip25_user_py312.sh"),
+    ):
+        script = script_path.read_text(encoding="utf-8")
+        for expected in (
+            "WARNING: Python 3.12 was not found on PATH.",
+            "Runtime python:",
+            "Cache directories:",
+            "mps_available",
+            "WARNING: MPS is unavailable",
+            "PYTORCH_ENABLE_MPS_FALLBACK",
+        ):
+            assert expected in script
+
+
 def test_production_examples_cover_family_genus_species_runs() -> None:
     path = Path("examples/production_workflow.md")
     assert path.exists()
