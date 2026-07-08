@@ -151,6 +151,11 @@ def test_production_examples_cover_family_genus_species_runs() -> None:
         "--storage-backend s3",
         "--workstore-backend postgres",
         "--vision-backend yoloe26",
+        "bash scripts/setup_yoloe26_user_py312.sh",
+        "bash scripts/setup_bioclip25_user_py312.sh",
+        "PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision yoloe26-runtime-check",
+        "PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer vision screen",
+        "PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run",
         "imageomics/bioclip-2.5-vith14",
     ):
         assert expected in text

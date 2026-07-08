@@ -21,6 +21,58 @@ export PYTORCH_ENABLE_MPS_FALLBACK=1
 
 `FLICKR_SECRET_KEY` can be present for future signed Flickr operations, but current metadata polling uses `FLICKR_API_KEY`.
 
+## Mac M5 Pro Runtime Examples
+
+Install the optional Python 3.12 sidecar runtimes outside the main Python 3.14 environment:
+
+```bash
+bash scripts/setup_yoloe26_user_py312.sh
+bash scripts/setup_bioclip25_user_py312.sh
+```
+
+Check the YOLOE-26 and BioCLIP sidecars on Apple MPS:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision yoloe26-runtime-check \
+  --runtime-python "../YOLO26/venv/bin/python" \
+  --checkpoint yoloe-26s-seg.pt \
+  --device mps
+
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision bioclip-runtime-check \
+  --runtime-python "../BioCLIP25/venv/bin/python" \
+  --device mps
+```
+
+Run the integrated local detector-first screen:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer vision screen \
+  --input runs/local_debug/papilio_demoleus/canonical_source_records.parquet \
+  --output-dir runs/local_debug/papilio_demoleus/vision_screen \
+  --species-context runs/local_debug/papilio_demoleus/species_context.json \
+  --species-candidates data/registry/current/species_candidates.parquet \
+  --vision-profile mac_m5pro_64gb \
+  --device mps \
+  --delete-images-after-commit
+```
+
+Run the production detector-first workflow:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
+  --taxon "Papilio demoleus" \
+  --rank species \
+  --registry-dir s3://biominer/biominer/registry/current \
+  --output-prefix s3://biominer/biominer/runs/papilio_demoleus \
+  --storage-backend s3 \
+  --workstore-backend postgres \
+  --vision-backend yoloe26 \
+  --vision-profile mac_m5pro_64gb \
+  --device mps \
+  --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
+  --delete-images-after-commit
+```
+
 ## Species Run
 
 Use `--rank species` when the requested taxon is one accepted species. The run expands to one species context and compiles Flickr query definitions from enabled registry names for that species.
