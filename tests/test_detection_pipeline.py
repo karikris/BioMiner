@@ -365,45 +365,75 @@ def test_fake_detector_returns_multiple_rows_for_one_photo() -> None:
     assert detections[1][1].label == "caterpillar"
 
 
-def test_yoloe26_sidecar_detector_serializes_rgb_images_without_importing_ultralytics(monkeypatch) -> None:
+def test_yoloe26_sidecar_detector_serializes_rgb_images_without_importing_ultralytics(tmp_path) -> None:
     calls: dict[str, object] = {}
+    output_lines: list[str] = []
 
-    def fake_run(command, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors subprocess.run.
-        calls["command"] = command
-        calls["payload"] = json.loads(kwargs["input"])
-        calls["env"] = kwargs["env"]
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps(
-                {
-                    "metadata": {
-                        "backend": "yoloe26",
-                        "model_id": "yoloe26:yoloe-26s-seg",
-                        "model_version": "ultralytics:test",
-                        "checkpoint": "yoloe-26s-seg.pt",
+    class FakeStdin:
+        def write(self, text: str) -> int:
+            payload = json.loads(text)
+            calls["payload"] = payload
+            output_lines.append(
+                json.dumps(
+                    {
+                        "metadata": {
+                            "backend": "yoloe26",
+                            "model_id": "yoloe26:yoloe-26s-seg",
+                            "model_version": "ultralytics:test",
+                            "checkpoint": "yoloe-26s-seg.pt",
+                        },
+                        "detections": [
+                            [
+                                {
+                                    "label": "butterfly",
+                                    "score": 0.91,
+                                    "bbox_xyxy": [0.0, 0.0, 4.0, 2.0],
+                                    "objectness_score": 0.88,
+                                }
+                            ]
+                        ],
                     },
-                    "detections": [
-                        [
-                            {
-                                "label": "butterfly",
-                                "score": 0.91,
-                                "bbox_xyxy": [0.0, 0.0, 4.0, 2.0],
-                                "objectness_score": 0.88,
-                            }
-                        ]
-                    ]
-                }
-            ),
-            stderr="",
-        )
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+            return len(text)
 
-    monkeypatch.setattr("biominer.detection.yoloe26_detector.subprocess.run", fake_run)
-    detector = YoloE26SidecarObjectDetector(runtime_python="/tmp/vision-python", device="mps")
+        def flush(self) -> None:
+            return None
+
+    class FakeStdout:
+        def readline(self) -> str:
+            return output_lines.pop(0)
+
+    class FakeProcess:
+        stdin = FakeStdin()
+        stdout = FakeStdout()
+        stderr = None
+        returncode = None
+
+        def poll(self):  # noqa: ANN202
+            return self.returncode
+
+        def wait(self, timeout=None):  # noqa: ANN001, ANN202
+            self.returncode = 0
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+    def fake_popen(command, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors subprocess.Popen.
+        calls["command"] = command
+        calls["env"] = kwargs["env"]
+        return FakeProcess()
+
+    runtime_python = str(tmp_path / "YOLO26" / "venv" / "bin" / "python")
+    detector = YoloE26SidecarObjectDetector(runtime_python=runtime_python, device="mps", popen=fake_popen)
 
     detections = detector.detect_batch([_wide_white_image()])
 
     payload = calls["payload"]
-    assert calls["command"] == ["/tmp/vision-python", "-m", "biominer.detection.yoloe26_detector"]
+    assert calls["command"] == [runtime_python, "-m", "biominer.detection.yoloe26_detector", "--persistent"]
     assert payload["device"] == "mps"
     assert payload["checkpoint"] == "yoloe-26s-seg.pt"
     assert "butterfly" in payload["prompt_classes"]
