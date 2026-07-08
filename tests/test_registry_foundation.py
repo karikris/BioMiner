@@ -883,3 +883,72 @@ def test_compile_registry_fixture_keeps_query_ids_unique_for_repeated_name_ids(t
     assert not any(row["code"] == "normalized_name_collision" and row["subject"] == "lime butterfly" for row in qa)
     assert {"severity": "warning", "code": "weak_language_or_script_metadata", "subject": "Lime Butterfly"} in qa
     assert {"severity": "warning", "code": "missing_name_source_evidence", "subject": "Lime Butterfly"} in qa
+
+
+def test_compile_registry_fixture_warns_on_deterministic_language_script_mismatch(tmp_path) -> None:
+    source = tmp_path / "source.json"
+    output = tmp_path / "registry"
+    _write_fixture(source)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["names"].extend(
+        [
+            {
+                "accepted_taxon_key": "gbif:100",
+                "verbatim_name": "クジャクカジカ",
+                "display_name": "クジャクカジカ",
+                "language": "eng",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "vernacular",
+                "source": "fixture",
+                "source_record_id": "fixture:jpn-mistag",
+                "trust_tier": "T2",
+                "precision_tier": "medium",
+                "confidence": "medium",
+                "enabled": True,
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "verbatim_name": "Бычок-бабочка",
+                "display_name": "Бычок-бабочка",
+                "language": "eng",
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": "vernacular",
+                "source": "fixture",
+                "source_record_id": "fixture:rus-mistag",
+                "trust_tier": "T2",
+                "precision_tier": "medium",
+                "confidence": "medium",
+                "enabled": True,
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "verbatim_name": "正しい日本語",
+                "display_name": "正しい日本語",
+                "language": "jpn",
+                "script": "Jpan",
+                "region": "",
+                "bbox": "",
+                "name_class": "vernacular",
+                "source": "fixture",
+                "source_record_id": "fixture:jpn-ok",
+                "trust_tier": "T2",
+                "precision_tier": "medium",
+                "confidence": "medium",
+                "enabled": True,
+            },
+        ]
+    )
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = compile_registry_fixture(source, output, registry_version="test-registry")
+
+    qa = pl.read_parquet(output / "qa_findings.parquet").to_dicts()
+
+    assert manifest["qa_status"] == "passed"
+    assert {"severity": "warning", "code": "language_script_mismatch", "subject": "クジャクカジカ"} in qa
+    assert {"severity": "warning", "code": "language_script_mismatch", "subject": "Бычок-бабочка"} in qa
+    assert {"severity": "warning", "code": "language_script_mismatch", "subject": "正しい日本語"} not in qa

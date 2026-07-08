@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 
 from biominer.registry.enrichment import SpeciesContext
-from biominer.registry.normalize import normalize_name_key
+from biominer.registry.normalize import parse_language_tag, normalize_name_key
 
 
 HTTPGet = Callable[[str, dict[str, object]], dict[str, Any]]
@@ -713,17 +713,76 @@ class CatalogueOfLifeClient:
     def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
         payload = self._http_get("/dataset/3/nameusage/search", {"q": context.accepted_scientific_name, "limit": COL_NAME_USAGE_SEARCH_LIMIT})
         rows = _result_rows(payload)
+        accepted_name_key = normalize_name_key(context.accepted_scientific_name)
+        synonym_keys = {normalize_name_key(name) for name in context.current_names if normalize_name_key(name) != accepted_name_key}
+        coverage = {
+            "rows_fetched": len(rows),
+            "accepted_name_rows": 0,
+            "synonym_rows": 0,
+            "rejected_unmatched_rows": 0,
+            "vernacular_names_extracted": 0,
+            "vernaculars_with_language": 0,
+            "vernaculars_without_language": 0,
+            "disabled_candidate_rows": 0,
+        }
         assertions: list[dict[str, Any]] = []
         links: list[dict[str, Any]] = []
         for row in rows:
-            scientific_name = _first_string(row, "scientificName", "name", "canonicalName")
-            if scientific_name and scientific_name != context.accepted_scientific_name:
+            scientific_name = _col_scientific_name(row)
+            scientific_name_key = normalize_name_key(scientific_name)
+            if scientific_name_key == accepted_name_key:
+                match_method = "scientific_name"
+                match_confidence = "high"
+                lineage_check = "accepted_scientific_name"
+                coverage["accepted_name_rows"] += 1
+            elif scientific_name_key in synonym_keys:
+                match_method = "scientific_synonym"
+                match_confidence = "medium"
+                lineage_check = "scientific_synonym"
+                coverage["synonym_rows"] += 1
+            else:
+                coverage["rejected_unmatched_rows"] += 1
                 continue
             source_id = _first_string(row, "id", "key", "usageKey")
             if source_id:
-                links.append(_external_link(context, source="CoL", source_taxon_id=source_id, match_method="scientific_name"))
-            for vernacular in _vernacular_values(row):
-                assertions.append(_name_assertion(context, vernacular, source="CoL", source_record_id=f"col:{source_id}:vernacular:{vernacular}", trust_tier="T2"))
+                links.append(
+                    _external_link(
+                        context,
+                        source="CoL",
+                        source_taxon_id=source_id,
+                        match_method=match_method,
+                        match_confidence=match_confidence,
+                        lineage_check=lineage_check,
+                    )
+                )
+            for vernacular in _vernacular_entries(row):
+                language_tag = parse_language_tag(vernacular["language"])
+                language = language_tag.language
+                enabled = bool(language)
+                disabled_reason = "" if enabled else "missing_language"
+                if enabled:
+                    coverage["vernaculars_with_language"] += 1
+                else:
+                    coverage["vernaculars_without_language"] += 1
+                    coverage["disabled_candidate_rows"] += 1
+                coverage["vernacular_names_extracted"] += 1
+                assertions.append(
+                    _name_assertion(
+                        context,
+                        vernacular["name"],
+                        source="CoL",
+                        source_record_id=f"col:{source_id}:vernacular:{vernacular['name']}",
+                        language=language,
+                        script=language_tag.script,
+                        trust_tier="T2",
+                        confidence=match_confidence,
+                        enabled=enabled,
+                        review_state="accepted" if enabled else "candidate",
+                        disabled_reason=disabled_reason,
+                        source_taxon_id=source_id,
+                        lineage_check=lineage_check,
+                    )
+                )
             for synonym in _list_values(row, "synonyms"):
                 name = _first_string(synonym, "scientificName", "name", "canonicalName") if isinstance(synonym, dict) else str(synonym or "")
                 if name:
@@ -741,7 +800,7 @@ class CatalogueOfLifeClient:
                             confidence="medium",
                         )
                     )
-        return {"name_assertions": assertions, "external_links": links, "source_snapshots": [_snapshot("CoL", "checklistbank-dataset-3")]}
+        return {"name_assertions": assertions, "external_links": links, "source_snapshots": [_snapshot("CoL", "checklistbank-dataset-3")], "coverage": coverage}
 
 
 class ITISClient:
@@ -1525,14 +1584,22 @@ def _name_assertion(
     }
 
 
-def _external_link(context: SpeciesContext, *, source: str, source_taxon_id: str, match_method: str) -> dict[str, Any]:
+def _external_link(
+    context: SpeciesContext,
+    *,
+    source: str,
+    source_taxon_id: str,
+    match_method: str,
+    match_confidence: str = "high",
+    lineage_check: str = "accepted_taxon_key",
+) -> dict[str, Any]:
     return {
         "accepted_taxon_key": context.accepted_taxon_key,
         "source": source,
         "source_taxon_id": source_taxon_id,
         "match_method": match_method,
-        "match_confidence": "high",
-        "lineage_check": "accepted_taxon_key",
+        "match_confidence": match_confidence,
+        "lineage_check": lineage_check,
     }
 
 
@@ -1570,14 +1637,45 @@ def _list_values(row: dict[str, Any], key: str) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def _vernacular_values(row: dict[str, Any]) -> list[str]:
-    values: list[str] = []
+def _col_scientific_name(row: dict[str, Any]) -> str:
+    usage = row.get("usage")
+    if isinstance(usage, dict):
+        usage_name = usage.get("name")
+        if isinstance(usage_name, dict):
+            value = _first_string(usage_name, "scientificName", "name", "canonicalName")
+            if value:
+                return value
+        value = _first_string(usage, "scientificName", "name", "canonicalName", "label")
+        if value:
+            return value
+    return _first_string(row, "scientificName", "name", "canonicalName", "label")
+
+
+def _vernacular_entries(row: dict[str, Any]) -> list[dict[str, str]]:
+    values: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
     for key in ("vernacularNames", "commonNames", "names"):
         for item in _list_values(row, key):
             if isinstance(item, dict):
-                value = _first_string(item, "name", "vernacularName", "commonName")
+                name = _first_string(item, "name", "vernacularName", "commonName").strip()
+                language = _first_string(item, "language", "lang", "commonNameLanguage").strip()
             else:
-                value = str(item or "")
-            if value:
-                values.append(value)
+                name = str(item or "").strip()
+                language = ""
+            if not name:
+                continue
+            dedupe_key = (normalize_name_key(name), language.casefold())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            values.append({"name": name, "language": language, "source_field": key})
+    return values
+
+
+def _vernacular_values(row: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for item in _vernacular_entries(row):
+        value = item["name"]
+        if value:
+            values.append(value)
     return values

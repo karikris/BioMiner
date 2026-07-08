@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any
+import unicodedata
 
 import polars as pl
 
@@ -476,6 +477,12 @@ def _qa_findings(taxa: pl.DataFrame, names: pl.DataFrame, queries: pl.DataFrame,
             _finding("warning", "weak_language_or_script_metadata", str(name))
             for name in sorted(set(weak_metadata.select("display_name").to_series().to_list()))
         )
+        language_script_mismatch = [
+            str(row["display_name"])
+            for row in enabled.filter(pl.col("name_class").is_in(["vernacular", "vernacular_alias"])).select(["display_name", "language", "script"]).to_dicts()
+            if _has_language_script_mismatch(str(row["display_name"]), str(row["language"] or ""), str(row["script"] or ""))
+        ]
+        findings.extend(_finding("warning", "language_script_mismatch", str(name)) for name in sorted(set(language_script_mismatch)))
         missing_source = names.filter((pl.col("enabled")) & ((pl.col("source") == "") | (pl.col("source_record_id") == "")))
         findings.extend(
             _finding("warning", "missing_name_source_evidence", str(name))
@@ -491,6 +498,71 @@ def _qa_findings(taxa: pl.DataFrame, names: pl.DataFrame, queries: pl.DataFrame,
 
 def _finding(severity: str, code: str, subject: str) -> dict[str, str]:
     return {"severity": severity, "code": code, "subject": subject}
+
+
+CYRILLIC_LANGUAGE_CODES = {"bel", "bul", "kaz", "kir", "mkd", "mon", "rus", "srp", "tgk", "ukr"}
+ARABIC_SCRIPT_LANGUAGE_CODES = {"ara", "fas", "pus", "snd", "urd"}
+DEVANAGARI_LANGUAGE_CODES = {"hin", "mar", "nep", "san"}
+SCRIPT_LANGUAGE_REQUIREMENTS = {
+    "Arab": ARABIC_SCRIPT_LANGUAGE_CODES,
+    "Beng": {"ben"},
+    "Cyrl": CYRILLIC_LANGUAGE_CODES,
+    "Deva": DEVANAGARI_LANGUAGE_CODES,
+    "Hani": {"jpn", "kor", "lzh", "zho"},
+    "Jpan": {"jpn"},
+    "Kana": {"jpn"},
+    "Taml": {"tam"},
+    "Telu": {"tel"},
+}
+
+
+def _has_language_script_mismatch(display_name: str, language: str, script: str) -> bool:
+    implied_script = _implied_script(display_name)
+    if not implied_script:
+        return False
+    normalized_language = normalize_language_code(language)
+    allowed_languages = SCRIPT_LANGUAGE_REQUIREMENTS.get(implied_script)
+    if allowed_languages and normalized_language not in allowed_languages:
+        return True
+    if not script or implied_script == "Kana":
+        return False
+    expected_script = implied_script
+    return script != expected_script and normalized_language not in (allowed_languages or set())
+
+
+def _implied_script(value: str) -> str:
+    scripts: dict[str, int] = {}
+    for character in value:
+        if character.isspace() or character in "-'()":
+            continue
+        script = _script_from_unicode_name(unicodedata.name(character, ""))
+        if script:
+            scripts[script] = scripts.get(script, 0) + 1
+    if not scripts:
+        return ""
+    if scripts.get("Kana"):
+        return "Kana"
+    return max(scripts, key=scripts.get)
+
+
+def _script_from_unicode_name(character_name: str) -> str:
+    if "HIRAGANA" in character_name or "KATAKANA" in character_name:
+        return "Kana"
+    if "CJK UNIFIED" in character_name or "CJK COMPATIBILITY" in character_name:
+        return "Hani"
+    if "CYRILLIC" in character_name:
+        return "Cyrl"
+    if "ARABIC" in character_name:
+        return "Arab"
+    if "BENGALI" in character_name:
+        return "Beng"
+    if "TAMIL" in character_name:
+        return "Taml"
+    if "TELUGU" in character_name:
+        return "Telu"
+    if "DEVANAGARI" in character_name:
+        return "Deva"
+    return ""
 
 
 def _empty_qa_frame() -> pl.DataFrame:

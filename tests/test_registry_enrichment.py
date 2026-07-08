@@ -330,6 +330,122 @@ def test_catalogue_of_life_source_uses_non_truncating_search_limit() -> None:
     assert requests == [("/dataset/3/nameusage/search", {"q": "Papilio demoleus", "limit": 1000})]
 
 
+def test_catalogue_of_life_source_rejects_drift_and_preserves_vernacular_languages() -> None:
+    def fake_get(path, params):  # noqa: ANN001, ANN202 - source test double.
+        assert path == "/dataset/3/nameusage/search"
+        assert params == {"q": "Papilio demoleus", "limit": 1000}
+        return {
+            "result": [
+                {
+                    "id": "demoleus",
+                    "usage": {"name": {"scientificName": "Papilio demoleus"}},
+                    "vernacularNames": [
+                        {"name": "Lime Butterfly", "language": "eng"},
+                        {"name": "Schwalbenschwanz", "language": "deu"},
+                        {"name": "Ritariperhonen", "language": "fin"},
+                        {"name": "Untyped name"},
+                    ],
+                },
+                {
+                    "id": "machaon",
+                    "usage": {"name": {"scientificName": "Papilio machaon"}},
+                    "vernacularNames": [
+                        {"name": "Old World Swallowtail", "language": "eng"},
+                        {"name": "Makaonfjäril", "language": "swe"},
+                    ],
+                },
+                {
+                    "id": "sculpin",
+                    "usage": {"name": {"scientificName": "Hemilepidotus papilio"}},
+                    "vernacularNames": [
+                        {"name": "butterfly sculpin", "language": "eng"},
+                        {"name": "クジャクカジカ", "language": "jpn"},
+                        {"name": "Бычок-бабочка", "language": "rus"},
+                    ],
+                },
+            ]
+        }
+
+    result = CatalogueOfLifeClient(http_get=fake_get).enrich_species(_species_context())
+
+    assertions = sorted(result["name_assertions"], key=lambda row: row["display_name"])
+    assert [(row["display_name"], row["language"], row["script"], row["enabled"], row["disabled_reason"]) for row in assertions] == [
+        ("Lime Butterfly", "eng", "Latn", True, ""),
+        ("Ritariperhonen", "fin", "Latn", True, ""),
+        ("Schwalbenschwanz", "deu", "Latn", True, ""),
+        ("Untyped name", "", "", False, "missing_language"),
+    ]
+    assert {row["source_record_id"] for row in assertions} == {
+        "col:demoleus:vernacular:Lime Butterfly",
+        "col:demoleus:vernacular:Ritariperhonen",
+        "col:demoleus:vernacular:Schwalbenschwanz",
+        "col:demoleus:vernacular:Untyped name",
+    }
+    assert result["external_links"] == [
+        {
+            "accepted_taxon_key": "gbif:100",
+            "source": "CoL",
+            "source_taxon_id": "demoleus",
+            "match_method": "scientific_name",
+            "match_confidence": "high",
+            "lineage_check": "accepted_scientific_name",
+        }
+    ]
+    assert result["coverage"] == {
+        "rows_fetched": 3,
+        "accepted_name_rows": 1,
+        "synonym_rows": 0,
+        "rejected_unmatched_rows": 2,
+        "vernacular_names_extracted": 4,
+        "vernaculars_with_language": 3,
+        "vernaculars_without_language": 1,
+        "disabled_candidate_rows": 1,
+    }
+
+
+def test_catalogue_of_life_source_accepts_unambiguous_synonym_rows() -> None:
+    def fake_get(path, params):  # noqa: ANN001, ANN202 - source test double.
+        assert path == "/dataset/3/nameusage/search"
+        assert params == {"q": "Papilio demoleus", "limit": 1000}
+        return {
+            "result": [
+                {
+                    "id": "synonym-row",
+                    "usage": {"name": {"scientificName": "Princeps demoleus"}},
+                    "vernacularNames": [{"name": "Synonym Lime", "language": "eng"}],
+                }
+            ]
+        }
+
+    context = _species_context()
+    context = SpeciesContext(
+        accepted_taxon_key=context.accepted_taxon_key,
+        accepted_scientific_name=context.accepted_scientific_name,
+        family_key=context.family_key,
+        family=context.family,
+        genus_key=context.genus_key,
+        genus=context.genus,
+        current_names=("Papilio demoleus", "Princeps demoleus"),
+    )
+
+    result = CatalogueOfLifeClient(http_get=fake_get).enrich_species(context)
+
+    assert [(row["display_name"], row["language"], row["lineage_check"], row["confidence"]) for row in result["name_assertions"]] == [
+        ("Synonym Lime", "eng", "scientific_synonym", "medium")
+    ]
+    assert result["external_links"] == [
+        {
+            "accepted_taxon_key": "gbif:100",
+            "source": "CoL",
+            "source_taxon_id": "synonym-row",
+            "match_method": "scientific_synonym",
+            "match_confidence": "medium",
+            "lineage_check": "scientific_synonym",
+        }
+    ]
+    assert result["coverage"]["synonym_rows"] == 1
+
+
 def test_inaturalist_source_uses_non_truncating_taxa_page_size() -> None:
     requests = []
 
