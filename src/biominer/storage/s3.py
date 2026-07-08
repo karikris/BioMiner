@@ -108,10 +108,15 @@ class S3StorageBackend:
         return ParquetPartWrite(uri=uri, row_count=frame.height, byte_count=byte_count, compression=compression)
 
     def list_shards(self, prefix: str) -> list[str]:
+        if str(prefix).endswith(".parquet"):
+            return [str(prefix)] if self.exists(prefix) else []
         filesystem, path = self._filesystem_and_path(prefix)
         selector = self._pyarrow_fs().FileSelector(path, recursive=True)
-        infos = filesystem.get_file_info(selector)
-        return sorted(f"s3://{self.bucket}/{info.path}" for info in infos if info.is_file and info.path.endswith(".parquet"))
+        try:
+            infos = filesystem.get_file_info(selector)
+        except FileNotFoundError:
+            return []
+        return sorted(_file_info_s3_uri(self.bucket, info.path) for info in infos if info.is_file and info.path.endswith(".parquet"))
 
     def write_json(self, uri: str, payload: dict[str, Any]) -> str:
         filesystem, path = self._filesystem_and_path(uri)
@@ -184,6 +189,14 @@ def _split_s3_uri(uri: str) -> tuple[str, str]:
     if not bucket:
         raise ValueError(f"missing bucket in S3 URI: {uri!r}")
     return bucket, key
+
+
+def _file_info_s3_uri(bucket: str, path: str) -> str:
+    normalized = str(path).lstrip("/")
+    bucket_prefix = f"{bucket}/"
+    if normalized.startswith(bucket_prefix):
+        normalized = normalized.removeprefix(bucket_prefix)
+    return f"s3://{bucket}/{normalized}"
 
 
 def _write_frame(frame: pl.DataFrame, stream, *, compression: str | None) -> None:  # noqa: ANN001

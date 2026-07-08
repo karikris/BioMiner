@@ -190,6 +190,34 @@ def test_s3_storage_writes_zstd_parquet_parts(monkeypatch) -> None:
         backend.write_parquet_part(uri, pl.DataFrame({"photo_id": ["3"]}))
 
 
+def test_s3_storage_lists_shards_without_bucket_duplication(monkeypatch) -> None:
+    backend = S3StorageBackend(bucket="biominer", prefix="biominer")
+    filesystem = _FakeListingS3Filesystem(
+        [
+            "biominer/biominer/runs/run_id=run-1/staging/canonical_source_records.parquet",
+            "biominer/biominer/runs/run_id=run-1/staging/run_manifest.json",
+            "biominer/biominer/runs/run_id=run-2/staging/canonical_source_records.parquet",
+        ]
+    )
+    monkeypatch.setattr(backend, "_filesystem_and_path", lambda uri: (filesystem, "biominer/biominer/runs"))
+    monkeypatch.setattr(backend, "_pyarrow_fs", lambda: _FakePyArrowFs)
+
+    assert backend.list_shards("s3://biominer/biominer/runs") == [
+        "s3://biominer/biominer/runs/run_id=run-1/staging/canonical_source_records.parquet",
+        "s3://biominer/biominer/runs/run_id=run-2/staging/canonical_source_records.parquet",
+    ]
+    assert filesystem.selectors == [("biominer/biominer/runs", True)]
+
+
+def test_s3_storage_lists_missing_prefix_as_empty(monkeypatch) -> None:
+    backend = S3StorageBackend(bucket="biominer", prefix="biominer")
+    filesystem = _MissingListingS3Filesystem()
+    monkeypatch.setattr(backend, "_filesystem_and_path", lambda uri: (filesystem, "biominer/biominer/missing"))
+    monkeypatch.setattr(backend, "_pyarrow_fs", lambda: _FakePyArrowFs)
+
+    assert backend.list_shards("s3://biominer/biominer/missing") == []
+
+
 def test_uri_helpers_classify_and_join_paths(tmp_path) -> None:
     assert is_cloud_uri("s3://biominer/prefix/file.parquet")
     assert is_s3_uri("s3://biominer/prefix/file.parquet")
@@ -303,14 +331,48 @@ class _FakeS3Filesystem:
         import pyarrow.fs as pafs
 
         if path in self.existing_paths:
-            return _FakeFileInfo(type=pafs.FileType.File, size=self.stream.bytes_written)
-        return _FakeFileInfo(type=pafs.FileType.NotFound, size=None)
+            return _FakeFileInfo(type=pafs.FileType.File, size=self.stream.bytes_written, path=path)
+        return _FakeFileInfo(type=pafs.FileType.NotFound, size=None, path=path)
+
+
+class _FakeListingS3Filesystem:
+    def __init__(self, paths: list[str]) -> None:
+        self.paths = paths
+        self.selectors: list[tuple[str, bool]] = []
+
+    def get_file_info(self, selector: "_FakeFileSelector") -> list["_FakeFileInfo"]:
+        import pyarrow.fs as pafs
+
+        self.selectors.append((selector.base_dir, selector.recursive))
+        return [_FakeFileInfo(type=pafs.FileType.File, size=128, path=path) for path in self.paths]
+
+
+class _MissingListingS3Filesystem:
+    def get_file_info(self, selector: "_FakeFileSelector") -> list["_FakeFileInfo"]:
+        raise FileNotFoundError(selector.base_dir)
+
+
+class _FakeFileSelector:
+    def __init__(self, base_dir: str, *, recursive: bool) -> None:
+        self.base_dir = base_dir
+        self.recursive = recursive
+
+
+class _FakePyArrowFs:
+    FileSelector = _FakeFileSelector
 
 
 class _FakeFileInfo:
-    def __init__(self, *, type, size: int | None) -> None:  # noqa: A002, ANN001
+    def __init__(self, *, type, size: int | None, path: str = "") -> None:  # noqa: A002, ANN001
         self.type = type
         self.size = size
+        self.path = path
+
+    @property
+    def is_file(self) -> bool:
+        import pyarrow.fs as pafs
+
+        return self.type == pafs.FileType.File
 
 
 class _FakeOutputStream:
