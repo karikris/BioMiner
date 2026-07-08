@@ -11,6 +11,7 @@ import biominer.detection.yoloe26_detector as yoloe26_module
 from biominer.detection.detector_base import COARSE_DETECTOR_LABELS, DecodedImage, DetectionCandidate
 from biominer.detection.yoloe26_detector import (
     DEFAULT_YOLOE26_PROMPTS,
+    YoloE26SidecarObjectDetector,
     detections_from_yoloe_result,
     default_yoloe26_prompts,
     yoloe26_coarse_label,
@@ -152,6 +153,66 @@ def test_yoloe26_persistent_sidecar_reports_json_errors(monkeypatch) -> None:
     assert payload["error_type"] == "RuntimeError"
 
 
+def test_yoloe26_sidecar_detector_reuses_one_process_for_multiple_batches(tmp_path) -> None:
+    factory = _FakePopenFactory()
+    detector = YoloE26SidecarObjectDetector(
+        runtime_python=str(tmp_path / "YOLO26" / "venv" / "bin" / "python"),
+        checkpoint="yoloe-26s-seg.pt",
+        device="mps",
+        imgsz=768,
+        popen=factory,
+    )
+
+    first = detector.detect_batch([_decoded_image()])
+    second = detector.detect_batch([_decoded_image()])
+    detector.close()
+
+    assert len(factory.processes) == 1
+    assert factory.processes[0].args[-1] == "--persistent"
+    assert first[0][0].label == "butterfly_like"
+    assert second[0][0].score == 0.91
+    assert detector.model_id == "fake-yoloe26"
+    assert detector.model_version == "ultralytics:fake"
+    assert any(json.loads(line).get("shutdown") is True for line in factory.processes[0].writes)
+    assert factory.processes[0].returncode == 0
+
+
+def test_yoloe26_sidecar_detector_closes_from_context_manager(tmp_path) -> None:
+    factory = _FakePopenFactory()
+    with YoloE26SidecarObjectDetector(
+        runtime_python=str(tmp_path / "YOLO26" / "venv" / "bin" / "python"),
+        popen=factory,
+    ) as detector:
+        detector.detect_batch([_decoded_image()])
+
+    assert len(factory.processes) == 1
+    assert any(json.loads(line).get("shutdown") is True for line in factory.processes[0].writes)
+
+
+def test_yoloe26_sidecar_detector_raises_worker_errors(tmp_path) -> None:
+    factory = _FakePopenFactory(error_payload={"error": "bad request", "error_type": "ValueError"})
+    detector = YoloE26SidecarObjectDetector(
+        runtime_python=str(tmp_path / "YOLO26" / "venv" / "bin" / "python"),
+        popen=factory,
+    )
+
+    with pytest.raises(RuntimeError, match="ValueError.*bad request"):
+        detector.detect_batch([_decoded_image()])
+
+    detector.close()
+
+
+def test_yoloe26_sidecar_detector_fails_clearly_when_process_exits(tmp_path) -> None:
+    factory = _FakePopenFactory(exited=True)
+    detector = YoloE26SidecarObjectDetector(
+        runtime_python=str(tmp_path / "YOLO26" / "venv" / "bin" / "python"),
+        popen=factory,
+    )
+
+    with pytest.raises(RuntimeError, match="exited early"):
+        detector.detect_batch([_decoded_image()])
+
+
 def _persistent_request(**overrides: object) -> dict[str, object]:
     image = DecodedImage(width=1, height=1, mode="RGB", data=b"\x00\x00\x00", source_uri="memory://image")
     request: dict[str, object] = {
@@ -168,6 +229,10 @@ def _persistent_request(**overrides: object) -> dict[str, object]:
     return request
 
 
+def _decoded_image() -> DecodedImage:
+    return DecodedImage(width=1, height=1, mode="RGB", data=b"\x00\x00\x00", source_uri="memory://image")
+
+
 def _run_persistent_worker_with_requests(monkeypatch, detector_class, requests: list[dict[str, object]]) -> io.StringIO:  # noqa: ANN001
     stdin = io.StringIO("".join(json.dumps(request, sort_keys=True) + "\n" for request in requests))
     stdout = io.StringIO()
@@ -176,6 +241,99 @@ def _run_persistent_worker_with_requests(monkeypatch, detector_class, requests: 
     monkeypatch.setattr(sys, "stdout", stdout)
     yoloe26_module._run_persistent_sidecar()
     return stdout
+
+
+class _FakePopenFactory:
+    def __init__(self, *, error_payload: dict[str, object] | None = None, exited: bool = False) -> None:
+        self.error_payload = error_payload
+        self.exited = exited
+        self.processes: list[_FakeProcess] = []
+
+    def __call__(self, args, **_kwargs) -> "_FakeProcess":  # noqa: ANN001
+        process = _FakeProcess(args=list(args), error_payload=self.error_payload, exited=self.exited)
+        self.processes.append(process)
+        return process
+
+
+class _FakeProcess:
+    def __init__(self, *, args: list[str], error_payload: dict[str, object] | None, exited: bool) -> None:
+        self.args = args
+        self.error_payload = error_payload
+        self.returncode = 17 if exited else None
+        self.writes: list[str] = []
+        self.output_lines: list[str] = []
+        self.stdin = _FakeStdin(self)
+        self.stdout = _FakeStdout(self)
+        self.stderr = io.StringIO("sidecar stderr tail\n" if exited else "")
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout=None) -> int:  # noqa: ANN001
+        self.returncode = 0 if self.returncode is None else self.returncode
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = -15
+
+
+class _FakeStdin:
+    def __init__(self, process: _FakeProcess) -> None:
+        self.process = process
+
+    def write(self, text: str) -> int:
+        for raw_line in text.splitlines():
+            self.process.writes.append(raw_line)
+            payload = json.loads(raw_line)
+            if payload.get("shutdown"):
+                self.process.returncode = 0
+                continue
+            if self.process.error_payload is not None:
+                self.process.output_lines.append(json.dumps(self.process.error_payload, sort_keys=True) + "\n")
+                continue
+            self.process.output_lines.append(
+                json.dumps(
+                    {
+                        "backend": "yoloe26",
+                        "model_id": "fake-yoloe26",
+                        "model_version": "ultralytics:fake",
+                        "checkpoint": payload["checkpoint"],
+                        "metadata": {
+                            "backend": "yoloe26",
+                            "model_id": "fake-yoloe26",
+                            "model_version": "ultralytics:fake",
+                            "checkpoint": payload["checkpoint"],
+                        },
+                        "detections": [
+                            [
+                                {
+                                    "label": "butterfly_like",
+                                    "score": 0.91,
+                                    "bbox_xyxy": [0.0, 0.0, 1.0, 1.0],
+                                    "objectness_score": 0.91,
+                                }
+                            ]
+                            for _image in payload["images"]
+                        ],
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+        return len(text)
+
+    def flush(self) -> None:
+        return None
+
+
+class _FakeStdout:
+    def __init__(self, process: _FakeProcess) -> None:
+        self.process = process
+
+    def readline(self) -> str:
+        if not self.process.output_lines:
+            return ""
+        return self.process.output_lines.pop(0)
 
 
 class _FakeResult:

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import base64
+from collections import deque
 import json
 import os
 from pathlib import Path
 import subprocess
-from typing import Any, Sequence
+from threading import Thread
+from typing import IO, Any, Callable, Sequence
 
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, detector_label_is_taxon_like
 from biominer.runtime_paths import YOLOE26_DIR
 
+
+PopenFactory = Callable[..., subprocess.Popen[str]]
 
 DEFAULT_YOLOE26_CHECKPOINT = "yoloe-26s-seg.pt"
 ALLOWED_YOLOE26_CHECKPOINTS = (
@@ -148,6 +152,7 @@ class YoloE26SidecarObjectDetector:
         iou: float = 0.50,
         max_det: int = 8,
         prompt_classes: Sequence[str] | None = None,
+        popen: PopenFactory = subprocess.Popen,
     ) -> None:
         _validate_checkpoint(checkpoint)
         self.runtime_python = str(Path(runtime_python).expanduser())
@@ -160,8 +165,22 @@ class YoloE26SidecarObjectDetector:
         self.prompt_classes = tuple(prompt_classes or default_yoloe26_prompts())
         self.model_id = f"yoloe26:{Path(checkpoint).stem}"
         self.model_version = "ultralytics:unknown"
+        self.popen = popen
+        self._process: subprocess.Popen[str] | None = None
+        self._stdin: IO[str] | None = None
+        self._stdout: IO[str] | None = None
+        self._stderr_lines: deque[str] = deque(maxlen=50)
+        self._stderr_thread: Thread | None = None
+
+    def __enter__(self) -> "YoloE26SidecarObjectDetector":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:  # noqa: ANN001 - context manager protocol.
+        self.close()
 
     def detect_batch(self, images: Sequence[DecodedImage]) -> list[list[DetectionCandidate]]:
+        if not images:
+            return []
         payload = {
             "checkpoint": self.checkpoint,
             "device": self.device,
@@ -172,23 +191,75 @@ class YoloE26SidecarObjectDetector:
             "prompt_classes": list(self.prompt_classes),
             "images": [_image_to_payload(image) for image in images],
         }
-        result = subprocess.run(
-            [self.runtime_python, "-m", "biominer.detection.yoloe26_detector"],
-            input=json.dumps(payload, sort_keys=True),
-            text=True,
-            capture_output=True,
-            cwd=str(_sidecar_cwd(self.runtime_python)),
-            env=_sidecar_env(self.runtime_python),
-            check=False,
-        )
-        if result.returncode != 0:
-            error = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
-            raise RuntimeError(f"YOLOE-26 sidecar detection failed: {error}")
-        response = json.loads(result.stdout or "{}")
-        metadata = response.get("metadata") or {}
-        self.model_id = str(metadata.get("model_id") or self.model_id)
-        self.model_version = str(metadata.get("model_version") or self.model_version)
+        response = self._request(payload)
         return _detections_from_payload(response)
+
+    def close(self) -> None:
+        process = self._process
+        if process is None:
+            return
+        if process.poll() is None and self._stdin is not None:
+            try:
+                self._stdin.write(json.dumps({"shutdown": True}, sort_keys=True) + "\n")
+                self._stdin.flush()
+                process.wait(timeout=10)
+            except Exception:  # noqa: BLE001 - close must not mask caller errors.
+                process.terminate()
+                process.wait(timeout=10)
+        self._process = None
+        self._stdin = None
+        self._stdout = None
+
+    def _request(self, payload: dict[str, object]) -> dict[str, object]:
+        process = self._ensure_process()
+        if process.poll() is not None:
+            raise RuntimeError(_sidecar_exit_message("YOLOE-26 persistent sidecar exited early", process, self._stderr_tail()))
+        assert self._stdin is not None
+        assert self._stdout is not None
+        try:
+            self._stdin.write(json.dumps(payload, sort_keys=True) + "\n")
+            self._stdin.flush()
+        except BrokenPipeError as exc:
+            raise RuntimeError(_sidecar_exit_message("YOLOE-26 persistent sidecar pipe closed", process, self._stderr_tail())) from exc
+        line = self._stdout.readline()
+        if not line:
+            raise RuntimeError(_sidecar_exit_message("YOLOE-26 persistent sidecar closed stdout before returning detections", process, self._stderr_tail()))
+        response = json.loads(line)
+        if "error" in response:
+            error_type = str(response.get("error_type") or "error")
+            raise RuntimeError(f"YOLOE-26 sidecar detection failed ({error_type}): {response['error']}")
+        metadata = response.get("metadata") or response
+        if isinstance(metadata, dict):
+            self.model_id = str(metadata.get("model_id") or self.model_id)
+            self.model_version = str(metadata.get("model_version") or self.model_version)
+            self.checkpoint = str(metadata.get("checkpoint") or self.checkpoint)
+        return response
+
+    def _ensure_process(self) -> subprocess.Popen[str]:
+        if self._process is None:
+            process = self.popen(
+                [self.runtime_python, "-m", "biominer.detection.yoloe26_detector", "--persistent"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                cwd=str(_sidecar_cwd(self.runtime_python)),
+                env=_sidecar_env(self.runtime_python),
+            )
+            if process.stdin is None or process.stdout is None:
+                process.terminate()
+                raise RuntimeError("YOLOE-26 persistent sidecar did not expose stdin/stdout pipes")
+            self._process = process
+            self._stdin = process.stdin
+            self._stdout = process.stdout
+            if process.stderr is not None:
+                self._stderr_thread = Thread(target=_drain_stderr, args=(process.stderr, self._stderr_lines), daemon=True)
+                self._stderr_thread.start()
+        return self._process
+
+    def _stderr_tail(self) -> str:
+        return "\n".join(self._stderr_lines)
 
 
 def detections_from_yoloe_result(result: object, *, prompt_classes: Sequence[str] | None = None) -> list[DetectionCandidate]:
@@ -213,6 +284,24 @@ def detections_from_yoloe_result(result: object, *, prompt_classes: Sequence[str
             )
         )
     return rows
+
+
+def _drain_stderr(stderr: IO[str], lines: deque[str]) -> None:
+    try:
+        for line in stderr:
+            stripped = line.rstrip()
+            if stripped:
+                lines.append(stripped)
+    except Exception:  # noqa: BLE001 - diagnostic drain must not affect worker requests.
+        return
+
+
+def _sidecar_exit_message(prefix: str, process: subprocess.Popen[str], stderr_tail: str) -> str:
+    code = process.poll()
+    message = f"{prefix} with code {code}"
+    if stderr_tail:
+        message = f"{message}: {stderr_tail}"
+    return message
 
 
 def _run_sidecar() -> None:
