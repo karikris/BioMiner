@@ -17,6 +17,7 @@ from biominer.bioclip.object_runner import (
     PRIMARY_VISUAL_CLASSIFIER,
     apply_geospatial_soft_prior,
     empty_object_score_frame,
+    iter_materialized_detector_crop_batches,
     materialize_detector_crop_inputs,
     screen_object_detections,
     write_object_evidence_outputs,
@@ -664,6 +665,105 @@ def test_materialized_object_embedding_crops_are_cleaned_when_image_loading_fail
         )
 
     assert not (tmp_path / ".object_image_embedding_cache.tmp").exists()
+
+
+def test_materialized_detector_crop_batches_default_to_24_and_clean_between_batches(tmp_path) -> None:
+    base_detection = _detections().to_dicts()[0]
+    detections = pl.DataFrame(
+        [
+            {
+                **base_detection,
+                "detection_id": f"det-{index:02d}",
+                "crop_hash": f"sha256:crop-{index:02d}",
+            }
+            for index in range(25)
+        ]
+    )
+    loaded_for: list[str] = []
+
+    def image_loader(item: dict[str, object]) -> DecodedImage:
+        loaded_for.append(str(item["detection_id"]))
+        return _decoded_image()
+
+    batch_sizes: list[int] = []
+    batch_dirs: list[Path] = []
+    previous_dir: Path | None = None
+    for batch in iter_materialized_detector_crop_batches(
+        canonical_records=_canonical_records(),
+        detections=detections,
+        image_loader=image_loader,
+        temp_dir=tmp_path,
+        crop_target_px=3,
+    ):
+        if previous_dir is not None:
+            assert not previous_dir.exists()
+        assert batch.temp_dir.exists()
+        assert all(path.exists() for path in batch.crop_paths)
+        assert all(item["crop_path"].exists() for item in batch.items)
+        assert all(Path(row["crop_path"]).exists() for row in batch.rows)
+        assert all(item["title"] == "monarch butterfly on milkweed" for item in batch.items)
+        assert all(item["crop_padding_ratio"] == 0.08 for item in batch.items)
+        assert all(item["crop_width"] == 3 and item["crop_height"] == 3 for item in batch.items)
+        batch_sizes.append(len(batch.items))
+        batch_dirs.append(batch.temp_dir)
+        previous_dir = batch.temp_dir
+
+    assert batch_sizes == [24, 1]
+    assert loaded_for == ["det-00", "det-24"]
+    assert all(not path.exists() for path in batch_dirs)
+
+
+def test_materialized_detector_crop_batches_skip_noneligible_without_image_load(tmp_path) -> None:
+    eligible = _detections().to_dicts()[0]
+    noneligible = {
+        **eligible,
+        "flickr_photo_id": "photo-without-canonical-record",
+        "detection_id": "moth-1",
+        "detector_label": "moth_like",
+        "bbox_xyxy": [],
+    }
+    loaded_for: list[str] = []
+    seen_batches: list[list[str]] = []
+
+    def image_loader(item: dict[str, object]) -> DecodedImage:
+        loaded_for.append(str(item["detection_id"]))
+        return _decoded_image()
+
+    for batch in iter_materialized_detector_crop_batches(
+        canonical_records=_canonical_records(),
+        detections=pl.DataFrame([noneligible, eligible]),
+        image_loader=image_loader,
+        temp_dir=tmp_path,
+        detection_policy=DetectionPolicy(bioclip_eligible_labels=("butterfly_like",)),
+        crop_target_px=3,
+    ):
+        seen_batches.append([str(item["detection_id"]) for item in batch.items])
+
+    assert loaded_for == ["det-1"]
+    assert seen_batches == [["det-1"]]
+
+
+def test_materialized_detector_crop_batches_retain_debug_crops_when_requested(tmp_path) -> None:
+    retained_batches = list(
+        iter_materialized_detector_crop_batches(
+            canonical_records=_canonical_records(),
+            detections=_detections().head(1),
+            image_loader=lambda item: _decoded_image(),
+            temp_dir=tmp_path,
+            crop_batch_size=1,
+            crop_target_px=3,
+            retain_debug_crops=True,
+        )
+    )
+
+    assert len(retained_batches) == 1
+    batch = retained_batches[0]
+    assert batch.temp_dir.exists()
+    assert all(path.exists() for path in batch.crop_paths)
+
+    batch.cleanup(force=True)
+
+    assert not batch.temp_dir.exists()
 
 
 def test_screen_object_detections_passes_ablation_mode_to_scorer(tmp_path) -> None:

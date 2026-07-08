@@ -6,7 +6,7 @@ import hashlib
 from pathlib import Path
 from shutil import rmtree
 import tempfile
-from typing import Any, Iterable, Literal, Protocol
+from typing import Any, Iterable, Iterator, Literal, Protocol
 
 import polars as pl
 
@@ -155,6 +155,23 @@ class MaterializedCropInputs:
 
     def cleanup(self) -> None:
         if self.temp_dir.exists():
+            rmtree(self.temp_dir)
+
+
+@dataclass(frozen=True)
+class MaterializedCropBatch:
+    items: list[dict[str, Any]]
+    rows: list[dict[str, Any]]
+    crop_path_by_hash: dict[str, Path]
+    temp_dir: Path
+    retain_debug_crops: bool = False
+
+    @property
+    def crop_paths(self) -> list[Path]:
+        return list(self.crop_path_by_hash.values())
+
+    def cleanup(self, *, force: bool = False) -> None:
+        if self.temp_dir.exists() and (force or not self.retain_debug_crops):
             rmtree(self.temp_dir)
 
 
@@ -362,6 +379,165 @@ def materialize_detector_crop_inputs(
             rmtree(base)
         raise
     return MaterializedCropInputs(rows=rows, crop_path_by_hash=crop_path_by_hash, temp_dir=base)
+
+
+def iter_materialized_detector_crop_batches(
+    *,
+    canonical_records: pl.DataFrame,
+    detections: pl.DataFrame,
+    image_loader: Any,
+    temp_dir: str | Path,
+    detection_policy: DetectionPolicy | None = None,
+    crop_batch_size: int = 24,
+    crop_padding_ratio: float = 0.08,
+    crop_target_px: int = 336,
+    retain_debug_crops: bool = False,
+) -> Iterator[MaterializedCropBatch]:
+    if crop_batch_size <= 0:
+        raise ValueError("crop_batch_size must be positive")
+    records_by_photo = {
+        (str(row.get("source") or ""), str(row.get("flickr_photo_id") or "")): row
+        for row in canonical_records.to_dicts()
+    }
+    pending: list[dict[str, Any]] = []
+    batch_index = 0
+    for detection in detections.to_dicts():
+        if not detection_is_bioclip_eligible(detection, detection_policy):
+            continue
+        pending.append(detection)
+        if len(pending) >= crop_batch_size:
+            yield from _yield_materialized_detector_crop_batch(
+                detections=pending,
+                records_by_photo=records_by_photo,
+                image_loader=image_loader,
+                temp_dir=temp_dir,
+                batch_index=batch_index,
+                crop_padding_ratio=crop_padding_ratio,
+                crop_target_px=crop_target_px,
+                retain_debug_crops=retain_debug_crops,
+            )
+            pending = []
+            batch_index += 1
+    if pending:
+        yield from _yield_materialized_detector_crop_batch(
+            detections=pending,
+            records_by_photo=records_by_photo,
+            image_loader=image_loader,
+            temp_dir=temp_dir,
+            batch_index=batch_index,
+            crop_padding_ratio=crop_padding_ratio,
+            crop_target_px=crop_target_px,
+            retain_debug_crops=retain_debug_crops,
+        )
+
+
+def _yield_materialized_detector_crop_batch(
+    *,
+    detections: list[dict[str, Any]],
+    records_by_photo: dict[tuple[str, str], dict[str, Any]],
+    image_loader: Any,
+    temp_dir: str | Path,
+    batch_index: int,
+    crop_padding_ratio: float,
+    crop_target_px: int,
+    retain_debug_crops: bool,
+) -> Iterator[MaterializedCropBatch]:
+    materialized = _materialize_detector_crop_batch(
+        detections=detections,
+        records_by_photo=records_by_photo,
+        image_loader=image_loader,
+        temp_dir=temp_dir,
+        batch_index=batch_index,
+        crop_padding_ratio=crop_padding_ratio,
+        crop_target_px=crop_target_px,
+        retain_debug_crops=retain_debug_crops,
+    )
+    try:
+        yield materialized
+    finally:
+        materialized.cleanup()
+
+
+def _materialize_detector_crop_batch(
+    *,
+    detections: list[dict[str, Any]],
+    records_by_photo: dict[tuple[str, str], dict[str, Any]],
+    image_loader: Any,
+    temp_dir: str | Path,
+    batch_index: int,
+    crop_padding_ratio: float,
+    crop_target_px: int,
+    retain_debug_crops: bool,
+) -> MaterializedCropBatch:
+    root = Path(temp_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    base = Path(tempfile.mkdtemp(prefix=f".object_bioclip_crops_{batch_index:06d}_", dir=root))
+    rows: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
+    crop_path_by_hash: dict[str, Path] = {}
+    image_by_photo: dict[tuple[str, str], DecodedImage] = {}
+    try:
+        for detection in detections:
+            key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
+            record = _canonical_record_for_detection(records_by_photo, key=key)
+            item = {**detection, **record, "ablation_mode": "detector_crop"}
+            image = image_by_photo.get(key)
+            if image is None:
+                loaded = image_loader(item)
+                if not isinstance(loaded, DecodedImage):
+                    raise TypeError("image_loader must return a DecodedImage")
+                image_by_photo[key] = loaded
+                image = loaded
+            bbox = detection.get("bbox_xyxy")
+            if not isinstance(bbox, list | tuple) or len(bbox) != 4:
+                raise ValueError("object BioCLIP crop batch requires bbox_xyxy")
+            crop = crop_with_padding(
+                image,
+                bbox_xyxy=tuple(float(value) for value in bbox),  # type: ignore[arg-type]
+                padding_ratio=crop_padding_ratio,
+                target_px=crop_target_px,
+            )
+            crop_hash = str(detection.get("crop_hash") or crop.crop_hash)
+            path = crop_path_by_hash.get(crop_hash)
+            if path is None:
+                path = base / f"{len(crop_path_by_hash):06d}_{_safe_file_stem(crop_hash)}.ppm"
+                path.write_bytes(_ppm_bytes(crop.encoded_bytes, width=crop.crop_width, height=crop.crop_height))
+                crop_path_by_hash[crop_hash] = path
+            row = {
+                "source": str(detection.get("source") or ""),
+                "flickr_photo_id": str(detection.get("flickr_photo_id") or ""),
+                "detection_id": str(detection.get("detection_id") or ""),
+                "crop_hash": crop_hash,
+                "crop_path": str(path),
+                "materialized_crop_hash": crop.crop_hash,
+            }
+            rows.append(row)
+            items.append(
+                {
+                    **item,
+                    "ablation_mode": "detector_crop",
+                    "crop_hash": crop_hash,
+                    "crop_path": path,
+                    "materialized_crop_hash": crop.crop_hash,
+                    "crop_padding_ratio": crop_padding_ratio,
+                    "crop_width": crop.crop_width,
+                    "crop_height": crop.crop_height,
+                    "clamped_bbox_xyxy": crop.clamped_bbox_xyxy,
+                    "padded_bbox_xyxy": crop.padded_bbox_xyxy,
+                    "crop_storage_policy": crop.storage_policy,
+                }
+            )
+    except Exception:
+        if base.exists():
+            rmtree(base)
+        raise
+    return MaterializedCropBatch(
+        items=items,
+        rows=rows,
+        crop_path_by_hash=crop_path_by_hash,
+        temp_dir=base,
+        retain_debug_crops=retain_debug_crops,
+    )
 
 
 def screen_object_detections(
