@@ -141,9 +141,44 @@ def test_detection_candidate_contract_normalizes_legacy_labels_and_rejects_taxa(
 def test_mac_m5pro_profile_matches_local_apple_silicon_defaults() -> None:
     assert hasattr(detection_policy, "runtime_profile")
     profile = detection_policy.runtime_profile("mac_m5pro_64gb")
+    settings = detection_policy.vision_runtime_settings("mac_m5pro_64gb")
+    config = json.loads(Path("config/vision_profiles/mac_m5pro_64gb.json").read_text(encoding="utf-8"))
 
     assert profile.profile_name == "mac_m5pro_64gb"
+    assert profile.vision_settings == settings
+    assert settings.profile_name == "mac_m5pro_64gb"
+    assert settings.device == "mps"
+    assert settings.yolo_checkpoint == "yoloe-26s-seg.pt"
+    assert settings.yolo_imgsz == 768
+    assert settings.yolo_conf == 0.20
+    assert settings.yolo_iou == 0.50
+    assert settings.yolo_max_det == 8
+    assert settings.detector_batch_size == 16
+    assert settings.crop_batch_size == 24
+    assert settings.crop_padding_ratio == 0.08
+    assert settings.crop_target_px == 336
+    assert settings.bioclip_model == "hf-hub:imageomics/bioclip-2.5-vith14"
+    assert settings.bioclip_top_k == 10
+    assert settings.parquet_compression == "zstd"
+    assert settings.parquet_part_rows == 10000
+    assert settings.retain_debug_crops is False
+    assert config["profile_name"] == settings.profile_name
+    assert config["device"] == settings.device
+    assert config["yolo_checkpoint"] == settings.yolo_checkpoint
+    assert config["yolo_imgsz"] == settings.yolo_imgsz
+    assert config["detector_batch_size"] == settings.detector_batch_size
+    assert config["crop_batch_size"] == settings.crop_batch_size
+    assert config["crop_padding_ratio"] == settings.crop_padding_ratio
+    assert config["crop_target_px"] == settings.crop_target_px
+    assert config["bioclip_model"] == settings.bioclip_model
+    assert config["bioclip_top_k"] == settings.bioclip_top_k
+    assert config["parquet_compression"] == settings.parquet_compression
+    assert config["retain_debug_crops"] is False
     assert profile.detection_policy.image_max_side_px == 1280
+    assert profile.detection_policy.box_score_threshold == 0.20
+    assert profile.detection_policy.nms_iou_threshold == 0.50
+    assert profile.detection_policy.max_boxes_per_image == 8
+    assert profile.detection_policy.crop_padding_ratio == 0.08
     assert profile.detection_policy.crop_target_px == 336
     assert profile.detection_policy.retain_debug_crops is False
     assert profile.run_policy.download_workers == 4
@@ -152,7 +187,7 @@ def test_mac_m5pro_profile_matches_local_apple_silicon_defaults() -> None:
     assert profile.bioclip_workers == 1
     assert profile.run_policy.max_inflight_images == 32
     assert profile.run_policy.max_inflight_crops == 96
-    assert profile.run_policy.detector_batch_size == 4
+    assert profile.run_policy.detector_batch_size == 16
     assert profile.run_policy.crop_batch_size == 24
     assert profile.text_embedding_batch_size == 256
     assert profile.worker_shard_target_mb == 64

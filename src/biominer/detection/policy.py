@@ -94,23 +94,43 @@ class RuntimeProfile:
     compacted_shard_target_mb: int = 256
 
 
-MAC_M5PRO_64GB_PROFILE = RuntimeProfile(
+MAC_M5PRO_64GB_SETTINGS = VisionRuntimeSettings(
     profile_name="mac_m5pro_64gb",
-    vision_settings=VisionRuntimeSettings(profile_name="mac_m5pro_64gb"),
-    detection_policy=DetectionPolicy(
-        image_max_side_px=1280,
-        crop_target_px=336,
-        retain_debug_crops=False,
+    device="mps",
+    yolo_checkpoint="yoloe-26s-seg.pt",
+    yolo_imgsz=768,
+    yolo_conf=0.20,
+    yolo_iou=0.50,
+    yolo_max_det=8,
+    detector_batch_size=16,
+    crop_batch_size=24,
+    crop_padding_ratio=0.08,
+    crop_target_px=336,
+    bioclip_model="hf-hub:imageomics/bioclip-2.5-vith14",
+    bioclip_top_k=10,
+    parquet_compression="zstd",
+    parquet_part_rows=10000,
+    delete_images_after_commit=True,
+    retain_debug_crops=False,
+)
+
+MAC_M5PRO_64GB_PROFILE = RuntimeProfile(
+    profile_name=MAC_M5PRO_64GB_SETTINGS.profile_name,
+    detection_policy=MAC_M5PRO_64GB_SETTINGS.to_detection_policy(),
+    run_policy=MAC_M5PRO_64GB_SETTINGS.to_detection_run_policy(
+        DetectionRunPolicy(
+            download_workers=4,
+            decode_workers=4,
+            detector_workers=1,
+            max_inflight_images=32,
+            max_inflight_crops=96,
+        )
     ),
-    run_policy=DetectionRunPolicy(
-        download_workers=4,
-        decode_workers=4,
-        detector_workers=1,
-        max_inflight_images=32,
-        max_inflight_crops=96,
-        detector_batch_size=4,
-        crop_batch_size=24,
-    ),
+    vision_settings=MAC_M5PRO_64GB_SETTINGS,
+    bioclip_workers=1,
+    text_embedding_batch_size=256,
+    worker_shard_target_mb=64,
+    compacted_shard_target_mb=256,
 )
 
 RUNTIME_PROFILES: dict[str, RuntimeProfile] = {

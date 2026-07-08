@@ -749,7 +749,7 @@ def test_detect_boxes_cli_applies_runtime_profile_with_explicit_overrides(tmp_pa
     assert pipeline["run_policy"].detector_workers == 1
     assert pipeline["run_policy"].max_inflight_images == 32
     assert pipeline["run_policy"].max_inflight_crops == 96
-    assert pipeline["run_policy"].detector_batch_size == 4
+    assert pipeline["run_policy"].detector_batch_size == 16
     assert pipeline["run_policy"].crop_batch_size == 24
 
 
