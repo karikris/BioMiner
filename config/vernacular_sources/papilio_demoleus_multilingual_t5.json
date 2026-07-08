@@ -1,7 +1,7 @@
 {
   "source_key": "papilio_demoleus_multilingual_t5",
-  "source_name": "Papilio demoleus multilingual T5",
-  "source_display_name": "Papilio demoleus multilingual T5",
+  "source_name": "Multilingual T5",
+  "source_display_name": "Multilingual T5",
   "source_type": "static_csv",
   "source_version": "2026-07-static-v1",
   "snapshot_version": "2026-07-static-v1",

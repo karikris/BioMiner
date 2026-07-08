@@ -2662,6 +2662,7 @@ def test_default_enrichment_clients_include_wikidata_gbif_vernacular_and_taxref(
     assert clients["bharat_ki_titliya_hi"].__class__.__name__ == "StaticVernacularSourceClient"
     assert clients["karnataka_chitte_kn"].__class__.__name__ == "StaticVernacularSourceClient"
     assert clients["papilio_demoleus_multilingual_t5"].__class__.__name__ == "StaticVernacularSourceClient"
+    assert clients["papilio_demoleus_multilingual_t5"].source_name == "Multilingual T5"
     assert clients["wikidata"].__class__.__name__ == "WikidataClient"
 
 
