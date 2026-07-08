@@ -5,10 +5,12 @@ from pathlib import Path
 import tempfile
 
 import polars as pl
+import pytest
 
 import biominer.storage.s3 as s3_module
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.local import LocalStorageBackend
+from biominer.storage.parquet import write_parquet_part
 from biominer.storage.paths import (
     build_evidence_shard_uri,
     build_raw_flickr_response_uri,
@@ -18,7 +20,7 @@ from biominer.storage.paths import (
     build_report_uri,
     safe_path_component,
 )
-from biominer.storage.shard_paths import build_parquet_shard_uri
+from biominer.storage.shard_paths import build_parquet_part_uri, build_parquet_shard_uri
 from biominer.storage.s3 import S3StorageBackend
 from biominer.storage.uri import is_cloud_uri, is_s3_uri, join_uri, normalize_local_uri
 
@@ -77,6 +79,21 @@ def test_local_storage_writes_parquet_batches(tmp_path) -> None:
         {"photo_id": "1", "score": 0.7},
         {"photo_id": "2", "score": 0.4},
     ]
+
+
+def test_local_parquet_part_defaults_to_zstd_and_refuses_overwrite(tmp_path) -> None:
+    target = tmp_path / "evidence" / "stage=detect_objects" / "run_id=run-1" / "worker=w1" / "part=000001.parquet"
+    frame = pl.DataFrame({"photo_id": ["1", "2"], "score": [0.7, 0.4]})
+
+    written = write_parquet_part(frame, target)
+
+    assert written.uri == str(target)
+    assert written.row_count == 2
+    assert written.byte_count is not None and written.byte_count > 0
+    assert written.compression == "zstd"
+    assert _parquet_column_compressions(target) == {"ZSTD"}
+    with pytest.raises(FileExistsError):
+        write_parquet_part(frame, target)
 
 
 def test_local_storage_lists_shards_deterministically(tmp_path) -> None:
@@ -153,6 +170,26 @@ def test_s3_storage_parquet_writes_do_not_require_local_temp_files(monkeypatch) 
     assert stream.bytes_written > 0
 
 
+def test_s3_storage_writes_zstd_parquet_parts(monkeypatch) -> None:
+    backend = S3StorageBackend(bucket="biominer", prefix="biominer")
+    stream = _FakeOutputStream()
+    filesystem = _FakeS3Filesystem(stream)
+    uri = "s3://biominer/biominer/evidence/stage=detect_objects/run_id=run-1/worker=w1/part=000001.parquet"
+
+    monkeypatch.setattr(backend, "_filesystem_and_path", lambda uri: (filesystem, "biominer/biominer/evidence/part.parquet"))
+
+    written = backend.write_parquet_part(uri, pl.DataFrame({"photo_id": ["1", "2"], "score": [0.7, 0.4]}))
+
+    assert written.uri == uri
+    assert written.row_count == 2
+    assert written.byte_count is not None and written.byte_count > 0
+    assert written.compression == "zstd"
+    assert filesystem.paths == ["biominer/biominer/evidence/part.parquet"]
+    assert _parquet_column_compressions(io.BytesIO(stream.payload)) == {"ZSTD"}
+    with pytest.raises(FileExistsError):
+        backend.write_parquet_part(uri, pl.DataFrame({"photo_id": ["3"]}))
+
+
 def test_uri_helpers_classify_and_join_paths(tmp_path) -> None:
     assert is_cloud_uri("s3://biominer/prefix/file.parquet")
     assert is_s3_uri("s3://biominer/prefix/file.parquet")
@@ -179,6 +216,13 @@ def test_build_parquet_shard_uri_is_stable_for_local_and_s3() -> None:
         worker_id="w",
         batch_id="abc",
     ) == "staging/evidence/stage=filter/run_id=r/worker=w/batch=abc.parquet"
+    assert build_parquet_part_uri(
+        "s3://biominer/biominer",
+        stage="score_bioclip",
+        run_id="run-2026",
+        worker_id="worker-3",
+        part_id=7,
+    ) == "s3://biominer/biominer/evidence/stage=score_bioclip/run_id=run-2026/worker=worker-3/part=000007.parquet"
 
 
 def test_build_evidence_shard_uri_local_and_s3() -> None:
@@ -245,17 +289,35 @@ class _FakeS3Filesystem:
     def __init__(self, stream: "_FakeOutputStream") -> None:
         self.stream = stream
         self.paths: list[str] = []
+        self.existing_paths: set[str] = set()
 
     def open_output_stream(self, path: str) -> "_FakeOutputStream":
         self.paths.append(path)
+        self.existing_paths.add(path)
         self.stream.closed = False
+        self.stream.payload.clear()
+        self.stream.bytes_written = 0
         return self.stream
+
+    def get_file_info(self, path: str):  # noqa: ANN201
+        import pyarrow.fs as pafs
+
+        if path in self.existing_paths:
+            return _FakeFileInfo(type=pafs.FileType.File, size=self.stream.bytes_written)
+        return _FakeFileInfo(type=pafs.FileType.NotFound, size=None)
+
+
+class _FakeFileInfo:
+    def __init__(self, *, type, size: int | None) -> None:  # noqa: A002, ANN001
+        self.type = type
+        self.size = size
 
 
 class _FakeOutputStream:
     def __init__(self) -> None:
         self.bytes_written = 0
         self.closed = False
+        self.payload = bytearray()
 
     def __enter__(self) -> "_FakeOutputStream":
         return self
@@ -265,6 +327,7 @@ class _FakeOutputStream:
         return None
 
     def write(self, data: bytes) -> int:
+        self.payload.extend(data)
         self.bytes_written += len(data)
         return len(data)
 
@@ -276,3 +339,15 @@ class _FakeOutputStream:
 
     def close(self) -> None:
         self.closed = True
+
+
+def _parquet_column_compressions(source) -> set[str]:  # noqa: ANN001
+    import pyarrow.parquet as pq
+
+    parquet_file = pq.ParquetFile(source)
+    compressions: set[str] = set()
+    for row_group_index in range(parquet_file.metadata.num_row_groups):
+        row_group = parquet_file.metadata.row_group(row_group_index)
+        for column_index in range(row_group.num_columns):
+            compressions.add(str(row_group.column(column_index).compression).upper())
+    return compressions

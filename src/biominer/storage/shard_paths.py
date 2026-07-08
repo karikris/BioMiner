@@ -24,3 +24,24 @@ def build_parquet_shard_uri(
         f"worker={worker_id}",
         f"batch={batch}",
     )
+
+
+def build_parquet_part_uri(
+    base_prefix: str | Path,
+    *,
+    stage: str,
+    run_id: str,
+    worker_id: str,
+    part_id: int | str,
+) -> str:
+    part = f"{part_id:06d}" if isinstance(part_id, int) else str(part_id)
+    if not part.endswith(".parquet"):
+        part = f"{part}.parquet"
+    return join_uri(
+        base_prefix,
+        "evidence",
+        f"stage={stage}",
+        f"run_id={run_id}",
+        f"worker={worker_id}",
+        f"part={part}",
+    )

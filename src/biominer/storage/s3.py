@@ -7,6 +7,7 @@ import json
 
 import polars as pl
 
+from biominer.storage.parquet import DEFAULT_PARQUET_COMPRESSION, ParquetPartWrite
 from biominer.storage.uri import is_s3_uri, join_uri
 
 
@@ -37,13 +38,31 @@ class S3StorageBackend:
     def scan_parquet(self, uri: str) -> pl.LazyFrame:
         return pl.scan_parquet(uri, storage_options=self._storage_options())
 
-    def write_parquet_shard(self, uri: str, frame: pl.DataFrame) -> str:
+    def write_parquet_shard(
+        self,
+        uri: str,
+        frame: pl.DataFrame,
+        *,
+        compression: str | None = DEFAULT_PARQUET_COMPRESSION,
+        overwrite: bool = True,
+    ) -> str:
+        if not overwrite and self.exists(uri):
+            raise FileExistsError(uri)
         filesystem, path = self._filesystem_and_path(uri)
         with filesystem.open_output_stream(path) as stream:
-            frame.write_parquet(stream)
+            _write_frame(frame, stream, compression=compression)
         return uri
 
-    def write_parquet_batches(self, uri: str, batches: Iterable[pl.DataFrame]) -> str:
+    def write_parquet_batches(
+        self,
+        uri: str,
+        batches: Iterable[pl.DataFrame],
+        *,
+        compression: str | None = DEFAULT_PARQUET_COMPRESSION,
+        overwrite: bool = True,
+    ) -> str:
+        if not overwrite and self.exists(uri):
+            raise FileExistsError(uri)
         filesystem, path = self._filesystem_and_path(uri)
         writer = None
         wrote_any = False
@@ -57,7 +76,7 @@ class S3StorageBackend:
                         import pyarrow.parquet as pq
 
                         stream = stack.enter_context(filesystem.open_output_stream(path))
-                        writer = pq.ParquetWriter(stream, table.schema, compression="zstd")
+                        writer = pq.ParquetWriter(stream, table.schema, compression=compression)
                     writer.write_table(table)
                     wrote_any = True
                 if writer is not None:
@@ -67,8 +86,26 @@ class S3StorageBackend:
             if writer is not None:
                 writer.close()
         if not wrote_any:
-            return self.write_parquet_shard(uri, pl.DataFrame())
+            return self.write_parquet_shard(uri, pl.DataFrame(), compression=compression, overwrite=overwrite)
         return uri
+
+    def write_parquet_part(
+        self,
+        uri: str,
+        frame: pl.DataFrame,
+        *,
+        compression: str | None = DEFAULT_PARQUET_COMPRESSION,
+        overwrite: bool = False,
+    ) -> ParquetPartWrite:
+        self.write_parquet_shard(uri, frame, compression=compression, overwrite=overwrite)
+        byte_count = None
+        try:
+            filesystem, path = self._filesystem_and_path(uri)
+            size = getattr(filesystem.get_file_info(path), "size", None)
+            byte_count = int(size) if size is not None and int(size) >= 0 else None
+        except Exception:  # noqa: BLE001 - byte size is best-effort for remote stores.
+            byte_count = None
+        return ParquetPartWrite(uri=uri, row_count=frame.height, byte_count=byte_count, compression=compression)
 
     def list_shards(self, prefix: str) -> list[str]:
         filesystem, path = self._filesystem_and_path(prefix)
@@ -147,3 +184,10 @@ def _split_s3_uri(uri: str) -> tuple[str, str]:
     if not bucket:
         raise ValueError(f"missing bucket in S3 URI: {uri!r}")
     return bucket, key
+
+
+def _write_frame(frame: pl.DataFrame, stream, *, compression: str | None) -> None:  # noqa: ANN001
+    if compression is None:
+        frame.write_parquet(stream)
+        return
+    frame.write_parquet(stream, compression=compression)

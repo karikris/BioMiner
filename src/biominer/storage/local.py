@@ -7,7 +7,7 @@ from pathlib import Path
 
 import polars as pl
 
-from biominer.storage.parquet import write_parquet
+from biominer.storage.parquet import DEFAULT_PARQUET_COMPRESSION, ParquetPartWrite, write_parquet, write_parquet_batches, write_parquet_part
 from biominer.storage.uri import normalize_local_uri
 
 
@@ -21,15 +21,46 @@ class LocalStorageBackend:
     def scan_parquet(self, uri: str | Path) -> pl.LazyFrame:
         return pl.scan_parquet(normalize_local_uri(uri))
 
-    def write_parquet_shard(self, uri: str | Path, frame: pl.DataFrame) -> str:
+    def write_parquet_shard(
+        self,
+        uri: str | Path,
+        frame: pl.DataFrame,
+        *,
+        compression: str | None = DEFAULT_PARQUET_COMPRESSION,
+        overwrite: bool = True,
+    ) -> str:
         output = normalize_local_uri(uri)
-        write_parquet(frame, output)
+        write_parquet(frame, output, compression=compression, overwrite=overwrite)
         return _preserve_uri_string(uri)
 
-    def write_parquet_batches(self, uri: str | Path, batches: Iterable[pl.DataFrame]) -> str:
-        frames = [frame for frame in batches if not frame.is_empty()]
-        frame = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
-        return self.write_parquet_shard(uri, frame)
+    def write_parquet_batches(
+        self,
+        uri: str | Path,
+        batches: Iterable[pl.DataFrame],
+        *,
+        compression: str | None = DEFAULT_PARQUET_COMPRESSION,
+        overwrite: bool = True,
+    ) -> str:
+        output = normalize_local_uri(uri)
+        write_parquet_batches(batches, output, compression=compression, overwrite=overwrite)
+        return _preserve_uri_string(uri)
+
+    def write_parquet_part(
+        self,
+        uri: str | Path,
+        frame: pl.DataFrame,
+        *,
+        compression: str | None = DEFAULT_PARQUET_COMPRESSION,
+        overwrite: bool = False,
+    ) -> ParquetPartWrite:
+        output = normalize_local_uri(uri)
+        result = write_parquet_part(frame, output, compression=compression, overwrite=overwrite)
+        return ParquetPartWrite(
+            uri=_preserve_uri_string(uri),
+            row_count=result.row_count,
+            byte_count=result.byte_count,
+            compression=result.compression,
+        )
 
     def list_shards(self, prefix: str | Path) -> list[str]:
         root = normalize_local_uri(prefix)
