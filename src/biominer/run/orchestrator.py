@@ -32,7 +32,7 @@ from biominer.evidence.metrics import build_review_queue, evidence_count_metrics
 from biominer.flickr_comments.comment_review import CommentReviewState
 from biominer.flickr_comments.comments_enrichment import fetch_flickr_comments
 from biominer.flickr_fetch.cloud_poller import CloudMetadataPoller, flickr_query_work_item
-from biominer.storage.parquet import write_parquet
+from biominer.storage.parquet import DEFAULT_PARQUET_COMPRESSION, ParquetPartWrite, write_parquet
 from biominer.flickr_fetch.metadata_poller import DEFAULT_STALE_CLAIM_SECONDS, SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries, load_registry_flickr_queries_from_frame
 from biominer.run.manifest import RunManifest, utc_now_iso
@@ -41,6 +41,7 @@ from biominer.run.stages import DEFAULT_PRODUCTION_STAGES, RunStage, StageStatus
 from biominer.run.taxon_scope import InputRank, TaxonScope, resolve_taxon_scope_from_registry, resolve_taxon_scope_from_registry_frames
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.paths import build_evidence_shard_uri, safe_path_component
+from biominer.storage.shard_paths import build_parquet_part_uri
 from biominer.storage.uri import is_cloud_uri, join_uri
 from biominer.workstore.base import WorkStore
 
@@ -618,16 +619,21 @@ class ProductionRunOrchestrator:
                     image_loader=self.image_loader,
                     detector_batch_size=self.request.vision_settings.detector_batch_size,
                 )
-                output_uri = self.storage.write_parquet_shard(
-                    build_evidence_shard_uri(
-                        plan.artifact_uris.staging_uri,
-                        stage=RunStage.DETECT_OBJECTS.value,
-                        run_id=plan.manifest.run_id,
-                        worker_id=self.request.worker_id,
-                        batch_id=detection_batch_id(claimed),
-                    ),
-                    result.frame,
+                part_id = detection_batch_id(claimed)
+                part_uri = build_parquet_part_uri(
+                    plan.artifact_uris.staging_uri,
+                    stage=RunStage.DETECT_OBJECTS.value,
+                    run_id=plan.manifest.run_id,
+                    worker_id=self.request.worker_id,
+                    part_id=part_id,
                 )
+                part_write, part_written = _write_immutable_parquet_part(
+                    self.storage,
+                    part_uri,
+                    result.frame,
+                    compression=self.request.vision_settings.parquet_compression,
+                )
+                output_uri = part_write.uri
                 self.workstore.register_shard(
                     job_name=PRODUCTION_JOB_NAME,
                     registry_version=plan.manifest.taxon_scope.registry_version,
@@ -636,11 +642,17 @@ class ProductionRunOrchestrator:
                     worker_id=self.request.worker_id,
                     uri=output_uri,
                     checksum=None,
-                    row_count=result.frame.height,
-                    metadata={"claimed_work_items": len(claimed)},
+                    row_count=part_write.row_count,
+                    byte_count=part_write.byte_count,
+                    metadata={
+                        "claimed_work_items": len(claimed),
+                        "part_id": part_id,
+                        "part_written": part_written,
+                        "parquet_compression": part_write.compression,
+                    },
                 )
                 for item in claimed:
-                    self.workstore.mark_completed(str(item["work_key"]), output_uri=output_uri, checksum=None, row_count=result.frame.height)
+                    self.workstore.mark_completed(str(item["work_key"]), output_uri=output_uri, checksum=None, row_count=part_write.row_count)
             except Exception as exc:  # noqa: BLE001 - claimed work must not remain claimed after batch failure.
                 for item in claimed:
                     self.workstore.mark_failed(str(item.get("work_key") or ""), str(exc) or exc.__class__.__name__)
@@ -653,6 +665,13 @@ class ProductionRunOrchestrator:
                     "detections_written": result.detections_written,
                     "crops_created": result.crops_created,
                     "parquet_batches_written": 1,
+                    "parquet_parts_written": 1 if part_written else 0,
+                    "parquet_parts_reused": 0 if part_written else 1,
+                    "parquet_part_count": 1,
+                    "parquet_part_rows": part_write.row_count,
+                    "parquet_compression": part_write.compression,
+                    "detection_part_count": 1,
+                    "detection_part_rows": part_write.row_count,
                     "detection_work_items_enqueued": plan_result.enqueued_work_items,
                     "duplicate_detection_work_items": plan_result.duplicate_work_items,
                     "work_items_claimed": len(claimed),
@@ -753,16 +772,21 @@ class ProductionRunOrchestrator:
                     scorer=self.object_scorer,
                     crop_batch_size=self.request.vision_settings.crop_batch_size,
                 )
-                output_uri = self.storage.write_parquet_shard(
-                    build_evidence_shard_uri(
-                        plan.artifact_uris.staging_uri,
-                        stage=RunStage.SCORE_BIOCLIP.value,
-                        run_id=plan.manifest.run_id,
-                        worker_id=self.request.worker_id,
-                        batch_id=bioclip_score_batch_id(claimed),
-                    ),
-                    result.frame,
+                part_id = bioclip_score_batch_id(claimed)
+                part_uri = build_parquet_part_uri(
+                    plan.artifact_uris.staging_uri,
+                    stage=RunStage.SCORE_BIOCLIP.value,
+                    run_id=plan.manifest.run_id,
+                    worker_id=self.request.worker_id,
+                    part_id=part_id,
                 )
+                part_write, part_written = _write_immutable_parquet_part(
+                    self.storage,
+                    part_uri,
+                    result.frame,
+                    compression=self.request.vision_settings.parquet_compression,
+                )
+                output_uri = part_write.uri
                 self.workstore.register_shard(
                     job_name=PRODUCTION_JOB_NAME,
                     registry_version=plan.manifest.taxon_scope.registry_version,
@@ -771,11 +795,18 @@ class ProductionRunOrchestrator:
                     worker_id=self.request.worker_id,
                     uri=output_uri,
                     checksum=None,
-                    row_count=result.frame.height,
-                    metadata={"claimed_work_items": len(claimed), "candidate_set_id": candidate_set.candidate_set_id},
+                    row_count=part_write.row_count,
+                    byte_count=part_write.byte_count,
+                    metadata={
+                        "claimed_work_items": len(claimed),
+                        "candidate_set_id": candidate_set.candidate_set_id,
+                        "part_id": part_id,
+                        "part_written": part_written,
+                        "parquet_compression": part_write.compression,
+                    },
                 )
                 for item in claimed:
-                    self.workstore.mark_completed(str(item["work_key"]), output_uri=output_uri, checksum=None, row_count=result.frame.height)
+                    self.workstore.mark_completed(str(item["work_key"]), output_uri=output_uri, checksum=None, row_count=part_write.row_count)
             except Exception as exc:  # noqa: BLE001 - claimed work must not remain claimed after batch failure.
                 for item in claimed:
                     self.workstore.mark_failed(str(item.get("work_key") or ""), str(exc) or exc.__class__.__name__)
@@ -789,6 +820,13 @@ class ProductionRunOrchestrator:
                     "workstore_work_items_completed": len(claimed),
                     "score_shards": 1,
                     "score_batches_written": 1,
+                    "parquet_parts_written": 1 if part_written else 0,
+                    "parquet_parts_reused": 0 if part_written else 1,
+                    "parquet_part_count": 1,
+                    "parquet_part_rows": part_write.row_count,
+                    "parquet_compression": part_write.compression,
+                    "score_part_count": 1,
+                    "score_part_rows": part_write.row_count,
                 }
             )
             return StageExecutionResult(metrics=metrics, outputs={"object_scores": output_uri})
@@ -1263,6 +1301,29 @@ def _cloud_stage_shard_uris(workstore: WorkStore | None, plan: ProductionRunPlan
         run_id=plan.manifest.run_id,
     )
     return [str(shard["uri"]) for shard in shards]
+
+
+def _write_immutable_parquet_part(
+    storage: CloudStorage,
+    uri: str,
+    frame: Any,
+    *,
+    compression: str | None = DEFAULT_PARQUET_COMPRESSION,
+) -> tuple[ParquetPartWrite, bool]:
+    try:
+        return storage.write_parquet_part(uri, frame, compression=compression, overwrite=False), True
+    except FileExistsError:
+        if not storage.exists(uri):
+            raise
+        return (
+            ParquetPartWrite(
+                uri=uri,
+                row_count=frame.height,
+                byte_count=None,
+                compression=compression,
+            ),
+            False,
+        )
 
 
 def _cloud_bioclip_metrics(result: Any) -> dict[str, Any]:

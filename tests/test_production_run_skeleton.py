@@ -33,6 +33,7 @@ from biominer.run import (
     resolve_taxon_scope_from_registry_frames,
 )
 from biominer.species.context import CommonName, SpeciesContext
+from biominer.storage.parquet import ParquetPartWrite
 from biominer.workstore.sqlite import SQLiteWorkStore
 
 
@@ -1393,6 +1394,10 @@ def test_orchestrator_detects_objects_from_cloud_storage(tmp_path) -> None:
     }
     detection_uri = result.manifest.stages[0].outputs["object_detections"]
     assert detection_uri.startswith(plan.artifact_uris.staging_uri + "/evidence/stage=detect_objects/")
+    assert "/part=" in detection_uri
+    assert result.manifest.stages[0].metrics["parquet_part_count"] == 1
+    assert result.manifest.stages[0].metrics["detection_part_rows"] == 1
+    assert result.manifest.stages[0].metrics["parquet_compression"] == "zstd"
     detections = storage.parquet_payloads[detection_uri]
     assert detections.select("detector_label").to_series().to_list() == ["butterfly_like"]
     assert storage.json_payloads[plan.artifact_uris.manifest_uri]["detection_counts"]["detections"] == 1
@@ -1409,6 +1414,8 @@ def test_orchestrator_detects_objects_from_cloud_storage(tmp_path) -> None:
         run_id=plan.manifest.run_id,
     )
     assert [shard["uri"] for shard in shards] == [detection_uri]
+    assert shards[0]["metadata"]["parquet_compression"] == "zstd"
+    assert shards[0]["metadata"]["part_written"] is True
 
 
 def test_orchestrator_cloud_detect_requires_storage_backend() -> None:
@@ -1497,6 +1504,10 @@ def test_orchestrator_scores_bioclip_from_cloud_storage(tmp_path) -> None:
     assert result.manifest.metrics["visual_modes_scored"] == ["detector_crop"]
     score_uri = result.manifest.stages[0].outputs["object_scores"]
     assert score_uri.startswith(plan.artifact_uris.staging_uri + "/evidence/stage=score_bioclip/")
+    assert "/part=" in score_uri
+    assert result.manifest.stages[0].metrics["parquet_part_count"] == 1
+    assert result.manifest.stages[0].metrics["score_part_rows"] == 1
+    assert result.manifest.stages[0].metrics["parquet_compression"] == "zstd"
     scores = storage.parquet_payloads[score_uri].sort("ablation_mode")
     assert scores.height == 1
     assert scores.select("ablation_mode").to_series().to_list() == ["detector_crop"]
@@ -1515,6 +1526,8 @@ def test_orchestrator_scores_bioclip_from_cloud_storage(tmp_path) -> None:
         run_id=plan.manifest.run_id,
     )
     assert [shard["uri"] for shard in shards] == [score_uri]
+    assert shards[0]["metadata"]["parquet_compression"] == "zstd"
+    assert shards[0]["metadata"]["part_written"] is True
 
 
 def test_production_cloud_run_does_not_write_durable_local_artifacts(monkeypatch, tmp_path) -> None:
@@ -1995,9 +2008,29 @@ class _FakeRunStorage:
     def read_json(self, uri: str) -> dict[str, object]:
         return self.json_payloads[uri]
 
-    def write_parquet_shard(self, uri: str, frame: pl.DataFrame) -> str:
+    def write_parquet_shard(
+        self,
+        uri: str,
+        frame: pl.DataFrame,
+        *,
+        compression: str | None = "zstd",
+        overwrite: bool = True,
+    ) -> str:
+        if not overwrite and uri in self.parquet_payloads:
+            raise FileExistsError(uri)
         self.parquet_payloads[uri] = frame
         return uri
+
+    def write_parquet_part(
+        self,
+        uri: str,
+        frame: pl.DataFrame,
+        *,
+        compression: str | None = "zstd",
+        overwrite: bool = False,
+    ) -> ParquetPartWrite:
+        self.write_parquet_shard(uri, frame, compression=compression, overwrite=overwrite)
+        return ParquetPartWrite(uri=uri, row_count=frame.height, byte_count=None, compression=compression)
 
     def write_json(self, uri: str, payload: dict[str, object]) -> str:
         self.json_payloads[uri] = payload
