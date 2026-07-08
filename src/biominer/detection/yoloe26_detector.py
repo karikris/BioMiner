@@ -529,6 +529,7 @@ def _sidecar_env(runtime_python: str | None = None) -> dict[str, str]:
     for key, value in defaults.items():
         env.setdefault(key, str(value))
         Path(env[key]).mkdir(parents=True, exist_ok=True)
+    env.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     return env
 
 

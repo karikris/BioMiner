@@ -1391,6 +1391,7 @@ def _yoloe26_worker_env(runtime_python: str | Path) -> dict[str, str]:
     for key, value in defaults.items():
         env.setdefault(key, str(value))
         Path(env[key]).mkdir(parents=True, exist_ok=True)
+    env.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     return env
 
 
@@ -2346,6 +2347,7 @@ def _bioclip_worker_env(hf_cache_dir: str | Path) -> dict[str, str]:
     hub_path.mkdir(parents=True, exist_ok=True)
     env["HF_HOME"] = str(cache_path)
     env["HUGGINGFACE_HUB_CACHE"] = str(hub_path)
+    env.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     return env
 
 
@@ -2354,32 +2356,47 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
 import sys
 
 import open_clip
 import torch
 
 requested = sys.argv[1]
+mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
 if requested == "auto":
     if torch.cuda.is_available():
         resolved = "cuda"
-    elif torch.backends.mps.is_available():
+    elif mps_available:
         resolved = "mps"
     else:
         resolved = "cpu"
 elif requested == "cuda" and not torch.cuda.is_available():
     raise SystemExit("CUDA was requested but is not available")
-elif requested == "mps" and not torch.backends.mps.is_available():
+elif requested == "mps" and not mps_available:
     raise SystemExit("MPS was requested but is not available")
 else:
     resolved = requested
 
+model_name = "hf-hub:imageomics/bioclip-2.5-vith14"
+model, _, _ = open_clip.create_model_and_transforms(model_name, pretrained=None)
+tokenizer = open_clip.get_tokenizer(model_name)
+model = model.to(resolved)
+model.eval()
+mps_fallback = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK")
 print(json.dumps({
+    "runtime_python": sys.executable,
     "device_requested": requested,
     "device_resolved": resolved,
     "cuda_available": torch.cuda.is_available(),
-    "mps_available": torch.backends.mps.is_available(),
+    "mps_available": mps_available,
+    "model_name": model_name,
+    "model_load": True,
+    "tokenizer_load": tokenizer is not None,
     "open_clip_version": importlib.metadata.version("open_clip_torch"),
+    "pytorch_mps_fallback_env": mps_fallback,
+    "pytorch_mps_fallback_enabled": mps_fallback == "1",
+    "pytorch_mps_fallback_recommendation": "set PYTORCH_ENABLE_MPS_FALLBACK=1 for Apple MPS sidecar runs",
     "torch_version": torch.__version__,
 }, sort_keys=True))
 """
@@ -2410,6 +2427,8 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
+from pathlib import Path
 import sys
 
 import torch
@@ -2417,32 +2436,41 @@ from ultralytics import YOLOE
 
 requested = sys.argv[1]
 checkpoint = sys.argv[2]
+mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
 if requested == "auto":
     if torch.cuda.is_available():
         resolved = "cuda"
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    elif mps_available:
         resolved = "mps"
     else:
         resolved = "cpu"
 elif requested == "cuda" and not torch.cuda.is_available():
     raise SystemExit("CUDA was requested but is not available")
-elif requested == "mps" and not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+elif requested == "mps" and not mps_available:
     raise SystemExit("MPS was requested but is not available")
 else:
     resolved = requested
 
 model = YOLOE(checkpoint)
 model.set_classes(["butterfly", "moth", "caterpillar", "pupa"])
+model_dir = Path(os.environ.get("BIOMINER_YOLO26_MODEL_DIR") or Path.cwd())
+checkpoint_path = model_dir / checkpoint
 cuda_device_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+mps_fallback = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK")
 print(json.dumps({
     "runtime_python": sys.executable,
     "checkpoint": checkpoint,
+    "checkpoint_path": str(checkpoint_path if checkpoint_path.exists() else checkpoint),
+    "checkpoint_resolved": True,
     "device_requested": requested,
     "device_resolved": resolved,
     "torch_version": torch.__version__,
     "cuda_available": torch.cuda.is_available(),
     "cuda_device_name": cuda_device_name,
-    "mps_available": hasattr(torch.backends, "mps") and torch.backends.mps.is_available(),
+    "mps_available": mps_available,
+    "pytorch_mps_fallback_env": mps_fallback,
+    "pytorch_mps_fallback_enabled": mps_fallback == "1",
+    "pytorch_mps_fallback_recommendation": "set PYTORCH_ENABLE_MPS_FALLBACK=1 for Apple MPS sidecar runs",
     "ultralytics_version": importlib.metadata.version("ultralytics"),
     "yoloe_import": True,
     "checkpoint_load": True,

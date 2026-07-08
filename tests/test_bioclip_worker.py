@@ -25,11 +25,13 @@ def test_open_clip_model_args_preserve_explicit_openclip_checkpoint() -> None:
 def test_configure_hf_cache_env_sets_writable_cache(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.delenv("HUGGINGFACE_HUB_CACHE", raising=False)
+    monkeypatch.delenv("PYTORCH_ENABLE_MPS_FALLBACK", raising=False)
 
     configure_hf_cache_env(tmp_path / "hf")
 
     assert str(tmp_path / "hf") in __import__("os").environ["HF_HOME"]
     assert str(tmp_path / "hf" / "hub") in __import__("os").environ["HUGGINGFACE_HUB_CACHE"]
+    assert __import__("os").environ["PYTORCH_ENABLE_MPS_FALLBACK"] == "1"
 
 
 def test_device_from_request_defaults_to_auto_and_preserves_legacy_cuda() -> None:

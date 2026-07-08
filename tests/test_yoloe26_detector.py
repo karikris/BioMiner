@@ -190,6 +190,7 @@ def test_yoloe26_sidecar_detector_reuses_one_process_for_multiple_batches(tmp_pa
 
     assert len(factory.processes) == 1
     assert factory.processes[0].args[-1] == "--persistent"
+    assert factory.processes[0].kwargs["env"]["PYTORCH_ENABLE_MPS_FALLBACK"] == "1"
     assert first[0][0].label == "butterfly_like"
     assert second[0][0].score == 0.91
     assert detector.model_id == "fake-yoloe26"
@@ -270,15 +271,16 @@ class _FakePopenFactory:
         self.exited = exited
         self.processes: list[_FakeProcess] = []
 
-    def __call__(self, args, **_kwargs) -> "_FakeProcess":  # noqa: ANN001
-        process = _FakeProcess(args=list(args), error_payload=self.error_payload, exited=self.exited)
+    def __call__(self, args, **kwargs) -> "_FakeProcess":  # noqa: ANN001, ANN003
+        process = _FakeProcess(args=list(args), kwargs=kwargs, error_payload=self.error_payload, exited=self.exited)
         self.processes.append(process)
         return process
 
 
 class _FakeProcess:
-    def __init__(self, *, args: list[str], error_payload: dict[str, object] | None, exited: bool) -> None:
+    def __init__(self, *, args: list[str], kwargs: dict[str, object], error_payload: dict[str, object] | None, exited: bool) -> None:
         self.args = args
+        self.kwargs = kwargs
         self.error_payload = error_payload
         self.returncode = 17 if exited else None
         self.writes: list[str] = []

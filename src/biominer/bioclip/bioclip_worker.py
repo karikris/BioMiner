@@ -56,6 +56,7 @@ def configure_hf_cache_env(cache_dir: str | Path) -> Path:
     hub_path.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("HF_HOME", str(cache_path))
     os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(hub_path))
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     return cache_path
 
 

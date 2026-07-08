@@ -1746,7 +1746,7 @@ def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=0,
-            stdout='{"device_resolved":"mps","mps_available":true}\n',
+            stdout='{"device_resolved":"mps","model_load":true,"mps_available":true,"pytorch_mps_fallback_enabled":true}\n',
             stderr="",
         )
 
@@ -1768,9 +1768,59 @@ def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["device_resolved"] == "mps"
+    assert payload["model_load"] is True
+    assert payload["pytorch_mps_fallback_enabled"] is True
     assert calls[0]["cmd"][0] == str(runtime_python)
     assert calls[0]["cmd"][-1] == "auto"
+    assert "hf-hub:imageomics/bioclip-2.5-vith14" in calls[0]["cmd"][2]
+    assert "create_model_and_transforms" in calls[0]["cmd"][2]
     assert calls[0]["env"]["HF_HOME"] == str((tmp_path / "hf").resolve())
+    assert calls[0]["env"]["PYTORCH_ENABLE_MPS_FALLBACK"] == "1"
+
+
+def test_yoloe26_runtime_check_uses_sidecar_python_and_mps_fallback(tmp_path, capsys, monkeypatch) -> None:
+    runtime_python = tmp_path / "YOLO26" / "venv" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("# fake python", encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    def fake_run(cmd, *, capture_output, check, cwd, env, text):  # noqa: ANN001 - mirrors subprocess.run.
+        calls.append({"cmd": cmd, "capture_output": capture_output, "check": check, "cwd": cwd, "env": env, "text": text})
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout='{"checkpoint_resolved":true,"device_resolved":"mps","mps_available":true,"pytorch_mps_fallback_enabled":true}\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr("biominer.cli.subprocess.run", fake_run)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "dev",
+            "vision",
+            "yoloe26-runtime-check",
+            "--runtime-python",
+            str(runtime_python),
+            "--device",
+            "mps",
+            "--checkpoint",
+            "yoloe-26s-seg.pt",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["device_resolved"] == "mps"
+    assert payload["checkpoint_resolved"] is True
+    assert payload["pytorch_mps_fallback_enabled"] is True
+    assert calls[0]["cmd"][0] == str(runtime_python)
+    assert calls[0]["cmd"][-2:] == ["mps", "yoloe-26s-seg.pt"]
+    assert "from ultralytics import YOLOE" in calls[0]["cmd"][2]
+    assert calls[0]["cwd"] == str(tmp_path / "YOLO26" / "models")
+    assert calls[0]["env"]["PYTORCH_ENABLE_MPS_FALLBACK"] == "1"
+    assert calls[0]["env"]["BIOMINER_YOLO26_MODEL_DIR"] == str(tmp_path / "YOLO26" / "models")
 
 
 def test_bioclip_prefetch_model_uses_snapshot_download_sidecar(tmp_path, capsys, monkeypatch) -> None:
