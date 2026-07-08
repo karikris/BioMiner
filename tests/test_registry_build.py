@@ -262,6 +262,7 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
         "boi_india_en": EmptyStaticClient("Butterflies of India"),
         "bharat_ki_titliya_hi": EmptyStaticClient("Bharat Ki Titliya"),
         "karnataka_chitte_kn": EmptyStaticClient("Karnataka Chitte"),
+        "papilio_demoleus_multilingual_t5": EmptyStaticClient("Papilio demoleus multilingual T5"),
     }
     monkeypatch.setattr("biominer.registry.enrichment.default_enrichment_clients", lambda max_retries=5: clients)
 
@@ -295,6 +296,7 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
         "boi_india_en",
         "bharat_ki_titliya_hi",
         "karnataka_chitte_kn",
+        "papilio_demoleus_multilingual_t5",
     ]
     assert {"Lime Swallowtail", "Lime Butterfly", "Chequered Swallowtail", "Zitronen-Schwalbenschwanz", "Wikidata Lime"}.issubset(
         set(names["display_name"].to_list())
@@ -531,6 +533,7 @@ def test_registry_build_quarantines_source_errors_without_siloing_successful_nam
         "boi_india_en": EmptyStaticClient("Butterflies of India"),
         "bharat_ki_titliya_hi": EmptyStaticClient("Bharat Ki Titliya"),
         "karnataka_chitte_kn": EmptyStaticClient("Karnataka Chitte"),
+        "papilio_demoleus_multilingual_t5": EmptyStaticClient("Papilio demoleus multilingual T5"),
     }
     monkeypatch.setattr("biominer.registry.enrichment.default_enrichment_clients", lambda max_retries=5: clients)
 

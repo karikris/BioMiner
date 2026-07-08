@@ -1393,6 +1393,87 @@ def test_static_vernacular_source_client_preserves_same_vernacular_across_region
     assert v1_result["name_assertions"][0]["source_record_id"] != v2_result["name_assertions"][0]["source_record_id"]
 
 
+def test_static_vernacular_source_client_preserves_t5_review_metadata_for_queries(tmp_path) -> None:
+    fieldnames = [
+        "source_key",
+        "source_name",
+        "source_version",
+        "country_code",
+        "admin1_code",
+        "scientific_name",
+        "source_taxon_id",
+        "accepted_name_usage",
+        "vernacular_name",
+        "language",
+        "script",
+        "region",
+        "rank",
+        "licence",
+        "source_url",
+        "citation",
+        "name_class",
+        "review_state",
+        "precision_tier",
+        "confidence",
+    ]
+    config_path = _write_static_source(
+        tmp_path,
+        source_key="papilio_demoleus_multilingual_t5",
+        fieldnames=fieldnames,
+        rows=[
+            {
+                "source_key": "papilio_demoleus_multilingual_t5",
+                "source_name": "Papilio demoleus multilingual T5",
+                "source_version": "test-static-v1",
+                "country_code": "001",
+                "admin1_code": "",
+                "scientific_name": "Papilio demoleus",
+                "source_taxon_id": "curated:papilio-demoleus",
+                "accepted_name_usage": "Papilio demoleus",
+                "vernacular_name": "Limettiperhonen",
+                "language": "fin",
+                "script": "Latn",
+                "region": "001",
+                "rank": "species",
+                "licence": "not_configured",
+                "source_url": "",
+                "citation": "Fixture citation",
+                "name_class": "generated_translation",
+                "review_state": "reviewed",
+                "precision_tier": "medium",
+                "confidence": "medium",
+            }
+        ],
+        config_updates={
+            "source_name": "Papilio demoleus multilingual T5",
+            "source_display_name": "Papilio demoleus multilingual T5",
+            "country_code": "001",
+            "country_scope": ["001"],
+            "language": "eng",
+            "language_scope": ["eng", "fin", "swe"],
+            "script": "Latn",
+            "region": "001",
+            "trust_tier": "T5",
+            "source_reliability_tier": "T5",
+            "precision_tier": "low",
+            "source_url": "",
+            "licence": "not_configured",
+        },
+    )
+
+    result = StaticVernacularSourceClient.from_config_path(config_path).enrich_registry(
+        taxa_rows=[{"accepted_taxon_key": "gbif:100", "rank": "SPECIES", "scientific_name": "Papilio demoleus"}],
+        name_rows=[],
+    )
+
+    assertion = result["name_assertions"][0]
+    assert assertion["trust_tier"] == "T5"
+    assert assertion["name_class"] == "generated_translation"
+    assert assertion["review_state"] == "reviewed"
+    assert assertion["precision_tier"] == "medium"
+    assert assertion["confidence"] == "medium"
+
+
 def test_static_vernacular_source_client_rejects_broad_rank_rows_and_disables_taxonomic_caution(tmp_path) -> None:
     config_path = _write_static_source(
         tmp_path,
@@ -2573,12 +2654,14 @@ def test_default_enrichment_clients_include_wikidata_gbif_vernacular_and_taxref(
         "boi_india_en",
         "bharat_ki_titliya_hi",
         "karnataka_chitte_kn",
+        "papilio_demoleus_multilingual_t5",
     ]
     assert clients["gbif_vernacular"].__class__.__name__ == "GBIFVernacularClient"
     assert clients["taxref_fr"].__class__.__name__ == "TAXREFFrenchClient"
     assert clients["boi_india_en"].__class__.__name__ == "StaticVernacularSourceClient"
     assert clients["bharat_ki_titliya_hi"].__class__.__name__ == "StaticVernacularSourceClient"
     assert clients["karnataka_chitte_kn"].__class__.__name__ == "StaticVernacularSourceClient"
+    assert clients["papilio_demoleus_multilingual_t5"].__class__.__name__ == "StaticVernacularSourceClient"
     assert clients["wikidata"].__class__.__name__ == "WikidataClient"
 
 

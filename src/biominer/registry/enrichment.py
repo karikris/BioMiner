@@ -46,9 +46,25 @@ DEFAULT_ENRICHMENT_SOURCES = (
     "boi_india_en",
     "bharat_ki_titliya_hi",
     "karnataka_chitte_kn",
+    "papilio_demoleus_multilingual_t5",
 )
-STATIC_VERNACULAR_SOURCE_KEYS = ("boi_india_en", "bharat_ki_titliya_hi", "karnataka_chitte_kn")
-BULK_ENRICHMENT_SOURCES = frozenset({"gbif_vernacular", "taxref_fr", "tmd_de", "boi_india_en", "bharat_ki_titliya_hi", "karnataka_chitte_kn"})
+STATIC_VERNACULAR_SOURCE_KEYS = (
+    "boi_india_en",
+    "bharat_ki_titliya_hi",
+    "karnataka_chitte_kn",
+    "papilio_demoleus_multilingual_t5",
+)
+BULK_ENRICHMENT_SOURCES = frozenset(
+    {
+        "gbif_vernacular",
+        "taxref_fr",
+        "tmd_de",
+        "boi_india_en",
+        "bharat_ki_titliya_hi",
+        "karnataka_chitte_kn",
+        "papilio_demoleus_multilingual_t5",
+    }
+)
 BULK_REGISTRY_WORK_KEY = "__registry__"
 INATURALIST_DAILY_REQUEST_LIMIT = 10000
 INATURALIST_WORKER_LIMIT = 1
@@ -69,6 +85,7 @@ SOURCE_WORKER_LIMITS = {
     "bharat_ki_titliya_hi": 1,
     "inaturalist": INATURALIST_WORKER_LIMIT,
     "karnataka_chitte_kn": 1,
+    "papilio_demoleus_multilingual_t5": 1,
     "taxref_fr": 1,
     "tmd_de": 1,
     "wikidata": WIKIDATA_WORKER_LIMIT,
@@ -1449,6 +1466,7 @@ def _source_display_names(sources: tuple[str, ...]) -> tuple[str, ...]:
         "inaturalist": "iNaturalist",
         "karnataka_chitte_kn": "Karnataka Chitte",
         "mymemory": "MyMemory",
+        "papilio_demoleus_multilingual_t5": "Multilingual T5",
         "taxref_fr": "TAXREF",
         "tmd_de": "TMD",
         "wikidata": "Wikidata",

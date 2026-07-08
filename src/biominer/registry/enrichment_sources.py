@@ -591,6 +591,9 @@ class StaticVernacularSourceClient:
             script = _static_value(row, "script", self.script)
             region = _static_value(row, "region", self.region)
             name_class = _static_value(row, "name_class") or ("vernacular_alias" if match_method == "scientific_synonym" else "vernacular")
+            precision_tier = _static_value(row, "precision_tier", self.precision_tier)
+            confidence = _static_value(row, "confidence", match_confidence) or match_confidence
+            review_state = _static_value(row, "review_state")
             dedupe_key = (accepted_taxon_key, normalize_name_key(vernacular_name), language, region, name_class)
             if dedupe_key in seen_assertions:
                 coverage["duplicate_rows"] += 1
@@ -626,10 +629,10 @@ class StaticVernacularSourceClient:
                     "source_taxon_id": source_taxon_id,
                     "lineage_check": lineage_check,
                     "trust_tier": self.trust_tier,
-                    "precision_tier": self.precision_tier,
-                    "confidence": match_confidence,
+                    "precision_tier": precision_tier,
+                    "confidence": confidence,
                     "enabled": enabled,
-                    "review_state": "accepted" if enabled else "candidate",
+                    "review_state": review_state or ("accepted" if enabled else "candidate"),
                     "disabled_reason": ";".join(disabled_reasons),
                     "licence": licence,
                 }
