@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 import json
 import os
 from pathlib import Path
@@ -18,6 +18,7 @@ from biominer.detection.cloud_work import (
     enqueue_detection_work_from_source_shards,
     run_cloud_detection_batch,
 )
+from biominer.detection.policy import VisionRuntimeSettings
 from biominer.evidence.cloud_work import (
     build_review_queue_from_cloud_summary_shards,
     join_evidence_batch_id,
@@ -77,6 +78,8 @@ class ProductionRunRequest:
     workstore_backend: str = "postgres"
     vision_backend: str = DEFAULT_VISION_BACKEND
     bioclip_model: str = DEFAULT_BIOCLIP_MODEL
+    vision_profile: str | None = None
+    vision_settings: VisionRuntimeSettings = field(default_factory=VisionRuntimeSettings)
     bioclip_ablation_mode: str = "detector_crop"
     bioclip_ablation_modes: tuple[str, ...] = OBJECT_VISUAL_MODES
     worker_id: str = "local"
@@ -110,6 +113,8 @@ class ProductionRunPlan:
                 "workstore_backend": self.request.workstore_backend,
                 "vision_backend": self.request.vision_backend,
                 "bioclip_model": self.request.bioclip_model,
+                "vision_profile": self.request.vision_profile,
+                "vision_settings": asdict(self.request.vision_settings),
                 "bioclip_ablation_mode": self.request.bioclip_ablation_mode,
                 "bioclip_ablation_modes": list(self.request.bioclip_ablation_modes),
                 "worker_id": self.request.worker_id,
@@ -155,6 +160,8 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
         model_configs={
             "vision_backend": request.vision_backend,
             "bioclip_model": request.bioclip_model,
+            "vision_profile": request.vision_profile,
+            "vision_settings": asdict(request.vision_settings),
             "bioclip_ablation_mode": request.bioclip_ablation_mode,
             "bioclip_ablation_modes": list(request.bioclip_ablation_modes),
             "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,

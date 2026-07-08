@@ -11,7 +11,7 @@ import polars as pl
 import pytest
 
 from biominer.config import BioMinerConfig, RuntimeConfig, StorageConfig, WorkStoreConfig
-from biominer.cli import _detect_boxes_backend, _yoloe26_metrics, build_parser, load_decoded_image_from_record, run
+from biominer.cli import _detect_boxes_backend, _production_vision_settings_from_args, _yoloe26_metrics, build_parser, load_decoded_image_from_record, run
 from biominer.detection.detector_base import DetectionCandidate
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES
@@ -118,6 +118,67 @@ def test_registry_build_source_defaults_exclude_blocked_providers() -> None:
     assert "slu" not in source_names
     assert "artdatabanken" not in source_names
     assert "swedish" not in source_names
+
+
+def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "run",
+            "--taxon",
+            "Papilio demoleus",
+            "--registry-dir",
+            "s3://biominer/biominer/registry/current",
+            "--output-prefix",
+            "s3://biominer/biominer/runs/papilio_demoleus",
+            "--vision-profile",
+            "mac_m5pro_64gb",
+        ]
+    )
+
+    settings = _production_vision_settings_from_args(args)
+
+    assert settings.profile_name == "mac_m5pro_64gb"
+    assert settings.device == "mps"
+    assert settings.yolo_checkpoint == "yoloe-26s-seg.pt"
+    assert settings.yolo_imgsz == 768
+    assert settings.detector_batch_size == 16
+    assert settings.bioclip_model == "hf-hub:imageomics/bioclip-2.5-vith14"
+    assert settings.crop_batch_size == 24
+    assert settings.bioclip_top_k == 10
+    assert settings.crop_padding_ratio == 0.08
+    assert settings.parquet_compression == "zstd"
+    assert settings.delete_images_after_commit is True
+
+    overridden = parser.parse_args(
+        [
+            "run",
+            "--taxon",
+            "Papilio demoleus",
+            "--registry-dir",
+            "s3://biominer/biominer/registry/current",
+            "--output-prefix",
+            "s3://biominer/biominer/runs/papilio_demoleus",
+            "--vision-profile",
+            "mac_m5pro_64gb",
+            "--device",
+            "cpu",
+            "--yolo-batch",
+            "7",
+            "--bioclip-model",
+            "custom-bioclip",
+            "--no-delete-images-after-commit",
+        ]
+    )
+
+    overridden_settings = _production_vision_settings_from_args(overridden)
+
+    assert overridden_settings.device == "cpu"
+    assert overridden_settings.detector_batch_size == 7
+    assert overridden_settings.bioclip_model == "custom-bioclip"
+    assert overridden_settings.delete_images_after_commit is False
+    assert overridden_settings.yolo_imgsz == 768
+    assert overridden_settings.crop_padding_ratio == 0.08
 
 
 def test_registry_build_parses_regional_and_static_source_options() -> None:

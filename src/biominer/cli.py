@@ -31,7 +31,7 @@ from biominer.detection.detector_base import DecodedImage, DetectionCandidate, F
 from biominer.detection.evaluate import evaluate_xie_style
 from biominer.detection.image_io import load_decoded_image_from_record
 from biominer.detection.pipeline import run_detection_pipeline
-from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, runtime_profile
+from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, VisionRuntimeSettings, runtime_profile, vision_runtime_settings
 from biominer.detection.segmentation import make_segmenter
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_comments.comment_review import (
@@ -313,7 +313,17 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--storage-backend", default="s3", choices=("s3", "local"))
     production_run.add_argument("--workstore-backend", default="postgres", choices=("postgres", "sqlite"))
     production_run.add_argument("--vision-backend", default="yoloe26")
-    production_run.add_argument("--bioclip-model", default=BIOCLIP_25_HUGE_REPO_ID)
+    production_run.add_argument("--vision-profile", choices=("mac_m5pro_64gb",))
+    production_run.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"))
+    production_run.add_argument("--yolo-checkpoint")
+    production_run.add_argument("--yolo-imgsz", type=int)
+    production_run.add_argument("--yolo-batch", type=int)
+    production_run.add_argument("--bioclip-model")
+    production_run.add_argument("--bioclip-batch", type=int)
+    production_run.add_argument("--bioclip-top-k", type=int)
+    production_run.add_argument("--crop-padding-ratio", type=float)
+    production_run.add_argument("--parquet-compression")
+    production_run.add_argument("--delete-images-after-commit", action=argparse.BooleanOptionalAction, default=None)
     production_run.add_argument("--stages")
     production_run.add_argument("--dry-run", action="store_true")
     production_run.add_argument("--build-registry-if-missing", action="store_true")
@@ -854,6 +864,36 @@ def _storage_base_uri(*, storage: object, config: object) -> str:
     return str(getattr(storage_config, "prefix", "."))
 
 
+def _production_vision_settings_from_args(args: argparse.Namespace) -> VisionRuntimeSettings:
+    settings = (
+        vision_runtime_settings(args.vision_profile)
+        if getattr(args, "vision_profile", None)
+        else VisionRuntimeSettings(bioclip_model=BIOCLIP_25_HUGE_REPO_ID)
+    )
+    overrides: dict[str, object] = {}
+    if getattr(args, "device", None) is not None:
+        overrides["device"] = args.device
+    if getattr(args, "yolo_checkpoint", None) is not None:
+        overrides["yolo_checkpoint"] = args.yolo_checkpoint
+    if getattr(args, "yolo_imgsz", None) is not None:
+        overrides["yolo_imgsz"] = args.yolo_imgsz
+    if getattr(args, "yolo_batch", None) is not None:
+        overrides["detector_batch_size"] = args.yolo_batch
+    if getattr(args, "bioclip_model", None) is not None:
+        overrides["bioclip_model"] = args.bioclip_model
+    if getattr(args, "bioclip_batch", None) is not None:
+        overrides["crop_batch_size"] = args.bioclip_batch
+    if getattr(args, "bioclip_top_k", None) is not None:
+        overrides["bioclip_top_k"] = args.bioclip_top_k
+    if getattr(args, "crop_padding_ratio", None) is not None:
+        overrides["crop_padding_ratio"] = args.crop_padding_ratio
+    if getattr(args, "parquet_compression", None) is not None:
+        overrides["parquet_compression"] = args.parquet_compression
+    if getattr(args, "delete_images_after_commit", None) is not None:
+        overrides["delete_images_after_commit"] = args.delete_images_after_commit
+    return replace(settings, **overrides) if overrides else settings
+
+
 def _run_production_command(args: argparse.Namespace) -> int:
     config = None
     try:
@@ -885,6 +925,7 @@ def _run_production_command(args: argparse.Namespace) -> int:
             }.items()
             if value and value > 0
         }
+        vision_settings = _production_vision_settings_from_args(args)
         request = ProductionRunRequest(
             taxon=args.taxon,
             rank=args.rank,
@@ -893,7 +934,9 @@ def _run_production_command(args: argparse.Namespace) -> int:
             storage_backend=args.storage_backend,
             workstore_backend=args.workstore_backend,
             vision_backend=args.vision_backend,
-            bioclip_model=args.bioclip_model,
+            bioclip_model=vision_settings.bioclip_model,
+            vision_profile=args.vision_profile,
+            vision_settings=vision_settings,
             worker_id=config.runtime.worker_id or ("local" if allow_local else ""),
             stages=stages,
             dry_run=args.dry_run,
