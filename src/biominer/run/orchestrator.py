@@ -81,7 +81,7 @@ class ProductionRunRequest:
     vision_profile: str | None = None
     vision_settings: VisionRuntimeSettings = field(default_factory=VisionRuntimeSettings)
     bioclip_ablation_mode: str = "detector_crop"
-    bioclip_ablation_modes: tuple[str, ...] = OBJECT_VISUAL_MODES
+    bioclip_ablation_modes: tuple[str, ...] = ("detector_crop",)
     worker_id: str = "local"
     stages: tuple[RunStage, ...] = DEFAULT_PRODUCTION_STAGES
     dry_run: bool = False

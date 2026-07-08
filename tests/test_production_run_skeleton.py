@@ -155,6 +155,17 @@ def test_run_paths_and_dry_run_manifest(tmp_path) -> None:
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["species_count"] == 1
 
 
+def test_production_run_plan_defaults_to_detector_crop_only(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(taxon="Danaus plexippus", rank="species", output_root=tmp_path, dry_run=True)
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
+
+    assert request.bioclip_ablation_modes == ("detector_crop",)
+    assert run_orchestrator_module._request_bioclip_modes(request) == ("detector_crop",)
+    assert plan.manifest.model_configs["bioclip_ablation_modes"] == ["detector_crop"]
+    assert "whole_image" not in plan.manifest.model_configs["bioclip_ablation_modes"]
+
+
 def test_run_artifact_uris_are_s3_safe_and_species_scoped() -> None:
     uris = RunArtifactUris.from_prefix("s3://biominer/runs", run_id="Family: Papilionidae")
 
@@ -863,11 +874,11 @@ def test_orchestrator_runs_fake_backed_cloud_workflow_end_to_end(tmp_path, monke
     assert result.manifest.query_counts["enqueued_work_items"] == 1
     assert result.manifest.query_counts["polled_work_items"] == 1
     assert result.manifest.detection_counts["detections"] == 1
-    assert result.manifest.bioclip_counts["objects_scored"] == 2
-    assert result.manifest.bioclip_counts["whole_images_scored"] == 1
+    assert result.manifest.bioclip_counts["objects_scored"] == 1
+    assert result.manifest.bioclip_counts["whole_images_scored"] == 0
     assert result.manifest.bioclip_counts["detector_crops_scored"] == 1
     assert result.manifest.bioclip_counts["segmentation_crops_scored"] == 0
-    assert result.manifest.evidence_counts["object_evidence_rows"] == 2
+    assert result.manifest.evidence_counts["object_evidence_rows"] == 1
     assert result.manifest.evidence_counts["photo_summary_rows"] == 1
     poll_shard_uri = result.manifest.stages[2].outputs["source_records"]
     assert poll_shard_uri.startswith(result.artifact_uris.staging_uri + "/evidence/stage=poll_flickr/")
@@ -1318,18 +1329,17 @@ def test_orchestrator_runs_local_detection_and_object_scoring_with_injected_fake
         "images_loaded": 1,
         "image_failures": 0,
     }
-    assert result.manifest.bioclip_counts["objects_scored"] == 2
-    assert result.manifest.bioclip_counts["whole_images_scored"] == 1
+    assert result.manifest.bioclip_counts["objects_scored"] == 1
+    assert result.manifest.bioclip_counts["whole_images_scored"] == 0
     assert result.manifest.bioclip_counts["detector_crops_scored"] == 1
     assert result.manifest.bioclip_counts["segmentation_crops_scored"] == 0
-    assert result.manifest.metrics["visual_modes_requested"] == list(OBJECT_VISUAL_MODES)
-    assert result.manifest.metrics["visual_modes_scored"] == ["detector_crop", "whole_image"]
-    assert result.manifest.metrics["visual_mode_status_by_mode"]["detector_crop_segmentation"] == "unavailable"
+    assert result.manifest.metrics["visual_modes_requested"] == ["detector_crop"]
+    assert result.manifest.metrics["visual_modes_scored"] == ["detector_crop"]
     scores = pl.read_parquet(result.paths.object_scores_path).sort("ablation_mode")
-    assert scores.height == 2
-    assert scores.select("ablation_mode").to_series().to_list() == ["detector_crop", "whole_image"]
-    assert scores.select("species_top1_scientific_name").to_series().to_list() == ["Danaus plexippus", "Danaus plexippus"]
-    assert scores.select("target_species_score").to_series().to_list() == [0.82, 0.82]
+    assert scores.height == 1
+    assert scores.select("ablation_mode").to_series().to_list() == ["detector_crop"]
+    assert scores.select("species_top1_scientific_name").to_series().to_list() == ["Danaus plexippus"]
+    assert scores.select("target_species_score").to_series().to_list() == [0.82]
     assert result.manifest.stages[0].outputs["object_detections"] == str(result.paths.object_detections_path)
     assert result.manifest.stages[1].outputs["object_scores"] == str(result.paths.object_scores_path)
 
@@ -1477,28 +1487,27 @@ def test_orchestrator_scores_bioclip_from_cloud_storage(tmp_path) -> None:
     ).run()
 
     assert result.manifest.status == "complete"
-    assert result.manifest.stages[0].metrics["score_work_items_enqueued"] == 3
-    assert result.manifest.stages[0].metrics["workstore_work_items_completed"] == 3
-    assert result.manifest.bioclip_counts["objects_scored"] == 2
-    assert result.manifest.bioclip_counts["whole_images_scored"] == 1
+    assert result.manifest.stages[0].metrics["score_work_items_enqueued"] == 1
+    assert result.manifest.stages[0].metrics["workstore_work_items_completed"] == 1
+    assert result.manifest.bioclip_counts["objects_scored"] == 1
+    assert result.manifest.bioclip_counts["whole_images_scored"] == 0
     assert result.manifest.bioclip_counts["detector_crops_scored"] == 1
     assert result.manifest.bioclip_counts["segmentation_crops_scored"] == 0
-    assert result.manifest.metrics["visual_modes_requested"] == list(OBJECT_VISUAL_MODES)
-    assert result.manifest.metrics["visual_modes_scored"] == ["detector_crop", "whole_image"]
-    assert result.manifest.metrics["visual_mode_status_by_mode"]["detector_crop_segmentation"] == "unavailable"
+    assert result.manifest.metrics["visual_modes_requested"] == ["detector_crop"]
+    assert result.manifest.metrics["visual_modes_scored"] == ["detector_crop"]
     score_uri = result.manifest.stages[0].outputs["object_scores"]
     assert score_uri.startswith(plan.artifact_uris.staging_uri + "/evidence/stage=score_bioclip/")
     scores = storage.parquet_payloads[score_uri].sort("ablation_mode")
-    assert scores.height == 2
-    assert scores.select("ablation_mode").to_series().to_list() == ["detector_crop", "whole_image"]
-    assert scores.select("species_top1_scientific_name").to_series().to_list() == ["Danaus plexippus", "Danaus plexippus"]
-    assert storage.json_payloads[plan.artifact_uris.manifest_uri]["bioclip_counts"]["objects_scored"] == 2
+    assert scores.height == 1
+    assert scores.select("ablation_mode").to_series().to_list() == ["detector_crop"]
+    assert scores.select("species_top1_scientific_name").to_series().to_list() == ["Danaus plexippus"]
+    assert storage.json_payloads[plan.artifact_uris.manifest_uri]["bioclip_counts"]["objects_scored"] == 1
     work_items = workstore.list_work_items(
         job_name="biominer_production_run",
         stage=RunStage.SCORE_BIOCLIP.value,
         registry_version=scope.registry_version,
     )
-    assert [item["status"] for item in work_items] == ["completed", "completed", "completed"]
+    assert [item["status"] for item in work_items] == ["completed"]
     shards = workstore.list_committed_shards(
         job_name="biominer_production_run",
         stage=RunStage.SCORE_BIOCLIP.value,

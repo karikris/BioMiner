@@ -181,6 +181,29 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
     assert overridden_settings.crop_padding_ratio == 0.08
 
 
+def test_vision_ablate_command_still_allows_all_visual_modes() -> None:
+    args = build_parser().parse_args(
+        [
+            "vision",
+            "ablate",
+            "--input",
+            "records.parquet",
+            "--detections",
+            "detections.parquet",
+            "--species-context",
+            "species_context.json",
+            "--output-dir",
+            "reports/ablation",
+            "--modes",
+            "whole_image,detector_crop,detector_crop_segmentation",
+        ]
+    )
+
+    assert args.command == "vision"
+    assert args.vision_command == "ablate"
+    assert args.modes == "whole_image,detector_crop,detector_crop_segmentation"
+
+
 def test_registry_build_parses_regional_and_static_source_options() -> None:
     parser = build_parser()
 
