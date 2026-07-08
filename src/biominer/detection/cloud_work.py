@@ -100,7 +100,10 @@ def run_cloud_detection_batch(
     detector: ObjectDetector,
     image_loader: ImageLoader,
     detection_policy: DetectionPolicy | None = None,
+    detector_batch_size: int = 16,
 ) -> CloudDetectionBatchResult:
+    if detector_batch_size <= 0:
+        raise ValueError("detector_batch_size must be positive")
     policy = detection_policy or DetectionPolicy(backend=detector.backend)
     rows: list[dict[str, Any]] = []
     records_seen = 0
@@ -119,9 +122,9 @@ def run_cloud_detection_batch(
             continue
         images_loaded += 1
         loaded.append((record, image))
-    if loaded:
-        detections_by_image = detector.detect_batch([image for _record, image in loaded])
-        for (record, image), detections in zip(loaded, detections_by_image, strict=True):
+    for loaded_batch in _chunks(loaded, detector_batch_size):
+        detections_by_image = detector.detect_batch([image for _record, image in loaded_batch])
+        for (record, image), detections in zip(loaded_batch, detections_by_image, strict=True):
             detection_rows = build_detection_rows(
                 record=record,
                 image=image,
@@ -147,6 +150,10 @@ def run_cloud_detection_batch(
         detections_written=detections_written,
         crops_created=crops_created,
     )
+
+
+def _chunks(items: list[Any], size: int) -> list[list[Any]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
 
 
 @dataclass(frozen=True)

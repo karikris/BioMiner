@@ -616,6 +616,7 @@ class ProductionRunOrchestrator:
                     work_items=claimed,
                     detector=self.object_detector,
                     image_loader=self.image_loader,
+                    detector_batch_size=self.request.vision_settings.detector_batch_size,
                 )
                 output_uri = self.storage.write_parquet_shard(
                     build_evidence_shard_uri(
@@ -750,6 +751,7 @@ class ProductionRunOrchestrator:
                     species_context=target_context,
                     candidate_set=candidate_set,
                     scorer=self.object_scorer,
+                    crop_batch_size=self.request.vision_settings.crop_batch_size,
                 )
                 output_uri = self.storage.write_parquet_shard(
                     build_evidence_shard_uri(

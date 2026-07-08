@@ -4,7 +4,8 @@ from pathlib import Path
 
 import polars as pl
 
-from biominer.detection.cloud_work import enqueue_detection_work_from_source_shards
+from biominer.detection.cloud_work import detection_work_item, enqueue_detection_work_from_source_shards, run_cloud_detection_batch
+from biominer.detection.detector_base import DecodedImage, DetectionCandidate
 from biominer.run.stages import RunStage
 from biominer.workstore.sqlite import SQLiteWorkStore
 
@@ -84,6 +85,62 @@ def test_enqueue_detection_work_from_source_shard_inventory_is_idempotent(tmp_pa
     assert {item["payload"]["source_shard_uri"] for item in items} == {source_uri}
     assert {item["payload"]["source_record"]["flickr_photo_id"] for item in items} == {"photo-1", "photo-2"}
     assert all(item["payload"]["detector"]["checkpoint"] == "fake-checkpoint" for item in items)
+
+
+def test_run_cloud_detection_batch_chunks_loaded_images_by_detector_batch_size() -> None:
+    class RecordingDetector:
+        backend = "fake"
+        model_id = "fake-detector"
+        model_version = "test"
+        checkpoint = "fake-checkpoint"
+
+        def __init__(self) -> None:
+            self.batch_sizes: list[int] = []
+
+        def detect_batch(self, images):  # noqa: ANN001, ANN202 - mirrors detector protocol.
+            self.batch_sizes.append(len(images))
+            return [
+                [DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 2.0, 2.0))]
+                for _image in images
+            ]
+
+    detector = RecordingDetector()
+    work_items = []
+    for index in range(5):
+        payload = detection_work_item(
+            {
+                "source": "flickr",
+                "flickr_photo_id": f"photo-{index}",
+                "source_record_hash": f"sha256:source-{index}",
+                "image_url": f"https://live.staticflickr.com/photo-{index}.jpg",
+            },
+            run_id="run-1",
+            source_shard_uri="s3://biominer/source.parquet",
+            detector={"backend": "fake", "model_id": "fake-detector", "model_version": "test", "checkpoint": "fake-checkpoint"},
+        )
+        work_items.append({"work_key": payload["work_key"], "payload": payload})
+
+    result = run_cloud_detection_batch(
+        work_items=work_items,
+        detector=detector,
+        image_loader=lambda record: _decoded_image(),
+        detector_batch_size=2,
+    )
+
+    assert detector.batch_sizes == [2, 2, 1]
+    assert result.records_seen == 5
+    assert result.images_loaded == 5
+    assert result.detections_written == 5
+
+
+def _decoded_image() -> DecodedImage:
+    return DecodedImage(
+        width=2,
+        height=2,
+        mode="RGB",
+        data=bytes([255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0]),
+        source_uri="memory://cloud-detection",
+    )
 
 
 class _FakeCloudStorage:

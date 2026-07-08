@@ -4,8 +4,10 @@ from pathlib import Path
 
 import polars as pl
 
-from biominer.bioclip.cloud_work import enqueue_bioclip_work_from_detection_shards
+from biominer.bioclip.candidate_sets import build_candidate_set
+from biominer.bioclip.cloud_work import bioclip_score_work_item, enqueue_bioclip_work_from_detection_shards, run_cloud_bioclip_batch
 from biominer.run.stages import RunStage
+from biominer.species.context import CommonName, SpeciesContext
 from biominer.workstore.sqlite import SQLiteWorkStore
 
 
@@ -81,6 +83,75 @@ def test_enqueue_bioclip_work_from_detection_shards_only_uses_detected_butterfli
     assert payload["model"]["checkpoint"] == "bioclip-2.5"
     assert payload["detection"]["flickr_photo_id"] == "photo-1"
     assert payload["detection"]["detector_label"] == "butterfly_like"
+
+
+def test_run_cloud_bioclip_batch_chunks_detector_crops_by_crop_batch_size() -> None:
+    class BatchRecordingScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self) -> None:
+            self.initial_batches: list[tuple[str, ...]] = []
+
+        def score(self, item, labels):  # noqa: ANN001, ANN202 - proves the batch path is used.
+            raise AssertionError(f"unexpected single-item BioCLIP score for {item.get('detection_id')}")
+
+        def score_label_sets_batch(self, items, label_sets):  # noqa: ANN001, ANN202 - mirrors object batch scorer API.
+            if "species" in label_sets:
+                self.initial_batches.append(tuple(str(item["detection_id"]) for item in items))
+            return {
+                name: [
+                    {label: (0.83 if label == "a photo of Danaus plexippus" else 0.1) for label in labels}
+                    for _item in items
+                ]
+                for name, labels in label_sets.items()
+            }
+
+    context = _context()
+    candidate_set = build_candidate_set(context, allow_single_target_fixture=True)
+    scorer = BatchRecordingScorer()
+    work_items = []
+    for index in range(5):
+        payload = bioclip_score_work_item(
+            _detection_row(f"photo-{index}", f"det-{index}", f"sha256:crop-{index}", "butterfly_like", "detected"),
+            run_id="run-1",
+            detection_shard_uri="s3://biominer/detections.parquet",
+            model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
+            candidate_set_id=candidate_set.candidate_set_id,
+            ablation_mode="detector_crop",
+        )
+        work_items.append({"work_key": payload["work_key"], "payload": payload})
+
+    result = run_cloud_bioclip_batch(
+        work_items=work_items,
+        species_context=context,
+        candidate_set=candidate_set,
+        scorer=scorer,
+        crop_batch_size=2,
+    )
+
+    assert scorer.initial_batches == [("det-0", "det-1"), ("det-2", "det-3"), ("det-4",)]
+    assert result.work_items_seen == 5
+    assert result.detections_seen == 5
+    assert result.crops_scored == 5
+
+
+def _context() -> SpeciesContext:
+    return SpeciesContext(
+        scientific_name="Danaus plexippus",
+        accepted_taxon_key="gbif:5131654",
+        canonical_name="Danaus plexippus",
+        family="Nymphalidae",
+        genus="Danaus",
+        family_key="gbif:7017",
+        genus_key="gbif:1927164",
+        species_key="gbif:5131654",
+        registry_version="registry-v1",
+        synonyms=("Anosia plexippus",),
+        common_names=(CommonName(name="monarch butterfly", language="en", source="gbif"),),
+        regions=(),
+    )
 
 
 def _detection_row(photo_id: str, detection_id: str, crop_hash: str, label: str, status: str) -> dict[str, object]:

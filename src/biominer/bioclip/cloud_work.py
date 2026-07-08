@@ -174,7 +174,10 @@ def run_cloud_bioclip_batch(
     candidate_set: CandidateSet,
     scorer: ObjectBioClipScorer,
     geo_prior_table: pl.DataFrame | None = None,
+    crop_batch_size: int = 24,
 ) -> CloudBioClipBatchResult:
+    if crop_batch_size <= 0:
+        raise ValueError("crop_batch_size must be positive")
     rows: list[dict[str, Any]] = []
     requested_modes: list[str] = []
     scored_by_mode: dict[str, int] = {}
@@ -232,19 +235,20 @@ def run_cloud_bioclip_batch(
                 rows.append(score_row)
                 scored_by_mode[mode] = scored_by_mode.get(mode, 0) + 1
             continue
-        try:
-            score_rows = _score_detection_batch(
-                items=score_items,
-                context=species_context,
-                candidate_set=candidate_set,
-                scorer=scorer,
-                ablation_mode=mode,  # type: ignore[arg-type]
-                geo_prior_table=geo_prior_table,
-            )
-        except SegmentationUnavailable:
-            raise
-        rows.extend(score_rows)
-        scored_by_mode[mode] = scored_by_mode.get(mode, 0) + len(score_rows)
+        for score_chunk in _chunks(score_items, crop_batch_size):
+            try:
+                score_rows = _score_detection_batch(
+                    items=score_chunk,
+                    context=species_context,
+                    candidate_set=candidate_set,
+                    scorer=scorer,
+                    ablation_mode=mode,  # type: ignore[arg-type]
+                    geo_prior_table=geo_prior_table,
+                )
+            except SegmentationUnavailable:
+                raise
+            rows.extend(score_rows)
+            scored_by_mode[mode] = scored_by_mode.get(mode, 0) + len(score_rows)
     frame = pl.DataFrame(rows) if rows else empty_object_score_frame()
     modes_requested = tuple(_unique(requested_modes))
     modes_scored = tuple(sorted(scored_by_mode))
@@ -280,6 +284,10 @@ def run_cloud_bioclip_batch(
         segmentation_unavailable_count_by_mode=unavailable_by_mode,
         segmentation_unavailable_reason_by_mode=unavailable_reason_by_mode,
     )
+
+
+def _chunks(items: list[Any], size: int) -> list[list[Any]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
 
 
 def bioclip_score_batch_id(work_items: list[dict[str, Any]]) -> str:
