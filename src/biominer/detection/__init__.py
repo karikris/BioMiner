@@ -1,6 +1,6 @@
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector, ObjectDetector
 from biominer.detection.pipeline import DetectionPipelineResult, run_detection_pipeline
-from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, RuntimeProfile, runtime_profile
+from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, RuntimeProfile, VisionRuntimeSettings, runtime_profile, vision_runtime_settings
 
 __all__ = [
     "DecodedImage",
@@ -11,6 +11,8 @@ __all__ = [
     "FakeObjectDetector",
     "ObjectDetector",
     "RuntimeProfile",
+    "VisionRuntimeSettings",
     "run_detection_pipeline",
     "runtime_profile",
+    "vision_runtime_settings",
 ]

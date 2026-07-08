@@ -13,7 +13,7 @@ from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import COARSE_DETECTOR_LABELS, DecodedImage, DetectionCandidate, FakeObjectDetector, normalize_detector_label
 from biominer.detection.evaluate import evaluate_xie_style, iou_xyxy, joint_detection_species_correct
 from biominer.detection.pipeline import run_detection_pipeline
-from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
+from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, VisionRuntimeSettings
 from biominer.detection.schema import build_detection_rows, detection_id_for
 from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
 
@@ -45,6 +45,47 @@ def test_detection_policy_defaults_match_object_pipeline_profile() -> None:
     assert run_policy.detector_workers == 1
     assert run_policy.max_inflight_images == 32
     assert run_policy.crop_batch_size == 24
+
+
+def test_vision_runtime_settings_bridge_existing_detection_policies() -> None:
+    settings = VisionRuntimeSettings(
+        profile_name="test_profile",
+        device="mps",
+        yolo_checkpoint="yoloe-26s-seg.pt",
+        yolo_imgsz=768,
+        yolo_conf=0.25,
+        yolo_iou=0.45,
+        yolo_max_det=6,
+        detector_batch_size=16,
+        crop_batch_size=24,
+        crop_padding_ratio=0.08,
+        crop_target_px=336,
+        bioclip_model="hf-hub:imageomics/bioclip-2.5-vith14",
+        bioclip_top_k=10,
+        parquet_compression="zstd",
+        parquet_part_rows=2048,
+        delete_images_after_commit=True,
+        retain_debug_crops=False,
+        debug_crop_limit=12,
+    )
+
+    detection = settings.to_detection_policy(DetectionPolicy(backend="fake", min_box_area_ratio=0.01))
+    runtime = settings.to_detection_run_policy(DetectionRunPolicy(download_workers=2, max_inflight_images=5))
+
+    assert detection.backend == "fake"
+    assert detection.box_score_threshold == 0.25
+    assert detection.nms_iou_threshold == 0.45
+    assert detection.min_box_area_ratio == 0.01
+    assert detection.max_boxes_per_image == 6
+    assert detection.crop_padding_ratio == 0.08
+    assert detection.crop_target_px == 336
+    assert detection.retain_debug_crops is False
+    assert detection.debug_crop_limit == 12
+    assert runtime.download_workers == 2
+    assert runtime.max_inflight_images == 5
+    assert runtime.detector_batch_size == 16
+    assert runtime.crop_batch_size == 24
+    assert runtime.parquet_batch_rows == 2048
 
 
 def test_detection_and_run_sources_do_not_create_reviewed_box_training_artifacts() -> None:
