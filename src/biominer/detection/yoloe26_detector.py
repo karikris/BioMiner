@@ -99,6 +99,8 @@ class YoloE26ObjectDetector:
         prompt_classes: Sequence[str] | None = None,
     ) -> None:
         _validate_checkpoint(checkpoint)
+        prompt_tuple = tuple(prompt_classes or default_yoloe26_prompts())
+        _validate_prompt_classes(prompt_tuple)
         try:
             import ultralytics
             from ultralytics import YOLOE
@@ -114,7 +116,7 @@ class YoloE26ObjectDetector:
         self.conf = float(conf)
         self.iou = float(iou)
         self.max_det = int(max_det)
-        self.prompt_classes = tuple(prompt_classes or default_yoloe26_prompts())
+        self.prompt_classes = prompt_tuple
         self.model_id = f"yoloe26:{Path(checkpoint).stem}"
         self.model_version = f"ultralytics:{getattr(ultralytics, '__version__', 'unknown')}"
         self._model = YOLOE(_checkpoint_reference(checkpoint))
@@ -155,6 +157,8 @@ class YoloE26SidecarObjectDetector:
         popen: PopenFactory = subprocess.Popen,
     ) -> None:
         _validate_checkpoint(checkpoint)
+        prompt_tuple = tuple(prompt_classes or default_yoloe26_prompts())
+        _validate_prompt_classes(prompt_tuple)
         self.runtime_python = str(Path(runtime_python).expanduser())
         self.checkpoint = checkpoint
         self.device = device
@@ -162,7 +166,7 @@ class YoloE26SidecarObjectDetector:
         self.conf = float(conf)
         self.iou = float(iou)
         self.max_det = int(max_det)
-        self.prompt_classes = tuple(prompt_classes or default_yoloe26_prompts())
+        self.prompt_classes = prompt_tuple
         self.model_id = f"yoloe26:{Path(checkpoint).stem}"
         self.model_version = "ultralytics:unknown"
         self.popen = popen
@@ -400,6 +404,11 @@ def _validate_checkpoint(checkpoint: str) -> None:
         + ", ".join(ALLOWED_YOLOE26_CHECKPOINTS)
         + " or an explicit checkpoint path"
     )
+
+
+def _validate_prompt_classes(prompt_classes: Sequence[str]) -> None:
+    for prompt in prompt_classes:
+        yoloe26_coarse_label(str(prompt))
 
 
 def _checkpoint_reference(checkpoint: str) -> str:

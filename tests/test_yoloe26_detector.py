@@ -11,6 +11,7 @@ import biominer.detection.yoloe26_detector as yoloe26_module
 from biominer.detection.detector_base import COARSE_DETECTOR_LABELS, DecodedImage, DetectionCandidate
 from biominer.detection.yoloe26_detector import (
     DEFAULT_YOLOE26_PROMPTS,
+    YoloE26ObjectDetector,
     YoloE26SidecarObjectDetector,
     detections_from_yoloe_result,
     default_yoloe26_prompts,
@@ -76,6 +77,26 @@ def test_yoloe26_result_conversion_rejects_taxonomic_custom_prompts() -> None:
 
     with pytest.raises(ValueError, match="object proposals"):
         detections_from_yoloe_result(result)
+
+
+def test_yoloe26_direct_and_sidecar_share_checkpoint_validation(tmp_path) -> None:
+    with pytest.raises(ValueError, match="unsupported YOLOE-26 checkpoint"):
+        YoloE26ObjectDetector(checkpoint="not-a-yoloe-checkpoint.pt")
+    with pytest.raises(ValueError, match="unsupported YOLOE-26 checkpoint"):
+        YoloE26SidecarObjectDetector(
+            runtime_python=str(tmp_path / "YOLO26" / "venv" / "bin" / "python"),
+            checkpoint="not-a-yoloe-checkpoint.pt",
+        )
+
+
+def test_yoloe26_direct_and_sidecar_share_prompt_validation(tmp_path) -> None:
+    with pytest.raises(ValueError, match="object proposals"):
+        YoloE26ObjectDetector(prompt_classes=("Papilio demoleus",))
+    with pytest.raises(ValueError, match="object proposals"):
+        YoloE26SidecarObjectDetector(
+            runtime_python=str(tmp_path / "YOLO26" / "venv" / "bin" / "python"),
+            prompt_classes=("Papilio demoleus",),
+        )
 
 
 def test_yoloe26_persistent_sidecar_reuses_detector_for_same_settings(monkeypatch) -> None:
