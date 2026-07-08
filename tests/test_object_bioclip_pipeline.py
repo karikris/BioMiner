@@ -1090,6 +1090,71 @@ def test_object_bioclip_respects_bioclip_batch_size_for_label_set_scoring(tmp_pa
     assert scorer.initial_batches == [("det-1",), ("det-2",)]
 
 
+def test_object_bioclip_production_gate_scores_only_detected_butterflies(tmp_path) -> None:
+    base_detection = _detections().to_dicts()[0]
+    cases = [
+        ("det-butterfly", "photo-1", "butterfly_like", "detected"),
+        ("det-moth", "photo-moth", "moth_like", "detected"),
+        ("det-caterpillar", "photo-caterpillar", "caterpillar", "detected"),
+        ("det-pupa", "photo-pupa", "pupa", "detected"),
+        ("det-insect", "photo-insect", "insect_like", "detected"),
+        ("det-hard-negative", "photo-hard-negative", "hard_negative", "detected"),
+        ("det-no-detection", "photo-no-detection", "butterfly_like", "no_detection"),
+        ("det-failed-image", "photo-failed-image", "butterfly_like", "failed_image_load"),
+    ]
+    detections = pl.DataFrame(
+        [
+            {
+                **base_detection,
+                "flickr_photo_id": photo_id,
+                "detection_id": detection_id,
+                "detector_label": label,
+                "detection_status": status,
+                "crop_hash": f"sha256:{detection_id}",
+                "failure_reason": None if status == "detected" else status,
+            }
+            for detection_id, photo_id, label, status in cases
+        ]
+    )
+
+    class GateRecordingScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        def score(self, item, labels):  # noqa: ANN001, ANN202 - proves the batch path is used.
+            raise AssertionError(f"unexpected single-item BioCLIP score for {item.get('detection_id')}")
+
+        def score_label_sets_batch(self, items, label_sets):  # noqa: ANN001, ANN202 - mirrors object batch scorer API.
+            self.calls.append(tuple(str(item["detection_id"]) for item in items))
+            return {
+                name: [
+                    {label: (0.84 if label == "a photo of Danaus plexippus" else 0.1) for label in labels}
+                    for _item in items
+                ]
+                for name, labels in label_sets.items()
+            }
+
+    scorer = GateRecordingScorer()
+
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=detections,
+        species_context=_context(),
+        candidate_set=_fixture_candidate_set(),
+        scorer=scorer,
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+    )
+
+    assert result.crops_scored == 1
+    assert result.frame["detection_id"].to_list() == ["det-butterfly"]
+    assert scorer.calls == [("det-butterfly",), ("det-butterfly",)]
+
+
 def test_object_bioclip_skips_non_butterfly_detector_labels(tmp_path) -> None:
     class FailingScorer:
         model_id = "fake-bioclip"
