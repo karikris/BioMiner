@@ -12,7 +12,7 @@ import pytest
 
 from biominer.config import BioMinerConfig, RuntimeConfig, StorageConfig, WorkStoreConfig
 from biominer.cli import _detect_boxes_backend, _production_vision_settings_from_args, _yoloe26_metrics, build_parser, load_decoded_image_from_record, run
-from biominer.detection.detector_base import DetectionCandidate
+from biominer.detection.detector_base import DecodedImage, DetectionCandidate
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES
 from biominer.registry.translation_harvester import (
@@ -1439,6 +1439,300 @@ def test_vision_screen_runs_integrated_detector_bioclip_parts(tmp_path, capsys, 
     assert metrics["score_parts"] == 2
     assert (output_dir / "object_detections" / "part-000000.parquet").exists()
     assert (output_dir / "object_bioclip_scores" / "part-000001.parquet").exists()
+
+
+def test_vision_screen_deletes_cached_images_after_relevant_parts_commit(tmp_path, capsys, monkeypatch) -> None:
+    yolo_python, bioclip_python = _fake_runtime_pythons(tmp_path)
+    input_path = tmp_path / "canonical.parquet"
+    pl.DataFrame(
+        [
+            {"source": "flickr", "flickr_photo_id": "photo-no-detection", "image_url": "memory://photo-no-detection"},
+            {"source": "flickr", "flickr_photo_id": "photo-butterfly", "image_url": "memory://photo-butterfly"},
+        ]
+    ).write_parquet(input_path)
+    context_path = _write_screen_context(tmp_path)
+    no_detection_image = tmp_path / "cache" / "no_detection.jpg"
+    butterfly_image = tmp_path / "cache" / "butterfly.jpg"
+    no_detection_image.parent.mkdir(parents=True)
+    no_detection_image.write_bytes(b"no-detection")
+    butterfly_image.write_bytes(b"butterfly")
+
+    class FakeYoloDetector:
+        backend = "yoloe26"
+        model_id = "yoloe26"
+        model_version = "test"
+        checkpoint = "yoloe-26s-seg.pt"
+
+        def __init__(self, **_kwargs):  # noqa: ANN003 - mirrors sidecar detector init.
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class FakePersistentScorer:
+        def __init__(self, **_kwargs):  # noqa: ANN003 - mirrors persistent scorer init.
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class FakeCropScorer:
+        model_id = "bioclip2_5"
+        model_version = "bioclip2_5_huge"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self, **_kwargs):  # noqa: ANN003 - mirrors crop scorer init.
+            return None
+
+    def fake_load_decoded_image(record, *, cache_root):  # noqa: ANN001, ANN202 - mirrors image loader.
+        path = no_detection_image if record["flickr_photo_id"] == "photo-no-detection" else butterfly_image
+        return DecodedImage(width=1, height=1, mode="RGB", data=b"\x00\x00\x00", source_uri=str(path))
+
+    def fake_run_detection_pipeline(**kwargs):  # noqa: ANN003, ANN202 - mirrors run_detection_pipeline.
+        for record in kwargs["records"]:
+            kwargs["image_loader"](record)
+        frame = pl.DataFrame(
+            [
+                {
+                    "source": "flickr",
+                    "flickr_photo_id": "photo-no-detection",
+                    "detection_id": "no-det",
+                    "crop_hash": None,
+                    "detector_label": "no_detection",
+                    "detection_status": "no_detection",
+                },
+                {
+                    "source": "flickr",
+                    "flickr_photo_id": "photo-butterfly",
+                    "detection_id": "det-butterfly",
+                    "crop_hash": "sha256:butterfly",
+                    "detector_label": "butterfly_like",
+                    "detection_status": "detected",
+                },
+            ]
+        )
+        frame.write_parquet(kwargs["output_path"])
+        return SimpleNamespace(
+            frame=frame,
+            output_path=Path(kwargs["output_path"]),
+            records_seen=2,
+            images_loaded=2,
+            image_failures=0,
+            detections_written=1,
+            crops_created=1,
+            parquet_batches_written=1,
+        )
+
+    def fake_screen_object_detections(**kwargs):  # noqa: ANN003, ANN202 - mirrors screen_object_detections.
+        assert not no_detection_image.exists()
+        assert butterfly_image.exists()
+        frame = pl.DataFrame(
+            [
+                {
+                    "source": "flickr",
+                    "flickr_photo_id": "photo-butterfly",
+                    "detection_id": "det-butterfly",
+                    "crop_hash": "sha256:butterfly",
+                    "target_species_score": 0.8,
+                    "occurrence_bin": "gold",
+                    "species_top1_scientific_name": "Danaus plexippus",
+                }
+            ]
+        )
+        frame.write_parquet(kwargs["output_path"])
+        return SimpleNamespace(
+            frame=frame,
+            output_path=Path(kwargs["output_path"]),
+            records_seen=2,
+            detections_seen=2,
+            crops_scored=1,
+            score_batches_written=1,
+            segmentation_unavailable_count=0,
+            segmentation_unavailable_reason=None,
+            visual_classifier="bioclip_object",
+            visual_mode="detector_crop",
+            visual_mode_status="available",
+        )
+
+    def fake_write_object_evidence_outputs(**kwargs):  # noqa: ANN003, ANN202 - mirrors evidence writer.
+        pl.DataFrame([{"source": "flickr"}]).write_parquet(kwargs["joined_output_path"])
+        pl.DataFrame([{"source": "flickr"}]).write_parquet(kwargs["photo_summary_output_path"])
+        return SimpleNamespace(
+            object_evidence_joined=Path(kwargs["joined_output_path"]),
+            photo_evidence_summary=Path(kwargs["photo_summary_output_path"]),
+        )
+
+    monkeypatch.setattr("biominer.detection.yoloe26_detector.YoloE26SidecarObjectDetector", FakeYoloDetector)
+    monkeypatch.setattr("biominer.cli.PersistentBioClipScorer", FakePersistentScorer)
+    monkeypatch.setattr("biominer.cli.EphemeralCropBioClipScorer", FakeCropScorer)
+    monkeypatch.setattr("biominer.cli.build_candidate_set", lambda context, **kwargs: SimpleNamespace(candidate_set_id="candidate-set-1"))
+    monkeypatch.setattr("biominer.cli.load_decoded_image_from_record", fake_load_decoded_image)
+    monkeypatch.setattr("biominer.cli.run_detection_pipeline", fake_run_detection_pipeline)
+    monkeypatch.setattr("biominer.cli.screen_object_detections", fake_screen_object_detections)
+    monkeypatch.setattr("biominer.cli.write_object_evidence_outputs", fake_write_object_evidence_outputs)
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "vision",
+            "screen",
+            "--input",
+            str(input_path),
+            "--output-dir",
+            str(tmp_path / "vision_screen"),
+            "--species-context",
+            str(context_path),
+            "--yolo-runtime-python",
+            str(yolo_python),
+            "--bioclip-runtime-python",
+            str(bioclip_python),
+            "--chunk-rows",
+            "2",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    metrics = json.loads((tmp_path / "vision_screen" / "vision_screen_metrics.json").read_text(encoding="utf-8"))
+    assert payload["image_cleanup_status"] == "commit_aware"
+    assert metrics["cached_images_deleted"] == 2
+    assert not no_detection_image.exists()
+    assert not butterfly_image.exists()
+
+
+def test_vision_screen_keeps_butterfly_image_when_score_write_fails(tmp_path, monkeypatch) -> None:
+    yolo_python, bioclip_python = _fake_runtime_pythons(tmp_path)
+    input_path = tmp_path / "canonical.parquet"
+    pl.DataFrame([{"source": "flickr", "flickr_photo_id": "photo-butterfly", "image_url": "memory://photo-butterfly"}]).write_parquet(
+        input_path
+    )
+    context_path = _write_screen_context(tmp_path)
+    butterfly_image = tmp_path / "cache" / "butterfly.jpg"
+    butterfly_image.parent.mkdir(parents=True)
+    butterfly_image.write_bytes(b"butterfly")
+
+    class FakeYoloDetector:
+        backend = "yoloe26"
+        model_id = "yoloe26"
+        model_version = "test"
+        checkpoint = "yoloe-26s-seg.pt"
+
+        def __init__(self, **_kwargs):  # noqa: ANN003 - mirrors sidecar detector init.
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class FakePersistentScorer:
+        def __init__(self, **_kwargs):  # noqa: ANN003 - mirrors persistent scorer init.
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class FakeCropScorer:
+        model_id = "bioclip2_5"
+        model_version = "bioclip2_5_huge"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self, **_kwargs):  # noqa: ANN003 - mirrors crop scorer init.
+            return None
+
+    def fake_load_decoded_image(record, *, cache_root):  # noqa: ANN001, ANN202 - mirrors image loader.
+        return DecodedImage(width=1, height=1, mode="RGB", data=b"\x00\x00\x00", source_uri=str(butterfly_image))
+
+    def fake_run_detection_pipeline(**kwargs):  # noqa: ANN003, ANN202 - mirrors run_detection_pipeline.
+        for record in kwargs["records"]:
+            kwargs["image_loader"](record)
+        frame = pl.DataFrame(
+            [
+                {
+                    "source": "flickr",
+                    "flickr_photo_id": "photo-butterfly",
+                    "detection_id": "det-butterfly",
+                    "crop_hash": "sha256:butterfly",
+                    "detector_label": "butterfly_like",
+                    "detection_status": "detected",
+                }
+            ]
+        )
+        frame.write_parquet(kwargs["output_path"])
+        return SimpleNamespace(
+            frame=frame,
+            output_path=Path(kwargs["output_path"]),
+            records_seen=1,
+            images_loaded=1,
+            image_failures=0,
+            detections_written=1,
+            crops_created=1,
+            parquet_batches_written=1,
+        )
+
+    def failing_screen_object_detections(**_kwargs):  # noqa: ANN003, ANN202 - mirrors screen_object_detections.
+        raise RuntimeError("score write failed")
+
+    monkeypatch.setattr("biominer.detection.yoloe26_detector.YoloE26SidecarObjectDetector", FakeYoloDetector)
+    monkeypatch.setattr("biominer.cli.PersistentBioClipScorer", FakePersistentScorer)
+    monkeypatch.setattr("biominer.cli.EphemeralCropBioClipScorer", FakeCropScorer)
+    monkeypatch.setattr("biominer.cli.build_candidate_set", lambda context, **kwargs: SimpleNamespace(candidate_set_id="candidate-set-1"))
+    monkeypatch.setattr("biominer.cli.load_decoded_image_from_record", fake_load_decoded_image)
+    monkeypatch.setattr("biominer.cli.run_detection_pipeline", fake_run_detection_pipeline)
+    monkeypatch.setattr("biominer.cli.screen_object_detections", failing_screen_object_detections)
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "vision",
+            "screen",
+            "--input",
+            str(input_path),
+            "--output-dir",
+            str(tmp_path / "vision_screen"),
+            "--species-context",
+            str(context_path),
+            "--yolo-runtime-python",
+            str(yolo_python),
+            "--bioclip-runtime-python",
+            str(bioclip_python),
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="score write failed"):
+        run(args)
+
+    assert butterfly_image.exists()
+
+
+def _fake_runtime_pythons(tmp_path: Path) -> tuple[Path, Path]:
+    yolo_python = tmp_path / "yolo" / "bin" / "python"
+    bioclip_python = tmp_path / "bioclip" / "bin" / "python"
+    yolo_python.parent.mkdir(parents=True)
+    bioclip_python.parent.mkdir(parents=True)
+    yolo_python.write_text("# fake yolo python", encoding="utf-8")
+    bioclip_python.write_text("# fake bioclip python", encoding="utf-8")
+    return yolo_python, bioclip_python
+
+
+def _write_screen_context(tmp_path: Path) -> Path:
+    context_path = tmp_path / "species_context.json"
+    context_path.write_text(
+        json.dumps(
+            {
+                "scientific_name": "Danaus plexippus",
+                "accepted_taxon_key": "gbif:5131654",
+                "canonical_name": "Danaus plexippus",
+                "family": "Nymphalidae",
+                "genus": "Danaus",
+                "family_key": "gbif:7017",
+                "genus_key": "gbif:1927164",
+                "species_key": "gbif:5131654",
+                "registry_version": "registry-v1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return context_path
 
 
 def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch) -> None:

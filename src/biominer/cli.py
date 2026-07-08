@@ -31,7 +31,14 @@ from biominer.detection.detector_base import DecodedImage, DetectionCandidate, F
 from biominer.detection.evaluate import evaluate_xie_style
 from biominer.detection.image_io import load_decoded_image_from_record
 from biominer.detection.pipeline import run_detection_pipeline
-from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, VisionRuntimeSettings, runtime_profile, vision_runtime_settings
+from biominer.detection.policy import (
+    DetectionPolicy,
+    DetectionRunPolicy,
+    VisionRuntimeSettings,
+    detection_is_bioclip_eligible,
+    runtime_profile,
+    vision_runtime_settings,
+)
 from biominer.detection.segmentation import make_segmenter
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_comments.comment_review import (
@@ -1788,13 +1795,22 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
         "score_parts": 0,
         "joined_parts": 0,
         "summary_parts": 0,
-        "cached_images_deleted": "not_implemented_until_commit_aware_cleanup",
+        "cached_images_deleted": 0,
     }
     part_outputs: list[dict[str, str]] = []
+    cached_paths_by_record: dict[tuple[str, str], set[Path]] = {}
+
+    def tracked_image_loader(record: dict[str, object]) -> DecodedImage:
+        decoded = load_decoded_image_from_record(record, cache_root=args.cache_root)
+        cached_path = _decoded_image_source_path(decoded)
+        if cached_path is not None:
+            cached_paths_by_record.setdefault(_record_identity(record), set()).add(cached_path)
+        return decoded
+
     try:
         object_scorer = EphemeralCropBioClipScorer(
             scorer=bioclip_scorer,
-            image_loader=lambda item: load_decoded_image_from_record(item, cache_root=args.cache_root),
+            image_loader=tracked_image_loader,
             temp_dir=args.crop_temp_dir,
             crop_padding_ratio=settings.crop_padding_ratio,
             crop_target_px=settings.crop_target_px,
@@ -1806,6 +1822,7 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
             segmenter=make_segmenter("none"),
         )
         for part_index, offset in enumerate(range(0, records.height, chunk_rows)):
+            cached_paths_by_record.clear()
             chunk = records.slice(offset, chunk_rows)
             part_name = f"part-{part_index:06d}.parquet"
             canonical_part = write_parquet(chunk, canonical_dir / part_name)
@@ -1817,10 +1834,21 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
                 records=chunk.to_dicts(),
                 detector=detector,
                 output_path=detection_part,
-                image_loader=lambda record: load_decoded_image_from_record(record, cache_root=args.cache_root),
+                image_loader=tracked_image_loader,
                 detection_policy=detection_policy,
                 run_policy=run_policy,
             )
+            eligible_record_keys = _eligible_bioclip_record_keys(detection_result.frame, detection_policy=detection_policy)
+            if delete_images_after_commit:
+                chunk_record_keys = {_record_identity(row) for row in chunk.to_dicts()}
+                eligible_paths = _cached_paths_for_record_keys(cached_paths_by_record, eligible_record_keys)
+                detection_only_paths = _cached_paths_for_record_keys(
+                    cached_paths_by_record,
+                    chunk_record_keys - eligible_record_keys,
+                )
+                metrics["cached_images_deleted"] = int(metrics["cached_images_deleted"]) + _delete_cached_image_paths(
+                    detection_only_paths - eligible_paths
+                )
             score_result = screen_object_detections(
                 canonical_records=chunk,
                 detections=detection_result.frame,
@@ -1840,6 +1868,10 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
                 photo_summary_output_path=summary_part,
                 species_context=context,
             )
+            if delete_images_after_commit:
+                metrics["cached_images_deleted"] = int(metrics["cached_images_deleted"]) + _delete_cached_image_paths(
+                    _cached_paths_for_record_keys(cached_paths_by_record, eligible_record_keys)
+                )
             metrics["records_seen"] = int(metrics["records_seen"]) + detection_result.records_seen
             metrics["images_loaded"] = int(metrics["images_loaded"]) + detection_result.images_loaded
             metrics["image_failures"] = int(metrics["image_failures"]) + detection_result.image_failures
@@ -1878,7 +1910,7 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
         "vision_profile": args.vision_profile,
         "vision_settings": asdict(settings),
         "delete_images_after_commit_requested": delete_images_after_commit,
-        "image_cleanup_status": "pending_commit_aware_cleanup" if delete_images_after_commit else "disabled",
+        "image_cleanup_status": "commit_aware" if delete_images_after_commit else "disabled",
         "part_outputs": part_outputs,
     }
     metrics = {
@@ -1911,6 +1943,47 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
+def _record_identity(record: dict[str, object]) -> tuple[str, str]:
+    return (str(record.get("source") or "flickr"), str(record.get("flickr_photo_id") or record.get("id") or ""))
+
+
+def _eligible_bioclip_record_keys(frame: pl.DataFrame, *, detection_policy: DetectionPolicy) -> set[tuple[str, str]]:
+    if frame.is_empty():
+        return set()
+    return {
+        _record_identity(row)
+        for row in frame.to_dicts()
+        if detection_is_bioclip_eligible(row, detection_policy)
+    }
+
+
+def _decoded_image_source_path(image: DecodedImage) -> Path | None:
+    if not image.source_uri:
+        return None
+    path = Path(image.source_uri)
+    return path if path.exists() else None
+
+
+def _cached_paths_for_record_keys(
+    cached_paths_by_record: dict[tuple[str, str], set[Path]],
+    record_keys: set[tuple[str, str]],
+) -> set[Path]:
+    paths: set[Path] = set()
+    for key in record_keys:
+        paths.update(cached_paths_by_record.get(key, set()))
+    return paths
+
+
+def _delete_cached_image_paths(paths: set[Path]) -> int:
+    deleted = 0
+    for path in sorted(paths):
+        if not path.exists():
+            continue
+        path.unlink()
+        deleted += 1
+    return deleted
 
 
 def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
