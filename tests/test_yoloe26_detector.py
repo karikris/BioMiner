@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import io
 import importlib
+import json
+import sys
 
 import pytest
 
-from biominer.detection.detector_base import COARSE_DETECTOR_LABELS
+import biominer.detection.yoloe26_detector as yoloe26_module
+from biominer.detection.detector_base import COARSE_DETECTOR_LABELS, DecodedImage, DetectionCandidate
 from biominer.detection.yoloe26_detector import (
     DEFAULT_YOLOE26_PROMPTS,
     detections_from_yoloe_result,
@@ -71,6 +75,107 @@ def test_yoloe26_result_conversion_rejects_taxonomic_custom_prompts() -> None:
 
     with pytest.raises(ValueError, match="object proposals"):
         detections_from_yoloe_result(result)
+
+
+def test_yoloe26_persistent_sidecar_reuses_detector_for_same_settings(monkeypatch) -> None:
+    loads: list[dict[str, object]] = []
+
+    class FakeDetector:
+        backend = "yoloe26"
+
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            loads.append(dict(kwargs))
+            self.checkpoint = str(kwargs["checkpoint"])
+            self.model_id = "fake-model"
+            self.model_version = "fake-version"
+
+        def detect_batch(self, images) -> list[list[DetectionCandidate]]:  # noqa: ANN001
+            return [[DetectionCandidate(label="butterfly_like", score=0.9, bbox_xyxy=(0, 0, 1, 1))] for _image in images]
+
+    request = _persistent_request(imgsz=768)
+    stdout = _run_persistent_worker_with_requests(monkeypatch, FakeDetector, [request, request, {"shutdown": True}])
+    responses = [json.loads(line) for line in stdout.getvalue().splitlines()]
+
+    assert len(loads) == 1
+    assert loads[0]["imgsz"] == 768
+    assert responses[0]["backend"] == "yoloe26"
+    assert responses[0]["model_id"] == "fake-model"
+    assert responses[0]["model_version"] == "fake-version"
+    assert responses[0]["checkpoint"] == "yoloe-26s-seg.pt"
+    assert responses[0]["detections"][0][0]["label"] == "butterfly_like"
+    assert responses[0]["metadata"]["model_id"] == "fake-model"
+    assert len(responses) == 2
+
+
+def test_yoloe26_persistent_sidecar_reloads_when_settings_change(monkeypatch) -> None:
+    loads: list[dict[str, object]] = []
+
+    class FakeDetector:
+        backend = "yoloe26"
+
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            loads.append(dict(kwargs))
+            self.checkpoint = str(kwargs["checkpoint"])
+            self.model_id = f"fake-{kwargs['imgsz']}"
+            self.model_version = "fake-version"
+
+        def detect_batch(self, images) -> list[list[DetectionCandidate]]:  # noqa: ANN001
+            return [[] for _image in images]
+
+    stdout = _run_persistent_worker_with_requests(
+        monkeypatch,
+        FakeDetector,
+        [_persistent_request(imgsz=768), _persistent_request(imgsz=640), {"shutdown": True}],
+    )
+    responses = [json.loads(line) for line in stdout.getvalue().splitlines()]
+
+    assert [load["imgsz"] for load in loads] == [768, 640]
+    assert [response["model_id"] for response in responses] == ["fake-768", "fake-640"]
+
+
+def test_yoloe26_persistent_sidecar_reports_json_errors(monkeypatch) -> None:
+    class FailingDetector:
+        backend = "yoloe26"
+
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            self.checkpoint = str(kwargs["checkpoint"])
+            self.model_id = "fake-model"
+            self.model_version = "fake-version"
+
+        def detect_batch(self, images) -> list[list[DetectionCandidate]]:  # noqa: ANN001, ARG002
+            raise RuntimeError("worker boom")
+
+    stdout = _run_persistent_worker_with_requests(monkeypatch, FailingDetector, [_persistent_request(), {"shutdown": True}])
+    payload = json.loads(stdout.getvalue().strip())
+
+    assert payload["error"] == "worker boom"
+    assert payload["error_type"] == "RuntimeError"
+
+
+def _persistent_request(**overrides: object) -> dict[str, object]:
+    image = DecodedImage(width=1, height=1, mode="RGB", data=b"\x00\x00\x00", source_uri="memory://image")
+    request: dict[str, object] = {
+        "checkpoint": "yoloe-26s-seg.pt",
+        "device": "mps",
+        "imgsz": 768,
+        "conf": 0.20,
+        "iou": 0.50,
+        "max_det": 8,
+        "prompt_classes": ["butterfly"],
+        "images": [yoloe26_module._image_to_payload(image)],
+    }
+    request.update(overrides)
+    return request
+
+
+def _run_persistent_worker_with_requests(monkeypatch, detector_class, requests: list[dict[str, object]]) -> io.StringIO:  # noqa: ANN001
+    stdin = io.StringIO("".join(json.dumps(request, sort_keys=True) + "\n" for request in requests))
+    stdout = io.StringIO()
+    monkeypatch.setattr(yoloe26_module, "YoloE26ObjectDetector", detector_class)
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    yoloe26_module._run_persistent_sidecar()
+    return stdout
 
 
 class _FakeResult:

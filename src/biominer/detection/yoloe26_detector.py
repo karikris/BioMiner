@@ -219,32 +219,85 @@ def _run_sidecar() -> None:
     import sys
 
     request = json.loads(sys.stdin.read() or "{}")
-    detector = YoloE26ObjectDetector(
-        checkpoint=str(request.get("checkpoint") or DEFAULT_YOLOE26_CHECKPOINT),
-        device=str(request.get("device") or "auto"),
-        imgsz=int(request.get("imgsz") or 640),
-        conf=float(request.get("conf") or 0.20),
-        iou=float(request.get("iou") or 0.50),
-        max_det=int(request.get("max_det") or 8),
-        prompt_classes=tuple(str(value) for value in request.get("prompt_classes", []) if str(value).strip())
-        or default_yoloe26_prompts(),
-    )
+    detector = _detector_from_request(request)
     images = [_image_from_payload(item) for item in request.get("images", [])]
     detections = detector.detect_batch(images)
-    print(
-        json.dumps(
-            {
-                "metadata": {
-                    "backend": detector.backend,
-                    "model_id": detector.model_id,
-                    "model_version": detector.model_version,
-                    "checkpoint": detector.checkpoint,
-                },
-                "detections": [[_candidate_to_payload(candidate) for candidate in batch] for batch in detections],
-            },
-            sort_keys=True,
-        )
+    print(json.dumps(_sidecar_response(detector, detections), sort_keys=True))
+
+
+def _run_persistent_sidecar() -> None:
+    import sys
+
+    detector: YoloE26ObjectDetector | None = None
+    loaded_key: tuple[object, ...] | None = None
+    for line in sys.stdin:
+        try:
+            request = json.loads(line or "{}")
+            if request.get("shutdown"):
+                return
+            key = _detector_request_key(request)
+            if detector is None or loaded_key != key:
+                detector = _detector_from_request(request)
+                loaded_key = key
+            images = [_image_from_payload(item) for item in request.get("images", [])]
+            detections = detector.detect_batch(images)
+            print(json.dumps(_sidecar_response(detector, detections), sort_keys=True), flush=True)
+        except Exception as exc:  # noqa: BLE001 - persistent worker reports JSON errors to the controller.
+            print(
+                json.dumps(
+                    {
+                        "error": str(exc),
+                        "error_type": exc.__class__.__name__,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+
+
+def _detector_from_request(request: dict[str, object]) -> YoloE26ObjectDetector:
+    kwargs = _detector_kwargs_from_request(request)
+    return YoloE26ObjectDetector(**kwargs)
+
+
+def _detector_request_key(request: dict[str, object]) -> tuple[object, ...]:
+    kwargs = _detector_kwargs_from_request(request)
+    return (
+        kwargs["checkpoint"],
+        kwargs["device"],
+        kwargs["imgsz"],
+        kwargs["conf"],
+        kwargs["iou"],
+        kwargs["max_det"],
+        kwargs["prompt_classes"],
     )
+
+
+def _detector_kwargs_from_request(request: dict[str, object]) -> dict[str, object]:
+    prompt_classes = tuple(str(value) for value in request.get("prompt_classes", []) if str(value).strip()) or default_yoloe26_prompts()
+    return {
+        "checkpoint": str(request.get("checkpoint") or DEFAULT_YOLOE26_CHECKPOINT),
+        "device": str(request.get("device") or "auto"),
+        "imgsz": int(request.get("imgsz") or 640),
+        "conf": float(request.get("conf") or 0.20),
+        "iou": float(request.get("iou") or 0.50),
+        "max_det": int(request.get("max_det") or 8),
+        "prompt_classes": prompt_classes,
+    }
+
+
+def _sidecar_response(detector: YoloE26ObjectDetector, detections: list[list[DetectionCandidate]]) -> dict[str, object]:
+    metadata = {
+        "backend": detector.backend,
+        "model_id": detector.model_id,
+        "model_version": detector.model_version,
+        "checkpoint": detector.checkpoint,
+    }
+    return {
+        **metadata,
+        "metadata": metadata,
+        "detections": [[_candidate_to_payload(candidate) for candidate in batch] for batch in detections],
+    }
 
 
 def _validate_checkpoint(checkpoint: str) -> None:
@@ -396,4 +449,9 @@ def _runtime_root(runtime_python: str | None = None) -> Path:
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised through sidecar subprocesses.
-    _run_sidecar()
+    import sys
+
+    if "--persistent" in sys.argv[1:]:
+        _run_persistent_sidecar()
+    else:
+        _run_sidecar()
