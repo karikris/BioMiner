@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from html import escape
 import json
@@ -140,6 +140,25 @@ def build_parser() -> argparse.ArgumentParser:
     vision_detect.add_argument("--prompt-class", action="append", default=[])
     vision_detect.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
     _add_detection_policy_args(vision_detect)
+    vision_screen = vision_subparsers.add_parser("screen")
+    vision_screen.add_argument("--input", required=True)
+    vision_screen.add_argument("--output-dir", required=True)
+    vision_screen.add_argument("--species-context", required=True)
+    vision_screen.add_argument("--species-candidates")
+    vision_screen.add_argument("--vision-profile", default="mac_m5pro_64gb")
+    vision_screen.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"))
+    vision_screen.add_argument("--yolo-runtime-python", default=YOLOE26_RUNTIME_PYTHON)
+    vision_screen.add_argument("--bioclip-runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    vision_screen.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
+    vision_screen.add_argument("--cache-root", default="data/cache/images")
+    vision_screen.add_argument("--crop-temp-dir", default="data/cache/object_crops")
+    vision_screen.add_argument("--chunk-rows", type=int)
+    vision_screen.add_argument("--limit", type=int)
+    vision_screen.add_argument("--parquet-part-rows", type=int)
+    vision_screen.add_argument("--prompt-class", action="append", default=[])
+    vision_screen.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
+    vision_screen.add_argument("--delete-images-after-commit", action=argparse.BooleanOptionalAction, default=None)
+    vision_screen.add_argument("--retain-debug-crops", action="store_true")
     vision_score = vision_subparsers.add_parser("score")
     vision_score.add_argument("--input", required=True)
     vision_score.add_argument("--detections", required=True)
@@ -448,6 +467,8 @@ def run(args: argparse.Namespace) -> int:
     if args.command == "vision" or (args.command == "dev" and args.dev_command == "vision"):
         if args.vision_command == "detect":
             return _run_detect_boxes(args)
+        if args.vision_command == "screen":
+            return _run_vision_screen(args)
         if args.vision_command == "score":
             return _run_bioclip_screen_objects(args)
         if args.vision_command == "ablate":
@@ -1682,6 +1703,213 @@ def _run_detect_eval(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_vision_screen(args: argparse.Namespace) -> int:
+    from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
+    from biominer.storage.parquet import write_parquet
+
+    started_at = datetime.now(UTC)
+    yolo_python = Path(args.yolo_runtime_python).expanduser()
+    bioclip_python = Path(args.bioclip_runtime_python).expanduser()
+    if not yolo_python.exists():
+        print(json.dumps({"error": f"YOLOE-26 runtime Python not found: {yolo_python}"}, indent=2, sort_keys=True))
+        return 2
+    if not bioclip_python.exists():
+        print(json.dumps({"error": f"BioCLIP runtime Python not found: {bioclip_python}"}, indent=2, sort_keys=True))
+        return 2
+
+    settings = vision_runtime_settings(args.vision_profile)
+    if args.device:
+        settings = replace(settings, device=args.device)
+    if args.parquet_part_rows is not None:
+        settings = replace(settings, parquet_part_rows=args.parquet_part_rows)
+    if args.retain_debug_crops:
+        settings = replace(settings, retain_debug_crops=True)
+    delete_images_after_commit = (
+        settings.delete_images_after_commit
+        if args.delete_images_after_commit is None
+        else bool(args.delete_images_after_commit)
+    )
+    chunk_rows = int(args.chunk_rows or settings.parquet_part_rows)
+    if chunk_rows <= 0:
+        print(json.dumps({"error": "chunk_rows must be positive"}, indent=2, sort_keys=True))
+        return 2
+
+    output_dir = Path(args.output_dir)
+    canonical_dir = output_dir / "canonical_source_records"
+    detection_dir = output_dir / "object_detections"
+    score_dir = output_dir / "object_bioclip_scores"
+    joined_dir = output_dir / "object_evidence_joined"
+    summary_dir = output_dir / "photo_evidence_summary"
+    for directory in (canonical_dir, detection_dir, score_dir, joined_dir, summary_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    records = pl.read_parquet(args.input)
+    if args.limit is not None and args.limit > 0:
+        records = records.head(args.limit)
+    context = SpeciesContext.read_json(args.species_context)
+    candidate_set = _build_candidate_set_for_cli(
+        context,
+        command="vision screen",
+        species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None,
+        records=records.to_dicts(),
+    )
+    if isinstance(candidate_set, int):
+        return candidate_set
+
+    detection_policy = settings.to_detection_policy(DetectionPolicy(backend="yoloe26"))
+    run_policy = settings.to_detection_run_policy()
+    detector = YoloE26SidecarObjectDetector(
+        runtime_python=str(yolo_python),
+        checkpoint=settings.yolo_checkpoint,
+        device=settings.device,
+        imgsz=settings.yolo_imgsz,
+        conf=settings.yolo_conf,
+        iou=settings.yolo_iou,
+        max_det=settings.yolo_max_det,
+        prompt_classes=_yoloe26_prompt_classes(args),
+    )
+    bioclip_scorer = PersistentBioClipScorer(
+        runtime=_bioclip_runtime(runtime_python=bioclip_python),
+        hf_cache_dir=args.hf_cache_dir,
+        device=settings.device,
+    )
+
+    metrics: dict[str, object] = {
+        "records_seen": 0,
+        "images_loaded": 0,
+        "image_failures": 0,
+        "detections_written": 0,
+        "crops_created": 0,
+        "crops_scored": 0,
+        "detection_parts": 0,
+        "score_parts": 0,
+        "joined_parts": 0,
+        "summary_parts": 0,
+        "cached_images_deleted": "not_implemented_until_commit_aware_cleanup",
+    }
+    part_outputs: list[dict[str, str]] = []
+    try:
+        object_scorer = EphemeralCropBioClipScorer(
+            scorer=bioclip_scorer,
+            image_loader=lambda item: load_decoded_image_from_record(item, cache_root=args.cache_root),
+            temp_dir=args.crop_temp_dir,
+            crop_padding_ratio=settings.crop_padding_ratio,
+            crop_target_px=settings.crop_target_px,
+            model_id="bioclip2_5",
+            model_version="bioclip2_5_huge",
+            model_checkpoint=BIOCLIP_25_HUGE_REVISION,
+            retain_debug_crops=settings.retain_debug_crops,
+            debug_crop_limit=settings.debug_crop_limit,
+            segmenter=make_segmenter("none"),
+        )
+        for part_index, offset in enumerate(range(0, records.height, chunk_rows)):
+            chunk = records.slice(offset, chunk_rows)
+            part_name = f"part-{part_index:06d}.parquet"
+            canonical_part = write_parquet(chunk, canonical_dir / part_name)
+            detection_part = detection_dir / part_name
+            score_part = score_dir / part_name
+            joined_part = joined_dir / part_name
+            summary_part = summary_dir / part_name
+            detection_result = run_detection_pipeline(
+                records=chunk.to_dicts(),
+                detector=detector,
+                output_path=detection_part,
+                image_loader=lambda record: load_decoded_image_from_record(record, cache_root=args.cache_root),
+                detection_policy=detection_policy,
+                run_policy=run_policy,
+            )
+            score_result = screen_object_detections(
+                canonical_records=chunk,
+                detections=detection_result.frame,
+                species_context=context,
+                candidate_set=candidate_set,
+                scorer=object_scorer,
+                output_path=score_part,
+                ablation_mode="detector_crop",
+                parquet_batch_rows=settings.parquet_part_rows,
+                bioclip_batch_size=settings.crop_batch_size,
+            )
+            evidence_outputs = write_object_evidence_outputs(
+                canonical_records_path=canonical_part,
+                detections_path=detection_part,
+                scores_path=score_part,
+                joined_output_path=joined_part,
+                photo_summary_output_path=summary_part,
+                species_context=context,
+            )
+            metrics["records_seen"] = int(metrics["records_seen"]) + detection_result.records_seen
+            metrics["images_loaded"] = int(metrics["images_loaded"]) + detection_result.images_loaded
+            metrics["image_failures"] = int(metrics["image_failures"]) + detection_result.image_failures
+            metrics["detections_written"] = int(metrics["detections_written"]) + detection_result.detections_written
+            metrics["crops_created"] = int(metrics["crops_created"]) + detection_result.crops_created
+            metrics["crops_scored"] = int(metrics["crops_scored"]) + score_result.crops_scored
+            metrics["detection_parts"] = int(metrics["detection_parts"]) + 1
+            metrics["score_parts"] = int(metrics["score_parts"]) + 1
+            metrics["joined_parts"] = int(metrics["joined_parts"]) + 1
+            metrics["summary_parts"] = int(metrics["summary_parts"]) + 1
+            part_outputs.append(
+                {
+                    "canonical_source_records": str(canonical_part),
+                    "object_detections": str(detection_part),
+                    "object_bioclip_scores": str(score_part),
+                    "object_evidence_joined": str(evidence_outputs.object_evidence_joined),
+                    "photo_evidence_summary": str(evidence_outputs.photo_evidence_summary),
+                }
+            )
+    finally:
+        bioclip_scorer.close()
+        close_detector = getattr(detector, "close", None)
+        if callable(close_detector):
+            close_detector()
+
+    ended_at = datetime.now(UTC)
+    manifest = {
+        "command": "vision screen",
+        "started_at": started_at.isoformat(),
+        "ended_at": ended_at.isoformat(),
+        "status": "complete",
+        "input": str(args.input),
+        "output_dir": str(output_dir),
+        "species_context": str(args.species_context),
+        "species_candidates": str(args.species_candidates) if args.species_candidates else None,
+        "vision_profile": args.vision_profile,
+        "vision_settings": asdict(settings),
+        "delete_images_after_commit_requested": delete_images_after_commit,
+        "image_cleanup_status": "pending_commit_aware_cleanup" if delete_images_after_commit else "disabled",
+        "part_outputs": part_outputs,
+    }
+    metrics = {
+        **metrics,
+        "run_id": started_at.strftime("vision-screen-%Y%m%dT%H%M%S%fZ"),
+        "status": "complete",
+        "vision_profile": args.vision_profile,
+        "device": settings.device,
+        "detector_batch_size": settings.detector_batch_size,
+        "crop_batch_size": settings.crop_batch_size,
+        "parquet_compression": settings.parquet_compression,
+    }
+    manifest_path = output_dir / "vision_screen_manifest.json"
+    metrics_path = output_dir / "vision_screen_metrics.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
+    print(
+        json.dumps(
+            {
+                "output_dir": str(output_dir),
+                "manifest": str(manifest_path),
+                "metrics": str(metrics_path),
+                "records_seen": metrics["records_seen"],
+                "detections_written": metrics["detections_written"],
+                "crops_scored": metrics["crops_scored"],
+                "image_cleanup_status": manifest["image_cleanup_status"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 

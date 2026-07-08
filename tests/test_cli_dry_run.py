@@ -1013,6 +1013,33 @@ def test_detect_crop_preview_writes_html_artifact_without_image_archive(tmp_path
 
 def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     parser = build_parser()
+    integrated_screen = parser.parse_args(
+        [
+            "vision",
+            "screen",
+            "--input",
+            "canonical.parquet",
+            "--output-dir",
+            "vision_screen",
+            "--species-context",
+            "species_context.json",
+            "--species-candidates",
+            "species_candidates.parquet",
+            "--vision-profile",
+            "mac_m5pro_64gb",
+            "--device",
+            "mps",
+            "--yolo-runtime-python",
+            ".venv-yolo/bin/python",
+            "--bioclip-runtime-python",
+            ".venv-bioclip/bin/python",
+            "--chunk-rows",
+            "2",
+            "--parquet-part-rows",
+            "3",
+            "--no-delete-images-after-commit",
+        ]
+    )
     screen = parser.parse_args(
         [
             "vision",
@@ -1148,6 +1175,19 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
         ]
     )
 
+    assert integrated_screen.command == "vision"
+    assert integrated_screen.vision_command == "screen"
+    assert integrated_screen.input == "canonical.parquet"
+    assert integrated_screen.output_dir == "vision_screen"
+    assert integrated_screen.species_context == "species_context.json"
+    assert integrated_screen.species_candidates == "species_candidates.parquet"
+    assert integrated_screen.vision_profile == "mac_m5pro_64gb"
+    assert integrated_screen.device == "mps"
+    assert integrated_screen.yolo_runtime_python == ".venv-yolo/bin/python"
+    assert integrated_screen.bioclip_runtime_python == ".venv-bioclip/bin/python"
+    assert integrated_screen.chunk_rows == 2
+    assert integrated_screen.parquet_part_rows == 3
+    assert integrated_screen.delete_images_after_commit is False
     assert screen.command == "vision"
     assert screen.vision_command == "score"
     assert screen.ablation_mode == "detector_crop"
@@ -1200,6 +1240,205 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     for removed in ("detect", "bioclip-objects", "ablate-objects", "join-object-evidence"):
         with pytest.raises(SystemExit):
             parser.parse_args(["species", removed])
+
+
+def test_vision_screen_runs_integrated_detector_bioclip_parts(tmp_path, capsys, monkeypatch) -> None:
+    yolo_python = tmp_path / "yolo" / "bin" / "python"
+    bioclip_python = tmp_path / "bioclip" / "bin" / "python"
+    yolo_python.parent.mkdir(parents=True)
+    bioclip_python.parent.mkdir(parents=True)
+    yolo_python.write_text("# fake yolo python", encoding="utf-8")
+    bioclip_python.write_text("# fake bioclip python", encoding="utf-8")
+    input_path = tmp_path / "canonical.parquet"
+    pl.DataFrame(
+        [
+            {"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "memory://photo-1"},
+            {"source": "flickr", "flickr_photo_id": "photo-2", "image_url": "memory://photo-2"},
+            {"source": "flickr", "flickr_photo_id": "photo-3", "image_url": "memory://photo-3"},
+        ]
+    ).write_parquet(input_path)
+    context_path = tmp_path / "species_context.json"
+    context_path.write_text(
+        json.dumps(
+            {
+                "scientific_name": "Danaus plexippus",
+                "accepted_taxon_key": "gbif:5131654",
+                "canonical_name": "Danaus plexippus",
+                "family": "Nymphalidae",
+                "genus": "Danaus",
+                "family_key": "gbif:7017",
+                "genus_key": "gbif:1927164",
+                "species_key": "gbif:5131654",
+                "registry_version": "registry-v1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "vision_screen"
+    calls: dict[str, object] = {"detect_chunks": [], "screen_chunks": []}
+
+    class FakeYoloDetector:
+        backend = "yoloe26"
+        model_id = "yoloe26"
+        model_version = "test"
+        checkpoint = "yoloe-26s-seg.pt"
+
+        def __init__(self, **kwargs):  # noqa: ANN003 - mirrors sidecar detector init.
+            calls["detector_init"] = kwargs
+
+        def close(self) -> None:
+            calls["detector_closed"] = True
+
+    class FakePersistentScorer:
+        def __init__(self, **kwargs):  # noqa: ANN003 - mirrors persistent scorer init.
+            calls["persistent_init"] = kwargs
+
+        def close(self) -> None:
+            calls["persistent_closed"] = True
+
+    class FakeCropScorer:
+        model_id = "bioclip2_5"
+        model_version = "bioclip2_5_huge"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self, **kwargs):  # noqa: ANN003 - mirrors crop scorer init.
+            calls["crop_scorer_init"] = kwargs
+
+    def fake_build_candidate_set(context, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors build_candidate_set.
+        calls["candidate_set"] = kwargs
+        return SimpleNamespace(candidate_set_id="candidate-set-1")
+
+    def fake_run_detection_pipeline(**kwargs):  # noqa: ANN003, ANN202 - mirrors run_detection_pipeline.
+        records = list(kwargs["records"])
+        calls["detect_chunks"].append(len(records))  # type: ignore[index,union-attr]
+        calls["detection_policy"] = kwargs["detection_policy"]
+        calls["run_policy"] = kwargs["run_policy"]
+        frame = pl.DataFrame(
+            [
+                {
+                    "source": record["source"],
+                    "flickr_photo_id": record["flickr_photo_id"],
+                    "detection_id": f"det-{record['flickr_photo_id']}",
+                    "crop_hash": f"sha256:{record['flickr_photo_id']}",
+                    "detector_label": "butterfly_like",
+                    "detection_status": "detected",
+                }
+                for record in records
+            ]
+        )
+        frame.write_parquet(kwargs["output_path"])
+        return SimpleNamespace(
+            frame=frame,
+            output_path=Path(kwargs["output_path"]),
+            records_seen=len(records),
+            images_loaded=len(records),
+            image_failures=0,
+            detections_written=len(records),
+            crops_created=len(records),
+            parquet_batches_written=1,
+        )
+
+    def fake_screen_object_detections(**kwargs):  # noqa: ANN003, ANN202 - mirrors screen_object_detections.
+        calls["screen_chunks"].append(kwargs["canonical_records"].height)  # type: ignore[index,union-attr]
+        calls["screen_kwargs"] = kwargs
+        frame = pl.DataFrame(
+            [
+                {
+                    "source": row["source"],
+                    "flickr_photo_id": row["flickr_photo_id"],
+                    "detection_id": row["detection_id"],
+                    "crop_hash": row["crop_hash"],
+                    "target_species_score": 0.8,
+                    "occurrence_bin": "gold",
+                    "species_top1_scientific_name": "Danaus plexippus",
+                }
+                for row in kwargs["detections"].to_dicts()
+            ]
+        )
+        frame.write_parquet(kwargs["output_path"])
+        return SimpleNamespace(
+            frame=frame,
+            output_path=Path(kwargs["output_path"]),
+            records_seen=kwargs["canonical_records"].height,
+            detections_seen=kwargs["detections"].height,
+            crops_scored=frame.height,
+            score_batches_written=1,
+            segmentation_unavailable_count=0,
+            segmentation_unavailable_reason=None,
+            visual_classifier="bioclip_object",
+            visual_mode="detector_crop",
+            visual_mode_status="available",
+        )
+
+    def fake_write_object_evidence_outputs(**kwargs):  # noqa: ANN003, ANN202 - mirrors evidence writer.
+        pl.DataFrame([{"source": "flickr"}]).write_parquet(kwargs["joined_output_path"])
+        pl.DataFrame([{"source": "flickr"}]).write_parquet(kwargs["photo_summary_output_path"])
+        return SimpleNamespace(
+            object_evidence_joined=Path(kwargs["joined_output_path"]),
+            photo_evidence_summary=Path(kwargs["photo_summary_output_path"]),
+        )
+
+    monkeypatch.setattr("biominer.detection.yoloe26_detector.YoloE26SidecarObjectDetector", FakeYoloDetector)
+    monkeypatch.setattr("biominer.cli.PersistentBioClipScorer", FakePersistentScorer)
+    monkeypatch.setattr("biominer.cli.EphemeralCropBioClipScorer", FakeCropScorer)
+    monkeypatch.setattr("biominer.cli.build_candidate_set", fake_build_candidate_set)
+    monkeypatch.setattr("biominer.cli.run_detection_pipeline", fake_run_detection_pipeline)
+    monkeypatch.setattr("biominer.cli.screen_object_detections", fake_screen_object_detections)
+    monkeypatch.setattr("biominer.cli.write_object_evidence_outputs", fake_write_object_evidence_outputs)
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "vision",
+            "screen",
+            "--input",
+            str(input_path),
+            "--output-dir",
+            str(output_dir),
+            "--species-context",
+            str(context_path),
+            "--yolo-runtime-python",
+            str(yolo_python),
+            "--bioclip-runtime-python",
+            str(bioclip_python),
+            "--device",
+            "mps",
+            "--chunk-rows",
+            "2",
+            "--parquet-part-rows",
+            "2",
+            "--no-delete-images-after-commit",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    manifest = json.loads((output_dir / "vision_screen_manifest.json").read_text(encoding="utf-8"))
+    metrics = json.loads((output_dir / "vision_screen_metrics.json").read_text(encoding="utf-8"))
+    assert payload["records_seen"] == 3
+    assert payload["detections_written"] == 3
+    assert payload["crops_scored"] == 3
+    assert payload["image_cleanup_status"] == "disabled"
+    assert calls["detect_chunks"] == [2, 1]
+    assert calls["screen_chunks"] == [2, 1]
+    assert calls["detector_init"]["device"] == "mps"
+    assert calls["detector_init"]["imgsz"] == 768
+    assert calls["persistent_init"]["device"] == "mps"
+    assert calls["crop_scorer_init"]["crop_padding_ratio"] == 0.08
+    assert calls["screen_kwargs"]["bioclip_batch_size"] == 24
+    assert calls["detection_policy"].crop_padding_ratio == 0.08
+    assert calls["run_policy"].detector_batch_size == 16
+    assert calls["persistent_closed"] is True
+    assert calls["detector_closed"] is True
+    assert manifest["status"] == "complete"
+    assert manifest["image_cleanup_status"] == "disabled"
+    assert len(manifest["part_outputs"]) == 2
+    assert metrics["records_seen"] == 3
+    assert metrics["detection_parts"] == 2
+    assert metrics["score_parts"] == 2
+    assert (output_dir / "object_detections" / "part-000000.parquet").exists()
+    assert (output_dir / "object_bioclip_scores" / "part-000001.parquet").exists()
 
 
 def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch) -> None:
