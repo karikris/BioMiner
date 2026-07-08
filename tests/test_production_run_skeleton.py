@@ -167,6 +167,22 @@ def test_production_run_plan_defaults_to_detector_crop_only(tmp_path) -> None:
     assert "whole_image" not in plan.manifest.model_configs["bioclip_ablation_modes"]
 
 
+def test_production_run_plan_preserves_explicit_ablation_modes(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    modes = ("whole_image", "detector_crop", "detector_crop_segmentation")
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root=tmp_path,
+        dry_run=True,
+        bioclip_ablation_modes=modes,
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
+
+    assert run_orchestrator_module._request_bioclip_modes(request) == modes
+    assert plan.manifest.model_configs["bioclip_ablation_modes"] == list(modes)
+
+
 def test_run_artifact_uris_are_s3_safe_and_species_scoped() -> None:
     uris = RunArtifactUris.from_prefix("s3://biominer/runs", run_id="Family: Papilionidae")
 
