@@ -78,10 +78,14 @@ class BenchmarkBioClipScorer:
         self.score_calls = 0
         self.batch_calls = 0
         self.label_evaluations = 0
+        self.scored_detection_ids: list[str] = []
+        self.batch_sizes: list[int] = []
+        self.label_set_names_by_batch: list[list[str]] = []
 
     def score(self, item: dict[str, Any], labels: tuple[str, ...]) -> dict[str, float]:
         self.score_calls += 1
         self.label_evaluations += len(labels)
+        self.scored_detection_ids.append(str(item.get("detection_id") or ""))
         return _fake_label_scores(labels)
 
     def score_label_sets_batch(
@@ -90,6 +94,9 @@ class BenchmarkBioClipScorer:
         label_sets: Mapping[str, Sequence[str]],
     ) -> dict[str, list[dict[str, float]]]:
         self.batch_calls += 1
+        self.batch_sizes.append(len(items))
+        self.label_set_names_by_batch.append(sorted(str(name) for name in label_sets))
+        self.scored_detection_ids.extend(str(item.get("detection_id") or "") for item in items)
         self.label_evaluations += len(items) * sum(len(labels) for labels in label_sets.values())
         return {
             str(name): [_fake_label_scores(tuple(str(label) for label in labels)) for _item in items]
@@ -117,6 +124,7 @@ def run_vision_plumbing_benchmark(
     output.mkdir(parents=True, exist_ok=True)
     taxonomy_path = Path(taxonomy_candidate_table) if taxonomy_candidate_table is not None else output / "taxonomy_store"
     taxonomy_fixture_created = False
+    taxonomy_store_reads = 0
 
     stage_seconds: dict[str, float] = {}
     total_start = perf_counter()
@@ -137,6 +145,7 @@ def run_vision_plumbing_benchmark(
             write_benchmark_taxonomy_store(taxonomy_path)
             taxonomy_fixture_created = True
         taxonomy_store = ButterflyTaxonomyStore.read(taxonomy_path)
+        taxonomy_store_reads += 1
         species_context = benchmark_species_context()
         candidate_set = build_candidate_set(species_context, records=canonical.to_dicts(), allow_single_target_fixture=True)
         stage_seconds["load_taxonomy"] = _elapsed(stage_start)
@@ -206,6 +215,8 @@ def run_vision_plumbing_benchmark(
             classification_mode=mode,
             taxonomy_path=taxonomy_path,
             taxonomy_fixture_created=taxonomy_fixture_created,
+            taxonomy_store_reads=taxonomy_store_reads,
+            temporary_directories_left=_temporary_directories_left(output),
             canonical=canonical,
             detection_result=detection_result,
             score_result=score_result,
@@ -364,6 +375,8 @@ def _benchmark_metrics(
     classification_mode: str,
     taxonomy_path: Path,
     taxonomy_fixture_created: bool,
+    taxonomy_store_reads: int,
+    temporary_directories_left: list[str],
     canonical: pl.DataFrame,
     detection_result: Any,
     score_result: Any,
@@ -398,6 +411,8 @@ def _benchmark_metrics(
         "classification_mode": classification_mode,
         "taxonomy_candidate_table": str(taxonomy_path),
         "taxonomy_fixture_created": taxonomy_fixture_created,
+        "taxonomy_store_reads": int(taxonomy_store_reads),
+        "temporary_directories_left": temporary_directories_left,
         "images_loaded": detection_result.images_loaded,
         "image_failures": detection_result.image_failures,
         "detection_rows_written": detection_result.frame.height,
@@ -418,6 +433,9 @@ def _benchmark_metrics(
             "score_calls": scorer.score_calls,
             "label_set_batch_calls": scorer.batch_calls,
             "label_evaluations": scorer.label_evaluations,
+            "scored_detection_ids": list(scorer.scored_detection_ids),
+            "batch_sizes": list(scorer.batch_sizes),
+            "label_set_names_by_batch": list(scorer.label_set_names_by_batch),
         },
         "rows": rows,
         "outputs": {key: str(value) if value is not None else None for key, value in outputs.items()},
@@ -474,6 +492,12 @@ def _fake_label_scores(labels: Sequence[str]) -> dict[str, float]:
             score = 0.05
         scores[str(label)] = score
     return scores
+
+
+def _temporary_directories_left(output: Path) -> list[str]:
+    if not output.exists():
+        return []
+    return sorted(str(path.relative_to(output)) for path in output.rglob("*") if path.is_dir() and path.name.endswith(".tmp"))
 
 
 def _taxon_row(
