@@ -13,6 +13,7 @@ import polars as pl
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
 from biominer.bioclip.classification_modes import (
     DEFAULT_CLASSIFICATION_MODE,
+    DEFAULT_FAMILY_TOP_K,
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
@@ -638,6 +639,7 @@ def screen_object_detections(
     parquet_batch_rows: int = 10000,
     bioclip_batch_size: int = 24,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
+    family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> ObjectScreenResult:
@@ -645,6 +647,11 @@ def screen_object_detections(
         raise ValueError("bioclip_batch_size must be positive")
     classification_mode = normalize_classification_mode(classification_mode)
     _raise_if_hierarchical_classification(classification_mode)
+    family_top_k, species_first_pass_top_k, species_rerank_top_k = _validate_visual_top_k(
+        family_top_k=family_top_k,
+        species_first_pass_top_k=species_first_pass_top_k,
+        species_rerank_top_k=species_rerank_top_k,
+    )
     records_by_photo = {
         (str(row.get("source") or ""), str(row.get("flickr_photo_id") or "")): row
         for row in canonical_records.to_dicts()
@@ -675,6 +682,7 @@ def screen_object_detections(
                 ablation_mode=ablation_mode,
                 geo_prior_table=geo_prior_table,
                 classification_mode=classification_mode,
+                family_top_k=family_top_k,
                 species_first_pass_top_k=species_first_pass_top_k,
                 species_rerank_top_k=species_rerank_top_k,
             )
@@ -879,20 +887,27 @@ def _score_detection(
     ablation_mode: AblationMode,
     geo_prior_table: pl.DataFrame | None = None,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
+    family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> dict[str, Any]:
     classification_mode = normalize_classification_mode(classification_mode)
     _raise_if_hierarchical_classification(classification_mode)
+    family_top_k, species_first_pass_top_k, species_rerank_top_k = _validate_visual_top_k(
+        family_top_k=family_top_k,
+        species_first_pass_top_k=species_first_pass_top_k,
+        species_rerank_top_k=species_rerank_top_k,
+    )
     labels = _object_scoring_labels(candidate_set)
     family_scores = scorer.score(item, labels.family) if labels.family else {}
     genus_scores = scorer.score(item, labels.genus) if labels.genus else {}
     species_scores = scorer.score(item, labels.species)
-    ranked_species_top20 = _rank_species(candidate_set.species_candidates, species_scores)[:20]
+    ranked_species_top20 = _rank_species(candidate_set.species_candidates, species_scores)[:species_first_pass_top_k]
     rerank_candidates = _species_rerank_candidates(
         candidate_set.species_candidates,
         ranked_species_top20,
         target_scientific_name=context.scientific_name,
+        rerank_top_k=species_rerank_top_k,
     )
     rerank_scores = scorer.score(item, _species_prompt_labels(rerank_candidates)) if rerank_candidates else {}
     return _score_detection_from_scores(
@@ -909,6 +924,7 @@ def _score_detection(
         rerank_scores=rerank_scores,
         geo_prior_table=geo_prior_table,
         classification_mode=classification_mode,
+        family_top_k=family_top_k,
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
     )
@@ -923,6 +939,7 @@ def _score_detection_batch(
     ablation_mode: AblationMode,
     geo_prior_table: pl.DataFrame | None = None,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
+    family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> list[dict[str, Any]]:
@@ -930,6 +947,11 @@ def _score_detection_batch(
         return []
     classification_mode = normalize_classification_mode(classification_mode)
     _raise_if_hierarchical_classification(classification_mode)
+    family_top_k, species_first_pass_top_k, species_rerank_top_k = _validate_visual_top_k(
+        family_top_k=family_top_k,
+        species_first_pass_top_k=species_first_pass_top_k,
+        species_rerank_top_k=species_rerank_top_k,
+    )
     labels = _object_scoring_labels(candidate_set)
     initial_label_sets: dict[str, tuple[str, ...]] = {}
     if labels.family:
@@ -943,13 +965,16 @@ def _score_detection_batch(
     rerank_scores_by_index: list[dict[str, float]] = [{} for _item in items]
 
     for index, _item in enumerate(items):
-        ranked_species_top20 = _rank_species(candidate_set.species_candidates, initial_scores["species"][index])[:20]
+        ranked_species_top20 = _rank_species(candidate_set.species_candidates, initial_scores["species"][index])[
+            :species_first_pass_top_k
+        ]
         ranked_species_top20_by_index.append(ranked_species_top20)
         rerank_candidates_by_index.append(
             _species_rerank_candidates(
                 candidate_set.species_candidates,
                 ranked_species_top20,
                 target_scientific_name=context.scientific_name,
+                rerank_top_k=species_rerank_top_k,
             )
         )
 
@@ -985,6 +1010,7 @@ def _score_detection_batch(
                 rerank_scores=rerank_scores_by_index[index],
                 geo_prior_table=geo_prior_table,
                 classification_mode=classification_mode,
+                family_top_k=family_top_k,
                 species_first_pass_top_k=species_first_pass_top_k,
                 species_rerank_top_k=species_rerank_top_k,
             )
@@ -1007,6 +1033,7 @@ def _score_detection_from_scores(
     rerank_scores: dict[str, float],
     geo_prior_table: pl.DataFrame | None,
     classification_mode: ClassificationMode,
+    family_top_k: int,
     species_first_pass_top_k: int,
     species_rerank_top_k: int,
 ) -> dict[str, Any]:
@@ -1016,7 +1043,7 @@ def _score_detection_from_scores(
     target_score = _target_score(ranked_species, context.scientific_name)
     top1_name = ranked_species[0][0] if ranked_species else None
     species_top20 = [name for name, _score in ranked_species_top20]
-    species_top5 = [name for name, _score in ranked_species[:5]]
+    species_top5 = [name for name, _score in ranked_species[:species_rerank_top_k]]
     taxon_key_by_name = _taxon_key_by_name(candidate_set.species_candidates)
     top1_taxon_key = _taxon_key_for_name(taxon_key_by_name, top1_name)
     top1_candidate = _candidate_for_name(candidate_set.species_candidates, top1_name)
@@ -1051,10 +1078,10 @@ def _score_detection_from_scores(
         "ablation_mode": ablation_mode,
         "species_first_pass_top_k": int(species_first_pass_top_k),
         "species_rerank_top_k": int(species_rerank_top_k),
-        "species_rerank_strategy": TARGET_SCOPE_SPECIES_RERANK_STRATEGY,
+        "species_rerank_strategy": _target_scope_species_rerank_strategy(species_rerank_top_k),
         "triage_group_top": "butterfly_like",
         "triage_group_scores": {"butterfly_like": float(item.get("detector_score") or 0.0)},
-        "family_top3": [name for name, _score in ranked_families[:3]],
+        "family_top3": [name for name, _score in ranked_families[:family_top_k]],
         "family_top1": ranked_families[0][0] if ranked_families else None,
         "family_top1_score": ranked_families[0][1] if ranked_families else 0.0,
         "family_margin": family_margin,
@@ -1103,6 +1130,26 @@ def _object_scoring_labels(candidate_set: CandidateSet) -> _ObjectScoringLabels:
 def _raise_if_hierarchical_classification(classification_mode: ClassificationMode) -> None:
     if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
         raise NotImplementedError(HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE)
+
+
+def _validate_visual_top_k(
+    *,
+    family_top_k: int,
+    species_first_pass_top_k: int,
+    species_rerank_top_k: int,
+) -> tuple[int, int, int]:
+    family = int(family_top_k)
+    first_pass = int(species_first_pass_top_k)
+    rerank = int(species_rerank_top_k)
+    if family <= 0:
+        raise ValueError("family_top_k must be positive")
+    if first_pass <= 0:
+        raise ValueError("species_first_pass_top_k must be positive")
+    if rerank <= 0:
+        raise ValueError("species_rerank_top_k must be positive")
+    if rerank > first_pass:
+        raise ValueError("species_rerank_top_k must be <= species_first_pass_top_k")
+    return family, first_pass, rerank
 
 
 def _score_label_sets_for_items(
@@ -1155,10 +1202,11 @@ def _species_rerank_candidates(
     ranked_species_top20: list[tuple[str, float]],
     *,
     target_scientific_name: str,
+    rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> tuple[CandidateTaxon, ...]:
     candidates_by_name = {_norm(candidate.scientific_name): candidate for candidate in candidates}
     selected: list[CandidateTaxon] = []
-    for name, _score in ranked_species_top20[:5]:
+    for name, _score in ranked_species_top20[:rerank_top_k]:
         candidate = candidates_by_name.get(_norm(name))
         if candidate is not None:
             selected.append(candidate)
@@ -1166,6 +1214,12 @@ def _species_rerank_candidates(
     if target is not None and all(_norm(candidate.scientific_name) != _norm(target.scientific_name) for candidate in selected):
         selected.append(target)
     return tuple(selected)
+
+
+def _target_scope_species_rerank_strategy(rerank_top_k: int) -> str:
+    if int(rerank_top_k) == DEFAULT_SPECIES_RERANK_TOP_K:
+        return TARGET_SCOPE_SPECIES_RERANK_STRATEGY
+    return f"first_pass_top{int(rerank_top_k)}_plus_target_if_missing"
 
 
 def _species_prompt_labels(candidates: tuple[CandidateTaxon, ...]) -> tuple[str, ...]:

@@ -8,7 +8,14 @@ from typing import Any
 import polars as pl
 
 from biominer.bioclip.candidate_sets import CandidateSet
-from biominer.bioclip.classification_modes import DEFAULT_CLASSIFICATION_MODE, ClassificationMode, normalize_classification_mode
+from biominer.bioclip.classification_modes import (
+    DEFAULT_CLASSIFICATION_MODE,
+    DEFAULT_FAMILY_TOP_K,
+    DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    DEFAULT_SPECIES_RERANK_TOP_K,
+    ClassificationMode,
+    normalize_classification_mode,
+)
 from biominer.bioclip.object_runner import (
     OBJECT_VISUAL_MODES,
     ObjectBioClipScorer,
@@ -177,6 +184,9 @@ def run_cloud_bioclip_batch(
     geo_prior_table: pl.DataFrame | None = None,
     crop_batch_size: int = 24,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
+    family_top_k: int = DEFAULT_FAMILY_TOP_K,
+    species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> CloudBioClipBatchResult:
     if crop_batch_size <= 0:
         raise ValueError("crop_batch_size must be positive")
@@ -227,6 +237,9 @@ def run_cloud_bioclip_batch(
                         ablation_mode=mode,  # type: ignore[arg-type]
                         geo_prior_table=geo_prior_table,
                         classification_mode=classification_mode,
+                        family_top_k=family_top_k,
+                        species_first_pass_top_k=species_first_pass_top_k,
+                        species_rerank_top_k=species_rerank_top_k,
                     )
                 except SegmentationUnavailable as exc:
                     _mark_unavailable(
@@ -249,6 +262,9 @@ def run_cloud_bioclip_batch(
                     ablation_mode=mode,  # type: ignore[arg-type]
                     geo_prior_table=geo_prior_table,
                     classification_mode=classification_mode,
+                    family_top_k=family_top_k,
+                    species_first_pass_top_k=species_first_pass_top_k,
+                    species_rerank_top_k=species_rerank_top_k,
                 )
             except SegmentationUnavailable:
                 raise

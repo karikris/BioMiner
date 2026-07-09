@@ -748,10 +748,7 @@ class ProductionRunOrchestrator:
             return StageExecutionResult(
                 status=StageStatus.FAILED,
                 message=HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE,
-                metrics={
-                    "classification_mode": self.request.classification_mode,
-                    "taxonomy_candidate_table": str(self.request.taxonomy_candidate_table) if self.request.taxonomy_candidate_table else None,
-                },
+                metrics=_visual_classification_config_metrics(self.request),
             )
         if is_cloud_uri(self.request.output_root):
             if self.storage is None:
@@ -816,6 +813,9 @@ class ProductionRunOrchestrator:
                     scorer=self.object_scorer,
                     crop_batch_size=self.request.vision_settings.crop_batch_size,
                     classification_mode=self.request.classification_mode,
+                    family_top_k=self.request.family_top_k,
+                    species_first_pass_top_k=self.request.species_first_pass_top_k,
+                    species_rerank_top_k=self.request.species_rerank_top_k,
                 )
                 part_id = bioclip_score_batch_id(claimed)
                 part_uri = build_parquet_part_uri(
@@ -859,6 +859,7 @@ class ProductionRunOrchestrator:
             metrics = _cloud_bioclip_metrics(result)
             metrics.update(
                 {
+                    **_visual_classification_config_metrics(self.request),
                     "score_work_items_enqueued": plan_result.enqueued_work_items,
                     "duplicate_score_work_items": plan_result.duplicate_work_items,
                     "work_items_claimed": len(claimed),
@@ -905,8 +906,12 @@ class ProductionRunOrchestrator:
             modes=_request_bioclip_modes(self.request),
             bioclip_batch_size=self.request.vision_settings.crop_batch_size,
             classification_mode=self.request.classification_mode,
+            family_top_k=self.request.family_top_k,
+            species_first_pass_top_k=self.request.species_first_pass_top_k,
+            species_rerank_top_k=self.request.species_rerank_top_k,
         )
         write_parquet(frame, plan.paths.object_scores_path)
+        metrics.update(_visual_classification_config_metrics(self.request))
         return StageExecutionResult(
             metrics=metrics,
             outputs={"object_scores": str(plan.paths.object_scores_path)},
@@ -1474,6 +1479,9 @@ def _score_object_visual_modes(
     modes: tuple[Any, ...],
     bioclip_batch_size: int = 24,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
+    family_top_k: int = DEFAULT_FAMILY_TOP_K,
+    species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> tuple[Any, dict[str, Any]]:
     import polars as pl
     from biominer.bioclip.ablation import run_object_ablations
@@ -1488,6 +1496,9 @@ def _score_object_visual_modes(
         modes=modes,  # type: ignore[arg-type]
         bioclip_batch_size=bioclip_batch_size,
         classification_mode=classification_mode,
+        family_top_k=family_top_k,
+        species_first_pass_top_k=species_first_pass_top_k,
+        species_rerank_top_k=species_rerank_top_k,
     )
     frames = [
         pl.read_parquet(path)
@@ -1516,6 +1527,16 @@ def _object_ablation_metrics(report: dict[str, Any], *, frame: Any) -> dict[str,
         "segmentation_unavailable_count_by_mode": dict(report.get("segmentation_unavailable_count_by_mode") or {}),
         "segmentation_unavailable_reason_by_mode": dict(report.get("segmentation_unavailable_reason_by_mode") or {}),
         "segmentation_unavailable_count": sum(int(value or 0) for value in dict(report.get("segmentation_unavailable_count_by_mode") or {}).values()),
+    }
+
+
+def _visual_classification_config_metrics(request: ProductionRunRequest) -> dict[str, Any]:
+    return {
+        "classification_mode": request.classification_mode,
+        "taxonomy_candidate_table": str(request.taxonomy_candidate_table) if request.taxonomy_candidate_table else None,
+        "family_top_k": request.family_top_k,
+        "species_first_pass_top_k": request.species_first_pass_top_k,
+        "species_rerank_top_k": request.species_rerank_top_k,
     }
 
 

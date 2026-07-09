@@ -8,7 +8,13 @@ from typing import Any
 import polars as pl
 
 from biominer.bioclip.candidate_sets import CandidateSet
-from biominer.bioclip.classification_modes import DEFAULT_CLASSIFICATION_MODE, ClassificationMode
+from biominer.bioclip.classification_modes import (
+    DEFAULT_CLASSIFICATION_MODE,
+    DEFAULT_FAMILY_TOP_K,
+    DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    DEFAULT_SPECIES_RERANK_TOP_K,
+    ClassificationMode,
+)
 from biominer.bioclip.object_runner import PRIMARY_VISUAL_CLASSIFIER, AblationMode, ObjectBioClipScorer, screen_object_detections
 from biominer.species.context import SpeciesContext
 
@@ -33,6 +39,9 @@ def run_object_ablations(
     parquet_batch_rows: int = 10000,
     bioclip_batch_size: int = 24,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
+    family_top_k: int = DEFAULT_FAMILY_TOP_K,
+    species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> AblationRunReport:
     base = Path(output_dir)
     base.mkdir(parents=True, exist_ok=True)
@@ -55,6 +64,9 @@ def run_object_ablations(
             parquet_batch_rows=parquet_batch_rows,
             bioclip_batch_size=bioclip_batch_size,
             classification_mode=classification_mode,
+            family_top_k=family_top_k,
+            species_first_pass_top_k=species_first_pass_top_k,
+            species_rerank_top_k=species_rerank_top_k,
         )
         frames.append(result.frame)
         score_batches_by_mode[mode] = result.score_batches_written
