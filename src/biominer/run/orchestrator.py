@@ -13,7 +13,6 @@ from biominer.bioclip.classification_modes import (
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-    HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE,
     ClassificationMode,
     normalize_classification_mode,
 )
@@ -773,17 +772,13 @@ class ProductionRunOrchestrator:
         )
 
     def _run_score_bioclip_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
+        taxonomy_store: ButterflyTaxonomyStore | None = None
+        taxonomy_metrics: dict[str, Any] = {}
         if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
-            taxonomy_status = self._validate_hierarchical_taxonomy_table()
+            taxonomy_store, taxonomy_status = self._load_valid_hierarchical_taxonomy_store()
             if taxonomy_status.status is StageStatus.FAILED:
                 return taxonomy_status
-            metrics = _visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path)
-            metrics.update(taxonomy_status.metrics)
-            return StageExecutionResult(
-                status=StageStatus.FAILED,
-                message=HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE,
-                metrics=metrics,
-            )
+            taxonomy_metrics = dict(taxonomy_status.metrics)
         if is_cloud_uri(self.request.output_root):
             if self.storage is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_score_bioclip")
@@ -912,9 +907,17 @@ class ProductionRunOrchestrator:
             return StageExecutionResult(metrics=metrics, outputs={"object_scores": output_uri})
         missing = _missing_paths(plan.paths.source_records_path, plan.paths.object_detections_path)
         if missing:
-            return StageExecutionResult(status=StageStatus.FAILED, message="missing_score_inputs: " + ", ".join(missing))
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="missing_score_inputs: " + ", ".join(missing),
+                metrics=taxonomy_metrics,
+            )
         if self.object_scorer is None:
-            return StageExecutionResult(status=StageStatus.FAILED, message="bioclip_runtime_required_for_score_bioclip")
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="bioclip_runtime_required_for_score_bioclip",
+                metrics=taxonomy_metrics,
+            )
         import polars as pl
         from biominer.bioclip.candidate_sets import build_candidate_set_for_taxon_scope
 
@@ -943,55 +946,76 @@ class ProductionRunOrchestrator:
             family_top_k=self.request.family_top_k,
             species_first_pass_top_k=self.request.species_first_pass_top_k,
             species_rerank_top_k=self.request.species_rerank_top_k,
+            taxonomy_store=taxonomy_store,
         )
         write_parquet(frame, plan.paths.object_scores_path)
         metrics.update(_visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path))
+        metrics.update(taxonomy_metrics)
         return StageExecutionResult(
             metrics=metrics,
             outputs={"object_scores": str(plan.paths.object_scores_path)},
         )
 
     def _validate_hierarchical_taxonomy_table(self) -> StageExecutionResult:
+        _store, result = self._load_valid_hierarchical_taxonomy_store()
+        return result
+
+    def _load_valid_hierarchical_taxonomy_store(self) -> tuple[ButterflyTaxonomyStore | None, StageExecutionResult]:
         base_metrics = _visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path)
         if self.species_candidate_path is None:
-            return StageExecutionResult(
-                status=StageStatus.FAILED,
-                message="missing_taxonomy_candidate_table",
-                metrics={**base_metrics, "taxonomy_candidate_table_status": "missing"},
+            return (
+                None,
+                StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="missing_taxonomy_candidate_table",
+                    metrics={**base_metrics, "taxonomy_candidate_table_status": "missing"},
+                ),
             )
         try:
             store = self._read_butterfly_taxonomy_store(self.species_candidate_path)
         except FileNotFoundError as exc:
-            return StageExecutionResult(
-                status=StageStatus.FAILED,
-                message=f"missing_taxonomy_candidate_table: {exc}",
-                metrics={**base_metrics, "taxonomy_candidate_table_status": "missing"},
+            return (
+                None,
+                StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message=f"missing_taxonomy_candidate_table: {exc}",
+                    metrics={**base_metrics, "taxonomy_candidate_table_status": "missing"},
+                ),
             )
         except ValueError as exc:
-            return StageExecutionResult(
-                status=StageStatus.FAILED,
-                message=f"invalid_taxonomy_candidate_table: {exc}",
-                metrics={**base_metrics, "taxonomy_candidate_table_status": "invalid"},
+            return (
+                None,
+                StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message=f"invalid_taxonomy_candidate_table: {exc}",
+                    metrics={**base_metrics, "taxonomy_candidate_table_status": "invalid"},
+                ),
             )
         findings = store.validation_findings()
         fatal = [finding for finding in findings if finding.get("severity") == "fatal"]
         if fatal:
-            return StageExecutionResult(
-                status=StageStatus.FAILED,
-                message="invalid_taxonomy_candidate_table: " + ", ".join(str(finding.get("code")) for finding in fatal),
+            return (
+                None,
+                StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="invalid_taxonomy_candidate_table: " + ", ".join(str(finding.get("code")) for finding in fatal),
+                    metrics={
+                        **base_metrics,
+                        **_butterfly_taxonomy_store_metrics(store, taxonomy_candidate_table_status="invalid"),
+                        "taxonomy_candidate_table_fatal_findings": len(fatal),
+                    },
+                ),
+            )
+        return (
+            store,
+            StageExecutionResult(
                 metrics={
                     **base_metrics,
-                    **_butterfly_taxonomy_store_metrics(store, taxonomy_candidate_table_status="invalid"),
-                    "taxonomy_candidate_table_fatal_findings": len(fatal),
-                },
-            )
-        return StageExecutionResult(
-            metrics={
-                **base_metrics,
-                **_butterfly_taxonomy_store_metrics(store, taxonomy_candidate_table_status="valid"),
-                "taxonomy_candidate_table_fatal_findings": 0,
-                "taxonomy_candidate_table_warning_findings": sum(1 for finding in findings if finding.get("severity") == "warning"),
-            }
+                    **_butterfly_taxonomy_store_metrics(store, taxonomy_candidate_table_status="valid"),
+                    "taxonomy_candidate_table_fatal_findings": 0,
+                    "taxonomy_candidate_table_warning_findings": sum(1 for finding in findings if finding.get("severity") == "warning"),
+                }
+            ),
         )
 
     def _read_butterfly_taxonomy_store(self, location: str | Path) -> ButterflyTaxonomyStore:
@@ -1588,6 +1612,7 @@ def _score_object_visual_modes(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
+    taxonomy_store: ButterflyTaxonomyStore | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     import polars as pl
     from biominer.bioclip.ablation import run_object_ablations
@@ -1605,6 +1630,7 @@ def _score_object_visual_modes(
         family_top_k=family_top_k,
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
+        taxonomy_store=taxonomy_store,
     )
     frames = [
         pl.read_parquet(path)

@@ -22,7 +22,12 @@ from biominer.bioclip.classification_modes import (
     normalize_classification_mode,
 )
 from biominer.bioclip.hierarchical_classifier import HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS
+from biominer.bioclip.hierarchical_classifier import (
+    classify_butterfly_crops_hierarchical_batch,
+    hierarchical_result_to_object_score_row,
+)
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
+from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage
 from biominer.detection.policy import DetectionPolicy, detection_is_bioclip_eligible
@@ -654,11 +659,13 @@ def screen_object_detections(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
+    taxonomy_store: ButterflyTaxonomyStore | None = None,
 ) -> ObjectScreenResult:
     if bioclip_batch_size <= 0:
         raise ValueError("bioclip_batch_size must be positive")
     classification_mode = normalize_classification_mode(classification_mode)
-    _raise_if_hierarchical_classification(classification_mode)
+    if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION and taxonomy_store is None:
+        raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
     family_top_k, species_first_pass_top_k, species_rerank_top_k = _validate_visual_top_k(
         family_top_k=family_top_k,
         species_first_pass_top_k=species_first_pass_top_k,
@@ -686,18 +693,30 @@ def screen_object_detections(
         items = list(score_items)
         score_items.clear()
         try:
-            score_rows = _score_detection_batch(
-                items=items,
-                context=species_context,
-                candidate_set=candidate_set,
-                scorer=scorer,
-                ablation_mode=ablation_mode,
-                geo_prior_table=geo_prior_table,
-                classification_mode=classification_mode,
-                family_top_k=family_top_k,
-                species_first_pass_top_k=species_first_pass_top_k,
-                species_rerank_top_k=species_rerank_top_k,
-            )
+            if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+                if taxonomy_store is None:
+                    raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
+                score_rows = _score_hierarchical_detection_batch(
+                    items=items,
+                    scorer=scorer,
+                    taxonomy_store=taxonomy_store,
+                    family_top_k=family_top_k,
+                    species_first_pass_top_k=species_first_pass_top_k,
+                    species_rerank_top_k=species_rerank_top_k,
+                )
+            else:
+                score_rows = _score_detection_batch(
+                    items=items,
+                    context=species_context,
+                    candidate_set=candidate_set,
+                    scorer=scorer,
+                    ablation_mode=ablation_mode,
+                    geo_prior_table=geo_prior_table,
+                    classification_mode=classification_mode,
+                    family_top_k=family_top_k,
+                    species_first_pass_top_k=species_first_pass_top_k,
+                    species_rerank_top_k=species_rerank_top_k,
+                )
         except SegmentationUnavailable as exc:
             if ablation_mode != "detector_crop_segmentation":
                 raise
@@ -1042,6 +1061,36 @@ def _score_detection_batch(
             )
         )
     return rows
+
+
+def _score_hierarchical_detection_batch(
+    *,
+    items: list[dict[str, Any]],
+    scorer: ObjectBioClipScorer,
+    taxonomy_store: ButterflyTaxonomyStore,
+    family_top_k: int,
+    species_first_pass_top_k: int,
+    species_rerank_top_k: int,
+) -> list[dict[str, Any]]:
+    results = classify_butterfly_crops_hierarchical_batch(
+        items=items,
+        scorer=scorer,
+        taxonomy_store=taxonomy_store,
+        family_top_k=family_top_k,
+        species_first_pass_top_k=species_first_pass_top_k,
+        species_rerank_top_k=species_rerank_top_k,
+    )
+    return [
+        hierarchical_result_to_object_score_row(
+            item=item,
+            result=result,
+            scorer=scorer,
+            family_top_k=family_top_k,
+            species_first_pass_top_k=species_first_pass_top_k,
+            species_rerank_top_k=species_rerank_top_k,
+        )
+        for item, result in zip(items, results, strict=True)
+    ]
 
 
 def _score_detection_from_scores(

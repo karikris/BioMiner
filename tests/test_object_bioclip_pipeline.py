@@ -8,7 +8,7 @@ import pytest
 
 from biominer.bioclip.ablation import build_ablation_report, run_object_ablations
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon, build_candidate_set, build_candidate_set_for_taxon_scope
-from biominer.bioclip.classification_modes import HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE
+from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 from biominer.bioclip.object_runner import (
     CachedObjectEmbeddingScorer,
     EphemeralCropBioClipScorer,
@@ -25,10 +25,19 @@ from biominer.bioclip.object_runner import (
     screen_object_detections,
     write_object_evidence_outputs,
 )
+from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
 from biominer.detection.detector_base import DecodedImage
 from biominer.detection.policy import DetectionPolicy
 from biominer.detection.segmentation import make_segmenter
 from biominer.detection.schema import DETECTION_OUTPUT_SCHEMA, empty_detection_frame
+from biominer.registry.classification_table import (
+    CLASSIFICATION_TABLE_VERSION,
+    CLASSIFICATION_TAXA_SCHEMA,
+    PROMPT_VARIANT_VERSION,
+    build_family_label_frame,
+    build_species_label_frame,
+    ensure_classification_taxa_schema,
+)
 from biominer.run.taxon_scope import TaxonScope
 from biominer.species.context import CommonName, RegionHint, SpeciesContext
 
@@ -1226,7 +1235,7 @@ def test_object_evidence_join_preserves_non_scored_detection_rows(tmp_path) -> N
     assert by_detection["det-no-detection"]["detection_status"] == "no_detection"
 
 
-def test_object_bioclip_hierarchical_mode_fails_before_target_scope_scoring(tmp_path) -> None:
+def test_object_bioclip_hierarchical_mode_requires_taxonomy_store(tmp_path) -> None:
     class FailingScorer:
         model_id = "fake-bioclip"
         model_version = "test"
@@ -1235,7 +1244,7 @@ def test_object_bioclip_hierarchical_mode_fails_before_target_scope_scoring(tmp_
         def score(self, item, labels):  # noqa: ANN001, ANN202 - should not be reached.
             raise AssertionError("hierarchical mode must not run target-scope object scoring")
 
-    with pytest.raises(NotImplementedError, match="Phase 2 GBIF taxonomy candidate table"):
+    with pytest.raises(ValueError, match="taxonomy_store is required"):
         screen_object_detections(
             canonical_records=_canonical_records(),
             detections=_detections().head(1),
@@ -1247,8 +1256,48 @@ def test_object_bioclip_hierarchical_mode_fails_before_target_scope_scoring(tmp_
             classification_mode="hierarchical_butterfly_classification",
         )
 
-    assert HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE.startswith("hierarchical_butterfly_classification requires")
     assert not (tmp_path / "object_scores.parquet").exists()
+
+
+def test_object_bioclip_scores_local_hierarchical_mode_with_fake_taxonomy(tmp_path) -> None:
+    store = _butterfly_taxonomy_store()
+    scorer = FakeObjectBioClipScorer(
+        {
+            "sha256:crop-1": _hierarchical_scores(
+                store,
+                family_scores={"Nymphalidae": 0.92, "Papilionidae": 0.30},
+                species_scores={"Danaus plexippus": 0.87, "Papilio demoleus": 0.20},
+            )
+        }
+    )
+
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections().head(1),
+        species_context=_context(),
+        candidate_set=_fixture_candidate_set(),
+        scorer=scorer,
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        taxonomy_store=store,
+        species_first_pass_top_k=2,
+        species_rerank_top_k=1,
+    )
+
+    row = result.frame.to_dicts()[0]
+    assert result.crops_scored == 1
+    assert row["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    assert row["candidate_selection_mode"] == "gbif_family_first"
+    assert row["selected_family"] == "Nymphalidae"
+    assert row["species_top20"] == ["Danaus plexippus"]
+    assert row["species_top1_scientific_name"] == "Danaus plexippus"
+    assert row["accepted_taxon_key"] == "gbif:7017001"
+    assert row["target_accepted_taxon_key"] is None
+    assert row["target_species_score"] is None
+    assert row["target_species_rank"] is None
+    assert row["occurrence_bin"] == "in_review"
+    assert pl.read_parquet(tmp_path / "object_scores.parquet").to_dicts()[0]["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 
 
 def test_object_bioclip_skips_non_butterfly_detector_labels(tmp_path) -> None:
@@ -2530,3 +2579,92 @@ def test_species_context_round_trip_for_object_pipeline(tmp_path) -> None:
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["scientific_name"] == "Danaus plexippus"
     assert SpeciesContext.read_json(path).target_terms()[0] == "Danaus plexippus"
+
+
+def _butterfly_taxonomy_store() -> ButterflyTaxonomyStore:
+    taxa = ensure_classification_taxa_schema(
+        pl.DataFrame(
+            [
+                _classification_taxon(
+                    accepted_taxon_key="gbif:7017001",
+                    scientific_name="Danaus plexippus",
+                    family_key="gbif:7017",
+                    family="Nymphalidae",
+                    genus_key="gbif:190",
+                    genus="Danaus",
+                ),
+                _classification_taxon(
+                    accepted_taxon_key="gbif:9417001",
+                    scientific_name="Papilio demoleus",
+                    family_key="gbif:9417",
+                    family="Papilionidae",
+                    genus_key="gbif:90",
+                    genus="Papilio",
+                ),
+            ],
+            schema=CLASSIFICATION_TAXA_SCHEMA,
+        )
+    )
+    return ButterflyTaxonomyStore(
+        classification_taxa=taxa,
+        family_labels=build_family_label_frame(taxa),
+        species_labels=build_species_label_frame(taxa),
+        manifest={
+            "registry_version": "registry-v1",
+            "classification_table_version": CLASSIFICATION_TABLE_VERSION,
+            "prompt_variant_version": PROMPT_VARIANT_VERSION,
+        },
+    )
+
+
+def _classification_taxon(
+    *,
+    accepted_taxon_key: str,
+    scientific_name: str,
+    family_key: str,
+    family: str,
+    genus_key: str,
+    genus: str,
+) -> dict[str, object]:
+    return {
+        "registry_version": "registry-v1",
+        "classification_table_version": CLASSIFICATION_TABLE_VERSION,
+        "source": "GBIF",
+        "source_version": "",
+        "retrieved_at": "",
+        "scope_id": "scope",
+        "accepted_taxon_key": accepted_taxon_key,
+        "gbif_species_key": accepted_taxon_key.removeprefix("gbif:"),
+        "scientific_name": scientific_name,
+        "canonical_name": scientific_name,
+        "rank": "SPECIES",
+        "taxonomic_status": "accepted",
+        "family_key": family_key,
+        "family": family,
+        "genus_key": genus_key,
+        "genus": genus,
+        "species_key": accepted_taxon_key,
+        "species": scientific_name,
+        "species_epithet": scientific_name.split()[-1],
+        "in_scope": True,
+        "classification_enabled": True,
+        "classification_disabled_reason": "",
+    }
+
+
+def _hierarchical_scores(
+    store: ButterflyTaxonomyStore,
+    *,
+    family_scores: dict[str, float],
+    species_scores: dict[str, float],
+) -> dict[str, float]:
+    return {
+        **{
+            str(row["label"]): float(family_scores.get(str(row["family"]), 0.0))
+            for row in store.family_labels.to_dicts()
+        },
+        **{
+            str(row["label"]): float(species_scores.get(str(row["scientific_name"]), 0.0))
+            for row in store.species_labels.to_dicts()
+        },
+    }

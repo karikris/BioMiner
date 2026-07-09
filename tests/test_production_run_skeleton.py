@@ -10,7 +10,6 @@ import biominer.run.orchestrator as run_orchestrator_module
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
 from biominer.bioclip.classification_modes import (
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-    HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE,
     TARGET_SCOPE_OBJECT_SCREENING,
 )
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
@@ -263,7 +262,7 @@ def test_production_run_hierarchical_score_stage_requires_taxonomy_table(tmp_pat
     assert plan.manifest.stages[0].metrics["taxonomy_candidate_table_status"] == "missing"
 
 
-def test_production_run_hierarchical_score_stage_validates_table_then_fails_until_phase3(tmp_path) -> None:
+def test_production_run_hierarchical_score_stage_validates_table_then_requires_score_inputs(tmp_path) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
@@ -281,7 +280,7 @@ def test_production_run_hierarchical_score_stage_validates_table_then_fails_unti
 
     assert plan.manifest.status == "failed"
     assert plan.manifest.stages[0].status is StageStatus.FAILED
-    assert plan.manifest.stages[0].message == HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE
+    assert plan.manifest.stages[0].message.startswith("missing_score_inputs:")
     assert plan.manifest.stages[0].metrics["taxonomy_candidate_table"] == str(registry)
     assert plan.manifest.stages[0].metrics["taxonomy_candidate_table_status"] == "valid"
     assert plan.manifest.stages[0].metrics["classification_family_count"] == 2
