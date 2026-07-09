@@ -581,8 +581,8 @@ class MyMemoryTranslationProvider:
         allow_machine_translation: bool = False,
     ) -> None:
         self._http_get = http_get or _json_get(MYMEMORY_BASE_URL, max_retries=max_retries)
-        self.email = email or os.environ.get("MYMEMORY_EMAIL", "")
-        self.api_key = api_key or os.environ.get("MYMEMORY_API_KEY", "")
+        self.email = email
+        self.api_key = api_key
         self.allow_machine_translation = allow_machine_translation
 
     def translate(

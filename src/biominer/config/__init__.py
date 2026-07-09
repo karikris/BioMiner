@@ -225,6 +225,19 @@ def _load_storage_config(raw: Any, env: Mapping[str, str]) -> StorageConfig:
         endpoint_url_env = str(endpoint_url_env or "BIOMINER_S3_ENDPOINT_URL")
         access_key_id_env = str(access_key_id_env or "BIOMINER_S3_ACCESS_KEY_ID")
         secret_access_key_env = str(secret_access_key_env or "BIOMINER_S3_SECRET_ACCESS_KEY")
+    if backend == "local":
+        return StorageConfig(
+            backend="local",
+            bucket=None,
+            prefix=str(values.get("prefix", prefix_default)),
+            endpoint_url_env=None,
+            access_key_id_env=None,
+            secret_access_key_env=None,
+            region="",
+            endpoint_url=None,
+            access_key_id=None,
+            secret_access_key=None,
+        )
     return StorageConfig(
         backend=backend,
         bucket=_optional_str(values.get("bucket", env.get("BIOMINER_S3_BUCKET"))),

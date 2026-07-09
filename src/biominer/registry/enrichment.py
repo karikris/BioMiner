@@ -752,6 +752,7 @@ def compile_enriched_registry(
     requested_sources: tuple[str, ...] | None = None,
     requested_translation_sources: tuple[str, ...] | None = None,
     query_curation_json: str | Path | None = None,
+    include_classification_tables: bool = True,
 ) -> dict[str, Any]:
     registry = Path(registry_dir) if registry_dir is not None else Path(base_registry_dir or "")
     base = Path(base_registry_dir) if base_registry_dir is not None else registry
@@ -804,6 +805,7 @@ def compile_enriched_registry(
         registry_version=registry_version,
         scope_path=scope_path,
         query_curation_json=query_curation_json,
+        include_classification_tables=include_classification_tables,
     )
     candidate_output = candidates.filter(~(pl.col("enabled") & (pl.col("disabled_reason") == "")))
     candidate_output.write_parquet(output / NAME_CANDIDATES_FILE)

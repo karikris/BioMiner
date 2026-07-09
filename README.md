@@ -63,7 +63,21 @@ canonical source records
 
 The production default visual mode is `detector_crop`, and the default classification mode is `target_scope_object_screening`. Whole-image BioCLIP and detector-crop segmentation remain explicit ablation/debug modes because whole-image scoring spends model time on backgrounds, labels, people, host plants, and other non-target content. YOLOE/YOLO26 output must first pass the coarse `butterfly_like` gate before BioCLIP species scoring runs; moth-like, hard-negative, no-detection, and failed-image rows remain evidence rows but are not sent to BioCLIP.
 
-Current object score fields such as `family_top3`, `species_top20`, and `species_top5` are target/scope screening fields from `SpeciesContext` and registry candidate-set labels. They are not a true family-first hierarchical classifier: `species_top20` is not constrained by a BioCLIP-selected family, and the current target-screening rerank strategy is recorded as `first_pass_top5_plus_target_if_missing` by default. The reserved `hierarchical_butterfly_classification` mode is accepted for planning and manifest recording, but non-dry scoring is guarded until the GBIF classification-table workflow is implemented.
+BioMiner now emits lightweight GBIF-derived classification artifacts alongside the registry:
+
+```text
+butterfly_classification_taxa.parquet
+butterfly_family_labels.parquet
+butterfly_species_labels.parquet
+butterfly_classification_manifest.json
+butterfly_classification_qa_findings.parquet
+```
+
+These files are derived from `taxa.parquet`, `source_snapshots.parquet`, and `manifest.json`. They are visual candidate-selection artifacts, not a second taxonomy authority. The accepted GBIF registry remains the identity source; the label tables are prompt inputs for Phase 3 BioCLIP text embeddings.
+
+`hierarchical_butterfly_classification` is accepted for dry-run planning and, in non-dry scoring, validates the classification artifacts first. Phase 2 still stops after validation with a clear Phase 3-not-implemented message; it does not silently run target-scope scoring.
+
+See [GBIF classification tables](docs/gbif_classification_tables.md) for schemas, build commands, validation behavior, and expected scale.
 
 The Mac M5 Pro / 64 GB profile is `mac_m5pro_64gb`: `device=mps`, YOLOE checkpoint `yoloe-26s-seg.pt`, YOLO image size `768`, detector batch size `16`, crop batch size `24`, crop target `336`, crop padding `0.08`, zstd Parquet parts, and delete-after-commit image cleanup. Production visual parts are written as immutable zstd Parquet objects such as `evidence/stage=detect_objects/run_id=<run_id>/worker=<worker_id>/part=<part_id>.parquet`.
 
@@ -137,7 +151,7 @@ uv run biominer run \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
   --classification-mode hierarchical_butterfly_classification \
-  --taxonomy-candidate-table s3://biominer/biominer/registry/current/butterfly_classification_taxa.parquet \
+  --taxonomy-candidate-table s3://biominer/biominer/registry/current \
   --family-top-k 3 \
   --species-first-pass-top-k 20 \
   --species-rerank-top-k 5 \
@@ -640,6 +654,16 @@ uv run biominer registry build \
   --curated-static-source-snapshot-dir data/source_snapshots \
   --skip-translations
 ```
+
+Registry builds emit the GBIF-backed visual classification artifacts by default. To rebuild just those derived artifacts from an existing registry:
+
+```bash
+uv run biominer registry build-classification-table \
+  --registry-dir data/registry/current \
+  --output-dir data/registry/current
+```
+
+Use `--skip-classification-table` on `registry build` only when intentionally producing a registry without visual candidate tables.
 
 Each definition retains:
 

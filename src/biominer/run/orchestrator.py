@@ -28,7 +28,7 @@ from biominer.detection.cloud_work import (
     enqueue_detection_work_from_source_shards,
     run_cloud_detection_batch,
 )
-from biominer.detection.policy import VisionRuntimeSettings
+from biominer.detection.policy import DetectionPolicy, VisionRuntimeSettings
 from biominer.evidence.cloud_work import (
     build_review_queue_from_cloud_summary_shards,
     join_evidence_batch_id,
@@ -45,6 +45,12 @@ from biominer.flickr_fetch.cloud_poller import CloudMetadataPoller, flickr_query
 from biominer.storage.parquet import DEFAULT_PARQUET_COMPRESSION, ParquetPartWrite, write_parquet
 from biominer.flickr_fetch.metadata_poller import DEFAULT_STALE_CLAIM_SECONDS, SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries, load_registry_flickr_queries_from_frame
+from biominer.registry.classification_table import (
+    ButterflyTaxonomyStore,
+    classification_artifact_paths,
+    classification_artifact_uris,
+    validate_classification_tables,
+)
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import RunArtifactUris, RunPaths
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES, RunStage, StageStatus, default_stage_records
@@ -249,9 +255,29 @@ class ProductionRunOrchestrator:
         self.comment_fetcher = comment_fetcher
         self.registry_builder = registry_builder
         self.flickr_api_key = flickr_api_key
-        self.species_candidate_path = species_candidate_path
+        self.species_candidate_path = self._resolve_species_candidate_path(
+            request_taxonomy_candidate_table=species_candidate_path
+            if species_candidate_path is not None
+            else self.request.taxonomy_candidate_table,
+            resolved_registry_dir=self.request.registry_dir,
+        )
         self.allow_single_target_fixture = allow_single_target_fixture
         self.stage_handlers = dict(stage_handlers or {})
+
+    def _resolve_species_candidate_path(
+        self,
+        *,
+        request_taxonomy_candidate_table: str | Path | None,
+        resolved_registry_dir: str | None,
+    ) -> str | Path | None:
+        if request_taxonomy_candidate_table is not None:
+            return request_taxonomy_candidate_table
+        if not resolved_registry_dir:
+            return None
+        classification_table = "butterfly_classification_taxa.parquet"
+        if is_cloud_uri(str(resolved_registry_dir)):
+            return join_uri(str(resolved_registry_dir), classification_table)
+        return Path(resolved_registry_dir) / classification_table
 
     def plan(self) -> ProductionRunPlan:
         return build_run_plan(self.request, taxon_scope=self._resolve_taxon_scope())
@@ -653,6 +679,7 @@ class ProductionRunOrchestrator:
                     detector=self.object_detector,
                     image_loader=self.image_loader,
                     detector_batch_size=self.request.vision_settings.detector_batch_size,
+                    detection_policy=self.request.vision_settings.to_detection_policy(DetectionPolicy(backend=self.object_detector.backend)),
                 )
                 part_id = detection_batch_id(claimed)
                 part_uri = build_parquet_part_uri(
@@ -730,6 +757,8 @@ class ProductionRunOrchestrator:
             detector=self.object_detector,
             output_path=plan.paths.object_detections_path,
             image_loader=self.image_loader,
+            detection_policy=self.request.vision_settings.to_detection_policy(DetectionPolicy(backend=self.object_detector.backend)),
+            run_policy=self.request.vision_settings.to_detection_run_policy(),
         )
         return StageExecutionResult(
             metrics={
@@ -745,10 +774,15 @@ class ProductionRunOrchestrator:
 
     def _run_score_bioclip_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+            taxonomy_status = self._validate_hierarchical_taxonomy_table()
+            if taxonomy_status.status is StageStatus.FAILED:
+                return taxonomy_status
+            metrics = _visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path)
+            metrics.update(taxonomy_status.metrics)
             return StageExecutionResult(
                 status=StageStatus.FAILED,
                 message=HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE,
-                metrics=_visual_classification_config_metrics(self.request),
+                metrics=metrics,
             )
         if is_cloud_uri(self.request.output_root):
             if self.storage is None:
@@ -859,7 +893,7 @@ class ProductionRunOrchestrator:
             metrics = _cloud_bioclip_metrics(result)
             metrics.update(
                 {
-                    **_visual_classification_config_metrics(self.request),
+                    **_visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path),
                     "score_work_items_enqueued": plan_result.enqueued_work_items,
                     "duplicate_score_work_items": plan_result.duplicate_work_items,
                     "work_items_claimed": len(claimed),
@@ -911,11 +945,83 @@ class ProductionRunOrchestrator:
             species_rerank_top_k=self.request.species_rerank_top_k,
         )
         write_parquet(frame, plan.paths.object_scores_path)
-        metrics.update(_visual_classification_config_metrics(self.request))
+        metrics.update(_visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path))
         return StageExecutionResult(
             metrics=metrics,
             outputs={"object_scores": str(plan.paths.object_scores_path)},
         )
+
+    def _validate_hierarchical_taxonomy_table(self) -> StageExecutionResult:
+        base_metrics = _visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path)
+        if self.species_candidate_path is None:
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="missing_taxonomy_candidate_table",
+                metrics={**base_metrics, "taxonomy_candidate_table_status": "missing"},
+            )
+        try:
+            store = self._read_butterfly_taxonomy_store(self.species_candidate_path)
+        except FileNotFoundError as exc:
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message=f"missing_taxonomy_candidate_table: {exc}",
+                metrics={**base_metrics, "taxonomy_candidate_table_status": "missing"},
+            )
+        except ValueError as exc:
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message=f"invalid_taxonomy_candidate_table: {exc}",
+                metrics={**base_metrics, "taxonomy_candidate_table_status": "invalid"},
+            )
+        findings = store.validation_findings()
+        fatal = [finding for finding in findings if finding.get("severity") == "fatal"]
+        if fatal:
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="invalid_taxonomy_candidate_table: " + ", ".join(str(finding.get("code")) for finding in fatal),
+                metrics={
+                    **base_metrics,
+                    **_butterfly_taxonomy_store_metrics(store, taxonomy_candidate_table_status="invalid"),
+                    "taxonomy_candidate_table_fatal_findings": len(fatal),
+                },
+            )
+        return StageExecutionResult(
+            metrics={
+                **base_metrics,
+                **_butterfly_taxonomy_store_metrics(store, taxonomy_candidate_table_status="valid"),
+                "taxonomy_candidate_table_fatal_findings": 0,
+                "taxonomy_candidate_table_warning_findings": sum(1 for finding in findings if finding.get("severity") == "warning"),
+            }
+        )
+
+    def _read_butterfly_taxonomy_store(self, location: str | Path) -> ButterflyTaxonomyStore:
+        if is_cloud_uri(str(location)):
+            if self.storage is None:
+                raise ValueError("storage_backend_required_for_taxonomy_candidate_table")
+            uris = classification_artifact_uris(location)
+            missing = [
+                uri
+                for key, uri in uris.items()
+                if key in {"classification_taxa", "family_labels", "species_labels"} and not self.storage.exists(uri)
+            ]
+            if missing:
+                raise FileNotFoundError(", ".join(missing))
+            manifest = self.storage.read_json(uris["manifest"]) if self.storage.exists(uris["manifest"]) else {}
+            return ButterflyTaxonomyStore(
+                classification_taxa=self.storage.read_parquet(uris["classification_taxa"]),
+                family_labels=self.storage.read_parquet(uris["family_labels"]),
+                species_labels=self.storage.read_parquet(uris["species_labels"]),
+                manifest=manifest,
+            )
+        paths = classification_artifact_paths(location)
+        missing = [
+            str(path)
+            for key, path in paths.items()
+            if key in {"classification_taxa", "family_labels", "species_labels"} and not path.exists()
+        ]
+        if missing:
+            raise FileNotFoundError(", ".join(missing))
+        return ButterflyTaxonomyStore.read(location)
 
     def _registry_query_definitions_source(self) -> tuple[Any, str, Path | None]:
         if self._registry_is_cloud():
@@ -1530,13 +1636,45 @@ def _object_ablation_metrics(report: dict[str, Any], *, frame: Any) -> dict[str,
     }
 
 
-def _visual_classification_config_metrics(request: ProductionRunRequest) -> dict[str, Any]:
+def _visual_classification_config_metrics_from_paths(
+    request: ProductionRunRequest,
+    *,
+    species_candidate_path: str | Path | None,
+) -> dict[str, Any]:
+    return _visual_classification_config_metrics(request=request, species_candidate_path=species_candidate_path)
+
+
+def _visual_classification_config_metrics(
+    request: ProductionRunRequest,
+    *,
+    species_candidate_path: str | Path | None = None,
+) -> dict[str, Any]:
+    candidate_table = (
+        str(species_candidate_path)
+        if species_candidate_path is not None
+        else (str(request.taxonomy_candidate_table) if request.taxonomy_candidate_table is not None else None)
+    )
     return {
         "classification_mode": request.classification_mode,
-        "taxonomy_candidate_table": str(request.taxonomy_candidate_table) if request.taxonomy_candidate_table else None,
+        "taxonomy_candidate_table": candidate_table,
         "family_top_k": request.family_top_k,
         "species_first_pass_top_k": request.species_first_pass_top_k,
         "species_rerank_top_k": request.species_rerank_top_k,
+    }
+
+
+def _butterfly_taxonomy_store_metrics(store: ButterflyTaxonomyStore, *, taxonomy_candidate_table_status: str) -> dict[str, Any]:
+    taxa = store.classification_taxa
+    enabled = taxa.filter(taxa["classification_enabled"]) if "classification_enabled" in taxa.columns and not taxa.is_empty() else taxa.head(0)
+    manifest = dict(store.manifest or {})
+    return {
+        "taxonomy_candidate_table_status": taxonomy_candidate_table_status,
+        "classification_table_version": manifest.get("classification_table_version")
+        or (enabled["classification_table_version"][0] if not enabled.is_empty() and "classification_table_version" in enabled.columns else None),
+        "classification_family_count": enabled.select("family_key").unique().height if "family_key" in enabled.columns else 0,
+        "classification_species_count": enabled.height,
+        "classification_family_label_count": store.family_labels.height,
+        "classification_species_label_count": store.species_labels.height,
     }
 
 

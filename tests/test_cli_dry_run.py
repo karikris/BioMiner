@@ -83,7 +83,7 @@ def test_registry_public_cli_exposes_only_build_and_audit() -> None:
     dev_choices = commands["dev"]._subparsers._group_actions[0].choices  # noqa: SLF001
     dev_registry_choices = dev_choices["registry"]._subparsers._group_actions[0].choices  # noqa: SLF001
 
-    assert set(registry_choices) == {"build", "audit"}
+    assert set(registry_choices) == {"build", "build-classification-table", "audit"}
     for internal in {"fetch-taxonomy", "compile-fixture", "compile-enriched", "enrich-sources", "seed-flickr-queries"}:
         assert internal not in registry_choices
         assert internal in dev_registry_choices
@@ -209,7 +209,7 @@ def test_yoloe26_prototype_profile_settings_do_not_use_hardcoded_crop_defaults()
 
     default_settings = _prototype_vision_settings_from_args(default_args)
 
-    assert default_settings.profile_name == "prototype_default"
+    assert default_settings.profile_name == "default"
     assert default_settings.device == "auto"
     assert default_settings.yolo_imgsz == 640
     assert default_settings.detector_batch_size == 4
@@ -3504,6 +3504,117 @@ def test_registry_build_cli_reuses_source_json_and_writes_report(tmp_path, capsy
     assert (output / "flickr_query_definitions.parquet").exists()
     assert Path(payload["report_json"]).exists()
     assert Path(payload["report_md"]).exists()
+
+
+def test_registry_build_cli_skip_classification_table_omits_artifacts(tmp_path, capsys) -> None:
+    scope = tmp_path / "scope.json"
+    scope.write_text(
+        json.dumps({"scope_id": "test-scope", "root": {"scientific_name": "Papilionoidea", "rank": "SUPERFAMILY"}, "included_families": []}),
+        encoding="utf-8",
+    )
+    source = tmp_path / "registry_source.json"
+    source.write_text(
+        json.dumps(
+            {
+                "source": "GBIF",
+                "source_version": "gbif-species-api",
+                "retrieved_at": "2026-06-20T00:00:00+00:00",
+                "taxa": [{"accepted_taxon_key": "gbif:1", "scientific_name": "Papilionoidea", "rank": "SUPERFAMILY"}],
+                "names": [],
+                "source_assertions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "registry"
+    parser = build_parser()
+
+    assert run(
+        parser.parse_args(
+            [
+                "registry",
+                "build",
+                "--source-json",
+                str(source),
+                "--reuse-source-json",
+                "--output-dir",
+                str(output),
+                "--registry-version",
+                "test-registry",
+                "--scope-json",
+                str(scope),
+                "--skip-classification-table",
+            ]
+        )
+    ) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["manifest"]["classification_table_skipped"] is True
+    assert not (output / "butterfly_classification_taxa.parquet").exists()
+    assert not (output / "butterfly_family_labels.parquet").exists()
+    assert not (output / "butterfly_species_labels.parquet").exists()
+
+
+def test_registry_build_classification_table_cli_writes_outputs(tmp_path, capsys) -> None:
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    pl.DataFrame(
+        [
+            {
+                "registry_schema_version": "registry-foundation-v1",
+                "scope_id": "scope",
+                "accepted_taxon_key": "gbif:100",
+                "scientific_name": "Papilio demoleus",
+                "rank": "SPECIES",
+                "parent_key": "gbif:90",
+                "family_key": "gbif:9417",
+                "family": "Papilionidae",
+                "genus_key": "gbif:90",
+                "genus": "Papilio",
+                "species_key": "gbif:100",
+                "species": "Papilio demoleus",
+                "in_scope": True,
+            },
+            {
+                "registry_schema_version": "registry-foundation-v1",
+                "scope_id": "scope",
+                "accepted_taxon_key": "gbif:101",
+                "scientific_name": "Papilio machaon",
+                "rank": "SPECIES",
+                "parent_key": "gbif:90",
+                "family_key": "gbif:9417",
+                "family": "Papilionidae",
+                "genus_key": "gbif:90",
+                "genus": "Papilio",
+                "species_key": "gbif:101",
+                "species": "Papilio machaon",
+                "in_scope": True,
+            },
+        ]
+    ).write_parquet(registry / "taxa.parquet")
+    (registry / "manifest.json").write_text(json.dumps({"registry_version": "registry-v1", "qa_status": "passed"}), encoding="utf-8")
+    parser = build_parser()
+
+    assert run(parser.parse_args(["registry", "build-classification-table", "--registry-dir", str(registry)])) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["classification_table_version"] == "gbif-butterfly-classification-v1"
+    assert payload["species_count"] == 2
+    assert payload["family_label_rows"] == 3
+    assert payload["species_label_rows"] == 6
+    assert (registry / "butterfly_classification_taxa.parquet").exists()
+    assert (registry / "butterfly_family_labels.parquet").exists()
+    assert (registry / "butterfly_species_labels.parquet").exists()
+    assert (registry / "butterfly_classification_manifest.json").exists()
+
+
+def test_registry_build_classification_table_cli_reports_missing_taxa(tmp_path, capsys) -> None:
+    parser = build_parser()
+
+    assert run(parser.parse_args(["registry", "build-classification-table", "--registry-dir", str(tmp_path)])) == 2
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "taxa.parquet" in payload["error"]
 
 
 def test_registry_seed_flickr_queries_cli_loads_query_definitions_into_state(tmp_path, capsys) -> None:

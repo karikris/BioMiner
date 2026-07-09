@@ -16,6 +16,7 @@ from biominer.bioclip.classification_modes import (
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.evidence import build_object_evidence_frames, build_review_queue, evidence_count_metrics
 from biominer.evidence.join import write_object_evidence_outputs
+from biominer.registry.classification_table import build_classification_tables_from_registry_dir
 from biominer.registry.trust_policy import (
     TrustTier,
     decide_name_trust,
@@ -239,7 +240,7 @@ def test_production_run_hierarchical_dry_run_skips_score_stage_with_plan_metadat
     assert plan.manifest.model_configs["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 
 
-def test_production_run_hierarchical_score_stage_fails_structurally(tmp_path) -> None:
+def test_production_run_hierarchical_score_stage_requires_taxonomy_table(tmp_path) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
         taxon="Danaus plexippus",
@@ -256,9 +257,35 @@ def test_production_run_hierarchical_score_stage_fails_structurally(tmp_path) ->
 
     assert plan.manifest.status == "failed"
     assert plan.manifest.stages[0].status is StageStatus.FAILED
-    assert plan.manifest.stages[0].message == HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE
+    assert plan.manifest.stages[0].message.startswith("missing_taxonomy_candidate_table:")
     assert plan.manifest.stages[0].metrics["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
     assert plan.manifest.stages[0].metrics["taxonomy_candidate_table"].endswith("butterfly_classification_taxa.parquet")
+    assert plan.manifest.stages[0].metrics["taxonomy_candidate_table_status"] == "missing"
+
+
+def test_production_run_hierarchical_score_stage_validates_table_then_fails_until_phase3(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        classification_mode="hierarchical",
+        taxonomy_candidate_table=str(registry),
+        stages=(RunStage.SCORE_BIOCLIP,),
+    )
+
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope).run()
+
+    assert plan.manifest.status == "failed"
+    assert plan.manifest.stages[0].status is StageStatus.FAILED
+    assert plan.manifest.stages[0].message == HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE
+    assert plan.manifest.stages[0].metrics["taxonomy_candidate_table"] == str(registry)
+    assert plan.manifest.stages[0].metrics["taxonomy_candidate_table_status"] == "valid"
+    assert plan.manifest.stages[0].metrics["classification_family_count"] == 2
+    assert plan.manifest.stages[0].metrics["classification_species_count"] == 4
 
 
 def test_production_run_request_validates_visual_classification_top_k() -> None:
@@ -1892,6 +1919,7 @@ def _write_rank_registry(registry: Path) -> Path:
     ).write_parquet(registry / "names.parquet")
     pl.DataFrame([{"source": "GBIF", "source_version": "fixture", "retrieved_at": "2026-01-01T00:00:00Z"}]).write_parquet(registry / "source_snapshots.parquet")
     (registry / "manifest.json").write_text(json.dumps({"registry_version": "rank-registry-v1"}), encoding="utf-8")
+    build_classification_tables_from_registry_dir(registry)
     return registry
 
 
@@ -2207,7 +2235,18 @@ def _is_forbidden_local_artifact(path: str | Path, *, root: Path) -> bool:
 def _seed_cloud_registry(storage: _FakeRunStorage, registry_uri: str, registry: Path) -> None:
     storage.parquet_payloads[f"{registry_uri}/taxa.parquet"] = pl.read_parquet(registry / "taxa.parquet")
     storage.parquet_payloads[f"{registry_uri}/names.parquet"] = pl.read_parquet(registry / "names.parquet")
+    storage.parquet_payloads[f"{registry_uri}/butterfly_classification_taxa.parquet"] = pl.read_parquet(
+        registry / "butterfly_classification_taxa.parquet"
+    )
+    storage.parquet_payloads[f"{registry_uri}/butterfly_family_labels.parquet"] = pl.read_parquet(registry / "butterfly_family_labels.parquet")
+    storage.parquet_payloads[f"{registry_uri}/butterfly_species_labels.parquet"] = pl.read_parquet(registry / "butterfly_species_labels.parquet")
+    storage.parquet_payloads[f"{registry_uri}/butterfly_classification_qa_findings.parquet"] = pl.read_parquet(
+        registry / "butterfly_classification_qa_findings.parquet"
+    )
     storage.parquet_payloads[f"{registry_uri}/source_snapshots.parquet"] = pl.read_parquet(registry / "source_snapshots.parquet")
+    storage.json_payloads[f"{registry_uri}/butterfly_classification_manifest.json"] = json.loads(
+        (registry / "butterfly_classification_manifest.json").read_text(encoding="utf-8")
+    )
     query_definitions = registry / "flickr_query_definitions.parquet"
     if query_definitions.exists():
         storage.parquet_payloads[f"{registry_uri}/flickr_query_definitions.parquet"] = pl.read_parquet(query_definitions)

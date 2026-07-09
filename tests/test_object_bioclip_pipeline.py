@@ -7,7 +7,7 @@ import polars as pl
 import pytest
 
 from biominer.bioclip.ablation import build_ablation_report, run_object_ablations
-from biominer.bioclip.candidate_sets import CandidateTaxon, build_candidate_set, build_candidate_set_for_taxon_scope
+from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon, build_candidate_set, build_candidate_set_for_taxon_scope
 from biominer.bioclip.classification_modes import HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE
 from biominer.bioclip.object_runner import (
     CachedObjectEmbeddingScorer,
@@ -1546,7 +1546,7 @@ def test_object_bioclip_scores_family_genus_and_species_stages_separately(tmp_pa
     assert row["target_species_score"] == 0.83
 
 
-def test_object_bioclip_target_screening_reranks_first_pass_top5_plus_target(tmp_path) -> None:
+def test_object_bioclip_target_screening_reranks_only_first_pass_candidates(tmp_path) -> None:
     candidates = tmp_path / "species_candidates.parquet"
     pl.DataFrame(
         [
@@ -1616,7 +1616,7 @@ def test_object_bioclip_target_screening_reranks_first_pass_top5_plus_target(tmp
     row = result.frame.to_dicts()[0]
     assert len(scorer.species_calls) == 2
     assert scorer.species_calls[0] == candidate_set.prompt_labels("species")
-    assert "a photo of Limenitis arthemis" not in scorer.species_calls[1]
+    assert "a photo of Limenitis arthemis" in scorer.species_calls[1]
     assert row["species_top20"][:6] == [
         "Danaus gilippus",
         "Danaus erippus",
@@ -1633,8 +1633,8 @@ def test_object_bioclip_target_screening_reranks_first_pass_top5_plus_target(tmp
         "Limenitis archippus",
     ]
     assert row["species_top1_scientific_name"] == "Danaus plexippus"
-    assert row["target_species_score"] == 0.95
-    assert row["target_species_rank"] == 1
+    assert row["target_species_score"] == 0.61
+    assert row["target_species_rank"] == 5
     assert row["species_rerank_strategy"] == TARGET_SCOPE_SPECIES_RERANK_STRATEGY
 
 
@@ -1711,9 +1711,9 @@ def test_object_bioclip_top_k_settings_control_first_pass_and_rerank_candidates(
     assert scorer.species_calls[0] == candidate_set.prompt_labels("species")
     assert "a photo of Danaus gilippus" in scorer.species_calls[1]
     assert "a photo of Danaus erippus" in scorer.species_calls[1]
-    assert "a photo of Danaus plexippus" in scorer.species_calls[1]
-    assert "a photo of Danaus eresimus" not in scorer.species_calls[1]
-    assert "a photo of Limenitis archippus" not in scorer.species_calls[1]
+    assert "a photo of Danaus eresimus" in scorer.species_calls[1]
+    assert "a photo of Limenitis archippus" in scorer.species_calls[1]
+    assert "a photo of Danaus plexippus" not in scorer.species_calls[1]
     assert row["family_top3"] == ["Nymphalidae"]
     assert row["species_top20"] == [
         "Danaus gilippus",
@@ -1721,10 +1721,111 @@ def test_object_bioclip_top_k_settings_control_first_pass_and_rerank_candidates(
         "Danaus eresimus",
         "Limenitis archippus",
     ]
-    assert row["species_top5"] == ["Danaus plexippus", "Danaus gilippus"]
+    assert row["species_top5"] == ["Danaus gilippus", "Danaus erippus"]
     assert row["species_first_pass_top_k"] == 4
     assert row["species_rerank_top_k"] == 2
-    assert row["species_rerank_strategy"] == "first_pass_top2_plus_target_if_missing"
+    assert row["species_rerank_strategy"] == "first_pass_top4"
+
+
+def test_object_bioclip_family_filter_excludes_cross_family_candidates_from_first_pass(tmp_path) -> None:
+    context = _context()
+    candidate_set = CandidateSet(
+        candidate_set_id="test_family_filtered",
+        registry_version=context.registry_version,
+        target_accepted_taxon_key=context.accepted_taxon_key,
+        target_scientific_name=context.scientific_name,
+        family_candidates=(
+            CandidateTaxon("Danaus plexippus", family="Nymphalidae", genus="Danaus", accepted_taxon_key="gbif:5131654"),
+            CandidateTaxon("Danaus gilippus", family="Nymphalidae", genus="Danaus", accepted_taxon_key="gbif:5131655"),
+            CandidateTaxon("Danaus eresimus", family="Nymphalidae", genus="Danaus", accepted_taxon_key="gbif:5131657"),
+            CandidateTaxon("Limenitis archippus", family="Nymphalidae", genus="Limenitis", accepted_taxon_key="gbif:1900000"),
+            CandidateTaxon("Limenitis arthemis", family="Nymphalidae", genus="Limenitis", accepted_taxon_key="gbif:1900001"),
+            CandidateTaxon("Papilio machaon", family="Papilionidae", genus="Papilio", accepted_taxon_key="gbif:1902000"),
+        ),
+        genus_candidates=(
+            CandidateTaxon("Danaus", genus="Danaus"),
+            CandidateTaxon("Limenitis", genus="Limenitis"),
+            CandidateTaxon("Papilio", genus="Papilio"),
+        ),
+        species_candidates=(
+            CandidateTaxon("Danaus plexippus", family="Nymphalidae", genus="Danaus", accepted_taxon_key="gbif:5131654"),
+            CandidateTaxon("Danaus gilippus", family="Nymphalidae", genus="Danaus", accepted_taxon_key="gbif:5131655"),
+            CandidateTaxon("Limenitis archippus", family="Nymphalidae", genus="Limenitis", accepted_taxon_key="gbif:1900000"),
+            CandidateTaxon("Limenitis arthemis", family="Nymphalidae", genus="Limenitis", accepted_taxon_key="gbif:1900001"),
+            CandidateTaxon("Danaus eresimus", family="Nymphalidae", genus="Danaus", accepted_taxon_key="gbif:5131657"),
+            CandidateTaxon("Papilio machaon", family="Papilionidae", genus="Papilio", accepted_taxon_key="gbif:1902000"),
+        ),
+        prompt_variant_version="object-bioclip-prompts-v1",
+        geospatial_scope=None,
+        source_evidence=("test",),
+    )
+
+    class FamilyFilterScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self) -> None:
+            self.species_calls: list[tuple[str, ...]] = []
+
+        def score(self, item: dict[str, object], labels: tuple[str, ...]) -> dict[str, float]:
+            scores = {label: 0.0 for label in labels}
+            if set(labels) == {"Nymphalidae", "Papilionidae"}:
+                scores["Nymphalidae"] = 0.8
+                scores["Papilionidae"] = 0.2
+                return scores
+            if set(labels) == {"Danaus", "Limenitis", "Papilio"}:
+                scores["Danaus"] = 0.7
+                scores["Papilio"] = 0.2
+                return scores
+            self.species_calls.append(labels)
+            if len(self.species_calls) == 1:
+                scores["a photo of Papilio machaon"] = 0.99
+                scores["a photo of Danaus gilippus"] = 0.93
+                scores["a photo of Limenitis archippus"] = 0.90
+                scores["a photo of Danaus eresimus"] = 0.20
+                scores["a photo of Danaus plexippus"] = 0.50
+                return scores
+            for label, score in {
+                "a photo of Danaus gilippus": 0.90,
+                "a photo of Danaus plexippus": 0.05,
+                "a photo of Limenitis archippus": 0.40,
+                "a photo of Danaus eresimus": 0.60,
+            }.items():
+                if label in scores:
+                    scores[label] = score
+            return scores
+
+    scorer = FamilyFilterScorer()
+
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections().head(1),
+        species_context=_context(),
+        candidate_set=candidate_set,
+        scorer=scorer,
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+        species_first_pass_top_k=4,
+        species_rerank_top_k=2,
+    )
+
+    row = result.frame.to_dicts()[0]
+    assert "Papilio machaon" not in row["species_top20"]
+    assert row["species_top20"] == ["Danaus gilippus", "Limenitis archippus", "Danaus plexippus"]
+    assert len(scorer.species_calls) == 2
+    assert "Nymphalidae" not in scorer.species_calls[0]
+    assert "Papilionidae" not in scorer.species_calls[0]
+    assert len(scorer.species_calls) == 2
+    assert "a photo of Papilio machaon" not in scorer.species_calls[1]
+    assert "a photo of Danaus gilippus" in scorer.species_calls[1]
+    assert "a photo of Limenitis archippus" in scorer.species_calls[1]
+    assert "a photo of Danaus eresimus" not in scorer.species_calls[1]
+    assert row["species_top5"][0] == "Danaus gilippus"
+    assert row["species_top5"][1] == "Limenitis archippus"
+    assert row["target_species_rank"] == 4
+    assert row["target_species_score"] == 0.50
+    assert row["species_rerank_strategy"] == "first_pass_top4"
 
 
 def test_object_bioclip_rejects_incoherent_top_k_settings(tmp_path) -> None:

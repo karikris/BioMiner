@@ -169,7 +169,7 @@ def test_apply_comment_review_decisions_updates_only_move_to_gold_records(tmp_pa
     assert rows[0]["comment_review_decision"] == "move_to_gold"
 
 
-def test_comment_review_cli_commands_run_once_without_network(tmp_path, capsys) -> None:
+def test_comment_review_cli_commands_run_once_without_network(tmp_path, capsys, monkeypatch) -> None:
     from biominer.cli import build_parser, run
 
     input_path = tmp_path / "triage.parquet"
@@ -191,6 +191,7 @@ def test_comment_review_cli_commands_run_once_without_network(tmp_path, capsys) 
     assert apply_payload["rows"] == 1
     assert output_path.exists()
 
+    monkeypatch.delenv("FLICKR_API_KEY", raising=False)
     assert run(parser.parse_args(["dev", "comments", "review-once", "--state-db", str(state_db), "--max-api-calls", "1"])) == 2
     error_payload = json.loads(capsys.readouterr().out)
     assert "Flickr API key is required" in error_payload["error"]

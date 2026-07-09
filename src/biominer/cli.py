@@ -59,6 +59,7 @@ from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry
+from biominer.registry.classification_table import build_classification_tables_from_registry_dir
 from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST_DAILY_REQUEST_LIMIT, build_enrichment_sources_from_registry, compile_enriched_registry
 from biominer.registry.gbif import GBIFClient
@@ -270,6 +271,10 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--skip-language-targets", action="store_true")
     registry_build.add_argument("--skip-curated-static-sources", action="store_true")
     registry_build.add_argument("--skip-enrichment", action="store_true")
+    registry_build.add_argument("--skip-classification-table", action="store_true")
+    registry_classification = registry_subparsers.add_parser("build-classification-table")
+    registry_classification.add_argument("--registry-dir", required=True)
+    registry_classification.add_argument("--output-dir")
     registry_audit = registry_subparsers.add_parser("audit")
     registry_audit.add_argument("--registry-dir", required=True)
     registry_audit.add_argument("--report-dir", default="reports")
@@ -643,8 +648,20 @@ def run(args: argparse.Namespace) -> int:
                     skip_language_targets=args.skip_language_targets,
                     skip_curated_static_sources=args.skip_curated_static_sources,
                     skip_enrichment=args.skip_enrichment,
+                    skip_classification_table=args.skip_classification_table,
                 )
-            except FileNotFoundError as exc:
+            except (FileNotFoundError, ValueError) as exc:
+                print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+                return 2
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        if args.registry_command == "build-classification-table":
+            try:
+                payload = build_classification_tables_from_registry_dir(
+                    registry_dir=args.registry_dir,
+                    output_dir=args.output_dir,
+                )
+            except (FileNotFoundError, ValueError) as exc:
                 print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
                 return 2
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -952,18 +969,6 @@ def _prototype_vision_settings_from_args(args: argparse.Namespace) -> VisionRunt
         vision_runtime_settings(args.vision_profile)
         if getattr(args, "vision_profile", None)
         else VisionRuntimeSettings(
-            profile_name="prototype_default",
-            device="auto",
-            yolo_checkpoint="yoloe-26s-seg.pt",
-            yolo_imgsz=640,
-            yolo_conf=0.20,
-            yolo_iou=0.50,
-            yolo_max_det=8,
-            detector_batch_size=4,
-            crop_batch_size=24,
-            crop_padding_ratio=0.12,
-            crop_target_px=336,
-            bioclip_model=BIOCLIP_25_HUGE_REPO_ID,
             parquet_part_rows=int(getattr(args, "parquet_batch_rows", 10000) or 10000),
             delete_images_after_commit=False,
         )

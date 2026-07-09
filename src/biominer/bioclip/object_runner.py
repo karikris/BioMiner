@@ -41,7 +41,7 @@ PRIMARY_VISUAL_CLASSIFIER = "bioclip_object"
 OBJECT_VISUAL_MODES: tuple[str, ...] = ("whole_image", "detector_crop", "detector_crop_segmentation")
 AblationMode = Literal["whole_image", "detector_crop", "detector_crop_segmentation"]
 TARGET_SCOPE_CANDIDATE_SELECTION_MODE = "taxon_scope_or_species_context"
-TARGET_SCOPE_SPECIES_RERANK_STRATEGY = "first_pass_top5_plus_target_if_missing"
+TARGET_SCOPE_SPECIES_RERANK_STRATEGY = "first_pass_top20"
 OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "source": pl.String,
     "flickr_photo_id": pl.String,
@@ -903,11 +903,16 @@ def _score_detection(
     genus_scores = scorer.score(item, labels.genus) if labels.genus else {}
     species_scores = scorer.score(item, labels.species)
     ranked_species_top20 = _rank_species(candidate_set.species_candidates, species_scores)[:species_first_pass_top_k]
+    ranked_families = _rank_labels(labels.family, family_scores) if labels.family else []
+    family_top1 = ranked_families[0][0] if ranked_families else None
+    family_filtered_ranked_species_top20 = _rank_species_for_family(
+        candidates=candidate_set.species_candidates,
+        ranked_species=ranked_species_top20,
+        family=family_top1,
+    )
     rerank_candidates = _species_rerank_candidates(
         candidate_set.species_candidates,
-        ranked_species_top20,
-        target_scientific_name=context.scientific_name,
-        rerank_top_k=species_rerank_top_k,
+        ranked_species_top20=family_filtered_ranked_species_top20,
     )
     rerank_scores = scorer.score(item, _species_prompt_labels(rerank_candidates)) if rerank_candidates else {}
     return _score_detection_from_scores(
@@ -919,7 +924,8 @@ def _score_detection(
         labels=labels,
         family_scores=family_scores,
         genus_scores=genus_scores,
-        ranked_species_top20=ranked_species_top20,
+        ranked_species_full_top20=ranked_species_top20,
+        ranked_species_top20=family_filtered_ranked_species_top20,
         rerank_candidates=rerank_candidates,
         rerank_scores=rerank_scores,
         geo_prior_table=geo_prior_table,
@@ -961,6 +967,7 @@ def _score_detection_batch(
     initial_label_sets["species"] = labels.species
     initial_scores = _score_label_sets_for_items(scorer, items, initial_label_sets)
     ranked_species_top20_by_index: list[list[tuple[str, float]]] = []
+    family_ranked_species_top20_by_index: list[list[tuple[str, float]]] = []
     rerank_candidates_by_index: list[tuple[CandidateTaxon, ...]] = []
     rerank_scores_by_index: list[dict[str, float]] = [{} for _item in items]
 
@@ -969,12 +976,18 @@ def _score_detection_batch(
             :species_first_pass_top_k
         ]
         ranked_species_top20_by_index.append(ranked_species_top20)
+        ranked_families = _rank_labels(labels.family, initial_scores["family"][index]) if labels.family else []
+        family_top1 = ranked_families[0][0] if ranked_families else None
+        family_ranked_species_top20 = _rank_species_for_family(
+            candidates=candidate_set.species_candidates,
+            ranked_species=ranked_species_top20,
+            family=family_top1,
+        )
+        family_ranked_species_top20_by_index.append(family_ranked_species_top20)
         rerank_candidates_by_index.append(
             _species_rerank_candidates(
                 candidate_set.species_candidates,
-                ranked_species_top20,
-                target_scientific_name=context.scientific_name,
-                rerank_top_k=species_rerank_top_k,
+                ranked_species_top20=family_ranked_species_top20,
             )
         )
 
@@ -1005,7 +1018,8 @@ def _score_detection_batch(
                 labels=labels,
                 family_scores=family_scores[index],
                 genus_scores=genus_scores[index],
-                ranked_species_top20=ranked_species_top20_by_index[index],
+                ranked_species_full_top20=ranked_species_top20_by_index[index],
+                ranked_species_top20=family_ranked_species_top20_by_index[index],
                 rerank_candidates=rerank_candidates_by_index[index],
                 rerank_scores=rerank_scores_by_index[index],
                 geo_prior_table=geo_prior_table,
@@ -1028,6 +1042,7 @@ def _score_detection_from_scores(
     labels: _ObjectScoringLabels,
     family_scores: dict[str, float],
     genus_scores: dict[str, float],
+    ranked_species_full_top20: list[tuple[str, float]],
     ranked_species_top20: list[tuple[str, float]],
     rerank_candidates: tuple[CandidateTaxon, ...],
     rerank_scores: dict[str, float],
@@ -1040,7 +1055,7 @@ def _score_detection_from_scores(
     ranked_families = _rank_labels(labels.family, family_scores)
     ranked_genera = _rank_labels(labels.genus, genus_scores)
     ranked_species = _rank_species(rerank_candidates, rerank_scores) if rerank_candidates else ranked_species_top20
-    target_score = _target_score(ranked_species, context.scientific_name)
+    target_score = _target_score(ranked_species_full_top20, context.scientific_name)
     top1_name = ranked_species[0][0] if ranked_species else None
     species_top20 = [name for name, _score in ranked_species_top20]
     species_top5 = [name for name, _score in ranked_species[:species_rerank_top_k]]
@@ -1048,7 +1063,7 @@ def _score_detection_from_scores(
     top1_taxon_key = _taxon_key_for_name(taxon_key_by_name, top1_name)
     top1_candidate = _candidate_for_name(candidate_set.species_candidates, top1_name)
     top1_score = ranked_species[0][1] if ranked_species else 0.0
-    target_rank = _target_rank(ranked_species, context.scientific_name)
+    target_rank = _target_rank(ranked_species_full_top20, context.scientific_name)
     margin = _margin(ranked_species)
     family_margin = _margin(ranked_families)
     genus_margin = _margin(ranked_genera)
@@ -1078,7 +1093,7 @@ def _score_detection_from_scores(
         "ablation_mode": ablation_mode,
         "species_first_pass_top_k": int(species_first_pass_top_k),
         "species_rerank_top_k": int(species_rerank_top_k),
-        "species_rerank_strategy": _target_scope_species_rerank_strategy(species_rerank_top_k),
+        "species_rerank_strategy": _target_scope_species_rerank_strategy(species_first_pass_top_k),
         "triage_group_top": "butterfly_like",
         "triage_group_scores": {"butterfly_like": float(item.get("detector_score") or 0.0)},
         "family_top3": [name for name, _score in ranked_families[:family_top_k]],
@@ -1200,26 +1215,52 @@ def _rank_species(candidates: tuple[CandidateTaxon, ...], scores: dict[str, floa
 def _species_rerank_candidates(
     candidates: tuple[CandidateTaxon, ...],
     ranked_species_top20: list[tuple[str, float]],
-    *,
-    target_scientific_name: str,
-    rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> tuple[CandidateTaxon, ...]:
     candidates_by_name = {_norm(candidate.scientific_name): candidate for candidate in candidates}
     selected: list[CandidateTaxon] = []
-    for name, _score in ranked_species_top20[:rerank_top_k]:
-        candidate = candidates_by_name.get(_norm(name))
-        if candidate is not None:
+    seen: set[str] = set()
+    for name, _score in ranked_species_top20:
+        key = _norm(name)
+        candidate = candidates_by_name.get(key)
+        if candidate is not None and key not in seen:
             selected.append(candidate)
-    target = candidates_by_name.get(_norm(target_scientific_name))
-    if target is not None and all(_norm(candidate.scientific_name) != _norm(target.scientific_name) for candidate in selected):
-        selected.append(target)
+            seen.add(key)
     return tuple(selected)
 
 
-def _target_scope_species_rerank_strategy(rerank_top_k: int) -> str:
-    if int(rerank_top_k) == DEFAULT_SPECIES_RERANK_TOP_K:
-        return TARGET_SCOPE_SPECIES_RERANK_STRATEGY
-    return f"first_pass_top{int(rerank_top_k)}_plus_target_if_missing"
+def _rank_species_for_family(
+    *,
+    candidates: tuple[CandidateTaxon, ...],
+    ranked_species: list[tuple[str, float]],
+    family: str | None,
+) -> list[tuple[str, float]]:
+    family_norm = _norm(family)
+    if not ranked_species:
+        return []
+    if not family_norm:
+        return ranked_species
+
+    candidate_family_by_name: dict[str, str] = {}
+    family_metadata_present = False
+    for candidate in candidates:
+        normalized_family = _norm(candidate.family)
+        if normalized_family:
+            family_metadata_present = True
+        candidate_family_by_name[_norm(candidate.scientific_name)] = normalized_family
+
+    if not family_metadata_present:
+        return ranked_species
+
+    filtered = [
+        (name, score)
+        for name, score in ranked_species
+        if candidate_family_by_name.get(_norm(name)) == family_norm
+    ]
+    return filtered if filtered else ranked_species
+
+
+def _target_scope_species_rerank_strategy(species_first_pass_top_k: int) -> str:
+    return f"first_pass_top{int(species_first_pass_top_k)}"
 
 
 def _species_prompt_labels(candidates: tuple[CandidateTaxon, ...]) -> tuple[str, ...]:

@@ -285,6 +285,11 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
     manifest = json.loads((registry / "manifest.json").read_text(encoding="utf-8"))
 
     assert result["manifest"]["qa_status"] == "passed"
+    assert (registry / "butterfly_classification_taxa.parquet").exists()
+    assert (registry / "butterfly_family_labels.parquet").exists()
+    assert (registry / "butterfly_species_labels.parquet").exists()
+    assert (registry / "butterfly_classification_manifest.json").exists()
+    assert result["manifest"]["classification_table"]["classification_table_version"] == "gbif-butterfly-classification-v1"
     assert manifest["enrichment_sources"] == [
         "col",
         "inaturalist",
@@ -472,10 +477,17 @@ def test_cloud_registry_build_writes_canonical_artifacts_to_s3_version_prefix(tm
         "names.parquet",
         "name_evidence.parquet",
         "source_snapshots.parquet",
+        "butterfly_classification_taxa.parquet",
+        "butterfly_family_labels.parquet",
+        "butterfly_species_labels.parquet",
+        "butterfly_classification_qa_findings.parquet",
         "flickr_query_definitions.parquet",
         "qa_findings.parquet",
     ):
         assert f"{registry_prefix}/{filename}" in storage.parquet_payloads
+    assert storage.json_payloads[f"{registry_prefix}/butterfly_classification_manifest.json"]["classification_table_version"] == (
+        "gbif-butterfly-classification-v1"
+    )
     assert storage.json_payloads[f"{registry_prefix}/manifest.json"]["registry_version"] == "cloud-test"
     assert storage.json_payloads[f"{registry_prefix}/gbif_source_snapshot.json"]["source"] == "GBIF"
     assert storage.json_payloads["s3://biominer/biominer/reports/registry_build_cloud-test.json"]["status"] == "passed"

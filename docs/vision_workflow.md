@@ -12,9 +12,17 @@ canonical Flickr source records
 
 YOLOE/YOLO26 is only an object finder. Production sends only `butterfly_like` detections with `detection_status=detected` to BioCLIP; moth, caterpillar, pupa, generic insect, hard-negative, no-detection, and failed-image rows remain evidence but are not species-scored. Production also avoids creating non-debug crop artifacts for those non-eligible detections.
 
-The current default classification mode is `target_scope_object_screening`. BioCLIP scores detector crops against target/scope candidate labels for screening evidence. Existing columns named `family_top3`, `species_top20`, and `species_top5` are not yet a true family-first hierarchical classifier: `species_top20` is not constrained by `family_top1`, and the current top-5 list is recorded with the target-screening rerank strategy and top-k settings used for that row.
+The current default classification mode is `target_scope_object_screening`. BioCLIP scores detector crops against target/scope candidate labels for screening evidence. Target-scope scoring can use registry-derived species candidates, but it is still screening evidence rather than taxonomic validation.
 
-The reserved `hierarchical_butterfly_classification` mode is for a later GBIF taxonomy candidate-table workflow. It can be recorded in dry-run plans, but real scoring fails clearly until that classifier exists.
+Phase 2 adds GBIF-derived candidate tables for the later family-first hierarchical classifier:
+
+```text
+butterfly_classification_taxa.parquet
+butterfly_family_labels.parquet
+butterfly_species_labels.parquet
+```
+
+The `hierarchical_butterfly_classification` mode can be recorded in dry-run plans. In non-dry score runs it validates the taxonomy candidate table, family labels, and species labels, then fails clearly until Phase 3 implements the actual BioCLIP scorer.
 
 The production default visual mode is `detector_crop`. Whole-image BioCLIP is available only through explicit ablation/debug commands because it spends model budget on background, host plants, labels, hands, and other non-target content.
 

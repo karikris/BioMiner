@@ -337,19 +337,55 @@ def _resize_image_to_max_side(image: DecodedImage, max_side_px: int) -> DecodedI
     scale = max_side_px / current_max_side
     target_width = max(1, round(image.width * scale))
     target_height = max(1, round(image.height * scale))
-    return DecodedImage(
-        width=target_width,
-        height=target_height,
-        mode=image.mode,
-        data=_resize_rgb_nearest(
+    try:
+        from PIL import Image
+    except ImportError:
+        return _resize_rgb_nearest(
             image.data,
             src_width=image.width,
             src_height=image.height,
             dst_width=target_width,
             dst_height=target_height,
+        )
+    return DecodedImage(
+        width=target_width,
+        height=target_height,
+        mode=image.mode,
+        data=_resize_rgb_lanczos(
+            image.data,
+            src_width=image.width,
+            src_height=image.height,
+            dst_width=target_width,
+            dst_height=target_height,
+            image_factory=Image.frombytes,
+            resample=Image.Resampling.LANCZOS,
         ),
         source_uri=image.source_uri,
     )
+
+
+def _resize_rgb_lanczos(
+    data: bytes,
+    *,
+    src_width: int,
+    src_height: int,
+    dst_width: int,
+    dst_height: int,
+    image_factory,
+    resample,
+) -> bytes:
+    try:
+        image = image_factory("RGB", (src_width, src_height), data)
+        resized = image.resize((dst_width, dst_height), resample=resample)
+        return resized.tobytes()
+    except Exception:
+        return _resize_rgb_nearest(
+            data,
+            src_width=src_width,
+            src_height=src_height,
+            dst_width=dst_width,
+            dst_height=dst_height,
+        )
 
 
 def _resize_rgb_nearest(
