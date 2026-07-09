@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -466,6 +466,18 @@ class ButterflyTaxonomyStore:
     family_labels: pl.DataFrame
     species_labels: pl.DataFrame
     manifest: dict[str, object] | None = None
+    _lookup_cache: _TaxonomyLookupCache = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "_lookup_cache",
+            _build_taxonomy_lookup_cache(
+                classification_taxa=self.classification_taxa,
+                family_labels=self.family_labels,
+                species_labels=self.species_labels,
+            ),
+        )
 
     @classmethod
     def read(cls, root: str | Path) -> ButterflyTaxonomyStore:
@@ -477,9 +489,9 @@ class ButterflyTaxonomyStore:
             raise FileNotFoundError("missing butterfly classification artifacts: " + ", ".join(missing))
         manifest = _read_json_optional(paths["manifest"])
         store = cls(
-            classification_taxa=pl.read_parquet(paths["classification_taxa"]),
-            family_labels=pl.read_parquet(paths["family_labels"]),
-            species_labels=pl.read_parquet(paths["species_labels"]),
+            classification_taxa=_read_parquet_projection(paths["classification_taxa"], CLASSIFICATION_TAXA_SCHEMA),
+            family_labels=_read_parquet_projection(paths["family_labels"], FAMILY_LABEL_SCHEMA),
+            species_labels=_read_parquet_projection(paths["species_labels"], SPECIES_LABEL_SCHEMA),
             manifest=manifest,
         )
         fatal = [finding for finding in store.validation_findings() if finding.get("severity") == "fatal"]
@@ -492,52 +504,98 @@ class ButterflyTaxonomyStore:
         return validate_classification_tables(self.classification_taxa, self.family_labels, self.species_labels)
 
     def family_candidates(self) -> pl.DataFrame:
-        taxa = ensure_classification_taxa_schema(self.classification_taxa)
-        return (
-            taxa.filter(pl.col("classification_enabled"))
-            .select(["family_key", "family"])
-            .unique(subset=["family_key"], keep="first")
-            .sort(["family", "family_key"])
-        )
+        return self._lookup_cache.family_candidates
+
+    def family_prompt_label_rows(self) -> pl.DataFrame:
+        return self._lookup_cache.family_label_rows
 
     def family_prompt_labels(self) -> tuple[str, ...]:
-        return tuple(
-            _ensure_schema(self.family_labels, FAMILY_LABEL_SCHEMA)
-            .filter(pl.col("enabled"))
-            .sort(["family", "sort_order", "label"])
-            .select("label")
-            .to_series()
-            .to_list()
-        )
+        return tuple(self.family_prompt_label_rows().select("label").to_series().to_list())
 
     def species_for_family(self, family_key: str) -> pl.DataFrame:
         family_key_text = str(family_key or "").strip()
-        taxa = ensure_classification_taxa_schema(self.classification_taxa)
-        known = set(self.family_candidates().select("family_key").to_series().to_list())
-        if family_key_text not in known:
+        if family_key_text not in self._lookup_cache.known_family_keys:
             raise KeyError(f"unknown family_key: {family_key_text}")
-        return taxa.filter(pl.col("classification_enabled") & (pl.col("family_key") == family_key_text)).sort(
-            ["family", "genus", "scientific_name", "accepted_taxon_key"]
-        )
+        return self._lookup_cache.species_by_family.get(family_key_text, pl.DataFrame(schema=CLASSIFICATION_TAXA_SCHEMA))
+
+    def species_label_rows_for_family(self, family_key: str) -> pl.DataFrame:
+        family_key_text = str(family_key or "").strip()
+        self.species_for_family(family_key_text)
+        return self._lookup_cache.species_labels_by_family.get(family_key_text, pl.DataFrame(schema=SPECIES_LABEL_SCHEMA))
 
     def species_prompt_labels_for_family(self, family_key: str) -> tuple[str, ...]:
-        self.species_for_family(family_key)
-        return tuple(
-            _ensure_schema(self.species_labels, SPECIES_LABEL_SCHEMA)
-            .filter(pl.col("enabled") & (pl.col("family_key") == str(family_key or "").strip()))
-            .sort(["family", "genus", "scientific_name", "sort_order", "label"])
-            .select("label")
-            .to_series()
-            .to_list()
-        )
+        return tuple(self.species_label_rows_for_family(family_key).select("label").to_series().to_list())
 
     def species_labels_for_taxa(self, accepted_taxon_keys: Sequence[str]) -> pl.DataFrame:
-        keys = [str(key) for key in accepted_taxon_keys]
-        return (
-            _ensure_schema(self.species_labels, SPECIES_LABEL_SCHEMA)
-            .filter(pl.col("enabled") & pl.col("accepted_taxon_key").is_in(keys))
-            .sort(["family", "genus", "scientific_name", "sort_order", "label"])
-        )
+        keys = tuple(dict.fromkeys(str(key) for key in accepted_taxon_keys))
+        frames = [self._lookup_cache.species_labels_by_taxon[key] for key in keys if key in self._lookup_cache.species_labels_by_taxon]
+        if not frames:
+            return pl.DataFrame(schema=SPECIES_LABEL_SCHEMA)
+        return pl.concat(frames, how="diagonal_relaxed").sort(["family", "genus", "scientific_name", "sort_order", "label"])
+
+
+@dataclass(frozen=True)
+class _TaxonomyLookupCache:
+    family_candidates: pl.DataFrame
+    family_label_rows: pl.DataFrame
+    species_by_family: dict[str, pl.DataFrame]
+    species_labels_by_family: dict[str, pl.DataFrame]
+    species_labels_by_taxon: dict[str, pl.DataFrame]
+    taxa_by_accepted_key: dict[str, dict[str, Any]]
+    known_family_keys: frozenset[str]
+
+
+def _build_taxonomy_lookup_cache(
+    *,
+    classification_taxa: pl.DataFrame,
+    family_labels: pl.DataFrame,
+    species_labels: pl.DataFrame,
+) -> _TaxonomyLookupCache:
+    taxa = ensure_classification_taxa_schema(classification_taxa)
+    enabled_taxa = taxa.filter(pl.col("classification_enabled")).sort(["family", "genus", "scientific_name", "accepted_taxon_key"])
+    family_candidates = _family_candidates_frame(taxa)
+    family_label_rows = (
+        _ensure_schema(family_labels, FAMILY_LABEL_SCHEMA)
+        .filter(pl.col("enabled"))
+        .sort(["family", "sort_order", "label"])
+    )
+    enabled_species_labels = (
+        _ensure_schema(species_labels, SPECIES_LABEL_SCHEMA)
+        .filter(pl.col("enabled"))
+        .sort(["family", "genus", "scientific_name", "sort_order", "label"])
+    )
+    return _TaxonomyLookupCache(
+        family_candidates=family_candidates,
+        family_label_rows=family_label_rows,
+        species_by_family=_partition_by_text_key(enabled_taxa, "family_key"),
+        species_labels_by_family=_partition_by_text_key(enabled_species_labels, "family_key"),
+        species_labels_by_taxon=_partition_by_text_key(enabled_species_labels, "accepted_taxon_key"),
+        taxa_by_accepted_key={str(row["accepted_taxon_key"]): row for row in enabled_taxa.to_dicts()},
+        known_family_keys=frozenset(str(key) for key in family_candidates.select("family_key").to_series().to_list()),
+    )
+
+
+def _family_candidates_frame(taxa: pl.DataFrame) -> pl.DataFrame:
+    return (
+        taxa.filter(pl.col("classification_enabled"))
+        .select(["family_key", "family"])
+        .unique(subset=["family_key"], keep="first")
+        .sort(["family", "family_key"])
+    )
+
+
+def _partition_by_text_key(frame: pl.DataFrame, key_column: str) -> dict[str, pl.DataFrame]:
+    if frame.is_empty() or key_column not in frame.columns:
+        return {}
+    groups: dict[str, pl.DataFrame] = {}
+    for key in frame.select(key_column).unique().sort(key_column).to_series().to_list():
+        key_text = str(key or "")
+        groups[key_text] = frame.filter(pl.col(key_column) == key_text)
+    return groups
+
+
+def _read_parquet_projection(path: Path, schema: dict[str, pl.DataType]) -> pl.DataFrame:
+    return pl.scan_parquet(path).select(list(schema)).collect()
 
 
 def _classification_summary(

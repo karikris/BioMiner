@@ -235,6 +235,49 @@ def test_butterfly_taxonomy_store_reads_and_filters_by_family(tmp_path) -> None:
         store.species_for_family("gbif:missing")
 
 
+def test_butterfly_taxonomy_store_lookup_cache_is_stable_and_non_mutating(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    _taxa_fixture(
+        [
+            _taxon("gbif:100", "Papilio demoleus", "SPECIES", family_key="gbif:9417", family="Papilionidae", genus_key="gbif:90", genus="Papilio"),
+            _taxon("gbif:101", "Papilio machaon", "SPECIES", family_key="gbif:9417", family="Papilionidae", genus_key="gbif:90", genus="Papilio"),
+            _taxon("gbif:200", "Danaus plexippus", "SPECIES", family_key="gbif:7017", family="Nymphalidae", genus_key="gbif:190", genus="Danaus"),
+        ]
+    ).write_parquet(registry / "taxa.parquet")
+    build_classification_tables_from_registry_dir(registry)
+    store = ButterflyTaxonomyStore.read(registry)
+    dict_keys_before = set(store.__dict__)
+    taxa_before = store.classification_taxa.to_dicts()
+    labels_before = store.species_labels.to_dicts()
+
+    first_species = store.species_for_family("gbif:9417")
+    second_species = store.species_for_family("gbif:9417")
+    first_family_labels = store.family_prompt_labels()
+    second_family_labels = store.family_prompt_labels()
+    family_label_rows = store.family_prompt_label_rows()
+    papilio_label_rows = store.species_label_rows_for_family("gbif:9417")
+
+    assert first_species.to_dicts() == second_species.to_dicts()
+    assert first_species.select("scientific_name").to_series().to_list() == ["Papilio demoleus", "Papilio machaon"]
+    assert first_family_labels == second_family_labels
+    assert family_label_rows.select("label").to_series().to_list()[0] == "a photo of a butterfly in the family Nymphalidae"
+    assert papilio_label_rows.select("scientific_name").to_series().head(3).to_list() == ["Papilio demoleus"] * 3
+    assert store.species_labels_for_taxa(["gbif:101", "gbif:100"]).select("scientific_name").to_series().to_list() == [
+        "Papilio demoleus",
+        "Papilio demoleus",
+        "Papilio demoleus",
+        "Papilio machaon",
+        "Papilio machaon",
+        "Papilio machaon",
+    ]
+    assert set(store.__dict__) == dict_keys_before
+    assert store.classification_taxa.to_dicts() == taxa_before
+    assert store.species_labels.to_dicts() == labels_before
+    with pytest.raises(KeyError, match="unknown family_key"):
+        store.species_label_rows_for_family("gbif:missing")
+
+
 def _taxa_fixture(rows: list[dict[str, object]]) -> pl.DataFrame:
     return pl.DataFrame(
         rows,

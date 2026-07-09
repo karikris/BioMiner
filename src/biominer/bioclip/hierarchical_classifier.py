@@ -246,7 +246,7 @@ def classify_butterfly_crop_hierarchical(
     )
     _raise_for_invalid_taxonomy_store(taxonomy_store)
 
-    family_label_rows = _enabled_label_rows(taxonomy_store.family_labels)
+    family_label_rows = taxonomy_store.family_prompt_label_rows()
     family_labels = _label_tuple(family_label_rows)
     if not family_labels:
         raise ValueError("butterfly taxonomy store has no enabled family labels")
@@ -283,9 +283,7 @@ def classify_butterfly_crop_hierarchical(
         )
     else:
         species_taxa = taxonomy_store.species_for_family(selected_family_key)
-        species_label_rows = _enabled_label_rows(taxonomy_store.species_labels).filter(
-            pl.col("family_key") == selected_family_key
-        )
+        species_label_rows = taxonomy_store.species_label_rows_for_family(selected_family_key)
         species_labels = _label_tuple(species_label_rows)
         if species_taxa.is_empty() or not species_labels:
             raise ValueError(f"butterfly taxonomy store has no enabled species labels for family_key={selected_family_key!r}")
@@ -347,7 +345,7 @@ def classify_butterfly_crops_hierarchical_batch(
     )
     _raise_for_invalid_taxonomy_store(taxonomy_store)
 
-    family_label_rows = _enabled_label_rows(taxonomy_store.family_labels)
+    family_label_rows = taxonomy_store.family_prompt_label_rows()
     family_labels = _label_tuple(family_label_rows)
     if not family_labels:
         raise ValueError("butterfly taxonomy store has no enabled family labels")
@@ -406,9 +404,7 @@ def classify_butterfly_crops_hierarchical_batch(
                 state[index]["species_top20"] = species_top20
             continue
 
-        species_label_rows = _enabled_label_rows(taxonomy_store.species_labels).filter(
-            pl.col("family_key") == family_key
-        )
+        species_label_rows = taxonomy_store.species_label_rows_for_family(family_key)
         species_labels = _label_tuple(species_label_rows)
         if species_taxa.is_empty() or not species_labels:
             raise ValueError(f"butterfly taxonomy store has no enabled species labels for family_key={family_key!r}")
@@ -713,14 +709,6 @@ def _coerce_score_batch(scores_by_item: Sequence[Mapping[str, Any]], *, expected
     if len(scores) != expected_count:
         raise ValueError(f"BioCLIP batch scorer returned {len(scores)} rows for {expected_count} images")
     return [{str(label): float(score) for label, score in dict(row).items()} for row in scores]
-
-
-def _enabled_label_rows(frame: pl.DataFrame) -> pl.DataFrame:
-    if frame.is_empty():
-        return frame
-    rows = frame.filter(pl.col("enabled")) if "enabled" in frame.columns else frame
-    sort_columns = [column for column in ("family", "genus", "scientific_name", "sort_order", "label") if column in rows.columns]
-    return rows.sort(sort_columns) if sort_columns else rows
 
 
 def _label_tuple(label_rows: pl.DataFrame) -> tuple[str, ...]:
