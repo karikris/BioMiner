@@ -17,7 +17,6 @@ from biominer.bioclip.classification_modes import (
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-    HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE,
     ClassificationMode,
     normalize_classification_mode,
 )
@@ -1220,7 +1219,10 @@ def _object_scoring_labels(candidate_set: CandidateSet) -> _ObjectScoringLabels:
 
 def _raise_if_hierarchical_classification(classification_mode: ClassificationMode) -> None:
     if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
-        raise NotImplementedError(HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE)
+        raise ValueError(
+            "target-scope object scoring helper received hierarchical_butterfly_classification; "
+            "dispatch through hierarchical scoring with a taxonomy_store"
+        )
 
 
 def _validate_visual_top_k(

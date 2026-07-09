@@ -14,10 +14,6 @@ DEFAULT_CLASSIFICATION_MODE: ClassificationMode = TARGET_SCOPE_OBJECT_SCREENING
 DEFAULT_FAMILY_TOP_K = 3
 DEFAULT_SPECIES_FIRST_PASS_TOP_K = 20
 DEFAULT_SPECIES_RERANK_TOP_K = 5
-HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE = (
-    "hierarchical_butterfly_classification requires the Phase 2 GBIF taxonomy candidate table; "
-    "use --classification-mode target_scope_object_screening for the current object-screening workflow."
-)
 
 SUPPORTED_CLASSIFICATION_MODES: tuple[ClassificationMode, ...] = (
     TARGET_SCOPE_OBJECT_SCREENING,
@@ -59,7 +55,6 @@ __all__ = [
     "DEFAULT_SPECIES_FIRST_PASS_TOP_K",
     "DEFAULT_SPECIES_RERANK_TOP_K",
     "HIERARCHICAL_BUTTERFLY_CLASSIFICATION",
-    "HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE",
     "SUPPORTED_CLASSIFICATION_MODES",
     "TARGET_SCOPE_OBJECT_SCREENING",
     "ClassificationMode",
