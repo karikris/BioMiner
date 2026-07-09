@@ -3110,6 +3110,7 @@ def test_public_vision_surface_excludes_debug_runtime_commands() -> None:
         "yoloe26-smoke",
         "yoloe26-prototype-run",
         "benchmark-plumbing",
+        "benchmark-live-m5pro",
         "crop-preview",
         "eval",
     ):

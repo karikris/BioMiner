@@ -42,6 +42,11 @@ from biominer.bioclip.object_runner import (
     write_object_evidence_outputs,
 )
 from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
+from biominer.benchmarks.vision_live import (
+    LiveM5ProBenchmarkRequest,
+    run_live_m5pro_benchmark,
+    validate_live_m5pro_benchmark_request,
+)
 from biominer.benchmarks.vision_plumbing import run_vision_plumbing_benchmark
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.detection.evaluate import evaluate_xie_style
@@ -522,6 +527,32 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     benchmark.add_argument("--species-first-pass-top-k", type=int, default=DEFAULT_SPECIES_FIRST_PASS_TOP_K)
     benchmark.add_argument("--species-rerank-top-k", type=int, default=DEFAULT_SPECIES_RERANK_TOP_K)
     benchmark.add_argument("--output-dir", required=True)
+    live_benchmark = subparsers.add_parser("benchmark-live-m5pro")
+    live_benchmark.add_argument("--input", required=True)
+    live_benchmark.add_argument("--taxonomy-candidate-table", required=True)
+    live_benchmark.add_argument("--vision-runtime-python", default=YOLOE26_RUNTIME_PYTHON)
+    live_benchmark.add_argument("--bioclip-runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    live_benchmark.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
+    live_benchmark.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
+    live_benchmark.add_argument("--device", default="mps", choices=("auto", "cuda", "mps", "cpu"))
+    live_benchmark.add_argument("--limit", type=int, default=100)
+    live_benchmark.add_argument("--output-dir", required=True)
+    live_benchmark.add_argument("--cache-root", default="data/cache/images")
+    live_benchmark.add_argument("--crop-temp-dir", default="data/cache/object_crops")
+    live_benchmark.add_argument("--imgsz", type=int, default=768)
+    live_benchmark.add_argument("--conf", type=float, default=0.20)
+    live_benchmark.add_argument("--iou", type=float, default=0.50)
+    live_benchmark.add_argument("--max-det", type=int, default=8)
+    live_benchmark.add_argument("--yolo-batch", type=int, default=16)
+    live_benchmark.add_argument("--bioclip-batch", type=int, default=24)
+    live_benchmark.add_argument("--crop-padding-ratio", type=float, default=0.08)
+    live_benchmark.add_argument("--crop-target-px", type=int, default=336)
+    live_benchmark.add_argument("--parquet-batch-rows", type=int, default=10000)
+    live_benchmark.add_argument("--prompt-class", action="append", default=[])
+    live_benchmark.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
+    live_benchmark.add_argument("--family-top-k", type=int, default=DEFAULT_FAMILY_TOP_K)
+    live_benchmark.add_argument("--species-first-pass-top-k", type=int, default=DEFAULT_SPECIES_FIRST_PASS_TOP_K)
+    live_benchmark.add_argument("--species-rerank-top-k", type=int, default=DEFAULT_SPECIES_RERANK_TOP_K)
     detect_crop_preview = subparsers.add_parser("crop-preview")
     detect_crop_preview.add_argument("--detections", required=True)
     detect_crop_preview.add_argument("--output", required=True)
@@ -561,6 +592,8 @@ def run(args: argparse.Namespace) -> int:
             return _run_yoloe26_prototype_run(args)
         if args.vision_command == "benchmark-plumbing":
             return _run_vision_benchmark_plumbing(args)
+        if args.vision_command == "benchmark-live-m5pro":
+            return _run_vision_benchmark_live_m5pro(args)
         if args.vision_command == "crop-preview":
             return _run_detect_crop_preview(args)
         if args.vision_command == "eval":
@@ -1481,6 +1514,71 @@ def _run_vision_benchmark_plumbing(args: argparse.Namespace) -> int:
                 "output_dir": str(result.output_dir),
                 "records": result.metrics["records"],
                 "crops_scored": result.metrics["crops_scored"],
+                "elapsed_seconds": result.metrics["elapsed_seconds"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _run_vision_benchmark_live_m5pro(args: argparse.Namespace) -> int:
+    request = LiveM5ProBenchmarkRequest(
+        input_path=Path(args.input).expanduser(),
+        taxonomy_candidate_table=Path(args.taxonomy_candidate_table).expanduser(),
+        vision_runtime_python=Path(args.vision_runtime_python).expanduser(),
+        bioclip_runtime_python=Path(args.bioclip_runtime_python).expanduser(),
+        hf_cache_dir=Path(args.hf_cache_dir).expanduser(),
+        checkpoint=args.checkpoint,
+        device=args.device,
+        limit=args.limit,
+        output_dir=Path(args.output_dir).expanduser(),
+        cache_root=Path(args.cache_root).expanduser(),
+        crop_temp_dir=Path(args.crop_temp_dir).expanduser(),
+        imgsz=args.imgsz,
+        conf=args.conf,
+        iou=args.iou,
+        max_det=args.max_det,
+        yolo_batch=args.yolo_batch,
+        bioclip_batch=args.bioclip_batch,
+        crop_padding_ratio=args.crop_padding_ratio,
+        crop_target_px=args.crop_target_px,
+        parquet_batch_rows=args.parquet_batch_rows,
+        prompt_classes=_yoloe26_prompt_classes(args),
+        family_top_k=args.family_top_k,
+        species_first_pass_top_k=args.species_first_pass_top_k,
+        species_rerank_top_k=args.species_rerank_top_k,
+    )
+    validation = validate_live_m5pro_benchmark_request(request)
+    if validation is not None:
+        print(json.dumps(validation, indent=2, sort_keys=True))
+        return 2
+    try:
+        result = run_live_m5pro_benchmark(
+            request=request,
+            bioclip_runtime=_bioclip_runtime(runtime_python=request.bioclip_runtime_python),
+        )
+    except Exception as exc:  # noqa: BLE001 - live command should fail compactly.
+        print(
+            json.dumps(
+                {
+                    "benchmark_kind": "vision_live_m5pro",
+                    "error": "benchmark_live_m5pro_failed",
+                    "message": str(exc),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(
+        json.dumps(
+            {
+                "benchmark_metrics": str(result.metrics_path),
+                "benchmark_summary": str(result.summary_path),
+                "output_dir": str(result.output_dir),
+                "records_loaded": result.metrics["records_loaded"],
                 "elapsed_seconds": result.metrics["elapsed_seconds"],
             },
             indent=2,
