@@ -23,6 +23,7 @@ GitHits:
 - `pypi:great-expectations`, docs search for validation checklist data pipeline audit report: indexing/no usable hits.
 - `github:openai/clip`, code search for prompt ensembling and mean class embeddings: returned unrelated model internals, no usable exact prompt-ensemble implementation.
 - `github:python-pillow/Pillow` and `github:ultralytics/ultralytics`, code search for crop/resize/LANCZOS patterns: returned relevant Pillow `thumbnail`, `ImageOps.pad`/`fit`, and Ultralytics crop/scale references after indexing completed.
+- `github:pallets/click`, code search for CLI help/defaults/docs parity: returned generic Click parser internals and one choice-metavar test; local parser smoke and docs search were more actionable for this argparse codebase.
 - `get_example` for CLIP prompt ensembling was unavailable because the daily generated-example limit was reached.
 
 External primary docs:
@@ -53,6 +54,9 @@ Commands run:
 - `uv run pytest -q tests/test_detection_pipeline.py`
 - `uv run pytest -q tests/test_object_bioclip_pipeline.py::test_materialized_detector_crop_batches_default_to_24_and_clean_between_batches tests/test_object_bioclip_pipeline.py::test_materialized_detector_crop_batches_skip_noneligible_without_image_load tests/test_object_bioclip_pipeline.py::test_materialized_detector_crop_batches_reuse_duplicate_crop_hash_within_batch tests/test_object_bioclip_pipeline.py::test_materialized_detector_crop_batches_retain_debug_crops_when_requested tests/test_object_bioclip_pipeline.py::test_screen_object_detections_reuses_materialized_detector_crop_paths_and_cleans_after_success tests/test_object_bioclip_pipeline.py::test_screen_object_detections_keeps_materialized_detector_crops_after_scorer_error tests/test_object_bioclip_pipeline.py::test_screen_object_detections_keeps_materialized_detector_crops_after_parquet_commit_failure tests/test_object_bioclip_pipeline.py::test_screen_object_detections_retains_materialized_detector_crops_when_debug_requested tests/test_object_bioclip_pipeline.py::test_screen_object_detections_materialized_path_skips_noneligible_without_image_load`
 - `uv run pytest -q tests/test_cloud_detection_work.py`
+- `uv run python - <<'PY' ... build_parser help smoke ... PY`
+- `uv run pytest -q tests/test_cli_dry_run.py::test_yoloe26_prototype_profile_settings_do_not_use_hardcoded_crop_defaults tests/test_phase4_m5pro_acceptance.py::test_phase4_docs_and_cli_expose_benchmarks_and_runbook_commands tests/test_vision_live_benchmark_cli.py`
+- `rg -n 'aggregate_prompt_scores_uses_max|uses max|It still uses detector batch size|crop padding 0.12|Current Defaults' docs README.md`
 - `uv run ruff check src/biominer/bioclip/cloud_work.py tests/test_cloud_bioclip_work.py`
 
 Focused test result:
@@ -66,6 +70,9 @@ Focused test result:
 - `tests/test_detection_pipeline.py`: `41 passed`
 - materialized object crop tests: `9 passed`
 - `tests/test_cloud_detection_work.py`: `6 passed`
+- parser help smoke: `parser help smoke ok`
+- docs/profile CLI tests: `5 passed`
+- stale-docs search for max aggregation and old M5 Pro crop defaults: no hits after cleanup
 - Ruff could not run because the `ruff` executable is not installed in this environment.
 
 ## Files Inspected
@@ -82,6 +89,8 @@ Focused test result:
 - `src/biominer/detection/pipeline.py`
 - `src/biominer/detection/cropper.py`
 - `src/biominer/detection/policy.py`
+- `docs/dev/yoloe26_bioclip_m5pro_plan.md`
+- `docs/superpowers/plans/2026-06-19-bioclip25-butterfly-identification.md`
 - `src/biominer/registry/build.py`
 - `src/biominer/registry/classification_table.py`
 - `src/biominer/run/manifest.py`
@@ -214,6 +223,7 @@ Remaining audit risk:
 - Cloud BioCLIP work items store output-affecting scoring settings in the payload and work key. Before Task 2, the cloud worker accepted independent batch-level mode and top-k arguments without validating them against the payload. That could silently score replayed work under stale semantics.
 - Before Task 3, `prepare_taxonomy_text_embedding_cache(... embedding_dtype=...)` could silently reuse a taxonomy text cache generated with a different recorded dtype. Runtime validation checked dtype presence and consistency, but not the requested dtype.
 - Before Task 4, BioCLIP detector crops still used custom nearest-neighbor resize in `crop_with_padding(...)`. `_resize_image_to_max_side(...)` already used Pillow/LANCZOS, but the crop bytes fed to BioCLIP did not.
+- Before Task 5, historical docs still contained active-looking stale text for old M5 Pro crop defaults and the original max-based species prompt aggregation sketch.
 
 ## Fixes Made Or Verified So Far
 
@@ -238,6 +248,11 @@ Remaining audit risk:
   - the fallback nearest-neighbor byte resize remains for environments without Pillow
   - float padded crop boxes are preserved so adjacent detections do not collapse to identical integer crop boxes
   - cropper tests now assert LANCZOS interpolation when Pillow is available
+- Fixed stale docs/help drift:
+  - the M5 Pro dev implementation map is marked historical and lists the current profile values
+  - the old BioCLIP prompt-aggregation plan now states the mean-by-default contract
+  - the stale max-aggregation example in that historical plan was updated to a mean-aggregation example
+  - parser help smoke and profile/default tests pass
 
 ## Core Invariant Checklist
 
@@ -270,6 +285,6 @@ Initial status is not the final audit verdict. `Supported` means evidence was lo
 
 - Continue tracing local/cloud hierarchical output schemas beyond the fixed work-payload contract.
 - Continue classification table manifest/QA review beyond the fixed embedding-cache dtype invalidation.
-- Continue docs/help review for crop/profile defaults beyond the fixed crop resize path.
+- Continue broader docs/help review beyond the fixed stale M5 Pro and prompt-aggregation notes.
 - Audit CLI help, docs, examples, and deprecated-command docs against parser behavior.
 - Run focused model-free tests for each fix, then full `pytest -q` before final push.

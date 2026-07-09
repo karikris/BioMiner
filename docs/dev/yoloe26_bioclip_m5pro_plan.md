@@ -1,11 +1,21 @@
-# YOLOE-26 + BioCLIP M5 Pro Implementation Map
+# YOLOE-26 + BioCLIP M5 Pro Historical Implementation Map
+
+This note is retained as historical design context from before the
+`mac_m5pro_64gb` production profile was implemented. Current profile values are
+defined in `src/biominer/detection/policy.py` and checked by
+`tests/test_phase4_m5pro_acceptance.py`.
+
+Current `mac_m5pro_64gb` values include detector batch size `16`,
+`crop_padding_ratio=0.08`, `crop_target_px=336`, YOLOE checkpoint
+`yoloe-26s-seg.pt`, YOLOE image size `768`, BioCLIP crop batch size `24`, zstd
+Parquet output, and delete-after-commit enabled.
 
 This note maps the current vision path before implementing the `mac_m5pro_64gb`
 production profile. The target production workflow is detector-first: YOLOE-26
 proposes butterfly objects, and only eligible butterfly detections are sent to
 BioCLIP 2.5 for biological scoring.
 
-## Current Defaults
+## Historical Defaults At Time Of Original Note
 
 - `DetectionPolicy` defaults to `backend="yoloe26"`, score threshold `0.20`,
   NMS IoU `0.50`, `max_boxes_per_image=8`, `crop_target_px=336`, and
@@ -14,9 +24,10 @@ BioCLIP 2.5 for biological scoring.
   `decode_workers=4`, `detector_workers=1`, `max_inflight_images=32`,
   `max_inflight_crops=96`, `detector_batch_size=4`, `crop_batch_size=24`,
   and `parquet_batch_rows=10000`.
-- `MAC_M5PRO_64GB_PROFILE` currently overrides only image max side, crop
+- `MAC_M5PRO_64GB_PROFILE` originally overrode only image max side, crop
   target, debug crop retention, worker counts, inflight limits, and batch
-  counts. It still uses detector batch size `4` and crop padding `0.12`.
+  counts. That historical state used detector batch size `4` and crop padding
+  `0.12`; this is no longer the active profile behavior.
 - `config/vision_profiles/mac_m5pro_64gb.json` mirrors those older defaults
   and does not carry device, YOLOE checkpoint, YOLOE image size, BioCLIP model,
   BioCLIP top-k, Parquet compression, or delete-after-commit settings.

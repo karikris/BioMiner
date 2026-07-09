@@ -2,6 +2,12 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+Historical note: this plan predates the Phase 4/5 audit fixes. The current
+species prompt aggregation contract is mean aggregation by taxon by default,
+with best-label retained only as evidence metadata. The older max-based
+aggregation sketch below is superseded and is not the active implementation
+contract.
+
 **Goal:** Improve BioMiner's BioCLIP 2.5 butterfly species screening by adding prompt ensembling, grouped triage probabilities, taxonomic consistency signals, richer diagnostics, and validation/report tooling.
 
 **Architecture:** Keep the existing persistent worker/register-runner architecture. Add small focused modules around label/prompt construction and prediction diagnostics, then thread the new fields through `BioClipClassifier`, `register_runner`, `triage`, and reports without changing Flickr fetch behavior.
@@ -68,7 +74,7 @@ def test_build_species_prompt_variants_includes_scientific_and_common_names() ->
     assert all(variant.taxon_key == "Papilio demoleus" for variant in variants)
 
 
-def test_aggregate_prompt_scores_uses_max_and_keeps_evidence() -> None:
+def test_aggregate_prompt_scores_uses_mean_by_default_and_keeps_evidence() -> None:
     variants = [
         PromptVariant(label="a photo of Papilio demoleus", taxon_key="Papilio demoleus", prompt_kind="scientific"),
         PromptVariant(label="a photo of lime butterfly", taxon_key="Papilio demoleus", prompt_kind="common"),
@@ -78,17 +84,19 @@ def test_aggregate_prompt_scores_uses_max_and_keeps_evidence() -> None:
     result = aggregate_prompt_scores(
         scores={
             "a photo of Papilio demoleus": 0.72,
-            "a photo of lime butterfly": 0.81,
-            "a photo of Papilio machaon": 0.11,
+            "a photo of lime butterfly": 0.08,
+            "a photo of Papilio machaon": 0.55,
         },
         variants=variants,
         top_k=2,
     )
 
-    assert result[0]["taxon_key"] == "Papilio demoleus"
-    assert result[0]["score"] == 0.81
-    assert result[0]["best_label"] == "a photo of lime butterfly"
-    assert result[0]["prompt_scores"]["a photo of Papilio demoleus"] == 0.72
+    assert result[0]["taxon_key"] == "Papilio machaon"
+    assert result[0]["score"] == 0.55
+    assert result[1]["taxon_key"] == "Papilio demoleus"
+    assert result[1]["score"] == 0.40
+    assert result[1]["best_label"] == "a photo of Papilio demoleus"
+    assert result[1]["prompt_scores"]["a photo of lime butterfly"] == 0.08
 ```
 
 - [ ] **Step 2: Run tests to verify failure**
