@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any
+from math import exp
+from typing import Any, Mapping
 
 import polars as pl
 
@@ -141,6 +142,121 @@ def butterfly_cascade_results_frame(results: list[ButterflyCascadeResult]) -> pl
     )
 
 
+def aggregate_taxon_prompt_scores(
+    *,
+    label_scores: Mapping[str, float],
+    label_rows: pl.DataFrame,
+    taxon_key_column: str,
+    taxon_name_column: str,
+    aggregation: str = "mean",
+) -> list[TaxonScore]:
+    if aggregation not in {"max", "mean", "softmax_mean"}:
+        raise ValueError("aggregation must be one of: max, mean, softmax_mean")
+    _require_label_columns(label_rows, taxon_key_column=taxon_key_column, taxon_name_column=taxon_name_column)
+    if label_rows.is_empty():
+        return []
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in label_rows.to_dicts():
+        if "enabled" in row and row.get("enabled") is False:
+            continue
+        label = _clean_text(row.get("label"))
+        if not label:
+            continue
+        taxon_key = _clean_text(row.get(taxon_key_column))
+        scientific_name = _clean_text(row.get(taxon_name_column))
+        if not taxon_key or not scientific_name:
+            continue
+        group = grouped.setdefault(
+            taxon_key,
+            {
+                "accepted_taxon_key": taxon_key,
+                "scientific_name": scientific_name,
+                "rank": _rank_for_label_row(row, taxon_key_column=taxon_key_column),
+                "family_key": _taxon_family_key(row, taxon_key=taxon_key, taxon_key_column=taxon_key_column),
+                "family": _taxon_family(row, scientific_name=scientific_name, taxon_key_column=taxon_key_column),
+                "genus_key": _clean_text(row.get("genus_key")) or None,
+                "genus": _clean_text(row.get("genus")) or None,
+                "label_scores": {},
+            },
+        )
+        group["label_scores"].setdefault(label, float(label_scores.get(label, 0.0)))
+
+    scores: list[TaxonScore] = []
+    for group in grouped.values():
+        values_by_label = dict(group["label_scores"])
+        if not values_by_label:
+            continue
+        values = list(values_by_label.values())
+        taxon_score = _aggregate_values(values, aggregation=aggregation)
+        best_label, _best_score = sorted(values_by_label.items(), key=lambda item: (-item[1], item[0]))[0]
+        scores.append(
+            TaxonScore(
+                accepted_taxon_key=group["accepted_taxon_key"],
+                scientific_name=group["scientific_name"],
+                rank=group["rank"],
+                family_key=group["family_key"],
+                family=group["family"],
+                genus_key=group["genus_key"],
+                genus=group["genus"],
+                score=taxon_score,
+                best_label=best_label,
+                label_count=len(values_by_label),
+            )
+        )
+    return sorted(scores, key=lambda score: (-score.score, score.scientific_name, score.accepted_taxon_key))
+
+
+def _require_label_columns(
+    label_rows: pl.DataFrame,
+    *,
+    taxon_key_column: str,
+    taxon_name_column: str,
+) -> None:
+    missing = [
+        column
+        for column in ("label", taxon_key_column, taxon_name_column)
+        if column not in label_rows.columns
+    ]
+    if missing:
+        raise ValueError(f"taxonomy label rows are missing required columns: {', '.join(missing)}")
+
+
+def _aggregate_values(values: list[float], *, aggregation: str) -> float:
+    if aggregation == "max":
+        return max(values)
+    if aggregation == "mean":
+        return sum(values) / len(values)
+    weights = [exp(value) for value in values]
+    weight_sum = sum(weights)
+    return sum(value * weight for value, weight in zip(values, weights, strict=True)) / weight_sum if weight_sum else 0.0
+
+
+def _rank_for_label_row(row: Mapping[str, Any], *, taxon_key_column: str) -> str:
+    rank = _clean_text(row.get("rank"))
+    if rank:
+        return rank.upper()
+    if taxon_key_column == "family_key":
+        return "FAMILY"
+    return "SPECIES"
+
+
+def _taxon_family_key(row: Mapping[str, Any], *, taxon_key: str, taxon_key_column: str) -> str | None:
+    if taxon_key_column == "family_key":
+        return taxon_key
+    return _clean_text(row.get("family_key")) or None
+
+
+def _taxon_family(row: Mapping[str, Any], *, scientific_name: str, taxon_key_column: str) -> str | None:
+    if taxon_key_column == "family_key":
+        return scientific_name
+    return _clean_text(row.get("family")) or None
+
+
+def _clean_text(value: object) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
 __all__ = [
     "BUTTERFLY_CASCADE_RESULT_SCHEMA",
     "HIERARCHICAL_CANDIDATE_SELECTION_MODE",
@@ -150,6 +266,7 @@ __all__ = [
     "TAXON_SCORE_SCHEMA",
     "ButterflyCascadeResult",
     "TaxonScore",
+    "aggregate_taxon_prompt_scores",
     "butterfly_cascade_result_to_dict",
     "butterfly_cascade_results_frame",
     "taxon_score_to_dict",

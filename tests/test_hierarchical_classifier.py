@@ -11,6 +11,7 @@ from biominer.bioclip.hierarchical_classifier import (
     TAXON_SCORE_DTYPE,
     ButterflyCascadeResult,
     TaxonScore,
+    aggregate_taxon_prompt_scores,
     butterfly_cascade_result_to_dict,
     butterfly_cascade_results_frame,
 )
@@ -123,3 +124,203 @@ def test_target_scope_rows_validate_after_hierarchical_schema_extension() -> Non
 def test_hierarchical_output_constants_are_explicit() -> None:
     assert HIERARCHICAL_CANDIDATE_SELECTION_MODE == "gbif_family_first"
     assert HIERARCHICAL_SPECIES_RERANK_STRATEGY == "rerank_all_first_pass_top20"
+
+
+def test_aggregate_taxon_prompt_scores_uses_mean_by_default() -> None:
+    scores = aggregate_taxon_prompt_scores(
+        label_scores={
+            "a photo of Papilio demoleus": 0.4,
+            "a close-up photo of the butterfly species Papilio demoleus": 0.7,
+            "a photo of Danaus plexippus": 0.6,
+        },
+        label_rows=_species_label_rows(),
+        taxon_key_column="accepted_taxon_key",
+        taxon_name_column="scientific_name",
+    )
+
+    assert [score.scientific_name for score in scores[:2]] == ["Danaus plexippus", "Papilio demoleus"]
+    assert scores[0].score == 0.6
+    assert scores[1].score == 0.55
+
+
+def test_aggregate_taxon_prompt_scores_supports_explicit_max() -> None:
+    scores = aggregate_taxon_prompt_scores(
+        label_scores={
+            "a photo of Papilio demoleus": 0.4,
+            "a close-up photo of the butterfly species Papilio demoleus": 0.7,
+            "a photo of Danaus plexippus": 0.6,
+        },
+        label_rows=_species_label_rows(),
+        taxon_key_column="accepted_taxon_key",
+        taxon_name_column="scientific_name",
+        aggregation="max",
+    )
+
+    assert [score.scientific_name for score in scores[:2]] == ["Papilio demoleus", "Danaus plexippus"]
+    assert scores[0].score == 0.7
+    assert scores[0].best_label == "a close-up photo of the butterfly species Papilio demoleus"
+    assert scores[0].label_count == 2
+
+
+def test_aggregate_taxon_prompt_scores_treats_missing_labels_as_zero() -> None:
+    scores = aggregate_taxon_prompt_scores(
+        label_scores={"a photo of Papilio demoleus": 0.4},
+        label_rows=_species_label_rows(),
+        taxon_key_column="accepted_taxon_key",
+        taxon_name_column="scientific_name",
+        aggregation="mean",
+    )
+
+    by_name = {score.scientific_name: score for score in scores}
+    assert by_name["Papilio demoleus"].score == 0.2
+    assert by_name["Danaus plexippus"].score == 0.0
+
+
+def test_aggregate_taxon_prompt_scores_breaks_ties_deterministically() -> None:
+    scores = aggregate_taxon_prompt_scores(
+        label_scores={
+            "a photo of Papilio demoleus": 0.5,
+            "a photo of Danaus plexippus": 0.5,
+        },
+        label_rows=_species_label_rows(),
+        taxon_key_column="accepted_taxon_key",
+        taxon_name_column="scientific_name",
+    )
+
+    assert [score.scientific_name for score in scores[:2]] == ["Danaus plexippus", "Papilio demoleus"]
+
+
+def test_aggregate_taxon_prompt_scores_ignores_disabled_rows_and_duplicate_labels() -> None:
+    rows = pl.concat(
+        [
+            _species_label_rows(),
+            pl.DataFrame(
+                [
+                    {
+                        "accepted_taxon_key": "gbif:100",
+                        "scientific_name": "Papilio demoleus",
+                        "family_key": "gbif:9417",
+                        "family": "Papilionidae",
+                        "genus_key": "gbif:90",
+                        "genus": "Papilio",
+                        "label": "a photo of Papilio demoleus",
+                        "enabled": True,
+                    },
+                    {
+                        "accepted_taxon_key": "gbif:100",
+                        "scientific_name": "Papilio demoleus",
+                        "family_key": "gbif:9417",
+                        "family": "Papilionidae",
+                        "genus_key": "gbif:90",
+                        "genus": "Papilio",
+                        "label": "disabled Papilio demoleus prompt",
+                        "enabled": False,
+                    },
+                ]
+            ),
+        ],
+        how="diagonal_relaxed",
+    )
+
+    scores = aggregate_taxon_prompt_scores(
+        label_scores={
+            "a photo of Papilio demoleus": 0.4,
+            "a close-up photo of the butterfly species Papilio demoleus": 0.7,
+            "disabled Papilio demoleus prompt": 0.99,
+        },
+        label_rows=rows,
+        taxon_key_column="accepted_taxon_key",
+        taxon_name_column="scientific_name",
+        aggregation="max",
+    )
+
+    papilio = next(score for score in scores if score.scientific_name == "Papilio demoleus")
+    assert papilio.score == 0.7
+    assert papilio.label_count == 2
+
+
+def test_aggregate_taxon_prompt_scores_supports_family_label_rows() -> None:
+    rows = pl.DataFrame(
+        [
+            {
+                "family_key": "gbif:9417",
+                "family": "Papilionidae",
+                "label": "a photo of a butterfly in the family Papilionidae",
+                "enabled": True,
+            }
+        ]
+    )
+
+    scores = aggregate_taxon_prompt_scores(
+        label_scores={"a photo of a butterfly in the family Papilionidae": 0.9},
+        label_rows=rows,
+        taxon_key_column="family_key",
+        taxon_name_column="family",
+    )
+
+    assert scores == [
+        TaxonScore(
+            accepted_taxon_key="gbif:9417",
+            scientific_name="Papilionidae",
+            rank="FAMILY",
+            family_key="gbif:9417",
+            family="Papilionidae",
+            genus_key=None,
+            genus=None,
+            score=0.9,
+            best_label="a photo of a butterfly in the family Papilionidae",
+            label_count=1,
+        )
+    ]
+
+
+def test_aggregate_taxon_prompt_scores_rejects_unknown_aggregation() -> None:
+    try:
+        aggregate_taxon_prompt_scores(
+            label_scores={},
+            label_rows=_species_label_rows(),
+            taxon_key_column="accepted_taxon_key",
+            taxon_name_column="scientific_name",
+            aggregation="median",
+        )
+    except ValueError as exc:
+        assert "aggregation must be one of" in str(exc)
+    else:
+        raise AssertionError("unknown aggregation should fail")
+
+
+def _species_label_rows() -> pl.DataFrame:
+    return pl.DataFrame(
+        [
+            {
+                "accepted_taxon_key": "gbif:100",
+                "scientific_name": "Papilio demoleus",
+                "family_key": "gbif:9417",
+                "family": "Papilionidae",
+                "genus_key": "gbif:90",
+                "genus": "Papilio",
+                "label": "a photo of Papilio demoleus",
+                "enabled": True,
+            },
+            {
+                "accepted_taxon_key": "gbif:100",
+                "scientific_name": "Papilio demoleus",
+                "family_key": "gbif:9417",
+                "family": "Papilionidae",
+                "genus_key": "gbif:90",
+                "genus": "Papilio",
+                "label": "a close-up photo of the butterfly species Papilio demoleus",
+                "enabled": True,
+            },
+            {
+                "accepted_taxon_key": "gbif:200",
+                "scientific_name": "Danaus plexippus",
+                "family_key": "gbif:7017",
+                "family": "Nymphalidae",
+                "genus_key": "gbif:190",
+                "genus": "Danaus",
+                "label": "a photo of Danaus plexippus",
+                "enabled": True,
+            },
+        ]
+    )
