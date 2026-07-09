@@ -21,6 +21,7 @@ from biominer.bioclip.classification_modes import (
     ClassificationMode,
     normalize_classification_mode,
 )
+from biominer.bioclip.hierarchical_classifier import HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage
@@ -55,6 +56,8 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "classification_mode": pl.String,
     "candidate_selection_mode": pl.String,
     "candidate_source": pl.String,
+    "taxonomy_table_version": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["taxonomy_table_version"],
+    "taxonomy_prompt_variant_version": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["taxonomy_prompt_variant_version"],
     "ablation_mode": pl.String,
     "species_first_pass_top_k": pl.Int64,
     "species_rerank_top_k": pl.Int64,
@@ -62,17 +65,26 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "triage_group_top": pl.String,
     "triage_group_scores": pl.Struct({"butterfly_like": pl.Float64}),
     "family_top3": pl.List(pl.String),
+    "family_top3_accepted_taxon_keys": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["family_top3_accepted_taxon_keys"],
+    "family_top3_scores": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["family_top3_scores"],
     "family_top1": pl.String,
     "family_top1_score": pl.Float64,
     "family_margin": pl.Float64,
+    "selected_family_key": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["selected_family_key"],
+    "selected_family": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["selected_family"],
     "genus_top8": pl.List(pl.String),
     "genus_top1": pl.String,
     "genus_top1_score": pl.Float64,
     "genus_margin": pl.Float64,
+    "species_candidate_family_key": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_candidate_family_key"],
+    "species_candidate_family": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_candidate_family"],
+    "species_candidate_count": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_candidate_count"],
     "species_top20": pl.List(pl.String),
     "species_top20_accepted_taxon_keys": pl.List(pl.String),
+    "species_top20_scores": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_top20_scores"],
     "species_top5": pl.List(pl.String),
     "species_top5_accepted_taxon_keys": pl.List(pl.String),
+    "species_top5_scores": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_top5_scores"],
     "species_top1": pl.String,
     "species_top1_scientific_name": pl.String,
     "species_top1_accepted_taxon_key": pl.String,
@@ -725,7 +737,7 @@ def screen_object_detections(
             frame = _read_score_batches(batch_paths)
             write_parquet(frame, output)
         else:
-            frame = pl.DataFrame(rows) if rows else empty_object_score_frame()
+            frame = _ensure_columns(pl.DataFrame(rows), OBJECT_SCORE_OUTPUT_SCHEMA) if rows else empty_object_score_frame()
         return ObjectScreenResult(
             frame=frame,
             output_path=output,
@@ -786,7 +798,7 @@ def _read_score_batches(batch_paths: list[Path]) -> pl.DataFrame:
     if not batch_paths:
         return empty_object_score_frame()
     frames = [pl.read_parquet(path) for path in batch_paths]
-    return pl.concat(frames, how="diagonal_relaxed")
+    return _ensure_columns(pl.concat(frames, how="diagonal_relaxed"), OBJECT_SCORE_OUTPUT_SCHEMA)
 
 
 def empty_object_score_frame() -> pl.DataFrame:
