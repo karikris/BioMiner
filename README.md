@@ -234,8 +234,6 @@ Individual `vision detect`, `vision score`, `vision ablate`, and `evidence join`
 
 Object-level tables are not standalone silos. Every detection and score row keeps `source`, `flickr_photo_id`, and object-level `detection_id`/`crop_hash` where applicable. Hierarchical rows include taxonomy table version, prompt variant version, selected family, species candidate counts, top-k accepted taxon keys, prompt/rerank metadata, and conservative review bins. Geography is recorded as a soft prior and can route strong visual conflicts to review; it is not an absolute discard rule.
 
-For the combined YOLOE-26 plus BioCLIP detector-crop prototype, see `docs/yoloe26_prototype.md`.
-
 The active package is `biominer` under `src/`. Run commands through:
 
 ```bash

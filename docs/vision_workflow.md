@@ -14,6 +14,8 @@ YOLOE/YOLO26 is only an object finder. Production sends only `butterfly_like` de
 
 The current default classification mode is `target_scope_object_screening`. BioCLIP scores detector crops against target/scope candidate labels for screening evidence. Target-scope scoring can use registry-derived species candidates, but it is still screening evidence rather than taxonomic validation.
 
+For target-scope local debugging, pass `--species-candidates data/registry/current/species_candidates.parquet` to `biominer vision score` or `biominer vision screen`.
+
 Registry builds add GBIF-derived candidate tables for the family-first hierarchical classifier:
 
 ```text
@@ -87,7 +89,7 @@ There is no image-enhancement mode in production, and BioMiner does not store re
 
 ## Debug And Runtime Commands
 
-Runtime checks, model prefetch, smoke tests, previews, evaluations, and prototype wrappers live under `biominer dev vision`:
+Runtime checks, model prefetch, smoke tests, previews, evaluations, and benchmarks live under `biominer dev vision`:
 
 ```bash
 PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision yoloe26-runtime-check \
@@ -98,19 +100,9 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision yoloe26-runtime-check \
 PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision bioclip-runtime-check \
   --runtime-python "../BioCLIP25/venv/bin/python" \
   --device mps
-
-uv run biominer dev vision yoloe26-prototype-run \
-  --input runs/local_debug/papilio_demoleus/canonical_source_records.parquet \
-  --species-context runs/local_debug/papilio_demoleus/species_context.json \
-  --species-candidates data/registry/current/species_candidates.parquet \
-  --output-dir reports/yoloe26_prototype/example \
-  --vision-profile mac_m5pro_64gb \
-  --vision-runtime-python "../YOLO26/venv/bin/python" \
-  --bioclip-runtime-python "../BioCLIP25/venv/bin/python" \
-  --limit 10
 ```
 
-These commands validate optional runtimes and prototype wiring. They are not the production entry point; production work is coordinated by `biominer run`.
+These commands validate optional runtimes and maintained pipeline wiring. They are not the production entry point; production work is coordinated by `biominer run`.
 
 ## Benchmarks And Optimisation Checks
 

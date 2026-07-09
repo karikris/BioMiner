@@ -200,17 +200,17 @@ def test_cloud_local_boundary_adr_records_stage_contract() -> None:
         assert expected in text
 
 
-def test_yoloe26_docs_do_not_recommend_training_dataset_storage() -> None:
-    text = Path("docs/yoloe26_prototype.md").read_text(encoding="utf-8")
+def test_vision_docs_do_not_recommend_training_dataset_storage() -> None:
+    text = Path("docs/vision_workflow.md").read_text(encoding="utf-8")
 
     for forbidden in (
         "reviewed box dataset",
         "supervised YOLO",
         "fine-tuning",
-        "training dataset",
     ):
         assert forbidden not in text
-    assert "rather than detector training artifacts" in text
+    assert "does not store reviewed boxes or a training dataset" in text
+    assert "yoloe26_prototype.md" not in Path("README.md").read_text(encoding="utf-8")
 
 
 def test_readme_keeps_broad_probe_recipe_out_of_production_workflow() -> None:
