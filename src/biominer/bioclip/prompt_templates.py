@@ -22,6 +22,8 @@ COMMON_NAME_PROMPT_TEMPLATES = (
     ("common_adult", "a field photo of {name} adult butterfly"),
 )
 
+SPECIES_PROMPT_AGGREGATION_DEFAULT = "mean"
+
 
 def build_species_prompt_variants(
     *,
@@ -49,7 +51,7 @@ def aggregate_prompt_scores(
     scores: Mapping[str, float],
     variants: Sequence[PromptVariant],
     top_k: int,
-    aggregation: str = "mean",
+    aggregation: str = SPECIES_PROMPT_AGGREGATION_DEFAULT,
 ) -> list[dict[str, object]]:
     if aggregation not in {"max", "mean"}:
         raise ValueError("aggregation must be one of: max, mean")

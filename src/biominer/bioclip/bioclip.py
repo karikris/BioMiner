@@ -8,7 +8,11 @@ from typing import IO, Any, Callable, Mapping, Sequence
 
 from biominer.bioclip.diagnostics import TRIAGE_LABEL_GROUPS, grouped_probability_summary, probability_entropy, topk_margin
 from biominer.bioclip.model_registry import BioClipRuntime
-from biominer.bioclip.prompt_templates import PromptVariant, aggregate_prompt_scores
+from biominer.bioclip.prompt_templates import (
+    SPECIES_PROMPT_AGGREGATION_DEFAULT,
+    PromptVariant,
+    aggregate_prompt_scores,
+)
 
 BioClipScorer = Callable[[Path, Sequence[str]], Mapping[str, float]]
 BioClipBatchScorer = Callable[[Sequence[Path], Sequence[str]], Sequence[Mapping[str, float]]]
@@ -149,7 +153,12 @@ class BioClipClassifier:
                 scores = scores_by_label_set[label_set_name][index]
                 raw_scores_by_label_set[label_set_name] = scores
                 if label_set_name == "species" and species_prompt_variants:
-                    aggregated = aggregate_prompt_scores(scores=scores, variants=species_prompt_variants, top_k=top_k)
+                    aggregated = aggregate_prompt_scores(
+                        scores=scores,
+                        variants=species_prompt_variants,
+                        top_k=top_k,
+                        aggregation=SPECIES_PROMPT_AGGREGATION_DEFAULT,
+                    )
                     topk_by_label_set[label_set_name] = [
                         (str(row["best_label"]), float(row["score"]))
                         for row in aggregated

@@ -4,6 +4,7 @@ import pytest
 
 from biominer.bioclip.prompt_templates import (
     PromptVariant,
+    SPECIES_PROMPT_AGGREGATION_DEFAULT,
     aggregate_prompt_scores,
     build_species_prompt_variants,
 )
@@ -23,6 +24,8 @@ def test_build_species_prompt_variants_includes_scientific_and_common_names() ->
 
 
 def test_aggregate_prompt_scores_uses_mean_by_default_and_keeps_evidence() -> None:
+    assert SPECIES_PROMPT_AGGREGATION_DEFAULT == "mean"
+
     variants = [
         PromptVariant(label="a photo of Papilio demoleus", taxon_key="Papilio demoleus", prompt_kind="scientific"),
         PromptVariant(label="a photo of lime butterfly", taxon_key="Papilio demoleus", prompt_kind="common"),
