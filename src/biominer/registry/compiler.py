@@ -54,13 +54,39 @@ def compile_registry_fixture(
 
     for filename, frame in frames.items():
         write_parquet(frame, output / filename)
-    (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     if include_classification_tables and isinstance(manifest.get("classification_table"), dict):
+        manifest = {
+            **manifest,
+            "classification_table": _classification_manifest_with_local_sizes(
+                dict(manifest["classification_table"]),
+                output,
+            ),
+        }
         (output / BUTTERFLY_CLASSIFICATION_MANIFEST_FILE).write_text(
             json.dumps(manifest["classification_table"], indent=2, sort_keys=True),
             encoding="utf-8",
         )
+    (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     return manifest
+
+
+def _classification_manifest_with_local_sizes(manifest: dict[str, Any], output: Path) -> dict[str, Any]:
+    artifact_keys = {
+        "classification_taxa": "butterfly_classification_taxa.parquet",
+        "family_labels": "butterfly_family_labels.parquet",
+        "species_labels": "butterfly_species_labels.parquet",
+        "qa_findings": "butterfly_classification_qa_findings.parquet",
+    }
+    sizes = {
+        key: (output / filename).stat().st_size
+        for key, filename in artifact_keys.items()
+        if (output / filename).exists()
+    }
+    return {
+        **manifest,
+        "artifact_file_sizes": sizes,
+        "estimated_metadata_only_size_mb": round(float(sizes.get("classification_taxa", 0)) / (1024 * 1024), 6),
+    }
 
 
 def compile_registry_frames(

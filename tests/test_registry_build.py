@@ -290,6 +290,8 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
     assert (registry / "butterfly_species_labels.parquet").exists()
     assert (registry / "butterfly_classification_manifest.json").exists()
     assert result["manifest"]["classification_table"]["classification_table_version"] == "gbif-butterfly-classification-v1"
+    assert result["manifest"]["classification_table"]["artifact_file_sizes"]["classification_taxa"] > 0
+    assert result["manifest"]["classification_table"]["estimated_metadata_only_size_mb"] > 0
     assert manifest["enrichment_sources"] == [
         "col",
         "inaturalist",
