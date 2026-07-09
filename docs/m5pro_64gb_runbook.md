@@ -2,6 +2,15 @@
 
 This runbook is the operator command set for BioMiner's `mac_m5pro_64gb` vision profile. It targets local Apple MPS runs while preserving the production S3/Postgres shape used by `biominer run`.
 
+Related docs:
+
+```text
+docs/vision_workflow.md
+docs/production_workflow.md
+docs/gbif_classification_tables.md
+docs/vision_performance_m5pro.md
+```
+
 ## Profile Contract
 
 The `mac_m5pro_64gb` profile is defined in `src/biominer/detection/policy.py` and should remain:

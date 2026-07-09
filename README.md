@@ -81,6 +81,20 @@ See [GBIF classification tables](docs/gbif_classification_tables.md) for schemas
 
 The Mac M5 Pro / 64 GB profile is `mac_m5pro_64gb`: `device=mps`, YOLOE checkpoint `yoloe-26s-seg.pt`, YOLO image size `768`, detector batch size `16`, crop batch size `24`, crop target `336`, crop padding `0.08`, zstd Parquet parts, and delete-after-commit image cleanup. Production visual parts are written as immutable zstd Parquet objects such as `evidence/stage=detect_objects/run_id=<run_id>/worker=<worker_id>/part=<part_id>.parquet`.
 
+Phase 4 vision optimisation status:
+
+| Capability | Status | Details |
+|-|-|-|
+| Default visual classification | `target_scope_object_screening` remains the default | Detector crops are scored for target/scope screening evidence. |
+| Hierarchical classifier | Available with GBIF classification tables | Uses family top 3, selected-family species top 20, and reranks all top 20 into top 5. |
+| BioCLIP input gate | Detector-first crop-level scoring | BioCLIP does not process all images in production; non-butterfly detections remain evidence but are not species-scored. |
+| Adaptive batching | Opt-in | Use only under memory pressure with `--adaptive-batching`, `--yolo-batch`, and `--bioclip-batch`. |
+| Taxonomy text embeddings | Optional and recommended at large scope | `--taxonomy-text-embedding-cache` validates the cache against taxonomy and BioCLIP metadata. |
+| Cleanup and resumability | Commit-ordered | Temporary images/crops are removed only after committed Parquet outputs and workstore registration where applicable. |
+| Benchmarks | Model-free and optional live commands | `benchmark-plumbing` is deterministic and model-free; `benchmark-live-m5pro` requires sidecar runtimes/models. |
+
+See [vision workflow](docs/vision_workflow.md), [M5 Pro performance note](docs/vision_performance_m5pro.md), and [Mac M5 Pro runbook](docs/m5pro_64gb_runbook.md) for the detailed command set.
+
 The core Python 3.14 environment keeps heavy vision dependencies optional. `vision detect --backend fake` is available for offline tests and deterministic local plumbing. YOLOE-26, explicit YOLO26 inference checkpoints, and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent. YOLOE/YOLO26 are object finders only; BioCLIP 2.5 Huge provides either target/scope screening or GBIF-backed open hierarchical classification after the object detector has proposed a crop.
 
 Production command shape:

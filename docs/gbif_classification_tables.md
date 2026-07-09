@@ -88,6 +88,24 @@ papilionidae_species = store.species_for_family("gbif:9417")
 labels = store.species_prompt_labels_for_family("gbif:9417")
 ```
 
+## Taxonomy Text Embedding Cache
+
+The classification label tables are the source of truth for optional taxonomy text embedding caches. Large family and superfamily runs should prepare or supply a cache when available so BioCLIP can reuse family/species prompt embeddings and compute image-embedding dot products instead of re-encoding the same labels for every crop.
+
+The cache is a performance input, not taxonomy evidence. Production validation checks:
+
+```text
+classification_table_version
+prompt_variant_version
+BioCLIP model id
+BioCLIP model checkpoint/revision
+label hash
+embedding dimension
+dtype
+```
+
+If a cache is missing or not supplied, hierarchical scoring still works through direct prompt scoring. If a supplied cache does not match the requested taxonomy/model metadata, the run must fail clearly or use the explicit fallback policy implemented by the calling command; it must not silently mix stale embeddings with current labels.
+
 ## Scale
 
 For roughly 18,000 butterfly species, the metadata-only taxa table should normally remain well under 0.1 GB. Prompt-label tables are also small because the current build uses a small set of family and species prompt templates. Optional text embedding caches may be larger, roughly 0.1-0.3 GB depending on prompt count, embedding dimension, and float16 versus float32 storage.

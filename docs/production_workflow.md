@@ -92,6 +92,10 @@ These files are derived from the accepted registry and are candidate-selection i
 
 The Mac M5 Pro / 64 GB production profile is `mac_m5pro_64gb`. It uses `device=mps`, YOLOE checkpoint `yoloe-26s-seg.pt`, YOLO image size `768`, detector batch size `16`, BioCLIP crop batch size `24`, crop target `336`, crop padding `0.08`, zstd Parquet part files, and delete-after-commit cached image cleanup. Set `PYTORCH_ENABLE_MPS_FALLBACK=1` when running MPS sidecars.
 
+For family or superfamily hierarchical runs, `--taxonomy-text-embedding-cache` is an optional performance input. The cache is accepted only when its classification table version, prompt variant version, BioCLIP model/checkpoint metadata, label hash, embedding dimension, and dtype match the requested taxonomy labels. Direct prompt scoring remains available when the cache is absent.
+
+Adaptive batching is opt-in with `--adaptive-batching`. It is intended for memory pressure on YOLOE or BioCLIP batches and must not be used to hide non-memory failures.
+
 Local hierarchical command shape:
 
 ```bash
@@ -160,3 +164,12 @@ evidence/stage=score_bioclip/run_id=<run_id>/worker=<worker_id>/part=<part_id>.p
 ```
 
 The workstore registers only successfully written parts. Cached Flickr images are deleted after committed detection, score, and evidence outputs; failed score or part writes leave the cached image retryable.
+
+Vision stages also write compact reports:
+
+```text
+vision_stage_metrics.json
+vision_stage_summary.md
+```
+
+These reports expose detector skip counts, eligible BioCLIP detections, selected family counts, species top-1 counts, batching settings, adaptive retries, throughput estimates, and cache-use flags. `bioclip_counts.objects_scored` should remain tied to eligible `butterfly_like` detections rather than all canonical source records.

@@ -96,17 +96,20 @@ Both paths:
 - Preserve object/photo evidence rows for non-scored detections.
 - Preserve `target_scope_object_screening` as the default.
 
-## Safe Phase 4 Optimisations
+## Implemented Phase 4 Optimisations
 
-- Add model-free benchmark and optional live benchmark commands.
-- Validate runtime profile overrides and make adaptive batching opt-in.
-- Add YOLOE sidecar image-path transport while keeping base64 transport for compatibility.
-- Centralise cleanup-safe crop materialisation and deduplicate crop files by crop hash.
-- Promote taxonomy text embedding caches as an optional production input.
-- Add conservative batch fallback for memory/device errors.
-- Cache taxonomy lookup tables inside the taxonomy store.
-- Add richer JSON/Markdown metrics for vision stages.
-- Harden resumability keys so output-affecting settings change work identity.
+- Model-free plumbing benchmark: `biominer dev vision benchmark-plumbing` writes JSON/Markdown reports and uses only fake detectors/scorers.
+- Optional live M5 Pro benchmark: `biominer dev vision benchmark-live-m5pro` validates sidecar runtimes, models, taxonomy tables, runtime settings, and MPS fallback state.
+- Runtime profile validation: `mac_m5pro_64gb` keeps the target MPS profile and rejects invalid batch, crop, image-size, and adaptive override settings.
+- YOLOE sidecar transport: `json_b64` remains compatible and `image_path` is available for lower local IPC overhead.
+- Crop lifecycle: detector crops are materialised once per eligible detection batch where needed and cleaned only after score rows are safely held or written.
+- Taxonomy text embedding cache: optional hierarchical taxonomy caches are validated against taxonomy and BioCLIP model metadata.
+- Adaptive batching: opt-in detector and BioCLIP batch fallback retries only conservative memory/device failures and records retry metrics.
+- Taxonomy lookup cache: classification tables are projected and indexed for repeated family/species lookups.
+- Vision observability: `vision_stage_metrics.json` and `vision_stage_summary.md` expose skip counts, selected families/species, throughput, cache use, and batching behavior.
+- Resumability keys: cloud detection and score work keys include output-affecting detector, classifier, taxonomy, prompt, top-k, and crop settings.
+
+For operator commands, fallback settings, and troubleshooting, see `docs/m5pro_64gb_runbook.md`.
 
 ## Intentionally Not Implemented In Phase 4
 

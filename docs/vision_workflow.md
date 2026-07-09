@@ -112,6 +112,37 @@ uv run biominer dev vision yoloe26-prototype-run \
 
 These commands validate optional runtimes and prototype wiring. They are not the production entry point; production work is coordinated by `biominer run`.
 
+## Benchmarks And Optimisation Checks
+
+The deterministic plumbing benchmark exercises the detector-first pipeline with fake images, a fake detector, a fake BioCLIP scorer, and fake taxonomy artifacts. It is the normal regression check for counts, gating, batching, and report output because it does not require models or network access:
+
+```bash
+uv run biominer dev vision benchmark-plumbing \
+  --records 1000 \
+  --butterfly-rate 0.25 \
+  --detections-per-butterfly 1 \
+  --classification-mode hierarchical_butterfly_classification \
+  --taxonomy-candidate-table tests/fixtures/taxonomy_store \
+  --output-dir reports/vision_benchmarks/plumbing
+```
+
+The optional live benchmark is for Mac M5 Pro sidecar validation only. It fails clearly when the YOLOE or BioCLIP runtime path, taxonomy table, cache, or model is missing:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision benchmark-live-m5pro \
+  --input runs/local_debug/papilio_demoleus/canonical_source_records.parquet \
+  --taxonomy-candidate-table data/registry/current \
+  --vision-runtime-python ../YOLO26/venv/bin/python \
+  --bioclip-runtime-python ../BioCLIP25/venv/bin/python \
+  --hf-cache-dir ../BioCLIP25/cache/huggingface \
+  --checkpoint yoloe-26s-seg.pt \
+  --device mps \
+  --limit 100 \
+  --output-dir reports/vision_benchmarks/m5pro_live
+```
+
+Adaptive batching is off by default. Enable `--adaptive-batching` only under memory pressure; conservative memory/device errors can reduce YOLO and BioCLIP batch sizes while non-memory errors still fail normally. Large hierarchical runs should prefer a validated `--taxonomy-text-embedding-cache` so species prompt embeddings are reused instead of recomputed.
+
 ## Optional Runtimes
 
 The main BioMiner package stays on Python 3.14. Heavy vision libraries run from Python 3.12 sidecar environments outside the repository:
@@ -131,6 +162,8 @@ Set `BIOMINER_BASE_PATH=/path/to/base` on macOS, WSL, or Ubuntu when the sibling
 The Mac M5 Pro / 64 GB profile is `mac_m5pro_64gb`. It uses Apple MPS, YOLOE checkpoint `yoloe-26s-seg.pt`, YOLO image size `768`, detector batch size `16`, crop batch size `24`, crop target `336`, crop padding `0.08`, zstd Parquet part outputs, and delete-after-commit image cleanup. Use `PYTORCH_ENABLE_MPS_FALLBACK=1` for runtime checks and sidecar runs.
 
 Unit tests use fake detectors and fake scorers and must not require Ultralytics, CUDA, MPS, model downloads, or network access.
+
+For the full hardware-specific command set and troubleshooting checklist, see `docs/m5pro_64gb_runbook.md`.
 
 ## Limitations
 
