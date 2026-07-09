@@ -1776,6 +1776,14 @@ def test_photo_summary_includes_hierarchical_open_classification_rows(tmp_path) 
     assert summary["photo_occurrence_bin"] == "in_review"
     assert summary["photo_bin_reason"] == "hierarchical_open_classification_requires_review"
     assert summary["all_candidate_species"] == ["Danaus plexippus"]
+    assert summary["all_selected_families"] == ["Nymphalidae"]
+    assert summary["photo_selected_family"] == "Nymphalidae"
+    assert summary["photo_species_top1"] == "Danaus plexippus"
+    assert summary["photo_species_top1_key"] == "gbif:7017001"
+    assert summary["photo_species_confidence_score"] == pytest.approx(0.88)
+    assert summary["photo_species_margin"] is None
+    assert summary["photo_multi_object_conflict"] is False
+    assert summary["photo_review_reason"] == "hierarchical_open_classification_requires_review"
 
 
 def test_object_bioclip_skips_non_butterfly_detector_labels(tmp_path) -> None:
@@ -1957,6 +1965,11 @@ def test_object_bioclip_score_bins_visual_hard_negative_object(tmp_path) -> None
     summary = pl.read_parquet(outputs.photo_evidence_summary).to_dicts()[0]
     assert summary["photo_occurrence_bin"] == "bin"
     assert summary["photo_bin_reason"] == "negative_material_hard_negative_object"
+    assert summary["photo_species_top1"] is None
+    assert summary["photo_species_top1_key"] is None
+    assert summary["photo_species_confidence_score"] is None
+    assert summary["photo_multi_object_conflict"] is False
+    assert summary["photo_review_reason"] == "negative_material_hard_negative_object"
 
 
 def test_object_bioclip_routes_non_top1_target_species_to_review(tmp_path) -> None:
@@ -2719,11 +2732,14 @@ def test_photo_summary_from_joined_evidence_keeps_open_classification_rows() -> 
                 "flickr_photo_id": "photo-1",
                 "detection_id": "det-1",
                 "classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+                "selected_family": "Nymphalidae",
                 "occurrence_bin": "in_review",
                 "bin_reason": "hierarchical_open_classification_requires_review",
                 "target_species_score": None,
                 "species_top1_score": 0.91,
+                "species_top1_margin": 0.24,
                 "species_top1_scientific_name": "Danaus plexippus",
+                "species_top1_accepted_taxon_key": "gbif:5131654",
                 "species_top5": ["Danaus plexippus"],
                 "species_top20": ["Danaus plexippus"],
                 "detection_status": "detected",
@@ -2738,6 +2754,108 @@ def test_photo_summary_from_joined_evidence_keeps_open_classification_rows() -> 
     assert summary["photo_occurrence_bin"] == "in_review"
     assert summary["photo_bin_reason"] == "hierarchical_open_classification_requires_review"
     assert summary["all_candidate_species"] == ["Danaus plexippus"]
+    assert summary["all_selected_families"] == ["Nymphalidae"]
+    assert summary["photo_selected_family"] == "Nymphalidae"
+    assert summary["photo_species_top1"] == "Danaus plexippus"
+    assert summary["photo_species_top1_key"] == "gbif:5131654"
+    assert summary["photo_species_confidence_score"] == pytest.approx(0.91)
+    assert summary["photo_species_margin"] == pytest.approx(0.24)
+    assert summary["photo_multi_object_conflict"] is False
+    assert summary["photo_review_reason"] == "hierarchical_open_classification_requires_review"
+
+
+def test_photo_summary_from_joined_evidence_routes_hierarchical_multi_object_conflict_to_review() -> None:
+    joined = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-conflict",
+                "detection_id": "det-weak-margin",
+                "classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+                "selected_family": "Nymphalidae",
+                "occurrence_bin": "gold",
+                "bin_reason": "target_species_score_ge_070",
+                "target_species_score": 0.99,
+                "species_top1_score": 0.88,
+                "species_top1_margin": 0.04,
+                "species_top1_scientific_name": "Danaus plexippus",
+                "species_top1_accepted_taxon_key": "gbif:5131654",
+                "species_top5": ["Danaus plexippus"],
+                "species_top20": ["Danaus plexippus"],
+                "detection_status": "detected",
+                "detector_label": "butterfly_like",
+            },
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-conflict",
+                "detection_id": "det-strong-margin",
+                "classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+                "selected_family": "Papilionidae",
+                "occurrence_bin": "gold",
+                "bin_reason": "target_species_score_ge_070",
+                "target_species_score": 0.10,
+                "species_top1_score": 0.88,
+                "species_top1_margin": 0.31,
+                "species_top1_scientific_name": "Papilio demoleus",
+                "species_top1_accepted_taxon_key": "gbif:9417001",
+                "species_top5": ["Papilio demoleus"],
+                "species_top20": ["Papilio demoleus"],
+                "detection_status": "detected",
+                "detector_label": "butterfly_like",
+            },
+        ]
+    )
+
+    summary = build_photo_summary_from_joined_evidence(joined).to_dicts()[0]
+
+    assert summary["best_detection_id"] == "det-strong-margin"
+    assert summary["photo_occurrence_bin"] == "in_review"
+    assert summary["photo_bin_reason"] == "multiple_species"
+    assert summary["photo_review_reason"] == "multiple_species"
+    assert summary["photo_multi_object_conflict"] is True
+    assert summary["all_candidate_species"] == ["Papilio demoleus", "Danaus plexippus"]
+    assert summary["all_selected_families"] == ["Papilionidae", "Nymphalidae"]
+    assert summary["photo_selected_family"] == "Papilionidae"
+    assert summary["photo_species_top1"] == "Papilio demoleus"
+    assert summary["photo_species_top1_key"] == "gbif:9417001"
+    assert summary["photo_species_confidence_score"] == pytest.approx(0.88)
+    assert summary["photo_species_margin"] == pytest.approx(0.31)
+
+
+def test_photo_summary_from_joined_evidence_keeps_target_scope_bucket_behavior() -> None:
+    joined = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-target",
+                "detection_id": "det-target",
+                "classification_mode": "target_scope_object_screening",
+                "occurrence_bin": "gold",
+                "bin_reason": "target_species_score_ge_070",
+                "target_species_score": 0.82,
+                "species_top1_score": 0.82,
+                "species_top1_margin": 0.22,
+                "species_top1_scientific_name": "Danaus plexippus",
+                "species_top1_accepted_taxon_key": "gbif:5131654",
+                "species_top5": ["Danaus plexippus"],
+                "species_top20": ["Danaus plexippus"],
+                "detection_status": "detected",
+                "detector_label": "butterfly_like",
+            }
+        ]
+    )
+
+    summary = build_photo_summary_from_joined_evidence(joined).to_dicts()[0]
+
+    assert summary["photo_occurrence_bin"] == "gold"
+    assert summary["photo_bin_reason"] == "target_species_score_ge_070"
+    assert summary["all_selected_families"] == []
+    assert summary["photo_selected_family"] is None
+    assert summary["photo_species_top1"] == "Danaus plexippus"
+    assert summary["photo_species_confidence_score"] == pytest.approx(0.82)
+    assert summary["photo_species_margin"] == pytest.approx(0.22)
+    assert summary["photo_multi_object_conflict"] is False
+    assert summary["photo_review_reason"] == ""
 
 
 def test_empty_object_evidence_outputs_keep_stable_join_table_schemas(tmp_path) -> None:
@@ -2806,6 +2924,14 @@ def test_empty_object_evidence_outputs_keep_stable_join_table_schemas(tmp_path) 
         "photo_bin_reason",
         "all_detection_ids",
         "all_candidate_species",
+        "all_selected_families",
+        "photo_selected_family",
+        "photo_species_top1",
+        "photo_species_top1_key",
+        "photo_species_confidence_score",
+        "photo_species_margin",
+        "photo_multi_object_conflict",
+        "photo_review_reason",
     }.issubset(summary.columns)
 
 
@@ -2991,6 +3117,14 @@ def test_no_detection_with_strong_text_evidence_routes_photo_to_review(tmp_path)
             "photo_bin_reason": "no_detection_strong_text_evidence",
             "all_detection_ids": [],
             "all_candidate_species": ["Danaus plexippus"],
+            "all_selected_families": [],
+            "photo_selected_family": None,
+            "photo_species_top1": None,
+            "photo_species_top1_key": None,
+            "photo_species_confidence_score": None,
+            "photo_species_margin": None,
+            "photo_multi_object_conflict": False,
+            "photo_review_reason": "no_detection_strong_text_evidence",
         }
     ]
 

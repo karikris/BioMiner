@@ -139,6 +139,14 @@ PHOTO_EVIDENCE_SUMMARY_SCHEMA: dict[str, pl.DataType] = {
     "photo_bin_reason": pl.String,
     "all_detection_ids": pl.List(pl.String),
     "all_candidate_species": pl.List(pl.String),
+    "all_selected_families": pl.List(pl.String),
+    "photo_selected_family": pl.String,
+    "photo_species_top1": pl.String,
+    "photo_species_top1_key": pl.String,
+    "photo_species_confidence_score": pl.Float64,
+    "photo_species_margin": pl.Float64,
+    "photo_multi_object_conflict": pl.Boolean,
+    "photo_review_reason": pl.String,
 }
 
 
@@ -1600,13 +1608,17 @@ def _photo_summary(
         for (_source, _photo), group in scores.group_by(["source", "flickr_photo_id"], maintain_order=True):
             sorted_rows = sorted(
                 group.to_dicts(),
-                key=lambda row: (-_summary_object_score(row), str(row.get("detection_id") or "")),
+                key=_photo_summary_sort_key,
             )
             best = sorted_rows[0]
             key = (str(best["source"]), str(best["flickr_photo_id"]))
             detection_ids = _summary_detection_ids(detections_by_photo.get(key, []), sorted_rows)
             species = _summary_candidate_species(sorted_rows)
+            hierarchical_fields = _hierarchical_photo_summary_fields(sorted_rows, best)
             photo_bucket, photo_reason = _photo_bucket_and_reason(sorted_rows, canonical_by_photo.get(key, {}))
+            if hierarchical_fields["photo_multi_object_conflict"]:
+                photo_bucket, photo_reason = "in_review", "multiple_species"
+            hierarchical_fields["photo_review_reason"] = photo_reason if photo_bucket == "in_review" else ""
             summarized_keys.add(key)
             rows.append(
                 {
@@ -1621,6 +1633,7 @@ def _photo_summary(
                     "photo_bin_reason": photo_reason,
                     "all_detection_ids": detection_ids,
                     "all_candidate_species": species,
+                    **hierarchical_fields,
                 }
             )
     if canonical is not None:
@@ -1669,6 +1682,7 @@ def _unscored_photo_summary(
             "photo_bin_reason": "detected_object_without_bioclip_score",
             "all_detection_ids": detection_ids,
             "all_candidate_species": [],
+            **_empty_photo_prediction_fields(photo_review_reason="detected_object_without_bioclip_score"),
         }
 
     visual_negative_reason = _noneligible_detection_reason(detection_rows)
@@ -1685,6 +1699,7 @@ def _unscored_photo_summary(
             "photo_bin_reason": visual_negative_reason,
             "all_detection_ids": [],
             "all_candidate_species": [],
+            **_empty_photo_prediction_fields(photo_review_reason=visual_negative_reason),
         }
 
     has_detection_failure = any(str(row.get("detection_status") or "") == "no_detection" for row in detection_rows)
@@ -1705,7 +1720,9 @@ def _unscored_photo_summary(
             "photo_bin_reason": failure_reason,
             "all_detection_ids": [],
             "all_candidate_species": [],
+            **_empty_photo_prediction_fields(photo_review_reason=failure_reason),
         }
+    review_reason = "no_detection_strong_text_evidence" if strong_text_evidence else "no_detection_without_object_score"
     return {
         "source": str(record.get("source") or ""),
         "flickr_photo_id": str(record.get("flickr_photo_id") or ""),
@@ -1715,9 +1732,12 @@ def _unscored_photo_summary(
         "best_object_species_top1": None,
         "best_object_score": None,
         "photo_occurrence_bin": "in_review",
-        "photo_bin_reason": "no_detection_strong_text_evidence" if strong_text_evidence else "no_detection_without_object_score",
+        "photo_bin_reason": review_reason,
         "all_detection_ids": [],
-        "all_candidate_species": [species_context.scientific_name] if strong_text_evidence and species_context is not None else [],
+        "all_candidate_species": (
+            [species_context.scientific_name] if strong_text_evidence and species_context is not None else []
+        ),
+        **_empty_photo_prediction_fields(photo_review_reason=review_reason),
     }
 
 
@@ -1780,6 +1800,72 @@ def _summary_candidate_species(scored_rows: list[dict[str, Any]]) -> list[str]:
     return _unique(values)
 
 
+def _hierarchical_photo_summary_fields(sorted_rows: list[dict[str, Any]], best: dict[str, Any]) -> dict[str, Any]:
+    selected_families = _unique(
+        row.get("selected_family") or row.get("family_top1")
+        for row in sorted_rows
+        if str(row.get("classification_mode") or "") == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    )
+    top1_species = _summary_species_top1(best)
+    species_by_detection = _unique(
+        _summary_species_top1(row)
+        for row in sorted_rows
+        if str(row.get("classification_mode") or "") == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    )
+    is_hierarchical = any(
+        str(row.get("classification_mode") or "") == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+        for row in sorted_rows
+    )
+    return {
+        "all_selected_families": selected_families,
+        "photo_selected_family": str(best.get("selected_family") or best.get("family_top1") or "") or None,
+        "photo_species_top1": top1_species or None,
+        "photo_species_top1_key": str(
+            best.get("species_top1_accepted_taxon_key") or best.get("accepted_taxon_key") or ""
+        )
+        or None,
+        "photo_species_confidence_score": _summary_object_score(best) if top1_species else None,
+        "photo_species_margin": _summary_species_margin(best),
+        "photo_multi_object_conflict": bool(is_hierarchical and len(species_by_detection) > 1),
+        "photo_review_reason": "",
+    }
+
+
+def _empty_photo_prediction_fields(*, photo_review_reason: str = "") -> dict[str, Any]:
+    return {
+        "all_selected_families": [],
+        "photo_selected_family": None,
+        "photo_species_top1": None,
+        "photo_species_top1_key": None,
+        "photo_species_confidence_score": None,
+        "photo_species_margin": None,
+        "photo_multi_object_conflict": False,
+        "photo_review_reason": photo_review_reason,
+    }
+
+
+def _photo_summary_sort_key(row: dict[str, Any]) -> tuple[float, float, str]:
+    return (
+        -_summary_object_score(row),
+        -(_summary_species_margin(row) or 0.0),
+        str(row.get("detection_id") or ""),
+    )
+
+
+def _summary_species_top1(row: dict[str, Any]) -> str:
+    return str(row.get("species_top1_scientific_name") or row.get("species_top1") or "")
+
+
+def _summary_species_margin(row: dict[str, Any]) -> float | None:
+    margin = row.get("species_top1_margin")
+    if margin not in (None, ""):
+        return _optional_float(margin)
+    margin = row.get("species_top1_top2_margin")
+    if margin not in (None, ""):
+        return _optional_float(margin)
+    return None
+
+
 def _summary_detection_ids(detection_rows: list[dict[str, Any]], scored_rows: list[dict[str, Any]]) -> list[str]:
     detection_ids = _unique(
         row.get("detection_id")
@@ -1792,6 +1878,10 @@ def _summary_detection_ids(detection_rows: list[dict[str, Any]], scored_rows: li
 
 
 def _summary_object_score(row: dict[str, Any]) -> float:
+    if str(row.get("classification_mode") or "") == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+        species_score = row.get("species_top1_score")
+        if species_score not in (None, ""):
+            return float(species_score)
     target_score = row.get("target_species_score")
     if target_score not in (None, ""):
         return float(target_score)
