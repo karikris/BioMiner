@@ -49,7 +49,10 @@ def aggregate_prompt_scores(
     scores: Mapping[str, float],
     variants: Sequence[PromptVariant],
     top_k: int,
+    aggregation: str = "mean",
 ) -> list[dict[str, object]]:
+    if aggregation not in {"max", "mean"}:
+        raise ValueError("aggregation must be one of: max, mean")
     grouped: dict[str, dict[str, object]] = {}
     for variant in variants:
         score = float(scores.get(variant.label, 0.0))
@@ -60,7 +63,21 @@ def aggregate_prompt_scores(
         prompt_scores = current["prompt_scores"]
         assert isinstance(prompt_scores, dict)
         prompt_scores[variant.label] = score
-        if score >= float(current["score"]):
-            current["score"] = score
+        if current["best_label"] is None or score >= float(scores.get(str(current["best_label"]), 0.0)):
             current["best_label"] = variant.label
-    return sorted(grouped.values(), key=lambda row: float(row["score"]), reverse=True)[:top_k]
+    rows = []
+    for current in grouped.values():
+        prompt_scores = current["prompt_scores"]
+        assert isinstance(prompt_scores, dict)
+        values = [float(value) for value in prompt_scores.values()]
+        current["score"] = _aggregate_values(values, aggregation=aggregation)
+        rows.append(current)
+    return sorted(rows, key=lambda row: (-float(row["score"]), str(row["taxon_key"])))[:top_k]
+
+
+def _aggregate_values(values: Sequence[float], *, aggregation: str) -> float:
+    if not values:
+        return 0.0
+    if aggregation == "max":
+        return max(values)
+    return sum(values) / len(values)

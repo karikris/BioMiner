@@ -545,9 +545,9 @@ def test_bioclip_classifier_aggregates_species_prompt_variants() -> None:
             return {
                 "species": [
                     {
-                        "a photo of Papilio demoleus": 0.62,
-                        "a photo of lime butterfly": 0.84,
-                        "a photo of Papilio machaon": 0.21,
+                        "a photo of Papilio demoleus": 0.95,
+                        "a field photo of Papilio demoleus adult butterfly": 0.05,
+                        "a photo of Papilio machaon": 0.58,
                     }
                 ],
                 "triage": [{"a photo of an adult butterfly": 0.91}],
@@ -568,20 +568,22 @@ def test_bioclip_classifier_aggregates_species_prompt_variants() -> None:
         label_sets={
             "species": [
                 "a photo of Papilio demoleus",
-                "a photo of lime butterfly",
+                "a field photo of Papilio demoleus adult butterfly",
                 "a photo of Papilio machaon",
             ],
             "triage": ["a photo of an adult butterfly"],
         },
         species_prompt_variants=[
             PromptVariant("a photo of Papilio demoleus", "Papilio demoleus", "scientific"),
-            PromptVariant("a photo of lime butterfly", "Papilio demoleus", "common"),
+            PromptVariant("a field photo of Papilio demoleus adult butterfly", "Papilio demoleus", "field_adult"),
             PromptVariant("a photo of Papilio machaon", "Papilio machaon", "scientific"),
         ],
     )
 
     record = records[0]
-    assert record["species_top1_scientific_name"] == "Papilio demoleus"
-    assert record["species_top1_score"] == 0.84
-    assert record["species_top1_label"] == "a photo of lime butterfly"
-    assert record["species_prompt_topk_json"][0]["prompt_scores"]["a photo of Papilio demoleus"] == 0.62
+    assert record["species_top1_scientific_name"] == "Papilio machaon"
+    assert record["species_top1_score"] == 0.58
+    assert record["species_top1_label"] == "a photo of Papilio machaon"
+    assert record["species_prompt_topk_json"][1]["taxon_key"] == "Papilio demoleus"
+    assert record["species_prompt_topk_json"][1]["score"] == pytest.approx(0.50)
+    assert record["species_prompt_topk_json"][1]["best_label"] == "a photo of Papilio demoleus"
