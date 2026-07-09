@@ -14,7 +14,7 @@ YOLOE/YOLO26 is only an object finder. Production sends only `butterfly_like` de
 
 The current default classification mode is `target_scope_object_screening`. BioCLIP scores detector crops against target/scope candidate labels for screening evidence. Target-scope scoring can use registry-derived species candidates, but it is still screening evidence rather than taxonomic validation.
 
-Phase 2 adds GBIF-derived candidate tables for the later family-first hierarchical classifier:
+Registry builds add GBIF-derived candidate tables for the family-first hierarchical classifier:
 
 ```text
 butterfly_classification_taxa.parquet
@@ -22,7 +22,9 @@ butterfly_family_labels.parquet
 butterfly_species_labels.parquet
 ```
 
-The `hierarchical_butterfly_classification` mode can be recorded in dry-run plans. In non-dry score runs it validates the taxonomy candidate table, family labels, and species labels, then fails clearly until Phase 3 implements the actual BioCLIP scorer.
+The `hierarchical_butterfly_classification` mode is implemented when `--taxonomy-candidate-table` points at those artifacts. It is open classification, not target validation. BioCLIP first scores configured butterfly-family prompts, records family top 3, selects the top family, scores species prompts only within that selected GBIF family, records species top 20, then reranks all 20 first-pass species into species top 5. Prompt-template scores are mean-aggregated by taxon. The mode does not inject the run target species and does not treat geography as hard validation.
+
+Hierarchical mode still obeys the detector gate: only YOLOE/YOLO26 rows with `detection_status=detected` and `detector_label=butterfly_like` are sent to BioCLIP. Other detector outcomes remain evidence rows and can influence review, but they are not species-scored.
 
 The production default visual mode is `detector_crop`. Whole-image BioCLIP is available only through explicit ablation/debug commands because it spends model budget on background, host plants, labels, hands, and other non-target content.
 
@@ -49,6 +51,23 @@ uv run biominer vision detect \
   --runtime-python "../YOLO26/venv/bin/python" \
   --checkpoint "../YOLO26/models/coarse-objects.pt"
 ```
+
+Direct hierarchical scoring for local debugging uses the same taxonomy artifacts:
+
+```bash
+uv run biominer vision score \
+  --input runs/local_debug/papilionoidea/canonical_source_records.parquet \
+  --detections runs/local_debug/papilionoidea/object_detections_yoloe26.parquet \
+  --species-context runs/local_debug/papilionoidea/species_context.json \
+  --taxonomy-candidate-table data/registry/current \
+  --classification-mode hierarchical_butterfly_classification \
+  --family-top-k 3 \
+  --species-first-pass-top-k 20 \
+  --species-rerank-top-k 5 \
+  --output runs/local_debug/papilionoidea/object_bioclip_scores.parquet
+```
+
+`--taxonomy-text-embedding-cache` is optional for hierarchical taxonomy labels. Target-scope caches such as `--candidate-text-embedding-cache` and `--object-image-embedding-cache` are not hierarchical taxonomy caches.
 
 YOLO26 checkpoints must emit BioMiner coarse object labels or known legacy object aliases. Species-class checkpoints are rejected rather than remapped.
 

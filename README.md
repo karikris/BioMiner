@@ -73,15 +73,15 @@ butterfly_classification_manifest.json
 butterfly_classification_qa_findings.parquet
 ```
 
-These files are derived from `taxa.parquet`, `source_snapshots.parquet`, and `manifest.json`. They are visual candidate-selection artifacts, not a second taxonomy authority. The accepted GBIF registry remains the identity source; the label tables are prompt inputs for Phase 3 BioCLIP text embeddings.
+These files are derived from `taxa.parquet`, `source_snapshots.parquet`, and `manifest.json`. They are visual candidate-selection artifacts, not a second taxonomy authority. The accepted GBIF registry remains the identity source; the label tables are prompt inputs for BioCLIP family-first classification and optional text-embedding caches.
 
-`hierarchical_butterfly_classification` is accepted for dry-run planning and, in non-dry scoring, validates the classification artifacts first. Phase 2 still stops after validation with a clear Phase 3-not-implemented message; it does not silently run target-scope scoring.
+`target_scope_object_screening` remains the default classification mode. `hierarchical_butterfly_classification` is now implemented as open visual classification, not target validation: BioCLIP scores YOLOE `butterfly_like` crops across configured butterfly families, records the top 3 families, selects the top family, scores only GBIF-derived species candidates in that family, records the top 20 species, then reranks all first-pass top-20 species into a top 5. Prompt-template scores are mean-aggregated by taxon. The hierarchical path never injects the run target species into reranking, and it writes conservative review-oriented evidence rather than pretending open-classification scores are target support.
 
 See [GBIF classification tables](docs/gbif_classification_tables.md) for schemas, build commands, validation behavior, and expected scale.
 
 The Mac M5 Pro / 64 GB profile is `mac_m5pro_64gb`: `device=mps`, YOLOE checkpoint `yoloe-26s-seg.pt`, YOLO image size `768`, detector batch size `16`, crop batch size `24`, crop target `336`, crop padding `0.08`, zstd Parquet parts, and delete-after-commit image cleanup. Production visual parts are written as immutable zstd Parquet objects such as `evidence/stage=detect_objects/run_id=<run_id>/worker=<worker_id>/part=<part_id>.parquet`.
 
-The core Python 3.14 environment keeps heavy vision dependencies optional. `vision detect --backend fake` is available for offline tests and deterministic local plumbing. YOLOE-26, explicit YOLO26 inference checkpoints, and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent. YOLOE/YOLO26 are object finders only; BioCLIP 2.5 Huge provides target/scope visual screening until the guarded hierarchical classifier is implemented.
+The core Python 3.14 environment keeps heavy vision dependencies optional. `vision detect --backend fake` is available for offline tests and deterministic local plumbing. YOLOE-26, explicit YOLO26 inference checkpoints, and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent. YOLOE/YOLO26 are object finders only; BioCLIP 2.5 Huge provides either target/scope screening or GBIF-backed open hierarchical classification after the object detector has proposed a crop.
 
 Production command shape:
 
@@ -138,10 +138,31 @@ uv run biominer run \
   --delete-images-after-commit
 ```
 
-Reserved future hierarchical command shape:
+Mac M5 Pro / 64 GB local hierarchical command shape:
 
 ```bash
-uv run biominer run \
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
+  --taxon "Papilionoidea" \
+  --rank family \
+  --registry-dir data/registry/current \
+  --output-prefix runs/local_debug/papilionoidea_hierarchical \
+  --storage-backend local \
+  --workstore-backend sqlite \
+  --vision-backend yoloe26 \
+  --vision-profile mac_m5pro_64gb \
+  --classification-mode hierarchical_butterfly_classification \
+  --taxonomy-candidate-table data/registry/current \
+  --device mps \
+  --family-top-k 3 \
+  --species-first-pass-top-k 20 \
+  --species-rerank-top-k 5 \
+  --delete-images-after-commit
+```
+
+Cloud/S3 hierarchical command shape:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
   --taxon "Papilionoidea" \
   --rank family \
   --registry-dir s3://biominer/biominer/registry/current \
@@ -152,16 +173,16 @@ uv run biominer run \
   --vision-profile mac_m5pro_64gb \
   --classification-mode hierarchical_butterfly_classification \
   --taxonomy-candidate-table s3://biominer/biominer/registry/current \
+  --device mps \
   --family-top-k 3 \
   --species-first-pass-top-k 20 \
   --species-rerank-top-k 5 \
-  --device mps \
   --delete-images-after-commit
 ```
 
 Individual `vision detect`, `vision score`, `vision ablate`, and `evidence join` commands are available for local stage debugging. They are not the production entry point; see `docs/vision_workflow.md` and `examples/species/papilio_demoleus/object_pipeline.md`.
 
-Object-level tables are not standalone silos. Every detection and score row keeps `source`, `flickr_photo_id`, and object-level `detection_id`/`crop_hash` where applicable. Geography is recorded as a soft prior and can route strong visual conflicts to review; it is not an absolute discard rule.
+Object-level tables are not standalone silos. Every detection and score row keeps `source`, `flickr_photo_id`, and object-level `detection_id`/`crop_hash` where applicable. Hierarchical rows include taxonomy table version, prompt variant version, selected family, species candidate counts, top-k accepted taxon keys, prompt/rerank metadata, and conservative review bins. Geography is recorded as a soft prior and can route strong visual conflicts to review; it is not an absolute discard rule.
 
 For the combined YOLOE-26 plus BioCLIP detector-crop prototype, see `docs/yoloe26_prototype.md`.
 

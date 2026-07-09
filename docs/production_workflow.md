@@ -76,7 +76,7 @@ Metadata filtering records metadata flags for review and routing. It does not pe
 
 BioCLIP is screening evidence only. The GBIF accepted taxonomic spine remains the production taxonomic identity, and geography is a candidate prior rather than validation.
 
-`target_scope_object_screening` is the current default classification mode. It scores detector crops against the run taxon scope and registry candidate-set context for target support screening. Output fields named `family_top3`, `species_top20`, and `species_top5` are screening fields, not taxonomic validation.
+`target_scope_object_screening` is the default classification mode. It scores detector crops against the run taxon scope and registry candidate-set context for target support screening. Output fields named `family_top3`, `species_top20`, and `species_top5` are screening fields, not taxonomic validation.
 
 Registry builds now emit GBIF-derived classification artifacts by default:
 
@@ -88,14 +88,35 @@ butterfly_classification_manifest.json
 butterfly_classification_qa_findings.parquet
 ```
 
-These files are derived from the accepted registry and are candidate-selection inputs only. `hierarchical_butterfly_classification` validates them in non-dry `score_bioclip`, then fails with the Phase 3-not-implemented message rather than running target-scope screening silently.
+These files are derived from the accepted registry and are candidate-selection inputs only. `hierarchical_butterfly_classification` now uses them for open classification: family top 3 across configured butterfly families, selected top family, species top 20 restricted to that family, and species top 5 reranked from all first-pass top-20 species. It never injects the run target species into hierarchical reranking and it keeps open-classification evidence separate from target-scope support.
 
 The Mac M5 Pro / 64 GB production profile is `mac_m5pro_64gb`. It uses `device=mps`, YOLOE checkpoint `yoloe-26s-seg.pt`, YOLO image size `768`, detector batch size `16`, BioCLIP crop batch size `24`, crop target `336`, crop padding `0.08`, zstd Parquet part files, and delete-after-commit cached image cleanup. Set `PYTORCH_ENABLE_MPS_FALLBACK=1` when running MPS sidecars.
 
-Reserved future hierarchical command shape:
+Local hierarchical command shape:
 
 ```bash
-uv run biominer run \
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
+  --taxon "Papilionoidea" \
+  --rank family \
+  --registry-dir data/registry/current \
+  --output-prefix runs/local_debug/papilionoidea_hierarchical \
+  --storage-backend local \
+  --workstore-backend sqlite \
+  --vision-backend yoloe26 \
+  --vision-profile mac_m5pro_64gb \
+  --classification-mode hierarchical_butterfly_classification \
+  --taxonomy-candidate-table data/registry/current \
+  --device mps \
+  --family-top-k 3 \
+  --species-first-pass-top-k 20 \
+  --species-rerank-top-k 5 \
+  --delete-images-after-commit
+```
+
+Cloud/S3 hierarchical command shape:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
   --taxon "Papilionoidea" \
   --rank family \
   --registry-dir s3://biominer/biominer/registry/current \
@@ -106,10 +127,10 @@ uv run biominer run \
   --vision-profile mac_m5pro_64gb \
   --classification-mode hierarchical_butterfly_classification \
   --taxonomy-candidate-table s3://biominer/biominer/registry/current \
+  --device mps \
   --family-top-k 3 \
   --species-first-pass-top-k 20 \
   --species-rerank-top-k 5 \
-  --device mps \
   --delete-images-after-commit
 ```
 

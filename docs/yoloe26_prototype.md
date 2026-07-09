@@ -1,8 +1,8 @@
 # YOLOE-26 Detector-First Prototype
 
-This prototype uses YOLOE-26 only as an open-vocabulary object proposal backend. BioCLIP 2.5 Huge provides target/scope visual screening until the guarded hierarchical classifier is implemented.
+This prototype uses YOLOE-26 only as an open-vocabulary object proposal backend. BioCLIP 2.5 Huge provides target/scope visual screening or GBIF-backed open hierarchical classification for eligible detector crops.
 
-The current default classification mode is `target_scope_object_screening`: BioCLIP scores YOLOE `butterfly_like` detector crops against target/scope candidate labels. Columns such as `family_top3`, `species_top20`, and `species_top5` are screening fields, not a completed family-first hierarchical classifier. The reserved `hierarchical_butterfly_classification` mode is guarded until the GBIF classification-table workflow is implemented.
+The default classification mode is `target_scope_object_screening`: BioCLIP scores YOLOE `butterfly_like` detector crops against target/scope candidate labels. `hierarchical_butterfly_classification` is implemented when GBIF-derived classification tables are supplied. It is open classification, not target validation: family top 3, selected top family, species top 20 within that family, and reranked species top 5 from all first-pass top-20 species. YOLOE remains only an object detector.
 
 ## Setup
 
@@ -114,6 +114,27 @@ uv run biominer dev vision yoloe26-prototype-run \
   --limit 10
 ```
 
+For open hierarchical scoring, use the production runner or direct `vision score` with the taxonomy artifacts:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
+  --taxon "Papilionoidea" \
+  --rank family \
+  --registry-dir data/registry/current \
+  --output-prefix runs/local_debug/papilionoidea_hierarchical \
+  --storage-backend local \
+  --workstore-backend sqlite \
+  --vision-backend yoloe26 \
+  --vision-profile mac_m5pro_64gb \
+  --classification-mode hierarchical_butterfly_classification \
+  --taxonomy-candidate-table data/registry/current \
+  --device mps \
+  --family-top-k 3 \
+  --species-first-pass-top-k 20 \
+  --species-rerank-top-k 5 \
+  --delete-images-after-commit
+```
+
 Expected outputs:
 
 ```text
@@ -146,7 +167,7 @@ Without `--image`, the command uses a synthetic placeholder and only validates r
 - YOLOE-26 is zero-shot/open-vocabulary. It can miss butterflies and can confuse leaf, flower, textile, or label regions with insects.
 - YOLOE-26 is not taxonomic validation. It only proposes object boxes.
 - Only YOLOE `butterfly_like` detections are sent to BioCLIP in the production detector-first path.
-- BioCLIP 2.5 Huge remains the target/scope screening scorer until the guarded hierarchical classifier is implemented.
+- BioCLIP 2.5 Huge provides target/scope screening or GBIF-backed open hierarchical classification after the detector gate.
 - Whole-image BioCLIP is an explicit ablation/debug mode, not the production default.
 - Metrics from `yoloe26-prototype-run` are labelled heuristic unless reviewed ground truth is supplied.
 - Model files, caches, downloaded Flickr images, and generated Parquet outputs must not be committed.
