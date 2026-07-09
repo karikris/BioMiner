@@ -8,6 +8,16 @@ import polars as pl
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION, TARGET_SCOPE_OBJECT_SCREENING
 
 
+CONFUSION_MATRIX_SCHEMA: dict[str, pl.DataType] = {
+    "true_key": pl.String,
+    "true_name": pl.String,
+    "predicted_key": pl.String,
+    "predicted_name": pl.String,
+    "count": pl.Int64,
+    "classification_mode": pl.String,
+}
+
+
 def evaluate_hierarchical_predictions(
     *,
     object_scores: pl.DataFrame,
@@ -120,6 +130,74 @@ def evaluate_hierarchical_predictions(
     }
 
 
+def family_confusion_matrix(
+    *,
+    object_scores: pl.DataFrame,
+    reviewed_labels: pl.DataFrame,
+) -> pl.DataFrame:
+    return _confusion_matrix(object_scores=object_scores, reviewed_labels=reviewed_labels, level="family")
+
+
+def species_confusion_matrix(
+    *,
+    object_scores: pl.DataFrame,
+    reviewed_labels: pl.DataFrame,
+    limit: int | None = None,
+) -> pl.DataFrame:
+    return _confusion_matrix(
+        object_scores=object_scores,
+        reviewed_labels=reviewed_labels,
+        level="species",
+        limit=limit,
+    )
+
+
+def _confusion_matrix(
+    *,
+    object_scores: pl.DataFrame,
+    reviewed_labels: pl.DataFrame,
+    level: str,
+    limit: int | None = None,
+) -> pl.DataFrame:
+    predictions = [
+        row
+        for row in object_scores.to_dicts()
+        if _text(row.get("classification_mode")) == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    ]
+    prediction_by_key = {_object_key(row): row for row in predictions if _has_object_key(row)}
+    predictions_by_photo: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in predictions:
+        predictions_by_photo.setdefault(_photo_key(row), []).append(row)
+
+    rows = []
+    for label in reviewed_labels.to_dicts():
+        prediction = _prediction_for_label(label, prediction_by_key, predictions_by_photo)
+        true_key, true_name = _true_confusion_taxon(label, level=level)
+        predicted_key, predicted_name = _predicted_confusion_taxon(prediction, level=level)
+        rows.append(
+            {
+                "true_key": true_key,
+                "true_name": true_name,
+                "predicted_key": predicted_key,
+                "predicted_name": predicted_name,
+                "classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+            }
+        )
+
+    if not rows:
+        return pl.DataFrame(schema=CONFUSION_MATRIX_SCHEMA)
+    grouped = (
+        pl.DataFrame(rows)
+        .group_by(["true_key", "true_name", "predicted_key", "predicted_name", "classification_mode"])
+        .len()
+        .rename({"len": "count"})
+        .sort(["count", "true_name", "predicted_name"], descending=[True, False, False])
+    )
+    if limit is not None:
+        grouped = grouped.head(max(0, int(limit)))
+    return _ensure_confusion_schema(grouped)
+
+
 def _prediction_for_label(
     label: Mapping[str, Any],
     prediction_by_key: Mapping[tuple[str, str, str], dict[str, Any]],
@@ -130,6 +208,34 @@ def _prediction_for_label(
         return prediction_by_key.get(_object_key(label))
     photo_predictions = predictions_by_photo.get(_photo_key(label), [])
     return photo_predictions[0] if len(photo_predictions) == 1 else None
+
+
+def _true_confusion_taxon(label: Mapping[str, Any], *, level: str) -> tuple[str, str]:
+    if not bool(label.get("is_butterfly")) or _text(label.get("label_level")) == "negative":
+        return "not_butterfly", "not_butterfly"
+    if level == "family":
+        return _taxon_or_missing(label.get("family_key"), label.get("family"), missing="missing_family_label")
+    return _taxon_or_missing(
+        label.get("accepted_taxon_key"),
+        label.get("scientific_name"),
+        missing="missing_species_label",
+    )
+
+
+def _predicted_confusion_taxon(prediction: Mapping[str, Any] | None, *, level: str) -> tuple[str, str]:
+    if prediction is None:
+        return "missing_prediction", "missing_prediction"
+    if level == "family":
+        return _taxon_or_missing(
+            prediction.get("selected_family_key"),
+            prediction.get("selected_family") or prediction.get("family_top1"),
+            missing="missing_prediction",
+        )
+    return _taxon_or_missing(
+        prediction.get("species_top1_accepted_taxon_key") or prediction.get("accepted_taxon_key"),
+        prediction.get("species_top1_scientific_name") or prediction.get("species_top1"),
+        missing="missing_prediction",
+    )
 
 
 def _family_top1_correct(label: Mapping[str, Any], prediction: Mapping[str, Any]) -> bool:
@@ -238,6 +344,23 @@ def _has_butterfly_prediction(prediction: Mapping[str, Any]) -> bool:
     )
 
 
+def _taxon_or_missing(key: object, name: object, *, missing: str) -> tuple[str, str]:
+    taxon_key = _text(key)
+    taxon_name = _text(name)
+    if not taxon_key and not taxon_name:
+        return missing, missing
+    return taxon_key or taxon_name, taxon_name or taxon_key
+
+
+def _ensure_confusion_schema(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty() and not frame.columns:
+        return pl.DataFrame(schema=CONFUSION_MATRIX_SCHEMA)
+    expressions = []
+    for column, dtype in CONFUSION_MATRIX_SCHEMA.items():
+        expressions.append(pl.col(column).cast(dtype).alias(column))
+    return frame.with_columns(expressions).select(list(CONFUSION_MATRIX_SCHEMA))
+
+
 def _as_list(value: object) -> list[object]:
     if value is None:
         return []
@@ -282,4 +405,9 @@ def _text(value: object) -> str:
     return " ".join(str(value or "").strip().split())
 
 
-__all__ = ["evaluate_hierarchical_predictions"]
+__all__ = [
+    "CONFUSION_MATRIX_SCHEMA",
+    "evaluate_hierarchical_predictions",
+    "family_confusion_matrix",
+    "species_confusion_matrix",
+]
