@@ -172,6 +172,43 @@ If a taxonomy text embedding cache has already been prepared and validated for t
   --taxonomy-text-embedding-cache data/registry/current/butterfly_taxonomy_text_embeddings.parquet
 ```
 
+## Post-Run Evaluation
+
+After a local hierarchical run writes `object_evidence_joined.parquet`, evaluate it against reviewed labels:
+
+```bash
+uv run biominer evaluation classify \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --reviewed-labels data/reviewed/papilionoidea_reviewed_labels.parquet \
+  --output-dir reports/evaluation/papilionoidea_hierarchical \
+  --write-charts
+```
+
+The evaluation step is model-free and should run in the main Python 3.14 environment. It reports family top1/top3, selected-family accuracy, species top1/top5/top20, MRR, family/species confusion matrices, heuristic calibration bins, review-error examples, and optional PNG charts. Human-reviewed labels are required for biological accuracy claims; synthetic fixtures only prove arithmetic, schema, and regression behavior.
+
+Build or refresh the local review queue when inspecting artifacts outside a full `biominer run summarize` stage:
+
+```bash
+uv run biominer evaluation review-queue \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --photo-summary runs/local_debug/papilionoidea_hierarchical/photo_evidence_summary.parquet \
+  --output reports/review_queue.parquet
+```
+
+The queue ranks low-margin, conflicting, missing-score, hard-negative, metadata-conflict, multi-object, and geospatial-prior cases for human inspection. It is not truth data.
+
+Run Xie-style metrics only as an evaluation profile:
+
+```bash
+uv run biominer evaluation classify \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --reviewed-labels data/reviewed/papilionoidea_reviewed_labels.parquet \
+  --output-dir reports/evaluation/papilionoidea_hierarchical \
+  --evaluation-profile xie_style_metrics_only
+```
+
+Xie-style here means report macro/micro/per-family/top-k metrics over BioMiner outputs. It does not replace the detector-first architecture, and BioCLIP scores remain candidate-set-relative rather than calibrated probabilities.
+
 ## Conservative Fallback Run
 
 Use this when MPS memory pressure appears during live runs. Adaptive batching is opt-in and only retries conservative memory/device failures.

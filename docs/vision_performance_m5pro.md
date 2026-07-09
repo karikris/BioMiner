@@ -111,6 +111,40 @@ Both paths:
 
 For operator commands, fallback settings, and troubleshooting, see `docs/m5pro_64gb_runbook.md`.
 
+## Phase 5 Evaluation Boundary
+
+Performance benchmarks are not biological accuracy evidence. After a live or local hierarchical run, evaluate saved artifacts with reviewed labels:
+
+```bash
+uv run biominer evaluation classify \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --reviewed-labels data/reviewed/papilionoidea_reviewed_labels.parquet \
+  --output-dir reports/evaluation/papilionoidea_hierarchical
+```
+
+For local visual diagnostics, add `--write-charts`. The chart writer uses matplotlib only and writes PNGs beside the JSON, Parquet, and Markdown report artifacts.
+
+Build a local review queue from the same object/photo evidence when triaging failures:
+
+```bash
+uv run biominer evaluation review-queue \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --photo-summary runs/local_debug/papilionoidea_hierarchical/photo_evidence_summary.parquet \
+  --output reports/review_queue.parquet
+```
+
+Run Xie-style metrics as a profile over BioMiner outputs:
+
+```bash
+uv run biominer evaluation classify \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --reviewed-labels data/reviewed/papilionoidea_reviewed_labels.parquet \
+  --output-dir reports/evaluation/papilionoidea_hierarchical \
+  --evaluation-profile xie_style_metrics_only
+```
+
+This does not alter the architecture or classifier semantics. Review queues are prioritisation artifacts, BioCLIP scores are candidate-set-relative, and model-free tests validate pipeline logic rather than real-world biological performance.
+
 ## Intentionally Not Implemented In Phase 4
 
 - YOLO training or reviewed-box storage.

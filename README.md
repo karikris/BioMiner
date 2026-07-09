@@ -97,6 +97,42 @@ See [vision workflow](docs/vision_workflow.md), [M5 Pro performance note](docs/v
 
 The core Python 3.14 environment keeps heavy vision dependencies optional. `vision detect --backend fake` is available for offline tests and deterministic local plumbing. YOLOE-26, explicit YOLO26 inference checkpoints, and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent. YOLOE/YOLO26 are object finders only; BioCLIP 2.5 Huge provides either target/scope screening or GBIF-backed open hierarchical classification after the object detector has proposed a crop.
 
+## Evaluation And QA
+
+Evaluate an existing hierarchical run from joined object evidence and reviewed labels:
+
+```bash
+uv run biominer evaluation classify \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --reviewed-labels data/reviewed/papilionoidea_reviewed_labels.parquet \
+  --output-dir reports/evaluation/papilionoidea_hierarchical
+```
+
+Add `--write-charts` for local PNG charts: family confusion matrix, species accuracy by reviewed family, calibration reliability, and review reason counts. Charts are local-only; S3 evaluation reports write JSON, Parquet, and Markdown artifacts.
+
+Build a standalone hierarchical review queue from local artifacts:
+
+```bash
+uv run biominer evaluation review-queue \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --photo-summary runs/local_debug/papilionoidea_hierarchical/photo_evidence_summary.parquet \
+  --output reports/review_queue.parquet
+```
+
+Production `biominer run` also writes `reports/review_queue.parquet` or an immutable cloud review-queue shard during `summarize`. The queue is a prioritisation artifact, not truth data.
+
+Run the Xie-style metrics profile without changing BioMiner's YOLOE-26 plus BioCLIP architecture:
+
+```bash
+uv run biominer evaluation classify \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --reviewed-labels data/reviewed/papilionoidea_reviewed_labels.parquet \
+  --output-dir reports/evaluation/papilionoidea_hierarchical \
+  --evaluation-profile xie_style_metrics_only
+```
+
+Xie-style means a metrics profile only. BioCLIP scores are candidate-set-relative, human-reviewed labels are required for real accuracy claims, and model-free tests validate logic rather than biological performance.
+
 Production command shape:
 
 ```bash
@@ -886,7 +922,7 @@ Step 2 does not make final species decisions.
 
 # Step 3 — BioCLIP 2.5 object scoring
 
-BioCLIP uses temporary image downloads and object-first scoring against registry-derived species contexts and candidate sets. YOLOE/YOLO26 provides coarse object proposals only; the current default BioCLIP mode is target/scope screening, not a completed family-first hierarchical classifier.
+BioCLIP uses temporary image downloads and object-first scoring against registry-derived species contexts, target/scope candidate sets, or GBIF-derived hierarchical classification tables. YOLOE/YOLO26 provides coarse object proposals only; the current default BioCLIP mode is target/scope screening, and `hierarchical_butterfly_classification` is the explicit family-first open-classification mode.
 
 BioCLIP 2.5 Huge runs through a separate Python 3.12 sidecar environment:
 

@@ -29,6 +29,7 @@ def test_evaluation_classify_parser_accepts_object_scores_command() -> None:
     assert args.object_evidence is None
     assert args.storage_backend == "local"
     assert args.write_charts is False
+    assert args.evaluation_profile == "standard"
 
 
 def test_evaluation_classify_parser_accepts_write_charts() -> None:
@@ -47,6 +48,46 @@ def test_evaluation_classify_parser_accepts_write_charts() -> None:
     )
 
     assert args.write_charts is True
+
+
+def test_evaluation_classify_parser_accepts_xie_style_profile() -> None:
+    args = build_parser().parse_args(
+        [
+            "evaluation",
+            "classify",
+            "--object-scores",
+            "runs/example/object_bioclip_scores.parquet",
+            "--reviewed-labels",
+            "tests/fixtures/evaluation/reviewed_labels_valid.jsonl",
+            "--output-dir",
+            "reports/evaluation/example",
+            "--evaluation-profile",
+            "xie_style_metrics_only",
+        ]
+    )
+
+    assert args.evaluation_profile == "xie_style_metrics_only"
+
+
+def test_evaluation_review_queue_parser_accepts_object_evidence_command() -> None:
+    args = build_parser().parse_args(
+        [
+            "evaluation",
+            "review-queue",
+            "--object-evidence",
+            "runs/example/object_evidence_joined.parquet",
+            "--photo-summary",
+            "runs/example/photo_evidence_summary.parquet",
+            "--output",
+            "reports/review_queue.parquet",
+        ]
+    )
+
+    assert args.command == "evaluation"
+    assert args.evaluation_command == "review-queue"
+    assert args.object_evidence == "runs/example/object_evidence_joined.parquet"
+    assert args.photo_summary == "runs/example/photo_evidence_summary.parquet"
+    assert args.output == "reports/review_queue.parquet"
 
 
 def test_evaluation_classify_missing_input_path_fails_clearly(tmp_path, capsys) -> None:
@@ -174,6 +215,63 @@ def test_evaluation_classify_command_writes_report_from_object_evidence(tmp_path
     assert (output / "evaluation_summary.md").exists()
     assert (output / "family_confusion_matrix.parquet").exists()
     assert (output / "species_confusion_matrix.parquet").exists()
+
+
+def test_evaluation_classify_command_writes_xie_profile_artifact(tmp_path, capsys) -> None:
+    object_scores = tmp_path / "object_bioclip_scores.parquet"
+    labels = tmp_path / "reviewed_labels.parquet"
+    output = tmp_path / "evaluation"
+    pl.DataFrame([_prediction()]).write_parquet(object_scores)
+    pl.DataFrame([_label()]).write_parquet(labels)
+    args = build_parser().parse_args(
+        [
+            "evaluation",
+            "classify",
+            "--object-scores",
+            str(object_scores),
+            "--reviewed-labels",
+            str(labels),
+            "--output-dir",
+            str(output),
+            "--evaluation-profile",
+            "xie_style_metrics_only",
+        ]
+    )
+
+    assert run(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    profile_path = output / "xie_style_metrics.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+
+    assert payload["evaluation_profile"] == "xie_style_metrics_only"
+    assert payload["paths"]["xie_style_metrics"] == str(profile_path)
+    assert profile["evaluation_profile"] == "xie_style_metrics_only"
+    assert profile["architecture"] == "biominer_yoloe26_bioclip25_hierarchical"
+
+
+def test_evaluation_review_queue_command_writes_parquet(tmp_path, capsys) -> None:
+    object_evidence = tmp_path / "object_evidence_joined.parquet"
+    output = tmp_path / "review_queue.parquet"
+    pl.DataFrame([_prediction()]).write_parquet(object_evidence)
+    args = build_parser().parse_args(
+        [
+            "evaluation",
+            "review-queue",
+            "--object-evidence",
+            str(object_evidence),
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert run(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    queue = pl.read_parquet(output)
+
+    assert payload["status"] == "complete"
+    assert payload["review_queue_rows"] == 1
+    assert payload["review_reason_counts"] == {"clean_confident_prediction": 1}
+    assert queue.to_dicts()[0]["review_reason"] == "clean_confident_prediction"
 
 
 def test_evaluation_classify_command_writes_report_to_s3_storage(monkeypatch, capsys) -> None:

@@ -143,11 +143,62 @@ Phase 5 evaluation reports should be model-free once prediction artifacts exist.
 - `family_confusion_matrix.parquet`
 - `species_confusion_matrix.parquet`
 - `evaluation_summary.md`
-- optional `calibration_bins.parquet`
-- optional `review_error_examples.parquet`
-- optional charts only when requested
+- `calibration_bins.parquet`
+- `review_error_examples.parquet`
+- optional charts only when requested:
+  - `family_confusion_matrix.png`
+  - `species_accuracy_by_family.png`
+  - `calibration_reliability.png`
+  - `review_reason_counts.png`
 
 Report metadata should include run id, classification mode, taxonomy table version, prompt variant version, BioCLIP model/checkpoint when present, input paths, reviewed-label schema version, row counts, metric counts, limitations, and artifact paths.
+
+Local evaluation command:
+
+```bash
+uv run biominer evaluation classify \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --reviewed-labels data/reviewed/papilionoidea_reviewed_labels.parquet \
+  --output-dir reports/evaluation/papilionoidea_hierarchical
+```
+
+Use `--object-scores` instead of `--object-evidence` when evaluating raw BioCLIP object-score output. Use `--write-charts` only for local report directories when PNG diagnostics are needed.
+
+Cloud evaluation command shape:
+
+```bash
+uv run biominer evaluation classify \
+  --object-evidence s3://biominer/biominer/runs/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --reviewed-labels s3://biominer/biominer/reviewed/papilionoidea_reviewed_labels.parquet \
+  --output-dir s3://biominer/biominer/reports/evaluation/papilionoidea_hierarchical \
+  --storage-backend s3 \
+  --config config/production.toml
+```
+
+S3 evaluation writes JSON, Parquet, and Markdown artifacts. Charts are intentionally local-only until the storage layer grows binary image writes.
+
+Standalone local review-queue command:
+
+```bash
+uv run biominer evaluation review-queue \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --photo-summary runs/local_debug/papilionoidea_hierarchical/photo_evidence_summary.parquet \
+  --output reports/review_queue.parquet
+```
+
+The queue prioritises human review; it is not an accuracy label set and must not be treated as taxonomic truth. Production `summarize` writes this artifact automatically for run outputs.
+
+Xie-style metrics command:
+
+```bash
+uv run biominer evaluation classify \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --reviewed-labels data/reviewed/papilionoidea_reviewed_labels.parquet \
+  --output-dir reports/evaluation/papilionoidea_hierarchical \
+  --evaluation-profile xie_style_metrics_only
+```
+
+This adds `xie_style_metrics.json`. It is a metrics profile only and does not mutate classifier outputs, replace BioMiner architecture, or alter the family-first candidate-selection rules.
 
 ## Regression Fixtures
 

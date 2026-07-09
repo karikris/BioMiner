@@ -143,6 +143,42 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision benchmark-live-m5pro \
 
 Adaptive batching is off by default. Enable `--adaptive-batching` only under memory pressure; conservative memory/device errors can reduce YOLO and BioCLIP batch sizes while non-memory errors still fail normally. Large hierarchical runs should prefer a validated `--taxonomy-text-embedding-cache` so species prompt embeddings are reused instead of recomputed.
 
+## Evaluation And Review QA
+
+Evaluation runs after detector/BioCLIP artifacts already exist. It is model-free: it reads object scores or joined object evidence plus reviewed labels and writes metrics, confusion matrices, calibration bins, review-error examples, and a Markdown summary.
+
+```bash
+uv run biominer evaluation classify \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --reviewed-labels data/reviewed/papilionoidea_reviewed_labels.parquet \
+  --output-dir reports/evaluation/papilionoidea_hierarchical
+```
+
+Use `--write-charts` only for local output directories when PNG charts are needed. The chart set is family confusion matrix, species accuracy by reviewed family, calibration reliability, and review reason counts.
+
+Build a local hierarchical review queue from object evidence and optional photo summaries:
+
+```bash
+uv run biominer evaluation review-queue \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --photo-summary runs/local_debug/papilionoidea_hierarchical/photo_evidence_summary.parquet \
+  --output reports/review_queue.parquet
+```
+
+The production `summarize` stage writes the same kind of review-priority artifact automatically. Review queues rank uncertainty, conflict, and missing-score cases; they do not certify species truth.
+
+Run Xie-style metrics as a reporting profile:
+
+```bash
+uv run biominer evaluation classify \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --reviewed-labels data/reviewed/papilionoidea_reviewed_labels.parquet \
+  --output-dir reports/evaluation/papilionoidea_hierarchical \
+  --evaluation-profile xie_style_metrics_only
+```
+
+Xie-style here means macro/micro/per-family/top-k metrics for BioMiner outputs. It does not replace YOLOE-26, BioCLIP 2.5, GBIF candidate tables, or hierarchical candidate selection. BioCLIP scores remain candidate-set-relative, so reviewed labels are required for accuracy claims.
+
 ## Optional Runtimes
 
 The main BioMiner package stays on Python 3.14. Heavy vision libraries run from Python 3.12 sidecar environments outside the repository:

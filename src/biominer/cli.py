@@ -63,7 +63,10 @@ from biominer.detection.policy import (
 )
 from biominer.detection.segmentation import make_segmenter
 from biominer.evaluation.labels import read_reviewed_labels, validate_reviewed_label_frame
+from biominer.evaluation.review_queue import build_hierarchical_review_queue
 from biominer.evaluation.reports import write_evaluation_report, write_evaluation_report_to_storage
+from biominer.evaluation.xie_style import EVALUATION_PROFILE as XIE_STYLE_EVALUATION_PROFILE
+from biominer.evaluation.xie_style import evaluate_xie_style_hierarchical
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_comments.comment_review import (
     CommentReviewState,
@@ -96,9 +99,12 @@ from biominer.secrets_loader import load_runtime_secrets_env
 from biominer.species.context import SpeciesContext
 from biominer.config import ConfigError, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
 from biominer.storage.factory import create_storage_backend
+from biominer.storage.parquet import write_parquet
 from biominer.storage.uri import is_cloud_uri, join_uri, normalize_local_uri
 
 
+STANDARD_EVALUATION_PROFILE = "standard"
+XIE_STYLE_METRICS_FILE = "xie_style_metrics.json"
 BIOCLIP_25_HUGE_REPO_ID = "imageomics/bioclip-2.5-vith14"
 BIOCLIP_25_HUGE_REVISION = "191d741545e4c741cdef4b22c6eb69c945c1e592"
 BIOMINER_BASE_PATH = BASE_PATH
@@ -260,6 +266,16 @@ def build_parser() -> argparse.ArgumentParser:
     evaluation_classify.add_argument("--storage-backend", choices=("local", "s3"), default="local")
     evaluation_classify.add_argument("--config")
     evaluation_classify.add_argument("--write-charts", action="store_true")
+    evaluation_classify.add_argument(
+        "--evaluation-profile",
+        choices=(STANDARD_EVALUATION_PROFILE, XIE_STYLE_EVALUATION_PROFILE),
+        default=STANDARD_EVALUATION_PROFILE,
+    )
+    evaluation_review_queue = evaluation_subparsers.add_parser("review-queue")
+    evaluation_review_queue.add_argument("--object-evidence", required=True)
+    evaluation_review_queue.add_argument("--photo-summary")
+    evaluation_review_queue.add_argument("--output", required=True)
+    evaluation_review_queue.add_argument("--max-rows", type=int)
     registry = subparsers.add_parser("registry")
     registry_subparsers = registry.add_subparsers(dest="registry_command")
     registry_build = registry_subparsers.add_parser("build")
@@ -889,6 +905,8 @@ def _run_dev_flickr_command(args: argparse.Namespace) -> int:
 def _run_evaluation_command(args: argparse.Namespace) -> int:
     if args.evaluation_command == "classify":
         return _run_evaluation_classify(args)
+    if args.evaluation_command == "review-queue":
+        return _run_evaluation_review_queue(args)
     return 2
 
 
@@ -949,6 +967,21 @@ def _run_evaluation_classify(args: argparse.Namespace) -> int:
             write_charts=bool(getattr(args, "write_charts", False)),
         )
         metrics = storage.read_json(paths["metrics"])
+    evaluation_profile = str(getattr(args, "evaluation_profile", STANDARD_EVALUATION_PROFILE))
+    if evaluation_profile == XIE_STYLE_EVALUATION_PROFILE:
+        xie_metrics = evaluate_xie_style_hierarchical(
+            object_scores=object_scores,
+            reviewed_labels=reviewed_labels,
+        )
+        if storage is None:
+            xie_path = str(output_dir / XIE_STYLE_METRICS_FILE)
+            xie_output = Path(xie_path)
+            xie_output.parent.mkdir(parents=True, exist_ok=True)
+            xie_output.write_text(json.dumps(xie_metrics, indent=2, sort_keys=True), encoding="utf-8")
+        else:
+            xie_path = join_uri(args.output_dir, XIE_STYLE_METRICS_FILE)
+            storage.write_json(xie_path, xie_metrics)
+        paths["xie_style_metrics"] = xie_path
     payload = {
         "status": "complete",
         "storage_backend": storage_backend,
@@ -956,6 +989,7 @@ def _run_evaluation_classify(args: argparse.Namespace) -> int:
         "input_path": input_uri,
         "reviewed_labels": labels_uri,
         "output_dir": str(args.output_dir),
+        "evaluation_profile": evaluation_profile,
         "write_charts": bool(getattr(args, "write_charts", False)),
         "paths": paths,
         "metrics": {
@@ -971,6 +1005,39 @@ def _run_evaluation_classify(args: argparse.Namespace) -> int:
             "finding_count": len(label_findings),
             "warning_count": sum(1 for finding in label_findings if finding.get("severity") == "warning"),
         },
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_evaluation_review_queue(args: argparse.Namespace) -> int:
+    try:
+        if args.max_rows is not None and args.max_rows < 0:
+            raise ValueError("--max-rows must be non-negative")
+        object_evidence = _read_local_evaluation_parquet(str(args.object_evidence), "object-evidence")
+        photo_summary = None
+        if args.photo_summary:
+            photo_summary = _read_local_evaluation_parquet(str(args.photo_summary), "photo-summary")
+        _raise_if_cloud_uri_for_local_backend("output", str(args.output))
+        output = normalize_local_uri(args.output)
+        queue = build_hierarchical_review_queue(
+            object_evidence=object_evidence,
+            photo_summary=photo_summary,
+            max_rows=args.max_rows,
+        )
+        write_parquet(queue, output)
+    except (FileNotFoundError, RuntimeError, ValueError, pl.exceptions.PolarsError) as exc:
+        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+        return 2
+
+    payload = {
+        "status": "complete",
+        "input_path": str(args.object_evidence),
+        "photo_summary": str(args.photo_summary) if args.photo_summary else None,
+        "output": str(output),
+        "review_queue_rows": queue.height,
+        "review_priority_counts": _value_counts(queue, "review_priority"),
+        "review_reason_counts": _value_counts(queue, "review_reason"),
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0

@@ -173,3 +173,39 @@ vision_stage_summary.md
 ```
 
 These reports expose detector skip counts, eligible BioCLIP detections, selected family counts, species top-1 counts, batching settings, adaptive retries, throughput estimates, and cache-use flags. `bioclip_counts.objects_scored` should remain tied to eligible `butterfly_like` detections rather than all canonical source records.
+
+## Evaluation And QA Reports
+
+Production summaries write review queues as run artifacts. Local runs write `reports/review_queue.parquet`; cloud runs write immutable review-queue shards and record them in the manifest. These rows are review priorities, not taxonomic truth or occurrence publication records.
+
+Evaluate a completed hierarchical run against human-reviewed labels:
+
+```bash
+uv run biominer evaluation classify \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --reviewed-labels data/reviewed/papilionoidea_reviewed_labels.parquet \
+  --output-dir reports/evaluation/papilionoidea_hierarchical
+```
+
+The report writer emits `evaluation_metrics.json`, family/species confusion matrices, `calibration_bins.parquet`, `review_error_examples.parquet`, and `evaluation_summary.md`. Add `--write-charts` for local PNG charts. BioCLIP scores are candidate-set-relative, so calibration is a review-prioritisation signal rather than absolute biological confidence.
+
+Build a local standalone review queue when inspecting artifacts outside a full production `summarize` run:
+
+```bash
+uv run biominer evaluation review-queue \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --photo-summary runs/local_debug/papilionoidea_hierarchical/photo_evidence_summary.parquet \
+  --output reports/review_queue.parquet
+```
+
+Run the Xie-style metrics profile against the same BioMiner outputs:
+
+```bash
+uv run biominer evaluation classify \
+  --object-evidence runs/local_debug/papilionoidea_hierarchical/object_evidence_joined.parquet \
+  --reviewed-labels data/reviewed/papilionoidea_reviewed_labels.parquet \
+  --output-dir reports/evaluation/papilionoidea_hierarchical \
+  --evaluation-profile xie_style_metrics_only
+```
+
+Xie-style is a metrics profile only. It does not change the production architecture, does not score all images with BioCLIP, and does not replace GBIF-derived candidate scope. Human-reviewed labels are required for real accuracy claims; synthetic fixtures only validate metric and QA logic.
