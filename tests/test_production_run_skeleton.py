@@ -13,7 +13,14 @@ from biominer.bioclip.classification_modes import (
     TARGET_SCOPE_OBJECT_SCREENING,
 )
 from biominer.bioclip.hierarchical_classifier import HIERARCHICAL_SPECIES_RERANK_STRATEGY
+from biominer.bioclip.candidate_sets import build_candidate_set_for_taxon_scope
+from biominer.bioclip.cloud_work import (
+    bioclip_score_batch_id,
+    enqueue_bioclip_work_from_detection_shards,
+)
+from biominer.detection.cloud_work import detection_batch_id, detection_work_item
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
+from biominer.detection.policy import DetectionPolicy
 from biominer.evidence import build_object_evidence_frames, build_review_queue, evidence_count_metrics
 from biominer.evidence.join import write_object_evidence_outputs
 from biominer.registry.classification_table import PROMPT_VARIANT_VERSION, build_classification_tables_from_registry_dir
@@ -38,6 +45,7 @@ from biominer.run import (
     resolve_taxon_scope_from_registry,
     resolve_taxon_scope_from_registry_frames,
 )
+from biominer.storage.shard_paths import build_parquet_part_uri
 from biominer.species.context import CommonName, SpeciesContext
 from biominer.storage.parquet import ParquetPartWrite
 from biominer.workstore.sqlite import SQLiteWorkStore
@@ -1688,6 +1696,89 @@ def test_orchestrator_detects_objects_from_cloud_storage(tmp_path) -> None:
     assert shards[0]["metadata"]["part_written"] is True
 
 
+def test_orchestrator_reuses_registered_cloud_detection_part(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    storage = _FakeRunStorage()
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root="s3://biominer/runs",
+        stages=(RunStage.DETECT_OBJECTS,),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
+    canonical, detections, _ = _join_stage_input_frames()
+    source_uri = plan.artifact_uris.staging_uri + "/evidence/stage=poll_flickr/run_id=species_danaus_plexippus/worker=poller/batch=001.parquet"
+    storage.parquet_payloads[source_uri] = canonical
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        stage=RunStage.POLL_FLICKR.value,
+        run_id=plan.manifest.run_id,
+        worker_id="poller",
+        uri=source_uri,
+        checksum=None,
+        row_count=canonical.height,
+    )
+    detector = _RaisingObjectDetector()
+    policy = request.vision_settings.to_detection_policy(DetectionPolicy(backend=detector.backend))
+    source_record = canonical.to_dicts()[0]
+    work_payload = detection_work_item(
+        source_record,
+        run_id=plan.manifest.run_id,
+        source_shard_uri=source_uri,
+        detector={
+            "backend": detector.backend,
+            "model_id": detector.model_id,
+            "model_version": detector.model_version,
+            "checkpoint": detector.checkpoint,
+        },
+        detection_policy=policy,
+        vision_settings=request.vision_settings,
+    )
+    part_id = detection_batch_id([{"work_key": work_payload["work_key"], "payload": work_payload}])
+    detection_uri = build_parquet_part_uri(
+        plan.artifact_uris.staging_uri,
+        stage=RunStage.DETECT_OBJECTS.value,
+        run_id=plan.manifest.run_id,
+        worker_id=request.worker_id,
+        part_id=part_id,
+    )
+    storage.parquet_payloads[detection_uri] = detections
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        stage=RunStage.DETECT_OBJECTS.value,
+        run_id=plan.manifest.run_id,
+        worker_id=request.worker_id,
+        uri=detection_uri,
+        checksum=None,
+        row_count=detections.height,
+        metadata={"part_id": part_id, "part_written": True},
+    )
+
+    result = ProductionRunOrchestrator(
+        request,
+        taxon_scope=scope,
+        storage=storage,
+        workstore=workstore,
+        object_detector=detector,
+        image_loader=lambda _record: (_ for _ in ()).throw(AssertionError("image loader should not run")),
+    ).run()
+
+    assert result.manifest.status == "complete"
+    assert result.manifest.stages[0].outputs["object_detections"] == detection_uri
+    assert result.manifest.stages[0].metrics["workstore_shard_reused"] is True
+    assert result.manifest.stages[0].metrics["parquet_parts_reused"] == 1
+    assert result.manifest.stages[0].metrics["workstore_work_items_completed"] == 1
+    work_items = workstore.list_work_items(
+        job_name="biominer_production_run",
+        stage=RunStage.DETECT_OBJECTS.value,
+        registry_version=scope.registry_version,
+    )
+    assert [item["status"] for item in work_items] == ["completed"]
+
+
 def test_orchestrator_cloud_detect_keeps_loaded_image_when_shard_registration_fails(tmp_path, monkeypatch) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     storage = _FakeRunStorage()
@@ -1885,6 +1976,113 @@ def test_orchestrator_scores_bioclip_from_cloud_storage(tmp_path) -> None:
     assert [shard["uri"] for shard in shards] == [score_uri]
     assert shards[0]["metadata"]["parquet_compression"] == "zstd"
     assert shards[0]["metadata"]["part_written"] is True
+
+
+def test_orchestrator_reuses_registered_cloud_bioclip_part(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    storage = _FakeRunStorage()
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root="s3://biominer/runs",
+        stages=(RunStage.SCORE_BIOCLIP,),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
+    canonical, detections, scores = _join_stage_input_frames()
+    source_uri = plan.artifact_uris.staging_uri + "/evidence/stage=poll_flickr/run_id=species_danaus_plexippus/worker=poller/batch=001.parquet"
+    detection_uri = plan.artifact_uris.staging_uri + "/evidence/stage=detect_objects/run_id=species_danaus_plexippus/worker=detector/batch=001.parquet"
+    storage.parquet_payloads[source_uri] = canonical
+    storage.parquet_payloads[detection_uri] = detections
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        stage=RunStage.POLL_FLICKR.value,
+        run_id=plan.manifest.run_id,
+        worker_id="poller",
+        uri=source_uri,
+        checksum=None,
+        row_count=canonical.height,
+    )
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        stage=RunStage.DETECT_OBJECTS.value,
+        run_id=plan.manifest.run_id,
+        worker_id="detector",
+        uri=detection_uri,
+        checksum=None,
+        row_count=detections.height,
+    )
+    candidate_set = build_candidate_set_for_taxon_scope(
+        scope,
+        target_context=scope.species_contexts[0],
+        allow_single_target_fixture=True,
+    )
+    scorer = _RaisingObjectScorer()
+    enqueue_bioclip_work_from_detection_shards(
+        storage=storage,
+        workstore=workstore,
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        run_id=plan.manifest.run_id,
+        detection_stage=RunStage.DETECT_OBJECTS.value,
+        score_stage=RunStage.SCORE_BIOCLIP.value,
+        model_id=scorer.model_id,
+        model_version=scorer.model_version,
+        model_checkpoint=scorer.model_checkpoint,
+        candidate_set_id=candidate_set.candidate_set_id,
+        classification_mode=request.classification_mode,
+        family_top_k=request.family_top_k,
+        species_first_pass_top_k=request.species_first_pass_top_k,
+        species_rerank_top_k=request.species_rerank_top_k,
+    )
+    queued = workstore.list_work_items(
+        job_name="biominer_production_run",
+        stage=RunStage.SCORE_BIOCLIP.value,
+        registry_version=scope.registry_version,
+    )
+    part_id = bioclip_score_batch_id(queued)
+    score_uri = build_parquet_part_uri(
+        plan.artifact_uris.staging_uri,
+        stage=RunStage.SCORE_BIOCLIP.value,
+        run_id=plan.manifest.run_id,
+        worker_id=request.worker_id,
+        part_id=part_id,
+    )
+    storage.parquet_payloads[score_uri] = scores
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        stage=RunStage.SCORE_BIOCLIP.value,
+        run_id=plan.manifest.run_id,
+        worker_id=request.worker_id,
+        uri=score_uri,
+        checksum=None,
+        row_count=scores.height,
+        metadata={"part_id": part_id, "part_written": True},
+    )
+
+    result = ProductionRunOrchestrator(
+        request,
+        taxon_scope=scope,
+        storage=storage,
+        workstore=workstore,
+        object_scorer=scorer,
+        allow_single_target_fixture=True,
+    ).run()
+
+    assert result.manifest.status == "complete"
+    assert result.manifest.stages[0].outputs["object_scores"] == score_uri
+    assert result.manifest.stages[0].metrics["workstore_shard_reused"] is True
+    assert result.manifest.stages[0].metrics["parquet_parts_reused"] == 1
+    assert result.manifest.stages[0].metrics["workstore_work_items_completed"] == 1
+    work_items = workstore.list_work_items(
+        job_name="biominer_production_run",
+        stage=RunStage.SCORE_BIOCLIP.value,
+        registry_version=scope.registry_version,
+    )
+    assert [item["status"] for item in work_items] == ["completed"]
 
 
 def test_production_cloud_run_does_not_write_durable_local_artifacts(monkeypatch, tmp_path) -> None:
@@ -2413,6 +2611,28 @@ class _ConstantObjectScorer:
 
     def score(self, _item: dict[str, object], labels: tuple[str, ...]) -> dict[str, float]:
         return {label: float(self.scores.get(label, 0.0)) for label in labels}
+
+
+class _RaisingObjectDetector:
+    backend = "fake"
+    model_id = "fake-detector"
+    model_version = "test"
+    checkpoint = "fake-checkpoint"
+
+    def detect_batch(self, _images):  # noqa: ANN001, ANN202 - mirrors object detector protocol.
+        raise AssertionError("detector should not run")
+
+
+class _RaisingObjectScorer:
+    model_id = "fake-bioclip"
+    model_version = "test"
+    model_checkpoint = "fake-checkpoint"
+
+    def score(self, _item: dict[str, object], _labels: tuple[str, ...]) -> dict[str, float]:
+        raise AssertionError("BioCLIP scorer should not run")
+
+    def score_label_sets_batch(self, _items, _label_sets):  # noqa: ANN001, ANN202 - mirrors object scorer protocol.
+        raise AssertionError("BioCLIP batch scorer should not run")
 
 
 class _HierarchicalRerankObjectScorer:

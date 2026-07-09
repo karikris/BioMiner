@@ -58,6 +58,8 @@ def enqueue_detection_work_from_source_shards(
     detector_model_id: str,
     detector_model_version: str,
     detector_checkpoint: str,
+    detection_policy: DetectionPolicy | None = None,
+    vision_settings: Any | None = None,
     limit: int | None = None,
 ) -> DetectionWorkPlanResult:
     shards = workstore.list_candidate_shards(
@@ -93,6 +95,8 @@ def enqueue_detection_work_from_source_shards(
                     run_id=run_id,
                     source_shard_uri=source_shard_uri,
                     detector=detector,
+                    detection_policy=detection_policy,
+                    vision_settings=vision_settings,
                 )
             )
             if remaining is not None:
@@ -221,10 +225,14 @@ def detection_work_item(
     run_id: str,
     source_shard_uri: str,
     detector: dict[str, str],
+    detection_policy: DetectionPolicy | None = None,
+    vision_settings: Any | None = None,
 ) -> dict[str, Any]:
     source = str(record.get("source") or "flickr")
     flickr_photo_id = str(record.get("flickr_photo_id") or record.get("id") or "")
     image_url = str(record.get("image_url") or "")
+    policy_key = _detection_policy_key(detection_policy or DetectionPolicy(backend=str(detector.get("backend") or "yoloe26")))
+    runtime_key = _vision_runtime_key(vision_settings)
     key_payload = {
         "run_id": run_id,
         "source": source,
@@ -234,6 +242,8 @@ def detection_work_item(
         "detector_model_id": detector.get("model_id") or "",
         "detector_model_version": detector.get("model_version") or "",
         "detector_checkpoint": detector.get("checkpoint") or "",
+        "detection_policy": policy_key,
+        "vision_runtime": runtime_key,
     }
     return {
         "work_key": f"{run_id}:detect:{_stable_hash(key_payload)}",
@@ -244,6 +254,8 @@ def detection_work_item(
         "source_shard_uri": source_shard_uri,
         "source_record": _jsonable_record(record),
         "detector": dict(detector),
+        "detection_policy": policy_key,
+        "vision_runtime": runtime_key,
     }
 
 
@@ -259,6 +271,40 @@ def source_record_from_detection_work_item(item: dict[str, Any]) -> dict[str, An
 
 def _record_is_detectable(record: dict[str, Any]) -> bool:
     return bool(str(record.get("flickr_photo_id") or record.get("id") or "") and str(record.get("image_url") or ""))
+
+
+def _detection_policy_key(policy: DetectionPolicy) -> dict[str, Any]:
+    return {
+        "backend": policy.backend,
+        "box_score_threshold": policy.box_score_threshold,
+        "nms_iou_threshold": policy.nms_iou_threshold,
+        "min_box_area_ratio": policy.min_box_area_ratio,
+        "max_boxes_per_image": policy.max_boxes_per_image,
+        "bioclip_eligible_labels": list(policy.bioclip_eligible_labels),
+        "crop_padding_ratio": policy.crop_padding_ratio,
+        "image_max_side_px": policy.image_max_side_px,
+        "crop_target_px": policy.crop_target_px,
+    }
+
+
+def _vision_runtime_key(settings: Any | None) -> dict[str, Any]:
+    if settings is None:
+        return {}
+    output_affecting_fields = (
+        "yolo_checkpoint",
+        "yolo_imgsz",
+        "yolo_conf",
+        "yolo_iou",
+        "yolo_max_det",
+        "crop_padding_ratio",
+        "crop_target_px",
+        "image_max_side_px",
+    )
+    return {
+        field_name: _jsonable_value(getattr(settings, field_name))
+        for field_name in output_affecting_fields
+        if hasattr(settings, field_name)
+    }
 
 
 def _stable_hash(payload: dict[str, Any]) -> str:

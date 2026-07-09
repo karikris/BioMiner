@@ -92,6 +92,9 @@ def enqueue_bioclip_work_from_detection_shards(
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
     taxonomy_table_version: str | None = None,
     taxonomy_prompt_variant_version: str | None = None,
+    family_top_k: int = DEFAULT_FAMILY_TOP_K,
+    species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> BioClipWorkPlanResult:
     shards = workstore.list_candidate_shards(
         job_name=job_name,
@@ -134,6 +137,9 @@ def enqueue_bioclip_work_from_detection_shards(
                         classification_mode=classification_mode,
                         taxonomy_table_version=taxonomy_table_version,
                         taxonomy_prompt_variant_version=taxonomy_prompt_variant_version,
+                        family_top_k=family_top_k,
+                        species_first_pass_top_k=species_first_pass_top_k,
+                        species_rerank_top_k=species_rerank_top_k,
                     )
                 )
                 if remaining is not None:
@@ -161,14 +167,28 @@ def bioclip_score_work_item(
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
     taxonomy_table_version: str | None = None,
     taxonomy_prompt_variant_version: str | None = None,
+    family_top_k: int = DEFAULT_FAMILY_TOP_K,
+    species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> dict[str, Any]:
     normalized_mode = normalize_classification_mode(classification_mode)
+    top_k_settings = {
+        "family_top_k": int(family_top_k),
+        "species_first_pass_top_k": int(species_first_pass_top_k),
+        "species_rerank_top_k": int(species_rerank_top_k),
+    }
+    crop_identity = {
+        "crop_hash": str(detection.get("crop_hash") or ""),
+        "crop_padding_ratio": _jsonable_value(detection.get("crop_padding_ratio")),
+        "crop_width": _jsonable_value(detection.get("crop_width")),
+        "crop_height": _jsonable_value(detection.get("crop_height")),
+    }
     key_payload = {
         "run_id": run_id,
         "source": str(detection.get("source") or ""),
         "flickr_photo_id": str(detection.get("flickr_photo_id") or ""),
         "detection_id": str(detection.get("detection_id") or ""),
-        "crop_hash": str(detection.get("crop_hash") or ""),
+        "crop": crop_identity,
         "model_id": str(model.get("model_id") or ""),
         "model_version": str(model.get("model_version") or ""),
         "model_checkpoint": str(model.get("checkpoint") or ""),
@@ -176,6 +196,7 @@ def bioclip_score_work_item(
         "classification_mode": normalized_mode,
         "taxonomy_table_version": str(taxonomy_table_version or ""),
         "taxonomy_prompt_variant_version": str(taxonomy_prompt_variant_version or ""),
+        "top_k_settings": top_k_settings,
         "ablation_mode": str(ablation_mode or ""),
     }
     return {
@@ -184,7 +205,7 @@ def bioclip_score_work_item(
         "source": key_payload["source"],
         "flickr_photo_id": key_payload["flickr_photo_id"],
         "detection_id": key_payload["detection_id"],
-        "crop_hash": key_payload["crop_hash"],
+        "crop_hash": crop_identity["crop_hash"],
         "detection_shard_uri": detection_shard_uri,
         "detection": _jsonable_record(detection),
         "model": dict(model),
@@ -192,6 +213,7 @@ def bioclip_score_work_item(
         "classification_mode": normalized_mode,
         "taxonomy_table_version": taxonomy_table_version,
         "taxonomy_prompt_variant_version": taxonomy_prompt_variant_version,
+        "top_k_settings": top_k_settings,
         "ablation_mode": ablation_mode,
     }
 

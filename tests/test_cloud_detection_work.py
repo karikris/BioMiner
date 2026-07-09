@@ -7,6 +7,7 @@ import pytest
 
 from biominer.detection.cloud_work import detection_work_item, enqueue_detection_work_from_source_shards, run_cloud_detection_batch
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate
+from biominer.detection.policy import DetectionPolicy, VisionRuntimeSettings
 from biominer.run.stages import RunStage
 from biominer.workstore.sqlite import SQLiteWorkStore
 
@@ -86,6 +87,45 @@ def test_enqueue_detection_work_from_source_shard_inventory_is_idempotent(tmp_pa
     assert {item["payload"]["source_shard_uri"] for item in items} == {source_uri}
     assert {item["payload"]["source_record"]["flickr_photo_id"] for item in items} == {"photo-1", "photo-2"}
     assert all(item["payload"]["detector"]["checkpoint"] == "fake-checkpoint" for item in items)
+
+
+def test_detection_work_item_key_changes_by_detector_policy_and_runtime_settings() -> None:
+    record = {
+        "source": "flickr",
+        "flickr_photo_id": "photo-1",
+        "source_record_hash": "sha256:source-1",
+        "image_url": "https://live.staticflickr.com/photo-1.jpg",
+    }
+    detector = {"backend": "fake", "model_id": "fake-detector", "model_version": "test", "checkpoint": "fake-checkpoint"}
+    base = detection_work_item(
+        record,
+        run_id="run-1",
+        source_shard_uri="s3://biominer/source.parquet",
+        detector=detector,
+        detection_policy=DetectionPolicy(backend="fake", crop_padding_ratio=0.12),
+        vision_settings=VisionRuntimeSettings(yolo_imgsz=640, yolo_conf=0.20, yolo_iou=0.50, yolo_max_det=8),
+    )
+    padding_changed = detection_work_item(
+        record,
+        run_id="run-1",
+        source_shard_uri="s3://biominer/source.parquet",
+        detector=detector,
+        detection_policy=DetectionPolicy(backend="fake", crop_padding_ratio=0.18),
+        vision_settings=VisionRuntimeSettings(yolo_imgsz=640, yolo_conf=0.20, yolo_iou=0.50, yolo_max_det=8),
+    )
+    imgsz_changed = detection_work_item(
+        record,
+        run_id="run-1",
+        source_shard_uri="s3://biominer/source.parquet",
+        detector=detector,
+        detection_policy=DetectionPolicy(backend="fake", crop_padding_ratio=0.12),
+        vision_settings=VisionRuntimeSettings(yolo_imgsz=768, yolo_conf=0.20, yolo_iou=0.50, yolo_max_det=8),
+    )
+
+    assert base["work_key"] != padding_changed["work_key"]
+    assert base["work_key"] != imgsz_changed["work_key"]
+    assert base["detection_policy"]["crop_padding_ratio"] == 0.12
+    assert base["vision_runtime"]["yolo_imgsz"] == 640
 
 
 def test_run_cloud_detection_batch_chunks_loaded_images_by_detector_batch_size() -> None:

@@ -642,6 +642,7 @@ class ProductionRunOrchestrator:
                 return StageExecutionResult(status=StageStatus.FAILED, message="missing_detection_inputs: source_records")
             if self.object_detector is None or self.image_loader is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="detector_runtime_required_for_detect_objects")
+            detection_policy = self.request.vision_settings.to_detection_policy(DetectionPolicy(backend=self.object_detector.backend))
             plan_result = enqueue_detection_work_from_source_shards(
                 storage=self.storage,
                 workstore=self.workstore,
@@ -654,6 +655,8 @@ class ProductionRunOrchestrator:
                 detector_model_id=self.object_detector.model_id,
                 detector_model_version=self.object_detector.model_version,
                 detector_checkpoint=self.object_detector.checkpoint,
+                detection_policy=detection_policy,
+                vision_settings=self.request.vision_settings,
                 limit=int(self.request.limits.get("records") or 0) or None,
             )
             claimed = self.workstore.claim_next_batch(
@@ -673,6 +676,48 @@ class ProductionRunOrchestrator:
                     },
                     outputs={"workstore_stage": RunStage.DETECT_OBJECTS.value},
                 )
+            part_id = detection_batch_id(claimed)
+            part_uri = build_parquet_part_uri(
+                plan.artifact_uris.staging_uri,
+                stage=RunStage.DETECT_OBJECTS.value,
+                run_id=plan.manifest.run_id,
+                worker_id=self.request.worker_id,
+                part_id=part_id,
+            )
+            existing_part = _registered_cloud_stage_shard_by_uri(self.workstore, plan, RunStage.DETECT_OBJECTS.value, part_uri)
+            if existing_part is not None and self.storage.exists(part_uri):
+                row_count = _optional_int(existing_part.get("row_count"))
+                for item in claimed:
+                    self.workstore.mark_completed(str(item["work_key"]), output_uri=part_uri, checksum=None, row_count=row_count)
+                return StageExecutionResult(
+                    metrics={
+                        "records_seen": 0,
+                        "images_loaded": 0,
+                        "image_failures": 0,
+                        "detections_written": row_count,
+                        "crops_created": 0,
+                        "adaptive_batching_enabled": self.request.vision_settings.adaptive_batching,
+                        "detector_batch_retries": 0,
+                        "detector_batch_size_initial": self.request.vision_settings.detector_batch_size,
+                        "detector_batch_size_final": self.request.vision_settings.detector_batch_size,
+                        "detector_batch_size_min": self.request.vision_settings.min_detector_batch_size,
+                        "parquet_batches_written": 0,
+                        "parquet_parts_written": 0,
+                        "parquet_parts_reused": 1,
+                        "parquet_part_count": 1,
+                        "parquet_part_rows": row_count,
+                        "parquet_compression": self.request.vision_settings.parquet_compression,
+                        "detection_part_count": 1,
+                        "detection_part_rows": row_count,
+                        "detection_work_items_enqueued": plan_result.enqueued_work_items,
+                        "duplicate_detection_work_items": plan_result.duplicate_work_items,
+                        "work_items_claimed": len(claimed),
+                        "workstore_work_items_completed": len(claimed),
+                        "detection_shards": 1,
+                        "workstore_shard_reused": True,
+                    },
+                    outputs={"object_detections": part_uri},
+                )
             try:
                 result = run_cloud_detection_batch(
                     work_items=claimed,
@@ -681,15 +726,7 @@ class ProductionRunOrchestrator:
                     detector_batch_size=self.request.vision_settings.detector_batch_size,
                     adaptive_batching=self.request.vision_settings.adaptive_batching,
                     min_detector_batch_size=self.request.vision_settings.min_detector_batch_size,
-                    detection_policy=self.request.vision_settings.to_detection_policy(DetectionPolicy(backend=self.object_detector.backend)),
-                )
-                part_id = detection_batch_id(claimed)
-                part_uri = build_parquet_part_uri(
-                    plan.artifact_uris.staging_uri,
-                    stage=RunStage.DETECT_OBJECTS.value,
-                    run_id=plan.manifest.run_id,
-                    worker_id=self.request.worker_id,
-                    part_id=part_id,
+                    detection_policy=detection_policy,
                 )
                 part_write, part_written = _write_immutable_parquet_part(
                     self.storage,
@@ -746,6 +783,7 @@ class ProductionRunOrchestrator:
                     "work_items_claimed": len(claimed),
                     "workstore_work_items_completed": len(claimed),
                     "detection_shards": 1,
+                    "workstore_shard_reused": False,
                 },
                 outputs={"object_detections": output_uri},
             )
@@ -832,6 +870,9 @@ class ProductionRunOrchestrator:
                 classification_mode=self.request.classification_mode,
                 taxonomy_table_version=_taxonomy_manifest_value(taxonomy_store, "classification_table_version"),
                 taxonomy_prompt_variant_version=_taxonomy_manifest_value(taxonomy_store, "prompt_variant_version"),
+                family_top_k=self.request.family_top_k,
+                species_first_pass_top_k=self.request.species_first_pass_top_k,
+                species_rerank_top_k=self.request.species_rerank_top_k,
             )
             claimed = self.workstore.claim_next_batch(
                 self.request.worker_id,
@@ -850,6 +891,64 @@ class ProductionRunOrchestrator:
                     },
                     outputs={"workstore_stage": RunStage.SCORE_BIOCLIP.value},
                 )
+            part_id = bioclip_score_batch_id(claimed)
+            part_uri = build_parquet_part_uri(
+                plan.artifact_uris.staging_uri,
+                stage=RunStage.SCORE_BIOCLIP.value,
+                run_id=plan.manifest.run_id,
+                worker_id=self.request.worker_id,
+                part_id=part_id,
+            )
+            existing_part = _registered_cloud_stage_shard_by_uri(self.workstore, plan, RunStage.SCORE_BIOCLIP.value, part_uri)
+            if existing_part is not None and self.storage.exists(part_uri):
+                existing_frame = _read_cloud_part_frame(self.storage, part_uri)
+                row_count = _optional_int(existing_part.get("row_count"))
+                if row_count is None:
+                    row_count = int(existing_frame.height)
+                visual_modes_scored = [mode for mode in OBJECT_VISUAL_MODES if _mode_row_count(existing_frame, mode) > 0]
+                for item in claimed:
+                    self.workstore.mark_completed(str(item["work_key"]), output_uri=part_uri, checksum=None, row_count=row_count)
+                metrics = {
+                    **_visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path),
+                    **taxonomy_metrics,
+                    "records_seen": row_count,
+                    "detections_seen": row_count,
+                    "crops_scored": row_count,
+                    "objects_scored": row_count,
+                    "whole_images_scored": _mode_row_count(existing_frame, "whole_image"),
+                    "detector_crops_scored": _mode_row_count(existing_frame, "detector_crop"),
+                    "segmentation_crops_scored": _mode_row_count(existing_frame, "detector_crop_segmentation"),
+                    "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
+                    "visual_modes_requested": list(_request_bioclip_modes(self.request)),
+                    "visual_modes_scored": visual_modes_scored,
+                    "visual_mode_status_by_mode": {},
+                    "segmentation_status_by_mode": {},
+                    "segmentation_unavailable_count_by_mode": {},
+                    "segmentation_unavailable_reason_by_mode": {},
+                    "segmentation_unavailable_count": 0,
+                    "segmentation_unavailable_reason": None,
+                    "adaptive_batching_enabled": self.request.vision_settings.adaptive_batching,
+                    "bioclip_batch_retries": 0,
+                    "bioclip_batch_size_initial": self.request.vision_settings.crop_batch_size,
+                    "bioclip_batch_size_final": self.request.vision_settings.crop_batch_size,
+                    "bioclip_batch_size_min": self.request.vision_settings.min_crop_batch_size,
+                    "score_work_items_enqueued": plan_result.enqueued_work_items,
+                    "duplicate_score_work_items": plan_result.duplicate_work_items,
+                    "work_items_claimed": len(claimed),
+                    "workstore_work_items_completed": len(claimed),
+                    "score_shards": 1,
+                    "score_batches_written": 0,
+                    "parquet_parts_written": 0,
+                    "parquet_parts_reused": 1,
+                    "parquet_part_count": 1,
+                    "parquet_part_rows": row_count,
+                    "parquet_compression": self.request.vision_settings.parquet_compression,
+                    "score_part_count": 1,
+                    "score_part_rows": row_count,
+                    "workstore_shard_reused": True,
+                    **object_score_audit_metrics(existing_frame),
+                }
+                return StageExecutionResult(metrics=metrics, outputs={"object_scores": part_uri})
             try:
                 result = run_cloud_bioclip_batch(
                     work_items=claimed,
@@ -864,14 +963,6 @@ class ProductionRunOrchestrator:
                     species_first_pass_top_k=self.request.species_first_pass_top_k,
                     species_rerank_top_k=self.request.species_rerank_top_k,
                     taxonomy_store=taxonomy_store,
-                )
-                part_id = bioclip_score_batch_id(claimed)
-                part_uri = build_parquet_part_uri(
-                    plan.artifact_uris.staging_uri,
-                    stage=RunStage.SCORE_BIOCLIP.value,
-                    run_id=plan.manifest.run_id,
-                    worker_id=self.request.worker_id,
-                    part_id=part_id,
                 )
                 part_write, part_written = _write_immutable_parquet_part(
                     self.storage,
@@ -922,6 +1013,7 @@ class ProductionRunOrchestrator:
                     "parquet_compression": part_write.compression,
                     "score_part_count": 1,
                     "score_part_rows": part_write.row_count,
+                    "workstore_shard_reused": False,
                 }
             )
             return StageExecutionResult(metrics=metrics, outputs={"object_scores": output_uri})
@@ -1530,12 +1622,43 @@ def _cloud_stage_shard_uris(workstore: WorkStore | None, plan: ProductionRunPlan
     return [str(shard["uri"]) for shard in shards]
 
 
+def _registered_cloud_stage_shard_by_uri(
+    workstore: WorkStore,
+    plan: ProductionRunPlan,
+    stage: str,
+    uri: str,
+) -> dict[str, Any] | None:
+    shards = workstore.list_committed_shards(
+        job_name=PRODUCTION_JOB_NAME,
+        stage=stage,
+        registry_version=plan.manifest.taxon_scope.registry_version,
+        run_id=plan.manifest.run_id,
+    )
+    for shard in shards:
+        if str(shard.get("uri") or "") == uri:
+            return shard
+    return None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _read_cloud_stage_frame(storage: CloudStorage, workstore: WorkStore, plan: ProductionRunPlan, stage: str) -> Any:
     import polars as pl
 
     uris = _cloud_stage_shard_uris(workstore, plan, stage)
     frames = [storage.read_parquet(uri) for uri in uris]
     return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+
+
+def _read_cloud_part_frame(storage: CloudStorage, uri: str) -> Any:
+    return storage.read_parquet(uri)
 
 
 def _read_optional_parquet(path: Path) -> Any:

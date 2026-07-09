@@ -125,6 +125,90 @@ def test_bioclip_work_item_key_changes_by_classification_mode_and_taxonomy_versi
     assert hierarchical["taxonomy_prompt_variant_version"] == PROMPT_VARIANT_VERSION
 
 
+def test_bioclip_work_item_key_changes_by_model_top_k_and_crop_identity() -> None:
+    detection = _detection_row("photo-1", "det-1", "sha256:crop-1", "butterfly_like", "detected")
+    base = bioclip_score_work_item(
+        detection,
+        run_id="run-1",
+        detection_shard_uri="s3://biominer/detections.parquet",
+        model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
+        candidate_set_id="candidate-set-1",
+        ablation_mode="detector_crop",
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        taxonomy_table_version=CLASSIFICATION_TABLE_VERSION,
+        taxonomy_prompt_variant_version=PROMPT_VARIANT_VERSION,
+        family_top_k=3,
+        species_first_pass_top_k=20,
+        species_rerank_top_k=20,
+    )
+    model_changed = bioclip_score_work_item(
+        detection,
+        run_id="run-1",
+        detection_shard_uri="s3://biominer/detections.parquet",
+        model={"model_id": "fake-bioclip-large", "model_version": "test", "checkpoint": "fake-checkpoint"},
+        candidate_set_id="candidate-set-1",
+        ablation_mode="detector_crop",
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        taxonomy_table_version=CLASSIFICATION_TABLE_VERSION,
+        taxonomy_prompt_variant_version=PROMPT_VARIANT_VERSION,
+        family_top_k=3,
+        species_first_pass_top_k=20,
+        species_rerank_top_k=20,
+    )
+    taxonomy_changed = bioclip_score_work_item(
+        detection,
+        run_id="run-1",
+        detection_shard_uri="s3://biominer/detections.parquet",
+        model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
+        candidate_set_id="candidate-set-1",
+        ablation_mode="detector_crop",
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        taxonomy_table_version="classification-table-v-next",
+        taxonomy_prompt_variant_version=PROMPT_VARIANT_VERSION,
+        family_top_k=3,
+        species_first_pass_top_k=20,
+        species_rerank_top_k=20,
+    )
+    top_k_changed = bioclip_score_work_item(
+        detection,
+        run_id="run-1",
+        detection_shard_uri="s3://biominer/detections.parquet",
+        model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
+        candidate_set_id="candidate-set-1",
+        ablation_mode="detector_crop",
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        taxonomy_table_version=CLASSIFICATION_TABLE_VERSION,
+        taxonomy_prompt_variant_version=PROMPT_VARIANT_VERSION,
+        family_top_k=5,
+        species_first_pass_top_k=20,
+        species_rerank_top_k=20,
+    )
+    crop_changed = bioclip_score_work_item(
+        {**detection, "crop_hash": "sha256:crop-2", "crop_padding_ratio": 0.18},
+        run_id="run-1",
+        detection_shard_uri="s3://biominer/detections.parquet",
+        model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
+        candidate_set_id="candidate-set-1",
+        ablation_mode="detector_crop",
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        taxonomy_table_version=CLASSIFICATION_TABLE_VERSION,
+        taxonomy_prompt_variant_version=PROMPT_VARIANT_VERSION,
+        family_top_k=3,
+        species_first_pass_top_k=20,
+        species_rerank_top_k=20,
+    )
+
+    assert base["work_key"] != model_changed["work_key"]
+    assert base["work_key"] != taxonomy_changed["work_key"]
+    assert base["work_key"] != top_k_changed["work_key"]
+    assert base["work_key"] != crop_changed["work_key"]
+    assert base["top_k_settings"] == {
+        "family_top_k": 3,
+        "species_first_pass_top_k": 20,
+        "species_rerank_top_k": 20,
+    }
+
+
 def test_run_cloud_bioclip_batch_chunks_detector_crops_by_crop_batch_size() -> None:
     class BatchRecordingScorer:
         model_id = "fake-bioclip"
