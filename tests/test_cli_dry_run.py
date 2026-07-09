@@ -23,6 +23,15 @@ from biominer.cli import (
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION, TARGET_SCOPE_OBJECT_SCREENING
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
+from biominer.registry.classification_table import (
+    CLASSIFICATION_TABLE_VERSION,
+    CLASSIFICATION_TAXA_SCHEMA,
+    PROMPT_VARIANT_VERSION,
+    build_family_label_frame,
+    build_species_label_frame,
+    classification_artifact_paths,
+    ensure_classification_taxa_schema,
+)
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES
 from biominer.registry.translation_harvester import (
     MYMEMORY_MONTHLY_BANDWIDTH_MB_LIMIT,
@@ -1203,6 +1212,18 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             "candidate_text_embeddings.parquet",
             "--object-image-embedding-cache",
             "object_image_embeddings.parquet",
+            "--classification-mode",
+            "hierarchical",
+            "--taxonomy-candidate-table",
+            "butterfly_classification_taxa.parquet",
+            "--family-top-k",
+            "4",
+            "--species-first-pass-top-k",
+            "25",
+            "--species-rerank-top-k",
+            "7",
+            "--taxonomy-text-embedding-cache",
+            "taxonomy_text_embeddings.parquet",
             "--segmenter",
             "none",
         ]
@@ -1334,6 +1355,12 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert screen.text_embedding_batch_size == 2
     assert screen.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert screen.object_image_embedding_cache == "object_image_embeddings.parquet"
+    assert screen.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    assert screen.taxonomy_candidate_table == "butterfly_classification_taxa.parquet"
+    assert screen.family_top_k == 4
+    assert screen.species_first_pass_top_k == 25
+    assert screen.species_rerank_top_k == 7
+    assert screen.taxonomy_text_embedding_cache == "taxonomy_text_embeddings.parquet"
     assert screen.segmenter == "none"
     assert ablate.command == "vision"
     assert ablate.vision_command == "ablate"
@@ -1344,6 +1371,8 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
     assert ablate.text_embedding_batch_size == 3
     assert ablate.candidate_text_embedding_cache == "candidate_text_embeddings.parquet"
     assert ablate.object_image_embedding_cache == "object_image_embeddings.parquet"
+    assert ablate.classification_mode == TARGET_SCOPE_OBJECT_SCREENING
+    assert ablate.taxonomy_text_embedding_cache is None
     assert ablate.segmenter == "none"
     assert vision_score.command == "vision"
     assert vision_score.vision_command == "score"
@@ -2401,6 +2430,188 @@ def test_bioclip_screen_objects_uses_embedding_caches_for_detector_crop_scoring(
     assert calls["candidate_set"]["records"][0]["scientific_names_detected"] == ["Danaus gilippus"]
     assert pl.read_parquet(text_cache_path).height == 4
     assert pl.read_parquet(image_cache_path).height == 1
+
+
+def test_bioclip_score_prepares_taxonomy_text_embedding_cache_for_hierarchical_mode(tmp_path, capsys, monkeypatch) -> None:
+    runtime_python = tmp_path / "runtime" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("# fake python", encoding="utf-8")
+    context_path = tmp_path / "species_context.json"
+    context_path.write_text(
+        json.dumps(
+            {
+                "scientific_name": "Danaus plexippus",
+                "accepted_taxon_key": "gbif:7017001",
+                "canonical_name": "Danaus plexippus",
+                "family": "Nymphalidae",
+                "genus": "Danaus",
+                "family_key": "gbif:7017",
+                "genus_key": "gbif:190",
+                "species_key": "gbif:7017001",
+                "registry_version": "registry-v1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    input_path = tmp_path / "filtered.parquet"
+    detections_path = tmp_path / "detections.parquet"
+    output_path = tmp_path / "scores.parquet"
+    taxonomy_dir = _write_cli_taxonomy_store(tmp_path / "taxonomy")
+    taxonomy_cache_path = tmp_path / "taxonomy_text_embeddings.parquet"
+    pl.DataFrame([{"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "https://example.test/1.jpg"}]).write_parquet(input_path)
+    pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "detection_id": "det-1",
+                "detection_status": "detected",
+                "detector_label": "butterfly_like",
+            }
+        ]
+    ).write_parquet(detections_path)
+    calls: dict[str, object] = {}
+
+    class FakePersistentScorer:
+        def __init__(self, **kwargs):  # noqa: ANN003 - mirrors persistent scorer init.
+            calls["persistent"] = kwargs
+
+        def embed_text_labels(self, labels):  # noqa: ANN001, ANN201 - mirrors scorer protocol.
+            calls.setdefault("embedded_labels", []).append(list(labels))
+            return [[float(index), float(index + 1)] for index, _label in enumerate(labels)]
+
+        def close(self) -> None:
+            calls["closed"] = True
+
+    class FakeCropScorer:
+        def __init__(self, **kwargs):  # noqa: ANN003 - mirrors crop scorer init.
+            calls["crop_scorer"] = kwargs
+
+    def fake_build_candidate_set(context, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors build_candidate_set.
+        calls["candidate_set"] = kwargs
+        return SimpleNamespace(candidate_set_id="hierarchical-placeholder")
+
+    def fake_screen(**kwargs):  # noqa: ANN003, ANN202 - mirrors screen_object_detections.
+        calls["screen"] = kwargs
+        return SimpleNamespace(
+            frame=pl.DataFrame([{"classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION}]),
+            output_path=Path(kwargs["output_path"]),
+            records_seen=1,
+            detections_seen=1,
+            crops_scored=1,
+            score_batches_written=1,
+            visual_classifier="bioclip_object",
+            visual_mode="detector_crop",
+            visual_mode_status="available",
+            segmentation_unavailable_count=0,
+            segmentation_unavailable_reason=None,
+        )
+
+    monkeypatch.setattr("biominer.cli.PersistentBioClipScorer", FakePersistentScorer)
+    monkeypatch.setattr("biominer.cli.EphemeralCropBioClipScorer", FakeCropScorer)
+    monkeypatch.setattr("biominer.cli.build_candidate_set", fake_build_candidate_set)
+    monkeypatch.setattr("biominer.cli.screen_object_detections", fake_screen)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "vision",
+            "score",
+            "--input",
+            str(input_path),
+            "--detections",
+            str(detections_path),
+            "--species-context",
+            str(context_path),
+            "--output",
+            str(output_path),
+            "--runtime-python",
+            str(runtime_python),
+            "--classification-mode",
+            "hierarchical",
+            "--taxonomy-candidate-table",
+            str(taxonomy_dir),
+            "--taxonomy-text-embedding-cache",
+            str(taxonomy_cache_path),
+            "--text-embedding-batch-size",
+            "4",
+            "--species-first-pass-top-k",
+            "2",
+            "--species-rerank-top-k",
+            "1",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["taxonomy_text_embedding_cache"]["rows_added"] == 12
+    assert payload["taxonomy_text_embedding_cache"]["embeddings_computed"] == 12
+    assert payload["taxonomy_text_embedding_cache"]["text_embedding_batch_size"] == 4
+    assert calls["closed"] is True
+    assert calls["candidate_set"]["allow_single_target_fixture"] is True
+    assert calls["screen"]["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    assert calls["screen"]["family_top_k"] == 3
+    assert calls["screen"]["species_first_pass_top_k"] == 2
+    assert calls["screen"]["species_rerank_top_k"] == 1
+    assert calls["screen"]["taxonomy_store"].classification_taxa.height == 2
+    assert pl.read_parquet(taxonomy_cache_path).height == 12
+
+
+def test_bioclip_score_hierarchical_mode_requires_taxonomy_table(tmp_path, capsys) -> None:
+    runtime_python, context_path, input_path, detections_path = _write_candidate_expansion_error_inputs(tmp_path)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "vision",
+            "score",
+            "--input",
+            str(input_path),
+            "--detections",
+            str(detections_path),
+            "--species-context",
+            str(context_path),
+            "--output",
+            str(tmp_path / "scores.parquet"),
+            "--runtime-python",
+            str(runtime_python),
+            "--classification-mode",
+            "hierarchical",
+        ]
+    )
+
+    assert run(args) == 2
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "vision score"
+    assert "--taxonomy-candidate-table is required" in payload["error"]
+
+
+def test_bioclip_score_taxonomy_text_cache_requires_hierarchical_mode(tmp_path, capsys) -> None:
+    runtime_python, context_path, input_path, detections_path = _write_candidate_expansion_error_inputs(tmp_path)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "vision",
+            "score",
+            "--input",
+            str(input_path),
+            "--detections",
+            str(detections_path),
+            "--species-context",
+            str(context_path),
+            "--output",
+            str(tmp_path / "scores.parquet"),
+            "--runtime-python",
+            str(runtime_python),
+            "--taxonomy-text-embedding-cache",
+            str(tmp_path / "taxonomy_text_embeddings.parquet"),
+        ]
+    )
+
+    assert run(args) == 2
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "--taxonomy-text-embedding-cache requires --classification-mode hierarchical" in payload["error"]
 
 
 def test_bioclip_ablate_objects_forwards_parquet_batch_rows(tmp_path, capsys, monkeypatch) -> None:
@@ -3802,6 +4013,84 @@ def _write_candidate_expansion_error_inputs(tmp_path: Path) -> tuple[Path, Path,
         detections_path
     )
     return runtime_python, context_path, input_path, detections_path
+
+
+def _write_cli_taxonomy_store(root: Path) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    taxa = ensure_classification_taxa_schema(
+        pl.DataFrame(
+            [
+                _classification_taxon(
+                    accepted_taxon_key="gbif:7017001",
+                    scientific_name="Danaus plexippus",
+                    family_key="gbif:7017",
+                    family="Nymphalidae",
+                    genus_key="gbif:190",
+                    genus="Danaus",
+                ),
+                _classification_taxon(
+                    accepted_taxon_key="gbif:9417001",
+                    scientific_name="Papilio demoleus",
+                    family_key="gbif:9417",
+                    family="Papilionidae",
+                    genus_key="gbif:90",
+                    genus="Papilio",
+                ),
+            ],
+            schema=CLASSIFICATION_TAXA_SCHEMA,
+        )
+    )
+    paths = classification_artifact_paths(root)
+    taxa.write_parquet(paths["classification_taxa"])
+    build_family_label_frame(taxa).write_parquet(paths["family_labels"])
+    build_species_label_frame(taxa).write_parquet(paths["species_labels"])
+    paths["manifest"].write_text(
+        json.dumps(
+            {
+                "registry_version": "registry-v1",
+                "classification_table_version": CLASSIFICATION_TABLE_VERSION,
+                "prompt_variant_version": PROMPT_VARIANT_VERSION,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return root
+
+
+def _classification_taxon(
+    *,
+    accepted_taxon_key: str,
+    scientific_name: str,
+    family_key: str,
+    family: str,
+    genus_key: str,
+    genus: str,
+) -> dict[str, object]:
+    return {
+        "registry_version": "registry-v1",
+        "classification_table_version": CLASSIFICATION_TABLE_VERSION,
+        "source": "GBIF",
+        "source_version": "",
+        "retrieved_at": "",
+        "scope_id": "scope",
+        "accepted_taxon_key": accepted_taxon_key,
+        "gbif_species_key": accepted_taxon_key.removeprefix("gbif:"),
+        "scientific_name": scientific_name,
+        "canonical_name": scientific_name,
+        "rank": "SPECIES",
+        "taxonomic_status": "accepted",
+        "family_key": family_key,
+        "family": family,
+        "genus_key": genus_key,
+        "genus": genus,
+        "species_key": accepted_taxon_key,
+        "species": scientific_name,
+        "species_epithet": scientific_name.split()[-1],
+        "in_scope": True,
+        "classification_enabled": True,
+        "classification_disabled_reason": "",
+    }
 
 
 def _fake_cloud_config() -> BioMinerConfig:

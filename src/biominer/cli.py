@@ -22,10 +22,16 @@ from biominer.bioclip.classification_modes import (
     DEFAULT_FAMILY_TOP_K,
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
+    HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     SUPPORTED_CLASSIFICATION_MODES,
     normalize_classification_mode,
 )
-from biominer.bioclip.embedding_cache import read_embedding_cache, prepare_candidate_text_embedding_cache, prepare_object_image_embedding_cache
+from biominer.bioclip.embedding_cache import (
+    prepare_candidate_text_embedding_cache,
+    prepare_object_image_embedding_cache,
+    prepare_taxonomy_text_embedding_cache,
+    read_embedding_cache,
+)
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
 from biominer.bioclip.object_runner import (
     CachedObjectEmbeddingScorer,
@@ -35,6 +41,7 @@ from biominer.bioclip.object_runner import (
     screen_object_detections,
     write_object_evidence_outputs,
 )
+from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.detection.evaluate import evaluate_xie_style
 from biominer.detection.image_io import load_decoded_image_from_record
@@ -196,6 +203,7 @@ def build_parser() -> argparse.ArgumentParser:
     vision_score.add_argument("--text-embedding-batch-size", type=int, default=256)
     vision_score.add_argument("--candidate-text-embedding-cache")
     vision_score.add_argument("--object-image-embedding-cache")
+    _add_direct_vision_classification_args(vision_score)
     vision_score.add_argument("--segmenter", default="none", choices=("none", "sam", "sam2"))
     vision_ablate = vision_subparsers.add_parser("ablate")
     vision_ablate.add_argument("--input", required=True)
@@ -218,6 +226,7 @@ def build_parser() -> argparse.ArgumentParser:
     vision_ablate.add_argument("--text-embedding-batch-size", type=int, default=256)
     vision_ablate.add_argument("--candidate-text-embedding-cache")
     vision_ablate.add_argument("--object-image-embedding-cache")
+    _add_direct_vision_classification_args(vision_ablate)
     vision_ablate.add_argument("--segmenter", default="none", choices=("none", "sam", "sam2"))
     evidence = subparsers.add_parser("evidence")
     evidence_subparsers = evidence.add_subparsers(dest="evidence_command")
@@ -399,6 +408,20 @@ def _add_poll_once_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--evidence-stage", default="poll_once")
     parser.add_argument("--no-compact", action="store_true")
     parser.add_argument("--config")
+
+
+def _add_direct_vision_classification_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--classification-mode",
+        type=_classification_mode_arg,
+        choices=SUPPORTED_CLASSIFICATION_MODES,
+        default=DEFAULT_CLASSIFICATION_MODE,
+    )
+    parser.add_argument("--taxonomy-candidate-table")
+    parser.add_argument("--family-top-k", type=int, default=DEFAULT_FAMILY_TOP_K)
+    parser.add_argument("--species-first-pass-top-k", type=int, default=DEFAULT_SPECIES_FIRST_PASS_TOP_K)
+    parser.add_argument("--species-rerank-top-k", type=int, default=DEFAULT_SPECIES_RERANK_TOP_K)
+    parser.add_argument("--taxonomy-text-embedding-cache")
 
 
 def _add_object_evidence_join_args(parser: argparse.ArgumentParser) -> None:
@@ -2094,6 +2117,15 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
     records = pl.read_parquet(args.input)
     detections = pl.read_parquet(args.detections)
     geo_prior_table = _optional_parquet(getattr(args, "geo_prior_table", None))
+    classification_mode = normalize_classification_mode(args.classification_mode)
+    taxonomy_store, taxonomy_error = _load_taxonomy_store_for_cli(args=args, classification_mode=classification_mode)
+    if taxonomy_error is not None:
+        print(json.dumps({"error": taxonomy_error, "command": "vision score"}, indent=2, sort_keys=True))
+        return 2
+    cache_error = _validate_object_image_cache_args(args=args, modes=(args.ablation_mode,), classification_mode=classification_mode)
+    if cache_error is not None:
+        print(json.dumps({"error": cache_error}, indent=2, sort_keys=True))
+        return 2
     candidate_set = _build_candidate_set_for_cli(
         context,
         command="vision score",
@@ -2101,17 +2133,15 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
         records=records.to_dicts(),
         geospatial_scope=str(args.geo_prior_table) if getattr(args, "geo_prior_table", None) else None,
         geo_prior_table=geo_prior_table,
+        allow_single_target_fixture=classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     )
     if isinstance(candidate_set, int):
         return candidate_set
     runtime = _bioclip_runtime(runtime_python=runtime_python)
     scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
     try:
-        cache_error = _validate_object_image_cache_args(args=args, modes=(args.ablation_mode,))
-        if cache_error is not None:
-            print(json.dumps({"error": cache_error}, indent=2, sort_keys=True))
-            return 2
         text_cache_payload = _prepare_candidate_text_embedding_cache_if_requested(args=args, candidate_set=candidate_set, scorer=scorer)
+        taxonomy_cache_payload = _prepare_taxonomy_text_embedding_cache_if_requested(args=args, taxonomy_store=taxonomy_store, scorer=scorer)
         object_cache_payload = _prepare_object_image_embedding_cache_if_requested(
             args=args,
             records=records,
@@ -2134,6 +2164,11 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
             geo_prior_table=geo_prior_table,
             parquet_batch_rows=args.parquet_batch_rows,
             bioclip_batch_size=args.bioclip_batch,
+            classification_mode=classification_mode,
+            family_top_k=args.family_top_k,
+            species_first_pass_top_k=args.species_first_pass_top_k,
+            species_rerank_top_k=args.species_rerank_top_k,
+            taxonomy_store=taxonomy_store,
         )
     finally:
         scorer.close()
@@ -2154,6 +2189,7 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
                 "candidate_set_id": candidate_set.candidate_set_id,
                 "scorer": "cached_object_embedding" if object_cache_payload is not None else "ephemeral_crop_bioclip",
                 **({"candidate_text_embedding_cache": text_cache_payload} if text_cache_payload is not None else {}),
+                **({"taxonomy_text_embedding_cache": taxonomy_cache_payload} if taxonomy_cache_payload is not None else {}),
                 **({"object_image_embedding_cache": object_cache_payload} if object_cache_payload is not None else {}),
             },
             indent=2,
@@ -2172,6 +2208,16 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
     records = pl.read_parquet(args.input)
     detections = pl.read_parquet(args.detections)
     geo_prior_table = _optional_parquet(getattr(args, "geo_prior_table", None))
+    classification_mode = normalize_classification_mode(args.classification_mode)
+    taxonomy_store, taxonomy_error = _load_taxonomy_store_for_cli(args=args, classification_mode=classification_mode)
+    if taxonomy_error is not None:
+        print(json.dumps({"error": taxonomy_error, "command": "vision ablate"}, indent=2, sort_keys=True))
+        return 2
+    modes = tuple(part.strip() for part in args.modes.split(",") if part.strip())
+    cache_error = _validate_object_image_cache_args(args=args, modes=modes, classification_mode=classification_mode)
+    if cache_error is not None:
+        print(json.dumps({"error": cache_error}, indent=2, sort_keys=True))
+        return 2
     candidate_set = _build_candidate_set_for_cli(
         context,
         command="vision ablate",
@@ -2179,18 +2225,15 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
         records=records.to_dicts(),
         geospatial_scope=str(args.geo_prior_table) if getattr(args, "geo_prior_table", None) else None,
         geo_prior_table=geo_prior_table,
+        allow_single_target_fixture=classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     )
     if isinstance(candidate_set, int):
         return candidate_set
-    modes = tuple(part.strip() for part in args.modes.split(",") if part.strip())
     runtime = _bioclip_runtime(runtime_python=runtime_python)
     scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
     try:
-        cache_error = _validate_object_image_cache_args(args=args, modes=modes)
-        if cache_error is not None:
-            print(json.dumps({"error": cache_error}, indent=2, sort_keys=True))
-            return 2
         text_cache_payload = _prepare_candidate_text_embedding_cache_if_requested(args=args, candidate_set=candidate_set, scorer=scorer)
+        taxonomy_cache_payload = _prepare_taxonomy_text_embedding_cache_if_requested(args=args, taxonomy_store=taxonomy_store, scorer=scorer)
         object_cache_payload = _prepare_object_image_embedding_cache_if_requested(
             args=args,
             records=records,
@@ -2213,6 +2256,11 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
             geo_prior_table=geo_prior_table,
             parquet_batch_rows=args.parquet_batch_rows,
             bioclip_batch_size=args.bioclip_batch,
+            classification_mode=classification_mode,
+            family_top_k=args.family_top_k,
+            species_first_pass_top_k=args.species_first_pass_top_k,
+            species_rerank_top_k=args.species_rerank_top_k,
+            taxonomy_store=taxonomy_store,
         )
     finally:
         scorer.close()
@@ -2223,6 +2271,7 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
                 "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
                 **report.report,
                 **({"candidate_text_embedding_cache": text_cache_payload} if text_cache_payload is not None else {}),
+                **({"taxonomy_text_embedding_cache": taxonomy_cache_payload} if taxonomy_cache_payload is not None else {}),
                 **({"object_image_embedding_cache": object_cache_payload} if object_cache_payload is not None else {}),
             },
             indent=2,
@@ -2263,6 +2312,7 @@ def _build_candidate_set_for_cli(
     records: list[dict[str, Any]] | None = None,
     geospatial_scope: str | None = None,
     geo_prior_table: pl.DataFrame | None = None,
+    allow_single_target_fixture: bool = False,
 ):
     try:
         return build_candidate_set(
@@ -2271,6 +2321,7 @@ def _build_candidate_set_for_cli(
             records=records,
             geospatial_scope=geospatial_scope,
             geo_prior_table=geo_prior_table,
+            allow_single_target_fixture=allow_single_target_fixture,
         )
     except ValueError as exc:
         print(
@@ -2321,7 +2372,69 @@ def _prepare_candidate_text_embedding_cache_if_requested(
     }
 
 
-def _validate_object_image_cache_args(*, args: argparse.Namespace, modes: tuple[str, ...]) -> str | None:
+def _prepare_taxonomy_text_embedding_cache_if_requested(
+    *,
+    args: argparse.Namespace,
+    taxonomy_store: ButterflyTaxonomyStore | None,
+    scorer: PersistentBioClipScorer,
+) -> dict[str, object] | None:
+    cache_path = getattr(args, "taxonomy_text_embedding_cache", None)
+    if not cache_path:
+        return None
+    if taxonomy_store is None:
+        raise ValueError("--taxonomy-text-embedding-cache requires a loaded taxonomy candidate table")
+    update = prepare_taxonomy_text_embedding_cache(
+        taxonomy_store,
+        cache_path,
+        model_id="bioclip2_5",
+        model_checkpoint=BIOCLIP_25_HUGE_REVISION,
+        embed_labels=scorer.embed_text_labels,
+        batch_size=args.text_embedding_batch_size,
+        embedding_dtype="float32",
+    )
+    return {
+        "output_path": str(update.output_path),
+        "rows_total": update.rows_total,
+        "rows_added": update.rows_added,
+        "rows_reused": update.rows_reused,
+        "embeddings_computed": update.embeddings_computed,
+        "text_embedding_batch_size": args.text_embedding_batch_size,
+    }
+
+
+def _load_taxonomy_store_for_cli(
+    *,
+    args: argparse.Namespace,
+    classification_mode: str,
+) -> tuple[ButterflyTaxonomyStore | None, str | None]:
+    if classification_mode != HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+        return None, None
+    table = getattr(args, "taxonomy_candidate_table", None)
+    if not table:
+        return None, "--taxonomy-candidate-table is required for hierarchical_butterfly_classification"
+    try:
+        return ButterflyTaxonomyStore.read(table), None
+    except FileNotFoundError as exc:
+        return None, f"missing_taxonomy_candidate_table: {exc}"
+    except ValueError as exc:
+        return None, f"invalid_taxonomy_candidate_table: {exc}"
+
+
+def _validate_object_image_cache_args(
+    *,
+    args: argparse.Namespace,
+    modes: tuple[str, ...],
+    classification_mode: str = DEFAULT_CLASSIFICATION_MODE,
+) -> str | None:
+    if getattr(args, "taxonomy_text_embedding_cache", None):
+        if classification_mode != HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+            return "--taxonomy-text-embedding-cache requires --classification-mode hierarchical"
+        if not getattr(args, "taxonomy_candidate_table", None):
+            return "--taxonomy-text-embedding-cache requires --taxonomy-candidate-table"
+    if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION and (
+        getattr(args, "candidate_text_embedding_cache", None) or getattr(args, "object_image_embedding_cache", None)
+    ):
+        return "--candidate-text-embedding-cache and --object-image-embedding-cache are target-scope caches; use --taxonomy-text-embedding-cache for hierarchical taxonomy labels"
     if not getattr(args, "object_image_embedding_cache", None):
         return None
     if not getattr(args, "candidate_text_embedding_cache", None):
