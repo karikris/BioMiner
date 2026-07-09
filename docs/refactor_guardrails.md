@@ -13,7 +13,7 @@ Do not commit generated or machine-local artifacts:
 - generated tabular outputs: `*.parquet`, `*.duckdb`, `staging/`, `runs/`
 - model files and weights: `*.pt`, `*.pth`, `*.safetensors`, `*.onnx`, `*.ts`
 
-Intentional markdown audit documents under `reports/*.md` may be committed. Generated run reports, JSON metrics, HTML previews, bucket views, and run artifacts remain ignored.
+Generated run reports, JSON metrics, Markdown audits, HTML previews, bucket views, and run artifacts remain ignored. Durable decisions from a report must be moved into `docs/adr/` before the report artifact is removed from version control.
 
 ## Workflow Cleanup Rules
 

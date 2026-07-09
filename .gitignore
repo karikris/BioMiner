@@ -17,7 +17,6 @@ data/cache/images/
 data/cache/object_crops/
 reports/*
 !reports/
-!reports/*.md
 /run/
 /runs/
 /staging/

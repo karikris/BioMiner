@@ -163,56 +163,41 @@ def test_production_examples_cover_family_genus_species_runs() -> None:
     assert "YOLO species" not in text
 
 
-def test_final_command_surface_audit_includes_migration_notes() -> None:
-    text = Path("reports/refactor_final_command_surface.md").read_text(encoding="utf-8")
+def test_command_surface_adr_includes_migration_notes() -> None:
+    text = Path("docs/adr/command_surface_policy.md").read_text(encoding="utf-8")
 
     for expected in (
-        "## Migration Notes",
         "biominer run --taxon <name> --rank auto|family|genus|species",
-        "flickr_query_definitions.parquet",
-        "--storage-backend local --workstore-backend sqlite --dry-run",
+        "registry build/audit",
+        "One-off scripts, root wrappers, and prototype commands are removed",
     ):
         assert expected in text
 
 
-def test_completion_audit_records_current_refactor_invariants() -> None:
-    text = Path("reports/refactor_completion_audit.md").read_text(encoding="utf-8")
+def test_artifact_tracking_policy_rejects_tracked_reports() -> None:
+    policy = Path("docs/adr/artifact_tracking_policy.md").read_text(encoding="utf-8")
+    ignore = Path(".gitignore").read_text(encoding="utf-8")
 
     for expected in (
-        "Public production workflow is rank-aware",
-        "Production storage/workstore defaults",
-        "T5 generated translations are retained as name evidence and query-gated before Flickr retrieval",
-        "Metadata keyword logic is flags, not hard pre-visual drop",
-        "YOLOE/YOLO26 are object proposal backends only",
-        "BioCLIP remains the species scorer",
-        "Generated artifacts are not tracked",
+        "generated reports",
+        "not committed to the repository",
+        "move only the decision into `docs/adr/`",
     ):
-        assert expected in text
+        assert expected in policy
+    assert "reports/*" in ignore
+    assert "!reports/*.md" not in ignore
 
 
-def test_refactor_phase_commit_map_records_pushed_main_phases() -> None:
-    text = Path("reports/refactor_phase_commit_map.md").read_text(encoding="utf-8")
+def test_cloud_local_boundary_adr_records_stage_contract() -> None:
+    text = Path("docs/adr/cloud_local_run_boundary.md").read_text(encoding="utf-8")
 
     for expected in (
-        "Current branch: `main`",
-        "All commits listed below are present on",
-        "Phase 0 - Repository and environment audit",
-        "Phase 10 - Final audits and PR readiness evidence",
-        "`f28aa84` chore: audit refactor environment and workflow surface",
-        "`e6a498b` docs: clarify verified refactor audit base",
-        "T5 translations",
-        "requiring query eligibility",
+        "local filesystem plus SQLite",
+        "object storage and a workstore backend",
+        "Cloud support must be explicit per stage",
+        "must fail clearly",
     ):
         assert expected in text
-
-
-def test_mcp_environment_report_uses_generic_runtime_layout() -> None:
-    text = Path("reports/refactor_mcp_environment.md").read_text(encoding="utf-8")
-
-    assert "/Users/merm0001/Repos" not in text
-    assert "BIOMINER_BASE_PATH" in text
-    assert "/Applications/secrets/secrets.env" in text
-    assert "/mnt/c/Applications/secrets/secrets.env" in text
 
 
 def test_yoloe26_docs_do_not_recommend_training_dataset_storage() -> None:
