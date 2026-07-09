@@ -1676,6 +1676,91 @@ def test_orchestrator_detects_objects_from_cloud_storage(tmp_path) -> None:
     assert shards[0]["metadata"]["part_written"] is True
 
 
+def test_orchestrator_cloud_detect_keeps_loaded_image_when_shard_registration_fails(tmp_path, monkeypatch) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    storage = _FakeRunStorage()
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root="s3://biominer/runs",
+        stages=(RunStage.DETECT_OBJECTS,),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
+    canonical, _, _ = _join_stage_input_frames()
+    source_uri = plan.artifact_uris.staging_uri + "/evidence/stage=poll_flickr/run_id=species_danaus_plexippus/worker=poller/batch=001.parquet"
+    storage.parquet_payloads[source_uri] = canonical
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        stage=RunStage.POLL_FLICKR.value,
+        run_id=plan.manifest.run_id,
+        worker_id="poller",
+        uri=source_uri,
+        checksum=None,
+        row_count=canonical.height,
+    )
+    original_register_shard = workstore.register_shard
+
+    def failing_register_shard(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202 - mirrors WorkStore API.
+        if kwargs.get("stage") == RunStage.DETECT_OBJECTS.value:
+            raise RuntimeError("register shard failed")
+        return original_register_shard(*args, **kwargs)
+
+    monkeypatch.setattr(workstore, "register_shard", failing_register_shard)
+    cached_image = tmp_path / "cache" / "photo-1.jpg"
+    cached_image.parent.mkdir(parents=True)
+    cached_image.write_bytes(b"retryable-image")
+    detector = FakeObjectDetector(
+        [[DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 4.0), objectness_score=0.91)]]
+    )
+
+    def image_loader(_record):  # noqa: ANN001, ANN202 - mirrors production image loader.
+        assert cached_image.exists()
+        return DecodedImage(width=4, height=4, mode="RGB", data=bytes([255, 255, 255] * 16), source_uri=str(cached_image))
+
+    result = ProductionRunOrchestrator(
+        request,
+        taxon_scope=scope,
+        storage=storage,
+        workstore=workstore,
+        object_detector=detector,
+        image_loader=image_loader,
+    ).run()
+
+    assert result.manifest.status == "failed"
+    assert result.manifest.stages[0].message == "detect_objects_failed: register shard failed"
+    assert cached_image.exists()
+    assert any("/evidence/stage=detect_objects/" in uri for uri in storage.parquet_payloads)
+    work_items = workstore.list_work_items(
+        job_name="biominer_production_run",
+        stage=RunStage.DETECT_OBJECTS.value,
+        registry_version=scope.registry_version,
+    )
+    assert [item["status"] for item in work_items] == ["failed"]
+    shards = workstore.list_committed_shards(
+        job_name="biominer_production_run",
+        stage=RunStage.DETECT_OBJECTS.value,
+        registry_version=scope.registry_version,
+        run_id=plan.manifest.run_id,
+    )
+    assert shards == []
+
+
+def test_immutable_parquet_part_reuse_does_not_overwrite_existing_payload() -> None:
+    storage = _FakeRunStorage()
+    uri = "s3://biominer/runs/evidence/stage=detect_objects/run_id=run/worker=worker/part=001.parquet"
+    existing = pl.DataFrame({"value": [1]})
+    replacement = pl.DataFrame({"value": [99]})
+    storage.write_parquet_part(uri, existing)
+
+    part_write, part_written = run_orchestrator_module._write_immutable_parquet_part(storage, uri, replacement)
+
+    assert part_written is False
+    assert part_write == ParquetPartWrite(uri=uri, row_count=1, byte_count=None, compression="zstd")
+    assert storage.parquet_payloads[uri].to_dict(as_series=False) == {"value": [1]}
+
+
 def test_orchestrator_cloud_detect_requires_storage_backend() -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(

@@ -927,7 +927,7 @@ def test_screen_object_detections_reuses_materialized_detector_crop_paths_and_cl
     assert not list(crop_root.rglob("*.ppm"))
 
 
-def test_screen_object_detections_cleans_materialized_detector_crops_after_scorer_error(tmp_path) -> None:
+def test_screen_object_detections_keeps_materialized_detector_crops_after_scorer_error(tmp_path) -> None:
     seen_paths: list[Path] = []
 
     class FailingPathBatchScorer:
@@ -960,8 +960,73 @@ def test_screen_object_detections_cleans_materialized_detector_crops_after_score
         )
 
     assert seen_paths
-    assert all(not path.exists() for path in seen_paths)
-    assert not list(crop_root.rglob("*.ppm"))
+    assert all(path.exists() for path in seen_paths)
+    assert list(crop_root.rglob("*.ppm"))
+
+
+def test_screen_object_detections_keeps_materialized_detector_crops_after_parquet_commit_failure(tmp_path, monkeypatch) -> None:
+    seen_paths: list[Path] = []
+
+    class PathBatchScorer:
+        def score_label_sets_batch(self, image_paths, label_sets):  # noqa: ANN001, ANN202 - mirrors persistent scorer API.
+            paths = tuple(Path(path) for path in image_paths)
+            seen_paths.extend(paths)
+            assert all(path.exists() for path in paths)
+            return {
+                name: [
+                    {
+                        label: (
+                            0.86
+                            if "Danaus plexippus" in label
+                            else 0.90
+                            if label == "Nymphalidae"
+                            else 0.1
+                        )
+                        for label in labels
+                    }
+                    for _path in paths
+                ]
+                for name, labels in label_sets.items()
+            }
+
+    import biominer.bioclip.object_runner as object_runner_module
+
+    original_write_parquet = object_runner_module.write_parquet
+
+    def failing_final_write(frame, path, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors write_parquet.
+        target = Path(path)
+        if target.name == "object_scores.parquet":
+            raise RuntimeError("parquet commit failed")
+        return original_write_parquet(frame, target, **kwargs)
+
+    monkeypatch.setattr(object_runner_module, "write_parquet", failing_final_write)
+    crop_root = tmp_path / "crops"
+    crop_scorer = EphemeralCropBioClipScorer(
+        scorer=PathBatchScorer(),
+        image_loader=lambda item: _decoded_image(),
+        temp_dir=crop_root,
+        crop_target_px=3,
+        model_id="bioclip2_5",
+        model_version="bioclip2_5_huge",
+        model_checkpoint="checkpoint-a",
+    )
+
+    with pytest.raises(RuntimeError, match="parquet commit failed"):
+        screen_object_detections(
+            canonical_records=_canonical_records(),
+            detections=_detections().head(1),
+            species_context=_context(),
+            candidate_set=_fixture_candidate_set(),
+            scorer=crop_scorer,
+            output_path=tmp_path / "object_scores.parquet",
+            ablation_mode="detector_crop",
+            bioclip_batch_size=1,
+        )
+
+    assert seen_paths
+    assert all(path.exists() for path in seen_paths)
+    assert list(crop_root.rglob("*.ppm"))
+    assert not (tmp_path / "object_scores.parquet").exists()
 
 
 def test_screen_object_detections_retains_materialized_detector_crops_when_debug_requested(tmp_path) -> None:

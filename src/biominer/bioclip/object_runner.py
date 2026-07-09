@@ -557,6 +557,7 @@ def iter_materialized_detector_crop_batches(
     crop_padding_ratio: float = 0.08,
     crop_target_px: int = 336,
     retain_debug_crops: bool = False,
+    cleanup_after_yield: bool = True,
 ) -> Iterator[MaterializedCropBatch]:
     if crop_batch_size <= 0:
         raise ValueError("crop_batch_size must be positive")
@@ -580,6 +581,7 @@ def iter_materialized_detector_crop_batches(
                 crop_padding_ratio=crop_padding_ratio,
                 crop_target_px=crop_target_px,
                 retain_debug_crops=retain_debug_crops,
+                cleanup_after_yield=cleanup_after_yield,
             )
             pending = []
             batch_index += 1
@@ -593,6 +595,7 @@ def iter_materialized_detector_crop_batches(
             crop_padding_ratio=crop_padding_ratio,
             crop_target_px=crop_target_px,
             retain_debug_crops=retain_debug_crops,
+            cleanup_after_yield=cleanup_after_yield,
         )
 
 
@@ -606,6 +609,7 @@ def _yield_materialized_detector_crop_batch(
     crop_padding_ratio: float,
     crop_target_px: int,
     retain_debug_crops: bool,
+    cleanup_after_yield: bool,
 ) -> Iterator[MaterializedCropBatch]:
     materialized = _materialize_detector_crop_batch(
         detections=detections,
@@ -620,7 +624,8 @@ def _yield_materialized_detector_crop_batch(
     try:
         yield materialized
     finally:
-        materialized.cleanup()
+        if cleanup_after_yield:
+            materialized.cleanup()
 
 
 def _materialize_detector_crop_batch(
@@ -757,6 +762,8 @@ def screen_object_detections(
         raise ValueError("min_bioclip_batch_size must be <= active BioCLIP batch size")
     current_bioclip_batch_size = active_bioclip_batch_size
     bioclip_batch_retries = 0
+    materialized_batches_to_cleanup: list[MaterializedCropBatch] = []
+    committed_output = False
     materialized_crop_config = (
         _detector_crop_materialization_config(scorer)
         if ablation_mode == "detector_crop"
@@ -852,7 +859,9 @@ def screen_object_detections(
                 crop_padding_ratio=materialized_crop_config.crop_padding_ratio,
                 crop_target_px=materialized_crop_config.crop_target_px,
                 retain_debug_crops=materialized_crop_config.retain_debug_crops,
+                cleanup_after_yield=False,
             ):
+                materialized_batches_to_cleanup.append(crop_batch)
                 score_items.extend(crop_batch.items)
                 flush_score_items()
         else:
@@ -876,7 +885,7 @@ def screen_object_detections(
             write_parquet(frame, output)
         else:
             frame = _ensure_columns(pl.DataFrame(rows), OBJECT_SCORE_OUTPUT_SCHEMA) if rows else empty_object_score_frame()
-        return ObjectScreenResult(
+        result = ObjectScreenResult(
             frame=frame,
             output_path=output,
             records_seen=canonical_records.height,
@@ -902,7 +911,12 @@ def screen_object_detections(
                 unavailable_count=segmentation_unavailable_count,
             ),
         )
+        committed_output = True
+        return result
     finally:
+        if committed_output:
+            for crop_batch in materialized_batches_to_cleanup:
+                crop_batch.cleanup()
         if batch_dir is not None and batch_dir.exists():
             rmtree(batch_dir)
 

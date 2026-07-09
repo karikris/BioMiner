@@ -2163,16 +2163,6 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
                 run_policy=run_policy,
             )
             eligible_record_keys = _eligible_bioclip_record_keys(detection_result.frame, detection_policy=detection_policy)
-            if delete_images_after_commit:
-                chunk_record_keys = {_record_identity(row) for row in chunk.to_dicts()}
-                eligible_paths = _cached_paths_for_record_keys(cached_paths_by_record, eligible_record_keys)
-                detection_only_paths = _cached_paths_for_record_keys(
-                    cached_paths_by_record,
-                    chunk_record_keys - eligible_record_keys,
-                )
-                metrics["cached_images_deleted"] = int(metrics["cached_images_deleted"]) + _delete_cached_image_paths(
-                    detection_only_paths - eligible_paths
-                )
             score_result = screen_object_detections(
                 canonical_records=chunk,
                 detections=detection_result.frame,
@@ -2195,8 +2185,9 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
                 species_context=context,
             )
             if delete_images_after_commit:
+                chunk_record_keys = {_record_identity(row) for row in chunk.to_dicts()}
                 metrics["cached_images_deleted"] = int(metrics["cached_images_deleted"]) + _delete_cached_image_paths(
-                    _cached_paths_for_record_keys(cached_paths_by_record, eligible_record_keys)
+                    _cached_paths_for_record_keys(cached_paths_by_record, chunk_record_keys)
                 )
             metrics["records_seen"] = int(metrics["records_seen"]) + detection_result.records_seen
             metrics["images_loaded"] = int(metrics["images_loaded"]) + detection_result.images_loaded
