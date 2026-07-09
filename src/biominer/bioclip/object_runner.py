@@ -15,6 +15,8 @@ from biominer.bioclip.classification_modes import (
     DEFAULT_CLASSIFICATION_MODE,
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
+    HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+    HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE,
     ClassificationMode,
     normalize_classification_mode,
 )
@@ -642,6 +644,7 @@ def screen_object_detections(
     if bioclip_batch_size <= 0:
         raise ValueError("bioclip_batch_size must be positive")
     classification_mode = normalize_classification_mode(classification_mode)
+    _raise_if_hierarchical_classification(classification_mode)
     records_by_photo = {
         (str(row.get("source") or ""), str(row.get("flickr_photo_id") or "")): row
         for row in canonical_records.to_dicts()
@@ -880,6 +883,7 @@ def _score_detection(
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> dict[str, Any]:
     classification_mode = normalize_classification_mode(classification_mode)
+    _raise_if_hierarchical_classification(classification_mode)
     labels = _object_scoring_labels(candidate_set)
     family_scores = scorer.score(item, labels.family) if labels.family else {}
     genus_scores = scorer.score(item, labels.genus) if labels.genus else {}
@@ -925,6 +929,7 @@ def _score_detection_batch(
     if not items:
         return []
     classification_mode = normalize_classification_mode(classification_mode)
+    _raise_if_hierarchical_classification(classification_mode)
     labels = _object_scoring_labels(candidate_set)
     initial_label_sets: dict[str, tuple[str, ...]] = {}
     if labels.family:
@@ -1093,6 +1098,11 @@ def _object_scoring_labels(candidate_set: CandidateSet) -> _ObjectScoringLabels:
         ),
         species=candidate_set.prompt_labels("species"),
     )
+
+
+def _raise_if_hierarchical_classification(classification_mode: ClassificationMode) -> None:
+    if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+        raise NotImplementedError(HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE)
 
 
 def _score_label_sets_for_items(

@@ -8,6 +8,7 @@ import pytest
 
 from biominer.bioclip.ablation import build_ablation_report, run_object_ablations
 from biominer.bioclip.candidate_sets import CandidateTaxon, build_candidate_set, build_candidate_set_for_taxon_scope
+from biominer.bioclip.classification_modes import HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE
 from biominer.bioclip.object_runner import (
     CachedObjectEmbeddingScorer,
     EphemeralCropBioClipScorer,
@@ -1161,6 +1162,31 @@ def test_object_bioclip_production_gate_scores_only_detected_butterflies(tmp_pat
     assert result.crops_scored == 1
     assert result.frame["detection_id"].to_list() == ["det-butterfly"]
     assert scorer.calls == [("det-butterfly",), ("det-butterfly",)]
+
+
+def test_object_bioclip_hierarchical_mode_fails_before_target_scope_scoring(tmp_path) -> None:
+    class FailingScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def score(self, item, labels):  # noqa: ANN001, ANN202 - should not be reached.
+            raise AssertionError("hierarchical mode must not run target-scope object scoring")
+
+    with pytest.raises(NotImplementedError, match="Phase 2 GBIF taxonomy candidate table"):
+        screen_object_detections(
+            canonical_records=_canonical_records(),
+            detections=_detections().head(1),
+            species_context=_context(),
+            candidate_set=_fixture_candidate_set(),
+            scorer=FailingScorer(),
+            output_path=tmp_path / "object_scores.parquet",
+            ablation_mode="detector_crop",
+            classification_mode="hierarchical_butterfly_classification",
+        )
+
+    assert HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE.startswith("hierarchical_butterfly_classification requires")
+    assert not (tmp_path / "object_scores.parquet").exists()
 
 
 def test_object_bioclip_skips_non_butterfly_detector_labels(tmp_path) -> None:

@@ -8,7 +8,11 @@ import pytest
 
 import biominer.run.orchestrator as run_orchestrator_module
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
-from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION, TARGET_SCOPE_OBJECT_SCREENING
+from biominer.bioclip.classification_modes import (
+    HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+    HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE,
+    TARGET_SCOPE_OBJECT_SCREENING,
+)
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.evidence import build_object_evidence_frames, build_review_queue, evidence_count_metrics
 from biominer.evidence.join import write_object_evidence_outputs
@@ -196,6 +200,47 @@ def test_production_run_plan_records_hierarchical_classification_config_for_dry_
     assert plan.manifest.model_configs["family_top_k"] == 4
     assert plan.manifest.model_configs["species_first_pass_top_k"] == 25
     assert plan.manifest.model_configs["species_rerank_top_k"] == 7
+
+
+def test_production_run_hierarchical_dry_run_skips_score_stage_with_plan_metadata(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root=tmp_path / "runs",
+        dry_run=True,
+        classification_mode="hierarchical",
+        stages=(RunStage.SCORE_BIOCLIP,),
+    )
+
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope).run()
+
+    assert plan.manifest.status == "complete"
+    assert plan.manifest.stages[0].status is StageStatus.SKIPPED
+    assert plan.manifest.stages[0].message == "dry_run"
+    assert plan.manifest.model_configs["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+
+
+def test_production_run_hierarchical_score_stage_fails_structurally(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        classification_mode="hierarchical",
+        taxonomy_candidate_table="data/registry/current/butterfly_classification_taxa.parquet",
+        stages=(RunStage.SCORE_BIOCLIP,),
+    )
+
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope).run()
+
+    assert plan.manifest.status == "failed"
+    assert plan.manifest.stages[0].status is StageStatus.FAILED
+    assert plan.manifest.stages[0].message == HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE
+    assert plan.manifest.stages[0].metrics["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    assert plan.manifest.stages[0].metrics["taxonomy_candidate_table"].endswith("butterfly_classification_taxa.parquet")
 
 
 def test_production_run_request_validates_visual_classification_top_k() -> None:

@@ -5,6 +5,7 @@ from pathlib import Path
 import polars as pl
 
 from biominer.bioclip.candidate_sets import build_candidate_set
+from biominer.bioclip.classification_modes import HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE
 from biominer.bioclip.cloud_work import bioclip_score_work_item, enqueue_bioclip_work_from_detection_shards, run_cloud_bioclip_batch
 from biominer.run.stages import RunStage
 from biominer.species.context import CommonName, SpeciesContext
@@ -135,6 +136,40 @@ def test_run_cloud_bioclip_batch_chunks_detector_crops_by_crop_batch_size() -> N
     assert result.work_items_seen == 5
     assert result.detections_seen == 5
     assert result.crops_scored == 5
+
+
+def test_run_cloud_bioclip_batch_hierarchical_mode_fails_before_target_scope_scoring() -> None:
+    class FailingScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def score(self, item, labels):  # noqa: ANN001, ANN202 - should not be reached.
+            raise AssertionError("hierarchical mode must not run target-scope object scoring")
+
+    context = _context()
+    candidate_set = build_candidate_set(context, allow_single_target_fixture=True)
+    payload = bioclip_score_work_item(
+        _detection_row("photo-1", "det-1", "sha256:crop-1", "butterfly_like", "detected"),
+        run_id="run-1",
+        detection_shard_uri="s3://biominer/detections.parquet",
+        model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
+        candidate_set_id=candidate_set.candidate_set_id,
+        ablation_mode="detector_crop",
+    )
+
+    try:
+        run_cloud_bioclip_batch(
+            work_items=[{"work_key": payload["work_key"], "payload": payload}],
+            species_context=context,
+            candidate_set=candidate_set,
+            scorer=FailingScorer(),
+            classification_mode="hierarchical_butterfly_classification",
+        )
+    except NotImplementedError as exc:
+        assert str(exc) == HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE
+    else:  # pragma: no cover - assertion branch.
+        raise AssertionError("expected hierarchical mode to fail before scoring")
 
 
 def _context() -> SpeciesContext:

@@ -8,6 +8,7 @@ from typing import Any
 import polars as pl
 
 from biominer.bioclip.candidate_sets import CandidateSet
+from biominer.bioclip.classification_modes import DEFAULT_CLASSIFICATION_MODE, ClassificationMode
 from biominer.bioclip.object_runner import PRIMARY_VISUAL_CLASSIFIER, AblationMode, ObjectBioClipScorer, screen_object_detections
 from biominer.species.context import SpeciesContext
 
@@ -31,6 +32,7 @@ def run_object_ablations(
     geo_prior_table: pl.DataFrame | None = None,
     parquet_batch_rows: int = 10000,
     bioclip_batch_size: int = 24,
+    classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
 ) -> AblationRunReport:
     base = Path(output_dir)
     base.mkdir(parents=True, exist_ok=True)
@@ -52,6 +54,7 @@ def run_object_ablations(
             geo_prior_table=geo_prior_table,
             parquet_batch_rows=parquet_batch_rows,
             bioclip_batch_size=bioclip_batch_size,
+            classification_mode=classification_mode,
         )
         frames.append(result.frame)
         score_batches_by_mode[mode] = result.score_batches_written

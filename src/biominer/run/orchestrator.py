@@ -12,6 +12,8 @@ from biominer.bioclip.classification_modes import (
     DEFAULT_FAMILY_TOP_K,
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
+    HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+    HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE,
     ClassificationMode,
     normalize_classification_mode,
 )
@@ -742,6 +744,15 @@ class ProductionRunOrchestrator:
         )
 
     def _run_score_bioclip_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
+        if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message=HIERARCHICAL_CLASSIFICATION_UNIMPLEMENTED_MESSAGE,
+                metrics={
+                    "classification_mode": self.request.classification_mode,
+                    "taxonomy_candidate_table": str(self.request.taxonomy_candidate_table) if self.request.taxonomy_candidate_table else None,
+                },
+            )
         if is_cloud_uri(self.request.output_root):
             if self.storage is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_score_bioclip")
@@ -804,6 +815,7 @@ class ProductionRunOrchestrator:
                     candidate_set=candidate_set,
                     scorer=self.object_scorer,
                     crop_batch_size=self.request.vision_settings.crop_batch_size,
+                    classification_mode=self.request.classification_mode,
                 )
                 part_id = bioclip_score_batch_id(claimed)
                 part_uri = build_parquet_part_uri(
@@ -892,6 +904,7 @@ class ProductionRunOrchestrator:
             output_dir=mode_output_dir,
             modes=_request_bioclip_modes(self.request),
             bioclip_batch_size=self.request.vision_settings.crop_batch_size,
+            classification_mode=self.request.classification_mode,
         )
         write_parquet(frame, plan.paths.object_scores_path)
         return StageExecutionResult(
@@ -1460,6 +1473,7 @@ def _score_object_visual_modes(
     output_dir: Path,
     modes: tuple[Any, ...],
     bioclip_batch_size: int = 24,
+    classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
 ) -> tuple[Any, dict[str, Any]]:
     import polars as pl
     from biominer.bioclip.ablation import run_object_ablations
@@ -1473,6 +1487,7 @@ def _score_object_visual_modes(
         output_dir=output_dir,
         modes=modes,  # type: ignore[arg-type]
         bioclip_batch_size=bioclip_batch_size,
+        classification_mode=classification_mode,
     )
     frames = [
         pl.read_parquet(path)

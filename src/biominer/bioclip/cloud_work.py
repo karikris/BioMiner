@@ -8,6 +8,7 @@ from typing import Any
 import polars as pl
 
 from biominer.bioclip.candidate_sets import CandidateSet
+from biominer.bioclip.classification_modes import DEFAULT_CLASSIFICATION_MODE, ClassificationMode, normalize_classification_mode
 from biominer.bioclip.object_runner import (
     OBJECT_VISUAL_MODES,
     ObjectBioClipScorer,
@@ -175,9 +176,11 @@ def run_cloud_bioclip_batch(
     scorer: ObjectBioClipScorer,
     geo_prior_table: pl.DataFrame | None = None,
     crop_batch_size: int = 24,
+    classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
 ) -> CloudBioClipBatchResult:
     if crop_batch_size <= 0:
         raise ValueError("crop_batch_size must be positive")
+    classification_mode = normalize_classification_mode(classification_mode)
     rows: list[dict[str, Any]] = []
     requested_modes: list[str] = []
     scored_by_mode: dict[str, int] = {}
@@ -223,6 +226,7 @@ def run_cloud_bioclip_batch(
                         scorer=scorer,
                         ablation_mode=mode,  # type: ignore[arg-type]
                         geo_prior_table=geo_prior_table,
+                        classification_mode=classification_mode,
                     )
                 except SegmentationUnavailable as exc:
                     _mark_unavailable(
@@ -244,6 +248,7 @@ def run_cloud_bioclip_batch(
                     scorer=scorer,
                     ablation_mode=mode,  # type: ignore[arg-type]
                     geo_prior_table=geo_prior_table,
+                    classification_mode=classification_mode,
                 )
             except SegmentationUnavailable:
                 raise
