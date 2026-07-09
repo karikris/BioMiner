@@ -814,6 +814,34 @@ def test_materialized_detector_crop_batches_skip_noneligible_without_image_load(
     assert seen_batches == [["det-1"]]
 
 
+def test_materialized_detector_crop_batches_reuse_duplicate_crop_hash_within_batch(tmp_path) -> None:
+    base_detection = _detections().to_dicts()[0]
+    detections = pl.DataFrame(
+        [
+            {**base_detection, "detection_id": "det-a", "crop_hash": "sha256:same-crop"},
+            {**base_detection, "detection_id": "det-b", "crop_hash": "sha256:same-crop"},
+        ]
+    )
+    batch_paths: list[Path] = []
+
+    for batch in iter_materialized_detector_crop_batches(
+        canonical_records=_canonical_records(),
+        detections=detections,
+        image_loader=lambda item: _decoded_image(),
+        temp_dir=tmp_path,
+        crop_batch_size=2,
+        crop_target_px=3,
+    ):
+        item_paths = [Path(item["crop_path"]) for item in batch.items]
+        assert len(batch.crop_path_by_hash) == 1
+        assert item_paths[0] == item_paths[1]
+        assert item_paths[0].exists()
+        batch_paths.extend(item_paths)
+
+    assert batch_paths
+    assert all(not path.exists() for path in batch_paths)
+
+
 def test_materialized_detector_crop_batches_retain_debug_crops_when_requested(tmp_path) -> None:
     retained_batches = list(
         iter_materialized_detector_crop_batches(
@@ -835,6 +863,181 @@ def test_materialized_detector_crop_batches_retain_debug_crops_when_requested(tm
     batch.cleanup(force=True)
 
     assert not batch.temp_dir.exists()
+
+
+def test_screen_object_detections_reuses_materialized_detector_crop_paths_and_cleans_after_success(tmp_path) -> None:
+    calls: list[dict[str, object]] = []
+
+    class PathBatchScorer:
+        def score_label_sets_batch(self, image_paths, label_sets):  # noqa: ANN001, ANN202 - mirrors persistent scorer API.
+            paths = tuple(Path(path) for path in image_paths)
+            calls.append(
+                {
+                    "paths": paths,
+                    "existing": tuple(path.exists() for path in paths),
+                    "label_sets": tuple(label_sets),
+                }
+            )
+            return {
+                name: [
+                    {
+                        label: (
+                            0.86
+                            if "Danaus plexippus" in label
+                            else 0.90
+                            if label == "Nymphalidae"
+                            else 0.1
+                        )
+                        for label in labels
+                    }
+                    for _path in paths
+                ]
+                for name, labels in label_sets.items()
+            }
+
+    crop_root = tmp_path / "crops"
+    crop_scorer = EphemeralCropBioClipScorer(
+        scorer=PathBatchScorer(),
+        image_loader=lambda item: _decoded_image(),
+        temp_dir=crop_root,
+        crop_target_px=3,
+        model_id="bioclip2_5",
+        model_version="bioclip2_5_huge",
+        model_checkpoint="checkpoint-a",
+    )
+
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections().head(1),
+        species_context=_context(),
+        candidate_set=_fixture_candidate_set(),
+        scorer=crop_scorer,
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+        bioclip_batch_size=1,
+    )
+
+    assert result.crops_scored == 1
+    assert [call["existing"] for call in calls] == [(True,), (True,)]
+    assert calls[0]["paths"] == calls[1]["paths"]
+    assert calls[0]["label_sets"] == ("family", "genus", "species")
+    assert calls[1]["label_sets"] == ("rerank",)
+    assert all(not path.exists() for call in calls for path in call["paths"])
+    assert not list(crop_root.rglob("*.ppm"))
+
+
+def test_screen_object_detections_cleans_materialized_detector_crops_after_scorer_error(tmp_path) -> None:
+    seen_paths: list[Path] = []
+
+    class FailingPathBatchScorer:
+        def score_label_sets_batch(self, image_paths, label_sets):  # noqa: ANN001, ANN202 - mirrors persistent scorer API.
+            seen_paths.extend(Path(path) for path in image_paths)
+            assert all(path.exists() for path in seen_paths)
+            raise RuntimeError("bioclip boom")
+
+    crop_root = tmp_path / "crops"
+    crop_scorer = EphemeralCropBioClipScorer(
+        scorer=FailingPathBatchScorer(),
+        image_loader=lambda item: _decoded_image(),
+        temp_dir=crop_root,
+        crop_target_px=3,
+        model_id="bioclip2_5",
+        model_version="bioclip2_5_huge",
+        model_checkpoint="checkpoint-a",
+    )
+
+    with pytest.raises(RuntimeError, match="bioclip boom"):
+        screen_object_detections(
+            canonical_records=_canonical_records(),
+            detections=_detections().head(1),
+            species_context=_context(),
+            candidate_set=_fixture_candidate_set(),
+            scorer=crop_scorer,
+            output_path=tmp_path / "object_scores.parquet",
+            ablation_mode="detector_crop",
+            bioclip_batch_size=1,
+        )
+
+    assert seen_paths
+    assert all(not path.exists() for path in seen_paths)
+    assert not list(crop_root.rglob("*.ppm"))
+
+
+def test_screen_object_detections_retains_materialized_detector_crops_when_debug_requested(tmp_path) -> None:
+    class PathBatchScorer:
+        def score_label_sets_batch(self, image_paths, label_sets):  # noqa: ANN001, ANN202 - mirrors persistent scorer API.
+            paths = [Path(path) for path in image_paths]
+            assert all(path.exists() for path in paths)
+            return {
+                name: [
+                    {label: (0.86 if "Danaus plexippus" in label else 0.1) for label in labels}
+                    for _path in paths
+                ]
+                for name, labels in label_sets.items()
+            }
+
+    crop_root = tmp_path / "debug-crops"
+    crop_scorer = EphemeralCropBioClipScorer(
+        scorer=PathBatchScorer(),
+        image_loader=lambda item: _decoded_image(),
+        temp_dir=crop_root,
+        crop_target_px=3,
+        model_id="bioclip2_5",
+        model_version="bioclip2_5_huge",
+        model_checkpoint="checkpoint-a",
+        retain_debug_crops=True,
+    )
+
+    screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections().head(1),
+        species_context=_context(),
+        candidate_set=_fixture_candidate_set(),
+        scorer=crop_scorer,
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+        bioclip_batch_size=1,
+    )
+
+    assert list(crop_root.rglob("*.ppm"))
+
+
+def test_screen_object_detections_materialized_path_skips_noneligible_without_image_load(tmp_path) -> None:
+    image_loads: list[str] = []
+
+    class FailingScorer:
+        def score_label_sets_batch(self, image_paths, label_sets):  # noqa: ANN001, ANN202 - should not be called.
+            raise AssertionError("non-butterfly detection should not be scored")
+
+    def image_loader(item: dict[str, object]) -> DecodedImage:
+        image_loads.append(str(item["detection_id"]))
+        return _decoded_image()
+
+    crop_scorer = EphemeralCropBioClipScorer(
+        scorer=FailingScorer(),
+        image_loader=image_loader,
+        temp_dir=tmp_path / "crops",
+        crop_target_px=3,
+        model_id="bioclip2_5",
+        model_version="bioclip2_5_huge",
+        model_checkpoint="checkpoint-a",
+    )
+    detections = _detections().with_columns(pl.lit("moth_like").alias("detector_label"))
+
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=detections,
+        species_context=_context(),
+        candidate_set=_fixture_candidate_set(),
+        scorer=crop_scorer,
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+        detection_policy=DetectionPolicy(bioclip_eligible_labels=("butterfly_like",)),
+    )
+
+    assert result.crops_scored == 0
+    assert image_loads == []
+    assert not list((tmp_path / "crops").rglob("*.ppm"))
 
 
 def test_screen_object_detections_passes_ablation_mode_to_scorer(tmp_path) -> None:

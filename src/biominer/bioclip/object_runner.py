@@ -216,6 +216,15 @@ class MaterializedCropBatch:
             rmtree(self.temp_dir)
 
 
+@dataclass(frozen=True)
+class DetectorCropMaterializationConfig:
+    image_loader: Any
+    temp_dir: Path
+    crop_padding_ratio: float
+    crop_target_px: int
+    retain_debug_crops: bool
+
+
 class FakeObjectBioClipScorer:
     model_id = "fake-bioclip"
     model_version = "test"
@@ -269,10 +278,13 @@ class EphemeralCropBioClipScorer:
         self._segmenter = segmenter or NoneSegmenter()
 
     def score(self, item: dict[str, Any], labels: tuple[str, ...]) -> dict[str, float]:
+        mode = _ablation_mode(item)
+        materialized_path = _materialized_detector_crop_path(item=item, mode=mode)
+        if materialized_path is not None:
+            return {str(label): float(score) for label, score in dict(self._scorer(materialized_path, labels)).items()}
         image = self._image_loader(item)
         if not isinstance(image, DecodedImage):
             raise TypeError("image_loader must return a DecodedImage")
-        mode = _ablation_mode(item)
         data, width, height, content_hash = self._visual_input_for_mode(item=item, image=image, mode=mode)
         crop_path, retained = self._write_temp_ppm_for_score(data, width=width, height=height, crop_hash=f"{mode}:{content_hash}")
         try:
@@ -288,19 +300,26 @@ class EphemeralCropBioClipScorer:
     ) -> dict[str, list[dict[str, float]]]:
         crop_paths: list[Path] = []
         retained_paths: set[Path] = set()
+        owned_paths: set[Path] = set()
         try:
             for item in items:
-                image = self._image_loader(item)
-                if not isinstance(image, DecodedImage):
-                    raise TypeError("image_loader must return a DecodedImage")
                 mode = _ablation_mode(item)
-                data, width, height, content_hash = self._visual_input_for_mode(item=item, image=image, mode=mode)
-                crop_path, retained = self._write_temp_ppm_for_score(
-                    data,
-                    width=width,
-                    height=height,
-                    crop_hash=f"{mode}:{content_hash}",
-                )
+                materialized_path = _materialized_detector_crop_path(item=item, mode=mode)
+                if materialized_path is not None:
+                    crop_path = materialized_path
+                    retained = True
+                else:
+                    image = self._image_loader(item)
+                    if not isinstance(image, DecodedImage):
+                        raise TypeError("image_loader must return a DecodedImage")
+                    data, width, height, content_hash = self._visual_input_for_mode(item=item, image=image, mode=mode)
+                    crop_path, retained = self._write_temp_ppm_for_score(
+                        data,
+                        width=width,
+                        height=height,
+                        crop_hash=f"{mode}:{content_hash}",
+                    )
+                    owned_paths.add(crop_path)
                 crop_paths.append(crop_path)
                 if retained:
                     retained_paths.add(crop_path)
@@ -324,11 +343,20 @@ class EphemeralCropBioClipScorer:
             }
         finally:
             for crop_path in crop_paths:
-                if crop_path not in retained_paths:
+                if crop_path in owned_paths and crop_path not in retained_paths:
                     crop_path.unlink(missing_ok=True)
 
     def supports_detector_crop_segmentation(self, item: dict[str, Any]) -> bool:
         return detector_crop_mask_available(item) or not isinstance(self._segmenter, NoneSegmenter)
+
+    def detector_crop_materialization_config(self) -> DetectorCropMaterializationConfig:
+        return DetectorCropMaterializationConfig(
+            image_loader=self._image_loader,
+            temp_dir=self._temp_dir,
+            crop_padding_ratio=self._crop_padding_ratio,
+            crop_target_px=self._crop_target_px,
+            retain_debug_crops=self._retain_debug_crops,
+        )
 
     def _visual_input_for_mode(self, *, item: dict[str, Any], image: DecodedImage, mode: AblationMode) -> tuple[bytes, int, int, str]:
         if mode == "whole_image":
@@ -684,6 +712,11 @@ def screen_object_detections(
     segmentation_unavailable_reason: str | None = None
     score_items: list[dict[str, Any]] = []
     active_bioclip_batch_size = 1 if ablation_mode == "detector_crop_segmentation" else max(1, bioclip_batch_size)
+    materialized_crop_config = (
+        _detector_crop_materialization_config(scorer)
+        if ablation_mode == "detector_crop"
+        else None
+    )
 
     def flush_score_items() -> None:
         nonlocal crops_scored, segmentation_unavailable_count, segmentation_unavailable_reason
@@ -736,19 +769,34 @@ def screen_object_detections(
             )
 
     try:
-        for detection in detections.to_dicts():
-            if not detection_is_bioclip_eligible(detection, detection_policy):
-                continue
-            key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
-            record = _canonical_record_for_detection(records_by_photo, key=key)
-            item = {**detection, **record, "ablation_mode": ablation_mode}
-            if ablation_mode == "detector_crop_segmentation" and not _scorer_supports_detector_crop_segmentation(scorer, item):
-                segmentation_unavailable_count += 1
-                segmentation_unavailable_reason = segmentation_unavailable_reason or "detector_masks_missing"
-                continue
-            score_items.append(item)
-            if len(score_items) >= active_bioclip_batch_size:
+        if materialized_crop_config is not None:
+            for crop_batch in iter_materialized_detector_crop_batches(
+                canonical_records=canonical_records,
+                detections=detections,
+                image_loader=materialized_crop_config.image_loader,
+                temp_dir=materialized_crop_config.temp_dir,
+                detection_policy=detection_policy,
+                crop_batch_size=active_bioclip_batch_size,
+                crop_padding_ratio=materialized_crop_config.crop_padding_ratio,
+                crop_target_px=materialized_crop_config.crop_target_px,
+                retain_debug_crops=materialized_crop_config.retain_debug_crops,
+            ):
+                score_items.extend(crop_batch.items)
                 flush_score_items()
+        else:
+            for detection in detections.to_dicts():
+                if not detection_is_bioclip_eligible(detection, detection_policy):
+                    continue
+                key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
+                record = _canonical_record_for_detection(records_by_photo, key=key)
+                item = {**detection, **record, "ablation_mode": ablation_mode}
+                if ablation_mode == "detector_crop_segmentation" and not _scorer_supports_detector_crop_segmentation(scorer, item):
+                    segmentation_unavailable_count += 1
+                    segmentation_unavailable_reason = segmentation_unavailable_reason or "detector_masks_missing"
+                    continue
+                score_items.append(item)
+                if len(score_items) >= active_bioclip_batch_size:
+                    flush_score_items()
         flush_score_items()
         if output is not None and batch_dir is not None:
             _flush_score_row_buffer(row_buffer=row_buffer, batch_paths=batch_paths, batch_dir=batch_dir)
@@ -1770,6 +1818,28 @@ def _ablation_mode(item: dict[str, Any]) -> AblationMode:
     if mode not in set(OBJECT_VISUAL_MODES):
         raise ValueError(f"unsupported object BioCLIP ablation mode: {mode}")
     return mode  # type: ignore[return-value]
+
+
+def _materialized_detector_crop_path(*, item: dict[str, Any], mode: AblationMode) -> Path | None:
+    if mode != "detector_crop" or "crop_path" not in item:
+        return None
+    path_value = item.get("crop_path")
+    if path_value is None or str(path_value).strip() == "":
+        raise ValueError("materialized detector crop item has blank crop_path")
+    path = path_value if isinstance(path_value, Path) else Path(str(path_value))
+    if not path.exists():
+        raise FileNotFoundError(f"materialized detector crop path does not exist: {path}")
+    return path
+
+
+def _detector_crop_materialization_config(scorer: ObjectBioClipScorer) -> DetectorCropMaterializationConfig | None:
+    config = getattr(scorer, "detector_crop_materialization_config", None)
+    if not callable(config):
+        return None
+    value = config()
+    if not isinstance(value, DetectorCropMaterializationConfig):
+        raise TypeError("detector_crop_materialization_config must return DetectorCropMaterializationConfig")
+    return value
 
 
 def _scorer_supports_detector_crop_segmentation(scorer: ObjectBioClipScorer, item: dict[str, Any]) -> bool:
