@@ -11,6 +11,13 @@ from typing import Any, Iterable, Iterator, Literal, Mapping, Protocol, Sequence
 import polars as pl
 
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
+from biominer.bioclip.classification_modes import (
+    DEFAULT_CLASSIFICATION_MODE,
+    DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    DEFAULT_SPECIES_RERANK_TOP_K,
+    ClassificationMode,
+    normalize_classification_mode,
+)
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage
@@ -30,6 +37,8 @@ from biominer.storage.parquet import write_parquet
 PRIMARY_VISUAL_CLASSIFIER = "bioclip_object"
 OBJECT_VISUAL_MODES: tuple[str, ...] = ("whole_image", "detector_crop", "detector_crop_segmentation")
 AblationMode = Literal["whole_image", "detector_crop", "detector_crop_segmentation"]
+TARGET_SCOPE_CANDIDATE_SELECTION_MODE = "taxon_scope_or_species_context"
+TARGET_SCOPE_SPECIES_RERANK_STRATEGY = "first_pass_top5_plus_target_if_missing"
 OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "source": pl.String,
     "flickr_photo_id": pl.String,
@@ -40,7 +49,13 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "model_checkpoint": pl.String,
     "candidate_set_id": pl.String,
     "classified_at": pl.String,
+    "classification_mode": pl.String,
+    "candidate_selection_mode": pl.String,
+    "candidate_source": pl.String,
     "ablation_mode": pl.String,
+    "species_first_pass_top_k": pl.Int64,
+    "species_rerank_top_k": pl.Int64,
+    "species_rerank_strategy": pl.String,
     "triage_group_top": pl.String,
     "triage_group_scores": pl.Struct({"butterfly_like": pl.Float64}),
     "family_top3": pl.List(pl.String),
@@ -620,9 +635,13 @@ def screen_object_detections(
     geo_prior_table: pl.DataFrame | None = None,
     parquet_batch_rows: int = 10000,
     bioclip_batch_size: int = 24,
+    classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
+    species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> ObjectScreenResult:
     if bioclip_batch_size <= 0:
         raise ValueError("bioclip_batch_size must be positive")
+    classification_mode = normalize_classification_mode(classification_mode)
     records_by_photo = {
         (str(row.get("source") or ""), str(row.get("flickr_photo_id") or "")): row
         for row in canonical_records.to_dicts()
@@ -652,6 +671,9 @@ def screen_object_detections(
                 scorer=scorer,
                 ablation_mode=ablation_mode,
                 geo_prior_table=geo_prior_table,
+                classification_mode=classification_mode,
+                species_first_pass_top_k=species_first_pass_top_k,
+                species_rerank_top_k=species_rerank_top_k,
             )
         except SegmentationUnavailable as exc:
             if ablation_mode != "detector_crop_segmentation":
@@ -853,7 +875,11 @@ def _score_detection(
     scorer: ObjectBioClipScorer,
     ablation_mode: AblationMode,
     geo_prior_table: pl.DataFrame | None = None,
+    classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
+    species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> dict[str, Any]:
+    classification_mode = normalize_classification_mode(classification_mode)
     labels = _object_scoring_labels(candidate_set)
     family_scores = scorer.score(item, labels.family) if labels.family else {}
     genus_scores = scorer.score(item, labels.genus) if labels.genus else {}
@@ -878,6 +904,9 @@ def _score_detection(
         rerank_candidates=rerank_candidates,
         rerank_scores=rerank_scores,
         geo_prior_table=geo_prior_table,
+        classification_mode=classification_mode,
+        species_first_pass_top_k=species_first_pass_top_k,
+        species_rerank_top_k=species_rerank_top_k,
     )
 
 
@@ -889,9 +918,13 @@ def _score_detection_batch(
     scorer: ObjectBioClipScorer,
     ablation_mode: AblationMode,
     geo_prior_table: pl.DataFrame | None = None,
+    classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
+    species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> list[dict[str, Any]]:
     if not items:
         return []
+    classification_mode = normalize_classification_mode(classification_mode)
     labels = _object_scoring_labels(candidate_set)
     initial_label_sets: dict[str, tuple[str, ...]] = {}
     if labels.family:
@@ -946,6 +979,9 @@ def _score_detection_batch(
                 rerank_candidates=rerank_candidates_by_index[index],
                 rerank_scores=rerank_scores_by_index[index],
                 geo_prior_table=geo_prior_table,
+                classification_mode=classification_mode,
+                species_first_pass_top_k=species_first_pass_top_k,
+                species_rerank_top_k=species_rerank_top_k,
             )
         )
     return rows
@@ -965,6 +1001,9 @@ def _score_detection_from_scores(
     rerank_candidates: tuple[CandidateTaxon, ...],
     rerank_scores: dict[str, float],
     geo_prior_table: pl.DataFrame | None,
+    classification_mode: ClassificationMode,
+    species_first_pass_top_k: int,
+    species_rerank_top_k: int,
 ) -> dict[str, Any]:
     ranked_families = _rank_labels(labels.family, family_scores)
     ranked_genera = _rank_labels(labels.genus, genus_scores)
@@ -1001,7 +1040,13 @@ def _score_detection_from_scores(
         "model_checkpoint": scorer.model_checkpoint,
         "candidate_set_id": candidate_set.candidate_set_id,
         "classified_at": datetime.now(UTC).isoformat(),
+        "classification_mode": classification_mode,
+        "candidate_selection_mode": TARGET_SCOPE_CANDIDATE_SELECTION_MODE,
+        "candidate_source": ",".join(candidate_set.source_evidence),
         "ablation_mode": ablation_mode,
+        "species_first_pass_top_k": int(species_first_pass_top_k),
+        "species_rerank_top_k": int(species_rerank_top_k),
+        "species_rerank_strategy": TARGET_SCOPE_SPECIES_RERANK_STRATEGY,
         "triage_group_top": "butterfly_like",
         "triage_group_scores": {"butterfly_like": float(item.get("detector_score") or 0.0)},
         "family_top3": [name for name, _score in ranked_families[:3]],

@@ -15,6 +15,8 @@ from biominer.bioclip.object_runner import (
     OBJECT_VISUAL_MODES,
     OBJECT_SCORE_OUTPUT_SCHEMA,
     PRIMARY_VISUAL_CLASSIFIER,
+    TARGET_SCOPE_CANDIDATE_SELECTION_MODE,
+    TARGET_SCOPE_SPECIES_RERANK_STRATEGY,
     apply_geospatial_soft_prior,
     empty_object_score_frame,
     iter_materialized_detector_crop_batches,
@@ -998,7 +1000,13 @@ def test_object_bioclip_scores_detection_crops_with_join_keys(tmp_path) -> None:
     assert row["detection_id"] == "det-1"
     assert row["crop_hash"] == "sha256:crop-1"
     assert row["candidate_set_id"] == candidate_set.candidate_set_id
+    assert row["classification_mode"] == "target_scope_object_screening"
+    assert row["candidate_selection_mode"] == TARGET_SCOPE_CANDIDATE_SELECTION_MODE
+    assert row["candidate_source"] == "species_context,single_target_fixture"
     assert row["ablation_mode"] == "detector_crop"
+    assert row["species_first_pass_top_k"] == 20
+    assert row["species_rerank_top_k"] == 5
+    assert row["species_rerank_strategy"] == TARGET_SCOPE_SPECIES_RERANK_STRATEGY
     assert row["species_top5"][0] == "Danaus plexippus"
     assert row["species_top5_accepted_taxon_keys"][0] == "gbif:5131654"
     assert row["accepted_taxon_key"] == "gbif:5131654"
@@ -1219,7 +1227,13 @@ def test_object_bioclip_empty_scores_write_stable_schema(tmp_path) -> None:
         "model_checkpoint",
         "candidate_set_id",
         "classified_at",
+        "classification_mode",
+        "candidate_selection_mode",
+        "candidate_source",
         "ablation_mode",
+        "species_first_pass_top_k",
+        "species_rerank_top_k",
+        "species_rerank_strategy",
         "triage_group_top",
         "triage_group_scores",
         "family_top3",
