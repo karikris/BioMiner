@@ -12,6 +12,7 @@ from biominer.bioclip.classification_modes import (
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     TARGET_SCOPE_OBJECT_SCREENING,
 )
+from biominer.bioclip.hierarchical_classifier import HIERARCHICAL_SPECIES_RERANK_STRATEGY
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.evidence import build_object_evidence_frames, build_review_queue, evidence_count_metrics
 from biominer.evidence.join import write_object_evidence_outputs
@@ -1059,6 +1060,109 @@ def test_orchestrator_runs_fake_backed_cloud_workflow_end_to_end(tmp_path, monke
     assert summary["best_object_species_top1"] == "Papilio demoleus"
 
 
+def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    scope = TaxonScope(
+        input_name="Papilionoidea",
+        input_rank="family",
+        accepted_taxon_key="gbif:1875",
+        accepted_scientific_name="Papilionoidea",
+        accepted_rank="family",
+        registry_version="rank-registry-v1",
+        species_contexts=(_species_context(),),
+    )
+    request = ProductionRunRequest(
+        taxon="Papilionoidea",
+        rank="family",
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        taxonomy_candidate_table=str(registry / "butterfly_classification_taxa.parquet"),
+        stages=(RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP, RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE),
+        species_first_pass_top_k=20,
+        species_rerank_top_k=5,
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
+    _write_hierarchical_source_records(plan.paths)
+    detector = FakeObjectDetector(
+        [
+            [
+                DetectionCandidate(label="butterfly_like", score=0.93, bbox_xyxy=(0.0, 0.0, 2.0, 2.0), objectness_score=0.93),
+                DetectionCandidate(label="moth_like", score=0.72, bbox_xyxy=(2.0, 2.0, 4.0, 4.0), objectness_score=0.72),
+            ],
+            [DetectionCandidate(label="moth_like", score=0.88, bbox_xyxy=(0.0, 0.0, 3.0, 3.0), objectness_score=0.88)],
+            [DetectionCandidate(label="hard_negative", score=0.91, bbox_xyxy=(0.0, 0.0, 3.0, 3.0), objectness_score=0.91)],
+            [],
+        ]
+    )
+
+    result = ProductionRunOrchestrator(
+        request,
+        taxon_scope=scope,
+        object_detector=detector,
+        image_loader=lambda _record: _tiny_rgb_image(),
+        object_scorer=_HierarchicalRerankObjectScorer(),
+        allow_single_target_fixture=True,
+    ).run()
+
+    assert result.manifest.status == "complete"
+    assert result.manifest.detection_counts["detections"] == 4
+    assert result.manifest.detection_counts["crops_created"] == 1
+    assert result.manifest.bioclip_counts["objects_scored"] == 1
+    assert result.manifest.evidence_counts["object_evidence_rows"] == 5
+    assert result.manifest.evidence_counts["photo_summary_rows"] == 4
+    assert result.manifest.metrics["classification_mode_counts"] == {HIERARCHICAL_BUTTERFLY_CLASSIFICATION: 1}
+    assert result.manifest.metrics["selected_family_counts"] == {"Papilionidae": 1}
+    score_stage = result.manifest.stages[1]
+    assert score_stage.metrics["classification_mode_counts"] == {HIERARCHICAL_BUTTERFLY_CLASSIFICATION: 1}
+    assert score_stage.metrics["taxonomy_candidate_table_status"] == "valid"
+
+    detections = pl.read_parquet(result.paths.object_detections_path)
+    detections_by_photo = {row["flickr_photo_id"]: row for row in detections.to_dicts()}
+    assert detections.height == 5
+    assert detections.filter(pl.col("crop_hash").is_not_null()).height == 1
+    assert detections.filter(pl.col("detector_label") == "butterfly_like").select("crop_hash").to_series().drop_nulls().len() == 1
+    assert detections_by_photo["photo-no-detection"]["detection_status"] == "no_detection"
+    assert detections.filter(pl.col("detector_label").is_in(["moth_like", "hard_negative"])).select("crop_hash").to_series().drop_nulls().is_empty()
+
+    scores = pl.read_parquet(result.paths.object_scores_path).to_dicts()
+    assert len(scores) == 1
+    score = scores[0]
+    assert score["flickr_photo_id"] == "photo-butterfly"
+    assert score["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    assert score["family_top3"][:2] == ["Papilionidae", "Nymphalidae"]
+    assert score["selected_family_key"] == "gbif:10"
+    assert score["species_candidate_count"] == 3
+    assert "gbif:200" not in score["species_top20_accepted_taxon_keys"]
+    assert set(score["species_top20_accepted_taxon_keys"]) == {"gbif:100", "gbif:101", "gbif:301"}
+    assert score["species_top20"][0] == "Papilio machaon"
+    assert score["species_top5"][0] == "Papilio demoleus"
+    assert score["species_top1_scientific_name"] == "Papilio demoleus"
+    assert score["accepted_taxon_key"] == "gbif:100"
+    assert score["target_species_score"] is None
+    assert score["species_rerank_strategy"] == HIERARCHICAL_SPECIES_RERANK_STRATEGY
+
+    joined = pl.read_parquet(result.paths.object_evidence_path)
+    assert joined.height == 5
+    assert set(joined.select("flickr_photo_id").to_series().to_list()) == {
+        "photo-butterfly",
+        "photo-moth",
+        "photo-hard-negative",
+        "photo-no-detection",
+    }
+    unscored = joined.filter(pl.col("flickr_photo_id") != "photo-butterfly")
+    assert unscored.select("species_top1_scientific_name").to_series().drop_nulls().is_empty()
+
+    summaries = {row["flickr_photo_id"]: row for row in pl.read_parquet(result.paths.photo_summary_path).to_dicts()}
+    butterfly_summary = summaries["photo-butterfly"]
+    assert butterfly_summary["best_object_species_top1"] == "Papilio demoleus"
+    assert butterfly_summary["best_object_occurrence_bin"] == "in_review"
+    assert butterfly_summary["photo_bin_reason"] == "hierarchical_open_classification_requires_review"
+    assert "Papilio machaon" in butterfly_summary["all_candidate_species"]
+    assert summaries["photo-no-detection"]["photo_occurrence_bin"] == "bin"
+
+
 def test_orchestrator_joins_evidence_and_writes_summary_metrics(tmp_path) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
@@ -2006,6 +2110,65 @@ def _write_source_records(paths: RunPaths) -> None:
     canonical.write_parquet(paths.source_records_path)
 
 
+def _write_hierarchical_source_records(paths: RunPaths) -> None:
+    paths.ensure_directories()
+    rows = [
+        {
+            "source": "flickr",
+            "flickr_photo_id": "photo-butterfly",
+            "source_record_hash": "sha256:hier-butterfly",
+            "image_url": "memory://photo-butterfly",
+            "photo_page_url": "https://www.flickr.com/photos/u/photo-butterfly",
+            "title": "Papilio butterfly candidate",
+            "description": "detector should find one butterfly-like object and one moth-like object",
+            "tags": ["butterfly", "papilio"],
+            "latitude": 0.0,
+            "longitude": 0.0,
+            "date_taken": "2025-07-01",
+        },
+        {
+            "source": "flickr",
+            "flickr_photo_id": "photo-moth",
+            "source_record_hash": "sha256:hier-moth",
+            "image_url": "memory://photo-moth",
+            "photo_page_url": "https://www.flickr.com/photos/u/photo-moth",
+            "title": "moth candidate",
+            "description": "non-butterfly detector row",
+            "tags": ["moth"],
+            "latitude": 0.0,
+            "longitude": 0.0,
+            "date_taken": "2025-07-02",
+        },
+        {
+            "source": "flickr",
+            "flickr_photo_id": "photo-hard-negative",
+            "source_record_hash": "sha256:hier-hard-negative",
+            "image_url": "memory://photo-hard-negative",
+            "photo_page_url": "https://www.flickr.com/photos/u/photo-hard-negative",
+            "title": "museum label",
+            "description": "hard-negative detector row",
+            "tags": ["label"],
+            "latitude": 0.0,
+            "longitude": 0.0,
+            "date_taken": "2025-07-03",
+        },
+        {
+            "source": "flickr",
+            "flickr_photo_id": "photo-no-detection",
+            "source_record_hash": "sha256:hier-no-detection",
+            "image_url": "memory://photo-no-detection",
+            "photo_page_url": "https://www.flickr.com/photos/u/photo-no-detection",
+            "title": "empty scene",
+            "description": "detector returns no objects",
+            "tags": ["landscape"],
+            "latitude": 0.0,
+            "longitude": 0.0,
+            "date_taken": "2025-07-04",
+        },
+    ]
+    pl.DataFrame(rows).write_parquet(paths.source_records_path)
+
+
 def _write_join_stage_inputs(paths: RunPaths) -> None:
     paths.ensure_directories()
     canonical, detections, scores = _join_stage_input_frames()
@@ -2152,6 +2315,43 @@ class _ConstantObjectScorer:
 
     def score(self, _item: dict[str, object], labels: tuple[str, ...]) -> dict[str, float]:
         return {label: float(self.scores.get(label, 0.0)) for label in labels}
+
+
+class _HierarchicalRerankObjectScorer:
+    model_id = "fake-bioclip"
+    model_version = "test"
+    model_checkpoint = "fake-checkpoint"
+
+    def __init__(self) -> None:
+        self._species_calls_by_crop_hash: dict[str, int] = {}
+
+    def score(self, item: dict[str, object], labels: tuple[str, ...]) -> dict[str, float]:
+        label_tuple = tuple(str(label) for label in labels)
+        if any(_contains_any(label, ("Papilio demoleus", "Papilio machaon", "Shared name", "Danaus plexippus")) for label in label_tuple):
+            crop_hash = str(item.get("crop_hash") or "")
+            species_call = self._species_calls_by_crop_hash.get(crop_hash, 0)
+            self._species_calls_by_crop_hash[crop_hash] = species_call + 1
+            scores = (
+                {"Papilio machaon": 0.82, "Papilio demoleus": 0.41, "Shared name": 0.20, "Danaus plexippus": 0.05}
+                if species_call == 0
+                else {"Papilio demoleus": 0.95, "Papilio machaon": 0.35, "Shared name": 0.10, "Danaus plexippus": 0.05}
+            )
+            return {label: _score_label_by_token(label, scores) for label in label_tuple}
+        return {
+            label: _score_label_by_token(label, {"Papilionidae": 0.94, "Nymphalidae": 0.60})
+            for label in label_tuple
+        }
+
+
+def _score_label_by_token(label: str, scores: dict[str, float]) -> float:
+    for token, score in scores.items():
+        if token in label:
+            return float(score)
+    return 0.0
+
+
+def _contains_any(text: str, tokens: tuple[str, ...]) -> bool:
+    return any(token in text for token in tokens)
 
 
 class _FakeRunStorage:
