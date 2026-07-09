@@ -13,6 +13,7 @@ from biominer.evaluation.reports import (
     REVIEW_ERROR_EXAMPLES_FILE,
     SPECIES_CONFUSION_FILE,
     write_evaluation_report,
+    write_evaluation_report_to_storage,
 )
 
 
@@ -80,6 +81,28 @@ def test_write_evaluation_report_handles_empty_inputs(tmp_path) -> None:
     assert "No reviewed object labels were available for evaluation." in markdown
 
 
+def test_write_evaluation_report_to_storage_writes_all_artifacts() -> None:
+    storage = _MemoryStorage()
+    output_dir = "s3://biominer/reports/evaluation/run-1"
+
+    paths = write_evaluation_report_to_storage(
+        object_scores=pl.DataFrame([_prediction()]),
+        reviewed_labels=pl.DataFrame([_label()]),
+        output_dir=output_dir,
+        storage=storage,
+        run_manifest={"run_id": "run-1"},
+    )
+
+    assert paths["metrics"] == f"{output_dir}/{EVALUATION_METRICS_FILE}"
+    assert paths["summary"] == f"{output_dir}/{EVALUATION_SUMMARY_FILE}"
+    assert storage.json_payloads[paths["metrics"]]["metrics"]["species_top1_accuracy"] == 1.0
+    assert "Family top1 accuracy" in storage.text_payloads[paths["summary"]]
+    assert storage.parquet_payloads[paths["family_confusion_matrix"]].height == 1
+    assert storage.parquet_payloads[paths["species_confusion_matrix"]].height == 1
+    assert storage.parquet_payloads[paths["calibration_bins"]].height == 10
+    assert storage.parquet_payloads[paths["review_error_examples"]].is_empty()
+
+
 def _prediction() -> dict[str, object]:
     return {
         "source": "flickr",
@@ -124,3 +147,34 @@ def _label() -> dict[str, object]:
         "review_confidence": "high",
         "review_notes": "synthetic",
     }
+
+
+class _MemoryStorage:
+    def __init__(self) -> None:
+        self.json_payloads: dict[str, dict[str, object]] = {}
+        self.parquet_payloads: dict[str, pl.DataFrame] = {}
+        self.text_payloads: dict[str, str] = {}
+
+    def write_json(self, uri: str, payload: dict[str, object]) -> str:
+        self.json_payloads[uri] = payload
+        return uri
+
+    def read_json(self, uri: str) -> dict[str, object]:
+        return self.json_payloads[uri]
+
+    def write_parquet_shard(self, uri: str, frame: pl.DataFrame) -> str:
+        self.parquet_payloads[uri] = frame
+        return uri
+
+    def read_parquet(self, uri: str) -> pl.DataFrame:
+        return self.parquet_payloads[uri]
+
+    def write_text(self, uri: str, text: str, *, encoding: str = "utf-8") -> str:
+        self.text_payloads[uri] = text
+        return uri
+
+    def read_text(self, uri: str, *, encoding: str = "utf-8") -> str:
+        return self.text_payloads[uri]
+
+    def exists(self, uri: str) -> bool:
+        return uri in self.json_payloads or uri in self.parquet_payloads or uri in self.text_payloads

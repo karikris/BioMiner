@@ -47,6 +47,17 @@ def test_local_storage_accepts_file_uris(tmp_path) -> None:
     assert storage.read_json(target) == {"ok": True}
 
 
+def test_local_storage_writes_and_reads_text(tmp_path) -> None:
+    storage = LocalStorageBackend()
+    target = tmp_path / "reports" / "summary.md"
+
+    written = storage.write_text(target, "# Summary\n")
+
+    assert written == str(target)
+    assert storage.exists(target)
+    assert storage.read_text(target) == "# Summary\n"
+
+
 def test_local_storage_writes_reads_and_scans_parquet_shards(tmp_path) -> None:
     storage = LocalStorageBackend()
     frame = pl.DataFrame({"photo_id": ["1", "2"], "score": [0.7, 0.4]})
@@ -190,6 +201,20 @@ def test_s3_storage_writes_zstd_parquet_parts(monkeypatch) -> None:
         backend.write_parquet_part(uri, pl.DataFrame({"photo_id": ["3"]}))
 
 
+def test_s3_storage_writes_and_reads_text(monkeypatch) -> None:
+    backend = S3StorageBackend(bucket="biominer", prefix="biominer")
+    stream = _FakeOutputStream()
+    filesystem = _FakeS3Filesystem(stream)
+    uri = "s3://biominer/biominer/reports/evaluation_summary.md"
+    monkeypatch.setattr(backend, "_filesystem_and_path", lambda uri: (filesystem, "biominer/biominer/reports/evaluation_summary.md"))
+
+    written = backend.write_text(uri, "# Summary\n")
+
+    assert written == uri
+    assert backend.read_text(uri) == "# Summary\n"
+    assert filesystem.paths == ["biominer/biominer/reports/evaluation_summary.md"]
+
+
 def test_s3_storage_lists_shards_without_bucket_duplication(monkeypatch) -> None:
     backend = S3StorageBackend(bucket="biominer", prefix="biominer")
     filesystem = _FakeListingS3Filesystem(
@@ -326,6 +351,9 @@ class _FakeS3Filesystem:
         self.stream.payload.clear()
         self.stream.bytes_written = 0
         return self.stream
+
+    def open_input_file(self, path: str):  # noqa: ANN201
+        return io.BytesIO(bytes(self.stream.payload))
 
     def get_file_info(self, path: str):  # noqa: ANN201
         import pyarrow.fs as pafs

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -13,7 +14,9 @@ from biominer.evaluation.metrics import (
     family_confusion_matrix,
     species_confusion_matrix,
 )
+from biominer.storage.cloud import CloudStorage
 from biominer.storage.parquet import write_parquet
+from biominer.storage.uri import join_uri
 
 
 EVALUATION_METRICS_FILE = "evaluation_metrics.json"
@@ -46,6 +49,17 @@ REVIEW_ERROR_EXAMPLE_SCHEMA: dict[str, pl.DataType] = {
 }
 
 
+@dataclass(frozen=True)
+class EvaluationReportArtifacts:
+    paths: dict[str, str]
+    metrics_payload: dict[str, object]
+    family_confusion: pl.DataFrame
+    species_confusion: pl.DataFrame
+    calibration_bins: pl.DataFrame
+    review_error_examples: pl.DataFrame
+    summary_markdown: str
+
+
 def write_evaluation_report(
     *,
     object_scores: pl.DataFrame,
@@ -53,9 +67,55 @@ def write_evaluation_report(
     output_dir: str | Path,
     run_manifest: dict[str, object] | None = None,
 ) -> dict[str, str]:
+    artifacts = build_evaluation_report_artifacts(
+        object_scores=object_scores,
+        reviewed_labels=reviewed_labels,
+        output_dir=output_dir,
+        run_manifest=run_manifest,
+    )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
+    paths = {key: Path(path) for key, path in artifacts.paths.items()}
+    write_parquet(artifacts.family_confusion, paths["family_confusion_matrix"])
+    write_parquet(artifacts.species_confusion, paths["species_confusion_matrix"])
+    write_parquet(artifacts.calibration_bins, paths["calibration_bins"])
+    write_parquet(artifacts.review_error_examples, paths["review_error_examples"])
+    paths["metrics"].write_text(json.dumps(artifacts.metrics_payload, indent=2, sort_keys=True), encoding="utf-8")
+    paths["summary"].write_text(artifacts.summary_markdown, encoding="utf-8")
+    return artifacts.paths
+
+
+def write_evaluation_report_to_storage(
+    *,
+    object_scores: pl.DataFrame,
+    reviewed_labels: pl.DataFrame,
+    output_dir: str | Path,
+    storage: CloudStorage,
+    run_manifest: dict[str, object] | None = None,
+) -> dict[str, str]:
+    artifacts = build_evaluation_report_artifacts(
+        object_scores=object_scores,
+        reviewed_labels=reviewed_labels,
+        output_dir=output_dir,
+        run_manifest=run_manifest,
+    )
+    storage.write_parquet_shard(artifacts.paths["family_confusion_matrix"], artifacts.family_confusion)
+    storage.write_parquet_shard(artifacts.paths["species_confusion_matrix"], artifacts.species_confusion)
+    storage.write_parquet_shard(artifacts.paths["calibration_bins"], artifacts.calibration_bins)
+    storage.write_parquet_shard(artifacts.paths["review_error_examples"], artifacts.review_error_examples)
+    storage.write_json(artifacts.paths["metrics"], artifacts.metrics_payload)
+    storage.write_text(artifacts.paths["summary"], artifacts.summary_markdown)
+    return artifacts.paths
+
+
+def build_evaluation_report_artifacts(
+    *,
+    object_scores: pl.DataFrame,
+    reviewed_labels: pl.DataFrame,
+    output_dir: str | Path,
+    run_manifest: dict[str, object] | None = None,
+) -> EvaluationReportArtifacts:
     metrics = evaluate_hierarchical_predictions(object_scores=object_scores, reviewed_labels=reviewed_labels)
     family_confusion = family_confusion_matrix(object_scores=object_scores, reviewed_labels=reviewed_labels)
     species_confusion = species_confusion_matrix(object_scores=object_scores, reviewed_labels=reviewed_labels)
@@ -69,15 +129,14 @@ def write_evaluation_report(
     )
     review_errors = _review_error_examples(scored_for_calibration)
 
-    paths = {
-        "metrics": output / EVALUATION_METRICS_FILE,
-        "family_confusion_matrix": output / FAMILY_CONFUSION_FILE,
-        "species_confusion_matrix": output / SPECIES_CONFUSION_FILE,
-        "summary": output / EVALUATION_SUMMARY_FILE,
-        "calibration_bins": output / CALIBRATION_BINS_FILE,
-        "review_error_examples": output / REVIEW_ERROR_EXAMPLES_FILE,
+    paths: dict[str, str] = {
+        "metrics": join_uri(output_dir, EVALUATION_METRICS_FILE),
+        "family_confusion_matrix": join_uri(output_dir, FAMILY_CONFUSION_FILE),
+        "species_confusion_matrix": join_uri(output_dir, SPECIES_CONFUSION_FILE),
+        "summary": join_uri(output_dir, EVALUATION_SUMMARY_FILE),
+        "calibration_bins": join_uri(output_dir, CALIBRATION_BINS_FILE),
+        "review_error_examples": join_uri(output_dir, REVIEW_ERROR_EXAMPLES_FILE),
     }
-    artifact_paths = {key: str(path) for key, path in paths.items()}
     metrics_payload = {
         "schema_version": "evaluation_metrics_v1",
         "classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
@@ -85,19 +144,18 @@ def write_evaluation_report(
         "metrics": metrics,
         "calibration": {key: value for key, value in calibration.items() if key != "bins"},
         "warnings": _warnings(metrics=metrics, calibration=calibration),
-        "artifacts": artifact_paths,
+        "artifacts": paths,
     }
 
-    write_parquet(family_confusion, paths["family_confusion_matrix"])
-    write_parquet(species_confusion, paths["species_confusion_matrix"])
-    write_parquet(_calibration_bins_frame(calibration), paths["calibration_bins"])
-    write_parquet(review_errors, paths["review_error_examples"])
-    paths["metrics"].write_text(json.dumps(metrics_payload, indent=2, sort_keys=True), encoding="utf-8")
-    paths["summary"].write_text(
-        evaluation_summary_markdown(metrics_payload, family_confusion, species_confusion),
-        encoding="utf-8",
+    return EvaluationReportArtifacts(
+        paths=paths,
+        metrics_payload=metrics_payload,
+        family_confusion=family_confusion,
+        species_confusion=species_confusion,
+        calibration_bins=_calibration_bins_frame(calibration),
+        review_error_examples=review_errors,
+        summary_markdown=evaluation_summary_markdown(metrics_payload, family_confusion, species_confusion),
     )
-    return artifact_paths
 
 
 def evaluation_summary_markdown(
@@ -319,6 +377,9 @@ __all__ = [
     "FAMILY_CONFUSION_FILE",
     "REVIEW_ERROR_EXAMPLES_FILE",
     "SPECIES_CONFUSION_FILE",
+    "EvaluationReportArtifacts",
+    "build_evaluation_report_artifacts",
     "evaluation_summary_markdown",
     "write_evaluation_report",
+    "write_evaluation_report_to_storage",
 ]

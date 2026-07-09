@@ -133,6 +133,17 @@ class S3StorageBackend:
             raise ValueError(f"expected JSON object at {uri}")
         return payload
 
+    def write_text(self, uri: str, text: str, *, encoding: str = "utf-8") -> str:
+        filesystem, path = self._filesystem_and_path(uri)
+        with filesystem.open_output_stream(path) as stream:
+            stream.write(text.encode(encoding))
+        return uri
+
+    def read_text(self, uri: str, *, encoding: str = "utf-8") -> str:
+        filesystem, path = self._filesystem_and_path(uri)
+        with filesystem.open_input_file(path) as stream:
+            return stream.read().decode(encoding)
+
     def delete(self, uri: str) -> bool:
         filesystem, path = self._filesystem_and_path(uri)
         if not self.exists(uri):

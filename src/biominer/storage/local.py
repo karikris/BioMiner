@@ -84,6 +84,17 @@ class LocalStorageBackend:
             raise ValueError(f"expected JSON object at {uri}")
         return payload
 
+    def write_text(self, uri: str | Path, text: str, *, encoding: str = "utf-8") -> str:
+        output = normalize_local_uri(uri)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        tmp = output.with_suffix(output.suffix + ".tmp")
+        tmp.write_text(text, encoding=encoding)
+        tmp.replace(output)
+        return _preserve_uri_string(uri)
+
+    def read_text(self, uri: str | Path, *, encoding: str = "utf-8") -> str:
+        return normalize_local_uri(uri).read_text(encoding=encoding)
+
     def delete(self, uri: str | Path) -> bool:
         path = normalize_local_uri(uri)
         if not path.exists():

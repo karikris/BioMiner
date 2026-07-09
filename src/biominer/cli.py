@@ -4,6 +4,7 @@ import argparse
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from html import escape
+import io
 import json
 import logging
 import math
@@ -62,7 +63,7 @@ from biominer.detection.policy import (
 )
 from biominer.detection.segmentation import make_segmenter
 from biominer.evaluation.labels import read_reviewed_labels, validate_reviewed_label_frame
-from biominer.evaluation.reports import write_evaluation_report
+from biominer.evaluation.reports import write_evaluation_report, write_evaluation_report_to_storage
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_comments.comment_review import (
     CommentReviewState,
@@ -95,7 +96,7 @@ from biominer.secrets_loader import load_runtime_secrets_env
 from biominer.species.context import SpeciesContext
 from biominer.config import ConfigError, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
 from biominer.storage.factory import create_storage_backend
-from biominer.storage.uri import is_cloud_uri, join_uri
+from biominer.storage.uri import is_cloud_uri, join_uri, normalize_local_uri
 
 
 BIOCLIP_25_HUGE_REPO_ID = "imageomics/bioclip-2.5-vith14"
@@ -256,6 +257,8 @@ def build_parser() -> argparse.ArgumentParser:
     evaluation_input.add_argument("--object-evidence")
     evaluation_classify.add_argument("--reviewed-labels", required=True)
     evaluation_classify.add_argument("--output-dir", required=True)
+    evaluation_classify.add_argument("--storage-backend", choices=("local", "s3"), default="local")
+    evaluation_classify.add_argument("--config")
     registry = subparsers.add_parser("registry")
     registry_subparsers = registry.add_subparsers(dest="registry_command")
     registry_build = registry_subparsers.add_parser("build")
@@ -889,33 +892,24 @@ def _run_evaluation_command(args: argparse.Namespace) -> int:
 
 
 def _run_evaluation_classify(args: argparse.Namespace) -> int:
-    input_path = Path(args.object_scores or args.object_evidence)
+    input_uri = str(args.object_scores or args.object_evidence)
     input_kind = "object_scores" if args.object_scores else "object_evidence"
-    labels_path = Path(args.reviewed_labels)
-    if not input_path.exists():
-        print(
-            json.dumps(
-                {"error": f"{input_kind} path does not exist: {input_path}"},
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 2
-    if not labels_path.exists():
-        print(
-            json.dumps(
-                {"error": f"reviewed-labels path does not exist: {labels_path}"},
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 2
-
+    labels_uri = str(args.reviewed_labels)
+    storage_backend = str(getattr(args, "storage_backend", "local") or "local")
     try:
-        object_scores = pl.read_parquet(input_path)
-        reviewed_labels = read_reviewed_labels(labels_path)
-    except (FileNotFoundError, ValueError, pl.exceptions.PolarsError) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+        storage = None
+        if storage_backend == "local":
+            object_scores = _read_local_evaluation_parquet(input_uri, input_kind)
+            reviewed_labels = _read_local_reviewed_labels(labels_uri)
+        elif storage_backend == "s3":
+            storage = _evaluation_storage_from_config(args)
+            object_scores = _read_storage_evaluation_parquet(storage, input_uri, input_kind)
+            reviewed_labels = _read_storage_reviewed_labels(storage, labels_uri)
+            _require_s3_uri("output-dir", args.output_dir)
+        else:
+            raise ValueError(f"unsupported evaluation storage backend: {storage_backend}")
+    except (ConfigError, FileNotFoundError, RuntimeError, ValueError, pl.exceptions.PolarsError) as exc:
+        print(json.dumps({"error": _redact_cloud_error(str(exc), args)}, indent=2, sort_keys=True))
         return 2
 
     label_findings = validate_reviewed_label_frame(reviewed_labels)
@@ -934,18 +928,29 @@ def _run_evaluation_classify(args: argparse.Namespace) -> int:
         )
         return 2
 
-    paths = write_evaluation_report(
-        object_scores=object_scores,
-        reviewed_labels=reviewed_labels,
-        output_dir=args.output_dir,
-    )
-    metrics = json.loads(Path(paths["metrics"]).read_text(encoding="utf-8"))
+    if storage is None:
+        output_dir = _local_evaluation_output_dir(args.output_dir)
+        paths = write_evaluation_report(
+            object_scores=object_scores,
+            reviewed_labels=reviewed_labels,
+            output_dir=output_dir,
+        )
+        metrics = json.loads(Path(paths["metrics"]).read_text(encoding="utf-8"))
+    else:
+        paths = write_evaluation_report_to_storage(
+            object_scores=object_scores,
+            reviewed_labels=reviewed_labels,
+            output_dir=args.output_dir,
+            storage=storage,
+        )
+        metrics = storage.read_json(paths["metrics"])
     payload = {
         "status": "complete",
+        "storage_backend": storage_backend,
         "input_kind": input_kind,
-        "input_path": str(input_path),
-        "reviewed_labels": str(labels_path),
-        "output_dir": str(Path(args.output_dir)),
+        "input_path": input_uri,
+        "reviewed_labels": labels_uri,
+        "output_dir": str(args.output_dir),
         "paths": paths,
         "metrics": {
             "evaluated_objects": metrics["metrics"].get("evaluated_objects"),
@@ -963,6 +968,64 @@ def _run_evaluation_classify(args: argparse.Namespace) -> int:
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
+
+
+def _read_local_evaluation_parquet(uri: str, input_kind: str) -> pl.DataFrame:
+    _raise_if_cloud_uri_for_local_backend(input_kind, uri)
+    path = normalize_local_uri(uri)
+    if not path.exists():
+        raise FileNotFoundError(f"{input_kind} path does not exist: {path}")
+    return pl.read_parquet(path)
+
+
+def _read_local_reviewed_labels(uri: str) -> pl.DataFrame:
+    _raise_if_cloud_uri_for_local_backend("reviewed-labels", uri)
+    path = normalize_local_uri(uri)
+    if not path.exists():
+        raise FileNotFoundError(f"reviewed-labels path does not exist: {path}")
+    return read_reviewed_labels(path)
+
+
+def _local_evaluation_output_dir(uri: str) -> Path:
+    _raise_if_cloud_uri_for_local_backend("output-dir", uri)
+    return normalize_local_uri(uri)
+
+
+def _read_storage_evaluation_parquet(storage: object, uri: str, input_kind: str) -> pl.DataFrame:
+    _require_s3_uri(input_kind, uri)
+    if not storage.exists(uri):
+        raise FileNotFoundError(f"{input_kind} path does not exist: {uri}")
+    return storage.read_parquet(uri)
+
+
+def _read_storage_reviewed_labels(storage: object, uri: str) -> pl.DataFrame:
+    _require_s3_uri("reviewed-labels", uri)
+    if not storage.exists(uri):
+        raise FileNotFoundError(f"reviewed-labels path does not exist: {uri}")
+    suffix = Path(uri).suffix.casefold()
+    if suffix == ".parquet":
+        return storage.read_parquet(uri)
+    if suffix in {".jsonl", ".ndjson"}:
+        return pl.read_ndjson(io.BytesIO(storage.read_text(uri).encode("utf-8")))
+    if suffix == ".json":
+        return pl.read_json(io.BytesIO(storage.read_text(uri).encode("utf-8")))
+    raise ValueError(f"unsupported reviewed-label format: {suffix or '<none>'}")
+
+
+def _evaluation_storage_from_config(args: argparse.Namespace) -> object:
+    config = load_biominer_config(args.config)
+    config = replace(config, storage=replace(config.storage, backend="s3"))
+    return create_storage_backend(config.storage)
+
+
+def _raise_if_cloud_uri_for_local_backend(name: str, uri: str) -> None:
+    if is_cloud_uri(uri):
+        raise ValueError(f"{name} is a cloud URI; use --storage-backend s3: {uri}")
+
+
+def _require_s3_uri(name: str, uri: str) -> None:
+    if not is_cloud_uri(uri):
+        raise ValueError(f"{name} must be an s3:// URI when --storage-backend s3 is used: {uri}")
 
 
 def _run_storage_command(args: argparse.Namespace) -> int:
