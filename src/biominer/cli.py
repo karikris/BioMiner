@@ -17,6 +17,14 @@ import polars as pl
 from biominer.bioclip.bioclip import PersistentBioClipScorer
 from biominer.bioclip.ablation import run_object_ablations
 from biominer.bioclip.candidate_sets import build_candidate_set
+from biominer.bioclip.classification_modes import (
+    DEFAULT_CLASSIFICATION_MODE,
+    DEFAULT_FAMILY_TOP_K,
+    DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    DEFAULT_SPECIES_RERANK_TOP_K,
+    SUPPORTED_CLASSIFICATION_MODES,
+    normalize_classification_mode,
+)
 from biominer.bioclip.embedding_cache import read_embedding_cache, prepare_candidate_text_embedding_cache, prepare_object_image_embedding_cache
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
 from biominer.bioclip.object_runner import (
@@ -349,6 +357,16 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--bioclip-model")
     production_run.add_argument("--bioclip-batch", type=int)
     production_run.add_argument("--bioclip-top-k", type=int)
+    production_run.add_argument(
+        "--classification-mode",
+        type=_classification_mode_arg,
+        choices=SUPPORTED_CLASSIFICATION_MODES,
+        default=DEFAULT_CLASSIFICATION_MODE,
+    )
+    production_run.add_argument("--taxonomy-candidate-table")
+    production_run.add_argument("--family-top-k", type=int, default=DEFAULT_FAMILY_TOP_K)
+    production_run.add_argument("--species-first-pass-top-k", type=int, default=DEFAULT_SPECIES_FIRST_PASS_TOP_K)
+    production_run.add_argument("--species-rerank-top-k", type=int, default=DEFAULT_SPECIES_RERANK_TOP_K)
     production_run.add_argument("--crop-padding-ratio", type=float)
     production_run.add_argument("--parquet-compression")
     production_run.add_argument("--delete-images-after-commit", action=argparse.BooleanOptionalAction, default=None)
@@ -924,6 +942,13 @@ def _production_vision_settings_from_args(args: argparse.Namespace) -> VisionRun
     return replace(settings, **overrides) if overrides else settings
 
 
+def _classification_mode_arg(value: str) -> str:
+    try:
+        return normalize_classification_mode(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _run_production_command(args: argparse.Namespace) -> int:
     config = None
     try:
@@ -967,6 +992,11 @@ def _run_production_command(args: argparse.Namespace) -> int:
             bioclip_model=vision_settings.bioclip_model,
             vision_profile=args.vision_profile,
             vision_settings=vision_settings,
+            classification_mode=args.classification_mode,
+            taxonomy_candidate_table=args.taxonomy_candidate_table,
+            family_top_k=args.family_top_k,
+            species_first_pass_top_k=args.species_first_pass_top_k,
+            species_rerank_top_k=args.species_rerank_top_k,
             worker_id=config.runtime.worker_id or ("local" if allow_local else ""),
             stages=stages,
             dry_run=args.dry_run,

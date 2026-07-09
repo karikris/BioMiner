@@ -12,6 +12,7 @@ import pytest
 
 from biominer.config import BioMinerConfig, RuntimeConfig, StorageConfig, WorkStoreConfig
 from biominer.cli import _detect_boxes_backend, _production_vision_settings_from_args, _yoloe26_metrics, build_parser, load_decoded_image_from_record, run
+from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION, TARGET_SCOPE_OBJECT_SCREENING
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES
@@ -180,6 +181,54 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
     assert overridden_settings.delete_images_after_commit is False
     assert overridden_settings.yolo_imgsz == 768
     assert overridden_settings.crop_padding_ratio == 0.08
+
+
+def test_run_cli_parses_classification_mode_and_top_k_controls() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "run",
+            "--taxon",
+            "Papilio demoleus",
+            "--registry-dir",
+            "s3://biominer/biominer/registry/current",
+            "--output-prefix",
+            "s3://biominer/biominer/runs/papilio_demoleus",
+            "--classification-mode",
+            "hierarchical",
+            "--taxonomy-candidate-table",
+            "s3://biominer/biominer/registry/current/butterfly_classification_taxa.parquet",
+            "--family-top-k",
+            "4",
+            "--species-first-pass-top-k",
+            "25",
+            "--species-rerank-top-k",
+            "7",
+        ]
+    )
+
+    assert args.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    assert args.taxonomy_candidate_table.endswith("butterfly_classification_taxa.parquet")
+    assert args.family_top_k == 4
+    assert args.species_first_pass_top_k == 25
+    assert args.species_rerank_top_k == 7
+
+    default_args = parser.parse_args(
+        [
+            "run",
+            "--taxon",
+            "Papilio demoleus",
+            "--registry-dir",
+            "s3://biominer/biominer/registry/current",
+            "--output-prefix",
+            "s3://biominer/biominer/runs/papilio_demoleus",
+        ]
+    )
+
+    assert default_args.classification_mode == TARGET_SCOPE_OBJECT_SCREENING
+    assert default_args.family_top_k == 3
+    assert default_args.species_first_pass_top_k == 20
+    assert default_args.species_rerank_top_k == 5
 
 
 def test_vision_ablate_command_still_allows_all_visual_modes() -> None:

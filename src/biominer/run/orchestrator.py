@@ -7,6 +7,14 @@ import os
 from pathlib import Path
 from typing import Any
 
+from biominer.bioclip.classification_modes import (
+    DEFAULT_CLASSIFICATION_MODE,
+    DEFAULT_FAMILY_TOP_K,
+    DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    DEFAULT_SPECIES_RERANK_TOP_K,
+    ClassificationMode,
+    normalize_classification_mode,
+)
 from biominer.bioclip.cloud_work import (
     bioclip_score_batch_id,
     enqueue_bioclip_work_from_detection_shards,
@@ -81,6 +89,11 @@ class ProductionRunRequest:
     bioclip_model: str = DEFAULT_BIOCLIP_MODEL
     vision_profile: str | None = None
     vision_settings: VisionRuntimeSettings = field(default_factory=VisionRuntimeSettings)
+    classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE
+    taxonomy_candidate_table: str | Path | None = None
+    family_top_k: int = DEFAULT_FAMILY_TOP_K
+    species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K
+    species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K
     bioclip_ablation_mode: str = "detector_crop"
     bioclip_ablation_modes: tuple[str, ...] = ("detector_crop",)
     worker_id: str = "local"
@@ -88,6 +101,16 @@ class ProductionRunRequest:
     dry_run: bool = False
     limits: dict[str, int] = field(default_factory=dict)
     build_registry_if_missing: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "classification_mode", normalize_classification_mode(self.classification_mode))
+        for field_name in ("family_top_k", "species_first_pass_top_k", "species_rerank_top_k"):
+            value = int(getattr(self, field_name))
+            if value <= 0:
+                raise ValueError(f"{field_name} must be positive")
+            object.__setattr__(self, field_name, value)
+        if self.species_rerank_top_k > self.species_first_pass_top_k:
+            raise ValueError("species_rerank_top_k must be <= species_first_pass_top_k")
 
     def resolved_run_id(self) -> str:
         if self.run_id:
@@ -116,6 +139,11 @@ class ProductionRunPlan:
                 "bioclip_model": self.request.bioclip_model,
                 "vision_profile": self.request.vision_profile,
                 "vision_settings": asdict(self.request.vision_settings),
+                "classification_mode": self.request.classification_mode,
+                "taxonomy_candidate_table": str(self.request.taxonomy_candidate_table) if self.request.taxonomy_candidate_table else None,
+                "family_top_k": self.request.family_top_k,
+                "species_first_pass_top_k": self.request.species_first_pass_top_k,
+                "species_rerank_top_k": self.request.species_rerank_top_k,
                 "bioclip_ablation_mode": self.request.bioclip_ablation_mode,
                 "bioclip_ablation_modes": list(self.request.bioclip_ablation_modes),
                 "worker_id": self.request.worker_id,
@@ -163,6 +191,11 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
             "bioclip_model": request.bioclip_model,
             "vision_profile": request.vision_profile,
             "vision_settings": asdict(request.vision_settings),
+            "classification_mode": request.classification_mode,
+            "taxonomy_candidate_table": str(request.taxonomy_candidate_table) if request.taxonomy_candidate_table else None,
+            "family_top_k": request.family_top_k,
+            "species_first_pass_top_k": request.species_first_pass_top_k,
+            "species_rerank_top_k": request.species_rerank_top_k,
             "bioclip_ablation_mode": request.bioclip_ablation_mode,
             "bioclip_ablation_modes": list(request.bioclip_ablation_modes),
             "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,

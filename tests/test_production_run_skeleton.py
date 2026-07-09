@@ -8,6 +8,7 @@ import pytest
 
 import biominer.run.orchestrator as run_orchestrator_module
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
+from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION, TARGET_SCOPE_OBJECT_SCREENING
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.evidence import build_object_evidence_frames, build_review_queue, evidence_count_metrics
 from biominer.evidence.join import write_object_evidence_outputs
@@ -137,6 +138,10 @@ def test_run_paths_and_dry_run_manifest(tmp_path) -> None:
     assert manifest.taxon_scope == scope
     assert manifest.model_configs["primary_visual_classifier"] == PRIMARY_VISUAL_CLASSIFIER
     assert manifest.model_configs["visual_modes"] == list(OBJECT_VISUAL_MODES)
+    assert manifest.model_configs["classification_mode"] == TARGET_SCOPE_OBJECT_SCREENING
+    assert manifest.model_configs["family_top_k"] == 3
+    assert manifest.model_configs["species_first_pass_top_k"] == 20
+    assert manifest.model_configs["species_rerank_top_k"] == 5
     assert manifest.query_counts == {"compiled_definitions": 0, "enqueued_work_items": 0}
     assert manifest.detection_counts == {"images_seen": 0, "detections": 0, "crops_created": 0}
     assert manifest.bioclip_counts == {"objects_scored": 0, "whole_images_scored": 0, "segmentation_crops_scored": 0}
@@ -164,7 +169,44 @@ def test_production_run_plan_defaults_to_detector_crop_only(tmp_path) -> None:
     assert request.bioclip_ablation_modes == ("detector_crop",)
     assert run_orchestrator_module._request_bioclip_modes(request) == ("detector_crop",)
     assert plan.manifest.model_configs["bioclip_ablation_modes"] == ["detector_crop"]
+    assert plan.to_dict()["request"]["classification_mode"] == TARGET_SCOPE_OBJECT_SCREENING
+    assert plan.to_dict()["request"]["taxonomy_candidate_table"] is None
     assert "whole_image" not in plan.manifest.model_configs["bioclip_ablation_modes"]
+
+
+def test_production_run_plan_records_hierarchical_classification_config_for_dry_run(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Papilionoidea",
+        rank="family",
+        output_root=tmp_path,
+        dry_run=True,
+        classification_mode="hierarchical",
+        taxonomy_candidate_table="s3://biominer/registry/current/butterfly_classification_taxa.parquet",
+        family_top_k=4,
+        species_first_pass_top_k=25,
+        species_rerank_top_k=7,
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
+
+    assert request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    assert plan.to_dict()["request"]["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    assert plan.to_dict()["request"]["taxonomy_candidate_table"] == "s3://biominer/registry/current/butterfly_classification_taxa.parquet"
+    assert plan.manifest.model_configs["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    assert plan.manifest.model_configs["family_top_k"] == 4
+    assert plan.manifest.model_configs["species_first_pass_top_k"] == 25
+    assert plan.manifest.model_configs["species_rerank_top_k"] == 7
+
+
+def test_production_run_request_validates_visual_classification_top_k() -> None:
+    with pytest.raises(ValueError, match="family_top_k must be positive"):
+        ProductionRunRequest(taxon="Danaus plexippus", family_top_k=0)
+    with pytest.raises(ValueError, match="species_first_pass_top_k must be positive"):
+        ProductionRunRequest(taxon="Danaus plexippus", species_first_pass_top_k=0)
+    with pytest.raises(ValueError, match="species_rerank_top_k must be positive"):
+        ProductionRunRequest(taxon="Danaus plexippus", species_rerank_top_k=0)
+    with pytest.raises(ValueError, match="species_rerank_top_k must be <= species_first_pass_top_k"):
+        ProductionRunRequest(taxon="Danaus plexippus", species_first_pass_top_k=3, species_rerank_top_k=4)
 
 
 def test_production_run_plan_preserves_explicit_ablation_modes(tmp_path) -> None:
