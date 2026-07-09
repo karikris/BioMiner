@@ -13,19 +13,27 @@ from biominer.bioclip.classification_modes import (
     DEFAULT_FAMILY_TOP_K,
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
+    HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     ClassificationMode,
     normalize_classification_mode,
 )
+from biominer.bioclip.hierarchical_classifier import (
+    classify_butterfly_crops_hierarchical_batch,
+    hierarchical_result_to_object_score_row,
+)
 from biominer.bioclip.object_runner import (
+    OBJECT_SCORE_OUTPUT_SCHEMA,
     OBJECT_VISUAL_MODES,
     ObjectBioClipScorer,
     empty_object_score_frame,
     _score_detection,
     _score_detection_batch,
+    _ensure_columns,
     _scorer_supports_detector_crop_segmentation,
     _segmentation_status,
     _visual_mode_status,
 )
+from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
 from biominer.detection.policy import DetectionPolicy, detection_is_bioclip_eligible
 from biominer.detection.segmentation import SegmentationUnavailable
 from biominer.species.context import SpeciesContext
@@ -74,6 +82,9 @@ def enqueue_bioclip_work_from_detection_shards(
     ablation_modes: tuple[str, ...] = ("detector_crop",),
     detection_policy: DetectionPolicy | None = None,
     limit: int | None = None,
+    classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
+    taxonomy_table_version: str | None = None,
+    taxonomy_prompt_variant_version: str | None = None,
 ) -> BioClipWorkPlanResult:
     shards = workstore.list_candidate_shards(
         job_name=job_name,
@@ -113,6 +124,9 @@ def enqueue_bioclip_work_from_detection_shards(
                         model=model,
                         candidate_set_id=candidate_set_id,
                         ablation_mode=mode,
+                        classification_mode=classification_mode,
+                        taxonomy_table_version=taxonomy_table_version,
+                        taxonomy_prompt_variant_version=taxonomy_prompt_variant_version,
                     )
                 )
                 if remaining is not None:
@@ -137,7 +151,11 @@ def bioclip_score_work_item(
     model: dict[str, str],
     candidate_set_id: str,
     ablation_mode: str,
+    classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
+    taxonomy_table_version: str | None = None,
+    taxonomy_prompt_variant_version: str | None = None,
 ) -> dict[str, Any]:
+    normalized_mode = normalize_classification_mode(classification_mode)
     key_payload = {
         "run_id": run_id,
         "source": str(detection.get("source") or ""),
@@ -148,6 +166,9 @@ def bioclip_score_work_item(
         "model_version": str(model.get("model_version") or ""),
         "model_checkpoint": str(model.get("checkpoint") or ""),
         "candidate_set_id": str(candidate_set_id or ""),
+        "classification_mode": normalized_mode,
+        "taxonomy_table_version": str(taxonomy_table_version or ""),
+        "taxonomy_prompt_variant_version": str(taxonomy_prompt_variant_version or ""),
         "ablation_mode": str(ablation_mode or ""),
     }
     return {
@@ -161,6 +182,9 @@ def bioclip_score_work_item(
         "detection": _jsonable_record(detection),
         "model": dict(model),
         "candidate_set_id": candidate_set_id,
+        "classification_mode": normalized_mode,
+        "taxonomy_table_version": taxonomy_table_version,
+        "taxonomy_prompt_variant_version": taxonomy_prompt_variant_version,
         "ablation_mode": ablation_mode,
     }
 
@@ -187,10 +211,13 @@ def run_cloud_bioclip_batch(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
+    taxonomy_store: ButterflyTaxonomyStore | None = None,
 ) -> CloudBioClipBatchResult:
     if crop_batch_size <= 0:
         raise ValueError("crop_batch_size must be positive")
     classification_mode = normalize_classification_mode(classification_mode)
+    if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION and taxonomy_store is None:
+        raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
     rows: list[dict[str, Any]] = []
     requested_modes: list[str] = []
     scored_by_mode: dict[str, int] = {}
@@ -226,6 +253,32 @@ def run_cloud_bioclip_batch(
         score_items_by_mode.setdefault(mode, []).append(score_item)
 
     for mode, score_items in score_items_by_mode.items():
+        if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+            if taxonomy_store is None:
+                raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
+            for score_chunk in _chunks(score_items, 1 if mode == "detector_crop_segmentation" else crop_batch_size):
+                try:
+                    score_rows = _score_hierarchical_cloud_batch(
+                        items=score_chunk,
+                        scorer=scorer,
+                        taxonomy_store=taxonomy_store,
+                        family_top_k=family_top_k,
+                        species_first_pass_top_k=species_first_pass_top_k,
+                        species_rerank_top_k=species_rerank_top_k,
+                    )
+                except SegmentationUnavailable as exc:
+                    if mode != "detector_crop_segmentation":
+                        raise
+                    _mark_unavailable(
+                        mode,
+                        reason=str(exc) or "detector_masks_missing",
+                        unavailable_by_mode=unavailable_by_mode,
+                        unavailable_reason_by_mode=unavailable_reason_by_mode,
+                    )
+                    continue
+                rows.extend(score_rows)
+                scored_by_mode[mode] = scored_by_mode.get(mode, 0) + len(score_rows)
+            continue
         if mode == "detector_crop_segmentation":
             for score_item in score_items:
                 try:
@@ -270,7 +323,7 @@ def run_cloud_bioclip_batch(
                 raise
             rows.extend(score_rows)
             scored_by_mode[mode] = scored_by_mode.get(mode, 0) + len(score_rows)
-    frame = pl.DataFrame(rows) if rows else empty_object_score_frame()
+    frame = _ensure_columns(pl.DataFrame(rows), OBJECT_SCORE_OUTPUT_SCHEMA) if rows else empty_object_score_frame()
     modes_requested = tuple(_unique(requested_modes))
     modes_scored = tuple(sorted(scored_by_mode))
     visual_status = {
@@ -309,6 +362,36 @@ def run_cloud_bioclip_batch(
 
 def _chunks(items: list[Any], size: int) -> list[list[Any]]:
     return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def _score_hierarchical_cloud_batch(
+    *,
+    items: list[dict[str, Any]],
+    scorer: ObjectBioClipScorer,
+    taxonomy_store: ButterflyTaxonomyStore,
+    family_top_k: int,
+    species_first_pass_top_k: int,
+    species_rerank_top_k: int,
+) -> list[dict[str, Any]]:
+    results = classify_butterfly_crops_hierarchical_batch(
+        items=items,
+        scorer=scorer,
+        taxonomy_store=taxonomy_store,
+        family_top_k=family_top_k,
+        species_first_pass_top_k=species_first_pass_top_k,
+        species_rerank_top_k=species_rerank_top_k,
+    )
+    return [
+        hierarchical_result_to_object_score_row(
+            item=item,
+            result=result,
+            scorer=scorer,
+            family_top_k=family_top_k,
+            species_first_pass_top_k=species_first_pass_top_k,
+            species_rerank_top_k=species_rerank_top_k,
+        )
+        for item, result in zip(items, results, strict=True)
+    ]
 
 
 def bioclip_score_batch_id(work_items: list[dict[str, Any]]) -> str:

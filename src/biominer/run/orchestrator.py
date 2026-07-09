@@ -816,6 +816,9 @@ class ProductionRunOrchestrator:
                 candidate_set_id=candidate_set.candidate_set_id,
                 ablation_modes=_request_bioclip_modes(self.request),
                 limit=int(self.request.limits.get("score_work_items") or 0) or None,
+                classification_mode=self.request.classification_mode,
+                taxonomy_table_version=_taxonomy_manifest_value(taxonomy_store, "classification_table_version"),
+                taxonomy_prompt_variant_version=_taxonomy_manifest_value(taxonomy_store, "prompt_variant_version"),
             )
             claimed = self.workstore.claim_next_batch(
                 self.request.worker_id,
@@ -845,6 +848,7 @@ class ProductionRunOrchestrator:
                     family_top_k=self.request.family_top_k,
                     species_first_pass_top_k=self.request.species_first_pass_top_k,
                     species_rerank_top_k=self.request.species_rerank_top_k,
+                    taxonomy_store=taxonomy_store,
                 )
                 part_id = bioclip_score_batch_id(claimed)
                 part_uri = build_parquet_part_uri(
@@ -889,6 +893,7 @@ class ProductionRunOrchestrator:
             metrics.update(
                 {
                     **_visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path),
+                    **taxonomy_metrics,
                     "score_work_items_enqueued": plan_result.enqueued_work_items,
                     "duplicate_score_work_items": plan_result.duplicate_work_items,
                     "work_items_claimed": len(claimed),
@@ -1702,6 +1707,13 @@ def _butterfly_taxonomy_store_metrics(store: ButterflyTaxonomyStore, *, taxonomy
         "classification_family_label_count": store.family_labels.height,
         "classification_species_label_count": store.species_labels.height,
     }
+
+
+def _taxonomy_manifest_value(store: ButterflyTaxonomyStore | None, key: str) -> str | None:
+    if store is None:
+        return None
+    value = dict(store.manifest or {}).get(key)
+    return str(value) if value is not None and str(value).strip() else None
 
 
 def _mode_row_count(frame: Any, mode: str) -> int:
