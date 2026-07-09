@@ -61,6 +61,8 @@ from biominer.detection.policy import (
     vision_runtime_settings,
 )
 from biominer.detection.segmentation import make_segmenter
+from biominer.evaluation.labels import read_reviewed_labels, validate_reviewed_label_frame
+from biominer.evaluation.reports import write_evaluation_report
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_comments.comment_review import (
     CommentReviewState,
@@ -246,6 +248,14 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_join = evidence_subparsers.add_parser("join")
     _add_object_evidence_join_args(evidence_join)
     evidence_join.add_argument("--species-context")
+    evaluation = subparsers.add_parser("evaluation")
+    evaluation_subparsers = evaluation.add_subparsers(dest="evaluation_command")
+    evaluation_classify = evaluation_subparsers.add_parser("classify")
+    evaluation_input = evaluation_classify.add_mutually_exclusive_group(required=True)
+    evaluation_input.add_argument("--object-scores")
+    evaluation_input.add_argument("--object-evidence")
+    evaluation_classify.add_argument("--reviewed-labels", required=True)
+    evaluation_classify.add_argument("--output-dir", required=True)
     registry = subparsers.add_parser("registry")
     registry_subparsers = registry.add_subparsers(dest="registry_command")
     registry_build = registry_subparsers.add_parser("build")
@@ -617,6 +627,8 @@ def run(args: argparse.Namespace) -> int:
         if args.evidence_command == "join":
             return _run_bioclip_join_object_evidence(args)
         return 2
+    if args.command == "evaluation":
+        return _run_evaluation_command(args)
     if args.command == "storage":
         return _run_storage_command(args)
     if args.command == "workstore":
@@ -867,6 +879,89 @@ def _run_dev_flickr_command(args: argparse.Namespace) -> int:
         work_store=work_store,
     )
     print(json.dumps({**result.__dict__, "state_db": str(result.state_db)}, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_evaluation_command(args: argparse.Namespace) -> int:
+    if args.evaluation_command == "classify":
+        return _run_evaluation_classify(args)
+    return 2
+
+
+def _run_evaluation_classify(args: argparse.Namespace) -> int:
+    input_path = Path(args.object_scores or args.object_evidence)
+    input_kind = "object_scores" if args.object_scores else "object_evidence"
+    labels_path = Path(args.reviewed_labels)
+    if not input_path.exists():
+        print(
+            json.dumps(
+                {"error": f"{input_kind} path does not exist: {input_path}"},
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
+    if not labels_path.exists():
+        print(
+            json.dumps(
+                {"error": f"reviewed-labels path does not exist: {labels_path}"},
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
+
+    try:
+        object_scores = pl.read_parquet(input_path)
+        reviewed_labels = read_reviewed_labels(labels_path)
+    except (FileNotFoundError, ValueError, pl.exceptions.PolarsError) as exc:
+        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+        return 2
+
+    label_findings = validate_reviewed_label_frame(reviewed_labels)
+    fatal_findings = [finding for finding in label_findings if finding.get("severity") == "fatal"]
+    if fatal_findings:
+        print(
+            json.dumps(
+                {
+                    "error": "reviewed labels failed validation",
+                    "fatal_findings": fatal_findings,
+                    "finding_count": len(label_findings),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
+
+    paths = write_evaluation_report(
+        object_scores=object_scores,
+        reviewed_labels=reviewed_labels,
+        output_dir=args.output_dir,
+    )
+    metrics = json.loads(Path(paths["metrics"]).read_text(encoding="utf-8"))
+    payload = {
+        "status": "complete",
+        "input_kind": input_kind,
+        "input_path": str(input_path),
+        "reviewed_labels": str(labels_path),
+        "output_dir": str(Path(args.output_dir)),
+        "paths": paths,
+        "metrics": {
+            "evaluated_objects": metrics["metrics"].get("evaluated_objects"),
+            "family_top1_accuracy": metrics["metrics"].get("family_top1_accuracy"),
+            "family_top3_recall": metrics["metrics"].get("family_top3_recall"),
+            "species_top1_accuracy": metrics["metrics"].get("species_top1_accuracy"),
+            "species_top5_recall": metrics["metrics"].get("species_top5_recall"),
+            "species_top20_recall": metrics["metrics"].get("species_top20_recall"),
+            "species_mrr": metrics["metrics"].get("species_mrr"),
+        },
+        "label_validation": {
+            "finding_count": len(label_findings),
+            "warning_count": sum(1 for finding in label_findings if finding.get("severity") == "warning"),
+        },
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
 
