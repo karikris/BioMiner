@@ -35,6 +35,10 @@ from biominer.storage.parquet import write_parquet
 
 BENCHMARK_KIND = "vision_plumbing_model_free"
 BENCHMARK_TAXONOMY_REGISTRY_VERSION = "benchmark-taxonomy-v1"
+BENCHMARK_PRIMARY_SPECIES = "Benchmarkus alpha"
+BENCHMARK_SECONDARY_SPECIES = "Benchmarkus beta"
+BENCHMARK_OUTGROUP_SPECIES = "Metricsus gamma"
+BENCHMARK_SECOND_OUTGROUP_SPECIES = "Metricsus delta"
 FAKE_IMAGE_WIDTH = 64
 FAKE_IMAGE_HEIGHT = 64
 FAKE_IMAGE_BYTES = bytes([240, 236, 220]) * FAKE_IMAGE_WIDTH * FAKE_IMAGE_HEIGHT
@@ -260,21 +264,21 @@ def write_benchmark_taxonomy_store(root: str | Path) -> dict[str, Path]:
 def benchmark_taxa_frame() -> pl.DataFrame:
     now = datetime.now(UTC).isoformat()
     rows = [
-        _taxon_row("gbif:9401", "Papilio demoleus", "gbif:9417", "Papilionidae", "gbif:9400", "Papilio", now),
-        _taxon_row("gbif:9402", "Papilio machaon", "gbif:9417", "Papilionidae", "gbif:9400", "Papilio", now),
-        _taxon_row("gbif:7001", "Danaus plexippus", "gbif:7017", "Nymphalidae", "gbif:7000", "Danaus", now),
-        _taxon_row("gbif:7002", "Danaus chrysippus", "gbif:7017", "Nymphalidae", "gbif:7000", "Danaus", now),
+        _taxon_row("gbif:9401", BENCHMARK_PRIMARY_SPECIES, "gbif:9417", "Papilionidae", "gbif:9400", "Benchmarkus", now),
+        _taxon_row("gbif:9402", BENCHMARK_SECONDARY_SPECIES, "gbif:9417", "Papilionidae", "gbif:9400", "Benchmarkus", now),
+        _taxon_row("gbif:7001", BENCHMARK_OUTGROUP_SPECIES, "gbif:7017", "Nymphalidae", "gbif:7000", "Metricsus", now),
+        _taxon_row("gbif:7002", BENCHMARK_SECOND_OUTGROUP_SPECIES, "gbif:7017", "Nymphalidae", "gbif:7000", "Metricsus", now),
     ]
     return pl.DataFrame(rows)
 
 
 def benchmark_species_context() -> SpeciesContext:
     return SpeciesContext(
-        scientific_name="Papilio demoleus",
+        scientific_name=BENCHMARK_PRIMARY_SPECIES,
         accepted_taxon_key="gbif:9401",
-        canonical_name="Papilio demoleus",
+        canonical_name=BENCHMARK_PRIMARY_SPECIES,
         family="Papilionidae",
-        genus="Papilio",
+        genus="Benchmarkus",
         family_key="gbif:9417",
         genus_key="gbif:9400",
         species_key="gbif:9401",
@@ -295,10 +299,10 @@ def benchmark_canonical_records(records: int, *, butterfly_rate: float) -> pl.Da
                 "source_record_hash": f"sha256:{photo_id}",
                 "image_url": f"memory://benchmark/{photo_id}.jpg",
                 "photo_page_url": f"https://example.invalid/photos/{photo_id}",
-                "title": "Papilio demoleus benchmark butterfly" if is_butterfly else "benchmark hard negative",
+                "title": f"{BENCHMARK_PRIMARY_SPECIES} benchmark butterfly" if is_butterfly else "benchmark hard negative",
                 "description": "model-free generated benchmark record",
-                "raw_tags": "Papilio demoleus butterfly" if is_butterfly else "leaf object",
-                "tags": "Papilio demoleus butterfly" if is_butterfly else "leaf object",
+                "raw_tags": f"{BENCHMARK_PRIMARY_SPECIES} butterfly" if is_butterfly else "leaf object",
+                "tags": f"{BENCHMARK_PRIMARY_SPECIES} butterfly" if is_butterfly else "leaf object",
                 "date_taken": "2024-07-01",
                 "latitude": -27.4705,
                 "longitude": 153.0260,
@@ -458,13 +462,13 @@ def _fake_label_scores(labels: Sequence[str]) -> dict[str, float]:
             score = 0.92
         elif "nymphalidae" in text:
             score = 0.36
-        elif "papilio demoleus" in text:
+        elif BENCHMARK_PRIMARY_SPECIES.casefold() in text:
             score = 0.86
-        elif "papilio machaon" in text:
+        elif BENCHMARK_SECONDARY_SPECIES.casefold() in text:
             score = 0.52
-        elif "danaus plexippus" in text:
+        elif BENCHMARK_OUTGROUP_SPECIES.casefold() in text:
             score = 0.30
-        elif "danaus chrysippus" in text:
+        elif BENCHMARK_SECOND_OUTGROUP_SPECIES.casefold() in text:
             score = 0.22
         else:
             score = 0.05
