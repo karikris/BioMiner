@@ -18,6 +18,7 @@ from biominer.bioclip.embedding_cache import (
     validate_taxonomy_text_embedding_cache,
     write_image_embedding_cache,
     write_text_embedding_cache,
+    write_taxonomy_text_embedding_cache,
 )
 from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
 from biominer.registry.classification_table import (
@@ -331,6 +332,34 @@ def test_prepare_taxonomy_text_embedding_cache_reuses_cached_labels(tmp_path: Pa
     assert set(TAXONOMY_TEXT_EMBEDDING_COLUMNS).issubset(frame.columns)
     assert set(frame.get_column("embedding_dtype").to_list()) == {"float16"}
     validate_taxonomy_text_embedding_cache(frame, store, model_id="bioclip", model_checkpoint="checkpoint-a")
+
+
+def test_prepare_taxonomy_text_embedding_cache_rejects_reused_wrong_dtype(tmp_path: Path) -> None:
+    cache_path = tmp_path / "taxonomy_text_embeddings.parquet"
+    store = _butterfly_taxonomy_store()
+    first = prepare_taxonomy_text_embedding_cache(
+        store,
+        cache_path,
+        model_id="bioclip",
+        model_checkpoint="checkpoint-a",
+        embed_labels=lambda labels: [[1.0, 0.0] for _label in labels],
+        embedding_dtype="float16",
+    )
+    write_taxonomy_text_embedding_cache(first.frame.to_dicts(), cache_path)
+
+    try:
+        prepare_taxonomy_text_embedding_cache(
+            store,
+            cache_path,
+            model_id="bioclip",
+            model_checkpoint="checkpoint-a",
+            embed_labels=lambda labels: [[0.0, 1.0] for _label in labels],
+            embedding_dtype="float32",
+        )
+    except ValueError as exc:
+        assert "embedding_dtype mismatch" in str(exc)
+    else:
+        raise AssertionError("taxonomy text embedding cache with wrong dtype should be rejected")
 
 
 def test_validate_taxonomy_text_embedding_cache_rejects_wrong_checkpoint(tmp_path: Path) -> None:

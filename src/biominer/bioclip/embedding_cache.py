@@ -162,13 +162,21 @@ def prepare_taxonomy_text_embedding_cache(
         model_checkpoint=model_checkpoint,
         embedding_dtype=embedding_dtype,
     )
-    return upsert_taxonomy_text_embedding_cache(
+    update = upsert_taxonomy_text_embedding_cache(
         rows,
         path,
         embed_labels=embed_labels,
         batch_size=batch_size,
         created_at=created_at,
     )
+    validate_taxonomy_text_embedding_cache(
+        update.frame,
+        taxonomy_store,
+        model_id=model_id,
+        model_checkpoint=model_checkpoint,
+        embedding_dtype=embedding_dtype,
+    )
+    return update
 
 
 def prepare_object_image_embedding_cache(
@@ -412,6 +420,7 @@ def validate_taxonomy_text_embedding_cache(
     *,
     model_id: str,
     model_checkpoint: str,
+    embedding_dtype: str | None = None,
 ) -> None:
     if cache.is_empty():
         raise ValueError("taxonomy text embedding cache is empty")
@@ -428,12 +437,18 @@ def validate_taxonomy_text_embedding_cache(
         suffix = "" if len(missing_labels) <= 5 else f" (+{len(missing_labels) - 5} more)"
         raise ValueError(f"taxonomy text embedding cache missing labels: {preview}{suffix}")
     requested = taxonomy_text_embedding_rows(taxonomy_store, model_id=model_id, model_checkpoint=model_checkpoint)
-    _validate_taxonomy_text_embedding_metadata(matching, requested)
+    _validate_taxonomy_text_embedding_metadata(
+        matching,
+        requested,
+        expected_embedding_dtype=embedding_dtype,
+    )
 
 
 def _validate_taxonomy_text_embedding_metadata(
     matching: pl.DataFrame,
     requested: list[dict[str, Any]],
+    *,
+    expected_embedding_dtype: str | None = None,
 ) -> None:
     keys = ["classification_table_version", "prompt_variant_version", "label", "model_id", "model_checkpoint"]
     requested_by_key = {_key(row, keys): row for row in requested}
@@ -450,6 +465,11 @@ def _validate_taxonomy_text_embedding_metadata(
         embedding_dtype = str(row.get("embedding_dtype") or "").strip()
         if not embedding_dtype:
             raise ValueError(f"taxonomy text embedding cache missing embedding_dtype for label={label!r}")
+        if expected_embedding_dtype is not None and embedding_dtype != expected_embedding_dtype:
+            raise ValueError(
+                f"taxonomy text embedding cache embedding_dtype mismatch for label={label!r}: "
+                f"{embedding_dtype!r} != {expected_embedding_dtype!r}"
+            )
         embedding_dtypes.add(embedding_dtype)
         row_dim = _positive_embedding_dim(row.get("embedding_dim"), label=label)
         embedding = row.get("embedding")

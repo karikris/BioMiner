@@ -43,6 +43,8 @@ Commands run:
 - `uv run pytest -q tests/test_cloud_bioclip_work.py`
 - `uv run pytest -q tests/test_object_bioclip_pipeline.py::test_object_bioclip_hierarchical_mode_requires_taxonomy_store tests/test_object_bioclip_pipeline.py::test_object_bioclip_scores_local_hierarchical_mode_with_fake_taxonomy tests/test_object_bioclip_pipeline.py::test_object_bioclip_hierarchical_mode_uses_taxonomy_text_embedding_cache`
 - `uv run pytest -q tests/test_production_run_skeleton.py::test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end tests/test_production_run_skeleton.py::test_production_run_hierarchical_score_stage_requires_taxonomy_table tests/test_production_run_skeleton.py::test_production_run_hierarchical_score_stage_validates_table_then_requires_score_inputs`
+- `uv run pytest -q tests/test_embedding_cache.py`
+- `uv run pytest -q tests/test_hierarchical_classifier.py::test_hierarchical_batch_uses_taxonomy_text_embedding_cache_for_species_first_pass tests/test_hierarchical_classifier.py::test_hierarchical_batch_taxonomy_text_embedding_cache_rejects_model_mismatch tests/test_hierarchical_classifier.py::test_hierarchical_batch_taxonomy_text_embedding_cache_rejects_missing_labels tests/test_hierarchical_classifier.py::test_hierarchical_batch_taxonomy_text_embedding_cache_rejects_stale_label_hash tests/test_hierarchical_classifier.py::test_rank_species_with_cached_text_embeddings_rejects_mixed_model_cache`
 - `uv run ruff check src/biominer/bioclip/cloud_work.py tests/test_cloud_bioclip_work.py`
 
 Focused test result:
@@ -51,6 +53,8 @@ Focused test result:
 - `tests/test_cloud_bioclip_work.py`: `12 passed`
 - local hierarchical object tests: `3 passed`
 - production hierarchical skeleton tests: `3 passed`
+- `tests/test_embedding_cache.py`: `13 passed`
+- cached hierarchical classifier tests: `5 passed`
 - Ruff could not run because the `ruff` executable is not installed in this environment.
 
 ## Files Inspected
@@ -196,8 +200,9 @@ Remaining audit risk:
 - CLI contains lazy heavy imports for live benchmark/dev commands. Later audit tasks must confirm these do not break dry-run/help/import-only use.
 - The initial map did not fully verify crop resize quality or all docs/help parity.
 - Cloud BioCLIP work items store output-affecting scoring settings in the payload and work key. Before Task 2, the cloud worker accepted independent batch-level mode and top-k arguments without validating them against the payload. That could silently score replayed work under stale semantics.
+- Before Task 3, `prepare_taxonomy_text_embedding_cache(... embedding_dtype=...)` could silently reuse a taxonomy text cache generated with a different recorded dtype. Runtime validation checked dtype presence and consistency, but not the requested dtype.
 
-## Fixes Made Or Verified In Task 1
+## Fixes Made Or Verified So Far
 
 - Added this audit report.
 - Added the species-prompt mean aggregation bug to the current phase task list.
@@ -211,6 +216,10 @@ Remaining audit risk:
   - cloud score workers now reject top-k settings drift
   - hierarchical cloud scoring validates payload taxonomy table and prompt-variant versions against the supplied taxonomy store
   - existing hierarchical cloud tests now create work items with top-k settings matching the score run
+- Fixed taxonomy text embedding cache dtype invalidation:
+  - taxonomy cache preparation validates the final reused/appended cache before returning
+  - callers may pass an expected `embedding_dtype` to validation
+  - reusing a float16 taxonomy cache for a float32 preparation request now fails clearly
 
 ## Core Invariant Checklist
 
@@ -229,7 +238,7 @@ Initial status is not the final audit verdict. `Supported` means evidence was lo
 | 9 | GBIF-backed classification tables are derived candidate artifacts, not taxonomy authority. | Supported |
 | 10 | Classification table outputs include taxa, family labels, species labels, manifest, and QA. | Supported |
 | 11 | Taxonomy store validates classification table inputs before hierarchical scoring. | Supported |
-| 12 | Optional text embedding caches validate taxonomy/model/prompt metadata. | Supported, deeper audit pending |
+| 12 | Optional text embedding caches validate taxonomy/model/prompt metadata. | Supported and dtype invalidation fixed |
 | 13 | Mac M5 Pro profile settings flow into vision runtime policy. | Supported |
 | 14 | Non-eligible detections retain metadata and are not cropped in production paths. | Supported, deeper audit pending |
 | 15 | Crop/image lifecycle deletes staged files only after successful score writes. | Supported, deeper audit pending |
@@ -242,7 +251,7 @@ Initial status is not the final audit verdict. `Supported` means evidence was lo
 ## Next Audit Tasks
 
 - Continue tracing local/cloud hierarchical output schemas beyond the fixed work-payload contract.
-- Verify classification table manifest/QA and text embedding cache invalidation behavior.
+- Continue classification table manifest/QA review beyond the fixed embedding-cache dtype invalidation.
 - Inspect crop resize quality and every prototype/dev path for hardcoded padding or stale defaults.
 - Audit CLI help, docs, examples, and deprecated-command docs against parser behavior.
 - Run focused model-free tests for each fix, then full `pytest -q` before final push.
