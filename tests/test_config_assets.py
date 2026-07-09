@@ -174,6 +174,19 @@ def test_command_surface_adr_includes_migration_notes() -> None:
         assert expected in text
 
 
+def test_removed_command_docs_name_deleted_source_entrypoints() -> None:
+    text = Path("docs/deprecated_removed_commands.md").read_text(encoding="utf-8")
+
+    for expected in (
+        "flicker_miner.py",
+        "scripts/run_flickr_text_search.py",
+        "scripts/generate_bioclip_species_visual_report.py",
+        "biominer dev vision yoloe26-prototype-run",
+        "Durable decisions belong under `docs/adr/`",
+    ):
+        assert expected in text
+
+
 def test_artifact_tracking_policy_rejects_tracked_reports() -> None:
     policy = Path("docs/adr/artifact_tracking_policy.md").read_text(encoding="utf-8")
     ignore = Path(".gitignore").read_text(encoding="utf-8")

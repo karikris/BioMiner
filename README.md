@@ -247,6 +247,7 @@ uv run biominer
 - `docs/vision_workflow.md` documents the public vision commands, dev-only runtime utilities, and YOLOE/YOLO26 object-finder boundary.
 - `docs/storage_postgres_s3.md` summarizes S3 artifact storage, Postgres workstore state, and explicit local overrides.
 - `docs/deprecated_removed_commands.md` records removed public commands and their replacements.
+- `docs/adr/` records durable architecture and repository-policy decisions; generated reports stay out of source control.
 - `examples/production_workflow.md` gives species, genus, and family `biominer run` examples using S3/Postgres defaults.
 
 ## Core invariants
@@ -1168,7 +1169,7 @@ Do not introduce pandas or CSV workflows unless a strict external boundary requi
 
 # Metrics and reports
 
-Every run writes compact JSON and Markdown under `reports/`.
+Every run writes compact JSON and Markdown under `reports/`. These files are runtime artifacts and are ignored by Git; promote only durable decisions into `docs/adr/`.
 
 Include when applicable:
 
