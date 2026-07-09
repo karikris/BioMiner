@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from math import exp
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol, Sequence
 
 import polars as pl
 
-from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+from biominer.bioclip.classification_modes import (
+    DEFAULT_FAMILY_TOP_K,
+    DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    DEFAULT_SPECIES_RERANK_TOP_K,
+    HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+)
+from biominer.registry.classification_table import (
+    CLASSIFICATION_TABLE_VERSION,
+    PROMPT_VARIANT_VERSION,
+    ButterflyTaxonomyStore,
+)
 
 
 HIERARCHICAL_CANDIDATE_SELECTION_MODE = "gbif_family_first"
@@ -61,6 +72,15 @@ HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS: dict[str, pl.DataType] = {
     "species_top20_scores": pl.List(pl.Float64),
     "species_top5_scores": pl.List(pl.Float64),
 }
+
+
+class ObjectBioClipScorer(Protocol):
+    model_id: str
+    model_version: str
+    model_checkpoint: str
+
+    def score(self, item: dict[str, Any], labels: tuple[str, ...]) -> dict[str, float]:
+        ...
 
 
 @dataclass(frozen=True)
@@ -207,6 +227,185 @@ def aggregate_taxon_prompt_scores(
     return sorted(scores, key=lambda score: (-score.score, score.scientific_name, score.accepted_taxon_key))
 
 
+def classify_butterfly_crop_hierarchical(
+    *,
+    item: dict[str, Any],
+    scorer: ObjectBioClipScorer,
+    taxonomy_store: ButterflyTaxonomyStore,
+    family_top_k: int = DEFAULT_FAMILY_TOP_K,
+    species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
+    prompt_aggregation: str = "mean",
+) -> ButterflyCascadeResult:
+    family_top_k, species_first_pass_top_k, species_rerank_top_k = _validate_top_k(
+        family_top_k=family_top_k,
+        species_first_pass_top_k=species_first_pass_top_k,
+        species_rerank_top_k=species_rerank_top_k,
+    )
+    _raise_for_invalid_taxonomy_store(taxonomy_store)
+
+    family_label_rows = _enabled_label_rows(taxonomy_store.family_labels)
+    family_labels = _label_tuple(family_label_rows)
+    if not family_labels:
+        raise ValueError("butterfly taxonomy store has no enabled family labels")
+    family_label_scores = scorer.score(item, family_labels)
+    family_scores = aggregate_taxon_prompt_scores(
+        label_scores=family_label_scores,
+        label_rows=family_label_rows,
+        taxon_key_column="family_key",
+        taxon_name_column="family",
+        aggregation=prompt_aggregation,
+    )
+    if not family_scores:
+        raise ValueError("butterfly taxonomy store produced no family scores")
+    family_top = tuple(family_scores[:family_top_k])
+    selected_family = family_top[0]
+    selected_family_key = selected_family.accepted_taxon_key
+
+    species_taxa = taxonomy_store.species_for_family(selected_family_key)
+    species_label_rows = _enabled_label_rows(taxonomy_store.species_labels).filter(
+        pl.col("family_key") == selected_family_key
+    )
+    species_labels = _label_tuple(species_label_rows)
+    if species_taxa.is_empty() or not species_labels:
+        raise ValueError(f"butterfly taxonomy store has no enabled species labels for family_key={selected_family_key!r}")
+    species_label_scores = scorer.score(item, species_labels)
+    species_scores = aggregate_taxon_prompt_scores(
+        label_scores=species_label_scores,
+        label_rows=species_label_rows,
+        taxon_key_column="accepted_taxon_key",
+        taxon_name_column="scientific_name",
+        aggregation=prompt_aggregation,
+    )
+    species_top20 = tuple(species_scores[:species_first_pass_top_k])
+    _assert_species_top20_family(species_top20, selected_family_key=selected_family_key)
+
+    rerank_keys = [score.accepted_taxon_key for score in species_top20]
+    rerank_label_rows = taxonomy_store.species_labels_for_taxa(rerank_keys)
+    rerank_labels = _label_tuple(rerank_label_rows)
+    rerank_scores = scorer.score(item, rerank_labels) if rerank_labels else {}
+    reranked_species = aggregate_taxon_prompt_scores(
+        label_scores=rerank_scores,
+        label_rows=rerank_label_rows,
+        taxon_key_column="accepted_taxon_key",
+        taxon_name_column="scientific_name",
+        aggregation=prompt_aggregation,
+    )
+    species_top5 = tuple(reranked_species[:species_rerank_top_k])
+    species_top1 = species_top5[0] if species_top5 else None
+
+    taxonomy_table_version = _taxonomy_table_version(taxonomy_store)
+    prompt_variant_version = _prompt_variant_version(taxonomy_store)
+    return ButterflyCascadeResult(
+        source=str(item.get("source") or ""),
+        flickr_photo_id=str(item.get("flickr_photo_id") or ""),
+        detection_id=str(item.get("detection_id") or ""),
+        crop_hash=str(item.get("crop_hash") or ""),
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        candidate_set_id=_candidate_set_id(taxonomy_store, taxonomy_table_version, prompt_variant_version),
+        taxonomy_table_version=taxonomy_table_version,
+        prompt_variant_version=prompt_variant_version,
+        family_top3=family_top,
+        selected_family_key=selected_family_key,
+        selected_family=selected_family.scientific_name,
+        species_candidate_count=species_taxa.height,
+        species_top20=species_top20,
+        species_top5=species_top5,
+        species_top1=species_top1,
+        family_top1_score=selected_family.score,
+        species_top1_score=species_top1.score if species_top1 is not None else 0.0,
+        species_top1_margin=_margin(species_top5),
+        classified_at=datetime.now(UTC).isoformat(),
+    )
+
+
+def _validate_top_k(
+    *,
+    family_top_k: int,
+    species_first_pass_top_k: int,
+    species_rerank_top_k: int,
+) -> tuple[int, int, int]:
+    family = int(family_top_k)
+    first_pass = int(species_first_pass_top_k)
+    rerank = int(species_rerank_top_k)
+    if family <= 0:
+        raise ValueError("family_top_k must be positive")
+    if first_pass <= 0:
+        raise ValueError("species_first_pass_top_k must be positive")
+    if rerank <= 0:
+        raise ValueError("species_rerank_top_k must be positive")
+    if rerank > first_pass:
+        raise ValueError("species_rerank_top_k must be <= species_first_pass_top_k")
+    return family, first_pass, rerank
+
+
+def _raise_for_invalid_taxonomy_store(taxonomy_store: ButterflyTaxonomyStore) -> None:
+    fatal = [finding for finding in taxonomy_store.validation_findings() if finding.get("severity") == "fatal"]
+    if fatal:
+        codes = ", ".join(str(finding.get("code")) for finding in fatal)
+        raise ValueError(f"invalid butterfly taxonomy store: {codes}")
+
+
+def _enabled_label_rows(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    rows = frame.filter(pl.col("enabled")) if "enabled" in frame.columns else frame
+    sort_columns = [column for column in ("family", "genus", "scientific_name", "sort_order", "label") if column in rows.columns]
+    return rows.sort(sort_columns) if sort_columns else rows
+
+
+def _label_tuple(label_rows: pl.DataFrame) -> tuple[str, ...]:
+    if "label" not in label_rows.columns or label_rows.is_empty():
+        return ()
+    return tuple(str(label) for label in label_rows.select("label").to_series().to_list() if str(label or "").strip())
+
+
+def _assert_species_top20_family(species_top20: Sequence[TaxonScore], *, selected_family_key: str) -> None:
+    wrong_family = [
+        score.accepted_taxon_key
+        for score in species_top20
+        if str(score.family_key or "") != str(selected_family_key)
+    ]
+    if wrong_family:
+        raise AssertionError(
+            "hierarchical species_top20 contains taxa outside selected family_key="
+            f"{selected_family_key!r}: {', '.join(wrong_family)}"
+        )
+
+
+def _taxonomy_table_version(taxonomy_store: ButterflyTaxonomyStore) -> str:
+    manifest = taxonomy_store.manifest or {}
+    return str(manifest.get("classification_table_version") or _first_value(taxonomy_store.classification_taxa, "classification_table_version") or CLASSIFICATION_TABLE_VERSION)
+
+
+def _prompt_variant_version(taxonomy_store: ButterflyTaxonomyStore) -> str:
+    manifest = taxonomy_store.manifest or {}
+    return str(manifest.get("prompt_variant_version") or _first_value(taxonomy_store.family_labels, "prompt_variant_version") or PROMPT_VARIANT_VERSION)
+
+
+def _candidate_set_id(taxonomy_store: ButterflyTaxonomyStore, taxonomy_table_version: str, prompt_variant_version: str) -> str:
+    manifest = taxonomy_store.manifest or {}
+    explicit = str(manifest.get("candidate_set_id") or "").strip()
+    if explicit:
+        return explicit
+    registry_version = str(manifest.get("registry_version") or _first_value(taxonomy_store.classification_taxa, "registry_version") or "").strip()
+    parts = [part for part in (registry_version, taxonomy_table_version, prompt_variant_version) if part]
+    return ":".join(parts)
+
+
+def _first_value(frame: pl.DataFrame, column: str) -> object:
+    if column not in frame.columns or frame.is_empty():
+        return None
+    values = frame.select(column).to_series().drop_nulls().to_list()
+    return values[0] if values else None
+
+
+def _margin(scores: Sequence[TaxonScore]) -> float | None:
+    if len(scores) < 2:
+        return None
+    return float(scores[0].score - scores[1].score)
+
+
 def _require_label_columns(
     label_rows: pl.DataFrame,
     *,
@@ -269,5 +468,6 @@ __all__ = [
     "aggregate_taxon_prompt_scores",
     "butterfly_cascade_result_to_dict",
     "butterfly_cascade_results_frame",
+    "classify_butterfly_crop_hierarchical",
     "taxon_score_to_dict",
 ]
