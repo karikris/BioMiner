@@ -460,17 +460,22 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     yoloe26_prototype.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
     yoloe26_prototype.add_argument("--cache-root", default=str(YOLOE26_RUNTIME_ROOT / "cache" / "images"))
     yoloe26_prototype.add_argument("--crop-temp-dir", default=str(YOLOE26_RUNTIME_ROOT / "cache" / "object_crops"))
-    yoloe26_prototype.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    yoloe26_prototype.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
+    yoloe26_prototype.add_argument("--vision-profile", choices=("mac_m5pro_64gb",))
+    yoloe26_prototype.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"))
+    yoloe26_prototype.add_argument("--checkpoint")
     yoloe26_prototype.add_argument("--limit", type=int)
     yoloe26_prototype.add_argument("--retain-debug-crops", action="store_true")
     yoloe26_prototype.add_argument("--ablation-mode", choices=("whole_image", "detector_crop", "detector_crop_segmentation"), default="detector_crop")
     yoloe26_prototype.add_argument("--also-whole-image", action="store_true")
     yoloe26_prototype.add_argument("--parquet-batch-rows", type=int, default=10000)
-    yoloe26_prototype.add_argument("--imgsz", type=int, default=640)
-    yoloe26_prototype.add_argument("--conf", type=float, default=0.20)
-    yoloe26_prototype.add_argument("--iou", type=float, default=0.50)
-    yoloe26_prototype.add_argument("--max-det", type=int, default=8)
+    yoloe26_prototype.add_argument("--imgsz", type=int)
+    yoloe26_prototype.add_argument("--conf", type=float)
+    yoloe26_prototype.add_argument("--iou", type=float)
+    yoloe26_prototype.add_argument("--max-det", type=int)
+    yoloe26_prototype.add_argument("--detector-batch-size", type=int)
+    yoloe26_prototype.add_argument("--bioclip-batch", type=int)
+    yoloe26_prototype.add_argument("--crop-padding-ratio", type=float)
+    yoloe26_prototype.add_argument("--crop-target-px", type=int)
     yoloe26_prototype.add_argument("--prompt-class", action="append", default=[])
     yoloe26_prototype.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
     detect_crop_preview = subparsers.add_parser("crop-preview")
@@ -942,6 +947,55 @@ def _production_vision_settings_from_args(args: argparse.Namespace) -> VisionRun
     return replace(settings, **overrides) if overrides else settings
 
 
+def _prototype_vision_settings_from_args(args: argparse.Namespace) -> VisionRuntimeSettings:
+    settings = (
+        vision_runtime_settings(args.vision_profile)
+        if getattr(args, "vision_profile", None)
+        else VisionRuntimeSettings(
+            profile_name="prototype_default",
+            device="auto",
+            yolo_checkpoint="yoloe-26s-seg.pt",
+            yolo_imgsz=640,
+            yolo_conf=0.20,
+            yolo_iou=0.50,
+            yolo_max_det=8,
+            detector_batch_size=4,
+            crop_batch_size=24,
+            crop_padding_ratio=0.12,
+            crop_target_px=336,
+            bioclip_model=BIOCLIP_25_HUGE_REPO_ID,
+            parquet_part_rows=int(getattr(args, "parquet_batch_rows", 10000) or 10000),
+            delete_images_after_commit=False,
+        )
+    )
+    overrides: dict[str, object] = {}
+    if getattr(args, "device", None) is not None:
+        overrides["device"] = args.device
+    if getattr(args, "checkpoint", None) is not None:
+        overrides["yolo_checkpoint"] = args.checkpoint
+    if getattr(args, "imgsz", None) is not None:
+        overrides["yolo_imgsz"] = args.imgsz
+    if getattr(args, "conf", None) is not None:
+        overrides["yolo_conf"] = args.conf
+    if getattr(args, "iou", None) is not None:
+        overrides["yolo_iou"] = args.iou
+    if getattr(args, "max_det", None) is not None:
+        overrides["yolo_max_det"] = args.max_det
+    if getattr(args, "detector_batch_size", None) is not None:
+        overrides["detector_batch_size"] = args.detector_batch_size
+    if getattr(args, "bioclip_batch", None) is not None:
+        overrides["crop_batch_size"] = args.bioclip_batch
+    if getattr(args, "crop_padding_ratio", None) is not None:
+        overrides["crop_padding_ratio"] = args.crop_padding_ratio
+    if getattr(args, "crop_target_px", None) is not None:
+        overrides["crop_target_px"] = args.crop_target_px
+    if getattr(args, "parquet_batch_rows", None) is not None:
+        overrides["parquet_part_rows"] = args.parquet_batch_rows
+    if getattr(args, "retain_debug_crops", False):
+        overrides["retain_debug_crops"] = True
+    return replace(settings, **overrides) if overrides else settings
+
+
 def _classification_mode_arg(value: str) -> str:
     try:
         return normalize_classification_mode(value)
@@ -1240,14 +1294,15 @@ def _run_yoloe26_prototype_run(args: argparse.Namespace) -> int:
 
     from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
 
+    settings = _prototype_vision_settings_from_args(args)
     detector = YoloE26SidecarObjectDetector(
         runtime_python=str(vision_python),
-        checkpoint=args.checkpoint,
-        device=args.device,
-        imgsz=args.imgsz,
-        conf=args.conf,
-        iou=args.iou,
-        max_det=args.max_det,
+        checkpoint=settings.yolo_checkpoint,
+        device=settings.device,
+        imgsz=settings.yolo_imgsz,
+        conf=settings.yolo_conf,
+        iou=settings.yolo_iou,
+        max_det=settings.yolo_max_det,
         prompt_classes=_yoloe26_prompt_classes(args),
     )
     detection_result = run_detection_pipeline(
@@ -1257,12 +1312,18 @@ def _run_yoloe26_prototype_run(args: argparse.Namespace) -> int:
         image_loader=lambda record: load_decoded_image_from_record(record, cache_root=args.cache_root),
         detection_policy=DetectionPolicy(
             backend="yoloe26",
-            box_score_threshold=args.conf,
-            nms_iou_threshold=args.iou,
-            max_boxes_per_image=args.max_det,
+            box_score_threshold=settings.yolo_conf,
+            nms_iou_threshold=settings.yolo_iou,
+            max_boxes_per_image=settings.yolo_max_det,
+            crop_padding_ratio=settings.crop_padding_ratio,
+            crop_target_px=settings.crop_target_px,
             retain_debug_crops=args.retain_debug_crops,
         ),
-        run_policy=DetectionRunPolicy(parquet_batch_rows=args.parquet_batch_rows),
+        run_policy=DetectionRunPolicy(
+            detector_batch_size=settings.detector_batch_size,
+            crop_batch_size=settings.crop_batch_size,
+            parquet_batch_rows=settings.parquet_part_rows,
+        ),
     )
 
     context = SpeciesContext.read_json(args.species_context)
@@ -1275,18 +1336,18 @@ def _run_yoloe26_prototype_run(args: argparse.Namespace) -> int:
     if isinstance(candidate_set, int):
         return candidate_set
     runtime = _bioclip_runtime(runtime_python=bioclip_python)
-    scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
+    scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=settings.device)
     try:
         object_scorer = EphemeralCropBioClipScorer(
             scorer=scorer,
             image_loader=lambda item: load_decoded_image_from_record(item, cache_root=args.cache_root),
             temp_dir=args.crop_temp_dir,
-            crop_padding_ratio=0.12,
-            crop_target_px=336,
+            crop_padding_ratio=settings.crop_padding_ratio,
+            crop_target_px=settings.crop_target_px,
             model_id="bioclip2_5",
             model_version="bioclip2_5_huge",
             model_checkpoint=BIOCLIP_25_HUGE_REVISION,
-            retain_debug_crops=args.retain_debug_crops,
+            retain_debug_crops=settings.retain_debug_crops,
             segmenter=make_segmenter("none"),
         )
         score_result = screen_object_detections(
@@ -1297,8 +1358,8 @@ def _run_yoloe26_prototype_run(args: argparse.Namespace) -> int:
             scorer=object_scorer,
             output_path=scores_path,
             ablation_mode=args.ablation_mode,
-            parquet_batch_rows=args.parquet_batch_rows,
-            bioclip_batch_size=getattr(args, "bioclip_batch", 24),
+            parquet_batch_rows=settings.parquet_part_rows,
+            bioclip_batch_size=settings.crop_batch_size,
         )
     finally:
         scorer.close()
@@ -1316,12 +1377,12 @@ def _run_yoloe26_prototype_run(args: argparse.Namespace) -> int:
         detection_result=detection_result,
         score_frame=score_result.frame,
         photo_summary=photo_summary,
-        checkpoint=args.checkpoint,
+        checkpoint=settings.yolo_checkpoint,
         prompt_classes=_yoloe26_prompt_classes(args),
-        device=args.device,
-        imgsz=args.imgsz,
-        conf=args.conf,
-        iou=args.iou,
+        device=settings.device,
+        imgsz=settings.yolo_imgsz,
+        conf=settings.yolo_conf,
+        iou=settings.yolo_iou,
     )
     metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
     manifest = {
@@ -1331,6 +1392,8 @@ def _run_yoloe26_prototype_run(args: argparse.Namespace) -> int:
         "species_candidates": args.species_candidates,
         "vision_runtime_python": str(vision_python),
         "bioclip_runtime_python": str(bioclip_python),
+        "vision_profile": args.vision_profile,
+        "vision_settings": asdict(settings),
         "outputs": {
             "object_detections": str(detections_path),
             "object_bioclip_scores": str(scores_path),

@@ -167,12 +167,30 @@ def test_run_paths_and_dry_run_manifest(tmp_path) -> None:
 
 def test_production_run_plan_defaults_to_detector_crop_only(tmp_path) -> None:
     scope = TaxonScope.from_species_context(_species_context())
-    request = ProductionRunRequest(taxon="Danaus plexippus", rank="species", output_root=tmp_path, dry_run=True)
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root=tmp_path,
+        dry_run=True,
+        vision_profile="mac_m5pro_64gb",
+        vision_settings=run_orchestrator_module.VisionRuntimeSettings(
+            profile_name="mac_m5pro_64gb",
+            device="mps",
+            yolo_imgsz=768,
+            detector_batch_size=16,
+            crop_batch_size=24,
+            crop_padding_ratio=0.08,
+        ),
+    )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
 
     assert request.bioclip_ablation_modes == ("detector_crop",)
     assert run_orchestrator_module._request_bioclip_modes(request) == ("detector_crop",)
     assert plan.manifest.model_configs["bioclip_ablation_modes"] == ["detector_crop"]
+    assert plan.manifest.model_configs["vision_settings"]["detector_batch_size"] == 16
+    assert plan.manifest.model_configs["vision_settings"]["crop_batch_size"] == 24
+    assert plan.manifest.model_configs["vision_settings"]["crop_padding_ratio"] == 0.08
+    assert plan.to_dict()["request"]["vision_settings"]["yolo_imgsz"] == 768
     assert plan.to_dict()["request"]["classification_mode"] == TARGET_SCOPE_OBJECT_SCREENING
     assert plan.to_dict()["request"]["taxonomy_candidate_table"] is None
     assert "whole_image" not in plan.manifest.model_configs["bioclip_ablation_modes"]

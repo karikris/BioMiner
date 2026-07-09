@@ -11,7 +11,15 @@ import polars as pl
 import pytest
 
 from biominer.config import BioMinerConfig, RuntimeConfig, StorageConfig, WorkStoreConfig
-from biominer.cli import _detect_boxes_backend, _production_vision_settings_from_args, _yoloe26_metrics, build_parser, load_decoded_image_from_record, run
+from biominer.cli import (
+    _detect_boxes_backend,
+    _production_vision_settings_from_args,
+    _prototype_vision_settings_from_args,
+    _yoloe26_metrics,
+    build_parser,
+    load_decoded_image_from_record,
+    run,
+)
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION, TARGET_SCOPE_OBJECT_SCREENING
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
@@ -181,6 +189,85 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
     assert overridden_settings.delete_images_after_commit is False
     assert overridden_settings.yolo_imgsz == 768
     assert overridden_settings.crop_padding_ratio == 0.08
+
+
+def test_yoloe26_prototype_profile_settings_do_not_use_hardcoded_crop_defaults() -> None:
+    parser = build_parser()
+    default_args = parser.parse_args(
+        [
+            "dev",
+            "vision",
+            "yoloe26-prototype-run",
+            "--input",
+            "filtered.parquet",
+            "--species-context",
+            "species_context.json",
+            "--output-dir",
+            "reports/yoloe26",
+        ]
+    )
+
+    default_settings = _prototype_vision_settings_from_args(default_args)
+
+    assert default_settings.profile_name == "prototype_default"
+    assert default_settings.device == "auto"
+    assert default_settings.yolo_imgsz == 640
+    assert default_settings.detector_batch_size == 4
+    assert default_settings.crop_batch_size == 24
+    assert default_settings.crop_padding_ratio == 0.12
+
+    profile_args = parser.parse_args(
+        [
+            "dev",
+            "vision",
+            "yoloe26-prototype-run",
+            "--input",
+            "filtered.parquet",
+            "--species-context",
+            "species_context.json",
+            "--output-dir",
+            "reports/yoloe26",
+            "--vision-profile",
+            "mac_m5pro_64gb",
+        ]
+    )
+
+    profile_settings = _prototype_vision_settings_from_args(profile_args)
+
+    assert profile_settings.profile_name == "mac_m5pro_64gb"
+    assert profile_settings.device == "mps"
+    assert profile_settings.yolo_imgsz == 768
+    assert profile_settings.detector_batch_size == 16
+    assert profile_settings.crop_batch_size == 24
+    assert profile_settings.crop_padding_ratio == 0.08
+
+    overridden = parser.parse_args(
+        [
+            "dev",
+            "vision",
+            "yoloe26-prototype-run",
+            "--input",
+            "filtered.parquet",
+            "--species-context",
+            "species_context.json",
+            "--output-dir",
+            "reports/yoloe26",
+            "--vision-profile",
+            "mac_m5pro_64gb",
+            "--imgsz",
+            "640",
+            "--crop-padding-ratio",
+            "0.05",
+            "--bioclip-batch",
+            "11",
+        ]
+    )
+
+    overridden_settings = _prototype_vision_settings_from_args(overridden)
+
+    assert overridden_settings.yolo_imgsz == 640
+    assert overridden_settings.crop_padding_ratio == 0.05
+    assert overridden_settings.crop_batch_size == 11
 
 
 def test_run_cli_parses_classification_mode_and_top_k_controls() -> None:
