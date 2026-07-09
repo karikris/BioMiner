@@ -489,6 +489,77 @@ def test_detection_pipeline_writes_ephemeral_crop_metadata_for_each_detection(tm
     assert len({row["crop_hash"] for row in rows}) == 2
 
 
+def test_detection_pipeline_skips_crop_metadata_for_non_bioclip_eligible_detections(tmp_path) -> None:
+    output = tmp_path / "object_detections.parquet"
+    detector = FakeObjectDetector(
+        [
+            [
+                DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 2, 2)),
+                DetectionCandidate(label="moth_like", score=0.8, bbox_xyxy=(2, 0, 4, 2)),
+                DetectionCandidate(label="hard_negative", score=0.7, bbox_xyxy=(0, 2, 2, 4)),
+            ]
+        ]
+    )
+
+    result = run_detection_pipeline(
+        records=[{"source": "flickr", "flickr_photo_id": "photo-mixed", "image_url": "memory://photo-mixed"}],
+        detector=detector,
+        output_path=output,
+        image_loader=lambda record: _image(),
+        detection_policy=DetectionPolicy(
+            backend="fake",
+            crop_target_px=3,
+            min_box_area_ratio=0.0,
+            bioclip_eligible_labels=("butterfly_like",),
+        ),
+        run_policy=DetectionRunPolicy(decode_workers=1),
+    )
+
+    by_label = {row["detector_label"]: row for row in result.frame.to_dicts()}
+
+    assert result.detections_written == 3
+    assert result.crops_created == 1
+    assert by_label["butterfly_like"]["crop_hash"].startswith("sha256:")
+    assert by_label["butterfly_like"]["crop_storage_policy"] == "ephemeral"
+    assert by_label["moth_like"]["crop_hash"] is None
+    assert by_label["moth_like"]["crop_storage_policy"] == "not_created"
+    assert by_label["hard_negative"]["crop_hash"] is None
+    assert by_label["hard_negative"]["crop_storage_policy"] == "not_created"
+
+
+def test_detection_pipeline_debug_crop_retention_can_materialize_noneligible_crops(tmp_path) -> None:
+    output = tmp_path / "object_detections.parquet"
+    detector = FakeObjectDetector(
+        [
+            [
+                DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 2, 2)),
+                DetectionCandidate(label="moth_like", score=0.8, bbox_xyxy=(2, 0, 4, 2)),
+            ]
+        ]
+    )
+
+    result = run_detection_pipeline(
+        records=[{"source": "flickr", "flickr_photo_id": "photo-debug-noneligible", "image_url": "memory://photo-debug"}],
+        detector=detector,
+        output_path=output,
+        image_loader=lambda record: _image(),
+        detection_policy=DetectionPolicy(
+            backend="fake",
+            crop_target_px=3,
+            min_box_area_ratio=0.0,
+            retain_debug_crops=True,
+            debug_crop_limit=10,
+        ),
+        run_policy=DetectionRunPolicy(decode_workers=1),
+    )
+
+    rows = result.frame.sort("detector_score", descending=True).to_dicts()
+
+    assert result.crops_created == 2
+    assert [row["crop_storage_policy"] for row in rows] == ["debug_retained", "debug_retained"]
+    assert len(list((tmp_path / "object_detections_debug_crops").glob("*.ppm"))) == 2
+
+
 def test_detection_pipeline_retains_debug_crops_only_when_enabled_and_limited(tmp_path) -> None:
     output = tmp_path / "object_detections.parquet"
     detector = FakeObjectDetector(

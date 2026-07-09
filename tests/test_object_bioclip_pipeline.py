@@ -1164,6 +1164,68 @@ def test_object_bioclip_production_gate_scores_only_detected_butterflies(tmp_pat
     assert scorer.calls == [("det-butterfly",), ("det-butterfly",)]
 
 
+def test_object_evidence_join_preserves_non_scored_detection_rows(tmp_path) -> None:
+    base_detection = _detections().to_dicts()[0]
+    cases = [
+        ("det-butterfly", "photo-1", "butterfly_like", "detected", "sha256:det-butterfly"),
+        ("det-moth", "photo-moth", "moth_like", "detected", None),
+        ("det-hard-negative", "photo-hard-negative", "hard_negative", "detected", None),
+        ("det-no-detection", "photo-no-detection", "butterfly_like", "no_detection", None),
+    ]
+    detections = pl.DataFrame(
+        [
+            {
+                **base_detection,
+                "flickr_photo_id": photo_id,
+                "detection_id": detection_id,
+                "detector_label": label,
+                "detection_status": status,
+                "crop_hash": crop_hash,
+                "crop_storage_policy": "ephemeral" if crop_hash else "not_created",
+                "failure_reason": None if status == "detected" else "no_butterfly_like_object",
+            }
+            for detection_id, photo_id, label, status, crop_hash in cases
+        ]
+    )
+    canonical = pl.DataFrame(
+        [
+            {**_canonical_records().to_dicts()[0], "flickr_photo_id": photo_id, "source_record_hash": f"sha256:{photo_id}"}
+            for _detection_id, photo_id, _label, _status, _crop_hash in cases
+        ]
+    )
+    scores_path = tmp_path / "scores.parquet"
+
+    score_result = screen_object_detections(
+        canonical_records=canonical,
+        detections=detections,
+        species_context=_context(),
+        candidate_set=_fixture_candidate_set(),
+        scorer=FakeObjectBioClipScorer({"sha256:det-butterfly": {"a photo of Danaus plexippus": 0.84}}),
+        output_path=scores_path,
+        ablation_mode="detector_crop",
+    )
+
+    canonical.write_parquet(tmp_path / "canonical.parquet")
+    detections.write_parquet(tmp_path / "detections.parquet")
+    outputs = write_object_evidence_outputs(
+        canonical_records_path=tmp_path / "canonical.parquet",
+        detections_path=tmp_path / "detections.parquet",
+        scores_path=scores_path,
+        joined_output_path=tmp_path / "joined.parquet",
+        photo_summary_output_path=tmp_path / "summary.parquet",
+        species_context=_context(),
+    )
+    joined = pl.read_parquet(outputs.object_evidence_joined).sort("detection_id")
+    by_detection = {row["detection_id"]: row for row in joined.to_dicts()}
+
+    assert score_result.frame.select("detection_id").to_series().to_list() == ["det-butterfly"]
+    assert set(by_detection) == {"det-butterfly", "det-hard-negative", "det-moth", "det-no-detection"}
+    assert by_detection["det-butterfly"]["classification_mode"] == "target_scope_object_screening"
+    assert by_detection["det-moth"]["classification_mode"] is None
+    assert by_detection["det-hard-negative"]["crop_storage_policy"] == "not_created"
+    assert by_detection["det-no-detection"]["detection_status"] == "no_detection"
+
+
 def test_object_bioclip_hierarchical_mode_fails_before_target_scope_scoring(tmp_path) -> None:
     class FailingScorer:
         model_id = "fake-bioclip"

@@ -13,7 +13,7 @@ import polars as pl
 
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage, ObjectDetector
-from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
+from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, detection_is_bioclip_eligible
 from biominer.detection.schema import build_detection_rows, detection_id_for, empty_detection_frame
 from biominer.storage.parquet import write_parquet
 
@@ -294,6 +294,8 @@ def _with_crop_metadata(
     debug_writer: _DebugCropWriter | None,
 ) -> dict[str, Any]:
     if row.get("detection_status") != "detected":
+        return row
+    if not detection_is_bioclip_eligible(row, policy) and debug_writer is None:
         return row
     bbox = row.get("bbox_xyxy")
     if not isinstance(bbox, list | tuple) or len(bbox) != 4:
