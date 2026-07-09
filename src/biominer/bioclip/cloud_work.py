@@ -38,6 +38,10 @@ from biominer.bioclip.object_runner import (
 from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
 from biominer.detection.policy import DetectionPolicy, detection_is_bioclip_eligible
 from biominer.detection.segmentation import SegmentationUnavailable
+from biominer.registry.classification_table import (
+    CLASSIFICATION_TABLE_VERSION,
+    PROMPT_VARIANT_VERSION,
+)
 from biominer.species.context import SpeciesContext
 from biominer.storage.cloud import CloudStorage
 from biominer.workstore.base import WorkStore
@@ -252,6 +256,14 @@ def run_cloud_bioclip_batch(
     if min_crop_batch_size > crop_batch_size:
         raise ValueError("min_crop_batch_size must be <= crop_batch_size")
     classification_mode = normalize_classification_mode(classification_mode)
+    _validate_cloud_bioclip_work_contract(
+        work_items=work_items,
+        classification_mode=classification_mode,
+        family_top_k=family_top_k,
+        species_first_pass_top_k=species_first_pass_top_k,
+        species_rerank_top_k=species_rerank_top_k,
+        taxonomy_store=taxonomy_store,
+    )
     if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION and taxonomy_store is None:
         raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
     rows: list[dict[str, Any]] = []
@@ -432,6 +444,98 @@ def run_cloud_bioclip_batch(
 
 def _chunks(items: list[Any], size: int) -> list[list[Any]]:
     return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def _validate_cloud_bioclip_work_contract(
+    *,
+    work_items: list[dict[str, Any]],
+    classification_mode: ClassificationMode,
+    family_top_k: int,
+    species_first_pass_top_k: int,
+    species_rerank_top_k: int,
+    taxonomy_store: ButterflyTaxonomyStore | None,
+) -> None:
+    expected_mode = normalize_classification_mode(classification_mode)
+    expected_top_k = {
+        "family_top_k": int(family_top_k),
+        "species_first_pass_top_k": int(species_first_pass_top_k),
+        "species_rerank_top_k": int(species_rerank_top_k),
+    }
+    taxonomy_table_version: str | None = None
+    prompt_variant_version: str | None = None
+    if expected_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+        if taxonomy_store is None:
+            raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
+        taxonomy_table_version = _taxonomy_table_version(taxonomy_store)
+        prompt_variant_version = _taxonomy_prompt_variant_version(taxonomy_store)
+
+    for item in work_items:
+        work_key = str(item.get("work_key") or "<unknown>")
+        payload = item.get("payload")
+        if not isinstance(payload, dict):
+            raise ValueError(f"work item {work_key} has invalid payload")
+
+        payload_mode = normalize_classification_mode(payload.get("classification_mode"))
+        if payload_mode != expected_mode:
+            raise ValueError(
+                f"work item {work_key} classification_mode {payload_mode!r} "
+                f"does not match batch classification_mode {expected_mode!r}"
+            )
+
+        top_k_settings = payload.get("top_k_settings")
+        if not isinstance(top_k_settings, dict):
+            raise ValueError(f"work item {work_key} is missing top_k_settings")
+        for key, expected in expected_top_k.items():
+            actual = top_k_settings.get(key)
+            try:
+                actual_int = int(actual)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"work item {work_key} has invalid top_k_settings.{key}") from exc
+            if actual_int != expected:
+                raise ValueError(
+                    f"work item {work_key} top_k_settings.{key}={actual_int} "
+                    f"does not match batch {key}={expected}"
+                )
+
+        if expected_mode != HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+            continue
+        if str(payload.get("taxonomy_table_version") or "") != taxonomy_table_version:
+            raise ValueError(
+                f"work item {work_key} taxonomy_table_version "
+                f"{str(payload.get('taxonomy_table_version') or '')!r} does not match taxonomy store "
+                f"{taxonomy_table_version!r}"
+            )
+        if str(payload.get("taxonomy_prompt_variant_version") or "") != prompt_variant_version:
+            raise ValueError(
+                f"work item {work_key} taxonomy_prompt_variant_version "
+                f"{str(payload.get('taxonomy_prompt_variant_version') or '')!r} does not match taxonomy store "
+                f"{prompt_variant_version!r}"
+            )
+
+
+def _taxonomy_table_version(taxonomy_store: ButterflyTaxonomyStore) -> str:
+    manifest = taxonomy_store.manifest or {}
+    return str(
+        manifest.get("classification_table_version")
+        or _first_value(taxonomy_store.classification_taxa, "classification_table_version")
+        or CLASSIFICATION_TABLE_VERSION
+    )
+
+
+def _taxonomy_prompt_variant_version(taxonomy_store: ButterflyTaxonomyStore) -> str:
+    manifest = taxonomy_store.manifest or {}
+    return str(
+        manifest.get("prompt_variant_version")
+        or _first_value(taxonomy_store.family_labels, "prompt_variant_version")
+        or PROMPT_VARIANT_VERSION
+    )
+
+
+def _first_value(frame: pl.DataFrame, column: str) -> object:
+    if column not in frame.columns or frame.is_empty():
+        return None
+    values = frame.select(column).drop_nulls().get_column(column)
+    return values.item(0) if values.len() else None
 
 
 def _score_hierarchical_cloud_batch(

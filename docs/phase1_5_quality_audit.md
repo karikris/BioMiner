@@ -40,10 +40,18 @@ Commands run:
 - focused `rg` searches for classification modes, prompt aggregation, stale markers, heavy imports, and docs inventory
 - focused `sed` reads of BioCLIP, registry, detection, run, and evaluation modules
 - `uv run pytest -q tests/test_prompt_templates.py tests/test_bioclip_prediction.py::test_bioclip_classifier_ranks_species_prompt_variants_by_mean_not_best_prompt tests/test_phase4_m5pro_acceptance.py::test_phase4_species_prompt_variants_rank_by_mean_not_best_single_prompt`
+- `uv run pytest -q tests/test_cloud_bioclip_work.py`
+- `uv run pytest -q tests/test_object_bioclip_pipeline.py::test_object_bioclip_hierarchical_mode_requires_taxonomy_store tests/test_object_bioclip_pipeline.py::test_object_bioclip_scores_local_hierarchical_mode_with_fake_taxonomy tests/test_object_bioclip_pipeline.py::test_object_bioclip_hierarchical_mode_uses_taxonomy_text_embedding_cache`
+- `uv run pytest -q tests/test_production_run_skeleton.py::test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end tests/test_production_run_skeleton.py::test_production_run_hierarchical_score_stage_requires_taxonomy_table tests/test_production_run_skeleton.py::test_production_run_hierarchical_score_stage_validates_table_then_requires_score_inputs`
+- `uv run ruff check src/biominer/bioclip/cloud_work.py tests/test_cloud_bioclip_work.py`
 
 Focused test result:
 
 - `5 passed in 0.53s`
+- `tests/test_cloud_bioclip_work.py`: `12 passed`
+- local hierarchical object tests: `3 passed`
+- production hierarchical skeleton tests: `3 passed`
+- Ruff could not run because the `ruff` executable is not installed in this environment.
 
 ## Files Inspected
 
@@ -186,7 +194,8 @@ Remaining audit risk:
 - Historical plan docs still describe an older max-based species prompt aggregation task. Current code and tests disagree with that stale historical text.
 - `src/biominer/registry/build.py` still contains an explicit `cloud_registry_enrichment_not_implemented` path. This may be acceptable if out of scope, but later audit tasks must confirm no production phase 1-5 command depends on it.
 - CLI contains lazy heavy imports for live benchmark/dev commands. Later audit tasks must confirm these do not break dry-run/help/import-only use.
-- The initial map did not fully verify local/cloud schema parity, crop resize quality, or all docs/help parity.
+- The initial map did not fully verify crop resize quality or all docs/help parity.
+- Cloud BioCLIP work items store output-affecting scoring settings in the payload and work key. Before Task 2, the cloud worker accepted independent batch-level mode and top-k arguments without validating them against the payload. That could silently score replayed work under stale semantics.
 
 ## Fixes Made Or Verified In Task 1
 
@@ -197,6 +206,11 @@ Remaining audit risk:
   - `aggregate_prompt_scores(...)` writes the aggregated mean to `score`
   - `BioClipClassifier.classify_images_with_label_sets(...)` ranks species prompt variants using aggregated rows
   - focused regression tests pass
+- Fixed cloud BioCLIP work contract validation:
+  - cloud score workers now reject work-item classification-mode drift
+  - cloud score workers now reject top-k settings drift
+  - hierarchical cloud scoring validates payload taxonomy table and prompt-variant versions against the supplied taxonomy store
+  - existing hierarchical cloud tests now create work items with top-k settings matching the score run
 
 ## Core Invariant Checklist
 
@@ -219,7 +233,7 @@ Initial status is not the final audit verdict. `Supported` means evidence was lo
 | 13 | Mac M5 Pro profile settings flow into vision runtime policy. | Supported |
 | 14 | Non-eligible detections retain metadata and are not cropped in production paths. | Supported, deeper audit pending |
 | 15 | Crop/image lifecycle deletes staged files only after successful score writes. | Supported, deeper audit pending |
-| 16 | Work keys include output-affecting detector, crop, model, taxonomy, mode, prompt, and top-k settings. | Supported, deeper audit pending |
+| 16 | Work keys include output-affecting detector, crop, model, taxonomy, mode, prompt, and top-k settings. | Supported and payload contract fixed |
 | 17 | Heavy vision runtimes are optional/lazy and not required for model-free tests. | Supported, deeper audit pending |
 | 18 | Evaluation/reporting writes review queues and visual QA findings without claiming validated occurrences. | Supported |
 | 19 | Xie-style behavior is metrics-only and does not score every image with BioCLIP. | Supported |
@@ -227,7 +241,7 @@ Initial status is not the final audit verdict. `Supported` means evidence was lo
 
 ## Next Audit Tasks
 
-- Trace local/cloud hierarchical scoring parity and output schemas.
+- Continue tracing local/cloud hierarchical output schemas beyond the fixed work-payload contract.
 - Verify classification table manifest/QA and text embedding cache invalidation behavior.
 - Inspect crop resize quality and every prototype/dev path for hardcoded padding or stale defaults.
 - Audit CLI help, docs, examples, and deprecated-command docs against parser behavior.
