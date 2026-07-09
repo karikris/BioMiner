@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from biominer.detection.cloud_work import detection_work_item, enqueue_detection_work_from_source_shards, run_cloud_detection_batch
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate
@@ -131,6 +132,107 @@ def test_run_cloud_detection_batch_chunks_loaded_images_by_detector_batch_size()
     assert result.records_seen == 5
     assert result.images_loaded == 5
     assert result.detections_written == 5
+
+
+def test_run_cloud_detection_batch_adaptive_batching_halves_after_memory_error() -> None:
+    class AdaptiveDetector:
+        backend = "fake"
+        model_id = "fake-detector"
+        model_version = "test"
+        checkpoint = "fake-checkpoint"
+
+        def __init__(self) -> None:
+            self.batch_sizes: list[int] = []
+
+        def detect_batch(self, images):  # noqa: ANN001, ANN202 - mirrors detector protocol.
+            self.batch_sizes.append(len(images))
+            if len(images) > 8:
+                raise RuntimeError("CUDA out of memory during YOLO inference")
+            return [
+                [DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 2.0, 2.0))]
+                for _image in images
+            ]
+
+    detector = AdaptiveDetector()
+    result = run_cloud_detection_batch(
+        work_items=_detection_work_items(16),
+        detector=detector,
+        image_loader=lambda record: _decoded_image(),
+        detector_batch_size=16,
+        adaptive_batching=True,
+        min_detector_batch_size=1,
+    )
+
+    assert detector.batch_sizes == [16, 8, 8]
+    assert result.records_seen == 16
+    assert result.images_loaded == 16
+    assert result.detections_written == 16
+    assert result.adaptive_batching_enabled is True
+    assert result.detector_batch_retries == 1
+    assert result.detector_batch_size_initial == 16
+    assert result.detector_batch_size_final == 8
+    assert result.detector_batch_size_min == 1
+    assert result.frame.get_column("flickr_photo_id").to_list() == [f"photo-{index}" for index in range(16)]
+
+
+def test_run_cloud_detection_batch_adaptive_batching_does_not_retry_non_memory_error() -> None:
+    class NonMemoryDetector:
+        backend = "fake"
+        model_id = "fake-detector"
+        model_version = "test"
+        checkpoint = "fake-checkpoint"
+
+        def detect_batch(self, images):  # noqa: ANN001, ANN202 - mirrors detector protocol.
+            raise RuntimeError("invalid YOLO tensor shape")
+
+    with pytest.raises(RuntimeError, match="invalid YOLO tensor shape"):
+        run_cloud_detection_batch(
+            work_items=_detection_work_items(2),
+            detector=NonMemoryDetector(),
+            image_loader=lambda record: _decoded_image(),
+            detector_batch_size=2,
+            adaptive_batching=True,
+            min_detector_batch_size=1,
+        )
+
+
+def test_run_cloud_detection_batch_adaptive_batching_reports_min_batch_failure() -> None:
+    class AlwaysMemoryDetector:
+        backend = "fake"
+        model_id = "fake-detector"
+        model_version = "test"
+        checkpoint = "fake-checkpoint"
+
+        def detect_batch(self, images):  # noqa: ANN001, ANN202 - mirrors detector protocol.
+            raise RuntimeError(f"MPS memory exhausted at detector batch size {len(images)}")
+
+    with pytest.raises(RuntimeError, match="MPS memory exhausted at detector batch size 1"):
+        run_cloud_detection_batch(
+            work_items=_detection_work_items(2),
+            detector=AlwaysMemoryDetector(),
+            image_loader=lambda record: _decoded_image(),
+            detector_batch_size=2,
+            adaptive_batching=True,
+            min_detector_batch_size=1,
+        )
+
+
+def _detection_work_items(count: int) -> list[dict[str, object]]:
+    work_items: list[dict[str, object]] = []
+    for index in range(count):
+        payload = detection_work_item(
+            {
+                "source": "flickr",
+                "flickr_photo_id": f"photo-{index}",
+                "source_record_hash": f"sha256:source-{index}",
+                "image_url": f"https://live.staticflickr.com/photo-{index}.jpg",
+            },
+            run_id="run-1",
+            source_shard_uri="s3://biominer/source.parquet",
+            detector={"backend": "fake", "model_id": "fake-detector", "model_version": "test", "checkpoint": "fake-checkpoint"},
+        )
+        work_items.append({"work_key": payload["work_key"], "payload": payload})
+    return work_items
 
 
 def _decoded_image() -> DecodedImage:

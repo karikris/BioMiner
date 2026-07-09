@@ -47,6 +47,8 @@ def test_detection_policy_defaults_match_object_pipeline_profile() -> None:
     assert run_policy.detector_workers == 1
     assert run_policy.max_inflight_images == 32
     assert run_policy.crop_batch_size == 24
+    assert run_policy.adaptive_batching is False
+    assert run_policy.min_detector_batch_size == 1
 
 
 def test_vision_runtime_settings_bridge_existing_detection_policies() -> None:
@@ -88,6 +90,8 @@ def test_vision_runtime_settings_bridge_existing_detection_policies() -> None:
     assert runtime.detector_batch_size == 16
     assert runtime.crop_batch_size == 24
     assert runtime.parquet_batch_rows == 2048
+    assert runtime.adaptive_batching is False
+    assert runtime.min_detector_batch_size == 1
 
 
 def test_vision_runtime_settings_validate_overrides_and_adaptive_manifest_fields() -> None:
@@ -949,6 +953,93 @@ def test_detection_pipeline_streams_loaded_images_into_detector_batches(tmp_path
     assert result.records_seen == 5
     assert result.images_loaded == 5
     assert result.detections_written == 5
+
+
+def test_detection_pipeline_adaptive_detector_batching_halves_after_memory_error(tmp_path) -> None:
+    class AdaptiveDetector:
+        backend = "fake"
+        model_id = "fake-detector"
+        model_version = "v1"
+        checkpoint = "checkpoint-a"
+
+        def __init__(self) -> None:
+            self.batches: list[tuple[str, ...]] = []
+
+        def detect_batch(self, images):  # noqa: ANN001, ANN201 - mirrors detector protocol.
+            self.batches.append(tuple(str(image.source_uri) for image in images))
+            if len(images) > 8:
+                raise RuntimeError("MPS memory allocation failed during YOLO inference")
+            return [[DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 2, 2))] for _image in images]
+
+    def image_loader(record):  # noqa: ANN001, ANN202 - mirrors test image loader protocol.
+        return DecodedImage(width=4, height=4, mode="RGB", data=_image().data, source_uri=str(record["image_url"]))
+
+    detector = AdaptiveDetector()
+    result = run_detection_pipeline(
+        records=[
+            {"source": "flickr", "flickr_photo_id": f"photo-{index}", "image_url": f"memory://photo-{index}"}
+            for index in range(16)
+        ],
+        detector=detector,
+        output_path=tmp_path / "object_detections.parquet",
+        image_loader=image_loader,
+        run_policy=DetectionRunPolicy(detector_batch_size=16, adaptive_batching=True, min_detector_batch_size=1),
+    )
+
+    assert [len(batch) for batch in detector.batches] == [16, 8, 8]
+    assert result.adaptive_batching_enabled is True
+    assert result.detector_batch_retries == 1
+    assert result.detector_batch_size_initial == 16
+    assert result.detector_batch_size_final == 8
+    assert result.detector_batch_size_min == 1
+    assert result.detections_written == 16
+    assert result.frame.get_column("flickr_photo_id").to_list() == [f"photo-{index}" for index in range(16)]
+
+
+def test_detection_pipeline_adaptive_detector_batching_does_not_retry_non_memory_error(tmp_path) -> None:
+    class NonMemoryDetector:
+        backend = "fake"
+        model_id = "fake-detector"
+        model_version = "v1"
+        checkpoint = "checkpoint-a"
+
+        def detect_batch(self, images):  # noqa: ANN001, ANN201 - mirrors detector protocol.
+            raise RuntimeError("invalid YOLO tensor shape")
+
+    with pytest.raises(RuntimeError, match="invalid YOLO tensor shape"):
+        run_detection_pipeline(
+            records=[
+                {"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "memory://photo-1"},
+                {"source": "flickr", "flickr_photo_id": "photo-2", "image_url": "memory://photo-2"},
+            ],
+            detector=NonMemoryDetector(),
+            output_path=tmp_path / "object_detections.parquet",
+            image_loader=lambda record: _image(),
+            run_policy=DetectionRunPolicy(detector_batch_size=2, adaptive_batching=True, min_detector_batch_size=1),
+        )
+
+
+def test_detection_pipeline_adaptive_detector_batching_reports_min_batch_failure(tmp_path) -> None:
+    class AlwaysMemoryDetector:
+        backend = "fake"
+        model_id = "fake-detector"
+        model_version = "v1"
+        checkpoint = "checkpoint-a"
+
+        def detect_batch(self, images):  # noqa: ANN001, ANN201 - mirrors detector protocol.
+            raise RuntimeError(f"CUDA out of memory at detector batch size {len(images)}")
+
+    with pytest.raises(RuntimeError, match="CUDA out of memory at detector batch size 1"):
+        run_detection_pipeline(
+            records=[
+                {"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "memory://photo-1"},
+                {"source": "flickr", "flickr_photo_id": "photo-2", "image_url": "memory://photo-2"},
+            ],
+            detector=AlwaysMemoryDetector(),
+            output_path=tmp_path / "object_detections.parquet",
+            image_loader=lambda record: _image(),
+            run_policy=DetectionRunPolicy(detector_batch_size=2, adaptive_batching=True, min_detector_batch_size=1),
+        )
 
 
 def test_detection_pipeline_flushes_detection_rows_in_parquet_batches(tmp_path) -> None:

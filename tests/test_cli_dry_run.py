@@ -750,6 +750,9 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
             "7",
             "--detector-batch-size",
             "3",
+            "--adaptive-batching",
+            "--min-detector-batch-size",
+            "2",
             "--parquet-batch-rows",
             "5",
             "--crop-target-px",
@@ -787,6 +790,8 @@ def test_detect_boxes_cli_accepts_object_detection_arguments() -> None:
     assert args.download_workers == 2
     assert args.max_inflight_images == 7
     assert args.detector_batch_size == 3
+    assert args.adaptive_batching is True
+    assert args.min_detector_batch_size == 2
     assert args.parquet_batch_rows == 5
     assert args.crop_target_px == 224
     assert args.image_max_side_px == 960
@@ -929,6 +934,9 @@ def test_detect_boxes_cli_forwards_detection_and_run_policies(tmp_path, capsys, 
             "7",
             "--detector-batch-size",
             "3",
+            "--adaptive-batching",
+            "--min-detector-batch-size",
+            "2",
             "--parquet-batch-rows",
             "5",
             "--crop-target-px",
@@ -953,6 +961,8 @@ def test_detect_boxes_cli_forwards_detection_and_run_policies(tmp_path, capsys, 
     assert pipeline["run_policy"].download_workers == 2
     assert pipeline["run_policy"].max_inflight_images == 7
     assert pipeline["run_policy"].detector_batch_size == 3
+    assert pipeline["run_policy"].adaptive_batching is True
+    assert pipeline["run_policy"].min_detector_batch_size == 2
     assert pipeline["run_policy"].parquet_batch_rows == 5
 
 
@@ -1013,6 +1023,8 @@ def test_detect_boxes_cli_applies_runtime_profile_with_explicit_overrides(tmp_pa
     assert pipeline["run_policy"].max_inflight_images == 32
     assert pipeline["run_policy"].max_inflight_crops == 96
     assert pipeline["run_policy"].detector_batch_size == 16
+    assert pipeline["run_policy"].adaptive_batching is False
+    assert pipeline["run_policy"].min_detector_batch_size == 1
     assert pipeline["run_policy"].crop_batch_size == 24
 
 
@@ -1071,6 +1083,8 @@ def test_detect_boxes_cli_uses_runtime_profile_defaults_when_not_overridden(tmp_
     assert pipeline["run_policy"].download_workers == 2
     assert pipeline["run_policy"].max_inflight_images == 5
     assert pipeline["run_policy"].detector_batch_size == 6
+    assert pipeline["run_policy"].adaptive_batching is False
+    assert pipeline["run_policy"].min_detector_batch_size == 1
 
 
 def test_detect_eval_cli_forwards_xie_thresholds(tmp_path, capsys, monkeypatch) -> None:

@@ -463,6 +463,8 @@ def _add_detection_policy_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-inflight-images", type=int)
     parser.add_argument("--max-inflight-crops", type=int)
     parser.add_argument("--detector-batch-size", type=int)
+    parser.add_argument("--adaptive-batching", action="store_true")
+    parser.add_argument("--min-detector-batch-size", type=int)
     parser.add_argument("--crop-batch-size", type=int)
     parser.add_argument("--parquet-batch-rows", type=int)
 
@@ -1269,6 +1271,11 @@ def _run_detect_boxes(args: argparse.Namespace) -> int:
                 "detections_written": result.detections_written,
                 "crops_created": result.crops_created,
                 "parquet_batches_written": result.parquet_batches_written,
+                "adaptive_batching_enabled": getattr(result, "adaptive_batching_enabled", run_policy.adaptive_batching),
+                "detector_batch_retries": getattr(result, "detector_batch_retries", 0),
+                "detector_batch_size_initial": getattr(result, "detector_batch_size_initial", run_policy.detector_batch_size),
+                "detector_batch_size_final": getattr(result, "detector_batch_size_final", run_policy.detector_batch_size),
+                "detector_batch_size_min": getattr(result, "detector_batch_size_min", run_policy.min_detector_batch_size),
             },
             indent=2,
             sort_keys=True,
@@ -1422,6 +1429,8 @@ def _run_yoloe26_prototype_run(args: argparse.Namespace) -> int:
             detector_batch_size=settings.detector_batch_size,
             crop_batch_size=settings.crop_batch_size,
             parquet_batch_rows=settings.parquet_part_rows,
+            adaptive_batching=settings.adaptive_batching,
+            min_detector_batch_size=settings.min_detector_batch_size,
         ),
     )
 
@@ -1732,6 +1741,11 @@ def _yoloe26_metrics(
         "images_loaded": int(detection_result.images_loaded),
         "image_failures": int(detection_result.image_failures),
         "detections_written": int(detection_result.detections_written),
+        "adaptive_batching_enabled": bool(getattr(detection_result, "adaptive_batching_enabled", False)),
+        "detector_batch_retries": int(getattr(detection_result, "detector_batch_retries", 0)),
+        "detector_batch_size_initial": int(getattr(detection_result, "detector_batch_size_initial", 0)),
+        "detector_batch_size_final": int(getattr(detection_result, "detector_batch_size_final", 0)),
+        "detector_batch_size_min": int(getattr(detection_result, "detector_batch_size_min", 1)),
         "no_detection_count": _count_equals(detections, "detection_status", "no_detection"),
         "crops_created": int(detection_result.crops_created),
         "crops_scored": int(score_frame.height),
@@ -1860,6 +1874,8 @@ def _detection_run_policy_from_args(args: argparse.Namespace) -> DetectionRunPol
         detector_batch_size=args.detector_batch_size if args.detector_batch_size is not None else profile.detector_batch_size,
         crop_batch_size=args.crop_batch_size if args.crop_batch_size is not None else profile.crop_batch_size,
         parquet_batch_rows=args.parquet_batch_rows if args.parquet_batch_rows is not None else profile.parquet_batch_rows,
+        adaptive_batching=args.adaptive_batching if getattr(args, "adaptive_batching", False) else profile.adaptive_batching,
+        min_detector_batch_size=args.min_detector_batch_size if args.min_detector_batch_size is not None else profile.min_detector_batch_size,
     )
 
 
@@ -2102,6 +2118,8 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
         "joined_parts": 0,
         "summary_parts": 0,
         "cached_images_deleted": 0,
+        "detector_batch_retries": 0,
+        "detector_batch_size_final": settings.detector_batch_size,
     }
     part_outputs: list[dict[str, str]] = []
     cached_paths_by_record: dict[tuple[str, str], set[Path]] = {}
@@ -2185,6 +2203,13 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
             metrics["image_failures"] = int(metrics["image_failures"]) + detection_result.image_failures
             metrics["detections_written"] = int(metrics["detections_written"]) + detection_result.detections_written
             metrics["crops_created"] = int(metrics["crops_created"]) + detection_result.crops_created
+            metrics["detector_batch_retries"] = int(metrics["detector_batch_retries"]) + int(
+                getattr(detection_result, "detector_batch_retries", 0)
+            )
+            metrics["detector_batch_size_final"] = min(
+                int(metrics["detector_batch_size_final"]),
+                int(getattr(detection_result, "detector_batch_size_final", settings.detector_batch_size)),
+            )
             metrics["crops_scored"] = int(metrics["crops_scored"]) + score_result.crops_scored
             metrics["detection_parts"] = int(metrics["detection_parts"]) + 1
             metrics["score_parts"] = int(metrics["score_parts"]) + 1
@@ -2227,7 +2252,12 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
         "status": "complete",
         "vision_profile": args.vision_profile,
         "device": settings.device,
+        "adaptive_batching_enabled": settings.adaptive_batching,
         "detector_batch_size": settings.detector_batch_size,
+        "detector_batch_size_initial": settings.detector_batch_size,
+        "detector_batch_size_final": metrics["detector_batch_size_final"],
+        "detector_batch_size_min": settings.min_detector_batch_size,
+        "detector_batch_retries": metrics["detector_batch_retries"],
         "crop_batch_size": settings.crop_batch_size,
         "parquet_compression": settings.parquet_compression,
     }

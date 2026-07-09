@@ -36,6 +36,11 @@ class DetectionPipelineResult:
     detections_written: int
     crops_created: int
     parquet_batches_written: int = 0
+    adaptive_batching_enabled: bool = False
+    detector_batch_retries: int = 0
+    detector_batch_size_initial: int = 4
+    detector_batch_size_final: int = 4
+    detector_batch_size_min: int = 1
 
 
 @dataclass(frozen=True)
@@ -49,6 +54,14 @@ class _LoadedImage:
 class _CropJob:
     row: dict[str, Any]
     image: DecodedImage
+
+
+@dataclass
+class _AdaptiveDetectorBatchState:
+    enabled: bool
+    current_batch_size: int
+    min_batch_size: int
+    retries: int = 0
 
 
 class _DebugCropWriter:
@@ -81,6 +94,17 @@ def run_detection_pipeline(
 ) -> DetectionPipelineResult:
     policy = detection_policy or DetectionPolicy(backend=detector.backend)
     runtime = run_policy or DetectionRunPolicy()
+    if runtime.detector_batch_size <= 0:
+        raise ValueError("detector_batch_size must be positive")
+    if runtime.min_detector_batch_size <= 0:
+        raise ValueError("min_detector_batch_size must be positive")
+    if runtime.min_detector_batch_size > runtime.detector_batch_size:
+        raise ValueError("min_detector_batch_size must be <= detector_batch_size")
+    detector_batch_state = _AdaptiveDetectorBatchState(
+        enabled=runtime.adaptive_batching,
+        current_batch_size=runtime.detector_batch_size,
+        min_batch_size=runtime.min_detector_batch_size,
+    )
     output_target = Path(output_path)
     batch_dir = _prepare_detection_batch_dir(output_target)
     debug_writer = _prepare_debug_crop_writer(output_target, policy=policy)
@@ -107,7 +131,7 @@ def run_detection_pipeline(
             loaded = _LoadedImage(record=loaded.record, image=_resize_image_to_max_side(loaded.image, policy.image_max_side_px))
             images_loaded += 1
             batch.append(loaded)
-            if len(batch) >= runtime.detector_batch_size:
+            if len(batch) >= detector_batch_state.current_batch_size:
                 enriched = _detect_and_enrich_batch(
                     batch,
                     detector=detector,
@@ -115,6 +139,7 @@ def run_detection_pipeline(
                     run_policy=runtime,
                     executor_factory=executor_factory,
                     debug_writer=debug_writer,
+                    detector_batch_state=detector_batch_state,
                 )
                 crops_created += sum(1 for row in enriched if row.get("crop_hash"))
                 _buffer_detection_rows(
@@ -133,6 +158,7 @@ def run_detection_pipeline(
                 run_policy=runtime,
                 executor_factory=executor_factory,
                 debug_writer=debug_writer,
+                detector_batch_state=detector_batch_state,
             )
             crops_created += sum(1 for row in enriched if row.get("crop_hash"))
             _buffer_detection_rows(
@@ -156,6 +182,11 @@ def run_detection_pipeline(
             else 0,
             crops_created=crops_created,
             parquet_batches_written=len(batch_paths),
+            adaptive_batching_enabled=runtime.adaptive_batching,
+            detector_batch_retries=detector_batch_state.retries,
+            detector_batch_size_initial=runtime.detector_batch_size,
+            detector_batch_size_final=detector_batch_state.current_batch_size,
+            detector_batch_size_min=runtime.min_detector_batch_size,
         )
     finally:
         if batch_dir.exists():
@@ -233,10 +264,10 @@ def _detect_and_enrich_batch(
     run_policy: DetectionRunPolicy,
     executor_factory: ExecutorFactory,
     debug_writer: _DebugCropWriter | None,
+    detector_batch_state: _AdaptiveDetectorBatchState,
 ) -> list[dict[str, Any]]:
-    detections_by_image = detector.detect_batch([item.image for item in batch if item.image is not None])
     crop_jobs: list[_CropJob] = []
-    for item, detections in zip(batch, detections_by_image, strict=True):
+    for item, detections in _detect_loaded_images_adaptively(batch, detector=detector, state=detector_batch_state):
         image = item.image
         if image is None:
             continue
@@ -260,6 +291,42 @@ def _detect_and_enrich_batch(
     )
 
 
+def _detect_loaded_images_adaptively(
+    batch: list[_LoadedImage],
+    *,
+    detector: ObjectDetector,
+    state: _AdaptiveDetectorBatchState,
+) -> list[tuple[_LoadedImage, list[Any]]]:
+    pending = [batch]
+    detected: list[tuple[_LoadedImage, list[Any]]] = []
+    while pending:
+        chunk = pending.pop(0)
+        images = [item.image for item in chunk if item.image is not None]
+        try:
+            detections_by_image = detector.detect_batch(images)
+        except RuntimeError as exc:
+            if not _should_retry_detector_batch(
+                exc,
+                adaptive_batching=state.enabled,
+                batch_size=len(chunk),
+                current_batch_size=state.current_batch_size,
+                min_batch_size=state.min_batch_size,
+            ):
+                raise
+            state.current_batch_size = _next_detector_batch_size(
+                current_batch_size=state.current_batch_size,
+                failed_batch_size=len(chunk),
+                min_batch_size=state.min_batch_size,
+            )
+            state.retries += 1
+            pending = _chunks(chunk, state.current_batch_size) + pending
+            continue
+        if len(detections_by_image) != len(images):
+            raise ValueError(f"detector returned {len(detections_by_image)} result rows for {len(images)} images")
+        detected.extend(zip(chunk, detections_by_image, strict=True))
+    return detected
+
+
 def _with_crop_metadata_bounded(
     jobs: list[_CropJob],
     *,
@@ -281,9 +348,52 @@ def _with_crop_metadata_bounded(
     return rows
 
 
-def _chunks(items: list[_CropJob], size: int) -> Iterable[list[_CropJob]]:
-    for start in range(0, len(items), size):
-        yield items[start : start + size]
+def _chunks(items: list[Any], size: int) -> list[list[Any]]:
+    if size <= 0:
+        raise ValueError("chunk size must be positive")
+    return [items[start : start + size] for start in range(0, len(items), size)]
+
+
+def _should_retry_detector_batch(
+    exc: RuntimeError,
+    *,
+    adaptive_batching: bool,
+    batch_size: int,
+    current_batch_size: int,
+    min_batch_size: int,
+) -> bool:
+    return (
+        adaptive_batching
+        and batch_size > min_batch_size
+        and current_batch_size > min_batch_size
+        and is_detector_memory_error(exc)
+    )
+
+
+def _next_detector_batch_size(
+    *,
+    current_batch_size: int,
+    failed_batch_size: int,
+    min_batch_size: int,
+) -> int:
+    if current_batch_size <= min_batch_size or failed_batch_size <= min_batch_size:
+        return min_batch_size
+    return max(min_batch_size, min(current_batch_size // 2, failed_batch_size // 2))
+
+
+def is_detector_memory_error(exc: BaseException) -> bool:
+    if not isinstance(exc, RuntimeError):
+        return False
+    message = " ".join(str(exc).casefold().split())
+    return any(
+        marker in message
+        for marker in (
+            "out of memory",
+            "cuda out of memory",
+            "mps memory",
+            "allocation failed",
+        )
+    )
 
 
 def _with_crop_metadata(

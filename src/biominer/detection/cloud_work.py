@@ -8,7 +8,14 @@ from typing import Any
 import polars as pl
 
 from biominer.detection.detector_base import DecodedImage, ObjectDetector
-from biominer.detection.pipeline import ImageLoader, _image_failure_row, _resize_image_to_max_side, _with_crop_metadata
+from biominer.detection.pipeline import (
+    ImageLoader,
+    _image_failure_row,
+    _next_detector_batch_size,
+    _resize_image_to_max_side,
+    _should_retry_detector_batch,
+    _with_crop_metadata,
+)
 from biominer.detection.policy import DetectionPolicy
 from biominer.detection.schema import build_detection_rows, empty_detection_frame
 from biominer.storage.cloud import CloudStorage
@@ -31,6 +38,11 @@ class CloudDetectionBatchResult:
     image_failures: int
     detections_written: int
     crops_created: int
+    adaptive_batching_enabled: bool = False
+    detector_batch_retries: int = 0
+    detector_batch_size_initial: int = 16
+    detector_batch_size_final: int = 16
+    detector_batch_size_min: int = 1
 
 
 def enqueue_detection_work_from_source_shards(
@@ -101,15 +113,23 @@ def run_cloud_detection_batch(
     image_loader: ImageLoader,
     detection_policy: DetectionPolicy | None = None,
     detector_batch_size: int = 16,
+    adaptive_batching: bool = False,
+    min_detector_batch_size: int = 1,
 ) -> CloudDetectionBatchResult:
     if detector_batch_size <= 0:
         raise ValueError("detector_batch_size must be positive")
+    if min_detector_batch_size <= 0:
+        raise ValueError("min_detector_batch_size must be positive")
+    if min_detector_batch_size > detector_batch_size:
+        raise ValueError("min_detector_batch_size must be <= detector_batch_size")
     policy = detection_policy or DetectionPolicy(backend=detector.backend)
     rows: list[dict[str, Any]] = []
     records_seen = 0
     images_loaded = 0
     image_failures = 0
     crops_created = 0
+    current_detector_batch_size = detector_batch_size
+    detector_batch_retries = 0
     loaded: list[tuple[dict[str, Any], DecodedImage]] = []
     for item in work_items:
         record = source_record_from_detection_work_item(item)
@@ -122,8 +142,30 @@ def run_cloud_detection_batch(
             continue
         images_loaded += 1
         loaded.append((record, image))
-    for loaded_batch in _chunks(loaded, detector_batch_size):
-        detections_by_image = detector.detect_batch([image for _record, image in loaded_batch])
+    pending_batches = _chunks(loaded, current_detector_batch_size)
+    while pending_batches:
+        loaded_batch = pending_batches.pop(0)
+        try:
+            detections_by_image = detector.detect_batch([image for _record, image in loaded_batch])
+        except RuntimeError as exc:
+            if not _should_retry_detector_batch(
+                exc,
+                adaptive_batching=adaptive_batching,
+                batch_size=len(loaded_batch),
+                current_batch_size=current_detector_batch_size,
+                min_batch_size=min_detector_batch_size,
+            ):
+                raise
+            current_detector_batch_size = _next_detector_batch_size(
+                current_batch_size=current_detector_batch_size,
+                failed_batch_size=len(loaded_batch),
+                min_batch_size=min_detector_batch_size,
+            )
+            detector_batch_retries += 1
+            pending_batches = _chunks(loaded_batch, current_detector_batch_size) + pending_batches
+            continue
+        if len(detections_by_image) != len(loaded_batch):
+            raise ValueError(f"detector returned {len(detections_by_image)} result rows for {len(loaded_batch)} images")
         for (record, image), detections in zip(loaded_batch, detections_by_image, strict=True):
             detection_rows = build_detection_rows(
                 record=record,
@@ -149,6 +191,11 @@ def run_cloud_detection_batch(
         image_failures=image_failures,
         detections_written=detections_written,
         crops_created=crops_created,
+        adaptive_batching_enabled=bool(adaptive_batching),
+        detector_batch_retries=detector_batch_retries,
+        detector_batch_size_initial=detector_batch_size,
+        detector_batch_size_final=current_detector_batch_size,
+        detector_batch_size_min=min_detector_batch_size,
     )
 
 
