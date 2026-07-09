@@ -28,6 +28,25 @@ def test_evaluation_classify_parser_accepts_object_scores_command() -> None:
     assert args.object_scores == "runs/example/object_bioclip_scores.parquet"
     assert args.object_evidence is None
     assert args.storage_backend == "local"
+    assert args.write_charts is False
+
+
+def test_evaluation_classify_parser_accepts_write_charts() -> None:
+    args = build_parser().parse_args(
+        [
+            "evaluation",
+            "classify",
+            "--object-scores",
+            "runs/example/object_bioclip_scores.parquet",
+            "--reviewed-labels",
+            "tests/fixtures/evaluation/reviewed_labels_valid.jsonl",
+            "--output-dir",
+            "reports/evaluation/example",
+            "--write-charts",
+        ]
+    )
+
+    assert args.write_charts is True
 
 
 def test_evaluation_classify_missing_input_path_fails_clearly(tmp_path, capsys) -> None:
@@ -102,6 +121,28 @@ def test_evaluation_classify_s3_without_config_fails_clearly(monkeypatch, capsys
     assert "BIOMINER_S3_BUCKET" in payload["error"]
 
 
+def test_evaluation_classify_s3_write_charts_fails_clearly(capsys) -> None:
+    args = build_parser().parse_args(
+        [
+            "evaluation",
+            "classify",
+            "--object-scores",
+            "s3://biominer/evaluation/object_scores.parquet",
+            "--reviewed-labels",
+            "s3://biominer/evaluation/reviewed_labels.parquet",
+            "--output-dir",
+            "s3://biominer/evaluation/report",
+            "--storage-backend",
+            "s3",
+            "--write-charts",
+        ]
+    )
+
+    assert run(args) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert "--write-charts is currently supported only for local evaluation outputs" in payload["error"]
+
+
 def test_evaluation_classify_command_writes_report_from_object_evidence(tmp_path, capsys) -> None:
     object_evidence = tmp_path / "object_evidence_joined.parquet"
     labels = tmp_path / "reviewed_labels.parquet"
@@ -167,6 +208,7 @@ def test_evaluation_classify_command_writes_report_to_s3_storage(monkeypatch, ca
     assert payload["status"] == "complete"
     assert payload["storage_backend"] == "s3"
     assert payload["input_kind"] == "object_scores"
+    assert payload["write_charts"] is False
     assert payload["paths"]["metrics"] == f"{output_dir}/evaluation_metrics.json"
     assert storage.json_payloads[payload["paths"]["metrics"]]["metrics"]["species_top1_accuracy"] == 1.0
     assert "Family top1 accuracy" in storage.text_payloads[payload["paths"]["summary"]]

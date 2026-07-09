@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import pytest
 import polars as pl
 
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+from biominer.evaluation.charts import (
+    CALIBRATION_RELIABILITY_CHART_FILE,
+    FAMILY_CONFUSION_CHART_FILE,
+    REVIEW_REASON_COUNTS_CHART_FILE,
+    SPECIES_ACCURACY_BY_FAMILY_CHART_FILE,
+)
 from biominer.evaluation.reports import (
     CALIBRATION_BINS_FILE,
     EVALUATION_METRICS_FILE,
@@ -64,6 +72,31 @@ def test_write_evaluation_report_writes_json_parquet_and_markdown(tmp_path) -> N
     assert "Species MRR" in markdown
 
 
+def test_write_evaluation_report_can_write_optional_charts(tmp_path) -> None:
+    pytest.importorskip("matplotlib")
+
+    paths = write_evaluation_report(
+        object_scores=pl.DataFrame([_prediction(), _prediction(source_id="2", detection_id="d2", score=0.25)]),
+        reviewed_labels=pl.DataFrame([_label(), _label(source_id="2", detection_id="d2", taxon_key="gbif:200")]),
+        output_dir=tmp_path,
+        write_charts=True,
+    )
+
+    assert paths["family_confusion_chart"] == str(tmp_path / FAMILY_CONFUSION_CHART_FILE)
+    assert paths["species_accuracy_by_family_chart"] == str(tmp_path / SPECIES_ACCURACY_BY_FAMILY_CHART_FILE)
+    assert paths["calibration_reliability_chart"] == str(tmp_path / CALIBRATION_RELIABILITY_CHART_FILE)
+    assert paths["review_reason_counts_chart"] == str(tmp_path / REVIEW_REASON_COUNTS_CHART_FILE)
+    metrics = json.loads((tmp_path / EVALUATION_METRICS_FILE).read_text(encoding="utf-8"))
+    assert metrics["artifacts"]["species_accuracy_by_family_chart"] == paths["species_accuracy_by_family_chart"]
+    for key in (
+        "family_confusion_chart",
+        "species_accuracy_by_family_chart",
+        "calibration_reliability_chart",
+        "review_reason_counts_chart",
+    ):
+        assert Path(paths[key]).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
 def test_write_evaluation_report_handles_empty_inputs(tmp_path) -> None:
     write_evaluation_report(
         object_scores=pl.DataFrame(),
@@ -103,11 +136,22 @@ def test_write_evaluation_report_to_storage_writes_all_artifacts() -> None:
     assert storage.parquet_payloads[paths["review_error_examples"]].is_empty()
 
 
-def _prediction() -> dict[str, object]:
+def test_write_evaluation_report_to_storage_rejects_charts() -> None:
+    with pytest.raises(RuntimeError, match="--write-charts"):
+        write_evaluation_report_to_storage(
+            object_scores=pl.DataFrame([_prediction()]),
+            reviewed_labels=pl.DataFrame([_label()]),
+            output_dir="s3://biominer/reports/evaluation/run-1",
+            storage=_MemoryStorage(),
+            write_charts=True,
+        )
+
+
+def _prediction(*, source_id: str = "1", detection_id: str = "d1", score: float = 0.91) -> dict[str, object]:
     return {
         "source": "flickr",
-        "flickr_photo_id": "1",
-        "detection_id": "d1",
+        "flickr_photo_id": source_id,
+        "detection_id": detection_id,
         "classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
         "taxonomy_table_version": "taxonomy-v1",
         "model_id": "bioclip",
@@ -119,7 +163,7 @@ def _prediction() -> dict[str, object]:
         "species_top1_scientific_name": "Papilio demoleus",
         "species_top1_accepted_taxon_key": "gbif:100",
         "accepted_taxon_key": "gbif:100",
-        "species_top1_score": 0.91,
+        "species_top1_score": score,
         "species_top5": ["Papilio demoleus", "Papilio machaon"],
         "species_top5_accepted_taxon_keys": ["gbif:100", "gbif:200"],
         "species_top20": ["Papilio demoleus", "Papilio machaon"],
@@ -127,16 +171,22 @@ def _prediction() -> dict[str, object]:
     }
 
 
-def _label() -> dict[str, object]:
+def _label(
+    *,
+    source_id: str = "1",
+    detection_id: str = "d1",
+    taxon_key: str = "gbif:100",
+    scientific_name: str = "Papilio demoleus",
+) -> dict[str, object]:
     return {
         "source": "flickr",
-        "flickr_photo_id": "1",
-        "detection_id": "d1",
-        "crop_hash": "sha256:d1",
+        "flickr_photo_id": source_id,
+        "detection_id": detection_id,
+        "crop_hash": f"sha256:{detection_id}",
         "label_level": "species",
         "is_butterfly": True,
-        "accepted_taxon_key": "gbif:100",
-        "scientific_name": "Papilio demoleus",
+        "accepted_taxon_key": taxon_key,
+        "scientific_name": scientific_name,
         "family_key": "gbif:9417",
         "family": "Papilionidae",
         "genus_key": "gbif:90",

@@ -259,6 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluation_classify.add_argument("--output-dir", required=True)
     evaluation_classify.add_argument("--storage-backend", choices=("local", "s3"), default="local")
     evaluation_classify.add_argument("--config")
+    evaluation_classify.add_argument("--write-charts", action="store_true")
     registry = subparsers.add_parser("registry")
     registry_subparsers = registry.add_subparsers(dest="registry_command")
     registry_build = registry_subparsers.add_parser("build")
@@ -902,6 +903,8 @@ def _run_evaluation_classify(args: argparse.Namespace) -> int:
             object_scores = _read_local_evaluation_parquet(input_uri, input_kind)
             reviewed_labels = _read_local_reviewed_labels(labels_uri)
         elif storage_backend == "s3":
+            if bool(getattr(args, "write_charts", False)):
+                raise ValueError("--write-charts is currently supported only for local evaluation outputs")
             storage = _evaluation_storage_from_config(args)
             object_scores = _read_storage_evaluation_parquet(storage, input_uri, input_kind)
             reviewed_labels = _read_storage_reviewed_labels(storage, labels_uri)
@@ -934,6 +937,7 @@ def _run_evaluation_classify(args: argparse.Namespace) -> int:
             object_scores=object_scores,
             reviewed_labels=reviewed_labels,
             output_dir=output_dir,
+            write_charts=bool(getattr(args, "write_charts", False)),
         )
         metrics = json.loads(Path(paths["metrics"]).read_text(encoding="utf-8"))
     else:
@@ -942,6 +946,7 @@ def _run_evaluation_classify(args: argparse.Namespace) -> int:
             reviewed_labels=reviewed_labels,
             output_dir=args.output_dir,
             storage=storage,
+            write_charts=bool(getattr(args, "write_charts", False)),
         )
         metrics = storage.read_json(paths["metrics"])
     payload = {
@@ -951,6 +956,7 @@ def _run_evaluation_classify(args: argparse.Namespace) -> int:
         "input_path": input_uri,
         "reviewed_labels": labels_uri,
         "output_dir": str(args.output_dir),
+        "write_charts": bool(getattr(args, "write_charts", False)),
         "paths": paths,
         "metrics": {
             "evaluated_objects": metrics["metrics"].get("evaluated_objects"),

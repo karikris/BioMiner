@@ -9,6 +9,7 @@ import polars as pl
 
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 from biominer.evaluation.calibration import expected_calibration_error
+from biominer.evaluation.charts import write_evaluation_charts
 from biominer.evaluation.metrics import (
     evaluate_hierarchical_predictions,
     family_confusion_matrix,
@@ -48,6 +49,14 @@ REVIEW_ERROR_EXAMPLE_SCHEMA: dict[str, pl.DataType] = {
     "error_type": pl.String,
 }
 
+SPECIES_ACCURACY_BY_FAMILY_SCHEMA: dict[str, pl.DataType] = {
+    "family_key": pl.String,
+    "family": pl.String,
+    "correct": pl.Int64,
+    "total": pl.Int64,
+    "accuracy": pl.Float64,
+}
+
 
 @dataclass(frozen=True)
 class EvaluationReportArtifacts:
@@ -57,6 +66,7 @@ class EvaluationReportArtifacts:
     species_confusion: pl.DataFrame
     calibration_bins: pl.DataFrame
     review_error_examples: pl.DataFrame
+    species_accuracy_by_family: pl.DataFrame
     summary_markdown: str
 
 
@@ -66,6 +76,7 @@ def write_evaluation_report(
     reviewed_labels: pl.DataFrame,
     output_dir: str | Path,
     run_manifest: dict[str, object] | None = None,
+    write_charts: bool = False,
 ) -> dict[str, str]:
     artifacts = build_evaluation_report_artifacts(
         object_scores=object_scores,
@@ -76,14 +87,29 @@ def write_evaluation_report(
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
+    returned_paths = dict(artifacts.paths)
+    metrics_payload = {
+        **artifacts.metrics_payload,
+        "artifacts": dict(artifacts.metrics_payload["artifacts"]),
+    }
     paths = {key: Path(path) for key, path in artifacts.paths.items()}
     write_parquet(artifacts.family_confusion, paths["family_confusion_matrix"])
     write_parquet(artifacts.species_confusion, paths["species_confusion_matrix"])
     write_parquet(artifacts.calibration_bins, paths["calibration_bins"])
     write_parquet(artifacts.review_error_examples, paths["review_error_examples"])
-    paths["metrics"].write_text(json.dumps(artifacts.metrics_payload, indent=2, sort_keys=True), encoding="utf-8")
+    if write_charts:
+        chart_paths = write_evaluation_charts(
+            family_confusion=artifacts.family_confusion,
+            species_accuracy_by_family=artifacts.species_accuracy_by_family,
+            calibration_bins=artifacts.calibration_bins,
+            review_error_examples=artifacts.review_error_examples,
+            output_dir=output,
+        )
+        returned_paths.update(chart_paths)
+        metrics_payload["artifacts"].update(chart_paths)
+    paths["metrics"].write_text(json.dumps(metrics_payload, indent=2, sort_keys=True), encoding="utf-8")
     paths["summary"].write_text(artifacts.summary_markdown, encoding="utf-8")
-    return artifacts.paths
+    return returned_paths
 
 
 def write_evaluation_report_to_storage(
@@ -93,7 +119,10 @@ def write_evaluation_report_to_storage(
     output_dir: str | Path,
     storage: CloudStorage,
     run_manifest: dict[str, object] | None = None,
+    write_charts: bool = False,
 ) -> dict[str, str]:
+    if write_charts:
+        raise RuntimeError("--write-charts is currently supported only for local evaluation outputs")
     artifacts = build_evaluation_report_artifacts(
         object_scores=object_scores,
         reviewed_labels=reviewed_labels,
@@ -154,6 +183,7 @@ def build_evaluation_report_artifacts(
         species_confusion=species_confusion,
         calibration_bins=_calibration_bins_frame(calibration),
         review_error_examples=review_errors,
+        species_accuracy_by_family=_species_accuracy_by_family_frame(scored_for_calibration),
         summary_markdown=evaluation_summary_markdown(metrics_payload, family_confusion, species_confusion),
     )
 
@@ -236,6 +266,9 @@ def _with_species_correct_column(object_scores: pl.DataFrame, reviewed_labels: p
                 "species_top1_correct": _species_top1_correct(row, label),
                 "expected_key": _text(label.get("accepted_taxon_key")) if label else "",
                 "expected_name": _text(label.get("scientific_name")) if label else "",
+                "expected_family_key": _text(label.get("family_key")) if label else "",
+                "expected_family": _text(label.get("family")) if label else "",
+                "expected_is_butterfly": bool(label.get("is_butterfly")) if label else False,
                 "predicted_key": _text(row.get("species_top1_accepted_taxon_key") or row.get("accepted_taxon_key")),
                 "predicted_name": _text(row.get("species_top1_scientific_name") or row.get("species_top1")),
             }
@@ -267,6 +300,39 @@ def _review_error_examples(frame: pl.DataFrame) -> pl.DataFrame:
 
 def _calibration_bins_frame(calibration: Mapping[str, Any]) -> pl.DataFrame:
     return _ensure_calibration_schema(pl.DataFrame(calibration.get("bins") or []))
+
+
+def _species_accuracy_by_family_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    rows = []
+    for row in frame.to_dicts():
+        correct = row.get("species_top1_correct")
+        if correct is None or not bool(row.get("expected_is_butterfly")):
+            continue
+        family_key = _text(row.get("expected_family_key"))
+        family = _text(row.get("expected_family")) or family_key or "missing_family_label"
+        rows.append(
+            {
+                "family_key": family_key or family,
+                "family": family,
+                "correct": 1 if bool(correct) else 0,
+                "total": 1,
+            }
+        )
+    if not rows:
+        return _ensure_species_accuracy_by_family_schema(pl.DataFrame())
+    grouped = (
+        pl.DataFrame(rows)
+        .group_by(["family_key", "family"])
+        .agg(
+            [
+                pl.col("correct").sum().alias("correct"),
+                pl.col("total").sum().alias("total"),
+            ]
+        )
+        .with_columns((pl.col("correct") / pl.col("total")).alias("accuracy"))
+        .sort(["family"])
+    )
+    return _ensure_species_accuracy_by_family_schema(grouped)
 
 
 def _run_metadata(run_manifest: Mapping[str, Any], object_scores: pl.DataFrame) -> dict[str, object]:
@@ -319,6 +385,10 @@ def _ensure_calibration_schema(frame: pl.DataFrame) -> pl.DataFrame:
 
 def _ensure_review_error_schema(frame: pl.DataFrame) -> pl.DataFrame:
     return _ensure_schema(frame, REVIEW_ERROR_EXAMPLE_SCHEMA)
+
+
+def _ensure_species_accuracy_by_family_schema(frame: pl.DataFrame) -> pl.DataFrame:
+    return _ensure_schema(frame, SPECIES_ACCURACY_BY_FAMILY_SCHEMA)
 
 
 def _ensure_schema(frame: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.DataFrame:
