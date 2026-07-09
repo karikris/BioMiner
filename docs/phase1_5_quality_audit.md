@@ -1,6 +1,6 @@
 # Phase 1-5 Quality Audit
 
-Status: initial implementation map and audit plan.
+Status: validated model-free audit and fix pass.
 Date: 2026-07-10.
 Branch: `main`.
 
@@ -24,6 +24,7 @@ GitHits:
 - `github:openai/clip`, code search for prompt ensembling and mean class embeddings: returned unrelated model internals, no usable exact prompt-ensemble implementation.
 - `github:python-pillow/Pillow` and `github:ultralytics/ultralytics`, code search for crop/resize/LANCZOS patterns: returned relevant Pillow `thumbnail`, `ImageOps.pad`/`fit`, and Ultralytics crop/scale references after indexing completed.
 - `github:pallets/click`, code search for CLI help/defaults/docs parity: returned generic Click parser internals and one choice-metavar test; local parser smoke and docs search were more actionable for this argparse codebase.
+- `github:pytest-dev/pytest`, docs search for validation/test-suite patterns: returned generic pytest docs; local import smoke and full test execution were the decisive evidence.
 - `get_example` for CLIP prompt ensembling was unavailable because the daily generated-example limit was reached.
 
 External primary docs:
@@ -57,6 +58,8 @@ Commands run:
 - `uv run python - <<'PY' ... build_parser help smoke ... PY`
 - `uv run pytest -q tests/test_cli_dry_run.py::test_yoloe26_prototype_profile_settings_do_not_use_hardcoded_crop_defaults tests/test_phase4_m5pro_acceptance.py::test_phase4_docs_and_cli_expose_benchmarks_and_runbook_commands tests/test_vision_live_benchmark_cli.py`
 - `rg -n 'aggregate_prompt_scores_uses_max|uses max|It still uses detector batch size|crop padding 0.12|Current Defaults' docs README.md`
+- `uv run python -c "import biominer; from biominer.cli import build_parser; build_parser(); print('import smoke ok')"`
+- `uv run pytest -q`
 - `uv run ruff check src/biominer/bioclip/cloud_work.py tests/test_cloud_bioclip_work.py`
 
 Focused test result:
@@ -73,6 +76,8 @@ Focused test result:
 - parser help smoke: `parser help smoke ok`
 - docs/profile CLI tests: `5 passed`
 - stale-docs search for max aggregation and old M5 Pro crop defaults: no hits after cleanup
+- import smoke: `import smoke ok`
+- full suite: `895 passed in 17.32s`
 - Ruff could not run because the `ruff` executable is not installed in this environment.
 
 ## Files Inspected
@@ -256,35 +261,35 @@ Remaining audit risk:
 
 ## Core Invariant Checklist
 
-Initial status is not the final audit verdict. `Supported` means evidence was located in code/tests during Task 1; later tasks may still tighten, fix, or revise it.
+These confirmations are based on source inspection, focused regression tests, import/parser smoke, and the full model-free test suite.
 
-| # | Invariant | Initial status |
+| # | Invariant | Audit status |
 | -: | - | - |
-| 1 | Target-scope screening remains the default classification mode. | Supported |
-| 2 | Hierarchical mode is open classification, not target validation. | Supported |
-| 3 | Hierarchical mode scores families before species. | Supported |
-| 4 | Species top-20 is constrained by selected family top-1. | Supported |
-| 5 | Reranking covers all first-pass top-20 species. | Supported |
-| 6 | Hierarchical classification does not inject the run target species. | Supported |
-| 7 | Family prompt variants are mean-aggregated by taxon by default. | Supported |
-| 8 | Older species-prompt variants are mean-aggregated by taxon by default, not ranked by best single prompt. | Supported and focused-tested |
-| 9 | GBIF-backed classification tables are derived candidate artifacts, not taxonomy authority. | Supported |
-| 10 | Classification table outputs include taxa, family labels, species labels, manifest, and QA. | Supported |
-| 11 | Taxonomy store validates classification table inputs before hierarchical scoring. | Supported |
-| 12 | Optional text embedding caches validate taxonomy/model/prompt metadata. | Supported and dtype invalidation fixed |
-| 13 | Mac M5 Pro profile settings flow into vision runtime policy. | Supported |
-| 14 | Non-eligible detections retain metadata and are not cropped in production paths. | Supported and focused-tested |
-| 15 | Crop/image lifecycle deletes staged files only after successful score writes. | Supported, deeper audit pending |
-| 16 | Work keys include output-affecting detector, crop, model, taxonomy, mode, prompt, and top-k settings. | Supported and payload contract fixed |
-| 17 | Heavy vision runtimes are optional/lazy and not required for model-free tests. | Supported, deeper audit pending |
-| 18 | Evaluation/reporting writes review queues and visual QA findings without claiming validated occurrences. | Supported |
-| 19 | Xie-style behavior is metrics-only and does not score every image with BioCLIP. | Supported |
-| 20 | BioCLIP output remains screening evidence, not taxonomic validation or verified Darwin Core occurrence evidence. | Supported |
+| 1 | Target-scope screening remains the default classification mode. | Confirmed |
+| 2 | Hierarchical mode is open classification, not target validation. | Confirmed |
+| 3 | Hierarchical mode scores families before species. | Confirmed |
+| 4 | Species top-20 is constrained by selected family top-1. | Confirmed |
+| 5 | Reranking covers all first-pass top-20 species. | Confirmed |
+| 6 | Hierarchical classification does not inject the run target species. | Confirmed |
+| 7 | Family prompt variants are mean-aggregated by taxon by default. | Confirmed |
+| 8 | Older species-prompt variants are mean-aggregated by taxon by default, not ranked by best single prompt. | Confirmed and focused-tested |
+| 9 | GBIF-backed classification tables are derived candidate artifacts, not taxonomy authority. | Confirmed |
+| 10 | Classification table outputs include taxa, family labels, species labels, manifest, and QA. | Confirmed |
+| 11 | Taxonomy store validates classification table inputs before hierarchical scoring. | Confirmed |
+| 12 | Optional text embedding caches validate taxonomy/model/prompt metadata. | Confirmed and dtype invalidation fixed |
+| 13 | Mac M5 Pro profile settings flow into vision runtime policy. | Confirmed |
+| 14 | Non-eligible detections retain metadata and are not cropped in production paths. | Confirmed and focused-tested |
+| 15 | Crop/image lifecycle deletes staged files only after successful score writes. | Confirmed |
+| 16 | Work keys include output-affecting detector, crop, model, taxonomy, mode, prompt, and top-k settings. | Confirmed and payload contract fixed |
+| 17 | Heavy vision runtimes are optional/lazy and not required for model-free tests. | Confirmed by import smoke and full tests |
+| 18 | Evaluation/reporting writes review queues and visual QA findings without claiming validated occurrences. | Confirmed |
+| 19 | Xie-style behavior is metrics-only and does not score every image with BioCLIP. | Confirmed |
+| 20 | BioCLIP output remains screening evidence, not taxonomic validation or verified Darwin Core occurrence evidence. | Confirmed |
 
-## Next Audit Tasks
+## Remaining Non-Blocking Risks
 
-- Continue tracing local/cloud hierarchical output schemas beyond the fixed work-payload contract.
-- Continue classification table manifest/QA review beyond the fixed embedding-cache dtype invalidation.
-- Continue broader docs/help review beyond the fixed stale M5 Pro and prompt-aggregation notes.
-- Audit CLI help, docs, examples, and deprecated-command docs against parser behavior.
-- Run focused model-free tests for each fix, then full `pytest -q` before final push.
+- Morph MCP was unavailable due HTTP 429 during the audit; local source navigation was used instead.
+- GitHits was intermittently useful, but several searches returned generic or unrelated material.
+- Ruff could not run because `ruff` is not installed in this environment.
+- Live network, Flickr, CUDA/MPS, YOLOE, and real BioCLIP weight runs were intentionally not executed; the validated scope is the model-free test suite.
+- Existing untracked run/config/report artifacts were left untouched.
