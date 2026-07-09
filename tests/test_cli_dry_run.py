@@ -1643,6 +1643,7 @@ def test_vision_screen_runs_integrated_detector_bioclip_parts(tmp_path, capsys, 
     payload = json.loads(capsys.readouterr().out)
     manifest = json.loads((output_dir / "vision_screen_manifest.json").read_text(encoding="utf-8"))
     metrics = json.loads((output_dir / "vision_screen_metrics.json").read_text(encoding="utf-8"))
+    vision_stage_metrics = json.loads((output_dir / "vision_stage_metrics.json").read_text(encoding="utf-8"))
     assert payload["records_seen"] == 3
     assert payload["detections_written"] == 3
     assert payload["crops_scored"] == 3
@@ -1660,9 +1661,15 @@ def test_vision_screen_runs_integrated_detector_bioclip_parts(tmp_path, capsys, 
     assert calls["detector_closed"] is True
     assert manifest["status"] == "complete"
     assert manifest["image_cleanup_status"] == "disabled"
+    assert Path(manifest["vision_stage_metrics"]).name == "vision_stage_metrics.json"
+    assert Path(manifest["vision_stage_summary"]).name == "vision_stage_summary.md"
     assert len(manifest["part_outputs"]) == 2
     assert metrics["records_seen"] == 3
     assert metrics["detection_parts"] == 2
+    assert Path(metrics["vision_stage_metrics"]).exists()
+    assert Path(metrics["vision_stage_summary"]).exists()
+    assert vision_stage_metrics["detection"]["eligible_bioclip_detections"] == 3
+    assert vision_stage_metrics["bioclip"]["crops_scored"] == 3
     assert metrics["score_parts"] == 2
     assert (output_dir / "object_detections" / "part-000000.parquet").exists()
     assert (output_dir / "object_bioclip_scores" / "part-000001.parquet").exists()
@@ -1828,12 +1835,17 @@ def test_vision_screen_model_free_smoke_writes_zstd_and_cleans_committed_images(
     payload = json.loads(capsys.readouterr().out)
     manifest = json.loads((output_dir / "vision_screen_manifest.json").read_text(encoding="utf-8"))
     metrics = json.loads((output_dir / "vision_screen_metrics.json").read_text(encoding="utf-8"))
+    vision_stage_metrics = json.loads((output_dir / "vision_stage_metrics.json").read_text(encoding="utf-8"))
     assert payload["image_cleanup_status"] == "commit_aware"
     assert manifest["status"] == "complete"
     assert metrics["records_seen"] == 2
     assert metrics["detections_written"] == 1
     assert metrics["crops_scored"] == 1
     assert metrics["cached_images_deleted"] == 2
+    assert vision_stage_metrics["detection"]["no_detection_count"] == 1
+    assert vision_stage_metrics["detection"]["eligible_bioclip_detections"] == 1
+    assert vision_stage_metrics["bioclip"]["crops_scored"] == 1
+    assert (output_dir / "vision_stage_summary.md").exists()
     assert calls["screened"] == ["photo-butterfly"]
     assert calls["persistent_closed"] is True
     assert calls["detector_closed"] is True

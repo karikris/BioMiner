@@ -50,6 +50,7 @@ from biominer.registry.classification_table import (
     classification_artifact_uris,
     validate_classification_tables,
 )
+from biominer.reports.vision import build_vision_stage_metrics, write_vision_stage_reports
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import RunArtifactUris, RunPaths
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES, RunStage, StageStatus, default_stage_records
@@ -1341,7 +1342,20 @@ class ProductionRunOrchestrator:
                     }
                 )
             metrics_uri = self.storage.write_json(plan.artifact_uris.metrics_uri, metrics)
-            outputs.update({"metrics": metrics_uri, "review_queue": review_queue_uri})
+            vision_stage_metrics = build_vision_stage_metrics(
+                detections=_read_cloud_stage_frame(self.storage, self.workstore, plan, RunStage.DETECT_OBJECTS.value),
+                scores=_read_cloud_stage_frame(self.storage, self.workstore, plan, RunStage.SCORE_BIOCLIP.value),
+                joined=_read_cloud_stage_frame(self.storage, self.workstore, plan, RunStage.JOIN_EVIDENCE.value),
+                photo_summary=(
+                    summary_result.frame
+                    if summary_result is not None
+                    else _read_cloud_stage_frame(self.storage, self.workstore, plan, "photo_summary")
+                ),
+                stage_metrics=plan.manifest.metrics,
+                detection_policy=self.request.vision_settings.to_detection_policy(DetectionPolicy()),
+            )
+            vision_stage_metrics_uri = self.storage.write_json(plan.artifact_uris.vision_stage_metrics_uri, vision_stage_metrics)
+            outputs.update({"metrics": metrics_uri, "review_queue": review_queue_uri, "vision_stage_metrics": vision_stage_metrics_uri})
             return StageExecutionResult(metrics=metrics, outputs=outputs)
         missing = _missing_paths(plan.paths.object_evidence_path, plan.paths.photo_summary_path)
         if missing:
@@ -1357,11 +1371,22 @@ class ProductionRunOrchestrator:
         metrics["review_queue_bin_counts"] = _value_counts(review_queue, "review_bucket")
         plan.paths.reports_dir.mkdir(parents=True, exist_ok=True)
         plan.paths.metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
+        vision_stage_metrics = build_vision_stage_metrics(
+            detections=_read_optional_parquet(plan.paths.object_detections_path),
+            scores=_read_optional_parquet(plan.paths.object_scores_path),
+            joined=joined,
+            photo_summary=photo_summary,
+            stage_metrics=plan.manifest.metrics,
+            detection_policy=self.request.vision_settings.to_detection_policy(DetectionPolicy()),
+        )
+        vision_report_paths = write_vision_stage_reports(vision_stage_metrics, plan.paths.reports_dir)
         write_parquet(review_queue, plan.paths.review_queue_path)
         return StageExecutionResult(
             metrics=metrics,
             outputs={
                 "metrics": str(plan.paths.metrics_path),
+                "vision_stage_metrics": str(vision_report_paths["metrics"]),
+                "vision_stage_summary": str(vision_report_paths["summary"]),
                 "review_queue": str(plan.paths.review_queue_path),
             },
         )
@@ -1503,6 +1528,20 @@ def _cloud_stage_shard_uris(workstore: WorkStore | None, plan: ProductionRunPlan
         run_id=plan.manifest.run_id,
     )
     return [str(shard["uri"]) for shard in shards]
+
+
+def _read_cloud_stage_frame(storage: CloudStorage, workstore: WorkStore, plan: ProductionRunPlan, stage: str) -> Any:
+    import polars as pl
+
+    uris = _cloud_stage_shard_uris(workstore, plan, stage)
+    frames = [storage.read_parquet(uri) for uri in uris]
+    return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+
+
+def _read_optional_parquet(path: Path) -> Any:
+    import polars as pl
+
+    return pl.read_parquet(path) if path.exists() else pl.DataFrame()
 
 
 def _write_immutable_parquet_part(

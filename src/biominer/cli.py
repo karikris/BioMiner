@@ -85,6 +85,7 @@ from biominer.registry.translation_harvester import (
     MYMEMORY_RESPONSE_BYTE_RESERVATION,
 )
 from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES, DEFAULT_TRANSLATION_TARGET_LOCALES_JSON
+from biominer.reports.vision import build_vision_stage_metrics, write_vision_stage_reports
 from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR, YOLOE26_DIR
 from biominer.run import ProductionRunOrchestrator, ProductionRunRequest, RunStage
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES
@@ -2120,6 +2121,8 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
         "cached_images_deleted": 0,
         "detector_batch_retries": 0,
         "detector_batch_size_final": settings.detector_batch_size,
+        "bioclip_batch_retries": 0,
+        "bioclip_batch_size_final": settings.crop_batch_size,
     }
     part_outputs: list[dict[str, str]] = []
     cached_paths_by_record: dict[tuple[str, str], set[Path]] = {}
@@ -2202,6 +2205,13 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
                 int(getattr(detection_result, "detector_batch_size_final", settings.detector_batch_size)),
             )
             metrics["crops_scored"] = int(metrics["crops_scored"]) + score_result.crops_scored
+            metrics["bioclip_batch_retries"] = int(metrics["bioclip_batch_retries"]) + int(
+                getattr(score_result, "bioclip_batch_retries", 0)
+            )
+            metrics["bioclip_batch_size_final"] = min(
+                int(metrics["bioclip_batch_size_final"]),
+                int(getattr(score_result, "bioclip_batch_size_final", settings.crop_batch_size)),
+            )
             metrics["detection_parts"] = int(metrics["detection_parts"]) + 1
             metrics["score_parts"] = int(metrics["score_parts"]) + 1
             metrics["joined_parts"] = int(metrics["joined_parts"]) + 1
@@ -2250,10 +2260,28 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
         "detector_batch_size_min": settings.min_detector_batch_size,
         "detector_batch_retries": metrics["detector_batch_retries"],
         "crop_batch_size": settings.crop_batch_size,
+        "bioclip_batch_size_initial": settings.crop_batch_size,
+        "bioclip_batch_size_final": metrics["bioclip_batch_size_final"],
+        "bioclip_batch_size_min": settings.min_crop_batch_size,
+        "bioclip_batch_retries": metrics["bioclip_batch_retries"],
         "parquet_compression": settings.parquet_compression,
+        "elapsed_seconds": (ended_at - started_at).total_seconds(),
     }
+    vision_stage_metrics = build_vision_stage_metrics(
+        detections=_read_part_output_frames(part_outputs, "object_detections"),
+        scores=_read_part_output_frames(part_outputs, "object_bioclip_scores"),
+        joined=_read_part_output_frames(part_outputs, "object_evidence_joined"),
+        photo_summary=_read_part_output_frames(part_outputs, "photo_evidence_summary"),
+        stage_metrics=metrics,
+        detection_policy=detection_policy,
+    )
+    vision_report_paths = write_vision_stage_reports(vision_stage_metrics, output_dir)
     manifest_path = output_dir / "vision_screen_manifest.json"
     metrics_path = output_dir / "vision_screen_metrics.json"
+    manifest["vision_stage_metrics"] = str(vision_report_paths["metrics"])
+    manifest["vision_stage_summary"] = str(vision_report_paths["summary"])
+    metrics["vision_stage_metrics"] = str(vision_report_paths["metrics"])
+    metrics["vision_stage_summary"] = str(vision_report_paths["summary"])
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
     print(
@@ -2303,6 +2331,11 @@ def _cached_paths_for_record_keys(
     for key in record_keys:
         paths.update(cached_paths_by_record.get(key, set()))
     return paths
+
+
+def _read_part_output_frames(part_outputs: list[dict[str, str]], key: str) -> pl.DataFrame:
+    frames = [pl.read_parquet(path) for part in part_outputs if (path := part.get(key))]
+    return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
 
 
 def _delete_cached_image_paths(paths: set[Path]) -> int:

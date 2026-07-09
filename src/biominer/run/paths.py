@@ -43,6 +43,14 @@ class RunArtifactUris:
         return join_uri(self.reports_uri, "run_metrics.json")
 
     @property
+    def vision_stage_metrics_uri(self) -> str:
+        return join_uri(self.reports_uri, "vision_stage_metrics.json")
+
+    @property
+    def vision_stage_summary_uri(self) -> str:
+        return join_uri(self.reports_uri, "vision_stage_summary.md")
+
+    @property
     def review_queue_uri(self) -> str:
         return join_uri(self.reports_uri, "review_queue.parquet")
 
@@ -88,6 +96,8 @@ class RunArtifactUris:
             "run_root": self.run_root_uri,
             "manifest": self.manifest_uri,
             "metrics": self.metrics_uri,
+            "vision_stage_metrics": self.vision_stage_metrics_uri,
+            "vision_stage_summary": self.vision_stage_summary_uri,
             "review_queue": self.review_queue_uri,
             "reviewed_object_evidence": self.reviewed_object_evidence_uri,
             "query_definitions": self.query_definitions_uri,
@@ -133,6 +143,14 @@ class RunPaths:
     @property
     def metrics_path(self) -> Path:
         return self.reports_dir / "run_metrics.json"
+
+    @property
+    def vision_stage_metrics_path(self) -> Path:
+        return self.reports_dir / "vision_stage_metrics.json"
+
+    @property
+    def vision_stage_summary_path(self) -> Path:
+        return self.reports_dir / "vision_stage_summary.md"
 
     @property
     def review_queue_path(self) -> Path:

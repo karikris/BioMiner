@@ -324,6 +324,7 @@ def test_run_artifact_uris_are_s3_safe_and_species_scoped() -> None:
     assert uris.run_root_uri == "s3://biominer/runs/run_id=family_papilionidae"
     assert uris.manifest_uri == "s3://biominer/runs/run_id=family_papilionidae/run_manifest.json"
     assert uris.review_queue_uri == "s3://biominer/runs/run_id=family_papilionidae/reports/review_queue.parquet"
+    assert uris.vision_stage_metrics_uri == "s3://biominer/runs/run_id=family_papilionidae/reports/vision_stage_metrics.json"
     assert uris.query_definitions_uri == "s3://biominer/runs/run_id=family_papilionidae/registry/flickr_query_definitions.parquet"
     assert uris.object_detections_uri == "s3://biominer/runs/run_id=family_papilionidae/staging/object_detections.parquet"
     assert uris.species_uri("Papilio demoleus") == "s3://biominer/runs/run_id=family_papilionidae/species/papilio_demoleus"
@@ -1182,8 +1183,13 @@ def test_orchestrator_joins_evidence_and_writes_summary_metrics(tmp_path) -> Non
     assert result.paths.object_evidence_path.exists()
     assert result.paths.photo_summary_path.exists()
     assert result.paths.metrics_path.exists()
+    assert result.paths.vision_stage_metrics_path.exists()
+    assert result.paths.vision_stage_summary_path.exists()
     assert result.paths.review_queue_path.exists()
     assert pl.read_parquet(result.paths.review_queue_path).height == 0
+    vision_stage_metrics = json.loads(result.paths.vision_stage_metrics_path.read_text(encoding="utf-8"))
+    assert vision_stage_metrics["detection"]["eligible_bioclip_detections"] == 1
+    assert vision_stage_metrics["bioclip"]["crops_scored"] == 1
     assert result.manifest.evidence_counts == {"object_evidence_rows": 1, "photo_summary_rows": 1, "review_queue_rows": 0}
     assert result.manifest.metrics["object_occurrence_bin_counts"] == {"gold": 1}
     assert result.manifest.metrics["photo_occurrence_bin_counts"] == {"gold": 1}
@@ -1194,6 +1200,8 @@ def test_orchestrator_joins_evidence_and_writes_summary_metrics(tmp_path) -> Non
     }
     assert result.manifest.stages[1].outputs == {
         "metrics": str(result.paths.metrics_path),
+        "vision_stage_metrics": str(result.paths.vision_stage_metrics_path),
+        "vision_stage_summary": str(result.paths.vision_stage_summary_path),
         "review_queue": str(result.paths.review_queue_path),
     }
     assert json.loads(result.paths.metrics_path.read_text(encoding="utf-8")) == {
@@ -1385,10 +1393,12 @@ def test_orchestrator_summarizes_photo_evidence_from_cloud_join_shards(tmp_path)
     assert result.manifest.evidence_counts == {"object_evidence_rows": 1, "photo_summary_rows": 1, "review_queue_rows": 0}
     photo_summary_uri = result.manifest.stages[0].outputs["photo_summary"]
     assert result.manifest.stages[0].outputs["metrics"] == plan.artifact_uris.metrics_uri
+    assert result.manifest.stages[0].outputs["vision_stage_metrics"] == plan.artifact_uris.vision_stage_metrics_uri
     assert photo_summary_uri.startswith(plan.artifact_uris.staging_uri + "/evidence/stage=photo_summary/")
     assert plan.artifact_uris.photo_summary_uri not in storage.parquet_payloads
     assert storage.json_payloads[plan.artifact_uris.manifest_uri]["evidence_counts"]["photo_summary_rows"] == 1
     assert storage.json_payloads[plan.artifact_uris.metrics_uri]["photo_occurrence_bin_counts"] == {"gold": 1}
+    assert storage.json_payloads[plan.artifact_uris.vision_stage_metrics_uri]["evidence"]["photo_summary_rows"] == 1
     summary = storage.parquet_payloads[photo_summary_uri]
     assert summary.select("flickr_photo_id").to_series().to_list() == ["photo-1"]
     assert summary.select("photo_occurrence_bin").to_series().to_list() == ["gold"]
@@ -1462,6 +1472,8 @@ def test_orchestrator_builds_review_queue_from_cloud_summary_shards(tmp_path) ->
     assert review_queue_uri.startswith(plan.artifact_uris.staging_uri + "/evidence/stage=review_queue/")
     assert plan.artifact_uris.review_queue_uri not in storage.parquet_payloads
     assert storage.json_payloads[plan.artifact_uris.metrics_uri]["review_queue_bin_counts"] == {"in_review": 1}
+    assert result.manifest.stages[0].outputs["vision_stage_metrics"] == plan.artifact_uris.vision_stage_metrics_uri
+    assert storage.json_payloads[plan.artifact_uris.vision_stage_metrics_uri]["evidence"]["photo_summary_rows"] == 2
     queue = storage.parquet_payloads[review_queue_uri]
     assert queue.select("flickr_photo_id").to_series().to_list() == ["review-1"]
     queue_shards = workstore.list_committed_shards(
@@ -1935,6 +1947,7 @@ def test_production_cloud_run_does_not_write_durable_local_artifacts(monkeypatch
     assert result.manifest.stages[3].outputs["photo_summary"] in storage.parquet_payloads
     assert result.manifest.stages[3].outputs["review_queue"] in storage.parquet_payloads
     assert plan.artifact_uris.metrics_uri in storage.json_payloads
+    assert plan.artifact_uris.vision_stage_metrics_uri in storage.json_payloads
     assert plan.artifact_uris.manifest_uri in storage.json_payloads
 
 
