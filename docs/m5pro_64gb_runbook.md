@@ -1,0 +1,275 @@
+# Mac M5 Pro 64 GB Vision Runbook
+
+This runbook is the operator command set for BioMiner's `mac_m5pro_64gb` vision profile. It targets local Apple MPS runs while preserving the production S3/Postgres shape used by `biominer run`.
+
+## Profile Contract
+
+The `mac_m5pro_64gb` profile is defined in `src/biominer/detection/policy.py` and should remain:
+
+```text
+device: mps
+YOLOE checkpoint: yoloe-26s-seg.pt
+YOLO image size: 768
+YOLO batch: 16
+YOLO conf/iou/max-det: 0.20 / 0.50 / 8
+BioCLIP model: hf-hub:imageomics/bioclip-2.5-vith14
+BioCLIP crop batch: 24
+crop target: 336
+crop padding: 0.08
+Parquet compression: zstd
+cleanup: delete cached images/crops only after committed outputs
+```
+
+The main BioMiner environment stays on Python 3.14 and does not require PyTorch, Ultralytics, OpenCLIP, or model downloads. Heavy vision dependencies live in sibling Python 3.12 sidecar environments.
+
+## Setup Assumptions
+
+Expected local layout:
+
+```text
+BioMiner/
+YOLO26/venv/bin/python
+YOLO26/models/
+YOLO26/cache/
+BioCLIP25/venv/bin/python
+BioCLIP25/cache/huggingface/
+```
+
+Set `BIOMINER_BASE_PATH` if those sibling folders are not next to the BioMiner checkout.
+
+```bash
+export BIOMINER_BASE_PATH=/path/to/workspace
+export PYTORCH_ENABLE_MPS_FALLBACK=1
+```
+
+## Runtime Checks
+
+Validate the YOLOE sidecar:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision yoloe26-runtime-check \
+  --runtime-python ../YOLO26/venv/bin/python \
+  --checkpoint yoloe-26s-seg.pt \
+  --device mps
+```
+
+Validate the BioCLIP sidecar:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision bioclip-runtime-check \
+  --runtime-python ../BioCLIP25/venv/bin/python \
+  --hf-cache-dir ../BioCLIP25/cache/huggingface \
+  --device mps
+```
+
+Prefetch BioCLIP 2.5 Huge into the sidecar cache:
+
+```bash
+uv run biominer dev vision bioclip-prefetch-model \
+  --runtime-python ../BioCLIP25/venv/bin/python \
+  --hf-cache-dir ../BioCLIP25/cache/huggingface \
+  --model-name imageomics/bioclip-2.5-vith14
+```
+
+Prefetch or validate the YOLOE checkpoint through the sidecar:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision yoloe26-prefetch \
+  --runtime-python ../YOLO26/venv/bin/python \
+  --checkpoint yoloe-26s-seg.pt \
+  --device mps
+```
+
+## Model-Free Plumbing Benchmark
+
+Use this first after code changes. It runs fake detector/scorer components, does not need model runtimes, and writes JSON and Markdown reports under the output directory.
+
+```bash
+uv run biominer dev vision benchmark-plumbing \
+  --records 1000 \
+  --butterfly-rate 0.25 \
+  --detections-per-butterfly 1 \
+  --classification-mode hierarchical_butterfly_classification \
+  --taxonomy-candidate-table tests/fixtures/taxonomy_store \
+  --output-dir reports/vision_benchmarks/plumbing
+```
+
+Expected outputs:
+
+```text
+reports/vision_benchmarks/plumbing/benchmark_metrics.json
+reports/vision_benchmarks/plumbing/benchmark_summary.md
+```
+
+## Optional Live M5 Pro Benchmark
+
+Use this only after the runtime checks pass. It is intentionally not part of the normal test suite.
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision benchmark-live-m5pro \
+  --input runs/local_debug/papilio_demoleus/canonical_source_records.parquet \
+  --taxonomy-candidate-table data/registry/current \
+  --vision-runtime-python ../YOLO26/venv/bin/python \
+  --bioclip-runtime-python ../BioCLIP25/venv/bin/python \
+  --hf-cache-dir ../BioCLIP25/cache/huggingface \
+  --checkpoint yoloe-26s-seg.pt \
+  --device mps \
+  --limit 100 \
+  --output-dir reports/vision_benchmarks/m5pro_live
+```
+
+For lower IPC overhead after validating the sidecar path mode:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision benchmark-live-m5pro \
+  --input runs/local_debug/papilio_demoleus/canonical_source_records.parquet \
+  --taxonomy-candidate-table data/registry/current \
+  --vision-runtime-python ../YOLO26/venv/bin/python \
+  --bioclip-runtime-python ../BioCLIP25/venv/bin/python \
+  --hf-cache-dir ../BioCLIP25/cache/huggingface \
+  --checkpoint yoloe-26s-seg.pt \
+  --yolo-sidecar-transport image_path \
+  --device mps \
+  --limit 100 \
+  --output-dir reports/vision_benchmarks/m5pro_live_path_transport
+```
+
+## Local Hierarchical Run
+
+This is the recommended local detector-first hierarchical command. It uses local storage and SQLite, preserves crop-level BioCLIP gating, and deletes cached images only after committed outputs.
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
+  --taxon "Papilionoidea" \
+  --rank family \
+  --registry-dir data/registry/current \
+  --output-prefix runs/local_debug/papilionoidea_hierarchical \
+  --storage-backend local \
+  --workstore-backend sqlite \
+  --vision-backend yoloe26 \
+  --vision-profile mac_m5pro_64gb \
+  --classification-mode hierarchical_butterfly_classification \
+  --taxonomy-candidate-table data/registry/current \
+  --device mps \
+  --family-top-k 3 \
+  --species-first-pass-top-k 20 \
+  --species-rerank-top-k 5 \
+  --delete-images-after-commit
+```
+
+If a taxonomy text embedding cache has already been prepared and validated for the same classification table, prompt variant, BioCLIP model, and checkpoint, add:
+
+```bash
+  --taxonomy-text-embedding-cache data/registry/current/butterfly_taxonomy_text_embeddings.parquet
+```
+
+## Conservative Fallback Run
+
+Use this when MPS memory pressure appears during live runs. Adaptive batching is opt-in and only retries conservative memory/device failures.
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
+  --taxon "Papilionoidea" \
+  --rank family \
+  --registry-dir data/registry/current \
+  --output-prefix runs/local_debug/papilionoidea_hierarchical_safe \
+  --storage-backend local \
+  --workstore-backend sqlite \
+  --vision-backend yoloe26 \
+  --vision-profile mac_m5pro_64gb \
+  --classification-mode hierarchical_butterfly_classification \
+  --taxonomy-candidate-table data/registry/current \
+  --device mps \
+  --yolo-batch 8 \
+  --bioclip-batch 12 \
+  --adaptive-batching \
+  --delete-images-after-commit
+```
+
+## Cloud S3/Postgres Production Run
+
+The same classifier semantics apply in cloud production: immutable Parquet parts, Postgres workstore claims, and BioCLIP scoring only for `butterfly_like` detections.
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
+  --taxon "Papilionoidea" \
+  --rank family \
+  --registry-dir s3://biominer/biominer/registry/current \
+  --output-prefix s3://biominer/biominer/runs/papilionoidea_hierarchical \
+  --storage-backend s3 \
+  --workstore-backend postgres \
+  --vision-backend yoloe26 \
+  --vision-profile mac_m5pro_64gb \
+  --classification-mode hierarchical_butterfly_classification \
+  --taxonomy-candidate-table s3://biominer/biominer/registry/current \
+  --device mps \
+  --family-top-k 3 \
+  --species-first-pass-top-k 20 \
+  --species-rerank-top-k 5 \
+  --delete-images-after-commit
+```
+
+## Expected Artifacts
+
+Local and cloud runs write stage outputs and reports under the configured prefix. Visual stages use zstd Parquet part files:
+
+```text
+evidence/stage=detect_objects/run_id=<run_id>/worker=<worker_id>/part=<part_id>.parquet
+evidence/stage=score_bioclip/run_id=<run_id>/worker=<worker_id>/part=<part_id>.parquet
+vision_stage_metrics.json
+vision_stage_summary.md
+manifest.json
+```
+
+Important counters to inspect after a run:
+
+```text
+detection_counts.images_seen
+detection_counts.images_loaded
+detection_counts.detections
+detection_counts.crops_created
+bioclip_counts.objects_scored
+bioclip_counts.detector_crops_scored
+metrics.butterfly_like_detections
+metrics.eligible_bioclip_detections
+metrics.selected_family_counts
+metrics.species_top1_counts
+metrics.adaptive_batching_enabled
+metrics.detector_batch_retries
+metrics.bioclip_batch_retries
+```
+
+`bioclip_counts.objects_scored` should track eligible `butterfly_like` detections, not all source records.
+
+## Failure Modes
+
+Missing sidecar Python:
+Runtime checks and live benchmarks fail before loading records. Fix the sidecar venv path or `BIOMINER_BASE_PATH`.
+
+Missing BioCLIP cache:
+Run `bioclip-prefetch-model` or point `--hf-cache-dir` at the populated sidecar cache. Do not commit model caches.
+
+YOLOE checkpoint rejected:
+Use `yoloe-26s-seg.pt` or another supported YOLOE-26 segmentation checkpoint. Species-class checkpoints are not valid object detectors for this path.
+
+MPS memory errors:
+Use the conservative fallback command, lower `--yolo-batch` or `--bioclip-batch`, and enable `--adaptive-batching`. Keep `PYTORCH_ENABLE_MPS_FALLBACK=1` set for Apple Silicon runs.
+
+Unexpected all-image BioCLIP scoring:
+Check requested ablation modes. Production defaults to `detector_crop`; whole-image and segmentation scoring are explicit debug/ablation modes.
+
+Too many non-butterfly crops:
+Production should not materialise crops for non-eligible detections. Inspect `eligible_bioclip_detections`, `hard_negative_detections`, and score row counts.
+
+Cleanup did not happen:
+Cached images and crops are deleted only after committed outputs. If detection, score, Parquet write, or workstore registration fails, cached inputs can remain retryable by design.
+
+## Invariants
+
+- YOLOE is an object detector, not a taxonomic classifier.
+- BioCLIP receives only detected `butterfly_like` crops in production scoring.
+- Hierarchical mode scores family top 3, constrains species top 20 to the selected family, and reranks all 20 into top 5.
+- Hierarchical mode does not inject the target species.
+- `target_scope_object_screening` remains the default classification mode.
+- Non-butterfly detections remain evidence but are not BioCLIP species-scored.
+- Images and crops are temporary and must not become a permanent Flickr image archive.
