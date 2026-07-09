@@ -1051,7 +1051,7 @@ def _run_production_command(args: argparse.Namespace) -> int:
             family_top_k=args.family_top_k,
             species_first_pass_top_k=args.species_first_pass_top_k,
             species_rerank_top_k=args.species_rerank_top_k,
-            worker_id=config.runtime.worker_id or ("local" if allow_local else ""),
+            worker_id="local" if allow_local and args.dry_run else config.runtime.worker_id or ("local" if allow_local else ""),
             stages=stages,
             dry_run=args.dry_run,
             build_registry_if_missing=args.build_registry_if_missing,
