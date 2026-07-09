@@ -10,7 +10,7 @@ from shutil import rmtree
 import subprocess
 from tempfile import mkdtemp
 from threading import Thread
-from typing import IO, Any, Callable, Iterator, Sequence
+from typing import IO, Callable, Iterator, Sequence
 
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, detector_label_is_taxon_like
 from biominer.runtime_paths import YOLOE26_DIR

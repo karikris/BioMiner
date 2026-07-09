@@ -4,7 +4,6 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import polars as pl
 import pytest

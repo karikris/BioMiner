@@ -20,7 +20,7 @@ from typing import Any
 import polars as pl
 
 from biominer.registry.compiler import compile_registry_fixture
-from biominer.registry.normalize import parse_language_tag, normalize_language_code, normalize_name_key
+from biominer.registry.normalize import parse_language_tag, normalize_name_key
 from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES, TRANSLATION_CANDIDATES_FILE, translation_candidate_schema, translation_source_display_names
 from biominer.registry.trust_policy import decide_name_trust
 

@@ -7,7 +7,6 @@ import biominer.flickr_fetch.query_planner as query_planner
 
 from biominer.flickr_fetch.query_planner import (
     BBOX_PAGE_SIZE,
-    COUNT_PROBE_PAGE_SIZE,
     FLICKR_SEARCH_RESULT_WINDOW,
     GEO_PAGE_SIZE,
     MAX_ACCESSIBLE_RESULTS_PER_QUERY,

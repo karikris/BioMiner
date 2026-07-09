@@ -5,14 +5,12 @@ from datetime import UTC, datetime, timedelta
 import json
 import sqlite3
 import threading
-from pathlib import Path
 
 import httpx
 import polars as pl
 
 from biominer.flickr_fetch.query_planner import (
     BBOX_PAGE_SIZE,
-    COUNT_PROBE_PAGE_SIZE,
     NORMAL_PAGE_SIZE,
     FlickrQuery,
     flickr_search_params,

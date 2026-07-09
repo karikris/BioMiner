@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 import sqlite3
 
 import polars as pl
@@ -179,7 +178,7 @@ def test_build_step1_fetch_report_includes_split_progress_metrics(tmp_path) -> N
         split_depth=1,
     )
     page = FlickrQuery(term="butterfly", language="en", search_field="text", lane="normal_page", page=1, per_page=500, has_geo=0)
-    completed_id = next_id = page_id = None
+    completed_id = page_id = None
     state.enqueue_work_item(completed)
     state.enqueue_work_item(pending)
     state.enqueue_work_item(page)
@@ -321,4 +320,3 @@ def test_build_step1_fetch_report_includes_dynamic_page_enqueue_metrics(tmp_path
             "response_total": 9000,
         }
     ]
-

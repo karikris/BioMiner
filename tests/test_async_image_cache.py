@@ -3,9 +3,8 @@ from __future__ import annotations
 import hashlib
 
 import httpx
-import pytest
 
-from biominer.bioclip.async_image_cache import cache_images_async, _download_batch
+from biominer.bioclip.async_image_cache import cache_images_async
 from biominer.bioclip.image_cache import CachedImage
 
 

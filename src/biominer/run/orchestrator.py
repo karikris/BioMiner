@@ -45,12 +45,11 @@ from biominer.flickr_comments.comments_enrichment import fetch_flickr_comments
 from biominer.flickr_fetch.cloud_poller import CloudMetadataPoller, flickr_query_work_item
 from biominer.storage.parquet import DEFAULT_PARQUET_COMPRESSION, ParquetPartWrite, write_parquet
 from biominer.flickr_fetch.metadata_poller import DEFAULT_STALE_CLAIM_SECONDS, SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
-from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries, load_registry_flickr_queries_from_frame
+from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries_from_frame
 from biominer.registry.classification_table import (
     ButterflyTaxonomyStore,
     classification_artifact_paths,
     classification_artifact_uris,
-    validate_classification_tables,
 )
 from biominer.reports.vision import build_vision_stage_metrics, write_vision_stage_reports
 from biominer.run.manifest import RunManifest, utc_now_iso

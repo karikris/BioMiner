@@ -7,12 +7,11 @@ from datetime import UTC, datetime
 import hashlib
 import json
 import logging
-import os
 from pathlib import Path
 import re
 import threading
 from time import monotonic
-from typing import Any, Callable
+from typing import Any
 
 import polars as pl
 

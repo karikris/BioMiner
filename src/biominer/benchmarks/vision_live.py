@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 import polars as pl
 

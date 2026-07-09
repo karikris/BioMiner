@@ -24,7 +24,6 @@ from biominer.flickr_fetch.metadata_poller import (
     _write_raw_response,
 )
 from biominer.filter.extractor import build_evidence_frame, extract_photo_evidence
-from biominer.flickr_fetch.endpoints import SEARCH_METHOD
 from biominer.flickr_fetch.query_planner import FlickrQuery, deduplicate_photo_records, plan_queries_from_count, query_hash
 from biominer.storage.cloud import CloudStorage
 from biominer.workstore.base import WorkStore

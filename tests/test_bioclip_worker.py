@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import json
-from pathlib import Path
 
 from biominer.bioclip import bioclip_worker
 from biominer.bioclip.bioclip_worker import configure_hf_cache_env, device_from_request, open_clip_model_args, resolve_torch_device
