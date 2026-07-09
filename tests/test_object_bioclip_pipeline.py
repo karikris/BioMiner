@@ -43,6 +43,7 @@ from biominer.registry.classification_table import (
 )
 from biominer.run.taxon_scope import TaxonScope
 from biominer.species.context import CommonName, RegionHint, SpeciesContext
+from factories import canonical_records, object_detection_row, object_detections
 
 
 def _context() -> SpeciesContext:
@@ -113,84 +114,18 @@ def _species_context(
 
 
 def _canonical_records() -> pl.DataFrame:
-    return pl.DataFrame(
-        [
-            {
-                "source": "flickr",
-                "flickr_photo_id": "photo-1",
-                "source_record_hash": "sha256:source-1",
-                "image_url": "https://live.staticflickr.com/photo-1.jpg",
-                "photo_page_url": "https://www.flickr.com/photos/u/photo-1",
-                "title": "monarch butterfly on milkweed",
-                "raw_tags": "monarch Danaus plexippus",
-                "latitude": 45.0,
-                "longitude": -93.0,
-                "date_taken": "2024-07-01",
-            }
-        ]
-    )
+    return canonical_records()
 
 
 def _detections() -> pl.DataFrame:
-    return pl.DataFrame(
-        [
-            {
-                "source": "flickr",
-                "flickr_photo_id": "photo-1",
-                "source_record_hash": "sha256:source-1",
-                "image_url": "https://live.staticflickr.com/photo-1.jpg",
-                "photo_page_url": "https://www.flickr.com/photos/u/photo-1",
-                "detection_id": "det-1",
-                "detector_backend": "fake",
-                "detector_model_id": "fake-detector",
-                "detector_model_version": "v1",
-                "detector_checkpoint": "checkpoint-a",
-                "detected_at": "2026-01-01T00:00:00+00:00",
-                "bbox_xyxy": [0.0, 0.0, 10.0, 10.0],
-                "bbox_xyxyn": [0.0, 0.0, 0.5, 0.5],
-                "bbox_xywhn": [0.25, 0.25, 0.5, 0.5],
-                "box_area_ratio": 0.25,
-                "detector_label": "butterfly_like",
-                "detector_score": 0.9,
-                "objectness_score": 0.9,
-                "nms_group_id": None,
-                "crop_padding_ratio": 0.12,
-                "crop_hash": "sha256:crop-1",
-                "crop_width": 336,
-                "crop_height": 336,
-                "crop_storage_policy": "ephemeral",
-                "detection_status": "detected",
-                "failure_reason": None,
-            },
-            {
-                "source": "flickr",
-                "flickr_photo_id": "photo-1",
-                "source_record_hash": "sha256:source-1",
-                "image_url": "https://live.staticflickr.com/photo-1.jpg",
-                "photo_page_url": "https://www.flickr.com/photos/u/photo-1",
-                "detection_id": "det-2",
-                "detector_backend": "fake",
-                "detector_model_id": "fake-detector",
-                "detector_model_version": "v1",
-                "detector_checkpoint": "checkpoint-a",
-                "detected_at": "2026-01-01T00:00:00+00:00",
-                "bbox_xyxy": [10.0, 10.0, 20.0, 20.0],
-                "bbox_xyxyn": [0.5, 0.5, 1.0, 1.0],
-                "bbox_xywhn": [0.75, 0.75, 0.5, 0.5],
-                "box_area_ratio": 0.25,
-                "detector_label": "butterfly_like",
-                "detector_score": 0.6,
-                "objectness_score": 0.6,
-                "nms_group_id": None,
-                "crop_padding_ratio": 0.12,
-                "crop_hash": "sha256:crop-2",
-                "crop_width": 336,
-                "crop_height": 336,
-                "crop_storage_policy": "ephemeral",
-                "detection_status": "detected",
-                "failure_reason": None,
-            },
-        ]
+    return object_detections(
+        object_detection_row(detection_id="det-1", score=0.9, crop_hash="sha256:crop-1"),
+        object_detection_row(
+            detection_id="det-2",
+            score=0.6,
+            bbox_xyxy=[10.0, 10.0, 20.0, 20.0],
+            crop_hash="sha256:crop-2",
+        ),
     )
 
 
