@@ -3109,6 +3109,7 @@ def test_public_vision_surface_excludes_debug_runtime_commands() -> None:
         "yoloe26-prefetch",
         "yoloe26-smoke",
         "yoloe26-prototype-run",
+        "benchmark-plumbing",
         "crop-preview",
         "eval",
     ):

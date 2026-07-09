@@ -42,6 +42,7 @@ from biominer.bioclip.object_runner import (
     write_object_evidence_outputs,
 )
 from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
+from biominer.benchmarks.vision_plumbing import run_vision_plumbing_benchmark
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.detection.evaluate import evaluate_xie_style
 from biominer.detection.image_io import load_decoded_image_from_record
@@ -506,6 +507,21 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     yoloe26_prototype.add_argument("--crop-target-px", type=int)
     yoloe26_prototype.add_argument("--prompt-class", action="append", default=[])
     yoloe26_prototype.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
+    benchmark = subparsers.add_parser("benchmark-plumbing")
+    benchmark.add_argument("--records", type=int, default=1000)
+    benchmark.add_argument("--butterfly-rate", type=float, default=0.25)
+    benchmark.add_argument("--detections-per-butterfly", type=int, default=1)
+    benchmark.add_argument(
+        "--classification-mode",
+        type=_classification_mode_arg,
+        choices=SUPPORTED_CLASSIFICATION_MODES,
+        default=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+    )
+    benchmark.add_argument("--taxonomy-candidate-table")
+    benchmark.add_argument("--family-top-k", type=int, default=DEFAULT_FAMILY_TOP_K)
+    benchmark.add_argument("--species-first-pass-top-k", type=int, default=DEFAULT_SPECIES_FIRST_PASS_TOP_K)
+    benchmark.add_argument("--species-rerank-top-k", type=int, default=DEFAULT_SPECIES_RERANK_TOP_K)
+    benchmark.add_argument("--output-dir", required=True)
     detect_crop_preview = subparsers.add_parser("crop-preview")
     detect_crop_preview.add_argument("--detections", required=True)
     detect_crop_preview.add_argument("--output", required=True)
@@ -543,6 +559,8 @@ def run(args: argparse.Namespace) -> int:
             return _run_yoloe26_smoke(args)
         if args.vision_command == "yoloe26-prototype-run":
             return _run_yoloe26_prototype_run(args)
+        if args.vision_command == "benchmark-plumbing":
+            return _run_vision_benchmark_plumbing(args)
         if args.vision_command == "crop-preview":
             return _run_detect_crop_preview(args)
         if args.vision_command == "eval":
@@ -1436,6 +1454,39 @@ def _run_yoloe26_prototype_run(args: argparse.Namespace) -> int:
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     markdown_path.write_text(_yoloe26_summary_markdown(metrics=metrics, manifest=manifest), encoding="utf-8")
     print(json.dumps({"metrics": str(metrics_path), "manifest": str(manifest_path), **manifest["outputs"]}, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_vision_benchmark_plumbing(args: argparse.Namespace) -> int:
+    try:
+        result = run_vision_plumbing_benchmark(
+            records=args.records,
+            butterfly_rate=args.butterfly_rate,
+            detections_per_butterfly=args.detections_per_butterfly,
+            classification_mode=args.classification_mode,
+            taxonomy_candidate_table=args.taxonomy_candidate_table,
+            output_dir=args.output_dir,
+            family_top_k=args.family_top_k,
+            species_first_pass_top_k=args.species_first_pass_top_k,
+            species_rerank_top_k=args.species_rerank_top_k,
+        )
+    except Exception as exc:  # noqa: BLE001 - dev command reports compact failures.
+        print(f"benchmark-plumbing failed: {exc}", file=sys.stderr)
+        return 2
+    print(
+        json.dumps(
+            {
+                "benchmark_metrics": str(result.metrics_path),
+                "benchmark_summary": str(result.summary_path),
+                "output_dir": str(result.output_dir),
+                "records": result.metrics["records"],
+                "crops_scored": result.metrics["crops_scored"],
+                "elapsed_seconds": result.metrics["elapsed_seconds"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
