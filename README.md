@@ -61,11 +61,13 @@ canonical source records
   -> reports/review_queue.parquet for Bronze and InReview photo summaries
 ```
 
-The production default is `detector_crop` only. Whole-image BioCLIP and detector-crop segmentation remain explicit ablation/debug modes because whole-image scoring spends model time on backgrounds, labels, people, host plants, and other non-target content. YOLOE/YOLO26 output must first pass the coarse `butterfly_like` gate before BioCLIP species scoring runs.
+The production default visual mode is `detector_crop`, and the default classification mode is `target_scope_object_screening`. Whole-image BioCLIP and detector-crop segmentation remain explicit ablation/debug modes because whole-image scoring spends model time on backgrounds, labels, people, host plants, and other non-target content. YOLOE/YOLO26 output must first pass the coarse `butterfly_like` gate before BioCLIP species scoring runs; moth-like, hard-negative, no-detection, and failed-image rows remain evidence rows but are not sent to BioCLIP.
+
+Current object score fields such as `family_top3`, `species_top20`, and `species_top5` are target/scope screening fields from `SpeciesContext` and registry candidate-set labels. They are not a true family-first hierarchical classifier: `species_top20` is not constrained by a BioCLIP-selected family, and the current target-screening rerank strategy is recorded as `first_pass_top5_plus_target_if_missing` by default. The reserved `hierarchical_butterfly_classification` mode is accepted for planning and manifest recording, but non-dry scoring is guarded until the GBIF classification-table workflow is implemented.
 
 The Mac M5 Pro / 64 GB profile is `mac_m5pro_64gb`: `device=mps`, YOLOE checkpoint `yoloe-26s-seg.pt`, YOLO image size `768`, detector batch size `16`, crop batch size `24`, crop target `336`, crop padding `0.08`, zstd Parquet parts, and delete-after-commit image cleanup. Production visual parts are written as immutable zstd Parquet objects such as `evidence/stage=detect_objects/run_id=<run_id>/worker=<worker_id>/part=<part_id>.parquet`.
 
-The core Python 3.14 environment keeps heavy vision dependencies optional. `vision detect --backend fake` is available for offline tests and deterministic local plumbing. YOLOE-26, explicit YOLO26 inference checkpoints, and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent. YOLOE/YOLO26 are object finders only; BioCLIP 2.5 Huge remains the biological classifier and species scorer.
+The core Python 3.14 environment keeps heavy vision dependencies optional. `vision detect --backend fake` is available for offline tests and deterministic local plumbing. YOLOE-26, explicit YOLO26 inference checkpoints, and SAM/SAM2-style adapters are lazy-loaded from optional vision environments and fail with clear runtime errors when their dependencies are absent. YOLOE/YOLO26 are object finders only; BioCLIP 2.5 Huge provides target/scope visual screening until the guarded hierarchical classifier is implemented.
 
 Production command shape:
 
@@ -79,8 +81,12 @@ uv run biominer run \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --classification-mode target_scope_object_screening \
   --device mps \
   --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
+  --family-top-k 3 \
+  --species-first-pass-top-k 20 \
+  --species-rerank-top-k 5 \
   --delete-images-after-commit
 
 uv run biominer run \
@@ -92,8 +98,12 @@ uv run biominer run \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --classification-mode target_scope_object_screening \
   --device mps \
   --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
+  --family-top-k 3 \
+  --species-first-pass-top-k 20 \
+  --species-rerank-top-k 5 \
   --delete-images-after-commit
 
 uv run biominer run \
@@ -105,8 +115,33 @@ uv run biominer run \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --classification-mode target_scope_object_screening \
   --device mps \
   --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
+  --family-top-k 3 \
+  --species-first-pass-top-k 20 \
+  --species-rerank-top-k 5 \
+  --delete-images-after-commit
+```
+
+Reserved future hierarchical command shape:
+
+```bash
+uv run biominer run \
+  --taxon "Papilionoidea" \
+  --rank family \
+  --registry-dir s3://biominer/biominer/registry/current \
+  --output-prefix s3://biominer/biominer/runs/papilionoidea_hierarchical \
+  --storage-backend s3 \
+  --workstore-backend postgres \
+  --vision-backend yoloe26 \
+  --vision-profile mac_m5pro_64gb \
+  --classification-mode hierarchical_butterfly_classification \
+  --taxonomy-candidate-table s3://biominer/biominer/registry/current/butterfly_classification_taxa.parquet \
+  --family-top-k 3 \
+  --species-first-pass-top-k 20 \
+  --species-rerank-top-k 5 \
+  --device mps \
   --delete-images-after-commit
 ```
 
@@ -792,7 +827,7 @@ Step 2 does not make final species decisions.
 
 # Step 3 — BioCLIP 2.5 object scoring
 
-BioCLIP uses temporary image downloads and object-first scoring against registry-derived species contexts and candidate sets. YOLOE/YOLO26 provides coarse object proposals only; BioCLIP remains the biological family, genus, and species scorer.
+BioCLIP uses temporary image downloads and object-first scoring against registry-derived species contexts and candidate sets. YOLOE/YOLO26 provides coarse object proposals only; the current default BioCLIP mode is target/scope screening, not a completed family-first hierarchical classifier.
 
 BioCLIP 2.5 Huge runs through a separate Python 3.12 sidecar environment:
 

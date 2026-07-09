@@ -9,6 +9,10 @@ uv run biominer run \
   --registry-dir s3://biominer/biominer/registry/current \
   --output-prefix s3://biominer/biominer/runs/papilio_demoleus \
   --vision-profile mac_m5pro_64gb \
+  --classification-mode target_scope_object_screening \
+  --family-top-k 3 \
+  --species-first-pass-top-k 20 \
+  --species-rerank-top-k 5 \
   --device mps
 ```
 
@@ -72,7 +76,32 @@ Metadata filtering records metadata flags for review and routing. It does not pe
 
 BioCLIP is screening evidence only. The GBIF accepted taxonomic spine remains the production taxonomic identity, and geography is a candidate prior rather than validation.
 
+`target_scope_object_screening` is the current default classification mode. It scores detector crops against the run taxon scope and registry candidate-set context for target support screening. Output fields named `family_top3`, `species_top20`, and `species_top5` are therefore screening fields, not proof of a family-first classifier. They are not yet constrained by `family_top1`; the current rerank metadata records the target-screening strategy and top-k settings used for the row.
+
+`hierarchical_butterfly_classification` is reserved for the later GBIF classification-table workflow. Dry-run planning can record this mode and the future `--taxonomy-candidate-table`, but non-dry `score_bioclip` fails clearly rather than running target-scope screening silently.
+
 The Mac M5 Pro / 64 GB production profile is `mac_m5pro_64gb`. It uses `device=mps`, YOLOE checkpoint `yoloe-26s-seg.pt`, YOLO image size `768`, detector batch size `16`, BioCLIP crop batch size `24`, crop target `336`, crop padding `0.08`, zstd Parquet part files, and delete-after-commit cached image cleanup. Set `PYTORCH_ENABLE_MPS_FALLBACK=1` when running MPS sidecars.
+
+Reserved future hierarchical command shape:
+
+```bash
+uv run biominer run \
+  --taxon "Papilionoidea" \
+  --rank family \
+  --registry-dir s3://biominer/biominer/registry/current \
+  --output-prefix s3://biominer/biominer/runs/papilionoidea_hierarchical \
+  --storage-backend s3 \
+  --workstore-backend postgres \
+  --vision-backend yoloe26 \
+  --vision-profile mac_m5pro_64gb \
+  --classification-mode hierarchical_butterfly_classification \
+  --taxonomy-candidate-table s3://biominer/biominer/registry/current/butterfly_classification_taxa.parquet \
+  --family-top-k 3 \
+  --species-first-pass-top-k 20 \
+  --species-rerank-top-k 5 \
+  --device mps \
+  --delete-images-after-commit
+```
 
 ## Outputs
 

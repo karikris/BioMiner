@@ -1,6 +1,8 @@
 # YOLOE-26 Detector-First Prototype
 
-This prototype uses YOLOE-26 only as an open-vocabulary object proposal backend. BioCLIP 2.5 Huge remains BioMiner's biological classifier and species scorer.
+This prototype uses YOLOE-26 only as an open-vocabulary object proposal backend. BioCLIP 2.5 Huge provides target/scope visual screening until the guarded hierarchical classifier is implemented.
+
+The current default classification mode is `target_scope_object_screening`: BioCLIP scores YOLOE `butterfly_like` detector crops against target/scope candidate labels. Columns such as `family_top3`, `species_top20`, and `species_top5` are screening fields, not a completed family-first hierarchical classifier. The reserved `hierarchical_butterfly_classification` mode is guarded until the GBIF classification-table workflow is implemented.
 
 ## Setup
 
@@ -105,11 +107,10 @@ uv run biominer dev vision yoloe26-prototype-run \
   --species-context runs/local_debug/papilio_demoleus/species_context.json \
   --species-candidates data/registry/current/species_candidates.parquet \
   --output-dir reports/yoloe26_prototype/example \
+  --vision-profile mac_m5pro_64gb \
   --vision-runtime-python "../YOLO26/venv/bin/python" \
   --bioclip-runtime-python "../BioCLIP25/venv/bin/python" \
   --hf-cache-dir "../BioCLIP25/cache/huggingface" \
-  --device auto \
-  --checkpoint yoloe-26s-seg.pt \
   --limit 10
 ```
 
@@ -145,7 +146,7 @@ Without `--image`, the command uses a synthetic placeholder and only validates r
 - YOLOE-26 is zero-shot/open-vocabulary. It can miss butterflies and can confuse leaf, flower, textile, or label regions with insects.
 - YOLOE-26 is not taxonomic validation. It only proposes object boxes.
 - Only YOLOE `butterfly_like` detections are sent to BioCLIP in the production detector-first path.
-- BioCLIP 2.5 Huge remains the family/genus/species scorer.
+- BioCLIP 2.5 Huge remains the target/scope screening scorer until the guarded hierarchical classifier is implemented.
 - Whole-image BioCLIP is an explicit ablation/debug mode, not the production default.
 - Metrics from `yoloe26-prototype-run` are labelled heuristic unless reviewed ground truth is supplied.
 - Model files, caches, downloaded Flickr images, and generated Parquet outputs must not be committed.
