@@ -376,6 +376,7 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--yolo-batch", type=int)
     production_run.add_argument("--bioclip-model")
     production_run.add_argument("--bioclip-batch", type=int)
+    production_run.add_argument("--adaptive-batching", action="store_true")
     production_run.add_argument("--bioclip-top-k", type=int)
     production_run.add_argument(
         "--classification-mode",
@@ -508,6 +509,7 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     yoloe26_prototype.add_argument("--max-det", type=int)
     yoloe26_prototype.add_argument("--detector-batch-size", type=int)
     yoloe26_prototype.add_argument("--bioclip-batch", type=int)
+    yoloe26_prototype.add_argument("--adaptive-batching", action="store_true")
     yoloe26_prototype.add_argument("--crop-padding-ratio", type=float)
     yoloe26_prototype.add_argument("--crop-target-px", type=int)
     yoloe26_prototype.add_argument("--prompt-class", action="append", default=[])
@@ -1035,7 +1037,9 @@ def _production_vision_settings_from_args(args: argparse.Namespace) -> VisionRun
         overrides["parquet_compression"] = args.parquet_compression
     if getattr(args, "delete_images_after_commit", None) is not None:
         overrides["delete_images_after_commit"] = args.delete_images_after_commit
-    return replace(settings, **overrides) if overrides else settings
+    if getattr(args, "adaptive_batching", False):
+        overrides["adaptive_batching"] = True
+    return settings.with_overrides(**overrides) if overrides else settings.with_overrides()
 
 
 def _prototype_vision_settings_from_args(args: argparse.Namespace) -> VisionRuntimeSettings:
@@ -1072,7 +1076,9 @@ def _prototype_vision_settings_from_args(args: argparse.Namespace) -> VisionRunt
         overrides["parquet_part_rows"] = args.parquet_batch_rows
     if getattr(args, "retain_debug_crops", False):
         overrides["retain_debug_crops"] = True
-    return replace(settings, **overrides) if overrides else settings
+    if getattr(args, "adaptive_batching", False):
+        overrides["adaptive_batching"] = True
+    return settings.with_overrides(**overrides) if overrides else settings.with_overrides()
 
 
 def _classification_mode_arg(value: str) -> str:

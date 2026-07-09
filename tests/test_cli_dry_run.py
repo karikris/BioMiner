@@ -168,6 +168,7 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
     assert settings.crop_padding_ratio == 0.08
     assert settings.parquet_compression == "zstd"
     assert settings.delete_images_after_commit is True
+    assert settings.adaptive_batching is False
 
     overridden = parser.parse_args(
         [
@@ -186,6 +187,7 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
             "7",
             "--bioclip-model",
             "custom-bioclip",
+            "--adaptive-batching",
             "--no-delete-images-after-commit",
         ]
     )
@@ -195,9 +197,28 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
     assert overridden_settings.device == "cpu"
     assert overridden_settings.detector_batch_size == 7
     assert overridden_settings.bioclip_model == "custom-bioclip"
+    assert overridden_settings.adaptive_batching is True
     assert overridden_settings.delete_images_after_commit is False
     assert overridden_settings.yolo_imgsz == 768
     assert overridden_settings.crop_padding_ratio == 0.08
+
+    invalid = parser.parse_args(
+        [
+            "run",
+            "--taxon",
+            "Papilio demoleus",
+            "--registry-dir",
+            "s3://biominer/biominer/registry/current",
+            "--output-prefix",
+            "s3://biominer/biominer/runs/papilio_demoleus",
+            "--vision-profile",
+            "mac_m5pro_64gb",
+            "--yolo-batch",
+            "0",
+        ]
+    )
+    with pytest.raises(ValueError, match="detector_batch_size"):
+        _production_vision_settings_from_args(invalid)
 
 
 def test_yoloe26_prototype_profile_settings_do_not_use_hardcoded_crop_defaults() -> None:
@@ -269,6 +290,7 @@ def test_yoloe26_prototype_profile_settings_do_not_use_hardcoded_crop_defaults()
             "0.05",
             "--bioclip-batch",
             "11",
+            "--adaptive-batching",
         ]
     )
 
@@ -277,6 +299,7 @@ def test_yoloe26_prototype_profile_settings_do_not_use_hardcoded_crop_defaults()
     assert overridden_settings.yolo_imgsz == 640
     assert overridden_settings.crop_padding_ratio == 0.05
     assert overridden_settings.crop_batch_size == 11
+    assert overridden_settings.adaptive_batching is True
 
 
 def test_run_cli_parses_classification_mode_and_top_k_controls() -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 
 
 @dataclass(frozen=True)
@@ -51,6 +51,20 @@ class VisionRuntimeSettings:
     retain_debug_crops: bool = False
     debug_crop_limit: int = 500
     image_max_side_px: int = 1280
+    adaptive_batching: bool = False
+    min_detector_batch_size: int = 1
+    min_crop_batch_size: int = 1
+    max_detector_batch_size: int = 16
+    max_crop_batch_size: int = 24
+    mps_memory_safety_margin_mb: int | None = None
+
+    def with_overrides(self, **overrides: object) -> VisionRuntimeSettings:
+        allowed = {field.name for field in fields(VisionRuntimeSettings)}
+        unknown = sorted(set(overrides) - allowed)
+        if unknown:
+            raise ValueError("unknown vision runtime setting override(s): " + ", ".join(unknown))
+        cleaned = {key: value for key, value in overrides.items() if value is not None}
+        return validate_vision_runtime_settings(replace(self, **cleaned))
 
     def to_detection_policy(self, base: DetectionPolicy | None = None) -> DetectionPolicy:
         active = base or DetectionPolicy()
@@ -148,6 +162,49 @@ def runtime_profile(profile_name: str) -> RuntimeProfile:
 
 def vision_runtime_settings(profile_name: str) -> VisionRuntimeSettings:
     return runtime_profile(profile_name).vision_settings
+
+
+def validate_vision_runtime_settings(settings: VisionRuntimeSettings) -> VisionRuntimeSettings:
+    _positive_int(settings.yolo_imgsz, "yolo_imgsz")
+    _positive_int(settings.yolo_max_det, "yolo_max_det")
+    _positive_int(settings.detector_batch_size, "detector_batch_size")
+    _positive_int(settings.crop_batch_size, "crop_batch_size")
+    _positive_int(settings.min_detector_batch_size, "min_detector_batch_size")
+    _positive_int(settings.min_crop_batch_size, "min_crop_batch_size")
+    _positive_int(settings.max_detector_batch_size, "max_detector_batch_size")
+    _positive_int(settings.max_crop_batch_size, "max_crop_batch_size")
+    _positive_int(settings.crop_target_px, "crop_target_px")
+    _positive_int(settings.bioclip_top_k, "bioclip_top_k")
+    _positive_int(settings.parquet_part_rows, "parquet_part_rows")
+    _positive_int(settings.image_max_side_px, "image_max_side_px")
+    _non_negative_int(settings.debug_crop_limit, "debug_crop_limit")
+    if settings.mps_memory_safety_margin_mb is not None:
+        _positive_int(settings.mps_memory_safety_margin_mb, "mps_memory_safety_margin_mb")
+    if settings.min_detector_batch_size > settings.max_detector_batch_size:
+        raise ValueError("min_detector_batch_size must be <= max_detector_batch_size")
+    if settings.min_crop_batch_size > settings.max_crop_batch_size:
+        raise ValueError("min_crop_batch_size must be <= max_crop_batch_size")
+    if not settings.min_detector_batch_size <= settings.detector_batch_size <= settings.max_detector_batch_size:
+        raise ValueError("detector_batch_size must be between min_detector_batch_size and max_detector_batch_size")
+    if not settings.min_crop_batch_size <= settings.crop_batch_size <= settings.max_crop_batch_size:
+        raise ValueError("crop_batch_size must be between min_crop_batch_size and max_crop_batch_size")
+    if not 0.0 <= float(settings.crop_padding_ratio) <= 0.5:
+        raise ValueError("crop_padding_ratio must be between 0.0 and 0.5")
+    if not 0.0 <= float(settings.yolo_conf) <= 1.0:
+        raise ValueError("yolo_conf must be between 0.0 and 1.0")
+    if not 0.0 <= float(settings.yolo_iou) <= 1.0:
+        raise ValueError("yolo_iou must be between 0.0 and 1.0")
+    return settings
+
+
+def _positive_int(value: object, name: str) -> None:
+    if int(value) <= 0:
+        raise ValueError(f"{name} must be positive")
+
+
+def _non_negative_int(value: object, name: str) -> None:
+    if int(value) < 0:
+        raise ValueError(f"{name} must be non-negative")
 
 
 def detection_is_bioclip_eligible(row: dict[str, object], policy: DetectionPolicy | None = None) -> bool:

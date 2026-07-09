@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -13,7 +14,7 @@ from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import COARSE_DETECTOR_LABELS, DecodedImage, DetectionCandidate, FakeObjectDetector, normalize_detector_label
 from biominer.detection.evaluate import evaluate_xie_style, iou_xyxy, joint_detection_species_correct
 from biominer.detection.pipeline import run_detection_pipeline
-from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, VisionRuntimeSettings
+from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, VisionRuntimeSettings, validate_vision_runtime_settings
 from biominer.detection.schema import build_detection_rows, detection_id_for
 from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
 
@@ -88,6 +89,45 @@ def test_vision_runtime_settings_bridge_existing_detection_policies() -> None:
     assert runtime.parquet_batch_rows == 2048
 
 
+def test_vision_runtime_settings_validate_overrides_and_adaptive_manifest_fields() -> None:
+    settings = VisionRuntimeSettings().with_overrides(
+        adaptive_batching=True,
+        detector_batch_size=8,
+        crop_batch_size=12,
+        min_detector_batch_size=2,
+        max_detector_batch_size=16,
+        min_crop_batch_size=3,
+        max_crop_batch_size=24,
+        mps_memory_safety_margin_mb=1024,
+    )
+
+    payload = asdict(settings)
+
+    assert validate_vision_runtime_settings(settings) == settings
+    assert settings.adaptive_batching is True
+    assert payload["adaptive_batching"] is True
+    assert payload["min_detector_batch_size"] == 2
+    assert payload["max_detector_batch_size"] == 16
+    assert payload["min_crop_batch_size"] == 3
+    assert payload["max_crop_batch_size"] == 24
+    assert payload["mps_memory_safety_margin_mb"] == 1024
+
+
+def test_vision_runtime_settings_reject_invalid_overrides() -> None:
+    with pytest.raises(ValueError, match="detector_batch_size"):
+        VisionRuntimeSettings().with_overrides(detector_batch_size=0)
+    with pytest.raises(ValueError, match="crop_batch_size"):
+        VisionRuntimeSettings().with_overrides(crop_batch_size=25)
+    with pytest.raises(ValueError, match="min_detector_batch_size"):
+        VisionRuntimeSettings().with_overrides(min_detector_batch_size=9, max_detector_batch_size=4)
+    with pytest.raises(ValueError, match="crop_padding_ratio"):
+        VisionRuntimeSettings().with_overrides(crop_padding_ratio=0.75)
+    with pytest.raises(ValueError, match="crop_target_px"):
+        VisionRuntimeSettings().with_overrides(crop_target_px=0)
+    with pytest.raises(ValueError, match="unknown vision runtime setting"):
+        VisionRuntimeSettings().with_overrides(not_a_setting=True)
+
+
 def test_detection_and_run_sources_do_not_create_reviewed_box_training_artifacts() -> None:
     source_paths = (
         *sorted(Path("src/biominer/detection").glob("*.py")),
@@ -155,6 +195,12 @@ def test_mac_m5pro_profile_matches_local_apple_silicon_defaults() -> None:
     assert settings.yolo_max_det == 8
     assert settings.detector_batch_size == 16
     assert settings.crop_batch_size == 24
+    assert settings.adaptive_batching is False
+    assert settings.min_detector_batch_size == 1
+    assert settings.max_detector_batch_size == 16
+    assert settings.min_crop_batch_size == 1
+    assert settings.max_crop_batch_size == 24
+    assert settings.mps_memory_safety_margin_mb is None
     assert settings.crop_padding_ratio == 0.08
     assert settings.crop_target_px == 336
     assert settings.bioclip_model == "hf-hub:imageomics/bioclip-2.5-vith14"
@@ -168,6 +214,12 @@ def test_mac_m5pro_profile_matches_local_apple_silicon_defaults() -> None:
     assert config["yolo_imgsz"] == settings.yolo_imgsz
     assert config["detector_batch_size"] == settings.detector_batch_size
     assert config["crop_batch_size"] == settings.crop_batch_size
+    assert config["adaptive_batching"] == settings.adaptive_batching
+    assert config["min_detector_batch_size"] == settings.min_detector_batch_size
+    assert config["max_detector_batch_size"] == settings.max_detector_batch_size
+    assert config["min_crop_batch_size"] == settings.min_crop_batch_size
+    assert config["max_crop_batch_size"] == settings.max_crop_batch_size
+    assert config["mps_memory_safety_margin_mb"] == settings.mps_memory_safety_margin_mb
     assert config["crop_padding_ratio"] == settings.crop_padding_ratio
     assert config["crop_target_px"] == settings.crop_target_px
     assert config["bioclip_model"] == settings.bioclip_model
