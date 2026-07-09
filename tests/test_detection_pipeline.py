@@ -34,6 +34,16 @@ def _wide_white_image() -> DecodedImage:
     return DecodedImage(width=4, height=2, mode="RGB", data=bytes([255, 255, 255] * 8), source_uri="memory://wide")
 
 
+def _checker_image() -> DecodedImage:
+    pixels = bytes(
+        channel
+        for y in range(4)
+        for x in range(4)
+        for channel in ([255, 255, 255] if (x + y) % 2 else [0, 0, 0])
+    )
+    return DecodedImage(width=4, height=4, mode="RGB", data=pixels, source_uri="memory://checker")
+
+
 def test_detection_policy_defaults_match_object_pipeline_profile() -> None:
     policy = DetectionPolicy()
     run_policy = DetectionRunPolicy()
@@ -408,6 +418,14 @@ def test_cropper_preserves_aspect_ratio_with_letterbox_padding() -> None:
     assert rows[1] == bytes([255, 255, 255] * 4)
     assert rows[2] == bytes([255, 255, 255] * 4)
     assert rows[3] == bytes([0, 0, 0] * 4)
+
+
+def test_cropper_uses_lanczos_resize_when_pillow_is_available() -> None:
+    pytest.importorskip("PIL.Image")
+
+    crop = crop_with_padding(_checker_image(), bbox_xyxy=(0.0, 0.0, 4.0, 4.0), padding_ratio=0.0, target_px=2)
+
+    assert any(0 < value < 255 for value in crop.encoded_bytes)
 
 
 def test_fake_detector_returns_multiple_rows_for_one_photo() -> None:

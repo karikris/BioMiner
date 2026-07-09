@@ -27,7 +27,7 @@ def crop_with_padding(
         raise ValueError("target_px must be positive")
     clamped = _clamped_bbox(image, bbox_xyxy)
     padded = _padded_bbox(image, bbox_xyxy, padding_ratio=padding_ratio)
-    resized = _resize_nearest(image, padded, target_px=target_px)
+    resized = _resize_crop(image, padded, target_px=target_px)
     digest = "sha256:" + hashlib.sha256(resized).hexdigest()
     return CropResult(
         encoded_bytes=resized,
@@ -65,10 +65,34 @@ def _padded_bbox(image: DecodedImage, bbox: tuple[float, float, float, float], *
     return [_round(left), _round(top), _round(right), _round(bottom)]
 
 
-def _resize_nearest(image: DecodedImage, bbox: list[float], *, target_px: int) -> bytes:
+def _resize_crop(image: DecodedImage, bbox: list[float], *, target_px: int) -> bytes:
+    try:
+        from PIL import Image
+    except ImportError:
+        return _resize_nearest(image, bbox, target_px=target_px)
+    try:
+        return _resize_crop_lanczos(image, bbox, target_px=target_px, image_module=Image)
+    except Exception:
+        return _resize_nearest(image, bbox, target_px=target_px)
+
+
+def _resize_crop_lanczos(image: DecodedImage, bbox: list[float], *, target_px: int, image_module) -> bytes:
     left, top, right, bottom = bbox
     width = max(1e-9, right - left)
     height = max(1e-9, bottom - top)
+    content_width, content_height, x_offset, y_offset = _letterboxed_size(width=width, height=height, target_px=target_px)
+    source = image_module.frombytes("RGB", (image.width, image.height), image.data)
+    resized = source.resize(
+        (content_width, content_height),
+        resample=image_module.Resampling.LANCZOS,
+        box=tuple(bbox),
+    )
+    output = image_module.new("RGB", (target_px, target_px), (0, 0, 0))
+    output.paste(resized, (x_offset, y_offset))
+    return output.tobytes()
+
+
+def _letterboxed_size(*, width: float, height: float, target_px: int) -> tuple[int, int, int, int]:
     if width >= height:
         content_width = target_px
         content_height = max(1, round(target_px * (height / width)))
@@ -77,6 +101,14 @@ def _resize_nearest(image: DecodedImage, bbox: list[float], *, target_px: int) -
         content_width = max(1, round(target_px * (width / height)))
     x_offset = (target_px - content_width) // 2
     y_offset = (target_px - content_height) // 2
+    return content_width, content_height, x_offset, y_offset
+
+
+def _resize_nearest(image: DecodedImage, bbox: list[float], *, target_px: int) -> bytes:
+    left, top, right, bottom = bbox
+    width = max(1e-9, right - left)
+    height = max(1e-9, bottom - top)
+    content_width, content_height, x_offset, y_offset = _letterboxed_size(width=width, height=height, target_px=target_px)
     output = bytearray(bytes(target_px * target_px * 3))
     for y in range(content_height):
         source_y = top + ((y + 0.5) / content_height) * height
