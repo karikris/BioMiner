@@ -14,14 +14,12 @@ from biominer.config import BioMinerConfig, RuntimeConfig, StorageConfig, WorkSt
 from biominer.cli import (
     _detect_boxes_backend,
     _production_vision_settings_from_args,
-    _prototype_vision_settings_from_args,
-    _yoloe26_metrics,
     build_parser,
     load_decoded_image_from_record,
     run,
 )
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION, TARGET_SCOPE_OBJECT_SCREENING
-from biominer.detection.detector_base import DecodedImage, DetectionCandidate
+from biominer.detection.detector_base import DecodedImage
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 from biominer.registry.classification_table import (
     CLASSIFICATION_TABLE_VERSION,
@@ -223,90 +221,6 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
     )
     with pytest.raises(ValueError, match="detector_batch_size"):
         _production_vision_settings_from_args(invalid)
-
-
-def test_yoloe26_prototype_profile_settings_do_not_use_hardcoded_crop_defaults() -> None:
-    parser = build_parser()
-    default_args = parser.parse_args(
-        [
-            "dev",
-            "vision",
-            "yoloe26-prototype-run",
-            "--input",
-            "filtered.parquet",
-            "--species-context",
-            "species_context.json",
-            "--output-dir",
-            "reports/yoloe26",
-        ]
-    )
-
-    default_settings = _prototype_vision_settings_from_args(default_args)
-
-    assert default_settings.profile_name == "default"
-    assert default_settings.device == "auto"
-    assert default_settings.yolo_imgsz == 640
-    assert default_settings.detector_batch_size == 4
-    assert default_settings.crop_batch_size == 24
-    assert default_settings.crop_padding_ratio == 0.12
-
-    profile_args = parser.parse_args(
-        [
-            "dev",
-            "vision",
-            "yoloe26-prototype-run",
-            "--input",
-            "filtered.parquet",
-            "--species-context",
-            "species_context.json",
-            "--output-dir",
-            "reports/yoloe26",
-            "--vision-profile",
-            "mac_m5pro_64gb",
-        ]
-    )
-
-    profile_settings = _prototype_vision_settings_from_args(profile_args)
-
-    assert profile_settings.profile_name == "mac_m5pro_64gb"
-    assert profile_settings.device == "mps"
-    assert profile_settings.yolo_imgsz == 768
-    assert profile_settings.detector_batch_size == 16
-    assert profile_settings.crop_batch_size == 24
-    assert profile_settings.crop_padding_ratio == 0.08
-
-    overridden = parser.parse_args(
-        [
-            "dev",
-            "vision",
-            "yoloe26-prototype-run",
-            "--input",
-            "filtered.parquet",
-            "--species-context",
-            "species_context.json",
-            "--output-dir",
-            "reports/yoloe26",
-            "--vision-profile",
-            "mac_m5pro_64gb",
-            "--imgsz",
-            "640",
-            "--crop-padding-ratio",
-            "0.05",
-            "--bioclip-batch",
-            "11",
-            "--adaptive-batching",
-            "--yolo-sidecar-transport",
-            "image_path",
-        ]
-    )
-
-    overridden_settings = _prototype_vision_settings_from_args(overridden)
-
-    assert overridden_settings.yolo_imgsz == 640
-    assert overridden_settings.crop_padding_ratio == 0.05
-    assert overridden_settings.crop_batch_size == 11
-    assert overridden_settings.adaptive_batching is True
-    assert overridden_settings.yolo_sidecar_transport == "image_path"
 
 
 def test_run_cli_parses_classification_mode_and_top_k_controls() -> None:
@@ -3315,30 +3229,14 @@ def test_yoloe26_runtime_commands_parse_with_applications_defaults() -> None:
     runtime = parser.parse_args(["dev", "vision", "yoloe26-runtime-check", "--device", "mps"])
     prefetch = parser.parse_args(["dev", "vision", "yoloe26-prefetch", "--checkpoint", "yoloe-26s-seg.pt"])
     smoke = parser.parse_args(["dev", "vision", "yoloe26-smoke", "--image", "manual.jpg"])
-    prototype = parser.parse_args(
-        [
-            "dev",
-            "vision",
-            "yoloe26-prototype-run",
-            "--input",
-            "filtered.parquet",
-            "--species-context",
-            "species_context.json",
-            "--output-dir",
-            "reports/yoloe26",
-            "--limit",
-            "10",
-        ]
-    )
 
     assert runtime.vision_command == "yoloe26-runtime-check"
     assert runtime.dev_command == "vision"
     assert runtime.runtime_python.endswith("/YOLO26/venv/bin/python")
     assert prefetch.checkpoint == "yoloe-26s-seg.pt"
     assert smoke.image == "manual.jpg"
-    assert prototype.vision_runtime_python.endswith("/YOLO26/venv/bin/python")
-    assert prototype.bioclip_runtime_python.endswith("/BioCLIP25/venv/bin/python")
-    assert prototype.limit == 10
+    with pytest.raises(SystemExit):
+        parser.parse_args(["dev", "vision", "yoloe26-prototype-run"])
 
 
 def test_public_vision_surface_excludes_debug_runtime_commands() -> None:
@@ -3403,61 +3301,6 @@ def test_yoloe26_smoke_resolves_paths_before_sidecar_run(tmp_path, capsys, monke
     assert command[5] == str((tmp_path / "smoke-output").resolve())
     assert command[6] == str(image_path.resolve())
     assert calls[0]["cwd"] == str(tmp_path / "YOLO26" / "models")
-
-
-def test_yoloe26_prototype_metrics_aggregate_tiny_frames() -> None:
-    detections = pl.DataFrame(
-        [
-            {"detection_status": "detected", "detector_label": "butterfly_like", "detector_score": 0.8},
-            {"detection_status": "detected", "detector_label": "hard_negative", "detector_score": 0.2},
-            {"detection_status": "no_detection", "detector_label": None, "detector_score": 0.0},
-        ]
-    )
-    scores = pl.DataFrame(
-        [
-            {
-                "occurrence_bin": "silver",
-                "species_top1_scientific_name": "Danaus plexippus",
-                "species_top1_score": 0.7,
-                "species_top1_margin": 0.3,
-            },
-            {
-                "occurrence_bin": "bronze",
-                "species_top1_scientific_name": "Danaus plexippus",
-                "species_top1_score": 0.4,
-                "species_top1_margin": 0.1,
-            },
-        ]
-    )
-    photo_summary = pl.DataFrame([{"photo_occurrence_bin": "silver"}, {"photo_occurrence_bin": "bin"}])
-
-    metrics = _yoloe26_metrics(
-        detection_result=SimpleNamespace(
-            frame=detections,
-            records_seen=3,
-            images_loaded=2,
-            image_failures=1,
-            detections_written=2,
-            crops_created=2,
-        ),
-        score_frame=scores,
-        photo_summary=photo_summary,
-        checkpoint="yoloe-26s-seg.pt",
-        prompt_classes=("butterfly",),
-        device="mps",
-        imgsz=640,
-        conf=0.2,
-        iou=0.5,
-    )
-
-    assert metrics["metrics_kind"] == "heuristic_without_ground_truth"
-    assert metrics["records_seen"] == 3
-    assert metrics["detections_by_detector_label"] == {"butterfly_like": 1, "hard_negative": 1}
-    assert metrics["hard_negative_count"] == 1
-    assert metrics["occurrence_bin_counts"] == {"bronze": 1, "silver": 1}
-    assert metrics["photo_occurrence_bin_counts"] == {"bin": 1, "silver": 1}
-    assert metrics["mean_species_top1_score"] == 0.55
-    assert metrics["top20_bioclip_top1_species"] == [{"value": "Danaus plexippus", "count": 2}]
 
 
 def _fake_cli_image(record: dict[str, object]):

@@ -7,11 +7,11 @@ from html import escape
 import io
 import json
 import logging
-import math
 import os
 from pathlib import Path
 import subprocess
 import sys
+from typing import Any
 
 import polars as pl
 
@@ -69,7 +69,6 @@ from biominer.evaluation.xie_style import EVALUATION_PROFILE as XIE_STYLE_EVALUA
 from biominer.evaluation.xie_style import evaluate_xie_style_hierarchical
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_comments.comment_review import (
-    CommentReviewState,
     apply_comment_review_decisions_to_parquet,
     build_comment_review_queue_from_parquet,
     review_comments_once,
@@ -525,36 +524,6 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     yoloe26_smoke.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
     yoloe26_smoke.add_argument("--image")
     yoloe26_smoke.add_argument("--output-dir", default="reports/yoloe26_smoke")
-    yoloe26_prototype = subparsers.add_parser("yoloe26-prototype-run")
-    yoloe26_prototype.add_argument("--input", required=True)
-    yoloe26_prototype.add_argument("--species-context", required=True)
-    yoloe26_prototype.add_argument("--species-candidates")
-    yoloe26_prototype.add_argument("--output-dir", required=True)
-    yoloe26_prototype.add_argument("--vision-runtime-python", default=YOLOE26_RUNTIME_PYTHON)
-    yoloe26_prototype.add_argument("--bioclip-runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
-    yoloe26_prototype.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
-    yoloe26_prototype.add_argument("--cache-root", default=str(YOLOE26_RUNTIME_ROOT / "cache" / "images"))
-    yoloe26_prototype.add_argument("--crop-temp-dir", default=str(YOLOE26_RUNTIME_ROOT / "cache" / "object_crops"))
-    yoloe26_prototype.add_argument("--vision-profile", choices=("mac_m5pro_64gb",))
-    yoloe26_prototype.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"))
-    yoloe26_prototype.add_argument("--checkpoint")
-    yoloe26_prototype.add_argument("--yolo-sidecar-transport", choices=("json_b64", "image_path"))
-    yoloe26_prototype.add_argument("--limit", type=int)
-    yoloe26_prototype.add_argument("--retain-debug-crops", action="store_true")
-    yoloe26_prototype.add_argument("--ablation-mode", choices=("whole_image", "detector_crop", "detector_crop_segmentation"), default="detector_crop")
-    yoloe26_prototype.add_argument("--also-whole-image", action="store_true")
-    yoloe26_prototype.add_argument("--parquet-batch-rows", type=int, default=10000)
-    yoloe26_prototype.add_argument("--imgsz", type=int)
-    yoloe26_prototype.add_argument("--conf", type=float)
-    yoloe26_prototype.add_argument("--iou", type=float)
-    yoloe26_prototype.add_argument("--max-det", type=int)
-    yoloe26_prototype.add_argument("--detector-batch-size", type=int)
-    yoloe26_prototype.add_argument("--bioclip-batch", type=int)
-    yoloe26_prototype.add_argument("--adaptive-batching", action="store_true")
-    yoloe26_prototype.add_argument("--crop-padding-ratio", type=float)
-    yoloe26_prototype.add_argument("--crop-target-px", type=int)
-    yoloe26_prototype.add_argument("--prompt-class", action="append", default=[])
-    yoloe26_prototype.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
     benchmark = subparsers.add_parser("benchmark-plumbing")
     benchmark.add_argument("--records", type=int, default=1000)
     benchmark.add_argument("--butterfly-rate", type=float, default=0.25)
@@ -632,8 +601,6 @@ def run(args: argparse.Namespace) -> int:
             return _run_yoloe26_prefetch(args)
         if args.vision_command == "yoloe26-smoke":
             return _run_yoloe26_smoke(args)
-        if args.vision_command == "yoloe26-prototype-run":
-            return _run_yoloe26_prototype_run(args)
         if args.vision_command == "benchmark-plumbing":
             return _run_vision_benchmark_plumbing(args)
         if args.vision_command == "benchmark-live-m5pro":
@@ -1287,47 +1254,6 @@ def _production_vision_settings_from_args(args: argparse.Namespace) -> VisionRun
     return settings.with_overrides(**overrides) if overrides else settings.with_overrides()
 
 
-def _prototype_vision_settings_from_args(args: argparse.Namespace) -> VisionRuntimeSettings:
-    settings = (
-        vision_runtime_settings(args.vision_profile)
-        if getattr(args, "vision_profile", None)
-        else VisionRuntimeSettings(
-            parquet_part_rows=int(getattr(args, "parquet_batch_rows", 10000) or 10000),
-            delete_images_after_commit=False,
-        )
-    )
-    overrides: dict[str, object] = {}
-    if getattr(args, "device", None) is not None:
-        overrides["device"] = args.device
-    if getattr(args, "checkpoint", None) is not None:
-        overrides["yolo_checkpoint"] = args.checkpoint
-    if getattr(args, "yolo_sidecar_transport", None) is not None:
-        overrides["yolo_sidecar_transport"] = args.yolo_sidecar_transport
-    if getattr(args, "imgsz", None) is not None:
-        overrides["yolo_imgsz"] = args.imgsz
-    if getattr(args, "conf", None) is not None:
-        overrides["yolo_conf"] = args.conf
-    if getattr(args, "iou", None) is not None:
-        overrides["yolo_iou"] = args.iou
-    if getattr(args, "max_det", None) is not None:
-        overrides["yolo_max_det"] = args.max_det
-    if getattr(args, "detector_batch_size", None) is not None:
-        overrides["detector_batch_size"] = args.detector_batch_size
-    if getattr(args, "bioclip_batch", None) is not None:
-        overrides["crop_batch_size"] = args.bioclip_batch
-    if getattr(args, "crop_padding_ratio", None) is not None:
-        overrides["crop_padding_ratio"] = args.crop_padding_ratio
-    if getattr(args, "crop_target_px", None) is not None:
-        overrides["crop_target_px"] = args.crop_target_px
-    if getattr(args, "parquet_batch_rows", None) is not None:
-        overrides["parquet_part_rows"] = args.parquet_batch_rows
-    if getattr(args, "retain_debug_crops", False):
-        overrides["retain_debug_crops"] = True
-    if getattr(args, "adaptive_batching", False):
-        overrides["adaptive_batching"] = True
-    return settings.with_overrides(**overrides) if overrides else settings.with_overrides()
-
-
 def _classification_mode_arg(value: str) -> str:
     try:
         return normalize_classification_mode(value)
@@ -1601,158 +1527,6 @@ def _run_yoloe26_smoke(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_yoloe26_prototype_run(args: argparse.Namespace) -> int:
-    vision_python = Path(args.vision_runtime_python).expanduser()
-    bioclip_python = Path(args.bioclip_runtime_python).expanduser()
-    if not vision_python.exists():
-        print(json.dumps({"error": f"YOLOE-26 runtime Python not found: {vision_python}"}, indent=2, sort_keys=True))
-        return 2
-    if not bioclip_python.exists():
-        print(json.dumps({"error": f"BioCLIP runtime Python not found: {bioclip_python}"}, indent=2, sort_keys=True))
-        return 2
-
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    records = pl.read_parquet(args.input)
-    if args.limit is not None and args.limit > 0:
-        records = records.head(args.limit)
-        canonical_records_path = output_dir / "canonical_records_limited_yoloe26.parquet"
-        records.write_parquet(canonical_records_path)
-    else:
-        canonical_records_path = Path(args.input)
-
-    detections_path = output_dir / "object_detections_yoloe26.parquet"
-    scores_path = output_dir / "object_bioclip_scores_yoloe26.parquet"
-    joined_path = output_dir / "object_evidence_joined_yoloe26.parquet"
-    summary_path = output_dir / "photo_evidence_summary_yoloe26.parquet"
-    metrics_path = output_dir / "yoloe26_metrics.json"
-    manifest_path = output_dir / "yoloe26_run_manifest.json"
-    markdown_path = output_dir / "yoloe26_summary.md"
-
-    from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
-
-    settings = _prototype_vision_settings_from_args(args)
-    detector = YoloE26SidecarObjectDetector(
-        runtime_python=str(vision_python),
-        checkpoint=settings.yolo_checkpoint,
-        device=settings.device,
-        imgsz=settings.yolo_imgsz,
-        conf=settings.yolo_conf,
-        iou=settings.yolo_iou,
-        max_det=settings.yolo_max_det,
-        prompt_classes=_yoloe26_prompt_classes(args),
-        transport=settings.yolo_sidecar_transport,
-    )
-    detection_result = run_detection_pipeline(
-        records=records.to_dicts(),
-        detector=detector,
-        output_path=detections_path,
-        image_loader=lambda record: load_decoded_image_from_record(record, cache_root=args.cache_root),
-        detection_policy=DetectionPolicy(
-            backend="yoloe26",
-            box_score_threshold=settings.yolo_conf,
-            nms_iou_threshold=settings.yolo_iou,
-            max_boxes_per_image=settings.yolo_max_det,
-            crop_padding_ratio=settings.crop_padding_ratio,
-            crop_target_px=settings.crop_target_px,
-            retain_debug_crops=args.retain_debug_crops,
-        ),
-        run_policy=DetectionRunPolicy(
-            detector_batch_size=settings.detector_batch_size,
-            crop_batch_size=settings.crop_batch_size,
-            parquet_batch_rows=settings.parquet_part_rows,
-            adaptive_batching=settings.adaptive_batching,
-            min_detector_batch_size=settings.min_detector_batch_size,
-        ),
-    )
-
-    context = SpeciesContext.read_json(args.species_context)
-    candidate_set = _build_candidate_set_for_cli(
-        context,
-        command="dev vision yoloe26-prototype-run",
-        species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None,
-        records=records.to_dicts(),
-    )
-    if isinstance(candidate_set, int):
-        return candidate_set
-    runtime = _bioclip_runtime(runtime_python=bioclip_python)
-    scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=settings.device)
-    try:
-        object_scorer = EphemeralCropBioClipScorer(
-            scorer=scorer,
-            image_loader=lambda item: load_decoded_image_from_record(item, cache_root=args.cache_root),
-            temp_dir=args.crop_temp_dir,
-            crop_padding_ratio=settings.crop_padding_ratio,
-            crop_target_px=settings.crop_target_px,
-            model_id="bioclip2_5",
-            model_version="bioclip2_5_huge",
-            model_checkpoint=BIOCLIP_25_HUGE_REVISION,
-            retain_debug_crops=settings.retain_debug_crops,
-            segmenter=make_segmenter("none"),
-        )
-        score_result = screen_object_detections(
-            canonical_records=records,
-            detections=detection_result.frame,
-            species_context=context,
-            candidate_set=candidate_set,
-            scorer=object_scorer,
-            output_path=scores_path,
-            ablation_mode=args.ablation_mode,
-            parquet_batch_rows=settings.parquet_part_rows,
-            bioclip_batch_size=settings.crop_batch_size,
-            adaptive_batching=settings.adaptive_batching,
-            min_bioclip_batch_size=settings.min_crop_batch_size,
-        )
-    finally:
-        scorer.close()
-
-    evidence_outputs = write_object_evidence_outputs(
-        canonical_records_path=canonical_records_path,
-        detections_path=detections_path,
-        scores_path=scores_path,
-        joined_output_path=joined_path,
-        photo_summary_output_path=summary_path,
-        species_context=context,
-    )
-    photo_summary = pl.read_parquet(evidence_outputs.photo_evidence_summary)
-    metrics = _yoloe26_metrics(
-        detection_result=detection_result,
-        score_frame=score_result.frame,
-        photo_summary=photo_summary,
-        checkpoint=settings.yolo_checkpoint,
-        prompt_classes=_yoloe26_prompt_classes(args),
-        device=settings.device,
-        imgsz=settings.yolo_imgsz,
-        conf=settings.yolo_conf,
-        iou=settings.yolo_iou,
-    )
-    metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
-    manifest = {
-        "input": str(args.input),
-        "canonical_records_path": str(canonical_records_path),
-        "species_context": str(args.species_context),
-        "species_candidates": args.species_candidates,
-        "vision_runtime_python": str(vision_python),
-        "bioclip_runtime_python": str(bioclip_python),
-        "vision_profile": args.vision_profile,
-        "vision_settings": asdict(settings),
-        "outputs": {
-            "object_detections": str(detections_path),
-            "object_bioclip_scores": str(scores_path),
-            "object_evidence_joined": str(evidence_outputs.object_evidence_joined),
-            "photo_evidence_summary": str(evidence_outputs.photo_evidence_summary),
-            "metrics": str(metrics_path),
-            "summary": str(markdown_path),
-        },
-        "also_whole_image_requested": bool(args.also_whole_image),
-        "also_whole_image_status": "not_instrumented",
-    }
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-    markdown_path.write_text(_yoloe26_summary_markdown(metrics=metrics, manifest=manifest), encoding="utf-8")
-    print(json.dumps({"metrics": str(metrics_path), "manifest": str(manifest_path), **manifest["outputs"]}, indent=2, sort_keys=True))
-    return 0
-
-
 def _run_vision_benchmark_plumbing(args: argparse.Namespace) -> int:
     try:
         result = run_vision_plumbing_benchmark(
@@ -1950,58 +1724,6 @@ def _runtime_root_from_python(runtime_python: str | Path, *, fallback: Path) -> 
     return fallback
 
 
-def _yoloe26_metrics(
-    *,
-    detection_result: object,
-    score_frame: pl.DataFrame,
-    photo_summary: pl.DataFrame,
-    checkpoint: str,
-    prompt_classes: tuple[str, ...],
-    device: str,
-    imgsz: int,
-    conf: float,
-    iou: float,
-) -> dict[str, object]:
-    detections = detection_result.frame
-    detected = detections.filter(pl.col("detection_status") == "detected") if "detection_status" in detections.columns else detections
-    species_scores = _numeric_values(score_frame, "species_top1_score")
-    species_margins = _numeric_values(score_frame, "species_top1_margin")
-    detector_scores = _numeric_values(detected, "detector_score")
-    return {
-        "metrics_kind": "heuristic_without_ground_truth",
-        "records_seen": int(detection_result.records_seen),
-        "images_loaded": int(detection_result.images_loaded),
-        "image_failures": int(detection_result.image_failures),
-        "detections_written": int(detection_result.detections_written),
-        "adaptive_batching_enabled": bool(getattr(detection_result, "adaptive_batching_enabled", False)),
-        "detector_batch_retries": int(getattr(detection_result, "detector_batch_retries", 0)),
-        "detector_batch_size_initial": int(getattr(detection_result, "detector_batch_size_initial", 0)),
-        "detector_batch_size_final": int(getattr(detection_result, "detector_batch_size_final", 0)),
-        "detector_batch_size_min": int(getattr(detection_result, "detector_batch_size_min", 1)),
-        "no_detection_count": _count_equals(detections, "detection_status", "no_detection"),
-        "crops_created": int(detection_result.crops_created),
-        "crops_scored": int(score_frame.height),
-        "detections_by_detector_label": _value_counts(detected, "detector_label"),
-        "hard_negative_count": _count_equals(detected, "detector_label", "hard_negative"),
-        "occurrence_bin_counts": _value_counts(score_frame, "occurrence_bin"),
-        "photo_occurrence_bin_counts": _value_counts(photo_summary, "photo_occurrence_bin"),
-        "mean_detector_score": _mean(detector_scores),
-        "median_detector_score": _median(detector_scores),
-        "mean_species_top1_score": _mean(species_scores),
-        "median_species_top1_score": _median(species_scores),
-        "mean_species_margin": _mean(species_margins),
-        "median_species_margin": _median(species_margins),
-        "top20_bioclip_top1_species": _top_counts(score_frame, "species_top1_scientific_name", limit=20),
-        "top20_detector_labels": _top_counts(detected, "detector_label", limit=20),
-        "checkpoint": checkpoint,
-        "prompt_classes": list(prompt_classes),
-        "device": device,
-        "imgsz": imgsz,
-        "conf": conf,
-        "iou": iou,
-    }
-
-
 def _value_counts(frame: pl.DataFrame, column: str) -> dict[str, int]:
     counts: dict[str, int] = {}
     if column not in frame.columns:
@@ -2012,71 +1734,6 @@ def _value_counts(frame: pl.DataFrame, column: str) -> dict[str, int]:
             continue
         counts[text] = counts.get(text, 0) + 1
     return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
-
-
-def _top_counts(frame: pl.DataFrame, column: str, *, limit: int) -> list[dict[str, object]]:
-    return [{"value": key, "count": count} for key, count in list(_value_counts(frame, column).items())[:limit]]
-
-
-def _count_equals(frame: pl.DataFrame, column: str, expected: str) -> int:
-    if column not in frame.columns:
-        return 0
-    return sum(1 for value in frame.get_column(column).to_list() if str(value or "") == expected)
-
-
-def _numeric_values(frame: pl.DataFrame, column: str) -> list[float]:
-    if column not in frame.columns:
-        return []
-    values: list[float] = []
-    for value in frame.get_column(column).to_list():
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(number):
-            values.append(number)
-    return values
-
-
-def _mean(values: list[float]) -> float | None:
-    return sum(values) / len(values) if values else None
-
-
-def _median(values: list[float]) -> float | None:
-    if not values:
-        return None
-    ordered = sorted(values)
-    midpoint = len(ordered) // 2
-    if len(ordered) % 2:
-        return ordered[midpoint]
-    return (ordered[midpoint - 1] + ordered[midpoint]) / 2
-
-
-def _yoloe26_summary_markdown(*, metrics: dict[str, object], manifest: dict[str, object]) -> str:
-    lines = [
-        "# YOLOE-26 Prototype Summary",
-        "",
-        "Metrics are heuristic because no reviewed ground-truth boxes or species labels were supplied.",
-        "",
-        f"- Records seen: {metrics['records_seen']}",
-        f"- Images loaded: {metrics['images_loaded']}",
-        f"- Image failures: {metrics['image_failures']}",
-        f"- Detections written: {metrics['detections_written']}",
-        f"- Crops scored: {metrics['crops_scored']}",
-        f"- Mean detector score: {metrics['mean_detector_score']}",
-        f"- Mean BioCLIP top1 species score: {metrics['mean_species_top1_score']}",
-        f"- Mean BioCLIP species margin: {metrics['mean_species_margin']}",
-        "",
-        "## Outputs",
-        "",
-    ]
-    outputs = manifest.get("outputs", {})
-    if isinstance(outputs, dict):
-        for key, value in outputs.items():
-            lines.append(f"- {key}: `{value}`")
-    lines.extend(["", "## Detector Labels", "", json.dumps(metrics["detections_by_detector_label"], indent=2, sort_keys=True)])
-    lines.extend(["", "## Occurrence Bins", "", json.dumps(metrics["occurrence_bin_counts"], indent=2, sort_keys=True)])
-    return "\n".join(lines) + "\n"
 
 
 def _detection_policy_from_args(args: argparse.Namespace) -> DetectionPolicy:
@@ -2396,7 +2053,6 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
                 detection_policy=detection_policy,
                 run_policy=run_policy,
             )
-            eligible_record_keys = _eligible_bioclip_record_keys(detection_result.frame, detection_policy=detection_policy)
             score_result = screen_object_detections(
                 canonical_records=chunk,
                 detections=detection_result.frame,
