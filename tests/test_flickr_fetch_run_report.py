@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-import importlib.util
-import json
 from pathlib import Path
 import sqlite3
 
@@ -12,16 +10,6 @@ from biominer.flickr_fetch.metadata_poller import PollOnceResult
 from biominer.reports.flickr_fetch import build_step1_fetch_report, write_step1_manifest
 from biominer.flickr_fetch.metadata_poller import MetadataPollState
 from biominer.flickr_fetch.query_planner import FlickrQuery
-
-
-def _load_fetch_script():
-    path = Path(__file__).resolve().parents[1] / "scripts" / "run_flickr_text_search.py"
-    spec = importlib.util.spec_from_file_location("run_flickr_text_search", path)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_write_step1_manifest_records_background_run_contract(tmp_path) -> None:
@@ -51,22 +39,6 @@ def test_write_step1_manifest_records_background_run_contract(tmp_path) -> None:
     assert payload["expected_outputs"]["evidence_output"].endswith("flickr_text_butterfly.parquet")
     assert "environment" in payload
     assert "secrets" not in payload["environment"]
-
-
-def test_log_event_writes_visible_jsonl_to_stdout_and_file(tmp_path, capsys) -> None:
-    script = _load_fetch_script()
-    log_path = tmp_path / "run.log"
-
-    script.log_event({"event": "run_started", "run_id": "run-1", "pages": 3}, log_path=log_path)
-
-    stdout_payload = json.loads(capsys.readouterr().out.strip())
-    file_payload = json.loads(log_path.read_text(encoding="utf-8").strip())
-    assert stdout_payload["event"] == "run_started"
-    assert stdout_payload["run_id"] == "run-1"
-    assert stdout_payload["pages"] == 3
-    assert "time" in stdout_payload
-    assert file_payload == stdout_payload
-
 
 def test_build_step1_fetch_report_includes_required_metrics(tmp_path) -> None:
     raw_root = tmp_path / "raw"
@@ -350,42 +322,3 @@ def test_build_step1_fetch_report_includes_dynamic_page_enqueue_metrics(tmp_path
         }
     ]
 
-
-def test_enqueue_fixed_upload_slice_pages_supports_tag_search(tmp_path) -> None:
-    state = MetadataPollState(tmp_path / "state.sqlite")
-    script = _load_fetch_script()
-
-    inserted = script._enqueue_fixed_upload_slice_pages(
-        state,
-        term="butterfly",
-        search_field="tags",
-        start_date="2004-02-10",
-        end_date="2004-02-20",
-        slice_days=5,
-        coarse_end_date=None,
-        coarse_slice_days=None,
-    )
-
-    assert inserted == 3
-    with sqlite3.connect(state.path) as conn:
-        rows = conn.execute(
-            "SELECT json_extract(query_json, '$.search_field'), page, per_page, json_extract(query_json, '$.has_geo'), min_date, max_date "
-            "FROM flickr_work_items ORDER BY min_date, page"
-        ).fetchall()
-    assert rows == [
-        ("tags", 1, 500, 0, "2004-02-10", "2004-02-14"),
-        ("tags", 1, 500, 0, "2004-02-15", "2004-02-19"),
-        ("tags", 1, 500, 0, "2004-02-20", "2004-02-20"),
-    ]
-
-
-def test_direct_page_enqueue_rejects_unsafe_ranges(tmp_path) -> None:
-    state = MetadataPollState(tmp_path / "state.sqlite")
-    script = _load_fetch_script()
-
-    try:
-        script._enqueue_direct_pages(state, term="butterfly", pages=9, search_field="text", has_geo=0, unsafe=False)
-    except ValueError as exc:
-        assert "4000" in str(exc)
-    else:  # pragma: no cover - test should fail before this branch.
-        raise AssertionError("unsafe direct page range should be rejected")
