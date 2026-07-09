@@ -9,6 +9,7 @@ import pytest
 from biominer.bioclip.ablation import build_ablation_report, run_object_ablations
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon, build_candidate_set, build_candidate_set_for_taxon_scope
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+from biominer.bioclip.embedding_cache import taxonomy_text_embedding_rows
 from biominer.bioclip.object_runner import (
     CachedObjectEmbeddingScorer,
     EphemeralCropBioClipScorer,
@@ -1512,6 +1513,75 @@ def test_object_bioclip_scores_local_hierarchical_mode_with_fake_taxonomy(tmp_pa
     assert pl.read_parquet(tmp_path / "object_scores.parquet").to_dicts()[0]["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 
 
+def test_object_bioclip_hierarchical_mode_uses_taxonomy_text_embedding_cache(tmp_path) -> None:
+    store = _butterfly_taxonomy_store()
+    cache = _taxonomy_embedding_cache(
+        store,
+        embedding_by_species={
+            "Danaus plexippus": [0.0, 1.0],
+            "Papilio demoleus": [1.0, 0.0],
+        },
+    )
+
+    class CachedTaxonomyScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self) -> None:
+            self.batch_calls: list[tuple[tuple[str, ...], dict[str, tuple[str, ...]]]] = []
+            self.embedding_calls: list[tuple[str, ...]] = []
+
+        def score(self, item, labels):  # noqa: ANN001, ANN202 - batch path should be used.
+            raise AssertionError("object hierarchical scoring should use score_label_sets_batch")
+
+        def score_label_sets_batch(self, items, label_sets):  # noqa: ANN001, ANN202 - mirrors object batch scorer API.
+            self.batch_calls.append(
+                (
+                    tuple(str(item.get("detection_id") or "") for item in items),
+                    {name: tuple(labels) for name, labels in label_sets.items()},
+                )
+            )
+            if any(name.startswith("species:") for name in label_sets):
+                raise AssertionError("cached taxonomy first-pass must not call direct species scoring")
+            scores = _hierarchical_scores(
+                store,
+                family_scores={"Papilionidae": 0.96, "Nymphalidae": 0.20},
+                species_scores={"Papilio demoleus": 0.91, "Danaus plexippus": 0.10},
+            )
+            return {
+                name: [{str(label): float(scores.get(str(label), 0.0)) for label in labels} for _item in items]
+                for name, labels in label_sets.items()
+            }
+
+        def embed_image_items(self, items):  # noqa: ANN001, ANN202 - mirrors cached taxonomy scorer API.
+            self.embedding_calls.append(tuple(str(item.get("detection_id") or "") for item in items))
+            return [[1.0, 0.0] for _item in items]
+
+    scorer = CachedTaxonomyScorer()
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections().head(1),
+        species_context=_context(),
+        candidate_set=_fixture_candidate_set(),
+        scorer=scorer,
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        taxonomy_store=store,
+        taxonomy_text_embedding_cache=cache,
+        species_first_pass_top_k=1,
+        species_rerank_top_k=1,
+    )
+
+    row = result.frame.to_dicts()[0]
+    assert scorer.embedding_calls == [("det-1",)]
+    assert [set(label_sets) for _detections, label_sets in scorer.batch_calls] == [{"family"}, {"rerank"}]
+    assert row["selected_family"] == "Papilionidae"
+    assert row["species_top20"] == ["Papilio demoleus"]
+    assert row["species_top1_scientific_name"] == "Papilio demoleus"
+
+
 def test_photo_summary_includes_hierarchical_open_classification_rows(tmp_path) -> None:
     store = _butterfly_taxonomy_store()
     scores = screen_object_detections(
@@ -2958,3 +3028,34 @@ def _hierarchical_scores(
             for row in store.species_labels.to_dicts()
         },
     }
+
+
+def _taxonomy_embedding_cache(
+    store: ButterflyTaxonomyStore,
+    *,
+    embedding_by_species: dict[str, list[float]],
+) -> pl.DataFrame:
+    rows: list[dict[str, object]] = []
+    for row in taxonomy_text_embedding_rows(
+        store,
+        model_id="fake-bioclip",
+        model_checkpoint="fake-checkpoint",
+    ):
+        species_name = _scientific_name_for_key(store, str(row["accepted_taxon_key"]))
+        embedding = embedding_by_species[species_name] if str(row["label_scope"]) == "species" else [0.0, 1.0]
+        rows.append(
+            {
+                **row,
+                "embedding_dim": len(embedding),
+                "embedding": embedding,
+                "created_at": "2026-07-09T00:00:00+00:00",
+            }
+        )
+    return pl.DataFrame(rows)
+
+
+def _scientific_name_for_key(store: ButterflyTaxonomyStore, accepted_taxon_key: str) -> str:
+    matches = store.classification_taxa.filter(pl.col("accepted_taxon_key") == accepted_taxon_key)
+    if matches.is_empty():
+        return ""
+    return str(matches.select("scientific_name").to_series().to_list()[0])

@@ -2320,6 +2320,11 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
     try:
         text_cache_payload = _prepare_candidate_text_embedding_cache_if_requested(args=args, candidate_set=candidate_set, scorer=scorer)
         taxonomy_cache_payload = _prepare_taxonomy_text_embedding_cache_if_requested(args=args, taxonomy_store=taxonomy_store, scorer=scorer)
+        taxonomy_text_embedding_cache = (
+            read_embedding_cache(args.taxonomy_text_embedding_cache)
+            if getattr(args, "taxonomy_text_embedding_cache", None)
+            else None
+        )
         object_cache_payload = _prepare_object_image_embedding_cache_if_requested(
             args=args,
             records=records,
@@ -2347,6 +2352,7 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
             species_first_pass_top_k=args.species_first_pass_top_k,
             species_rerank_top_k=args.species_rerank_top_k,
             taxonomy_store=taxonomy_store,
+            taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
         )
     finally:
         scorer.close()
@@ -2412,6 +2418,11 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
     try:
         text_cache_payload = _prepare_candidate_text_embedding_cache_if_requested(args=args, candidate_set=candidate_set, scorer=scorer)
         taxonomy_cache_payload = _prepare_taxonomy_text_embedding_cache_if_requested(args=args, taxonomy_store=taxonomy_store, scorer=scorer)
+        taxonomy_text_embedding_cache = (
+            read_embedding_cache(args.taxonomy_text_embedding_cache)
+            if getattr(args, "taxonomy_text_embedding_cache", None)
+            else None
+        )
         object_cache_payload = _prepare_object_image_embedding_cache_if_requested(
             args=args,
             records=records,
@@ -2439,6 +2450,7 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
             species_first_pass_top_k=args.species_first_pass_top_k,
             species_rerank_top_k=args.species_rerank_top_k,
             taxonomy_store=taxonomy_store,
+            taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
         )
     finally:
         scorer.close()

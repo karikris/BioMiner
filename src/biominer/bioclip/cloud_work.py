@@ -212,6 +212,7 @@ def run_cloud_bioclip_batch(
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
     taxonomy_store: ButterflyTaxonomyStore | None = None,
+    taxonomy_text_embedding_cache: pl.DataFrame | None = None,
 ) -> CloudBioClipBatchResult:
     if crop_batch_size <= 0:
         raise ValueError("crop_batch_size must be positive")
@@ -265,6 +266,7 @@ def run_cloud_bioclip_batch(
                         family_top_k=family_top_k,
                         species_first_pass_top_k=species_first_pass_top_k,
                         species_rerank_top_k=species_rerank_top_k,
+                        taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
                     )
                 except SegmentationUnavailable as exc:
                     if mode != "detector_crop_segmentation":
@@ -372,6 +374,7 @@ def _score_hierarchical_cloud_batch(
     family_top_k: int,
     species_first_pass_top_k: int,
     species_rerank_top_k: int,
+    taxonomy_text_embedding_cache: pl.DataFrame | None = None,
 ) -> list[dict[str, Any]]:
     results = classify_butterfly_crops_hierarchical_batch(
         items=items,
@@ -380,6 +383,7 @@ def _score_hierarchical_cloud_batch(
         family_top_k=family_top_k,
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
+        taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
     )
     return [
         hierarchical_result_to_object_score_row(

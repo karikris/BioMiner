@@ -349,6 +349,37 @@ class EphemeralCropBioClipScorer:
     def supports_detector_crop_segmentation(self, item: dict[str, Any]) -> bool:
         return detector_crop_mask_available(item) or not isinstance(self._segmenter, NoneSegmenter)
 
+    def embed_image_items(self, items: Sequence[dict[str, Any]]) -> list[list[float]]:
+        embedder = getattr(self._scorer, "embed_image_paths", None)
+        if not callable(embedder):
+            raise ValueError("underlying BioCLIP scorer does not support image embeddings")
+        crop_paths: list[Path] = []
+        owned_paths: set[Path] = set()
+        try:
+            for item in items:
+                mode = _ablation_mode(item)
+                materialized_path = _materialized_detector_crop_path(item=item, mode=mode)
+                if materialized_path is not None:
+                    crop_paths.append(materialized_path)
+                    continue
+                image = self._image_loader(item)
+                if not isinstance(image, DecodedImage):
+                    raise TypeError("image_loader must return a DecodedImage")
+                data, width, height, content_hash = self._visual_input_for_mode(item=item, image=image, mode=mode)
+                crop_path, retained = self._write_temp_ppm_for_score(
+                    data,
+                    width=width,
+                    height=height,
+                    crop_hash=f"{mode}:{content_hash}",
+                )
+                crop_paths.append(crop_path)
+                if not retained:
+                    owned_paths.add(crop_path)
+            return [[float(value) for value in embedding] for embedding in embedder(crop_paths)]
+        finally:
+            for crop_path in owned_paths:
+                crop_path.unlink(missing_ok=True)
+
     def detector_crop_materialization_config(self) -> DetectorCropMaterializationConfig:
         return DetectorCropMaterializationConfig(
             image_loader=self._image_loader,
@@ -687,6 +718,7 @@ def screen_object_detections(
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
     taxonomy_store: ButterflyTaxonomyStore | None = None,
+    taxonomy_text_embedding_cache: pl.DataFrame | None = None,
 ) -> ObjectScreenResult:
     if bioclip_batch_size <= 0:
         raise ValueError("bioclip_batch_size must be positive")
@@ -735,6 +767,7 @@ def screen_object_detections(
                     family_top_k=family_top_k,
                     species_first_pass_top_k=species_first_pass_top_k,
                     species_rerank_top_k=species_rerank_top_k,
+                    taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
                 )
             else:
                 score_rows = _score_detection_batch(
@@ -1133,6 +1166,7 @@ def _score_hierarchical_detection_batch(
     family_top_k: int,
     species_first_pass_top_k: int,
     species_rerank_top_k: int,
+    taxonomy_text_embedding_cache: pl.DataFrame | None = None,
 ) -> list[dict[str, Any]]:
     results = classify_butterfly_crops_hierarchical_batch(
         items=items,
@@ -1141,6 +1175,7 @@ def _score_hierarchical_detection_batch(
         family_top_k=family_top_k,
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
+        taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
     )
     return [
         hierarchical_result_to_object_score_row(

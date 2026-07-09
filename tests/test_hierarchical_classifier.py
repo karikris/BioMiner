@@ -534,6 +534,103 @@ def test_rank_species_with_cached_text_embeddings_mean_aggregates_prompt_templat
     assert ranked[1].score == pytest.approx(1.0 / 3.0)
 
 
+def test_hierarchical_batch_uses_taxonomy_text_embedding_cache_for_species_first_pass() -> None:
+    store = _taxonomy_store(species_per_papilionidae=2)
+    cache = _taxonomy_embedding_cache(
+        store,
+        embedding_by_species={
+            "Papilio species01": [0.0, 1.0],
+            "Papilio species02": [1.0, 0.0],
+            "Danaus plexippus": [1.0, 0.0],
+            "Pieris rapae": [1.0, 0.0],
+        },
+    )
+    cache = pl.concat([cache, cache.with_columns(pl.lit("other-model").alias("model_id"))], how="diagonal_relaxed")
+    scorer = _CachedFirstPassScorer(
+        image_embeddings=[[1.0, 0.0], [1.0, 0.0]],
+        rerank_species_scores={"Papilio species01": 0.20, "Papilio species02": 0.95},
+    )
+    items = [
+        {**_cascade_item(), "detection_id": "det-1", "crop_hash": "sha256:crop-1"},
+        {**_cascade_item(), "detection_id": "det-2", "crop_hash": "sha256:crop-2"},
+    ]
+
+    results = classify_butterfly_crops_hierarchical_batch(
+        items=items,
+        scorer=scorer,
+        taxonomy_store=store,
+        taxonomy_text_embedding_cache=cache,
+        species_first_pass_top_k=2,
+        species_rerank_top_k=1,
+    )
+
+    assert scorer.embedded_item_batches == [("det-1", "det-2")]
+    assert all(
+        not any(name.startswith("species:") for name in label_sets)
+        for _detections, label_sets in scorer.batch_calls
+    )
+    assert [set(label_sets) for _detections, label_sets in scorer.batch_calls] == [{"family"}, {"rerank"}]
+    assert [result.selected_family for result in results] == ["Papilionidae", "Papilionidae"]
+    for result in results:
+        assert [score.scientific_name for score in result.species_top20] == ["Papilio species02", "Papilio species01"]
+        assert {score.family_key for score in result.species_top20} == {"gbif:9417"}
+        assert result.species_top1 is not None
+        assert result.species_top1.scientific_name == "Papilio species02"
+
+
+def test_hierarchical_batch_taxonomy_text_embedding_cache_rejects_model_mismatch() -> None:
+    store = _taxonomy_store(species_per_papilionidae=2)
+    cache = _taxonomy_embedding_cache(store).with_columns(pl.lit("other-model").alias("model_id"))
+    scorer = _CachedFirstPassScorer(image_embeddings=[[1.0, 0.0]])
+
+    with pytest.raises(ValueError, match="taxonomy text embedding cache has no rows"):
+        classify_butterfly_crops_hierarchical_batch(
+            items=[_cascade_item()],
+            scorer=scorer,
+            taxonomy_store=store,
+            taxonomy_text_embedding_cache=cache,
+            species_first_pass_top_k=2,
+            species_rerank_top_k=1,
+        )
+
+
+def test_hierarchical_batch_taxonomy_text_embedding_cache_rejects_missing_labels() -> None:
+    store = _taxonomy_store(species_per_papilionidae=2)
+    cache = _taxonomy_embedding_cache(store).filter(~pl.col("label").str.contains("Papilio species02"))
+    scorer = _CachedFirstPassScorer(image_embeddings=[[1.0, 0.0]])
+
+    with pytest.raises(ValueError, match="taxonomy text embedding cache missing labels"):
+        classify_butterfly_crops_hierarchical_batch(
+            items=[_cascade_item()],
+            scorer=scorer,
+            taxonomy_store=store,
+            taxonomy_text_embedding_cache=cache,
+            species_first_pass_top_k=2,
+            species_rerank_top_k=1,
+        )
+
+
+def test_hierarchical_batch_taxonomy_text_embedding_cache_rejects_stale_label_hash() -> None:
+    store = _taxonomy_store(species_per_papilionidae=2)
+    cache = _taxonomy_embedding_cache(store).with_columns(
+        pl.when(pl.col("label").str.contains("Papilio species02"))
+        .then(pl.lit("sha256:stale"))
+        .otherwise(pl.col("label_hash"))
+        .alias("label_hash")
+    )
+    scorer = _CachedFirstPassScorer(image_embeddings=[[1.0, 0.0]])
+
+    with pytest.raises(ValueError, match="label_hash mismatch"):
+        classify_butterfly_crops_hierarchical_batch(
+            items=[_cascade_item()],
+            scorer=scorer,
+            taxonomy_store=store,
+            taxonomy_text_embedding_cache=cache,
+            species_first_pass_top_k=2,
+            species_rerank_top_k=1,
+        )
+
+
 def test_rank_species_with_cached_text_embeddings_rejects_mixed_model_cache() -> None:
     store = _taxonomy_store(species_per_papilionidae=1)
     cache = _taxonomy_embedding_cache(store)
@@ -683,6 +780,70 @@ class _StaticBatchScorer:
         return {
             name: [self.score(item, tuple(labels)) for item in items]
             for name, labels in label_sets.items()
+        }
+
+
+class _CachedFirstPassScorer:
+    model_id = "fake-bioclip"
+    model_version = "test"
+    model_checkpoint = "fake-checkpoint"
+
+    def __init__(
+        self,
+        *,
+        image_embeddings: list[list[float]],
+        rerank_species_scores: dict[str, float] | None = None,
+    ) -> None:
+        self._image_embeddings = image_embeddings
+        self._rerank_species_scores = rerank_species_scores or {}
+        self.batch_calls: list[tuple[tuple[str, ...], dict[str, tuple[str, ...]]]] = []
+        self.embedded_item_batches: list[tuple[str, ...]] = []
+
+    def score(self, item: dict[str, object], labels: tuple[str, ...]) -> dict[str, float]:
+        raise AssertionError("cached batch classifier should use score_label_sets_batch")
+
+    def score_label_sets_batch(
+        self,
+        items: list[dict[str, object]],
+        label_sets: dict[str, tuple[str, ...]],
+    ) -> dict[str, list[dict[str, float]]]:
+        self.batch_calls.append(
+            (
+                tuple(str(item.get("detection_id") or "") for item in items),
+                {name: tuple(labels) for name, labels in label_sets.items()},
+            )
+        )
+        if any(name.startswith("species:") for name in label_sets):
+            raise AssertionError("cached taxonomy first-pass must not call direct species scoring")
+        return {
+            name: [self._scores_for_labels(name=name, labels=tuple(labels)) for _item in items]
+            for name, labels in label_sets.items()
+        }
+
+    def embed_image_items(self, items: list[dict[str, object]]) -> list[list[float]]:
+        self.embedded_item_batches.append(tuple(str(item.get("detection_id") or "") for item in items))
+        return self._image_embeddings[: len(items)]
+
+    def _scores_for_labels(self, *, name: str, labels: tuple[str, ...]) -> dict[str, float]:
+        if name == "family":
+            return {
+                label: (
+                    0.95
+                    if "Papilionidae" in label
+                    else 0.20
+                    if "Nymphalidae" in label
+                    else 0.10
+                    if "Pieridae" in label
+                    else 0.0
+                )
+                for label in labels
+            }
+        return {
+            label: max(
+                (score for species, score in self._rerank_species_scores.items() if species in label),
+                default=0.0,
+            )
+            for label in labels
         }
 
 

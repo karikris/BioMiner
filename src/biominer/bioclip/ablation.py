@@ -50,6 +50,7 @@ def run_object_ablations(
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
     taxonomy_store: ButterflyTaxonomyStore | None = None,
+    taxonomy_text_embedding_cache: pl.DataFrame | None = None,
 ) -> AblationRunReport:
     base = Path(output_dir)
     base.mkdir(parents=True, exist_ok=True)
@@ -76,6 +77,7 @@ def run_object_ablations(
             species_first_pass_top_k=species_first_pass_top_k,
             species_rerank_top_k=species_rerank_top_k,
             taxonomy_store=taxonomy_store,
+            taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
         )
         frames.append(result.frame)
         score_batches_by_mode[mode] = result.score_batches_written

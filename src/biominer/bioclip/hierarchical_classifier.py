@@ -237,6 +237,7 @@ def classify_butterfly_crop_hierarchical(
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
     prompt_aggregation: str = "mean",
+    taxonomy_text_embedding_cache: pl.DataFrame | None = None,
 ) -> ButterflyCascadeResult:
     family_top_k, species_first_pass_top_k, species_rerank_top_k = _validate_top_k(
         family_top_k=family_top_k,
@@ -263,22 +264,40 @@ def classify_butterfly_crop_hierarchical(
     selected_family = family_top[0]
     selected_family_key = selected_family.accepted_taxon_key
 
-    species_taxa = taxonomy_store.species_for_family(selected_family_key)
-    species_label_rows = _enabled_label_rows(taxonomy_store.species_labels).filter(
-        pl.col("family_key") == selected_family_key
-    )
-    species_labels = _label_tuple(species_label_rows)
-    if species_taxa.is_empty() or not species_labels:
-        raise ValueError(f"butterfly taxonomy store has no enabled species labels for family_key={selected_family_key!r}")
-    species_label_scores = scorer.score(item, species_labels)
-    species_scores = aggregate_taxon_prompt_scores(
-        label_scores=species_label_scores,
-        label_rows=species_label_rows,
-        taxon_key_column="accepted_taxon_key",
-        taxon_name_column="scientific_name",
-        aggregation=prompt_aggregation,
-    )
-    species_top20 = tuple(species_scores[:species_first_pass_top_k])
+    if taxonomy_text_embedding_cache is not None:
+        text_embedding_cache = _validated_taxonomy_text_embedding_cache_for_scorer(
+            taxonomy_text_embedding_cache,
+            taxonomy_store=taxonomy_store,
+            scorer=scorer,
+        )
+        image_embedding = _embed_image_items_for_cached_taxonomy(scorer, [item])[0]
+        species_taxa = taxonomy_store.species_for_family(selected_family_key)
+        species_top20 = tuple(
+            rank_species_with_cached_text_embeddings(
+                image_embedding=image_embedding,
+                taxonomy_store=taxonomy_store,
+                family_key=selected_family_key,
+                text_embedding_cache=text_embedding_cache,
+                top_k=species_first_pass_top_k,
+            )
+        )
+    else:
+        species_taxa = taxonomy_store.species_for_family(selected_family_key)
+        species_label_rows = _enabled_label_rows(taxonomy_store.species_labels).filter(
+            pl.col("family_key") == selected_family_key
+        )
+        species_labels = _label_tuple(species_label_rows)
+        if species_taxa.is_empty() or not species_labels:
+            raise ValueError(f"butterfly taxonomy store has no enabled species labels for family_key={selected_family_key!r}")
+        species_label_scores = scorer.score(item, species_labels)
+        species_scores = aggregate_taxon_prompt_scores(
+            label_scores=species_label_scores,
+            label_rows=species_label_rows,
+            taxon_key_column="accepted_taxon_key",
+            taxon_name_column="scientific_name",
+            aggregation=prompt_aggregation,
+        )
+        species_top20 = tuple(species_scores[:species_first_pass_top_k])
     _assert_species_top20_family(species_top20, selected_family_key=selected_family_key)
 
     rerank_keys = [score.accepted_taxon_key for score in species_top20]
@@ -316,6 +335,7 @@ def classify_butterfly_crops_hierarchical_batch(
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
     prompt_aggregation: str = "mean",
+    taxonomy_text_embedding_cache: pl.DataFrame | None = None,
 ) -> list[ButterflyCascadeResult]:
     batch_items = list(items)
     if not batch_items:
@@ -336,6 +356,15 @@ def classify_butterfly_crops_hierarchical_batch(
         batch_items,
         {"family": family_labels},
     )["family"]
+    image_embeddings: list[list[float]] | None = None
+    text_embedding_cache: pl.DataFrame | None = None
+    if taxonomy_text_embedding_cache is not None:
+        text_embedding_cache = _validated_taxonomy_text_embedding_cache_for_scorer(
+            taxonomy_text_embedding_cache,
+            taxonomy_store=taxonomy_store,
+            scorer=scorer,
+        )
+        image_embeddings = _embed_image_items_for_cached_taxonomy(scorer, batch_items)
 
     state: dict[int, dict[str, Any]] = {}
     family_groups: dict[str, list[int]] = {}
@@ -359,6 +388,24 @@ def classify_butterfly_crops_hierarchical_batch(
 
     for family_key, indices in family_groups.items():
         species_taxa = taxonomy_store.species_for_family(family_key)
+        if image_embeddings is not None:
+            if text_embedding_cache is None:
+                raise AssertionError("taxonomy text embedding cache was not validated before cached species ranking")
+            for index in indices:
+                species_top20 = tuple(
+                    rank_species_with_cached_text_embeddings(
+                        image_embedding=image_embeddings[index],
+                        taxonomy_store=taxonomy_store,
+                        family_key=family_key,
+                        text_embedding_cache=text_embedding_cache,
+                        top_k=species_first_pass_top_k,
+                    )
+                )
+                _assert_species_top20_family(species_top20, selected_family_key=family_key)
+                state[index]["species_candidate_count"] = species_taxa.height
+                state[index]["species_top20"] = species_top20
+            continue
+
         species_label_rows = _enabled_label_rows(taxonomy_store.species_labels).filter(
             pl.col("family_key") == family_key
         )
@@ -601,6 +648,34 @@ def _raise_for_invalid_taxonomy_store(taxonomy_store: ButterflyTaxonomyStore) ->
     if fatal:
         codes = ", ".join(str(finding.get("code")) for finding in fatal)
         raise ValueError(f"invalid butterfly taxonomy store: {codes}")
+
+
+def _validated_taxonomy_text_embedding_cache_for_scorer(
+    cache: pl.DataFrame,
+    *,
+    taxonomy_store: ButterflyTaxonomyStore,
+    scorer: ObjectBioClipScorer,
+) -> pl.DataFrame:
+    validate_taxonomy_text_embedding_cache(
+        cache,
+        taxonomy_store,
+        model_id=scorer.model_id,
+        model_checkpoint=scorer.model_checkpoint,
+    )
+    return cache.filter((pl.col("model_id") == scorer.model_id) & (pl.col("model_checkpoint") == scorer.model_checkpoint))
+
+
+def _embed_image_items_for_cached_taxonomy(
+    scorer: ObjectBioClipScorer,
+    items: Sequence[dict[str, Any]],
+) -> list[list[float]]:
+    embed_items = getattr(scorer, "embed_image_items", None)
+    if not callable(embed_items):
+        raise ValueError("taxonomy text embedding cache requires a scorer with embed_image_items support")
+    embeddings = embed_items(list(items))
+    if len(embeddings) != len(items):
+        raise ValueError(f"BioCLIP image embedder returned {len(embeddings)} rows for {len(items)} crops")
+    return [_float_vector(embedding) for embedding in embeddings]
 
 
 def _score_label_sets_for_items(

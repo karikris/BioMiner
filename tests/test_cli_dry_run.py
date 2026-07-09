@@ -2587,6 +2587,7 @@ def test_bioclip_score_prepares_taxonomy_text_embedding_cache_for_hierarchical_m
     assert calls["screen"]["species_first_pass_top_k"] == 2
     assert calls["screen"]["species_rerank_top_k"] == 1
     assert calls["screen"]["taxonomy_store"].classification_taxa.height == 2
+    assert calls["screen"]["taxonomy_text_embedding_cache"].height == 12
     assert pl.read_parquet(taxonomy_cache_path).height == 12
 
 

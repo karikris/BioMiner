@@ -427,6 +427,52 @@ def validate_taxonomy_text_embedding_cache(
         preview = ", ".join(missing_labels[:5])
         suffix = "" if len(missing_labels) <= 5 else f" (+{len(missing_labels) - 5} more)"
         raise ValueError(f"taxonomy text embedding cache missing labels: {preview}{suffix}")
+    requested = taxonomy_text_embedding_rows(taxonomy_store, model_id=model_id, model_checkpoint=model_checkpoint)
+    _validate_taxonomy_text_embedding_metadata(matching, requested)
+
+
+def _validate_taxonomy_text_embedding_metadata(
+    matching: pl.DataFrame,
+    requested: list[dict[str, Any]],
+) -> None:
+    keys = ["classification_table_version", "prompt_variant_version", "label", "model_id", "model_checkpoint"]
+    requested_by_key = {_key(row, keys): row for row in requested}
+    expected_dims: set[int] = set()
+    embedding_dtypes: set[str] = set()
+    for row in matching.to_dicts():
+        expected = requested_by_key.get(_key(row, keys))
+        if expected is None:
+            continue
+        label = str(row.get("label") or "")
+        expected_label_hash = str(expected.get("label_hash") or "")
+        if str(row.get("label_hash") or "") != expected_label_hash:
+            raise ValueError(f"taxonomy text embedding cache label_hash mismatch for label={label!r}")
+        embedding_dtype = str(row.get("embedding_dtype") or "").strip()
+        if not embedding_dtype:
+            raise ValueError(f"taxonomy text embedding cache missing embedding_dtype for label={label!r}")
+        embedding_dtypes.add(embedding_dtype)
+        row_dim = _positive_embedding_dim(row.get("embedding_dim"), label=label)
+        embedding = row.get("embedding")
+        if embedding is None:
+            raise ValueError(f"taxonomy text embedding cache missing embedding for label={label!r}")
+        vector = [float(value) for value in embedding]
+        if len(vector) != row_dim:
+            raise ValueError(f"taxonomy text embedding cache embedding_dim mismatch for label={label!r}")
+        expected_dims.add(row_dim)
+    if len(expected_dims) > 1:
+        raise ValueError("taxonomy text embedding cache has inconsistent embedding_dim values")
+    if len(embedding_dtypes) > 1:
+        raise ValueError("taxonomy text embedding cache has inconsistent embedding_dtype values")
+
+
+def _positive_embedding_dim(value: Any, *, label: str) -> int:
+    try:
+        dim = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"taxonomy text embedding cache invalid embedding_dim for label={label!r}") from exc
+    if dim <= 0:
+        raise ValueError(f"taxonomy text embedding cache invalid embedding_dim for label={label!r}")
+    return dim
 
 
 def _taxonomy_label_rows(taxonomy_store: ButterflyTaxonomyStore) -> list[dict[str, str]]:
