@@ -1,0 +1,21 @@
+{
+  "fixture_version": "evaluation-synthetic-v1",
+  "metrics": {
+    "butterfly_positive_labels": 4,
+    "family_top1_accuracy": 0.75,
+    "family_top3_recall": 1.0,
+    "missing_prediction_count": 1,
+    "negative_correct_count": 1,
+    "negative_labels": 1,
+    "selected_family_accuracy": 0.75,
+    "species_mrr": 0.4,
+    "species_top1_accuracy": 0.25,
+    "species_top20_recall": 0.75,
+    "species_top5_recall": 0.5
+  },
+  "review_queue": {
+    "high_priority_rows": 1,
+    "rows": 4
+  },
+  "schema_version": "hierarchical-golden-evaluation-v1"
+}
