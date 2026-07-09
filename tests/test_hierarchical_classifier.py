@@ -16,6 +16,7 @@ from biominer.bioclip.hierarchical_classifier import (
     butterfly_cascade_result_to_dict,
     butterfly_cascade_results_frame,
     classify_butterfly_crop_hierarchical,
+    classify_butterfly_crops_hierarchical_batch,
 )
 from biominer.bioclip.object_runner import OBJECT_SCORE_OUTPUT_SCHEMA, _ensure_columns, empty_object_score_frame
 from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
@@ -386,6 +387,97 @@ def test_classify_butterfly_crop_hierarchical_fails_clearly_for_missing_family_l
         )
 
 
+def test_classify_butterfly_crops_hierarchical_batch_matches_single_item_results() -> None:
+    store = _taxonomy_store(species_per_papilionidae=3)
+    scores = _combined_label_scores(
+        store,
+        family_scores={"Papilionidae": 0.90, "Nymphalidae": 0.40, "Pieridae": 0.30},
+        species_scores={"Papilio species01": 0.80, "Papilio species02": 0.70, "Papilio species03": 0.60},
+    )
+    item = _cascade_item()
+    single = classify_butterfly_crop_hierarchical(
+        item=item,
+        scorer=_StaticBatchScorer({"sha256:crop-1": scores}),
+        taxonomy_store=store,
+        species_first_pass_top_k=3,
+        species_rerank_top_k=2,
+    )
+    batch = classify_butterfly_crops_hierarchical_batch(
+        items=[item],
+        scorer=_StaticBatchScorer({"sha256:crop-1": scores}),
+        taxonomy_store=store,
+        species_first_pass_top_k=3,
+        species_rerank_top_k=2,
+    )
+
+    assert len(batch) == 1
+    assert batch[0].selected_family_key == single.selected_family_key
+    assert [score.accepted_taxon_key for score in batch[0].species_top20] == [
+        score.accepted_taxon_key for score in single.species_top20
+    ]
+    assert [score.accepted_taxon_key for score in batch[0].species_top5] == [
+        score.accepted_taxon_key for score in single.species_top5
+    ]
+
+
+def test_classify_butterfly_crops_hierarchical_batch_preserves_order_and_family_pools() -> None:
+    store = _taxonomy_store(species_per_papilionidae=3)
+    papilio_scores = _combined_label_scores(
+        store,
+        family_scores={"Papilionidae": 0.95, "Nymphalidae": 0.20, "Pieridae": 0.10},
+        species_scores={"Papilio species01": 0.50, "Papilio species02": 0.80, "Papilio species03": 0.70},
+    )
+    danaus_scores = _combined_label_scores(
+        store,
+        family_scores={"Papilionidae": 0.10, "Nymphalidae": 0.96, "Pieridae": 0.20},
+        species_scores={"Danaus plexippus": 0.88},
+    )
+    items = [
+        {**_cascade_item(), "flickr_photo_id": "photo-nymph", "detection_id": "det-nymph", "crop_hash": "sha256:crop-nymph"},
+        {**_cascade_item(), "flickr_photo_id": "photo-papilio", "detection_id": "det-papilio", "crop_hash": "sha256:crop-papilio"},
+    ]
+    scorer = _StaticBatchScorer(
+        {
+            "sha256:crop-nymph": danaus_scores,
+            "sha256:crop-papilio": papilio_scores,
+        }
+    )
+
+    results = classify_butterfly_crops_hierarchical_batch(
+        items=items,
+        scorer=scorer,
+        taxonomy_store=store,
+        species_first_pass_top_k=3,
+        species_rerank_top_k=2,
+    )
+
+    assert [result.detection_id for result in results] == ["det-nymph", "det-papilio"]
+    assert results[0].selected_family == "Nymphalidae"
+    assert results[0].species_top1 is not None
+    assert results[0].species_top1.scientific_name == "Danaus plexippus"
+    assert results[1].selected_family == "Papilionidae"
+    assert results[1].species_top1 is not None
+    assert results[1].species_top1.scientific_name == "Papilio species02"
+
+    species_batch_labels = [
+        tuple(label for labels in label_sets.values() for label in labels)
+        for _detections, label_sets in scorer.batch_calls
+        if any(name.startswith("species:") for name in label_sets)
+    ]
+    assert len(species_batch_labels) == 2
+    assert any(any("Danaus plexippus" in label for label in labels) and not any("Papilio species" in label for label in labels) for labels in species_batch_labels)
+    assert any(any("Papilio species" in label for label in labels) and not any("Danaus plexippus" in label for label in labels) for labels in species_batch_labels)
+
+    rerank_label_sets = [
+        tuple(label for labels in label_sets.values() for label in labels)
+        for _detections, label_sets in scorer.batch_calls
+        if set(label_sets) == {"rerank"}
+    ]
+    assert len(rerank_label_sets) == 2
+    assert any(any("Danaus plexippus" in label for label in labels) and not any("Papilio species" in label for label in labels) for labels in rerank_label_sets)
+    assert any(any("Papilio species" in label for label in labels) and not any("Danaus plexippus" in label for label in labels) for labels in rerank_label_sets)
+
+
 def _species_label_rows() -> pl.DataFrame:
     return pl.DataFrame(
         [
@@ -437,6 +529,36 @@ class _SequencedScorer:
         index = min(len(self.calls) - 1, len(self._responses) - 1)
         response = self._responses[index] if self._responses else {}
         return {label: float(response.get(label, 0.0)) for label in labels}
+
+
+class _StaticBatchScorer:
+    model_id = "fake-bioclip"
+    model_version = "test"
+    model_checkpoint = "fake-checkpoint"
+
+    def __init__(self, scores_by_crop: dict[str, dict[str, float]]) -> None:
+        self._scores_by_crop = scores_by_crop
+        self.batch_calls: list[tuple[tuple[str, ...], dict[str, tuple[str, ...]]]] = []
+
+    def score(self, item: dict[str, object], labels: tuple[str, ...]) -> dict[str, float]:
+        scores = self._scores_by_crop.get(str(item.get("crop_hash") or ""), {})
+        return {label: float(scores.get(label, 0.0)) for label in labels}
+
+    def score_label_sets_batch(
+        self,
+        items: list[dict[str, object]],
+        label_sets: dict[str, tuple[str, ...]],
+    ) -> dict[str, list[dict[str, float]]]:
+        self.batch_calls.append(
+            (
+                tuple(str(item.get("detection_id") or "") for item in items),
+                {name: tuple(labels) for name, labels in label_sets.items()},
+            )
+        )
+        return {
+            name: [self.score(item, tuple(labels)) for item in items]
+            for name, labels in label_sets.items()
+        }
 
 
 def _cascade_item() -> dict[str, object]:
@@ -541,4 +663,16 @@ def _species_label_scores(store: ButterflyTaxonomyStore, score_by_species: dict[
     return {
         str(row["label"]): float(score_by_species.get(str(row["scientific_name"]), 0.0))
         for row in store.species_labels.to_dicts()
+    }
+
+
+def _combined_label_scores(
+    store: ButterflyTaxonomyStore,
+    *,
+    family_scores: dict[str, float],
+    species_scores: dict[str, float],
+) -> dict[str, float]:
+    return {
+        **_family_label_scores(store, family_scores),
+        **_species_label_scores(store, species_scores),
     }

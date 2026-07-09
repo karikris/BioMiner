@@ -294,6 +294,153 @@ def classify_butterfly_crop_hierarchical(
     species_top5 = tuple(reranked_species[:species_rerank_top_k])
     species_top1 = species_top5[0] if species_top5 else None
 
+    return _cascade_result(
+        item=item,
+        taxonomy_store=taxonomy_store,
+        family_top=family_top,
+        selected_family_key=selected_family_key,
+        species_candidate_count=species_taxa.height,
+        species_top20=species_top20,
+        species_top5=species_top5,
+        species_top1=species_top1,
+    )
+
+
+def classify_butterfly_crops_hierarchical_batch(
+    *,
+    items: Sequence[dict[str, Any]],
+    scorer: ObjectBioClipScorer,
+    taxonomy_store: ButterflyTaxonomyStore,
+    family_top_k: int = DEFAULT_FAMILY_TOP_K,
+    species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
+    prompt_aggregation: str = "mean",
+) -> list[ButterflyCascadeResult]:
+    batch_items = list(items)
+    if not batch_items:
+        return []
+    family_top_k, species_first_pass_top_k, species_rerank_top_k = _validate_top_k(
+        family_top_k=family_top_k,
+        species_first_pass_top_k=species_first_pass_top_k,
+        species_rerank_top_k=species_rerank_top_k,
+    )
+    _raise_for_invalid_taxonomy_store(taxonomy_store)
+
+    family_label_rows = _enabled_label_rows(taxonomy_store.family_labels)
+    family_labels = _label_tuple(family_label_rows)
+    if not family_labels:
+        raise ValueError("butterfly taxonomy store has no enabled family labels")
+    family_scores_by_item = _score_label_sets_for_items(
+        scorer,
+        batch_items,
+        {"family": family_labels},
+    )["family"]
+
+    state: dict[int, dict[str, Any]] = {}
+    family_groups: dict[str, list[int]] = {}
+    for index, label_scores in enumerate(family_scores_by_item):
+        family_scores = aggregate_taxon_prompt_scores(
+            label_scores=label_scores,
+            label_rows=family_label_rows,
+            taxon_key_column="family_key",
+            taxon_name_column="family",
+            aggregation=prompt_aggregation,
+        )
+        if not family_scores:
+            raise ValueError("butterfly taxonomy store produced no family scores")
+        family_top = tuple(family_scores[:family_top_k])
+        selected_family_key = family_top[0].accepted_taxon_key
+        state[index] = {
+            "family_top": family_top,
+            "selected_family_key": selected_family_key,
+        }
+        family_groups.setdefault(selected_family_key, []).append(index)
+
+    for family_key, indices in family_groups.items():
+        species_taxa = taxonomy_store.species_for_family(family_key)
+        species_label_rows = _enabled_label_rows(taxonomy_store.species_labels).filter(
+            pl.col("family_key") == family_key
+        )
+        species_labels = _label_tuple(species_label_rows)
+        if species_taxa.is_empty() or not species_labels:
+            raise ValueError(f"butterfly taxonomy store has no enabled species labels for family_key={family_key!r}")
+        score_key = f"species:{family_key}"
+        species_scores = _score_label_sets_for_items(
+            scorer,
+            [batch_items[index] for index in indices],
+            {score_key: species_labels},
+        )[score_key]
+        for index, label_scores in zip(indices, species_scores, strict=True):
+            species_ranked = aggregate_taxon_prompt_scores(
+                label_scores=label_scores,
+                label_rows=species_label_rows,
+                taxon_key_column="accepted_taxon_key",
+                taxon_name_column="scientific_name",
+                aggregation=prompt_aggregation,
+            )
+            species_top20 = tuple(species_ranked[:species_first_pass_top_k])
+            _assert_species_top20_family(species_top20, selected_family_key=family_key)
+            state[index]["species_candidate_count"] = species_taxa.height
+            state[index]["species_top20"] = species_top20
+
+    rerank_groups: dict[tuple[str, ...], list[int]] = {}
+    for index in range(len(batch_items)):
+        top20_keys = tuple(score.accepted_taxon_key for score in state[index]["species_top20"])
+        rerank_groups.setdefault(top20_keys, []).append(index)
+
+    for top20_keys, indices in rerank_groups.items():
+        rerank_label_rows = taxonomy_store.species_labels_for_taxa(top20_keys)
+        rerank_labels = _label_tuple(rerank_label_rows)
+        rerank_scores = (
+            _score_label_sets_for_items(
+                scorer,
+                [batch_items[index] for index in indices],
+                {"rerank": rerank_labels},
+            )["rerank"]
+            if rerank_labels
+            else [{} for _index in indices]
+        )
+        for index, label_scores in zip(indices, rerank_scores, strict=True):
+            reranked_species = aggregate_taxon_prompt_scores(
+                label_scores=label_scores,
+                label_rows=rerank_label_rows,
+                taxon_key_column="accepted_taxon_key",
+                taxon_name_column="scientific_name",
+                aggregation=prompt_aggregation,
+            )
+            species_top5 = tuple(reranked_species[:species_rerank_top_k])
+            state[index]["species_top5"] = species_top5
+            state[index]["species_top1"] = species_top5[0] if species_top5 else None
+
+    return [
+        _cascade_result(
+            item=batch_items[index],
+            taxonomy_store=taxonomy_store,
+            family_top=state[index]["family_top"],
+            selected_family_key=state[index]["selected_family_key"],
+            species_candidate_count=int(state[index]["species_candidate_count"]),
+            species_top20=state[index]["species_top20"],
+            species_top5=state[index]["species_top5"],
+            species_top1=state[index]["species_top1"],
+        )
+        for index in range(len(batch_items))
+    ]
+
+
+def _cascade_result(
+    *,
+    item: dict[str, Any],
+    taxonomy_store: ButterflyTaxonomyStore,
+    family_top: tuple[TaxonScore, ...],
+    selected_family_key: str,
+    species_candidate_count: int,
+    species_top20: tuple[TaxonScore, ...],
+    species_top5: tuple[TaxonScore, ...],
+    species_top1: TaxonScore | None,
+) -> ButterflyCascadeResult:
+    if not family_top:
+        raise ValueError("butterfly taxonomy store produced no family scores")
+    selected_family = family_top[0]
     taxonomy_table_version = _taxonomy_table_version(taxonomy_store)
     prompt_variant_version = _prompt_variant_version(taxonomy_store)
     return ButterflyCascadeResult(
@@ -308,7 +455,7 @@ def classify_butterfly_crop_hierarchical(
         family_top3=family_top,
         selected_family_key=selected_family_key,
         selected_family=selected_family.scientific_name,
-        species_candidate_count=species_taxa.height,
+        species_candidate_count=int(species_candidate_count),
         species_top20=species_top20,
         species_top5=species_top5,
         species_top1=species_top1,
@@ -344,6 +491,43 @@ def _raise_for_invalid_taxonomy_store(taxonomy_store: ButterflyTaxonomyStore) ->
     if fatal:
         codes = ", ".join(str(finding.get("code")) for finding in fatal)
         raise ValueError(f"invalid butterfly taxonomy store: {codes}")
+
+
+def _score_label_sets_for_items(
+    scorer: ObjectBioClipScorer,
+    items: Sequence[dict[str, Any]],
+    label_sets: Mapping[str, Sequence[str]],
+) -> dict[str, list[dict[str, float]]]:
+    label_sets_by_name = {str(name): tuple(str(label) for label in labels) for name, labels in label_sets.items()}
+    batch_scorer = getattr(scorer, "score_label_sets_batch", None)
+    if callable(batch_scorer):
+        return _coerce_label_set_batch_scores(batch_scorer(items, label_sets_by_name), label_sets_by_name, len(items))
+    return {
+        name: [scorer.score(item, labels) for item in items]
+        for name, labels in label_sets_by_name.items()
+    }
+
+
+def _coerce_label_set_batch_scores(
+    scores_by_label_set: Mapping[str, Sequence[Mapping[str, Any]]],
+    label_sets: Mapping[str, Sequence[str]],
+    expected_count: int,
+) -> dict[str, list[dict[str, float]]]:
+    output: dict[str, list[dict[str, float]]] = {}
+    for name in label_sets:
+        try:
+            raw_scores = list(scores_by_label_set[name])
+        except KeyError as exc:
+            raise ValueError(f"BioCLIP batch scorer did not return label set {name!r}") from exc
+        output[name] = _coerce_score_batch(raw_scores, expected_count=expected_count)
+    return output
+
+
+def _coerce_score_batch(scores_by_item: Sequence[Mapping[str, Any]], *, expected_count: int) -> list[dict[str, float]]:
+    scores = list(scores_by_item)
+    if len(scores) != expected_count:
+        raise ValueError(f"BioCLIP batch scorer returned {len(scores)} rows for {expected_count} images")
+    return [{str(label): float(score) for label, score in dict(row).items()} for row in scores]
 
 
 def _enabled_label_rows(frame: pl.DataFrame) -> pl.DataFrame:
@@ -468,6 +652,7 @@ __all__ = [
     "aggregate_taxon_prompt_scores",
     "butterfly_cascade_result_to_dict",
     "butterfly_cascade_results_frame",
+    "classify_butterfly_crops_hierarchical_batch",
     "classify_butterfly_crop_hierarchical",
     "taxon_score_to_dict",
 ]
