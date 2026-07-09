@@ -18,7 +18,9 @@ from biominer.bioclip.hierarchical_classifier import (
     classify_butterfly_crop_hierarchical,
     classify_butterfly_crops_hierarchical_batch,
     hierarchical_result_to_object_score_row,
+    rank_species_with_cached_text_embeddings,
 )
+from biominer.bioclip.embedding_cache import taxonomy_text_embedding_rows
 from biominer.bioclip.object_runner import OBJECT_SCORE_OUTPUT_SCHEMA, _ensure_columns, empty_object_score_frame
 from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
 from biominer.registry.classification_table import (
@@ -479,6 +481,80 @@ def test_classify_butterfly_crops_hierarchical_batch_preserves_order_and_family_
     assert any(any("Papilio species" in label for label in labels) and not any("Danaus plexippus" in label for label in labels) for labels in rerank_label_sets)
 
 
+def test_rank_species_with_cached_text_embeddings_filters_family_and_top_k() -> None:
+    store = _taxonomy_store(species_per_papilionidae=2)
+    cache = _taxonomy_embedding_cache(
+        store,
+        embedding_by_species={
+            "Papilio species01": [0.40, 0.90],
+            "Papilio species02": [0.85, 0.10],
+            "Danaus plexippus": [1.0, 0.0],
+            "Pieris rapae": [0.95, 0.05],
+        },
+    )
+
+    ranked = rank_species_with_cached_text_embeddings(
+        image_embedding=[1.0, 0.0],
+        taxonomy_store=store,
+        family_key="gbif:9417",
+        text_embedding_cache=cache,
+        top_k=1,
+    )
+
+    assert len(ranked) == 1
+    assert ranked[0].scientific_name == "Papilio species02"
+    assert ranked[0].family_key == "gbif:9417"
+    assert ranked[0].label_count == 3
+
+
+def test_rank_species_with_cached_text_embeddings_mean_aggregates_prompt_templates() -> None:
+    store = _taxonomy_store(species_per_papilionidae=2)
+    cache = _taxonomy_embedding_cache(
+        store,
+        embedding_by_label={
+            ("gbif:9401", "a photo of Papilio species01"): [1.0, 0.0],
+            ("gbif:9401", "a close-up photo of the butterfly species Papilio species01"): [0.0, 1.0],
+            ("gbif:9401", "a field photo of the butterfly species Papilio species01"): [0.0, 1.0],
+            ("gbif:9402", "a photo of Papilio species02"): [0.50, 0.866],
+            ("gbif:9402", "a close-up photo of the butterfly species Papilio species02"): [0.50, 0.866],
+            ("gbif:9402", "a field photo of the butterfly species Papilio species02"): [0.50, 0.866],
+        },
+    )
+
+    ranked = rank_species_with_cached_text_embeddings(
+        image_embedding=[1.0, 0.0],
+        taxonomy_store=store,
+        family_key="gbif:9417",
+        text_embedding_cache=cache,
+        top_k=2,
+    )
+
+    assert [score.scientific_name for score in ranked] == ["Papilio species02", "Papilio species01"]
+    assert ranked[0].score > ranked[1].score
+    assert ranked[1].score == pytest.approx(1.0 / 3.0)
+
+
+def test_rank_species_with_cached_text_embeddings_rejects_mixed_model_cache() -> None:
+    store = _taxonomy_store(species_per_papilionidae=1)
+    cache = _taxonomy_embedding_cache(store)
+    mixed = pl.concat(
+        [
+            cache,
+            cache.head(1).with_columns(pl.lit("other-model").alias("model_id")),
+        ],
+        how="diagonal_relaxed",
+    )
+
+    with pytest.raises(ValueError, match="exactly one model_id/model_checkpoint"):
+        rank_species_with_cached_text_embeddings(
+            image_embedding=[1.0, 0.0],
+            taxonomy_store=store,
+            family_key="gbif:9417",
+            text_embedding_cache=mixed,
+            top_k=1,
+        )
+
+
 def test_hierarchical_result_to_object_score_row_is_conservative_open_classification() -> None:
     store = _taxonomy_store(species_per_papilionidae=3)
     scores = _combined_label_scores(
@@ -725,3 +801,40 @@ def _combined_label_scores(
         **_family_label_scores(store, family_scores),
         **_species_label_scores(store, species_scores),
     }
+
+
+def _taxonomy_embedding_cache(
+    store: ButterflyTaxonomyStore,
+    *,
+    embedding_by_species: dict[str, list[float]] | None = None,
+    embedding_by_label: dict[tuple[str, str], list[float]] | None = None,
+) -> pl.DataFrame:
+    rows: list[dict[str, object]] = []
+    species_vectors = embedding_by_species or {}
+    label_vectors = embedding_by_label or {}
+    default_embedding = [0.0, 1.0]
+    for row in taxonomy_text_embedding_rows(
+        store,
+        model_id="fake-bioclip",
+        model_checkpoint="fake-checkpoint",
+    ):
+        label = str(row["label"])
+        taxon_key = str(row["accepted_taxon_key"])
+        species_name = _scientific_name_for_key(store, taxon_key)
+        embedding = label_vectors.get((taxon_key, label)) or species_vectors.get(species_name) or default_embedding
+        rows.append(
+            {
+                **row,
+                "embedding_dim": len(embedding),
+                "embedding": embedding,
+                "created_at": "2026-07-09T00:00:00+00:00",
+            }
+        )
+    return pl.DataFrame(rows)
+
+
+def _scientific_name_for_key(store: ButterflyTaxonomyStore, accepted_taxon_key: str) -> str:
+    matches = store.classification_taxa.filter(pl.col("accepted_taxon_key") == accepted_taxon_key)
+    if not matches.is_empty():
+        return str(matches.select("scientific_name").to_series().to_list()[0])
+    return ""

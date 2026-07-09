@@ -13,6 +13,7 @@ from biominer.bioclip.classification_modes import (
     DEFAULT_SPECIES_RERANK_TOP_K,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
 )
+from biominer.bioclip.embedding_cache import validate_taxonomy_text_embedding_cache
 from biominer.registry.classification_table import (
     CLASSIFICATION_TABLE_VERSION,
     PROMPT_VARIANT_VERSION,
@@ -427,6 +428,42 @@ def classify_butterfly_crops_hierarchical_batch(
     ]
 
 
+def rank_species_with_cached_text_embeddings(
+    *,
+    image_embedding: Sequence[float],
+    taxonomy_store: ButterflyTaxonomyStore,
+    family_key: str,
+    text_embedding_cache: pl.DataFrame,
+    top_k: int,
+) -> list[TaxonScore]:
+    limit = int(top_k)
+    if limit <= 0:
+        raise ValueError("top_k must be positive")
+    _raise_for_invalid_taxonomy_store(taxonomy_store)
+    selected_family_key = _clean_text(family_key)
+    if not selected_family_key:
+        raise ValueError("family_key is required")
+    species_taxa = taxonomy_store.species_for_family(selected_family_key)
+    model_id, model_checkpoint = _single_cache_model_pair(text_embedding_cache)
+    validate_taxonomy_text_embedding_cache(
+        text_embedding_cache,
+        taxonomy_store,
+        model_id=model_id,
+        model_checkpoint=model_checkpoint,
+    )
+    image_vector = _float_vector(image_embedding)
+    groups = _cached_species_prompt_similarity_groups(
+        image_vector=image_vector,
+        species_taxa=species_taxa,
+        family_key=selected_family_key,
+        text_embedding_cache=text_embedding_cache,
+        model_id=model_id,
+        model_checkpoint=model_checkpoint,
+    )
+    scores = [_taxon_score_from_cached_group(group) for group in groups.values()]
+    return sorted(scores, key=lambda score: (-score.score, score.scientific_name, score.accepted_taxon_key))[:limit]
+
+
 def hierarchical_result_to_object_score_row(
     *,
     item: dict[str, Any],
@@ -630,6 +667,87 @@ def _assert_species_top20_family(species_top20: Sequence[TaxonScore], *, selecte
         )
 
 
+def _single_cache_model_pair(frame: pl.DataFrame) -> tuple[str, str]:
+    if frame.is_empty():
+        raise ValueError("taxonomy text embedding cache is empty")
+    missing = sorted({"model_id", "model_checkpoint"} - set(frame.columns))
+    if missing:
+        raise ValueError("taxonomy text embedding cache is missing columns: " + ", ".join(missing))
+    pairs = {
+        (str(row["model_id"]), str(row["model_checkpoint"]))
+        for row in frame.select(["model_id", "model_checkpoint"]).unique().to_dicts()
+        if str(row["model_id"] or "").strip() and str(row["model_checkpoint"] or "").strip()
+    }
+    if not pairs:
+        raise ValueError("taxonomy text embedding cache has no model_id/model_checkpoint pair")
+    if len(pairs) > 1:
+        raise ValueError("taxonomy text embedding cache must contain exactly one model_id/model_checkpoint pair")
+    return next(iter(pairs))
+
+
+def _cached_species_prompt_similarity_groups(
+    *,
+    image_vector: list[float],
+    species_taxa: pl.DataFrame,
+    family_key: str,
+    text_embedding_cache: pl.DataFrame,
+    model_id: str,
+    model_checkpoint: str,
+) -> dict[str, dict[str, Any]]:
+    taxa_by_key = {str(row["accepted_taxon_key"]): row for row in species_taxa.to_dicts()}
+    species_rows = (
+        text_embedding_cache.filter(
+            (pl.col("model_id") == model_id)
+            & (pl.col("model_checkpoint") == model_checkpoint)
+            & (pl.col("label_scope") == "species")
+            & (pl.col("family_key") == family_key)
+            & pl.col("accepted_taxon_key").is_in(list(taxa_by_key))
+        )
+        .sort(["accepted_taxon_key", "label"])
+        .to_dicts()
+    )
+    groups: dict[str, dict[str, Any]] = {}
+    for row in species_rows:
+        taxon_key = _clean_text(row.get("accepted_taxon_key"))
+        label = _clean_text(row.get("label"))
+        if not taxon_key or not label or taxon_key not in taxa_by_key:
+            continue
+        taxon = taxa_by_key[taxon_key]
+        group = groups.setdefault(
+            taxon_key,
+            {
+                "accepted_taxon_key": taxon_key,
+                "scientific_name": _clean_text(taxon.get("scientific_name")),
+                "rank": _clean_text(taxon.get("rank")) or "SPECIES",
+                "family_key": _clean_text(taxon.get("family_key")) or None,
+                "family": _clean_text(taxon.get("family")) or None,
+                "genus_key": _clean_text(taxon.get("genus_key")) or None,
+                "genus": _clean_text(taxon.get("genus")) or None,
+                "label_scores": {},
+            },
+        )
+        group["label_scores"].setdefault(label, _cosine_similarity(image_vector, _float_vector(row.get("embedding"))))
+    return groups
+
+
+def _taxon_score_from_cached_group(group: Mapping[str, Any]) -> TaxonScore:
+    values_by_label = dict(group["label_scores"])
+    values = list(values_by_label.values())
+    best_label, _best_score = sorted(values_by_label.items(), key=lambda item: (-item[1], item[0]))[0]
+    return TaxonScore(
+        accepted_taxon_key=str(group["accepted_taxon_key"]),
+        scientific_name=str(group["scientific_name"]),
+        rank=str(group["rank"]),
+        family_key=group["family_key"],
+        family=group["family"],
+        genus_key=group["genus_key"],
+        genus=group["genus"],
+        score=sum(values) / len(values),
+        best_label=best_label,
+        label_count=len(values_by_label),
+    )
+
+
 def _taxonomy_table_version(taxonomy_store: ButterflyTaxonomyStore) -> str:
     manifest = taxonomy_store.manifest or {}
     return str(manifest.get("classification_table_version") or _first_value(taxonomy_store.classification_taxa, "classification_table_version") or CLASSIFICATION_TABLE_VERSION)
@@ -724,6 +842,20 @@ def _clean_text(value: object) -> str:
     return " ".join(str(value or "").strip().split())
 
 
+def _float_vector(value: object) -> list[float]:
+    return [float(item) for item in value]  # type: ignore[union-attr]
+
+
+def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
+    if len(left) != len(right):
+        raise ValueError(f"embedding dimensions differ: image={len(left)}, text={len(right)}")
+    left_norm = sum(value * value for value in left) ** 0.5
+    right_norm = sum(value * value for value in right) ** 0.5
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+    return sum(a * b for a, b in zip(left, right, strict=True)) / (left_norm * right_norm)
+
+
 __all__ = [
     "BUTTERFLY_CASCADE_RESULT_SCHEMA",
     "HIERARCHICAL_CANDIDATE_SELECTION_MODE",
@@ -739,5 +871,6 @@ __all__ = [
     "classify_butterfly_crops_hierarchical_batch",
     "classify_butterfly_crop_hierarchical",
     "hierarchical_result_to_object_score_row",
+    "rank_species_with_cached_text_embeddings",
     "taxon_score_to_dict",
 ]
