@@ -17,6 +17,7 @@ from biominer.bioclip.hierarchical_classifier import (
     butterfly_cascade_results_frame,
     classify_butterfly_crop_hierarchical,
     classify_butterfly_crops_hierarchical_batch,
+    hierarchical_result_to_object_score_row,
 )
 from biominer.bioclip.object_runner import OBJECT_SCORE_OUTPUT_SCHEMA, _ensure_columns, empty_object_score_frame
 from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
@@ -476,6 +477,54 @@ def test_classify_butterfly_crops_hierarchical_batch_preserves_order_and_family_
     assert len(rerank_label_sets) == 2
     assert any(any("Danaus plexippus" in label for label in labels) and not any("Papilio species" in label for label in labels) for labels in rerank_label_sets)
     assert any(any("Papilio species" in label for label in labels) and not any("Danaus plexippus" in label for label in labels) for labels in rerank_label_sets)
+
+
+def test_hierarchical_result_to_object_score_row_is_conservative_open_classification() -> None:
+    store = _taxonomy_store(species_per_papilionidae=3)
+    scores = _combined_label_scores(
+        store,
+        family_scores={"Papilionidae": 0.90, "Nymphalidae": 0.40, "Pieridae": 0.30},
+        species_scores={"Papilio species01": 0.60, "Papilio species02": 0.85, "Papilio species03": 0.70},
+    )
+    scorer = _StaticBatchScorer({"sha256:crop-1": scores})
+    item = {**_cascade_item(), "ablation_mode": "detector_crop", "detector_score": 0.77}
+    result = classify_butterfly_crop_hierarchical(
+        item=item,
+        scorer=scorer,
+        taxonomy_store=store,
+        species_first_pass_top_k=3,
+        species_rerank_top_k=2,
+    )
+
+    row = hierarchical_result_to_object_score_row(
+        item=item,
+        result=result,
+        scorer=scorer,
+        family_top_k=3,
+        species_first_pass_top_k=3,
+        species_rerank_top_k=2,
+    )
+    frame = _ensure_columns(pl.DataFrame([row]), OBJECT_SCORE_OUTPUT_SCHEMA)
+
+    assert row["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    assert row["candidate_selection_mode"] == HIERARCHICAL_CANDIDATE_SELECTION_MODE
+    assert row["species_rerank_strategy"] == HIERARCHICAL_SPECIES_RERANK_STRATEGY
+    assert row["selected_family_key"] == "gbif:9417"
+    assert row["selected_family"] == "Papilionidae"
+    assert row["species_top1_scientific_name"] == "Papilio species02"
+    assert row["species_top1_accepted_taxon_key"] == row["accepted_taxon_key"]
+    assert row["species_top5"][0] == "Papilio species02"
+    assert row["species_top5_accepted_taxon_keys"][0] == row["accepted_taxon_key"]
+    assert row["species_top5_scores"][0] == row["species_top1_score"]
+    assert row["target_accepted_taxon_key"] is None
+    assert row["target_species_score"] is None
+    assert row["target_species_rank"] is None
+    assert row["is_target_positive"] is False
+    assert row["occurrence_bin"] == "in_review"
+    assert row["bin_reason"] == "hierarchical_open_classification_requires_review"
+    assert frame.schema["target_species_rank"] == pl.Int64
+    assert frame.schema["target_species_score"] == pl.Float64
+    assert frame.schema["species_top20_scores"] == pl.List(pl.Float64)
 
 
 def _species_label_rows() -> pl.DataFrame:

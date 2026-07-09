@@ -1384,8 +1384,11 @@ def empty_photo_summary_frame() -> pl.DataFrame:
 def _ensure_columns(frame: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.DataFrame:
     if frame.is_empty() and not frame.columns:
         return pl.DataFrame(schema=schema)
-    missing = [pl.lit(None, dtype=dtype).alias(name) for name, dtype in schema.items() if name not in frame.columns]
-    return frame.with_columns(missing) if missing else frame
+    expressions = [
+        pl.col(name).cast(dtype).alias(name) if name in frame.columns else pl.lit(None, dtype=dtype).alias(name)
+        for name, dtype in schema.items()
+    ]
+    return frame.with_columns(expressions)
 
 
 def _unscored_photo_summary(

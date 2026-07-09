@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from math import exp
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 import polars as pl
 
@@ -427,6 +427,79 @@ def classify_butterfly_crops_hierarchical_batch(
     ]
 
 
+def hierarchical_result_to_object_score_row(
+    *,
+    item: dict[str, Any],
+    result: ButterflyCascadeResult,
+    scorer: ObjectBioClipScorer,
+    family_top_k: int,
+    species_first_pass_top_k: int,
+    species_rerank_top_k: int,
+) -> dict[str, Any]:
+    species_top1 = result.species_top1
+    genera = _unique_text(score.genus for score in result.species_top5 if score.genus)
+    return {
+        "source": result.source or str(item.get("source") or ""),
+        "flickr_photo_id": result.flickr_photo_id or str(item.get("flickr_photo_id") or ""),
+        "detection_id": result.detection_id or str(item.get("detection_id") or ""),
+        "crop_hash": result.crop_hash or str(item.get("crop_hash") or ""),
+        "model_id": scorer.model_id,
+        "model_version": scorer.model_version,
+        "model_checkpoint": scorer.model_checkpoint,
+        "candidate_set_id": result.candidate_set_id,
+        "classified_at": result.classified_at,
+        "classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        "candidate_selection_mode": HIERARCHICAL_CANDIDATE_SELECTION_MODE,
+        "candidate_source": "gbif_classification_table",
+        "taxonomy_table_version": result.taxonomy_table_version,
+        "taxonomy_prompt_variant_version": result.prompt_variant_version,
+        "ablation_mode": str(item.get("ablation_mode") or "detector_crop"),
+        "species_first_pass_top_k": int(species_first_pass_top_k),
+        "species_rerank_top_k": int(species_rerank_top_k),
+        "species_rerank_strategy": HIERARCHICAL_SPECIES_RERANK_STRATEGY,
+        "triage_group_top": "butterfly_like",
+        "triage_group_scores": {"butterfly_like": float(item.get("detector_score") or 0.0)},
+        "family_top3": [score.scientific_name for score in result.family_top3[:family_top_k]],
+        "family_top3_accepted_taxon_keys": [score.accepted_taxon_key for score in result.family_top3[:family_top_k]],
+        "family_top3_scores": [score.score for score in result.family_top3[:family_top_k]],
+        "family_top1": result.selected_family,
+        "family_top1_score": result.family_top1_score,
+        "family_margin": _margin(result.family_top3),
+        "selected_family_key": result.selected_family_key,
+        "selected_family": result.selected_family,
+        "genus_top8": genera[:8],
+        "genus_top1": species_top1.genus if species_top1 is not None else None,
+        "genus_top1_score": species_top1.score if species_top1 is not None and species_top1.genus else None,
+        "genus_margin": None,
+        "species_candidate_family_key": result.selected_family_key,
+        "species_candidate_family": result.selected_family,
+        "species_candidate_count": int(result.species_candidate_count),
+        "species_top20": [score.scientific_name for score in result.species_top20],
+        "species_top20_accepted_taxon_keys": [score.accepted_taxon_key for score in result.species_top20],
+        "species_top20_scores": [score.score for score in result.species_top20],
+        "species_top5": [score.scientific_name for score in result.species_top5],
+        "species_top5_accepted_taxon_keys": [score.accepted_taxon_key for score in result.species_top5],
+        "species_top5_scores": [score.score for score in result.species_top5],
+        "species_top1": species_top1.scientific_name if species_top1 is not None else None,
+        "species_top1_scientific_name": species_top1.scientific_name if species_top1 is not None else None,
+        "species_top1_accepted_taxon_key": species_top1.accepted_taxon_key if species_top1 is not None else None,
+        "accepted_taxon_key": species_top1.accepted_taxon_key if species_top1 is not None else None,
+        "species_top1_score": result.species_top1_score,
+        "species_top1_margin": result.species_top1_margin,
+        "target_accepted_taxon_key": None,
+        "target_species_score": None,
+        "target_species_rank": None,
+        "geospatial_prior_score": 0.0,
+        "geospatial_prior_reason": "not_applied_open_classification",
+        "text_evidence_score": 0.0,
+        "comment_evidence_score": 0.0,
+        "is_target_positive": False,
+        "is_negative_material": False,
+        "occurrence_bin": "in_review",
+        "bin_reason": "hierarchical_open_classification_requires_review",
+    }
+
+
 def _cascade_result(
     *,
     item: dict[str, Any],
@@ -590,6 +663,17 @@ def _margin(scores: Sequence[TaxonScore]) -> float | None:
     return float(scores[0].score - scores[1].score)
 
 
+def _unique_text(values: Iterable[str | None]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        text = _clean_text(value)
+        if text and text not in seen:
+            output.append(text)
+            seen.add(text)
+    return output
+
+
 def _require_label_columns(
     label_rows: pl.DataFrame,
     *,
@@ -654,5 +738,6 @@ __all__ = [
     "butterfly_cascade_results_frame",
     "classify_butterfly_crops_hierarchical_batch",
     "classify_butterfly_crop_hierarchical",
+    "hierarchical_result_to_object_score_row",
     "taxon_score_to_dict",
 ]
