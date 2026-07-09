@@ -4020,45 +4020,29 @@ def test_cli_help_does_not_describe_old_gold_silver_bronze_logic(capsys) -> None
     assert "bioclip_positive_without_human_verification" not in help_text
 
 
-def test_removed_filter_and_apply_rules_commands_no_longer_parse() -> None:
-    parser = build_parser()
-
-    with pytest.raises(SystemExit):
-        parser.parse_args(["apply-rules", "--evidence", "evidence.parquet", "--output", "classified.parquet"])
-    with pytest.raises(SystemExit):
-        parser.parse_args(["filter", "--input", "evidence.parquet", "--output", "flagged.parquet"])
-
-
-def test_low_level_fetch_and_comment_commands_are_dev_only() -> None:
-    parser = build_parser()
-
-    removed_commands = (
+@pytest.mark.parametrize(
+    "command",
+    (
+        ["apply-rules", "--evidence", "evidence.parquet", "--output", "classified.parquet"],
+        ["filter", "--input", "evidence.parquet", "--output", "flagged.parquet"],
         ["fetch-comments", "--photo-id", "1"],
         ["build-comment-review-queue", "--input", "classified.parquet"],
         ["review-comments-once"],
         ["apply-comment-review-decisions", "--input", "classified.parquet", "--output", "reviewed.parquet"],
         ["poll-once"],
-    )
-    for command in removed_commands:
-        with pytest.raises(SystemExit):
-            parser.parse_args(command)
-
-
-def test_legacy_local_compaction_and_gc_cache_commands_no_longer_parse() -> None:
+        ["compact-parquet", "--input-root", "predictions", "--output", "compacted.parquet"],
+        ["gc-cache", "--cache-root", "data/cache", "--delete"],
+        ["qa-rate-limit"],
+        ["qa-summary"],
+        ["export-bucket-views"],
+        ["report-name-evidence"],
+    ),
+)
+def test_removed_top_level_commands_no_longer_parse(command: list[str]) -> None:
     parser = build_parser()
 
     with pytest.raises(SystemExit):
-        parser.parse_args(["compact-parquet", "--input-root", "predictions", "--output", "compacted.parquet"])
-    with pytest.raises(SystemExit):
-        parser.parse_args(["gc-cache", "--cache-root", "data/cache", "--delete"])
-
-
-def test_legacy_ad_hoc_report_commands_no_longer_parse() -> None:
-    parser = build_parser()
-
-    for command in ("qa-rate-limit", "qa-summary", "export-bucket-views", "report-name-evidence"):
-        with pytest.raises(SystemExit):
-            parser.parse_args([command])
+        parser.parse_args(command)
 
 
 def test_comments_enrichment_cli(tmp_path, capsys) -> None:
