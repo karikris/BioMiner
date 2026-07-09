@@ -161,6 +161,7 @@ def test_run_paths_and_dry_run_manifest(tmp_path) -> None:
     assert manifest.evidence_counts == {"object_evidence_rows": 0, "photo_summary_rows": 0, "review_queue_rows": 0}
     assert manifest.outputs["manifest"].endswith("/run_manifest.json")
     assert manifest.outputs["review_queue"].endswith("/reports/review_queue.parquet")
+    assert manifest.outputs["visual_qa_findings"].endswith("/reports/visual_qa_findings.parquet")
     assert [stage.stage for stage in manifest.stages][:3] == [
         RunStage.RESOLVE_TAXON_SCOPE,
         RunStage.BUILD_REGISTRY,
@@ -332,6 +333,7 @@ def test_run_artifact_uris_are_s3_safe_and_species_scoped() -> None:
     assert uris.run_root_uri == "s3://biominer/runs/run_id=family_papilionidae"
     assert uris.manifest_uri == "s3://biominer/runs/run_id=family_papilionidae/run_manifest.json"
     assert uris.review_queue_uri == "s3://biominer/runs/run_id=family_papilionidae/reports/review_queue.parquet"
+    assert uris.visual_qa_findings_uri == "s3://biominer/runs/run_id=family_papilionidae/reports/visual_qa_findings.parquet"
     assert uris.vision_stage_metrics_uri == "s3://biominer/runs/run_id=family_papilionidae/reports/vision_stage_metrics.json"
     assert uris.query_definitions_uri == "s3://biominer/runs/run_id=family_papilionidae/registry/flickr_query_definitions.parquet"
     assert uris.object_detections_uri == "s3://biominer/runs/run_id=family_papilionidae/staging/object_detections.parquet"
@@ -1194,7 +1196,9 @@ def test_orchestrator_joins_evidence_and_writes_summary_metrics(tmp_path) -> Non
     assert result.paths.vision_stage_metrics_path.exists()
     assert result.paths.vision_stage_summary_path.exists()
     assert result.paths.review_queue_path.exists()
+    assert result.paths.visual_qa_findings_path.exists()
     assert pl.read_parquet(result.paths.review_queue_path).height == 0
+    assert pl.read_parquet(result.paths.visual_qa_findings_path).height == 0
     vision_stage_metrics = json.loads(result.paths.vision_stage_metrics_path.read_text(encoding="utf-8"))
     assert vision_stage_metrics["detection"]["eligible_bioclip_detections"] == 1
     assert vision_stage_metrics["bioclip"]["crops_scored"] == 1
@@ -1211,6 +1215,7 @@ def test_orchestrator_joins_evidence_and_writes_summary_metrics(tmp_path) -> Non
         "vision_stage_metrics": str(result.paths.vision_stage_metrics_path),
         "vision_stage_summary": str(result.paths.vision_stage_summary_path),
         "review_queue": str(result.paths.review_queue_path),
+        "visual_qa_findings": str(result.paths.visual_qa_findings_path),
     }
     assert json.loads(result.paths.metrics_path.read_text(encoding="utf-8")) == {
         "object_evidence_rows": 1,
@@ -1223,6 +1228,13 @@ def test_orchestrator_joins_evidence_and_writes_summary_metrics(tmp_path) -> Non
         "review_queue_mode": "target_scope",
         "review_queue_rows": 0,
         "top_review_reasons": {},
+        "visual_qa_fatal_count": 0,
+        "visual_qa_finding_type_counts": {},
+        "visual_qa_findings": 0,
+        "visual_qa_info_count": 0,
+        "visual_qa_severity_counts": {},
+        "visual_qa_status": "passed",
+        "visual_qa_warning_count": 0,
     }
 
 
@@ -1368,6 +1380,7 @@ def test_orchestrator_summarize_writes_review_queue_for_ambiguous_photos(tmp_pat
     assert result.manifest.metrics["review_queue_mode"] == "target_scope"
     assert result.manifest.metrics["high_priority_review_rows"] == 0
     assert result.manifest.stages[0].outputs["review_queue"] == str(result.paths.review_queue_path)
+    assert result.manifest.stages[0].outputs["visual_qa_findings"] == str(result.paths.visual_qa_findings_path)
     assert queue.select("flickr_photo_id").to_series().to_list() == ["review-1", "bronze-1"]
 
 
@@ -1402,6 +1415,9 @@ def test_orchestrator_summarize_writes_hierarchical_review_queue_without_photo_s
         "low_species_margin": 1,
         "metadata_species_conflict": 1,
     }
+    assert result.manifest.metrics["visual_qa_warning_count"] == 2
+    assert result.manifest.metrics["visual_qa_info_count"] == 1
+    assert result.manifest.metrics["visual_qa_fatal_count"] == 0
     assert queue.select("review_priority").to_series().to_list() == [90]
     assert queue.select("review_reason").to_series().to_list() == ["metadata_species_conflict;low_species_margin"]
 
@@ -1444,12 +1460,16 @@ def test_orchestrator_summarizes_photo_evidence_from_cloud_join_shards(tmp_path)
     assert result.manifest.status == "complete"
     assert result.manifest.evidence_counts == {"object_evidence_rows": 1, "photo_summary_rows": 1, "review_queue_rows": 0}
     photo_summary_uri = result.manifest.stages[0].outputs["photo_summary"]
+    visual_qa_uri = result.manifest.stages[0].outputs["visual_qa_findings"]
     assert result.manifest.stages[0].outputs["metrics"] == plan.artifact_uris.metrics_uri
     assert result.manifest.stages[0].outputs["vision_stage_metrics"] == plan.artifact_uris.vision_stage_metrics_uri
+    assert visual_qa_uri == plan.artifact_uris.visual_qa_findings_uri
     assert photo_summary_uri.startswith(plan.artifact_uris.staging_uri + "/evidence/stage=photo_summary/")
     assert plan.artifact_uris.photo_summary_uri not in storage.parquet_payloads
+    assert storage.parquet_payloads[visual_qa_uri].height == 0
     assert storage.json_payloads[plan.artifact_uris.manifest_uri]["evidence_counts"]["photo_summary_rows"] == 1
     assert storage.json_payloads[plan.artifact_uris.metrics_uri]["photo_occurrence_bin_counts"] == {"gold": 1}
+    assert storage.json_payloads[plan.artifact_uris.metrics_uri]["visual_qa_status"] == "passed"
     assert storage.json_payloads[plan.artifact_uris.vision_stage_metrics_uri]["evidence"]["photo_summary_rows"] == 1
     summary = storage.parquet_payloads[photo_summary_uri]
     assert summary.select("flickr_photo_id").to_series().to_list() == ["photo-1"]
@@ -1521,8 +1541,11 @@ def test_orchestrator_builds_review_queue_from_cloud_summary_shards(tmp_path) ->
     assert result.manifest.status == "complete"
     assert result.manifest.evidence_counts == {"object_evidence_rows": 0, "photo_summary_rows": 2, "review_queue_rows": 1}
     review_queue_uri = result.manifest.stages[0].outputs["review_queue"]
+    visual_qa_uri = result.manifest.stages[0].outputs["visual_qa_findings"]
     assert review_queue_uri.startswith(plan.artifact_uris.staging_uri + "/evidence/stage=review_queue/")
     assert plan.artifact_uris.review_queue_uri not in storage.parquet_payloads
+    assert visual_qa_uri == plan.artifact_uris.visual_qa_findings_uri
+    assert storage.parquet_payloads[visual_qa_uri].height == 0
     assert storage.json_payloads[plan.artifact_uris.metrics_uri]["review_queue_bin_counts"] == {"in_review": 1}
     assert result.manifest.stages[0].outputs["vision_stage_metrics"] == plan.artifact_uris.vision_stage_metrics_uri
     assert storage.json_payloads[plan.artifact_uris.vision_stage_metrics_uri]["evidence"]["photo_summary_rows"] == 2
@@ -1579,6 +1602,11 @@ def test_orchestrator_builds_hierarchical_review_queue_from_cloud_join_shards(tm
         "low_species_margin": 1,
         "metadata_species_conflict": 1,
     }
+    assert result.manifest.metrics["visual_qa_warning_count"] == 2
+    assert result.manifest.metrics["visual_qa_info_count"] == 1
+    visual_qa_uri = result.manifest.stages[0].outputs["visual_qa_findings"]
+    assert visual_qa_uri == plan.artifact_uris.visual_qa_findings_uri
+    assert storage.parquet_payloads[visual_qa_uri].height == 3
     review_queue_uri = result.manifest.stages[0].outputs["review_queue"]
     queue = storage.parquet_payloads[review_queue_uri]
     assert queue.select("review_priority").to_series().to_list() == [90]

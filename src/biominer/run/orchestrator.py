@@ -38,6 +38,7 @@ from biominer.evidence.cloud_work import (
 )
 from biominer.evidence.join import write_object_evidence_outputs
 from biominer.evidence.metrics import build_review_queue, evidence_count_metrics
+from biominer.evaluation.qa import build_visual_qa_findings
 from biominer.evaluation.review_queue import build_hierarchical_review_queue
 from biominer.flickr_comments.comment_review import CommentReviewState
 from biominer.flickr_comments.comments_enrichment import fetch_flickr_comments
@@ -1401,6 +1402,7 @@ class ProductionRunOrchestrator:
                 else _read_cloud_stage_frame(self.storage, self.workstore, plan, "photo_summary")
             )
             review_queue, review_queue_mode = _build_production_review_queue(joined=joined, photo_summary=photo_summary)
+            visual_qa_findings = build_visual_qa_findings(object_evidence=joined, photo_summary=photo_summary)
             queue_result = CloudReviewQueueResult(
                 frame=review_queue,
                 summary_shards=tuple(summary_shards),
@@ -1431,6 +1433,10 @@ class ProductionRunOrchestrator:
                     "review_queue_mode": review_queue_mode,
                 },
             )
+            visual_qa_uri = self.storage.write_parquet_shard(
+                plan.artifact_uris.visual_qa_findings_uri,
+                visual_qa_findings,
+            )
             metrics = evidence_count_metrics(joined, photo_summary)
             metrics.update(
                 {
@@ -1441,6 +1447,7 @@ class ProductionRunOrchestrator:
                 }
             )
             metrics.update(_review_queue_metrics(queue_result.frame, review_queue_mode=review_queue_mode))
+            metrics.update(_visual_qa_metrics(visual_qa_findings))
             if summary_result is not None:
                 metrics.update(
                     {
@@ -1460,7 +1467,14 @@ class ProductionRunOrchestrator:
                 detection_policy=self.request.vision_settings.to_detection_policy(DetectionPolicy()),
             )
             vision_stage_metrics_uri = self.storage.write_json(plan.artifact_uris.vision_stage_metrics_uri, vision_stage_metrics)
-            outputs.update({"metrics": metrics_uri, "review_queue": review_queue_uri, "vision_stage_metrics": vision_stage_metrics_uri})
+            outputs.update(
+                {
+                    "metrics": metrics_uri,
+                    "review_queue": review_queue_uri,
+                    "visual_qa_findings": visual_qa_uri,
+                    "vision_stage_metrics": vision_stage_metrics_uri,
+                }
+            )
             return StageExecutionResult(metrics=metrics, outputs=outputs)
         missing = _missing_paths(plan.paths.object_evidence_path)
         if missing:
@@ -1471,8 +1485,10 @@ class ProductionRunOrchestrator:
         joined = pl.read_parquet(plan.paths.object_evidence_path)
         photo_summary = _read_optional_parquet(plan.paths.photo_summary_path)
         review_queue, review_queue_mode = _build_production_review_queue(joined=joined, photo_summary=photo_summary)
+        visual_qa_findings = build_visual_qa_findings(object_evidence=joined, photo_summary=photo_summary)
         metrics = evidence_count_metrics(joined, photo_summary)
         metrics.update(_review_queue_metrics(review_queue, review_queue_mode=review_queue_mode))
+        metrics.update(_visual_qa_metrics(visual_qa_findings))
         plan.paths.reports_dir.mkdir(parents=True, exist_ok=True)
         plan.paths.metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
         vision_stage_metrics = build_vision_stage_metrics(
@@ -1485,6 +1501,7 @@ class ProductionRunOrchestrator:
         )
         vision_report_paths = write_vision_stage_reports(vision_stage_metrics, plan.paths.reports_dir)
         write_parquet(review_queue, plan.paths.review_queue_path)
+        write_parquet(visual_qa_findings, plan.paths.visual_qa_findings_path)
         return StageExecutionResult(
             metrics=metrics,
             outputs={
@@ -1492,6 +1509,7 @@ class ProductionRunOrchestrator:
                 "vision_stage_metrics": str(vision_report_paths["metrics"]),
                 "vision_stage_summary": str(vision_report_paths["summary"]),
                 "review_queue": str(plan.paths.review_queue_path),
+                "visual_qa_findings": str(plan.paths.visual_qa_findings_path),
             },
         )
 
@@ -1977,6 +1995,20 @@ def _review_queue_metrics(frame: Any, *, review_queue_mode: str) -> dict[str, An
         "review_priority_counts": _value_counts(frame, "review_priority"),
         "review_queue_bin_counts": _value_counts(frame, "review_bucket"),
         "top_review_reasons": _review_reason_counts(frame),
+    }
+
+
+def _visual_qa_metrics(frame: Any) -> dict[str, Any]:
+    severity_counts = _value_counts(frame, "severity")
+    fatal_count = int(severity_counts.get("fatal", 0))
+    return {
+        "visual_qa_findings": frame.height,
+        "visual_qa_severity_counts": severity_counts,
+        "visual_qa_finding_type_counts": _value_counts(frame, "finding_type"),
+        "visual_qa_fatal_count": fatal_count,
+        "visual_qa_warning_count": int(severity_counts.get("warning", 0)),
+        "visual_qa_info_count": int(severity_counts.get("info", 0)),
+        "visual_qa_status": "failed" if fatal_count > 0 else "passed",
     }
 
 

@@ -6,7 +6,7 @@ from typing import Any, Mapping
 import polars as pl
 
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-from biominer.detection.policy import detection_is_bioclip_eligible
+from biominer.detection.policy import DetectionPolicy, detection_is_bioclip_eligible
 from biominer.evaluation.review_queue import build_hierarchical_review_queue
 from biominer.evaluation.thresholds import VisionBucketPolicy, load_vision_bucket_policy
 
@@ -87,11 +87,7 @@ def _append_row_findings(findings: list[dict[str, str]], row: Mapping[str, Any],
                 "rerun species reranking from the full constrained top20 candidate set",
             )
         )
-    if (
-        _has_detection_eligibility_fields(row)
-        and _has_bioclip_score(row)
-        and not detection_is_bioclip_eligible(dict(row))
-    ):
+    if _has_bioclip_score_for_noneligible_detection(row):
         findings.append(
             _finding(
                 "fatal",
@@ -322,8 +318,18 @@ def _has_bioclip_score(row: Mapping[str, Any]) -> bool:
     )
 
 
-def _has_detection_eligibility_fields(row: Mapping[str, Any]) -> bool:
-    return bool(_text(row.get("detector_label")) or _text(row.get("detection_status")))
+def _has_bioclip_score_for_noneligible_detection(row: Mapping[str, Any]) -> bool:
+    if not _has_bioclip_score(row):
+        return False
+    label = _text(row.get("detector_label"))
+    status = _text(row.get("detection_status"))
+    if not label and not status:
+        return False
+    if status and status != "detected":
+        return True
+    if not label:
+        return False
+    return label not in set(DetectionPolicy().bioclip_eligible_labels)
 
 
 def _is_butterfly_like_detection(row: Mapping[str, Any]) -> bool:

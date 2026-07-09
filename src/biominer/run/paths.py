@@ -55,6 +55,10 @@ class RunArtifactUris:
         return join_uri(self.reports_uri, "review_queue.parquet")
 
     @property
+    def visual_qa_findings_uri(self) -> str:
+        return join_uri(self.reports_uri, "visual_qa_findings.parquet")
+
+    @property
     def reviewed_object_evidence_uri(self) -> str:
         return join_uri(self.staging_uri, "object_evidence_reviewed.parquet")
 
@@ -99,6 +103,7 @@ class RunArtifactUris:
             "vision_stage_metrics": self.vision_stage_metrics_uri,
             "vision_stage_summary": self.vision_stage_summary_uri,
             "review_queue": self.review_queue_uri,
+            "visual_qa_findings": self.visual_qa_findings_uri,
             "reviewed_object_evidence": self.reviewed_object_evidence_uri,
             "query_definitions": self.query_definitions_uri,
             "source_records": self.source_records_uri,
@@ -155,6 +160,10 @@ class RunPaths:
     @property
     def review_queue_path(self) -> Path:
         return self.reports_dir / "review_queue.parquet"
+
+    @property
+    def visual_qa_findings_path(self) -> Path:
+        return self.reports_dir / "visual_qa_findings.parquet"
 
     @property
     def comment_review_state_path(self) -> Path:
