@@ -6,11 +6,7 @@ from typing import Any, Mapping
 import polars as pl
 
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-
-
-LOW_MARGIN_THRESHOLD = 0.05
-HIGH_DETECTOR_SCORE_THRESHOLD = 0.80
-WEAK_SPECIES_SCORE_THRESHOLD = 0.35
+from biominer.evaluation.thresholds import VisionBucketPolicy, load_vision_bucket_policy
 
 HIERARCHICAL_REVIEW_QUEUE_SCHEMA: dict[str, pl.DataType] = {
     "source": pl.String,
@@ -40,6 +36,7 @@ def build_hierarchical_review_queue(
     object_evidence: pl.DataFrame,
     photo_summary: pl.DataFrame | None = None,
     max_rows: int | None = None,
+    policy: VisionBucketPolicy | None = None,
 ) -> pl.DataFrame:
     """Return object-level review priorities for hierarchical classifier output."""
 
@@ -50,6 +47,7 @@ def build_hierarchical_review_queue(
 
     photo_rows = _photo_rows_by_key(photo_summary)
     distinct_photo_species = _distinct_species_by_photo(object_evidence)
+    active_policy = policy or load_vision_bucket_policy()
     rows: list[dict[str, Any]] = []
     for object_row in object_evidence.to_dicts():
         photo_key = (_text(object_row.get("source")), _text(object_row.get("flickr_photo_id")))
@@ -57,7 +55,7 @@ def build_hierarchical_review_queue(
         row = _merge_photo_object_row(photo_row, object_row)
         if not _reviewable_hierarchical_row(row):
             continue
-        priority, reasons = _review_priority(row, distinct_photo_species.get(photo_key, set()))
+        priority, reasons = _review_priority(row, distinct_photo_species.get(photo_key, set()), policy=active_policy)
         rows.append(
             {
                 "source": _text(row.get("source")),
@@ -103,9 +101,14 @@ def _reviewable_hierarchical_row(row: Mapping[str, Any]) -> bool:
     return _is_butterfly_like_detection(row) and _missing_bioclip_score(row)
 
 
-def _review_priority(row: Mapping[str, Any], photo_species: set[str]) -> tuple[int, list[str]]:
+def _review_priority(
+    row: Mapping[str, Any],
+    photo_species: set[str],
+    *,
+    policy: VisionBucketPolicy,
+) -> tuple[int, list[str]]:
     reasons: list[str] = []
-    priority = 10
+    priority = policy.clean_confident_review_priority
 
     def add(reason: str, value: int) -> None:
         nonlocal priority
@@ -114,25 +117,25 @@ def _review_priority(row: Mapping[str, Any], photo_species: set[str]) -> tuple[i
         priority = max(priority, value)
 
     if _missing_bioclip_score(row) and _is_butterfly_like_detection(row):
-        add("missing_bioclip_score", 100)
+        add("missing_bioclip_score", policy.missing_bioclip_review_priority)
     if _hard_negative_metadata_conflict(row):
-        add("hard_negative_metadata_conflict", 95)
+        add("hard_negative_metadata_conflict", policy.hard_negative_review_priority)
     if _metadata_species_conflict(row):
-        add("metadata_species_conflict", 90)
+        add("metadata_species_conflict", policy.metadata_conflict_review_priority)
     if _family_species_conflict(row):
-        add("family_species_conflict", 85)
+        add("family_species_conflict", policy.family_species_conflict_review_priority)
     if _species_name(row) and len(photo_species) > 1:
-        add("multiple_detection_species_conflict", 80)
-    if _high_detector_weak_species(row):
-        add("high_detector_weak_species_score", 75)
+        add("multiple_detection_species_conflict", policy.multi_object_conflict_review_priority)
+    if _high_detector_weak_species(row, policy=policy):
+        add("high_detector_weak_species_score", policy.high_detector_weak_species_review_priority)
     species_margin = _species_margin(row)
-    if species_margin is not None and species_margin <= LOW_MARGIN_THRESHOLD:
-        add("low_species_margin", 70)
+    if species_margin is not None and species_margin <= policy.minimum_species_margin:
+        add("low_species_margin", policy.low_species_margin_review_priority)
     family_margin = _family_margin(row)
-    if family_margin is not None and family_margin <= LOW_MARGIN_THRESHOLD:
-        add("low_family_margin", 65)
+    if family_margin is not None and family_margin <= policy.minimum_family_margin:
+        add("low_family_margin", policy.low_family_margin_review_priority)
     if _geo_prior_conflict(row):
-        add("geospatial_prior_conflict", 60)
+        add("geospatial_prior_conflict", policy.geospatial_prior_conflict_review_priority)
 
     if not reasons:
         reasons.append("clean_confident_prediction")
@@ -240,14 +243,14 @@ def _family_species_conflict(row: Mapping[str, Any]) -> bool:
     return bool(selected_family and species_family and selected_family != species_family)
 
 
-def _high_detector_weak_species(row: Mapping[str, Any]) -> bool:
+def _high_detector_weak_species(row: Mapping[str, Any], *, policy: VisionBucketPolicy) -> bool:
     detector_score = _optional_float(row.get("detector_score"))
     species_score = _optional_float(row.get("species_top1_score"))
     return (
         detector_score is not None
         and species_score is not None
-        and detector_score >= HIGH_DETECTOR_SCORE_THRESHOLD
-        and species_score < WEAK_SPECIES_SCORE_THRESHOLD
+        and detector_score >= policy.high_detector_score
+        and species_score < policy.low_confidence_species_score
     )
 
 
