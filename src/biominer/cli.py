@@ -162,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     vision_detect.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
     vision_detect.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
     vision_detect.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
+    vision_detect.add_argument("--yolo-sidecar-transport", default="json_b64", choices=("json_b64", "image_path"))
     vision_detect.add_argument("--imgsz", type=int, default=640)
     vision_detect.add_argument("--conf", type=float, default=0.20)
     vision_detect.add_argument("--iou", type=float, default=0.50)
@@ -176,6 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
     vision_screen.add_argument("--species-candidates")
     vision_screen.add_argument("--vision-profile", default="mac_m5pro_64gb")
     vision_screen.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"))
+    vision_screen.add_argument("--yolo-sidecar-transport", choices=("json_b64", "image_path"))
     vision_screen.add_argument("--yolo-runtime-python", default=YOLOE26_RUNTIME_PYTHON)
     vision_screen.add_argument("--bioclip-runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
     vision_screen.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
@@ -372,6 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--vision-profile", choices=("mac_m5pro_64gb",))
     production_run.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"))
     production_run.add_argument("--yolo-checkpoint")
+    production_run.add_argument("--yolo-sidecar-transport", choices=("json_b64", "image_path"))
     production_run.add_argument("--yolo-imgsz", type=int)
     production_run.add_argument("--yolo-batch", type=int)
     production_run.add_argument("--bioclip-model")
@@ -498,6 +501,7 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     yoloe26_prototype.add_argument("--vision-profile", choices=("mac_m5pro_64gb",))
     yoloe26_prototype.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"))
     yoloe26_prototype.add_argument("--checkpoint")
+    yoloe26_prototype.add_argument("--yolo-sidecar-transport", choices=("json_b64", "image_path"))
     yoloe26_prototype.add_argument("--limit", type=int)
     yoloe26_prototype.add_argument("--retain-debug-crops", action="store_true")
     yoloe26_prototype.add_argument("--ablation-mode", choices=("whole_image", "detector_crop", "detector_crop_segmentation"), default="detector_crop")
@@ -536,6 +540,7 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     live_benchmark.add_argument("--bioclip-runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
     live_benchmark.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
     live_benchmark.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
+    live_benchmark.add_argument("--yolo-sidecar-transport", default="json_b64", choices=("json_b64", "image_path"))
     live_benchmark.add_argument("--device", default="mps", choices=("auto", "cuda", "mps", "cpu"))
     live_benchmark.add_argument("--limit", type=int, default=100)
     live_benchmark.add_argument("--output-dir", required=True)
@@ -1021,6 +1026,8 @@ def _production_vision_settings_from_args(args: argparse.Namespace) -> VisionRun
         overrides["device"] = args.device
     if getattr(args, "yolo_checkpoint", None) is not None:
         overrides["yolo_checkpoint"] = args.yolo_checkpoint
+    if getattr(args, "yolo_sidecar_transport", None) is not None:
+        overrides["yolo_sidecar_transport"] = args.yolo_sidecar_transport
     if getattr(args, "yolo_imgsz", None) is not None:
         overrides["yolo_imgsz"] = args.yolo_imgsz
     if getattr(args, "yolo_batch", None) is not None:
@@ -1056,6 +1063,8 @@ def _prototype_vision_settings_from_args(args: argparse.Namespace) -> VisionRunt
         overrides["device"] = args.device
     if getattr(args, "checkpoint", None) is not None:
         overrides["yolo_checkpoint"] = args.checkpoint
+    if getattr(args, "yolo_sidecar_transport", None) is not None:
+        overrides["yolo_sidecar_transport"] = args.yolo_sidecar_transport
     if getattr(args, "imgsz", None) is not None:
         overrides["yolo_imgsz"] = args.imgsz
     if getattr(args, "conf", None) is not None:
@@ -1389,6 +1398,7 @@ def _run_yoloe26_prototype_run(args: argparse.Namespace) -> int:
         iou=settings.yolo_iou,
         max_det=settings.yolo_max_det,
         prompt_classes=_yoloe26_prompt_classes(args),
+        transport=settings.yolo_sidecar_transport,
     )
     detection_result = run_detection_pipeline(
         records=records.to_dicts(),
@@ -1537,6 +1547,7 @@ def _run_vision_benchmark_live_m5pro(args: argparse.Namespace) -> int:
         bioclip_runtime_python=Path(args.bioclip_runtime_python).expanduser(),
         hf_cache_dir=Path(args.hf_cache_dir).expanduser(),
         checkpoint=args.checkpoint,
+        yolo_sidecar_transport=args.yolo_sidecar_transport,
         device=args.device,
         limit=args.limit,
         output_dir=Path(args.output_dir).expanduser(),
@@ -1611,7 +1622,14 @@ def _detect_boxes_backend(args: argparse.Namespace, records: list[dict[str, obje
             "prompt_classes": prompts,
         }
         if _use_vision_sidecar(args.runtime_python):
-            return YoloE26SidecarObjectDetector(runtime_python=args.runtime_python, **kwargs), load_decoded_image_from_record
+            return (
+                YoloE26SidecarObjectDetector(
+                    runtime_python=args.runtime_python,
+                    transport=getattr(args, "yolo_sidecar_transport", "json_b64"),
+                    **kwargs,
+                ),
+                load_decoded_image_from_record,
+            )
         return YoloE26ObjectDetector(**kwargs), load_decoded_image_from_record
     if args.backend == "yolo26":
         from biominer.detection.yolo26_detector import Yolo26ObjectDetector, Yolo26SidecarObjectDetector
@@ -2005,12 +2023,16 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
         return 2
 
     settings = vision_runtime_settings(args.vision_profile)
+    overrides: dict[str, object] = {}
     if args.device:
-        settings = replace(settings, device=args.device)
+        overrides["device"] = args.device
+    if args.yolo_sidecar_transport:
+        overrides["yolo_sidecar_transport"] = args.yolo_sidecar_transport
     if args.parquet_part_rows is not None:
-        settings = replace(settings, parquet_part_rows=args.parquet_part_rows)
+        overrides["parquet_part_rows"] = args.parquet_part_rows
     if args.retain_debug_crops:
-        settings = replace(settings, retain_debug_crops=True)
+        overrides["retain_debug_crops"] = True
+    settings = settings.with_overrides(**overrides)
     delete_images_after_commit = (
         settings.delete_images_after_commit
         if args.delete_images_after_commit is None
@@ -2054,6 +2076,7 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
         iou=settings.yolo_iou,
         max_det=settings.yolo_max_det,
         prompt_classes=_yoloe26_prompt_classes(args),
+        transport=settings.yolo_sidecar_transport,
     )
     bioclip_scorer = PersistentBioClipScorer(
         runtime=_bioclip_runtime(runtime_python=bioclip_python),

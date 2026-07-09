@@ -42,6 +42,7 @@ class LiveM5ProBenchmarkRequest:
     bioclip_runtime_python: Path
     hf_cache_dir: Path
     checkpoint: str
+    yolo_sidecar_transport: str
     device: str
     limit: int
     output_dir: Path
@@ -92,6 +93,8 @@ def validate_live_m5pro_benchmark_request(request: LiveM5ProBenchmarkRequest) ->
         return {"error": "invalid_limit", "message": "--limit must be positive"}
     if request.yolo_batch <= 0 or request.bioclip_batch <= 0:
         return {"error": "invalid_batch_size", "message": "--yolo-batch and --bioclip-batch must be positive"}
+    if request.yolo_sidecar_transport not in {"json_b64", "image_path"}:
+        return {"error": "invalid_yolo_sidecar_transport", "message": "--yolo-sidecar-transport must be json_b64 or image_path"}
     return None
 
 
@@ -148,6 +151,7 @@ def run_live_m5pro_benchmark(
     detector = YoloE26SidecarObjectDetector(
         runtime_python=str(request.vision_runtime_python),
         checkpoint=request.checkpoint,
+        transport=request.yolo_sidecar_transport,
         device=request.device,
         imgsz=request.imgsz,
         conf=request.conf,
@@ -308,6 +312,7 @@ def _live_metrics(
         "records_loaded": records.height,
         "model_metadata": {
             "yolo_checkpoint": request.checkpoint,
+            "yolo_sidecar_transport": request.yolo_sidecar_transport,
             "bioclip_model_id": bioclip_runtime.model.model_id,
             "bioclip_model_name": bioclip_runtime.model.model_name,
             "bioclip_checkpoint": bioclip_runtime.model.checkpoint,

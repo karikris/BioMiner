@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import polars as pl
 import pytest
 
+from biominer.detection import yoloe26_detector
 import biominer.detection.policy as detection_policy
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import COARSE_DETECTOR_LABELS, DecodedImage, DetectionCandidate, FakeObjectDetector, normalize_detector_label
@@ -98,6 +99,7 @@ def test_vision_runtime_settings_validate_overrides_and_adaptive_manifest_fields
         max_detector_batch_size=16,
         min_crop_batch_size=3,
         max_crop_batch_size=24,
+        yolo_sidecar_transport="image_path",
         mps_memory_safety_margin_mb=1024,
     )
 
@@ -110,6 +112,7 @@ def test_vision_runtime_settings_validate_overrides_and_adaptive_manifest_fields
     assert payload["max_detector_batch_size"] == 16
     assert payload["min_crop_batch_size"] == 3
     assert payload["max_crop_batch_size"] == 24
+    assert payload["yolo_sidecar_transport"] == "image_path"
     assert payload["mps_memory_safety_margin_mb"] == 1024
 
 
@@ -124,6 +127,8 @@ def test_vision_runtime_settings_reject_invalid_overrides() -> None:
         VisionRuntimeSettings().with_overrides(crop_padding_ratio=0.75)
     with pytest.raises(ValueError, match="crop_target_px"):
         VisionRuntimeSettings().with_overrides(crop_target_px=0)
+    with pytest.raises(ValueError, match="yolo_sidecar_transport"):
+        VisionRuntimeSettings().with_overrides(yolo_sidecar_transport="pipe_dream")
     with pytest.raises(ValueError, match="unknown vision runtime setting"):
         VisionRuntimeSettings().with_overrides(not_a_setting=True)
 
@@ -196,6 +201,7 @@ def test_mac_m5pro_profile_matches_local_apple_silicon_defaults() -> None:
     assert settings.detector_batch_size == 16
     assert settings.crop_batch_size == 24
     assert settings.adaptive_batching is False
+    assert settings.yolo_sidecar_transport == "json_b64"
     assert settings.min_detector_batch_size == 1
     assert settings.max_detector_batch_size == 16
     assert settings.min_crop_batch_size == 1
@@ -215,6 +221,7 @@ def test_mac_m5pro_profile_matches_local_apple_silicon_defaults() -> None:
     assert config["detector_batch_size"] == settings.detector_batch_size
     assert config["crop_batch_size"] == settings.crop_batch_size
     assert config["adaptive_batching"] == settings.adaptive_batching
+    assert config["yolo_sidecar_transport"] == settings.yolo_sidecar_transport
     assert config["min_detector_batch_size"] == settings.min_detector_batch_size
     assert config["max_detector_batch_size"] == settings.max_detector_batch_size
     assert config["min_crop_batch_size"] == settings.min_crop_batch_size
@@ -417,6 +424,60 @@ def test_fake_detector_returns_multiple_rows_for_one_photo() -> None:
     assert detections[1][1].label == "caterpillar"
 
 
+def _fake_yoloe26_popen(calls: dict[str, object], response: dict[str, object] | None = None):
+    output_lines: list[str] = []
+    sidecar_response = response or {
+        "metadata": {
+            "backend": "yoloe26",
+            "model_id": "yoloe26:yoloe-26s-seg",
+            "model_version": "ultralytics:test",
+            "checkpoint": "yoloe-26s-seg.pt",
+        },
+        "detections": [[]],
+    }
+
+    class FakeStdin:
+        def write(self, text: str) -> int:
+            payload = json.loads(text)
+            calls["payload"] = payload
+            image_paths = [Path(path) for path in payload.get("image_paths", [])]
+            calls["paths_existed_during_write"] = [path.exists() for path in image_paths]
+            if image_paths:
+                calls["ppm_prefix"] = image_paths[0].read_bytes()[: len(b"P6\n4 2\n255\n")]
+            output_lines.append(json.dumps(sidecar_response, sort_keys=True) + "\n")
+            return len(text)
+
+        def flush(self) -> None:
+            return None
+
+    class FakeStdout:
+        def readline(self) -> str:
+            return output_lines.pop(0)
+
+    class FakeProcess:
+        stdin = FakeStdin()
+        stdout = FakeStdout()
+        stderr = None
+        returncode = None
+
+        def poll(self):  # noqa: ANN202
+            return self.returncode
+
+        def wait(self, timeout=None):  # noqa: ANN001, ANN202
+            self.returncode = 0
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+    def fake_popen(command, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors subprocess.Popen.
+        calls["command"] = command
+        calls["env"] = kwargs["env"]
+        return FakeProcess()
+
+    return fake_popen
+
+
 def test_yoloe26_sidecar_detector_serializes_rgb_images_without_importing_ultralytics(tmp_path) -> None:
     calls: dict[str, object] = {}
     output_lines: list[str] = []
@@ -488,6 +549,7 @@ def test_yoloe26_sidecar_detector_serializes_rgb_images_without_importing_ultral
     assert calls["command"] == [runtime_python, "-m", "biominer.detection.yoloe26_detector", "--persistent"]
     assert payload["device"] == "mps"
     assert payload["checkpoint"] == "yoloe-26s-seg.pt"
+    assert payload["transport"] == "json_b64"
     assert "butterfly" in payload["prompt_classes"]
     assert payload["images"][0]["width"] == 4
     assert payload["images"][0]["height"] == 2
@@ -495,6 +557,64 @@ def test_yoloe26_sidecar_detector_serializes_rgb_images_without_importing_ultral
     assert detector.model_id == "yoloe26:yoloe-26s-seg"
     assert detector.model_version == "ultralytics:test"
     assert detections == [[DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 2.0), objectness_score=0.88)]]
+
+
+def test_yoloe26_sidecar_detector_can_send_temp_image_paths_and_cleanup(tmp_path) -> None:
+    calls: dict[str, object] = {}
+    detector = YoloE26SidecarObjectDetector(
+        runtime_python=str(tmp_path / "YOLO26" / "venv" / "bin" / "python"),
+        transport="image_path",
+        temp_dir=tmp_path / "sidecar-images",
+        popen=_fake_yoloe26_popen(calls),
+    )
+
+    detector.detect_batch([_wide_white_image()])
+
+    payload = calls["payload"]
+    image_paths = [Path(path) for path in payload["image_paths"]]
+    assert payload["transport"] == "image_path"
+    assert calls["paths_existed_during_write"] == [True]
+    assert calls["ppm_prefix"] == b"P6\n4 2\n255\n"
+    assert image_paths and not image_paths[0].exists()
+
+
+def test_yoloe26_sidecar_detector_cleans_temp_image_paths_after_sidecar_error(tmp_path) -> None:
+    calls: dict[str, object] = {}
+    detector = YoloE26SidecarObjectDetector(
+        runtime_python=str(tmp_path / "YOLO26" / "venv" / "bin" / "python"),
+        transport="image_path",
+        temp_dir=tmp_path / "sidecar-images",
+        popen=_fake_yoloe26_popen(calls, response={"error": "boom", "error_type": "RuntimeError"}),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        detector.detect_batch([_wide_white_image()])
+
+    image_paths = [Path(path) for path in calls["payload"]["image_paths"]]
+    assert image_paths and not image_paths[0].exists()
+
+
+def test_yoloe26_sidecar_detector_can_retain_temp_image_paths_for_debug(tmp_path) -> None:
+    calls: dict[str, object] = {}
+    detector = YoloE26SidecarObjectDetector(
+        runtime_python=str(tmp_path / "YOLO26" / "venv" / "bin" / "python"),
+        transport="image_path",
+        temp_dir=tmp_path / "sidecar-images",
+        retain_temp_images=True,
+        popen=_fake_yoloe26_popen(calls),
+    )
+
+    detector.detect_batch([_wide_white_image()])
+
+    image_paths = [Path(path) for path in calls["payload"]["image_paths"]]
+    assert image_paths and image_paths[0].exists()
+
+
+def test_yoloe26_sidecar_worker_missing_image_path_fails_clearly(tmp_path) -> None:
+    with pytest.raises(FileNotFoundError, match="YOLOE-26 sidecar image path does not exist"):
+        yoloe26_detector._images_from_request(  # noqa: SLF001 - worker request parser contract.
+            {"image_paths": [str(tmp_path / "missing.ppm")]}
+        )
 
 
 def test_detection_pipeline_writes_ephemeral_crop_metadata_for_each_detection(tmp_path) -> None:

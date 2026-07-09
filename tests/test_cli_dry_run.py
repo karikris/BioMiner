@@ -169,6 +169,7 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
     assert settings.parquet_compression == "zstd"
     assert settings.delete_images_after_commit is True
     assert settings.adaptive_batching is False
+    assert settings.yolo_sidecar_transport == "json_b64"
 
     overridden = parser.parse_args(
         [
@@ -188,6 +189,8 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
             "--bioclip-model",
             "custom-bioclip",
             "--adaptive-batching",
+            "--yolo-sidecar-transport",
+            "image_path",
             "--no-delete-images-after-commit",
         ]
     )
@@ -198,6 +201,7 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
     assert overridden_settings.detector_batch_size == 7
     assert overridden_settings.bioclip_model == "custom-bioclip"
     assert overridden_settings.adaptive_batching is True
+    assert overridden_settings.yolo_sidecar_transport == "image_path"
     assert overridden_settings.delete_images_after_commit is False
     assert overridden_settings.yolo_imgsz == 768
     assert overridden_settings.crop_padding_ratio == 0.08
@@ -291,6 +295,8 @@ def test_yoloe26_prototype_profile_settings_do_not_use_hardcoded_crop_defaults()
             "--bioclip-batch",
             "11",
             "--adaptive-batching",
+            "--yolo-sidecar-transport",
+            "image_path",
         ]
     )
 
@@ -300,6 +306,7 @@ def test_yoloe26_prototype_profile_settings_do_not_use_hardcoded_crop_defaults()
     assert overridden_settings.crop_padding_ratio == 0.05
     assert overridden_settings.crop_batch_size == 11
     assert overridden_settings.adaptive_batching is True
+    assert overridden_settings.yolo_sidecar_transport == "image_path"
 
 
 def test_run_cli_parses_classification_mode_and_top_k_controls() -> None:
@@ -822,6 +829,8 @@ def test_detect_boxes_cli_accepts_yoloe26_arguments() -> None:
             "butterfly",
             "--prompt-class",
             "museum label",
+            "--yolo-sidecar-transport",
+            "image_path",
             "--no-include-hard-negative-prompts",
         ]
     )
@@ -831,6 +840,7 @@ def test_detect_boxes_cli_accepts_yoloe26_arguments() -> None:
     assert args.checkpoint == "yoloe-26m-seg.pt"
     assert args.device == "mps"
     assert args.imgsz == 768
+    assert args.yolo_sidecar_transport == "image_path"
     assert args.conf == 0.15
     assert args.iou == 0.55
     assert args.max_det == 12
@@ -2979,6 +2989,7 @@ def test_detect_boxes_yoloe26_backend_uses_sidecar_runtime(tmp_path, monkeypatch
         "conf": 0.2,
         "iou": 0.5,
         "max_det": 8,
+        "transport": "json_b64",
         "prompt_classes": (
             "butterfly",
             "moth",

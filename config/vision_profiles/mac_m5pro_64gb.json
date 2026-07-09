@@ -15,6 +15,7 @@
   "detector_batch_size": 16,
   "crop_batch_size": 24,
   "adaptive_batching": false,
+  "yolo_sidecar_transport": "json_b64",
   "min_detector_batch_size": 1,
   "min_crop_batch_size": 1,
   "max_detector_batch_size": 16,

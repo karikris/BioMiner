@@ -29,6 +29,7 @@ def test_dev_vision_benchmark_live_m5pro_parses_m5pro_defaults() -> None:
     assert args.dev_command == "vision"
     assert args.device == "mps"
     assert args.checkpoint == "yoloe-26s-seg.pt"
+    assert args.yolo_sidecar_transport == "json_b64"
     assert args.imgsz == 768
     assert args.yolo_batch == 16
     assert args.bioclip_batch == 24

@@ -52,6 +52,7 @@ class VisionRuntimeSettings:
     debug_crop_limit: int = 500
     image_max_side_px: int = 1280
     adaptive_batching: bool = False
+    yolo_sidecar_transport: str = "json_b64"
     min_detector_batch_size: int = 1
     min_crop_batch_size: int = 1
     max_detector_batch_size: int = 16
@@ -194,6 +195,8 @@ def validate_vision_runtime_settings(settings: VisionRuntimeSettings) -> VisionR
         raise ValueError("yolo_conf must be between 0.0 and 1.0")
     if not 0.0 <= float(settings.yolo_iou) <= 1.0:
         raise ValueError("yolo_iou must be between 0.0 and 1.0")
+    if settings.yolo_sidecar_transport not in {"json_b64", "image_path"}:
+        raise ValueError("yolo_sidecar_transport must be one of: json_b64, image_path")
     return settings
 
 

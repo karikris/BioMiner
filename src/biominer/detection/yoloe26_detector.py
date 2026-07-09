@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import base64
 from collections import deque
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+from shutil import rmtree
 import subprocess
+from tempfile import mkdtemp
 from threading import Thread
-from typing import IO, Any, Callable, Sequence
+from typing import IO, Any, Callable, Iterator, Sequence
 
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, detector_label_is_taxon_like
 from biominer.runtime_paths import YOLOE26_DIR
@@ -67,6 +70,7 @@ YOLOE26_PROMPT_LABEL_MAP = {
     "sign": "hard_negative",
     "museum label": "hard_negative",
 }
+YOLOE26_SIDECAR_TRANSPORTS = ("json_b64", "image_path")
 
 
 def default_yoloe26_prompts(*, include_hard_negative_prompts: bool = True) -> tuple[str, ...]:
@@ -154,6 +158,9 @@ class YoloE26SidecarObjectDetector:
         iou: float = 0.50,
         max_det: int = 8,
         prompt_classes: Sequence[str] | None = None,
+        transport: str = "json_b64",
+        temp_dir: str | Path | None = None,
+        retain_temp_images: bool = False,
         popen: PopenFactory = subprocess.Popen,
     ) -> None:
         _validate_checkpoint(checkpoint)
@@ -167,6 +174,9 @@ class YoloE26SidecarObjectDetector:
         self.iou = float(iou)
         self.max_det = int(max_det)
         self.prompt_classes = prompt_tuple
+        self.transport = _validate_sidecar_transport(transport)
+        self.temp_dir = Path(temp_dir).expanduser() if temp_dir is not None else None
+        self.retain_temp_images = bool(retain_temp_images)
         self.model_id = f"yoloe26:{Path(checkpoint).stem}"
         self.model_version = "ultralytics:unknown"
         self.popen = popen
@@ -185,7 +195,22 @@ class YoloE26SidecarObjectDetector:
     def detect_batch(self, images: Sequence[DecodedImage]) -> list[list[DetectionCandidate]]:
         if not images:
             return []
-        payload = {
+        base = self._base_request_payload()
+        if self.transport == "json_b64":
+            payload = {**base, "images": [_image_to_payload(image) for image in images]}
+            response = self._request(payload)
+            return _detections_from_payload(response)
+        with _temporary_sidecar_image_paths(
+            images,
+            root=self.temp_dir,
+            retain=self.retain_temp_images,
+        ) as image_paths:
+            payload = {**base, "image_paths": [str(path) for path in image_paths]}
+            response = self._request(payload)
+            return _detections_from_payload(response)
+
+    def _base_request_payload(self) -> dict[str, object]:
+        return {
             "checkpoint": self.checkpoint,
             "device": self.device,
             "imgsz": self.imgsz,
@@ -193,10 +218,8 @@ class YoloE26SidecarObjectDetector:
             "iou": self.iou,
             "max_det": self.max_det,
             "prompt_classes": list(self.prompt_classes),
-            "images": [_image_to_payload(image) for image in images],
+            "transport": self.transport,
         }
-        response = self._request(payload)
-        return _detections_from_payload(response)
 
     def close(self) -> None:
         process = self._process
@@ -313,7 +336,7 @@ def _run_sidecar() -> None:
 
     request = json.loads(sys.stdin.read() or "{}")
     detector = _detector_from_request(request)
-    images = [_image_from_payload(item) for item in request.get("images", [])]
+    images = _images_from_request(request)
     detections = detector.detect_batch(images)
     print(json.dumps(_sidecar_response(detector, detections), sort_keys=True))
 
@@ -332,7 +355,7 @@ def _run_persistent_sidecar() -> None:
             if detector is None or loaded_key != key:
                 detector = _detector_from_request(request)
                 loaded_key = key
-            images = [_image_from_payload(item) for item in request.get("images", [])]
+            images = _images_from_request(request)
             detections = detector.detect_batch(images)
             print(json.dumps(_sidecar_response(detector, detections), sort_keys=True), flush=True)
         except Exception as exc:  # noqa: BLE001 - persistent worker reports JSON errors to the controller.
@@ -379,6 +402,15 @@ def _detector_kwargs_from_request(request: dict[str, object]) -> dict[str, objec
     }
 
 
+def _images_from_request(request: dict[str, object]) -> list[DecodedImage]:
+    image_paths = request.get("image_paths")
+    if image_paths is not None:
+        if not isinstance(image_paths, list | tuple):
+            raise ValueError("YOLOE-26 sidecar image_paths must be a list")
+        return [_image_from_path(Path(str(path))) for path in image_paths]
+    return [_image_from_payload(item) for item in request.get("images", [])]
+
+
 def _sidecar_response(detector: YoloE26ObjectDetector, detections: list[list[DetectionCandidate]]) -> dict[str, object]:
     metadata = {
         "backend": detector.backend,
@@ -409,6 +441,13 @@ def _validate_checkpoint(checkpoint: str) -> None:
 def _validate_prompt_classes(prompt_classes: Sequence[str]) -> None:
     for prompt in prompt_classes:
         yoloe26_coarse_label(str(prompt))
+
+
+def _validate_sidecar_transport(value: str) -> str:
+    transport = str(value or "").strip()
+    if transport in YOLOE26_SIDECAR_TRANSPORTS:
+        return transport
+    raise ValueError("YOLOE-26 sidecar transport must be one of: " + ", ".join(YOLOE26_SIDECAR_TRANSPORTS))
 
 
 def _checkpoint_reference(checkpoint: str) -> str:
@@ -484,6 +523,45 @@ def _image_from_payload(payload: dict[str, object]) -> DecodedImage:
         data=base64.b64decode(str(payload.get("data_b64") or "")),
         source_uri=str(payload.get("source_uri") or "") or None,
     )
+
+
+@contextmanager
+def _temporary_sidecar_image_paths(
+    images: Sequence[DecodedImage],
+    *,
+    root: Path | None,
+    retain: bool,
+) -> Iterator[list[Path]]:
+    if root is not None:
+        root.mkdir(parents=True, exist_ok=True)
+    request_dir = Path(mkdtemp(prefix="biominer_yoloe26_", dir=str(root) if root is not None else None))
+    try:
+        paths: list[Path] = []
+        for index, image in enumerate(images):
+            path = request_dir / f"{index:06d}.ppm"
+            path.write_bytes(_ppm_bytes(image))
+            paths.append(path)
+        yield paths
+    finally:
+        if not retain:
+            rmtree(request_dir, ignore_errors=True)
+
+
+def _ppm_bytes(image: DecodedImage) -> bytes:
+    return f"P6\n{image.width} {image.height}\n255\n".encode("ascii") + image.data
+
+
+def _image_from_path(path: Path) -> DecodedImage:
+    if not path.exists():
+        raise FileNotFoundError(f"YOLOE-26 sidecar image path does not exist: {path}")
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - sidecar runtime dependency path.
+        raise RuntimeError("Pillow is required to read YOLOE-26 sidecar image paths") from exc
+    with Image.open(path) as image:
+        rgb = image.convert("RGB")
+        width, height = rgb.size
+        return DecodedImage(width=int(width), height=int(height), mode="RGB", data=rgb.tobytes(), source_uri=str(path))
 
 
 def _candidate_to_payload(candidate: DetectionCandidate) -> dict[str, object]:
