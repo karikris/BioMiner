@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from biominer.bioclip.candidate_sets import build_candidate_set
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
@@ -174,6 +175,150 @@ def test_run_cloud_bioclip_batch_chunks_detector_crops_by_crop_batch_size() -> N
     assert result.work_items_seen == 5
     assert result.detections_seen == 5
     assert result.crops_scored == 5
+
+
+def test_run_cloud_bioclip_batch_adaptive_batching_halves_after_memory_error() -> None:
+    class AdaptiveScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self) -> None:
+            self.initial_batches: list[tuple[str, ...]] = []
+
+        def score(self, item, labels):  # noqa: ANN001, ANN202 - proves the batch path is used.
+            raise AssertionError(f"unexpected single-item BioCLIP score for {item.get('detection_id')}")
+
+        def score_label_sets_batch(self, items, label_sets):  # noqa: ANN001, ANN202 - mirrors object batch scorer API.
+            if "species" in label_sets:
+                self.initial_batches.append(tuple(str(item["detection_id"]) for item in items))
+                if len(items) > 12:
+                    raise RuntimeError("CUDA out of memory while scoring BioCLIP crop batch")
+            return {
+                name: [
+                    {label: (0.83 if label == "a photo of Danaus plexippus" else 0.1) for label in labels}
+                    for _item in items
+                ]
+                for name, labels in label_sets.items()
+            }
+
+    context = _context()
+    candidate_set = build_candidate_set(context, allow_single_target_fixture=True)
+    work_items = [
+        {
+            "work_key": payload["work_key"],
+            "payload": payload,
+        }
+        for index in range(24)
+        for payload in [
+            bioclip_score_work_item(
+                _detection_row(f"photo-{index}", f"det-{index}", f"sha256:crop-{index}", "butterfly_like", "detected"),
+                run_id="run-1",
+                detection_shard_uri="s3://biominer/detections.parquet",
+                model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
+                candidate_set_id=candidate_set.candidate_set_id,
+                ablation_mode="detector_crop",
+            )
+        ]
+    ]
+    scorer = AdaptiveScorer()
+
+    result = run_cloud_bioclip_batch(
+        work_items=work_items,
+        species_context=context,
+        candidate_set=candidate_set,
+        scorer=scorer,
+        crop_batch_size=24,
+        adaptive_batching=True,
+        min_crop_batch_size=1,
+    )
+
+    assert result.crops_scored == 24
+    assert result.adaptive_batching_enabled is True
+    assert result.bioclip_batch_retries == 1
+    assert result.bioclip_batch_size_initial == 24
+    assert result.bioclip_batch_size_final == 12
+    assert result.bioclip_batch_size_min == 1
+    assert [len(batch) for batch in scorer.initial_batches] == [24, 12, 12]
+
+
+def test_run_cloud_bioclip_batch_adaptive_batching_does_not_retry_non_memory_error() -> None:
+    class NonMemoryScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def score(self, item, labels):  # noqa: ANN001, ANN202 - proves the batch path is used.
+            raise AssertionError(f"unexpected single-item BioCLIP score for {item.get('detection_id')}")
+
+        def score_label_sets_batch(self, items, label_sets):  # noqa: ANN001, ANN202 - mirrors object batch scorer API.
+            if "species" in label_sets:
+                raise RuntimeError("invalid BioCLIP tensor shape")
+            return {name: [{label: 0.1 for label in labels} for _item in items] for name, labels in label_sets.items()}
+
+    context = _context()
+    candidate_set = build_candidate_set(context, allow_single_target_fixture=True)
+    work_items = []
+    for index in range(2):
+        payload = bioclip_score_work_item(
+            _detection_row(f"photo-{index}", f"det-{index}", f"sha256:crop-{index}", "butterfly_like", "detected"),
+            run_id="run-1",
+            detection_shard_uri="s3://biominer/detections.parquet",
+            model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
+            candidate_set_id=candidate_set.candidate_set_id,
+            ablation_mode="detector_crop",
+        )
+        work_items.append({"work_key": payload["work_key"], "payload": payload})
+
+    with pytest.raises(RuntimeError, match="invalid BioCLIP tensor shape"):
+        run_cloud_bioclip_batch(
+            work_items=work_items,
+            species_context=context,
+            candidate_set=candidate_set,
+            scorer=NonMemoryScorer(),
+            crop_batch_size=2,
+            adaptive_batching=True,
+        )
+
+
+def test_run_cloud_bioclip_batch_adaptive_batching_reports_min_batch_failure() -> None:
+    class AlwaysMemoryScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def score(self, item, labels):  # noqa: ANN001, ANN202 - proves the batch path is used.
+            raise AssertionError(f"unexpected single-item BioCLIP score for {item.get('detection_id')}")
+
+        def score_label_sets_batch(self, items, label_sets):  # noqa: ANN001, ANN202 - mirrors object batch scorer API.
+            if "species" in label_sets:
+                raise RuntimeError(f"CUDA out of memory at batch size {len(items)}")
+            return {name: [{label: 0.1 for label in labels} for _item in items] for name, labels in label_sets.items()}
+
+    context = _context()
+    candidate_set = build_candidate_set(context, allow_single_target_fixture=True)
+    work_items = []
+    for index in range(2):
+        payload = bioclip_score_work_item(
+            _detection_row(f"photo-{index}", f"det-{index}", f"sha256:crop-{index}", "butterfly_like", "detected"),
+            run_id="run-1",
+            detection_shard_uri="s3://biominer/detections.parquet",
+            model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
+            candidate_set_id=candidate_set.candidate_set_id,
+            ablation_mode="detector_crop",
+        )
+        work_items.append({"work_key": payload["work_key"], "payload": payload})
+
+    with pytest.raises(RuntimeError, match="CUDA out of memory at batch size 1"):
+        run_cloud_bioclip_batch(
+            work_items=work_items,
+            species_context=context,
+            candidate_set=candidate_set,
+            scorer=AlwaysMemoryScorer(),
+            crop_batch_size=2,
+            adaptive_batching=True,
+            min_crop_batch_size=1,
+        )
 
 
 def test_run_cloud_bioclip_batch_hierarchical_mode_requires_taxonomy_store() -> None:

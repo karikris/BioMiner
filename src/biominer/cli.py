@@ -206,6 +206,8 @@ def build_parser() -> argparse.ArgumentParser:
     vision_score.add_argument("--crop-target-px", type=int, default=336)
     vision_score.add_argument("--crop-padding-ratio", type=float, default=0.12)
     vision_score.add_argument("--bioclip-batch", type=int, default=24)
+    vision_score.add_argument("--adaptive-batching", action="store_true")
+    vision_score.add_argument("--min-bioclip-batch", type=int, default=1)
     vision_score.add_argument("--parquet-batch-rows", type=int, default=10000)
     vision_score.add_argument("--retain-debug-crops", action="store_true")
     vision_score.add_argument("--text-embedding-batch-size", type=int, default=256)
@@ -229,6 +231,8 @@ def build_parser() -> argparse.ArgumentParser:
     vision_ablate.add_argument("--crop-target-px", type=int, default=336)
     vision_ablate.add_argument("--crop-padding-ratio", type=float, default=0.12)
     vision_ablate.add_argument("--bioclip-batch", type=int, default=24)
+    vision_ablate.add_argument("--adaptive-batching", action="store_true")
+    vision_ablate.add_argument("--min-bioclip-batch", type=int, default=1)
     vision_ablate.add_argument("--parquet-batch-rows", type=int, default=10000)
     vision_ablate.add_argument("--retain-debug-crops", action="store_true")
     vision_ablate.add_argument("--text-embedding-batch-size", type=int, default=256)
@@ -1455,6 +1459,8 @@ def _run_yoloe26_prototype_run(args: argparse.Namespace) -> int:
             ablation_mode=args.ablation_mode,
             parquet_batch_rows=settings.parquet_part_rows,
             bioclip_batch_size=settings.crop_batch_size,
+            adaptive_batching=settings.adaptive_batching,
+            min_bioclip_batch_size=settings.min_crop_batch_size,
         )
     finally:
         scorer.close()
@@ -2159,6 +2165,8 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
                 ablation_mode="detector_crop",
                 parquet_batch_rows=settings.parquet_part_rows,
                 bioclip_batch_size=settings.crop_batch_size,
+                adaptive_batching=settings.adaptive_batching,
+                min_bioclip_batch_size=settings.min_crop_batch_size,
             )
             evidence_outputs = write_object_evidence_outputs(
                 canonical_records_path=canonical_part,
@@ -2347,6 +2355,8 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
             geo_prior_table=geo_prior_table,
             parquet_batch_rows=args.parquet_batch_rows,
             bioclip_batch_size=args.bioclip_batch,
+            adaptive_batching=args.adaptive_batching,
+            min_bioclip_batch_size=args.min_bioclip_batch,
             classification_mode=classification_mode,
             family_top_k=args.family_top_k,
             species_first_pass_top_k=args.species_first_pass_top_k,
@@ -2368,6 +2378,11 @@ def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
                 "primary_visual_classifier": result.visual_classifier,
                 "visual_mode": result.visual_mode,
                 "visual_mode_status": result.visual_mode_status,
+                "adaptive_batching_enabled": getattr(result, "adaptive_batching_enabled", False),
+                "bioclip_batch_retries": getattr(result, "bioclip_batch_retries", 0),
+                "bioclip_batch_size_initial": getattr(result, "bioclip_batch_size_initial", args.bioclip_batch),
+                "bioclip_batch_size_final": getattr(result, "bioclip_batch_size_final", args.bioclip_batch),
+                "bioclip_batch_size_min": getattr(result, "bioclip_batch_size_min", args.min_bioclip_batch),
                 "segmentation_unavailable_count": result.segmentation_unavailable_count,
                 "segmentation_unavailable_reason": result.segmentation_unavailable_reason,
                 "candidate_set_id": candidate_set.candidate_set_id,
@@ -2445,6 +2460,8 @@ def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
             geo_prior_table=geo_prior_table,
             parquet_batch_rows=args.parquet_batch_rows,
             bioclip_batch_size=args.bioclip_batch,
+            adaptive_batching=args.adaptive_batching,
+            min_bioclip_batch_size=args.min_bioclip_batch,
             classification_mode=classification_mode,
             family_top_k=args.family_top_k,
             species_first_pass_top_k=args.species_first_pass_top_k,

@@ -1314,6 +1314,92 @@ def test_object_bioclip_respects_bioclip_batch_size_for_label_set_scoring(tmp_pa
     assert scorer.initial_batches == [("det-1",), ("det-2",)]
 
 
+def test_object_bioclip_adaptive_batching_retries_memory_error_at_smaller_batch(tmp_path) -> None:
+    class AdaptiveScorer(FakeObjectBioClipScorer):
+        def __init__(self) -> None:
+            super().__init__(
+                {
+                    "sha256:crop-1": {"a photo of Danaus plexippus": 0.82},
+                    "sha256:crop-2": {"a photo of Danaus plexippus": 0.81},
+                }
+            )
+            self.initial_batches: list[tuple[str, ...]] = []
+
+        def score_label_sets_batch(self, items, label_sets):  # noqa: ANN001, ANN202 - mirrors object batch scorer API.
+            if "species" in label_sets:
+                self.initial_batches.append(tuple(str(item["detection_id"]) for item in items))
+                if len(items) > 1:
+                    raise RuntimeError("MPS memory allocation failed while scoring BioCLIP crops")
+            return super().score_label_sets_batch(items, label_sets)
+
+    scorer = AdaptiveScorer()
+
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections(),
+        species_context=_context(),
+        candidate_set=_fixture_candidate_set(),
+        scorer=scorer,
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+        bioclip_batch_size=2,
+        adaptive_batching=True,
+        min_bioclip_batch_size=1,
+    )
+
+    assert result.crops_scored == 2
+    assert result.adaptive_batching_enabled is True
+    assert result.bioclip_batch_retries == 1
+    assert result.bioclip_batch_size_initial == 2
+    assert result.bioclip_batch_size_final == 1
+    assert result.bioclip_batch_size_min == 1
+    assert scorer.initial_batches == [("det-1", "det-2"), ("det-1",), ("det-2",)]
+
+
+def test_object_bioclip_adaptive_batching_does_not_retry_non_memory_error(tmp_path) -> None:
+    class NonMemoryScorer(FakeObjectBioClipScorer):
+        def score_label_sets_batch(self, items, label_sets):  # noqa: ANN001, ANN202 - mirrors object batch scorer API.
+            if "species" in label_sets:
+                raise RuntimeError("invalid BioCLIP label tensor shape")
+            return super().score_label_sets_batch(items, label_sets)
+
+    with pytest.raises(RuntimeError, match="invalid BioCLIP label tensor shape"):
+        screen_object_detections(
+            canonical_records=_canonical_records(),
+            detections=_detections(),
+            species_context=_context(),
+            candidate_set=_fixture_candidate_set(),
+            scorer=NonMemoryScorer({}),
+            output_path=tmp_path / "object_scores.parquet",
+            ablation_mode="detector_crop",
+            bioclip_batch_size=2,
+            adaptive_batching=True,
+            min_bioclip_batch_size=1,
+        )
+
+
+def test_object_bioclip_adaptive_batching_reports_min_batch_memory_failure(tmp_path) -> None:
+    class AlwaysMemoryScorer(FakeObjectBioClipScorer):
+        def score_label_sets_batch(self, items, label_sets):  # noqa: ANN001, ANN202 - mirrors object batch scorer API.
+            if "species" in label_sets:
+                raise RuntimeError(f"CUDA out of memory at batch size {len(items)}")
+            return super().score_label_sets_batch(items, label_sets)
+
+    with pytest.raises(RuntimeError, match="CUDA out of memory at batch size 1"):
+        screen_object_detections(
+            canonical_records=_canonical_records(),
+            detections=_detections(),
+            species_context=_context(),
+            candidate_set=_fixture_candidate_set(),
+            scorer=AlwaysMemoryScorer({}),
+            output_path=tmp_path / "object_scores.parquet",
+            ablation_mode="detector_crop",
+            bioclip_batch_size=2,
+            adaptive_batching=True,
+            min_bioclip_batch_size=1,
+        )
+
+
 def test_object_bioclip_production_gate_scores_only_detected_butterflies(tmp_path) -> None:
     base_detection = _detections().to_dicts()[0]
     cases = [

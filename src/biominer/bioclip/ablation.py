@@ -45,6 +45,8 @@ def run_object_ablations(
     geo_prior_table: pl.DataFrame | None = None,
     parquet_batch_rows: int = 10000,
     bioclip_batch_size: int = 24,
+    adaptive_batching: bool = False,
+    min_bioclip_batch_size: int = 1,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
@@ -60,6 +62,8 @@ def run_object_ablations(
     segmentation_status_by_mode: dict[str, str | None] = {}
     segmentation_unavailable_count_by_mode: dict[str, int] = {}
     segmentation_unavailable_reason_by_mode: dict[str, str | None] = {}
+    bioclip_batch_retries_by_mode: dict[str, int] = {}
+    bioclip_batch_size_final_by_mode: dict[str, int] = {}
     for mode in modes:
         result = screen_object_detections(
             canonical_records=canonical_records,
@@ -72,6 +76,8 @@ def run_object_ablations(
             geo_prior_table=geo_prior_table,
             parquet_batch_rows=parquet_batch_rows,
             bioclip_batch_size=bioclip_batch_size,
+            adaptive_batching=adaptive_batching,
+            min_bioclip_batch_size=min_bioclip_batch_size,
             classification_mode=classification_mode,
             family_top_k=family_top_k,
             species_first_pass_top_k=species_first_pass_top_k,
@@ -85,6 +91,8 @@ def run_object_ablations(
         segmentation_status_by_mode[mode] = result.segmentation_status
         segmentation_unavailable_count_by_mode[mode] = result.segmentation_unavailable_count
         segmentation_unavailable_reason_by_mode[mode] = result.segmentation_unavailable_reason
+        bioclip_batch_retries_by_mode[mode] = result.bioclip_batch_retries
+        bioclip_batch_size_final_by_mode[mode] = result.bioclip_batch_size_final
     combined = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
     report = build_ablation_report(combined, canonical_records=canonical_records, detections=detections)
     report["primary_visual_classifier"] = PRIMARY_VISUAL_CLASSIFIER
@@ -94,6 +102,13 @@ def run_object_ablations(
     report["visual_mode_status_by_mode"] = visual_mode_status_by_mode
     report["score_batches_written_by_mode"] = score_batches_by_mode
     report["score_batches_written"] = sum(score_batches_by_mode.values())
+    report["adaptive_batching_enabled"] = bool(adaptive_batching)
+    report["bioclip_batch_retries"] = sum(bioclip_batch_retries_by_mode.values())
+    report["bioclip_batch_retries_by_mode"] = bioclip_batch_retries_by_mode
+    report["bioclip_batch_size_initial"] = int(bioclip_batch_size)
+    report["bioclip_batch_size_final"] = min(bioclip_batch_size_final_by_mode.values()) if bioclip_batch_size_final_by_mode else int(bioclip_batch_size)
+    report["bioclip_batch_size_final_by_mode"] = bioclip_batch_size_final_by_mode
+    report["bioclip_batch_size_min"] = int(min_bioclip_batch_size)
     report["segmentation_status_by_mode"] = segmentation_status_by_mode
     report["segmentation_unavailable_count_by_mode"] = segmentation_unavailable_count_by_mode
     report["segmentation_unavailable_reason_by_mode"] = segmentation_unavailable_reason_by_mode

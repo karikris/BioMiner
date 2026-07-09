@@ -167,6 +167,11 @@ class ObjectScreenResult:
     detections_seen: int
     crops_scored: int
     score_batches_written: int = 0
+    adaptive_batching_enabled: bool = False
+    bioclip_batch_retries: int = 0
+    bioclip_batch_size_initial: int = 24
+    bioclip_batch_size_final: int = 24
+    bioclip_batch_size_min: int = 1
     segmentation_unavailable_count: int = 0
     segmentation_unavailable_reason: str | None = None
     segmentation_status: str | None = None
@@ -713,6 +718,8 @@ def screen_object_detections(
     geo_prior_table: pl.DataFrame | None = None,
     parquet_batch_rows: int = 10000,
     bioclip_batch_size: int = 24,
+    adaptive_batching: bool = False,
+    min_bioclip_batch_size: int = 1,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
@@ -722,6 +729,8 @@ def screen_object_detections(
 ) -> ObjectScreenResult:
     if bioclip_batch_size <= 0:
         raise ValueError("bioclip_batch_size must be positive")
+    if min_bioclip_batch_size <= 0:
+        raise ValueError("min_bioclip_batch_size must be positive")
     classification_mode = normalize_classification_mode(classification_mode)
     if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION and taxonomy_store is None:
         raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
@@ -744,50 +753,44 @@ def screen_object_detections(
     segmentation_unavailable_reason: str | None = None
     score_items: list[dict[str, Any]] = []
     active_bioclip_batch_size = 1 if ablation_mode == "detector_crop_segmentation" else max(1, bioclip_batch_size)
+    if min_bioclip_batch_size > active_bioclip_batch_size:
+        raise ValueError("min_bioclip_batch_size must be <= active BioCLIP batch size")
+    current_bioclip_batch_size = active_bioclip_batch_size
+    bioclip_batch_retries = 0
     materialized_crop_config = (
         _detector_crop_materialization_config(scorer)
         if ablation_mode == "detector_crop"
         else None
     )
 
-    def flush_score_items() -> None:
-        nonlocal crops_scored, segmentation_unavailable_count, segmentation_unavailable_reason
-        if not score_items:
-            return
-        items = list(score_items)
-        score_items.clear()
-        try:
-            if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
-                if taxonomy_store is None:
-                    raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
-                score_rows = _score_hierarchical_detection_batch(
-                    items=items,
-                    scorer=scorer,
-                    taxonomy_store=taxonomy_store,
-                    family_top_k=family_top_k,
-                    species_first_pass_top_k=species_first_pass_top_k,
-                    species_rerank_top_k=species_rerank_top_k,
-                    taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
-                )
-            else:
-                score_rows = _score_detection_batch(
-                    items=items,
-                    context=species_context,
-                    candidate_set=candidate_set,
-                    scorer=scorer,
-                    ablation_mode=ablation_mode,
-                    geo_prior_table=geo_prior_table,
-                    classification_mode=classification_mode,
-                    family_top_k=family_top_k,
-                    species_first_pass_top_k=species_first_pass_top_k,
-                    species_rerank_top_k=species_rerank_top_k,
-                )
-        except SegmentationUnavailable as exc:
-            if ablation_mode != "detector_crop_segmentation":
-                raise
-            segmentation_unavailable_count += len(items)
-            segmentation_unavailable_reason = segmentation_unavailable_reason or str(exc) or "detector_masks_missing"
-            return
+    def score_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+            if taxonomy_store is None:
+                raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
+            return _score_hierarchical_detection_batch(
+                items=items,
+                scorer=scorer,
+                taxonomy_store=taxonomy_store,
+                family_top_k=family_top_k,
+                species_first_pass_top_k=species_first_pass_top_k,
+                species_rerank_top_k=species_rerank_top_k,
+                taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
+            )
+        return _score_detection_batch(
+            items=items,
+            context=species_context,
+            candidate_set=candidate_set,
+            scorer=scorer,
+            ablation_mode=ablation_mode,
+            geo_prior_table=geo_prior_table,
+            classification_mode=classification_mode,
+            family_top_k=family_top_k,
+            species_first_pass_top_k=species_first_pass_top_k,
+            species_rerank_top_k=species_rerank_top_k,
+        )
+
+    def emit_score_rows(score_rows: list[dict[str, Any]]) -> None:
+        nonlocal crops_scored
         crops_scored += len(score_rows)
         if output is None or batch_dir is None:
             rows.extend(score_rows)
@@ -800,6 +803,42 @@ def screen_object_detections(
                 batch_dir=batch_dir,
                 parquet_batch_rows=parquet_batch_rows,
             )
+
+    def flush_score_items() -> None:
+        nonlocal bioclip_batch_retries, current_bioclip_batch_size, segmentation_unavailable_count, segmentation_unavailable_reason
+        if not score_items:
+            return
+        items = list(score_items)
+        score_items.clear()
+        pending = [items]
+        while pending:
+            batch = pending.pop(0)
+            try:
+                score_rows = score_batch(batch)
+            except SegmentationUnavailable as exc:
+                if ablation_mode != "detector_crop_segmentation":
+                    raise
+                segmentation_unavailable_count += len(batch)
+                segmentation_unavailable_reason = segmentation_unavailable_reason or str(exc) or "detector_masks_missing"
+                continue
+            except RuntimeError as exc:
+                if not _should_retry_bioclip_batch(
+                    exc,
+                    adaptive_batching=adaptive_batching,
+                    batch_size=len(batch),
+                    current_batch_size=current_bioclip_batch_size,
+                    min_batch_size=min_bioclip_batch_size,
+                ):
+                    raise
+                current_bioclip_batch_size = _next_bioclip_batch_size(
+                    current_batch_size=current_bioclip_batch_size,
+                    failed_batch_size=len(batch),
+                    min_batch_size=min_bioclip_batch_size,
+                )
+                bioclip_batch_retries += 1
+                pending = _chunks(batch, current_bioclip_batch_size) + pending
+                continue
+            emit_score_rows(score_rows)
 
     try:
         if materialized_crop_config is not None:
@@ -828,7 +867,7 @@ def screen_object_detections(
                     segmentation_unavailable_reason = segmentation_unavailable_reason or "detector_masks_missing"
                     continue
                 score_items.append(item)
-                if len(score_items) >= active_bioclip_batch_size:
+                if len(score_items) >= current_bioclip_batch_size:
                     flush_score_items()
         flush_score_items()
         if output is not None and batch_dir is not None:
@@ -844,6 +883,11 @@ def screen_object_detections(
             detections_seen=detections.height,
             crops_scored=crops_scored,
             score_batches_written=len(batch_paths),
+            adaptive_batching_enabled=bool(adaptive_batching),
+            bioclip_batch_retries=bioclip_batch_retries,
+            bioclip_batch_size_initial=active_bioclip_batch_size,
+            bioclip_batch_size_final=current_bioclip_batch_size,
+            bioclip_batch_size_min=min_bioclip_batch_size,
             segmentation_unavailable_count=segmentation_unavailable_count,
             segmentation_unavailable_reason=segmentation_unavailable_reason,
             segmentation_status=_segmentation_status(
@@ -861,6 +905,54 @@ def screen_object_detections(
     finally:
         if batch_dir is not None and batch_dir.exists():
             rmtree(batch_dir)
+
+
+def _chunks(items: list[Any], size: int) -> list[list[Any]]:
+    if size <= 0:
+        raise ValueError("chunk size must be positive")
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def _should_retry_bioclip_batch(
+    exc: RuntimeError,
+    *,
+    adaptive_batching: bool,
+    batch_size: int,
+    current_batch_size: int,
+    min_batch_size: int,
+) -> bool:
+    return (
+        adaptive_batching
+        and batch_size > min_batch_size
+        and current_batch_size > min_batch_size
+        and is_bioclip_memory_error(exc)
+    )
+
+
+def _next_bioclip_batch_size(
+    *,
+    current_batch_size: int,
+    failed_batch_size: int,
+    min_batch_size: int,
+) -> int:
+    if current_batch_size <= min_batch_size or failed_batch_size <= min_batch_size:
+        return min_batch_size
+    return max(min_batch_size, min(current_batch_size // 2, failed_batch_size // 2))
+
+
+def is_bioclip_memory_error(exc: BaseException) -> bool:
+    if not isinstance(exc, RuntimeError):
+        return False
+    message = " ".join(str(exc).casefold().split())
+    return any(
+        marker in message
+        for marker in (
+            "out of memory",
+            "cuda out of memory",
+            "mps memory",
+            "allocation failed",
+        )
+    )
 
 
 def _prepare_score_batch_dir(output_path: Path) -> Path:

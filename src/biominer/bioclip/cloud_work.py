@@ -29,6 +29,8 @@ from biominer.bioclip.object_runner import (
     _score_detection,
     _score_detection_batch,
     _ensure_columns,
+    _next_bioclip_batch_size,
+    _should_retry_bioclip_batch,
     _scorer_supports_detector_crop_segmentation,
     _segmentation_status,
     _visual_mode_status,
@@ -64,6 +66,11 @@ class CloudBioClipBatchResult:
     segmentation_status_by_mode: dict[str, str | None]
     segmentation_unavailable_count_by_mode: dict[str, int]
     segmentation_unavailable_reason_by_mode: dict[str, str | None]
+    adaptive_batching_enabled: bool = False
+    bioclip_batch_retries: int = 0
+    bioclip_batch_size_initial: int = 24
+    bioclip_batch_size_final: int = 24
+    bioclip_batch_size_min: int = 1
 
 
 def enqueue_bioclip_work_from_detection_shards(
@@ -207,6 +214,8 @@ def run_cloud_bioclip_batch(
     scorer: ObjectBioClipScorer,
     geo_prior_table: pl.DataFrame | None = None,
     crop_batch_size: int = 24,
+    adaptive_batching: bool = False,
+    min_crop_batch_size: int = 1,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
@@ -216,6 +225,10 @@ def run_cloud_bioclip_batch(
 ) -> CloudBioClipBatchResult:
     if crop_batch_size <= 0:
         raise ValueError("crop_batch_size must be positive")
+    if min_crop_batch_size <= 0:
+        raise ValueError("min_crop_batch_size must be positive")
+    if min_crop_batch_size > crop_batch_size:
+        raise ValueError("min_crop_batch_size must be <= crop_batch_size")
     classification_mode = normalize_classification_mode(classification_mode)
     if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION and taxonomy_store is None:
         raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
@@ -226,6 +239,8 @@ def run_cloud_bioclip_batch(
     unavailable_reason_by_mode: dict[str, str | None] = {}
     detection_keys: set[tuple[str, str, str]] = set()
     score_items_by_mode: dict[str, list[dict[str, Any]]] = {}
+    current_crop_batch_size = crop_batch_size
+    bioclip_batch_retries = 0
     for item in work_items:
         payload = item.get("payload")
         if not isinstance(payload, dict):
@@ -253,38 +268,73 @@ def run_cloud_bioclip_batch(
             continue
         score_items_by_mode.setdefault(mode, []).append(score_item)
 
+    def score_mode_batches(
+        *,
+        mode: str,
+        score_items: list[dict[str, Any]],
+        score_batch: Any,
+    ) -> None:
+        nonlocal bioclip_batch_retries, current_crop_batch_size
+        initial_size = 1 if mode == "detector_crop_segmentation" else current_crop_batch_size
+        pending = _chunks(score_items, initial_size)
+        while pending:
+            score_chunk = pending.pop(0)
+            try:
+                score_rows = score_batch(score_chunk)
+            except SegmentationUnavailable as exc:
+                if mode != "detector_crop_segmentation":
+                    raise
+                _mark_unavailable(
+                    mode,
+                    reason=str(exc) or "detector_masks_missing",
+                    unavailable_by_mode=unavailable_by_mode,
+                    unavailable_reason_by_mode=unavailable_reason_by_mode,
+                )
+                continue
+            except RuntimeError as exc:
+                if mode == "detector_crop_segmentation" or not _should_retry_bioclip_batch(
+                    exc,
+                    adaptive_batching=adaptive_batching,
+                    batch_size=len(score_chunk),
+                    current_batch_size=current_crop_batch_size,
+                    min_batch_size=min_crop_batch_size,
+                ):
+                    raise
+                current_crop_batch_size = _next_bioclip_batch_size(
+                    current_batch_size=current_crop_batch_size,
+                    failed_batch_size=len(score_chunk),
+                    min_batch_size=min_crop_batch_size,
+                )
+                bioclip_batch_retries += 1
+                pending = _chunks(score_chunk, current_crop_batch_size) + pending
+                continue
+            rows.extend(score_rows)
+            scored_by_mode[mode] = scored_by_mode.get(mode, 0) + len(score_rows)
+
     for mode, score_items in score_items_by_mode.items():
         if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
             if taxonomy_store is None:
                 raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
-            for score_chunk in _chunks(score_items, 1 if mode == "detector_crop_segmentation" else crop_batch_size):
-                try:
-                    score_rows = _score_hierarchical_cloud_batch(
-                        items=score_chunk,
-                        scorer=scorer,
-                        taxonomy_store=taxonomy_store,
-                        family_top_k=family_top_k,
-                        species_first_pass_top_k=species_first_pass_top_k,
-                        species_rerank_top_k=species_rerank_top_k,
-                        taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
-                    )
-                except SegmentationUnavailable as exc:
-                    if mode != "detector_crop_segmentation":
-                        raise
-                    _mark_unavailable(
-                        mode,
-                        reason=str(exc) or "detector_masks_missing",
-                        unavailable_by_mode=unavailable_by_mode,
-                        unavailable_reason_by_mode=unavailable_reason_by_mode,
-                    )
-                    continue
-                rows.extend(score_rows)
-                scored_by_mode[mode] = scored_by_mode.get(mode, 0) + len(score_rows)
+            score_mode_batches(
+                mode=mode,
+                score_items=score_items,
+                score_batch=lambda score_chunk: _score_hierarchical_cloud_batch(
+                    items=score_chunk,
+                    scorer=scorer,
+                    taxonomy_store=taxonomy_store,
+                    family_top_k=family_top_k,
+                    species_first_pass_top_k=species_first_pass_top_k,
+                    species_rerank_top_k=species_rerank_top_k,
+                    taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
+                ),
+            )
             continue
         if mode == "detector_crop_segmentation":
-            for score_item in score_items:
-                try:
-                    score_row = _score_detection(
+            score_mode_batches(
+                mode=mode,
+                score_items=score_items,
+                score_batch=lambda score_chunk: [
+                    _score_detection(
                         item=score_item,
                         context=species_context,
                         candidate_set=candidate_set,
@@ -296,35 +346,26 @@ def run_cloud_bioclip_batch(
                         species_first_pass_top_k=species_first_pass_top_k,
                         species_rerank_top_k=species_rerank_top_k,
                     )
-                except SegmentationUnavailable as exc:
-                    _mark_unavailable(
-                        mode,
-                        reason=str(exc) or "detector_masks_missing",
-                        unavailable_by_mode=unavailable_by_mode,
-                        unavailable_reason_by_mode=unavailable_reason_by_mode,
-                    )
-                    continue
-                rows.append(score_row)
-                scored_by_mode[mode] = scored_by_mode.get(mode, 0) + 1
+                    for score_item in score_chunk
+                ],
+            )
             continue
-        for score_chunk in _chunks(score_items, crop_batch_size):
-            try:
-                score_rows = _score_detection_batch(
-                    items=score_chunk,
-                    context=species_context,
-                    candidate_set=candidate_set,
-                    scorer=scorer,
-                    ablation_mode=mode,  # type: ignore[arg-type]
-                    geo_prior_table=geo_prior_table,
-                    classification_mode=classification_mode,
-                    family_top_k=family_top_k,
-                    species_first_pass_top_k=species_first_pass_top_k,
-                    species_rerank_top_k=species_rerank_top_k,
-                )
-            except SegmentationUnavailable:
-                raise
-            rows.extend(score_rows)
-            scored_by_mode[mode] = scored_by_mode.get(mode, 0) + len(score_rows)
+        score_mode_batches(
+            mode=mode,
+            score_items=score_items,
+            score_batch=lambda score_chunk: _score_detection_batch(
+                items=score_chunk,
+                context=species_context,
+                candidate_set=candidate_set,
+                scorer=scorer,
+                ablation_mode=mode,  # type: ignore[arg-type]
+                geo_prior_table=geo_prior_table,
+                classification_mode=classification_mode,
+                family_top_k=family_top_k,
+                species_first_pass_top_k=species_first_pass_top_k,
+                species_rerank_top_k=species_rerank_top_k,
+            ),
+        )
     frame = _ensure_columns(pl.DataFrame(rows), OBJECT_SCORE_OUTPUT_SCHEMA) if rows else empty_object_score_frame()
     modes_requested = tuple(_unique(requested_modes))
     modes_scored = tuple(sorted(scored_by_mode))
@@ -351,6 +392,11 @@ def run_cloud_bioclip_batch(
         work_items_seen=len(work_items),
         detections_seen=len(detection_keys),
         crops_scored=frame.height,
+        adaptive_batching_enabled=bool(adaptive_batching),
+        bioclip_batch_retries=bioclip_batch_retries,
+        bioclip_batch_size_initial=crop_batch_size,
+        bioclip_batch_size_final=current_crop_batch_size,
+        bioclip_batch_size_min=min_crop_batch_size,
         segmentation_unavailable_count=unavailable_total,
         segmentation_unavailable_reason=first_unavailable_reason,
         visual_modes_requested=modes_requested,
