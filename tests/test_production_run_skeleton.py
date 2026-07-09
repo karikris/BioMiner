@@ -15,7 +15,7 @@ from biominer.bioclip.classification_modes import (
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.evidence import build_object_evidence_frames, build_review_queue, evidence_count_metrics
 from biominer.evidence.join import write_object_evidence_outputs
-from biominer.registry.classification_table import build_classification_tables_from_registry_dir
+from biominer.registry.classification_table import PROMPT_VARIANT_VERSION, build_classification_tables_from_registry_dir
 from biominer.registry.trust_policy import (
     TrustTier,
     decide_name_trust,
@@ -285,6 +285,9 @@ def test_production_run_hierarchical_score_stage_validates_table_then_requires_s
     assert plan.manifest.stages[0].metrics["taxonomy_candidate_table_status"] == "valid"
     assert plan.manifest.stages[0].metrics["classification_family_count"] == 2
     assert plan.manifest.stages[0].metrics["classification_species_count"] == 4
+    assert plan.manifest.stages[0].metrics["classification_prompt_variant_version"] == PROMPT_VARIANT_VERSION
+    assert plan.manifest.stages[0].metrics["taxonomy_family_candidate_count"] == 2
+    assert plan.manifest.stages[0].metrics["taxonomy_species_candidate_count"] == 4
 
 
 def test_production_run_request_validates_visual_classification_top_k() -> None:
@@ -1483,6 +1486,10 @@ def test_orchestrator_runs_local_detection_and_object_scoring_with_injected_fake
     assert result.manifest.bioclip_counts["segmentation_crops_scored"] == 0
     assert result.manifest.metrics["visual_modes_requested"] == ["detector_crop"]
     assert result.manifest.metrics["visual_modes_scored"] == ["detector_crop"]
+    assert result.manifest.metrics["classification_mode_counts"] == {TARGET_SCOPE_OBJECT_SCREENING: 1}
+    assert result.manifest.metrics["candidate_selection_mode_counts"] == {"taxon_scope_or_species_context": 1}
+    assert result.manifest.metrics["species_rerank_strategy_counts"] == {"first_pass_top20": 1}
+    assert result.manifest.metrics["species_top1_counts"] == {"Danaus plexippus": 1}
     scores = pl.read_parquet(result.paths.object_scores_path).sort("ablation_mode")
     assert scores.height == 1
     assert scores.select("ablation_mode").to_series().to_list() == ["detector_crop"]
@@ -1649,6 +1656,8 @@ def test_orchestrator_scores_bioclip_from_cloud_storage(tmp_path) -> None:
     assert result.manifest.bioclip_counts["segmentation_crops_scored"] == 0
     assert result.manifest.metrics["visual_modes_requested"] == ["detector_crop"]
     assert result.manifest.metrics["visual_modes_scored"] == ["detector_crop"]
+    assert result.manifest.metrics["classification_mode_counts"] == {TARGET_SCOPE_OBJECT_SCREENING: 1}
+    assert result.manifest.metrics["species_top1_counts"] == {"Danaus plexippus": 1}
     score_uri = result.manifest.stages[0].outputs["object_scores"]
     assert score_uri.startswith(plan.artifact_uris.staging_uri + "/evidence/stage=score_bioclip/")
     assert "/part=" in score_uri

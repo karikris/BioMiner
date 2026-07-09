@@ -21,7 +21,7 @@ from biominer.bioclip.cloud_work import (
     enqueue_bioclip_work_from_detection_shards,
     run_cloud_bioclip_batch,
 )
-from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER
+from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER, object_score_audit_metrics
 from biominer.detection.cloud_work import (
     detection_batch_id,
     enqueue_detection_work_from_source_shards,
@@ -1531,6 +1531,7 @@ def _cloud_bioclip_metrics(result: Any) -> dict[str, Any]:
         "segmentation_unavailable_reason_by_mode": dict(result.segmentation_unavailable_reason_by_mode),
         "segmentation_unavailable_count": result.segmentation_unavailable_count,
         "segmentation_unavailable_reason": result.segmentation_unavailable_reason,
+        **object_score_audit_metrics(frame),
     }
 
 
@@ -1664,6 +1665,7 @@ def _object_ablation_metrics(report: dict[str, Any], *, frame: Any) -> dict[str,
         "segmentation_unavailable_count_by_mode": dict(report.get("segmentation_unavailable_count_by_mode") or {}),
         "segmentation_unavailable_reason_by_mode": dict(report.get("segmentation_unavailable_reason_by_mode") or {}),
         "segmentation_unavailable_count": sum(int(value or 0) for value in dict(report.get("segmentation_unavailable_count_by_mode") or {}).values()),
+        **object_score_audit_metrics(frame),
     }
 
 
@@ -1698,12 +1700,22 @@ def _butterfly_taxonomy_store_metrics(store: ButterflyTaxonomyStore, *, taxonomy
     taxa = store.classification_taxa
     enabled = taxa.filter(taxa["classification_enabled"]) if "classification_enabled" in taxa.columns and not taxa.is_empty() else taxa.head(0)
     manifest = dict(store.manifest or {})
+    family_count = enabled.select("family_key").unique().height if "family_key" in enabled.columns else 0
+    species_count = enabled.height
     return {
         "taxonomy_candidate_table_status": taxonomy_candidate_table_status,
         "classification_table_version": manifest.get("classification_table_version")
         or (enabled["classification_table_version"][0] if not enabled.is_empty() and "classification_table_version" in enabled.columns else None),
-        "classification_family_count": enabled.select("family_key").unique().height if "family_key" in enabled.columns else 0,
-        "classification_species_count": enabled.height,
+        "classification_prompt_variant_version": manifest.get("prompt_variant_version")
+        or _first_non_blank_frame_value(store.family_labels, "prompt_variant_version"),
+        "classification_registry_version": manifest.get("registry_version")
+        or _first_non_blank_frame_value(enabled, "registry_version"),
+        "classification_retrieved_at_min": _min_non_blank_frame_value(enabled, "retrieved_at"),
+        "classification_retrieved_at_max": _max_non_blank_frame_value(enabled, "retrieved_at"),
+        "classification_family_count": family_count,
+        "classification_species_count": species_count,
+        "taxonomy_family_candidate_count": family_count,
+        "taxonomy_species_candidate_count": species_count,
         "classification_family_label_count": store.family_labels.height,
         "classification_species_label_count": store.species_labels.height,
     }
@@ -1714,6 +1726,27 @@ def _taxonomy_manifest_value(store: ButterflyTaxonomyStore | None, key: str) -> 
         return None
     value = dict(store.manifest or {}).get(key)
     return str(value) if value is not None and str(value).strip() else None
+
+
+def _first_non_blank_frame_value(frame: Any, column: str) -> str | None:
+    values = _non_blank_frame_values(frame, column)
+    return values[0] if values else None
+
+
+def _min_non_blank_frame_value(frame: Any, column: str) -> str | None:
+    values = _non_blank_frame_values(frame, column)
+    return min(values) if values else None
+
+
+def _max_non_blank_frame_value(frame: Any, column: str) -> str | None:
+    values = _non_blank_frame_values(frame, column)
+    return max(values) if values else None
+
+
+def _non_blank_frame_values(frame: Any, column: str) -> list[str]:
+    if frame.is_empty() or column not in frame.columns:
+        return []
+    return [str(value) for value in frame.get_column(column).drop_nulls().to_list() if str(value or "").strip()]
 
 
 def _mode_row_count(frame: Any, mode: str) -> int:

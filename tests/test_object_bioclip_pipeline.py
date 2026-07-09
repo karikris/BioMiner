@@ -22,6 +22,7 @@ from biominer.bioclip.object_runner import (
     empty_object_score_frame,
     iter_materialized_detector_crop_batches,
     materialize_detector_crop_inputs,
+    object_score_audit_metrics,
     screen_object_detections,
     write_object_evidence_outputs,
 )
@@ -1297,6 +1298,13 @@ def test_object_bioclip_scores_local_hierarchical_mode_with_fake_taxonomy(tmp_pa
     assert row["target_species_score"] is None
     assert row["target_species_rank"] is None
     assert row["occurrence_bin"] == "in_review"
+    metrics = object_score_audit_metrics(result.frame)
+    assert metrics["classification_mode_counts"] == {HIERARCHICAL_BUTTERFLY_CLASSIFICATION: 1}
+    assert metrics["taxonomy_table_versions"] == [CLASSIFICATION_TABLE_VERSION]
+    assert metrics["taxonomy_prompt_variant_versions"] == [PROMPT_VARIANT_VERSION]
+    assert metrics["selected_family_counts"] == {"Nymphalidae": 1}
+    assert metrics["species_candidate_count_min"] == 1.0
+    assert metrics["species_candidate_count_max"] == 1.0
     assert pl.read_parquet(tmp_path / "object_scores.parquet").to_dicts()[0]["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 
 
@@ -2033,6 +2041,10 @@ def test_ablation_modes_write_rows_with_shared_photo_join_keys(tmp_path) -> None
         "detector_crop_segmentation": "unavailable",
         "whole_image": "available",
     }
+    assert report.report["classification_mode_counts"] == {"target_scope_object_screening": 2}
+    assert report.report["candidate_selection_mode_counts"] == {TARGET_SCOPE_CANDIDATE_SELECTION_MODE: 2}
+    assert report.report["species_rerank_strategy_counts"] == {TARGET_SCOPE_SPECIES_RERANK_STRATEGY: 2}
+    assert report.report["species_candidate_count_non_null_count"] == 0
     assert report.report["segmentation_status_by_mode"]["detector_crop_segmentation"] == "unavailable"
     assert report.report["segmentation_unavailable_count_by_mode"]["detector_crop_segmentation"] == 1
     assert report.report["segmentation_unavailable_reason_by_mode"]["detector_crop_segmentation"] == "detector_masks_missing"

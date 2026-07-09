@@ -824,6 +824,21 @@ def empty_object_score_frame() -> pl.DataFrame:
     return pl.DataFrame(schema=OBJECT_SCORE_OUTPUT_SCHEMA)
 
 
+def object_score_audit_metrics(frame: pl.DataFrame) -> dict[str, Any]:
+    return {
+        "classification_mode_counts": _string_value_counts(frame, "classification_mode"),
+        "candidate_selection_mode_counts": _string_value_counts(frame, "candidate_selection_mode"),
+        "species_rerank_strategy_counts": _string_value_counts(frame, "species_rerank_strategy"),
+        "taxonomy_table_versions": _string_values(frame, "taxonomy_table_version"),
+        "taxonomy_prompt_variant_versions": _string_values(frame, "taxonomy_prompt_variant_version"),
+        "selected_family_counts": _string_value_counts(frame, "selected_family"),
+        "selected_family_key_counts": _string_value_counts(frame, "selected_family_key"),
+        "species_top1_counts": _string_value_counts(frame, "species_top1_scientific_name"),
+        "accepted_taxon_key_counts": _string_value_counts(frame, "accepted_taxon_key"),
+        **_numeric_summary(frame, "species_candidate_count"),
+    }
+
+
 def _canonical_record_for_detection(
     records_by_photo: dict[tuple[str, str], dict[str, Any]],
     *,
@@ -1820,6 +1835,50 @@ def _cosine_similarity(left: list[float], right: list[float]) -> float:
     if left_norm == 0.0 or right_norm == 0.0:
         return 0.0
     return sum(a * b for a, b in zip(left, right, strict=True)) / (left_norm * right_norm)
+
+
+def _string_value_counts(frame: pl.DataFrame, column: str) -> dict[str, int]:
+    if frame.is_empty() or column not in frame.columns:
+        return {}
+    filtered = frame.filter(pl.col(column).is_not_null() & (pl.col(column).cast(pl.String) != ""))
+    if filtered.is_empty():
+        return {}
+    return {
+        str(row[column]): int(row["count"])
+        for row in filtered.group_by(column).len(name="count").sort(column).to_dicts()
+    }
+
+
+def _string_values(frame: pl.DataFrame, column: str) -> list[str]:
+    if frame.is_empty() or column not in frame.columns:
+        return []
+    return sorted(
+        {
+            str(value)
+            for value in frame.get_column(column).drop_nulls().to_list()
+            if str(value or "").strip()
+        }
+    )
+
+
+def _numeric_summary(frame: pl.DataFrame, column: str) -> dict[str, float | int | None]:
+    empty = {
+        f"{column}_non_null_count": 0,
+        f"{column}_min": None,
+        f"{column}_max": None,
+        f"{column}_mean": None,
+    }
+    if frame.is_empty() or column not in frame.columns:
+        return empty
+    values = [float(value) for value in frame.get_column(column).drop_nulls().to_list()]
+    if not values:
+        return empty
+    return {
+        f"{column}_non_null_count": len(values),
+        f"{column}_min": min(values),
+        f"{column}_max": max(values),
+        f"{column}_mean": sum(values) / len(values),
+    }
 
 
 def _norm(value: object) -> str:

@@ -15,7 +15,13 @@ from biominer.bioclip.classification_modes import (
     DEFAULT_SPECIES_RERANK_TOP_K,
     ClassificationMode,
 )
-from biominer.bioclip.object_runner import PRIMARY_VISUAL_CLASSIFIER, AblationMode, ObjectBioClipScorer, screen_object_detections
+from biominer.bioclip.object_runner import (
+    PRIMARY_VISUAL_CLASSIFIER,
+    AblationMode,
+    ObjectBioClipScorer,
+    object_score_audit_metrics,
+    screen_object_detections,
+)
 from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
 from biominer.species.context import SpeciesContext
 
@@ -120,6 +126,7 @@ def build_ablation_report(
             "crop_vs_segmentation": 0,
             "whole_image_vs_crop_disagreements": 0,
             "crop_vs_segmentation_disagreements": 0,
+            **object_score_audit_metrics(frame),
         }
     ranks = [int(value) for value in frame.get_column("target_species_rank").drop_nulls().to_list()] if "target_species_rank" in frame.columns else []
     counts = _bucket_counts(frame)
@@ -142,6 +149,7 @@ def build_ablation_report(
         "crop_vs_segmentation": crop_vs_segmentation,
         "whole_image_vs_crop_disagreements": whole_image_vs_crop,
         "crop_vs_segmentation_disagreements": crop_vs_segmentation,
+        **object_score_audit_metrics(frame),
     }
 
 
