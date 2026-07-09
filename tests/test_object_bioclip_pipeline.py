@@ -31,6 +31,7 @@ from biominer.detection.detector_base import DecodedImage
 from biominer.detection.policy import DetectionPolicy
 from biominer.detection.segmentation import make_segmenter
 from biominer.detection.schema import DETECTION_OUTPUT_SCHEMA, empty_detection_frame
+from biominer.evidence.join import build_photo_summary_from_joined_evidence
 from biominer.registry.classification_table import (
     CLASSIFICATION_TABLE_VERSION,
     CLASSIFICATION_TAXA_SCHEMA,
@@ -1308,6 +1309,51 @@ def test_object_bioclip_scores_local_hierarchical_mode_with_fake_taxonomy(tmp_pa
     assert pl.read_parquet(tmp_path / "object_scores.parquet").to_dicts()[0]["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 
 
+def test_photo_summary_includes_hierarchical_open_classification_rows(tmp_path) -> None:
+    store = _butterfly_taxonomy_store()
+    scores = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections().head(1),
+        species_context=_context(),
+        candidate_set=_fixture_candidate_set(),
+        scorer=FakeObjectBioClipScorer(
+            {
+                "sha256:crop-1": _hierarchical_scores(
+                    store,
+                    family_scores={"Nymphalidae": 0.92, "Papilionidae": 0.30},
+                    species_scores={"Danaus plexippus": 0.88, "Papilio demoleus": 0.20},
+                )
+            }
+        ),
+        output_path=tmp_path / "scores.parquet",
+        ablation_mode="detector_crop",
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        taxonomy_store=store,
+        species_first_pass_top_k=2,
+        species_rerank_top_k=1,
+    )
+    _canonical_records().write_parquet(tmp_path / "canonical.parquet")
+    _detections().head(1).write_parquet(tmp_path / "detections.parquet")
+    scores.frame.write_parquet(tmp_path / "scores.parquet")
+
+    outputs = write_object_evidence_outputs(
+        canonical_records_path=tmp_path / "canonical.parquet",
+        detections_path=tmp_path / "detections.parquet",
+        scores_path=tmp_path / "scores.parquet",
+        joined_output_path=tmp_path / "joined.parquet",
+        photo_summary_output_path=tmp_path / "summary.parquet",
+    )
+
+    summary = pl.read_parquet(outputs.photo_evidence_summary).to_dicts()[0]
+    assert summary["best_detection_id"] == "det-1"
+    assert summary["best_object_occurrence_bin"] == "in_review"
+    assert summary["best_object_species_top1"] == "Danaus plexippus"
+    assert summary["best_object_score"] == 0.88
+    assert summary["photo_occurrence_bin"] == "in_review"
+    assert summary["photo_bin_reason"] == "hierarchical_open_classification_requires_review"
+    assert summary["all_candidate_species"] == ["Danaus plexippus"]
+
+
 def test_object_bioclip_skips_non_butterfly_detector_labels(tmp_path) -> None:
     class FailingScorer:
         model_id = "fake-bioclip"
@@ -2239,6 +2285,35 @@ def test_photo_summary_retains_topk_candidate_species(tmp_path) -> None:
 
     summary = pl.read_parquet(outputs.photo_evidence_summary).to_dicts()[0]
     assert summary["all_candidate_species"] == ["Danaus plexippus", "Danaus gilippus", "Limenitis archippus"]
+
+
+def test_photo_summary_from_joined_evidence_keeps_open_classification_rows() -> None:
+    joined = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "detection_id": "det-1",
+                "classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+                "occurrence_bin": "in_review",
+                "bin_reason": "hierarchical_open_classification_requires_review",
+                "target_species_score": None,
+                "species_top1_score": 0.91,
+                "species_top1_scientific_name": "Danaus plexippus",
+                "species_top5": ["Danaus plexippus"],
+                "species_top20": ["Danaus plexippus"],
+                "detection_status": "detected",
+                "detector_label": "butterfly_like",
+            }
+        ]
+    )
+
+    summary = build_photo_summary_from_joined_evidence(joined).to_dicts()[0]
+
+    assert summary["best_object_score"] == 0.91
+    assert summary["photo_occurrence_bin"] == "in_review"
+    assert summary["photo_bin_reason"] == "hierarchical_open_classification_requires_review"
+    assert summary["all_candidate_species"] == ["Danaus plexippus"]
 
 
 def test_empty_object_evidence_outputs_keep_stable_join_table_schemas(tmp_path) -> None:

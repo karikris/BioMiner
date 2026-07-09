@@ -16,6 +16,7 @@ PHOTO_REVIEW_REASONS = {
     "ambiguous_species_margin",
     "species_conflict",
     "taxonomy_inconsistent",
+    "hierarchical_open_classification_requires_review",
     "detected_object_without_bioclip_score",
 }
 REVIEW_REASON_PRECEDENCE = (

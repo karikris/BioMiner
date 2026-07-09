@@ -63,17 +63,31 @@ def build_photo_summary_from_joined_evidence(
 
     if joined_evidence.is_empty():
         return empty_photo_summary_frame()
-    scores = (
-        joined_evidence.filter(pl.col("target_species_score").is_not_null())
-        if "target_species_score" in joined_evidence.columns
-        else joined_evidence.head(0)
-    )
+    scores = _scored_object_rows(joined_evidence)
     return _photo_summary(
         scores,
         canonical=joined_evidence,
         detections=joined_evidence,
         species_context=species_context,
     )
+
+
+def _scored_object_rows(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    predicates: list[pl.Expr] = []
+    if "classification_mode" in frame.columns:
+        predicates.append(pl.col("classification_mode").is_not_null())
+    if "target_species_score" in frame.columns:
+        predicates.append(pl.col("target_species_score").is_not_null())
+    if "species_top1_score" in frame.columns:
+        predicates.append(pl.col("species_top1_score").is_not_null())
+    if not predicates:
+        return frame.head(0)
+    predicate = predicates[0]
+    for extra in predicates[1:]:
+        predicate = predicate | extra
+    return frame.filter(predicate)
 
 
 def write_object_evidence_outputs(

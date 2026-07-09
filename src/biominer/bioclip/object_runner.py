@@ -1405,9 +1405,12 @@ def _photo_summary(
     summarized_keys: set[tuple[str, str]] = set()
     canonical_by_photo = _canonical_by_photo(canonical)
     detections_by_photo = _detections_by_photo(detections)
-    if _has_columns(scores, ["source", "flickr_photo_id", "target_species_score"]):
+    if _has_columns(scores, ["source", "flickr_photo_id"]):
         for (_source, _photo), group in scores.group_by(["source", "flickr_photo_id"], maintain_order=True):
-            sorted_rows = group.sort("target_species_score", descending=True).to_dicts()
+            sorted_rows = sorted(
+                group.to_dicts(),
+                key=lambda row: (-_summary_object_score(row), str(row.get("detection_id") or "")),
+            )
             best = sorted_rows[0]
             key = (str(best["source"]), str(best["flickr_photo_id"]))
             detection_ids = _summary_detection_ids(detections_by_photo.get(key, []), sorted_rows)
@@ -1422,7 +1425,7 @@ def _photo_summary(
                     "detection_count": len(detection_ids),
                     "best_object_occurrence_bin": best["occurrence_bin"],
                     "best_object_species_top1": best["species_top1_scientific_name"],
-                    "best_object_score": best["target_species_score"],
+                    "best_object_score": _summary_object_score(best),
                     "photo_occurrence_bin": photo_bucket,
                     "photo_bin_reason": photo_reason,
                     "all_detection_ids": detection_ids,
@@ -1595,6 +1598,16 @@ def _summary_detection_ids(detection_rows: list[dict[str, Any]], scored_rows: li
     if detection_ids:
         return detection_ids
     return _unique(row.get("detection_id") for row in scored_rows)
+
+
+def _summary_object_score(row: dict[str, Any]) -> float:
+    target_score = row.get("target_species_score")
+    if target_score not in (None, ""):
+        return float(target_score)
+    species_score = row.get("species_top1_score")
+    if species_score not in (None, ""):
+        return float(species_score)
+    return 0.0
 
 
 def _has_columns(frame: pl.DataFrame, columns: Iterable[str]) -> bool:
