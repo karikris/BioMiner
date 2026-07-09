@@ -19,7 +19,7 @@ from biominer.bioclip.cloud_work import (
     enqueue_bioclip_work_from_detection_shards,
 )
 from biominer.detection.cloud_work import detection_batch_id, detection_work_item
-from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
+from biominer.detection.detector_base import DecodedImage, FakeObjectDetector
 from biominer.detection.policy import DetectionPolicy
 from biominer.evidence import build_object_evidence_frames, build_review_queue, evidence_count_metrics
 from biominer.evidence.join import write_object_evidence_outputs
@@ -49,6 +49,7 @@ from biominer.storage.shard_paths import build_parquet_part_uri
 from biominer.species.context import CommonName, SpeciesContext
 from biominer.storage.parquet import ParquetPartWrite
 from biominer.workstore.sqlite import SQLiteWorkStore
+from factories import detection_candidate
 
 
 def test_taxon_scope_construction_and_roundtrip() -> None:
@@ -990,9 +991,7 @@ def test_orchestrator_runs_fake_backed_cloud_workflow_end_to_end(tmp_path, monke
     _write_query_definitions(registry)
     storage = _FakeRunStorage()
     workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
-    detector = FakeObjectDetector(
-        [[DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 4.0), objectness_score=0.91)]]
-    )
+    detector = FakeObjectDetector([[detection_candidate()]])
     scorer = _ConstantObjectScorer(
         {
             "Papilio demoleus": 0.84,
@@ -1099,11 +1098,11 @@ def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(tmp_path
     detector = FakeObjectDetector(
         [
             [
-                DetectionCandidate(label="butterfly_like", score=0.93, bbox_xyxy=(0.0, 0.0, 2.0, 2.0), objectness_score=0.93),
-                DetectionCandidate(label="moth_like", score=0.72, bbox_xyxy=(2.0, 2.0, 4.0, 4.0), objectness_score=0.72),
+                detection_candidate(score=0.93, bbox_xyxy=(0.0, 0.0, 2.0, 2.0)),
+                detection_candidate("moth_like", score=0.72, bbox_xyxy=(2.0, 2.0, 4.0, 4.0)),
             ],
-            [DetectionCandidate(label="moth_like", score=0.88, bbox_xyxy=(0.0, 0.0, 3.0, 3.0), objectness_score=0.88)],
-            [DetectionCandidate(label="hard_negative", score=0.91, bbox_xyxy=(0.0, 0.0, 3.0, 3.0), objectness_score=0.91)],
+            [detection_candidate("moth_like", score=0.88, bbox_xyxy=(0.0, 0.0, 3.0, 3.0))],
+            [detection_candidate("hard_negative", bbox_xyxy=(0.0, 0.0, 3.0, 3.0))],
             [],
         ]
     )
@@ -1692,9 +1691,7 @@ def test_orchestrator_runs_local_detection_and_object_scoring_with_injected_fake
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
     _write_source_records(plan.paths)
-    detector = FakeObjectDetector(
-        [[DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 4.0), objectness_score=0.91)]]
-    )
+    detector = FakeObjectDetector([[detection_candidate()]])
     scorer = _ConstantObjectScorer(
         {
             "Danaus plexippus": 0.82,
@@ -1767,9 +1764,7 @@ def test_orchestrator_detects_objects_from_cloud_storage(tmp_path) -> None:
         checksum=None,
         row_count=canonical.height,
     )
-    detector = FakeObjectDetector(
-        [[DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 4.0), objectness_score=0.91)]]
-    )
+    detector = FakeObjectDetector([[detection_candidate()]])
 
     result = ProductionRunOrchestrator(
         request,
@@ -1934,9 +1929,7 @@ def test_orchestrator_cloud_detect_keeps_loaded_image_when_shard_registration_fa
     cached_image = tmp_path / "cache" / "photo-1.jpg"
     cached_image.parent.mkdir(parents=True)
     cached_image.write_bytes(b"retryable-image")
-    detector = FakeObjectDetector(
-        [[DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 4.0), objectness_score=0.91)]]
-    )
+    detector = FakeObjectDetector([[detection_candidate()]])
 
     def image_loader(_record):  # noqa: ANN001, ANN202 - mirrors production image loader.
         assert cached_image.exists()
@@ -2230,9 +2223,7 @@ def test_production_cloud_run_does_not_write_durable_local_artifacts(monkeypatch
         checksum=None,
         row_count=canonical.height,
     )
-    detector = FakeObjectDetector(
-        [[DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 4.0), objectness_score=0.91)]]
-    )
+    detector = FakeObjectDetector([[detection_candidate()]])
     scorer = _ConstantObjectScorer(
         {
             "Danaus plexippus": 0.82,

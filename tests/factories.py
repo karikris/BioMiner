@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import polars as pl
 
+from biominer.detection.detector_base import DetectionCandidate
+
 
 def flickr_source_record(
     photo_id: str = "photo-1",
@@ -78,3 +80,12 @@ def object_detection_row(
 
 def object_detections(*rows: dict[str, object]) -> pl.DataFrame:
     return pl.DataFrame(list(rows) or [object_detection_row()])
+
+
+def detection_candidate(
+    label: str = "butterfly_like",
+    *,
+    score: float = 0.91,
+    bbox_xyxy: tuple[float, float, float, float] = (0.0, 0.0, 4.0, 4.0),
+) -> DetectionCandidate:
+    return DetectionCandidate(label=label, score=score, bbox_xyxy=bbox_xyxy, objectness_score=score)
