@@ -29,7 +29,7 @@ from biominer.detection.cloud_work import (
 )
 from biominer.detection.policy import DetectionPolicy, VisionRuntimeSettings
 from biominer.evidence.cloud_work import (
-    build_review_queue_from_cloud_summary_shards,
+    CloudReviewQueueResult,
     join_evidence_batch_id,
     join_object_evidence_from_cloud_shards,
     photo_summary_batch_id,
@@ -38,6 +38,7 @@ from biominer.evidence.cloud_work import (
 )
 from biominer.evidence.join import write_object_evidence_outputs
 from biominer.evidence.metrics import build_review_queue, evidence_count_metrics
+from biominer.evaluation.review_queue import build_hierarchical_review_queue
 from biominer.flickr_comments.comment_review import CommentReviewState
 from biominer.flickr_comments.comments_enrichment import fetch_flickr_comments
 from biominer.flickr_fetch.cloud_poller import CloudMetadataPoller, flickr_query_work_item
@@ -1387,13 +1388,24 @@ class ProductionRunOrchestrator:
                 outputs["photo_summary"] = photo_summary_uri
             if not _cloud_stage_shard_uris(self.workstore, plan, "photo_summary"):
                 return StageExecutionResult(status=StageStatus.FAILED, message="missing_summary_inputs: object_evidence, photo_summary")
-            queue_result = build_review_queue_from_cloud_summary_shards(
-                storage=self.storage,
-                workstore=self.workstore,
+            summary_shards = self.workstore.list_committed_shards(
                 job_name=PRODUCTION_JOB_NAME,
+                stage="photo_summary",
                 registry_version=plan.manifest.taxon_scope.registry_version,
                 run_id=plan.manifest.run_id,
-                summary_stage="photo_summary",
+            )
+            joined = _read_cloud_stage_frame(self.storage, self.workstore, plan, RunStage.JOIN_EVIDENCE.value)
+            photo_summary = (
+                summary_result.frame
+                if summary_result is not None
+                else _read_cloud_stage_frame(self.storage, self.workstore, plan, "photo_summary")
+            )
+            review_queue, review_queue_mode = _build_production_review_queue(joined=joined, photo_summary=photo_summary)
+            queue_result = CloudReviewQueueResult(
+                frame=review_queue,
+                summary_shards=tuple(summary_shards),
+                photo_summary_rows_seen=photo_summary.height,
+                photo_occurrence_bin_counts=_value_counts(photo_summary, "photo_occurrence_bin"),
             )
             review_queue_uri = self.storage.write_parquet_shard(
                 build_evidence_shard_uri(
@@ -1414,16 +1426,21 @@ class ProductionRunOrchestrator:
                 uri=review_queue_uri,
                 checksum=None,
                 row_count=queue_result.frame.height,
-                metadata={"summary_shards_seen": queue_result.summary_shards_seen},
+                metadata={
+                    "summary_shards_seen": queue_result.summary_shards_seen,
+                    "review_queue_mode": review_queue_mode,
+                },
             )
-            metrics = {
-                "photo_summary_rows": queue_result.photo_summary_rows_seen,
-                "photo_occurrence_bin_counts": queue_result.photo_occurrence_bin_counts,
-                "review_queue_rows": queue_result.frame.height,
-                "review_queue_bin_counts": _value_counts(queue_result.frame, "review_bucket"),
-                "summary_shards": queue_result.summary_shards_seen,
-                "review_queue_shards": 1,
-            }
+            metrics = evidence_count_metrics(joined, photo_summary)
+            metrics.update(
+                {
+                    "photo_occurrence_bin_counts": queue_result.photo_occurrence_bin_counts,
+                    "object_occurrence_bin_counts": _value_counts(joined, "occurrence_bin"),
+                    "summary_shards": queue_result.summary_shards_seen,
+                    "review_queue_shards": 1,
+                }
+            )
+            metrics.update(_review_queue_metrics(queue_result.frame, review_queue_mode=review_queue_mode))
             if summary_result is not None:
                 metrics.update(
                     {
@@ -1437,30 +1454,25 @@ class ProductionRunOrchestrator:
             vision_stage_metrics = build_vision_stage_metrics(
                 detections=_read_cloud_stage_frame(self.storage, self.workstore, plan, RunStage.DETECT_OBJECTS.value),
                 scores=_read_cloud_stage_frame(self.storage, self.workstore, plan, RunStage.SCORE_BIOCLIP.value),
-                joined=_read_cloud_stage_frame(self.storage, self.workstore, plan, RunStage.JOIN_EVIDENCE.value),
-                photo_summary=(
-                    summary_result.frame
-                    if summary_result is not None
-                    else _read_cloud_stage_frame(self.storage, self.workstore, plan, "photo_summary")
-                ),
+                joined=joined,
+                photo_summary=photo_summary,
                 stage_metrics=plan.manifest.metrics,
                 detection_policy=self.request.vision_settings.to_detection_policy(DetectionPolicy()),
             )
             vision_stage_metrics_uri = self.storage.write_json(plan.artifact_uris.vision_stage_metrics_uri, vision_stage_metrics)
             outputs.update({"metrics": metrics_uri, "review_queue": review_queue_uri, "vision_stage_metrics": vision_stage_metrics_uri})
             return StageExecutionResult(metrics=metrics, outputs=outputs)
-        missing = _missing_paths(plan.paths.object_evidence_path, plan.paths.photo_summary_path)
+        missing = _missing_paths(plan.paths.object_evidence_path)
         if missing:
             return StageExecutionResult(status=StageStatus.FAILED, message="missing_summary_inputs: " + ", ".join(missing))
         import json
         import polars as pl
 
         joined = pl.read_parquet(plan.paths.object_evidence_path)
-        photo_summary = pl.read_parquet(plan.paths.photo_summary_path)
-        review_queue = build_review_queue(photo_summary)
+        photo_summary = _read_optional_parquet(plan.paths.photo_summary_path)
+        review_queue, review_queue_mode = _build_production_review_queue(joined=joined, photo_summary=photo_summary)
         metrics = evidence_count_metrics(joined, photo_summary)
-        metrics["review_queue_rows"] = review_queue.height
-        metrics["review_queue_bin_counts"] = _value_counts(review_queue, "review_bucket")
+        metrics.update(_review_queue_metrics(review_queue, review_queue_mode=review_queue_mode))
         plan.paths.reports_dir.mkdir(parents=True, exist_ok=True)
         plan.paths.metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
         vision_stage_metrics = build_vision_stage_metrics(
@@ -1940,6 +1952,55 @@ def _mode_row_count(frame: Any, mode: str) -> int:
     if frame.is_empty() or "ablation_mode" not in frame.columns:
         return 0
     return frame.filter(frame["ablation_mode"] == mode).height
+
+
+def _build_production_review_queue(*, joined: Any, photo_summary: Any) -> tuple[Any, str]:
+    if _has_hierarchical_classification_rows(joined):
+        return build_hierarchical_review_queue(object_evidence=joined, photo_summary=photo_summary), "hierarchical"
+    return build_review_queue(photo_summary), "target_scope"
+
+
+def _has_hierarchical_classification_rows(frame: Any) -> bool:
+    if frame.is_empty() or "classification_mode" not in frame.columns:
+        return False
+    return any(
+        str(value or "") == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+        for value in frame.get_column("classification_mode").drop_nulls().to_list()
+    )
+
+
+def _review_queue_metrics(frame: Any, *, review_queue_mode: str) -> dict[str, Any]:
+    return {
+        "review_queue_mode": review_queue_mode,
+        "review_queue_rows": frame.height,
+        "high_priority_review_rows": _high_priority_review_rows(frame),
+        "review_priority_counts": _value_counts(frame, "review_priority"),
+        "review_queue_bin_counts": _value_counts(frame, "review_bucket"),
+        "top_review_reasons": _review_reason_counts(frame),
+    }
+
+
+def _high_priority_review_rows(frame: Any) -> int:
+    if frame.is_empty() or "review_priority" not in frame.columns:
+        return 0
+    count = 0
+    for value in frame.get_column("review_priority").drop_nulls().to_list():
+        priority = _optional_int(value)
+        if priority is not None and priority >= 80:
+            count += 1
+    return count
+
+
+def _review_reason_counts(frame: Any) -> dict[str, int]:
+    if frame.is_empty() or "review_reason" not in frame.columns:
+        return {}
+    counts: dict[str, int] = {}
+    for value in frame.get_column("review_reason").drop_nulls().to_list():
+        for reason in str(value or "").split(";"):
+            reason = reason.strip()
+            if reason:
+                counts[reason] = counts.get(reason, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
 
 
 def _merge_stage_counts(manifest: RunManifest, *, stage: RunStage, result: StageExecutionResult) -> RunManifest:

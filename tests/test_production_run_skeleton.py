@@ -1217,8 +1217,12 @@ def test_orchestrator_joins_evidence_and_writes_summary_metrics(tmp_path) -> Non
         "object_occurrence_bin_counts": {"gold": 1},
         "photo_occurrence_bin_counts": {"gold": 1},
         "photo_summary_rows": 1,
+        "high_priority_review_rows": 0,
+        "review_priority_counts": {},
         "review_queue_bin_counts": {},
+        "review_queue_mode": "target_scope",
         "review_queue_rows": 0,
+        "top_review_reasons": {},
     }
 
 
@@ -1361,8 +1365,45 @@ def test_orchestrator_summarize_writes_review_queue_for_ambiguous_photos(tmp_pat
     assert result.manifest.status == "complete"
     assert result.manifest.evidence_counts["review_queue_rows"] == 2
     assert result.manifest.metrics["review_queue_bin_counts"] == {"bronze": 1, "in_review": 1}
+    assert result.manifest.metrics["review_queue_mode"] == "target_scope"
+    assert result.manifest.metrics["high_priority_review_rows"] == 0
     assert result.manifest.stages[0].outputs["review_queue"] == str(result.paths.review_queue_path)
     assert queue.select("flickr_photo_id").to_series().to_list() == ["review-1", "bronze-1"]
+
+
+def test_orchestrator_summarize_writes_hierarchical_review_queue_without_photo_summary(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Papilionoidea",
+        rank="family",
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        stages=(RunStage.SUMMARIZE,),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
+    plan.paths.ensure_directories()
+    pl.DataFrame([_hierarchical_object_evidence_row()]).write_parquet(plan.paths.object_evidence_path)
+
+    result = ProductionRunOrchestrator(request, taxon_scope=scope).run()
+    queue = pl.read_parquet(result.paths.review_queue_path)
+
+    assert result.manifest.status == "complete"
+    assert result.manifest.evidence_counts == {
+        "object_evidence_rows": 1,
+        "photo_summary_rows": 0,
+        "review_queue_rows": 1,
+    }
+    assert result.manifest.metrics["review_queue_mode"] == "hierarchical"
+    assert result.manifest.metrics["high_priority_review_rows"] == 1
+    assert result.manifest.metrics["review_priority_counts"] == {"90": 1}
+    assert result.manifest.metrics["top_review_reasons"] == {
+        "low_species_margin": 1,
+        "metadata_species_conflict": 1,
+    }
+    assert queue.select("review_priority").to_series().to_list() == [90]
+    assert queue.select("review_reason").to_series().to_list() == ["metadata_species_conflict;low_species_margin"]
 
 
 def test_orchestrator_summarizes_photo_evidence_from_cloud_join_shards(tmp_path) -> None:
@@ -1382,7 +1423,10 @@ def test_orchestrator_summarizes_photo_evidence_from_cloud_join_shards(tmp_path)
         object_detections=detections,
         object_scores=scores,
     )
-    joined_uri = plan.artifact_uris.staging_uri + "/evidence/stage=join_evidence/run_id=species_danaus_plexippus/worker=joiner/batch=001.parquet"
+    joined_uri = (
+        plan.artifact_uris.staging_uri
+        + "/evidence/stage=join_evidence/run_id=species_danaus_plexippus/worker=joiner/batch=001.parquet"
+    )
     storage.parquet_payloads[joined_uri] = joined
     workstore.register_shard(
         job_name="biominer_production_run",
@@ -1491,6 +1535,54 @@ def test_orchestrator_builds_review_queue_from_cloud_summary_shards(tmp_path) ->
         run_id=plan.manifest.run_id,
     )
     assert [shard["uri"] for shard in queue_shards] == [review_queue_uri]
+
+
+def test_orchestrator_builds_hierarchical_review_queue_from_cloud_join_shards(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    storage = _FakeRunStorage()
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+    request = ProductionRunRequest(
+        taxon="Papilionoidea",
+        rank="family",
+        output_root="s3://biominer/runs",
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        stages=(RunStage.SUMMARIZE,),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
+    joined_uri = (
+        plan.artifact_uris.staging_uri
+        + "/evidence/stage=join_evidence/run_id=species_danaus_plexippus/worker=joiner/batch=001.parquet"
+    )
+    storage.parquet_payloads[joined_uri] = pl.DataFrame([_hierarchical_object_evidence_row()])
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        stage=RunStage.JOIN_EVIDENCE.value,
+        run_id=plan.manifest.run_id,
+        worker_id="joiner",
+        uri=joined_uri,
+        checksum=None,
+        row_count=1,
+    )
+
+    result = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage, workstore=workstore).run()
+
+    assert result.manifest.status == "complete"
+    assert result.manifest.evidence_counts == {
+        "object_evidence_rows": 1,
+        "photo_summary_rows": 1,
+        "review_queue_rows": 1,
+    }
+    assert result.manifest.metrics["review_queue_mode"] == "hierarchical"
+    assert result.manifest.metrics["high_priority_review_rows"] == 1
+    assert result.manifest.metrics["top_review_reasons"] == {
+        "low_species_margin": 1,
+        "metadata_species_conflict": 1,
+    }
+    review_queue_uri = result.manifest.stages[0].outputs["review_queue"]
+    queue = storage.parquet_payloads[review_queue_uri]
+    assert queue.select("review_priority").to_series().to_list() == [90]
+    assert queue.select("flickr_photo_id").to_series().to_list() == ["hier-photo-1"]
 
 
 def test_orchestrator_local_comment_review_stages_process_and_apply_promotions(tmp_path) -> None:
@@ -2557,6 +2649,36 @@ def _join_stage_input_frames() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame
         ]
     )
     return canonical, detections, scores
+
+
+def _hierarchical_object_evidence_row() -> dict[str, object]:
+    return {
+        "source": "flickr",
+        "flickr_photo_id": "hier-photo-1",
+        "detection_id": "hier-det-1",
+        "crop_hash": "sha256:hier-crop-1",
+        "photo_page_url": "https://www.flickr.com/photos/u/hier-photo-1",
+        "image_url": "memory://hier-photo-1",
+        "classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        "selected_family": "Papilionidae",
+        "selected_family_key": "gbif:9417",
+        "family_top3": ["Papilionidae", "Nymphalidae", "Pieridae"],
+        "family_top3_scores": [0.91, 0.04, 0.03],
+        "species_top20": ["Papilio demoleus", "Papilio machaon"],
+        "species_top5": ["Papilio demoleus", "Papilio machaon"],
+        "species_top5_scores": [0.52, 0.51],
+        "species_top1": "Papilio demoleus",
+        "species_top1_scientific_name": "Papilio demoleus",
+        "species_top1_accepted_taxon_key": "gbif:100",
+        "accepted_taxon_key": "gbif:100",
+        "species_top1_score": 0.52,
+        "species_top1_margin": 0.01,
+        "flickr_text_species_candidate": "Papilio machaon",
+        "detector_label": "butterfly_like",
+        "detector_score": 0.95,
+        "occurrence_bin": "in_review",
+        "bin_reason": "hierarchical_open_classification_requires_review",
+    }
 
 
 def _tiny_rgb_image() -> DecodedImage:
