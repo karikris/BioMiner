@@ -225,7 +225,7 @@ def test_mac_m5pro_profile_matches_local_apple_silicon_defaults() -> None:
     assert settings.bioclip_model == "hf-hub:imageomics/bioclip-2.5-vith14"
     assert settings.bioclip_top_k == 10
     assert settings.parquet_compression == "zstd"
-    assert settings.parquet_part_rows == 10000
+    assert settings.parquet_part_rows == 500
     assert settings.retain_debug_crops is False
     assert config["profile_name"] == settings.profile_name
     assert config["device"] == settings.device

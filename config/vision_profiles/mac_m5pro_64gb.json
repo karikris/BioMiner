@@ -27,7 +27,7 @@
   "bioclip_model": "hf-hub:imageomics/bioclip-2.5-vith14",
   "bioclip_top_k": 10,
   "parquet_compression": "zstd",
-  "parquet_part_rows": 10000,
+  "parquet_part_rows": 500,
   "delete_images_after_commit": true,
   "text_embedding_batch_size": 256,
   "worker_shard_target_mb": 64,

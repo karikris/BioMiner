@@ -128,7 +128,7 @@ MAC_M5PRO_64GB_SETTINGS = VisionRuntimeSettings(
     bioclip_model="hf-hub:imageomics/bioclip-2.5-vith14",
     bioclip_top_k=10,
     parquet_compression="zstd",
-    parquet_part_rows=10000,
+    parquet_part_rows=500,
     delete_images_after_commit=True,
     retain_debug_crops=False,
 )
