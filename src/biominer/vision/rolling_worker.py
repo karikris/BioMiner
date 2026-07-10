@@ -7,8 +7,13 @@ from pathlib import Path
 from queue import Queue
 from threading import BoundedSemaphore, Event, Lock, Thread
 from typing import Any
+from urllib.parse import urlparse
 
+import httpx
 import polars as pl
+
+from biominer.bioclip.image_cache import cache_image_from_url
+from biominer.storage.parquet import write_parquet
 
 
 @dataclass(frozen=True)
@@ -110,6 +115,75 @@ class BatchPlanner:
                 part_id=f"part-{batch_index:06d}",
                 records=records.slice(offset, self.batch_rows),
             )
+
+
+class ImageStager:
+    def __init__(
+        self,
+        *,
+        output_dir: str | Path,
+        cache_root: str | Path = "data/cache/images",
+        http_client: httpx.Client | None = None,
+    ) -> None:
+        self.output_dir = Path(output_dir)
+        self.cache_root = Path(cache_root)
+        self.manifest_dir = self.output_dir / "image_batch_manifest"
+        self._owns_client = http_client is None
+        self._client = http_client or httpx.Client(timeout=30)
+
+    def __call__(self, planned: PlannedBatch) -> ImageBatch:
+        started_at = datetime.now(UTC).isoformat()
+        rows: list[dict[str, Any]] = []
+        staged_records: list[dict[str, Any]] = []
+        cached_paths: list[Path] = []
+        failed: list[dict[str, Any]] = []
+        for record in planned.records.to_dicts():
+            staged = dict(record)
+            image_url = str(record.get("image_url") or record.get("image_url_used") or "")
+            row = {
+                "source": str(record.get("source") or "flickr"),
+                "flickr_photo_id": str(record.get("flickr_photo_id") or record.get("id") or ""),
+                "image_url": image_url,
+                "image_cache_path": None,
+                "image_hash": None,
+                "image_cache_status": "skipped",
+                "failure_reason": None,
+                "batch_id": planned.batch_id,
+                "part_id": planned.part_id,
+            }
+            if _is_http_url(image_url):
+                try:
+                    cached = cache_image_from_url(image_url, cache_root=self.cache_root, http_client=self._client)
+                except Exception as exc:  # noqa: BLE001 - detection stage keeps retryable failure evidence.
+                    row["image_cache_status"] = "failed"
+                    row["failure_reason"] = str(exc)
+                    failed.append({**staged, "image_cache_failure_reason": str(exc)})
+                else:
+                    row["image_cache_path"] = str(cached.path)
+                    row["image_hash"] = cached.image_hash
+                    row["image_cache_status"] = "cached"
+                    staged["staged_image_path"] = str(cached.path)
+                    cached_paths.append(cached.path)
+            rows.append(row)
+            staged_records.append(staged)
+        self.manifest_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = write_parquet(pl.DataFrame(rows), self.manifest_dir / f"{planned.part_id}.parquet")
+        ended_at = datetime.now(UTC).isoformat()
+        return ImageBatch(
+            batch_index=planned.batch_index,
+            batch_id=planned.batch_id,
+            part_id=planned.part_id,
+            records=pl.DataFrame(staged_records),
+            image_batch_manifest=manifest_path,
+            cached_image_paths=tuple(cached_paths),
+            failed_image_records=tuple(failed),
+            started_at=started_at,
+            ended_at=ended_at,
+        )
+
+    def close(self) -> None:
+        if self._owns_client:
+            self._client.close()
 
 
 class RollingVisionWorker:
@@ -285,11 +359,16 @@ def _missing_stage(name: str) -> Any:
     return missing
 
 
+def _is_http_url(value: str) -> bool:
+    return urlparse(value).scheme in {"http", "https"}
+
+
 __all__ = [
     "BatchPlanner",
     "CommitResult",
     "DetectionBatch",
     "ImageBatch",
+    "ImageStager",
     "PlannedBatch",
     "RollingVisionWorker",
     "RollingVisionWorkerResult",

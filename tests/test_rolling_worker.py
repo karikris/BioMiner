@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 from threading import Event
-from typing import Any
 
+import httpx
 import polars as pl
 
 from biominer.vision.rolling_worker import (
@@ -10,6 +11,7 @@ from biominer.vision.rolling_worker import (
     CommitResult,
     DetectionBatch,
     ImageBatch,
+    ImageStager,
     PlannedBatch,
     RollingVisionWorker,
     RollingVisionWorkerSettings,
@@ -29,6 +31,42 @@ def test_batch_planner_slices_records_into_deterministic_parts() -> None:
         (2, "vision-batch-000002", "part-000002", 1),
     ]
     assert batches[1].records["flickr_photo_id"].to_list() == ["photo-2", "photo-3"]
+
+
+def test_image_stager_caches_http_images_and_writes_manifest(tmp_path) -> None:
+    requests_seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests_seen.append(str(request.url))
+        return httpx.Response(200, headers={"Content-Type": "image/jpeg"}, content=b"fake-jpeg-bytes")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    stager = ImageStager(output_dir=tmp_path / "out", cache_root=tmp_path / "cache", http_client=client)
+    planned = PlannedBatch(
+        batch_index=0,
+        batch_id="vision-batch-000000",
+        part_id="part-000000",
+        records=pl.DataFrame(
+            [
+                {
+                    "source": "flickr",
+                    "flickr_photo_id": "photo-1",
+                    "image_url": "https://live.staticflickr.com/photo-1.jpg",
+                }
+            ]
+        ),
+    )
+
+    batch = stager(planned)
+
+    manifest = pl.read_parquet(batch.image_batch_manifest)
+    assert requests_seen == ["https://live.staticflickr.com/photo-1.jpg"]
+    assert batch.records["staged_image_path"].item()
+    assert Path(batch.records["staged_image_path"].item()).exists()
+    assert batch.cached_image_paths == (Path(batch.records["staged_image_path"].item()),)
+    assert batch.failed_image_records == ()
+    assert manifest["image_cache_status"].to_list() == ["cached"]
+    assert manifest["image_cache_path"].to_list() == [str(batch.cached_image_paths[0])]
 
 
 def test_rolling_worker_starts_next_yolo_batch_before_bioclip_finishes_previous() -> None:
