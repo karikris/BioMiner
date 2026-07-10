@@ -227,7 +227,7 @@ def test_commit_worker_failure_preserves_retryable_inputs(tmp_path: Path) -> Non
             detection_batch=DetectionBatch(
                 image_batch=image_batch,
                 frame=object_detections(object_detection_row()),
-                output_path=None,
+                output_path=tmp_path / "detections.parquet",
             ),
             frame=pl.DataFrame([{"detection_id": "det-1"}]),
             output_path=tmp_path / "score-inputs.parquet",
@@ -236,11 +236,13 @@ def test_commit_worker_failure_preserves_retryable_inputs(tmp_path: Path) -> Non
         frame=empty_object_score_frame(),
         output_path=score_path,
     )
+    blocked_output_dir = tmp_path / "rolling-file"
+    blocked_output_dir.write_text("not a directory", encoding="utf-8")
 
     try:
-        CommitWorker(output_dir=tmp_path / "rolling")(score_batch)
-    except ValueError as exc:
-        assert "requires detection" in str(exc)
+        CommitWorker(output_dir=blocked_output_dir)(score_batch)
+    except OSError:
+        pass
     else:  # pragma: no cover - defensive assertion.
         raise AssertionError("expected commit failure")
 

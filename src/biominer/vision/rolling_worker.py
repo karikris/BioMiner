@@ -364,6 +364,9 @@ class CommitWorker:
     ) -> None:
         self.output_dir = Path(output_dir)
         self.canonical_dir = self.output_dir / "canonical_source_records"
+        self.detection_dir = self.output_dir / "object_detections"
+        self.score_input_dir = self.output_dir / "bioclip_score_inputs"
+        self.score_dir = self.output_dir / "object_bioclip_scores"
         self.joined_dir = self.output_dir / "object_evidence_joined"
         self.summary_dir = self.output_dir / "photo_evidence_summary"
         self.species_context = species_context
@@ -372,14 +375,18 @@ class CommitWorker:
     def __call__(self, batch: ScoreBatch) -> CommitResult:
         image_batch = batch.score_input_batch.detection_batch.image_batch
         self.canonical_dir.mkdir(parents=True, exist_ok=True)
+        self.detection_dir.mkdir(parents=True, exist_ok=True)
+        self.score_input_dir.mkdir(parents=True, exist_ok=True)
+        self.score_dir.mkdir(parents=True, exist_ok=True)
         self.joined_dir.mkdir(parents=True, exist_ok=True)
         self.summary_dir.mkdir(parents=True, exist_ok=True)
         canonical_path = write_parquet(image_batch.records, self.canonical_dir / f"{image_batch.part_id}.parquet")
-        detection_path = batch.score_input_batch.detection_batch.output_path
-        score_input_path = batch.score_input_batch.output_path
-        score_path = batch.output_path
-        if detection_path is None or score_input_path is None or score_path is None:
-            raise ValueError("rolling commit requires detection, score-input, and score output paths")
+        detection_path = write_parquet(
+            batch.score_input_batch.detection_batch.frame,
+            self.detection_dir / f"{image_batch.part_id}.parquet",
+        )
+        score_input_path = write_parquet(batch.score_input_batch.frame, self.score_input_dir / f"{image_batch.part_id}.parquet")
+        score_path = write_parquet(batch.frame, self.score_dir / f"{image_batch.part_id}.parquet")
         evidence_outputs = write_object_evidence_outputs(
             canonical_records_path=canonical_path,
             detections_path=detection_path,
