@@ -65,6 +65,7 @@ from biominer.workstore.base import WorkStore
 
 DEFAULT_BIOCLIP_MODEL = "imageomics/bioclip-2.5-vith14"
 DEFAULT_VISION_BACKEND = "yoloe26"
+DEFAULT_VISION_WORKER = "serial"
 PRODUCTION_JOB_NAME = "biominer_production_run"
 REQUIRED_REGISTRY_ARTIFACTS = (
     "taxa.parquet",
@@ -95,6 +96,7 @@ class ProductionRunRequest:
     storage_backend: str = "s3"
     workstore_backend: str = "postgres"
     vision_backend: str = DEFAULT_VISION_BACKEND
+    vision_worker: str = DEFAULT_VISION_WORKER
     bioclip_model: str = DEFAULT_BIOCLIP_MODEL
     vision_profile: str | None = None
     vision_settings: VisionRuntimeSettings = field(default_factory=VisionRuntimeSettings)
@@ -113,6 +115,8 @@ class ProductionRunRequest:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "classification_mode", normalize_classification_mode(self.classification_mode))
+        if self.vision_worker not in {"serial", "rolling"}:
+            raise ValueError("vision_worker must be one of: serial, rolling")
         for field_name in ("family_top_k", "species_first_pass_top_k", "species_rerank_top_k"):
             value = int(getattr(self, field_name))
             if value <= 0:
@@ -145,6 +149,7 @@ class ProductionRunPlan:
                 "storage_backend": self.request.storage_backend,
                 "workstore_backend": self.request.workstore_backend,
                 "vision_backend": self.request.vision_backend,
+                "vision_worker": self.request.vision_worker,
                 "bioclip_model": self.request.bioclip_model,
                 "vision_profile": self.request.vision_profile,
                 "vision_settings": asdict(self.request.vision_settings),
@@ -197,6 +202,7 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
         stages=default_stage_records(request.stages),
         model_configs={
             "vision_backend": request.vision_backend,
+            "vision_worker": request.vision_worker,
             "bioclip_model": request.bioclip_model,
             "vision_profile": request.vision_profile,
             "vision_settings": asdict(request.vision_settings),

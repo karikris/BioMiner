@@ -302,6 +302,8 @@ def test_production_run_hierarchical_score_stage_validates_table_then_requires_s
 
 
 def test_production_run_request_validates_visual_classification_top_k() -> None:
+    with pytest.raises(ValueError, match="vision_worker must be one of"):
+        ProductionRunRequest(taxon="Danaus plexippus", vision_worker="parallel")
     with pytest.raises(ValueError, match="family_top_k must be positive"):
         ProductionRunRequest(taxon="Danaus plexippus", family_top_k=0)
     with pytest.raises(ValueError, match="species_first_pass_top_k must be positive"):

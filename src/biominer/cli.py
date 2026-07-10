@@ -442,6 +442,7 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--storage-backend", default="s3", choices=("s3", "local"))
     production_run.add_argument("--workstore-backend", default="postgres", choices=("postgres", "sqlite"))
     production_run.add_argument("--vision-backend", default="yoloe26")
+    production_run.add_argument("--vision-worker", default="serial", choices=("serial", "rolling"))
     production_run.add_argument("--vision-profile", choices=("mac_m5pro_64gb",))
     production_run.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"))
     production_run.add_argument("--yolo-checkpoint")
@@ -1340,6 +1341,7 @@ def _run_production_command(args: argparse.Namespace) -> int:
             storage_backend=args.storage_backend,
             workstore_backend=args.workstore_backend,
             vision_backend=args.vision_backend,
+            vision_worker=args.vision_worker,
             bioclip_model=vision_settings.bioclip_model,
             vision_profile=args.vision_profile,
             vision_settings=vision_settings,

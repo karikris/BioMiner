@@ -3519,6 +3519,8 @@ def test_production_run_cli_resolves_registry_and_writes_dry_run_manifest(tmp_pa
             "local",
             "--workstore-backend",
             "sqlite",
+            "--vision-worker",
+            "rolling",
             "--dry-run",
         ]
     )
@@ -3530,9 +3532,11 @@ def test_production_run_cli_resolves_registry_and_writes_dry_run_manifest(tmp_pa
     assert payload["request"]["taxon"] == "Papilio demoleus"
     assert payload["request"]["storage_backend"] == "local"
     assert payload["request"]["workstore_backend"] == "sqlite"
+    assert payload["request"]["vision_worker"] == "rolling"
     assert payload["request"]["worker_id"] == "local"
     assert manifest["taxon_scope"]["accepted_taxon_key"] == "gbif:100"
     assert manifest["taxon_scope"]["accepted_rank"] == "species"
+    assert manifest["model_configs"]["vision_worker"] == "rolling"
     assert manifest["stages"][0]["stage"] == "resolve_taxon_scope"
     assert manifest["stages"][0]["status"] == "complete"
     assert manifest["stages"][1]["status"] == "skipped"
