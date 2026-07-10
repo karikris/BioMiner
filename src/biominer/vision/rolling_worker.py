@@ -3,9 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+import os
 from pathlib import Path
 from queue import Queue
 from threading import BoundedSemaphore, Event, Lock, Thread
+from time import perf_counter
 from typing import Any
 from urllib.parse import urlparse
 
@@ -453,6 +455,10 @@ class RollingVisionWorker:
         resident = _ResidentBatchCounter()
         image_slots = BoundedSemaphore(self.settings.image_prefetch_batches)
         committed: list[CommitResult] = []
+        metrics = _RollingMetrics()
+        image_ready_at: dict[str, float] = {}
+        detection_ready_at: dict[str, float] = {}
+        score_ready_at: dict[str, float] = {}
         sentinel = object()
 
         def remember_error(exc: BaseException) -> None:
@@ -468,7 +474,11 @@ class RollingVisionWorker:
                     image_slots.acquire()
                     resident.increment()
                     self.max_resident_image_batches = max(self.max_resident_image_batches, resident.value)
+                    stage_start = perf_counter()
                     staged = self._image_stage(planned)
+                    metrics.add_stage_seconds("image_staging", perf_counter() - stage_start)
+                    metrics.add_count("images_staged", staged.records.height)
+                    image_ready_at[staged.batch_id] = perf_counter()
                     staged_image_batches.put(staged)
             except BaseException as exc:  # noqa: BLE001 - propagate across worker boundary.
                 remember_error(exc)
@@ -481,7 +491,19 @@ class RollingVisionWorker:
                     item = staged_image_batches.get()
                     if item is sentinel:
                         break
-                    yolo_to_score_batches.put(self._detection_stage(item))  # type: ignore[arg-type]
+                    image_batch = item  # type: ignore[assignment]
+                    metrics.add_queue_wait(
+                        "staged_image_batches",
+                        perf_counter() - image_ready_at.pop(image_batch.batch_id, perf_counter()),
+                    )
+                    stage_start = perf_counter()
+                    detected = self._detection_stage(image_batch)  # type: ignore[arg-type]
+                    metrics.add_stage_seconds("yolo_detection", perf_counter() - stage_start)
+                    metrics.add_count("images_detected", detected.image_batch.records.height)
+                    metrics.add_count("detection_rows", detected.frame.height)
+                    metrics.add_count("detector_batch_retries", int(detected.metrics.get("detector_batch_retries", 0) or 0))
+                    detection_ready_at[detected.image_batch.batch_id] = perf_counter()
+                    yolo_to_score_batches.put(detected)
             except BaseException as exc:  # noqa: BLE001
                 remember_error(exc)
             finally:
@@ -493,10 +515,24 @@ class RollingVisionWorker:
                     item = yolo_to_score_batches.get()
                     if item is sentinel:
                         break
-                    score_inputs = self._score_input_stage(item)  # type: ignore[arg-type]
+                    detection_batch = item  # type: ignore[assignment]
+                    metrics.add_queue_wait(
+                        "yolo_to_score_batches",
+                        perf_counter() - detection_ready_at.pop(detection_batch.image_batch.batch_id, perf_counter()),
+                    )
+                    stage_start = perf_counter()
+                    score_inputs = self._score_input_stage(detection_batch)  # type: ignore[arg-type]
+                    metrics.add_stage_seconds("score_input_materialization", perf_counter() - stage_start)
+                    metrics.add_count("bioclip_score_inputs", score_inputs.frame.height)
                     resident.decrement()
                     image_slots.release()
-                    score_to_commit_batches.put(self._score_stage(score_inputs))
+                    stage_start = perf_counter()
+                    scored = self._score_stage(score_inputs)
+                    metrics.add_stage_seconds("bioclip_scoring", perf_counter() - stage_start)
+                    metrics.add_count("bioclip_inputs_scored", scored.frame.height)
+                    metrics.add_count("bioclip_batch_retries", int(scored.metrics.get("bioclip_batch_retries", 0) or 0))
+                    score_ready_at[scored.score_input_batch.detection_batch.image_batch.batch_id] = perf_counter()
+                    score_to_commit_batches.put(scored)
             except BaseException as exc:  # noqa: BLE001
                 remember_error(exc)
             finally:
@@ -508,7 +544,17 @@ class RollingVisionWorker:
                     item = score_to_commit_batches.get()
                     if item is sentinel:
                         break
-                    committed.append(self._commit_stage(item))  # type: ignore[arg-type]
+                    score_batch = item  # type: ignore[assignment]
+                    batch_id = score_batch.score_input_batch.detection_batch.image_batch.batch_id
+                    metrics.add_queue_wait(
+                        "score_to_commit_batches",
+                        perf_counter() - score_ready_at.pop(batch_id, perf_counter()),
+                    )
+                    stage_start = perf_counter()
+                    result = self._commit_stage(score_batch)  # type: ignore[arg-type]
+                    metrics.add_stage_seconds("commit", perf_counter() - stage_start)
+                    metrics.add_count("cleanup_paths_deleted", result.cleanup_paths_deleted)
+                    committed.append(result)
             except BaseException as exc:  # noqa: BLE001
                 remember_error(exc)
 
@@ -525,6 +571,7 @@ class RollingVisionWorker:
         if first_error:
             raise first_error[0]
         ended_at = datetime.now(UTC).isoformat()
+        metric_payload = metrics.to_dict(max_resident_image_batches=self.max_resident_image_batches)
         return RollingVisionWorkerResult(
             started_at=started_at,
             ended_at=ended_at,
@@ -536,8 +583,13 @@ class RollingVisionWorker:
                 "vision_batch_rows": self.settings.vision_batch_rows,
                 "image_prefetch_batches": self.settings.image_prefetch_batches,
                 "max_resident_image_batches": self.max_resident_image_batches,
+                "cache_resident_batch_count": self.max_resident_image_batches,
                 "yolo_to_score_queue_maxsize": yolo_to_score_batches.maxsize,
                 "score_to_commit_queue_maxsize": score_to_commit_batches.maxsize,
+                "accelerator_concurrency": self.settings.accelerator_concurrency,
+                "bioclip_preprocess_workers": self.settings.bioclip_preprocess_workers,
+                "mps_fallback_enabled": os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK") == "1",
+                **metric_payload,
             },
         )
 
@@ -559,6 +611,65 @@ class _ResidentBatchCounter:
     def decrement(self) -> None:
         with self._lock:
             self._value = max(0, self._value - 1)
+
+
+class _RollingMetrics:
+    def __init__(self) -> None:
+        self.stage_seconds: dict[str, float] = {}
+        self.queue_wait_seconds: dict[str, float] = {}
+        self.counts: dict[str, int] = {}
+        self._lock = Lock()
+
+    def add_stage_seconds(self, stage: str, seconds: float) -> None:
+        with self._lock:
+            self.stage_seconds[stage] = self.stage_seconds.get(stage, 0.0) + max(0.0, seconds)
+
+    def add_queue_wait(self, queue_name: str, seconds: float) -> None:
+        with self._lock:
+            self.queue_wait_seconds[queue_name] = self.queue_wait_seconds.get(queue_name, 0.0) + max(0.0, seconds)
+
+    def add_count(self, name: str, value: int) -> None:
+        with self._lock:
+            self.counts[name] = self.counts.get(name, 0) + int(value)
+
+    def to_dict(self, *, max_resident_image_batches: int) -> dict[str, Any]:
+        with self._lock:
+            stage_seconds = {key: round(value, 6) for key, value in sorted(self.stage_seconds.items())}
+            queue_wait_seconds = {key: round(value, 6) for key, value in sorted(self.queue_wait_seconds.items())}
+            counts = dict(self.counts)
+        images_staged = counts.get("images_staged", 0)
+        images_detected = counts.get("images_detected", 0)
+        detection_rows = counts.get("detection_rows", 0)
+        score_inputs = counts.get("bioclip_score_inputs", 0)
+        scored_inputs = counts.get("bioclip_inputs_scored", 0)
+        detector_retries = counts.get("detector_batch_retries", 0)
+        bioclip_retries = counts.get("bioclip_batch_retries", 0)
+        return {
+            "elapsed_seconds_by_stage": stage_seconds,
+            "queue_wait_seconds_by_stage": queue_wait_seconds,
+            "images_staged": images_staged,
+            "images_detected": images_detected,
+            "detection_rows": detection_rows,
+            "bioclip_score_inputs": score_inputs,
+            "bioclip_inputs_scored": scored_inputs,
+            "staged_images_per_sec": _rate(images_staged, self.stage_seconds.get("image_staging", 0.0)),
+            "yolo_images_per_sec": _rate(images_detected, self.stage_seconds.get("yolo_detection", 0.0)),
+            "detection_rows_per_image": _rate(detection_rows, images_detected),
+            "bioclip_score_inputs_per_image": _rate(score_inputs, images_staged),
+            "bioclip_inputs_per_sec": _rate(scored_inputs, self.stage_seconds.get("bioclip_scoring", 0.0)),
+            "cache_resident_batch_count": max_resident_image_batches,
+            "cleanup_paths_deleted": counts.get("cleanup_paths_deleted", 0),
+            "detector_batch_retries": detector_retries,
+            "bioclip_batch_retries": bioclip_retries,
+            "adaptive_retry_count": detector_retries + bioclip_retries,
+        }
+
+
+def _rate(numerator: int | float, denominator: int | float) -> float:
+    denominator_value = float(denominator)
+    if denominator_value <= 0.0:
+        return 0.0
+    return round(float(numerator) / denominator_value, 6)
 
 
 def _validate_settings(settings: RollingVisionWorkerSettings) -> None:

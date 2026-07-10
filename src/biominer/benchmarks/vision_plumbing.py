@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import product
 import json
 from pathlib import Path
 from time import perf_counter
@@ -31,9 +32,20 @@ from biominer.registry.classification_table import (
 )
 from biominer.species.context import SpeciesContext
 from biominer.storage.parquet import write_parquet
+from biominer.vision.rolling_worker import (
+    CommitResult,
+    DetectionBatch,
+    ImageBatch,
+    PlannedBatch,
+    RollingVisionWorker,
+    RollingVisionWorkerSettings,
+    ScoreBatch,
+    ScoreInputBatch,
+)
 
 
 BENCHMARK_KIND = "vision_plumbing_model_free"
+ROLLING_MATRIX_BENCHMARK_KIND = "rolling_vision_worker_model_free_matrix"
 BENCHMARK_TAXONOMY_REGISTRY_VERSION = "benchmark-taxonomy-v1"
 BENCHMARK_PRIMARY_SPECIES = "Benchmarkus alpha"
 BENCHMARK_SECONDARY_SPECIES = "Benchmarkus beta"
@@ -46,6 +58,14 @@ FAKE_IMAGE_BYTES = bytes([240, 236, 220]) * FAKE_IMAGE_WIDTH * FAKE_IMAGE_HEIGHT
 
 @dataclass(frozen=True)
 class VisionPlumbingBenchmarkResult:
+    metrics: dict[str, Any]
+    output_dir: Path
+    metrics_path: Path
+    summary_path: Path
+
+
+@dataclass(frozen=True)
+class RollingWorkerBenchmarkMatrixResult:
     metrics: dict[str, Any]
     output_dir: Path
     metrics_path: Path
@@ -252,6 +272,107 @@ def run_vision_plumbing_benchmark(
         )
     finally:
         tracemalloc.stop()
+
+
+def run_rolling_worker_benchmark_matrix(
+    *,
+    records: int,
+    output_dir: str | Path,
+) -> RollingWorkerBenchmarkMatrixResult:
+    record_count = _positive_int(records, name="records", allow_zero=True)
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    variants = rolling_worker_benchmark_variants()
+    rows: list[dict[str, Any]] = []
+    total_start = perf_counter()
+    source_records = pl.DataFrame(
+        {
+            "source": ["flickr"] * record_count,
+            "flickr_photo_id": [f"rolling-bench-{index:06d}" for index in range(record_count)],
+        }
+    )
+    for index, variant in enumerate(variants):
+        worker = RollingVisionWorker(
+            settings=RollingVisionWorkerSettings(
+                vision_batch_rows=int(variant["vision_batch_rows"]),
+                image_prefetch_batches=2,
+                accelerator_concurrency=int(variant["accelerator_concurrency"]),
+                bioclip_preprocess_workers=int(variant["bioclip_preprocess_workers"]),
+                bioclip_gate_mode=str(variant["bioclip_gate_mode"]),
+            ),
+            image_stage=_benchmark_image_stage,
+            detection_stage=_benchmark_detection_stage,
+            score_input_stage=_benchmark_score_input_stage,
+            score_stage=_benchmark_score_stage,
+            commit_stage=_benchmark_commit_stage,
+        )
+        started = perf_counter()
+        result = worker.run(source_records)
+        elapsed = _elapsed(started)
+        rows.append(
+            {
+                "variant_index": index,
+                **variant,
+                "records": record_count,
+                "elapsed_seconds": elapsed,
+                "batches_seen": result.batches_seen,
+                "batches_committed": result.batches_committed,
+                "staged_images_per_sec": result.metrics.get("staged_images_per_sec"),
+                "yolo_images_per_sec": result.metrics.get("yolo_images_per_sec"),
+                "bioclip_inputs_per_sec": result.metrics.get("bioclip_inputs_per_sec"),
+                "detection_rows_per_image": result.metrics.get("detection_rows_per_image"),
+                "bioclip_score_inputs_per_image": result.metrics.get("bioclip_score_inputs_per_image"),
+                "max_resident_image_batches": result.metrics.get("max_resident_image_batches"),
+                "queue_wait_seconds_by_stage": result.metrics.get("queue_wait_seconds_by_stage"),
+                "cleanup_paths_deleted": result.metrics.get("cleanup_paths_deleted"),
+                "adaptive_retry_count": result.metrics.get("adaptive_retry_count"),
+            }
+        )
+    metrics_path = output / "rolling_benchmark_matrix_metrics.json"
+    summary_path = output / "rolling_benchmark_matrix_summary.md"
+    metrics = {
+        "benchmark_kind": ROLLING_MATRIX_BENCHMARK_KIND,
+        "status": "ok",
+        "records": record_count,
+        "variant_count": len(rows),
+        "dimensions": {
+            "yolo_sidecar_transport": ["json_b64", "image_path"],
+            "accelerator_concurrency": [1, 2],
+            "bioclip_preprocess_workers": [1, 2, 4],
+            "bioclip_gate_mode": ["butterfly_like_only", "exclude_hard_negative"],
+            "vision_batch_rows": [250, 500, 1000],
+        },
+        "variants": rows,
+        "elapsed_seconds": _elapsed(total_start),
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
+    summary_path.write_text(_rolling_matrix_summary_markdown(metrics), encoding="utf-8")
+    return RollingWorkerBenchmarkMatrixResult(
+        metrics=metrics,
+        output_dir=output,
+        metrics_path=metrics_path,
+        summary_path=summary_path,
+    )
+
+
+def rolling_worker_benchmark_variants() -> list[dict[str, Any]]:
+    return [
+        {
+            "yolo_sidecar_transport": transport,
+            "accelerator_concurrency": accelerator_concurrency,
+            "bioclip_preprocess_workers": preprocess_workers,
+            "bioclip_gate_mode": gate_mode,
+            "vision_batch_rows": batch_rows,
+        }
+        for transport, accelerator_concurrency, preprocess_workers, gate_mode, batch_rows in product(
+            ("json_b64", "image_path"),
+            (1, 2),
+            (1, 2, 4),
+            ("butterfly_like_only", "exclude_hard_negative"),
+            (250, 500, 1000),
+        )
+    ]
 
 
 def write_benchmark_taxonomy_store(root: str | Path) -> dict[str, Path]:
@@ -470,6 +591,84 @@ def _benchmark_summary_markdown(metrics: Mapping[str, Any]) -> str:
     lines.extend(["", "## Rows", ""])
     lines.extend(f"- {key}: {value}" for key, value in sorted(rows.items()))
     return "\n".join(lines) + "\n"
+
+
+def _rolling_matrix_summary_markdown(metrics: Mapping[str, Any]) -> str:
+    lines = [
+        "# Rolling Vision Worker Benchmark Matrix",
+        "",
+        f"- benchmark_kind: `{metrics.get('benchmark_kind')}`",
+        f"- status: `{metrics.get('status')}`",
+        f"- records: {metrics.get('records')}",
+        f"- variants: {metrics.get('variant_count')}",
+        f"- elapsed_seconds: {metrics.get('elapsed_seconds')}",
+        "",
+        "## Dimensions",
+        "",
+    ]
+    dimensions = dict(metrics.get("dimensions") or {})
+    lines.extend(f"- {name}: {values}" for name, values in sorted(dimensions.items()))
+    lines.extend(["", "## Variants", ""])
+    for row in list(metrics.get("variants") or [])[:10]:
+        lines.append(
+            "- "
+            + ", ".join(
+                [
+                    f"idx={row.get('variant_index')}",
+                    f"transport={row.get('yolo_sidecar_transport')}",
+                    f"accel={row.get('accelerator_concurrency')}",
+                    f"preprocess={row.get('bioclip_preprocess_workers')}",
+                    f"gate={row.get('bioclip_gate_mode')}",
+                    f"batch={row.get('vision_batch_rows')}",
+                    f"elapsed={row.get('elapsed_seconds')}",
+                ]
+            )
+        )
+    if int(metrics.get("variant_count") or 0) > 10:
+        lines.append(f"- ... {int(metrics.get('variant_count') or 0) - 10} more variants in JSON")
+    return "\n".join(lines) + "\n"
+
+
+def _benchmark_image_stage(planned: PlannedBatch) -> ImageBatch:
+    return ImageBatch(
+        batch_index=planned.batch_index,
+        batch_id=planned.batch_id,
+        part_id=planned.part_id,
+        records=planned.records,
+    )
+
+
+def _benchmark_detection_stage(batch: ImageBatch) -> DetectionBatch:
+    return DetectionBatch(
+        image_batch=batch,
+        frame=pl.DataFrame(
+            {
+                "detection_id": [f"{batch.batch_id}-det-{index:06d}" for index in range(batch.records.height)],
+            }
+        ),
+    )
+
+
+def _benchmark_score_input_stage(batch: DetectionBatch) -> ScoreInputBatch:
+    return ScoreInputBatch(
+        detection_batch=batch,
+        frame=pl.DataFrame({"detection_id": batch.frame.get_column("detection_id").to_list()}),
+    )
+
+
+def _benchmark_score_stage(batch: ScoreInputBatch) -> ScoreBatch:
+    return ScoreBatch(
+        score_input_batch=batch,
+        frame=pl.DataFrame({"detection_id": batch.frame.get_column("detection_id").to_list()}),
+    )
+
+
+def _benchmark_commit_stage(batch: ScoreBatch) -> CommitResult:
+    return CommitResult(
+        batch_id=batch.score_input_batch.detection_batch.image_batch.batch_id,
+        part_outputs={},
+        cleanup_paths_deleted=0,
+    )
 
 
 def _fake_label_scores(labels: Sequence[str]) -> dict[str, float]:

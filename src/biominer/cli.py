@@ -48,7 +48,7 @@ from biominer.benchmarks.vision_live import (
     run_live_m5pro_benchmark,
     validate_live_m5pro_benchmark_request,
 )
-from biominer.benchmarks.vision_plumbing import run_vision_plumbing_benchmark
+from biominer.benchmarks.vision_plumbing import run_rolling_worker_benchmark_matrix, run_vision_plumbing_benchmark
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.detection.evaluate import evaluate_xie_style
 from biominer.detection.image_io import load_decoded_image_from_record
@@ -577,6 +577,9 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     benchmark.add_argument("--species-first-pass-top-k", type=int, default=DEFAULT_SPECIES_FIRST_PASS_TOP_K)
     benchmark.add_argument("--species-rerank-top-k", type=int, default=DEFAULT_SPECIES_RERANK_TOP_K)
     benchmark.add_argument("--output-dir", required=True)
+    rolling_benchmark = subparsers.add_parser("benchmark-rolling-matrix")
+    rolling_benchmark.add_argument("--records", type=int, default=1000)
+    rolling_benchmark.add_argument("--output-dir", required=True)
     live_benchmark = subparsers.add_parser("benchmark-live-m5pro")
     live_benchmark.add_argument("--input", required=True)
     live_benchmark.add_argument("--taxonomy-candidate-table", required=True)
@@ -643,6 +646,8 @@ def run(args: argparse.Namespace) -> int:
             return _run_yoloe26_smoke(args)
         if args.vision_command == "benchmark-plumbing":
             return _run_vision_benchmark_plumbing(args)
+        if args.vision_command == "benchmark-rolling-matrix":
+            return _run_vision_benchmark_rolling_matrix(args)
         if args.vision_command == "benchmark-live-m5pro":
             return _run_vision_benchmark_live_m5pro(args)
         if args.vision_command == "crop-preview":
@@ -1592,6 +1597,32 @@ def _run_vision_benchmark_plumbing(args: argparse.Namespace) -> int:
                 "output_dir": str(result.output_dir),
                 "records": result.metrics["records"],
                 "crops_scored": result.metrics["crops_scored"],
+                "elapsed_seconds": result.metrics["elapsed_seconds"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _run_vision_benchmark_rolling_matrix(args: argparse.Namespace) -> int:
+    try:
+        result = run_rolling_worker_benchmark_matrix(
+            records=args.records,
+            output_dir=args.output_dir,
+        )
+    except Exception as exc:  # noqa: BLE001 - dev command reports compact failures.
+        print(f"benchmark-rolling-matrix failed: {exc}", file=sys.stderr)
+        return 2
+    print(
+        json.dumps(
+            {
+                "benchmark_metrics": str(result.metrics_path),
+                "benchmark_summary": str(result.summary_path),
+                "output_dir": str(result.output_dir),
+                "records": result.metrics["records"],
+                "variant_count": result.metrics["variant_count"],
                 "elapsed_seconds": result.metrics["elapsed_seconds"],
             },
             indent=2,

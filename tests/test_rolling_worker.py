@@ -168,6 +168,84 @@ def test_rolling_worker_image_slots_never_exceed_prefetch_limit() -> None:
     assert result.metrics["max_resident_image_batches"] <= 2
 
 
+def test_rolling_worker_emits_throughput_queue_cleanup_and_retry_metrics() -> None:
+    records = pl.DataFrame({"source": ["flickr"] * 2, "flickr_photo_id": ["photo-1", "photo-2"]})
+
+    def image_stage(planned: PlannedBatch) -> ImageBatch:
+        return ImageBatch(
+            batch_index=planned.batch_index,
+            batch_id=planned.batch_id,
+            part_id=planned.part_id,
+            records=planned.records,
+        )
+
+    def detection_stage(batch: ImageBatch) -> DetectionBatch:
+        return DetectionBatch(
+            image_batch=batch,
+            frame=pl.DataFrame({"detection_id": ["det-1", "det-2"]}),
+            metrics={"detector_batch_retries": 2},
+        )
+
+    def score_input_stage(batch: DetectionBatch) -> ScoreInputBatch:
+        return ScoreInputBatch(
+            detection_batch=batch,
+            frame=pl.DataFrame({"detection_id": ["det-1", "det-2"]}),
+        )
+
+    def score_stage(batch: ScoreInputBatch) -> ScoreBatch:
+        return ScoreBatch(
+            score_input_batch=batch,
+            frame=pl.DataFrame({"detection_id": ["det-1", "det-2"]}),
+            metrics={"bioclip_batch_retries": 3},
+        )
+
+    def commit_stage(batch: ScoreBatch) -> CommitResult:
+        return CommitResult(
+            batch_id=batch.score_input_batch.detection_batch.image_batch.batch_id,
+            part_outputs={},
+            cleanup_paths_deleted=4,
+        )
+
+    worker = RollingVisionWorker(
+        settings=RollingVisionWorkerSettings(
+            vision_batch_rows=2,
+            image_prefetch_batches=1,
+            accelerator_concurrency=2,
+            bioclip_preprocess_workers=4,
+        ),
+        image_stage=image_stage,
+        detection_stage=detection_stage,
+        score_input_stage=score_input_stage,
+        score_stage=score_stage,
+        commit_stage=commit_stage,
+    )
+
+    result = worker.run(records)
+
+    assert result.metrics["images_staged"] == 2
+    assert result.metrics["images_detected"] == 2
+    assert result.metrics["detection_rows"] == 2
+    assert result.metrics["bioclip_score_inputs"] == 2
+    assert result.metrics["bioclip_inputs_scored"] == 2
+    assert result.metrics["detection_rows_per_image"] == 1.0
+    assert result.metrics["bioclip_score_inputs_per_image"] == 1.0
+    assert result.metrics["cleanup_paths_deleted"] == 4
+    assert result.metrics["detector_batch_retries"] == 2
+    assert result.metrics["bioclip_batch_retries"] == 3
+    assert result.metrics["adaptive_retry_count"] == 5
+    assert result.metrics["accelerator_concurrency"] == 2
+    assert result.metrics["bioclip_preprocess_workers"] == 4
+    assert result.metrics["cache_resident_batch_count"] <= 1
+    assert set(result.metrics["queue_wait_seconds_by_stage"]) == {
+        "score_to_commit_batches",
+        "staged_image_batches",
+        "yolo_to_score_batches",
+    }
+    assert result.metrics["staged_images_per_sec"] > 0.0
+    assert result.metrics["yolo_images_per_sec"] > 0.0
+    assert result.metrics["bioclip_inputs_per_sec"] > 0.0
+
+
 def test_commit_worker_deletes_cached_images_and_score_inputs_only_after_outputs_commit(tmp_path: Path) -> None:
     cached_image = tmp_path / "cached" / "photo.jpg"
     cached_image.parent.mkdir(parents=True)
