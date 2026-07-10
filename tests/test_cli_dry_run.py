@@ -55,7 +55,7 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert "evidence" in commands
     assert "storage" in commands
     assert "workstore" in commands
-    assert "bioclip" not in commands
+    assert "bioclip" in commands
     assert "detect" not in commands
     assert "species" not in commands
     assert "dev" in commands
@@ -83,6 +83,45 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert poll_once.max_api_calls == 3500
     assert poll_once.run_id == "run-1"
     assert poll_once.worker_id == "worker-001"
+
+
+def test_legacy_bioclip_screen_alias_parses_current_score_options() -> None:
+    args = build_parser().parse_args(
+        [
+            "bioclip",
+            "screen",
+            "--input",
+            "canonical.parquet",
+            "--detections",
+            "detections.parquet",
+            "--species-context",
+            "species_context.json",
+            "--output",
+            "scores.parquet",
+            "--classification-mode",
+            "hierarchical_butterfly_classification",
+            "--taxonomy-candidate-table",
+            "butterfly_classification_taxa.parquet",
+            "--family-top-k",
+            "3",
+            "--species-first-pass-top-k",
+            "20",
+            "--species-rerank-top-k",
+            "5",
+        ]
+    )
+
+    assert args.command == "bioclip"
+    assert args.bioclip_command == "screen"
+    assert args.input == "canonical.parquet"
+    assert args.detections == "detections.parquet"
+    assert args.species_context == "species_context.json"
+    assert args.output == "scores.parquet"
+    assert args.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    assert args.taxonomy_candidate_table == "butterfly_classification_taxa.parquet"
+    assert args.family_top_k == 3
+    assert args.species_first_pass_top_k == 20
+    assert args.species_rerank_top_k == 5
 
 
 def test_registry_public_cli_exposes_only_build_and_audit() -> None:

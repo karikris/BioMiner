@@ -34,9 +34,52 @@ def test_loaded_model_encodes_image_batch_once_for_label_sets(monkeypatch) -> No
     assert len(scores["triage"]) == 2
 
 
+def test_loaded_model_chunks_large_text_feature_sets(monkeypatch) -> None:  # noqa: ANN001 - pytest fixture.
+    monkeypatch.setenv("BIOMINER_BIOCLIP_TEXT_FEATURE_BATCH_SIZE", "2")
+    fake_torch = FakeTorch()
+    fake_model = FakeModel()
+    loaded = bioclip_worker._LoadedBioClipModel(  # noqa: SLF001 - worker text-batching contract.
+        model=fake_model,
+        preprocess=lambda image: FakeTensor(f"preprocessed:{image.path}"),
+        tokenizer=FakeTokenizer(),
+        torch=fake_torch,
+        device="mps",
+        gpu_name="Apple MPS",
+    )
+    labels = ["label-1", "label-2", "label-3", "label-4", "label-5"]
+
+    features = loaded._text_features(labels)  # noqa: SLF001 - focused worker contract test.
+    cached = loaded._text_features(labels)  # noqa: SLF001 - focused worker contract test.
+
+    assert features is cached
+    assert features.label_count == 5
+    assert fake_model.encoded_text_batch_lengths == [2, 2, 1]
+    assert fake_torch.cat_lengths == [3]
+
+
+def test_loaded_model_does_not_cache_one_off_text_embedding_batches(monkeypatch) -> None:  # noqa: ANN001 - pytest fixture.
+    monkeypatch.setenv("BIOMINER_BIOCLIP_TEXT_FEATURE_BATCH_SIZE", "2")
+    fake_model = FakeModel()
+    loaded = bioclip_worker._LoadedBioClipModel(  # noqa: SLF001 - worker text-batching contract.
+        model=fake_model,
+        preprocess=lambda image: FakeTensor(f"preprocessed:{image.path}"),
+        tokenizer=FakeTokenizer(),
+        torch=FakeTorch(),
+        device="mps",
+        gpu_name="Apple MPS",
+    )
+
+    embeddings = loaded.text_embeddings(["label-1", "label-2", "label-3"])
+
+    assert embeddings == [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]
+    assert loaded._text_features_by_labels == {}  # noqa: SLF001 - focused worker cache contract.
+    assert fake_model.encoded_text_batch_lengths == [2, 1]
+
+
 class FakeTorch:
     def __init__(self) -> None:
         self.stacked_lengths: list[int] = []
+        self.cat_lengths: list[int] = []
 
     def no_grad(self):  # noqa: ANN201 - mirrors torch context manager.
         return self
@@ -51,17 +94,25 @@ class FakeTorch:
         self.stacked_lengths.append(len(tensors))
         return FakeBatch(tensors)
 
+    def cat(self, tensors, dim=0):  # noqa: ANN001, ANN201 - mirrors torch.cat.
+        assert dim == 0
+        parts = list(tensors)
+        self.cat_lengths.append(len(parts))
+        return FakeTextFeatures(sum(part.label_count for part in parts))
+
 
 class FakeModel:
     def __init__(self) -> None:
         self.encoded_image_batch_lengths: list[int] = []
+        self.encoded_text_batch_lengths: list[int] = []
 
     def encode_image(self, batch):  # noqa: ANN001, ANN201 - test fake.
         self.encoded_image_batch_lengths.append(len(batch.items))
         return FakeFeatureBatch(len(batch.items))
 
     def encode_text(self, text):  # noqa: ANN001, ANN201 - test fake.
-        return FakeTextFeatures()
+        self.encoded_text_batch_lengths.append(len(text.labels))
+        return FakeTextFeatures(len(text.labels))
 
 
 class FakeTokenizer:
@@ -122,15 +173,32 @@ class FakeFeatureBatch:
 
 
 class FakeTextFeatures:
+    def __init__(self, label_count: int = 1) -> None:
+        self.label_count = label_count
+
     @property
     def T(self):  # noqa: N802 - mirrors torch tensor API.
         return self
+
+    def __iter__(self):  # noqa: ANN204 - mirrors tensor row iteration.
+        return iter(FakeEmbeddingRow() for _index in range(self.label_count))
 
     def norm(self, dim, keepdim):  # noqa: ANN001, ANN201 - mirrors torch tensor.
         return self
 
     def __truediv__(self, other):  # noqa: ANN001, ANN204 - mirrors torch tensor.
         return self
+
+
+class FakeEmbeddingRow:
+    def detach(self):  # noqa: ANN201 - mirrors torch tensor.
+        return self
+
+    def cpu(self):  # noqa: ANN201 - mirrors torch tensor.
+        return self
+
+    def tolist(self) -> list[float]:
+        return [1.0, 0.0]
 
 
 class FakeLogits:

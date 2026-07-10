@@ -9,6 +9,8 @@ from typing import Sequence
 
 DEFAULT_DEVICE = "auto"
 VALID_DEVICES = {"auto", "cuda", "mps", "cpu"}
+DEFAULT_TEXT_FEATURE_BATCH_SIZE = 512
+TEXT_FEATURE_BATCH_SIZE_ENV = "BIOMINER_BIOCLIP_TEXT_FEATURE_BATCH_SIZE"
 
 
 def main() -> None:
@@ -288,7 +290,7 @@ class _LoadedBioClipModel:
         return scores_by_label_set
 
     def text_embeddings(self, labels: Sequence[str]) -> list[list[float]]:
-        text_features = self._text_features(labels)
+        text_features = self._text_features(labels, cache=False)
         return [
             [float(value) for value in row.detach().cpu().tolist()]
             for row in text_features
@@ -316,17 +318,45 @@ class _LoadedBioClipModel:
         ]
         return self.torch.stack(images).to(self.device)
 
-    def _text_features(self, labels: Sequence[str]):
+    def _text_features(self, labels: Sequence[str], *, cache: bool = True):
         label_key = tuple(labels)
-        cached = self._text_features_by_labels.get(label_key)
-        if cached is not None:
-            return cached
+        if cache:
+            cached = self._text_features_by_labels.get(label_key)
+            if cached is not None:
+                return cached
+        label_list = list(labels)
+        batch_size = text_feature_batch_size()
+        if len(label_list) <= batch_size:
+            text_features = self._encode_text_features(label_list)
+        else:
+            batches = [
+                self._encode_text_features(label_list[start : start + batch_size])
+                for start in range(0, len(label_list), batch_size)
+            ]
+            text_features = self.torch.cat(batches, dim=0)
+        if cache:
+            self._text_features_by_labels[label_key] = text_features
+        return text_features
+
+    def _encode_text_features(self, labels: Sequence[str]):
         text = self.tokenizer(list(labels)).to(self.device)
         with self.torch.no_grad():
             text_features = self.model.encode_text(text)
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-        self._text_features_by_labels[label_key] = text_features
         return text_features
+
+
+def text_feature_batch_size() -> int:
+    raw_value = os.environ.get(TEXT_FEATURE_BATCH_SIZE_ENV)
+    if raw_value is None:
+        return DEFAULT_TEXT_FEATURE_BATCH_SIZE
+    try:
+        parsed = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{TEXT_FEATURE_BATCH_SIZE_ENV} must be a positive integer") from exc
+    if parsed <= 0:
+        raise ValueError(f"{TEXT_FEATURE_BATCH_SIZE_ENV} must be a positive integer")
+    return parsed
 
 
 def open_clip_model_args(model_name: str, checkpoint: str) -> dict[str, str | None]:

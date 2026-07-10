@@ -163,6 +163,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config")
     parser.add_argument("--version", action="store_true")
     subparsers = parser.add_subparsers(dest="command")
+    bioclip = subparsers.add_parser("bioclip")
+    bioclip_subparsers = bioclip.add_subparsers(dest="bioclip_command")
+    bioclip_screen = bioclip_subparsers.add_parser("screen")
+    _add_bioclip_screen_args(bioclip_screen)
     vision = subparsers.add_parser("vision")
     vision_subparsers = vision.add_subparsers(dest="vision_command")
     vision_detect = vision_subparsers.add_parser("detect")
@@ -469,6 +473,37 @@ def _add_direct_vision_classification_args(parser: argparse.ArgumentParser) -> N
     parser.add_argument("--taxonomy-text-embedding-cache")
 
 
+def _add_bioclip_screen_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--detections", required=True)
+    parser.add_argument("--species-context", required=True)
+    parser.add_argument("--species-candidates")
+    parser.add_argument("--geo-prior-table")
+    parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--ablation-mode",
+        choices=("whole_image", "detector_crop", "detector_crop_segmentation"),
+        default="detector_crop",
+    )
+    parser.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    parser.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
+    parser.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    parser.add_argument("--cache-root", default="data/cache/images")
+    parser.add_argument("--crop-temp-dir", default="data/cache/object_crops")
+    parser.add_argument("--crop-target-px", type=int, default=336)
+    parser.add_argument("--crop-padding-ratio", type=float, default=0.12)
+    parser.add_argument("--bioclip-batch", type=int, default=24)
+    parser.add_argument("--adaptive-batching", action="store_true")
+    parser.add_argument("--min-bioclip-batch", type=int, default=1)
+    parser.add_argument("--parquet-batch-rows", type=int, default=10000)
+    parser.add_argument("--retain-debug-crops", action="store_true")
+    parser.add_argument("--text-embedding-batch-size", type=int, default=256)
+    parser.add_argument("--candidate-text-embedding-cache")
+    parser.add_argument("--object-image-embedding-cache")
+    _add_direct_vision_classification_args(parser)
+    parser.add_argument("--segmenter", default="none", choices=("none", "sam", "sam2"))
+
+
 def _add_object_evidence_join_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", required=True)
     parser.add_argument("--detections", required=True)
@@ -613,6 +648,10 @@ def run(args: argparse.Namespace) -> int:
     if args.version:
         print("biominer 0.1.0")
         return 0
+    if args.command == "bioclip":
+        if args.bioclip_command == "screen":
+            return _run_bioclip_screen_objects(args)
+        return 2
     if args.command == "vision" or (args.command == "dev" and args.dev_command == "vision"):
         if args.vision_command == "detect":
             return _run_detect_boxes(args)
