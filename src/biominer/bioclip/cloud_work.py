@@ -311,7 +311,13 @@ def run_cloud_bioclip_batch(
                 str(detection.get("detection_id") or ""),
             )
         )
-        score_item = {**detection, "ablation_mode": mode}
+        score_item = {
+            **detection,
+            "ablation_mode": mode,
+            "visual_input_kind": mode,
+            "bioclip_gate_mode": payload.get("bioclip_gate_mode"),
+            "bioclip_gate_reason": payload.get("bioclip_gate_reason"),
+        }
         if mode == "detector_crop_segmentation" and not _scorer_supports_detector_crop_segmentation(scorer, score_item):
             _mark_unavailable(
                 mode,
