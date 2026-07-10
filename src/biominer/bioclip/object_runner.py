@@ -2193,7 +2193,7 @@ def _ablation_mode(item: dict[str, Any]) -> AblationMode:
 
 
 def _materialized_detector_crop_path(*, item: dict[str, Any], mode: AblationMode) -> Path | None:
-    if mode != "detector_crop" or "crop_path" not in item:
+    if "crop_path" not in item:
         return None
     path_value = item.get("crop_path")
     if path_value is None or str(path_value).strip() == "":

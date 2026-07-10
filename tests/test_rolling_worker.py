@@ -6,9 +6,12 @@ from threading import Event
 import httpx
 import polars as pl
 
+from biominer.bioclip.object_runner import empty_object_score_frame
+from biominer.storage.parquet import write_parquet
 from biominer.vision.rolling_worker import (
     BatchPlanner,
     CommitResult,
+    CommitWorker,
     DetectionBatch,
     ImageBatch,
     ImageStager,
@@ -18,6 +21,7 @@ from biominer.vision.rolling_worker import (
     ScoreBatch,
     ScoreInputBatch,
 )
+from factories import canonical_records, object_detection_row, object_detections
 
 
 def test_batch_planner_slices_records_into_deterministic_parts() -> None:
@@ -162,3 +166,83 @@ def test_rolling_worker_image_slots_never_exceed_prefetch_limit() -> None:
     assert result.batches_committed == 6
     assert worker.max_resident_image_batches <= 2
     assert result.metrics["max_resident_image_batches"] <= 2
+
+
+def test_commit_worker_deletes_cached_images_and_score_inputs_only_after_outputs_commit(tmp_path: Path) -> None:
+    cached_image = tmp_path / "cached" / "photo.jpg"
+    cached_image.parent.mkdir(parents=True)
+    cached_image.write_bytes(b"cached-image")
+    score_input_dir = tmp_path / "score-inputs"
+    score_input_dir.mkdir()
+    (score_input_dir / "input.ppm").write_bytes(b"P6\n1 1\n255\n\x00\x00\x00")
+    output_dir = tmp_path / "rolling"
+    image_batch = ImageBatch(
+        batch_index=0,
+        batch_id="vision-batch-000000",
+        part_id="part-000000",
+        records=canonical_records(),
+        cached_image_paths=(cached_image,),
+    )
+    detection_path = write_parquet(object_detections(), tmp_path / "detections.parquet")
+    score_input_path = write_parquet(pl.DataFrame([{"detection_id": "det-1"}]), tmp_path / "score-inputs.parquet")
+    score_path = write_parquet(empty_object_score_frame(), tmp_path / "scores.parquet")
+    score_batch = ScoreBatch(
+        score_input_batch=ScoreInputBatch(
+            detection_batch=DetectionBatch(image_batch=image_batch, frame=object_detections(), output_path=detection_path),
+            frame=pl.DataFrame([{"detection_id": "det-1"}]),
+            output_path=score_input_path,
+            temp_dir=score_input_dir,
+        ),
+        frame=empty_object_score_frame(),
+        output_path=score_path,
+    )
+
+    result = CommitWorker(output_dir=output_dir)(score_batch)
+
+    assert not cached_image.exists()
+    assert not score_input_dir.exists()
+    assert Path(result.part_outputs["canonical_source_records"]).exists()
+    assert Path(result.part_outputs["object_evidence_joined"]).exists()
+    assert Path(result.part_outputs["photo_evidence_summary"]).exists()
+    assert result.cleanup_paths_deleted == 2
+
+
+def test_commit_worker_failure_preserves_retryable_inputs(tmp_path: Path) -> None:
+    cached_image = tmp_path / "cached" / "photo.jpg"
+    cached_image.parent.mkdir(parents=True)
+    cached_image.write_bytes(b"cached-image")
+    score_input_dir = tmp_path / "score-inputs"
+    score_input_dir.mkdir()
+    (score_input_dir / "input.ppm").write_bytes(b"P6\n1 1\n255\n\x00\x00\x00")
+    image_batch = ImageBatch(
+        batch_index=0,
+        batch_id="vision-batch-000000",
+        part_id="part-000000",
+        records=canonical_records(),
+        cached_image_paths=(cached_image,),
+    )
+    score_path = write_parquet(empty_object_score_frame(), tmp_path / "scores.parquet")
+    score_batch = ScoreBatch(
+        score_input_batch=ScoreInputBatch(
+            detection_batch=DetectionBatch(
+                image_batch=image_batch,
+                frame=object_detections(object_detection_row()),
+                output_path=None,
+            ),
+            frame=pl.DataFrame([{"detection_id": "det-1"}]),
+            output_path=tmp_path / "score-inputs.parquet",
+            temp_dir=score_input_dir,
+        ),
+        frame=empty_object_score_frame(),
+        output_path=score_path,
+    )
+
+    try:
+        CommitWorker(output_dir=tmp_path / "rolling")(score_batch)
+    except ValueError as exc:
+        assert "requires detection" in str(exc)
+    else:  # pragma: no cover - defensive assertion.
+        raise AssertionError("expected commit failure")
+
+    assert cached_image.exists()
+    assert score_input_dir.exists()

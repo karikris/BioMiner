@@ -13,7 +13,23 @@ import httpx
 import polars as pl
 
 from biominer.bioclip.image_cache import cache_image_from_url
+from biominer.bioclip.candidate_sets import CandidateSet
+from biominer.bioclip.object_runner import (
+    OBJECT_SCORE_OUTPUT_SCHEMA,
+    ObjectBioClipScorer,
+    _ensure_columns,
+    _score_detection_batch,
+    is_bioclip_memory_error,
+    write_object_evidence_outputs,
+)
+from biominer.detection.detector_base import DecodedImage, ObjectDetector
+from biominer.detection.image_io import load_decoded_image_from_record
+from biominer.detection.pipeline import DetectionPipelineResult, run_detection_pipeline
+from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
+from biominer.species.context import SpeciesContext
 from biominer.storage.parquet import write_parquet
+from biominer.vision.gates import BioClipGatePolicy
+from biominer.vision.score_inputs import materialize_bioclip_score_inputs
 
 
 @dataclass(frozen=True)
@@ -55,6 +71,7 @@ class ScoreInputBatch:
     detection_batch: DetectionBatch
     frame: pl.DataFrame
     items: tuple[dict[str, Any], ...] = ()
+    output_path: Path | None = None
     temp_dir: Path | None = None
     metrics: dict[str, Any] = field(default_factory=dict)
 
@@ -184,6 +201,217 @@ class ImageStager:
     def close(self) -> None:
         if self._owns_client:
             self._client.close()
+
+
+class YOLOWorker:
+    def __init__(
+        self,
+        *,
+        detector: ObjectDetector,
+        output_dir: str | Path,
+        image_loader: Callable[[dict[str, Any]], DecodedImage] | None = None,
+        detection_policy: DetectionPolicy | None = None,
+        run_policy: DetectionRunPolicy | None = None,
+    ) -> None:
+        self.detector = detector
+        self.detection_dir = Path(output_dir) / "object_detections"
+        self.image_loader = image_loader or load_staged_or_cached_image
+        self.detection_policy = detection_policy
+        self.run_policy = run_policy
+
+    def __call__(self, batch: ImageBatch) -> DetectionBatch:
+        self.detection_dir.mkdir(parents=True, exist_ok=True)
+        result: DetectionPipelineResult = run_detection_pipeline(
+            records=batch.records.to_dicts(),
+            detector=self.detector,
+            output_path=self.detection_dir / f"{batch.part_id}.parquet",
+            image_loader=self.image_loader,
+            detection_policy=self.detection_policy,
+            run_policy=self.run_policy,
+        )
+        return DetectionBatch(
+            image_batch=batch,
+            frame=result.frame,
+            output_path=result.output_path,
+            metrics={
+                "records_seen": result.records_seen,
+                "images_loaded": result.images_loaded,
+                "image_failures": result.image_failures,
+                "detections_written": result.detections_written,
+                "crops_created": result.crops_created,
+                "detector_batch_retries": result.detector_batch_retries,
+                "detector_batch_size_final": result.detector_batch_size_final,
+            },
+        )
+
+
+class ScoreInputMaterializer:
+    def __init__(
+        self,
+        *,
+        output_dir: str | Path,
+        image_loader: Callable[[dict[str, Any]], DecodedImage] | None = None,
+        gate_policy: BioClipGatePolicy | None = None,
+        crop_padding_ratio: float = 0.08,
+        crop_target_px: int = 336,
+    ) -> None:
+        self.score_input_dir = Path(output_dir) / "bioclip_score_inputs"
+        self.temp_root = Path(output_dir) / "bioclip_score_input_files"
+        self.image_loader = image_loader or load_staged_or_cached_image
+        self.gate_policy = gate_policy or BioClipGatePolicy()
+        self.crop_padding_ratio = crop_padding_ratio
+        self.crop_target_px = crop_target_px
+
+    def __call__(self, batch: DetectionBatch) -> ScoreInputBatch:
+        self.score_input_dir.mkdir(parents=True, exist_ok=True)
+        materialized = materialize_bioclip_score_inputs(
+            canonical_records=batch.image_batch.records,
+            detections=batch.frame,
+            image_loader=self.image_loader,
+            temp_dir=self.temp_root,
+            gate_policy=self.gate_policy,
+            crop_padding_ratio=self.crop_padding_ratio,
+            crop_target_px=self.crop_target_px,
+            batch_id=batch.image_batch.batch_id,
+            part_id=batch.image_batch.part_id,
+        )
+        output_path = write_parquet(materialized.frame, self.score_input_dir / f"{batch.image_batch.part_id}.parquet")
+        return ScoreInputBatch(
+            detection_batch=batch,
+            frame=materialized.frame,
+            items=tuple(materialized.items),
+            output_path=output_path,
+            temp_dir=materialized.temp_dir,
+            metrics={"score_inputs": materialized.frame.height},
+        )
+
+
+class BioCLIPWorker:
+    def __init__(
+        self,
+        *,
+        species_context: SpeciesContext,
+        candidate_set: CandidateSet,
+        scorer: ObjectBioClipScorer,
+        output_dir: str | Path,
+        bioclip_batch_size: int = 24,
+        adaptive_batching: bool = False,
+        min_bioclip_batch_size: int = 1,
+    ) -> None:
+        if bioclip_batch_size <= 0:
+            raise ValueError("bioclip_batch_size must be positive")
+        if min_bioclip_batch_size <= 0:
+            raise ValueError("min_bioclip_batch_size must be positive")
+        if min_bioclip_batch_size > bioclip_batch_size:
+            raise ValueError("min_bioclip_batch_size must be <= bioclip_batch_size")
+        self.species_context = species_context
+        self.candidate_set = candidate_set
+        self.scorer = scorer
+        self.score_dir = Path(output_dir) / "object_bioclip_scores"
+        self.bioclip_batch_size = bioclip_batch_size
+        self.adaptive_batching = adaptive_batching
+        self.min_bioclip_batch_size = min_bioclip_batch_size
+
+    def __call__(self, batch: ScoreInputBatch) -> ScoreBatch:
+        self.score_dir.mkdir(parents=True, exist_ok=True)
+        rows: list[dict[str, Any]] = []
+        pending = _chunks(list(batch.items), self.bioclip_batch_size)
+        current_batch_size = self.bioclip_batch_size
+        retries = 0
+        while pending:
+            chunk = pending.pop(0)
+            try:
+                rows.extend(
+                    _score_detection_batch(
+                        items=chunk,
+                        context=self.species_context,
+                        candidate_set=self.candidate_set,
+                        scorer=self.scorer,
+                        ablation_mode="detector_crop",
+                    )
+                )
+            except RuntimeError as exc:
+                if (
+                    not self.adaptive_batching
+                    or len(chunk) <= self.min_bioclip_batch_size
+                    or not is_bioclip_memory_error(exc)
+                ):
+                    raise
+                current_batch_size = max(self.min_bioclip_batch_size, min(current_batch_size // 2, len(chunk) // 2))
+                retries += 1
+                pending = _chunks(chunk, current_batch_size) + pending
+        frame = _ensure_columns(pl.DataFrame(rows), OBJECT_SCORE_OUTPUT_SCHEMA) if rows else pl.DataFrame(schema=OBJECT_SCORE_OUTPUT_SCHEMA)
+        output_path = write_parquet(frame, self.score_dir / f"{batch.detection_batch.image_batch.part_id}.parquet")
+        return ScoreBatch(
+            score_input_batch=batch,
+            frame=frame,
+            output_path=output_path,
+            metrics={
+                "crops_scored": frame.height,
+                "bioclip_batch_retries": retries,
+                "bioclip_batch_size_final": current_batch_size,
+            },
+        )
+
+
+class CommitWorker:
+    def __init__(
+        self,
+        *,
+        output_dir: str | Path,
+        species_context: SpeciesContext | None = None,
+        delete_images_after_commit: bool = True,
+    ) -> None:
+        self.output_dir = Path(output_dir)
+        self.canonical_dir = self.output_dir / "canonical_source_records"
+        self.joined_dir = self.output_dir / "object_evidence_joined"
+        self.summary_dir = self.output_dir / "photo_evidence_summary"
+        self.species_context = species_context
+        self.delete_images_after_commit = delete_images_after_commit
+
+    def __call__(self, batch: ScoreBatch) -> CommitResult:
+        image_batch = batch.score_input_batch.detection_batch.image_batch
+        self.canonical_dir.mkdir(parents=True, exist_ok=True)
+        self.joined_dir.mkdir(parents=True, exist_ok=True)
+        self.summary_dir.mkdir(parents=True, exist_ok=True)
+        canonical_path = write_parquet(image_batch.records, self.canonical_dir / f"{image_batch.part_id}.parquet")
+        detection_path = batch.score_input_batch.detection_batch.output_path
+        score_input_path = batch.score_input_batch.output_path
+        score_path = batch.output_path
+        if detection_path is None or score_input_path is None or score_path is None:
+            raise ValueError("rolling commit requires detection, score-input, and score output paths")
+        evidence_outputs = write_object_evidence_outputs(
+            canonical_records_path=canonical_path,
+            detections_path=detection_path,
+            scores_path=score_path,
+            joined_output_path=self.joined_dir / f"{image_batch.part_id}.parquet",
+            photo_summary_output_path=self.summary_dir / f"{image_batch.part_id}.parquet",
+            species_context=self.species_context,
+        )
+        cleanup_deleted = 0
+        if self.delete_images_after_commit:
+            cleanup_deleted += _delete_paths(image_batch.cached_image_paths)
+        if batch.score_input_batch.temp_dir is not None and batch.score_input_batch.temp_dir.exists():
+            cleanup_deleted += _delete_tree(batch.score_input_batch.temp_dir)
+        return CommitResult(
+            batch_id=image_batch.batch_id,
+            part_outputs={
+                "image_batch_manifest": str(image_batch.image_batch_manifest) if image_batch.image_batch_manifest else "",
+                "canonical_source_records": str(canonical_path),
+                "object_detections": str(detection_path),
+                "bioclip_score_inputs": str(score_input_path),
+                "object_bioclip_scores": str(score_path),
+                "object_evidence_joined": str(evidence_outputs.object_evidence_joined),
+                "photo_evidence_summary": str(evidence_outputs.photo_evidence_summary),
+            },
+            cleanup_paths_deleted=cleanup_deleted,
+            metrics={
+                **batch.score_input_batch.detection_batch.metrics,
+                **batch.score_input_batch.metrics,
+                **batch.metrics,
+                "cleanup_paths_deleted": cleanup_deleted,
+            },
+        )
 
 
 class RollingVisionWorker:
@@ -363,9 +591,53 @@ def _is_http_url(value: str) -> bool:
     return urlparse(value).scheme in {"http", "https"}
 
 
+def _chunks(items: list[Any], size: int) -> list[list[Any]]:
+    if size <= 0:
+        raise ValueError("chunk size must be positive")
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def load_staged_or_cached_image(record: dict[str, Any]) -> DecodedImage:
+    staged_path = str(record.get("staged_image_path") or "")
+    if staged_path:
+        try:
+            from PIL import Image
+        except ImportError as exc:  # pragma: no cover - optional dependency path.
+            raise RuntimeError("Pillow is required to decode staged images") from exc
+        with Image.open(staged_path) as image:
+            rgb = image.convert("RGB")
+            width, height = rgb.size
+            return DecodedImage(width=int(width), height=int(height), mode="RGB", data=rgb.tobytes(), source_uri=staged_path)
+    return load_decoded_image_from_record(record)
+
+
+def _delete_paths(paths: tuple[Path, ...]) -> int:
+    deleted = 0
+    for path in sorted(paths):
+        if path.exists():
+            path.unlink()
+            deleted += 1
+    return deleted
+
+
+def _delete_tree(path: Path) -> int:
+    if not path.exists():
+        return 0
+    files = [child for child in path.rglob("*") if child.is_file()]
+    for child in files:
+        child.unlink()
+    directories = [child for child in path.rglob("*") if child.is_dir()]
+    for child in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+        child.rmdir()
+    path.rmdir()
+    return len(files)
+
+
 __all__ = [
     "BatchPlanner",
+    "BioCLIPWorker",
     "CommitResult",
+    "CommitWorker",
     "DetectionBatch",
     "ImageBatch",
     "ImageStager",
@@ -375,4 +647,7 @@ __all__ = [
     "RollingVisionWorkerSettings",
     "ScoreBatch",
     "ScoreInputBatch",
+    "ScoreInputMaterializer",
+    "YOLOWorker",
+    "load_staged_or_cached_image",
 ]
