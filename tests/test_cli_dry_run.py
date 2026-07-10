@@ -1506,6 +1506,8 @@ def test_vision_rolling_screen_runs_model_free_worker(tmp_path, capsys, monkeypa
             str(bioclip_python),
             "--device",
             "mps",
+            "--bioclip-preprocess-workers",
+            "4",
         ]
     )
 
@@ -1517,6 +1519,7 @@ def test_vision_rolling_screen_runs_model_free_worker(tmp_path, capsys, monkeypa
     assert payload["records_seen"] == 1
     assert payload["batches_committed"] == 1
     assert calls["detector_init"]["transport"] == "image_path"
+    assert calls["persistent_init"]["preprocess_workers"] == 4
     assert calls["worker_records"] == 1
     assert calls["worker_init"]["settings"].bioclip_gate_mode == "exclude_hard_negative"
     assert calls["worker_init"]["settings"].score_no_detection_whole_image is True

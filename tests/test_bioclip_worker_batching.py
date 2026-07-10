@@ -34,9 +34,38 @@ def test_loaded_model_encodes_image_batch_once_for_label_sets(monkeypatch) -> No
     assert len(scores["triage"]) == 2
 
 
+def test_loaded_model_parallel_preprocess_preserves_image_order(monkeypatch) -> None:  # noqa: ANN001 - pytest fixture.
+    fake_pil = types.ModuleType("PIL")
+    fake_pil.Image = FakeImageModule()
+    monkeypatch.setitem(sys.modules, "PIL", fake_pil)
+
+    fake_torch = FakeTorch()
+    loaded = bioclip_worker._LoadedBioClipModel(  # noqa: SLF001 - worker batching contract.
+        model=FakeModel(),
+        preprocess=lambda image: FakeTensor(f"preprocessed:{image.path}"),
+        tokenizer=FakeTokenizer(),
+        torch=fake_torch,
+        device="cuda",
+        gpu_name="test-gpu",
+    )
+
+    loaded.score_images(
+        [Path("/tmp/1.jpg"), Path("/tmp/2.jpg"), Path("/tmp/3.jpg")],
+        ["a photo of a butterfly"],
+        preprocess_workers=2,
+    )
+
+    assert fake_torch.stacked_values == [
+        "preprocessed:/tmp/1.jpg",
+        "preprocessed:/tmp/2.jpg",
+        "preprocessed:/tmp/3.jpg",
+    ]
+
+
 class FakeTorch:
     def __init__(self) -> None:
         self.stacked_lengths: list[int] = []
+        self.stacked_values: list[str] = []
 
     def no_grad(self):  # noqa: ANN201 - mirrors torch context manager.
         return self
@@ -49,6 +78,7 @@ class FakeTorch:
 
     def stack(self, tensors):  # noqa: ANN001, ANN201 - test fake.
         self.stacked_lengths.append(len(tensors))
+        self.stacked_values = [tensor.value for tensor in tensors]
         return FakeBatch(tensors)
 
 

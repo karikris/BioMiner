@@ -224,12 +224,14 @@ class ExternalBioClipScorer:
         runner: SubprocessRunner = subprocess.run,
         device: str = "auto",
         require_cuda: bool | None = None,
+        preprocess_workers: int = 1,
     ) -> None:
         self.runtime = runtime
         self.worker_script = Path(worker_script) if worker_script is not None else _default_worker_script()
         self.hf_cache_dir = Path(hf_cache_dir)
         self.runner = runner
         self.device = _coerce_worker_device(device=device, require_cuda=require_cuda)
+        self.preprocess_workers = _positive_preprocess_workers(preprocess_workers)
 
     def __call__(self, image_path: Path, labels: Sequence[str]) -> Mapping[str, float]:
         return self.score_batch([image_path], labels)[0]
@@ -244,6 +246,7 @@ class ExternalBioClipScorer:
             "checkpoint": self.runtime.model.checkpoint,
             "hf_cache_dir": str(self.hf_cache_dir),
             "device": self.device,
+            "preprocess_workers": self.preprocess_workers,
         }
         result = self.runner(
             [str(self.runtime.venv_python), str(self.worker_script)],
@@ -276,6 +279,7 @@ class ExternalBioClipScorer:
             "checkpoint": self.runtime.model.checkpoint,
             "hf_cache_dir": str(self.hf_cache_dir),
             "device": self.device,
+            "preprocess_workers": self.preprocess_workers,
         }
         result = self.runner(
             [str(self.runtime.venv_python), str(self.worker_script)],
@@ -439,12 +443,14 @@ class PersistentBioClipScorer:
         popen: PopenFactory = subprocess.Popen,
         device: str = "auto",
         require_cuda: bool | None = None,
+        preprocess_workers: int = 1,
     ) -> None:
         self.runtime = runtime
         self.worker_script = Path(worker_script) if worker_script is not None else _default_worker_script()
         self.hf_cache_dir = Path(hf_cache_dir)
         self.popen = popen
         self.requested_device = _coerce_worker_device(device=device, require_cuda=require_cuda)
+        self.preprocess_workers = _positive_preprocess_workers(preprocess_workers)
         self._process: subprocess.Popen[str] | None = None
         self._stdin: IO[str] | None = None
         self._stdout: IO[str] | None = None
@@ -471,6 +477,7 @@ class PersistentBioClipScorer:
             "checkpoint": self.runtime.model.checkpoint,
             "hf_cache_dir": str(self.hf_cache_dir),
             "device": self.requested_device,
+            "preprocess_workers": self.preprocess_workers,
         }
         assert self._stdin is not None
         assert self._stdout is not None
@@ -512,6 +519,7 @@ class PersistentBioClipScorer:
             "checkpoint": self.runtime.model.checkpoint,
             "hf_cache_dir": str(self.hf_cache_dir),
             "device": self.requested_device,
+            "preprocess_workers": self.preprocess_workers,
         }
         assert self._stdin is not None
         assert self._stdout is not None
@@ -545,6 +553,7 @@ class PersistentBioClipScorer:
             "checkpoint": self.runtime.model.checkpoint,
             "hf_cache_dir": str(self.hf_cache_dir),
             "device": self.requested_device,
+            "preprocess_workers": self.preprocess_workers,
         }
         assert self._stdin is not None
         assert self._stdout is not None
@@ -578,6 +587,7 @@ class PersistentBioClipScorer:
             "checkpoint": self.runtime.model.checkpoint,
             "hf_cache_dir": str(self.hf_cache_dir),
             "device": self.requested_device,
+            "preprocess_workers": self.preprocess_workers,
         }
         assert self._stdin is not None
         assert self._stdout is not None
@@ -655,3 +665,10 @@ def _coerce_worker_device(*, device: str, require_cuda: bool | None) -> str:
     if normalized not in {"auto", "cuda", "mps", "cpu"}:
         raise ValueError(f"Unsupported BioCLIP device {device!r}")
     return normalized
+
+
+def _positive_preprocess_workers(value: int) -> int:
+    workers = int(value)
+    if workers <= 0:
+        raise ValueError("preprocess_workers must be positive")
+    return workers

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Sequence
 
@@ -19,6 +20,7 @@ def main() -> None:
     configure_hf_cache_env(Path(request.get("hf_cache_dir") or "data/cache/huggingface"))
     image_paths = request.get("image_paths")
     device = device_from_request(request)
+    preprocess_workers = preprocess_workers_from_request(request)
     label_sets = request.get("label_sets")
     if label_sets is not None:
         scores_by_image_by_label_set = score_image_label_sets(
@@ -27,6 +29,7 @@ def main() -> None:
             model_name=request["model_name"],
             checkpoint=request["checkpoint"],
             device=device,
+            preprocess_workers=preprocess_workers,
         )
         print(json.dumps({"scores_by_image_by_label_set": scores_by_image_by_label_set}, sort_keys=True))
         return
@@ -37,6 +40,7 @@ def main() -> None:
             model_name=request["model_name"],
             checkpoint=request["checkpoint"],
             device=device,
+            preprocess_workers=preprocess_workers,
         )
         print(json.dumps({"scores": scores}, sort_keys=True))
         return
@@ -46,6 +50,7 @@ def main() -> None:
         model_name=request["model_name"],
         checkpoint=request["checkpoint"],
         device=device,
+        preprocess_workers=preprocess_workers,
     )
     print(json.dumps({"scores_by_image": scores_by_image}, sort_keys=True))
 
@@ -68,6 +73,13 @@ def device_from_request(request: dict[str, object]) -> str:
     return DEFAULT_DEVICE
 
 
+def preprocess_workers_from_request(request: dict[str, object]) -> int:
+    value = int(request.get("preprocess_workers") or 1)
+    if value <= 0:
+        raise ValueError("preprocess_workers must be positive")
+    return value
+
+
 def normalize_device(device: str) -> str:
     normalized = device.casefold().strip()
     if normalized not in VALID_DEVICES:
@@ -85,6 +97,7 @@ def run_persistent_worker() -> None:
                 return
             configure_hf_cache_env(Path(request.get("hf_cache_dir") or "data/cache/huggingface"))
             device = device_from_request(request)
+            preprocess_workers = preprocess_workers_from_request(request)
             key = (str(request["model_name"]), str(request["checkpoint"]), device)
             if loaded is None or loaded_key != key:
                 loaded = _LoadedBioClipModel.load(
@@ -112,7 +125,10 @@ def run_persistent_worker() -> None:
                 continue
             image_embedding_paths = request.get("image_embedding_paths")
             if image_embedding_paths is not None:
-                embeddings = loaded.image_embeddings([Path(path) for path in image_embedding_paths])
+                embeddings = loaded.image_embeddings(
+                    [Path(path) for path in image_embedding_paths],
+                    preprocess_workers=preprocess_workers,
+                )
                 print(
                     json.dumps(
                         {
@@ -132,6 +148,7 @@ def run_persistent_worker() -> None:
                 scores_by_image_by_label_set = loaded.score_image_label_sets(
                     [Path(path) for path in image_paths],
                     {str(name): list(labels) for name, labels in label_sets.items()},
+                    preprocess_workers=preprocess_workers,
                 )
                 print(
                     json.dumps(
@@ -146,10 +163,18 @@ def run_persistent_worker() -> None:
                 )
                 continue
             if image_paths is None:
-                scores = loaded.score_images([Path(request["image_path"])], request["labels"])[0]
+                scores = loaded.score_images(
+                    [Path(request["image_path"])],
+                    request["labels"],
+                    preprocess_workers=preprocess_workers,
+                )[0]
                 print(json.dumps({"scores": scores, "device": loaded.device, "gpu_name": loaded.gpu_name}, sort_keys=True), flush=True)
                 continue
-            scores_by_image = loaded.score_images([Path(path) for path in image_paths], request["labels"])
+            scores_by_image = loaded.score_images(
+                [Path(path) for path in image_paths],
+                request["labels"],
+                preprocess_workers=preprocess_workers,
+            )
             print(
                 json.dumps(
                     {"scores_by_image": scores_by_image, "device": loaded.device, "gpu_name": loaded.gpu_name},
@@ -169,6 +194,7 @@ def score_image(
     checkpoint: str,
     device: str = DEFAULT_DEVICE,
     require_cuda: bool | None = None,
+    preprocess_workers: int = 1,
 ) -> dict[str, float]:
     return score_images(
         image_paths=[image_path],
@@ -176,6 +202,7 @@ def score_image(
         model_name=model_name,
         checkpoint=checkpoint,
         device=_coerce_device(device=device, require_cuda=require_cuda),
+        preprocess_workers=preprocess_workers,
     )[0]
 
 
@@ -187,13 +214,14 @@ def score_images(
     checkpoint: str,
     device: str = DEFAULT_DEVICE,
     require_cuda: bool | None = None,
+    preprocess_workers: int = 1,
 ) -> list[dict[str, float]]:
     model = _LoadedBioClipModel.load(
         model_name=model_name,
         checkpoint=checkpoint,
         device=_coerce_device(device=device, require_cuda=require_cuda),
     )
-    return model.score_images(image_paths, labels)
+    return model.score_images(image_paths, labels, preprocess_workers=preprocess_workers)
 
 
 def score_image_label_sets(
@@ -204,13 +232,14 @@ def score_image_label_sets(
     checkpoint: str,
     device: str = DEFAULT_DEVICE,
     require_cuda: bool | None = None,
+    preprocess_workers: int = 1,
 ) -> dict[str, list[dict[str, float]]]:
     model = _LoadedBioClipModel.load(
         model_name=model_name,
         checkpoint=checkpoint,
         device=_coerce_device(device=device, require_cuda=require_cuda),
     )
-    return model.score_image_label_sets(image_paths, label_sets)
+    return model.score_image_label_sets(image_paths, label_sets, preprocess_workers=preprocess_workers)
 
 
 def _coerce_device(*, device: str, require_cuda: bool | None) -> str:
@@ -246,7 +275,13 @@ class _LoadedBioClipModel:
         model.eval()
         return cls(model=model, preprocess=preprocess, tokenizer=tokenizer, torch=torch, device=resolved_device, gpu_name=gpu_name)
 
-    def score_images(self, image_paths: Sequence[Path], labels: Sequence[str]) -> list[dict[str, float]]:
+    def score_images(
+        self,
+        image_paths: Sequence[Path],
+        labels: Sequence[str],
+        *,
+        preprocess_workers: int = 1,
+    ) -> list[dict[str, float]]:
         try:
             from PIL import Image
         except Exception as exc:  # noqa: BLE001 - executed in the external model runtime.
@@ -255,7 +290,7 @@ class _LoadedBioClipModel:
         text_features = self._text_features(labels)
         with self.torch.no_grad():
             scores_by_image: list[dict[str, float]] = []
-            image_batch = self._image_batch(image_paths, Image)
+            image_batch = self._image_batch(image_paths, Image, preprocess_workers=preprocess_workers)
             image_features = self.model.encode_image(image_batch)
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
             probabilities_by_image = (100.0 * image_features @ text_features.T).softmax(dim=-1)
@@ -267,6 +302,8 @@ class _LoadedBioClipModel:
         self,
         image_paths: Sequence[Path],
         label_sets: dict[str, Sequence[str]],
+        *,
+        preprocess_workers: int = 1,
     ) -> dict[str, list[dict[str, float]]]:
         try:
             from PIL import Image
@@ -276,7 +313,7 @@ class _LoadedBioClipModel:
         text_features_by_set = {name: self._text_features(labels) for name, labels in label_sets.items()}
         scores_by_label_set: dict[str, list[dict[str, float]]] = {name: [] for name in label_sets}
         with self.torch.no_grad():
-            image_batch = self._image_batch(image_paths, Image)
+            image_batch = self._image_batch(image_paths, Image, preprocess_workers=preprocess_workers)
             image_features = self.model.encode_image(image_batch)
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
             for label_set_name, labels in label_sets.items():
@@ -294,14 +331,14 @@ class _LoadedBioClipModel:
             for row in text_features
         ]
 
-    def image_embeddings(self, image_paths: Sequence[Path]) -> list[list[float]]:
+    def image_embeddings(self, image_paths: Sequence[Path], *, preprocess_workers: int = 1) -> list[list[float]]:
         try:
             from PIL import Image
         except Exception as exc:  # noqa: BLE001 - executed in the external model runtime.
             raise RuntimeError(f"BioCLIP dependencies are unavailable: {exc}") from exc
 
         with self.torch.no_grad():
-            image_batch = self._image_batch(image_paths, Image)
+            image_batch = self._image_batch(image_paths, Image, preprocess_workers=preprocess_workers)
             image_features = self.model.encode_image(image_batch)
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         return [
@@ -309,12 +346,25 @@ class _LoadedBioClipModel:
             for row in image_features
         ]
 
-    def _image_batch(self, image_paths: Sequence[Path], image_module):  # noqa: ANN001 - PIL module.
-        images = [
-            self.preprocess(image_module.open(image_path).convert("RGB"))
-            for image_path in image_paths
-        ]
+    def _image_batch(self, image_paths: Sequence[Path], image_module, *, preprocess_workers: int = 1):  # noqa: ANN001 - PIL module.
+        workers = int(preprocess_workers)
+        if workers <= 0:
+            raise ValueError("preprocess_workers must be positive")
+        if workers == 1 or len(image_paths) <= 1:
+            images = [self._preprocess_image_path(image_path, image_module) for image_path in image_paths]
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                images = list(executor.map(lambda image_path: self._preprocess_image_path(image_path, image_module), image_paths))
         return self.torch.stack(images).to(self.device)
+
+    def _preprocess_image_path(self, image_path: Path, image_module):  # noqa: ANN001 - PIL module.
+        image = image_module.open(image_path)
+        try:
+            return self.preprocess(image.convert("RGB"))
+        finally:
+            close = getattr(image, "close", None)
+            if callable(close):
+                close()
 
     def _text_features(self, labels: Sequence[str]):
         label_key = tuple(labels)

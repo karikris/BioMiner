@@ -2034,6 +2034,7 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
         runtime=_bioclip_runtime(runtime_python=bioclip_python),
         hf_cache_dir=args.hf_cache_dir,
         device=settings.device,
+        preprocess_workers=getattr(args, "bioclip_preprocess_workers", 1),
     )
 
     metrics: dict[str, object] = {
@@ -2292,6 +2293,7 @@ def _run_vision_rolling_screen(args: argparse.Namespace) -> int:
         runtime=_bioclip_runtime(runtime_python=bioclip_python),
         hf_cache_dir=args.hf_cache_dir,
         device=settings.device,
+        preprocess_workers=args.bioclip_preprocess_workers,
     )
     image_stager = ImageStager(output_dir=output_dir, cache_root=args.cache_root)
     gate_policy = BioClipGatePolicy(

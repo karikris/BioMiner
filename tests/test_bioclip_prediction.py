@@ -301,7 +301,7 @@ def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_uses_auto_devic
         processes.append(process)
         return process
 
-    scorer = PersistentBioClipScorer(runtime=_runtime(), popen=fake_popen)
+    scorer = PersistentBioClipScorer(runtime=_runtime(), popen=fake_popen, preprocess_workers=4)
     try:
         first = scorer.score_batch(
             [Path("/tmp/1.jpg"), Path("/tmp/2.jpg")],
@@ -318,7 +318,9 @@ def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_uses_auto_devic
     assert "--persistent" in processes[0].cmd
     assert '"image_paths": ["/tmp/1.jpg", "/tmp/2.jpg"]' in writes[0]
     assert '"device": "auto"' in writes[0]
+    assert '"preprocess_workers": 4' in writes[0]
     assert '"device": "auto"' in writes[1]
+    assert '"preprocess_workers": 4' in writes[1]
     assert '"shutdown": true' in writes[-1]
     assert processes[0].waited is True
 
