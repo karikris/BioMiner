@@ -47,7 +47,7 @@ Use `--skip-classification-table` only for compatibility builds that should omit
 The hierarchical workflow shape is:
 
 ```text
-YOLOE butterfly_like crop
+gate-approved visual input
 -> BioCLIP top 3 butterfly families
 -> select top family
 -> BioCLIP top 20 species from that family only

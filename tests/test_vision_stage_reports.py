@@ -105,6 +105,42 @@ def test_vision_stage_metrics_count_detection_bioclip_and_evidence_frames() -> N
     assert metrics["warnings"] == ["hard_negative_detections_present", "no_detection_records_present"]
 
 
+def test_vision_stage_metrics_use_score_inputs_for_rolling_gate_warning() -> None:
+    detections = pl.DataFrame(
+        [
+            {"source": "flickr", "flickr_photo_id": "photo-1", "detection_id": "det-1", "detector_label": "butterfly_like", "detection_status": "detected"},
+            {"source": "flickr", "flickr_photo_id": "photo-2", "detection_id": "det-2", "detector_label": "moth_like", "detection_status": "detected"},
+            {"source": "flickr", "flickr_photo_id": "photo-3", "detection_id": "det-3", "detector_label": "no_detection", "detection_status": "no_detection"},
+            {"source": "flickr", "flickr_photo_id": "photo-4", "detection_id": "det-4", "detector_label": "hard_negative", "detection_status": "detected"},
+        ]
+    )
+    scores = pl.DataFrame(
+        [
+            {"source": "flickr", "flickr_photo_id": "photo-1", "detection_id": "det-1", "ablation_mode": "detector_crop"},
+            {"source": "flickr", "flickr_photo_id": "photo-2", "detection_id": "det-2", "ablation_mode": "detector_crop"},
+            {"source": "flickr", "flickr_photo_id": "photo-3", "detection_id": "det-3", "ablation_mode": "whole_image"},
+        ]
+    )
+
+    metrics = build_vision_stage_metrics(
+        detections=detections,
+        scores=scores,
+        stage_metrics={
+            "bioclip_gate_mode": "exclude_hard_negative",
+            "bioclip_score_inputs": 3,
+            "objects_scored": 3,
+        },
+    )
+
+    assert metrics["detection"]["eligible_bioclip_detections"] == 1
+    assert metrics["bioclip"]["bioclip_gate_mode"] == "exclude_hard_negative"
+    assert metrics["bioclip"]["score_inputs_seen"] == 3
+    assert metrics["bioclip"]["whole_images_scored"] == 1
+    assert metrics["bioclip"]["detector_crops_scored"] == 2
+    assert "crops_scored_exceeds_eligible_bioclip_detections" not in metrics["warnings"]
+    assert metrics["warnings"] == ["hard_negative_detections_present", "no_detection_records_present"]
+
+
 def test_vision_stage_metrics_empty_frames_are_stable() -> None:
     metrics = build_vision_stage_metrics(
         detections=pl.DataFrame(),

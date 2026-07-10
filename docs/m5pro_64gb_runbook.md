@@ -145,7 +145,7 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision benchmark-live-m5pro \
 
 ## Local Hierarchical Run
 
-This is the recommended local detector-first hierarchical command. It uses local storage and SQLite, preserves crop-level BioCLIP gating, and deletes cached images only after committed outputs.
+This is the recommended local detector-first hierarchical command. It uses local storage and SQLite, selects the rolling recall worker, preserves BioCLIP score-input gating, and deletes cached images only after committed outputs.
 
 ```bash
 PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
@@ -157,6 +157,7 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
   --workstore-backend sqlite \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --vision-worker rolling \
   --classification-mode hierarchical_butterfly_classification \
   --taxonomy-candidate-table data/registry/current \
   --device mps \
@@ -223,6 +224,7 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
   --workstore-backend sqlite \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --vision-worker rolling \
   --classification-mode hierarchical_butterfly_classification \
   --taxonomy-candidate-table data/registry/current \
   --device mps \
@@ -234,7 +236,7 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
 
 ## Cloud S3/Postgres Production Run
 
-The same classifier semantics apply in cloud production: immutable Parquet parts, Postgres workstore claims, and BioCLIP scoring only for `butterfly_like` detections.
+The same classifier semantics apply in cloud production: immutable Parquet parts, Postgres workstore claims, rolling 500-image work keys, `exclude_hard_negative` BioCLIP score-input gating, and no-detection whole-image fallback when the image loaded.
 
 ```bash
 PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
@@ -246,6 +248,7 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --vision-worker rolling \
   --classification-mode hierarchical_butterfly_classification \
   --taxonomy-candidate-table s3://biominer/biominer/registry/current \
   --device mps \
@@ -276,8 +279,12 @@ detection_counts.detections
 detection_counts.crops_created
 bioclip_counts.objects_scored
 bioclip_counts.detector_crops_scored
+bioclip_counts.whole_images_scored
+metrics.bioclip_score_inputs
+metrics.bioclip_score_inputs_per_image
 metrics.butterfly_like_detections
 metrics.eligible_bioclip_detections
+metrics.bioclip_gate_mode
 metrics.selected_family_counts
 metrics.species_top1_counts
 metrics.adaptive_batching_enabled
@@ -285,7 +292,7 @@ metrics.detector_batch_retries
 metrics.bioclip_batch_retries
 ```
 
-`bioclip_counts.objects_scored` should track eligible `butterfly_like` detections, not all source records.
+In rolling recall mode, `metrics.bioclip_score_inputs` is the denominator for BioCLIP work: non-hard-negative detections plus configured no-detection fallback rows. `metrics.eligible_bioclip_detections` remains the legacy detector-policy count and should not be used as the rolling score-input denominator.
 
 ## Failure Modes
 
@@ -302,10 +309,10 @@ MPS memory errors:
 Use the conservative fallback command, lower `--yolo-batch` or `--bioclip-batch`, and enable `--adaptive-batching`. Keep `PYTORCH_ENABLE_MPS_FALLBACK=1` set for Apple Silicon runs.
 
 Unexpected all-image BioCLIP scoring:
-Check requested ablation modes. Production defaults to `detector_crop`; whole-image and segmentation scoring are explicit debug/ablation modes.
+Check requested ablation modes and gate settings. Production defaults to `detector_crop`; whole-image and segmentation scoring are explicit debug/ablation modes except for the rolling no-detection fallback.
 
 Too many non-butterfly crops:
-Production should not materialise crops for non-eligible detections. Inspect `eligible_bioclip_detections`, `hard_negative_detections`, and score row counts.
+Rolling recall intentionally materialises crops for non-hard-negative detections, including moth-like, caterpillar, pupa, and generic insect-like labels. It should not materialise crops for hard-negative detections. Inspect `bioclip_score_inputs`, `hard_negative_detections`, `bioclip_gate_mode`, and score row counts.
 
 Cleanup did not happen:
 Cached images and crops are deleted only after committed outputs. If detection, score, Parquet write, or workstore registration fails, cached inputs can remain retryable by design.
@@ -313,9 +320,10 @@ Cached images and crops are deleted only after committed outputs. If detection, 
 ## Invariants
 
 - YOLOE is an object detector, not a taxonomic classifier.
-- BioCLIP receives only detected `butterfly_like` crops in production scoring.
+- Rolling production BioCLIP receives detected non-hard-negative crops and no-detection whole-image fallback rows, but never hard-negative rows.
+- Legacy `butterfly_like_only` scoring remains available for serial runs and ablations.
 - Hierarchical mode scores family top 3, constrains species top 20 to the selected family, and reranks all 20 into top 5.
 - Hierarchical mode does not inject the target species.
 - `target_scope_object_screening` remains the default classification mode.
-- Non-butterfly detections remain evidence but are not BioCLIP species-scored.
+- Hard-negative detections remain evidence but are not BioCLIP species-scored.
 - Images and crops are temporary and must not become a permanent Flickr image archive.

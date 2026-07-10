@@ -43,16 +43,17 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision bioclip-runtime-check \
   --device mps
 ```
 
-Run the integrated local detector-first screen:
+Run the integrated local rolling detector-first screen:
 
 ```bash
-PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer vision screen \
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer vision rolling-screen \
   --input runs/local_debug/papilio_demoleus/canonical_source_records.parquet \
-  --output-dir runs/local_debug/papilio_demoleus/vision_screen \
+  --output-dir runs/local_debug/papilio_demoleus/vision_rolling_screen \
   --species-context runs/local_debug/papilio_demoleus/species_context.json \
   --species-candidates data/registry/current/species_candidates.parquet \
   --vision-profile mac_m5pro_64gb \
   --device mps \
+  --vision-batch-rows 500 \
   --delete-images-after-commit
 ```
 
@@ -68,6 +69,7 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --vision-worker rolling \
   --device mps \
   --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
   --delete-images-after-commit
@@ -87,6 +89,7 @@ uv run biominer run \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --vision-worker rolling \
   --device mps \
   --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
   --delete-images-after-commit
@@ -106,6 +109,7 @@ uv run biominer run \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --vision-worker rolling \
   --device mps \
   --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
   --delete-images-after-commit
@@ -125,6 +129,7 @@ uv run biominer run \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --vision-worker rolling \
   --device mps \
   --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
   --delete-images-after-commit
@@ -143,6 +148,7 @@ uv run biominer run \
   --storage-backend s3 \
   --workstore-backend postgres \
   --vision-profile mac_m5pro_64gb \
+  --vision-worker rolling \
   --limit-records 10
 ```
 

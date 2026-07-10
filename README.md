@@ -2,7 +2,7 @@
 
 BioMiner is a taxonomically grounded Flickr butterfly-discovery and image-triage pipeline.
 
-It builds a reviewed multilingual butterfly name registry, compiles deterministic Flickr search definitions, fetches Flickr metadata, records metadata review flags, finds candidate objects with YOLOE/YOLO26-style coarse detectors, scores eligible detector crops with BioCLIP 2.5, assigns evidence buckets, and uses targeted Flickr comment review to strengthen ambiguous records.
+It builds a reviewed multilingual butterfly name registry, compiles deterministic Flickr search definitions, fetches Flickr metadata, records metadata review flags, finds candidate objects with YOLOE/YOLO26-style coarse detectors, scores gate-approved visual inputs with BioCLIP 2.5, assigns evidence buckets, and uses targeted Flickr comment review to strengthen ambiguous records.
 
 BioMiner separates three forms of evidence:
 
@@ -37,7 +37,8 @@ Step 2: metadata flagging
 Step 3: detector-first BioCLIP screening
   temporary image download
   -> YOLOE/YOLO26 coarse object proposals
-  -> BioCLIP 2.5 detector-crop scoring for butterfly_like detections
+  -> materialized BioCLIP score inputs from the configured gate
+  -> BioCLIP 2.5 detector-crop or no-detection fallback scoring
   -> Gold/Silver/Bronze/Bin/InReview
   -> delete temporary image after committed outputs
 
@@ -54,14 +55,14 @@ BioMiner's production visual path is detector-first and object-evidence based:
 ```text
 canonical source records
   -> object detections with source + flickr_photo_id join keys
-  -> ephemeral detector crops
+  -> materialized score inputs
   -> BioCLIP object scores against SpeciesContext/candidate-set labels
-  -> detector-crop rows for YOLOE butterfly_like detections
+  -> detector-crop rows for gate-approved detections and optional whole-image fallback rows
   -> object_evidence_joined.parquet and photo_evidence_summary.parquet
   -> reports/review_queue.parquet for Bronze and InReview photo summaries
 ```
 
-The production default visual mode is `detector_crop`, and the default classification mode is `target_scope_object_screening`. Whole-image BioCLIP and detector-crop segmentation remain explicit ablation/debug modes because whole-image scoring spends model time on backgrounds, labels, people, host plants, and other non-target content. YOLOE/YOLO26 output must first pass the coarse `butterfly_like` gate before BioCLIP species scoring runs; moth-like, hard-negative, no-detection, and failed-image rows remain evidence rows but are not sent to BioCLIP.
+The production default visual mode is `detector_crop`, and the default classification mode is `target_scope_object_screening`. The legacy serial gate is `butterfly_like_only`: BioCLIP receives only detected `butterfly_like` crops. The rolling recall gate is `exclude_hard_negative`: BioCLIP receives all detected non-hard-negative rows (`butterfly_like`, `moth_like`, `caterpillar`, `pupa`, and `insect_like`) plus a whole-image fallback for `no_detection` rows when the image loaded. `hard_negative` and failed-image rows remain evidence rows but are not BioCLIP-scored. Whole-image BioCLIP is still not an all-image production default; it is used only by explicit ablations or by the configured no-detection fallback.
 
 BioMiner now emits lightweight GBIF-derived classification artifacts alongside the registry:
 
@@ -75,11 +76,11 @@ butterfly_classification_qa_findings.parquet
 
 These files are derived from `taxa.parquet`, `source_snapshots.parquet`, and `manifest.json`. They are visual candidate-selection artifacts, not a second taxonomy authority. The accepted GBIF registry remains the identity source; the label tables are prompt inputs for BioCLIP family-first classification and optional text-embedding caches.
 
-`target_scope_object_screening` remains the default classification mode. `hierarchical_butterfly_classification` is now implemented as open visual classification, not target validation: BioCLIP scores YOLOE `butterfly_like` crops across configured butterfly families, records the top 3 families, selects the top family, scores only GBIF-derived species candidates in that family, records the top 20 species, then reranks all first-pass top-20 species into a top 5. Prompt-template scores are mean-aggregated by taxon. The hierarchical path never injects the run target species into reranking, and it writes conservative review-oriented evidence rather than pretending open-classification scores are target support.
+`target_scope_object_screening` remains the default classification mode. `hierarchical_butterfly_classification` is now implemented as open visual classification, not target validation: BioCLIP scores the gate-approved visual inputs across configured butterfly families, records the top 3 families, selects the top family, scores only GBIF-derived species candidates in that family, records the top 20 species, then reranks all first-pass top-20 species into a top 5. Prompt-template scores are mean-aggregated by taxon. The hierarchical path never injects the run target species into reranking, and it writes conservative review-oriented evidence rather than pretending open-classification scores are target support.
 
 See [GBIF classification tables](docs/gbif_classification_tables.md) for schemas, build commands, validation behavior, and expected scale.
 
-The Mac M5 Pro / 64 GB profile is `mac_m5pro_64gb`: `device=mps`, YOLOE checkpoint `yoloe-26s-seg.pt`, YOLO image size `768`, detector batch size `16`, crop batch size `24`, crop target `336`, crop padding `0.08`, zstd Parquet parts, and delete-after-commit image cleanup. Production visual parts are written as immutable zstd Parquet objects such as `evidence/stage=detect_objects/run_id=<run_id>/worker=<worker_id>/part=<part_id>.parquet`.
+The Mac M5 Pro / 64 GB profile is `mac_m5pro_64gb`: `device=mps`, YOLOE checkpoint `yoloe-26s-seg.pt`, YOLO image size `768`, detector batch size `16`, crop batch size `24`, crop target `336`, crop padding `0.08`, zstd Parquet parts, `parquet_part_rows=500`, and delete-after-commit image cleanup. Production visual parts are written as immutable zstd Parquet objects such as `evidence/stage=detect_objects/run_id=<run_id>/worker=<worker_id>/part=<part_id>.parquet`.
 
 Phase 4 vision optimisation status:
 
@@ -87,11 +88,12 @@ Phase 4 vision optimisation status:
 |-|-|-|
 | Default visual classification | `target_scope_object_screening` remains the default | Detector crops are scored for target/scope screening evidence. |
 | Hierarchical classifier | Available with GBIF classification tables | Uses family top 3, selected-family species top 20, and reranks all top 20 into top 5. |
-| BioCLIP input gate | Detector-first crop-level scoring | BioCLIP does not process all images in production; non-butterfly detections remain evidence but are not species-scored. |
+| BioCLIP input gate | Configurable detector-first scoring | Legacy `butterfly_like_only` is retained; rolling recall defaults to `exclude_hard_negative` with no-detection whole-image fallback. |
+| Rolling worker | Available for local and cloud runs | `vision rolling-screen` and `run --vision-worker rolling` process deterministic 500-row batches with commit-ordered cleanup. |
 | Adaptive batching | Opt-in | Use only under memory pressure with `--adaptive-batching`, `--yolo-batch`, and `--bioclip-batch`. |
 | Taxonomy text embeddings | Optional and recommended at large scope | `--taxonomy-text-embedding-cache` validates the cache against taxonomy and BioCLIP metadata. |
 | Cleanup and resumability | Commit-ordered | Temporary images/crops are removed only after committed Parquet outputs and workstore registration where applicable. |
-| Benchmarks | Model-free and optional live commands | `benchmark-plumbing` is deterministic and model-free; `benchmark-live-m5pro` requires sidecar runtimes/models. |
+| Benchmarks | Model-free and optional live commands | `benchmark-plumbing` and `benchmark-rolling-matrix` are deterministic and model-free; `benchmark-live-m5pro` requires sidecar runtimes/models. |
 
 See [vision workflow](docs/vision_workflow.md), [M5 Pro performance note](docs/vision_performance_m5pro.md), and [Mac M5 Pro runbook](docs/m5pro_64gb_runbook.md) for the detailed command set.
 
@@ -145,6 +147,7 @@ uv run biominer run \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --vision-worker rolling \
   --classification-mode target_scope_object_screening \
   --device mps \
   --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
@@ -162,6 +165,7 @@ uv run biominer run \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --vision-worker rolling \
   --classification-mode target_scope_object_screening \
   --device mps \
   --bioclip-model hf-hub:imageomics/bioclip-2.5-vith14 \
@@ -200,6 +204,7 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
   --workstore-backend sqlite \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --vision-worker rolling \
   --classification-mode hierarchical_butterfly_classification \
   --taxonomy-candidate-table data/registry/current \
   --device mps \
@@ -221,6 +226,7 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --vision-worker rolling \
   --classification-mode hierarchical_butterfly_classification \
   --taxonomy-candidate-table s3://biominer/biominer/registry/current \
   --device mps \

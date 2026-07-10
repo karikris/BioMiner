@@ -5,12 +5,17 @@ The production vision path is object-first:
 ```text
 canonical Flickr source records
 -> YOLOE/YOLO26 object proposals
--> ephemeral crops
+-> materialized score inputs
 -> BioCLIP 2.5 scoring
 -> joined object evidence and photo summaries
 ```
 
-YOLOE/YOLO26 is only an object finder. Production sends only `butterfly_like` detections with `detection_status=detected` to BioCLIP; moth, caterpillar, pupa, generic insect, hard-negative, no-detection, and failed-image rows remain evidence but are not species-scored. Production also avoids creating non-debug crop artifacts for those non-eligible detections.
+YOLOE/YOLO26 is only an object finder. The BioCLIP gate is configurable:
+
+- `butterfly_like_only` is the legacy serial behavior: only `detection_status=detected`, `detector_label=butterfly_like` rows are scored.
+- `exclude_hard_negative` is the rolling recall behavior: all detected non-hard-negative rows are scored as detector crops, and `no_detection` rows are scored as whole-image fallback when the image loaded.
+
+Hard-negative and failed-image rows remain evidence rows but are not BioCLIP-scored. Production also avoids creating non-debug crop artifacts for hard-negative detections.
 
 The current default classification mode is `target_scope_object_screening`. BioCLIP scores detector crops against target/scope candidate labels for screening evidence. Target-scope scoring can use registry-derived species candidates, but it is still screening evidence rather than taxonomic validation.
 
@@ -26,9 +31,9 @@ butterfly_species_labels.parquet
 
 The `hierarchical_butterfly_classification` mode is implemented when `--taxonomy-candidate-table` points at those artifacts. It is open classification, not target validation. BioCLIP first scores configured butterfly-family prompts, records family top 3, selects the top family, scores species prompts only within that selected GBIF family, records species top 20, then reranks all 20 first-pass species into species top 5. Prompt-template scores are mean-aggregated by taxon. The mode does not inject the run target species and does not treat geography as hard validation.
 
-Hierarchical mode still obeys the detector gate: only YOLOE/YOLO26 rows with `detection_status=detected` and `detector_label=butterfly_like` are sent to BioCLIP. Other detector outcomes remain evidence rows and can influence review, but they are not species-scored.
+Hierarchical mode still obeys the configured BioCLIP gate. In rolling recall mode, moth-like, caterpillar, pupa, and generic insect-like detections are intentionally screened by BioCLIP rather than dropped at the detector boundary; hard-negative rows still remain evidence only.
 
-The production default visual mode is `detector_crop`. Whole-image BioCLIP is available only through explicit ablation/debug commands because it spends model budget on background, host plants, labels, hands, and other non-target content.
+The production default visual mode is `detector_crop`. Whole-image BioCLIP is available through explicit ablation/debug commands and through the rolling no-detection fallback; it is not an all-image default.
 
 ## Public Commands
 
@@ -36,6 +41,7 @@ The public stage tools are:
 
 ```bash
 uv run biominer vision screen --help
+uv run biominer vision rolling-screen --help
 uv run biominer vision detect --help
 uv run biominer vision score --help
 uv run biominer vision ablate --help
@@ -74,6 +80,21 @@ uv run biominer vision score \
 YOLO26 checkpoints must emit BioMiner coarse object labels or known legacy object aliases. Species-class checkpoints are rejected rather than remapped.
 
 For a local detector-first run that keeps each stage as durable zstd part files, use `vision screen`. It runs one persistent YOLOE sidecar and one persistent BioCLIP sidecar, writes canonical/detection/score/joined/summary part directories, and deletes cached images only after the relevant outputs commit.
+
+For the pipelined recall path, use `vision rolling-screen`. It plans deterministic 500-row image batches, uses YOLOE `image_path` transport by default, materializes `bioclip_score_inputs`, defaults to `--bioclip-gate-mode exclude_hard_negative`, enables `--score-no-detection-whole-image`, and keeps at most the configured image batches resident before commit-ordered cleanup:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer vision rolling-screen \
+  --input runs/local_debug/papilionoidea/canonical_source_records.parquet \
+  --output-dir runs/local_debug/papilionoidea/vision_rolling_screen \
+  --species-context runs/local_debug/papilionoidea/species_context.json \
+  --species-candidates data/registry/current/species_candidates.parquet \
+  --vision-profile mac_m5pro_64gb \
+  --device mps \
+  --vision-batch-rows 500 \
+  --bioclip-preprocess-workers 2 \
+  --delete-images-after-commit
+```
 
 Supported visual modes are:
 
@@ -116,6 +137,14 @@ uv run biominer dev vision benchmark-plumbing \
   --classification-mode hierarchical_butterfly_classification \
   --taxonomy-candidate-table tests/fixtures/taxonomy_store \
   --output-dir reports/vision_benchmarks/plumbing
+```
+
+The rolling benchmark matrix is also model-free. It compares YOLOE sidecar transport (`json_b64` versus `image_path`), accelerator concurrency, BioCLIP preprocessing workers, gate mode, and 250/500/1000-row batch sizes:
+
+```bash
+uv run biominer dev vision benchmark-rolling-matrix \
+  --records 1000 \
+  --output-dir reports/vision_benchmarks/rolling_matrix
 ```
 
 The optional live benchmark is for Mac M5 Pro sidecar validation only. It fails clearly when the YOLOE or BioCLIP runtime path, taxonomy table, cache, or model is missing:
@@ -187,7 +216,7 @@ The main BioMiner package stays on Python 3.14. Heavy vision libraries run from 
 
 Set `BIOMINER_BASE_PATH=/path/to/base` on macOS, WSL, or Ubuntu when the sibling folders are not next to the repository.
 
-The Mac M5 Pro / 64 GB profile is `mac_m5pro_64gb`. It uses Apple MPS, YOLOE checkpoint `yoloe-26s-seg.pt`, YOLO image size `768`, detector batch size `16`, crop batch size `24`, crop target `336`, crop padding `0.08`, zstd Parquet part outputs, and delete-after-commit image cleanup. Use `PYTORCH_ENABLE_MPS_FALLBACK=1` for runtime checks and sidecar runs.
+The Mac M5 Pro / 64 GB profile is `mac_m5pro_64gb`. It uses Apple MPS, YOLOE checkpoint `yoloe-26s-seg.pt`, YOLO image size `768`, detector batch size `16`, crop batch size `24`, crop target `336`, crop padding `0.08`, zstd Parquet part outputs, `parquet_part_rows=500`, and delete-after-commit image cleanup. Use `PYTORCH_ENABLE_MPS_FALLBACK=1` for runtime checks and sidecar runs.
 
 Unit tests use fake detectors and fake scorers and must not require Ultralytics, CUDA, MPS, model downloads, or network access.
 

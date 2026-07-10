@@ -1004,12 +1004,12 @@ def test_screen_object_detections_retains_materialized_detector_crops_when_debug
     assert list(crop_root.rglob("*.ppm"))
 
 
-def test_screen_object_detections_materialized_path_skips_noneligible_without_image_load(tmp_path) -> None:
+def test_screen_object_detections_materialized_path_skips_legacy_ineligible_without_image_load(tmp_path) -> None:
     image_loads: list[str] = []
 
     class FailingScorer:
         def score_label_sets_batch(self, image_paths, label_sets):  # noqa: ANN001, ANN202 - should not be called.
-            raise AssertionError("non-butterfly detection should not be scored")
+            raise AssertionError("legacy-ineligible detection should not be scored")
 
     def image_loader(item: dict[str, object]) -> DecodedImage:
         image_loads.append(str(item["detection_id"]))
@@ -1787,14 +1787,14 @@ def test_photo_summary_includes_hierarchical_open_classification_rows(tmp_path) 
     assert summary["photo_review_reason"] == "hierarchical_open_classification_requires_review"
 
 
-def test_object_bioclip_skips_non_butterfly_detector_labels(tmp_path) -> None:
+def test_object_bioclip_skips_legacy_ineligible_detector_labels(tmp_path) -> None:
     class FailingScorer:
         model_id = "fake-bioclip"
         model_version = "test"
         model_checkpoint = "fake-checkpoint"
 
         def score(self, item, labels):  # noqa: ANN001, ANN202 - mirrors scorer protocol.
-            raise AssertionError(f"non-butterfly detection was sent to BioCLIP: {item.get('detector_label')}")
+            raise AssertionError(f"legacy-ineligible detection was sent to BioCLIP: {item.get('detector_label')}")
 
     detections = _detections().with_columns(pl.lit("moth_like").alias("detector_label"))
     result = screen_object_detections(

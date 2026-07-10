@@ -10,8 +10,8 @@ BioMiner evaluates the pipeline as a screening and classification workflow:
 
 ```text
 Flickr image
--> YOLOE-26 butterfly_like detection
--> detector crop
+-> YOLOE-26 object proposal or no-detection fallback
+-> gate-approved visual input
 -> BioCLIP family top 3
 -> selected family
 -> BioCLIP species top 20 within selected family
@@ -27,7 +27,7 @@ BioCLIP scores are visual screening and classification evidence. They are not fo
 YOLOE and BioCLIP are measured separately:
 
 - YOLOE is an object detector only. Its output is evaluated as object discovery and butterfly-gate evidence.
-- BioCLIP is evaluated only on eligible detector crops. Production evaluation must not reward or require all-image BioCLIP scoring.
+- BioCLIP is evaluated only on gate-approved visual inputs. Production evaluation must record whether the run used legacy `butterfly_like_only` gating or rolling `exclude_hard_negative` recall gating.
 
 ## Fixed Invariants
 
@@ -36,13 +36,13 @@ Evaluation must preserve these classifier semantics:
 - `target_scope_object_screening` remains the default mode and is reported separately from hierarchical mode.
 - `hierarchical_butterfly_classification` performs open butterfly classification, not target validation.
 - YOLOE does not classify family, genus, or species.
-- BioCLIP scores only detections with `detection_status=detected` and `detector_label=butterfly_like`.
+- BioCLIP score-input eligibility is determined by the recorded gate mode. `butterfly_like_only` scores only detected `butterfly_like` crops. `exclude_hard_negative` scores detected non-hard-negative crops and configured no-detection whole-image fallback rows.
 - Hierarchical mode scores configured butterfly families and records family top 3.
 - Species top 20 is constrained to the selected top family.
 - Species top 5 is reranked from all first-pass top-20 species.
 - Hierarchical mode does not inject the run target species.
 - Prompt-template variants are aggregated by taxon, with mean aggregation as the default.
-- Non-butterfly detections remain evidence rows and review signals, but they are not BioCLIP species-scored.
+- Hard-negative and failed-image rows remain evidence rows and review signals, but they are not BioCLIP species-scored.
 
 ## Truth Data
 
@@ -58,7 +58,7 @@ Image-level butterfly gate:
 Measures whether an input photo produces any usable butterfly-like object evidence and whether negative photos avoid false butterfly promotion.
 
 Object-level butterfly crop detection:
-Measures detected object rows, eligible crop count, no-detection count, non-butterfly skip count, and false positives or false negatives relative to reviewed object labels.
+Measures detected object rows, configured score-input count, no-detection count, hard-negative skip count, and false positives or false negatives relative to reviewed object labels.
 
 Family top1/top3:
 Measures whether the reviewed family is the first predicted family and whether it appears anywhere in family top 3.
@@ -73,7 +73,7 @@ Review queue quality:
 Measures whether uncertain, conflicting, missing-score, hard-negative, and metadata-vision disagreement cases are captured for human review and ranked above clean confident rows.
 
 Negative and non-butterfly handling:
-Measures whether non-butterfly labels avoid BioCLIP species evidence and avoid promotion into confident species outputs.
+Measures whether hard-negative labels avoid BioCLIP species evidence and whether reviewed non-butterfly labels avoid promotion into confident species outputs.
 
 End-to-end photo summary behavior:
 Measures whether object-level predictions aggregate into conservative photo summaries, whether multi-object conflicts are retained, and whether open hierarchical predictions are not misrepresented as verified target positives.
@@ -82,9 +82,11 @@ Measures whether object-level predictions aggregate into conservative photo summ
 
 Detection and gating:
 
-- `detection_eligible_count`: detector rows eligible for BioCLIP crop scoring.
+- `detection_eligible_count`: detector rows eligible under the legacy detector policy, retained for backward-compatible reports.
+- `bioclip_score_inputs`: materialized BioCLIP score-input rows under the recorded gate mode.
 - `no_detection_count`: photos or objects with no usable detection.
-- `non_butterfly_skip_count`: detector rows retained as evidence but skipped for BioCLIP species scoring.
+- `hard_negative_skip_count`: hard-negative detector rows retained as evidence but skipped for BioCLIP species scoring.
+- `no_detection_fallback_count`: no-detection rows scored as whole-image fallback when configured.
 - `missing_prediction_count`: reviewed labels without a matching prediction row.
 - `missing_label_count`: prediction rows without a matching reviewed label.
 
@@ -214,7 +216,7 @@ Model-free fixtures should cover:
 - negative label
 - mixed target-scope and hierarchical rows
 - no target species injection in hierarchical mode
-- BioCLIP scored only eligible butterfly-like detections
+- BioCLIP score-input counts match the recorded gate mode
 
 Golden tests should compare compact JSON metrics and small Parquet tables. They should round floats to fixed precision and avoid snapshotting large output tables.
 

@@ -146,16 +146,11 @@ YOLOE/YOLO26 remain object proposal backends only. Their boxes are evidence for 
 
 ### BioCLIP 2.5
 
-BioCLIP work is planned from detection shards. Only rows with:
+Serial BioCLIP work is planned from detection shards and keeps the legacy `butterfly_like_only` gate. Rolling cloud vision work plans deterministic 500-image batches from committed source-record shards, runs detection, materializes `bioclip_score_inputs`, scores BioCLIP, joins evidence, writes photo summaries, registers all shards, and only then completes the work item.
 
-```text
-detection_status = "detected"
-detector_label = "butterfly_like"
-```
+The rolling gate is `exclude_hard_negative`: detected `butterfly_like`, `moth_like`, `caterpillar`, `pupa`, and `insect_like` rows proceed as detector crops; `no_detection` rows proceed as whole-image fallback when the image loaded; `hard_negative` and failed-image rows remain unscored evidence rows.
 
-may proceed to BioCLIP 2.5 scoring.
-
-BioCLIP 2.5 remains the crop-level species scorer. Output score shards carry object keys, model IDs, checkpoints, candidate-set IDs, visual mode, ranked family/genus/species candidates, target species score/rank, and bucket decision.
+BioCLIP 2.5 remains the visual family/species scorer. Output score shards carry object keys, visual input IDs, model IDs, checkpoints, candidate-set IDs, visual mode, gate mode/reason, ranked family/genus/species candidates, target species score/rank, and bucket decision.
 
 ### Evidence Join And Summary
 

@@ -9,6 +9,7 @@ uv run biominer run \
   --registry-dir s3://biominer/biominer/registry/current \
   --output-prefix s3://biominer/biominer/runs/papilio_demoleus \
   --vision-profile mac_m5pro_64gb \
+  --vision-worker rolling \
   --classification-mode target_scope_object_screening \
   --family-top-k 3 \
   --species-first-pass-top-k 20 \
@@ -63,8 +64,8 @@ Stage responsibilities:
 - `compile_queries`: compiles deterministic Flickr text and tag query definitions from enabled, query-eligible registry names; generic/collided/generated terms remain retained evidence unless review or corroboration makes them eligible.
 - `enqueue_flickr_work`: writes resumable Flickr work items into the workstore.
 - `poll_flickr`: fetches Flickr metadata, stores raw JSON audit payloads when configured, and writes canonical source records.
-- `detect_objects`: runs YOLOE/YOLO26-style object proposals over temporary image loads.
-- `score_bioclip`: scores BioCLIP 2.5 detector crops for `butterfly_like` detections. Whole-image and segmentation modes are explicit ablation/debug modes, not the production default.
+- `detect_objects`: runs YOLOE/YOLO26-style object proposals over temporary image loads. With `--vision-worker rolling`, this stage also materializes BioCLIP score inputs, runs BioCLIP, writes joined evidence, and registers all rolling shards before completing each work item.
+- `score_bioclip`: in serial mode, scores BioCLIP 2.5 detector crops for legacy `butterfly_like_only` eligibility. In rolling mode, reuses already committed rolling score shards. Whole-image and segmentation modes are explicit ablation/debug modes except for the configured rolling no-detection fallback.
 - `join_evidence`: joins canonical records, detections, and BioCLIP scores into object and photo evidence outputs.
 - `summarize`: writes run metrics, review queues, and report artifacts.
 
@@ -75,6 +76,8 @@ Canonical source records are keyed by `source` and `flickr_photo_id`. Repeated d
 Metadata filtering records metadata flags for review and routing. It does not perform final biological classification. Metadata flags are kept as evidence fields and cannot override hard-negative visual triage.
 
 BioCLIP is screening evidence only. The GBIF accepted taxonomic spine remains the production taxonomic identity, and geography is a candidate prior rather than validation.
+
+The BioCLIP score-input gate is recorded in output metadata. Legacy serial scoring uses `butterfly_like_only`; rolling production uses `exclude_hard_negative`, which scores all detected non-hard-negative rows and no-detection whole-image fallback rows while retaining hard-negative rows as unscored evidence.
 
 `target_scope_object_screening` is the default classification mode. It scores detector crops against the run taxon scope and registry candidate-set context for target support screening. Output fields named `family_top3`, `species_top20`, and `species_top5` are screening fields, not taxonomic validation.
 
@@ -108,6 +111,7 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
   --workstore-backend sqlite \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --vision-worker rolling \
   --classification-mode hierarchical_butterfly_classification \
   --taxonomy-candidate-table data/registry/current \
   --device mps \
@@ -129,6 +133,7 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run \
   --workstore-backend postgres \
   --vision-backend yoloe26 \
   --vision-profile mac_m5pro_64gb \
+  --vision-worker rolling \
   --classification-mode hierarchical_butterfly_classification \
   --taxonomy-candidate-table s3://biominer/biominer/registry/current \
   --device mps \
@@ -172,7 +177,8 @@ vision_stage_metrics.json
 vision_stage_summary.md
 ```
 
-These reports expose detector skip counts, eligible BioCLIP detections, selected family counts, species top-1 counts, batching settings, adaptive retries, throughput estimates, and cache-use flags. `bioclip_counts.objects_scored` should remain tied to eligible `butterfly_like` detections rather than all canonical source records.
+These reports expose detector skip counts, legacy eligible BioCLIP detections, selected family counts, species top-1 counts, batching settings, adaptive retries, throughput estimates, and cache-use flags. `bioclip_counts.objects_scored` should remain tied to configured score inputs rather than all canonical source records.
+Rolling reports additionally expose `bioclip_score_inputs`, `bioclip_score_inputs_per_image`, `whole_images_scored`, `bioclip_gate_mode`, queue wait seconds by stage, resident cache batch count, cleanup counts, MPS fallback state, and adaptive retry counts. In rolling recall mode, `bioclip_score_inputs` is the score-input denominator; `eligible_bioclip_detections` remains the legacy detector-policy count.
 
 ## Evaluation And QA Reports
 
@@ -208,4 +214,4 @@ uv run biominer evaluation classify \
   --evaluation-profile xie_style_metrics_only
 ```
 
-Xie-style is a metrics profile only. It does not change the production architecture, does not score all images with BioCLIP, and does not replace GBIF-derived candidate scope. Human-reviewed labels are required for real accuracy claims; synthetic fixtures only validate metric and QA logic.
+Xie-style is a metrics profile only. It does not change the production architecture, does not force all images through BioCLIP, and does not replace GBIF-derived candidate scope. Human-reviewed labels are required for real accuracy claims; synthetic fixtures only validate metric and QA logic.

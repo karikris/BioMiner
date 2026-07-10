@@ -18,6 +18,7 @@ crop target: 336
 crop padding: 0.08
 Parquet compression: zstd
 cleanup: delete cached images/crops only after committed outputs
+Parquet part rows: 500
 ```
 
 The profile lives in `src/biominer/detection/policy.py`. Heavy model dependencies stay in Python 3.12 sidecar runtimes; the main BioMiner Python 3.14 environment must remain light.
@@ -28,10 +29,10 @@ Detection loading:
 `run_detection_pipeline(...)` loads images with bounded `ThreadPoolExecutor.map(..., buffersize=max_inflight_images)`, resizes images when needed, and submits detector batches according to `DetectionRunPolicy.detector_batch_size`.
 
 YOLOE sidecar:
-`YoloE26SidecarObjectDetector.detect_batch(...)` keeps a persistent subprocess and sends decoded RGB images as base64 JSON payloads. That is simple and testable, but it is likely the largest avoidable IPC cost on local high-throughput runs. The in-process optional YOLOE backend converts decoded images to PIL inside the sidecar/runtime path.
+`YoloE26SidecarObjectDetector.detect_batch(...)` keeps a persistent subprocess. Legacy `vision screen` can send decoded RGB images as base64 JSON payloads; rolling `vision rolling-screen` uses `image_path` by default for lower local IPC overhead. The in-process optional YOLOE backend converts decoded images to PIL inside the sidecar/runtime path.
 
-Crop generation:
-Detection rows get crop metadata only for BioCLIP-eligible detections unless debug crop retention is enabled. Non-eligible detector rows remain evidence rows but normally do not materialise crop bytes. Object image embedding cache and direct crop materialisation write PPM files into temporary batch directories and remove them in `finally` blocks unless debug retention is requested.
+Score-input materialisation:
+Legacy serial scoring creates crop metadata only for `butterfly_like`-eligible detections unless debug crop retention is enabled. Rolling recall materializes detector crops for all non-hard-negative detections and whole-image fallback inputs for no-detection rows when the image loaded. Hard-negative and failed-image rows remain evidence rows and do not materialize BioCLIP inputs.
 
 BioCLIP worker:
 BioCLIP sidecar requests already use image paths. `PersistentBioClipScorer` batches crop paths and supports label-set scoring, text embeddings, and image embeddings. This is the correct transport shape for large crop batches.
@@ -96,13 +97,15 @@ Both paths:
 - Preserve object/photo evidence rows for non-scored detections.
 - Preserve `target_scope_object_screening` as the default.
 
-## Implemented Phase 4 Optimisations
+## Implemented Vision Optimisations
 
 - Model-free plumbing benchmark: `biominer dev vision benchmark-plumbing` writes JSON/Markdown reports and uses only fake detectors/scorers.
+- Model-free rolling matrix benchmark: `biominer dev vision benchmark-rolling-matrix` compares transport, accelerator concurrency, preprocessing workers, gate mode, and 250/500/1000-row batches.
 - Optional live M5 Pro benchmark: `biominer dev vision benchmark-live-m5pro` validates sidecar runtimes, models, taxonomy tables, runtime settings, and MPS fallback state.
 - Runtime profile validation: `mac_m5pro_64gb` keeps the target MPS profile and rejects invalid batch, crop, image-size, and adaptive override settings.
-- YOLOE sidecar transport: `json_b64` remains compatible and `image_path` is available for lower local IPC overhead.
-- Crop lifecycle: detector crops are materialised once per eligible detection batch where needed and cleaned only after score rows are safely held or written.
+- YOLOE sidecar transport: `json_b64` remains compatible and rolling uses `image_path` by default for lower local IPC overhead.
+- Rolling worker: `vision rolling-screen` and `run --vision-worker rolling` process deterministic 500-row batches through staging, YOLOE, score-input materialisation, BioCLIP, commit, and cleanup.
+- Crop lifecycle: detector crops and fallback score inputs are materialised once per eligible batch where needed and cleaned only after score rows are safely held or written.
 - Taxonomy text embedding cache: optional hierarchical taxonomy caches are validated against taxonomy and BioCLIP model metadata.
 - Adaptive batching: opt-in detector and BioCLIP batch fallback retries only conservative memory/device failures and records retry metrics.
 - Taxonomy lookup cache: classification tables are projected and indexed for repeated family/species lookups.
@@ -150,7 +153,7 @@ This does not alter the architecture or classifier semantics. Review queues are 
 - YOLO training or reviewed-box storage.
 - Metadata anti-keywords as hard pre-visual discards.
 - Permanent Flickr image archives.
-- Hidden whole-image BioCLIP production scoring.
+- Hidden all-image BioCLIP production scoring beyond the explicit no-detection fallback.
 - Hidden segmentation production defaults.
 - Broadening Flickr discovery/query behaviour.
 - Adding PyTorch, OpenCLIP, Ultralytics, or Pillow-heavy runtime dependencies to the main required package.
@@ -159,12 +162,13 @@ This does not alter the architecture or classifier semantics. Review queues are 
 
 - YOLOE is an object detector only.
 - BioCLIP is the family/species classifier.
-- BioCLIP only receives YOLOE `butterfly_like` detections in production scoring.
+- Legacy `butterfly_like_only` gating remains available for serial scoring and ablation.
+- Rolling production scoring defaults to `exclude_hard_negative`: score non-hard-negative detections and no-detection whole-image fallback, never hard-negative rows.
 - Family top 3 is scored across configured butterfly families.
 - Species top 20 is constrained to the selected top family.
 - Species top 5 is reranked from all top 20.
 - Hierarchical mode never injects the target species.
 - `target_scope_object_screening` remains backward-compatible and remains the default.
-- Whole-image BioCLIP remains explicit ablation/debug behavior.
+- Whole-image BioCLIP remains explicit ablation/debug behavior except for the configured no-detection fallback.
 - Temporary images/crops are deleted only after committed outputs.
 - Model-free tests stay deterministic, network-free, and free of real model dependencies.

@@ -80,8 +80,12 @@ def vision_stage_summary_markdown(metrics: dict[str, Any]) -> str:
         "",
         "| Metric | Value |",
         "| --- | ---: |",
+        f"| BioCLIP gate mode | {_display(bioclip.get('bioclip_gate_mode'))} |",
+        f"| Score inputs seen | {_display(bioclip.get('score_inputs_seen'))} |",
         f"| Crops seen | {_display(bioclip.get('crops_seen'))} |",
         f"| Crops scored | {_display(bioclip.get('crops_scored'))} |",
+        f"| Whole images scored | {_display(bioclip.get('whole_images_scored'))} |",
+        f"| Detector crops scored | {_display(bioclip.get('detector_crops_scored'))} |",
         f"| Family score entries | {_display(bioclip.get('family_scores_computed'))} |",
         f"| Species first-pass candidates | {_display(bioclip.get('species_first_pass_candidates_seen'))} |",
         f"| Species rerank candidates | {_display(bioclip.get('species_rerank_candidates_seen'))} |",
@@ -150,10 +154,15 @@ def _detection_metrics(
 
 def _bioclip_metrics(scores: pl.DataFrame | None, *, detections: pl.DataFrame | None, runtime: dict[str, Any]) -> dict[str, Any]:
     crops_scored = _height(scores)
+    score_inputs_seen = _runtime_int(runtime, "bioclip_score_inputs", "score_inputs_seen")
     candidate_counts = _numeric_values(scores, "species_candidate_count")
     return {
-        "crops_seen": _runtime_int(runtime, "crops_seen", default=_eligible_detection_count(detections)),
+        "bioclip_gate_mode": _runtime_string(runtime, "bioclip_gate_mode"),
+        "score_inputs_seen": score_inputs_seen,
+        "crops_seen": _runtime_int(runtime, "crops_seen", default=score_inputs_seen if score_inputs_seen is not None else _eligible_detection_count(detections)),
         "crops_scored": _runtime_int(runtime, "crops_scored", "objects_scored", default=crops_scored),
+        "whole_images_scored": _runtime_int(runtime, "whole_images_scored", default=_mode_row_count(scores, "whole_image")),
+        "detector_crops_scored": _runtime_int(runtime, "detector_crops_scored", default=_mode_row_count(scores, "detector_crop")),
         "family_scores_computed": _runtime_int(runtime, "family_scores_computed", default=_list_length_sum(scores, "family_top3")),
         "species_first_pass_candidates_seen": _runtime_int(
             runtime,
@@ -194,7 +203,11 @@ def _warning_flags(*, detection_metrics: dict[str, Any], bioclip_metrics: dict[s
     warnings: list[str] = []
     eligible = detection_metrics.get("eligible_bioclip_detections")
     scored = bioclip_metrics.get("crops_scored")
-    if isinstance(eligible, int) and isinstance(scored, int) and scored > eligible:
+    score_inputs_seen = bioclip_metrics.get("score_inputs_seen")
+    if isinstance(score_inputs_seen, int):
+        if isinstance(scored, int) and scored > score_inputs_seen:
+            warnings.append("crops_scored_exceeds_bioclip_score_inputs")
+    elif isinstance(eligible, int) and isinstance(scored, int) and scored > eligible:
         warnings.append("crops_scored_exceeds_eligible_bioclip_detections")
     if int(detection_metrics.get("hard_negative_detections") or 0) > 0:
         warnings.append("hard_negative_detections_present")
@@ -228,6 +241,14 @@ def _eligible_detection_count(frame: pl.DataFrame | None) -> int | None:
     if frame is None:
         return None
     return sum(1 for row in frame.to_dicts() if detection_is_bioclip_eligible(row))
+
+
+def _mode_row_count(frame: pl.DataFrame | None, mode: str) -> int | None:
+    if frame is None:
+        return None
+    if frame.is_empty() or "ablation_mode" not in frame.columns:
+        return 0
+    return int(frame.filter(pl.col("ablation_mode") == mode).height)
 
 
 def _detected_label_count(rows: list[dict[str, Any]], label: str) -> int:
@@ -287,6 +308,14 @@ def _runtime_float(runtime: dict[str, Any], *keys: str) -> float | None:
 def _runtime_bool(runtime: dict[str, Any], key: str, *, default: bool | None = None) -> bool | None:
     value = runtime.get(key)
     return bool(value) if value is not None else default
+
+
+def _runtime_string(runtime: dict[str, Any], *keys: str, default: str | None = None) -> str | None:
+    for key in keys:
+        value = runtime.get(key)
+        if value is not None:
+            return str(value)
+    return default
 
 
 def _rate(count: int | None, seconds: float | None) -> float | None:

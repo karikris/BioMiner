@@ -109,7 +109,7 @@ def test_phase4_docs_and_cli_expose_benchmarks_and_runbook_commands() -> None:
     assert "uv run biominer dev vision benchmark-live-m5pro" in runbook
     assert "--taxonomy-text-embedding-cache" in runbook
     assert "--adaptive-batching" in runbook
-    assert "BioCLIP does not process all images in production" in readme
+    assert "Whole-image BioCLIP is still not an all-image production default" in readme
 
 
 def _dependency_name(value: object) -> str:
