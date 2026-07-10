@@ -7,6 +7,11 @@ from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 import polars as pl
 
+try:  # NumPy is available with the local BioMiner environment via the ML stack.
+    import numpy as _np
+except Exception:  # pragma: no cover - fallback keeps the package usable without NumPy.
+    _np = None
+
 from biominer.bioclip.classification_modes import (
     DEFAULT_FAMILY_TOP_K,
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
@@ -23,6 +28,7 @@ from biominer.registry.classification_table import (
 
 HIERARCHICAL_CANDIDATE_SELECTION_MODE = "gbif_family_first"
 HIERARCHICAL_SPECIES_RERANK_STRATEGY = "rerank_all_first_pass_top20"
+_CACHE_INDEX_BY_FRAME_AND_FAMILY: dict[tuple[int, str, str, str], "_CachedFamilySpeciesIndex"] = {}
 
 TAXON_SCORE_SCHEMA: dict[str, pl.DataType] = {
     "accepted_taxon_key": pl.String,
@@ -356,12 +362,15 @@ def classify_butterfly_crops_hierarchical_batch(
     )["family"]
     image_embeddings: list[list[float]] | None = None
     text_embedding_cache: pl.DataFrame | None = None
+    cache_model_id: str | None = None
+    cache_model_checkpoint: str | None = None
     if taxonomy_text_embedding_cache is not None:
         text_embedding_cache = _validated_taxonomy_text_embedding_cache_for_scorer(
             taxonomy_text_embedding_cache,
             taxonomy_store=taxonomy_store,
             scorer=scorer,
         )
+        cache_model_id, cache_model_checkpoint = _single_cache_model_pair(text_embedding_cache)
         image_embeddings = _embed_image_items_for_cached_taxonomy(scorer, batch_items)
 
     state: dict[int, dict[str, Any]] = {}
@@ -387,15 +396,17 @@ def classify_butterfly_crops_hierarchical_batch(
     for family_key, indices in family_groups.items():
         species_taxa = taxonomy_store.species_for_family(family_key)
         if image_embeddings is not None:
-            if text_embedding_cache is None:
+            if text_embedding_cache is None or cache_model_id is None or cache_model_checkpoint is None:
                 raise AssertionError("taxonomy text embedding cache was not validated before cached species ranking")
             for index in indices:
                 species_top20 = tuple(
-                    rank_species_with_cached_text_embeddings(
+                    _rank_species_with_validated_cached_text_embeddings(
                         image_embedding=image_embeddings[index],
                         taxonomy_store=taxonomy_store,
                         family_key=family_key,
                         text_embedding_cache=text_embedding_cache,
+                        model_id=cache_model_id,
+                        model_checkpoint=cache_model_checkpoint,
                         top_k=species_first_pass_top_k,
                     )
                 )
@@ -494,17 +505,231 @@ def rank_species_with_cached_text_embeddings(
         model_id=model_id,
         model_checkpoint=model_checkpoint,
     )
+    return _rank_species_with_validated_cached_text_embeddings(
+        image_embedding=image_embedding,
+        taxonomy_store=taxonomy_store,
+        family_key=family_key,
+        text_embedding_cache=text_embedding_cache,
+        model_id=model_id,
+        model_checkpoint=model_checkpoint,
+        top_k=limit,
+    )
+
+
+def _rank_species_with_validated_cached_text_embeddings(
+    *,
+    image_embedding: Sequence[float],
+    taxonomy_store: ButterflyTaxonomyStore,
+    family_key: str,
+    text_embedding_cache: pl.DataFrame,
+    model_id: str,
+    model_checkpoint: str,
+    top_k: int,
+) -> list[TaxonScore]:
+    limit = int(top_k)
+    if limit <= 0:
+        raise ValueError("top_k must be positive")
+    selected_family_key = _clean_text(family_key)
+    if not selected_family_key:
+        raise ValueError("family_key is required")
+    species_taxa = taxonomy_store.species_for_family(selected_family_key)
     image_vector = _float_vector(image_embedding)
-    groups = _cached_species_prompt_similarity_groups(
-        image_vector=image_vector,
+    index = _cached_family_species_index(
         species_taxa=species_taxa,
         family_key=selected_family_key,
         text_embedding_cache=text_embedding_cache,
         model_id=model_id,
         model_checkpoint=model_checkpoint,
     )
-    scores = [_taxon_score_from_cached_group(group) for group in groups.values()]
+    if index.matrix is not None and _np is not None:
+        image = _np.asarray(image_vector, dtype=_np.float32)
+        norm = float(_np.linalg.norm(image))
+        if norm == 0.0:
+            label_scores = _np.zeros(len(index.labels), dtype=_np.float32)
+        else:
+            label_scores = index.matrix @ (image / norm)
+        scores = [
+            _taxon_score_from_label_scores(
+                metadata=index.taxon_metadata_by_key[taxon_key],
+                labels=index.labels,
+                label_scores=label_scores,
+                label_indices=indices,
+            )
+            for taxon_key, indices in index.label_indices_by_taxon_key.items()
+        ]
+    else:
+        scores = [
+            _taxon_score_from_values(
+                metadata=index.taxon_metadata_by_key[taxon_key],
+                values_by_label={
+                    index.labels[index_index]: _cosine_similarity(image_vector, index.embedding_vectors[index_index])
+                    for index_index in indices
+                },
+            )
+            for taxon_key, indices in index.label_indices_by_taxon_key.items()
+        ]
     return sorted(scores, key=lambda score: (-score.score, score.scientific_name, score.accepted_taxon_key))[:limit]
+
+
+@dataclass(frozen=True)
+class _CachedTaxonMetadata:
+    accepted_taxon_key: str
+    scientific_name: str
+    rank: str
+    family_key: str | None
+    family: str | None
+    genus_key: str | None
+    genus: str | None
+
+
+@dataclass(frozen=True)
+class _CachedFamilySpeciesIndex:
+    labels: tuple[str, ...]
+    embedding_vectors: tuple[tuple[float, ...], ...]
+    matrix: Any | None
+    label_indices_by_taxon_key: dict[str, tuple[int, ...]]
+    taxon_metadata_by_key: dict[str, _CachedTaxonMetadata]
+
+
+def _cached_family_species_index(
+    *,
+    species_taxa: pl.DataFrame,
+    family_key: str,
+    text_embedding_cache: pl.DataFrame,
+    model_id: str,
+    model_checkpoint: str,
+) -> _CachedFamilySpeciesIndex:
+    cache_key = (id(text_embedding_cache), family_key, model_id, model_checkpoint)
+    cached = _CACHE_INDEX_BY_FRAME_AND_FAMILY.get(cache_key)
+    if cached is not None:
+        return cached
+    taxa_by_key = {str(row["accepted_taxon_key"]): row for row in species_taxa.to_dicts()}
+    species_rows = (
+        text_embedding_cache.filter(
+            (pl.col("model_id") == model_id)
+            & (pl.col("model_checkpoint") == model_checkpoint)
+            & (pl.col("label_scope") == "species")
+            & (pl.col("family_key") == family_key)
+            & pl.col("accepted_taxon_key").is_in(list(taxa_by_key))
+        )
+        .sort(["accepted_taxon_key", "label"])
+        .to_dicts()
+    )
+    labels: list[str] = []
+    embedding_vectors: list[tuple[float, ...]] = []
+    label_indices_by_taxon_key: dict[str, list[int]] = {}
+    taxon_metadata_by_key: dict[str, _CachedTaxonMetadata] = {}
+    for row in species_rows:
+        taxon_key = _clean_text(row.get("accepted_taxon_key"))
+        label = _clean_text(row.get("label"))
+        if not taxon_key or not label or taxon_key not in taxa_by_key:
+            continue
+        taxon = taxa_by_key[taxon_key]
+        taxon_metadata_by_key.setdefault(
+            taxon_key,
+            _CachedTaxonMetadata(
+                accepted_taxon_key=taxon_key,
+                scientific_name=_clean_text(taxon.get("scientific_name")),
+                rank=_clean_text(taxon.get("rank")) or "SPECIES",
+                family_key=_clean_text(taxon.get("family_key")) or None,
+                family=_clean_text(taxon.get("family")) or None,
+                genus_key=_clean_text(taxon.get("genus_key")) or None,
+                genus=_clean_text(taxon.get("genus")) or None,
+            ),
+        )
+        label_indices_by_taxon_key.setdefault(taxon_key, []).append(len(labels))
+        labels.append(label)
+        embedding_vectors.append(tuple(_float_vector(row.get("embedding"))))
+    matrix = _embedding_matrix(embedding_vectors)
+    index = _CachedFamilySpeciesIndex(
+        labels=tuple(labels),
+        embedding_vectors=tuple(embedding_vectors),
+        matrix=matrix,
+        label_indices_by_taxon_key={key: tuple(value) for key, value in label_indices_by_taxon_key.items()},
+        taxon_metadata_by_key=taxon_metadata_by_key,
+    )
+    _CACHE_INDEX_BY_FRAME_AND_FAMILY[cache_key] = index
+    return index
+
+
+def _embedding_matrix(embedding_vectors: Sequence[Sequence[float]]) -> Any | None:
+    if _np is None or not embedding_vectors:
+        return None
+    matrix = _np.asarray(embedding_vectors, dtype=_np.float32)
+    norms = _np.linalg.norm(matrix, axis=1, keepdims=True)
+    return matrix / _np.where(norms == 0.0, 1.0, norms)
+
+
+def _taxon_score_from_label_scores(
+    *,
+    metadata: _CachedTaxonMetadata,
+    labels: Sequence[str],
+    label_scores: Sequence[float],
+    label_indices: Sequence[int],
+) -> TaxonScore:
+    values_by_label = {labels[index]: float(label_scores[index]) for index in label_indices}
+    return _taxon_score_from_values(metadata=metadata, values_by_label=values_by_label)
+
+
+def _taxon_score_from_values(
+    *,
+    metadata: _CachedTaxonMetadata,
+    values_by_label: Mapping[str, float],
+) -> TaxonScore:
+    values = list(values_by_label.values())
+    best_label, _best_score = sorted(values_by_label.items(), key=lambda item: (-item[1], item[0]))[0]
+    return TaxonScore(
+        accepted_taxon_key=metadata.accepted_taxon_key,
+        scientific_name=metadata.scientific_name,
+        rank=metadata.rank,
+        family_key=metadata.family_key,
+        family=metadata.family,
+        genus_key=metadata.genus_key,
+        genus=metadata.genus,
+        score=sum(values) / len(values),
+        best_label=best_label,
+        label_count=len(values_by_label),
+    )
+
+
+def _cached_species_prompt_similarity_groups(
+    *,
+    image_vector: list[float],
+    species_taxa: pl.DataFrame,
+    family_key: str,
+    text_embedding_cache: pl.DataFrame,
+    model_id: str,
+    model_checkpoint: str,
+) -> dict[str, dict[str, Any]]:
+    index = _cached_family_species_index(
+        species_taxa=species_taxa,
+        family_key=family_key,
+        text_embedding_cache=text_embedding_cache,
+        model_id=model_id,
+        model_checkpoint=model_checkpoint,
+    )
+    groups: dict[str, dict[str, Any]] = {}
+    for taxon_key, indices in index.label_indices_by_taxon_key.items():
+        metadata = index.taxon_metadata_by_key[taxon_key]
+        group = groups.setdefault(
+            taxon_key,
+            {
+                "accepted_taxon_key": metadata.accepted_taxon_key,
+                "scientific_name": metadata.scientific_name,
+                "rank": metadata.rank,
+                "family_key": metadata.family_key,
+                "family": metadata.family,
+                "genus_key": metadata.genus_key,
+                "genus": metadata.genus,
+                "label_scores": {},
+            },
+        )
+        for index_index in indices:
+            group["label_scores"].setdefault(
+                index.labels[index_index],
+                _cosine_similarity(image_vector, index.embedding_vectors[index_index]),
+            )
+    return groups
 
 
 def hierarchical_result_to_object_score_row(
@@ -746,69 +971,6 @@ def _single_cache_model_pair(frame: pl.DataFrame) -> tuple[str, str]:
     if len(pairs) > 1:
         raise ValueError("taxonomy text embedding cache must contain exactly one model_id/model_checkpoint pair")
     return next(iter(pairs))
-
-
-def _cached_species_prompt_similarity_groups(
-    *,
-    image_vector: list[float],
-    species_taxa: pl.DataFrame,
-    family_key: str,
-    text_embedding_cache: pl.DataFrame,
-    model_id: str,
-    model_checkpoint: str,
-) -> dict[str, dict[str, Any]]:
-    taxa_by_key = {str(row["accepted_taxon_key"]): row for row in species_taxa.to_dicts()}
-    species_rows = (
-        text_embedding_cache.filter(
-            (pl.col("model_id") == model_id)
-            & (pl.col("model_checkpoint") == model_checkpoint)
-            & (pl.col("label_scope") == "species")
-            & (pl.col("family_key") == family_key)
-            & pl.col("accepted_taxon_key").is_in(list(taxa_by_key))
-        )
-        .sort(["accepted_taxon_key", "label"])
-        .to_dicts()
-    )
-    groups: dict[str, dict[str, Any]] = {}
-    for row in species_rows:
-        taxon_key = _clean_text(row.get("accepted_taxon_key"))
-        label = _clean_text(row.get("label"))
-        if not taxon_key or not label or taxon_key not in taxa_by_key:
-            continue
-        taxon = taxa_by_key[taxon_key]
-        group = groups.setdefault(
-            taxon_key,
-            {
-                "accepted_taxon_key": taxon_key,
-                "scientific_name": _clean_text(taxon.get("scientific_name")),
-                "rank": _clean_text(taxon.get("rank")) or "SPECIES",
-                "family_key": _clean_text(taxon.get("family_key")) or None,
-                "family": _clean_text(taxon.get("family")) or None,
-                "genus_key": _clean_text(taxon.get("genus_key")) or None,
-                "genus": _clean_text(taxon.get("genus")) or None,
-                "label_scores": {},
-            },
-        )
-        group["label_scores"].setdefault(label, _cosine_similarity(image_vector, _float_vector(row.get("embedding"))))
-    return groups
-
-
-def _taxon_score_from_cached_group(group: Mapping[str, Any]) -> TaxonScore:
-    values_by_label = dict(group["label_scores"])
-    values = list(values_by_label.values())
-    best_label, _best_score = sorted(values_by_label.items(), key=lambda item: (-item[1], item[0]))[0]
-    return TaxonScore(
-        accepted_taxon_key=str(group["accepted_taxon_key"]),
-        scientific_name=str(group["scientific_name"]),
-        rank=str(group["rank"]),
-        family_key=group["family_key"],
-        family=group["family"],
-        genus_key=group["genus_key"],
-        genus=group["genus"],
-        score=sum(values) / len(values),
-        best_label=best_label,
-        label_count=len(values_by_label),
-    )
 
 
 def _taxonomy_table_version(taxonomy_store: ButterflyTaxonomyStore) -> str:
