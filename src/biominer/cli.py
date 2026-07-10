@@ -100,6 +100,17 @@ from biominer.config import ConfigError, create_workstore, load_biominer_config,
 from biominer.storage.factory import create_storage_backend
 from biominer.storage.parquet import write_parquet
 from biominer.storage.uri import is_cloud_uri, join_uri, normalize_local_uri
+from biominer.vision.gates import BioClipGateMode, BioClipGatePolicy
+from biominer.vision.rolling_worker import (
+    BioCLIPWorker,
+    CommitWorker,
+    ImageStager,
+    RollingVisionWorker,
+    RollingVisionWorkerSettings,
+    ScoreInputMaterializer,
+    YOLOWorker,
+    load_staged_or_cached_image,
+)
 
 
 STANDARD_EVALUATION_PROFILE = "standard"
@@ -199,6 +210,32 @@ def build_parser() -> argparse.ArgumentParser:
     vision_screen.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
     vision_screen.add_argument("--delete-images-after-commit", action=argparse.BooleanOptionalAction, default=None)
     vision_screen.add_argument("--retain-debug-crops", action="store_true")
+    vision_rolling_screen = vision_subparsers.add_parser("rolling-screen")
+    vision_rolling_screen.add_argument("--input", required=True)
+    vision_rolling_screen.add_argument("--output-dir", required=True)
+    vision_rolling_screen.add_argument("--species-context", required=True)
+    vision_rolling_screen.add_argument("--species-candidates")
+    vision_rolling_screen.add_argument("--vision-profile", default="mac_m5pro_64gb")
+    vision_rolling_screen.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"))
+    vision_rolling_screen.add_argument("--yolo-sidecar-transport", default="image_path", choices=("json_b64", "image_path"))
+    vision_rolling_screen.add_argument("--yolo-runtime-python", default=YOLOE26_RUNTIME_PYTHON)
+    vision_rolling_screen.add_argument("--bioclip-runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    vision_rolling_screen.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
+    vision_rolling_screen.add_argument("--cache-root", default="data/cache/images")
+    vision_rolling_screen.add_argument("--crop-temp-dir", default="data/cache/object_crops")
+    vision_rolling_screen.add_argument("--limit", type=int)
+    vision_rolling_screen.add_argument("--parquet-part-rows", type=int)
+    vision_rolling_screen.add_argument("--prompt-class", action="append", default=[])
+    vision_rolling_screen.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
+    vision_rolling_screen.add_argument("--delete-images-after-commit", action=argparse.BooleanOptionalAction, default=None)
+    vision_rolling_screen.add_argument("--retain-debug-crops", action="store_true")
+    vision_rolling_screen.add_argument("--vision-batch-rows", type=int, default=500)
+    vision_rolling_screen.add_argument("--image-prefetch-batches", type=int, default=4)
+    vision_rolling_screen.add_argument("--target-ready-yolo-batches", type=int, default=3)
+    vision_rolling_screen.add_argument("--bioclip-gate-mode", choices=tuple(mode.value for mode in BioClipGateMode), default=BioClipGateMode.EXCLUDE_HARD_NEGATIVE.value)
+    vision_rolling_screen.add_argument("--score-no-detection-whole-image", action=argparse.BooleanOptionalAction, default=True)
+    vision_rolling_screen.add_argument("--accelerator-concurrency", type=int, default=1)
+    vision_rolling_screen.add_argument("--bioclip-preprocess-workers", type=int, default=1)
     vision_score = vision_subparsers.add_parser("score")
     vision_score.add_argument("--input", required=True)
     vision_score.add_argument("--detections", required=True)
@@ -587,6 +624,8 @@ def run(args: argparse.Namespace) -> int:
             return _run_detect_boxes(args)
         if args.vision_command == "screen":
             return _run_vision_screen(args)
+        if args.vision_command == "rolling-screen":
+            return _run_vision_rolling_screen(args)
         if args.vision_command == "score":
             return _run_bioclip_screen_objects(args)
         if args.vision_command == "ablate":
@@ -2181,6 +2220,215 @@ def _run_vision_screen(args: argparse.Namespace) -> int:
                 "detections_written": metrics["detections_written"],
                 "crops_scored": metrics["crops_scored"],
                 "image_cleanup_status": manifest["image_cleanup_status"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _run_vision_rolling_screen(args: argparse.Namespace) -> int:
+    from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
+
+    started_at = datetime.now(UTC)
+    yolo_python = Path(args.yolo_runtime_python).expanduser()
+    bioclip_python = Path(args.bioclip_runtime_python).expanduser()
+    if not yolo_python.exists():
+        print(json.dumps({"error": f"YOLOE-26 runtime Python not found: {yolo_python}"}, indent=2, sort_keys=True))
+        return 2
+    if not bioclip_python.exists():
+        print(json.dumps({"error": f"BioCLIP runtime Python not found: {bioclip_python}"}, indent=2, sort_keys=True))
+        return 2
+
+    settings = vision_runtime_settings(args.vision_profile)
+    overrides: dict[str, object] = {}
+    if args.device:
+        overrides["device"] = args.device
+    if args.yolo_sidecar_transport:
+        overrides["yolo_sidecar_transport"] = args.yolo_sidecar_transport
+    if args.parquet_part_rows is not None:
+        overrides["parquet_part_rows"] = args.parquet_part_rows
+    if args.retain_debug_crops:
+        overrides["retain_debug_crops"] = True
+    settings = settings.with_overrides(**overrides)
+    delete_images_after_commit = (
+        settings.delete_images_after_commit
+        if args.delete_images_after_commit is None
+        else bool(args.delete_images_after_commit)
+    )
+
+    records = pl.read_parquet(args.input)
+    if args.limit is not None and args.limit > 0:
+        records = records.head(args.limit)
+    context = SpeciesContext.read_json(args.species_context)
+    candidate_set = _build_candidate_set_for_cli(
+        context,
+        command="vision rolling-screen",
+        species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None,
+        records=records.to_dicts(),
+    )
+    if isinstance(candidate_set, int):
+        return candidate_set
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    detection_policy = settings.to_detection_policy(DetectionPolicy(backend="yoloe26"))
+    run_policy = settings.to_detection_run_policy()
+    detector = YoloE26SidecarObjectDetector(
+        runtime_python=str(yolo_python),
+        checkpoint=settings.yolo_checkpoint,
+        device=settings.device,
+        imgsz=settings.yolo_imgsz,
+        conf=settings.yolo_conf,
+        iou=settings.yolo_iou,
+        max_det=settings.yolo_max_det,
+        prompt_classes=_yoloe26_prompt_classes(args),
+        transport=settings.yolo_sidecar_transport,
+    )
+    bioclip_scorer = PersistentBioClipScorer(
+        runtime=_bioclip_runtime(runtime_python=bioclip_python),
+        hf_cache_dir=args.hf_cache_dir,
+        device=settings.device,
+    )
+    image_stager = ImageStager(output_dir=output_dir, cache_root=args.cache_root)
+    gate_policy = BioClipGatePolicy(
+        mode=args.bioclip_gate_mode,
+        score_no_detection_whole_image=bool(args.score_no_detection_whole_image),
+    )
+    try:
+        object_scorer = EphemeralCropBioClipScorer(
+            scorer=bioclip_scorer,
+            image_loader=load_staged_or_cached_image,
+            temp_dir=args.crop_temp_dir,
+            crop_padding_ratio=settings.crop_padding_ratio,
+            crop_target_px=settings.crop_target_px,
+            model_id="bioclip2_5",
+            model_version="bioclip2_5_huge",
+            model_checkpoint=BIOCLIP_25_HUGE_REVISION,
+            retain_debug_crops=settings.retain_debug_crops,
+            debug_crop_limit=settings.debug_crop_limit,
+            segmenter=make_segmenter("none"),
+        )
+        worker = RollingVisionWorker(
+            settings=RollingVisionWorkerSettings(
+                vision_batch_rows=args.vision_batch_rows,
+                image_prefetch_batches=args.image_prefetch_batches,
+                target_ready_yolo_batches=args.target_ready_yolo_batches,
+                accelerator_concurrency=args.accelerator_concurrency,
+                bioclip_preprocess_workers=args.bioclip_preprocess_workers,
+                bioclip_gate_mode=args.bioclip_gate_mode,
+                score_no_detection_whole_image=bool(args.score_no_detection_whole_image),
+            ),
+            image_stage=image_stager,
+            detection_stage=YOLOWorker(
+                detector=detector,
+                output_dir=output_dir,
+                image_loader=load_staged_or_cached_image,
+                detection_policy=detection_policy,
+                run_policy=run_policy,
+            ),
+            score_input_stage=ScoreInputMaterializer(
+                output_dir=output_dir,
+                image_loader=load_staged_or_cached_image,
+                gate_policy=gate_policy,
+                crop_padding_ratio=settings.crop_padding_ratio,
+                crop_target_px=settings.crop_target_px,
+            ),
+            score_stage=BioCLIPWorker(
+                species_context=context,
+                candidate_set=candidate_set,
+                scorer=object_scorer,
+                output_dir=output_dir,
+                bioclip_batch_size=settings.crop_batch_size,
+                adaptive_batching=settings.adaptive_batching,
+                min_bioclip_batch_size=settings.min_crop_batch_size,
+            ),
+            commit_stage=CommitWorker(
+                output_dir=output_dir,
+                species_context=context,
+                delete_images_after_commit=delete_images_after_commit,
+            ),
+        )
+        result = worker.run(records)
+    finally:
+        image_stager.close()
+        bioclip_scorer.close()
+        close_detector = getattr(detector, "close", None)
+        if callable(close_detector):
+            close_detector()
+
+    ended_at = datetime.now(UTC)
+    part_outputs = [dict(part) for part in result.part_outputs]
+    metrics = {
+        **result.metrics,
+        "run_id": started_at.strftime("vision-rolling-screen-%Y%m%dT%H%M%S%fZ"),
+        "status": result.status,
+        "command": "vision rolling-screen",
+        "records_seen": records.height,
+        "batches_seen": result.batches_seen,
+        "batches_committed": result.batches_committed,
+        "vision_profile": args.vision_profile,
+        "device": settings.device,
+        "yolo_sidecar_transport": settings.yolo_sidecar_transport,
+        "bioclip_gate_mode": args.bioclip_gate_mode,
+        "score_no_detection_whole_image": bool(args.score_no_detection_whole_image),
+        "delete_images_after_commit_requested": delete_images_after_commit,
+        "image_cleanup_status": "commit_aware" if delete_images_after_commit else "disabled",
+        "elapsed_seconds": (ended_at - started_at).total_seconds(),
+    }
+    vision_stage_metrics = build_vision_stage_metrics(
+        detections=_read_part_output_frames(part_outputs, "object_detections"),
+        scores=_read_part_output_frames(part_outputs, "object_bioclip_scores"),
+        joined=_read_part_output_frames(part_outputs, "object_evidence_joined"),
+        photo_summary=_read_part_output_frames(part_outputs, "photo_evidence_summary"),
+        stage_metrics=metrics,
+        detection_policy=detection_policy,
+    )
+    vision_report_paths = write_vision_stage_reports(vision_stage_metrics, output_dir)
+    manifest = {
+        "command": "vision rolling-screen",
+        "started_at": started_at.isoformat(),
+        "ended_at": ended_at.isoformat(),
+        "status": result.status,
+        "input": str(args.input),
+        "output_dir": str(output_dir),
+        "species_context": str(args.species_context),
+        "species_candidates": str(args.species_candidates) if args.species_candidates else None,
+        "vision_profile": args.vision_profile,
+        "vision_settings": asdict(settings),
+        "rolling_settings": asdict(
+            RollingVisionWorkerSettings(
+                vision_batch_rows=args.vision_batch_rows,
+                image_prefetch_batches=args.image_prefetch_batches,
+                target_ready_yolo_batches=args.target_ready_yolo_batches,
+                accelerator_concurrency=args.accelerator_concurrency,
+                bioclip_preprocess_workers=args.bioclip_preprocess_workers,
+                bioclip_gate_mode=args.bioclip_gate_mode,
+                score_no_detection_whole_image=bool(args.score_no_detection_whole_image),
+            )
+        ),
+        "delete_images_after_commit_requested": delete_images_after_commit,
+        "image_cleanup_status": metrics["image_cleanup_status"],
+        "part_outputs": part_outputs,
+        "vision_stage_metrics": str(vision_report_paths["metrics"]),
+        "vision_stage_summary": str(vision_report_paths["summary"]),
+    }
+    metrics["vision_stage_metrics"] = str(vision_report_paths["metrics"])
+    metrics["vision_stage_summary"] = str(vision_report_paths["summary"])
+    manifest_path = output_dir / "vision_rolling_screen_manifest.json"
+    metrics_path = output_dir / "vision_rolling_screen_metrics.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
+    print(
+        json.dumps(
+            {
+                "output_dir": str(output_dir),
+                "manifest": str(manifest_path),
+                "metrics": str(metrics_path),
+                "records_seen": records.height,
+                "batches_committed": result.batches_committed,
+                "image_cleanup_status": metrics["image_cleanup_status"],
             },
             indent=2,
             sort_keys=True,

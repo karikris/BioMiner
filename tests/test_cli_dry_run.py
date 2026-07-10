@@ -1383,6 +1383,150 @@ def test_bioclip_object_cli_accepts_screen_and_ablation_arguments() -> None:
             parser.parse_args(["species", removed])
 
 
+def test_vision_rolling_screen_cli_accepts_required_arguments() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "vision",
+            "rolling-screen",
+            "--input",
+            "canonical.parquet",
+            "--output-dir",
+            "vision_rolling_screen",
+            "--species-context",
+            "species_context.json",
+            "--species-candidates",
+            "species_candidates.parquet",
+            "--vision-batch-rows",
+            "500",
+            "--image-prefetch-batches",
+            "4",
+            "--target-ready-yolo-batches",
+            "3",
+            "--bioclip-gate-mode",
+            "exclude_hard_negative",
+            "--no-score-no-detection-whole-image",
+            "--accelerator-concurrency",
+            "2",
+            "--bioclip-preprocess-workers",
+            "4",
+        ]
+    )
+
+    assert args.command == "vision"
+    assert args.vision_command == "rolling-screen"
+    assert args.yolo_sidecar_transport == "image_path"
+    assert args.vision_batch_rows == 500
+    assert args.image_prefetch_batches == 4
+    assert args.target_ready_yolo_batches == 3
+    assert args.bioclip_gate_mode == "exclude_hard_negative"
+    assert args.score_no_detection_whole_image is False
+    assert args.accelerator_concurrency == 2
+    assert args.bioclip_preprocess_workers == 4
+
+
+def test_vision_rolling_screen_runs_model_free_worker(tmp_path, capsys, monkeypatch) -> None:
+    yolo_python, bioclip_python = _fake_runtime_pythons(tmp_path)
+    input_path = tmp_path / "canonical.parquet"
+    pl.DataFrame(
+        [
+            {"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "https://live.staticflickr.com/photo-1.jpg"},
+        ]
+    ).write_parquet(input_path)
+    context_path = _write_screen_context(tmp_path)
+    output_dir = tmp_path / "vision_rolling_screen"
+    calls: dict[str, object] = {}
+
+    class FakeYoloDetector:
+        backend = "yoloe26"
+        model_id = "yoloe26"
+        model_version = "test"
+        checkpoint = "yoloe-26s-seg.pt"
+
+        def __init__(self, **kwargs):  # noqa: ANN003 - mirrors sidecar detector init.
+            calls["detector_init"] = kwargs
+
+        def close(self) -> None:
+            calls["detector_closed"] = True
+
+    class FakePersistentScorer:
+        def __init__(self, **kwargs):  # noqa: ANN003 - mirrors persistent scorer init.
+            calls["persistent_init"] = kwargs
+
+        def close(self) -> None:
+            calls["persistent_closed"] = True
+
+    class FakeCropScorer:
+        model_id = "bioclip2_5"
+        model_version = "bioclip2_5_huge"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self, **kwargs):  # noqa: ANN003 - mirrors crop scorer init.
+            calls["crop_scorer_init"] = kwargs
+
+    class FakeRollingWorker:
+        def __init__(self, **kwargs):  # noqa: ANN003 - mirrors rolling worker init.
+            calls["worker_init"] = kwargs
+
+        def run(self, records):  # noqa: ANN001, ANN202 - mirrors rolling worker API.
+            calls["worker_records"] = records.height
+            return SimpleNamespace(
+                status="complete",
+                batches_seen=1,
+                batches_committed=1,
+                part_outputs=(),
+                metrics={
+                    "vision_batch_rows": 500,
+                    "image_prefetch_batches": 4,
+                    "max_resident_image_batches": 1,
+                    "yolo_to_score_queue_maxsize": 2,
+                    "score_to_commit_queue_maxsize": 2,
+                },
+            )
+
+    monkeypatch.setattr("biominer.detection.yoloe26_detector.YoloE26SidecarObjectDetector", FakeYoloDetector)
+    monkeypatch.setattr("biominer.cli.PersistentBioClipScorer", FakePersistentScorer)
+    monkeypatch.setattr("biominer.cli.EphemeralCropBioClipScorer", FakeCropScorer)
+    monkeypatch.setattr("biominer.cli.build_candidate_set", lambda context, **kwargs: SimpleNamespace(candidate_set_id="candidate-set-1"))
+    monkeypatch.setattr("biominer.cli.RollingVisionWorker", FakeRollingWorker)
+
+    args = build_parser().parse_args(
+        [
+            "vision",
+            "rolling-screen",
+            "--input",
+            str(input_path),
+            "--output-dir",
+            str(output_dir),
+            "--species-context",
+            str(context_path),
+            "--yolo-runtime-python",
+            str(yolo_python),
+            "--bioclip-runtime-python",
+            str(bioclip_python),
+            "--device",
+            "mps",
+        ]
+    )
+
+    assert run(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    manifest = json.loads((output_dir / "vision_rolling_screen_manifest.json").read_text(encoding="utf-8"))
+    metrics = json.loads((output_dir / "vision_rolling_screen_metrics.json").read_text(encoding="utf-8"))
+    assert payload["records_seen"] == 1
+    assert payload["batches_committed"] == 1
+    assert calls["detector_init"]["transport"] == "image_path"
+    assert calls["worker_records"] == 1
+    assert calls["worker_init"]["settings"].bioclip_gate_mode == "exclude_hard_negative"
+    assert calls["worker_init"]["settings"].score_no_detection_whole_image is True
+    assert manifest["command"] == "vision rolling-screen"
+    assert manifest["rolling_settings"]["vision_batch_rows"] == 500
+    assert metrics["bioclip_gate_mode"] == "exclude_hard_negative"
+    assert calls["persistent_closed"] is True
+    assert calls["detector_closed"] is True
+
+
 def test_vision_screen_runs_integrated_detector_bioclip_parts(tmp_path, capsys, monkeypatch) -> None:
     yolo_python = tmp_path / "yolo" / "bin" / "python"
     bioclip_python = tmp_path / "bioclip" / "bin" / "python"
