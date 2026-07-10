@@ -60,6 +60,15 @@ from biominer.storage.cloud import CloudStorage
 from biominer.storage.paths import build_evidence_shard_uri, safe_path_component
 from biominer.storage.shard_paths import build_parquet_part_uri
 from biominer.storage.uri import is_cloud_uri, join_uri
+from biominer.vision.cloud_work import (
+    ROLLING_VISION_ARTIFACT_ORDER,
+    commit_rolling_vision_batch_shards,
+    enqueue_rolling_vision_work_from_source_shards,
+    rolling_vision_batch_id,
+    rolling_vision_part_id,
+    run_cloud_rolling_vision_batch,
+)
+from biominer.vision.gates import BioClipGatePolicy
 from biominer.workstore.base import WorkStore
 
 
@@ -641,6 +650,8 @@ class ProductionRunOrchestrator:
 
     def _run_detect_objects_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if is_cloud_uri(self.request.output_root):
+            if self.request.vision_worker == "rolling":
+                return self._run_cloud_rolling_vision_stage(plan)
             if self.storage is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_detect_objects")
             if self.workstore is None:
@@ -829,7 +840,263 @@ class ProductionRunOrchestrator:
             outputs={"object_detections": str(result.output_path)},
         )
 
+    def _run_cloud_rolling_vision_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
+        if self.storage is None:
+            return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_detect_objects")
+        if self.workstore is None:
+            return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_detect_objects")
+        if not _cloud_source_records_available(self.storage, self.workstore, plan):
+            return StageExecutionResult(status=StageStatus.FAILED, message="missing_detection_inputs: source_records")
+        if self.object_detector is None or self.image_loader is None or self.object_scorer is None:
+            return StageExecutionResult(status=StageStatus.FAILED, message="rolling_vision_runtime_required_for_detect_objects")
+
+        taxonomy_store: ButterflyTaxonomyStore | None = None
+        taxonomy_metrics: dict[str, Any] = {}
+        if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+            taxonomy_store, taxonomy_status = self._load_valid_hierarchical_taxonomy_store()
+            if taxonomy_status.status is StageStatus.FAILED:
+                return taxonomy_status
+            taxonomy_metrics = dict(taxonomy_status.metrics)
+
+        from biominer.bioclip.candidate_sets import build_candidate_set_for_taxon_scope
+
+        target_context = plan.manifest.taxon_scope.species_contexts[0]
+        candidate_set = build_candidate_set_for_taxon_scope(
+            plan.manifest.taxon_scope,
+            target_context=target_context,
+            species_candidate_path=self.species_candidate_path,
+            allow_single_target_fixture=self.allow_single_target_fixture,
+        )
+        registry_version = plan.manifest.taxon_scope.registry_version
+        stale_requeued = self.workstore.requeue_stale_claims(
+            job_name=PRODUCTION_JOB_NAME,
+            stage=RunStage.DETECT_OBJECTS.value,
+            registry_version=registry_version,
+            stale_after_seconds=int(self.request.limits.get("stale_claim_seconds") or DEFAULT_STALE_CLAIM_SECONDS),
+        )
+        detection_policy = self.request.vision_settings.to_detection_policy(DetectionPolicy(backend=self.object_detector.backend))
+        gate_mode = "exclude_hard_negative"
+        score_no_detection_whole_image = True
+        plan_result = enqueue_rolling_vision_work_from_source_shards(
+            storage=self.storage,
+            workstore=self.workstore,
+            job_name=PRODUCTION_JOB_NAME,
+            registry_version=registry_version,
+            run_id=plan.manifest.run_id,
+            source_stage=RunStage.POLL_FLICKR.value,
+            vision_stage=RunStage.DETECT_OBJECTS.value,
+            vision_batch_rows=self.request.vision_settings.parquet_part_rows,
+            detector={
+                "backend": self.object_detector.backend,
+                "model_id": self.object_detector.model_id,
+                "model_version": self.object_detector.model_version,
+                "checkpoint": self.object_detector.checkpoint,
+            },
+            vision_settings=self.request.vision_settings,
+            bioclip_gate_mode=gate_mode,
+            score_no_detection_whole_image=score_no_detection_whole_image,
+            bioclip_model={
+                "model_id": self.object_scorer.model_id,
+                "model_version": self.object_scorer.model_version,
+                "checkpoint": self.object_scorer.model_checkpoint,
+            },
+            candidate_set_id=candidate_set.candidate_set_id,
+            classification_mode=self.request.classification_mode,
+            taxonomy_table_version=_taxonomy_manifest_value(taxonomy_store, "classification_table_version"),
+            taxonomy_prompt_variant_version=_taxonomy_manifest_value(taxonomy_store, "prompt_variant_version"),
+            family_top_k=self.request.family_top_k,
+            species_first_pass_top_k=self.request.species_first_pass_top_k,
+            species_rerank_top_k=self.request.species_rerank_top_k,
+            limit=int(self.request.limits.get("records") or 0) or None,
+        )
+        claimed = self.workstore.claim_next_batch(
+            self.request.worker_id,
+            _cloud_rolling_vision_claim_limit(self.request.limits),
+            job_name=PRODUCTION_JOB_NAME,
+            stage=RunStage.DETECT_OBJECTS.value,
+            registry_version=registry_version,
+        )
+        if not claimed:
+            return StageExecutionResult(
+                metrics={
+                    **taxonomy_metrics,
+                    "rolling_vision_work_items_enqueued": plan_result.enqueued_work_items,
+                    "duplicate_rolling_vision_work_items": plan_result.duplicate_work_items,
+                    "rolling_vision_batches_planned": plan_result.batches_planned,
+                    "source_records_seen": plan_result.source_records_seen,
+                    "source_record_shards": plan_result.source_shards_seen,
+                    "work_items_claimed": 0,
+                    "workstore_work_items_completed": 0,
+                    "workstore_stale_claims_requeued": stale_requeued,
+                    "vision_worker": "rolling",
+                },
+                outputs={"workstore_stage": RunStage.DETECT_OBJECTS.value},
+            )
+
+        committed_outputs: list[dict[str, str]] = []
+        accumulated_metrics: dict[str, int] = {
+            "records_seen": 0,
+            "images_loaded": 0,
+            "image_failures": 0,
+            "detections_written": 0,
+            "crops_created": 0,
+            "score_inputs": 0,
+            "objects_scored": 0,
+            "whole_images_scored": 0,
+            "detector_crops_scored": 0,
+            "segmentation_crops_scored": 0,
+            "object_evidence_rows": 0,
+            "photo_summary_rows": 0,
+            "parquet_parts_written": 0,
+            "parquet_parts_reused": 0,
+            "detector_batch_retries": 0,
+            "bioclip_batch_retries": 0,
+        }
+        completed = 0
+        for item in claimed:
+            batch_id = rolling_vision_batch_id(item)
+            part_id = rolling_vision_part_id(item)
+            temp_dir = Path("/tmp") / "biominer_rolling_vision" / plan.manifest.run_id / batch_id
+            try:
+                batch_result = run_cloud_rolling_vision_batch(
+                    work_item=item,
+                    detector=self.object_detector,
+                    image_loader=self.image_loader,
+                    species_context=target_context,
+                    candidate_set=candidate_set,
+                    scorer=self.object_scorer,
+                    detection_policy=detection_policy,
+                    bioclip_gate_policy=BioClipGatePolicy(
+                        mode=gate_mode,
+                        eligible_detector_labels=detection_policy.bioclip_eligible_labels,
+                        score_no_detection_whole_image=score_no_detection_whole_image,
+                    ),
+                    temp_dir=temp_dir,
+                    detector_batch_size=self.request.vision_settings.detector_batch_size,
+                    adaptive_detector_batching=self.request.vision_settings.adaptive_batching,
+                    min_detector_batch_size=self.request.vision_settings.min_detector_batch_size,
+                    crop_padding_ratio=self.request.vision_settings.crop_padding_ratio,
+                    crop_target_px=self.request.vision_settings.crop_target_px,
+                    bioclip_batch_size=self.request.vision_settings.crop_batch_size,
+                    adaptive_bioclip_batching=self.request.vision_settings.adaptive_batching,
+                    min_bioclip_batch_size=self.request.vision_settings.min_crop_batch_size,
+                    classification_mode=self.request.classification_mode,
+                    taxonomy_table_version=_taxonomy_manifest_value(taxonomy_store, "classification_table_version"),
+                    taxonomy_prompt_variant_version=_taxonomy_manifest_value(taxonomy_store, "prompt_variant_version"),
+                    family_top_k=self.request.family_top_k,
+                    species_first_pass_top_k=self.request.species_first_pass_top_k,
+                    species_rerank_top_k=self.request.species_rerank_top_k,
+                    taxonomy_store=taxonomy_store,
+                )
+                commit_result = commit_rolling_vision_batch_shards(
+                    storage=self.storage,
+                    workstore=self.workstore,
+                    job_name=PRODUCTION_JOB_NAME,
+                    registry_version=registry_version,
+                    run_id=plan.manifest.run_id,
+                    worker_id=self.request.worker_id,
+                    base_prefix=plan.artifact_uris.staging_uri,
+                    work_key=str(item["work_key"]),
+                    batch_id=batch_id,
+                    part_id=part_id,
+                    frames=batch_result.frames,
+                    compression=self.request.vision_settings.parquet_compression,
+                    metadata={
+                        "vision_worker": "rolling",
+                        "claimed_work_items": 1,
+                        "source_record_count": batch_result.metrics.get("records_seen"),
+                    },
+                )
+                if self.request.vision_settings.delete_images_after_commit:
+                    batch_result.cleanup_after_commit()
+                completed += 1
+                committed_outputs.append(commit_result.output_uris)
+                for key in accumulated_metrics:
+                    accumulated_metrics[key] += int(batch_result.metrics.get(key, 0) or 0)
+                accumulated_metrics["parquet_parts_written"] += commit_result.parts_written
+                accumulated_metrics["parquet_parts_reused"] += commit_result.parts_reused
+            except Exception as exc:  # noqa: BLE001 - claimed batch must not remain claimed after failure.
+                self.workstore.mark_failed(str(item.get("work_key") or ""), str(exc) or exc.__class__.__name__)
+                return StageExecutionResult(status=StageStatus.FAILED, message=f"rolling_vision_failed: {exc}")
+
+        outputs_by_artifact = {
+            artifact: ",".join(output[artifact] for output in committed_outputs if output.get(artifact))
+            for artifact in ROLLING_VISION_ARTIFACT_ORDER
+        }
+        return StageExecutionResult(
+            metrics={
+                **taxonomy_metrics,
+                **accumulated_metrics,
+                "rolling_vision_work_items_enqueued": plan_result.enqueued_work_items,
+                "duplicate_rolling_vision_work_items": plan_result.duplicate_work_items,
+                "rolling_vision_batches_planned": plan_result.batches_planned,
+                "rolling_vision_batches_claimed": len(claimed),
+                "rolling_vision_batches_committed": completed,
+                "source_record_shards": plan_result.source_shards_seen,
+                "work_items_claimed": len(claimed),
+                "workstore_work_items_completed": completed,
+                "workstore_stale_claims_requeued": stale_requeued,
+                "vision_worker": "rolling",
+                "bioclip_gate_mode": gate_mode,
+                "score_no_detection_whole_image": score_no_detection_whole_image,
+                "parquet_part_count": completed,
+                "parquet_part_rows": accumulated_metrics["detections_written"],
+                "parquet_compression": self.request.vision_settings.parquet_compression,
+                "detection_shards": completed,
+                "score_input_shards": completed,
+                "score_shards": completed,
+                "object_evidence_shards": completed,
+                "photo_summary_shards": completed,
+            },
+            outputs={
+                "object_detections": outputs_by_artifact["object_detections"],
+                "bioclip_score_inputs": outputs_by_artifact["bioclip_score_inputs"],
+                "object_scores": outputs_by_artifact["object_bioclip_scores"],
+                "object_evidence": outputs_by_artifact["object_evidence_joined"],
+                "photo_summary": outputs_by_artifact["photo_evidence_summary"],
+                "image_batch_manifest": outputs_by_artifact["image_batch_manifest"],
+            },
+        )
+
     def _run_score_bioclip_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
+        if is_cloud_uri(self.request.output_root) and self.request.vision_worker == "rolling":
+            if self.storage is None:
+                return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_score_bioclip")
+            if self.workstore is None:
+                return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_score_bioclip")
+            score_uris = _cloud_stage_shard_uris(self.workstore, plan, RunStage.SCORE_BIOCLIP.value)
+            if not score_uris:
+                return StageExecutionResult(status=StageStatus.FAILED, message="missing_score_inputs: object_bioclip_scores")
+            frame = _read_cloud_stage_frame(self.storage, self.workstore, plan, RunStage.SCORE_BIOCLIP.value)
+            row_count = frame.height
+            return StageExecutionResult(
+                metrics={
+                    **_visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path),
+                    "records_seen": row_count,
+                    "detections_seen": row_count,
+                    "crops_scored": row_count,
+                    "objects_scored": row_count,
+                    "whole_images_scored": _mode_row_count(frame, "whole_image"),
+                    "detector_crops_scored": _mode_row_count(frame, "detector_crop"),
+                    "segmentation_crops_scored": _mode_row_count(frame, "detector_crop_segmentation"),
+                    "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
+                    "visual_modes_requested": list(_request_bioclip_modes(self.request)),
+                    "visual_modes_scored": [mode for mode in OBJECT_VISUAL_MODES if _mode_row_count(frame, mode) > 0],
+                    "score_shards": len(score_uris),
+                    "score_batches_written": 0,
+                    "parquet_parts_written": 0,
+                    "parquet_parts_reused": len(score_uris),
+                    "parquet_part_count": len(score_uris),
+                    "parquet_part_rows": row_count,
+                    "parquet_compression": self.request.vision_settings.parquet_compression,
+                    "score_part_count": len(score_uris),
+                    "score_part_rows": row_count,
+                    "vision_worker": "rolling",
+                    "rolling_vision_shards_reused": True,
+                    **object_score_audit_metrics(frame),
+                },
+                outputs={"object_scores": ",".join(score_uris)},
+            )
         taxonomy_store: ButterflyTaxonomyStore | None = None
         taxonomy_metrics: dict[str, Any] = {}
         if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
@@ -1264,6 +1531,21 @@ class ProductionRunOrchestrator:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_join_evidence")
             if self.workstore is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_join_evidence")
+            if self.request.vision_worker == "rolling":
+                joined_uris = _cloud_stage_shard_uris(self.workstore, plan, RunStage.JOIN_EVIDENCE.value)
+                if joined_uris:
+                    joined = _read_cloud_stage_frame(self.storage, self.workstore, plan, RunStage.JOIN_EVIDENCE.value)
+                    return StageExecutionResult(
+                        metrics={
+                            "object_evidence_rows": joined.height,
+                            "object_occurrence_bin_counts": _value_counts(joined, "occurrence_bin"),
+                            "object_evidence_shards": len(joined_uris),
+                            "parquet_parts_reused": len(joined_uris),
+                            "vision_worker": "rolling",
+                            "rolling_vision_shards_reused": True,
+                        },
+                        outputs={"object_evidence": ",".join(joined_uris)},
+                    )
             missing = []
             if not _cloud_stage_shard_uris(self.workstore, plan, RunStage.POLL_FLICKR.value):
                 missing.append("source_records")
@@ -1357,7 +1639,9 @@ class ProductionRunOrchestrator:
                 return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_summarize")
             outputs: dict[str, str] = {}
             summary_result = None
-            if _cloud_stage_shard_uris(self.workstore, plan, RunStage.JOIN_EVIDENCE.value):
+            existing_photo_summary_uris = _cloud_stage_shard_uris(self.workstore, plan, "photo_summary")
+            should_materialize_summary = not (self.request.vision_worker == "rolling" and existing_photo_summary_uris)
+            if should_materialize_summary and _cloud_stage_shard_uris(self.workstore, plan, RunStage.JOIN_EVIDENCE.value):
                 summary_result = summarize_photo_evidence_from_cloud_shards(
                     storage=self.storage,
                     workstore=self.workstore,
@@ -1392,6 +1676,8 @@ class ProductionRunOrchestrator:
                     },
                 )
                 outputs["photo_summary"] = photo_summary_uri
+            if existing_photo_summary_uris and "photo_summary" not in outputs:
+                outputs["photo_summary"] = ",".join(existing_photo_summary_uris)
             if not _cloud_stage_shard_uris(self.workstore, plan, "photo_summary"):
                 return StageExecutionResult(status=StageStatus.FAILED, message="missing_summary_inputs: object_evidence, photo_summary")
             summary_shards = self.workstore.list_committed_shards(
@@ -1609,6 +1895,13 @@ def _cloud_detection_claim_limit(limits: dict[str, int]) -> int:
     records_limit = int(limits.get("records") or 0)
     worker_limit = int(limits.get("workers") or 0)
     candidates = [value for value in (records_limit, worker_limit) if value > 0]
+    return min(candidates) if candidates else 1
+
+
+def _cloud_rolling_vision_claim_limit(limits: dict[str, int]) -> int:
+    batch_limit = int(limits.get("rolling_vision_batches") or 0)
+    worker_limit = int(limits.get("workers") or 0)
+    candidates = [value for value in (batch_limit, worker_limit) if value > 0]
     return min(candidates) if candidates else 1
 
 

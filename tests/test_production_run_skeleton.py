@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sqlite3
 
 import polars as pl
 import pytest
@@ -20,7 +21,7 @@ from biominer.bioclip.cloud_work import (
 )
 from biominer.detection.cloud_work import detection_batch_id, detection_work_item
 from biominer.detection.detector_base import DecodedImage, FakeObjectDetector
-from biominer.detection.policy import DetectionPolicy
+from biominer.detection.policy import DetectionPolicy, VisionRuntimeSettings
 from biominer.evidence import build_object_evidence_frames, build_review_queue, evidence_count_metrics
 from biominer.evidence.join import write_object_evidence_outputs
 from biominer.registry.classification_table import PROMPT_VARIANT_VERSION, build_classification_tables_from_registry_dir
@@ -48,6 +49,7 @@ from biominer.run import (
 from biominer.storage.shard_paths import build_parquet_part_uri
 from biominer.species.context import CommonName, SpeciesContext
 from biominer.storage.parquet import ParquetPartWrite
+from biominer.vision.cloud_work import enqueue_rolling_vision_work_from_source_shards
 from biominer.workstore.sqlite import SQLiteWorkStore
 from factories import detection_candidate
 
@@ -1811,6 +1813,193 @@ def test_orchestrator_detects_objects_from_cloud_storage(tmp_path) -> None:
     assert [shard["uri"] for shard in shards] == [detection_uri]
     assert shards[0]["metadata"]["parquet_compression"] == "zstd"
     assert shards[0]["metadata"]["part_written"] is True
+
+
+def test_orchestrator_cloud_rolling_vision_commits_shards_and_reuses_downstream(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    storage = _FakeRunStorage()
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root="s3://biominer/runs",
+        vision_worker="rolling",
+        vision_settings=VisionRuntimeSettings(parquet_part_rows=500, detector_batch_size=1, crop_batch_size=1),
+        stages=(RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP, RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE),
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
+    canonical, _, _ = _join_stage_input_frames()
+    source_uri = plan.artifact_uris.staging_uri + "/evidence/stage=poll_flickr/run_id=species_danaus_plexippus/worker=poller/batch=001.parquet"
+    storage.parquet_payloads[source_uri] = canonical
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        stage=RunStage.POLL_FLICKR.value,
+        run_id=plan.manifest.run_id,
+        worker_id="poller",
+        uri=source_uri,
+        checksum=None,
+        row_count=canonical.height,
+    )
+    detector = FakeObjectDetector([[detection_candidate()]])
+    scorer = _ConstantObjectScorer(
+        {
+            "Danaus plexippus": 0.82,
+            "a photo of Danaus plexippus": 0.81,
+            "Monarch": 0.50,
+            "Nymphalidae": 0.93,
+            "Danaus": 0.90,
+        }
+    )
+
+    result = ProductionRunOrchestrator(
+        request,
+        taxon_scope=scope,
+        storage=storage,
+        workstore=workstore,
+        object_detector=detector,
+        image_loader=lambda _record: _tiny_rgb_image(),
+        object_scorer=scorer,
+        allow_single_target_fixture=True,
+    ).run()
+
+    assert result.manifest.status == "complete"
+    assert result.manifest.stages[0].metrics["rolling_vision_batches_planned"] == 1
+    assert result.manifest.stages[0].metrics["rolling_vision_batches_committed"] == 1
+    assert result.manifest.stages[0].metrics["score_inputs"] == 1
+    assert result.manifest.stages[1].metrics["rolling_vision_shards_reused"] is True
+    assert result.manifest.stages[2].metrics["rolling_vision_shards_reused"] is True
+    assert result.manifest.stages[3].outputs["photo_summary"].startswith(
+        plan.artifact_uris.staging_uri + "/evidence/stage=photo_evidence_summary/"
+    )
+    expected_stage_counts = {
+        "image_batch_manifest": 1,
+        RunStage.DETECT_OBJECTS.value: 1,
+        "bioclip_score_inputs": 1,
+        RunStage.SCORE_BIOCLIP.value: 1,
+        RunStage.JOIN_EVIDENCE.value: 1,
+        "photo_summary": 1,
+    }
+    for stage, expected_count in expected_stage_counts.items():
+        shards = workstore.list_committed_shards(
+            job_name="biominer_production_run",
+            stage=stage,
+            registry_version=scope.registry_version,
+            run_id=plan.manifest.run_id,
+        )
+        assert len(shards) == expected_count
+        assert all(shard["metadata"]["vision_worker"] == "rolling" for shard in shards)
+    assert result.manifest.stages[0].outputs["object_detections"] in storage.parquet_payloads
+    assert result.manifest.stages[0].outputs["bioclip_score_inputs"] in storage.parquet_payloads
+    assert result.manifest.stages[0].outputs["object_scores"] in storage.parquet_payloads
+    assert result.manifest.stages[0].outputs["object_evidence"] in storage.parquet_payloads
+    assert result.manifest.stages[0].outputs["photo_summary"] in storage.parquet_payloads
+    work_items = workstore.list_work_items(
+        job_name="biominer_production_run",
+        stage=RunStage.DETECT_OBJECTS.value,
+        registry_version=scope.registry_version,
+    )
+    assert [item["status"] for item in work_items] == ["completed"]
+    assert work_items[0]["payload"]["vision_batch_rows"] == 500
+
+
+def test_orchestrator_cloud_rolling_vision_requeues_stale_claim(tmp_path) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    storage = _FakeRunStorage()
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root="s3://biominer/runs",
+        vision_worker="rolling",
+        vision_settings=VisionRuntimeSettings(parquet_part_rows=500, detector_batch_size=1, crop_batch_size=1),
+        stages=(RunStage.DETECT_OBJECTS,),
+        limits={"stale_claim_seconds": 1},
+    )
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
+    canonical, _, _ = _join_stage_input_frames()
+    source_uri = plan.artifact_uris.staging_uri + "/evidence/stage=poll_flickr/run_id=species_danaus_plexippus/worker=poller/batch=001.parquet"
+    storage.parquet_payloads[source_uri] = canonical
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        stage=RunStage.POLL_FLICKR.value,
+        run_id=plan.manifest.run_id,
+        worker_id="poller",
+        uri=source_uri,
+        checksum=None,
+        row_count=canonical.height,
+    )
+    detector = FakeObjectDetector([[detection_candidate()]])
+    scorer = _ConstantObjectScorer(
+        {
+            "Danaus plexippus": 0.82,
+            "a photo of Danaus plexippus": 0.81,
+            "Monarch": 0.50,
+            "Nymphalidae": 0.93,
+            "Danaus": 0.90,
+        }
+    )
+    candidate_set = build_candidate_set_for_taxon_scope(
+        scope,
+        target_context=scope.species_contexts[0],
+        allow_single_target_fixture=True,
+    )
+    enqueue_rolling_vision_work_from_source_shards(
+        storage=storage,
+        workstore=workstore,
+        job_name="biominer_production_run",
+        registry_version=scope.registry_version,
+        run_id=plan.manifest.run_id,
+        source_stage=RunStage.POLL_FLICKR.value,
+        vision_batch_rows=500,
+        detector={
+            "backend": detector.backend,
+            "model_id": detector.model_id,
+            "model_version": detector.model_version,
+            "checkpoint": detector.checkpoint,
+        },
+        vision_settings=request.vision_settings,
+        bioclip_model={
+            "model_id": scorer.model_id,
+            "model_version": scorer.model_version,
+            "checkpoint": scorer.model_checkpoint,
+        },
+        candidate_set_id=candidate_set.candidate_set_id,
+    )
+    claimed = workstore.claim_next_batch(
+        "crashed-worker",
+        1,
+        job_name="biominer_production_run",
+        stage=RunStage.DETECT_OBJECTS.value,
+        registry_version=scope.registry_version,
+    )
+    with sqlite3.connect(workstore.path) as conn:
+        conn.execute(
+            "UPDATE biominer_work_items SET claimed_at = ? WHERE work_key = ?",
+            ("2000-01-01T00:00:00+00:00", claimed[0]["work_key"]),
+        )
+
+    result = ProductionRunOrchestrator(
+        request,
+        taxon_scope=scope,
+        storage=storage,
+        workstore=workstore,
+        object_detector=detector,
+        image_loader=lambda _record: _tiny_rgb_image(),
+        object_scorer=scorer,
+        allow_single_target_fixture=True,
+    ).run()
+
+    assert result.manifest.status == "complete"
+    assert result.manifest.stages[0].metrics["workstore_stale_claims_requeued"] == 1
+    assert result.manifest.stages[0].metrics["duplicate_rolling_vision_work_items"] == 1
+    work_items = workstore.list_work_items(
+        job_name="biominer_production_run",
+        stage=RunStage.DETECT_OBJECTS.value,
+        registry_version=scope.registry_version,
+    )
+    assert [item["status"] for item in work_items] == ["completed"]
 
 
 def test_orchestrator_reuses_registered_cloud_detection_part(tmp_path) -> None:
