@@ -46,12 +46,13 @@ def test_resolve_torch_device_prefers_mps_when_cuda_is_unavailable() -> None:
 def test_worker_main_accepts_batch_request_without_loading_model(monkeypatch, tmp_path, capsys) -> None:
     calls: dict[str, object] = {}
 
-    def fake_score_images(*, image_paths, labels, model_name, checkpoint, device):  # noqa: ANN001 - mirrors worker signature.
+    def fake_score_images(*, image_paths, labels, model_name, checkpoint, device, preprocess_workers):  # noqa: ANN001 - mirrors worker signature.
         calls["image_paths"] = image_paths
         calls["labels"] = labels
         calls["model_name"] = model_name
         calls["checkpoint"] = checkpoint
         calls["device"] = device
+        calls["preprocess_workers"] = preprocess_workers
         return [{"label-a": 0.7}, {"label-a": 0.8}]
 
     monkeypatch.setattr(bioclip_worker, "score_images", fake_score_images)
@@ -76,6 +77,7 @@ def test_worker_main_accepts_batch_request_without_loading_model(monkeypatch, tm
     assert payload["scores_by_image"] == [{"label-a": 0.7}, {"label-a": 0.8}]
     assert [str(path) for path in calls["image_paths"]] == ["/tmp/1.jpg", "/tmp/2.jpg"]
     assert calls["device"] == "auto"
+    assert calls["preprocess_workers"] == 1
 
 
 class FakeTorch:
