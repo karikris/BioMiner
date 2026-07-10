@@ -36,7 +36,7 @@ from biominer.bioclip.object_runner import (
     _visual_mode_status,
 )
 from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
-from biominer.detection.policy import DetectionPolicy, detection_is_bioclip_eligible
+from biominer.detection.policy import DetectionPolicy
 from biominer.detection.segmentation import SegmentationUnavailable
 from biominer.registry.classification_table import (
     CLASSIFICATION_TABLE_VERSION,
@@ -44,6 +44,7 @@ from biominer.registry.classification_table import (
 )
 from biominer.species.context import SpeciesContext
 from biominer.storage.cloud import CloudStorage
+from biominer.vision.gates import BioClipGatePolicy, ScoreInputDecision, bioclip_score_input_decision
 from biominer.workstore.base import WorkStore
 
 
@@ -92,6 +93,7 @@ def enqueue_bioclip_work_from_detection_shards(
     candidate_set_id: str,
     ablation_modes: tuple[str, ...] = ("detector_crop",),
     detection_policy: DetectionPolicy | None = None,
+    bioclip_gate_policy: BioClipGatePolicy | None = None,
     limit: int | None = None,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
     taxonomy_table_version: str | None = None,
@@ -112,6 +114,10 @@ def enqueue_bioclip_work_from_detection_shards(
         "model_version": model_version,
         "checkpoint": model_checkpoint,
     }
+    gate_policy = _active_bioclip_gate_policy(
+        detection_policy=detection_policy,
+        bioclip_gate_policy=bioclip_gate_policy,
+    )
     items: list[dict[str, Any]] = []
     detections_seen = 0
     eligible_seen = 0
@@ -124,10 +130,12 @@ def enqueue_bioclip_work_from_detection_shards(
         for row in frame.iter_rows(named=True):
             detections_seen += 1
             detection = dict(row)
-            if not _detection_is_scoreable(detection, detection_policy=detection_policy):
+            gate_decision = bioclip_score_input_decision(detection, gate_policy)
+            if not _detection_is_scoreable(detection, gate_decision=gate_decision):
                 continue
             eligible_seen += 1
-            for mode in modes:
+            score_modes = ("whole_image",) if gate_decision.visual_input_kind == "whole_image" else modes
+            for mode in score_modes:
                 if remaining == 0:
                     break
                 items.append(
@@ -144,6 +152,7 @@ def enqueue_bioclip_work_from_detection_shards(
                         family_top_k=family_top_k,
                         species_first_pass_top_k=species_first_pass_top_k,
                         species_rerank_top_k=species_rerank_top_k,
+                        gate_decision=gate_decision,
                     )
                 )
                 if remaining is not None:
@@ -174,8 +183,13 @@ def bioclip_score_work_item(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
+    gate_decision: ScoreInputDecision | None = None,
 ) -> dict[str, Any]:
     normalized_mode = normalize_classification_mode(classification_mode)
+    active_gate_decision = gate_decision or bioclip_score_input_decision(
+        detection,
+        BioClipGatePolicy.legacy_butterfly_like_only(),
+    )
     top_k_settings = {
         "family_top_k": int(family_top_k),
         "species_first_pass_top_k": int(species_first_pass_top_k),
@@ -202,6 +216,9 @@ def bioclip_score_work_item(
         "taxonomy_prompt_variant_version": str(taxonomy_prompt_variant_version or ""),
         "top_k_settings": top_k_settings,
         "ablation_mode": str(ablation_mode or ""),
+        "bioclip_gate_mode": active_gate_decision.bioclip_gate_mode,
+        "bioclip_gate_decision": active_gate_decision.bioclip_gate_decision,
+        "bioclip_gate_reason": active_gate_decision.bioclip_gate_reason,
     }
     return {
         "work_key": f"{run_id}:bioclip:{_stable_hash(key_payload)}",
@@ -219,6 +236,9 @@ def bioclip_score_work_item(
         "taxonomy_prompt_variant_version": taxonomy_prompt_variant_version,
         "top_k_settings": top_k_settings,
         "ablation_mode": ablation_mode,
+        "bioclip_gate_mode": active_gate_decision.bioclip_gate_mode,
+        "bioclip_gate_decision": active_gate_decision.bioclip_gate_decision,
+        "bioclip_gate_reason": active_gate_decision.bioclip_gate_reason,
     }
 
 
@@ -589,14 +609,27 @@ def _mark_unavailable(
 def _detection_is_scoreable(
     detection: dict[str, Any],
     *,
-    detection_policy: DetectionPolicy | None,
+    gate_decision: ScoreInputDecision,
 ) -> bool:
-    if not detection_is_bioclip_eligible(detection, detection_policy):
+    if not gate_decision.should_score:
         return False
     return bool(
         str(detection.get("source") or "")
         and str(detection.get("flickr_photo_id") or "")
         and str(detection.get("detection_id") or "")
+    )
+
+
+def _active_bioclip_gate_policy(
+    *,
+    detection_policy: DetectionPolicy | None,
+    bioclip_gate_policy: BioClipGatePolicy | None,
+) -> BioClipGatePolicy:
+    if bioclip_gate_policy is not None:
+        return bioclip_gate_policy
+    active_detection_policy = detection_policy or DetectionPolicy()
+    return BioClipGatePolicy.legacy_butterfly_like_only(
+        eligible_detector_labels=tuple(active_detection_policy.bioclip_eligible_labels)
     )
 
 

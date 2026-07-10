@@ -43,6 +43,7 @@ from biominer.registry.classification_table import (
 )
 from biominer.run.taxon_scope import TaxonScope
 from biominer.species.context import CommonName, RegionHint, SpeciesContext
+from biominer.vision.gates import BioClipGateMode, BioClipGatePolicy
 from factories import canonical_records, object_detection_row, object_detections
 
 
@@ -1463,6 +1464,71 @@ def test_object_bioclip_production_gate_scores_only_detected_butterflies(tmp_pat
     assert result.crops_scored == 1
     assert result.frame["detection_id"].to_list() == ["det-butterfly"]
     assert scorer.calls == [("det-butterfly",), ("det-butterfly",)]
+
+
+def test_object_bioclip_exclude_hard_negative_gate_scores_mixed_non_hard_labels(tmp_path) -> None:
+    base_detection = _detections().to_dicts()[0]
+    cases = [
+        ("det-butterfly", "butterfly_like"),
+        ("det-moth", "moth_like"),
+        ("det-caterpillar", "caterpillar"),
+        ("det-pupa", "pupa"),
+        ("det-insect", "insect_like"),
+        ("det-hard-negative", "hard_negative"),
+    ]
+    detections = pl.DataFrame(
+        [
+            {
+                **base_detection,
+                "detection_id": detection_id,
+                "detector_label": label,
+                "detection_status": "detected",
+                "crop_hash": f"sha256:{detection_id}",
+            }
+            for detection_id, label in cases
+        ]
+    )
+
+    class GateRecordingScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        def score(self, item, labels):  # noqa: ANN001, ANN202 - proves the batch path is used.
+            raise AssertionError(f"unexpected single-item BioCLIP score for {item.get('detection_id')}")
+
+        def score_label_sets_batch(self, items, label_sets):  # noqa: ANN001, ANN202 - mirrors object batch scorer API.
+            self.calls.append(tuple(str(item["detection_id"]) for item in items))
+            return {
+                name: [
+                    {label: (0.84 if label == "a photo of Danaus plexippus" else 0.1) for label in labels}
+                    for _item in items
+                ]
+                for name, labels in label_sets.items()
+            }
+
+    scorer = GateRecordingScorer()
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=detections,
+        species_context=_context(),
+        candidate_set=_fixture_candidate_set(),
+        scorer=scorer,
+        output_path=tmp_path / "object_scores.parquet",
+        ablation_mode="detector_crop",
+        bioclip_gate_policy=BioClipGatePolicy(
+            mode=BioClipGateMode.EXCLUDE_HARD_NEGATIVE,
+            score_no_detection_whole_image=False,
+        ),
+    )
+
+    expected_scored = ["det-butterfly", "det-moth", "det-caterpillar", "det-pupa", "det-insect"]
+    assert result.crops_scored == len(expected_scored)
+    assert result.frame["detection_id"].to_list() == expected_scored
+    assert scorer.calls == [tuple(expected_scored), tuple(expected_scored)]
 
 
 def test_object_evidence_join_preserves_non_scored_detection_rows(tmp_path) -> None:

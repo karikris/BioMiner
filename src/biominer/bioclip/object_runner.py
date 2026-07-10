@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 import hashlib
 from pathlib import Path
@@ -40,6 +40,7 @@ from biominer.detection.segmentation import (
 )
 from biominer.species.context import SpeciesContext
 from biominer.storage.parquet import write_parquet
+from biominer.vision.gates import BioClipGatePolicy, bioclip_score_input_decision
 
 
 PRIMARY_VISUAL_CLASSIFIER = "bioclip_object"
@@ -502,9 +503,15 @@ def materialize_detector_crop_inputs(
     image_loader: Any,
     temp_dir: str | Path,
     detection_policy: DetectionPolicy | None = None,
+    bioclip_gate_policy: BioClipGatePolicy | None = None,
     crop_padding_ratio: float = 0.12,
     crop_target_px: int = 336,
 ) -> MaterializedCropInputs:
+    gate_policy = _active_bioclip_gate_policy(
+        detection_policy=detection_policy,
+        bioclip_gate_policy=bioclip_gate_policy,
+        detected_visual_input_kind="detector_crop",
+    )
     records_by_photo = {
         (str(row.get("source") or ""), str(row.get("flickr_photo_id") or "")): row
         for row in canonical_records.to_dicts()
@@ -517,7 +524,7 @@ def materialize_detector_crop_inputs(
     crop_path_by_hash: dict[str, Path] = {}
     try:
         for detection in detections.to_dicts():
-            if not detection_is_bioclip_eligible(detection, detection_policy):
+            if not _score_detector_crop_decision(detection, gate_policy=gate_policy):
                 continue
             key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
             record = _canonical_record_for_detection(records_by_photo, key=key)
@@ -561,6 +568,7 @@ def iter_materialized_detector_crop_batches(
     image_loader: Any,
     temp_dir: str | Path,
     detection_policy: DetectionPolicy | None = None,
+    bioclip_gate_policy: BioClipGatePolicy | None = None,
     crop_batch_size: int = 24,
     crop_padding_ratio: float = 0.08,
     crop_target_px: int = 336,
@@ -569,6 +577,11 @@ def iter_materialized_detector_crop_batches(
 ) -> Iterator[MaterializedCropBatch]:
     if crop_batch_size <= 0:
         raise ValueError("crop_batch_size must be positive")
+    gate_policy = _active_bioclip_gate_policy(
+        detection_policy=detection_policy,
+        bioclip_gate_policy=bioclip_gate_policy,
+        detected_visual_input_kind="detector_crop",
+    )
     records_by_photo = {
         (str(row.get("source") or ""), str(row.get("flickr_photo_id") or "")): row
         for row in canonical_records.to_dicts()
@@ -576,7 +589,7 @@ def iter_materialized_detector_crop_batches(
     pending: list[dict[str, Any]] = []
     batch_index = 0
     for detection in detections.to_dicts():
-        if not detection_is_bioclip_eligible(detection, detection_policy):
+        if not _score_detector_crop_decision(detection, gate_policy=gate_policy):
             continue
         pending.append(detection)
         if len(pending) >= crop_batch_size:
@@ -728,6 +741,7 @@ def screen_object_detections(
     output_path: str | Path | None = None,
     ablation_mode: AblationMode = "detector_crop",
     detection_policy: DetectionPolicy | None = None,
+    bioclip_gate_policy: BioClipGatePolicy | None = None,
     geo_prior_table: pl.DataFrame | None = None,
     parquet_batch_rows: int = 10000,
     bioclip_batch_size: int = 24,
@@ -751,6 +765,11 @@ def screen_object_detections(
         family_top_k=family_top_k,
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
+    )
+    gate_policy = _active_bioclip_gate_policy(
+        detection_policy=detection_policy,
+        bioclip_gate_policy=bioclip_gate_policy,
+        detected_visual_input_kind=ablation_mode,
     )
     records_by_photo = {
         (str(row.get("source") or ""), str(row.get("flickr_photo_id") or "")): row
@@ -863,6 +882,7 @@ def screen_object_detections(
                 image_loader=materialized_crop_config.image_loader,
                 temp_dir=materialized_crop_config.temp_dir,
                 detection_policy=detection_policy,
+                bioclip_gate_policy=gate_policy,
                 crop_batch_size=active_bioclip_batch_size,
                 crop_padding_ratio=materialized_crop_config.crop_padding_ratio,
                 crop_target_px=materialized_crop_config.crop_target_px,
@@ -872,13 +892,23 @@ def screen_object_detections(
                 materialized_batches_to_cleanup.append(crop_batch)
                 score_items.extend(crop_batch.items)
                 flush_score_items()
+            for item in _score_items_for_visual_input_kind(
+                canonical_records_by_photo=records_by_photo,
+                detections=detections,
+                gate_policy=gate_policy,
+                visual_input_kind="whole_image",
+            ):
+                score_items.append(item)
+                if len(score_items) >= current_bioclip_batch_size:
+                    flush_score_items()
         else:
             for detection in detections.to_dicts():
-                if not detection_is_bioclip_eligible(detection, detection_policy):
+                decision = bioclip_score_input_decision(detection, gate_policy)
+                if not decision.should_score:
                     continue
                 key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
                 record = _canonical_record_for_detection(records_by_photo, key=key)
-                item = {**detection, **record, "ablation_mode": ablation_mode}
+                item = {**detection, **record, "ablation_mode": decision.visual_input_kind or ablation_mode}
                 if ablation_mode == "detector_crop_segmentation" and not _scorer_supports_detector_crop_segmentation(scorer, item):
                     segmentation_unavailable_count += 1
                     segmentation_unavailable_reason = segmentation_unavailable_reason or "detector_masks_missing"
@@ -1133,6 +1163,7 @@ def _score_detection(
 ) -> dict[str, Any]:
     classification_mode = normalize_classification_mode(classification_mode)
     _raise_if_hierarchical_classification(classification_mode)
+    item_ablation_mode = _ablation_mode({**item, "ablation_mode": item.get("ablation_mode") or ablation_mode})
     family_top_k, species_first_pass_top_k, species_rerank_top_k = _validate_visual_top_k(
         family_top_k=family_top_k,
         species_first_pass_top_k=species_first_pass_top_k,
@@ -1160,7 +1191,7 @@ def _score_detection(
         context=context,
         candidate_set=candidate_set,
         scorer=scorer,
-        ablation_mode=ablation_mode,
+        ablation_mode=item_ablation_mode,
         labels=labels,
         family_scores=family_scores,
         genus_scores=genus_scores,
@@ -1254,7 +1285,7 @@ def _score_detection_batch(
                 context=context,
                 candidate_set=candidate_set,
                 scorer=scorer,
-                ablation_mode=ablation_mode,
+                ablation_mode=_ablation_mode({**item, "ablation_mode": item.get("ablation_mode") or ablation_mode}),
                 labels=labels,
                 family_scores=family_scores[index],
                 genus_scores=genus_scores[index],
@@ -1766,6 +1797,41 @@ def _no_detection_failure_reason(detection_rows: list[dict[str, Any]]) -> str:
         if reason:
             return reason
     return "no_detection_without_object_score"
+
+
+def _active_bioclip_gate_policy(
+    *,
+    detection_policy: DetectionPolicy | None,
+    bioclip_gate_policy: BioClipGatePolicy | None,
+    detected_visual_input_kind: AblationMode,
+) -> BioClipGatePolicy:
+    if bioclip_gate_policy is None:
+        active_detection_policy = detection_policy or DetectionPolicy()
+        bioclip_gate_policy = BioClipGatePolicy.legacy_butterfly_like_only(
+            eligible_detector_labels=tuple(active_detection_policy.bioclip_eligible_labels)
+        )
+    return replace(bioclip_gate_policy, detected_visual_input_kind=detected_visual_input_kind)
+
+
+def _score_detector_crop_decision(detection: dict[str, Any], *, gate_policy: BioClipGatePolicy) -> bool:
+    decision = bioclip_score_input_decision(detection, gate_policy)
+    return decision.should_score and decision.visual_input_kind == "detector_crop"
+
+
+def _score_items_for_visual_input_kind(
+    *,
+    canonical_records_by_photo: dict[tuple[str, str], dict[str, Any]],
+    detections: pl.DataFrame,
+    gate_policy: BioClipGatePolicy,
+    visual_input_kind: AblationMode,
+) -> Iterator[dict[str, Any]]:
+    for detection in detections.to_dicts():
+        decision = bioclip_score_input_decision(detection, gate_policy)
+        if not decision.should_score or decision.visual_input_kind != visual_input_kind:
+            continue
+        key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
+        record = _canonical_record_for_detection(canonical_records_by_photo, key=key)
+        yield {**detection, **record, "ablation_mode": visual_input_kind}
 
 
 def _detections_by_photo(detections: pl.DataFrame | None) -> dict[tuple[str, str], list[dict[str, Any]]]:
