@@ -1429,3 +1429,103 @@ verification:
 
 `ff07eee2-f883-4dce-a4cd-37c584518675`,
 `01e56d9b-226c-474c-8d7e-85891e70c457`.
+
+## Phase 8 — Classification-v3 migration and legacy removal
+
+### Pre-implementation verification — 2026-07-11
+
+Research questions:
+
+- Should persisted classification-v2 artifacts be upgraded implicitly,
+  accepted partially, or rejected until an explicit v3 rebuild completes?
+- Which compatibility surfaces must remain long enough to explain migration,
+  and which obsolete interfaces should disappear once replacement coverage is
+  complete?
+- What is the exact local dependency boundary that prevents deletion of the
+  old five-rank modules today?
+
+Strict GitHits calls:
+
+1. A delegated strict-licence query for versioned persisted-schema migration
+   and rejection hit the rolling 50-example quota with the exact retry
+   estimate 60391 seconds.
+2. A delegated strict-licence query for deliberate removal of obsolete
+   compatibility code hit the same quota with the exact retry estimate 60366
+   seconds.
+3. A main-agent strict-licence query combining incompatible artifact rejection
+   and compatibility removal hit the quota with the exact retry estimate
+   60176 seconds.
+
+None returned a solution ID, and no Phase 8 solution ID is invented.
+
+Immutable migration evidence:
+
+- `mlflow/mlflow@75b30ca00d3eb8815f3ba556c66ff8faeab60640`
+  is Apache-2.0 (`LICENSE.txt:3-5`). GitHits reads found:
+  - `mlflow/store/db/utils.py:103-128` determines the single current schema
+    head and rejects every nonmatching persisted revision;
+  - `mlflow/store/db/utils.py:225-249` performs migration as a separate,
+    explicit upgrade operation;
+  - `tests/store/tracking/sqlalchemy_store/test_sqlalchemy_store_schema.py:95-116`
+    keeps empty, legacy, and every intermediate revision invalid until the
+    fully migrated head exists.
+- `pydantic/pydantic@bd2d0dd0137dfa1a8fdff2529b9dfb1547980150`
+  is MIT (`LICENSE:1-20`). GitHits reads found:
+  - `pydantic/_migration.py:251-316` explicitly separates bounded moved-name
+    redirects from names removed at the v2 boundary, which raise an import
+    error;
+  - `tests/test_migration.py:18-45` parametrizes moved, redirected, removed,
+    and separately relocated symbols and requires removed interfaces to stay
+    unavailable.
+
+Constraints adopted:
+
+- Validate one exact classification version and one exact physical schema
+  before interpreting persisted data.
+- Make migration a separate rebuild into a new versioned root. Reads never
+  mutate or silently upgrade the old artifact area.
+- Treat empty, partially migrated, intermediate, stale, and mixed-version
+  states as invalid rather than approximately compatible.
+- Retain explicit negative tests for v2 rejection after deleting the v2
+  builder and classifier.
+- Enumerate any intentionally retained compatibility bridge. Remove obsolete
+  interfaces and their dedicated tests as one coherent change after v3
+  replacement tests pass.
+- Keep historical output immutable. New v3 output uses new work identity and
+  is not appended to or merged with v2 Parquet parts.
+
+Patterns explicitly rejected:
+
+- migrating on read, accepting an intermediate version, or inferring v3 from
+  filenames shared with v2;
+- silently redirecting every removed API through an indefinite compatibility
+  layer;
+- deleting negative migration tests together with the obsolete implementation;
+- leaving two production hierarchical classifiers because some stale test
+  imports the old one;
+- moving the complete legacy schema wholesale into a new compatibility module
+  without separating still-used target-screening fields from v3 audit fields.
+
+Local removal boundary:
+
+- `registry/classification_v2.py`: 1,015 lines;
+- `bioclip/five_rank_store.py`: 207 lines;
+- `bioclip/five_rank_embedding_cache.py`: 216 lines;
+- `bioclip/five_rank_classifier.py`: 562 lines;
+- three dedicated legacy test files: 758 lines;
+- `config/taxonomy/papilionoidea_classification_v2.json`: 145 lines.
+
+The directly removable legacy surface is exactly 2,903 lines. The remaining
+blocker is a schema-type coupling: `object_runner.py` imports
+`FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS` from the old classifier. The
+authoritative object/path output schemas must first own every still-supported
+field; dead v2 aliases must not be carried forward merely to make deletion
+compile.
+
+Morph MCP was invoked for the bounded local migration/call-site audit and
+failed with the exact response `Error: 429 status code (no body)`. Focused
+`rg` and source reads supplied the line counts and coupling inventory; no
+Morph-derived claim is made.
+
+Pre-implementation solution IDs: none generated. Verification uses the exact
+immutable MLflow and Pydantic source references above.
