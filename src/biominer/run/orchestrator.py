@@ -22,6 +22,7 @@ from biominer.bioclip.cloud_work import (
     run_cloud_bioclip_batch,
 )
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER, object_score_audit_metrics
+from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
 from biominer.detection.cloud_work import (
     detection_batch_id,
     enqueue_detection_work_from_source_shards,
@@ -51,6 +52,7 @@ from biominer.registry.classification_table import (
     classification_artifact_paths,
     classification_artifact_uris,
 )
+from biominer.registry.classification_v2 import classification_v2_artifact_paths, classification_v2_artifact_uris
 from biominer.reports.vision import build_vision_stage_metrics, write_vision_stage_reports
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import RunArtifactUris, RunPaths
@@ -1348,7 +1350,7 @@ class ProductionRunOrchestrator:
         _store, result = self._load_valid_hierarchical_taxonomy_store()
         return result
 
-    def _load_valid_hierarchical_taxonomy_store(self) -> tuple[ButterflyTaxonomyStore | None, StageExecutionResult]:
+    def _load_valid_hierarchical_taxonomy_store(self) -> tuple[ButterflyTaxonomyStore | FiveRankTaxonomyStore | None, StageExecutionResult]:
         base_metrics = _visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path)
         if self.species_candidate_path is None:
             return (
@@ -1406,10 +1408,36 @@ class ProductionRunOrchestrator:
             ),
         )
 
-    def _read_butterfly_taxonomy_store(self, location: str | Path) -> ButterflyTaxonomyStore:
+    def _read_butterfly_taxonomy_store(self, location: str | Path) -> ButterflyTaxonomyStore | FiveRankTaxonomyStore:
         if is_cloud_uri(str(location)):
             if self.storage is None:
                 raise ValueError("storage_backend_required_for_taxonomy_candidate_table")
+            v2_uris = classification_v2_artifact_uris(str(location))
+            if self.storage.exists(v2_uris["manifest"]):
+                missing_v2 = [
+                    uri
+                    for key, uri in v2_uris.items()
+                    if key in {"sources", "nodes", "edges", "gbif_mappings", "leaf_paths", "prompt_labels"}
+                    and not self.storage.exists(uri)
+                ]
+                if missing_v2:
+                    raise FileNotFoundError(", ".join(missing_v2))
+                v2_manifest = self.storage.read_json(v2_uris["manifest"])
+                store = FiveRankTaxonomyStore(
+                    sources=self.storage.read_parquet(v2_uris["sources"]),
+                    nodes=self.storage.read_parquet(v2_uris["nodes"]),
+                    edges=self.storage.read_parquet(v2_uris["edges"]),
+                    gbif_mappings=self.storage.read_parquet(v2_uris["gbif_mappings"]),
+                    leaf_paths=self.storage.read_parquet(v2_uris["leaf_paths"]),
+                    prompt_labels=self.storage.read_parquet(v2_uris["prompt_labels"]),
+                    manifest=v2_manifest,
+                )
+                expected = str(v2_manifest.get("classification_fingerprint") or "")
+                if int(v2_manifest.get("fatal_finding_count") or 0) or v2_manifest.get("qa_status") != "passed":
+                    raise ValueError("classification-v2 manifest did not pass fatal QA")
+                if expected and expected != store.taxonomy_fingerprint:
+                    raise ValueError("classification-v2 taxonomy fingerprint mismatch")
+                return store
             uris = classification_artifact_uris(location)
             missing = [
                 uri
@@ -1425,6 +1453,10 @@ class ProductionRunOrchestrator:
                 species_labels=self.storage.read_parquet(uris["species_labels"]),
                 manifest=manifest,
             )
+        v2_root = Path(location).parent if Path(location).suffix == ".parquet" else Path(location)
+        v2_paths = classification_v2_artifact_paths(v2_root)
+        if v2_paths["manifest"].exists():
+            return FiveRankTaxonomyStore.read(v2_root)
         paths = classification_artifact_paths(location)
         missing = [
             str(path)
@@ -2211,7 +2243,30 @@ def _visual_classification_config_metrics(
     }
 
 
-def _butterfly_taxonomy_store_metrics(store: ButterflyTaxonomyStore, *, taxonomy_candidate_table_status: str) -> dict[str, Any]:
+def _butterfly_taxonomy_store_metrics(
+    store: ButterflyTaxonomyStore | FiveRankTaxonomyStore,
+    *,
+    taxonomy_candidate_table_status: str,
+) -> dict[str, Any]:
+    if isinstance(store, FiveRankTaxonomyStore):
+        manifest = dict(store.manifest or {})
+        family_count = store.candidates("FAMILY").height
+        species_count = store.leaf_paths.filter(store.leaf_paths["enabled"]).height
+        return {
+            "taxonomy_candidate_table_status": taxonomy_candidate_table_status,
+            "classification_table_version": manifest.get("classification_version"),
+            "classification_prompt_variant_version": manifest.get("prompt_version"),
+            "classification_registry_version": manifest.get("registry_version"),
+            "classification_retrieved_at_min": _min_non_blank_frame_value(store.nodes, "retrieved_at"),
+            "classification_retrieved_at_max": _max_non_blank_frame_value(store.nodes, "retrieved_at"),
+            "classification_family_count": family_count,
+            "classification_species_count": species_count,
+            "taxonomy_family_candidate_count": family_count,
+            "taxonomy_species_candidate_count": species_count,
+            "classification_family_label_count": store.prompt_rows_for_rank("FAMILY").height,
+            "classification_species_label_count": store.prompt_rows_for_rank("SPECIES").height,
+            "classification_taxonomy_fingerprint": store.taxonomy_fingerprint,
+        }
     taxa = store.classification_taxa
     enabled = taxa.filter(taxa["classification_enabled"]) if "classification_enabled" in taxa.columns and not taxa.is_empty() else taxa.head(0)
     manifest = dict(store.manifest or {})
@@ -2236,10 +2291,17 @@ def _butterfly_taxonomy_store_metrics(store: ButterflyTaxonomyStore, *, taxonomy
     }
 
 
-def _taxonomy_manifest_value(store: ButterflyTaxonomyStore | None, key: str) -> str | None:
+def _taxonomy_manifest_value(store: ButterflyTaxonomyStore | FiveRankTaxonomyStore | None, key: str) -> str | None:
     if store is None:
         return None
-    value = dict(store.manifest or {}).get(key)
+    manifest = dict(store.manifest or {})
+    aliases = {
+        "classification_table_version": "classification_version",
+        "prompt_variant_version": "prompt_version",
+    }
+    value = manifest.get(key)
+    if value is None:
+        value = manifest.get(aliases.get(key, ""))
     return str(value) if value is not None and str(value).strip() else None
 
 

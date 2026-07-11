@@ -21,6 +21,11 @@ from biominer.bioclip.hierarchical_classifier import (
     classify_butterfly_crops_hierarchical_batch,
     hierarchical_result_to_object_score_row,
 )
+from biominer.bioclip.five_rank_classifier import (
+    classify_five_rank_crops_batch,
+    five_rank_result_to_object_score_row,
+)
+from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
 from biominer.bioclip.object_runner import (
     OBJECT_SCORE_OUTPUT_SCHEMA,
     OBJECT_VISUAL_MODES,
@@ -582,6 +587,27 @@ def _score_hierarchical_cloud_batch(
     species_rerank_top_k: int,
     taxonomy_text_embedding_cache: pl.DataFrame | None = None,
 ) -> list[dict[str, Any]]:
+    if isinstance(taxonomy_store, FiveRankTaxonomyStore):
+        results = classify_five_rank_crops_batch(
+            items=items,
+            scorer=scorer,
+            taxonomy_store=taxonomy_store,
+            beam_widths={"FAMILY": family_top_k},
+            species_first_pass_top_k=species_first_pass_top_k,
+            species_rerank_top_k=species_rerank_top_k,
+            taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
+        )
+        return [
+            five_rank_result_to_object_score_row(
+                item=item,
+                result=result,
+                scorer=scorer,
+                family_top_k=family_top_k,
+                species_first_pass_top_k=species_first_pass_top_k,
+                species_rerank_top_k=species_rerank_top_k,
+            )
+            for item, result in zip(items, results, strict=True)
+        ]
     results = classify_butterfly_crops_hierarchical_batch(
         items=items,
         scorer=scorer,

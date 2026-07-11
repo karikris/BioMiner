@@ -25,6 +25,11 @@ from biominer.bioclip.hierarchical_classifier import (
     classify_butterfly_crops_hierarchical_batch,
     hierarchical_result_to_object_score_row,
 )
+from biominer.bioclip.five_rank_classifier import (
+    classify_five_rank_crops_batch,
+    five_rank_result_to_object_score_row,
+)
+from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
 from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
 from biominer.detection.cropper import crop_with_padding
@@ -113,6 +118,7 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "occurrence_bin": pl.String,
     "bin_reason": pl.String,
 }
+OBJECT_SCORE_OUTPUT_SCHEMA.update(HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS)
 OBJECT_EVIDENCE_JOINED_SCHEMA: dict[str, pl.DataType] = {
     **OBJECT_SCORE_OUTPUT_SCHEMA,
     **DETECTION_OUTPUT_SCHEMA,
@@ -1349,6 +1355,27 @@ def _score_hierarchical_detection_batch(
     species_rerank_top_k: int,
     taxonomy_text_embedding_cache: pl.DataFrame | None = None,
 ) -> list[dict[str, Any]]:
+    if isinstance(taxonomy_store, FiveRankTaxonomyStore):
+        results = classify_five_rank_crops_batch(
+            items=items,
+            scorer=scorer,
+            taxonomy_store=taxonomy_store,
+            beam_widths={"FAMILY": family_top_k},
+            species_first_pass_top_k=species_first_pass_top_k,
+            species_rerank_top_k=species_rerank_top_k,
+            taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
+        )
+        return [
+            five_rank_result_to_object_score_row(
+                item=item,
+                result=result,
+                scorer=scorer,
+                family_top_k=family_top_k,
+                species_first_pass_top_k=species_first_pass_top_k,
+                species_rerank_top_k=species_rerank_top_k,
+            )
+            for item, result in zip(items, results, strict=True)
+        ]
     results = classify_butterfly_crops_hierarchical_batch(
         items=items,
         scorer=scorer,

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+import json
 from typing import Any, Mapping, Protocol, Sequence
 
 import polars as pl
 
 from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
+from biominer.bioclip.five_rank_embedding_cache import FiveRankTextEmbeddingIndex
 from biominer.registry.classification_v2 import CLASSIFICATION_RANKS
+from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 
 
 DEFAULT_BEAM_WIDTHS: dict[str, int] = {
@@ -96,12 +99,33 @@ def classify_five_rank_crop(
     beam_widths: Mapping[str, int] | None = None,
     species_first_pass_top_k: int = 20,
     species_rerank_top_k: int = 5,
+    taxonomy_text_embedding_cache: pl.DataFrame | None = None,
+    _embedding_index: FiveRankTextEmbeddingIndex | None = None,
+    _image_embedding: Sequence[float] | None = None,
 ) -> FiveRankCascadeResult:
     widths = _beam_widths(beam_widths)
     if species_first_pass_top_k <= 0:
         raise ValueError("species_first_pass_top_k must be positive")
     if species_rerank_top_k <= 0 or species_rerank_top_k > species_first_pass_top_k:
         raise ValueError("species_rerank_top_k must be positive and <= species_first_pass_top_k")
+    embedding_index = _embedding_index
+    image_embedding = _image_embedding
+    if taxonomy_text_embedding_cache is not None and embedding_index is not None:
+        raise ValueError("pass either taxonomy_text_embedding_cache or a validated embedding index")
+    if taxonomy_text_embedding_cache is not None:
+        embedding_index = FiveRankTextEmbeddingIndex.from_frame(
+            taxonomy_text_embedding_cache,
+            taxonomy_store=taxonomy_store,
+            model_id=scorer.model_id,
+            model_checkpoint=scorer.model_checkpoint,
+        )
+        embed_items = getattr(scorer, "embed_image_items", None)
+        if not callable(embed_items):
+            raise ValueError("classification-v2 text embedding cache requires scorer.embed_image_items")
+        embedded = embed_items([item])
+        if len(embedded) != 1:
+            raise ValueError("classification-v2 image embedder must return one row per crop")
+        image_embedding = embedded[0]
 
     rank_top: dict[str, tuple[RankCandidateScore, ...]] = {rank: () for rank in CLASSIFICATION_RANKS}
     candidate_counts: dict[str, int] = {rank: 0 for rank in CLASSIFICATION_RANKS}
@@ -109,7 +133,7 @@ def classify_five_rank_crop(
     skipped: dict[str, str] = {}
 
     family_candidates = taxonomy_store.candidates("FAMILY")
-    family_scores = _score_candidates(item, scorer, taxonomy_store, family_candidates)
+    family_scores = _score_candidates(item, scorer, taxonomy_store, family_candidates, embedding_index, image_embedding)
     candidate_counts["FAMILY"] = len(family_scores)
     family_selected = family_scores[: widths["FAMILY"]]
     rank_top["FAMILY"] = tuple(family_selected)
@@ -123,7 +147,7 @@ def classify_five_rank_crop(
             continue
         parent_ids = tuple(path.leaf.node_id for path in paths)
         candidates = taxonomy_store.child_candidates(parent_ids, child_rank=rank)
-        scores = _score_candidates(item, scorer, taxonomy_store, candidates)
+        scores = _score_candidates(item, scorer, taxonomy_store, candidates, embedding_index, image_embedding)
         candidate_counts[rank] = len(scores)
         score_by_node = {score.node_id: score for score in scores}
         extensions: list[_PathState] = []
@@ -161,7 +185,7 @@ def classify_five_rank_crop(
     if paths:
         genus_ids = tuple(path.leaf.node_id for path in paths)
         species_candidates = taxonomy_store.species_candidates_for_genera(genus_ids)
-        species_scores = _score_candidates(item, scorer, taxonomy_store, species_candidates)
+        species_scores = _score_candidates(item, scorer, taxonomy_store, species_candidates, embedding_index, image_embedding)
         candidate_counts["SPECIES"] = len(species_scores)
         path_by_genus = {path.leaf.node_id: path for path in paths}
         genus_by_species: dict[str, str] = {}
@@ -203,7 +227,7 @@ def classify_five_rank_crop(
         rerank_nodes = taxonomy_store.nodes.filter(
             pl.col("node_id").is_in([score.node_id for score in species_top20])
         )
-        reranked_scores = _score_candidates(item, scorer, taxonomy_store, rerank_nodes)
+        reranked_scores = _score_candidates(item, scorer, taxonomy_store, rerank_nodes, embedding_index, image_embedding)
         first_pass_by_id = {entry[1].node_id: entry for entry in first_pass}
         reranked: list[tuple[RankCandidateScore, _PathState]] = []
         for rerank_score in reranked_scores:
@@ -255,7 +279,7 @@ def classify_five_rank_crop(
         source_release="; ".join(releases),
         prompt_version=taxonomy_store.prompt_version,
         taxonomy_fingerprint=taxonomy_store.taxonomy_fingerprint,
-        embedding_cache_fingerprint=None,
+        embedding_cache_fingerprint=embedding_index.cache_fingerprint if embedding_index is not None else None,
         rank_top_candidates=rank_top,
         candidate_counts=candidate_counts,
         selected_path=selected_path,
@@ -278,7 +302,24 @@ def classify_five_rank_crops_batch(
     beam_widths: Mapping[str, int] | None = None,
     species_first_pass_top_k: int = 20,
     species_rerank_top_k: int = 5,
+    taxonomy_text_embedding_cache: pl.DataFrame | None = None,
 ) -> list[FiveRankCascadeResult]:
+    embedding_index = None
+    image_embeddings: list[Sequence[float] | None] = [None] * len(items)
+    if taxonomy_text_embedding_cache is not None:
+        embedding_index = FiveRankTextEmbeddingIndex.from_frame(
+            taxonomy_text_embedding_cache,
+            taxonomy_store=taxonomy_store,
+            model_id=scorer.model_id,
+            model_checkpoint=scorer.model_checkpoint,
+        )
+        embed_items = getattr(scorer, "embed_image_items", None)
+        if not callable(embed_items):
+            raise ValueError("classification-v2 text embedding cache requires scorer.embed_image_items")
+        embedded = embed_items(list(items))
+        if len(embedded) != len(items):
+            raise ValueError("classification-v2 image embedder must return one row per crop")
+        image_embeddings = list(embedded)
     return [
         classify_five_rank_crop(
             item=item,
@@ -287,9 +328,113 @@ def classify_five_rank_crops_batch(
             beam_widths=beam_widths,
             species_first_pass_top_k=species_first_pass_top_k,
             species_rerank_top_k=species_rerank_top_k,
+            _embedding_index=embedding_index,
+            _image_embedding=image_embeddings[index],
         )
-        for item in items
+        for index, item in enumerate(items)
     ]
+
+
+def five_rank_result_to_object_score_row(
+    *,
+    item: dict[str, Any],
+    result: FiveRankCascadeResult,
+    scorer: FiveRankScorer,
+    family_top_k: int,
+    species_first_pass_top_k: int,
+    species_rerank_top_k: int,
+) -> dict[str, Any]:
+    family_candidates = result.rank_top_candidates.get("FAMILY", ())[:family_top_k]
+    selected_family = result.selected_path.get("FAMILY")
+    selected_subfamily = result.selected_path.get("SUBFAMILY")
+    selected_tribe = result.selected_path.get("TRIBE")
+    selected_genus = result.selected_path.get("GENUS")
+    species_top = result.species_reranked[:species_rerank_top_k]
+    species_top1 = result.species_top1
+    return {
+        "source": result.source or str(item.get("source") or ""),
+        "flickr_photo_id": result.flickr_photo_id or str(item.get("flickr_photo_id") or ""),
+        "detection_id": result.detection_id or str(item.get("detection_id") or ""),
+        "crop_hash": result.crop_hash or str(item.get("crop_hash") or ""),
+        "model_id": scorer.model_id,
+        "model_version": str(getattr(scorer, "model_version", "")),
+        "model_checkpoint": scorer.model_checkpoint,
+        "candidate_set_id": result.taxonomy_fingerprint,
+        "classified_at": result.classified_at,
+        "classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        "candidate_selection_mode": "reviewed_five_rank_beam",
+        "candidate_source": "reviewed_classification_v2",
+        "taxonomy_table_version": result.classification_version,
+        "taxonomy_prompt_variant_version": result.prompt_version,
+        "ablation_mode": str(item.get("ablation_mode") or "detector_crop"),
+        "species_first_pass_top_k": int(species_first_pass_top_k),
+        "species_rerank_top_k": int(species_rerank_top_k),
+        "species_rerank_strategy": result.rerank_mode,
+        "triage_group_top": "butterfly_like",
+        "triage_group_scores": {"butterfly_like": float(item.get("detector_score") or 0.0)},
+        "family_top3": [score.scientific_name for score in family_candidates],
+        "family_top3_accepted_taxon_keys": [score.node_id for score in family_candidates],
+        "family_top3_scores": [score.score for score in family_candidates],
+        "family_top1": selected_family.scientific_name if selected_family else None,
+        "family_top1_score": selected_family.score if selected_family else 0.0,
+        "family_margin": _score_margin(family_candidates),
+        "selected_family_key": selected_family.node_id if selected_family else None,
+        "selected_family": selected_family.scientific_name if selected_family else None,
+        "genus_top8": [score.scientific_name for score in result.rank_top_candidates.get("GENUS", ())[:8]],
+        "genus_top1": selected_genus.scientific_name if selected_genus else None,
+        "genus_top1_score": selected_genus.score if selected_genus else None,
+        "genus_margin": _score_margin(result.rank_top_candidates.get("GENUS", ())),
+        "species_candidate_family_key": selected_family.node_id if selected_family else None,
+        "species_candidate_family": selected_family.scientific_name if selected_family else None,
+        "species_candidate_count": int(result.candidate_counts.get("SPECIES", 0)),
+        "species_top20": [score.scientific_name for score in result.species_top20],
+        "species_top20_accepted_taxon_keys": [score.accepted_taxon_key for score in result.species_top20],
+        "species_top20_scores": [score.score for score in result.species_top20],
+        "species_top5": [score.scientific_name for score in species_top],
+        "species_top5_accepted_taxon_keys": [score.accepted_taxon_key for score in species_top],
+        "species_top5_scores": [score.score for score in species_top],
+        "species_top1": species_top1.scientific_name if species_top1 else None,
+        "species_top1_scientific_name": species_top1.scientific_name if species_top1 else None,
+        "species_top1_accepted_taxon_key": species_top1.accepted_taxon_key if species_top1 else None,
+        "accepted_taxon_key": species_top1.accepted_taxon_key if species_top1 else None,
+        "species_top1_score": species_top1.score if species_top1 else 0.0,
+        "species_top1_margin": result.species_top1_margin,
+        "target_accepted_taxon_key": None,
+        "target_species_score": None,
+        "target_species_rank": None,
+        "geospatial_prior_score": 0.0,
+        "geospatial_prior_reason": "not_applied_open_classification",
+        "text_evidence_score": 0.0,
+        "comment_evidence_score": 0.0,
+        "is_target_positive": False,
+        "is_negative_material": False,
+        "occurrence_bin": "in_review",
+        "bin_reason": "five_rank_open_classification_requires_review",
+        "selected_subfamily_key": selected_subfamily.node_id if selected_subfamily else None,
+        "selected_subfamily": selected_subfamily.scientific_name if selected_subfamily else None,
+        "selected_tribe_key": selected_tribe.node_id if selected_tribe else None,
+        "selected_tribe": selected_tribe.scientific_name if selected_tribe else None,
+        "selected_genus_key": selected_genus.node_id if selected_genus else None,
+        "selected_genus": selected_genus.scientific_name if selected_genus else None,
+        "taxonomy_source_release": result.source_release,
+        "taxonomy_fingerprint": result.taxonomy_fingerprint,
+        "embedding_cache_fingerprint": result.embedding_cache_fingerprint,
+        "classification_path_json": json.dumps(
+            {rank: asdict(score) for rank, score in result.selected_path.items()}, sort_keys=True
+        ),
+        "rank_candidates_json": json.dumps(
+            {
+                rank: [asdict(score) for score in candidates]
+                for rank, candidates in result.rank_top_candidates.items()
+            },
+            sort_keys=True,
+        ),
+        "candidate_counts_json": json.dumps(result.candidate_counts, sort_keys=True),
+        "pruning_decisions_json": json.dumps([asdict(decision) for decision in result.pruning_decisions], sort_keys=True),
+        "skipped_level_reasons_json": json.dumps(result.skipped_level_reasons, sort_keys=True),
+        "rerank_mode": result.rerank_mode,
+        "species_rerank_candidate_count": len(result.species_reranked),
+    }
 
 
 def _score_candidates(
@@ -297,6 +442,8 @@ def _score_candidates(
     scorer: FiveRankScorer,
     store: FiveRankTaxonomyStore,
     candidates: pl.DataFrame,
+    embedding_index: FiveRankTextEmbeddingIndex | None,
+    image_embedding: Sequence[float] | None,
 ) -> list[RankCandidateScore]:
     if candidates.is_empty():
         return []
@@ -305,7 +452,12 @@ def _score_candidates(
     if prompts.is_empty():
         return []
     labels = tuple(prompts["label"].to_list())
-    label_scores = scorer.score(item, labels)
+    if embedding_index is not None:
+        if image_embedding is None:
+            raise AssertionError("validated embedding index requires an image embedding")
+        label_scores = embedding_index.score(image_embedding, labels)
+    else:
+        label_scores = scorer.score(item, labels)
     rows_by_node: dict[str, list[dict[str, Any]]] = {}
     for row in prompts.iter_rows(named=True):
         rows_by_node.setdefault(str(row["node_id"]), []).append(row)
@@ -364,6 +516,10 @@ def _beam_widths(values: Mapping[str, int] | None) -> dict[str, int]:
     return widths
 
 
+def _score_margin(scores: Sequence[RankCandidateScore]) -> float | None:
+    return scores[0].score - scores[1].score if len(scores) > 1 else None
+
+
 __all__ = [
     "DEFAULT_BEAM_WIDTHS",
     "FiveRankCascadeResult",
@@ -371,4 +527,5 @@ __all__ = [
     "RankCandidateScore",
     "classify_five_rank_crop",
     "classify_five_rank_crops_batch",
+    "five_rank_result_to_object_score_row",
 ]

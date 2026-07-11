@@ -82,6 +82,22 @@ HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS: dict[str, pl.DataType] = {
     "species_candidate_count": pl.Int64,
     "species_top20_scores": pl.List(pl.Float64),
     "species_top5_scores": pl.List(pl.Float64),
+    "selected_subfamily_key": pl.String,
+    "selected_subfamily": pl.String,
+    "selected_tribe_key": pl.String,
+    "selected_tribe": pl.String,
+    "selected_genus_key": pl.String,
+    "selected_genus": pl.String,
+    "taxonomy_source_release": pl.String,
+    "taxonomy_fingerprint": pl.String,
+    "embedding_cache_fingerprint": pl.String,
+    "classification_path_json": pl.String,
+    "rank_candidates_json": pl.String,
+    "candidate_counts_json": pl.String,
+    "pruning_decisions_json": pl.String,
+    "skipped_level_reasons_json": pl.String,
+    "rerank_mode": pl.String,
+    "species_rerank_candidate_count": pl.Int64,
 }
 
 
@@ -501,7 +517,7 @@ def rank_species_with_cached_text_embeddings(
     selected_family_key = _clean_text(family_key)
     if not selected_family_key:
         raise ValueError("family_key is required")
-    species_taxa = taxonomy_store.species_for_family(selected_family_key)
+    taxonomy_store.species_for_family(selected_family_key)
     model_id, model_checkpoint = _single_cache_model_pair(text_embedding_cache)
     validate_taxonomy_text_embedding_cache(
         text_embedding_cache,

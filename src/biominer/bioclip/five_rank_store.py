@@ -96,6 +96,17 @@ class FiveRankTaxonomyStore:
     def prompt_version(self) -> str:
         return str(self.manifest.get("prompt_version") or "")
 
+    def validation_findings(self) -> list[dict[str, object]]:
+        if int(self.manifest.get("fatal_finding_count") or 0) > 0:
+            return [
+                {
+                    "severity": "fatal",
+                    "code": "manifest_fatal_qa",
+                    "table": "classification_manifest",
+                }
+            ]
+        return []
+
     def candidates(self, rank: str) -> pl.DataFrame:
         normalized = _rank(rank)
         return self.nodes.filter((pl.col("rank") == normalized) & pl.col("enabled")).sort(

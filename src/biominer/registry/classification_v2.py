@@ -10,6 +10,7 @@ from typing import Any, Sequence
 import polars as pl
 
 from biominer.storage.parquet import write_parquet
+from biominer.storage.uri import join_uri
 
 
 CLASSIFICATION_V2_VERSION = "butterfly-classification-v2.0.0"
@@ -269,6 +270,20 @@ def classification_v2_artifact_paths(root: str | Path) -> dict[str, Path]:
         "prompt_labels": base / CLASSIFICATION_V2_PROMPT_LABELS_FILE,
         "qa_findings": base / CLASSIFICATION_V2_QA_FINDINGS_FILE,
         "manifest": base / CLASSIFICATION_V2_MANIFEST_FILE,
+    }
+
+
+def classification_v2_artifact_uris(root: str) -> dict[str, str]:
+    base = str(root).rstrip("/")
+    return {
+        "sources": join_uri(base, CLASSIFICATION_V2_SOURCES_FILE),
+        "nodes": join_uri(base, CLASSIFICATION_V2_NODES_FILE),
+        "edges": join_uri(base, CLASSIFICATION_V2_EDGES_FILE),
+        "gbif_mappings": join_uri(base, CLASSIFICATION_V2_GBIF_MAPPINGS_FILE),
+        "leaf_paths": join_uri(base, CLASSIFICATION_V2_LEAF_PATHS_FILE),
+        "prompt_labels": join_uri(base, CLASSIFICATION_V2_PROMPT_LABELS_FILE),
+        "qa_findings": join_uri(base, CLASSIFICATION_V2_QA_FINDINGS_FILE),
+        "manifest": join_uri(base, CLASSIFICATION_V2_MANIFEST_FILE),
     }
 
 
@@ -977,6 +992,7 @@ __all__ = [
     "build_classification_v2_frames",
     "build_classification_v2_manifest",
     "classification_v2_artifact_paths",
+    "classification_v2_artifact_uris",
     "classification_v2_fingerprint",
     "load_classification_v2_source",
     "write_classification_v2_artifacts",
