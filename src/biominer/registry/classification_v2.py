@@ -210,6 +210,20 @@ def write_classification_v2_artifacts(
         ("prompt_labels", frames.prompt_labels),
     ):
         write_parquet(frame, paths[key])
+    manifest["artifacts"] = {
+        key: {
+            "file": path.name,
+            "bytes": path.stat().st_size,
+            "sha256": _sha256_file(path),
+        }
+        for key, path in paths.items()
+        if key not in {"manifest", "qa_findings"} and path.exists()
+    }
+    manifest["artifacts"]["qa_findings"] = {
+        "file": paths["qa_findings"].name,
+        "bytes": paths["qa_findings"].stat().st_size,
+        "sha256": _sha256_file(paths["qa_findings"]),
+    }
     paths["manifest"].write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     return {**manifest, "outputs": {key: str(path) for key, path in paths.items()}}
 
@@ -945,6 +959,14 @@ def _read_json_optional(path: Path) -> dict[str, Any]:
     except FileNotFoundError:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
 
 
 __all__ = [
