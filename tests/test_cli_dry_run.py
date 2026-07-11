@@ -1733,7 +1733,7 @@ def test_registry_build_classification_cli_writes_v3_outputs(tmp_path, capsys) -
     payload = json.loads(capsys.readouterr().out)
     assert payload["classification_version"] == "butterfly-classification-v3.0.0"
     assert payload["enabled_leaf_path_count"] == 1
-    assert payload["prompt_label_count"] == 5
+    assert payload["prompt_label_count"] == 12
     assert payload["reviewed_rank_skip_count"] == 1
     assert (registry / "classification_nodes.parquet").exists()
     assert (registry / "classification_edges.parquet").exists()

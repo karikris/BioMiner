@@ -696,3 +696,112 @@ Pre-implementation solution IDs:
 `7e71f8b6-3dfd-4ee2-8358-97a83bd40fc8`,
 `0768879f-03d4-4612-8572-958d1fca077a`,
 `19c1ebb4-8791-4cf5-8af4-367ccbb702d6`.
+
+### Post-implementation verification — 2026-07-11
+
+Strict post call:
+
+```text
+get_example(
+  query="Python CLIP zero-shot classifier cache normalized text embeddings, encode each image batch once, compute raw cosine similarities for deterministic ranking, then rerank a fixed top-k with a distinct prompt ensemble without softmax selection",
+  language="Python",
+  license_mode="strict",
+  format="json"
+)
+```
+
+Solution ID: `fbf0d6c3-b346-427c-8a0b-9a79caa6ae0c`. Its immutable
+references included:
+
+- `towhee-io/towhee@fe856301680713032e9613cf2500932f0ae3ad13`
+  (Apache-2.0);
+- `alibaba/EasyNLP@a4ee9568fa094f5825346f3acd0d65b15f1e3a95`
+  (Apache-2.0);
+- `huggingface/optimum-intel@6898d97242498b7dc4367a12555e4f7e52b01d16`
+  (Apache-2.0);
+- `lstein/PhotoMapAI@6b7ae76c6b51bed913d103e60c69a60103e712fa`
+  (MIT);
+- `om-ai-lab/RS5M@084cdd9596a845b69320526a7eef44b8cd3426ed`
+  (MIT).
+
+The generated example confirmed the design pattern—one normalized image
+embedding, cached normalized text embeddings, raw matrix products, fixed
+top-k restriction, and a distinct prompt ensemble for reranking. BioMiner did
+not copy that implementation: it retains source-scoped taxonomy node IDs,
+stage-specific prompt provenance, accepted GBIF mappings, deterministic
+scientific-name/node-ID tie breaks, and strict cache identity checks.
+
+The post audit re-read exact OpenCLIP 3.3.0 source at
+`mlfoundations/open_clip@30573618fc375b12f094ef64cb3a1391cf611c45`
+(MIT):
+
+```text
+code_read(src/open_clip/model.py, 310:365)
+code_read(src/open_clip/model.py, 430:479)
+code_read(src/open_clip/zero_shot_classifier.py, 35:72)
+code_read(tests/test_inference_simple.py, 38:51)
+```
+
+The source signatures and shapes match the integration:
+
+- image output is `[image_batch, embedding_dim]` and text output is
+  `[text_batch, embedding_dim]`;
+- `F.normalize(..., dim=-1)` makes their matrix product a cosine matrix;
+- OpenCLIP logits apply the positive learned `exp(logit_scale)` after
+  normalization, so unscaled cosine preserves fixed-checkpoint ordering;
+- prompt batches are reshaped as
+  `[class_batch, prompt_variant_count, embedding_dim]`, averaged, normalized,
+  transposed, and concatenated;
+- softmax occurs only after the similarity/logit matrix and is unnecessary for
+  top-k selection.
+
+Implementation comparison:
+
+- `TaxonomyTextEmbeddingIndex.raw_similarities` returns unscaled cosine values;
+  `diagnostic_probabilities` is a separately named candidate-relative helper.
+- The cache uses an exact Float32 physical schema and binds classification
+  version, prompt version, prompt stage, hierarchy fingerprint, label hash,
+  model ID, model checkpoint, dimension, and a canonical whole-cache SHA256.
+- Cache loading rejects missing labels, stage-association drift, wrong
+  hierarchy/model/checkpoint, non-unit or non-finite vectors, mixed dimensions,
+  and fingerprint or physical-schema changes.
+- Compact immutable bytes hold the validated vector matrix instead of Python
+  float objects. Prompt text is embedded once per unique stage/label.
+- Prompt version `butterfly-six-rank-prompts-v4` supplies two rank-screen
+  variants, two species-first-pass variants, and two disjoint species-rerank
+  variants; lineage-aware rerank text uses only reviewed family/genus paths.
+- `classify_path_cascade_batch` calls `embed_image_items` once for the entire
+  input batch. Direct mode batches and memoizes missing text labels across the
+  batch; cached mode performs no classification-time text encoding.
+- Species rerank candidates are set-equal to first-pass top 20. The reranked
+  top 20 retains both raw stage scores; top 5 and reported top 3 are strict
+  prefixes, and the winning path follows reranked top 1.
+- Existing accelerator work remains inside the persistent sidecar. Normalized
+  rows cross the boundary through `detach().cpu().tolist()`, so the taxonomy
+  index does not retain CUDA or MPS tensors.
+
+Patterns rejected after comparison:
+
+- OpenCLIP's illustrative constant `100.0` as a durable raw score;
+- candidate-set softmax in cached or direct selection;
+- averaging prompt vectors before preserving prompt-level audit evidence;
+- persisting accelerator tensors or Python float64 tuples for every label;
+- reranking a species outside first-pass top 20;
+- allowing cache fallback after any identity mismatch.
+
+Repository verification:
+
+- focused Ruff across the staged registry, store, cache, worker, classifier,
+  object runner, and their tests: passed;
+- focused pytest across those components: `167 passed`;
+- the first full run exposed one honest stale CLI expectation (`5` prompt rows
+  versus the new staged count `12`); the assertion was updated and rerun;
+- final `.venv/bin/pytest -q`: `938 passed`.
+
+The dedicated sidecar remains absent and its installer remains insufficiently
+pinned; therefore real OpenCLIP/MPS execution was not claimed or required for
+this deterministic phase gate.
+
+Post-implementation solution IDs:
+
+`fbf0d6c3-b346-427c-8a0b-9a79caa6ae0c`.
