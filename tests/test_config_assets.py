@@ -14,11 +14,31 @@ def test_authoritative_docs_and_classification_source_exist() -> None:
         Path("docs/registry.md"),
         Path("docs/production.md"),
         Path("docs/vision.md"),
+        Path("docs/migrations/classification-v3.md"),
         Path("config/taxonomy/papilionoidea_classification_v2.json"),
         Path("config/taxonomy/papilionoidea_classification_v3.json"),
         Path("config/vision_profiles/mac_m5pro_64gb.json"),
     ):
         assert path.exists(), path
+
+
+def test_classification_v3_cutover_doc_preserves_version_and_output_boundaries() -> None:
+    text = Path("docs/migrations/classification-v3.md").read_text(encoding="utf-8")
+
+    for required in (
+        "Classification-v2 is not upgraded in place",
+        "butterfly-classification-v3.0.0",
+        "butterfly-six-rank-prompts-v4",
+        "butterfly-cascade-output-v1.0.0",
+        "global-rank-pruning-v1",
+        "--output-dir data/registry/classification-v3",
+        "--output data/cache/classification-v3/classification_text_embeddings.parquet",
+        "does not open or validate the classification-v3",
+        "Do not cast old columns",
+        "Work keys change intentionally",
+        "previous v2-capable release or Git SHA",
+    ):
+        assert required in text
 
 
 def test_classification_source_has_reviewed_five_rank_path() -> None:

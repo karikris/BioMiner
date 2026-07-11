@@ -42,6 +42,10 @@ checkpoint, dimensions, normalized vectors, and self-fingerprint are validated
 before production scoring. A cache from another taxonomy, prompt set, model, or
 checkpoint is not accepted.
 
+V2 artifacts are not upgraded or read as v3. Follow the
+[classification-v3 cutover runbook](migrations/classification-v3.md) to rebuild
+the overlay and cache in new versioned roots.
+
 ## Names and Flickr queries
 
 Source authority order is GBIF/CoL taxonomy, established vernacular sources, then generated translation candidates. Raw translations are T5 candidates and do not become enabled queries without review.

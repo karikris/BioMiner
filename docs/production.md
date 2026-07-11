@@ -65,7 +65,9 @@ Cascade output persists `classification_fingerprint`,
 `selected_<rank>` fields describe the final reranked species-winning path; the
 two are intentionally not interchangeable. Species audit arrays retain the
 first-pass top 20, reranked top 5, and reported top 3. See
-[Vision and classification](vision.md) for the complete field contract.
+[Vision and classification](vision.md) for the complete field contract and the
+[classification-v3 cutover runbook](migrations/classification-v3.md) before
+switching persisted artifacts or output roots.
 
 ## Durability and observability
 

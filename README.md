@@ -160,5 +160,6 @@ Tests use fake clients, fake classifiers, and synthetic images. They do not requ
 - [Registry and taxonomy](docs/registry.md)
 - [Production workflow](docs/production.md)
 - [Vision and classification](docs/vision.md)
+- [Classification-v3 cutover](docs/migrations/classification-v3.md)
 
 Repository invariants and agent implementation rules are defined in `AGENTS.md`.
