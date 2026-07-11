@@ -221,11 +221,25 @@ def test_prompt_and_mapping_queries_preserve_same_name_node_identities(tmp_path:
     duplicate_name_ids = ["fixture:genus:b1", "fixture:genus:a2", "fixture:genus:a2"]
 
     prompts = store.prompt_rows_for_nodes(duplicate_name_ids, "rank_screen")
-    assert prompts["node_id"].to_list() == ["fixture:genus:a2", "fixture:genus:b1"]
-    assert prompts["scientific_name"].to_list() == ["Duplicata", "Duplicata"]
-    assert prompts["label"].n_unique() == 1
-    with pytest.raises(ValueError, match="prompt stage is unavailable"):
+    assert prompts["node_id"].to_list() == [
+        "fixture:genus:a2",
+        "fixture:genus:a2",
+        "fixture:genus:b1",
+        "fixture:genus:b1",
+    ]
+    assert prompts["scientific_name"].to_list() == ["Duplicata"] * 4
+    assert prompts["label"].n_unique() == 2
+    assert prompts["prompt_stage"].unique().to_list() == ["rank_screen"]
+    with pytest.raises(ValueError, match="species_rerank prompts require"):
         store.prompt_rows_for_nodes(duplicate_name_ids, "species_rerank")
+
+    species_ids = ["fixture:species:a1-1", "fixture:species:c2"]
+    first_pass = store.prompt_rows_for_nodes(species_ids, "species_first_pass")
+    rerank = store.prompt_rows_for_nodes(species_ids, "species_rerank")
+    assert first_pass.height == rerank.height == 4
+    assert set(first_pass["label"].to_list()).isdisjoint(rerank["label"].to_list())
+    assert first_pass["node_id"].unique().sort().to_list() == sorted(species_ids)
+    assert rerank["node_id"].unique().sort().to_list() == sorted(species_ids)
 
     mappings = store.mappings_for_species_nodes(
         ["fixture:species:c2", "fixture:species:a1-1", "fixture:species:c2"]

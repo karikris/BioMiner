@@ -10,6 +10,7 @@ import polars as pl
 import pytest
 
 from biominer.registry.classification_v3 import (
+    CLASSIFICATION_PROMPT_STAGES,
     CLASSIFICATION_RANKS,
     CLASSIFICATION_V3_PROMPT_VERSION,
     CLASSIFICATION_V3_VERSION,
@@ -19,7 +20,10 @@ from biominer.registry.classification_v3 import (
     NODE_SCHEMA,
     PROMPT_LABEL_SCHEMA,
     QA_FINDING_SCHEMA,
+    RANK_SCREEN_PROMPT_STAGE,
     SOURCE_SCHEMA,
+    SPECIES_FIRST_PASS_PROMPT_STAGE,
+    SPECIES_RERANK_PROMPT_STAGE,
     build_classification_v3_frames,
     classification_v3_artifact_paths,
     classification_v3_fingerprint,
@@ -65,9 +69,41 @@ def test_classification_v3_builds_complete_six_rank_path_with_exact_schemas() ->
         "Papilio demoleus",
     )
     assert frames.leaf_paths["hierarchy_hash"][0].startswith("sha256:")
-    assert frames.prompt_labels["rank"].to_list() == list(CLASSIFICATION_RANKS)
+    rank_screen = frames.prompt_labels.filter(pl.col("prompt_stage") == RANK_SCREEN_PROMPT_STAGE)
+    assert rank_screen["rank"].unique(maintain_order=True).to_list() == list(CLASSIFICATION_RANKS[:-1])
+    assert rank_screen.group_by("rank").len()["len"].to_list() == [2, 2, 2, 2, 2]
     assert frames.prompt_labels["label"][0] == "a photo of a butterfly in family Papilionidae"
     assert validate_classification_v3(frames, taxa=_taxa()) == []
+
+
+def test_prompt_labels_have_rank_specific_stages_and_distinct_species_rerank_text() -> None:
+    frames = build_classification_v3_frames(_taxa(), _six_rank_source())
+    prompts = frames.prompt_labels
+
+    assert prompts["prompt_version"].unique().to_list() == [CLASSIFICATION_V3_PROMPT_VERSION]
+    assert prompts["prompt_stage"].unique(maintain_order=True).to_list() == list(
+        CLASSIFICATION_PROMPT_STAGES
+    )
+    assert set(
+        prompts.filter(pl.col("prompt_stage") == RANK_SCREEN_PROMPT_STAGE)["rank"].unique().to_list()
+    ) == {
+        "FAMILY",
+        "GENUS",
+        "SUBFAMILY",
+        "SUBTRIBE",
+        "TRIBE",
+    }
+    first_pass = prompts.filter(pl.col("prompt_stage") == SPECIES_FIRST_PASS_PROMPT_STAGE)
+    rerank = prompts.filter(pl.col("prompt_stage") == SPECIES_RERANK_PROMPT_STAGE)
+    assert first_pass.height == rerank.height == 2
+    assert first_pass["rank"].unique().to_list() == rerank["rank"].unique().to_list() == [
+        "SPECIES"
+    ]
+    assert set(first_pass["label"].to_list()).isdisjoint(rerank["label"].to_list())
+    assert (
+        "the butterfly Papilio demoleus in genus Papilio, family Papilionidae"
+        in rerank["label"].to_list()
+    )
 
 
 def test_curated_papilio_source_uses_reviewed_optional_subtribe_skip() -> None:
@@ -296,6 +332,34 @@ def test_cross_table_qa_detects_disabled_node_missing_label_and_rank_gap() -> No
     } <= codes
 
 
+def test_prompt_qa_rejects_wrong_stage_rank_and_reused_species_text() -> None:
+    frames = build_classification_v3_frames(_taxa(), _six_rank_source())
+    label_rows = frames.prompt_labels.to_dicts()
+    family = next(row for row in label_rows if row["rank"] == "FAMILY")
+    family["prompt_stage"] = SPECIES_RERANK_PROMPT_STAGE
+    species_first = next(
+        row for row in label_rows if row["prompt_stage"] == SPECIES_FIRST_PASS_PROMPT_STAGE
+    )
+    species_rerank_rows = [
+        row
+        for row in label_rows
+        if row["prompt_stage"] == SPECIES_RERANK_PROMPT_STAGE and row["rank"] == "SPECIES"
+    ]
+    species_rerank_rows[0]["label"] = species_first["label"]
+    for row in label_rows:
+        if row["prompt_stage"] == SPECIES_FIRST_PASS_PROMPT_STAGE and row is not species_first:
+            row["enabled"] = False
+    tampered = replace(
+        frames,
+        prompt_labels=pl.DataFrame(label_rows, schema=PROMPT_LABEL_SCHEMA),
+    )
+
+    codes = _codes(validate_classification_v3(tampered, taxa=_taxa()), severity="fatal")
+
+    assert "invalid_prompt_stage_rank" in codes
+    assert "species_prompt_stages_not_distinct" in codes
+
+
 def test_enabled_genus_without_enabled_species_child_warns() -> None:
     frames = build_classification_v3_frames(_taxa(), _six_rank_source())
     edges = frames.edges.filter(pl.col("child_rank") != "SPECIES")
@@ -359,6 +423,19 @@ def test_fingerprints_are_invariant_to_source_and_frame_row_order() -> None:
     assert hierarchy_fingerprint(rebuilt) == hierarchy_fingerprint(frames)
     assert classification_v3_fingerprint(reversed_frames) == classification_v3_fingerprint(frames)
     assert hierarchy_fingerprint(reversed_frames) == hierarchy_fingerprint(frames)
+
+
+def test_prompt_change_updates_classification_but_not_hierarchy_fingerprint() -> None:
+    frames = build_classification_v3_frames(_taxa(), _six_rank_source())
+    prompt_rows = frames.prompt_labels.to_dicts()
+    prompt_rows[0]["label"] += " close view"
+    changed = replace(
+        frames,
+        prompt_labels=pl.DataFrame(prompt_rows, schema=PROMPT_LABEL_SCHEMA),
+    )
+
+    assert classification_v3_fingerprint(changed) != classification_v3_fingerprint(frames)
+    assert hierarchy_fingerprint(changed) == hierarchy_fingerprint(frames)
 
 
 def test_v3_writer_refuses_v2_manifest_without_overwriting_it(tmp_path: Path) -> None:

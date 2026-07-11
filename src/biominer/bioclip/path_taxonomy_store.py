@@ -10,6 +10,7 @@ from typing import Mapping, Self, Sequence
 import polars as pl
 
 from biominer.registry.classification_v3 import (
+    CLASSIFICATION_PROMPT_STAGES,
     CLASSIFICATION_RANKS,
     CLASSIFICATION_V3_PROMPT_VERSION,
     CLASSIFICATION_V3_VERSION,
@@ -20,7 +21,10 @@ from biominer.registry.classification_v3 import (
     OPTIONAL_CLASSIFICATION_RANKS,
     PROMPT_LABEL_SCHEMA,
     QA_FINDING_SCHEMA,
+    RANK_SCREEN_PROMPT_STAGE,
     SOURCE_SCHEMA,
+    SPECIES_FIRST_PASS_PROMPT_STAGE,
+    SPECIES_RERANK_PROMPT_STAGE,
     ClassificationV3Frames,
     classification_v3_artifact_paths,
     classification_v3_fingerprint,
@@ -28,8 +32,6 @@ from biominer.registry.classification_v3 import (
 )
 
 
-RANK_SCREEN_PROMPT_STAGE = "rank_screen"
-SPECIES_FIRST_PASS_PROMPT_STAGE = "species_first_pass"
 _CHECKSUM_ARTIFACTS = (
     "sources",
     "nodes",
@@ -201,26 +203,32 @@ class PathTaxonomyStore:
         prompt_stage: str,
     ) -> pl.DataFrame:
         stage = str(prompt_stage or "").strip().casefold()
-        ids = _node_ids(node_ids)
-        if stage == SPECIES_FIRST_PASS_PROMPT_STAGE:
-            species_ids = set(
-                self.nodes.filter(
-                    pl.col("enabled")
-                    & (pl.col("rank") == "SPECIES")
-                    & pl.col("node_id").is_in(ids)
-                )["node_id"].to_list()
-            )
-            if species_ids != set(ids):
-                raise ValueError("species_first_pass prompts require only enabled SPECIES node IDs")
-        elif stage != RANK_SCREEN_PROMPT_STAGE:
+        if stage not in CLASSIFICATION_PROMPT_STAGES:
             raise ValueError(
                 f"classification-v3 prompt stage is unavailable: {prompt_stage}; "
-                f"expected {RANK_SCREEN_PROMPT_STAGE} or {SPECIES_FIRST_PASS_PROMPT_STAGE}"
+                f"expected one of {', '.join(CLASSIFICATION_PROMPT_STAGES)}"
             )
+        ids = _node_ids(node_ids)
         if not ids:
             return pl.DataFrame(schema=PROMPT_LABEL_SCHEMA)
+        selected_nodes = self.nodes.filter(pl.col("enabled") & pl.col("node_id").is_in(ids))
+        if set(selected_nodes["node_id"].to_list()) != set(ids):
+            raise ValueError("classification-v3 prompts require enabled classification node IDs")
+        ranks = set(selected_nodes["rank"].to_list())
+        if stage == RANK_SCREEN_PROMPT_STAGE:
+            valid = "SPECIES" not in ranks
+            required = "enabled intermediate-rank"
+        else:
+            valid = ranks == {"SPECIES"}
+            required = "enabled SPECIES"
+        if not valid:
+            raise ValueError(f"{stage} prompts require only {required} node IDs")
         return _sort_prompts(
-            self.prompt_labels.filter(pl.col("enabled") & pl.col("node_id").is_in(ids))
+            self.prompt_labels.filter(
+                pl.col("enabled")
+                & (pl.col("prompt_stage") == stage)
+                & pl.col("node_id").is_in(ids)
+            )
         )
 
     def mappings_for_species_nodes(self, node_ids: Sequence[str]) -> pl.DataFrame:
@@ -384,9 +392,11 @@ def _deduplicate_paths(paths: pl.DataFrame) -> pl.DataFrame:
 
 def _sort_prompts(prompts: pl.DataFrame) -> pl.DataFrame:
     rank_order = {rank: index for index, rank in enumerate(CLASSIFICATION_RANKS)}
+    stage_order = {stage: index for index, stage in enumerate(CLASSIFICATION_PROMPT_STAGES)}
     rows = sorted(
         prompts.iter_rows(named=True),
         key=lambda row: (
+            stage_order.get(str(row.get("prompt_stage") or ""), len(stage_order)),
             rank_order.get(str(row.get("rank") or ""), len(rank_order)),
             str(row.get("scientific_name") or ""),
             str(row.get("node_id") or ""),
@@ -409,4 +419,5 @@ __all__ = [
     "PathTaxonomyStore",
     "RANK_SCREEN_PROMPT_STAGE",
     "SPECIES_FIRST_PASS_PROMPT_STAGE",
+    "SPECIES_RERANK_PROMPT_STAGE",
 ]

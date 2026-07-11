@@ -14,7 +14,16 @@ from biominer.storage.uri import join_uri
 
 
 CLASSIFICATION_V3_VERSION = "butterfly-classification-v3.0.0"
-CLASSIFICATION_V3_PROMPT_VERSION = "butterfly-six-rank-prompts-v3"
+CLASSIFICATION_V3_PROMPT_VERSION = "butterfly-six-rank-prompts-v4"
+
+RANK_SCREEN_PROMPT_STAGE = "rank_screen"
+SPECIES_FIRST_PASS_PROMPT_STAGE = "species_first_pass"
+SPECIES_RERANK_PROMPT_STAGE = "species_rerank"
+CLASSIFICATION_PROMPT_STAGES = (
+    RANK_SCREEN_PROMPT_STAGE,
+    SPECIES_FIRST_PASS_PROMPT_STAGE,
+    SPECIES_RERANK_PROMPT_STAGE,
+)
 
 CLASSIFICATION_RANKS = (
     "FAMILY",
@@ -148,6 +157,7 @@ LEAF_PATH_SCHEMA: dict[str, pl.DataType] = {
 PROMPT_LABEL_SCHEMA: dict[str, pl.DataType] = {
     "classification_version": pl.String,
     "prompt_version": pl.String,
+    "prompt_stage": pl.String,
     "node_id": pl.String,
     "rank": pl.String,
     "scientific_name": pl.String,
@@ -167,13 +177,37 @@ QA_FINDING_SCHEMA: dict[str, pl.DataType] = {
 }
 
 RANK_PROMPT_TEMPLATES: dict[str, tuple[str, ...]] = {
-    "FAMILY": ("a photo of a butterfly in family {name}",),
-    "SUBFAMILY": ("a photo of a butterfly in subfamily {name}",),
-    "TRIBE": ("a photo of a butterfly in tribe {name}",),
-    "SUBTRIBE": ("a photo of a butterfly in subtribe {name}",),
-    "GENUS": ("a photo of a butterfly in genus {name}",),
-    "SPECIES": ("a photo of the butterfly species {name}",),
+    "FAMILY": (
+        "a photo of a butterfly in family {name}",
+        "a butterfly belonging to the family {name}",
+    ),
+    "SUBFAMILY": (
+        "a photo of a butterfly in subfamily {name}",
+        "a butterfly belonging to the subfamily {name}",
+    ),
+    "TRIBE": (
+        "a photo of a butterfly in tribe {name}",
+        "a butterfly belonging to the tribe {name}",
+    ),
+    "SUBTRIBE": (
+        "a photo of a butterfly in subtribe {name}",
+        "a butterfly belonging to the subtribe {name}",
+    ),
+    "GENUS": (
+        "a photo of a butterfly in genus {name}",
+        "a butterfly belonging to the genus {name}",
+    ),
 }
+
+SPECIES_FIRST_PASS_PROMPT_TEMPLATES = (
+    "a photo of the butterfly species {name}",
+    "a butterfly identified as {name}",
+)
+
+SPECIES_RERANK_PROMPT_TEMPLATES = (
+    "a detailed photograph showing the diagnostic features of {name}",
+    "the butterfly {name} in genus {genus}, family {family}",
+)
 
 
 @dataclass(frozen=True)
@@ -352,7 +386,10 @@ def classification_v3_fingerprint(frames: ClassificationV3Frames) -> str:
         "edges": _canonical_rows(frames.edges, ("parent_rank", "parent_node_id", "child_node_id")),
         "mappings": _canonical_rows(frames.gbif_mappings, ("accepted_scientific_name", "gbif_species_key")),
         "paths": _canonical_rows(frames.leaf_paths, ("accepted_taxon_key", "hierarchy_hash")),
-        "prompts": _canonical_rows(frames.prompt_labels, ("rank", "scientific_name", "sort_order", "label")),
+        "prompts": _canonical_rows(
+            frames.prompt_labels,
+            ("prompt_stage", "rank", "scientific_name", "sort_order", "label"),
+        ),
     }
     return _sha256_json(payload)
 
@@ -747,8 +784,19 @@ def _leaf_path_row(
 
 def _prompt_label_frame(*, version: str, nodes: pl.DataFrame, leaf_paths: pl.DataFrame) -> pl.DataFrame:
     usable_node_ids: set[str] = set()
-    for row in leaf_paths.filter(pl.col("enabled")).iter_rows(named=True):
+    species_lineage_by_node: dict[str, dict[str, str]] = {}
+    enabled_paths = leaf_paths.filter(pl.col("enabled"))
+    for row in enabled_paths.iter_rows(named=True):
         usable_node_ids.update(_string_list(row.get("rank_path_node_ids")))
+        species_node_id = _text(row.get("species_node_id"))
+        if species_node_id:
+            species_lineage_by_node.setdefault(
+                species_node_id,
+                {
+                    "family": _text(row.get("family")),
+                    "genus": _text(row.get("genus")),
+                },
+            )
     rows: list[dict[str, Any]] = []
     for node in nodes.filter(pl.col("enabled")).iter_rows(named=True):
         node_id = str(node["node_id"])
@@ -756,20 +804,34 @@ def _prompt_label_frame(*, version: str, nodes: pl.DataFrame, leaf_paths: pl.Dat
             continue
         rank = str(node["rank"])
         name = str(node["scientific_name"])
-        for sort_order, template in enumerate(RANK_PROMPT_TEMPLATES[rank], start=1):
-            rows.append(
-                {
-                    "classification_version": version,
-                    "prompt_version": CLASSIFICATION_V3_PROMPT_VERSION,
-                    "node_id": node_id,
-                    "rank": rank,
-                    "scientific_name": name,
-                    "label": template.format(name=name),
-                    "prompt_template": template,
-                    "sort_order": sort_order,
-                    "enabled": True,
-                }
+        if rank == "SPECIES":
+            prompt_sets = (
+                (SPECIES_FIRST_PASS_PROMPT_STAGE, SPECIES_FIRST_PASS_PROMPT_TEMPLATES),
+                (SPECIES_RERANK_PROMPT_STAGE, SPECIES_RERANK_PROMPT_TEMPLATES),
             )
+        else:
+            prompt_sets = ((RANK_SCREEN_PROMPT_STAGE, RANK_PROMPT_TEMPLATES[rank]),)
+        lineage = species_lineage_by_node.get(node_id, {"family": "", "genus": ""})
+        for prompt_stage, templates in prompt_sets:
+            for sort_order, template in enumerate(templates, start=1):
+                rows.append(
+                    {
+                        "classification_version": version,
+                        "prompt_version": CLASSIFICATION_V3_PROMPT_VERSION,
+                        "prompt_stage": prompt_stage,
+                        "node_id": node_id,
+                        "rank": rank,
+                        "scientific_name": name,
+                        "label": template.format(
+                            name=name,
+                            family=lineage["family"],
+                            genus=lineage["genus"],
+                        ),
+                        "prompt_template": template,
+                        "sort_order": sort_order,
+                        "enabled": True,
+                    }
+                )
     return _sort_prompts(_typed_frame(rows, PROMPT_LABEL_SCHEMA))
 
 
@@ -1128,9 +1190,13 @@ def _validate_prompt_labels(
     findings: list[dict[str, Any]],
 ) -> None:
     enabled_node_counts: dict[str, int] = {}
+    rank_by_node: dict[str, str] = {}
     for node in nodes.filter(pl.col("enabled")).iter_rows(named=True):
         node_id = _text(node.get("node_id"))
         enabled_node_counts[node_id] = enabled_node_counts.get(node_id, 0) + 1
+        rank_by_node[node_id] = _text(node.get("rank"))
+    stages_by_node: dict[str, set[str]] = {}
+    labels_by_node_stage: dict[tuple[str, str], set[str]] = {}
     for label in labels.filter(pl.col("enabled")).iter_rows(named=True):
         node_id = _text(label.get("node_id"))
         if enabled_node_counts.get(node_id) != 1:
@@ -1143,6 +1209,66 @@ def _validate_prompt_labels(
                     "enabled prompt label does not reference exactly one enabled node",
                 )
             )
+            continue
+        stage = _text(label.get("prompt_stage"))
+        rank = rank_by_node[node_id]
+        stages_by_node.setdefault(node_id, set()).add(stage)
+        labels_by_node_stage.setdefault((node_id, stage), set()).add(_text(label.get("label")))
+        if stage not in CLASSIFICATION_PROMPT_STAGES:
+            findings.append(
+                _finding(
+                    "fatal",
+                    "invalid_prompt_stage",
+                    "classification_prompt_labels",
+                    node_id,
+                    "enabled prompt label uses an unsupported prompt stage",
+                    {"prompt_stage": stage, "rank": rank},
+                )
+            )
+        elif (rank == "SPECIES") != (
+            stage in {SPECIES_FIRST_PASS_PROMPT_STAGE, SPECIES_RERANK_PROMPT_STAGE}
+        ):
+            findings.append(
+                _finding(
+                    "fatal",
+                    "invalid_prompt_stage_rank",
+                    "classification_prompt_labels",
+                    node_id,
+                    "prompt stage is incompatible with the node rank",
+                    {"prompt_stage": stage, "rank": rank},
+                )
+            )
+    for node_id, rank in sorted(rank_by_node.items()):
+        required_stages = (
+            {SPECIES_FIRST_PASS_PROMPT_STAGE, SPECIES_RERANK_PROMPT_STAGE}
+            if rank == "SPECIES"
+            else {RANK_SCREEN_PROMPT_STAGE}
+        )
+        missing = sorted(required_stages - stages_by_node.get(node_id, set()))
+        if missing:
+            findings.append(
+                _finding(
+                    "fatal",
+                    "missing_required_prompt_stage",
+                    "classification_prompt_labels",
+                    node_id,
+                    "enabled classification node is missing a required prompt stage",
+                    {"rank": rank, "missing_prompt_stages": missing},
+                )
+            )
+        if rank == "SPECIES":
+            first_pass = labels_by_node_stage.get((node_id, SPECIES_FIRST_PASS_PROMPT_STAGE), set())
+            rerank = labels_by_node_stage.get((node_id, SPECIES_RERANK_PROMPT_STAGE), set())
+            if first_pass & rerank:
+                findings.append(
+                    _finding(
+                        "fatal",
+                        "species_prompt_stages_not_distinct",
+                        "classification_prompt_labels",
+                        node_id,
+                        "species first-pass and rerank label sets must be disjoint",
+                    )
+                )
 
 
 def _append_registry_coverage_gaps(
@@ -1257,9 +1383,11 @@ def _sort_nodes(frame: pl.DataFrame) -> pl.DataFrame:
 
 def _sort_prompts(frame: pl.DataFrame) -> pl.DataFrame:
     rank_order = {rank: index for index, rank in enumerate(CLASSIFICATION_RANKS)}
+    stage_order = {stage: index for index, stage in enumerate(CLASSIFICATION_PROMPT_STAGES)}
     rows = sorted(
         frame.iter_rows(named=True),
         key=lambda row: (
+            stage_order.get(_text(row.get("prompt_stage")), len(stage_order)),
             rank_order.get(_text(row.get("rank")), len(rank_order)),
             _text(row.get("scientific_name")),
             int(row.get("sort_order") or 0),
@@ -1444,6 +1572,7 @@ def _sha256_file(path: Path) -> str:
 __all__ = [
     "ALLOWED_RANK_TRANSITIONS",
     "ASSERTED_PARENT_EDGE",
+    "CLASSIFICATION_PROMPT_STAGES",
     "CLASSIFICATION_RANKS",
     "CLASSIFICATION_V3_PROMPT_VERSION",
     "CLASSIFICATION_V3_VERSION",
@@ -1457,9 +1586,14 @@ __all__ = [
     "OPTIONAL_CLASSIFICATION_RANKS",
     "PROMPT_LABEL_SCHEMA",
     "QA_FINDING_SCHEMA",
+    "RANK_SCREEN_PROMPT_STAGE",
     "RANK_PROMPT_TEMPLATES",
     "REVIEWED_RANK_SKIP_EDGE",
     "SOURCE_SCHEMA",
+    "SPECIES_FIRST_PASS_PROMPT_STAGE",
+    "SPECIES_FIRST_PASS_PROMPT_TEMPLATES",
+    "SPECIES_RERANK_PROMPT_STAGE",
+    "SPECIES_RERANK_PROMPT_TEMPLATES",
     "SUPPORTED_EDGE_TYPES",
     "build_classification_v3_frames",
     "build_classification_v3_manifest",

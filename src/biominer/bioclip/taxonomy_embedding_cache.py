@@ -11,6 +11,7 @@ from typing import Callable, Mapping, Sequence
 import polars as pl
 
 from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
+from biominer.registry.classification_v3 import CLASSIFICATION_PROMPT_STAGES
 
 
 TAXONOMY_TEXT_EMBEDDING_SCHEMA: dict[str, pl.DataType] = {
@@ -27,11 +28,6 @@ TAXONOMY_TEXT_EMBEDDING_SCHEMA: dict[str, pl.DataType] = {
     "embedding": pl.List(pl.Float32),
 }
 
-_PROMPT_STAGES = (
-    "rank_screen",
-    "species_first_pass",
-    "species_rerank",
-)
 _UNIT_NORM_TOLERANCE = 1e-5
 
 
@@ -306,7 +302,8 @@ def _enabled_unique_prompts(taxonomy_store: PathTaxonomyStore) -> pl.DataFrame:
         raise ValueError("classification-v3 prompt labels are missing prompt_stage")
     enabled = prompts.filter(pl.col("enabled")).select("prompt_stage", "label")
     invalid_stages = sorted(
-        set(str(value or "") for value in enabled["prompt_stage"].to_list()) - set(_PROMPT_STAGES)
+        set(str(value or "") for value in enabled["prompt_stage"].to_list())
+        - set(CLASSIFICATION_PROMPT_STAGES)
     )
     if invalid_stages:
         raise ValueError("classification-v3 has invalid prompt stages: " + ", ".join(invalid_stages))
@@ -360,14 +357,14 @@ def _requested_labels(labels: Sequence[str]) -> tuple[str, ...]:
 
 def _prompt_stage(value: object) -> str:
     stage = str(value or "")
-    if stage not in _PROMPT_STAGES:
+    if stage not in CLASSIFICATION_PROMPT_STAGES:
         raise ValueError(f"invalid taxonomy prompt stage: {stage}")
     return stage
 
 
 def _prompt_stage_order(stage: str) -> int:
     try:
-        return _PROMPT_STAGES.index(stage)
+        return CLASSIFICATION_PROMPT_STAGES.index(stage)
     except ValueError as exc:
         raise ValueError(f"invalid taxonomy prompt stage: {stage}") from exc
 

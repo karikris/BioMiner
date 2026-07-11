@@ -471,6 +471,10 @@ def _label(node_id: str) -> str:
     return f"prompt::{node_id}"
 
 
+def _rerank_label(node_id: str) -> str:
+    return f"rerank::{node_id}"
+
+
 def _only_species_prefix(store: PathTaxonomyStore, prefix: str) -> PathTaxonomyStore:
     paths = store.leaf_paths.filter(pl.col("species_node_id").str.starts_with(prefix))
     return replace(
@@ -569,20 +573,32 @@ def _store() -> PathTaxonomyStore:
             }
         )
     node_frame = pl.DataFrame(list(nodes.values()), schema=NODE_SCHEMA)
-    prompt_rows = [
-        {
-            "classification_version": CLASSIFICATION_V3_VERSION,
-            "prompt_version": CLASSIFICATION_V3_PROMPT_VERSION,
-            "node_id": row["node_id"],
-            "rank": row["rank"],
-            "scientific_name": row["scientific_name"],
-            "label": _label(str(row["node_id"])),
-            "prompt_template": "prompt::{name}",
-            "sort_order": 1,
-            "enabled": True,
-        }
-        for row in nodes.values()
-    ]
+    prompt_rows: list[dict[str, object]] = []
+    for row in nodes.values():
+        rank = str(row["rank"])
+        stages_and_labels = (
+            (
+                ("species_first_pass", _label(str(row["node_id"]))),
+                ("species_rerank", _rerank_label(str(row["node_id"]))),
+            )
+            if rank == "SPECIES"
+            else (("rank_screen", _label(str(row["node_id"]))),)
+        )
+        for prompt_stage, label in stages_and_labels:
+            prompt_rows.append(
+                {
+                    "classification_version": CLASSIFICATION_V3_VERSION,
+                    "prompt_version": CLASSIFICATION_V3_PROMPT_VERSION,
+                    "prompt_stage": prompt_stage,
+                    "node_id": row["node_id"],
+                    "rank": rank,
+                    "scientific_name": row["scientific_name"],
+                    "label": label,
+                    "prompt_template": f"{prompt_stage}::{{name}}",
+                    "sort_order": 1,
+                    "enabled": True,
+                }
+            )
     path_frame = pl.DataFrame(paths, schema=LEAF_PATH_SCHEMA)
     return PathTaxonomyStore(
         sources=pl.DataFrame(schema=SOURCE_SCHEMA),
