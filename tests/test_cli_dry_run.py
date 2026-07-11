@@ -1606,7 +1606,7 @@ def test_registry_build_classification_cli_writes_v2_outputs(tmp_path, capsys) -
     pl.DataFrame(
         [
             {
-                "registry_schema_version": "registry-foundation-v1",
+                "registry_schema_version": "registry-foundation-v2",
                 "scope_id": "scope",
                 "accepted_taxon_key": "gbif:1938069",
                 "scientific_name": "Papilio demoleus",
@@ -1622,7 +1622,7 @@ def test_registry_build_classification_cli_writes_v2_outputs(tmp_path, capsys) -
                 "in_scope": True,
             },
             {
-                "registry_schema_version": "registry-foundation-v1",
+                "registry_schema_version": "registry-foundation-v2",
                 "scope_id": "scope",
                 "accepted_taxon_key": "gbif:101",
                 "scientific_name": "Papilio machaon",

@@ -369,21 +369,21 @@ def test_report_and_registry_uri_helpers_are_cloud_safe() -> None:
     assert build_report_uri("s3://biominer/biominer", run_id="run-1", report_name="step1_report") == (
         "s3://biominer/biominer/reports/run_id=run-1/step1_report.json"
     )
-    assert build_registry_version_uri("s3://biominer/biominer", registry_version="butterflies-v1", filename="taxa.parquet") == (
-        "s3://biominer/biominer/registry/version=butterflies-v1/taxa.parquet"
+    assert build_registry_version_uri("s3://biominer/biominer", registry_version="butterflies-v2", filename="taxa.parquet") == (
+        "s3://biominer/biominer/registry/version=butterflies-v2/taxa.parquet"
     )
     assert build_registry_current_uri("s3://biominer/biominer", filename="manifest.json") == (
         "s3://biominer/biominer/registry/current/manifest.json"
     )
     assert build_registry_current_pointer(
-        registry_version="butterflies-v1",
-        registry_prefix="s3://biominer/biominer/registry/version=butterflies-v1",
-        manifest_uri="s3://biominer/biominer/registry/version=butterflies-v1/manifest.json",
+        registry_version="butterflies-v2",
+        registry_prefix="s3://biominer/biominer/registry/version=butterflies-v2",
+        manifest_uri="s3://biominer/biominer/registry/version=butterflies-v2/manifest.json",
         promoted_at="2026-07-02T00:00:00Z",
     ) == {
-        "registry_version": "butterflies-v1",
-        "registry_prefix": "s3://biominer/biominer/registry/version=butterflies-v1",
-        "manifest_uri": "s3://biominer/biominer/registry/version=butterflies-v1/manifest.json",
+        "registry_version": "butterflies-v2",
+        "registry_prefix": "s3://biominer/biominer/registry/version=butterflies-v2",
+        "manifest_uri": "s3://biominer/biominer/registry/version=butterflies-v2/manifest.json",
         "promoted_at": "2026-07-02T00:00:00Z",
     }
 

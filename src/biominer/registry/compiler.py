@@ -16,8 +16,8 @@ from biominer.registry.scope import load_scope
 from biominer.storage.parquet import write_parquet
 
 
-REGISTRY_SCHEMA_VERSION = "registry-foundation-v1"
-COMPILER_VERSION = "registry-compiler-v1"
+REGISTRY_SCHEMA_VERSION = "registry-foundation-v2"
+COMPILER_VERSION = "registry-compiler-v2"
 COLLISION_REVIEW_STATES = {"reviewed", "curator_reviewed", "manual_reviewed", "query_approved"}
 
 
