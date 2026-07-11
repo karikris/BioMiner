@@ -805,3 +805,109 @@ this deterministic phase gate.
 Post-implementation solution IDs:
 
 `fbf0d6c3-b346-427c-8a0b-9a79caa6ae0c`.
+
+## Phase 5 — Versioned cascade Parquet and audit semantics
+
+### Pre-implementation verification — 2026-07-11
+
+Dependency inspection found that `pyproject.toml` permits `polars>=1.30` and
+`pyarrow>=18`, while `uv.lock` resolves Polars 1.41.2 and PyArrow 24.0.0.
+Phase 5 therefore treats those locked versions—not newer registry releases—as
+the API contract.
+
+Strict call 1:
+
+```text
+get_example(
+  query="Polars Python explicit nested Struct and List(Struct) schema, including typed empty DataFrame and selecting/projecting columns for stable schema evolution",
+  language="Python",
+  license_mode="strict",
+  format="json"
+)
+```
+
+Solution ID: `77cf4806-5805-4e4b-b866-6fb623606bcc`. The result demonstrated
+explicit `pl.Struct`/`pl.List(pl.Struct(...))`, zero-row frames constructed from
+an explicit schema, and ordered projection. Its permissively licensed sources
+included Polars and Apache-2.0, BSD-3-Clause, and MIT projects.
+
+Strict call 2:
+
+```text
+get_example(
+  query="PyArrow Python nested list of struct schema, typed empty table, schema projection and Parquet Zstandard output",
+  language="Python",
+  license_mode="strict",
+  format="json"
+)
+```
+
+Solution ID: `59c46397-efc0-48a6-b63e-5a7529e18947`. It confirmed the
+Arrow equivalents—`list_(struct(...))`, an empty table with an explicit
+schema, top-level projection, and Zstandard Parquet. A separate strict Polars
+Zstandard query hit GitHits' rolling 50-example limit and returned no solution
+ID; no ID or verification claim was invented for it.
+
+Pinned source verification:
+
+- `pola-rs/polars` tag `py-1.41.2` resolved to immutable commit
+  `599a503a0997188a74750926a5cdaa47585cf8aa`; `LICENSE` confirmed MIT.
+  Exact reads were
+  `py-polars/tests/unit/constructors/test_constructors.py:1358-1430`,
+  `py-polars/src/polars/dataframe/frame.py:4118-4205`, and
+  `py-polars/tests/unit/io/test_parquet.py:115-140`.
+- `apache/arrow` tag `apache-arrow-24.0.0` resolved to immutable commit
+  `31b4b6c0a0a7e7c117312d285541a21446675ec6`; `LICENSE.txt:1-30`
+  confirmed Apache-2.0. Focused tests at
+  `python/pyarrow/tests/test_extension_type.py:733` and
+  `python/pyarrow/tests/test_pandas.py:5319` exercise list-of-struct and schema
+  round trips.
+- GitHits `pkg_info` corroborated the package lineage. The Polars registry
+  license field contains only copyright prose, so the immutable source
+  `LICENSE`, not that metadata field, is the licence authority used here.
+
+The pinned Polars source confirms that `DataFrame.write_parquet` accepts
+`compression="zstd"` and uses the native writer by default; it documents Zstd
+levels 1–22 with default 3. Its constructor tests prove nested
+`List(Struct(...))`, inner list fields, empty lists, and exact typed zero-row
+frames. The pinned Arrow tests independently confirm compatible nested schema
+round trips.
+
+Constraints adopted:
+
+- define one ordered, versioned Polars schema as the physical contract;
+- use typed `List(String)`/`List(Float64)` columns for important aligned top-k
+  arrays and fixed `Struct` columns for per-rank count maps;
+- reserve compact deterministic JSON only for verbose pruning trace detail;
+- construct both populated and empty frames with the same explicit schema;
+- project and cast in declared order before writing, rather than infer or
+  merge schemas;
+- write native Polars Parquet through BioMiner's existing atomic writer with
+  explicit Zstandard compression and verify a physical-schema round trip;
+- add nullable fields only behind an incremented classifier schema version.
+
+Patterns rejected:
+
+- schema inference for empty, all-null, or nested result data;
+- Python-object columns or JSON blobs for first-class ranked candidates;
+- permissive/diagonal schema merging and implicit column order;
+- silently reinterpreting old Parquet parts under the new schema;
+- switching to the PyArrow writer where the pinned Polars native writer
+  already supports the required nested types and compression;
+- assuming `pa.parquet` exists instead of importing `pyarrow.parquet`, or
+  treating top-level `Table.select` as nested-child projection.
+
+The local output audit found that v3 currently has no serializer. The v2
+serializer sets `family_top1` from the final species path, writes overlay node
+IDs into `family_top3_accepted_taxon_keys`, and retains `genus_top8`.
+`RankStepResult` also discards full candidate/pruned-node detail. These are the
+specific defects the Phase 5 schema must make unrepresentable.
+
+Morph MCP was invoked for the required local call-site trace and failed with
+the exact response `Error: 429 status code (no body)`. Focused source reads and
+`rg` call-site discovery were used; no Morph-derived claim is made.
+
+Pre-implementation solution IDs:
+
+`77cf4806-5805-4e4b-b866-6fb623606bcc`,
+`59c46397-efc0-48a6-b63e-5a7529e18947`.
