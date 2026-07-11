@@ -178,6 +178,8 @@ def build_taxonomy_text_embedding_cache(
 ) -> pl.DataFrame:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
+    if not str(model_id or "") or not str(model_checkpoint or ""):
+        raise ValueError("taxonomy text embedding model identity must be nonblank")
     prompts = _enabled_unique_prompts(taxonomy_store)
     if prompts.is_empty():
         raise ValueError("classification-v3 has no enabled staged prompt labels")

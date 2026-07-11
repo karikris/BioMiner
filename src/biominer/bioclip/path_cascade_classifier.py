@@ -248,6 +248,11 @@ def classify_path_cascade_batch(
     if not model_id or not model_checkpoint:
         raise ValueError("BioCLIP embedding scorer identity must be nonblank")
     if taxonomy_text_embedding_index is not None:
+        if (
+            taxonomy_text_embedding_index.classification_version
+            != taxonomy_store.classification_version
+        ):
+            raise ValueError("taxonomy text embedding index classification version mismatch")
         if taxonomy_text_embedding_index.model_id != model_id:
             raise ValueError("taxonomy text embedding index model_id mismatch")
         if taxonomy_text_embedding_index.model_checkpoint != model_checkpoint:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, dataclass, fields, replace
 from itertools import chain
+from math import sqrt
+from typing import Any, Sequence
 
 import polars as pl
 import pytest
@@ -11,7 +13,12 @@ from biominer.bioclip.path_cascade_classifier import (
     PathCascadeClassificationError,
     RankCandidateScore,
     classify_path_cascade,
+    classify_path_cascade_batch,
     score_rank_candidates,
+)
+from biominer.bioclip.taxonomy_embedding_cache import (
+    TaxonomyTextEmbeddingIndex,
+    build_taxonomy_text_embedding_cache,
 )
 from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
 from biominer.registry.classification_v3 import (
@@ -39,6 +46,24 @@ class _RawScorer:
     def raw_similarities(self, item, labels):  # noqa: ANN001, ANN201 - protocol fake.
         self.calls.append(tuple(labels))
         return {label: self.scores[label] for label in labels}
+
+
+class _EmbeddingScorer:
+    model_id = "fake-embedding-bioclip"
+    model_checkpoint = "fake-embedding-checkpoint"
+
+    def __init__(self, vectors: dict[str, list[float]]) -> None:
+        self.vectors = vectors
+        self.image_calls: list[int] = []
+        self.text_calls: list[tuple[str, ...]] = []
+
+    def embed_image_items(self, items: Sequence[dict[str, Any]]) -> list[list[float]]:
+        self.image_calls.append(len(items))
+        return [[float(value) for value in item["embedding"]] for item in items]
+
+    def embed_text_labels(self, labels: Sequence[str]) -> list[list[float]]:
+        self.text_calls.append(tuple(labels))
+        return [self.vectors[label] for label in labels]
 
 
 def test_result_models_exclude_complete_path_selection_scores() -> None:
@@ -427,6 +452,93 @@ def test_species_rerank_scores_exactly_first_pass_top_twenty_with_distinct_promp
     assert _rerank_label("s:a1:19") in rerank_call
     assert _rerank_label("s:a1:20") not in rerank_call
     assert result.final_winning_path[-1] == result.species_top1
+
+
+def test_direct_and_cached_embedding_batches_have_matching_raw_rankings() -> None:
+    store = _store()
+    labels = sorted(set(store.prompt_labels.filter(pl.col("enabled"))["label"].to_list()))
+    denominator = max(1, len(labels) - 1)
+    vectors = {}
+    for index, label in enumerate(labels):
+        score = 0.9 - (1.8 * index / denominator)
+        vectors[label] = [score, sqrt(1.0 - score * score)]
+    cache_builder = _EmbeddingScorer(vectors)
+    cache = build_taxonomy_text_embedding_cache(
+        store,
+        model_id=cache_builder.model_id,
+        model_checkpoint=cache_builder.model_checkpoint,
+        embed_labels=cache_builder.embed_text_labels,
+        batch_size=17,
+    )
+    index = TaxonomyTextEmbeddingIndex.from_frame(
+        cache,
+        taxonomy_store=store,
+        model_id=cache_builder.model_id,
+        model_checkpoint=cache_builder.model_checkpoint,
+    )
+    items = ({"embedding": [1.0, 0.0]}, {"embedding": [1.0, 0.0]})
+    direct_scorer = _EmbeddingScorer(vectors)
+    cached_scorer = _EmbeddingScorer(vectors)
+
+    direct = classify_path_cascade_batch(
+        items=items,
+        embedding_scorer=direct_scorer,
+        taxonomy_store=store,
+    )
+    cached = classify_path_cascade_batch(
+        items=items,
+        embedding_scorer=cached_scorer,
+        taxonomy_store=store,
+        taxonomy_text_embedding_index=index,
+    )
+
+    assert direct_scorer.image_calls == cached_scorer.image_calls == [2]
+    assert cached_scorer.text_calls == []
+    direct_labels = [label for call in direct_scorer.text_calls for label in call]
+    assert len(direct_labels) == len(set(direct_labels))
+    for direct_result, cached_result in zip(direct, cached, strict=True):
+        assert cached_result.embedding_cache_fingerprint == index.cache_fingerprint
+        assert direct_result.embedding_cache_fingerprint is None
+        assert [
+            [candidate.node_id for candidate in step.top_candidates]
+            for step in direct_result.rank_steps
+        ] == [
+            [candidate.node_id for candidate in step.top_candidates]
+            for step in cached_result.rank_steps
+        ]
+        for direct_step, cached_step in zip(
+            direct_result.rank_steps,
+            cached_result.rank_steps,
+            strict=True,
+        ):
+            for direct_score, cached_score in zip(
+                direct_step.top_candidates,
+                cached_step.top_candidates,
+                strict=True,
+            ):
+                assert direct_score.raw_similarity == pytest.approx(
+                    cached_score.raw_similarity,
+                    abs=1e-6,
+                )
+        assert [score.node_id for score in direct_result.species_top20] == [
+            score.node_id for score in cached_result.species_top20
+        ]
+        assert [score.node_id for score in direct_result.species_reranked_top20] == [
+            score.node_id for score in cached_result.species_reranked_top20
+        ]
+        for direct_score, cached_score in zip(
+            direct_result.species_reranked_top20,
+            cached_result.species_reranked_top20,
+            strict=True,
+        ):
+            assert direct_score.raw_similarity == pytest.approx(
+                cached_score.raw_similarity,
+                abs=1e-6,
+            )
+            assert direct_score.first_pass_raw_similarity == pytest.approx(
+                cached_score.first_pass_raw_similarity,
+                abs=1e-6,
+            )
 
 
 @pytest.mark.parametrize("mode", ["missing", "duplicate", "nonaccepted", "mismatched_key"])
