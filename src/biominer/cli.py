@@ -28,6 +28,7 @@ from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
 from biominer.bioclip.object_runner import (
     write_object_evidence_outputs,
 )
+from biominer.benchmarks.path_cascade import run_path_cascade_benchmark
 from biominer.benchmarks.vision_live import (
     LiveM5ProBenchmarkRequest,
     run_live_m5pro_benchmark,
@@ -398,6 +399,8 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     rolling_benchmark = subparsers.add_parser("benchmark-rolling-matrix")
     rolling_benchmark.add_argument("--records", type=int, default=1000)
     rolling_benchmark.add_argument("--output-dir", required=True)
+    cascade_benchmark = subparsers.add_parser("benchmark-cascade")
+    cascade_benchmark.add_argument("--output-dir", required=True)
     live_benchmark = subparsers.add_parser("benchmark-live-m5pro")
     live_benchmark.add_argument("--input", required=True)
     live_benchmark.add_argument("--taxonomy-candidate-table", required=True)
@@ -456,6 +459,8 @@ def run(args: argparse.Namespace) -> int:
             return _run_vision_benchmark_plumbing(args)
         if args.vision_command == "benchmark-rolling-matrix":
             return _run_vision_benchmark_rolling_matrix(args)
+        if args.vision_command == "benchmark-cascade":
+            return _run_path_cascade_benchmark(args)
         if args.vision_command == "benchmark-live-m5pro":
             return _run_vision_benchmark_live_m5pro(args)
         if args.vision_command == "crop-preview":
@@ -1493,6 +1498,31 @@ def _run_vision_benchmark_rolling_matrix(args: argparse.Namespace) -> int:
                 "output_dir": str(result.output_dir),
                 "records": result.metrics["records"],
                 "variant_count": result.metrics["variant_count"],
+                "elapsed_seconds": result.metrics["elapsed_seconds"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _run_path_cascade_benchmark(args: argparse.Namespace) -> int:
+    try:
+        result = run_path_cascade_benchmark(output_dir=args.output_dir)
+    except Exception as exc:  # noqa: BLE001 - dev command reports compact failures.
+        print(f"benchmark-cascade failed: {exc}", file=sys.stderr)
+        return 2
+    print(
+        json.dumps(
+            {
+                "benchmark_metrics": str(result.metrics_path),
+                "benchmark_summary": str(result.summary_path),
+                "output_dir": str(result.output_dir),
+                "family_candidate_count": result.metrics["family_candidate_count"],
+                "species_candidates_beneath_genus_top3": result.metrics[
+                    "species_candidates_beneath_genus_top3"
+                ],
                 "elapsed_seconds": result.metrics["elapsed_seconds"],
             },
             indent=2,

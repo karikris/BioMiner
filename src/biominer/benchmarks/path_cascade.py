@@ -9,11 +9,25 @@ optional-rank skips, and large species candidate sets deterministically.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+import json
+from math import isfinite
+from pathlib import Path
+from time import perf_counter
+from typing import Any, Mapping
 
 import polars as pl
 
-from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
+from biominer.bioclip.cascade_contract import DEFAULT_RANK_BEAM_WIDTH
+from biominer.bioclip.path_cascade_classifier import (
+    INTERMEDIATE_CLASSIFICATION_RANKS,
+    PathCascadeResult,
+    RankStepResult,
+    classify_path_cascade,
+)
+from biominer.bioclip.path_taxonomy_store import (
+    SPECIES_RERANK_PROMPT_STAGE,
+    PathTaxonomyStore,
+)
 from biominer.registry.classification_v3 import (
     ASSERTED_PARENT_EDGE,
     CLASSIFICATION_V3_VERSION,
@@ -35,6 +49,8 @@ BENCHMARK_FIXTURE_NOTICE = (
 BENCHMARK_REGISTRY_VERSION = "synthetic-seven-family-cascade-v1"
 BENCHMARK_SOURCE_ID = "fixture:synthetic-taxonomy-v1"
 BENCHMARK_REVIEW_DATE = "2026-07-11"
+BENCHMARK_KIND = "path_cascade_model_free_global_beam"
+BENCHMARK_VERSION = "path-cascade-model-free-v1"
 FAMILY_COUNT = 7
 SUBFAMILIES_PER_FAMILY = 2
 TRIBES_PER_SUBFAMILY = 2
@@ -56,6 +72,55 @@ class SevenFamilyPathCascadeFixture:
     qa_findings: pl.DataFrame
     manifest: Mapping[str, object]
     taxonomy_store: PathTaxonomyStore
+
+
+@dataclass(frozen=True)
+class PathCascadeBenchmarkResult:
+    """Artifacts and metrics from the model-free global-beam benchmark."""
+
+    metrics: dict[str, Any]
+    cascade_result: PathCascadeResult
+    output_dir: Path
+    metrics_path: Path
+    summary_path: Path
+
+
+class DeterministicRawSimilarityScorer:
+    """Stable model-free scores derived only from synthetic fixture identities.
+
+    First-pass scores prefer lexicographically earlier synthetic nodes.  The
+    species rerank stage deliberately reverses the retained species-number
+    order so the benchmark exercises a distinct second scoring pass.
+    """
+
+    model_id = "synthetic-path-cascade-scorer"
+    model_checkpoint = "model-free-v1"
+
+    def __init__(self, taxonomy_store: PathTaxonomyStore) -> None:
+        self._score_by_label: dict[str, float] = {}
+        for row in taxonomy_store.prompt_labels.iter_rows(named=True):
+            label = str(row["label"])
+            score = _deterministic_prompt_score(
+                node_id=str(row["node_id"]),
+                prompt_stage=str(row["prompt_stage"]),
+            )
+            existing = self._score_by_label.setdefault(label, score)
+            if existing != score:
+                raise ValueError(f"synthetic prompt label maps to conflicting scores: {label}")
+        self.calls: list[tuple[str, ...]] = []
+
+    def raw_similarities(
+        self,
+        item: dict[str, Any],
+        labels: tuple[str, ...],
+    ) -> Mapping[str, float]:
+        del item
+        requested = tuple(str(label) for label in labels)
+        missing = [label for label in requested if label not in self._score_by_label]
+        if missing:
+            raise ValueError("synthetic scorer received unknown labels: " + ", ".join(missing))
+        self.calls.append(requested)
+        return {label: self._score_by_label[label] for label in requested}
 
 
 def build_seven_family_path_cascade_fixture() -> SevenFamilyPathCascadeFixture:
@@ -106,6 +171,146 @@ def build_seven_family_path_cascade_fixture() -> SevenFamilyPathCascadeFixture:
         qa_findings=qa_findings,
         manifest=taxonomy_store.manifest,
         taxonomy_store=taxonomy_store,
+    )
+
+
+def run_path_cascade_benchmark(*, output_dir: str | Path) -> PathCascadeBenchmarkResult:
+    """Run the deterministic global-beam classifier against the synthetic fixture."""
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    total_start = perf_counter()
+
+    fixture_start = perf_counter()
+    fixture = build_seven_family_path_cascade_fixture()
+    fixture_seconds = _elapsed(fixture_start)
+
+    classify_start = perf_counter()
+    scorer = DeterministicRawSimilarityScorer(fixture.taxonomy_store)
+    cascade_result = classify_path_cascade(
+        item={"benchmark_item_id": "synthetic-path-cascade-item"},
+        scorer=scorer,
+        taxonomy_store=fixture.taxonomy_store,
+    )
+    classify_seconds = _elapsed(classify_start)
+
+    intermediate_steps = tuple(
+        step
+        for step in cascade_result.rank_steps
+        if step.rank in INTERMEDIATE_CLASSIFICATION_RANKS
+    )
+    excessive_beam_steps = [
+        step.rank
+        for step in intermediate_steps
+        if step.retained_count > DEFAULT_RANK_BEAM_WIDTH
+    ]
+    if excessive_beam_steps:
+        raise AssertionError(
+            "global cascade retained more than three intermediate nodes at: "
+            + ", ".join(excessive_beam_steps)
+        )
+
+    expected_score_calls = len(cascade_result.rank_steps) + 1
+    if len(scorer.calls) != expected_score_calls:
+        raise AssertionError(
+            "benchmark scorer call count does not match rank and rerank steps: "
+            f"expected {expected_score_calls}, observed {len(scorer.calls)}"
+        )
+
+    genus_step = next(step for step in cascade_result.rank_steps if step.rank == "GENUS")
+    selected_genus_paths = fixture.taxonomy_store.filter_paths_by_rank_nodes(
+        fixture.taxonomy_store.enabled_paths(),
+        "GENUS",
+        genus_step.retained_node_ids,
+    )
+    species_nodes_beneath_genus_top3 = fixture.taxonomy_store.species_nodes_in_paths(
+        selected_genus_paths
+    )
+    species_beneath_genus_top3 = species_nodes_beneath_genus_top3.height
+    first_pass_step = next(
+        step for step in cascade_result.rank_steps if step.rank == "SPECIES"
+    )
+    expected_species_node_ids = set(
+        species_nodes_beneath_genus_top3["node_id"].to_list()
+    )
+    actual_species_node_ids = set(first_pass_step.candidate_node_ids)
+    if expected_species_node_ids != actual_species_node_ids:
+        raise AssertionError(
+            "species first-pass candidates escaped the retained genus top-three paths"
+        )
+    species_counts_by_genus = {
+        str(row["genus_node_id"]): int(row["species_count"])
+        for row in selected_genus_paths.group_by("genus_node_id")
+        .agg(pl.col("species_node_id").n_unique().alias("species_count"))
+        .sort("genus_node_id")
+        .iter_rows(named=True)
+    }
+
+    rank_metrics = [
+        _rank_step_metrics(step=step, labels=scorer.calls[index])
+        for index, step in enumerate(cascade_result.rank_steps)
+    ]
+    rerank_labels = scorer.calls[-1]
+    rerank_metrics = _rank_step_metrics(
+        step=cascade_result.species_rerank_step,
+        labels=rerank_labels,
+    )
+    unique_labels = {label for call in scorer.calls for label in call}
+    elapsed_seconds = _elapsed(total_start)
+    metrics_path = output / "benchmark_metrics.json"
+    summary_path = output / "benchmark_summary.md"
+    metrics: dict[str, Any] = {
+        "benchmark_kind": BENCHMARK_KIND,
+        "benchmark_version": BENCHMARK_VERSION,
+        "status": "ok",
+        "benchmark_fixture": True,
+        "synthetic_taxonomy": True,
+        "authoritative_taxonomy": False,
+        "gbif_authority": False,
+        "fixture_notice": BENCHMARK_FIXTURE_NOTICE,
+        "registry_version": BENCHMARK_REGISTRY_VERSION,
+        "classification_version": cascade_result.classification_version,
+        "classification_fingerprint": cascade_result.classification_fingerprint,
+        "hierarchy_fingerprint": cascade_result.taxonomy_fingerprint,
+        "prompt_version": cascade_result.prompt_version,
+        "beam_strategy": cascade_result.beam_strategy,
+        "rank_beam_width": cascade_result.rank_beam_width,
+        "family_candidate_count": rank_metrics[0]["candidate_count"],
+        "rank_steps": rank_metrics,
+        "species_rerank_step": rerank_metrics,
+        "unique_labels_scored": len(unique_labels),
+        "genus_top3_node_ids": list(genus_step.retained_node_ids),
+        "species_candidates_beneath_genus_top3": species_beneath_genus_top3,
+        "species_candidate_node_ids_beneath_genus_top3": list(
+            first_pass_step.candidate_node_ids
+        ),
+        "species_candidate_counts_by_genus": species_counts_by_genus,
+        "species_first_pass_candidate_count": first_pass_step.candidate_count,
+        "species_first_pass_retained_count": first_pass_step.retained_count,
+        "species_rerank_candidate_count": cascade_result.species_rerank_step.candidate_count,
+        "species_rerank_retained_count": cascade_result.species_rerank_step.retained_count,
+        "reported_species_count": len(cascade_result.species_top3),
+        "elapsed_seconds": elapsed_seconds,
+        "elapsed_seconds_by_stage": {
+            "build_fixture": fixture_seconds,
+            "classify": classify_seconds,
+        },
+        "artifacts": {
+            "metrics": str(metrics_path),
+            "summary": str(summary_path),
+        },
+    }
+    _assert_nonnegative_elapsed_telemetry(metrics)
+    metrics_path.write_text(
+        json.dumps(metrics, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    summary_path.write_text(_benchmark_summary_markdown(metrics), encoding="utf-8")
+    return PathCascadeBenchmarkResult(
+        metrics=metrics,
+        cascade_result=cascade_result,
+        output_dir=output,
+        metrics_path=metrics_path,
+        summary_path=summary_path,
     )
 
 
@@ -282,3 +487,105 @@ def _review() -> dict[str, object]:
         "reviewed_at": BENCHMARK_REVIEW_DATE,
         "enabled": True,
     }
+
+
+def _deterministic_prompt_score(*, node_id: str, prompt_stage: str) -> float:
+    try:
+        identity_numbers = tuple(int(part) for part in node_id.split(":")[2:])
+    except ValueError as exc:
+        raise ValueError(f"synthetic benchmark node has a nonnumeric identity: {node_id}") from exc
+    if not identity_numbers:
+        raise ValueError(f"synthetic benchmark node has no numeric identity: {node_id}")
+    if prompt_stage == SPECIES_RERANK_PROMPT_STAGE:
+        score = float(identity_numbers[-1])
+    else:
+        encoded_identity = sum(
+            value * (100 ** (len(identity_numbers) - index - 1))
+            for index, value in enumerate(identity_numbers)
+        )
+        score = -float(encoded_identity)
+    if not isfinite(score):
+        raise ValueError(f"synthetic benchmark score is not finite for node: {node_id}")
+    return score
+
+
+def _rank_step_metrics(
+    *,
+    step: RankStepResult,
+    labels: tuple[str, ...],
+) -> dict[str, Any]:
+    return {
+        "rank": step.rank,
+        "prompt_stage": step.prompt_stage,
+        "candidate_count": step.candidate_count,
+        "retained_node_count": step.retained_count,
+        "active_path_count_before": step.active_path_count_before,
+        "active_path_count_after": step.active_path_count_after,
+        "labels_scored": len(labels),
+        "unique_labels_scored": len(set(labels)),
+        "reviewed_skip_path_count": step.reviewed_skip_path_count,
+        "skipped": step.skipped,
+        "parent_node_ids": list(step.parent_node_ids),
+        "candidate_node_ids": list(step.candidate_node_ids),
+        "retained_node_ids": list(step.retained_node_ids),
+        "pruned_node_ids": list(step.pruned_node_ids),
+    }
+
+
+def _assert_nonnegative_elapsed_telemetry(metrics: Mapping[str, Any]) -> None:
+    elapsed_seconds = float(metrics["elapsed_seconds"])
+    stage_seconds = metrics["elapsed_seconds_by_stage"]
+    if elapsed_seconds < 0 or any(float(value) < 0 for value in stage_seconds.values()):
+        raise AssertionError("benchmark elapsed telemetry must be nonnegative")
+
+
+def _benchmark_summary_markdown(metrics: Mapping[str, Any]) -> str:
+    rows = [
+        "| Rank/stage | Candidates | Retained | Paths before | Paths after | Labels scored |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for step in metrics["rank_steps"]:
+        rows.append(
+            f"| {step['rank']} / {step['prompt_stage']} | {step['candidate_count']} | "
+            f"{step['retained_node_count']} | {step['active_path_count_before']} | "
+            f"{step['active_path_count_after']} | {step['labels_scored']} |"
+        )
+    rerank = metrics["species_rerank_step"]
+    rows.append(
+        f"| {rerank['rank']} / {rerank['prompt_stage']} | {rerank['candidate_count']} | "
+        f"{rerank['retained_node_count']} | {rerank['active_path_count_before']} | "
+        f"{rerank['active_path_count_after']} | {rerank['labels_scored']} |"
+    )
+    return "\n".join(
+        [
+            "# Model-free global-beam cascade benchmark",
+            "",
+            f"> {metrics['fixture_notice']}",
+            "",
+            f"- Beam strategy: `{metrics['beam_strategy']}`",
+            f"- Fixed intermediate width: {metrics['rank_beam_width']}",
+            (
+                "- Species candidates beneath genus top 3: "
+                f"{metrics['species_candidates_beneath_genus_top3']}"
+            ),
+            (
+                "- Species first pass: "
+                f"{metrics['species_first_pass_candidate_count']} candidates, "
+                f"{metrics['species_first_pass_retained_count']} retained"
+            ),
+            (
+                "- Species rerank: "
+                f"{metrics['species_rerank_candidate_count']} candidates, "
+                f"{metrics['species_rerank_retained_count']} retained"
+            ),
+            f"- Unique labels scored: {metrics['unique_labels_scored']}",
+            f"- Elapsed seconds: {metrics['elapsed_seconds']:.6f}",
+            "",
+            *rows,
+            "",
+        ]
+    )
+
+
+def _elapsed(started_at: float) -> float:
+    return max(0.0, perf_counter() - started_at)
