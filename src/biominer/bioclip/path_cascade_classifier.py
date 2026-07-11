@@ -2,14 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from math import isfinite
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 import polars as pl
 
 from biominer.bioclip.path_taxonomy_store import (
     RANK_SCREEN_PROMPT_STAGE,
     SPECIES_FIRST_PASS_PROMPT_STAGE,
+    SPECIES_RERANK_PROMPT_STAGE,
     PathTaxonomyStore,
+)
+from biominer.bioclip.taxonomy_embedding_cache import (
+    TaxonomyTextEmbeddingIndex,
+    normalize_embedding,
+    raw_embedding_similarities,
 )
 from biominer.registry.classification_v3 import CLASSIFICATION_RANKS, OPTIONAL_CLASSIFICATION_RANKS
 
@@ -17,6 +23,8 @@ from biominer.registry.classification_v3 import CLASSIFICATION_RANKS, OPTIONAL_C
 GLOBAL_RANK_TOP_K_BEAM_STRATEGY = "global_rank_top_k"
 DEFAULT_RANK_BEAM_WIDTH = 3
 DEFAULT_SPECIES_FIRST_PASS_TOP_K = 20
+DEFAULT_SPECIES_RERANK_TOP_K = 5
+DEFAULT_SPECIES_REPORT_TOP_K = 3
 INTERMEDIATE_CLASSIFICATION_RANKS = (
     "FAMILY",
     "SUBFAMILY",
@@ -37,6 +45,8 @@ class RankCandidateScore:
     label_count: int
     accepted_taxon_key: str | None = None
     gbif_species_key: str | None = None
+    first_pass_raw_similarity: float | None = None
+    rerank_raw_similarity: float | None = None
 
     def __post_init__(self) -> None:
         if not self.node_id or not self.rank or not self.scientific_name:
@@ -45,6 +55,9 @@ class RankCandidateScore:
             raise ValueError("rank candidate similarities must be finite")
         if self.label_count <= 0:
             raise ValueError("rank candidate label_count must be positive")
+        optional_scores = (self.first_pass_raw_similarity, self.rerank_raw_similarity)
+        if any(value is not None and not isfinite(value) for value in optional_scores):
+            raise ValueError("species stage similarities must be finite when present")
 
 
 @dataclass(frozen=True)
@@ -88,6 +101,7 @@ class PathCascadeResult:
     rank_beam_width: int
     rank_steps: tuple[RankStepResult, ...]
     species_top20: tuple[RankCandidateScore, ...]
+    species_reranked_top20: tuple[RankCandidateScore, ...]
     species_top5: tuple[RankCandidateScore, ...]
     species_top3: tuple[RankCandidateScore, ...]
     species_top1: RankCandidateScore | None
@@ -99,6 +113,16 @@ class PathCascadeResult:
             raise ValueError(f"unsupported cascade beam strategy: {self.beam_strategy}")
         if self.rank_beam_width <= 0:
             raise ValueError("rank_beam_width must be positive")
+        if self.species_top5 != self.species_reranked_top20[:DEFAULT_SPECIES_RERANK_TOP_K]:
+            raise ValueError("species_top5 must be the reranked top-twenty prefix")
+        if self.species_top3 != self.species_top5[:DEFAULT_SPECIES_REPORT_TOP_K]:
+            raise ValueError("species_top3 must be the reranked top-five prefix")
+        if self.species_top1 != (self.species_top3[0] if self.species_top3 else None):
+            raise ValueError("species_top1 must be the reported top-three winner")
+        if {score.node_id for score in self.species_top20} != {
+            score.node_id for score in self.species_reranked_top20
+        }:
+            raise ValueError("species first-pass and rerank candidate sets must match")
 
 
 class PathCascadeClassificationError(RuntimeError):
@@ -140,6 +164,130 @@ class PathCascadeScorer(Protocol):
         item: dict[str, Any],
         labels: tuple[str, ...],
     ) -> Mapping[str, float]: ...
+
+
+class PathCascadeEmbeddingScorer(Protocol):
+    model_id: str
+    model_checkpoint: str
+
+    def embed_image_items(
+        self,
+        items: Sequence[dict[str, Any]],
+    ) -> list[list[float]]: ...
+
+    def embed_text_labels(self, labels: Sequence[str]) -> list[list[float]]: ...
+
+
+class _TextSimilarityProvider(Protocol):
+    def raw_similarities(
+        self,
+        image_embedding: Sequence[float],
+        labels: Sequence[str],
+    ) -> Mapping[str, float]: ...
+
+
+class _DirectTextSimilarityProvider:
+    def __init__(
+        self,
+        embed_labels: Callable[[Sequence[str]], list[list[float]]],
+    ) -> None:
+        self._embed_labels = embed_labels
+        self._embedding_by_label: dict[str, tuple[float, ...]] = {}
+
+    def raw_similarities(
+        self,
+        image_embedding: Sequence[float],
+        labels: Sequence[str],
+    ) -> Mapping[str, float]:
+        requested = tuple(str(label) for label in labels)
+        missing = [label for label in requested if label not in self._embedding_by_label]
+        if missing:
+            embeddings = self._embed_labels(missing)
+            if len(embeddings) != len(missing):
+                raise ValueError(
+                    f"text embedder returned {len(embeddings)} rows for {len(missing)} labels"
+                )
+            for label, embedding in zip(missing, embeddings, strict=True):
+                self._embedding_by_label[label] = normalize_embedding(embedding)
+        return raw_embedding_similarities(
+            image_embedding,
+            requested,
+            tuple(self._embedding_by_label[label] for label in requested),
+        )
+
+
+@dataclass(frozen=True)
+class _EmbeddedImageScorer:
+    model_id: str
+    model_checkpoint: str
+    image_embedding: tuple[float, ...]
+    text_provider: _TextSimilarityProvider
+
+    def raw_similarities(
+        self,
+        item: dict[str, Any],
+        labels: tuple[str, ...],
+    ) -> Mapping[str, float]:
+        del item
+        return self.text_provider.raw_similarities(self.image_embedding, labels)
+
+
+def classify_path_cascade_batch(
+    *,
+    items: Sequence[dict[str, Any]],
+    embedding_scorer: PathCascadeEmbeddingScorer,
+    taxonomy_store: PathTaxonomyStore,
+    taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
+    rank_beam_width: int = DEFAULT_RANK_BEAM_WIDTH,
+) -> tuple[PathCascadeResult, ...]:
+    batch = tuple(items)
+    if not batch:
+        return ()
+    model_id = str(embedding_scorer.model_id or "")
+    model_checkpoint = str(embedding_scorer.model_checkpoint or "")
+    if not model_id or not model_checkpoint:
+        raise ValueError("BioCLIP embedding scorer identity must be nonblank")
+    if taxonomy_text_embedding_index is not None:
+        if taxonomy_text_embedding_index.model_id != model_id:
+            raise ValueError("taxonomy text embedding index model_id mismatch")
+        if taxonomy_text_embedding_index.model_checkpoint != model_checkpoint:
+            raise ValueError("taxonomy text embedding index model_checkpoint mismatch")
+        if taxonomy_text_embedding_index.hierarchy_fingerprint != taxonomy_store.hierarchy_fingerprint:
+            raise ValueError("taxonomy text embedding index hierarchy fingerprint mismatch")
+        if taxonomy_text_embedding_index.prompt_version != taxonomy_store.prompt_version:
+            raise ValueError("taxonomy text embedding index prompt version mismatch")
+        text_provider: _TextSimilarityProvider = taxonomy_text_embedding_index
+        cache_fingerprint = taxonomy_text_embedding_index.cache_fingerprint
+    else:
+        embed_labels = getattr(embedding_scorer, "embed_text_labels", None)
+        if not callable(embed_labels):
+            raise ValueError("direct cascade scoring requires text embedding support")
+        text_provider = _DirectTextSimilarityProvider(embed_labels)
+        cache_fingerprint = None
+    image_embeddings = embedding_scorer.embed_image_items(batch)
+    if len(image_embeddings) != len(batch):
+        raise ValueError(
+            f"image embedder returned {len(image_embeddings)} rows for {len(batch)} items"
+        )
+    normalized_images = tuple(normalize_embedding(embedding) for embedding in image_embeddings)
+    results: list[PathCascadeResult] = []
+    for item, image_embedding in zip(batch, normalized_images, strict=True):
+        scorer = _EmbeddedImageScorer(
+            model_id=model_id,
+            model_checkpoint=model_checkpoint,
+            image_embedding=image_embedding,
+            text_provider=text_provider,
+        )
+        results.append(
+            classify_path_cascade(
+                item=item,
+                scorer=scorer,
+                taxonomy_store=taxonomy_store,
+                rank_beam_width=rank_beam_width,
+                embedding_cache_fingerprint=cache_fingerprint,
+            )
+        )
+    return tuple(results)
 
 
 def score_rank_candidates(
@@ -356,6 +504,10 @@ def classify_path_cascade(
         scores=species_top20_unmapped,
         active_path_count=active_paths.height,
     )
+    species_top20 = tuple(
+        replace(score, first_pass_raw_similarity=score.raw_similarity)
+        for score in species_top20
+    )
     species_active_paths = taxonomy_store.filter_paths_by_rank_nodes(
         active_paths,
         "SPECIES",
@@ -375,10 +527,7 @@ def classify_path_cascade(
             skip_reason=None,
         )
     )
-    species_top5 = species_top20[:5]
-    species_top3 = species_top20[:3]
-    species_top1 = species_top20[0] if species_top20 else None
-    if species_top1 is None:
+    if not species_top20:
         raise PathCascadeClassificationError(
             code="unscorable_species_candidates",
             rank="SPECIES",
@@ -386,10 +535,46 @@ def classify_path_cascade(
             active_path_count=active_paths.height,
             message="species candidates produced no retained raw similarity scores",
         )
+    rerank_candidates = taxonomy_store.species_nodes_in_paths(species_active_paths)
+    rerank_scores_unmapped = score_rank_candidates(
+        item=item,
+        scorer=scorer,
+        taxonomy_store=taxonomy_store,
+        candidates=rerank_candidates,
+        prompt_stage=SPECIES_RERANK_PROMPT_STAGE,
+    )
+    if {score.node_id for score in rerank_scores_unmapped} != {
+        score.node_id for score in species_top20
+    }:
+        raise PathCascadeClassificationError(
+            code="incomplete_species_rerank",
+            rank="SPECIES",
+            candidate_count=len(rerank_scores_unmapped),
+            active_path_count=species_active_paths.height,
+            message="species rerank must score exactly the first-pass top twenty",
+        )
+    rerank_mapped = _attach_species_mappings(
+        taxonomy_store=taxonomy_store,
+        scores=rerank_scores_unmapped,
+        active_path_count=species_active_paths.height,
+    )
+    first_pass_by_node = {score.node_id: score for score in species_top20}
+    species_reranked_top20 = tuple(
+        replace(
+            score,
+            first_pass_raw_similarity=first_pass_by_node[score.node_id].raw_similarity,
+            rerank_raw_similarity=score.raw_similarity,
+        )
+        for score in rerank_mapped
+    )
+    species_top5 = species_reranked_top20[:DEFAULT_SPECIES_RERANK_TOP_K]
+    species_top3 = species_top5[:DEFAULT_SPECIES_REPORT_TOP_K]
+    species_top1 = species_top3[0]
     winning_path_row = taxonomy_store.path_for_species_node(species_top1.node_id)
     winning_path = _winning_path_scores(
         path_row=winning_path_row,
         rank_steps=tuple(rank_steps),
+        species_score=species_top1,
     )
     return PathCascadeResult(
         classification_version=taxonomy_store.classification_version,
@@ -401,6 +586,7 @@ def classify_path_cascade(
         rank_beam_width=rank_beam_width,
         rank_steps=tuple(rank_steps),
         species_top20=species_top20,
+        species_reranked_top20=species_reranked_top20,
         species_top5=species_top5,
         species_top3=species_top3,
         species_top1=species_top1,
@@ -471,12 +657,14 @@ def _winning_path_scores(
     *,
     path_row: dict[str, object],
     rank_steps: tuple[RankStepResult, ...],
+    species_score: RankCandidateScore,
 ) -> tuple[RankCandidateScore, ...]:
     score_by_node = {
         score.node_id: score
         for step in rank_steps
         for score in step.top_candidates
     }
+    score_by_node[species_score.node_id] = species_score
     winning: list[RankCandidateScore] = []
     for rank in CLASSIFICATION_RANKS:
         node_id = str(path_row.get(f"{rank.casefold()}_node_id") or "")
@@ -498,14 +686,18 @@ def _winning_path_scores(
 __all__ = [
     "DEFAULT_RANK_BEAM_WIDTH",
     "DEFAULT_SPECIES_FIRST_PASS_TOP_K",
+    "DEFAULT_SPECIES_REPORT_TOP_K",
+    "DEFAULT_SPECIES_RERANK_TOP_K",
     "GLOBAL_RANK_TOP_K_BEAM_STRATEGY",
     "INTERMEDIATE_CLASSIFICATION_RANKS",
     "PathCascadeClassificationError",
+    "PathCascadeEmbeddingScorer",
     "PathCascadeResult",
     "PathCascadeScorer",
     "RankCandidateScore",
     "RankStepResult",
     "classify_path_cascade",
+    "classify_path_cascade_batch",
     "raw_similarity_margin",
     "score_rank_candidates",
 ]

@@ -323,7 +323,7 @@ def test_fully_skipped_subtribe_records_skip_without_scoring_placeholders() -> N
     assert step.retained_count == 0
     assert step.active_path_count_before == step.active_path_count_after == 3
     assert step.skip_reason == "all_active_paths_reviewed_rank_skip"
-    assert len(scorer.calls) == 5  # FAMILY, SUBFAMILY, TRIBE, GENUS, SPECIES
+    assert len(scorer.calls) == 6  # FAMILY, SUBFAMILY, TRIBE, GENUS, species first pass/rerank
 
 
 def test_mixed_optional_rank_rejects_paths_without_node_or_reviewed_skip() -> None:
@@ -389,10 +389,44 @@ def test_species_top_twenty_uses_species_score_only_beneath_genus_top_three() ->
     assert result.species_top1 is not None and result.species_top1.node_id == "s:a2"
     assert result.species_top1.raw_similarity == 1.0
     assert result.species_top20[1].node_id == "s:a1:00"
-    assert result.species_top5 == result.species_top20[:5]
-    assert result.species_top3 == result.species_top20[:3]
+    assert [score.node_id for score in result.species_top5] == [
+        score.node_id for score in result.species_top20[:5]
+    ]
+    assert result.species_top3 == result.species_top5[:3]
     assert step.top1_margin == pytest.approx(0.10)
-    assert len(scorer.calls[-1]) == 27
+    assert len(scorer.calls[-2]) == 27
+    assert len(scorer.calls[-1]) == 20
+
+
+def test_species_rerank_scores_exactly_first_pass_top_twenty_with_distinct_prompts() -> None:
+    store = _only_species_prefix(_store(), "s:a1:")
+    first_pass_scores = {f"s:a1:{index:02d}": 1.0 - index * 0.01 for index in range(25)}
+    rerank_scores = {
+        _rerank_label(f"s:a1:{index:02d}"): (99.0 if index == 20 else index * 0.01)
+        for index in range(25)
+    }
+    scorer = _scorer(store, first_pass_scores, label_overrides=rerank_scores)
+
+    result = classify_path_cascade(item={}, scorer=scorer, taxonomy_store=store)
+
+    assert [score.node_id for score in result.species_top20] == [
+        f"s:a1:{index:02d}" for index in range(20)
+    ]
+    assert result.species_top1 is not None
+    assert result.species_top1.node_id == "s:a1:19"
+    assert result.species_top1.first_pass_raw_similarity == pytest.approx(0.81)
+    assert result.species_top1.rerank_raw_similarity == pytest.approx(0.19)
+    assert result.species_top1.raw_similarity == pytest.approx(0.19)
+    assert result.species_top3 == result.species_top5[:3]
+    assert result.species_top5 == result.species_reranked_top20[:5]
+    assert {score.node_id for score in result.species_reranked_top20} == {
+        score.node_id for score in result.species_top20
+    }
+    rerank_call = scorer.calls[-1]
+    assert len(rerank_call) == 20
+    assert _rerank_label("s:a1:19") in rerank_call
+    assert _rerank_label("s:a1:20") not in rerank_call
+    assert result.final_winning_path[-1] == result.species_top1
 
 
 @pytest.mark.parametrize("mode", ["missing", "duplicate", "nonaccepted", "mismatched_key"])

@@ -236,6 +236,10 @@ def raw_embedding_similarities(
     return scores
 
 
+def normalize_embedding(values: Sequence[float]) -> tuple[float, ...]:
+    return _normalize(values)
+
+
 def taxonomy_label_hash(label: str) -> str:
     return "sha256:" + hashlib.sha256(str(label).encode("utf-8")).hexdigest()
 
@@ -407,6 +411,7 @@ __all__ = [
     "TAXONOMY_TEXT_EMBEDDING_SCHEMA",
     "TaxonomyTextEmbeddingIndex",
     "build_taxonomy_text_embedding_cache",
+    "normalize_embedding",
     "raw_embedding_similarities",
     "taxonomy_label_hash",
     "taxonomy_text_embedding_cache_fingerprint",

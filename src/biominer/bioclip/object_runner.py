@@ -400,6 +400,15 @@ class EphemeralCropBioClipScorer:
             for crop_path in owned_paths:
                 crop_path.unlink(missing_ok=True)
 
+    def embed_text_labels(self, labels: Sequence[str]) -> list[list[float]]:
+        embedder = getattr(self._scorer, "embed_text_labels", None)
+        if not callable(embedder):
+            raise ValueError("underlying BioCLIP scorer does not support text embeddings")
+        return [
+            [float(value) for value in embedding]
+            for embedding in embedder(tuple(str(label) for label in labels))
+        ]
+
     def detector_crop_materialization_config(self) -> DetectorCropMaterializationConfig:
         return DetectorCropMaterializationConfig(
             image_loader=self._image_loader,
