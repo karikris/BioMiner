@@ -1326,3 +1326,106 @@ verification:
 
 `ff07eee2-f883-4dce-a4cd-37c584518675`,
 `01e56d9b-226c-474c-8d7e-85891e70c457`.
+
+### Post-implementation verification — 2026-07-11
+
+A strict-licence post-implementation `get_example` call for deterministic
+top-k acceptance fixtures, per-stage candidate telemetry, and elapsed timing
+hit the rolling generated-example quota with the exact retry estimate 60626
+seconds. It returned no solution ID, and none is claimed.
+
+GitHits source verification therefore re-read the immutable BSD-3-Clause
+scikit-learn source at
+`scikit-learn/scikit-learn@6b9e392862ac86f6a3f3b71ee89622d5af49bb4e`:
+
+```text
+code_read(sklearn/metrics/_ranking.py, 2221:2248)
+code_read(sklearn/metrics/tests/test_ranking.py, 2121:2231)
+code_read(sklearn/model_selection/_search_successive_halving.py, 343:405)
+```
+
+The post reads reconfirmed the specific patterns used by the implementation:
+a stable sort before top-k slicing; an explicit warning that a candidate-wide
+`k` makes success meaningless; fixed score matrices with exact top-k outcomes;
+non-decreasing top-k success as k grows; explicit tie fixtures; and per-stage
+candidate counts retained alongside work/resource metadata.
+
+Morph MCP was invoked for the post-implementation benchmark and production
+call-site audit and failed with the exact response
+`Error: 429 status code (no body)`. Focused source reads and `rg` confirmed
+that historical cumulative selection appears only in the developer benchmark
+and its tests. No Morph-derived claim is made.
+
+Implementation audit:
+
+- The fixture is compiled through the real classification-v3 builder, QA,
+  fingerprint, physical schemas, and `PathTaxonomyStore.from_frames`. It has
+  exactly 7 synthetic families, 14 subfamilies, 28 tribes, asserted and
+  reviewed-skipped SUBTRIBE paths, 57 genera, and 129 species.
+- Three sibling genera contain 25 species each. Other genera use one species,
+  avoiding a wasteful 1,120-species cross product while preserving a
+  non-trivial 75-species candidate universe.
+- Every fixture identity, source statement, evidence string, manifest flag,
+  and test marks the fixture as synthetic, non-biological, and non-GBIF.
+- The model-free benchmark calls the actual production
+  `classify_path_cascade`, starts with seven family candidates, and records for
+  every stage: candidate and retained counts, active paths before and after,
+  all candidate/retained/pruned node IDs, raw similarities, parent IDs, unique
+  labels scored, and reviewed skip counts.
+- The emitted rank counts are FAMILY 7 -> 3, SUBFAMILY 6 -> 3, TRIBE 6 -> 3,
+  SUBTRIBE 2 -> 2 while carrying 2 reviewed skip paths, GENUS 7 -> 3, SPECIES
+  first pass 75 -> 20, and distinct species rerank 20 -> 5 -> report 3.
+- Exact set equality—not count equality—verifies that all first-pass species
+  lie under genus top 3. The report also persists genus IDs, species IDs, and
+  the 25/25/25 per-genus counts.
+- The comparison uses cosine-range scores. Production current-rank selection
+  retains subfamilies `01:01`, `02:01`, and `02:02`. The private historical
+  parent/child mean would retain `02:01`, `02:02`, and `03:01`; parent,
+  current-rank, and cumulative values remain visible in the report.
+- Acceptance tests independently prove that the three winning genera share
+  one parent even though candidate genera have multiple parents; therefore no
+  per-parent quota is active.
+- Reviewed SUBTRIBE skip path hashes survive the optional rank without
+  becoming nodes or consuming beam slots.
+- A species assigned score 1.0 below a pruned fourth genus never enters the
+  first-pass or rerank prompt calls.
+- First-pass species 1..20 are ordered only by first-pass raw score. Species
+  21 would outrank species 20 under the rerank prompt but is not admitted.
+  Rerank reverses the retained order, top 5 follows those distinct scores, and
+  reported top 3 is its prefix.
+- Direct 2-D embeddings and a validated float32 cache produce identical rank,
+  first-pass, rerank, top-5, and top-3 node orderings. Cached scoring embeds the
+  image batch once and performs no direct text-embedding call.
+
+Patterns rejected after comparison:
+
+- using biological-looking names or real GBIF keys for software fixtures;
+- populating 25 species under every branch when only selected genera need a
+  top-20 adversarial universe;
+- raw-similarity fixtures outside cosine's `[-1, 1]` range;
+- validating the species boundary by count alone;
+- counting retained prompt labels rather than labels for all scored
+  candidates;
+- asserting exact elapsed values or minimum throughput;
+- allowing reviewed optional-rank skips to consume actual-node beam slots;
+- restoring the historical algorithm to `src/biominer/bioclip/` or importing
+  the legacy five-rank classifier.
+
+Repository and benchmark verification:
+
+- final `uv run ruff check .`: passed;
+- final `.venv/bin/pytest -q`: `1009 passed`;
+- focused fixture, store, classifier, cache, benchmark, and acceptance suite:
+  `66 passed`;
+- `benchmark-plumbing --records 1000`: 1,000 records, 250 eligible crops,
+  250 score rows, one taxonomy-store load, and 250 images embedded in 11
+  bounded batches; observed elapsed time 23.706295 seconds;
+- `benchmark-cascade`: 7 family candidates, 75 species beneath genus top 3,
+  20 first-pass survivors, 20 rerank candidates, 5 rerank survivors, and 3
+  reported species; observed elapsed time 0.488263 seconds.
+
+Post-implementation solution IDs reused from the earlier strict ranking
+verification:
+
+`ff07eee2-f883-4dce-a4cd-37c584518675`,
+`01e56d9b-226c-474c-8d7e-85891e70c457`.
