@@ -101,8 +101,12 @@ class PathTaxonomyStore:
         return _sort_paths(self.leaf_paths.filter(pl.col("enabled")))
 
     def rank_candidates(self, rank: str) -> pl.DataFrame:
+        return self.candidate_nodes_in_paths(self.enabled_paths(), rank)
+
+    def candidate_nodes_in_paths(self, active_paths: pl.DataFrame, rank: str) -> pl.DataFrame:
         normalized_rank = _rank(rank)
-        node_ids = _rank_node_ids(self.enabled_paths(), normalized_rank)
+        paths = _active_paths(active_paths)
+        node_ids = _rank_node_ids(paths, normalized_rank)
         if node_ids.is_empty():
             return pl.DataFrame(schema=NODE_SCHEMA)
         return (
@@ -110,6 +114,43 @@ class PathTaxonomyStore:
             .join(node_ids, on="node_id", how="semi")
             .sort(["scientific_name", "node_id"])
         )
+
+    def filter_paths_by_rank_nodes(
+        self,
+        active_paths: pl.DataFrame,
+        rank: str,
+        selected_node_ids: Sequence[str],
+    ) -> pl.DataFrame:
+        normalized_rank = _rank(rank)
+        paths = _active_paths(active_paths)
+        selected_ids = _node_ids(selected_node_ids)
+        if not selected_ids:
+            return pl.DataFrame(schema=LEAF_PATH_SCHEMA)
+        return _deduplicate_paths(
+            paths.filter(pl.col(f"{normalized_rank.casefold()}_node_id").is_in(selected_ids))
+        )
+
+    def species_nodes_in_paths(self, active_paths: pl.DataFrame) -> pl.DataFrame:
+        return self.candidate_nodes_in_paths(active_paths, "SPECIES")
+
+    def paths_for_species_nodes(self, species_node_ids: Sequence[str]) -> pl.DataFrame:
+        ids = _node_ids(species_node_ids)
+        if not ids:
+            return pl.DataFrame(schema=LEAF_PATH_SCHEMA)
+        return _deduplicate_paths(
+            self.enabled_paths().filter(pl.col("species_node_id").is_in(ids))
+        )
+
+    def path_for_species_node(self, species_node_id: str) -> dict[str, object]:
+        normalized_id = str(species_node_id or "").strip()
+        if not normalized_id:
+            raise ValueError("species_node_id must be nonblank")
+        paths = self.paths_for_species_nodes((normalized_id,))
+        if paths.is_empty():
+            raise KeyError(f"classification-v3 species path not found: {normalized_id}")
+        if paths.height != 1:
+            raise ValueError(f"classification-v3 species has multiple enabled paths: {normalized_id}")
+        return dict(paths.row(0, named=True))
 
     def prompt_rows_for_nodes(
         self,
@@ -241,8 +282,31 @@ def _rank_node_ids(paths: pl.DataFrame, rank: str) -> pl.DataFrame:
     )
 
 
+def _active_paths(paths: pl.DataFrame) -> pl.DataFrame:
+    missing = [column for column in LEAF_PATH_SCHEMA if column not in paths.columns]
+    if missing:
+        raise ValueError("active classification paths are missing columns: " + ", ".join(missing))
+    selected = paths.select(list(LEAF_PATH_SCHEMA))
+    versions = set(selected["classification_version"].to_list())
+    if versions and versions != {CLASSIFICATION_V3_VERSION}:
+        raise ValueError("active classification paths have a version mismatch")
+    if selected.filter(~pl.col("enabled")).height:
+        raise ValueError("active classification paths contain disabled rows")
+    return _sort_paths(selected)
+
+
 def _sort_paths(paths: pl.DataFrame) -> pl.DataFrame:
     return paths.sort(list(_PATH_SORT_COLUMNS))
+
+
+def _deduplicate_paths(paths: pl.DataFrame) -> pl.DataFrame:
+    if paths.is_empty():
+        return pl.DataFrame(schema=LEAF_PATH_SCHEMA)
+    return (
+        _sort_paths(paths)
+        .unique(subset=["hierarchy_hash"], keep="first", maintain_order=True)
+        .sort(list(_PATH_SORT_COLUMNS))
+    )
 
 
 def _sort_prompts(prompts: pl.DataFrame) -> pl.DataFrame:
