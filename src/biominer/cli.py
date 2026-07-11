@@ -294,15 +294,12 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--output-prefix", required=True)
     production_run.add_argument("--storage-backend", default="s3", choices=("s3", "local"))
     production_run.add_argument("--workstore-backend", default="postgres", choices=("postgres", "sqlite"))
-    production_run.add_argument("--vision-backend", default="yoloe26")
-    production_run.set_defaults(vision_worker="rolling")
     production_run.add_argument("--vision-profile", choices=("mac_m5pro_64gb",))
     production_run.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"))
     production_run.add_argument("--yolo-checkpoint")
     production_run.add_argument("--yolo-sidecar-transport", choices=("json_b64", "image_path"))
     production_run.add_argument("--yolo-imgsz", type=int)
     production_run.add_argument("--yolo-batch", type=int)
-    production_run.add_argument("--bioclip-model")
     production_run.add_argument("--bioclip-batch", type=int)
     production_run.add_argument("--adaptive-batching", action="store_true")
     production_run.add_argument("--bioclip-top-k", type=int)
@@ -313,6 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CLASSIFICATION_MODE,
     )
     production_run.add_argument("--taxonomy-candidate-table")
+    production_run.add_argument("--taxonomy-text-embedding-cache")
     production_run.add_argument("--family-top-k", type=int, default=DEFAULT_FAMILY_TOP_K)
     production_run.add_argument("--species-first-pass-top-k", type=int, default=DEFAULT_SPECIES_FIRST_PASS_TOP_K)
     production_run.add_argument("--species-rerank-top-k", type=int, default=DEFAULT_SPECIES_RERANK_TOP_K)
@@ -364,6 +362,13 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     bioclip_prefetch.add_argument("--model-name", default=BIOCLIP_25_HUGE_REPO_ID)
     bioclip_prefetch.add_argument("--revision", default=BIOCLIP_25_HUGE_REVISION)
     bioclip_prefetch.add_argument("--max-workers", type=int, default=8)
+    text_embedding_cache = subparsers.add_parser("build-text-embedding-cache")
+    text_embedding_cache.add_argument("--taxonomy-candidate-table", required=True)
+    text_embedding_cache.add_argument("--output", required=True)
+    text_embedding_cache.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    text_embedding_cache.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
+    text_embedding_cache.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    text_embedding_cache.add_argument("--batch-size", type=int, default=256)
     yoloe26_runtime = subparsers.add_parser("yoloe26-runtime-check")
     yoloe26_runtime.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
     yoloe26_runtime.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
@@ -444,6 +449,8 @@ def run(args: argparse.Namespace) -> int:
             return _run_bioclip_runtime_check(args)
         if args.vision_command == "bioclip-prefetch-model":
             return _run_bioclip_prefetch_model(args)
+        if args.vision_command == "build-text-embedding-cache":
+            return _run_build_text_embedding_cache(args)
         if args.vision_command == "yoloe26-runtime-check":
             return _run_yoloe26_runtime_check(args)
         if args.vision_command == "yoloe26-prefetch":
@@ -1089,8 +1096,6 @@ def _production_vision_settings_from_args(args: argparse.Namespace) -> VisionRun
         overrides["yolo_imgsz"] = args.yolo_imgsz
     if getattr(args, "yolo_batch", None) is not None:
         overrides["detector_batch_size"] = args.yolo_batch
-    if getattr(args, "bioclip_model", None) is not None:
-        overrides["bioclip_model"] = args.bioclip_model
     if getattr(args, "bioclip_batch", None) is not None:
         overrides["crop_batch_size"] = args.bioclip_batch
     if getattr(args, "bioclip_top_k", None) is not None:
@@ -1115,6 +1120,7 @@ def _classification_mode_arg(value: str) -> str:
 
 def _run_production_command(args: argparse.Namespace) -> int:
     config = None
+    runtime_resources: list[Any] = []
     try:
         config = load_biominer_config(args.config)
         config = replace(
@@ -1132,7 +1138,7 @@ def _run_production_command(args: argparse.Namespace) -> int:
         if args.storage_backend != "local" and (not args.dry_run or registry_dir_is_cloud):
             storage = create_storage_backend(config.storage)
         workstore = None
-        if not args.dry_run and RunStage.ENQUEUE_FLICKR_WORK in stages:
+        if not args.dry_run:
             workstore = create_workstore(config.workstore)
             _init_workstore_schema_if_supported(workstore)
         limits = {
@@ -1152,13 +1158,12 @@ def _run_production_command(args: argparse.Namespace) -> int:
             output_root=args.output_prefix,
             storage_backend=args.storage_backend,
             workstore_backend=args.workstore_backend,
-            vision_backend=args.vision_backend,
-            vision_worker=args.vision_worker,
             bioclip_model=vision_settings.bioclip_model,
             vision_profile=args.vision_profile,
             vision_settings=vision_settings,
             classification_mode=args.classification_mode,
             taxonomy_candidate_table=args.taxonomy_candidate_table,
+            taxonomy_text_embedding_cache=args.taxonomy_text_embedding_cache,
             family_top_k=args.family_top_k,
             species_first_pass_top_k=args.species_first_pass_top_k,
             species_rerank_top_k=args.species_rerank_top_k,
@@ -1168,15 +1173,76 @@ def _run_production_command(args: argparse.Namespace) -> int:
             build_registry_if_missing=args.build_registry_if_missing,
             limits=limits,
         )
-        plan = ProductionRunOrchestrator(request, storage=storage, workstore=workstore).run()
+        object_detector = None
+        image_loader = None
+        object_scorer = None
+        if not args.dry_run and RunStage.DETECT_OBJECTS in stages:
+            object_detector, image_loader, object_scorer, runtime_resources = _create_production_vision_runtime(
+                vision_settings
+            )
+        plan = ProductionRunOrchestrator(
+            request,
+            storage=storage,
+            workstore=workstore,
+            object_detector=object_detector,
+            image_loader=image_loader,
+            object_scorer=object_scorer,
+            flickr_api_key=os.environ.get("FLICKR_API_KEY"),
+        ).run()
     except (ConfigError, FileNotFoundError, ValueError) as exc:
         payload: dict[str, object] = {"error": redact_text(str(exc), config) if config else str(exc)}
         if config is not None:
             payload["config"] = redact_config(config)
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 2
+    finally:
+        for resource in reversed(runtime_resources):
+            close = getattr(resource, "close", None)
+            if callable(close):
+                close()
     print(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
     return 0
+
+
+def _create_production_vision_runtime(
+    vision_settings: VisionRuntimeSettings,
+) -> tuple[Any, Any, Any, list[Any]]:
+    from biominer.bioclip.bioclip import PersistentBioClipScorer
+    from biominer.bioclip.object_runner import EphemeralCropBioClipScorer
+    from biominer.detection.image_io import load_decoded_image_from_record
+    from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
+
+    detector = YoloE26SidecarObjectDetector(
+        runtime_python=YOLOE26_RUNTIME_PYTHON,
+        checkpoint=vision_settings.yolo_checkpoint,
+        device=vision_settings.device,
+        imgsz=vision_settings.yolo_imgsz,
+        conf=vision_settings.yolo_conf,
+        iou=vision_settings.yolo_iou,
+        max_det=vision_settings.yolo_max_det,
+        transport=vision_settings.yolo_sidecar_transport,
+        temp_dir=Path("/tmp") / "biominer_yoloe26",
+    )
+    runtime = _bioclip_runtime(runtime_python=Path(BIOCLIP_RUNTIME_PYTHON))
+    persistent = PersistentBioClipScorer(
+        runtime=runtime,
+        hf_cache_dir=BIOCLIP_HF_CACHE_DIR,
+        device=vision_settings.device,
+        preprocess_workers=vision_settings.bioclip_preprocess_workers,
+    )
+    def image_loader(record: dict[str, Any]) -> Any:
+        return load_decoded_image_from_record(record, cache_root="data/cache/images")
+    scorer = EphemeralCropBioClipScorer(
+        scorer=persistent,
+        image_loader=image_loader,
+        temp_dir=Path("/tmp") / "biominer_bioclip_crops",
+        crop_padding_ratio=vision_settings.crop_padding_ratio,
+        crop_target_px=vision_settings.crop_target_px,
+        model_id=runtime.model.model_name,
+        model_version=runtime.package_version,
+        model_checkpoint=runtime.model.checkpoint,
+    )
+    return detector, image_loader, scorer, [persistent, detector]
 
 
 def _parse_run_stages(value: str | None) -> tuple[RunStage, ...]:
@@ -1250,6 +1316,50 @@ def _run_bioclip_prefetch_model(args: argparse.Namespace) -> int:
         print(json.dumps({"error": result.stderr.strip() or result.stdout.strip()}, indent=2, sort_keys=True))
         return 2
     print(result.stdout.strip())
+    return 0
+
+
+def _run_build_text_embedding_cache(args: argparse.Namespace) -> int:
+    from biominer.bioclip.bioclip import PersistentBioClipScorer
+    from biominer.bioclip.five_rank_embedding_cache import build_five_rank_text_embedding_cache
+    from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
+
+    runtime_python = Path(args.runtime_python).expanduser()
+    if not runtime_python.exists():
+        print(json.dumps({"error": f"BioCLIP runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
+        return 2
+    scorer = PersistentBioClipScorer(
+        runtime=_bioclip_runtime(runtime_python=runtime_python),
+        hf_cache_dir=args.hf_cache_dir,
+        device=args.device,
+    )
+    try:
+        store = FiveRankTaxonomyStore.read(args.taxonomy_candidate_table)
+        frame = build_five_rank_text_embedding_cache(
+            store,
+            model_id=scorer.runtime.model.model_name,
+            model_checkpoint=scorer.runtime.model.checkpoint,
+            embed_labels=scorer.embed_text_labels,
+            batch_size=args.batch_size,
+        )
+        output = write_parquet(frame, args.output)
+    finally:
+        scorer.close()
+    print(
+        json.dumps(
+            {
+                "status": "complete",
+                "output": str(output),
+                "rows": frame.height,
+                "taxonomy_fingerprint": store.taxonomy_fingerprint,
+                "embedding_cache_fingerprint": frame["embedding_cache_fingerprint"][0] if frame.height else None,
+                "model_id": scorer.runtime.model.model_name,
+                "model_checkpoint": scorer.runtime.model.checkpoint,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 

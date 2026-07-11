@@ -6,7 +6,6 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from biominer.bioclip.ablation import build_ablation_report, run_object_ablations
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon, build_candidate_set, build_candidate_set_for_taxon_scope
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 from biominer.bioclip.object_runner import (
@@ -62,7 +61,6 @@ def test_object_visual_modes_are_segmentation_not_enhancement() -> None:
 
     source_paths = (
         Path("src/biominer/bioclip/object_runner.py"),
-        Path("src/biominer/bioclip/ablation.py"),
         Path("src/biominer/detection/segmentation.py"),
         Path("src/biominer/cli.py"),
     )
@@ -2311,123 +2309,6 @@ def test_geography_soft_prior_accepts_candidate_specific_geo_prior_table() -> No
     assert prior.reason == "within_geo_prior_table"
     assert prior.route_to_review is False
     assert prior.hard_discard is False
-
-
-def test_ablation_modes_write_rows_with_shared_photo_join_keys(tmp_path) -> None:
-    candidate_set = _fixture_candidate_set()
-    report = run_object_ablations(
-        canonical_records=_canonical_records(),
-        detections=_detections().head(1),
-        species_context=_context(),
-        candidate_set=candidate_set,
-        scorer=FakeObjectBioClipScorer({"sha256:crop-1": {"a photo of Danaus plexippus": 0.82}}),
-        output_dir=tmp_path,
-        modes=("whole_image", "detector_crop", "detector_crop_segmentation"),
-        parquet_batch_rows=1,
-    )
-
-    frames = [pl.read_parquet(tmp_path / f"object_bioclip_scores_{mode}.parquet") for mode in report.modes]
-    combined = pl.concat(frames, how="diagonal_relaxed")
-    rows = combined.sort("ablation_mode").to_dicts()
-
-    assert {row["ablation_mode"] for row in rows} == {"whole_image", "detector_crop"}
-    assert {row["source"] for row in rows} == {"flickr"}
-    assert {row["flickr_photo_id"] for row in rows} == {"photo-1"}
-    assert report.report["score_batches_written_by_mode"] == {
-        "detector_crop": 1,
-        "detector_crop_segmentation": 0,
-        "whole_image": 1,
-    }
-    assert report.report["primary_visual_classifier"] == PRIMARY_VISUAL_CLASSIFIER
-    assert report.report["visual_modes_requested"] == ["whole_image", "detector_crop", "detector_crop_segmentation"]
-    assert report.report["visual_modes_scored"] == ["detector_crop", "whole_image"]
-    assert report.report["visual_mode_status_by_mode"] == {
-        "detector_crop": "available",
-        "detector_crop_segmentation": "unavailable",
-        "whole_image": "available",
-    }
-    assert report.report["classification_mode_counts"] == {"target_scope_object_screening": 2}
-    assert report.report["candidate_selection_mode_counts"] == {TARGET_SCOPE_CANDIDATE_SELECTION_MODE: 2}
-    assert report.report["species_rerank_strategy_counts"] == {TARGET_SCOPE_SPECIES_RERANK_STRATEGY: 2}
-    assert report.report["species_candidate_count_non_null_count"] == 0
-    assert report.report["segmentation_status_by_mode"]["detector_crop_segmentation"] == "unavailable"
-    assert report.report["segmentation_unavailable_count_by_mode"]["detector_crop_segmentation"] == 1
-    assert report.report["segmentation_unavailable_reason_by_mode"]["detector_crop_segmentation"] == "detector_masks_missing"
-    assert build_ablation_report(combined)["crops_scored"] == 2
-    assert build_ablation_report(combined)["gold_count"] == 2
-
-
-def test_ablation_report_uses_objective_disagreement_field_names() -> None:
-    report = build_ablation_report(
-        pl.DataFrame(
-            [
-                {
-                    "source": "flickr",
-                    "flickr_photo_id": "photo-1",
-                    "detection_id": "det-1",
-                    "ablation_mode": "whole_image",
-                    "occurrence_bin": "gold",
-                    "species_top1_scientific_name": "Danaus gilippus",
-                },
-                {
-                    "source": "flickr",
-                    "flickr_photo_id": "photo-1",
-                    "detection_id": "det-1",
-                    "ablation_mode": "detector_crop",
-                    "occurrence_bin": "gold",
-                    "species_top1_scientific_name": "Danaus plexippus",
-                },
-                {
-                    "source": "flickr",
-                    "flickr_photo_id": "photo-1",
-                    "detection_id": "det-1",
-                    "ablation_mode": "detector_crop_segmentation",
-                    "occurrence_bin": "gold",
-                    "species_top1_scientific_name": "Danaus plexippus",
-                },
-            ]
-        )
-    )
-
-    assert report["whole_image_vs_crop"] == 1
-    assert report["crop_vs_segmentation"] == 0
-    assert report["whole_image_vs_crop_disagreements"] == 1
-    assert report["crop_vs_segmentation_disagreements"] == 0
-
-
-def test_ablation_report_counts_no_detection_records(tmp_path) -> None:
-    detections = pl.DataFrame(
-        [
-            {
-                "source": "flickr",
-                "flickr_photo_id": "photo-1",
-                "detection_id": "no-detection-photo-1",
-                "crop_hash": None,
-                "bbox_xyxy": [],
-                "detection_status": "no_detection",
-                "failure_reason": "no_butterfly_like_object",
-            }
-        ]
-    )
-
-    report = run_object_ablations(
-        canonical_records=_canonical_records(),
-        detections=detections,
-        species_context=_context(),
-        candidate_set=_fixture_candidate_set(),
-        scorer=FakeObjectBioClipScorer({}),
-        output_dir=tmp_path,
-        modes=("detector_crop",),
-    )
-
-    assert report.report["records_seen"] == 1
-    assert report.report["detections_seen"] == 1
-    assert report.report["crops_scored"] == 0
-    assert report.report["no_detection_records"] == 1
-    assert report.report["ablation_mode"] == ["detector_crop"]
-    persisted = json.loads((tmp_path / "ablation_report.json").read_text(encoding="utf-8"))
-    assert persisted["no_detection_records"] == 1
-    assert persisted["ablation_mode"] == ["detector_crop"]
 
 
 def test_object_evidence_join_and_photo_summary_outputs(tmp_path) -> None:

@@ -43,6 +43,7 @@ class VisionRuntimeSettings:
     yolo_max_det: int = 8
     detector_batch_size: int = 4
     crop_batch_size: int = 24
+    bioclip_preprocess_workers: int = 1
     crop_padding_ratio: float = 0.12
     crop_target_px: int = 336
     bioclip_model: str = "imageomics/bioclip-2.5-vith14"
@@ -123,6 +124,7 @@ MAC_M5PRO_64GB_SETTINGS = VisionRuntimeSettings(
     yolo_max_det=8,
     detector_batch_size=16,
     crop_batch_size=24,
+    bioclip_preprocess_workers=4,
     crop_padding_ratio=0.08,
     crop_target_px=336,
     bioclip_model="hf-hub:imageomics/bioclip-2.5-vith14",
@@ -173,6 +175,7 @@ def validate_vision_runtime_settings(settings: VisionRuntimeSettings) -> VisionR
     _positive_int(settings.yolo_imgsz, "yolo_imgsz")
     _positive_int(settings.yolo_max_det, "yolo_max_det")
     _positive_int(settings.detector_batch_size, "detector_batch_size")
+    _positive_int(settings.bioclip_preprocess_workers, "bioclip_preprocess_workers")
     _positive_int(settings.crop_batch_size, "crop_batch_size")
     _positive_int(settings.min_detector_batch_size, "min_detector_batch_size")
     _positive_int(settings.min_crop_batch_size, "min_crop_batch_size")

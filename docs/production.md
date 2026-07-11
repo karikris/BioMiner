@@ -28,11 +28,15 @@ uv run biominer --config config/biominer.cloud.example.toml run \
   --rank family \
   --registry-dir s3://biominer/registry/butterflies-v2 \
   --taxonomy-candidate-table s3://biominer/registry/butterflies-v2 \
+  --taxonomy-text-embedding-cache s3://biominer/registry/butterflies-v2/classification_text_embeddings.parquet \
   --output-prefix s3://biominer/runs \
   --classification-mode hierarchical_butterfly_classification
 ```
 
 Use `storage doctor`, `workstore doctor`, and `run --dry-run` before a live run.
+The embedding cache is optional for diagnostic compatibility, but production
+hierarchical runs should provide it; otherwise the manifest records
+`direct_prompt_fallback` and BioCLIP repeatedly encodes rank prompts.
 
 ## Durability and observability
 

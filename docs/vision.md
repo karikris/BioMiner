@@ -2,7 +2,12 @@
 
 YOLOE identifies butterfly and life-stage objects. Production preserves metadata for ineligible detections but does not create their crops. Eligible crops use profile-controlled padding, resize, batching, and memory limits; fine wing patterns use high-quality image resizing.
 
-BioCLIP 2.5 runs as a persistent worker. Text embeddings are precomputed from reviewed rank prompts and fingerprinted against model checkpoint, prompt version, and taxonomy fingerprint. Image embeddings are batched and compared with normalized text embeddings.
+BioCLIP 2.5 runs as a persistent worker. Build text embeddings from reviewed
+rank prompts with `biominer dev vision build-text-embedding-cache`, then pass
+the Parquet artifact to production with `--taxonomy-text-embedding-cache`.
+The cache is validated against model checkpoint, prompt version, and taxonomy
+fingerprint. Image embeddings are batched and compared with normalized text
+embeddings. Omitting the cache is an explicit slower diagnostic fallback.
 
 ## Five-stage cascade
 

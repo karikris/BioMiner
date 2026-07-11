@@ -76,6 +76,15 @@ uv run biominer registry build-classification \
   --source-json config/taxonomy/papilionoidea_classification_v2.json
 ```
 
+Precompute its fingerprinted BioCLIP text embeddings once per taxonomy,
+prompt, model, or checkpoint version:
+
+```bash
+uv run biominer dev vision build-text-embedding-cache \
+  --taxonomy-candidate-table data/registry/butterflies-v2 \
+  --output data/registry/butterflies-v2/classification_text_embeddings.parquet
+```
+
 Audit the registry:
 
 ```bash
@@ -92,6 +101,7 @@ uv run biominer --config config/biominer.local.example.toml run \
   --rank family \
   --registry-dir data/registry/butterflies-v2 \
   --taxonomy-candidate-table data/registry/butterflies-v2 \
+  --taxonomy-text-embedding-cache data/registry/butterflies-v2/classification_text_embeddings.parquet \
   --output-prefix data/runs \
   --storage-backend local \
   --workstore-backend sqlite \

@@ -11,12 +11,14 @@ import pytest
 
 from biominer.config import BioMinerConfig, RuntimeConfig, StorageConfig, WorkStoreConfig
 from biominer.cli import (
+    _create_production_vision_runtime,
     _production_vision_settings_from_args,
     build_parser,
     run,
 )
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION, TARGET_SCOPE_OBJECT_SCREENING
 from biominer.detection.detector_base import DecodedImage
+from biominer.detection.policy import VisionRuntimeSettings
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES
 from biominer.registry.translation_harvester import (
     MYMEMORY_MONTHLY_BANDWIDTH_MB_LIMIT,
@@ -67,6 +69,93 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert poll_once.max_api_calls == 3500
     assert poll_once.run_id == "run-1"
     assert poll_once.worker_id == "worker-001"
+
+
+def test_production_vision_runtime_wires_persistent_sidecars(monkeypatch) -> None:
+    created: dict[str, Any] = {}
+
+    class FakeDetector:
+        def __init__(self, **kwargs):  # noqa: ANN003
+            created["detector"] = kwargs
+
+        def close(self) -> None:
+            created["detector_closed"] = True
+
+    class FakePersistent:
+        def __init__(self, **kwargs):  # noqa: ANN003
+            created["persistent"] = kwargs
+
+        def close(self) -> None:
+            created["persistent_closed"] = True
+
+    class FakeCropScorer:
+        def __init__(self, **kwargs):  # noqa: ANN003
+            created["crop_scorer"] = kwargs
+
+    runtime = SimpleNamespace(
+        model=SimpleNamespace(model_name="imageomics/bioclip", checkpoint="revision-1"),
+        package_version="3.3.0",
+    )
+    monkeypatch.setattr("biominer.detection.yoloe26_detector.YoloE26SidecarObjectDetector", FakeDetector)
+    monkeypatch.setattr("biominer.bioclip.bioclip.PersistentBioClipScorer", FakePersistent)
+    monkeypatch.setattr("biominer.bioclip.object_runner.EphemeralCropBioClipScorer", FakeCropScorer)
+    monkeypatch.setattr("biominer.cli._bioclip_runtime", lambda **_kwargs: runtime)
+
+    detector, image_loader, scorer, resources = _create_production_vision_runtime(VisionRuntimeSettings())
+
+    assert detector is not None
+    assert callable(image_loader)
+    assert scorer is not None
+    assert resources == [created["crop_scorer"]["scorer"], detector]
+    assert created["detector"]["runtime_python"]
+    assert created["persistent"]["device"] == "auto"
+    assert created["crop_scorer"]["model_checkpoint"] == "revision-1"
+
+
+def test_build_text_embedding_cache_command_writes_and_closes_worker(tmp_path, monkeypatch, capsys) -> None:
+    runtime_python = tmp_path / "python"
+    runtime_python.touch()
+    closed: list[bool] = []
+    runtime = SimpleNamespace(
+        model=SimpleNamespace(model_name="imageomics/bioclip", checkpoint="revision-1"),
+        package_version="3.3.0",
+    )
+
+    class FakePersistent:
+        def __init__(self, **_kwargs):
+            self.runtime = runtime
+
+        def embed_text_labels(self, labels):  # noqa: ANN001, ANN201
+            return [[1.0, 0.0] for _label in labels]
+
+        def close(self) -> None:
+            closed.append(True)
+
+    store = SimpleNamespace(taxonomy_fingerprint="sha256:taxonomy")
+    frame = pl.DataFrame([{"embedding_cache_fingerprint": "sha256:cache"}])
+    monkeypatch.setattr("biominer.bioclip.bioclip.PersistentBioClipScorer", FakePersistent)
+    monkeypatch.setattr("biominer.bioclip.five_rank_store.FiveRankTaxonomyStore.read", lambda _path: store)
+    monkeypatch.setattr("biominer.bioclip.five_rank_embedding_cache.build_five_rank_text_embedding_cache", lambda *_args, **_kwargs: frame)
+    output = tmp_path / "text-embeddings.parquet"
+    args = build_parser().parse_args(
+        [
+            "dev",
+            "vision",
+            "build-text-embedding-cache",
+            "--taxonomy-candidate-table",
+            str(tmp_path / "taxonomy"),
+            "--output",
+            str(output),
+            "--runtime-python",
+            str(runtime_python),
+        ]
+    )
+
+    assert run(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert output.exists()
+    assert payload["embedding_cache_fingerprint"] == "sha256:cache"
+    assert closed == [True]
 
 
 def test_registry_public_cli_exposes_only_build_and_audit() -> None:
@@ -170,8 +259,6 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
             "cpu",
             "--yolo-batch",
             "7",
-            "--bioclip-model",
-            "custom-bioclip",
             "--adaptive-batching",
             "--yolo-sidecar-transport",
             "image_path",
@@ -183,7 +270,7 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
 
     assert overridden_settings.device == "cpu"
     assert overridden_settings.detector_batch_size == 7
-    assert overridden_settings.bioclip_model == "custom-bioclip"
+    assert overridden_settings.bioclip_model == "hf-hub:imageomics/bioclip-2.5-vith14"
     assert overridden_settings.adaptive_batching is True
     assert overridden_settings.yolo_sidecar_transport == "image_path"
     assert overridden_settings.delete_images_after_commit is False
@@ -1130,11 +1217,11 @@ def test_production_run_cli_resolves_registry_and_writes_dry_run_manifest(tmp_pa
     assert payload["request"]["taxon"] == "Papilio demoleus"
     assert payload["request"]["storage_backend"] == "local"
     assert payload["request"]["workstore_backend"] == "sqlite"
-    assert payload["request"]["vision_worker"] == "rolling"
+    assert payload["request"]["vision_worker"] == "local_dev"
     assert payload["request"]["worker_id"] == "local"
     assert manifest["taxon_scope"]["accepted_taxon_key"] == "gbif:100"
     assert manifest["taxon_scope"]["accepted_rank"] == "species"
-    assert manifest["model_configs"]["vision_worker"] == "rolling"
+    assert manifest["model_configs"]["vision_worker"] == "local_dev"
     assert manifest["stages"][0]["stage"] == "resolve_taxon_scope"
     assert manifest["stages"][0]["status"] == "complete"
     assert manifest["stages"][1]["status"] == "skipped"

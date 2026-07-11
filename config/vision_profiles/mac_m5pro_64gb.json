@@ -14,6 +14,7 @@
   "max_inflight_crops": 96,
   "detector_batch_size": 16,
   "crop_batch_size": 24,
+  "bioclip_preprocess_workers": 4,
   "adaptive_batching": false,
   "yolo_sidecar_transport": "json_b64",
   "min_detector_batch_size": 1,

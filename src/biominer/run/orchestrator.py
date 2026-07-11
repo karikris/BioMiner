@@ -16,18 +16,8 @@ from biominer.bioclip.classification_modes import (
     ClassificationMode,
     normalize_classification_mode,
 )
-from biominer.bioclip.cloud_work import (
-    bioclip_score_batch_id,
-    enqueue_bioclip_work_from_detection_shards,
-    run_cloud_bioclip_batch,
-)
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER, object_score_audit_metrics
 from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
-from biominer.detection.cloud_work import (
-    detection_batch_id,
-    enqueue_detection_work_from_source_shards,
-    run_cloud_detection_batch,
-)
 from biominer.detection.policy import DetectionPolicy, VisionRuntimeSettings
 from biominer.evidence.cloud_work import (
     CloudReviewQueueResult,
@@ -44,7 +34,7 @@ from biominer.evaluation.review_queue import build_hierarchical_review_queue
 from biominer.flickr_comments.comment_review import CommentReviewState
 from biominer.flickr_comments.comments_enrichment import fetch_flickr_comments
 from biominer.flickr_fetch.cloud_poller import CloudMetadataPoller, flickr_query_work_item
-from biominer.storage.parquet import DEFAULT_PARQUET_COMPRESSION, ParquetPartWrite, write_parquet
+from biominer.storage.parquet import write_parquet
 from biominer.flickr_fetch.metadata_poller import DEFAULT_STALE_CLAIM_SECONDS, SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries_from_frame
 from biominer.registry.classification_v2 import classification_v2_artifact_uris
@@ -55,15 +45,17 @@ from biominer.run.stages import DEFAULT_PRODUCTION_STAGES, RunStage, StageStatus
 from biominer.run.taxon_scope import InputRank, TaxonScope, resolve_taxon_scope_from_registry, resolve_taxon_scope_from_registry_frames
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.paths import build_evidence_shard_uri, safe_path_component
-from biominer.storage.shard_paths import build_parquet_part_uri
 from biominer.storage.uri import is_cloud_uri, join_uri
 from biominer.vision.cloud_work import (
     ROLLING_VISION_ARTIFACT_ORDER,
+    RollingVisionPipelineError,
     commit_rolling_vision_batch_shards,
+    detect_cloud_rolling_vision_batch,
     enqueue_rolling_vision_work_from_source_shards,
     rolling_vision_batch_id,
     rolling_vision_part_id,
-    run_cloud_rolling_vision_batch,
+    run_bounded_cloud_rolling_pipeline,
+    score_cloud_rolling_detection_batch,
 )
 from biominer.vision.gates import BioClipGatePolicy
 from biominer.workstore.base import WorkStore
@@ -71,7 +63,7 @@ from biominer.workstore.base import WorkStore
 
 DEFAULT_BIOCLIP_MODEL = "imageomics/bioclip-2.5-vith14"
 DEFAULT_VISION_BACKEND = "yoloe26"
-DEFAULT_VISION_WORKER = "serial"
+PRODUCTION_VISUAL_MODE = "detector_crop"
 PRODUCTION_JOB_NAME = "biominer_production_run"
 REQUIRED_REGISTRY_ARTIFACTS = (
     "taxa.parquet",
@@ -102,17 +94,15 @@ class ProductionRunRequest:
     storage_backend: str = "s3"
     workstore_backend: str = "postgres"
     vision_backend: str = DEFAULT_VISION_BACKEND
-    vision_worker: str = DEFAULT_VISION_WORKER
     bioclip_model: str = DEFAULT_BIOCLIP_MODEL
     vision_profile: str | None = None
     vision_settings: VisionRuntimeSettings = field(default_factory=VisionRuntimeSettings)
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE
     taxonomy_candidate_table: str | Path | None = None
+    taxonomy_text_embedding_cache: str | Path | None = None
     family_top_k: int = DEFAULT_FAMILY_TOP_K
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K
-    bioclip_ablation_mode: str = "detector_crop"
-    bioclip_ablation_modes: tuple[str, ...] = ("detector_crop",)
     worker_id: str = "local"
     stages: tuple[RunStage, ...] = DEFAULT_PRODUCTION_STAGES
     dry_run: bool = False
@@ -121,8 +111,6 @@ class ProductionRunRequest:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "classification_mode", normalize_classification_mode(self.classification_mode))
-        if self.vision_worker not in {"serial", "rolling"}:
-            raise ValueError("vision_worker must be one of: serial, rolling")
         for field_name in ("family_top_k", "species_first_pass_top_k", "species_rerank_top_k"):
             value = int(getattr(self, field_name))
             if value <= 0:
@@ -155,17 +143,18 @@ class ProductionRunPlan:
                 "storage_backend": self.request.storage_backend,
                 "workstore_backend": self.request.workstore_backend,
                 "vision_backend": self.request.vision_backend,
-                "vision_worker": self.request.vision_worker,
+                "vision_worker": "rolling" if is_cloud_uri(str(self.request.output_root)) else "local_dev",
                 "bioclip_model": self.request.bioclip_model,
                 "vision_profile": self.request.vision_profile,
                 "vision_settings": asdict(self.request.vision_settings),
                 "classification_mode": self.request.classification_mode,
                 "taxonomy_candidate_table": str(self.request.taxonomy_candidate_table) if self.request.taxonomy_candidate_table else None,
+                "taxonomy_text_embedding_cache": str(self.request.taxonomy_text_embedding_cache)
+                if self.request.taxonomy_text_embedding_cache
+                else None,
                 "family_top_k": self.request.family_top_k,
                 "species_first_pass_top_k": self.request.species_first_pass_top_k,
                 "species_rerank_top_k": self.request.species_rerank_top_k,
-                "bioclip_ablation_mode": self.request.bioclip_ablation_mode,
-                "bioclip_ablation_modes": list(self.request.bioclip_ablation_modes),
                 "worker_id": self.request.worker_id,
                 "stages": [stage.value for stage in self.request.stages],
                 "dry_run": self.request.dry_run,
@@ -208,19 +197,20 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
         stages=default_stage_records(request.stages),
         model_configs={
             "vision_backend": request.vision_backend,
-            "vision_worker": request.vision_worker,
+            "vision_worker": "rolling" if is_cloud_uri(str(request.output_root)) else "local_dev",
             "bioclip_model": request.bioclip_model,
             "vision_profile": request.vision_profile,
             "vision_settings": asdict(request.vision_settings),
             "classification_mode": request.classification_mode,
             "taxonomy_candidate_table": str(request.taxonomy_candidate_table) if request.taxonomy_candidate_table else None,
+            "taxonomy_text_embedding_cache": str(request.taxonomy_text_embedding_cache)
+            if request.taxonomy_text_embedding_cache
+            else None,
             "family_top_k": request.family_top_k,
             "species_first_pass_top_k": request.species_first_pass_top_k,
             "species_rerank_top_k": request.species_rerank_top_k,
-            "bioclip_ablation_mode": request.bioclip_ablation_mode,
-            "bioclip_ablation_modes": list(request.bioclip_ablation_modes),
             "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
-            "visual_modes": list(OBJECT_VISUAL_MODES),
+            "visual_modes": [PRODUCTION_VISUAL_MODE],
         },
         query_counts={"compiled_definitions": 0, "enqueued_work_items": 0},
         detection_counts={"images_seen": 0, "detections": 0, "crops_created": 0},
@@ -648,161 +638,7 @@ class ProductionRunOrchestrator:
 
     def _run_detect_objects_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if is_cloud_uri(self.request.output_root):
-            if self.request.vision_worker == "rolling":
-                return self._run_cloud_rolling_vision_stage(plan)
-            if self.storage is None:
-                return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_detect_objects")
-            if self.workstore is None:
-                return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_detect_objects")
-            if not _cloud_source_records_available(self.storage, self.workstore, plan):
-                return StageExecutionResult(status=StageStatus.FAILED, message="missing_detection_inputs: source_records")
-            if self.object_detector is None or self.image_loader is None:
-                return StageExecutionResult(status=StageStatus.FAILED, message="detector_runtime_required_for_detect_objects")
-            detection_policy = self.request.vision_settings.to_detection_policy(DetectionPolicy(backend=self.object_detector.backend))
-            plan_result = enqueue_detection_work_from_source_shards(
-                storage=self.storage,
-                workstore=self.workstore,
-                job_name=PRODUCTION_JOB_NAME,
-                registry_version=plan.manifest.taxon_scope.registry_version,
-                run_id=plan.manifest.run_id,
-                source_stage=RunStage.POLL_FLICKR.value,
-                detection_stage=RunStage.DETECT_OBJECTS.value,
-                detector_backend=self.object_detector.backend,
-                detector_model_id=self.object_detector.model_id,
-                detector_model_version=self.object_detector.model_version,
-                detector_checkpoint=self.object_detector.checkpoint,
-                detection_policy=detection_policy,
-                vision_settings=self.request.vision_settings,
-                limit=int(self.request.limits.get("records") or 0) or None,
-            )
-            claimed = self.workstore.claim_next_batch(
-                self.request.worker_id,
-                _cloud_detection_claim_limit(self.request.limits),
-                job_name=PRODUCTION_JOB_NAME,
-                stage=RunStage.DETECT_OBJECTS.value,
-                registry_version=plan.manifest.taxon_scope.registry_version,
-            )
-            if not claimed:
-                return StageExecutionResult(
-                    metrics={
-                        "detection_work_items_enqueued": plan_result.enqueued_work_items,
-                        "duplicate_detection_work_items": plan_result.duplicate_work_items,
-                        "work_items_claimed": 0,
-                        "workstore_work_items_completed": 0,
-                    },
-                    outputs={"workstore_stage": RunStage.DETECT_OBJECTS.value},
-                )
-            part_id = detection_batch_id(claimed)
-            part_uri = build_parquet_part_uri(
-                plan.artifact_uris.staging_uri,
-                stage=RunStage.DETECT_OBJECTS.value,
-                run_id=plan.manifest.run_id,
-                worker_id=self.request.worker_id,
-                part_id=part_id,
-            )
-            existing_part = _registered_cloud_stage_shard_by_uri(self.workstore, plan, RunStage.DETECT_OBJECTS.value, part_uri)
-            if existing_part is not None and self.storage.exists(part_uri):
-                row_count = _optional_int(existing_part.get("row_count"))
-                for item in claimed:
-                    self.workstore.mark_completed(str(item["work_key"]), output_uri=part_uri, checksum=None, row_count=row_count)
-                return StageExecutionResult(
-                    metrics={
-                        "records_seen": 0,
-                        "images_loaded": 0,
-                        "image_failures": 0,
-                        "detections_written": row_count,
-                        "crops_created": 0,
-                        "adaptive_batching_enabled": self.request.vision_settings.adaptive_batching,
-                        "detector_batch_retries": 0,
-                        "detector_batch_size_initial": self.request.vision_settings.detector_batch_size,
-                        "detector_batch_size_final": self.request.vision_settings.detector_batch_size,
-                        "detector_batch_size_min": self.request.vision_settings.min_detector_batch_size,
-                        "parquet_batches_written": 0,
-                        "parquet_parts_written": 0,
-                        "parquet_parts_reused": 1,
-                        "parquet_part_count": 1,
-                        "parquet_part_rows": row_count,
-                        "parquet_compression": self.request.vision_settings.parquet_compression,
-                        "detection_part_count": 1,
-                        "detection_part_rows": row_count,
-                        "detection_work_items_enqueued": plan_result.enqueued_work_items,
-                        "duplicate_detection_work_items": plan_result.duplicate_work_items,
-                        "work_items_claimed": len(claimed),
-                        "workstore_work_items_completed": len(claimed),
-                        "detection_shards": 1,
-                        "workstore_shard_reused": True,
-                    },
-                    outputs={"object_detections": part_uri},
-                )
-            try:
-                result = run_cloud_detection_batch(
-                    work_items=claimed,
-                    detector=self.object_detector,
-                    image_loader=self.image_loader,
-                    detector_batch_size=self.request.vision_settings.detector_batch_size,
-                    adaptive_batching=self.request.vision_settings.adaptive_batching,
-                    min_detector_batch_size=self.request.vision_settings.min_detector_batch_size,
-                    detection_policy=detection_policy,
-                )
-                part_write, part_written = _write_immutable_parquet_part(
-                    self.storage,
-                    part_uri,
-                    result.frame,
-                    compression=self.request.vision_settings.parquet_compression,
-                )
-                output_uri = part_write.uri
-                self.workstore.register_shard(
-                    job_name=PRODUCTION_JOB_NAME,
-                    registry_version=plan.manifest.taxon_scope.registry_version,
-                    stage=RunStage.DETECT_OBJECTS.value,
-                    run_id=plan.manifest.run_id,
-                    worker_id=self.request.worker_id,
-                    uri=output_uri,
-                    checksum=None,
-                    row_count=part_write.row_count,
-                    byte_count=part_write.byte_count,
-                    metadata={
-                        "claimed_work_items": len(claimed),
-                        "part_id": part_id,
-                        "part_written": part_written,
-                        "parquet_compression": part_write.compression,
-                    },
-                )
-                for item in claimed:
-                    self.workstore.mark_completed(str(item["work_key"]), output_uri=output_uri, checksum=None, row_count=part_write.row_count)
-            except Exception as exc:  # noqa: BLE001 - claimed work must not remain claimed after batch failure.
-                for item in claimed:
-                    self.workstore.mark_failed(str(item.get("work_key") or ""), str(exc) or exc.__class__.__name__)
-                return StageExecutionResult(status=StageStatus.FAILED, message=f"detect_objects_failed: {exc}")
-            return StageExecutionResult(
-                metrics={
-                    "records_seen": result.records_seen,
-                    "images_loaded": result.images_loaded,
-                    "image_failures": result.image_failures,
-                    "detections_written": result.detections_written,
-                    "crops_created": result.crops_created,
-                    "adaptive_batching_enabled": result.adaptive_batching_enabled,
-                    "detector_batch_retries": result.detector_batch_retries,
-                    "detector_batch_size_initial": result.detector_batch_size_initial,
-                    "detector_batch_size_final": result.detector_batch_size_final,
-                    "detector_batch_size_min": result.detector_batch_size_min,
-                    "parquet_batches_written": 1,
-                    "parquet_parts_written": 1 if part_written else 0,
-                    "parquet_parts_reused": 0 if part_written else 1,
-                    "parquet_part_count": 1,
-                    "parquet_part_rows": part_write.row_count,
-                    "parquet_compression": part_write.compression,
-                    "detection_part_count": 1,
-                    "detection_part_rows": part_write.row_count,
-                    "detection_work_items_enqueued": plan_result.enqueued_work_items,
-                    "duplicate_detection_work_items": plan_result.duplicate_work_items,
-                    "work_items_claimed": len(claimed),
-                    "workstore_work_items_completed": len(claimed),
-                    "detection_shards": 1,
-                    "workstore_shard_reused": False,
-                },
-                outputs={"object_detections": output_uri},
-            )
+            return self._run_cloud_rolling_vision_stage(plan)
         missing = _missing_paths(plan.paths.source_records_path)
         if missing:
             return StageExecutionResult(status=StageStatus.FAILED, message="missing_detection_inputs: " + ", ".join(missing))
@@ -849,12 +685,28 @@ class ProductionRunOrchestrator:
             return StageExecutionResult(status=StageStatus.FAILED, message="rolling_vision_runtime_required_for_detect_objects")
 
         taxonomy_store: FiveRankTaxonomyStore | None = None
+        taxonomy_text_embedding_cache = None
         taxonomy_metrics: dict[str, Any] = {}
         if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
             taxonomy_store, taxonomy_status = self._load_valid_hierarchical_taxonomy_store()
             if taxonomy_status.status is StageStatus.FAILED:
                 return taxonomy_status
             taxonomy_metrics = dict(taxonomy_status.metrics)
+            if self.request.taxonomy_text_embedding_cache:
+                try:
+                    taxonomy_text_embedding_cache = self._read_optional_parquet_location(
+                        self.request.taxonomy_text_embedding_cache
+                    )
+                except FileNotFoundError as exc:
+                    return StageExecutionResult(
+                        status=StageStatus.FAILED,
+                        message=f"missing_taxonomy_text_embedding_cache: {exc}",
+                    )
+                taxonomy_metrics["taxonomy_text_embedding_cache_rows"] = taxonomy_text_embedding_cache.height
+                taxonomy_metrics["taxonomy_text_embedding_cache_status"] = "loaded"
+            else:
+                taxonomy_metrics["taxonomy_text_embedding_cache_rows"] = 0
+                taxonomy_metrics["taxonomy_text_embedding_cache_status"] = "direct_prompt_fallback"
 
         from biominer.bioclip.candidate_sets import build_candidate_set_for_taxon_scope
 
@@ -952,43 +804,52 @@ class ProductionRunOrchestrator:
             "detector_batch_retries": 0,
             "bioclip_batch_retries": 0,
         }
-        completed = 0
-        for item in claimed:
+        gate_policy = BioClipGatePolicy(
+            mode=gate_mode,
+            eligible_detector_labels=detection_policy.bioclip_eligible_labels,
+            score_no_detection_whole_image=score_no_detection_whole_image,
+        )
+
+        def detect(item: dict[str, Any]) -> Any:
+            return detect_cloud_rolling_vision_batch(
+                work_item=item,
+                detector=self.object_detector,
+                image_loader=self.image_loader,
+                detection_policy=detection_policy,
+                detector_batch_size=self.request.vision_settings.detector_batch_size,
+                adaptive_detector_batching=self.request.vision_settings.adaptive_batching,
+                min_detector_batch_size=self.request.vision_settings.min_detector_batch_size,
+            )
+
+        def score(detected: Any) -> Any:
+            temp_dir = Path("/tmp") / "biominer_rolling_vision" / plan.manifest.run_id / detected.batch_id
+            return score_cloud_rolling_detection_batch(
+                batch=detected,
+                image_loader=self.image_loader,
+                species_context=target_context,
+                candidate_set=candidate_set,
+                scorer=self.object_scorer,
+                bioclip_gate_policy=gate_policy,
+                temp_dir=temp_dir,
+                crop_padding_ratio=self.request.vision_settings.crop_padding_ratio,
+                crop_target_px=self.request.vision_settings.crop_target_px,
+                bioclip_batch_size=self.request.vision_settings.crop_batch_size,
+                adaptive_bioclip_batching=self.request.vision_settings.adaptive_batching,
+                min_bioclip_batch_size=self.request.vision_settings.min_crop_batch_size,
+                classification_mode=self.request.classification_mode,
+                taxonomy_table_version=_taxonomy_manifest_value(taxonomy_store, "classification_table_version"),
+                taxonomy_prompt_variant_version=_taxonomy_manifest_value(taxonomy_store, "prompt_variant_version"),
+                family_top_k=self.request.family_top_k,
+                species_first_pass_top_k=self.request.species_first_pass_top_k,
+                species_rerank_top_k=self.request.species_rerank_top_k,
+                taxonomy_store=taxonomy_store,
+                taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
+            )
+
+        def commit(item: dict[str, Any], batch_result: Any) -> Any:
             batch_id = rolling_vision_batch_id(item)
             part_id = rolling_vision_part_id(item)
-            temp_dir = Path("/tmp") / "biominer_rolling_vision" / plan.manifest.run_id / batch_id
-            try:
-                batch_result = run_cloud_rolling_vision_batch(
-                    work_item=item,
-                    detector=self.object_detector,
-                    image_loader=self.image_loader,
-                    species_context=target_context,
-                    candidate_set=candidate_set,
-                    scorer=self.object_scorer,
-                    detection_policy=detection_policy,
-                    bioclip_gate_policy=BioClipGatePolicy(
-                        mode=gate_mode,
-                        eligible_detector_labels=detection_policy.bioclip_eligible_labels,
-                        score_no_detection_whole_image=score_no_detection_whole_image,
-                    ),
-                    temp_dir=temp_dir,
-                    detector_batch_size=self.request.vision_settings.detector_batch_size,
-                    adaptive_detector_batching=self.request.vision_settings.adaptive_batching,
-                    min_detector_batch_size=self.request.vision_settings.min_detector_batch_size,
-                    crop_padding_ratio=self.request.vision_settings.crop_padding_ratio,
-                    crop_target_px=self.request.vision_settings.crop_target_px,
-                    bioclip_batch_size=self.request.vision_settings.crop_batch_size,
-                    adaptive_bioclip_batching=self.request.vision_settings.adaptive_batching,
-                    min_bioclip_batch_size=self.request.vision_settings.min_crop_batch_size,
-                    classification_mode=self.request.classification_mode,
-                    taxonomy_table_version=_taxonomy_manifest_value(taxonomy_store, "classification_table_version"),
-                    taxonomy_prompt_variant_version=_taxonomy_manifest_value(taxonomy_store, "prompt_variant_version"),
-                    family_top_k=self.request.family_top_k,
-                    species_first_pass_top_k=self.request.species_first_pass_top_k,
-                    species_rerank_top_k=self.request.species_rerank_top_k,
-                    taxonomy_store=taxonomy_store,
-                )
-                commit_result = commit_rolling_vision_batch_shards(
+            commit_result = commit_rolling_vision_batch_shards(
                     storage=self.storage,
                     workstore=self.workstore,
                     job_name=PRODUCTION_JOB_NAME,
@@ -1007,17 +868,27 @@ class ProductionRunOrchestrator:
                         "source_record_count": batch_result.metrics.get("records_seen"),
                     },
                 )
-                if self.request.vision_settings.delete_images_after_commit:
-                    batch_result.cleanup_after_commit()
-                completed += 1
-                committed_outputs.append(commit_result.output_uris)
-                for key in accumulated_metrics:
-                    accumulated_metrics[key] += int(batch_result.metrics.get(key, 0) or 0)
-                accumulated_metrics["parquet_parts_written"] += commit_result.parts_written
-                accumulated_metrics["parquet_parts_reused"] += commit_result.parts_reused
-            except Exception as exc:  # noqa: BLE001 - claimed batch must not remain claimed after failure.
-                self.workstore.mark_failed(str(item.get("work_key") or ""), str(exc) or exc.__class__.__name__)
-                return StageExecutionResult(status=StageStatus.FAILED, message=f"rolling_vision_failed: {exc}")
+            if self.request.vision_settings.delete_images_after_commit:
+                batch_result.cleanup_after_commit()
+            committed_outputs.append(commit_result.output_uris)
+            for key in accumulated_metrics:
+                accumulated_metrics[key] += int(batch_result.metrics.get(key, 0) or 0)
+            accumulated_metrics["parquet_parts_written"] += commit_result.parts_written
+            accumulated_metrics["parquet_parts_reused"] += commit_result.parts_reused
+            return commit_result
+
+        try:
+            pipeline_result = run_bounded_cloud_rolling_pipeline(claimed, detect=detect, score=score, commit=commit)
+        except RollingVisionPipelineError as exc:
+            completed_keys = {
+                str(item.get("work_key") or "") for item in claimed[: len(committed_outputs)]
+            }
+            for item in claimed:
+                work_key = str(item.get("work_key") or "")
+                if work_key not in completed_keys:
+                    self.workstore.mark_failed(work_key, str(exc) or exc.__class__.__name__)
+            return StageExecutionResult(status=StageStatus.FAILED, message=f"rolling_vision_failed: {exc}")
+        completed = pipeline_result.batches_committed
 
         outputs_by_artifact = {
             artifact: ",".join(output[artifact] for output in committed_outputs if output.get(artifact))
@@ -1032,6 +903,7 @@ class ProductionRunOrchestrator:
                 "rolling_vision_batches_planned": plan_result.batches_planned,
                 "rolling_vision_batches_claimed": len(claimed),
                 "rolling_vision_batches_committed": completed,
+                "rolling_vision_buffer_capacity": pipeline_result.buffer_capacity,
                 "source_record_shards": plan_result.source_shards_seen,
                 "work_items_claimed": len(claimed),
                 "workstore_work_items_completed": completed,
@@ -1059,7 +931,7 @@ class ProductionRunOrchestrator:
         )
 
     def _run_score_bioclip_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
-        if is_cloud_uri(self.request.output_root) and self.request.vision_worker == "rolling":
+        if is_cloud_uri(self.request.output_root):
             if self.storage is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_score_bioclip")
             if self.workstore is None:
@@ -1080,7 +952,7 @@ class ProductionRunOrchestrator:
                     "detector_crops_scored": _mode_row_count(frame, "detector_crop"),
                     "segmentation_crops_scored": _mode_row_count(frame, "detector_crop_segmentation"),
                     "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
-                    "visual_modes_requested": list(_request_bioclip_modes(self.request)),
+                    "visual_modes_requested": [PRODUCTION_VISUAL_MODE],
                     "visual_modes_scored": [mode for mode in OBJECT_VISUAL_MODES if _mode_row_count(frame, mode) > 0],
                     "score_shards": len(score_uris),
                     "score_batches_written": 0,
@@ -1098,201 +970,28 @@ class ProductionRunOrchestrator:
                 outputs={"object_scores": ",".join(score_uris)},
             )
         taxonomy_store: FiveRankTaxonomyStore | None = None
+        taxonomy_text_embedding_cache = None
         taxonomy_metrics: dict[str, Any] = {}
         if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
             taxonomy_store, taxonomy_status = self._load_valid_hierarchical_taxonomy_store()
             if taxonomy_status.status is StageStatus.FAILED:
                 return taxonomy_status
             taxonomy_metrics = dict(taxonomy_status.metrics)
-        if is_cloud_uri(self.request.output_root):
-            if self.storage is None:
-                return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_score_bioclip")
-            if self.workstore is None:
-                return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_score_bioclip")
-            missing: list[str] = []
-            if not _cloud_detection_shard_uris(self.workstore, plan):
-                missing.append("object_detections")
-            if not _cloud_source_records_available(self.storage, self.workstore, plan):
-                missing.append("source_records")
-            if missing:
-                return StageExecutionResult(status=StageStatus.FAILED, message="missing_score_inputs: " + ", ".join(missing))
-            if self.object_scorer is None:
-                return StageExecutionResult(status=StageStatus.FAILED, message="bioclip_runtime_required_for_score_bioclip")
-            from biominer.bioclip.candidate_sets import build_candidate_set_for_taxon_scope
-
-            target_context = plan.manifest.taxon_scope.species_contexts[0]
-            candidate_set = build_candidate_set_for_taxon_scope(
-                plan.manifest.taxon_scope,
-                target_context=target_context,
-                species_candidate_path=None
-                if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-                else self.species_candidate_path,
-                allow_single_target_fixture=self.allow_single_target_fixture,
-            )
-            plan_result = enqueue_bioclip_work_from_detection_shards(
-                storage=self.storage,
-                workstore=self.workstore,
-                job_name=PRODUCTION_JOB_NAME,
-                registry_version=plan.manifest.taxon_scope.registry_version,
-                run_id=plan.manifest.run_id,
-                detection_stage=RunStage.DETECT_OBJECTS.value,
-                score_stage=RunStage.SCORE_BIOCLIP.value,
-                model_id=self.object_scorer.model_id,
-                model_version=self.object_scorer.model_version,
-                model_checkpoint=self.object_scorer.model_checkpoint,
-                candidate_set_id=candidate_set.candidate_set_id,
-                ablation_modes=_request_bioclip_modes(self.request),
-                limit=int(self.request.limits.get("score_work_items") or 0) or None,
-                classification_mode=self.request.classification_mode,
-                taxonomy_table_version=_taxonomy_manifest_value(taxonomy_store, "classification_table_version"),
-                taxonomy_prompt_variant_version=_taxonomy_manifest_value(taxonomy_store, "prompt_variant_version"),
-                family_top_k=self.request.family_top_k,
-                species_first_pass_top_k=self.request.species_first_pass_top_k,
-                species_rerank_top_k=self.request.species_rerank_top_k,
-            )
-            claimed = self.workstore.claim_next_batch(
-                self.request.worker_id,
-                _cloud_bioclip_claim_limit(self.request.limits),
-                job_name=PRODUCTION_JOB_NAME,
-                stage=RunStage.SCORE_BIOCLIP.value,
-                registry_version=plan.manifest.taxon_scope.registry_version,
-            )
-            if not claimed:
-                return StageExecutionResult(
-                    metrics={
-                        "score_work_items_enqueued": plan_result.enqueued_work_items,
-                        "duplicate_score_work_items": plan_result.duplicate_work_items,
-                        "work_items_claimed": 0,
-                        "workstore_work_items_completed": 0,
-                    },
-                    outputs={"workstore_stage": RunStage.SCORE_BIOCLIP.value},
-                )
-            part_id = bioclip_score_batch_id(claimed)
-            part_uri = build_parquet_part_uri(
-                plan.artifact_uris.staging_uri,
-                stage=RunStage.SCORE_BIOCLIP.value,
-                run_id=plan.manifest.run_id,
-                worker_id=self.request.worker_id,
-                part_id=part_id,
-            )
-            existing_part = _registered_cloud_stage_shard_by_uri(self.workstore, plan, RunStage.SCORE_BIOCLIP.value, part_uri)
-            if existing_part is not None and self.storage.exists(part_uri):
-                existing_frame = _read_cloud_part_frame(self.storage, part_uri)
-                row_count = _optional_int(existing_part.get("row_count"))
-                if row_count is None:
-                    row_count = int(existing_frame.height)
-                visual_modes_scored = [mode for mode in OBJECT_VISUAL_MODES if _mode_row_count(existing_frame, mode) > 0]
-                for item in claimed:
-                    self.workstore.mark_completed(str(item["work_key"]), output_uri=part_uri, checksum=None, row_count=row_count)
-                metrics = {
-                    **_visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path),
-                    **taxonomy_metrics,
-                    "records_seen": row_count,
-                    "detections_seen": row_count,
-                    "crops_scored": row_count,
-                    "objects_scored": row_count,
-                    "whole_images_scored": _mode_row_count(existing_frame, "whole_image"),
-                    "detector_crops_scored": _mode_row_count(existing_frame, "detector_crop"),
-                    "segmentation_crops_scored": _mode_row_count(existing_frame, "detector_crop_segmentation"),
-                    "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
-                    "visual_modes_requested": list(_request_bioclip_modes(self.request)),
-                    "visual_modes_scored": visual_modes_scored,
-                    "visual_mode_status_by_mode": {},
-                    "segmentation_status_by_mode": {},
-                    "segmentation_unavailable_count_by_mode": {},
-                    "segmentation_unavailable_reason_by_mode": {},
-                    "segmentation_unavailable_count": 0,
-                    "segmentation_unavailable_reason": None,
-                    "adaptive_batching_enabled": self.request.vision_settings.adaptive_batching,
-                    "bioclip_batch_retries": 0,
-                    "bioclip_batch_size_initial": self.request.vision_settings.crop_batch_size,
-                    "bioclip_batch_size_final": self.request.vision_settings.crop_batch_size,
-                    "bioclip_batch_size_min": self.request.vision_settings.min_crop_batch_size,
-                    "score_work_items_enqueued": plan_result.enqueued_work_items,
-                    "duplicate_score_work_items": plan_result.duplicate_work_items,
-                    "work_items_claimed": len(claimed),
-                    "workstore_work_items_completed": len(claimed),
-                    "score_shards": 1,
-                    "score_batches_written": 0,
-                    "parquet_parts_written": 0,
-                    "parquet_parts_reused": 1,
-                    "parquet_part_count": 1,
-                    "parquet_part_rows": row_count,
-                    "parquet_compression": self.request.vision_settings.parquet_compression,
-                    "score_part_count": 1,
-                    "score_part_rows": row_count,
-                    "workstore_shard_reused": True,
-                    **object_score_audit_metrics(existing_frame),
-                }
-                return StageExecutionResult(metrics=metrics, outputs={"object_scores": part_uri})
-            try:
-                result = run_cloud_bioclip_batch(
-                    work_items=claimed,
-                    species_context=target_context,
-                    candidate_set=candidate_set,
-                    scorer=self.object_scorer,
-                    crop_batch_size=self.request.vision_settings.crop_batch_size,
-                    adaptive_batching=self.request.vision_settings.adaptive_batching,
-                    min_crop_batch_size=self.request.vision_settings.min_crop_batch_size,
-                    classification_mode=self.request.classification_mode,
-                    family_top_k=self.request.family_top_k,
-                    species_first_pass_top_k=self.request.species_first_pass_top_k,
-                    species_rerank_top_k=self.request.species_rerank_top_k,
-                    taxonomy_store=taxonomy_store,
-                )
-                part_write, part_written = _write_immutable_parquet_part(
-                    self.storage,
-                    part_uri,
-                    result.frame,
-                    compression=self.request.vision_settings.parquet_compression,
-                )
-                output_uri = part_write.uri
-                self.workstore.register_shard(
-                    job_name=PRODUCTION_JOB_NAME,
-                    registry_version=plan.manifest.taxon_scope.registry_version,
-                    stage=RunStage.SCORE_BIOCLIP.value,
-                    run_id=plan.manifest.run_id,
-                    worker_id=self.request.worker_id,
-                    uri=output_uri,
-                    checksum=None,
-                    row_count=part_write.row_count,
-                    byte_count=part_write.byte_count,
-                    metadata={
-                        "claimed_work_items": len(claimed),
-                        "candidate_set_id": candidate_set.candidate_set_id,
-                        "part_id": part_id,
-                        "part_written": part_written,
-                        "parquet_compression": part_write.compression,
-                    },
-                )
-                for item in claimed:
-                    self.workstore.mark_completed(str(item["work_key"]), output_uri=output_uri, checksum=None, row_count=part_write.row_count)
-            except Exception as exc:  # noqa: BLE001 - claimed work must not remain claimed after batch failure.
-                for item in claimed:
-                    self.workstore.mark_failed(str(item.get("work_key") or ""), str(exc) or exc.__class__.__name__)
-                return StageExecutionResult(status=StageStatus.FAILED, message=f"score_bioclip_failed: {exc}")
-            metrics = _cloud_bioclip_metrics(result)
-            metrics.update(
-                {
-                    **_visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path),
-                    **taxonomy_metrics,
-                    "score_work_items_enqueued": plan_result.enqueued_work_items,
-                    "duplicate_score_work_items": plan_result.duplicate_work_items,
-                    "work_items_claimed": len(claimed),
-                    "workstore_work_items_completed": len(claimed),
-                    "score_shards": 1,
-                    "score_batches_written": 1,
-                    "parquet_parts_written": 1 if part_written else 0,
-                    "parquet_parts_reused": 0 if part_written else 1,
-                    "parquet_part_count": 1,
-                    "parquet_part_rows": part_write.row_count,
-                    "parquet_compression": part_write.compression,
-                    "score_part_count": 1,
-                    "score_part_rows": part_write.row_count,
-                    "workstore_shard_reused": False,
-                }
-            )
-            return StageExecutionResult(metrics=metrics, outputs={"object_scores": output_uri})
+            if self.request.taxonomy_text_embedding_cache:
+                try:
+                    taxonomy_text_embedding_cache = self._read_optional_parquet_location(
+                        self.request.taxonomy_text_embedding_cache
+                    )
+                except FileNotFoundError as exc:
+                    return StageExecutionResult(
+                        status=StageStatus.FAILED,
+                        message=f"missing_taxonomy_text_embedding_cache: {exc}",
+                    )
+                taxonomy_metrics["taxonomy_text_embedding_cache_rows"] = taxonomy_text_embedding_cache.height
+                taxonomy_metrics["taxonomy_text_embedding_cache_status"] = "loaded"
+            else:
+                taxonomy_metrics["taxonomy_text_embedding_cache_rows"] = 0
+                taxonomy_metrics["taxonomy_text_embedding_cache_status"] = "direct_prompt_fallback"
         missing = _missing_paths(plan.paths.source_records_path, plan.paths.object_detections_path)
         if missing:
             return StageExecutionResult(
@@ -1323,14 +1022,13 @@ class ProductionRunOrchestrator:
             allow_single_target_fixture=self.allow_single_target_fixture,
         )
         mode_output_dir = plan.paths.staging_dir / "object_bioclip_scores_by_mode"
-        frame, metrics = _score_object_visual_modes(
+        frame, metrics = _score_primary_visual_mode(
             canonical_records=canonical,
             detections=detections,
             species_context=target_context,
             candidate_set=candidate_set,
             scorer=self.object_scorer,
             output_dir=mode_output_dir,
-            modes=_request_bioclip_modes(self.request),
             bioclip_batch_size=self.request.vision_settings.crop_batch_size,
             adaptive_batching=self.request.vision_settings.adaptive_batching,
             min_bioclip_batch_size=self.request.vision_settings.min_crop_batch_size,
@@ -1339,6 +1037,7 @@ class ProductionRunOrchestrator:
             species_first_pass_top_k=self.request.species_first_pass_top_k,
             species_rerank_top_k=self.request.species_rerank_top_k,
             taxonomy_store=taxonomy_store,
+            taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
         )
         write_parquet(frame, plan.paths.object_scores_path)
         metrics.update(_visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path))
@@ -1442,6 +1141,20 @@ class ProductionRunOrchestrator:
         v2_root = Path(location).parent if Path(location).suffix == ".parquet" else Path(location)
         return FiveRankTaxonomyStore.read(v2_root)
 
+    def _read_optional_parquet_location(self, location: str | Path) -> Any:
+        if is_cloud_uri(str(location)):
+            if self.storage is None:
+                raise ValueError("storage_backend_required_for_cloud_parquet")
+            if not self.storage.exists(str(location)):
+                raise FileNotFoundError(str(location))
+            return self.storage.read_parquet(str(location))
+        import polars as pl
+
+        path = Path(location)
+        if not path.exists():
+            raise FileNotFoundError(path)
+        return pl.read_parquet(path)
+
     def _registry_query_definitions_source(self) -> tuple[Any, str, Path | None]:
         if self._registry_is_cloud():
             uri = self._registry_artifact_uri("flickr_query_definitions.parquet")
@@ -1538,21 +1251,20 @@ class ProductionRunOrchestrator:
                 return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_join_evidence")
             if self.workstore is None:
                 return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_join_evidence")
-            if self.request.vision_worker == "rolling":
-                joined_uris = _cloud_stage_shard_uris(self.workstore, plan, RunStage.JOIN_EVIDENCE.value)
-                if joined_uris:
-                    joined = _read_cloud_stage_frame(self.storage, self.workstore, plan, RunStage.JOIN_EVIDENCE.value)
-                    return StageExecutionResult(
-                        metrics={
-                            "object_evidence_rows": joined.height,
-                            "object_occurrence_bin_counts": _value_counts(joined, "occurrence_bin"),
-                            "object_evidence_shards": len(joined_uris),
-                            "parquet_parts_reused": len(joined_uris),
-                            "vision_worker": "rolling",
-                            "rolling_vision_shards_reused": True,
-                        },
-                        outputs={"object_evidence": ",".join(joined_uris)},
-                    )
+            joined_uris = _cloud_stage_shard_uris(self.workstore, plan, RunStage.JOIN_EVIDENCE.value)
+            if joined_uris:
+                joined = _read_cloud_stage_frame(self.storage, self.workstore, plan, RunStage.JOIN_EVIDENCE.value)
+                return StageExecutionResult(
+                    metrics={
+                        "object_evidence_rows": joined.height,
+                        "object_occurrence_bin_counts": _value_counts(joined, "occurrence_bin"),
+                        "object_evidence_shards": len(joined_uris),
+                        "parquet_parts_reused": len(joined_uris),
+                        "vision_worker": "rolling",
+                        "rolling_vision_shards_reused": True,
+                    },
+                    outputs={"object_evidence": ",".join(joined_uris)},
+                )
             missing = []
             if not _cloud_stage_shard_uris(self.workstore, plan, RunStage.POLL_FLICKR.value):
                 missing.append("source_records")
@@ -1647,7 +1359,7 @@ class ProductionRunOrchestrator:
             outputs: dict[str, str] = {}
             summary_result = None
             existing_photo_summary_uris = _cloud_stage_shard_uris(self.workstore, plan, "photo_summary")
-            should_materialize_summary = not (self.request.vision_worker == "rolling" and existing_photo_summary_uris)
+            should_materialize_summary = not existing_photo_summary_uris
             if should_materialize_summary and _cloud_stage_shard_uris(self.workstore, plan, RunStage.JOIN_EVIDENCE.value):
                 summary_result = summarize_photo_evidence_from_cloud_shards(
                     storage=self.storage,
@@ -1898,25 +1610,11 @@ def _cloud_poll_claim_limit(limits: dict[str, int]) -> int:
     return max(1, min(value for value in candidates if value > 0))
 
 
-def _cloud_detection_claim_limit(limits: dict[str, int]) -> int:
-    records_limit = int(limits.get("records") or 0)
-    worker_limit = int(limits.get("workers") or 0)
-    candidates = [value for value in (records_limit, worker_limit) if value > 0]
-    return min(candidates) if candidates else 1
-
-
 def _cloud_rolling_vision_claim_limit(limits: dict[str, int]) -> int:
     batch_limit = int(limits.get("rolling_vision_batches") or 0)
     worker_limit = int(limits.get("workers") or 0)
     candidates = [value for value in (batch_limit, worker_limit) if value > 0]
-    return min(candidates) if candidates else 1
-
-
-def _cloud_bioclip_claim_limit(limits: dict[str, int]) -> int:
-    score_limit = int(limits.get("score_work_items") or 0)
-    worker_limit = int(limits.get("workers") or 0)
-    candidates = [value for value in (score_limit, worker_limit) if value > 0]
-    return min(candidates) if candidates else 100
+    return min(candidates) if candidates else 4
 
 
 def _cloud_source_records_available(storage: CloudStorage, workstore: WorkStore | None, plan: ProductionRunPlan) -> bool:
@@ -1925,24 +1623,8 @@ def _cloud_source_records_available(storage: CloudStorage, workstore: WorkStore 
     return bool(_cloud_source_record_shard_uris(workstore, plan))
 
 
-def _read_cloud_source_records(storage: CloudStorage, workstore: WorkStore | None, plan: ProductionRunPlan) -> Any:
-    if storage.exists(plan.artifact_uris.source_records_uri):
-        return storage.scan_parquet(plan.artifact_uris.source_records_uri).collect(engine="streaming")
-    shard_uris = _cloud_source_record_shard_uris(workstore, plan)
-    if not shard_uris:
-        raise FileNotFoundError("source_records")
-    import polars as pl
-
-    scans = [storage.scan_parquet(uri) for uri in shard_uris]
-    return pl.concat(scans, how="diagonal_relaxed").collect(engine="streaming") if scans else pl.DataFrame()
-
-
 def _cloud_source_record_shard_uris(workstore: WorkStore | None, plan: ProductionRunPlan) -> list[str]:
     return _cloud_stage_shard_uris(workstore, plan, RunStage.POLL_FLICKR.value)
-
-
-def _cloud_detection_shard_uris(workstore: WorkStore | None, plan: ProductionRunPlan) -> list[str]:
-    return _cloud_stage_shard_uris(workstore, plan, RunStage.DETECT_OBJECTS.value)
 
 
 def _cloud_stage_shard_uris(workstore: WorkStore | None, plan: ProductionRunPlan, stage: str) -> list[str]:
@@ -1955,24 +1637,6 @@ def _cloud_stage_shard_uris(workstore: WorkStore | None, plan: ProductionRunPlan
         run_id=plan.manifest.run_id,
     )
     return [str(shard["uri"]) for shard in shards]
-
-
-def _registered_cloud_stage_shard_by_uri(
-    workstore: WorkStore,
-    plan: ProductionRunPlan,
-    stage: str,
-    uri: str,
-) -> dict[str, Any] | None:
-    shards = workstore.list_committed_shards(
-        job_name=PRODUCTION_JOB_NAME,
-        stage=stage,
-        registry_version=plan.manifest.taxon_scope.registry_version,
-        run_id=plan.manifest.run_id,
-    )
-    for shard in shards:
-        if str(shard.get("uri") or "") == uri:
-            return shard
-    return None
 
 
 def _optional_int(value: Any) -> int | None:
@@ -1992,65 +1656,10 @@ def _read_cloud_stage_frame(storage: CloudStorage, workstore: WorkStore, plan: P
     return pl.concat(scans, how="diagonal_relaxed").collect(engine="streaming") if scans else pl.DataFrame()
 
 
-def _read_cloud_part_frame(storage: CloudStorage, uri: str) -> Any:
-    return storage.scan_parquet(uri).collect(engine="streaming")
-
-
 def _read_optional_parquet(path: Path) -> Any:
     import polars as pl
 
     return pl.read_parquet(path) if path.exists() else pl.DataFrame()
-
-
-def _write_immutable_parquet_part(
-    storage: CloudStorage,
-    uri: str,
-    frame: Any,
-    *,
-    compression: str | None = DEFAULT_PARQUET_COMPRESSION,
-) -> tuple[ParquetPartWrite, bool]:
-    try:
-        return storage.write_parquet_part(uri, frame, compression=compression, overwrite=False), True
-    except FileExistsError:
-        if not storage.exists(uri):
-            raise
-        return (
-            ParquetPartWrite(
-                uri=uri,
-                row_count=frame.height,
-                byte_count=None,
-                compression=compression,
-            ),
-            False,
-        )
-
-
-def _cloud_bioclip_metrics(result: Any) -> dict[str, Any]:
-    frame = result.frame
-    return {
-        "records_seen": result.detections_seen,
-        "detections_seen": result.detections_seen,
-        "crops_scored": result.crops_scored,
-        "objects_scored": result.crops_scored,
-        "whole_images_scored": _mode_row_count(frame, "whole_image"),
-        "detector_crops_scored": _mode_row_count(frame, "detector_crop"),
-        "segmentation_crops_scored": _mode_row_count(frame, "detector_crop_segmentation"),
-        "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
-        "visual_modes_requested": list(result.visual_modes_requested),
-        "visual_modes_scored": list(result.visual_modes_scored),
-        "visual_mode_status_by_mode": dict(result.visual_mode_status_by_mode),
-        "segmentation_status_by_mode": dict(result.segmentation_status_by_mode),
-        "segmentation_unavailable_count_by_mode": dict(result.segmentation_unavailable_count_by_mode),
-        "segmentation_unavailable_reason_by_mode": dict(result.segmentation_unavailable_reason_by_mode),
-        "segmentation_unavailable_count": result.segmentation_unavailable_count,
-        "segmentation_unavailable_reason": result.segmentation_unavailable_reason,
-        "adaptive_batching_enabled": result.adaptive_batching_enabled,
-        "bioclip_batch_retries": result.bioclip_batch_retries,
-        "bioclip_batch_size_initial": result.bioclip_batch_size_initial,
-        "bioclip_batch_size_final": result.bioclip_batch_size_final,
-        "bioclip_batch_size_min": result.bioclip_batch_size_min,
-        **object_score_audit_metrics(frame),
-    }
 
 
 def _parquet_row_count(path: Path) -> int:
@@ -2111,18 +1720,7 @@ def _missing_uris(storage: CloudStorage, *uris: str) -> list[str]:
     return [uri for uri in uris if not storage.exists(uri)]
 
 
-def _request_bioclip_modes(request: ProductionRunRequest) -> tuple[Any, ...]:
-    raw_modes = request.bioclip_ablation_modes or (request.bioclip_ablation_mode,)
-    modes = tuple(str(mode) for mode in raw_modes if str(mode).strip())
-    if not modes:
-        modes = (request.bioclip_ablation_mode,)
-    unsupported = [mode for mode in modes if mode not in OBJECT_VISUAL_MODES]
-    if unsupported:
-        raise ValueError("unsupported BioCLIP visual mode(s): " + ", ".join(unsupported))
-    return modes
-
-
-def _score_object_visual_modes(
+def _score_primary_visual_mode(
     *,
     canonical_records: Any,
     detections: Any,
@@ -2130,7 +1728,6 @@ def _score_object_visual_modes(
     candidate_set: Any,
     scorer: Any,
     output_dir: Path,
-    modes: tuple[Any, ...],
     bioclip_batch_size: int = 24,
     adaptive_batching: bool = False,
     min_bioclip_batch_size: int = 1,
@@ -2139,18 +1736,18 @@ def _score_object_visual_modes(
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
     taxonomy_store: FiveRankTaxonomyStore | None = None,
+    taxonomy_text_embedding_cache: Any | None = None,
 ) -> tuple[Any, dict[str, Any]]:
-    import polars as pl
-    from biominer.bioclip.ablation import run_object_ablations
+    from biominer.bioclip.object_runner import screen_object_detections
 
-    report = run_object_ablations(
+    result = screen_object_detections(
         canonical_records=canonical_records,
         detections=detections,
         species_context=species_context,
         candidate_set=candidate_set,
         scorer=scorer,
-        output_dir=output_dir,
-        modes=modes,  # type: ignore[arg-type]
+        output_path=output_dir / "object_bioclip_scores_detector_crop.parquet",
+        ablation_mode=PRODUCTION_VISUAL_MODE,
         bioclip_batch_size=bioclip_batch_size,
         adaptive_batching=adaptive_batching,
         min_bioclip_batch_size=min_bioclip_batch_size,
@@ -2159,34 +1756,33 @@ def _score_object_visual_modes(
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
         taxonomy_store=taxonomy_store,
+        taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
     )
-    frames = [
-        pl.read_parquet(path)
-        for mode in report.modes
-        if (path := report.output_dir / f"object_bioclip_scores_{mode}.parquet").exists()
-    ]
-    frame = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
-    return frame, _object_ablation_metrics(report.report, frame=frame)
-
-
-def _object_ablation_metrics(report: dict[str, Any], *, frame: Any) -> dict[str, Any]:
-    return {
-        "records_seen": int(report.get("records_seen") or 0),
-        "detections_seen": int(report.get("detections_seen") or 0),
-        "crops_scored": int(report.get("crops_scored") or 0),
-        "objects_scored": int(report.get("crops_scored") or 0),
-        "whole_images_scored": _mode_row_count(frame, "whole_image"),
-        "detector_crops_scored": _mode_row_count(frame, "detector_crop"),
-        "segmentation_crops_scored": _mode_row_count(frame, "detector_crop_segmentation"),
-        "score_batches_written": int(report.get("score_batches_written") or 0),
-        "primary_visual_classifier": report.get("primary_visual_classifier"),
-        "visual_modes_requested": list(report.get("visual_modes_requested") or []),
-        "visual_modes_scored": list(report.get("visual_modes_scored") or []),
-        "visual_mode_status_by_mode": dict(report.get("visual_mode_status_by_mode") or {}),
-        "segmentation_status_by_mode": dict(report.get("segmentation_status_by_mode") or {}),
-        "segmentation_unavailable_count_by_mode": dict(report.get("segmentation_unavailable_count_by_mode") or {}),
-        "segmentation_unavailable_reason_by_mode": dict(report.get("segmentation_unavailable_reason_by_mode") or {}),
-        "segmentation_unavailable_count": sum(int(value or 0) for value in dict(report.get("segmentation_unavailable_count_by_mode") or {}).values()),
+    frame = result.frame
+    scored = [PRODUCTION_VISUAL_MODE] if result.crops_scored else []
+    return frame, {
+        "records_seen": result.records_seen,
+        "detections_seen": result.detections_seen,
+        "crops_scored": result.crops_scored,
+        "objects_scored": result.crops_scored,
+        "whole_images_scored": 0,
+        "detector_crops_scored": result.crops_scored,
+        "segmentation_crops_scored": 0,
+        "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
+        "visual_modes_requested": [PRODUCTION_VISUAL_MODE],
+        "visual_modes_scored": scored,
+        "visual_mode_status_by_mode": {PRODUCTION_VISUAL_MODE: result.visual_mode_status},
+        "segmentation_status_by_mode": {},
+        "segmentation_unavailable_count_by_mode": {},
+        "segmentation_unavailable_reason_by_mode": {},
+        "segmentation_unavailable_count": 0,
+        "segmentation_unavailable_reason": None,
+        "adaptive_batching_enabled": result.adaptive_batching_enabled,
+        "bioclip_batch_retries": result.bioclip_batch_retries,
+        "bioclip_batch_size_initial": result.bioclip_batch_size_initial,
+        "bioclip_batch_size_final": result.bioclip_batch_size_final,
+        "bioclip_batch_size_min": result.bioclip_batch_size_min,
+        "score_batches_written": result.score_batches_written,
         **object_score_audit_metrics(frame),
     }
 

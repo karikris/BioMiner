@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from concurrent.futures import Future, ThreadPoolExecutor
 import hashlib
 import json
 from pathlib import Path
@@ -21,7 +22,7 @@ from biominer.bioclip.classification_modes import (
 from biominer.bioclip.cloud_work import bioclip_score_work_item, run_cloud_bioclip_batch
 from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
 from biominer.bioclip.object_runner import ObjectBioClipScorer
-from biominer.detection.cloud_work import detection_work_item, run_cloud_detection_batch
+from biominer.detection.cloud_work import CloudDetectionBatchResult, detection_work_item, run_cloud_detection_batch
 from biominer.detection.detector_base import ObjectDetector
 from biominer.detection.pipeline import ImageLoader
 from biominer.detection.policy import DetectionPolicy
@@ -81,11 +82,39 @@ class CloudRollingVisionBatchResult:
 
 
 @dataclass(frozen=True)
+class CloudRollingDetectionBatch:
+    work_item: dict[str, Any]
+    payload: dict[str, Any]
+    batch_id: str
+    part_id: str
+    canonical: pl.DataFrame
+    manifest: pl.DataFrame
+    detection_result: CloudDetectionBatchResult
+
+
+@dataclass(frozen=True)
 class RollingVisionShardCommitResult:
     output_uris: dict[str, str]
     rows_by_artifact: dict[str, int]
     parts_written: int
     parts_reused: int
+
+
+@dataclass(frozen=True)
+class RollingVisionPipelineResult:
+    commit_results: tuple[Any, ...]
+    batches_started: int
+    batches_committed: int
+    buffer_capacity: int = 1
+
+
+class RollingVisionPipelineError(RuntimeError):
+    def __init__(self, *, phase: str, work_item: dict[str, Any], cause: BaseException) -> None:
+        self.phase = phase
+        self.work_item = work_item
+        self.cause = cause
+        work_key = str(work_item.get("work_key") or "unknown")
+        super().__init__(f"{phase} failed for {work_key}: {cause}")
 
 
 def enqueue_rolling_vision_work_from_source_shards(
@@ -280,33 +309,16 @@ def rolling_vision_settings_key(
     }
 
 
-def run_cloud_rolling_vision_batch(
+def detect_cloud_rolling_vision_batch(
     *,
     work_item: dict[str, Any],
     detector: ObjectDetector,
     image_loader: ImageLoader,
-    species_context: SpeciesContext,
-    candidate_set: CandidateSet,
-    scorer: ObjectBioClipScorer,
     detection_policy: DetectionPolicy,
-    bioclip_gate_policy: BioClipGatePolicy,
-    temp_dir: str | Path,
     detector_batch_size: int = 16,
     adaptive_detector_batching: bool = False,
     min_detector_batch_size: int = 1,
-    crop_padding_ratio: float = 0.12,
-    crop_target_px: int = 336,
-    bioclip_batch_size: int = 24,
-    adaptive_bioclip_batching: bool = False,
-    min_bioclip_batch_size: int = 1,
-    classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
-    taxonomy_table_version: str | None = None,
-    taxonomy_prompt_variant_version: str | None = None,
-    family_top_k: int = DEFAULT_FAMILY_TOP_K,
-    species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
-    species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
-    taxonomy_store: FiveRankTaxonomyStore | None = None,
-) -> CloudRollingVisionBatchResult:
+) -> CloudRollingDetectionBatch:
     payload = _work_payload(work_item)
     records = [dict(row) for row in payload.get("source_records") or [] if isinstance(row, dict)]
     batch_id = str(payload.get("batch_id") or "")
@@ -341,16 +353,50 @@ def run_cloud_rolling_vision_batch(
         adaptive_batching=adaptive_detector_batching,
         min_detector_batch_size=min_detector_batch_size,
     )
+    return CloudRollingDetectionBatch(
+        work_item=work_item,
+        payload=payload,
+        batch_id=batch_id,
+        part_id=part_id,
+        canonical=canonical,
+        manifest=manifest,
+        detection_result=detection_result,
+    )
+
+
+def score_cloud_rolling_detection_batch(
+    *,
+    batch: CloudRollingDetectionBatch,
+    image_loader: ImageLoader,
+    species_context: SpeciesContext,
+    candidate_set: CandidateSet,
+    scorer: ObjectBioClipScorer,
+    bioclip_gate_policy: BioClipGatePolicy,
+    temp_dir: str | Path,
+    crop_padding_ratio: float = 0.12,
+    crop_target_px: int = 336,
+    bioclip_batch_size: int = 24,
+    adaptive_bioclip_batching: bool = False,
+    min_bioclip_batch_size: int = 1,
+    classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
+    taxonomy_table_version: str | None = None,
+    taxonomy_prompt_variant_version: str | None = None,
+    family_top_k: int = DEFAULT_FAMILY_TOP_K,
+    species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
+    taxonomy_store: FiveRankTaxonomyStore | None = None,
+    taxonomy_text_embedding_cache: pl.DataFrame | None = None,
+) -> CloudRollingVisionBatchResult:
     score_inputs = materialize_bioclip_score_inputs(
-        canonical_records=canonical,
-        detections=detection_result.frame,
+        canonical_records=batch.canonical,
+        detections=batch.detection_result.frame,
         image_loader=image_loader,
         temp_dir=temp_dir,
         gate_policy=bioclip_gate_policy,
         crop_padding_ratio=crop_padding_ratio,
         crop_target_px=crop_target_px,
-        batch_id=batch_id,
-        part_id=part_id,
+        batch_id=batch.batch_id,
+        part_id=batch.part_id,
     )
     model = {
         "model_id": scorer.model_id,
@@ -359,11 +405,11 @@ def run_cloud_rolling_vision_batch(
     }
     score_work_items = [
         {
-            "work_key": f"{str(work_item.get('work_key') or batch_id)}:score:{index:06d}",
+            "work_key": f"{str(batch.work_item.get('work_key') or batch.batch_id)}:score:{index:06d}",
             "payload": bioclip_score_work_item(
                 dict(item),
-                run_id=str(payload.get("run_id") or ""),
-                detection_shard_uri=f"rolling://{batch_id}/object_detections/{part_id}",
+                run_id=str(batch.payload.get("run_id") or ""),
+                detection_shard_uri=f"rolling://{batch.batch_id}/object_detections/{batch.part_id}",
                 model=model,
                 candidate_set_id=candidate_set.candidate_set_id,
                 ablation_mode=str(item.get("visual_input_kind") or item.get("ablation_mode") or "detector_crop"),
@@ -390,30 +436,31 @@ def run_cloud_rolling_vision_batch(
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
         taxonomy_store=taxonomy_store,
+        taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
     )
     joined, summary = build_object_evidence_frames(
-        canonical_source_records=canonical,
-        object_detections=detection_result.frame,
+        canonical_source_records=batch.canonical,
+        object_detections=batch.detection_result.frame,
         object_scores=score_result.frame,
         species_context=species_context,
     )
     return CloudRollingVisionBatchResult(
-        batch_id=batch_id,
-        part_id=part_id,
+        batch_id=batch.batch_id,
+        part_id=batch.part_id,
         frames={
-            "image_batch_manifest": manifest,
-            "object_detections": detection_result.frame,
+            "image_batch_manifest": batch.manifest,
+            "object_detections": batch.detection_result.frame,
             "bioclip_score_inputs": score_inputs.frame,
             "object_bioclip_scores": score_result.frame,
             "object_evidence_joined": joined,
             "photo_evidence_summary": summary,
         },
         metrics={
-            "records_seen": detection_result.records_seen,
-            "images_loaded": detection_result.images_loaded,
-            "image_failures": detection_result.image_failures,
-            "detections_written": detection_result.detections_written,
-            "crops_created": detection_result.crops_created,
+            "records_seen": batch.detection_result.records_seen,
+            "images_loaded": batch.detection_result.images_loaded,
+            "image_failures": batch.detection_result.image_failures,
+            "detections_written": batch.detection_result.detections_written,
+            "crops_created": batch.detection_result.crops_created,
             "score_inputs": score_inputs.frame.height,
             "objects_scored": score_result.crops_scored,
             "whole_images_scored": _mode_row_count(score_result.frame, "whole_image"),
@@ -421,13 +468,126 @@ def run_cloud_rolling_vision_batch(
             "segmentation_crops_scored": _mode_row_count(score_result.frame, "detector_crop_segmentation"),
             "object_evidence_rows": joined.height,
             "photo_summary_rows": summary.height,
-            "detector_batch_retries": detection_result.detector_batch_retries,
+            "detector_batch_retries": batch.detection_result.detector_batch_retries,
             "bioclip_batch_retries": score_result.bioclip_batch_retries,
         },
         materialized_score_inputs=score_inputs,
     )
 
 
+def run_cloud_rolling_vision_batch(
+    *,
+    work_item: dict[str, Any],
+    detector: ObjectDetector,
+    image_loader: ImageLoader,
+    species_context: SpeciesContext,
+    candidate_set: CandidateSet,
+    scorer: ObjectBioClipScorer,
+    detection_policy: DetectionPolicy,
+    bioclip_gate_policy: BioClipGatePolicy,
+    temp_dir: str | Path,
+    detector_batch_size: int = 16,
+    adaptive_detector_batching: bool = False,
+    min_detector_batch_size: int = 1,
+    crop_padding_ratio: float = 0.12,
+    crop_target_px: int = 336,
+    bioclip_batch_size: int = 24,
+    adaptive_bioclip_batching: bool = False,
+    min_bioclip_batch_size: int = 1,
+    classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
+    taxonomy_table_version: str | None = None,
+    taxonomy_prompt_variant_version: str | None = None,
+    family_top_k: int = DEFAULT_FAMILY_TOP_K,
+    species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
+    taxonomy_store: FiveRankTaxonomyStore | None = None,
+    taxonomy_text_embedding_cache: pl.DataFrame | None = None,
+) -> CloudRollingVisionBatchResult:
+    detected = detect_cloud_rolling_vision_batch(
+        work_item=work_item,
+        detector=detector,
+        image_loader=image_loader,
+        detection_policy=detection_policy,
+        detector_batch_size=detector_batch_size,
+        adaptive_detector_batching=adaptive_detector_batching,
+        min_detector_batch_size=min_detector_batch_size,
+    )
+    return score_cloud_rolling_detection_batch(
+        batch=detected,
+        image_loader=image_loader,
+        species_context=species_context,
+        candidate_set=candidate_set,
+        scorer=scorer,
+        bioclip_gate_policy=bioclip_gate_policy,
+        temp_dir=temp_dir,
+        crop_padding_ratio=crop_padding_ratio,
+        crop_target_px=crop_target_px,
+        bioclip_batch_size=bioclip_batch_size,
+        adaptive_bioclip_batching=adaptive_bioclip_batching,
+        min_bioclip_batch_size=min_bioclip_batch_size,
+        classification_mode=classification_mode,
+        taxonomy_table_version=taxonomy_table_version,
+        taxonomy_prompt_variant_version=taxonomy_prompt_variant_version,
+        family_top_k=family_top_k,
+        species_first_pass_top_k=species_first_pass_top_k,
+        species_rerank_top_k=species_rerank_top_k,
+        taxonomy_store=taxonomy_store,
+        taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
+    )
+
+
+def run_bounded_cloud_rolling_pipeline(
+    work_items: list[dict[str, Any]],
+    *,
+    detect: Any,
+    score: Any,
+    commit: Any,
+) -> RollingVisionPipelineResult:
+    """Run one-slot YOLO -> BioCLIP -> commit buffers with ordered main-thread writes.
+
+    Detection of batch N+1 overlaps scoring of batch N. Only one completed
+    detection batch and one scored batch can be resident beyond the active
+    calls, and ``commit`` always runs on the caller thread in input order.
+    """
+    items = list(work_items)
+    if not items:
+        return RollingVisionPipelineResult(commit_results=(), batches_started=0, batches_committed=0)
+
+    committed: list[Any] = []
+    detection_future: Future[Any] | None = None
+    detection_item: dict[str, Any] | None = None
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="biominer-yolo") as detector_pool, ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="biominer-bioclip",
+    ) as scorer_pool:
+        detection_item = items[0]
+        detection_future = detector_pool.submit(detect, detection_item)
+        for index, item in enumerate(items):
+            try:
+                detected = detection_future.result()
+            except BaseException as exc:
+                raise RollingVisionPipelineError(phase="detect", work_item=detection_item or item, cause=exc) from exc
+
+            next_item = items[index + 1] if index + 1 < len(items) else None
+            if next_item is not None:
+                detection_item = next_item
+                detection_future = detector_pool.submit(detect, next_item)
+
+            score_future = scorer_pool.submit(score, detected)
+            try:
+                scored = score_future.result()
+            except BaseException as exc:
+                raise RollingVisionPipelineError(phase="score", work_item=item, cause=exc) from exc
+            try:
+                committed.append(commit(item, scored))
+            except BaseException as exc:
+                raise RollingVisionPipelineError(phase="commit", work_item=item, cause=exc) from exc
+
+    return RollingVisionPipelineResult(
+        commit_results=tuple(committed),
+        batches_started=len(items),
+        batches_committed=len(committed),
+    )
 def commit_rolling_vision_batch_shards(
     *,
     storage: CloudStorage,
@@ -593,19 +753,25 @@ def _mode_row_count(frame: pl.DataFrame, mode: str) -> int:
 
 
 __all__ = [
+    "CloudRollingDetectionBatch",
     "CloudRollingVisionBatchResult",
     "ROLLING_VISION_ARTIFACT_ORDER",
     "ROLLING_VISION_ARTIFACT_STAGES",
     "ROLLING_VISION_STORAGE_STAGES",
     "ROLLING_VISION_WORK_STAGE",
     "RollingVisionShardCommitResult",
+    "RollingVisionPipelineError",
+    "RollingVisionPipelineResult",
     "RollingVisionWorkPlanResult",
     "cleanup_rolling_batch_temp_dir",
     "commit_rolling_vision_batch_shards",
+    "detect_cloud_rolling_vision_batch",
     "enqueue_rolling_vision_work_from_source_shards",
     "rolling_vision_batch_id",
     "rolling_vision_part_id",
     "rolling_vision_settings_key",
     "rolling_vision_work_item",
     "run_cloud_rolling_vision_batch",
+    "run_bounded_cloud_rolling_pipeline",
+    "score_cloud_rolling_detection_batch",
 ]
