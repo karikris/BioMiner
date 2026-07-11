@@ -72,6 +72,26 @@ def test_local_storage_writes_reads_and_scans_parquet_shards(tmp_path) -> None:
     assert lazy.collect().to_dicts() == frame.to_dicts()
 
 
+def test_local_storage_iterates_parquet_in_bounded_ordered_batches(tmp_path) -> None:
+    storage = LocalStorageBackend()
+    target = tmp_path / "ordered.parquet"
+    storage.write_parquet_shard(target, pl.DataFrame({"row_id": [0, 1, 2, 3, 4]}))
+
+    batches = list(storage.iter_parquet_batches(target, batch_size=2))
+
+    assert [batch.height for batch in batches] == [2, 2, 1]
+    assert [row_id for batch in batches for row_id in batch["row_id"].to_list()] == [0, 1, 2, 3, 4]
+
+
+def test_local_storage_rejects_invalid_parquet_batch_size(tmp_path) -> None:
+    storage = LocalStorageBackend()
+    target = tmp_path / "ordered.parquet"
+    storage.write_parquet_shard(target, pl.DataFrame({"row_id": [0]}))
+
+    with pytest.raises(ValueError, match="batch_size must be positive"):
+        list(storage.iter_parquet_batches(target, batch_size=0))
+
+
 def test_local_storage_writes_parquet_batches(tmp_path) -> None:
     storage = LocalStorageBackend()
     target = tmp_path / "evidence" / "stage=poll_once" / "batch=000001.parquet"

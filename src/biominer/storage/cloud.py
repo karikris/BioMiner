@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Any, Protocol, runtime_checkable
 
 import polars as pl
 
-from biominer.storage.parquet import DEFAULT_PARQUET_COMPRESSION, ParquetPartWrite
+from biominer.storage.parquet import DEFAULT_PARQUET_COMPRESSION, DEFAULT_PARQUET_READ_BATCH_SIZE, ParquetPartWrite
 
 
 @runtime_checkable
@@ -14,6 +14,14 @@ class CloudStorage(Protocol):
         ...
 
     def scan_parquet(self, uri: str) -> pl.LazyFrame:
+        ...
+
+    def iter_parquet_batches(
+        self,
+        uri: str,
+        *,
+        batch_size: int = DEFAULT_PARQUET_READ_BATCH_SIZE,
+    ) -> Iterator[pl.DataFrame]:
         ...
 
     def write_parquet_shard(

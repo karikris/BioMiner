@@ -44,6 +44,7 @@ from biominer.registry.classification_table import (
 )
 from biominer.species.context import SpeciesContext
 from biominer.storage.cloud import CloudStorage
+from biominer.storage.parquet import DEFAULT_PARQUET_READ_BATCH_SIZE
 from biominer.vision.gates import BioClipGatePolicy, ScoreInputDecision, bioclip_score_input_decision
 from biominer.workstore.base import WorkStore
 
@@ -101,6 +102,7 @@ def enqueue_bioclip_work_from_detection_shards(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
+    read_batch_size: int = DEFAULT_PARQUET_READ_BATCH_SIZE,
 ) -> BioClipWorkPlanResult:
     shards = workstore.list_candidate_shards(
         job_name=job_name,
@@ -118,54 +120,60 @@ def enqueue_bioclip_work_from_detection_shards(
         detection_policy=detection_policy,
         bioclip_gate_policy=bioclip_gate_policy,
     )
-    items: list[dict[str, Any]] = []
     detections_seen = 0
     eligible_seen = 0
+    attempted = 0
+    inserted = 0
     remaining = None if limit is None or limit <= 0 else int(limit)
     for shard in shards:
         if remaining == 0:
             break
         detection_shard_uri = str(shard["uri"])
-        frame = storage.read_parquet(detection_shard_uri)
-        for row in frame.iter_rows(named=True):
-            detections_seen += 1
-            detection = dict(row)
-            gate_decision = bioclip_score_input_decision(detection, gate_policy)
-            if not _detection_is_scoreable(detection, gate_decision=gate_decision):
-                continue
-            eligible_seen += 1
-            score_modes = ("whole_image",) if gate_decision.visual_input_kind == "whole_image" else modes
-            for mode in score_modes:
+        for frame in storage.iter_parquet_batches(detection_shard_uri, batch_size=read_batch_size):
+            batch_items: list[dict[str, Any]] = []
+            for row in frame.iter_rows(named=True):
+                detections_seen += 1
+                detection = dict(row)
+                gate_decision = bioclip_score_input_decision(detection, gate_policy)
+                if not _detection_is_scoreable(detection, gate_decision=gate_decision):
+                    continue
+                eligible_seen += 1
+                score_modes = ("whole_image",) if gate_decision.visual_input_kind == "whole_image" else modes
+                for mode in score_modes:
+                    if remaining == 0:
+                        break
+                    batch_items.append(
+                        bioclip_score_work_item(
+                            detection,
+                            run_id=run_id,
+                            detection_shard_uri=detection_shard_uri,
+                            model=model,
+                            candidate_set_id=candidate_set_id,
+                            ablation_mode=mode,
+                            classification_mode=classification_mode,
+                            taxonomy_table_version=taxonomy_table_version,
+                            taxonomy_prompt_variant_version=taxonomy_prompt_variant_version,
+                            family_top_k=family_top_k,
+                            species_first_pass_top_k=species_first_pass_top_k,
+                            species_rerank_top_k=species_rerank_top_k,
+                            gate_decision=gate_decision,
+                        )
+                    )
+                    if remaining is not None:
+                        remaining -= 1
                 if remaining == 0:
                     break
-                items.append(
-                    bioclip_score_work_item(
-                        detection,
-                        run_id=run_id,
-                        detection_shard_uri=detection_shard_uri,
-                        model=model,
-                        candidate_set_id=candidate_set_id,
-                        ablation_mode=mode,
-                        classification_mode=classification_mode,
-                        taxonomy_table_version=taxonomy_table_version,
-                        taxonomy_prompt_variant_version=taxonomy_prompt_variant_version,
-                        family_top_k=family_top_k,
-                        species_first_pass_top_k=species_first_pass_top_k,
-                        species_rerank_top_k=species_rerank_top_k,
-                        gate_decision=gate_decision,
-                    )
-                )
-                if remaining is not None:
-                    remaining -= 1
+            if batch_items:
+                attempted += len(batch_items)
+                inserted += workstore.enqueue_work(job_name, registry_version, batch_items, stage=score_stage)
             if remaining == 0:
                 break
-    inserted = workstore.enqueue_work(job_name, registry_version, items, stage=score_stage) if items else 0
     return BioClipWorkPlanResult(
         detection_shards_seen=len(shards),
         detections_seen=detections_seen,
         eligible_detections_seen=eligible_seen,
         enqueued_work_items=inserted,
-        duplicate_work_items=len(items) - inserted,
+        duplicate_work_items=attempted - inserted,
     )
 
 

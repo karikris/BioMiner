@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from contextlib import ExitStack
 from typing import Any
 import json
 
 import polars as pl
 
-from biominer.storage.parquet import DEFAULT_PARQUET_COMPRESSION, ParquetPartWrite
+from biominer.storage.parquet import DEFAULT_PARQUET_COMPRESSION, DEFAULT_PARQUET_READ_BATCH_SIZE, ParquetPartWrite
 from biominer.storage.uri import is_s3_uri, join_uri
 
 
@@ -37,6 +37,24 @@ class S3StorageBackend:
 
     def scan_parquet(self, uri: str) -> pl.LazyFrame:
         return pl.scan_parquet(uri, storage_options=self._storage_options())
+
+    def iter_parquet_batches(
+        self,
+        uri: str,
+        *,
+        batch_size: int = DEFAULT_PARQUET_READ_BATCH_SIZE,
+    ) -> Iterator[pl.DataFrame]:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        import pyarrow.parquet as pq
+
+        with self._open_input_file(uri) as stream:
+            parquet_file = pq.ParquetFile(stream)
+            try:
+                for batch in parquet_file.iter_batches(batch_size=batch_size):
+                    yield pl.from_arrow(batch)
+            finally:
+                parquet_file.close()
 
     def write_parquet_shard(
         self,

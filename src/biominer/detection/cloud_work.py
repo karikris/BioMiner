@@ -19,6 +19,7 @@ from biominer.detection.pipeline import (
 from biominer.detection.policy import DetectionPolicy
 from biominer.detection.schema import build_detection_rows, empty_detection_frame
 from biominer.storage.cloud import CloudStorage
+from biominer.storage.parquet import DEFAULT_PARQUET_READ_BATCH_SIZE
 from biominer.workstore.base import WorkStore
 
 
@@ -61,6 +62,7 @@ def enqueue_detection_work_from_source_shards(
     detection_policy: DetectionPolicy | None = None,
     vision_settings: Any | None = None,
     limit: int | None = None,
+    read_batch_size: int = DEFAULT_PARQUET_READ_BATCH_SIZE,
 ) -> DetectionWorkPlanResult:
     shards = workstore.list_candidate_shards(
         job_name=job_name,
@@ -68,8 +70,9 @@ def enqueue_detection_work_from_source_shards(
         registry_version=registry_version,
         run_id=run_id,
     )
-    items: list[dict[str, Any]] = []
     records_seen = 0
+    attempted = 0
+    inserted = 0
     remaining = None if limit is None or limit <= 0 else int(limit)
     detector = {
         "backend": detector_backend,
@@ -81,32 +84,37 @@ def enqueue_detection_work_from_source_shards(
         if remaining == 0:
             break
         source_shard_uri = str(shard["uri"])
-        frame = storage.read_parquet(source_shard_uri)
-        for row in frame.iter_rows(named=True):
+        for frame in storage.iter_parquet_batches(source_shard_uri, batch_size=read_batch_size):
+            batch_items: list[dict[str, Any]] = []
+            for row in frame.iter_rows(named=True):
+                if remaining == 0:
+                    break
+                record = dict(row)
+                if not _record_is_detectable(record):
+                    continue
+                records_seen += 1
+                batch_items.append(
+                    detection_work_item(
+                        record,
+                        run_id=run_id,
+                        source_shard_uri=source_shard_uri,
+                        detector=detector,
+                        detection_policy=detection_policy,
+                        vision_settings=vision_settings,
+                    )
+                )
+                if remaining is not None:
+                    remaining -= 1
+            if batch_items:
+                attempted += len(batch_items)
+                inserted += workstore.enqueue_work(job_name, registry_version, batch_items, stage=detection_stage)
             if remaining == 0:
                 break
-            record = dict(row)
-            if not _record_is_detectable(record):
-                continue
-            records_seen += 1
-            items.append(
-                detection_work_item(
-                    record,
-                    run_id=run_id,
-                    source_shard_uri=source_shard_uri,
-                    detector=detector,
-                    detection_policy=detection_policy,
-                    vision_settings=vision_settings,
-                )
-            )
-            if remaining is not None:
-                remaining -= 1
-    inserted = workstore.enqueue_work(job_name, registry_version, items, stage=detection_stage) if items else 0
     return DetectionWorkPlanResult(
         source_shards_seen=len(shards),
         source_records_seen=records_seen,
         enqueued_work_items=inserted,
-        duplicate_work_items=len(items) - inserted,
+        duplicate_work_items=attempted - inserted,
     )
 
 

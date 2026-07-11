@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +11,7 @@ import polars as pl
 
 CANONICAL_BUCKETED_RECORDS = "bucketed_records.parquet"
 DEFAULT_PARQUET_COMPRESSION = "zstd"
+DEFAULT_PARQUET_READ_BATCH_SIZE = 1_000
 BUCKET_VIEW_FILES = {
     "gold": "gold_records.parquet",
     "silver": "silver_records.parquet",
@@ -111,6 +112,23 @@ def write_parquet_part(
         byte_count=output.stat().st_size if output.exists() else None,
         compression=compression,
     )
+
+
+def iter_parquet_batches(
+    path: str | Path,
+    *,
+    batch_size: int = DEFAULT_PARQUET_READ_BATCH_SIZE,
+) -> Iterator[pl.DataFrame]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    import pyarrow.parquet as pq
+
+    parquet_file = pq.ParquetFile(path)
+    try:
+        for batch in parquet_file.iter_batches(batch_size=batch_size):
+            yield pl.from_arrow(batch)
+    finally:
+        parquet_file.close()
 
 
 def write_bucket_views(frame: pl.DataFrame, output_dir: str | Path) -> dict[str, str]:

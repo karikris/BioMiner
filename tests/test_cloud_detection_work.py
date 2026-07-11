@@ -12,9 +12,17 @@ from biominer.run.stages import RunStage
 from biominer.workstore.sqlite import SQLiteWorkStore
 
 
-def test_enqueue_detection_work_from_source_shard_inventory_is_idempotent(tmp_path: Path) -> None:
+def test_enqueue_detection_work_from_source_shard_inventory_is_idempotent(tmp_path: Path, monkeypatch) -> None:
     storage = _FakeCloudStorage()
     workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+    enqueue_batch_sizes: list[int] = []
+    original_enqueue_work = workstore.enqueue_work
+
+    def recording_enqueue_work(job_name, registry_version=None, items=None, *, stage="default"):  # noqa: ANN001, ANN202
+        enqueue_batch_sizes.append(len(items or []))
+        return original_enqueue_work(job_name, registry_version, items, stage=stage)
+
+    monkeypatch.setattr(workstore, "enqueue_work", recording_enqueue_work)
     source_uri = "s3://biominer/runs/run_id=run-1/staging/evidence/stage=poll_flickr/run_id=run-1/worker=w1/batch=001.parquet"
     storage.parquet_payloads[source_uri] = pl.DataFrame(
         [
@@ -57,6 +65,7 @@ def test_enqueue_detection_work_from_source_shard_inventory_is_idempotent(tmp_pa
         detector_model_id="fake-detector",
         detector_model_version="test",
         detector_checkpoint="fake-checkpoint",
+        read_batch_size=1,
     )
     second = enqueue_detection_work_from_source_shards(
         storage=storage,
@@ -70,6 +79,7 @@ def test_enqueue_detection_work_from_source_shard_inventory_is_idempotent(tmp_pa
         detector_model_id="fake-detector",
         detector_model_version="test",
         detector_checkpoint="fake-checkpoint",
+        read_batch_size=1,
     )
 
     assert first.source_shards_seen == 1
@@ -78,6 +88,7 @@ def test_enqueue_detection_work_from_source_shard_inventory_is_idempotent(tmp_pa
     assert first.duplicate_work_items == 0
     assert second.enqueued_work_items == 0
     assert second.duplicate_work_items == 2
+    assert enqueue_batch_sizes == [1, 1, 1, 1]
     items = workstore.list_work_items(
         job_name="biominer_production_run",
         stage=RunStage.DETECT_OBJECTS.value,
@@ -291,3 +302,6 @@ class _FakeCloudStorage:
 
     def read_parquet(self, uri: str) -> pl.DataFrame:
         return self.parquet_payloads[uri]
+
+    def iter_parquet_batches(self, uri: str, *, batch_size: int):  # noqa: ANN201 - fake protocol implementation.
+        yield from self.parquet_payloads[uri].iter_slices(batch_size)

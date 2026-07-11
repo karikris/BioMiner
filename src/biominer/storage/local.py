@@ -1,13 +1,21 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Any
 import json
 from pathlib import Path
 
 import polars as pl
 
-from biominer.storage.parquet import DEFAULT_PARQUET_COMPRESSION, ParquetPartWrite, write_parquet, write_parquet_batches, write_parquet_part
+from biominer.storage.parquet import (
+    DEFAULT_PARQUET_COMPRESSION,
+    DEFAULT_PARQUET_READ_BATCH_SIZE,
+    ParquetPartWrite,
+    iter_parquet_batches,
+    write_parquet,
+    write_parquet_batches,
+    write_parquet_part,
+)
 from biominer.storage.uri import normalize_local_uri
 
 
@@ -20,6 +28,14 @@ class LocalStorageBackend:
 
     def scan_parquet(self, uri: str | Path) -> pl.LazyFrame:
         return pl.scan_parquet(normalize_local_uri(uri))
+
+    def iter_parquet_batches(
+        self,
+        uri: str | Path,
+        *,
+        batch_size: int = DEFAULT_PARQUET_READ_BATCH_SIZE,
+    ) -> Iterator[pl.DataFrame]:
+        yield from iter_parquet_batches(normalize_local_uri(uri), batch_size=batch_size)
 
     def write_parquet_shard(
         self,

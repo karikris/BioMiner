@@ -818,3 +818,6 @@ class _FakeCloudStorage:
 
     def read_parquet(self, uri: str) -> pl.DataFrame:
         return self.parquet_payloads[uri]
+
+    def iter_parquet_batches(self, uri: str, *, batch_size: int):  # noqa: ANN201 - fake protocol implementation.
+        yield from self.parquet_payloads[uri].iter_slices(batch_size)
