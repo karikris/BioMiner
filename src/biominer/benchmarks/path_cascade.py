@@ -25,6 +25,7 @@ from biominer.bioclip.path_cascade_classifier import (
     classify_path_cascade,
 )
 from biominer.bioclip.path_taxonomy_store import (
+    RANK_SCREEN_PROMPT_STAGE,
     SPECIES_RERANK_PROMPT_STAGE,
     PathTaxonomyStore,
 )
@@ -61,6 +62,17 @@ BENCHMARK_SELECTED_GENUS_NODE_IDS = (
     "fixture:genus:01:01:01:02",
     "fixture:genus:01:01:01:03",
 )
+_DIVERGENCE_NODE_RAW_SIMILARITIES = {
+    "fixture:family:01": 0.10,
+    "fixture:family:02": 0.99,
+    "fixture:family:03": 0.80,
+    "fixture:subfamily:01:01": 0.95,
+    "fixture:subfamily:01:02": 0.10,
+    "fixture:subfamily:02:01": 0.80,
+    "fixture:subfamily:02:02": 0.79,
+    "fixture:subfamily:03:01": 0.78,
+    "fixture:subfamily:03:02": 0.00,
+}
 
 
 @dataclass(frozen=True)
@@ -83,6 +95,16 @@ class PathCascadeBenchmarkResult:
     output_dir: Path
     metrics_path: Path
     summary_path: Path
+
+
+@dataclass(frozen=True)
+class _HistoricalCumulativeCandidate:
+    node_id: str
+    parent_node_id: str
+    scientific_name: str
+    parent_raw_similarity: float
+    current_rank_raw_similarity: float
+    cumulative_path_raw_similarity: float
 
 
 class DeterministicRawSimilarityScorer:
@@ -121,6 +143,24 @@ class DeterministicRawSimilarityScorer:
             raise ValueError("synthetic scorer received unknown labels: " + ", ".join(missing))
         self.calls.append(requested)
         return {label: self._score_by_label[label] for label in requested}
+
+
+class _SubfamilyDivergenceScorer(DeterministicRawSimilarityScorer):
+    """Fixture-only scorer that makes rank-local and cumulative beams diverge."""
+
+    def __init__(self, taxonomy_store: PathTaxonomyStore) -> None:
+        super().__init__(taxonomy_store)
+        divergence_prompts = taxonomy_store.prompt_labels.filter(
+            (pl.col("prompt_stage") == RANK_SCREEN_PROMPT_STAGE)
+            & pl.col("node_id").is_in(_DIVERGENCE_NODE_RAW_SIMILARITIES)
+        )
+        overridden_nodes = set(divergence_prompts["node_id"].to_list())
+        if overridden_nodes != set(_DIVERGENCE_NODE_RAW_SIMILARITIES):
+            raise AssertionError("synthetic divergence fixture is missing rank prompts")
+        for prompt in divergence_prompts.iter_rows(named=True):
+            self._score_by_label[str(prompt["label"])] = (
+                _DIVERGENCE_NODE_RAW_SIMILARITIES[str(prompt["node_id"])]
+            )
 
 
 def build_seven_family_path_cascade_fixture() -> SevenFamilyPathCascadeFixture:
@@ -192,6 +232,10 @@ def run_path_cascade_benchmark(*, output_dir: str | Path) -> PathCascadeBenchmar
         taxonomy_store=fixture.taxonomy_store,
     )
     classify_seconds = _elapsed(classify_start)
+
+    comparison_start = perf_counter()
+    subfamily_selection_comparison = _subfamily_selection_comparison(fixture)
+    comparison_seconds = _elapsed(comparison_start)
 
     intermediate_steps = tuple(
         step
@@ -277,6 +321,7 @@ def run_path_cascade_benchmark(*, output_dir: str | Path) -> PathCascadeBenchmar
         "family_candidate_count": rank_metrics[0]["candidate_count"],
         "rank_steps": rank_metrics,
         "species_rerank_step": rerank_metrics,
+        "subfamily_selection_comparison": subfamily_selection_comparison,
         "unique_labels_scored": len(unique_labels),
         "genus_top3_node_ids": list(genus_step.retained_node_ids),
         "species_candidates_beneath_genus_top3": species_beneath_genus_top3,
@@ -293,6 +338,7 @@ def run_path_cascade_benchmark(*, output_dir: str | Path) -> PathCascadeBenchmar
         "elapsed_seconds_by_stage": {
             "build_fixture": fixture_seconds,
             "classify": classify_seconds,
+            "compare_subfamily_selection": comparison_seconds,
         },
         "artifacts": {
             "metrics": str(metrics_path),
@@ -312,6 +358,140 @@ def run_path_cascade_benchmark(*, output_dir: str | Path) -> PathCascadeBenchmar
         metrics_path=metrics_path,
         summary_path=summary_path,
     )
+
+
+def _subfamily_selection_comparison(
+    fixture: SevenFamilyPathCascadeFixture,
+) -> dict[str, Any]:
+    """Compare production rank-local pruning with the fixture-only historical rule."""
+    scorer = _SubfamilyDivergenceScorer(fixture.taxonomy_store)
+    production_result = classify_path_cascade(
+        item={"benchmark_item_id": "synthetic-subfamily-selection-divergence"},
+        scorer=scorer,
+        taxonomy_store=fixture.taxonomy_store,
+    )
+    family_step = next(
+        step for step in production_result.rank_steps if step.rank == "FAMILY"
+    )
+    subfamily_step = next(
+        step for step in production_result.rank_steps if step.rank == "SUBFAMILY"
+    )
+    current_node_ids = subfamily_step.retained_node_ids
+    historical_candidates = _historical_cumulative_subfamily_selection(
+        fixture=fixture,
+        family_step=family_step,
+        subfamily_step=subfamily_step,
+    )
+    historical_node_ids = tuple(candidate.node_id for candidate in historical_candidates)
+    if current_node_ids == historical_node_ids:
+        raise AssertionError("comparison fixture no longer makes subfamily beams diverge")
+    return {
+        "fixture_only": True,
+        "rank": "SUBFAMILY",
+        "beam_width": DEFAULT_RANK_BEAM_WIDTH,
+        "production_beam_strategy": production_result.beam_strategy,
+        "production_score_basis": "current_rank_raw_similarity_only",
+        "historical_score_basis": "mean_family_and_subfamily_raw_similarity",
+        "production_selected_node_ids": list(current_node_ids),
+        "historical_selected_node_ids": list(historical_node_ids),
+        "production_candidates": [
+            {
+                "node_id": node_id,
+                "current_rank_raw_similarity": raw_similarity,
+            }
+            for node_id, raw_similarity in zip(
+                subfamily_step.candidate_node_ids,
+                subfamily_step.candidate_raw_similarities,
+                strict=True,
+            )
+        ],
+        "historical_candidates": [
+            {
+                "node_id": candidate.node_id,
+                "parent_node_id": candidate.parent_node_id,
+                "scientific_name": candidate.scientific_name,
+                "parent_raw_similarity": candidate.parent_raw_similarity,
+                "current_rank_raw_similarity": candidate.current_rank_raw_similarity,
+                "cumulative_path_raw_similarity": (
+                    candidate.cumulative_path_raw_similarity
+                ),
+            }
+            for candidate in historical_candidates
+        ],
+        "selections_differ": True,
+    }
+
+
+def _historical_cumulative_subfamily_selection(
+    *,
+    fixture: SevenFamilyPathCascadeFixture,
+    family_step: RankStepResult,
+    subfamily_step: RankStepResult,
+) -> tuple[_HistoricalCumulativeCandidate, ...]:
+    """Reproduce the retired cumulative-path SUBFAMILY beam for this fixture only."""
+    if (
+        fixture.manifest.get("benchmark_fixture") is not True
+        or fixture.manifest.get("registry_version") != BENCHMARK_REGISTRY_VERSION
+    ):
+        raise ValueError("historical comparison is restricted to the synthetic benchmark fixture")
+    if family_step.rank != "FAMILY" or subfamily_step.rank != "SUBFAMILY":
+        raise ValueError("historical comparison requires FAMILY and SUBFAMILY rank steps")
+    family_score_by_node = dict(
+        zip(
+            family_step.candidate_node_ids,
+            family_step.candidate_raw_similarities,
+            strict=True,
+        )
+    )
+    subfamily_score_by_node = dict(
+        zip(
+            subfamily_step.candidate_node_ids,
+            subfamily_step.candidate_raw_similarities,
+            strict=True,
+        )
+    )
+    subfamily_names = {
+        str(row["node_id"]): str(row["scientific_name"])
+        for row in fixture.frames.nodes.filter(pl.col("rank") == "SUBFAMILY").iter_rows(
+            named=True
+        )
+    }
+    selected_family_ids = set(family_step.retained_node_ids)
+    family_subfamily_pairs = (
+        fixture.taxonomy_store.enabled_paths()
+        .filter(pl.col("family_node_id").is_in(selected_family_ids))
+        .select("family_node_id", "subfamily_node_id")
+        .unique()
+        .sort("family_node_id", "subfamily_node_id")
+    )
+    paths: list[_HistoricalCumulativeCandidate] = []
+    for row in family_subfamily_pairs.iter_rows(named=True):
+        family_node_id = str(row["family_node_id"])
+        subfamily_node_id = str(row["subfamily_node_id"])
+        family_similarity = family_score_by_node[family_node_id]
+        subfamily_similarity = subfamily_score_by_node[subfamily_node_id]
+        paths.append(
+            _HistoricalCumulativeCandidate(
+                node_id=subfamily_node_id,
+                parent_node_id=family_node_id,
+                scientific_name=subfamily_names[subfamily_node_id],
+                parent_raw_similarity=family_similarity,
+                current_rank_raw_similarity=subfamily_similarity,
+                cumulative_path_raw_similarity=(
+                    family_similarity + subfamily_similarity
+                )
+                / 2.0,
+            )
+        )
+    paths.sort(
+        key=lambda candidate: (
+            -candidate.cumulative_path_raw_similarity,
+            candidate.scientific_name,
+            candidate.node_id,
+            candidate.parent_node_id,
+        )
+    )
+    return tuple(paths[:DEFAULT_RANK_BEAM_WIDTH])
 
 
 def _synthetic_source_and_taxa() -> tuple[pl.DataFrame, dict[str, object]]:
@@ -497,13 +677,13 @@ def _deterministic_prompt_score(*, node_id: str, prompt_stage: str) -> float:
     if not identity_numbers:
         raise ValueError(f"synthetic benchmark node has no numeric identity: {node_id}")
     if prompt_stage == SPECIES_RERANK_PROMPT_STAGE:
-        score = float(identity_numbers[-1])
+        score = float(identity_numbers[-1]) / 100.0
     else:
         encoded_identity = sum(
             value * (100 ** (len(identity_numbers) - index - 1))
             for index, value in enumerate(identity_numbers)
         )
-        score = -float(encoded_identity)
+        score = -float(encoded_identity) / 1_000_000_000.0
     if not isfinite(score):
         raise ValueError(f"synthetic benchmark score is not finite for node: {node_id}")
     return score
@@ -527,6 +707,7 @@ def _rank_step_metrics(
         "skipped": step.skipped,
         "parent_node_ids": list(step.parent_node_ids),
         "candidate_node_ids": list(step.candidate_node_ids),
+        "candidate_raw_similarities": list(step.candidate_raw_similarities),
         "retained_node_ids": list(step.retained_node_ids),
         "pruned_node_ids": list(step.pruned_node_ids),
     }
@@ -540,6 +721,7 @@ def _assert_nonnegative_elapsed_telemetry(metrics: Mapping[str, Any]) -> None:
 
 
 def _benchmark_summary_markdown(metrics: Mapping[str, Any]) -> str:
+    comparison = metrics["subfamily_selection_comparison"]
     rows = [
         "| Rank/stage | Candidates | Retained | Paths before | Paths after | Labels scored |",
         "|---|---:|---:|---:|---:|---:|",
@@ -580,6 +762,21 @@ def _benchmark_summary_markdown(metrics: Mapping[str, Any]) -> str:
             ),
             f"- Unique labels scored: {metrics['unique_labels_scored']}",
             f"- Elapsed seconds: {metrics['elapsed_seconds']:.6f}",
+            "",
+            "## SUBFAMILY selection regression",
+            "",
+            (
+                "- Production global current-rank top 3: `"
+                + "`, `".join(comparison["production_selected_node_ids"])
+                + "`"
+            ),
+            (
+                "- Historical cumulative-path top 3: `"
+                + "`, `".join(comparison["historical_selected_node_ids"])
+                + "`"
+            ),
+            f"- Selections differ: {str(comparison['selections_differ']).casefold()}",
+            "- Historical reproduction scope: synthetic benchmark fixture only",
             "",
             *rows,
             "",
