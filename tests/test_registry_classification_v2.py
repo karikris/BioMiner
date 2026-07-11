@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import replace
+import json
+
 import polars as pl
+import pytest
 
 from biominer.registry.classification_v2 import (
     CLASSIFICATION_RANKS,
@@ -9,7 +14,9 @@ from biominer.registry.classification_v2 import (
     build_classification_v2_frames,
     build_classification_v2_manifest,
     classification_v2_artifact_paths,
+    classification_v2_qa_frame,
     load_classification_v2_source,
+    validate_classification_v2,
     write_classification_v2_artifacts,
 )
 
@@ -84,7 +91,7 @@ def test_curated_papilio_demoleus_source_writes_versioned_artifacts(tmp_path) ->
     manifest = write_classification_v2_artifacts(registry, source_path=source_path)
 
     paths = classification_v2_artifact_paths(registry)
-    assert all(path.exists() for key, path in paths.items() if key != "qa_findings")
+    assert all(path.exists() for path in paths.values())
     assert manifest["classification_version"] == CLASSIFICATION_V2_VERSION
     assert manifest["enabled_leaf_path_count"] == 1
     assert pl.read_parquet(paths["leaf_paths"]).select(
@@ -99,6 +106,121 @@ def test_curated_papilio_demoleus_source_writes_versioned_artifacts(tmp_path) ->
             "gbif_species_key": "1938069",
         }
     ]
+
+
+def test_classification_v2_qa_reports_invalid_transition_and_missing_path() -> None:
+    source = deepcopy(_reviewed_source())
+    source["edges"][1]["child_node_id"] = "genus:papilio"
+    frames = build_classification_v2_frames(_taxa(), source)
+
+    findings = validate_classification_v2(frames, taxa=_taxa())
+    codes = {finding["code"] for finding in findings if finding["severity"] == "fatal"}
+
+    assert "invalid_edge_rank_transition" in codes
+    assert "no_enabled_leaf_path" in codes
+
+
+def test_classification_v2_qa_emits_explicit_unmapped_species_gap() -> None:
+    taxa = pl.concat(
+        [
+            _taxa(),
+            pl.DataFrame(
+                [
+                    {
+                        "registry_version": "butterflies-v2",
+                        "accepted_taxon_key": "gbif:999",
+                        "species_key": "gbif:999",
+                        "scientific_name": "Papilio unmapped",
+                        "species": "Papilio unmapped",
+                        "rank": "SPECIES",
+                        "taxonomic_status": "ACCEPTED",
+                    }
+                ]
+            ),
+        ],
+        how="diagonal_relaxed",
+    )
+    frames = build_classification_v2_frames(taxa, _reviewed_source())
+
+    findings = validate_classification_v2(frames, taxa=taxa)
+    gaps = [finding for finding in findings if finding["code"] == "unmapped_accepted_species"]
+
+    assert gaps == [
+        {
+            "severity": "warning",
+            "code": "unmapped_accepted_species",
+            "table": "classification_leaf_paths",
+            "subject": "gbif:999",
+            "message": "accepted GBIF species has no complete reviewed five-rank path",
+            "details": {"scientific_name": "Papilio unmapped", "family": ""},
+        }
+    ]
+    assert classification_v2_qa_frame(findings).filter(pl.col("code") == "unmapped_accepted_species")["subject"].to_list() == ["gbif:999"]
+
+
+def test_classification_v2_qa_rejects_multiple_enabled_parents() -> None:
+    source = deepcopy(_reviewed_source())
+    source["nodes"].append(
+        {
+            "node_id": "family:alternate",
+            "rank": "FAMILY",
+            "scientific_name": "Alternateidae",
+            "source_id": "ncbi-76202",
+            **_review(),
+            "enabled": True,
+        }
+    )
+    source["edges"].append(
+        {
+            "parent_node_id": "family:alternate",
+            "child_node_id": "subfamily:papilioninae",
+            "source_id": "ncbi-76202",
+            **_review(),
+        }
+    )
+    frames = build_classification_v2_frames(_taxa(), source)
+
+    codes = {finding["code"] for finding in validate_classification_v2(frames, taxa=_taxa())}
+
+    assert "enabled_node_has_multiple_parents" in codes
+
+
+def test_classification_v2_qa_rejects_enabled_cycles() -> None:
+    frames = build_classification_v2_frames(_taxa(), _reviewed_source())
+    reverse = dict(frames.edges.row(0, named=True))
+    reverse.update(
+        {
+            "parent_node_id": "species:papilio-demoleus",
+            "child_node_id": "family:papilionidae",
+            "parent_rank": "SPECIES",
+            "child_rank": "FAMILY",
+            "enabled": True,
+        }
+    )
+    cyclic = replace(frames, edges=pl.concat([frames.edges, pl.DataFrame([reverse], schema=frames.edges.schema)]))
+
+    codes = {finding["code"] for finding in validate_classification_v2(cyclic, taxa=_taxa())}
+
+    assert "invalid_edge_rank_transition" in codes
+    assert "enabled_hierarchy_cycle" in codes
+
+
+def test_classification_v2_fatal_qa_blocks_artifact_promotion(tmp_path) -> None:
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    _taxa().write_parquet(registry / "taxa.parquet")
+    source = deepcopy(_reviewed_source())
+    source["edges"] = source["edges"][:-1]
+    source_path = tmp_path / "invalid-source.json"
+    source_path.write_text(json.dumps(source), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="classification-v2 fatal QA"):
+        write_classification_v2_artifacts(registry, source_path=source_path)
+
+    paths = classification_v2_artifact_paths(registry)
+    assert paths["qa_findings"].exists()
+    assert not paths["nodes"].exists()
+    assert "no_enabled_leaf_path" in pl.read_parquet(paths["qa_findings"])["code"].to_list()
 
 
 def _taxa() -> pl.DataFrame:

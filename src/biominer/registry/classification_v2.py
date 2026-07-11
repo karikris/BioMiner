@@ -174,14 +174,33 @@ def write_classification_v2_artifacts(
     if not taxa_path.exists():
         raise FileNotFoundError(f"missing required registry artifact: {taxa_path}")
     registry_manifest = _read_json_optional(registry / "manifest.json")
-    frames = build_classification_v2_frames(pl.read_parquet(taxa_path), load_classification_v2_source(source_path))
+    taxa = pl.read_parquet(taxa_path)
+    frames = build_classification_v2_frames(taxa, load_classification_v2_source(source_path))
+    findings = validate_classification_v2(frames, taxa=taxa)
+    qa_findings = classification_v2_qa_frame(findings)
     manifest = build_classification_v2_manifest(
         frames,
         registry_version=_text(registry_manifest.get("registry_version")),
     )
     manifest["classification_fingerprint"] = classification_v2_fingerprint(frames)
+    manifest["fatal_finding_count"] = sum(1 for finding in findings if finding["severity"] == "fatal")
+    manifest["warning_finding_count"] = sum(1 for finding in findings if finding["severity"] == "warning")
+    manifest["qa_status"] = "failed" if manifest["fatal_finding_count"] else "passed"
+    accepted_species = _accepted_species_rows(taxa)
+    enabled_keys = set(frames.leaf_paths.filter(pl.col("enabled"))["accepted_taxon_key"].to_list())
+    manifest["accepted_species_count"] = len(accepted_species)
+    manifest["unmapped_accepted_species_count"] = sum(
+        1 for row in accepted_species if _text(row.get("accepted_taxon_key")) not in enabled_keys
+    )
+    manifest["coverage_by_family"] = _coverage_by_family(accepted_species, enabled_keys)
     output.mkdir(parents=True, exist_ok=True)
     paths = classification_v2_artifact_paths(output)
+    write_parquet(qa_findings, paths["qa_findings"])
+    if manifest["fatal_finding_count"]:
+        raise ValueError(
+            "classification-v2 fatal QA: "
+            + ", ".join(str(finding["code"]) for finding in findings if finding["severity"] == "fatal")
+        )
     for key, frame in (
         ("sources", frames.sources),
         ("nodes", frames.nodes),
@@ -193,6 +212,36 @@ def write_classification_v2_artifacts(
         write_parquet(frame, paths[key])
     paths["manifest"].write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     return {**manifest, "outputs": {key: str(path) for key, path in paths.items()}}
+
+
+def validate_classification_v2(
+    frames: ClassificationV2Frames,
+    *,
+    taxa: pl.DataFrame,
+) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    _validate_sources(frames.sources, findings)
+    _validate_nodes(frames.nodes, findings)
+    _validate_edges(frames.nodes, frames.edges, findings)
+    _validate_mappings(frames.nodes, frames.gbif_mappings, findings)
+    _validate_leaf_paths(frames.leaf_paths, findings)
+    _append_registry_coverage_gaps(taxa, frames.leaf_paths, findings)
+    return findings
+
+
+def classification_v2_qa_frame(findings: Sequence[dict[str, Any]]) -> pl.DataFrame:
+    rows = [
+        {
+            "severity": _text(finding.get("severity")),
+            "code": _text(finding.get("code")),
+            "table": _text(finding.get("table")),
+            "subject": _text(finding.get("subject")),
+            "message": _text(finding.get("message")),
+            "details_json": json.dumps(finding.get("details") or {}, sort_keys=True, default=str),
+        }
+        for finding in findings
+    ]
+    return _frame(rows, QA_FINDING_SCHEMA).sort(["severity", "code", "subject"])
 
 
 def classification_v2_artifact_paths(root: str | Path) -> dict[str, Path]:
@@ -523,6 +572,312 @@ def _prompt_label_frame(*, version: str, nodes: pl.DataFrame, leaf_paths: pl.Dat
                 }
             )
     return _frame(rows, PROMPT_LABEL_SCHEMA).sort(["rank", "scientific_name", "sort_order"])
+
+
+def _validate_sources(frame: pl.DataFrame, findings: list[dict[str, Any]]) -> None:
+    if frame.is_empty():
+        findings.append(_finding("fatal", "missing_source_catalog", "classification_sources", "", "source catalog is empty"))
+        return
+    _append_duplicate_findings(frame, ("source_id",), "duplicate_source_id", "classification_sources", findings)
+    for row in frame.iter_rows(named=True):
+        missing = [
+            field
+            for field in ("source_id", "authority", "release", "citation", "retrieved_at", "evidence_url", "evidence")
+            if not _text(row.get(field))
+        ]
+        if missing:
+            findings.append(
+                _finding(
+                    "fatal",
+                    "source_missing_provenance",
+                    "classification_sources",
+                    row.get("source_id"),
+                    "classification source is missing required provenance",
+                    {"missing_fields": missing},
+                )
+            )
+
+
+def _validate_nodes(frame: pl.DataFrame, findings: list[dict[str, Any]]) -> None:
+    _append_duplicate_findings(frame, ("node_id",), "duplicate_node_id", "classification_nodes", findings)
+    invalid = frame.filter(~pl.col("rank").is_in(CLASSIFICATION_RANKS))
+    for row in invalid.iter_rows(named=True):
+        findings.append(
+            _finding(
+                "fatal",
+                "invalid_node_rank",
+                "classification_nodes",
+                row.get("node_id"),
+                "node rank is outside the five-rank classification contract",
+                {"rank": row.get("rank")},
+            )
+        )
+    for rank in CLASSIFICATION_RANKS:
+        if frame.filter((pl.col("rank") == rank) & pl.col("enabled")).is_empty():
+            findings.append(
+                _finding(
+                    "fatal",
+                    "missing_enabled_rank",
+                    "classification_nodes",
+                    rank,
+                    f"no enabled {rank} node exists",
+                )
+            )
+    required = ("node_id", "scientific_name", "source_id", "source_release", "citation", "retrieved_at", "evidence", "reviewed_by", "reviewed_at")
+    for row in frame.filter(pl.col("enabled")).iter_rows(named=True):
+        missing = [field for field in required if not _text(row.get(field))]
+        if not row.get("reviewed") or row.get("review_status") != "reviewed" or missing:
+            findings.append(
+                _finding(
+                    "fatal",
+                    "enabled_node_without_reviewed_provenance",
+                    "classification_nodes",
+                    row.get("node_id"),
+                    "enabled node lacks reviewed provenance",
+                    {"missing_fields": missing},
+                )
+            )
+
+
+def _validate_edges(nodes: pl.DataFrame, edges: pl.DataFrame, findings: list[dict[str, Any]]) -> None:
+    _append_duplicate_findings(
+        edges,
+        ("parent_node_id", "child_node_id"),
+        "duplicate_edge",
+        "classification_edges",
+        findings,
+    )
+    known_nodes = set(nodes["node_id"].to_list())
+    for row in edges.iter_rows(named=True):
+        subject = f"{row['parent_node_id']}->{row['child_node_id']}"
+        if row["parent_node_id"] not in known_nodes or row["child_node_id"] not in known_nodes:
+            findings.append(_finding("fatal", "edge_unknown_node", "classification_edges", subject, "edge references an unknown node"))
+        if (row["parent_rank"], row["child_rank"]) not in ALLOWED_RANK_TRANSITIONS:
+            findings.append(
+                _finding(
+                    "fatal",
+                    "invalid_edge_rank_transition",
+                    "classification_edges",
+                    subject,
+                    "edge violates the allowed rank order",
+                    {"parent_rank": row["parent_rank"], "child_rank": row["child_rank"]},
+                )
+            )
+        if row["enabled"] and (
+            not row["reviewed"]
+            or row["review_status"] != "reviewed"
+            or any(not _text(row.get(field)) for field in ("source_release", "citation", "retrieved_at", "evidence", "reviewed_by", "reviewed_at"))
+        ):
+            findings.append(
+                _finding(
+                    "fatal",
+                    "enabled_edge_without_reviewed_provenance",
+                    "classification_edges",
+                    subject,
+                    "enabled edge lacks reviewed provenance",
+                )
+            )
+    enabled = edges.filter(pl.col("enabled"))
+    parents = enabled.group_by("child_node_id").agg(pl.col("parent_node_id").n_unique().alias("parent_count"))
+    for row in parents.filter(pl.col("parent_count") > 1).iter_rows(named=True):
+        findings.append(
+            _finding(
+                "fatal",
+                "enabled_node_has_multiple_parents",
+                "classification_edges",
+                row.get("child_node_id"),
+                "enabled node has more than one enabled parent",
+            )
+        )
+    cycle = _first_cycle(enabled)
+    if cycle:
+        findings.append(
+            _finding(
+                "fatal",
+                "enabled_hierarchy_cycle",
+                "classification_edges",
+                cycle[0],
+                "enabled classification edges contain a cycle",
+                {"cycle": cycle},
+            )
+        )
+
+
+def _validate_mappings(nodes: pl.DataFrame, mappings: pl.DataFrame, findings: list[dict[str, Any]]) -> None:
+    known_species_nodes = set(nodes.filter(pl.col("rank") == "SPECIES")["node_id"].to_list())
+    for row in mappings.iter_rows(named=True):
+        subject = row.get("gbif_species_key")
+        if row.get("species_node_id") not in known_species_nodes:
+            findings.append(
+                _finding("fatal", "mapping_unknown_species_node", "species_gbif_mappings", subject, "GBIF mapping references an unknown species node")
+            )
+        if row["enabled"] and (
+            row["taxonomic_status"] != "ACCEPTED"
+            or not row["reviewed"]
+            or row["review_status"] != "reviewed"
+            or any(not _text(row.get(field)) for field in ("accepted_taxon_key", "gbif_species_key", "accepted_scientific_name", "source_release", "citation", "retrieved_at", "evidence", "reviewed_by", "reviewed_at"))
+        ):
+            findings.append(
+                _finding(
+                    "fatal",
+                    "enabled_mapping_invalid",
+                    "species_gbif_mappings",
+                    subject,
+                    "enabled GBIF mapping is not accepted, reviewed, and fully sourced",
+                )
+            )
+    enabled = mappings.filter(pl.col("enabled"))
+    if enabled.is_empty():
+        findings.append(_finding("fatal", "no_enabled_gbif_mapping", "species_gbif_mappings", "", "no enabled GBIF species mapping exists"))
+    _append_duplicate_findings(
+        enabled,
+        ("gbif_species_key",),
+        "duplicate_enabled_gbif_mapping",
+        "species_gbif_mappings",
+        findings,
+    )
+    _append_duplicate_findings(
+        enabled,
+        ("species_node_id",),
+        "duplicate_enabled_species_node_mapping",
+        "species_gbif_mappings",
+        findings,
+    )
+
+
+def _validate_leaf_paths(paths: pl.DataFrame, findings: list[dict[str, Any]]) -> None:
+    enabled = paths.filter(pl.col("enabled"))
+    if enabled.is_empty():
+        findings.append(_finding("fatal", "no_enabled_leaf_path", "classification_leaf_paths", "", "no complete enabled five-rank leaf path exists"))
+        return
+    _append_duplicate_findings(
+        enabled,
+        ("accepted_taxon_key",),
+        "duplicate_enabled_leaf_path",
+        "classification_leaf_paths",
+        findings,
+    )
+    required = [
+        item
+        for rank in CLASSIFICATION_RANKS
+        for item in (f"{rank.casefold()}_node_id", rank.casefold())
+    ]
+    for row in enabled.iter_rows(named=True):
+        missing = [field for field in required if not _text(row.get(field))]
+        if missing:
+            findings.append(
+                _finding(
+                    "fatal",
+                    "enabled_leaf_path_has_gap",
+                    "classification_leaf_paths",
+                    row.get("accepted_taxon_key"),
+                    "enabled leaf path skips one or more required ranks",
+                    {"missing_fields": missing},
+                )
+            )
+
+
+def _append_registry_coverage_gaps(
+    taxa: pl.DataFrame,
+    leaf_paths: pl.DataFrame,
+    findings: list[dict[str, Any]],
+) -> None:
+    enabled_keys = set(leaf_paths.filter(pl.col("enabled"))["accepted_taxon_key"].to_list())
+    for row in _accepted_species_rows(taxa):
+        key = _text(row.get("accepted_taxon_key"))
+        if key not in enabled_keys:
+            findings.append(
+                _finding(
+                    "warning",
+                    "unmapped_accepted_species",
+                    "classification_leaf_paths",
+                    key,
+                    "accepted GBIF species has no complete reviewed five-rank path",
+                    {"scientific_name": _text(row.get("species"), row.get("scientific_name")), "family": _text(row.get("family"))},
+                )
+            )
+
+
+def _append_duplicate_findings(
+    frame: pl.DataFrame,
+    keys: tuple[str, ...],
+    code: str,
+    table: str,
+    findings: list[dict[str, Any]],
+) -> None:
+    if frame.is_empty():
+        return
+    duplicates = frame.group_by(list(keys)).len().filter(pl.col("len") > 1)
+    for row in duplicates.iter_rows(named=True):
+        subject = "|".join(_text(row.get(key)) for key in keys)
+        findings.append(_finding("fatal", code, table, subject, f"duplicate rows exist for {', '.join(keys)}"))
+
+
+def _first_cycle(edges: pl.DataFrame) -> list[str]:
+    children: dict[str, list[str]] = {}
+    for row in edges.iter_rows(named=True):
+        children.setdefault(str(row["parent_node_id"]), []).append(str(row["child_node_id"]))
+    visited: set[str] = set()
+    active: list[str] = []
+
+    def visit(node: str) -> list[str]:
+        if node in active:
+            start = active.index(node)
+            return [*active[start:], node]
+        if node in visited:
+            return []
+        active.append(node)
+        for child in children.get(node, ()):
+            cycle = visit(child)
+            if cycle:
+                return cycle
+        active.pop()
+        visited.add(node)
+        return []
+
+    for node in sorted(children):
+        cycle = visit(node)
+        if cycle:
+            return cycle
+    return []
+
+
+def _accepted_species_rows(taxa: pl.DataFrame) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in taxa.iter_rows(named=True)
+        if _text(row.get("rank")).upper() == "SPECIES"
+        and (_text(row.get("taxonomic_status"), row.get("status")).upper() or "ACCEPTED") == "ACCEPTED"
+    ]
+
+
+def _coverage_by_family(accepted_species: list[dict[str, Any]], enabled_keys: set[str]) -> list[dict[str, Any]]:
+    counts: dict[str, dict[str, int | str]] = {}
+    for row in accepted_species:
+        family = _text(row.get("family")) or "unknown"
+        bucket = counts.setdefault(family, {"family": family, "accepted_species": 0, "mapped_species": 0})
+        bucket["accepted_species"] = int(bucket["accepted_species"]) + 1
+        if _text(row.get("accepted_taxon_key")) in enabled_keys:
+            bucket["mapped_species"] = int(bucket["mapped_species"]) + 1
+    return [counts[family] for family in sorted(counts)]
+
+
+def _finding(
+    severity: str,
+    code: str,
+    table: str,
+    subject: object,
+    message: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "severity": severity,
+        "code": code,
+        "table": table,
+        "subject": _text(subject),
+        "message": message,
+        "details": dict(details or {}),
+    }
 
 
 def _frame(rows: Sequence[dict[str, Any]], schema: dict[str, pl.DataType]) -> pl.DataFrame:
