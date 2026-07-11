@@ -48,9 +48,9 @@ uv run biominer --config config/biominer.cloud.example.toml run \
   --taxon Papilionidae \
   --rank family \
   --registry-dir s3://biominer/registry/butterflies-v2 \
-  --taxonomy-candidate-table s3://biominer/registry/butterflies-v2 \
-  --taxonomy-text-embedding-cache s3://biominer/registry/butterflies-v2/classification_text_embeddings.parquet \
-  --output-prefix s3://biominer/runs \
+  --taxonomy-candidate-table s3://biominer/registry/classification-v3 \
+  --taxonomy-text-embedding-cache s3://biominer/cache/classification-v3/classification_text_embeddings.parquet \
+  --output-prefix s3://biominer/runs/classification-v3 \
   --classification-mode hierarchical_butterfly_classification
 ```
 

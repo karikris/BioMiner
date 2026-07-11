@@ -89,6 +89,7 @@ Compile the reviewed six-rank overlay (SUBTRIBE may be an explicit reviewed skip
 ```bash
 uv run biominer registry build-classification \
   --registry-dir data/registry/butterflies-v2 \
+  --output-dir data/registry/classification-v3 \
   --source-json config/taxonomy/papilionoidea_classification_v3.json
 ```
 
@@ -97,8 +98,8 @@ prompt, model, or checkpoint version:
 
 ```bash
 uv run biominer dev vision build-text-embedding-cache \
-  --taxonomy-candidate-table data/registry/butterflies-v2 \
-  --output data/registry/butterflies-v2/classification_text_embeddings.parquet
+  --taxonomy-candidate-table data/registry/classification-v3 \
+  --output data/cache/classification-v3/classification_text_embeddings.parquet
 ```
 
 Audit the registry:
@@ -116,9 +117,9 @@ uv run biominer --config config/biominer.local.example.toml run \
   --taxon Papilionidae \
   --rank family \
   --registry-dir data/registry/butterflies-v2 \
-  --taxonomy-candidate-table data/registry/butterflies-v2 \
-  --taxonomy-text-embedding-cache data/registry/butterflies-v2/classification_text_embeddings.parquet \
-  --output-prefix data/runs \
+  --taxonomy-candidate-table data/registry/classification-v3 \
+  --taxonomy-text-embedding-cache data/cache/classification-v3/classification_text_embeddings.parquet \
+  --output-prefix data/runs/classification-v3 \
   --storage-backend local \
   --workstore-backend sqlite \
   --classification-mode hierarchical_butterfly_classification \

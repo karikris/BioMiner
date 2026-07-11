@@ -15,6 +15,7 @@ def test_authoritative_docs_and_classification_source_exist() -> None:
         Path("docs/production.md"),
         Path("docs/vision.md"),
         Path("docs/migrations/classification-v3.md"),
+        Path("docs/verification/top3_cascade_final_verification.md"),
         Path("config/taxonomy/papilionoidea_classification_v3.json"),
         Path("config/vision_profiles/mac_m5pro_64gb.json"),
     ):
@@ -38,6 +39,29 @@ def test_classification_v3_cutover_doc_preserves_version_and_output_boundaries()
         "previous v2-capable release or Git SHA",
     ):
         assert required in text
+
+
+def test_authoritative_examples_separate_base_overlay_cache_and_run_roots() -> None:
+    text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (Path("README.md"), Path("docs/registry.md"), Path("docs/production.md"))
+    )
+
+    for required in (
+        "--output-dir data/registry/classification-v3",
+        "--taxonomy-candidate-table data/registry/classification-v3",
+        "--output data/cache/classification-v3/classification_text_embeddings.parquet",
+        "--taxonomy-candidate-table s3://biominer/registry/classification-v3",
+        "--taxonomy-text-embedding-cache s3://biominer/cache/classification-v3/classification_text_embeddings.parquet",
+    ):
+        assert required in text
+    for forbidden in (
+        "--taxonomy-candidate-table data/registry/butterflies-v2",
+        "--taxonomy-text-embedding-cache data/registry/butterflies-v2",
+        "--taxonomy-candidate-table s3://biominer/registry/butterflies-v2",
+        "--taxonomy-text-embedding-cache s3://biominer/registry/butterflies-v2",
+    ):
+        assert forbidden not in text
 
 
 def test_classification_source_has_reviewed_six_rank_path_with_subtribe_skip() -> None:

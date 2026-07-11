@@ -56,6 +56,7 @@ Flickr definitions contain one normalized term and one field (`tags` or `text`).
 
 ```bash
 uv run biominer registry build --output-dir data/registry/butterflies-v2 --registry-version butterflies-v2
-uv run biominer registry build-classification --registry-dir data/registry/butterflies-v2
+uv run biominer registry build-classification --registry-dir data/registry/butterflies-v2 --output-dir data/registry/classification-v3
+uv run biominer dev vision build-text-embedding-cache --taxonomy-candidate-table data/registry/classification-v3 --output data/cache/classification-v3/classification_text_embeddings.parquet
 uv run biominer registry audit --registry-dir data/registry/butterflies-v2 --report-dir reports
 ```
