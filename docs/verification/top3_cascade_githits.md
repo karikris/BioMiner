@@ -1529,3 +1529,224 @@ Morph-derived claim is made.
 
 Pre-implementation solution IDs: none generated. Verification uses the exact
 immutable MLflow and Pydantic source references above.
+
+### Final verification — 2026-07-11
+
+Confidence: high.
+
+Final research questions:
+
+- Do locked Polars and Arrow releases preserve BioMiner's exact nested schema,
+  typed-empty, Zstandard, and Parquet round-trip contract?
+- Does the pinned OpenCLIP release justify normalized raw-cosine or
+  pre-softmax-logit ordering without candidate-set softmax?
+- Is top-k ordering stable under an explicit tie policy and applied to one
+  global candidate frontier?
+- Does the work identity use canonical content hashing and remain separate
+  from mutable attempt and output state?
+
+The required strict-licence `get_example` call combined those questions. It
+hit the rolling 50-generated-example quota with retry estimate 57723 seconds.
+The exact query was retried once and returned the same error with estimate
+57694 seconds. Neither call produced a solution ID. GitHits package/repository
+source navigation remained available, so final verification used exact
+immutable source reads and applicable strict solution IDs already recorded by
+the phases; no new ID is invented.
+
+#### Review of every recorded phase solution ID
+
+All 24 unique strict solution IDs in this document were reviewed before
+selecting the evidence applicable to the final implementation:
+
+- Phase 1 graph/schema/fingerprint evidence:
+  `78a5fd65-7fc3-4457-b954-1d1a8e242fa2`,
+  `a04caaf5-9c66-4bcf-9e7b-8d08dbe3a062`,
+  `b6ea6462-b3ec-441b-8a56-39bc29c59fb8`,
+  `b4cedb7f-90a3-4a70-a5f9-889932e7b78a`, and
+  `e75c1d38-3897-418b-800a-5fdeefc6c825`;
+- Phase 2 active-path/store evidence:
+  `1b65243e-51a3-4304-9821-eab4f2570fe0`,
+  `511fc304-02b1-49b4-872f-1b5882d08a10`,
+  `95dff618-be06-4f89-8098-4a80075eef2d`,
+  `95fc44d5-7d13-42f2-b2b0-6e836ecb9cbd`,
+  `78ded640-7add-4677-8a43-d652116d3eed`,
+  `ca6b81e3-0f4d-41d3-8af8-1ee3fd6c3b3b`,
+  `fc033682-87c8-47c9-8ad1-4f320d14f4a3`, and
+  `561375ba-a8e2-4200-a275-c494f366acb6`;
+- Phase 3 global-top-k evidence:
+  `ff07eee2-f883-4dce-a4cd-37c584518675`,
+  `01e56d9b-226c-474c-8d7e-85891e70c457`,
+  `0eaddf09-f3db-493a-8533-ea91a4138e5b`, and
+  `e1eefff4-fa7c-405a-a9f2-fadd7208e6fe`;
+- Phase 4 raw-similarity/cache evidence:
+  `5028e074-f077-484a-b607-cae57531390b`,
+  `7e71f8b6-3dfd-4ee2-8358-97a83bd40fc8`,
+  `0768879f-03d4-4612-8572-958d1fca077a`,
+  `19c1ebb4-8791-4cf5-8af4-367ccbb702d6`, and
+  `fbf0d6c3-b346-427c-8a0b-9a79caa6ae0c`;
+- Phase 5 nested-schema evidence:
+  `77cf4806-5805-4e4b-b866-6fb623606bcc` and
+  `59c46397-efc0-48a6-b63e-5a7529e18947`;
+- Phase 6 reused `a04caaf5-9c66-4bcf-9e7b-8d08dbe3a062` for the bounded
+  canonical-hash comparison;
+- Phase 7 reused `ff07eee2-f883-4dce-a4cd-37c584518675` and
+  `01e56d9b-226c-474c-8d7e-85891e70c457` for deterministic acceptance;
+- Phase 8 generated no new solution ID and retains the exact MLflow and
+  Pydantic migration-source reads recorded above.
+
+Mutable PR/issue-only references and solutions irrelevant to the final four
+research questions were not elevated into the final evidence set.
+
+#### Locked Polars and Arrow recheck
+
+GitHits resolved Polars tag `py-1.41.2` to exact commit
+`pola-rs/polars@599a503a0997188a74750926a5cdaa47585cf8aa`.
+`LICENSE:1-20` is MIT; its indexed file hash is
+`8296022372dc83cc8ef234b3d4889ef8f8b1779754a78bebf13d2c5178a6b4c4`.
+Exact calls and decisive reads were:
+
+```text
+code_read(py-polars/tests/unit/constructors/test_constructors.py, 1358:1430)
+code_read(py-polars/src/polars/dataframe/frame.py, 4125:4205)
+code_read(py-polars/src/polars/dataframe/frame.py, 4285:4370)
+code_read(py-polars/tests/unit/io/test_parquet.py, 360:386)
+```
+
+Those windows construct an explicit nullable `List(Struct(...))` schema,
+construct a zero-row frame from the same schema, declare native
+`write_parquet(compression="zstd", use_pyarrow=False)`, and round-trip nested
+list/struct values with frame equality. Relevant indexed hashes are
+`be3e179b8edc83b9c42c84b6d0579fce61ef51d21c88681ec209294223f2dfd6`,
+`c6b96fe46fff30450f01c3f6c725aefab32ab0e4416024e43efc2b22543cd9aa`,
+and `46116f96ad653855e279a6a5deca7d4d854cf18d2982e6f5b8af140552d78bf8`.
+
+GitHits resolved Arrow tag `apache-arrow-24.0.0` to exact commit
+`apache/arrow@31b4b6c0a0a7e7c117312d285541a21446675ec6`.
+`LICENSE.txt:1-30` is Apache-2.0; its indexed hash is
+`d1c981370f1ffd4edcdd2fb3565c8939cc40c75e24e1f92d581d04e54f0dff81`.
+Exact reads at `python/pyarrow/tests/test_extension_type.py:724-740`,
+`python/pyarrow/tests/parquet/test_data_types.py:270-307`,
+`python/pyarrow/tests/parquet/common.py:43-75`, and
+`python/pyarrow/_parquet.pyx:1515-1550` independently confirm explicit
+list-of-struct schemas, nested Parquet schema/value round trips, and native
+ZSTD mapping.
+
+Applicable strict solution IDs:
+`77cf4806-5805-4e4b-b866-6fb623606bcc` and
+`59c46397-efc0-48a6-b63e-5a7529e18947`.
+
+#### OpenCLIP raw-similarity recheck
+
+GitHits resolved OpenCLIP 3.3.0 to exact commit
+`mlfoundations/open_clip@30573618fc375b12f094ef64cb3a1391cf611c45`
+(MIT; `LICENSE:1-23`, indexed hash
+`4a5b4f13ea4792a8211a69f32d2b460b6d520e57cd23c6301e707c76a6e97a55`).
+Exact reads found:
+
+- `src/open_clip/model.py:326-354`: image and text encoders apply
+  `F.normalize(..., dim=-1)`; logits are their dot product under positive
+  `exp(logit_scale)` and optional constant broadcast bias;
+- `src/open_clip/zero_shot_classifier.py:21-68`: template embeddings are
+  encoded in bounded class batches, averaged, normalized again, transposed,
+  and concatenated;
+- `src/open_clip_train/zero_shot.py:11-42`: zero-shot evaluation applies
+  `topk` directly to raw logits without softmax.
+
+The corresponding file hashes are
+`af1ea24220ddb928fcafcca302b57dd4e2222f865feab7168b1b954f3bfc3d30`,
+`683bc78fa3c43d6dae522490a331da005fee8664793db654c9fbb6e0c296aea9`,
+and `4b1cf32af0e5d6321e03c587ba477f2b664c409f81f841b5d6324b828b72d1f8`.
+For a fixed checkpoint, normalized dot product is cosine; the positive scale
+and constant bias preserve ordering. BioMiner therefore correctly keeps
+softmax diagnostic-only.
+
+Applicable strict solution IDs:
+`5028e074-f077-484a-b607-cae57531390b`,
+`7e71f8b6-3dfd-4ee2-8358-97a83bd40fc8`, and
+`fbf0d6c3-b346-427c-8a0b-9a79caa6ae0c`.
+
+#### Deterministic top-k and work-identity recheck
+
+GitHits resolved scikit-learn to exact commit
+`scikit-learn/scikit-learn@6b9e392862ac86f6a3f3b71ee89622d5af49bb4e`
+(BSD-3-Clause). `sklearn/metrics/_ranking.py:2200-2250` uses a stable
+`mergesort` before its top-k slice; fixed tests at
+`sklearn/metrics/tests/test_ranking.py:2210-2233` assert top-1/2/3 and an
+explicit tie rule. Indexed hashes are
+`a028c792d23b7f957f6c2c7f249bd25f55216bf5380a1086c43bb594af751e8b`
+and `02ff1a889c6c9bbabbf9cd5a77f633948c1c3c23300e1c35a9714e9c4135fc87`.
+BioMiner intentionally rejects scikit-learn's numeric-index tie rule and uses
+scientific name then stable node ID as explicit secondary keys.
+
+GitHits resolved `microsoft/sammo@2137815ba9a6fb8c86e5c18cc47ecda8ad8f5e98`
+(MIT). `sammo/search.py:48-60,338-351` sorts one combined frontier and takes a
+single global beam slice (file hash
+`18ae939b91f344c686bb01423868a390424ae815b38dcfdf50b15e86fdd78602`).
+SAMMO has no explicit secondary tie key and is used only for the global
+sort-then-slice pattern.
+
+GitHits resolved `iterative/dvc@f74c1c0e709de61f571905802bc0c75035dc6ef2`
+(Apache-2.0). `dvc/utils/__init__.py:20-51` recursively filters mappings,
+serializes sorted-key JSON as UTF-8, and computes SHA-256 (indexed hash
+`14ba6df90d7a0e988722a740c732446d23c62fa13de800caa1a26773dd80e03c`).
+`dvc/stage/cache.py:20-90,145-195` keeps the input-derived cache key separate
+from the output value and publishes via a temporary location then move (hash
+`36666e0944002be2623869b834eda202c19dcbf334fecbe2275f2362b2907ffd`).
+DVC does not model queue attempt identity, so that claim rests on BioMiner's
+own schema and tests, not on DVC.
+
+Applicable strict solution IDs:
+`ff07eee2-f883-4dce-a4cd-37c584518675`,
+`01e56d9b-226c-474c-8d7e-85891e70c457`, and
+`a04caaf5-9c66-4bcf-9e7b-8d08dbe3a062`.
+
+#### Final implementation comparison
+
+- `PATH_CASCADE_OUTPUT_SCHEMA` now owns every overlapping object-score dtype;
+  tests assert exact equality and reject legacy fields. The old schema had
+  silently widened eight v3 `UInt8`/`Float32` fields.
+- Production scoring sorts once by
+  `(-raw_similarity, scientific_name, node_id)` and uses no accumulated parent
+  score. The historical cumulative selector is isolated in the developer
+  benchmark.
+- Normalized cached text and image embeddings drive raw matrix products;
+  selection never depends on candidate-set softmax.
+- Work identities include every cascade output-affecting field using sorted,
+  compact JSON, UTF-8, and SHA-256. Retry, claim, and attempt metadata remain
+  separate mutable workstore columns.
+- A temporary classification-v3 build passed fatal QA and checksum/fingerprint
+  validation; a hierarchical dry run emitted the fixed 3/20/5/3 contract.
+- The model-free rolling matrix completed 1,000 records across 72 variants;
+  the cascade benchmark verified seven families, genus-top-three species
+  universe 75, first pass 75 -> 20, and distinct rerank 20 -> 5 -> report 3.
+- Final Ruff passed and the complete repository suite passed 986 tests.
+
+Patterns rejected after final comparison:
+
+- inferred or permissively widened physical schemas;
+- historical output reinterpretation or mixed v2/v3 roots;
+- softmax probabilities as cross-stage ranking evidence;
+- unstable or input-order tie breaks;
+- per-parent beams or cumulative parent/child selection;
+- incomplete work-key payloads or queue attempt numbers in computation
+  identity;
+- indefinite compatibility aliases and a second production hierarchical
+  classifier.
+
+Morph MCP was invoked for the final local call-site review and failed with the
+exact response `Error: 429 status code (no body)`. Focused local reads, `rg`,
+tests, and the source comparisons above supplied the final evidence; no
+Morph-derived claim is made.
+
+GitHits-Phase: 8
+
+GitHits-Solution-IDs: `77cf4806-5805-4e4b-b866-6fb623606bcc`,
+`59c46397-efc0-48a6-b63e-5a7529e18947`,
+`5028e074-f077-484a-b607-cae57531390b`,
+`7e71f8b6-3dfd-4ee2-8358-97a83bd40fc8`,
+`fbf0d6c3-b346-427c-8a0b-9a79caa6ae0c`,
+`ff07eee2-f883-4dce-a4cd-37c584518675`,
+`01e56d9b-226c-474c-8d7e-85891e70c457`,
+`a04caaf5-9c66-4bcf-9e7b-8d08dbe3a062`
+
+GitHits-Verification: passed
