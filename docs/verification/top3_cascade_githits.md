@@ -398,3 +398,86 @@ Post-implementation solution IDs:
 `ca6b81e3-0f4d-41d3-8af8-1ee3fd6c3b3b`,
 `fc033682-87c8-47c9-8ad1-4f320d14f4a3`,
 `561375ba-a8e2-4200-a275-c494f366acb6`.
+
+## Phase 3 — Global rank-local top-three cascade
+
+### Pre-implementation verification — 2026-07-11
+
+BioMiner’s required beam is a node beam: at each rank, construct the union of
+eligible nodes under the currently active paths, score those nodes using only
+the current rank, sort once, and retain at most three globally. It is not a
+complete-path beam, top-three per parent, a diversity quota, or cumulative
+path search.
+
+Primary strict call:
+
+```text
+get_example(
+  query="beam search implementation global top k candidate pruning deterministic tie breaking tests",
+  language="Python",
+  license_mode="strict",
+  format="json"
+)
+```
+
+Solution ID: `ff07eee2-f883-4dce-a4cd-37c584518675`.
+GitHits source navigation resolved
+`mberlanda/quantik-core-py@refs/pull/15/head` to immutable commit
+`bd468bfce026c02c7755d70f4a6c36d56256f84c`; `code_read(LICENSE, 1:30)`
+confirmed MIT. Focused reads found:
+
+- `_score_and_prune` in `src/quantik_core/beam_search.py:500-570` scores the
+  combined candidate frontier, sorts once, and slices `[:beam_width]`;
+- mutation-sensitive ranking fixtures in `tests/test_beam_search.py` around
+  line 303;
+- same-seed determinism tests around line 188.
+
+A supplemental strict query for a globally sorted candidate list with
+deterministic secondary keys returned solution ID
+`01e56d9b-226c-474c-8d7e-85891e70c457`. Its durable source was
+`microsoft/sammo@2137815ba9a6fb8c86e5c18cc47ecda8ad8f5e98` (MIT); mutable
+issue/PR links in the generated reference set were not used as durable
+evidence. A broader taxonomy-specific query returned no result above the
+quality threshold, and three other broad calls were terminated after repeated
+waits; no IDs or claims were invented for them.
+
+Patterns adopted:
+
+- restrict the next candidate pool to descendants represented by currently
+  active paths;
+- deduplicate candidates by stable taxonomy `node_id` before scoring;
+- score the entire current-rank union once;
+- sort by raw similarity descending, scientific name ascending, then stable
+  node ID ascending;
+- retain exactly the first three actual nodes globally;
+- keep earlier-rank scores only as audit evidence;
+- use fixtures that make an incorrect algorithm produce a different survivor,
+  rather than relying on ordinary happy paths.
+
+Patterns rejected:
+
+- the source’s insertion-index tie-break: BioMiner input/traversal order is not
+  identity, so scientific name and source-scoped node ID are required;
+- game-tree mover sign changes, rollout evaluation, terminal-state rules, and
+  multiplicity semantics;
+- top-k independently under every parent;
+- reserving one branch per parent or otherwise enforcing taxonomic diversity;
+- multiplying, summing, averaging, or otherwise combining parent scores with
+  current-rank scores;
+- injecting a target species or requested branch into open classification.
+
+Decisive regression designs derived from the evidence:
+
+- Global versus per-parent: A1=.99, A2=.98, A3=.97, B1=.96, C1=.95 must retain
+  A1/A2/A3 even though all share family A.
+- Current versus cumulative: parent A=.10 with A1=.99/A2=.98/A3=.97 must beat
+  parent B=.90 with B1=.80/B2=.79/B3=.78 at the child rank.
+- Tie: equal scores under permuted input must always retain the same lexical
+  scientific-name/node-ID top three.
+- Restriction: a score-1.00 child below a pruned parent must never enter the
+  next candidate pool.
+
+Pre-implementation solution IDs:
+
+`ff07eee2-f883-4dce-a4cd-37c584518675`,
+`01e56d9b-226c-474c-8d7e-85891e70c457`.
