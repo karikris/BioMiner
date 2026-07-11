@@ -8,6 +8,9 @@ from biominer.registry.classification_v2 import (
     CLASSIFICATION_V2_VERSION,
     build_classification_v2_frames,
     build_classification_v2_manifest,
+    classification_v2_artifact_paths,
+    load_classification_v2_source,
+    write_classification_v2_artifacts,
 )
 
 
@@ -56,6 +59,48 @@ def test_classification_v2_disables_nonaccepted_gbif_mapping_and_leaf_path() -> 
     assert frames.prompt_labels.is_empty()
 
 
+def test_classification_v2_requires_explicit_reviewer_identity_and_date() -> None:
+    source = _reviewed_source()
+    source["nodes"][0].pop("reviewed_by")
+
+    frames = build_classification_v2_frames(_taxa(), source)
+
+    family = frames.nodes.filter(pl.col("rank") == "FAMILY").to_dicts()[0]
+    assert family["reviewed"] is False
+    assert family["enabled"] is False
+    assert family["disabled_reason"] == "unreviewed_node"
+    assert frames.leaf_paths["enabled"].to_list() == [False]
+
+
+def test_curated_papilio_demoleus_source_writes_versioned_artifacts(tmp_path) -> None:
+    source_path = "config/taxonomy/papilionoidea_classification_v2.json"
+    source = load_classification_v2_source(source_path)
+    assert source["species_mappings"][0]["gbif_species_key"] == "1938069"
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    _taxa().write_parquet(registry / "taxa.parquet")
+    (registry / "manifest.json").write_text('{"registry_version":"butterflies-v2"}', encoding="utf-8")
+
+    manifest = write_classification_v2_artifacts(registry, source_path=source_path)
+
+    paths = classification_v2_artifact_paths(registry)
+    assert all(path.exists() for key, path in paths.items() if key != "qa_findings")
+    assert manifest["classification_version"] == CLASSIFICATION_V2_VERSION
+    assert manifest["enabled_leaf_path_count"] == 1
+    assert pl.read_parquet(paths["leaf_paths"]).select(
+        "family", "subfamily", "tribe", "genus", "species", "gbif_species_key"
+    ).to_dicts() == [
+        {
+            "family": "Papilionidae",
+            "subfamily": "Papilioninae",
+            "tribe": "Papilionini",
+            "genus": "Papilio",
+            "species": "Papilio demoleus",
+            "gbif_species_key": "1938069",
+        }
+    ]
+
+
 def _taxa() -> pl.DataFrame:
     return pl.DataFrame(
         [
@@ -78,7 +123,7 @@ def _reviewed_source() -> dict[str, object]:
         "rank": rank,
         "scientific_name": name,
         "source_id": "ncbi-76202",
-        "reviewed": True,
+        **_review(),
         "enabled": True,
     }
     return {
@@ -102,10 +147,10 @@ def _reviewed_source() -> dict[str, object]:
             node("species:papilio-demoleus", "SPECIES", "Papilio demoleus"),
         ],
         "edges": [
-            {"parent_node_id": "family:papilionidae", "child_node_id": "subfamily:papilioninae", "source_id": "ncbi-76202", "reviewed": True},
-            {"parent_node_id": "subfamily:papilioninae", "child_node_id": "tribe:papilionini", "source_id": "ncbi-76202", "reviewed": True},
-            {"parent_node_id": "tribe:papilionini", "child_node_id": "genus:papilio", "source_id": "ncbi-76202", "reviewed": True},
-            {"parent_node_id": "genus:papilio", "child_node_id": "species:papilio-demoleus", "source_id": "ncbi-76202", "reviewed": True},
+            {"parent_node_id": "family:papilionidae", "child_node_id": "subfamily:papilioninae", "source_id": "ncbi-76202", **_review()},
+            {"parent_node_id": "subfamily:papilioninae", "child_node_id": "tribe:papilionini", "source_id": "ncbi-76202", **_review()},
+            {"parent_node_id": "tribe:papilionini", "child_node_id": "genus:papilio", "source_id": "ncbi-76202", **_review()},
+            {"parent_node_id": "genus:papilio", "child_node_id": "species:papilio-demoleus", "source_id": "ncbi-76202", **_review()},
         ],
         "species_mappings": [
             {
@@ -113,7 +158,16 @@ def _reviewed_source() -> dict[str, object]:
                 "accepted_scientific_name": "Papilio demoleus",
                 "species_node_id": "species:papilio-demoleus",
                 "source_id": "ncbi-76202",
-                "reviewed": True,
+                **_review(),
             }
         ],
+    }
+
+
+def _review() -> dict[str, object]:
+    return {
+        "reviewed": True,
+        "review_status": "reviewed",
+        "reviewed_by": "BioMiner taxonomy review",
+        "reviewed_at": "2026-07-11",
     }

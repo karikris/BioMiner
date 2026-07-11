@@ -4,9 +4,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
 import json
+from pathlib import Path
 from typing import Any, Sequence
 
 import polars as pl
+
+from biominer.storage.parquet import write_parquet
 
 
 CLASSIFICATION_V2_VERSION = "butterfly-classification-v2.0.0"
@@ -22,6 +25,7 @@ CLASSIFICATION_V2_LEAF_PATHS_FILE = "classification_leaf_paths.parquet"
 CLASSIFICATION_V2_PROMPT_LABELS_FILE = "classification_prompt_labels.parquet"
 CLASSIFICATION_V2_QA_FINDINGS_FILE = "classification_qa_findings.parquet"
 CLASSIFICATION_V2_MANIFEST_FILE = "classification_manifest.json"
+DEFAULT_CLASSIFICATION_V2_SOURCE = Path("config/taxonomy/papilionoidea_classification_v2.json")
 
 SOURCE_SCHEMA: dict[str, pl.DataType] = {
     "classification_version": pl.String,
@@ -45,6 +49,9 @@ NODE_SCHEMA: dict[str, pl.DataType] = {
     "retrieved_at": pl.String,
     "evidence": pl.String,
     "reviewed": pl.Boolean,
+    "review_status": pl.String,
+    "reviewed_by": pl.String,
+    "reviewed_at": pl.String,
     "enabled": pl.Boolean,
     "disabled_reason": pl.String,
 }
@@ -61,6 +68,9 @@ EDGE_SCHEMA: dict[str, pl.DataType] = {
     "retrieved_at": pl.String,
     "evidence": pl.String,
     "reviewed": pl.Boolean,
+    "review_status": pl.String,
+    "reviewed_by": pl.String,
+    "reviewed_at": pl.String,
     "enabled": pl.Boolean,
     "disabled_reason": pl.String,
 }
@@ -78,6 +88,9 @@ GBIF_MAPPING_SCHEMA: dict[str, pl.DataType] = {
     "retrieved_at": pl.String,
     "evidence": pl.String,
     "reviewed": pl.Boolean,
+    "review_status": pl.String,
+    "reviewed_by": pl.String,
+    "reviewed_at": pl.String,
     "enabled": pl.Boolean,
     "disabled_reason": pl.String,
 }
@@ -139,6 +152,61 @@ class ClassificationV2Frames:
     gbif_mappings: pl.DataFrame
     leaf_paths: pl.DataFrame
     prompt_labels: pl.DataFrame
+
+
+def load_classification_v2_source(path: str | Path = DEFAULT_CLASSIFICATION_V2_SOURCE) -> dict[str, Any]:
+    source_path = Path(path)
+    payload = json.loads(source_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"classification source must be a JSON object: {source_path}")
+    return payload
+
+
+def write_classification_v2_artifacts(
+    registry_dir: str | Path,
+    *,
+    output_dir: str | Path | None = None,
+    source_path: str | Path = DEFAULT_CLASSIFICATION_V2_SOURCE,
+) -> dict[str, Any]:
+    registry = Path(registry_dir)
+    output = Path(output_dir) if output_dir is not None else registry
+    taxa_path = registry / "taxa.parquet"
+    if not taxa_path.exists():
+        raise FileNotFoundError(f"missing required registry artifact: {taxa_path}")
+    registry_manifest = _read_json_optional(registry / "manifest.json")
+    frames = build_classification_v2_frames(pl.read_parquet(taxa_path), load_classification_v2_source(source_path))
+    manifest = build_classification_v2_manifest(
+        frames,
+        registry_version=_text(registry_manifest.get("registry_version")),
+    )
+    manifest["classification_fingerprint"] = classification_v2_fingerprint(frames)
+    output.mkdir(parents=True, exist_ok=True)
+    paths = classification_v2_artifact_paths(output)
+    for key, frame in (
+        ("sources", frames.sources),
+        ("nodes", frames.nodes),
+        ("edges", frames.edges),
+        ("gbif_mappings", frames.gbif_mappings),
+        ("leaf_paths", frames.leaf_paths),
+        ("prompt_labels", frames.prompt_labels),
+    ):
+        write_parquet(frame, paths[key])
+    paths["manifest"].write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    return {**manifest, "outputs": {key: str(path) for key, path in paths.items()}}
+
+
+def classification_v2_artifact_paths(root: str | Path) -> dict[str, Path]:
+    base = Path(root)
+    return {
+        "sources": base / CLASSIFICATION_V2_SOURCES_FILE,
+        "nodes": base / CLASSIFICATION_V2_NODES_FILE,
+        "edges": base / CLASSIFICATION_V2_EDGES_FILE,
+        "gbif_mappings": base / CLASSIFICATION_V2_GBIF_MAPPINGS_FILE,
+        "leaf_paths": base / CLASSIFICATION_V2_LEAF_PATHS_FILE,
+        "prompt_labels": base / CLASSIFICATION_V2_PROMPT_LABELS_FILE,
+        "qa_findings": base / CLASSIFICATION_V2_QA_FINDINGS_FILE,
+        "manifest": base / CLASSIFICATION_V2_MANIFEST_FILE,
+    }
 
 
 def build_classification_v2_frames(
@@ -236,7 +304,8 @@ def _node_frame(
     for row in rows:
         source_id = _text(row.get("source_id"))
         source = source_by_id.get(source_id, {})
-        reviewed = _bool(row.get("reviewed"))
+        review = _review_fields(row)
+        reviewed = bool(review["reviewed"])
         reasons = []
         if not reviewed:
             reasons.append("unreviewed_node")
@@ -254,6 +323,9 @@ def _node_frame(
                 "retrieved_at": _text(source.get("retrieved_at")),
                 "evidence": _text(row.get("evidence"), source.get("evidence")),
                 "reviewed": reviewed,
+                "review_status": review["review_status"],
+                "reviewed_by": review["reviewed_by"],
+                "reviewed_at": review["reviewed_at"],
                 "enabled": _bool(row.get("enabled"), default=True) and not reasons,
                 "disabled_reason": ",".join(reasons),
             }
@@ -276,7 +348,8 @@ def _edge_frame(
         child = node_by_id.get(child_id, {})
         source_id = _text(row.get("source_id"))
         source = source_by_id.get(source_id, {})
-        reviewed = _bool(row.get("reviewed"))
+        review = _review_fields(row)
+        reviewed = bool(review["reviewed"])
         transition = (_text(parent.get("rank")), _text(child.get("rank")))
         reasons = []
         if not parent or not child:
@@ -304,6 +377,9 @@ def _edge_frame(
                 "retrieved_at": _text(source.get("retrieved_at")),
                 "evidence": _text(row.get("evidence"), source.get("evidence")),
                 "reviewed": reviewed,
+                "review_status": review["review_status"],
+                "reviewed_by": review["reviewed_by"],
+                "reviewed_at": review["reviewed_at"],
                 "enabled": _bool(row.get("enabled"), default=True) and not reasons,
                 "disabled_reason": ",".join(reasons),
             }
@@ -337,7 +413,8 @@ def _mapping_frame(
         species_node = node_by_id.get(species_node_id, {})
         source_id = _text(row.get("source_id"))
         source = source_by_id.get(source_id, {})
-        reviewed = _bool(row.get("reviewed"))
+        review = _review_fields(row)
+        reviewed = bool(review["reviewed"])
         reasons = []
         if len(matches) != 1:
             reasons.append("gbif_species_key_not_unique")
@@ -365,6 +442,9 @@ def _mapping_frame(
                 "retrieved_at": _text(source.get("retrieved_at")),
                 "evidence": _text(row.get("evidence"), source.get("evidence")),
                 "reviewed": reviewed,
+                "review_status": review["review_status"],
+                "reviewed_by": review["reviewed_by"],
+                "reviewed_at": review["reviewed_at"],
                 "enabled": _bool(row.get("enabled"), default=True) and not reasons,
                 "disabled_reason": ",".join(reasons),
             }
@@ -480,6 +560,19 @@ def _bool(value: object, *, default: bool = False) -> bool:
     return str(value).strip().casefold() in {"1", "true", "yes", "y"}
 
 
+def _review_fields(row: dict[str, Any]) -> dict[str, object]:
+    status = _text(row.get("review_status")) or ("reviewed" if _bool(row.get("reviewed")) else "candidate")
+    reviewed_by = _text(row.get("reviewed_by"))
+    reviewed_at = _text(row.get("reviewed_at"))
+    reviewed = _bool(row.get("reviewed")) and status == "reviewed" and bool(reviewed_by) and bool(reviewed_at)
+    return {
+        "reviewed": reviewed,
+        "review_status": status,
+        "reviewed_by": reviewed_by,
+        "reviewed_at": reviewed_at,
+    }
+
+
 def _bare_gbif_key(*values: object) -> str:
     text = _text(*values)
     return text.split(":", 1)[1] if text.casefold().startswith("gbif:") else text
@@ -491,6 +584,14 @@ def _first_value(frame: pl.DataFrame, column: str) -> str:
     return _text(frame[column][0])
 
 
+def _read_json_optional(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 __all__ = [
     "ALLOWED_RANK_TRANSITIONS",
     "CLASSIFICATION_RANKS",
@@ -498,5 +599,8 @@ __all__ = [
     "ClassificationV2Frames",
     "build_classification_v2_frames",
     "build_classification_v2_manifest",
+    "classification_v2_artifact_paths",
     "classification_v2_fingerprint",
+    "load_classification_v2_source",
+    "write_classification_v2_artifacts",
 ]
