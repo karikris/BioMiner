@@ -37,6 +37,46 @@ def test_batch_planner_slices_records_into_deterministic_parts() -> None:
     assert batches[1].records["flickr_photo_id"].to_list() == ["photo-2", "photo-3"]
 
 
+def test_rolling_worker_consumes_planned_batches_lazily(monkeypatch) -> None:  # noqa: ANN001
+    staged_indices: list[int] = []
+
+    def streaming_plan(_planner, records):  # noqa: ANN001, ANN202
+        yield PlannedBatch(0, "vision-batch-000000", "part-000000", records.slice(0, 1))
+        assert staged_indices == [0]
+        yield PlannedBatch(1, "vision-batch-000001", "part-000001", records.slice(1, 1))
+
+    def image_stage(planned: PlannedBatch) -> ImageBatch:
+        staged_indices.append(planned.batch_index)
+        return ImageBatch(planned.batch_index, planned.batch_id, planned.part_id, planned.records)
+
+    def detection_stage(batch: ImageBatch) -> DetectionBatch:
+        return DetectionBatch(batch, pl.DataFrame({"detection_id": [f"det-{batch.batch_index}"]}))
+
+    def score_input_stage(batch: DetectionBatch) -> ScoreInputBatch:
+        return ScoreInputBatch(batch, batch.frame)
+
+    def score_stage(batch: ScoreInputBatch) -> ScoreBatch:
+        return ScoreBatch(batch, batch.frame)
+
+    def commit_stage(batch: ScoreBatch) -> CommitResult:
+        return CommitResult(batch.score_input_batch.detection_batch.image_batch.batch_id, {})
+
+    monkeypatch.setattr(BatchPlanner, "plan", streaming_plan)
+    worker = RollingVisionWorker(
+        settings=RollingVisionWorkerSettings(vision_batch_rows=1),
+        image_stage=image_stage,
+        detection_stage=detection_stage,
+        score_input_stage=score_input_stage,
+        score_stage=score_stage,
+        commit_stage=commit_stage,
+    )
+
+    result = worker.run(pl.DataFrame({"flickr_photo_id": ["one", "two"]}))
+
+    assert staged_indices == [0, 1]
+    assert result.batches_seen == 2
+
+
 def test_image_stager_caches_http_images_and_writes_manifest(tmp_path) -> None:
     requests_seen: list[str] = []
 

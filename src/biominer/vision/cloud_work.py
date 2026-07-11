@@ -123,24 +123,14 @@ def enqueue_rolling_vision_work_from_source_shards(
         ),
         key=lambda shard: str(shard.get("uri") or ""),
     )
-    records: list[dict[str, Any]] = []
-    record_source_uris: list[str] = []
     remaining = None if limit is None or limit <= 0 else int(limit)
-    for shard in shards:
-        if remaining == 0:
-            break
-        source_shard_uri = str(shard["uri"])
-        frame = storage.read_parquet(source_shard_uri)
-        for row in frame.iter_rows(named=True):
-            if remaining == 0:
-                break
-            record = dict(row)
-            if not _record_is_detectable(record):
-                continue
-            records.append(_jsonable_record(record))
-            record_source_uris.append(source_shard_uri)
-            if remaining is not None:
-                remaining -= 1
+    pending_records: list[dict[str, Any]] = []
+    pending_source_uris: list[str] = []
+    source_records_seen = 0
+    source_shards_seen = 0
+    work_items_seen = 0
+    inserted = 0
+    batch_index = 0
     settings_key = rolling_vision_settings_key(
         detector=detector or {},
         vision_settings=vision_settings,
@@ -155,27 +145,53 @@ def enqueue_rolling_vision_work_from_source_shards(
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
     )
-    items: list[dict[str, Any]] = []
-    for batch_index, offset in enumerate(range(0, len(records), vision_batch_rows)):
-        batch_records = records[offset : offset + vision_batch_rows]
-        batch_source_uris = record_source_uris[offset : offset + vision_batch_rows]
-        items.append(
-            rolling_vision_work_item(
-                batch_records,
-                run_id=run_id,
-                batch_index=batch_index,
-                vision_batch_rows=vision_batch_rows,
-                source_shard_uris=batch_source_uris,
-                settings_key=settings_key,
-            )
+
+    def flush_pending() -> None:
+        nonlocal batch_index, inserted, work_items_seen
+        if not pending_records:
+            return
+        item = rolling_vision_work_item(
+            list(pending_records),
+            run_id=run_id,
+            batch_index=batch_index,
+            vision_batch_rows=vision_batch_rows,
+            source_shard_uris=list(pending_source_uris),
+            settings_key=settings_key,
         )
-    inserted = workstore.enqueue_work(job_name, registry_version, items, stage=vision_stage) if items else 0
+        inserted += workstore.enqueue_work(job_name, registry_version, [item], stage=vision_stage)
+        work_items_seen += 1
+        batch_index += 1
+        pending_records.clear()
+        pending_source_uris.clear()
+
+    for shard in shards:
+        if remaining == 0:
+            break
+        source_shards_seen += 1
+        source_shard_uri = str(shard["uri"])
+        for frame in storage.iter_parquet_batches(source_shard_uri, batch_size=vision_batch_rows):
+            for row in frame.iter_rows(named=True):
+                if remaining == 0:
+                    break
+                record = dict(row)
+                if not _record_is_detectable(record):
+                    continue
+                pending_records.append(_jsonable_record(record))
+                pending_source_uris.append(source_shard_uri)
+                source_records_seen += 1
+                if remaining is not None:
+                    remaining -= 1
+                if len(pending_records) == vision_batch_rows:
+                    flush_pending()
+            if remaining == 0:
+                break
+    flush_pending()
     return RollingVisionWorkPlanResult(
-        source_shards_seen=len(shards),
-        source_records_seen=len(records),
-        batches_planned=len(items),
+        source_shards_seen=source_shards_seen,
+        source_records_seen=source_records_seen,
+        batches_planned=work_items_seen,
         enqueued_work_items=inserted,
-        duplicate_work_items=len(items) - inserted,
+        duplicate_work_items=work_items_seen - inserted,
     )
 
 

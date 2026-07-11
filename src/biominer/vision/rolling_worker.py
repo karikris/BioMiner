@@ -446,7 +446,8 @@ class RollingVisionWorker:
     def run(self, records: pl.DataFrame) -> RollingVisionWorkerResult:
         started_at = datetime.now(UTC).isoformat()
         planner = BatchPlanner(batch_rows=self.settings.vision_batch_rows)
-        planned_batches = list(planner.plan(records))
+        planned_batches = planner.plan(records)
+        batches_seen = 0
         staged_image_batches: Queue[ImageBatch | object] = Queue(maxsize=self.settings.image_prefetch_batches)
         yolo_to_score_batches: Queue[DetectionBatch | object] = Queue(maxsize=self.settings.yolo_to_score_batches)
         score_to_commit_batches: Queue[ScoreBatch | object] = Queue(maxsize=self.settings.score_to_commit_batches)
@@ -467,6 +468,7 @@ class RollingVisionWorker:
             stop.set()
 
         def image_producer() -> None:
+            nonlocal batches_seen
             try:
                 for planned in planned_batches:
                     if stop.is_set():
@@ -476,6 +478,7 @@ class RollingVisionWorker:
                     self.max_resident_image_batches = max(self.max_resident_image_batches, resident.value)
                     stage_start = perf_counter()
                     staged = self._image_stage(planned)
+                    batches_seen += 1
                     metrics.add_stage_seconds("image_staging", perf_counter() - stage_start)
                     metrics.add_count("images_staged", staged.records.height)
                     image_ready_at[staged.batch_id] = perf_counter()
@@ -576,7 +579,7 @@ class RollingVisionWorker:
             started_at=started_at,
             ended_at=ended_at,
             status="complete",
-            batches_seen=len(planned_batches),
+            batches_seen=batches_seen,
             batches_committed=len(committed),
             part_outputs=tuple(result.part_outputs for result in committed),
             metrics={
