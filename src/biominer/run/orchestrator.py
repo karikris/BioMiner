@@ -1920,14 +1920,14 @@ def _cloud_source_records_available(storage: CloudStorage, workstore: WorkStore 
 
 def _read_cloud_source_records(storage: CloudStorage, workstore: WorkStore | None, plan: ProductionRunPlan) -> Any:
     if storage.exists(plan.artifact_uris.source_records_uri):
-        return storage.read_parquet(plan.artifact_uris.source_records_uri)
+        return storage.scan_parquet(plan.artifact_uris.source_records_uri).collect(engine="streaming")
     shard_uris = _cloud_source_record_shard_uris(workstore, plan)
     if not shard_uris:
         raise FileNotFoundError("source_records")
     import polars as pl
 
-    frames = [storage.read_parquet(uri) for uri in shard_uris]
-    return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+    scans = [storage.scan_parquet(uri) for uri in shard_uris]
+    return pl.concat(scans, how="diagonal_relaxed").collect(engine="streaming") if scans else pl.DataFrame()
 
 
 def _cloud_source_record_shard_uris(workstore: WorkStore | None, plan: ProductionRunPlan) -> list[str]:
@@ -1981,12 +1981,12 @@ def _read_cloud_stage_frame(storage: CloudStorage, workstore: WorkStore, plan: P
     import polars as pl
 
     uris = _cloud_stage_shard_uris(workstore, plan, stage)
-    frames = [storage.read_parquet(uri) for uri in uris]
-    return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+    scans = [storage.scan_parquet(uri) for uri in uris]
+    return pl.concat(scans, how="diagonal_relaxed").collect(engine="streaming") if scans else pl.DataFrame()
 
 
 def _read_cloud_part_frame(storage: CloudStorage, uri: str) -> Any:
-    return storage.read_parquet(uri)
+    return storage.scan_parquet(uri).collect(engine="streaming")
 
 
 def _read_optional_parquet(path: Path) -> Any:

@@ -3012,6 +3012,12 @@ class _FakeRunStorage:
     def read_parquet(self, uri: str) -> pl.DataFrame:
         return self.parquet_payloads[uri]
 
+    def scan_parquet(self, uri: str) -> pl.LazyFrame:
+        return self.parquet_payloads[uri].lazy()
+
+    def iter_parquet_batches(self, uri: str, *, batch_size: int):  # noqa: ANN201 - fake storage protocol.
+        yield from self.parquet_payloads[uri].iter_slices(batch_size)
+
     def read_json(self, uri: str) -> dict[str, object]:
         return self.json_payloads[uri]
 

@@ -220,8 +220,10 @@ def _candidate_shards(
 
 
 def _read_shards(storage: CloudStorage, shards: list[dict[str, Any]]) -> pl.DataFrame:
-    frames = [storage.read_parquet(str(shard["uri"])) for shard in shards]
-    return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+    scans = [storage.scan_parquet(str(shard["uri"])) for shard in shards]
+    if not scans:
+        return pl.DataFrame()
+    return pl.concat(scans, how="diagonal_relaxed").collect(engine="streaming")
 
 
 def _shard_identities(shards: tuple[dict[str, Any], ...]) -> list[str]:
