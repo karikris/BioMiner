@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import json
 from pathlib import Path
 from typing import Any
 
@@ -161,7 +162,7 @@ def path_cascade_result_to_output_row(result: PathCascadeResult) -> dict[str, An
             attribute="active_path_count_after",
         ),
         "pruning_trace_version": PATH_CASCADE_PRUNING_TRACE_VERSION,
-        "pruning_trace_json": "[]",
+        "pruning_trace_json": _pruning_trace_json(result),
     }
     for rank in CLASSIFICATION_RANKS[:-1]:
         prefix = rank.casefold()
@@ -263,6 +264,30 @@ def _raw_margin(scores: Sequence[RankCandidateScore]) -> float | None:
         if len(scores) > 1
         else None
     )
+
+
+def _pruning_trace_json(result: PathCascadeResult) -> str:
+    entries = []
+    for step in (*result.rank_steps, result.species_rerank_step):
+        entries.append(
+            {
+                "rank": step.rank,
+                "prompt_stage": step.prompt_stage,
+                "union_candidate_node_ids": list(step.candidate_node_ids),
+                "candidate_raw_similarities": list(step.candidate_raw_similarities),
+                "retained_node_ids": list(step.retained_node_ids),
+                "pruned_node_ids": list(step.pruned_node_ids),
+                "parent_node_ids": list(step.parent_node_ids),
+                "candidate_count": step.candidate_count,
+                "retained_count": step.retained_count,
+                "active_path_count_before": step.active_path_count_before,
+                "active_path_count_after": step.active_path_count_after,
+                "reviewed_skip_path_count": step.reviewed_skip_path_count,
+                "skipped": step.skipped,
+                "skip_reason": step.skip_reason,
+            }
+        )
+    return json.dumps(entries, sort_keys=True, separators=(",", ":"))
 
 
 def _normalize_row(row: Mapping[str, Any]) -> dict[str, Any]:

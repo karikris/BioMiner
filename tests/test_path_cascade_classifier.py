@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, dataclass, fields, replace
 from itertools import chain
+import json
 from math import sqrt
 from typing import Any, Sequence
 
@@ -149,6 +150,18 @@ def test_global_subfamily_beam_can_retain_three_nodes_from_one_family() -> None:
     assert step.candidate_count == 7
     assert step.retained_count == 3
     assert [score.node_id for score in step.top_candidates] == ["sf:a1", "sf:a2", "sf:a3"]
+    assert step.retained_node_ids == ("sf:a1", "sf:a2", "sf:a3")
+    assert set(step.candidate_node_ids) == {
+        "sf:a1",
+        "sf:a2",
+        "sf:a3",
+        "sf:a4",
+        "sf:b1",
+        "sf:b2",
+        "sf:c1",
+    }
+    assert set(step.pruned_node_ids) == {"sf:a4", "sf:b1", "sf:b2", "sf:c1"}
+    assert len(step.candidate_raw_similarities) == step.candidate_count
     assert result.beam_strategy == GLOBAL_RANK_TOP_K_BEAM_STRATEGY
     assert result.rank_beam_width == 3
     assert result.taxonomy_fingerprint == store.hierarchy_fingerprint
@@ -233,6 +246,20 @@ def test_family_rank_three_preserves_true_branch_but_rank_four_cannot_reenter() 
     assert output["family_top3_node_ids"] == ["f:a", "f:b", "f:c"]
     assert output["species_top1_node_id"] == "s:c1"
     assert output["species_top1_accepted_taxon_key"] == "gbif:2201"
+    trace = json.loads(output["pruning_trace_json"])
+    assert len(trace) == 7
+    assert [entry["prompt_stage"] for entry in trace[-2:]] == [
+        "species_first_pass",
+        "species_rerank",
+    ]
+    assert "cumulative" not in output["pruning_trace_json"]
+    for entry in trace:
+        assert entry["candidate_count"] == len(entry["union_candidate_node_ids"])
+        assert entry["candidate_count"] == len(entry["candidate_raw_similarities"])
+        assert set(entry["retained_node_ids"]).isdisjoint(entry["pruned_node_ids"])
+        assert set(entry["retained_node_ids"]) | set(entry["pruned_node_ids"]) == set(
+            entry["union_candidate_node_ids"]
+        )
 
     pruned_scorer = _scorer(
         store,
@@ -357,6 +384,8 @@ def test_fully_skipped_subtribe_records_skip_without_scoring_placeholders() -> N
     assert step.retained_count == 0
     assert step.active_path_count_before == step.active_path_count_after == 3
     assert step.skip_reason == "all_active_paths_reviewed_rank_skip"
+    assert step.candidate_node_ids == step.retained_node_ids == step.pruned_node_ids == ()
+    assert step.reviewed_skip_path_count == 3
     assert len(scorer.calls) == 6  # FAMILY, SUBFAMILY, TRIBE, GENUS, species first pass/rerank
 
 
@@ -461,6 +490,11 @@ def test_species_rerank_scores_exactly_first_pass_top_twenty_with_distinct_promp
     assert _rerank_label("s:a1:19") in rerank_call
     assert _rerank_label("s:a1:20") not in rerank_call
     assert result.final_winning_path[-1] == result.species_top1
+    assert result.species_rerank_step.candidate_count == 20
+    assert result.species_rerank_step.retained_count == 5
+    assert result.species_rerank_step.retained_node_ids == tuple(
+        score.node_id for score in result.species_top5
+    )
 
 
 def test_direct_and_cached_embedding_batches_have_matching_raw_rankings() -> None:

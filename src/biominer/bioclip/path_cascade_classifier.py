@@ -63,6 +63,7 @@ class RankCandidateScore:
 @dataclass(frozen=True)
 class RankStepResult:
     rank: str
+    prompt_stage: str
     candidate_count: int
     retained_count: int
     active_path_count_before: int
@@ -70,6 +71,11 @@ class RankStepResult:
     top_candidates: tuple[RankCandidateScore, ...]
     top1_margin: float | None
     parent_node_ids: tuple[str, ...]
+    candidate_node_ids: tuple[str, ...]
+    candidate_raw_similarities: tuple[float, ...]
+    retained_node_ids: tuple[str, ...]
+    pruned_node_ids: tuple[str, ...]
+    reviewed_skip_path_count: int
     skipped: bool
     skip_reason: str | None
 
@@ -86,6 +92,28 @@ class RankStepResult:
             raise ValueError("rank-step retained_count cannot exceed candidate_count")
         if len(self.top_candidates) != self.retained_count:
             raise ValueError("rank-step top_candidates must match retained_count")
+        if len(self.candidate_node_ids) != self.candidate_count:
+            raise ValueError("rank-step candidate_node_ids must match candidate_count")
+        if len(self.candidate_raw_similarities) != self.candidate_count:
+            raise ValueError("rank-step candidate similarities must match candidate_count")
+        if any(not isfinite(value) for value in self.candidate_raw_similarities):
+            raise ValueError("rank-step candidate similarities must be finite")
+        if len(self.retained_node_ids) != self.retained_count:
+            raise ValueError("rank-step retained_node_ids must match retained_count")
+        if self.retained_node_ids != tuple(score.node_id for score in self.top_candidates):
+            raise ValueError("rank-step retained IDs must align with top candidates")
+        if len(set(self.candidate_node_ids)) != len(self.candidate_node_ids):
+            raise ValueError("rank-step candidate node IDs must be unique")
+        if len(set(self.pruned_node_ids)) != len(self.pruned_node_ids):
+            raise ValueError("rank-step pruned node IDs must be unique")
+        if set(self.retained_node_ids) & set(self.pruned_node_ids):
+            raise ValueError("rank-step retained and pruned node IDs must be disjoint")
+        if set(self.retained_node_ids) | set(self.pruned_node_ids) != set(
+            self.candidate_node_ids
+        ):
+            raise ValueError("rank-step retained and pruned IDs must partition candidates")
+        if self.reviewed_skip_path_count < 0:
+            raise ValueError("rank-step reviewed skip path count must be nonnegative")
         if self.skipped and self.retained_count:
             raise ValueError("a skipped rank cannot retain scored nodes")
 
@@ -100,6 +128,7 @@ class PathCascadeResult:
     beam_strategy: str
     rank_beam_width: int
     rank_steps: tuple[RankStepResult, ...]
+    species_rerank_step: RankStepResult
     species_top20: tuple[RankCandidateScore, ...]
     species_reranked_top20: tuple[RankCandidateScore, ...]
     species_top5: tuple[RankCandidateScore, ...]
@@ -123,6 +152,10 @@ class PathCascadeResult:
             score.node_id for score in self.species_reranked_top20
         }:
             raise ValueError("species first-pass and rerank candidate sets must match")
+        if self.species_rerank_step.prompt_stage != SPECIES_RERANK_PROMPT_STAGE:
+            raise ValueError("species rerank step has the wrong prompt stage")
+        if self.species_rerank_step.top_candidates != self.species_top5:
+            raise ValueError("species rerank step must retain species_top5")
 
 
 class PathCascadeClassificationError(RuntimeError):
@@ -419,6 +452,7 @@ def classify_path_cascade(
                     rank_steps.append(
                         RankStepResult(
                             rank=rank,
+                            prompt_stage=RANK_SCREEN_PROMPT_STAGE,
                             candidate_count=0,
                             retained_count=0,
                             active_path_count_before=active_before,
@@ -426,6 +460,11 @@ def classify_path_cascade(
                             top_candidates=(),
                             top1_margin=None,
                             parent_node_ids=parent_node_ids,
+                            candidate_node_ids=(),
+                            candidate_raw_similarities=(),
+                            retained_node_ids=(),
+                            pruned_node_ids=(),
+                            reviewed_skip_path_count=reviewed_skips.height,
                             skipped=True,
                             skip_reason="all_active_paths_reviewed_rank_skip",
                         )
@@ -476,6 +515,7 @@ def classify_path_cascade(
         rank_steps.append(
             RankStepResult(
                 rank=rank,
+                prompt_stage=RANK_SCREEN_PROMPT_STAGE,
                 candidate_count=len(scores),
                 retained_count=len(selected),
                 active_path_count_before=active_before,
@@ -483,6 +523,11 @@ def classify_path_cascade(
                 top_candidates=selected,
                 top1_margin=raw_similarity_margin(scores),
                 parent_node_ids=parent_node_ids,
+                candidate_node_ids=tuple(score.node_id for score in scores),
+                candidate_raw_similarities=tuple(score.raw_similarity for score in scores),
+                retained_node_ids=tuple(score.node_id for score in selected),
+                pruned_node_ids=tuple(score.node_id for score in scores[rank_beam_width:]),
+                reviewed_skip_path_count=reviewed_skips.height,
                 skipped=False,
                 skip_reason=None,
             )
@@ -521,6 +566,7 @@ def classify_path_cascade(
     rank_steps.append(
         RankStepResult(
             rank="SPECIES",
+            prompt_stage=SPECIES_FIRST_PASS_PROMPT_STAGE,
             candidate_count=len(species_scores),
             retained_count=len(species_top20),
             active_path_count_before=active_paths.height,
@@ -528,6 +574,13 @@ def classify_path_cascade(
             top_candidates=species_top20,
             top1_margin=raw_similarity_margin(species_scores),
             parent_node_ids=_parent_node_ids(active_paths, "SPECIES"),
+            candidate_node_ids=tuple(score.node_id for score in species_scores),
+            candidate_raw_similarities=tuple(score.raw_similarity for score in species_scores),
+            retained_node_ids=tuple(score.node_id for score in species_top20),
+            pruned_node_ids=tuple(
+                score.node_id for score in species_scores[DEFAULT_SPECIES_FIRST_PASS_TOP_K:]
+            ),
+            reviewed_skip_path_count=0,
             skipped=False,
             skip_reason=None,
         )
@@ -575,6 +628,33 @@ def classify_path_cascade(
     species_top5 = species_reranked_top20[:DEFAULT_SPECIES_RERANK_TOP_K]
     species_top3 = species_top5[:DEFAULT_SPECIES_REPORT_TOP_K]
     species_top1 = species_top3[0]
+    rerank_active_paths = taxonomy_store.filter_paths_by_rank_nodes(
+        species_active_paths,
+        "SPECIES",
+        tuple(score.node_id for score in species_top5),
+    )
+    species_rerank_step = RankStepResult(
+        rank="SPECIES",
+        prompt_stage=SPECIES_RERANK_PROMPT_STAGE,
+        candidate_count=len(species_reranked_top20),
+        retained_count=len(species_top5),
+        active_path_count_before=species_active_paths.height,
+        active_path_count_after=rerank_active_paths.height,
+        top_candidates=species_top5,
+        top1_margin=raw_similarity_margin(species_reranked_top20),
+        parent_node_ids=_parent_node_ids(species_active_paths, "SPECIES"),
+        candidate_node_ids=tuple(score.node_id for score in species_reranked_top20),
+        candidate_raw_similarities=tuple(
+            score.raw_similarity for score in species_reranked_top20
+        ),
+        retained_node_ids=tuple(score.node_id for score in species_top5),
+        pruned_node_ids=tuple(
+            score.node_id for score in species_reranked_top20[DEFAULT_SPECIES_RERANK_TOP_K:]
+        ),
+        reviewed_skip_path_count=0,
+        skipped=False,
+        skip_reason=None,
+    )
     winning_path_row = taxonomy_store.path_for_species_node(species_top1.node_id)
     winning_path = _winning_path_scores(
         path_row=winning_path_row,
@@ -590,6 +670,7 @@ def classify_path_cascade(
         beam_strategy=GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
         rank_beam_width=rank_beam_width,
         rank_steps=tuple(rank_steps),
+        species_rerank_step=species_rerank_step,
         species_top20=species_top20,
         species_reranked_top20=species_reranked_top20,
         species_top5=species_top5,
