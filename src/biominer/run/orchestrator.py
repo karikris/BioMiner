@@ -23,7 +23,6 @@ from biominer.bioclip.classification_modes import (
     normalize_classification_mode,
 )
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER, object_score_audit_metrics
-from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
 from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
 from biominer.bioclip.taxonomy_embedding_cache import TaxonomyTextEmbeddingIndex
 from biominer.detection.policy import DetectionPolicy, VisionRuntimeSettings
@@ -1845,8 +1844,6 @@ def _score_primary_visual_mode(
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
     species_report_top_k: int = DEFAULT_SPECIES_REPORT_TOP_K,
-    taxonomy_store: FiveRankTaxonomyStore | None = None,
-    taxonomy_text_embedding_cache: Any | None = None,
     path_taxonomy_store: PathTaxonomyStore | None = None,
     taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
 ) -> tuple[Any, dict[str, Any]]:
@@ -1880,8 +1877,6 @@ def _score_primary_visual_mode(
         family_top_k=rank_beam_width,
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
-        taxonomy_store=taxonomy_store,
-        taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
         path_taxonomy_store=path_taxonomy_store,
         taxonomy_text_embedding_index=taxonomy_text_embedding_index,
     )
@@ -1974,7 +1969,7 @@ def _butterfly_taxonomy_store_metrics(
 
 
 def _taxonomy_manifest_value(
-    store: FiveRankTaxonomyStore | PathTaxonomyStore | None,
+    store: PathTaxonomyStore | None,
     key: str,
 ) -> str | None:
     if store is None:

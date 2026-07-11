@@ -112,7 +112,7 @@ def test_production_vision_runtime_wires_persistent_sidecars(monkeypatch) -> Non
     assert created["crop_scorer"]["model_checkpoint"] == "revision-1"
 
 
-def test_build_text_embedding_cache_command_writes_and_closes_worker(tmp_path, monkeypatch, capsys) -> None:
+def test_build_text_embedding_cache_command_builds_v3_cache_and_closes_worker(tmp_path, monkeypatch, capsys) -> None:
     runtime_python = tmp_path / "python"
     runtime_python.touch()
     closed: list[bool] = []
@@ -131,11 +131,36 @@ def test_build_text_embedding_cache_command_writes_and_closes_worker(tmp_path, m
         def close(self) -> None:
             closed.append(True)
 
-    store = SimpleNamespace(taxonomy_fingerprint="sha256:taxonomy")
+    store = SimpleNamespace(
+        classification_fingerprint="sha256:classification",
+        hierarchy_fingerprint="sha256:hierarchy",
+    )
     frame = pl.DataFrame([{"embedding_cache_fingerprint": "sha256:cache"}])
+    builder_calls: list[tuple[object, str, str, int]] = []
+
+    def fake_build_cache(
+        taxonomy_store,
+        *,
+        model_id,
+        model_checkpoint,
+        embed_labels,
+        batch_size,
+    ):  # noqa: ANN001, ANN201 - dependency-boundary fake.
+        assert callable(embed_labels)
+        builder_calls.append(
+            (taxonomy_store, model_id, model_checkpoint, batch_size)
+        )
+        return frame
+
     monkeypatch.setattr("biominer.bioclip.bioclip.PersistentBioClipScorer", FakePersistent)
-    monkeypatch.setattr("biominer.bioclip.five_rank_store.FiveRankTaxonomyStore.read", lambda _path: store)
-    monkeypatch.setattr("biominer.bioclip.five_rank_embedding_cache.build_five_rank_text_embedding_cache", lambda *_args, **_kwargs: frame)
+    monkeypatch.setattr(
+        "biominer.bioclip.path_taxonomy_store.PathTaxonomyStore.read",
+        lambda _path: store,
+    )
+    monkeypatch.setattr(
+        "biominer.bioclip.taxonomy_embedding_cache.build_taxonomy_text_embedding_cache",
+        fake_build_cache,
+    )
     output = tmp_path / "text-embeddings.parquet"
     args = build_parser().parse_args(
         [
@@ -155,6 +180,12 @@ def test_build_text_embedding_cache_command_writes_and_closes_worker(tmp_path, m
     payload = json.loads(capsys.readouterr().out)
     assert output.exists()
     assert payload["embedding_cache_fingerprint"] == "sha256:cache"
+    assert payload["classification_fingerprint"] == "sha256:classification"
+    assert payload["hierarchy_fingerprint"] == "sha256:hierarchy"
+    assert "taxonomy_fingerprint" not in payload
+    assert builder_calls == [
+        (store, "imageomics/bioclip", "revision-1", 256)
+    ]
     assert closed == [True]
 
 

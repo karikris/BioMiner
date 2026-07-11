@@ -15,11 +15,6 @@ from biominer.bioclip.cloud_work import (
     enqueue_bioclip_work_from_detection_shards,
     run_cloud_bioclip_batch,
 )
-from biominer.benchmarks.vision_plumbing import benchmark_taxonomy_store
-from biominer.registry.classification_v2 import (
-    CLASSIFICATION_V2_PROMPT_VERSION as PROMPT_VARIANT_VERSION,
-    CLASSIFICATION_V2_VERSION as CLASSIFICATION_TABLE_VERSION,
-)
 from biominer.registry.classification_v3 import (
     CLASSIFICATION_RANKS,
     CLASSIFICATION_V3_PROMPT_VERSION,
@@ -179,46 +174,6 @@ def test_enqueue_bioclip_work_can_use_exclude_hard_negative_gate(tmp_path: Path)
     ]
     assert {payload["bioclip_gate_mode"] for payload in payloads} == {"exclude_hard_negative"}
     assert payloads[-1]["bioclip_gate_reason"] == "no_detection_whole_image_fallback"
-
-
-def test_legacy_v2_bioclip_work_item_key_changes_by_classification_mode_and_taxonomy_version() -> (
-    None
-):
-    detection = _detection_row(
-        "photo-1", "det-1", "sha256:crop-1", "butterfly_like", "detected"
-    )
-    target = bioclip_score_work_item(
-        detection,
-        run_id="run-1",
-        detection_shard_uri="s3://biominer/detections.parquet",
-        model={
-            "model_id": "fake-bioclip",
-            "model_version": "test",
-            "checkpoint": "fake-checkpoint",
-        },
-        candidate_set_id="candidate-set-1",
-        ablation_mode="detector_crop",
-    )
-    hierarchical = bioclip_score_work_item(
-        detection,
-        run_id="run-1",
-        detection_shard_uri="s3://biominer/detections.parquet",
-        model={
-            "model_id": "fake-bioclip",
-            "model_version": "test",
-            "checkpoint": "fake-checkpoint",
-        },
-        candidate_set_id="candidate-set-1",
-        ablation_mode="detector_crop",
-        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_table_version=CLASSIFICATION_TABLE_VERSION,
-        taxonomy_prompt_variant_version=PROMPT_VARIANT_VERSION,
-    )
-
-    assert target["work_key"] != hierarchical["work_key"]
-    assert hierarchical["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-    assert hierarchical["taxonomy_table_version"] == CLASSIFICATION_TABLE_VERSION
-    assert hierarchical["taxonomy_prompt_variant_version"] == PROMPT_VARIANT_VERSION
 
 
 @pytest.mark.parametrize(
@@ -494,7 +449,7 @@ def test_run_cloud_bioclip_batch_adaptive_batching_reports_min_batch_failure() -
         )
 
 
-def test_run_cloud_bioclip_batch_hierarchical_mode_requires_taxonomy_store() -> None:
+def test_run_cloud_bioclip_batch_hierarchical_mode_requires_v3_store_and_cache() -> None:
     class FailingScorer:
         model_id = "fake-bioclip"
         model_version = "test"
@@ -505,30 +460,21 @@ def test_run_cloud_bioclip_batch_hierarchical_mode_requires_taxonomy_store() -> 
 
     context = _context()
     candidate_set = build_candidate_set(context, allow_single_target_fixture=True)
-    payload = bioclip_score_work_item(
-        _detection_row("photo-1", "det-1", "sha256:crop-1", "butterfly_like", "detected"),
-        run_id="run-1",
-        detection_shard_uri="s3://biominer/detections.parquet",
-        model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
+    work_item = _hierarchical_work_item(
+        1,
         candidate_set_id=candidate_set.candidate_set_id,
-        ablation_mode="detector_crop",
-        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_table_version=CLASSIFICATION_TABLE_VERSION,
-        taxonomy_prompt_variant_version=PROMPT_VARIANT_VERSION,
+        taxonomy_table_version=CLASSIFICATION_V3_VERSION,
+        taxonomy_prompt_variant_version=CLASSIFICATION_V3_PROMPT_VERSION,
     )
 
-    try:
+    with pytest.raises(ValueError, match="path_taxonomy_store.*required"):
         run_cloud_bioclip_batch(
-            work_items=[{"work_key": payload["work_key"], "payload": payload}],
+            work_items=[work_item],
             species_context=context,
             candidate_set=candidate_set,
             scorer=FailingScorer(),
             classification_mode="hierarchical_butterfly_classification",
         )
-    except ValueError as exc:
-        assert "taxonomy_store is required" in str(exc)
-    else:  # pragma: no cover - assertion branch.
-        raise AssertionError("expected hierarchical mode to require taxonomy_store")
 
 
 def test_run_cloud_bioclip_batch_v3_uses_cached_path_cascade_once_per_crop_batch(
@@ -565,11 +511,9 @@ def test_run_cloud_bioclip_batch_v3_uses_cached_path_cascade_once_per_crop_batch
         embedding_scorer,
         taxonomy_store,
         taxonomy_text_embedding_index,
-        rank_beam_width,
     ):  # noqa: ANN001, ANN201 - dependency-boundary fake.
         assert taxonomy_store is path_store
         assert taxonomy_text_embedding_index is embedding_index
-        assert rank_beam_width == 3
         cascade_calls.append(tuple(str(item["detection_id"]) for item in items))
         embeddings = embedding_scorer.embed_image_items(items)
         return tuple({"embedding": embedding} for embedding in embeddings)
@@ -596,13 +540,6 @@ def test_run_cloud_bioclip_batch_v3_uses_cached_path_cascade_once_per_crop_batch
         cloud_work,
         "path_cascade_result_to_object_score_row",
         fake_result_to_row,
-    )
-    monkeypatch.setattr(
-        cloud_work,
-        "classify_five_rank_crops_batch",
-        lambda **_kwargs: pytest.fail(
-            "classification-v3 must not use five-rank dispatch"
-        ),
     )
     context = _context()
     candidate_set = build_candidate_set(context, allow_single_target_fixture=True)
@@ -728,16 +665,10 @@ def test_run_cloud_bioclip_batch_rejects_payload_classification_mode_mismatch() 
 
     context = _context()
     candidate_set = build_candidate_set(context, allow_single_target_fixture=True)
-    payload = bioclip_score_work_item(
+    payload = _v3_bioclip_payload(
         _detection_row("photo-1", "det-1", "sha256:crop-1", "butterfly_like", "detected"),
-        run_id="run-1",
-        detection_shard_uri="s3://biominer/detections.parquet",
-        model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
         candidate_set_id=candidate_set.candidate_set_id,
-        ablation_mode="detector_crop",
-        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_table_version=CLASSIFICATION_TABLE_VERSION,
-        taxonomy_prompt_variant_version=PROMPT_VARIANT_VERSION,
+        cascade_identity=_v3_cascade_identity(),
     )
 
     with pytest.raises(ValueError, match="classification_mode"):
@@ -747,64 +678,6 @@ def test_run_cloud_bioclip_batch_rejects_payload_classification_mode_mismatch() 
             candidate_set=candidate_set,
             scorer=FailingScorer(),
         )
-
-
-def test_run_cloud_bioclip_batch_rejects_payload_top_k_mismatch() -> None:
-    store = _butterfly_taxonomy_store()
-    context = _context()
-    candidate_set = build_candidate_set(context, allow_single_target_fixture=True)
-    payload = bioclip_score_work_item(
-        _detection_row("photo-1", "det-1", "sha256:crop-1", "butterfly_like", "detected"),
-        run_id="run-1",
-        detection_shard_uri="s3://biominer/detections.parquet",
-        model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
-        candidate_set_id=candidate_set.candidate_set_id,
-        ablation_mode="detector_crop",
-        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_table_version=CLASSIFICATION_TABLE_VERSION,
-        taxonomy_prompt_variant_version=PROMPT_VARIANT_VERSION,
-        species_rerank_top_k=5,
-    )
-
-    with pytest.raises(ValueError, match="species_rerank_top_k"):
-        run_cloud_bioclip_batch(
-            work_items=[{"work_key": payload["work_key"], "payload": payload}],
-            species_context=context,
-            candidate_set=candidate_set,
-            scorer=_StaticBatchScorer({}),
-            classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-            taxonomy_store=store,
-            species_rerank_top_k=1,
-        )
-
-
-def test_run_cloud_bioclip_batch_rejects_payload_taxonomy_version_mismatch() -> None:
-    store = _butterfly_taxonomy_store()
-    context = _context()
-    candidate_set = build_candidate_set(context, allow_single_target_fixture=True)
-    payload = bioclip_score_work_item(
-        _detection_row("photo-1", "det-1", "sha256:crop-1", "butterfly_like", "detected"),
-        run_id="run-1",
-        detection_shard_uri="s3://biominer/detections.parquet",
-        model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
-        candidate_set_id=candidate_set.candidate_set_id,
-        ablation_mode="detector_crop",
-        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_table_version="classification-table-v-old",
-        taxonomy_prompt_variant_version=PROMPT_VARIANT_VERSION,
-    )
-
-    with pytest.raises(ValueError, match="taxonomy_table_version"):
-        run_cloud_bioclip_batch(
-            work_items=[{"work_key": payload["work_key"], "payload": payload}],
-            species_context=context,
-            candidate_set=candidate_set,
-            scorer=_StaticBatchScorer({}),
-            classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-            taxonomy_store=store,
-        )
-
-
 
 
 def _context() -> SpeciesContext:
@@ -1018,10 +891,6 @@ class _StaticBatchScorer:
             name: [self.score(item, tuple(labels)) for item in items]
             for name, labels in label_sets.items()
         }
-
-
-def _butterfly_taxonomy_store():
-    return benchmark_taxonomy_store()
 
 
 class _FakeCloudStorage:

@@ -84,6 +84,7 @@ def test_production_run_defaults_to_rolling_worker_without_public_switch() -> No
     )
 
     assert args.command == "run"
+    assert not hasattr(args, "vision_worker")
     with pytest.raises(SystemExit):
         parser.parse_args(
             [

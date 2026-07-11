@@ -10,6 +10,11 @@ from typing import Any, Iterable, Iterator, Literal, Mapping, Protocol, Sequence
 
 import polars as pl
 
+from biominer.bioclip.cascade_contract import (
+    DEFAULT_SPECIES_REPORT_TOP_K,
+    GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
+    validate_production_cascade_settings,
+)
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
 from biominer.bioclip.classification_modes import (
     DEFAULT_CLASSIFICATION_MODE,
@@ -22,10 +27,7 @@ from biominer.bioclip.classification_modes import (
 )
 from biominer.bioclip.five_rank_classifier import (
     FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS,
-    classify_five_rank_crops_batch,
-    five_rank_result_to_object_score_row,
 )
-from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
 from biominer.bioclip.path_cascade_classifier import classify_path_cascade_batch
 from biominer.bioclip.path_cascade_output import (
     PATH_CASCADE_OUTPUT_SCHEMA,
@@ -799,8 +801,6 @@ def screen_object_detections(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
-    taxonomy_store: FiveRankTaxonomyStore | None = None,
-    taxonomy_text_embedding_cache: pl.DataFrame | None = None,
     path_taxonomy_store: PathTaxonomyStore | None = None,
     taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
 ) -> ObjectScreenResult:
@@ -814,21 +814,24 @@ def screen_object_detections(
             "path_taxonomy_store and taxonomy_text_embedding_index are required together "
             "for classification-v3 hierarchical scoring"
         )
-    if (
-        classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-        and path_taxonomy_store is None
-        and taxonomy_store is None
-    ):
+    if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION and path_taxonomy_store is None:
         raise ValueError(
-            "taxonomy_store is required for hierarchical_butterfly_classification "
-            "(classification-v3 requires path_taxonomy_store with "
-            "taxonomy_text_embedding_index)"
+            "classification-v3 path_taxonomy_store and taxonomy_text_embedding_index "
+            "are required for hierarchical_butterfly_classification"
         )
     family_top_k, species_first_pass_top_k, species_rerank_top_k = _validate_visual_top_k(
         family_top_k=family_top_k,
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
     )
+    if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+        validate_production_cascade_settings(
+            beam_strategy=GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
+            rank_beam_width=family_top_k,
+            species_first_pass_top_k=species_first_pass_top_k,
+            species_rerank_top_k=species_rerank_top_k,
+            species_report_top_k=DEFAULT_SPECIES_REPORT_TOP_K,
+        )
     gate_policy = _active_bioclip_gate_policy(
         detection_policy=detection_policy,
         bioclip_gate_policy=bioclip_gate_policy,
@@ -862,15 +865,12 @@ def screen_object_detections(
 
     def score_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+            assert path_taxonomy_store is not None
+            assert taxonomy_text_embedding_index is not None
             return _score_hierarchical_detection_batch(
                 items=items,
                 scorer=scorer,
-                taxonomy_store=taxonomy_store,
                 path_taxonomy_store=path_taxonomy_store,
-                family_top_k=family_top_k,
-                species_first_pass_top_k=species_first_pass_top_k,
-                species_rerank_top_k=species_rerank_top_k,
-                taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
                 taxonomy_text_embedding_index=taxonomy_text_embedding_index,
             )
         return _score_detection_batch(
@@ -1381,54 +1381,20 @@ def _score_hierarchical_detection_batch(
     *,
     items: list[dict[str, Any]],
     scorer: ObjectBioClipScorer,
-    taxonomy_store: FiveRankTaxonomyStore | None,
-    path_taxonomy_store: PathTaxonomyStore | None,
-    family_top_k: int,
-    species_first_pass_top_k: int,
-    species_rerank_top_k: int,
-    taxonomy_text_embedding_cache: pl.DataFrame | None = None,
-    taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
+    path_taxonomy_store: PathTaxonomyStore,
+    taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex,
 ) -> list[dict[str, Any]]:
-    if path_taxonomy_store is not None:
-        if taxonomy_text_embedding_index is None:
-            raise ValueError(
-                "taxonomy_text_embedding_index is required for classification-v3 "
-                "hierarchical scoring"
-            )
-        results = classify_path_cascade_batch(
-            items=items,
-            embedding_scorer=scorer,
-            taxonomy_store=path_taxonomy_store,
-            taxonomy_text_embedding_index=taxonomy_text_embedding_index,
-            rank_beam_width=family_top_k,
-        )
-        return [
-            path_cascade_result_to_object_score_row(
-                item=item,
-                result=result,
-                scorer=scorer,
-            )
-            for item, result in zip(items, results, strict=True)
-        ]
-    if taxonomy_store is None:
-        raise ValueError("legacy taxonomy_store is required for five-rank hierarchical scoring")
-    results = classify_five_rank_crops_batch(
+    results = classify_path_cascade_batch(
         items=items,
-        scorer=scorer,
-        taxonomy_store=taxonomy_store,
-        beam_widths={"FAMILY": family_top_k},
-        species_first_pass_top_k=species_first_pass_top_k,
-        species_rerank_top_k=species_rerank_top_k,
-        taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
+        embedding_scorer=scorer,
+        taxonomy_store=path_taxonomy_store,
+        taxonomy_text_embedding_index=taxonomy_text_embedding_index,
     )
     return [
-        five_rank_result_to_object_score_row(
+        path_cascade_result_to_object_score_row(
             item=item,
             result=result,
             scorer=scorer,
-            family_top_k=family_top_k,
-            species_first_pass_top_k=species_first_pass_top_k,
-            species_rerank_top_k=species_rerank_top_k,
         )
         for item, result in zip(items, results, strict=True)
     ]

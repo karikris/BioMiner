@@ -13,7 +13,6 @@ from biominer.bioclip.five_rank_classifier import (
 )
 from biominer.bioclip.five_rank_embedding_cache import build_five_rank_text_embedding_cache
 from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
-from biominer.bioclip.object_runner import _score_hierarchical_detection_batch
 from biominer.registry.classification_v2 import build_classification_v2_frames, build_classification_v2_manifest
 
 
@@ -245,23 +244,6 @@ def test_five_rank_object_score_row_preserves_full_screening_audit() -> None:
     assert row["bin_reason"] == "five_rank_open_classification_requires_review"
     assert '"SUBFAMILY"' in row["classification_path_json"]
     assert '"pruned_node_ids"' in row["pruning_decisions_json"]
-
-
-def test_object_runner_dispatches_classification_v2_store_to_five_rank_cascade() -> None:
-    store = _store(species_count=3)
-
-    rows = _score_hierarchical_detection_batch(
-        items=[_item("one")],
-        scorer=_RecordingScorer(_scores(species_count=3)),
-        taxonomy_store=store,
-        family_top_k=2,
-        species_first_pass_top_k=20,
-        species_rerank_top_k=5,
-    )
-
-    assert rows[0]["candidate_selection_mode"] == "reviewed_five_rank_beam"
-    assert rows[0]["selected_subfamily"] == "Betainae"
-    assert rows[0]["candidate_source"] == "reviewed_classification_v2"
 
 
 def _store(*, species_count: int) -> FiveRankTaxonomyStore:

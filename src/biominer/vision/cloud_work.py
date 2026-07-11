@@ -22,7 +22,6 @@ from biominer.bioclip.classification_modes import (
     normalize_classification_mode,
 )
 from biominer.bioclip.cloud_work import bioclip_score_work_item, run_cloud_bioclip_batch
-from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
 from biominer.bioclip.object_runner import ObjectBioClipScorer
 from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
 from biominer.bioclip.taxonomy_embedding_cache import TaxonomyTextEmbeddingIndex
@@ -413,8 +412,6 @@ def score_cloud_rolling_detection_batch(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
-    taxonomy_store: FiveRankTaxonomyStore | None = None,
-    taxonomy_text_embedding_cache: pl.DataFrame | None = None,
     path_taxonomy_store: PathTaxonomyStore | None = None,
     taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
     cascade_identity: dict[str, Any] | None = None,
@@ -471,8 +468,6 @@ def score_cloud_rolling_detection_batch(
         family_top_k=family_top_k,
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
-        taxonomy_store=taxonomy_store,
-        taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
         path_taxonomy_store=path_taxonomy_store,
         taxonomy_text_embedding_index=taxonomy_text_embedding_index,
     )
@@ -538,8 +533,6 @@ def run_cloud_rolling_vision_batch(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
-    taxonomy_store: FiveRankTaxonomyStore | None = None,
-    taxonomy_text_embedding_cache: pl.DataFrame | None = None,
     path_taxonomy_store: PathTaxonomyStore | None = None,
     taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
     cascade_identity: dict[str, Any] | None = None,
@@ -572,8 +565,6 @@ def run_cloud_rolling_vision_batch(
         family_top_k=family_top_k,
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
-        taxonomy_store=taxonomy_store,
-        taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
         path_taxonomy_store=path_taxonomy_store,
         taxonomy_text_embedding_index=taxonomy_text_embedding_index,
         cascade_identity=cascade_identity,

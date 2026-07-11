@@ -1315,8 +1315,10 @@ def _run_bioclip_prefetch_model(args: argparse.Namespace) -> int:
 
 def _run_build_text_embedding_cache(args: argparse.Namespace) -> int:
     from biominer.bioclip.bioclip import PersistentBioClipScorer
-    from biominer.bioclip.five_rank_embedding_cache import build_five_rank_text_embedding_cache
-    from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
+    from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
+    from biominer.bioclip.taxonomy_embedding_cache import (
+        build_taxonomy_text_embedding_cache,
+    )
 
     runtime_python = Path(args.runtime_python).expanduser()
     if not runtime_python.exists():
@@ -1328,8 +1330,8 @@ def _run_build_text_embedding_cache(args: argparse.Namespace) -> int:
         device=args.device,
     )
     try:
-        store = FiveRankTaxonomyStore.read(args.taxonomy_candidate_table)
-        frame = build_five_rank_text_embedding_cache(
+        store = PathTaxonomyStore.read(args.taxonomy_candidate_table)
+        frame = build_taxonomy_text_embedding_cache(
             store,
             model_id=scorer.runtime.model.model_name,
             model_checkpoint=scorer.runtime.model.checkpoint,
@@ -1345,7 +1347,8 @@ def _run_build_text_embedding_cache(args: argparse.Namespace) -> int:
                 "status": "complete",
                 "output": str(output),
                 "rows": frame.height,
-                "taxonomy_fingerprint": store.taxonomy_fingerprint,
+                "classification_fingerprint": store.classification_fingerprint,
+                "hierarchy_fingerprint": store.hierarchy_fingerprint,
                 "embedding_cache_fingerprint": frame["embedding_cache_fingerprint"][0] if frame.height else None,
                 "model_id": scorer.runtime.model.model_name,
                 "model_checkpoint": scorer.runtime.model.checkpoint,

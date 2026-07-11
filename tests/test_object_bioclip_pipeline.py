@@ -1580,7 +1580,7 @@ def test_object_evidence_join_preserves_non_scored_detection_rows(tmp_path) -> N
     assert by_detection["det-no-detection"]["detection_status"] == "no_detection"
 
 
-def test_object_bioclip_hierarchical_mode_requires_taxonomy_store(tmp_path) -> None:
+def test_object_bioclip_hierarchical_mode_requires_v3_store_and_cache(tmp_path) -> None:
     class FailingScorer:
         model_id = "fake-bioclip"
         model_version = "test"
@@ -1589,7 +1589,7 @@ def test_object_bioclip_hierarchical_mode_requires_taxonomy_store(tmp_path) -> N
         def score(self, item, labels):  # noqa: ANN001, ANN202 - should not be reached.
             raise AssertionError("hierarchical mode must not run target-scope object scoring")
 
-    with pytest.raises(ValueError, match="taxonomy_store is required"):
+    with pytest.raises(ValueError, match="classification-v3.*required"):
         screen_object_detections(
             canonical_records=_canonical_records(),
             detections=_detections().head(1),
