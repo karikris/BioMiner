@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import json
 from pathlib import Path
 import sys
 import types
@@ -122,6 +124,45 @@ def test_loaded_model_bounds_text_feature_cache_with_lru_eviction(monkeypatch) -
     loaded._text_features(["three"])  # noqa: SLF001 - evicts the second entry.
 
     assert list(loaded._text_features_by_labels) == [("one",), ("three",)]  # noqa: SLF001 - focused worker cache contract.
+
+
+def test_persistent_worker_clears_model_caches_on_replacement_and_shutdown(monkeypatch) -> None:  # noqa: ANN001 - pytest fixture.
+    loaded_models: list[FakePersistentLoadedModel] = []
+
+    def fake_load(*, model_name: str, checkpoint: str, device: str) -> FakePersistentLoadedModel:
+        loaded = FakePersistentLoadedModel(f"{model_name}:{checkpoint}:{device}")
+        loaded_models.append(loaded)
+        return loaded
+
+    requests = (
+        {"model_name": "model-a", "checkpoint": "one", "device": "cpu", "text_labels": []},
+        {"model_name": "model-b", "checkpoint": "two", "device": "cpu", "text_labels": []},
+        {"shutdown": True},
+    )
+    monkeypatch.setattr(bioclip_worker._LoadedBioClipModel, "load", staticmethod(fake_load))  # noqa: SLF001
+    monkeypatch.setattr(bioclip_worker, "configure_hf_cache_env", lambda _path: None)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("".join(json.dumps(request) + "\n" for request in requests)))
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+
+    bioclip_worker.run_persistent_worker()
+
+    assert [loaded.key for loaded in loaded_models] == ["model-a:one:cpu", "model-b:two:cpu"]
+    assert [loaded.close_calls for loaded in loaded_models] == [1, 1]
+
+
+class FakePersistentLoadedModel:
+    device = "cpu"
+    gpu_name = "test-cpu"
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self.close_calls = 0
+
+    def text_embeddings(self, _labels):  # noqa: ANN001, ANN201 - fake worker protocol.
+        return []
+
+    def close(self) -> None:
+        self.close_calls += 1
 
 
 class FakeTorch:

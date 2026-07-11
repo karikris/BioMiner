@@ -95,100 +95,106 @@ def normalize_device(device: str) -> str:
 def run_persistent_worker() -> None:
     loaded: _LoadedBioClipModel | None = None
     loaded_key: tuple[str, str, str] | None = None
-    for line in sys.stdin:
-        try:
-            request = json.loads(line)
-            if request.get("shutdown"):
-                return
-            configure_hf_cache_env(Path(request.get("hf_cache_dir") or "data/cache/huggingface"))
-            device = device_from_request(request)
-            preprocess_workers = preprocess_workers_from_request(request)
-            key = (str(request["model_name"]), str(request["checkpoint"]), device)
-            if loaded is None or loaded_key != key:
-                loaded = _LoadedBioClipModel.load(
-                    model_name=key[0],
-                    checkpoint=key[1],
-                    device=key[2],
-                )
-                loaded_key = key
-                print(json.dumps({"ready": True, "device": loaded.device, "gpu_name": loaded.gpu_name}, sort_keys=True), flush=True)
-            text_labels = request.get("text_labels")
-            if text_labels is not None:
-                embeddings = loaded.text_embeddings(list(text_labels))
-                print(
-                    json.dumps(
-                        {
-                            "text_embeddings": embeddings,
-                            "embedding_dim": len(embeddings[0]) if embeddings else 0,
-                            "device": loaded.device,
-                            "gpu_name": loaded.gpu_name,
-                        },
-                        sort_keys=True,
-                    ),
-                    flush=True,
-                )
-                continue
-            image_embedding_paths = request.get("image_embedding_paths")
-            if image_embedding_paths is not None:
-                embeddings = loaded.image_embeddings(
-                    [Path(path) for path in image_embedding_paths],
-                    preprocess_workers=preprocess_workers,
-                )
-                print(
-                    json.dumps(
-                        {
-                            "image_embeddings": embeddings,
-                            "embedding_dim": len(embeddings[0]) if embeddings else 0,
-                            "device": loaded.device,
-                            "gpu_name": loaded.gpu_name,
-                        },
-                        sort_keys=True,
-                    ),
-                    flush=True,
-                )
-                continue
-            image_paths = request.get("image_paths")
-            label_sets = request.get("label_sets")
-            if label_sets is not None:
-                scores_by_image_by_label_set = loaded.score_image_label_sets(
+    try:
+        for line in sys.stdin:
+            try:
+                request = json.loads(line)
+                if request.get("shutdown"):
+                    return
+                configure_hf_cache_env(Path(request.get("hf_cache_dir") or "data/cache/huggingface"))
+                device = device_from_request(request)
+                preprocess_workers = preprocess_workers_from_request(request)
+                key = (str(request["model_name"]), str(request["checkpoint"]), device)
+                if loaded is None or loaded_key != key:
+                    if loaded is not None:
+                        loaded.close()
+                    loaded = _LoadedBioClipModel.load(
+                        model_name=key[0],
+                        checkpoint=key[1],
+                        device=key[2],
+                    )
+                    loaded_key = key
+                    print(json.dumps({"ready": True, "device": loaded.device, "gpu_name": loaded.gpu_name}, sort_keys=True), flush=True)
+                text_labels = request.get("text_labels")
+                if text_labels is not None:
+                    embeddings = loaded.text_embeddings(list(text_labels))
+                    print(
+                        json.dumps(
+                            {
+                                "text_embeddings": embeddings,
+                                "embedding_dim": len(embeddings[0]) if embeddings else 0,
+                                "device": loaded.device,
+                                "gpu_name": loaded.gpu_name,
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
+                    continue
+                image_embedding_paths = request.get("image_embedding_paths")
+                if image_embedding_paths is not None:
+                    embeddings = loaded.image_embeddings(
+                        [Path(path) for path in image_embedding_paths],
+                        preprocess_workers=preprocess_workers,
+                    )
+                    print(
+                        json.dumps(
+                            {
+                                "image_embeddings": embeddings,
+                                "embedding_dim": len(embeddings[0]) if embeddings else 0,
+                                "device": loaded.device,
+                                "gpu_name": loaded.gpu_name,
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
+                    continue
+                image_paths = request.get("image_paths")
+                label_sets = request.get("label_sets")
+                if label_sets is not None:
+                    scores_by_image_by_label_set = loaded.score_image_label_sets(
+                        [Path(path) for path in image_paths],
+                        {str(name): list(labels) for name, labels in label_sets.items()},
+                        preprocess_workers=preprocess_workers,
+                    )
+                    print(
+                        json.dumps(
+                            {
+                                "scores_by_image_by_label_set": scores_by_image_by_label_set,
+                                "device": loaded.device,
+                                "gpu_name": loaded.gpu_name,
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
+                    continue
+                if image_paths is None:
+                    scores = loaded.score_images(
+                        [Path(request["image_path"])],
+                        request["labels"],
+                        preprocess_workers=preprocess_workers,
+                    )[0]
+                    print(json.dumps({"scores": scores, "device": loaded.device, "gpu_name": loaded.gpu_name}, sort_keys=True), flush=True)
+                    continue
+                scores_by_image = loaded.score_images(
                     [Path(path) for path in image_paths],
-                    {str(name): list(labels) for name, labels in label_sets.items()},
-                    preprocess_workers=preprocess_workers,
-                )
-                print(
-                    json.dumps(
-                        {
-                            "scores_by_image_by_label_set": scores_by_image_by_label_set,
-                            "device": loaded.device,
-                            "gpu_name": loaded.gpu_name,
-                        },
-                        sort_keys=True,
-                    ),
-                    flush=True,
-                )
-                continue
-            if image_paths is None:
-                scores = loaded.score_images(
-                    [Path(request["image_path"])],
                     request["labels"],
                     preprocess_workers=preprocess_workers,
-                )[0]
-                print(json.dumps({"scores": scores, "device": loaded.device, "gpu_name": loaded.gpu_name}, sort_keys=True), flush=True)
-                continue
-            scores_by_image = loaded.score_images(
-                [Path(path) for path in image_paths],
-                request["labels"],
-                preprocess_workers=preprocess_workers,
-            )
-            print(
-                json.dumps(
-                    {"scores_by_image": scores_by_image, "device": loaded.device, "gpu_name": loaded.gpu_name},
-                    sort_keys=True,
-                ),
-                flush=True,
-            )
-        except Exception as exc:  # noqa: BLE001 - worker reports errors to controller process.
-            print(json.dumps({"error": str(exc)}, sort_keys=True), flush=True)
+                )
+                print(
+                    json.dumps(
+                        {"scores_by_image": scores_by_image, "device": loaded.device, "gpu_name": loaded.gpu_name},
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - worker reports errors to controller process.
+                print(json.dumps({"error": str(exc)}, sort_keys=True), flush=True)
+    finally:
+        if loaded is not None:
+            loaded.close()
 
 
 def score_image(
@@ -400,6 +406,16 @@ class _LoadedBioClipModel:
             text_features = self.model.encode_text(text)
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
         return text_features
+
+    def close(self) -> None:
+        self._text_features_by_labels.clear()
+        self.model = None
+        self.preprocess = None
+        self.tokenizer = None
+        accelerator = getattr(self.torch, "cuda" if self.device.startswith("cuda") else "mps", None)
+        empty_cache = getattr(accelerator, "empty_cache", None)
+        if callable(empty_cache):
+            empty_cache()
 
 
 def text_feature_batch_size() -> int:
