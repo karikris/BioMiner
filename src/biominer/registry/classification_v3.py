@@ -278,6 +278,10 @@ def compile_classification_v3_artifacts(
 
 def build_classification_v3_frames(taxa: pl.DataFrame, source: dict[str, Any]) -> ClassificationV3Frames:
     version = _text(source.get("classification_version")) or CLASSIFICATION_V3_VERSION
+    if version != CLASSIFICATION_V3_VERSION:
+        raise ValueError(
+            f"classification source version mismatch: found {version}, expected {CLASSIFICATION_V3_VERSION}"
+        )
     sources = _source_frame(source.get("sources") or (), version=version)
     source_by_id = {str(row["source_id"]): row for row in sources.iter_rows(named=True)}
     nodes = _node_frame(source.get("nodes") or (), version=version, source_by_id=source_by_id)
@@ -575,7 +579,7 @@ def _mapping_frame(
         normalized.append(
             {
                 "classification_version": version,
-                "accepted_taxon_key": _text(taxon.get("accepted_taxon_key")),
+                "accepted_taxon_key": _text(taxon.get("accepted_taxon_key"), taxon.get("species_key")),
                 "gbif_species_key": gbif_species_key,
                 "accepted_scientific_name": actual_name or expected_name,
                 "species_node_id": species_node_id,
@@ -774,18 +778,34 @@ def validate_classification_v3(
     *,
     taxa: pl.DataFrame,
 ) -> list[dict[str, Any]]:
-    """Return deterministic construction-level findings.
-
-    Phase 1.5 extends these graph-construction guards with the complete production
-    QA contract. Keeping the checks here makes every intermediate artifact build
-    fail closed when a source tries to bypass the six-rank transition rules.
-    """
+    """Validate the immutable six-rank graph and its denormalized artifacts."""
     findings: list[dict[str, Any]] = []
-    if frames.sources.is_empty():
+    _validate_sources(frames.sources, findings)
+    _validate_nodes(frames.nodes, findings)
+    _validate_edges(frames.nodes, frames.edges, findings)
+    _validate_mappings(frames.nodes, frames.gbif_mappings, findings)
+    _validate_leaf_paths(frames.nodes, frames.leaf_paths, findings)
+    _validate_prompt_labels(frames.nodes, frames.prompt_labels, findings)
+    _append_registry_coverage_gaps(taxa, frames.leaf_paths, findings)
+    return sorted(
+        findings,
+        key=lambda finding: (
+            0 if finding["severity"] == "fatal" else 1,
+            finding["code"],
+            finding["subject"],
+            _canonical_json(finding.get("details") or {}),
+        ),
+    )
+
+
+def _validate_sources(frame: pl.DataFrame, findings: list[dict[str, Any]]) -> None:
+    if frame.is_empty():
         findings.append(
             _finding("fatal", "missing_source_catalog", "classification_sources", "", "source catalog is empty")
         )
-    for source in frames.sources.iter_rows(named=True):
+        return
+    _append_duplicate_findings(frame, ("source_id",), "duplicate_source_id", "classification_sources", findings)
+    for source in frame.iter_rows(named=True):
         missing = [
             field
             for field in ("source_id", "authority", "release", "citation", "retrieved_at", "evidence_url", "evidence")
@@ -802,7 +822,11 @@ def validate_classification_v3(
                     {"missing_fields": missing},
                 )
             )
-    for node in frames.nodes.iter_rows(named=True):
+
+
+def _validate_nodes(frame: pl.DataFrame, findings: list[dict[str, Any]]) -> None:
+    _append_duplicate_findings(frame, ("node_id",), "duplicate_node_id", "classification_nodes", findings)
+    for node in frame.iter_rows(named=True):
         if _text(node.get("rank")) not in CLASSIFICATION_RANKS:
             findings.append(
                 _finding(
@@ -814,24 +838,42 @@ def validate_classification_v3(
                     {"rank": node.get("rank")},
                 )
             )
-    for edge in frames.edges.iter_rows(named=True):
+
+
+def _validate_edges(nodes: pl.DataFrame, edges: pl.DataFrame, findings: list[dict[str, Any]]) -> None:
+    _append_duplicate_findings(
+        edges,
+        ("parent_node_id", "child_node_id", "edge_type"),
+        "duplicate_edge",
+        "classification_edges",
+        findings,
+    )
+    node_rows_by_id: dict[str, list[dict[str, Any]]] = {}
+    for node in nodes.iter_rows(named=True):
+        node_rows_by_id.setdefault(_text(node.get("node_id")), []).append(dict(node))
+    known_nodes = set(node_rows_by_id)
+    for edge in edges.iter_rows(named=True):
         subject = f"{edge['parent_node_id']}->{edge['child_node_id']}"
         edge_type = _text(edge.get("edge_type"))
         skipped_ranks = _string_list(edge.get("skipped_ranks"))
-        if not _edge_transition_is_valid(
+        expresses_skip = (
+            edge_type == REVIEWED_RANK_SKIP_EDGE
+            or bool(skipped_ranks)
+            or bool(_text(edge.get("skip_reason")))
+        )
+        if expresses_skip and not _edge_transition_is_valid(
             parent_rank=_text(edge.get("parent_rank")),
             child_rank=_text(edge.get("child_rank")),
             edge_type=edge_type,
             skipped_ranks=skipped_ranks,
         ):
-            code = "invalid_rank_skip" if edge_type == REVIEWED_RANK_SKIP_EDGE else "invalid_rank_transition"
             findings.append(
                 _finding(
                     "fatal",
-                    code,
+                    "invalid_rank_skip",
                     "classification_edges",
                     subject,
-                    "edge violates the six-rank transition contract",
+                    "rank skip is not the supported TRIBE to GENUS optional-SUBTRIBE transition",
                     {
                         "parent_rank": edge.get("parent_rank"),
                         "child_rank": edge.get("child_rank"),
@@ -840,8 +882,29 @@ def validate_classification_v3(
                     },
                 )
             )
+        elif not expresses_skip and not _edge_transition_is_valid(
+            parent_rank=_text(edge.get("parent_rank")),
+            child_rank=_text(edge.get("child_rank")),
+            edge_type=edge_type,
+            skipped_ranks=skipped_ranks,
+        ):
+            findings.append(
+                _finding(
+                    "fatal",
+                    "invalid_rank_transition",
+                    "classification_edges",
+                    subject,
+                    "edge violates the adjacent six-rank transition contract",
+                    {
+                        "parent_rank": edge.get("parent_rank"),
+                        "child_rank": edge.get("child_rank"),
+                        "edge_type": edge_type,
+                    },
+                )
+            )
         if edge_type == REVIEWED_RANK_SKIP_EDGE and (
             not edge.get("reviewed")
+            or edge.get("review_status") != "reviewed"
             or not _text(edge.get("skip_reason"))
             or any(
                 not _text(edge.get(field))
@@ -857,9 +920,239 @@ def validate_classification_v3(
                     "rank skip lacks complete reviewed provenance",
                 )
             )
-    enabled_keys = set(frames.leaf_paths.filter(pl.col("enabled"))["accepted_taxon_key"].to_list())
+        if _text(edge.get("parent_node_id")) not in known_nodes or _text(edge.get("child_node_id")) not in known_nodes:
+            findings.append(
+                _finding(
+                    "fatal",
+                    "invalid_rank_transition",
+                    "classification_edges",
+                    subject,
+                    "edge references an unknown classification node",
+                )
+            )
+    cycle = _first_cycle(edges, known_nodes=known_nodes)
+    if cycle:
+        findings.append(
+            _finding(
+                "fatal",
+                "cycle_detected",
+                "classification_edges",
+                cycle[0],
+                "classification edges contain a directed cycle",
+                {"cycle": cycle},
+            )
+        )
+    enabled_node_ids = {
+        _text(row.get("node_id")) for row in nodes.filter(pl.col("enabled")).iter_rows(named=True)
+    }
+    enabled_edges = [
+        row
+        for row in edges.filter(pl.col("enabled")).iter_rows(named=True)
+        if _text(row.get("parent_node_id")) in enabled_node_ids
+        and _text(row.get("child_node_id")) in enabled_node_ids
+    ]
+    parents_by_child: dict[str, set[str]] = {}
+    for edge in enabled_edges:
+        parents_by_child.setdefault(_text(edge.get("child_node_id")), set()).add(
+            _text(edge.get("parent_node_id"))
+        )
+    for child_node_id in sorted(parents_by_child):
+        parents = sorted(parents_by_child[child_node_id])
+        if len(parents) > 1:
+            findings.append(
+                _finding(
+                    "fatal",
+                    "enabled_node_has_multiple_enabled_parents",
+                    "classification_edges",
+                    child_node_id,
+                    "enabled node has more than one enabled parent",
+                    {"parent_node_ids": parents},
+                )
+            )
+    species_children = {
+        _text(edge.get("parent_node_id"))
+        for edge in enabled_edges
+        if _text(edge.get("parent_rank")) == "GENUS" and _text(edge.get("child_rank")) == "SPECIES"
+    }
+    for genus in nodes.filter((pl.col("rank") == "GENUS") & pl.col("enabled")).iter_rows(named=True):
+        node_id = _text(genus.get("node_id"))
+        if node_id not in species_children:
+            findings.append(
+                _finding(
+                    "warning",
+                    "enabled_genus_has_no_species",
+                    "classification_nodes",
+                    node_id,
+                    "enabled genus has no enabled species child",
+                )
+            )
+
+
+def _validate_mappings(
+    nodes: pl.DataFrame,
+    mappings: pl.DataFrame,
+    findings: list[dict[str, Any]],
+) -> None:
+    enabled_species_ids = {
+        _text(row.get("node_id"))
+        for row in nodes.filter((pl.col("rank") == "SPECIES") & pl.col("enabled")).iter_rows(named=True)
+    }
+    enabled_mapping_species_ids = {
+        _text(row.get("species_node_id"))
+        for row in mappings.filter(pl.col("enabled")).iter_rows(named=True)
+    }
+    for species_node_id in sorted(enabled_species_ids - enabled_mapping_species_ids):
+        findings.append(
+            _finding(
+                "fatal",
+                "enabled_species_missing_gbif_mapping",
+                "species_gbif_mappings",
+                species_node_id,
+                "enabled species has no enabled reviewed GBIF mapping",
+            )
+        )
+    for mapping in mappings.iter_rows(named=True):
+        species_node_id = _text(mapping.get("species_node_id"))
+        if species_node_id in enabled_species_ids and _text(mapping.get("taxonomic_status")) != "ACCEPTED":
+            findings.append(
+                _finding(
+                    "fatal",
+                    "enabled_species_maps_to_nonaccepted_gbif_taxon",
+                    "species_gbif_mappings",
+                    species_node_id,
+                    "enabled species mapping does not resolve to an explicitly accepted GBIF species",
+                    {
+                        "gbif_species_key": mapping.get("gbif_species_key"),
+                        "taxonomic_status": mapping.get("taxonomic_status"),
+                    },
+                )
+            )
+
+
+def _validate_leaf_paths(
+    nodes: pl.DataFrame,
+    paths: pl.DataFrame,
+    findings: list[dict[str, Any]],
+) -> None:
+    node_rows_by_id: dict[str, list[dict[str, Any]]] = {}
+    for node in nodes.iter_rows(named=True):
+        node_rows_by_id.setdefault(_text(node.get("node_id")), []).append(dict(node))
+    enabled_paths = paths.filter(pl.col("enabled"))
+    duplicate_subjects: set[str] = set()
+    for key in ("accepted_taxon_key", "species_node_id"):
+        if enabled_paths.is_empty():
+            continue
+        duplicates = enabled_paths.group_by(key).len().filter((pl.col(key) != "") & (pl.col("len") > 1))
+        duplicate_subjects.update(_text(value) for value in duplicates[key].to_list())
+    for subject in sorted(duplicate_subjects):
+        findings.append(
+            _finding(
+                "fatal",
+                "duplicate_enabled_species_path",
+                "classification_leaf_paths",
+                subject,
+                "enabled species resolves to more than one classification path",
+            )
+        )
+    for path in paths.iter_rows(named=True):
+        subject = _text(path.get("accepted_taxon_key"), path.get("species_node_id"), path.get("hierarchy_hash"))
+        rank_path = _string_list(path.get("rank_path"))
+        missing: list[str] = []
+        for rank in MANDATORY_CLASSIFICATION_RANKS:
+            prefix = rank.casefold()
+            if (
+                not _text(path.get(f"{prefix}_node_id"))
+                or not _text(path.get(prefix))
+                or rank_path.count(rank) != 1
+            ):
+                missing.append(rank)
+        if missing:
+            findings.append(
+                _finding(
+                    "fatal",
+                    "missing_mandatory_rank",
+                    "classification_leaf_paths",
+                    subject,
+                    "classification path is missing one or more mandatory ranks",
+                    {"missing_ranks": missing},
+                )
+            )
+        if not path.get("enabled"):
+            continue
+        rank_path_node_ids = _string_list(path.get("rank_path_node_ids"))
+        wide_node_ids = [
+            _text(path.get(f"{rank.casefold()}_node_id"))
+            for rank in CLASSIFICATION_RANKS
+            if _text(path.get(f"{rank.casefold()}_node_id"))
+        ]
+        unusable = sorted(
+            {
+                node_id
+                for node_id in [*rank_path_node_ids, *wide_node_ids]
+                if len(node_rows_by_id.get(node_id, ())) != 1
+                or not bool(node_rows_by_id[node_id][0].get("enabled"))
+            }
+        )
+        if len(rank_path) != len(rank_path_node_ids) or set(wide_node_ids) != set(rank_path_node_ids):
+            unusable.append("path_node_id_mismatch")
+        if unusable:
+            findings.append(
+                _finding(
+                    "fatal",
+                    "enabled_path_contains_disabled_node",
+                    "classification_leaf_paths",
+                    subject,
+                    "enabled path references a missing, disabled, duplicate, or inconsistent node",
+                    {"unusable_node_ids": sorted(set(unusable))},
+                )
+            )
+        if (
+            _text(path.get("path_completeness")) == "reviewed_optional_skip"
+            and _string_list(path.get("skipped_ranks")) == ["SUBTRIBE"]
+            and not _text(path.get("subtribe_node_id"), path.get("subtribe"))
+        ):
+            findings.append(
+                _finding(
+                    "warning",
+                    "optional_subtribe_skipped",
+                    "classification_leaf_paths",
+                    subject,
+                    "reviewed path explicitly skips the optional SUBTRIBE rank",
+                )
+            )
+
+
+def _validate_prompt_labels(
+    nodes: pl.DataFrame,
+    labels: pl.DataFrame,
+    findings: list[dict[str, Any]],
+) -> None:
+    enabled_node_counts: dict[str, int] = {}
+    for node in nodes.filter(pl.col("enabled")).iter_rows(named=True):
+        node_id = _text(node.get("node_id"))
+        enabled_node_counts[node_id] = enabled_node_counts.get(node_id, 0) + 1
+    for label in labels.filter(pl.col("enabled")).iter_rows(named=True):
+        node_id = _text(label.get("node_id"))
+        if enabled_node_counts.get(node_id) != 1:
+            findings.append(
+                _finding(
+                    "fatal",
+                    "enabled_label_references_missing_node",
+                    "classification_prompt_labels",
+                    node_id,
+                    "enabled prompt label does not reference exactly one enabled node",
+                )
+            )
+
+
+def _append_registry_coverage_gaps(
+    taxa: pl.DataFrame,
+    leaf_paths: pl.DataFrame,
+    findings: list[dict[str, Any]],
+) -> None:
+    enabled_keys = set(leaf_paths.filter(pl.col("enabled"))["accepted_taxon_key"].to_list())
     for row in _accepted_species_rows(taxa):
-        key = _text(row.get("accepted_taxon_key"))
+        key = _text(row.get("accepted_taxon_key"), row.get("species_key"))
         if key not in enabled_keys:
             findings.append(
                 _finding(
@@ -874,7 +1167,6 @@ def validate_classification_v3(
                     },
                 )
             )
-    return sorted(findings, key=lambda finding: (finding["severity"], finding["code"], finding["subject"]))
 
 
 def _edge_transition_is_valid(
@@ -893,6 +1185,61 @@ def _edge_transition_is_valid(
         and transition == ("TRIBE", "GENUS")
         and normalized_skips == ["SUBTRIBE"]
     )
+
+
+def _append_duplicate_findings(
+    frame: pl.DataFrame,
+    keys: tuple[str, ...],
+    code: str,
+    table: str,
+    findings: list[dict[str, Any]],
+) -> None:
+    if frame.is_empty():
+        return
+    duplicates = frame.group_by(list(keys)).len().filter(pl.col("len") > 1)
+    for row in duplicates.sort(list(keys)).iter_rows(named=True):
+        subject = "|".join(_text(row.get(key)) for key in keys)
+        findings.append(
+            _finding(
+                "fatal",
+                code,
+                table,
+                subject,
+                f"duplicate rows exist for {', '.join(keys)}",
+            )
+        )
+
+
+def _first_cycle(edges: pl.DataFrame, *, known_nodes: set[str]) -> list[str]:
+    children: dict[str, set[str]] = {}
+    for edge in edges.iter_rows(named=True):
+        parent = _text(edge.get("parent_node_id"))
+        child = _text(edge.get("child_node_id"))
+        if parent in known_nodes and child in known_nodes:
+            children.setdefault(parent, set()).add(child)
+    visited: set[str] = set()
+    active: list[str] = []
+
+    def visit(node_id: str) -> list[str]:
+        if node_id in active:
+            start = active.index(node_id)
+            return [*active[start:], node_id]
+        if node_id in visited:
+            return []
+        active.append(node_id)
+        for child_id in sorted(children.get(node_id, ())):
+            cycle = visit(child_id)
+            if cycle:
+                return cycle
+        active.pop()
+        visited.add(node_id)
+        return []
+
+    for node_id in sorted(known_nodes):
+        cycle = visit(node_id)
+        if cycle:
+            return cycle
+    return []
 
 
 def _sort_nodes(frame: pl.DataFrame) -> pl.DataFrame:
