@@ -84,6 +84,20 @@ def test_visual_qa_rejects_path_cascade_without_subtribe_or_reviewed_skip() -> N
     assert "hierarchical_missing_subtribe_or_skip" in findings["finding_type"].to_list()
 
 
+def test_visual_qa_rejects_overlay_node_id_in_species_accepted_key_field() -> None:
+    findings = build_visual_qa_findings(
+        object_evidence=pl.DataFrame(
+            [
+                _cascade_row(
+                    species_top20_accepted_taxon_keys=["fixture:family:papilionidae"],
+                )
+            ]
+        )
+    )
+
+    assert "overlay_node_id_in_accepted_taxon_keys" in findings["finding_type"].to_list()
+
+
 def test_visual_qa_does_not_flag_bare_object_scores_as_noneligible_detections() -> None:
     row = _row()
     row.pop("detector_label")

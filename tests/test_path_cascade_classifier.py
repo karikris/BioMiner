@@ -4,6 +4,7 @@ from dataclasses import FrozenInstanceError, dataclass, fields, replace
 from itertools import chain
 import json
 from math import sqrt
+from pathlib import Path
 from typing import Any, Sequence
 
 import polars as pl
@@ -17,8 +18,13 @@ from biominer.bioclip.path_cascade_classifier import (
     classify_path_cascade_batch,
     score_rank_candidates,
 )
-from biominer.bioclip.path_cascade_output import path_cascade_result_to_output_row
-from biominer.bioclip.path_cascade_output import path_cascade_result_to_object_score_row
+from biominer.bioclip.path_cascade_output import (
+    PATH_CASCADE_OUTPUT_SCHEMA,
+    path_cascade_output_frame,
+    path_cascade_result_to_object_score_row,
+    path_cascade_result_to_output_row,
+    write_path_cascade_output,
+)
 from biominer.bioclip.object_runner import (
     OBJECT_SCORE_OUTPUT_SCHEMA,
     PHOTO_EVIDENCE_SUMMARY_SCHEMA,
@@ -253,6 +259,21 @@ def test_family_rank_three_preserves_true_branch_but_rank_four_cannot_reenter() 
     assert output["family_top3_node_ids"] == ["f:a", "f:b", "f:c"]
     assert output["species_top1_node_id"] == "s:c1"
     assert output["species_top1_accepted_taxon_key"] == "gbif:2201"
+    overlay_node_ids: set[str] = set()
+    for prefix in ("family", "subfamily", "tribe", "subtribe", "genus"):
+        names = output[f"{prefix}_top3"]
+        node_ids = output[f"{prefix}_top3_node_ids"]
+        scores = output[f"{prefix}_top3_scores"]
+        assert len(names) == len(node_ids) == len(scores) <= 3
+        overlay_node_ids.update(node_ids)
+    for prefix in ("species_top20", "species_top5", "species_top3"):
+        assert len(output[prefix]) == len(output[f"{prefix}_node_ids"])
+        assert len(output[prefix]) == len(output[f"{prefix}_accepted_taxon_keys"])
+    accepted_keys = set(output["species_top20_accepted_taxon_keys"])
+    assert all(key.startswith("gbif:") for key in accepted_keys)
+    assert overlay_node_ids.isdisjoint(accepted_keys)
+    assert output["species_top3"] == output["species_top5"][:3]
+    assert set(output["species_top5_node_ids"]) <= set(output["species_top20_node_ids"])
     trace = json.loads(output["pruning_trace_json"])
     assert len(trace) == 7
     assert [entry["prompt_stage"] for entry in trace[-2:]] == [
@@ -356,6 +377,27 @@ def test_cascade_object_audit_survives_join_and_summarizes_winning_genus() -> No
     assert summary["photo_selected_genus_node_id"][0] == "g:c1"
     assert summary["photo_species_top1_key"][0] == "gbif:2201"
 
+    alias = dict(row)
+    alias.update(
+        {
+            "detection_id": "detection-2",
+            "species_top1": "Gamma one alias",
+            "species_top1_scientific_name": "Gamma one alias",
+        }
+    )
+    alias_summary = _photo_summary(
+        pl.DataFrame([row, alias], schema=OBJECT_SCORE_OUTPUT_SCHEMA)
+    )
+    assert alias_summary["photo_multi_object_conflict"][0] is False
+
+    conflicting = dict(alias)
+    conflicting["species_top1_accepted_taxon_key"] = "gbif:9999"
+    conflicting["accepted_taxon_key"] = "gbif:9999"
+    conflict_summary = _photo_summary(
+        pl.DataFrame([row, conflicting], schema=OBJECT_SCORE_OUTPUT_SCHEMA)
+    )
+    assert conflict_summary["photo_multi_object_conflict"][0] is True
+
 
 def test_genus_beam_is_three_and_excluded_genus_species_are_never_scored() -> None:
     store = _store()
@@ -432,9 +474,16 @@ def test_reviewed_subtribe_skip_does_not_consume_a_beam_slot() -> None:
     assert _label("g:a4u") not in genus_call
     assert result.species_top1 is not None and result.species_top1.node_id == "s:askip"
     assert result.skipped_ranks == ("SUBTRIBE",)
+    output = path_cascade_result_to_output_row(result)
+    assert output["subtribe_top3_node_ids"] == ["u:a1", "u:a1-2", "u:a1-3"]
+    assert output["selected_subtribe"] is None
+    assert output["selected_subtribe_node_id"] is None
+    assert output["skipped_ranks"] == ["SUBTRIBE"]
 
 
-def test_fully_skipped_subtribe_records_skip_without_scoring_placeholders() -> None:
+def test_fully_skipped_subtribe_records_skip_without_scoring_placeholders(
+    tmp_path: Path,
+) -> None:
     store = _store()
     scorer = _scorer(
         store,
@@ -463,6 +512,25 @@ def test_fully_skipped_subtribe_records_skip_without_scoring_placeholders() -> N
     assert step.candidate_node_ids == step.retained_node_ids == step.pruned_node_ids == ()
     assert step.reviewed_skip_path_count == 3
     assert len(scorer.calls) == 6  # FAMILY, SUBFAMILY, TRIBE, GENUS, species first pass/rerank
+    output = path_cascade_result_to_output_row(result)
+    assert output["subtribe_top3"] == []
+    assert output["subtribe_top3_node_ids"] == []
+    assert output["subtribe_top3_scores"] == []
+    assert output["subtribe_top1"] is None
+    assert output["selected_subtribe"] is None
+    assert output["fully_skipped_ranks"] == ["SUBTRIBE"]
+    assert output["candidate_counts_by_rank"]["SUBTRIBE"] == 0
+    assert (
+        output["active_path_counts_before_by_rank"]["SUBTRIBE"]
+        == output["active_path_counts_after_by_rank"]["SUBTRIBE"]
+    )
+    path = write_path_cascade_output(
+        path_cascade_output_frame([output]),
+        tmp_path / "skipped-subtribe.parquet",
+    )
+    restored = pl.read_parquet(path)
+    assert dict(restored.schema) == PATH_CASCADE_OUTPUT_SCHEMA
+    assert restored["subtribe_top3"][0].to_list() == []
 
 
 def test_mixed_optional_rank_rejects_paths_without_node_or_reviewed_skip() -> None:

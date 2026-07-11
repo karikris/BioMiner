@@ -31,13 +31,17 @@ def test_cascade_output_schema_is_six_rank_and_has_no_legacy_identity_fields() -
     )
 
 
-def test_empty_cascade_output_preserves_exact_physical_schema() -> None:
+def test_empty_cascade_output_preserves_exact_physical_schema(tmp_path) -> None:
     frame = empty_path_cascade_output_frame()
 
     assert frame.shape == (0, len(PATH_CASCADE_OUTPUT_SCHEMA))
     assert frame.columns == list(PATH_CASCADE_OUTPUT_SCHEMA)
     assert dict(frame.schema) == PATH_CASCADE_OUTPUT_SCHEMA
     assert validate_path_cascade_output_frame(frame).schema == frame.schema
+    path = write_path_cascade_output(frame, tmp_path / "empty-cascade.parquet")
+    restored = pl.read_parquet(path)
+    assert restored.is_empty()
+    assert dict(restored.schema) == PATH_CASCADE_OUTPUT_SCHEMA
 
 
 def test_minimal_row_uses_typed_empty_lists_zero_count_structs_and_null_scalars() -> None:
