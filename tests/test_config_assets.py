@@ -15,6 +15,7 @@ def test_authoritative_docs_and_classification_source_exist() -> None:
         Path("docs/production.md"),
         Path("docs/vision.md"),
         Path("config/taxonomy/papilionoidea_classification_v2.json"),
+        Path("config/taxonomy/papilionoidea_classification_v3.json"),
         Path("config/vision_profiles/mac_m5pro_64gb.json"),
     ):
         assert path.exists(), path

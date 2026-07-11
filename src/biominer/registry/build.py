@@ -14,10 +14,10 @@ import polars as pl
 
 from biominer.registry import enrichment as registry_enrichment
 from biominer.registry.compiler import compile_registry_fixture, compile_registry_frames
-from biominer.registry.classification_v2 import (
-    classification_v2_artifact_uris,
-    compile_classification_v2_artifacts,
-    write_classification_v2_artifacts,
+from biominer.registry.classification_v3 import (
+    classification_v3_artifact_uris,
+    compile_classification_v3_artifacts,
+    write_classification_v3_artifacts,
 )
 from biominer.registry.enrichment import (
     DEFAULT_ENRICHMENT_SOURCES,
@@ -223,7 +223,7 @@ def build_cloud_registry(
         scope_path=scope_path,
         query_curation_json=query_curation_json,
     )
-    manifest = _add_cloud_classification_v2_outputs(
+    manifest = _add_cloud_classification_v3_outputs(
         storage=storage,
         registry_prefix=registry_prefix,
         registry_version=registry_version,
@@ -405,7 +405,7 @@ def build_local_registry(
             skip_language_targets=skip_language_targets,
             retrieved_at=retrieved,
         )
-        manifest = _add_local_classification_v2_outputs(
+        manifest = _add_local_classification_v3_outputs(
             registry_dir=output,
             manifest=manifest,
             skip=skip_classification_table,
@@ -500,7 +500,7 @@ def build_local_registry(
             skip_language_targets=skip_language_targets,
             retrieved_at=retrieved,
         )
-        manifest = _add_local_classification_v2_outputs(
+        manifest = _add_local_classification_v3_outputs(
             registry_dir=canonical_dir,
             manifest=manifest,
             skip=skip_classification_table,
@@ -602,7 +602,7 @@ def _add_regional_outputs(
     return updated
 
 
-def _add_local_classification_v2_outputs(
+def _add_local_classification_v3_outputs(
     *,
     registry_dir: Path,
     manifest: dict[str, Any],
@@ -610,7 +610,7 @@ def _add_local_classification_v2_outputs(
 ) -> dict[str, Any]:
     classification: dict[str, Any] | None = None
     if not skip:
-        result = write_classification_v2_artifacts(registry_dir)
+        result = write_classification_v3_artifacts(registry_dir)
         classification = {key: value for key, value in result.items() if key != "outputs"}
     updated = {
         **manifest,
@@ -621,7 +621,7 @@ def _add_local_classification_v2_outputs(
     return updated
 
 
-def _add_cloud_classification_v2_outputs(
+def _add_cloud_classification_v3_outputs(
     *,
     storage: CloudStorage,
     registry_prefix: str,
@@ -632,14 +632,14 @@ def _add_cloud_classification_v2_outputs(
 ) -> dict[str, Any]:
     classification: dict[str, Any] | None = None
     if not skip:
-        frames, classification = compile_classification_v2_artifacts(
+        frames, classification = compile_classification_v3_artifacts(
             taxa,
             registry_version=registry_version,
         )
         if int(classification.get("fatal_finding_count") or 0):
             fatal_codes = frames["qa_findings"].filter(pl.col("severity") == "fatal")["code"].to_list()
-            raise ValueError("classification-v2 fatal QA: " + ", ".join(str(code) for code in fatal_codes))
-        uris = classification_v2_artifact_uris(registry_prefix)
+            raise ValueError("classification-v3 fatal QA: " + ", ".join(str(code) for code in fatal_codes))
+        uris = classification_v3_artifact_uris(registry_prefix)
         for key, frame in frames.items():
             storage.write_parquet_shard(uris[key], frame)
         storage.write_json(uris["manifest"], classification)

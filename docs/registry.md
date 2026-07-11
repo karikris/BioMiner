@@ -10,23 +10,23 @@ The base build writes `taxa.parquet`, `taxon_relations.parquet`, `names.parquet`
 
 ## Reviewed classification overlay
 
-BioCLIP classification uses exactly:
+BioCLIP classification uses the ordered rank contract:
 
 ```text
-FAMILY → SUBFAMILY → TRIBE → GENUS → SPECIES
+FAMILY → SUBFAMILY → TRIBE → SUBTRIBE → GENUS → SPECIES
 ```
 
-GBIF does not reliably expose subfamily and tribe in the butterfly backbone. Those ranks therefore come from reviewed source records, never suffix inference or name guessing. The initial source catalog is `config/taxonomy/papilionoidea_classification_v2.json`.
+GBIF does not reliably expose subfamily, tribe, and subtribe in the butterfly backbone. Those ranks therefore come from reviewed source records, never suffix inference or name guessing. SUBTRIBE is optional only through an explicit, sourced, reviewed `TRIBE → GENUS` rank-skip edge; it is never invented. The production source catalog is `config/taxonomy/papilionoidea_classification_v3.json`; v2 remains a historical fixture during migration.
 
 An enabled path requires:
 
-- allowed adjacent rank transitions;
+- allowed adjacent rank transitions, or the single reviewed optional-SUBTRIBE skip;
 - one enabled parent per child;
 - no cycles;
 - complete authority, release, citation, retrieval date, and evidence;
 - explicit reviewer identity and review date;
 - one accepted GBIF mapping per species node;
-- an unbroken five-rank leaf path.
+- every mandatory rank (`FAMILY`, `SUBFAMILY`, `TRIBE`, `GENUS`, `SPECIES`) and either a sourced SUBTRIBE or a reviewed skip.
 
 Fatal findings block artifact promotion. Accepted species without a reviewed path remain in the GBIF registry but receive `unmapped_accepted_species` warnings and are unavailable to the hierarchical classifier.
 

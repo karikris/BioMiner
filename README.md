@@ -68,12 +68,12 @@ uv run biominer registry build \
   --max-retries 5
 ```
 
-Compile the reviewed five-rank overlay:
+Compile the reviewed six-rank overlay (SUBTRIBE may be an explicit reviewed skip):
 
 ```bash
 uv run biominer registry build-classification \
   --registry-dir data/registry/butterflies-v2 \
-  --source-json config/taxonomy/papilionoidea_classification_v2.json
+  --source-json config/taxonomy/papilionoidea_classification_v3.json
 ```
 
 Precompute its fingerprinted BioCLIP text embeddings once per taxonomy,

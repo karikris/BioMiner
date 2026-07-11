@@ -54,7 +54,7 @@ from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry
-from biominer.registry.classification_v2 import DEFAULT_CLASSIFICATION_V2_SOURCE, write_classification_v2_artifacts
+from biominer.registry.classification_v3 import DEFAULT_CLASSIFICATION_V3_SOURCE, write_classification_v3_artifacts
 from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST_DAILY_REQUEST_LIMIT, build_enrichment_sources_from_registry, compile_enriched_registry
 from biominer.registry.gbif import GBIFClient
@@ -215,7 +215,7 @@ def build_parser() -> argparse.ArgumentParser:
     registry_classification = registry_subparsers.add_parser("build-classification")
     registry_classification.add_argument("--registry-dir", required=True)
     registry_classification.add_argument("--output-dir")
-    registry_classification.add_argument("--source-json", default=str(DEFAULT_CLASSIFICATION_V2_SOURCE))
+    registry_classification.add_argument("--source-json", default=str(DEFAULT_CLASSIFICATION_V3_SOURCE))
     registry_audit = registry_subparsers.add_parser("audit")
     registry_audit.add_argument("--registry-dir", required=True)
     registry_audit.add_argument("--report-dir", default="reports")
@@ -602,7 +602,7 @@ def run(args: argparse.Namespace) -> int:
             return 0
         if args.registry_command == "build-classification":
             try:
-                payload = write_classification_v2_artifacts(
+                payload = write_classification_v3_artifacts(
                     registry_dir=args.registry_dir,
                     output_dir=args.output_dir,
                     source_path=args.source_json,

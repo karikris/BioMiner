@@ -1687,7 +1687,7 @@ def test_registry_build_cli_skip_classification_omits_artifacts(tmp_path, capsys
     assert not (output / "classification_leaf_paths.parquet").exists()
 
 
-def test_registry_build_classification_cli_writes_v2_outputs(tmp_path, capsys) -> None:
+def test_registry_build_classification_cli_writes_v3_outputs(tmp_path, capsys) -> None:
     registry = tmp_path / "registry"
     registry.mkdir()
     pl.DataFrame(
@@ -1731,9 +1731,10 @@ def test_registry_build_classification_cli_writes_v2_outputs(tmp_path, capsys) -
     assert run(parser.parse_args(["registry", "build-classification", "--registry-dir", str(registry)])) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["classification_version"] == "butterfly-classification-v2.0.0"
+    assert payload["classification_version"] == "butterfly-classification-v3.0.0"
     assert payload["enabled_leaf_path_count"] == 1
     assert payload["prompt_label_count"] == 5
+    assert payload["reviewed_rank_skip_count"] == 1
     assert (registry / "classification_nodes.parquet").exists()
     assert (registry / "classification_edges.parquet").exists()
     assert (registry / "classification_leaf_paths.parquet").exists()
