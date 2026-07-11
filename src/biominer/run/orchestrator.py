@@ -23,6 +23,8 @@ from biominer.bioclip.classification_modes import (
 )
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER, object_score_audit_metrics
 from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
+from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
+from biominer.bioclip.taxonomy_embedding_cache import TaxonomyTextEmbeddingIndex
 from biominer.detection.policy import DetectionPolicy, VisionRuntimeSettings
 from biominer.evidence.cloud_work import (
     CloudReviewQueueResult,
@@ -42,7 +44,7 @@ from biominer.flickr_fetch.cloud_poller import CloudMetadataPoller, flickr_query
 from biominer.storage.parquet import write_parquet
 from biominer.flickr_fetch.metadata_poller import DEFAULT_STALE_CLAIM_SECONDS, SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries_from_frame
-from biominer.registry.classification_v2 import classification_v2_artifact_uris
+from biominer.registry.classification_v3 import classification_v3_artifact_uris
 from biominer.reports.vision import build_vision_stage_metrics, write_vision_stage_reports
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import RunArtifactUris, RunPaths
@@ -707,29 +709,25 @@ class ProductionRunOrchestrator:
         if self.object_detector is None or self.image_loader is None or self.object_scorer is None:
             return StageExecutionResult(status=StageStatus.FAILED, message="rolling_vision_runtime_required_for_detect_objects")
 
-        taxonomy_store: FiveRankTaxonomyStore | None = None
-        taxonomy_text_embedding_cache = None
+        path_taxonomy_store: PathTaxonomyStore | None = None
+        taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None
         taxonomy_metrics: dict[str, Any] = {}
         if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
-            taxonomy_store, taxonomy_status = self._load_valid_hierarchical_taxonomy_store()
+            path_taxonomy_store, taxonomy_status = self._load_valid_hierarchical_taxonomy_store()
             if taxonomy_status.status is StageStatus.FAILED:
                 return taxonomy_status
             taxonomy_metrics = dict(taxonomy_status.metrics)
-            if self.request.taxonomy_text_embedding_cache:
-                try:
-                    taxonomy_text_embedding_cache = self._read_optional_parquet_location(
-                        self.request.taxonomy_text_embedding_cache
-                    )
-                except FileNotFoundError as exc:
-                    return StageExecutionResult(
-                        status=StageStatus.FAILED,
-                        message=f"missing_taxonomy_text_embedding_cache: {exc}",
-                    )
-                taxonomy_metrics["taxonomy_text_embedding_cache_rows"] = taxonomy_text_embedding_cache.height
-                taxonomy_metrics["taxonomy_text_embedding_cache_status"] = "loaded"
-            else:
-                taxonomy_metrics["taxonomy_text_embedding_cache_rows"] = 0
-                taxonomy_metrics["taxonomy_text_embedding_cache_status"] = "direct_prompt_fallback"
+            assert path_taxonomy_store is not None
+            taxonomy_text_embedding_index, cache_status = (
+                self._load_required_taxonomy_embedding_index(path_taxonomy_store)
+            )
+            taxonomy_metrics.update(cache_status.metrics)
+            if cache_status.status is StageStatus.FAILED:
+                return StageExecutionResult(
+                    status=cache_status.status,
+                    message=cache_status.message,
+                    metrics=taxonomy_metrics,
+                )
 
         from biominer.bioclip.candidate_sets import build_candidate_set_for_taxon_scope
 
@@ -777,8 +775,8 @@ class ProductionRunOrchestrator:
             },
             candidate_set_id=candidate_set.candidate_set_id,
             classification_mode=self.request.classification_mode,
-            taxonomy_table_version=_taxonomy_manifest_value(taxonomy_store, "classification_table_version"),
-            taxonomy_prompt_variant_version=_taxonomy_manifest_value(taxonomy_store, "prompt_variant_version"),
+            taxonomy_table_version=_taxonomy_manifest_value(path_taxonomy_store, "classification_version"),
+            taxonomy_prompt_variant_version=_taxonomy_manifest_value(path_taxonomy_store, "prompt_version"),
             family_top_k=self.request.rank_beam_width,
             species_first_pass_top_k=self.request.species_first_pass_top_k,
             species_rerank_top_k=self.request.species_rerank_top_k,
@@ -860,13 +858,13 @@ class ProductionRunOrchestrator:
                 adaptive_bioclip_batching=self.request.vision_settings.adaptive_batching,
                 min_bioclip_batch_size=self.request.vision_settings.min_crop_batch_size,
                 classification_mode=self.request.classification_mode,
-                taxonomy_table_version=_taxonomy_manifest_value(taxonomy_store, "classification_table_version"),
-                taxonomy_prompt_variant_version=_taxonomy_manifest_value(taxonomy_store, "prompt_variant_version"),
+                taxonomy_table_version=_taxonomy_manifest_value(path_taxonomy_store, "classification_version"),
+                taxonomy_prompt_variant_version=_taxonomy_manifest_value(path_taxonomy_store, "prompt_version"),
                 family_top_k=self.request.rank_beam_width,
                 species_first_pass_top_k=self.request.species_first_pass_top_k,
                 species_rerank_top_k=self.request.species_rerank_top_k,
-                taxonomy_store=taxonomy_store,
-                taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
+                path_taxonomy_store=path_taxonomy_store,
+                taxonomy_text_embedding_index=taxonomy_text_embedding_index,
             )
 
         def commit(item: dict[str, Any], batch_result: Any) -> Any:
@@ -992,29 +990,14 @@ class ProductionRunOrchestrator:
                 },
                 outputs={"object_scores": ",".join(score_uris)},
             )
-        taxonomy_store: FiveRankTaxonomyStore | None = None
-        taxonomy_text_embedding_cache = None
+        path_taxonomy_store: PathTaxonomyStore | None = None
+        taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None
         taxonomy_metrics: dict[str, Any] = {}
         if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
-            taxonomy_store, taxonomy_status = self._load_valid_hierarchical_taxonomy_store()
+            path_taxonomy_store, taxonomy_status = self._load_valid_hierarchical_taxonomy_store()
             if taxonomy_status.status is StageStatus.FAILED:
                 return taxonomy_status
             taxonomy_metrics = dict(taxonomy_status.metrics)
-            if self.request.taxonomy_text_embedding_cache:
-                try:
-                    taxonomy_text_embedding_cache = self._read_optional_parquet_location(
-                        self.request.taxonomy_text_embedding_cache
-                    )
-                except FileNotFoundError as exc:
-                    return StageExecutionResult(
-                        status=StageStatus.FAILED,
-                        message=f"missing_taxonomy_text_embedding_cache: {exc}",
-                    )
-                taxonomy_metrics["taxonomy_text_embedding_cache_rows"] = taxonomy_text_embedding_cache.height
-                taxonomy_metrics["taxonomy_text_embedding_cache_status"] = "loaded"
-            else:
-                taxonomy_metrics["taxonomy_text_embedding_cache_rows"] = 0
-                taxonomy_metrics["taxonomy_text_embedding_cache_status"] = "direct_prompt_fallback"
         missing = _missing_paths(plan.paths.source_records_path, plan.paths.object_detections_path)
         if missing:
             return StageExecutionResult(
@@ -1028,6 +1011,17 @@ class ProductionRunOrchestrator:
                 message="bioclip_runtime_required_for_score_bioclip",
                 metrics=taxonomy_metrics,
             )
+        if path_taxonomy_store is not None:
+            taxonomy_text_embedding_index, cache_status = (
+                self._load_required_taxonomy_embedding_index(path_taxonomy_store)
+            )
+            taxonomy_metrics.update(cache_status.metrics)
+            if cache_status.status is StageStatus.FAILED:
+                return StageExecutionResult(
+                    status=cache_status.status,
+                    message=cache_status.message,
+                    metrics=taxonomy_metrics,
+                )
         import polars as pl
         from biominer.bioclip.candidate_sets import build_candidate_set_for_taxon_scope
 
@@ -1060,8 +1054,8 @@ class ProductionRunOrchestrator:
             species_first_pass_top_k=self.request.species_first_pass_top_k,
             species_rerank_top_k=self.request.species_rerank_top_k,
             species_report_top_k=self.request.species_report_top_k,
-            taxonomy_store=taxonomy_store,
-            taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
+            path_taxonomy_store=path_taxonomy_store,
+            taxonomy_text_embedding_index=taxonomy_text_embedding_index,
         )
         write_parquet(frame, plan.paths.object_scores_path)
         metrics.update(_visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path))
@@ -1075,7 +1069,9 @@ class ProductionRunOrchestrator:
         _store, result = self._load_valid_hierarchical_taxonomy_store()
         return result
 
-    def _load_valid_hierarchical_taxonomy_store(self) -> tuple[FiveRankTaxonomyStore | None, StageExecutionResult]:
+    def _load_valid_hierarchical_taxonomy_store(
+        self,
+    ) -> tuple[PathTaxonomyStore | None, StageExecutionResult]:
         base_metrics = _visual_classification_config_metrics_from_paths(self.request, species_candidate_path=self.species_candidate_path)
         if self.species_candidate_path is None:
             return (
@@ -1133,37 +1129,114 @@ class ProductionRunOrchestrator:
             ),
         )
 
-    def _read_butterfly_taxonomy_store(self, location: str | Path) -> FiveRankTaxonomyStore:
+    def _read_butterfly_taxonomy_store(self, location: str | Path) -> PathTaxonomyStore:
         if is_cloud_uri(str(location)):
             if self.storage is None:
                 raise ValueError("storage_backend_required_for_taxonomy_candidate_table")
-            v2_uris = classification_v2_artifact_uris(str(location))
-            missing_v2 = [
+            v3_uris = classification_v3_artifact_uris(str(location))
+            required = {
+                "sources",
+                "nodes",
+                "edges",
+                "gbif_mappings",
+                "leaf_paths",
+                "prompt_labels",
+                "qa_findings",
+                "manifest",
+            }
+            missing_v3 = [
                 uri
-                for key, uri in v2_uris.items()
-                if key in {"sources", "nodes", "edges", "gbif_mappings", "leaf_paths", "prompt_labels", "manifest"}
-                and not self.storage.exists(uri)
+                for key, uri in v3_uris.items()
+                if key in required and not self.storage.exists(uri)
             ]
-            if missing_v2:
-                raise FileNotFoundError(", ".join(missing_v2))
-            v2_manifest = self.storage.read_json(v2_uris["manifest"])
-            store = FiveRankTaxonomyStore(
-                sources=self.storage.read_parquet(v2_uris["sources"]),
-                nodes=self.storage.read_parquet(v2_uris["nodes"]),
-                edges=self.storage.read_parquet(v2_uris["edges"]),
-                gbif_mappings=self.storage.read_parquet(v2_uris["gbif_mappings"]),
-                leaf_paths=self.storage.read_parquet(v2_uris["leaf_paths"]),
-                prompt_labels=self.storage.read_parquet(v2_uris["prompt_labels"]),
-                manifest=v2_manifest,
+            if missing_v3:
+                raise FileNotFoundError(", ".join(missing_v3))
+            return PathTaxonomyStore.from_frames(
+                sources=self.storage.read_parquet(v3_uris["sources"]),
+                nodes=self.storage.read_parquet(v3_uris["nodes"]),
+                edges=self.storage.read_parquet(v3_uris["edges"]),
+                gbif_mappings=self.storage.read_parquet(v3_uris["gbif_mappings"]),
+                leaf_paths=self.storage.read_parquet(v3_uris["leaf_paths"]),
+                prompt_labels=self.storage.read_parquet(v3_uris["prompt_labels"]),
+                qa_findings=self.storage.read_parquet(v3_uris["qa_findings"]),
+                manifest=self.storage.read_json(v3_uris["manifest"]),
             )
-            expected = str(v2_manifest.get("classification_fingerprint") or "")
-            if int(v2_manifest.get("fatal_finding_count") or 0) or v2_manifest.get("qa_status") != "passed":
-                raise ValueError("classification-v2 manifest did not pass fatal QA")
-            if expected and expected != store.taxonomy_fingerprint:
-                raise ValueError("classification-v2 taxonomy fingerprint mismatch")
-            return store
-        v2_root = Path(location).parent if Path(location).suffix == ".parquet" else Path(location)
-        return FiveRankTaxonomyStore.read(v2_root)
+        v3_root = Path(location).parent if Path(location).suffix == ".parquet" else Path(location)
+        return PathTaxonomyStore.read(v3_root)
+
+    def _load_required_taxonomy_embedding_index(
+        self,
+        taxonomy_store: PathTaxonomyStore,
+    ) -> tuple[TaxonomyTextEmbeddingIndex | None, StageExecutionResult]:
+        location = self.request.taxonomy_text_embedding_cache
+        if not location:
+            return (
+                None,
+                StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message=(
+                        "missing_taxonomy_text_embedding_cache: hierarchical production "
+                        "requires a validated classification-v3 cache"
+                    ),
+                    metrics={
+                        "taxonomy_text_embedding_cache_rows": 0,
+                        "taxonomy_text_embedding_cache_status": "missing",
+                    },
+                ),
+            )
+        if self.object_scorer is None:
+            return (
+                None,
+                StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="bioclip_runtime_required_for_taxonomy_text_embedding_cache",
+                ),
+            )
+        frame = None
+        try:
+            frame = self._read_optional_parquet_location(location)
+            index = TaxonomyTextEmbeddingIndex.from_frame(
+                frame,
+                taxonomy_store=taxonomy_store,
+                model_id=str(self.object_scorer.model_id or ""),
+                model_checkpoint=str(self.object_scorer.model_checkpoint or ""),
+            )
+        except FileNotFoundError as exc:
+            return (
+                None,
+                StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message=f"missing_taxonomy_text_embedding_cache: {exc}",
+                    metrics={
+                        "taxonomy_text_embedding_cache_rows": 0,
+                        "taxonomy_text_embedding_cache_status": "missing",
+                    },
+                ),
+            )
+        except ValueError as exc:
+            return (
+                None,
+                StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message=f"invalid_taxonomy_text_embedding_cache: {exc}",
+                    metrics={
+                        "taxonomy_text_embedding_cache_rows": frame.height if frame is not None else 0,
+                        "taxonomy_text_embedding_cache_status": "invalid",
+                    },
+                ),
+            )
+        return (
+            index,
+            StageExecutionResult(
+                metrics={
+                    "taxonomy_text_embedding_cache_rows": frame.height,
+                    "taxonomy_text_embedding_cache_status": "validated",
+                    "taxonomy_text_embedding_cache_fingerprint": index.cache_fingerprint,
+                    "taxonomy_text_embedding_dimension": index.embedding_dim,
+                    "taxonomy_text_embedding_label_count": index.label_count,
+                }
+            ),
+        )
 
     def _read_optional_parquet_location(self, location: str | Path) -> Any:
         if is_cloud_uri(str(location)):
@@ -1762,6 +1835,8 @@ def _score_primary_visual_mode(
     species_report_top_k: int = DEFAULT_SPECIES_REPORT_TOP_K,
     taxonomy_store: FiveRankTaxonomyStore | None = None,
     taxonomy_text_embedding_cache: Any | None = None,
+    path_taxonomy_store: PathTaxonomyStore | None = None,
+    taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     from biominer.bioclip.object_runner import screen_object_detections
 
@@ -1795,6 +1870,8 @@ def _score_primary_visual_mode(
         species_rerank_top_k=species_rerank_top_k,
         taxonomy_store=taxonomy_store,
         taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
+        path_taxonomy_store=path_taxonomy_store,
+        taxonomy_text_embedding_index=taxonomy_text_embedding_index,
     )
     frame = result.frame
     scored = [PRODUCTION_VISUAL_MODE] if result.crops_scored else []
@@ -1855,12 +1932,12 @@ def _visual_classification_config_metrics(
 
 
 def _butterfly_taxonomy_store_metrics(
-    store: FiveRankTaxonomyStore,
+    store: PathTaxonomyStore,
     *,
     taxonomy_candidate_table_status: str,
 ) -> dict[str, Any]:
     manifest = dict(store.manifest or {})
-    family_count = store.candidates("FAMILY").height
+    family_count = store.rank_candidates("FAMILY").height
     species_count = store.leaf_paths.filter(store.leaf_paths["enabled"]).height
     return {
         "taxonomy_candidate_table_status": taxonomy_candidate_table_status,
@@ -1873,13 +1950,21 @@ def _butterfly_taxonomy_store_metrics(
         "classification_species_count": species_count,
         "taxonomy_family_candidate_count": family_count,
         "taxonomy_species_candidate_count": species_count,
-        "classification_family_label_count": store.prompt_rows_for_rank("FAMILY").height,
-        "classification_species_label_count": store.prompt_rows_for_rank("SPECIES").height,
-        "classification_taxonomy_fingerprint": store.taxonomy_fingerprint,
+        "classification_family_label_count": store.prompt_labels.filter(
+            store.prompt_labels["enabled"] & (store.prompt_labels["rank"] == "FAMILY")
+        ).height,
+        "classification_species_label_count": store.prompt_labels.filter(
+            store.prompt_labels["enabled"] & (store.prompt_labels["rank"] == "SPECIES")
+        ).height,
+        "classification_taxonomy_fingerprint": store.classification_fingerprint,
+        "classification_hierarchy_fingerprint": store.hierarchy_fingerprint,
     }
 
 
-def _taxonomy_manifest_value(store: FiveRankTaxonomyStore | None, key: str) -> str | None:
+def _taxonomy_manifest_value(
+    store: FiveRankTaxonomyStore | PathTaxonomyStore | None,
+    key: str,
+) -> str | None:
     if store is None:
         return None
     manifest = dict(store.manifest or {})

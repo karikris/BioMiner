@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
 
+import biominer.bioclip.cloud_work as cloud_work
 from biominer.bioclip.candidate_sets import build_candidate_set
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 from biominer.bioclip.cloud_work import bioclip_score_work_item, enqueue_bioclip_work_from_detection_shards, run_cloud_bioclip_batch
@@ -12,6 +14,10 @@ from biominer.benchmarks.vision_plumbing import benchmark_taxonomy_store
 from biominer.registry.classification_v2 import (
     CLASSIFICATION_V2_PROMPT_VERSION as PROMPT_VARIANT_VERSION,
     CLASSIFICATION_V2_VERSION as CLASSIFICATION_TABLE_VERSION,
+)
+from biominer.registry.classification_v3 import (
+    CLASSIFICATION_V3_PROMPT_VERSION,
+    CLASSIFICATION_V3_VERSION,
 )
 from biominer.run.stages import RunStage
 from biominer.species.context import CommonName, SpeciesContext
@@ -514,6 +520,149 @@ def test_run_cloud_bioclip_batch_hierarchical_mode_requires_taxonomy_store() -> 
         raise AssertionError("expected hierarchical mode to require taxonomy_store")
 
 
+def test_run_cloud_bioclip_batch_v3_uses_cached_path_cascade_once_per_crop_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class EmbeddingScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self) -> None:
+            self.image_batches: list[tuple[str, ...]] = []
+
+        def embed_image_items(self, items):  # noqa: ANN001, ANN201 - cascade protocol fake.
+            self.image_batches.append(tuple(str(item["detection_id"]) for item in items))
+            return [[1.0, 0.0] for _item in items]
+
+    path_store = SimpleNamespace(
+        classification_version=CLASSIFICATION_V3_VERSION,
+        prompt_version=CLASSIFICATION_V3_PROMPT_VERSION,
+    )
+    embedding_index = object()
+    cascade_calls: list[tuple[str, ...]] = []
+
+    def fake_classify_path_cascade_batch(
+        *,
+        items,
+        embedding_scorer,
+        taxonomy_store,
+        taxonomy_text_embedding_index,
+        rank_beam_width,
+    ):  # noqa: ANN001, ANN201 - dependency-boundary fake.
+        assert taxonomy_store is path_store
+        assert taxonomy_text_embedding_index is embedding_index
+        assert rank_beam_width == 3
+        cascade_calls.append(tuple(str(item["detection_id"]) for item in items))
+        embeddings = embedding_scorer.embed_image_items(items)
+        return tuple({"embedding": embedding} for embedding in embeddings)
+
+    def fake_result_to_row(*, item, result, scorer):  # noqa: ANN001, ANN201 - serializer fake.
+        assert result == {"embedding": [1.0, 0.0]}
+        assert scorer.model_checkpoint == "fake-checkpoint"
+        return {
+            "source": item["source"],
+            "flickr_photo_id": item["flickr_photo_id"],
+            "detection_id": item["detection_id"],
+            "crop_hash": item["crop_hash"],
+            "classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+            "taxonomy_table_version": CLASSIFICATION_V3_VERSION,
+            "taxonomy_prompt_variant_version": CLASSIFICATION_V3_PROMPT_VERSION,
+        }
+
+    monkeypatch.setattr(
+        cloud_work,
+        "classify_path_cascade_batch",
+        fake_classify_path_cascade_batch,
+    )
+    monkeypatch.setattr(
+        cloud_work,
+        "path_cascade_result_to_object_score_row",
+        fake_result_to_row,
+    )
+    monkeypatch.setattr(
+        cloud_work,
+        "classify_five_rank_crops_batch",
+        lambda **_kwargs: pytest.fail("classification-v3 must not use five-rank dispatch"),
+    )
+    context = _context()
+    candidate_set = build_candidate_set(context, allow_single_target_fixture=True)
+    work_items = [
+        _hierarchical_work_item(
+            index,
+            candidate_set_id=candidate_set.candidate_set_id,
+            taxonomy_table_version=CLASSIFICATION_V3_VERSION,
+            taxonomy_prompt_variant_version=CLASSIFICATION_V3_PROMPT_VERSION,
+        )
+        for index in range(5)
+    ]
+    scorer = EmbeddingScorer()
+
+    result = run_cloud_bioclip_batch(
+        work_items=work_items,
+        species_context=context,
+        candidate_set=candidate_set,
+        scorer=scorer,
+        crop_batch_size=2,
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        path_taxonomy_store=path_store,  # type: ignore[arg-type]
+        taxonomy_text_embedding_index=embedding_index,  # type: ignore[arg-type]
+    )
+
+    assert cascade_calls == [("det-0", "det-1"), ("det-2", "det-3"), ("det-4",)]
+    assert scorer.image_batches == cascade_calls
+    assert result.crops_scored == 5
+    assert result.frame["taxonomy_table_version"].unique().to_list() == [
+        CLASSIFICATION_V3_VERSION
+    ]
+
+
+def test_run_cloud_bioclip_batch_v3_requires_embedding_index() -> None:
+    context = _context()
+    candidate_set = build_candidate_set(context, allow_single_target_fixture=True)
+    work_item = _hierarchical_work_item(
+        1,
+        candidate_set_id=candidate_set.candidate_set_id,
+        taxonomy_table_version=CLASSIFICATION_V3_VERSION,
+        taxonomy_prompt_variant_version=CLASSIFICATION_V3_PROMPT_VERSION,
+    )
+    path_store = SimpleNamespace(
+        classification_version=CLASSIFICATION_V3_VERSION,
+        prompt_version=CLASSIFICATION_V3_PROMPT_VERSION,
+    )
+
+    with pytest.raises(ValueError, match="taxonomy_text_embedding_index is required"):
+        run_cloud_bioclip_batch(
+            work_items=[work_item],
+            species_context=context,
+            candidate_set=candidate_set,
+            scorer=_StaticBatchScorer({}),
+            classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+            path_taxonomy_store=path_store,  # type: ignore[arg-type]
+        )
+
+
+def test_run_cloud_bioclip_batch_v3_requires_path_store_for_embedding_index() -> None:
+    context = _context()
+    candidate_set = build_candidate_set(context, allow_single_target_fixture=True)
+    work_item = _hierarchical_work_item(
+        1,
+        candidate_set_id=candidate_set.candidate_set_id,
+        taxonomy_table_version=CLASSIFICATION_V3_VERSION,
+        taxonomy_prompt_variant_version=CLASSIFICATION_V3_PROMPT_VERSION,
+    )
+
+    with pytest.raises(ValueError, match="path_taxonomy_store is required"):
+        run_cloud_bioclip_batch(
+            work_items=[work_item],
+            species_context=context,
+            candidate_set=candidate_set,
+            scorer=_StaticBatchScorer({}),
+            classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+            taxonomy_text_embedding_index=object(),  # type: ignore[arg-type]
+        )
+
+
 def test_run_cloud_bioclip_batch_rejects_payload_classification_mode_mismatch() -> None:
     class FailingScorer:
         model_id = "fake-bioclip"
@@ -652,6 +801,37 @@ def _detection_row(photo_id: str, detection_id: str, crop_hash: str, label: str,
         "failure_reason": None if status == "detected" else "no_butterfly_like_object",
         "schema_version": "object-detection-v1",
     }
+
+
+def _hierarchical_work_item(
+    index: int,
+    *,
+    candidate_set_id: str,
+    taxonomy_table_version: str,
+    taxonomy_prompt_variant_version: str,
+) -> dict[str, object]:
+    payload = bioclip_score_work_item(
+        _detection_row(
+            f"photo-{index}",
+            f"det-{index}",
+            f"sha256:crop-{index}",
+            "butterfly_like",
+            "detected",
+        ),
+        run_id="run-1",
+        detection_shard_uri="s3://biominer/detections.parquet",
+        model={
+            "model_id": "fake-bioclip",
+            "model_version": "test",
+            "checkpoint": "fake-checkpoint",
+        },
+        candidate_set_id=candidate_set_id,
+        ablation_mode="detector_crop",
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        taxonomy_table_version=taxonomy_table_version,
+        taxonomy_prompt_variant_version=taxonomy_prompt_variant_version,
+    )
+    return {"work_key": payload["work_key"], "payload": payload}
 
 
 class _StaticBatchScorer:

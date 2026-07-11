@@ -62,6 +62,59 @@ class PathTaxonomyStore:
     _enabled_hierarchy_hashes: frozenset[str]
 
     @classmethod
+    def from_frames(
+        cls,
+        *,
+        sources: pl.DataFrame,
+        nodes: pl.DataFrame,
+        edges: pl.DataFrame,
+        gbif_mappings: pl.DataFrame,
+        leaf_paths: pl.DataFrame,
+        prompt_labels: pl.DataFrame,
+        qa_findings: pl.DataFrame,
+        manifest: Mapping[str, object],
+    ) -> Self:
+        manifest_payload = dict(manifest)
+        _validate_manifest_header(manifest_payload)
+        normalized = {
+            "sources": _require_schema(sources, SOURCE_SCHEMA, artifact="sources"),
+            "nodes": _require_schema(nodes, NODE_SCHEMA, artifact="nodes"),
+            "edges": _require_schema(edges, EDGE_SCHEMA, artifact="edges"),
+            "gbif_mappings": _require_schema(
+                gbif_mappings,
+                GBIF_MAPPING_SCHEMA,
+                artifact="gbif_mappings",
+            ),
+            "leaf_paths": _require_schema(
+                leaf_paths,
+                LEAF_PATH_SCHEMA,
+                artifact="leaf_paths",
+            ),
+            "prompt_labels": _require_schema(
+                prompt_labels,
+                PROMPT_LABEL_SCHEMA,
+                artifact="prompt_labels",
+            ),
+            "qa_findings": _require_schema(
+                qa_findings,
+                QA_FINDING_SCHEMA,
+                artifact="qa_findings",
+            ),
+        }
+        store = cls(
+            **normalized,
+            manifest=MappingProxyType(manifest_payload),
+            _enabled_hierarchy_hashes=frozenset(
+                str(value)
+                for value in normalized["leaf_paths"]
+                .filter(pl.col("enabled"))["hierarchy_hash"]
+                .to_list()
+            ),
+        )
+        store._validate_loaded_frames()
+        return store
+
+    @classmethod
     def read(cls, root: str | Path) -> Self:
         paths = classification_v3_artifact_paths(root)
         required = (*_CHECKSUM_ARTIFACTS, "manifest")
@@ -78,7 +131,7 @@ class PathTaxonomyStore:
         leaf_paths = _scan(paths["leaf_paths"], LEAF_PATH_SCHEMA, artifact="leaf_paths")
         prompt_labels = _scan(paths["prompt_labels"], PROMPT_LABEL_SCHEMA, artifact="prompt_labels")
         qa_findings = _scan(paths["qa_findings"], QA_FINDING_SCHEMA, artifact="qa_findings")
-        store = cls(
+        return cls.from_frames(
             sources=sources,
             nodes=nodes,
             edges=edges,
@@ -86,14 +139,8 @@ class PathTaxonomyStore:
             leaf_paths=leaf_paths,
             prompt_labels=prompt_labels,
             qa_findings=qa_findings,
-            manifest=MappingProxyType(manifest),
-            _enabled_hierarchy_hashes=frozenset(
-                str(value)
-                for value in leaf_paths.filter(pl.col("enabled"))["hierarchy_hash"].to_list()
-            ),
+            manifest=manifest,
         )
-        store._validate_loaded_frames()
-        return store
 
     @property
     def classification_version(self) -> str:
@@ -334,6 +381,17 @@ def _scan(path: Path, schema: dict[str, pl.DataType], *, artifact: str) -> pl.Da
     if dict(lazy.collect_schema()) != schema:
         raise ValueError(f"classification-v3 artifact schema mismatch: {artifact}")
     return lazy.select(list(schema)).collect(engine="streaming")
+
+
+def _require_schema(
+    frame: pl.DataFrame,
+    schema: dict[str, pl.DataType],
+    *,
+    artifact: str,
+) -> pl.DataFrame:
+    if frame.columns != list(schema) or dict(frame.schema) != schema:
+        raise ValueError(f"classification-v3 artifact schema mismatch: {artifact}")
+    return frame.select(list(schema))
 
 
 def _rank(value: str) -> str:

@@ -22,6 +22,8 @@ from biominer.bioclip.classification_modes import (
 from biominer.bioclip.cloud_work import bioclip_score_work_item, run_cloud_bioclip_batch
 from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
 from biominer.bioclip.object_runner import ObjectBioClipScorer
+from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
+from biominer.bioclip.taxonomy_embedding_cache import TaxonomyTextEmbeddingIndex
 from biominer.detection.cloud_work import CloudDetectionBatchResult, detection_work_item, run_cloud_detection_batch
 from biominer.detection.detector_base import ObjectDetector
 from biominer.detection.pipeline import ImageLoader
@@ -386,6 +388,8 @@ def score_cloud_rolling_detection_batch(
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
     taxonomy_store: FiveRankTaxonomyStore | None = None,
     taxonomy_text_embedding_cache: pl.DataFrame | None = None,
+    path_taxonomy_store: PathTaxonomyStore | None = None,
+    taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
 ) -> CloudRollingVisionBatchResult:
     score_inputs = materialize_bioclip_score_inputs(
         canonical_records=batch.canonical,
@@ -437,6 +441,8 @@ def score_cloud_rolling_detection_batch(
         species_rerank_top_k=species_rerank_top_k,
         taxonomy_store=taxonomy_store,
         taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
+        path_taxonomy_store=path_taxonomy_store,
+        taxonomy_text_embedding_index=taxonomy_text_embedding_index,
     )
     joined, summary = build_object_evidence_frames(
         canonical_source_records=batch.canonical,
@@ -502,6 +508,8 @@ def run_cloud_rolling_vision_batch(
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
     taxonomy_store: FiveRankTaxonomyStore | None = None,
     taxonomy_text_embedding_cache: pl.DataFrame | None = None,
+    path_taxonomy_store: PathTaxonomyStore | None = None,
+    taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
 ) -> CloudRollingVisionBatchResult:
     detected = detect_cloud_rolling_vision_batch(
         work_item=work_item,
@@ -533,6 +541,8 @@ def run_cloud_rolling_vision_batch(
         species_rerank_top_k=species_rerank_top_k,
         taxonomy_store=taxonomy_store,
         taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
+        path_taxonomy_store=path_taxonomy_store,
+        taxonomy_text_embedding_index=taxonomy_text_embedding_index,
     )
 
 

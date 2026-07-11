@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from math import sqrt
 from pathlib import Path
 import sqlite3
 
@@ -16,6 +17,8 @@ from biominer.bioclip.cascade_contract import (
     GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
 )
 from biominer.bioclip.object_runner import PRIMARY_VISUAL_CLASSIFIER
+from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
+from biominer.bioclip.taxonomy_embedding_cache import build_taxonomy_text_embedding_cache
 from biominer.bioclip.classification_modes import (
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     TARGET_SCOPE_OBJECT_SCREENING,
@@ -29,10 +32,12 @@ from biominer.detection.detector_base import DecodedImage, FakeObjectDetector
 from biominer.detection.policy import VisionRuntimeSettings
 from biominer.evidence import build_object_evidence_frames, build_review_queue, evidence_count_metrics
 from biominer.evidence.join import write_object_evidence_outputs
-from biominer.registry.classification_v2 import (
-    CLASSIFICATION_V2_PROMPT_VERSION as PROMPT_VARIANT_VERSION,
-    classification_v2_artifact_paths,
-    write_classification_v2_artifacts,
+from biominer.registry.classification_v3 import (
+    CLASSIFICATION_V3_PROMPT_VERSION as PROMPT_VARIANT_VERSION,
+    CLASSIFICATION_V3_VERSION,
+    REVIEWED_RANK_SKIP_EDGE,
+    classification_v3_artifact_paths,
+    write_classification_v3_artifacts,
 )
 from biominer.registry.trust_policy import (
     TrustTier,
@@ -318,6 +323,76 @@ def test_production_run_hierarchical_score_stage_validates_table_then_requires_s
     assert plan.manifest.stages[0].metrics["classification_prompt_variant_version"] == PROMPT_VARIANT_VERSION
     assert plan.manifest.stages[0].metrics["taxonomy_family_candidate_count"] == 2
     assert plan.manifest.stages[0].metrics["taxonomy_species_candidate_count"] == 4
+
+
+def test_hierarchical_production_requires_current_v3_embedding_cache(tmp_path) -> None:
+    registry = _write_rank_registry(tmp_path / "registry")
+    scope = TaxonScope.from_species_context(_species_context())
+    scorer = _HierarchicalRerankObjectScorer()
+
+    missing = ProductionRunOrchestrator(
+        ProductionRunRequest(
+            taxon="Danaus plexippus",
+            output_root=tmp_path / "runs-missing",
+            classification_mode="hierarchical",
+            taxonomy_candidate_table=registry,
+            stages=(RunStage.SCORE_BIOCLIP,),
+        ),
+        taxon_scope=scope,
+        object_scorer=scorer,
+    )
+    store, store_status = missing._load_valid_hierarchical_taxonomy_store()
+    assert store_status.status is StageStatus.COMPLETE
+    assert store is not None
+    index, cache_status = missing._load_required_taxonomy_embedding_index(store)
+    assert index is None
+    assert cache_status.status is StageStatus.FAILED
+    assert cache_status.message.startswith("missing_taxonomy_text_embedding_cache:")
+
+    valid_cache = _write_rank_embedding_cache(
+        registry,
+        tmp_path / "taxonomy-text-embeddings.parquet",
+    )
+    stale_cache = tmp_path / "stale-taxonomy-text-embeddings.parquet"
+    pl.read_parquet(valid_cache).with_columns(
+        pl.lit("stale-prompt-version").alias("prompt_version")
+    ).write_parquet(stale_cache)
+    stale = ProductionRunOrchestrator(
+        ProductionRunRequest(
+            taxon="Danaus plexippus",
+            output_root=tmp_path / "runs-stale",
+            classification_mode="hierarchical",
+            taxonomy_candidate_table=registry,
+            taxonomy_text_embedding_cache=stale_cache,
+            stages=(RunStage.SCORE_BIOCLIP,),
+        ),
+        taxon_scope=scope,
+        object_scorer=scorer,
+    )
+    stale_index, stale_status = stale._load_required_taxonomy_embedding_index(store)
+    assert stale_index is None
+    assert stale_status.status is StageStatus.FAILED
+    assert stale_status.message.startswith("invalid_taxonomy_text_embedding_cache:")
+
+    current = ProductionRunOrchestrator(
+        ProductionRunRequest(
+            taxon="Danaus plexippus",
+            output_root=tmp_path / "runs-current",
+            classification_mode="hierarchical",
+            taxonomy_candidate_table=registry,
+            taxonomy_text_embedding_cache=valid_cache,
+            stages=(RunStage.SCORE_BIOCLIP,),
+        ),
+        taxon_scope=scope,
+        object_scorer=scorer,
+    )
+    current_index, current_status = current._load_required_taxonomy_embedding_index(store)
+    assert current_index is not None
+    assert current_status.status is StageStatus.COMPLETE
+    assert current_status.metrics["taxonomy_text_embedding_cache_status"] == "validated"
+    assert current_status.metrics["taxonomy_text_embedding_cache_fingerprint"] == (
+        current_index.cache_fingerprint
+    )
 
 
 @pytest.mark.parametrize(
@@ -1093,6 +1168,10 @@ def test_orchestrator_runs_fake_backed_cloud_workflow_end_to_end(tmp_path, monke
 
 def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(tmp_path) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
+    embedding_cache = _write_rank_embedding_cache(
+        registry,
+        tmp_path / "taxonomy-text-embeddings.parquet",
+    )
     scope = TaxonScope(
         input_name="Papilionoidea",
         input_rank="family",
@@ -1110,6 +1189,7 @@ def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(tmp_path
         workstore_backend="sqlite",
         classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
         taxonomy_candidate_table=str(registry),
+        taxonomy_text_embedding_cache=str(embedding_cache),
         stages=(RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP, RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE),
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
@@ -1161,7 +1241,8 @@ def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(tmp_path
     assert score["flickr_photo_id"] == "photo-butterfly"
     assert score["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
     assert score["family_top3"][:2] == ["Papilionidae", "Nymphalidae"]
-    assert score["selected_family_key"] == "family:papilionidae"
+    assert score["selected_family_key"] is None
+    assert score["selected_family_node_id"] == "family:papilionidae"
     assert score["species_candidate_count"] == 4
     assert set(score["species_top20_accepted_taxon_keys"]) == {"gbif:100", "gbif:101", "gbif:200", "gbif:301"}
     assert score["species_top20"][0] == "Papilio machaon"
@@ -1169,7 +1250,7 @@ def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(tmp_path
     assert score["species_top1_scientific_name"] == "Papilio demoleus"
     assert score["accepted_taxon_key"] == "gbif:100"
     assert score["target_species_score"] is None
-    assert score["species_rerank_strategy"] == "rerank_all_first_pass_top20"
+    assert score["species_rerank_strategy"] == "distinct_species_rerank_prompts"
 
     joined = pl.read_parquet(result.paths.object_evidence_path)
     assert joined.height == 5
@@ -1186,7 +1267,7 @@ def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(tmp_path
     butterfly_summary = summaries["photo-butterfly"]
     assert butterfly_summary["best_object_species_top1"] == "Papilio demoleus"
     assert butterfly_summary["best_object_occurrence_bin"] == "in_review"
-    assert butterfly_summary["photo_bin_reason"] == "five_rank_open_classification_requires_review"
+    assert butterfly_summary["photo_bin_reason"] == "hierarchical_open_classification_requires_review"
     assert "Papilio machaon" in butterfly_summary["all_candidate_species"]
     assert summaries["photo-no-detection"]["photo_occurrence_bin"] == "bin"
 
@@ -2313,10 +2394,67 @@ def _write_rank_registry(registry: Path) -> Path:
     classification_source = registry / "classification_source.json"
     classification_source.write_text(json.dumps(_rank_classification_source(), sort_keys=True), encoding="utf-8")
     try:
-        write_classification_v2_artifacts(registry, source_path=classification_source)
+        write_classification_v3_artifacts(registry, source_path=classification_source)
     finally:
         classification_source.unlink(missing_ok=True)
     return registry
+
+
+def _write_rank_embedding_cache(registry: Path, output: Path) -> Path:
+    store = PathTaxonomyStore.read(registry)
+    node_names = {
+        str(row["node_id"]): str(row["scientific_name"])
+        for row in store.nodes.iter_rows(named=True)
+    }
+    prompt_identity = {
+        str(row["label"]): (str(row["prompt_stage"]), node_names[str(row["node_id"])])
+        for row in store.prompt_labels.filter(store.prompt_labels["enabled"]).iter_rows(
+            named=True
+        )
+    }
+
+    def embed_labels(labels: list[str]) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for label in labels:
+            stage, scientific_name = prompt_identity[label]
+            if stage == "species_first_pass":
+                scores = {
+                    "Papilio machaon": 0.82,
+                    "Papilio demoleus": 0.41,
+                    "Shared name": 0.20,
+                    "Danaus plexippus": 0.05,
+                }
+            elif stage == "species_rerank":
+                scores = {
+                    "Papilio demoleus": 0.95,
+                    "Papilio machaon": 0.35,
+                    "Shared name": 0.10,
+                    "Danaus plexippus": 0.05,
+                }
+            else:
+                scores = {
+                    "Papilionidae": 0.94,
+                    "Nymphalidae": 0.60,
+                    "Papilioninae": 0.93,
+                    "Danainae": 0.50,
+                    "Papilionini": 0.92,
+                    "Danaini": 0.40,
+                    "Papilio": 0.91,
+                    "Shared name": 0.55,
+                    "Danaus": 0.35,
+                }
+            score = scores.get(scientific_name, 0.01)
+            vectors.append([score, sqrt(1.0 - score * score)])
+        return vectors
+
+    frame = build_taxonomy_text_embedding_cache(
+        store,
+        model_id=_HierarchicalRerankObjectScorer.model_id,
+        model_checkpoint=_HierarchicalRerankObjectScorer.model_checkpoint,
+        embed_labels=embed_labels,
+    )
+    frame.write_parquet(output)
+    return output
 
 
 def _rank_classification_source() -> dict[str, object]:
@@ -2327,7 +2465,7 @@ def _rank_classification_source() -> dict[str, object]:
         "reviewed_at": "2026-07-11",
         "enabled": True,
     }
-    source_id = "test-five-rank-source"
+    source_id = "test-six-rank-source"
     paths = (
         ("Papilionidae", "Papilioninae", "Papilionini", "Papilio", (("gbif:100", "Papilio demoleus"), ("gbif:101", "Papilio machaon"))),
         ("Papilionidae", "Papilioninae", "Papilionini", "Shared name", (("gbif:301", "Shared name"),)),
@@ -2349,13 +2487,22 @@ def _rank_classification_source() -> dict[str, object]:
                 **reviewed,
             }
             if parent_id is not None:
-                edges_by_pair[(parent_id, node_id)] = {
+                edge = {
                     "parent_node_id": parent_id,
                     "child_node_id": node_id,
                     "source_id": source_id,
-                    "evidence": "deterministic five-rank test fixture",
+                    "evidence": "deterministic six-rank test fixture",
                     **reviewed,
                 }
+                if rank == "GENUS":
+                    edge.update(
+                        {
+                            "edge_type": REVIEWED_RANK_SKIP_EDGE,
+                            "skipped_ranks": ["SUBTRIBE"],
+                            "skip_reason": "reviewed fixture has no supported subtribe",
+                        }
+                    )
+                edges_by_pair[(parent_id, node_id)] = edge
             parent_id = node_id
         for taxon_key, species in species_rows:
             species_id = f"species:{species.casefold().replace(' ', '-')}"
@@ -2385,12 +2532,12 @@ def _rank_classification_source() -> dict[str, object]:
                 }
             )
     return {
-        "classification_version": "butterfly-classification-v2.0.0",
+        "classification_version": CLASSIFICATION_V3_VERSION,
         "sources": [
             {
                 "source_id": source_id,
                 "authority": "BioMiner test fixture",
-                "release": "v2",
+                "release": "v3",
                 "citation": "deterministic test classification",
                 "retrieved_at": "2026-07-11",
                 "evidence_url": "https://example.invalid/test-classification",
@@ -2745,6 +2892,12 @@ class _HierarchicalRerankObjectScorer:
     def __init__(self) -> None:
         self._species_calls_by_crop_hash: dict[str, int] = {}
 
+    def embed_image_items(
+        self,
+        items: list[dict[str, object]],
+    ) -> list[list[float]]:
+        return [[1.0, 0.0] for _item in items]
+
     def score(self, item: dict[str, object], labels: tuple[str, ...]) -> dict[str, float]:
         label_tuple = tuple(str(label) for label in labels)
         if any("butterfly species" in label for label in label_tuple):
@@ -2869,7 +3022,7 @@ def _is_forbidden_local_artifact(path: str | Path, *, root: Path) -> bool:
 def _seed_cloud_registry(storage: _FakeRunStorage, registry_uri: str, registry: Path) -> None:
     storage.parquet_payloads[f"{registry_uri}/taxa.parquet"] = pl.read_parquet(registry / "taxa.parquet")
     storage.parquet_payloads[f"{registry_uri}/names.parquet"] = pl.read_parquet(registry / "names.parquet")
-    for key, path in classification_v2_artifact_paths(registry).items():
+    for key, path in classification_v3_artifact_paths(registry).items():
         uri = f"{registry_uri}/{path.name}"
         if key == "manifest":
             storage.json_payloads[uri] = json.loads(path.read_text(encoding="utf-8"))

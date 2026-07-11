@@ -26,8 +26,14 @@ from biominer.bioclip.five_rank_classifier import (
     five_rank_result_to_object_score_row,
 )
 from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
-from biominer.bioclip.path_cascade_output import PATH_CASCADE_OUTPUT_SCHEMA
+from biominer.bioclip.path_cascade_classifier import classify_path_cascade_batch
+from biominer.bioclip.path_cascade_output import (
+    PATH_CASCADE_OUTPUT_SCHEMA,
+    path_cascade_result_to_object_score_row,
+)
+from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
+from biominer.bioclip.taxonomy_embedding_cache import TaxonomyTextEmbeddingIndex
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage
 from biominer.detection.policy import DetectionPolicy, detection_is_bioclip_eligible
@@ -795,14 +801,29 @@ def screen_object_detections(
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
     taxonomy_store: FiveRankTaxonomyStore | None = None,
     taxonomy_text_embedding_cache: pl.DataFrame | None = None,
+    path_taxonomy_store: PathTaxonomyStore | None = None,
+    taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
 ) -> ObjectScreenResult:
     if bioclip_batch_size <= 0:
         raise ValueError("bioclip_batch_size must be positive")
     if min_bioclip_batch_size <= 0:
         raise ValueError("min_bioclip_batch_size must be positive")
     classification_mode = normalize_classification_mode(classification_mode)
-    if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION and taxonomy_store is None:
-        raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
+    if (path_taxonomy_store is None) != (taxonomy_text_embedding_index is None):
+        raise ValueError(
+            "path_taxonomy_store and taxonomy_text_embedding_index are required together "
+            "for classification-v3 hierarchical scoring"
+        )
+    if (
+        classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+        and path_taxonomy_store is None
+        and taxonomy_store is None
+    ):
+        raise ValueError(
+            "taxonomy_store is required for hierarchical_butterfly_classification "
+            "(classification-v3 requires path_taxonomy_store with "
+            "taxonomy_text_embedding_index)"
+        )
     family_top_k, species_first_pass_top_k, species_rerank_top_k = _validate_visual_top_k(
         family_top_k=family_top_k,
         species_first_pass_top_k=species_first_pass_top_k,
@@ -841,16 +862,16 @@ def screen_object_detections(
 
     def score_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
-            if taxonomy_store is None:
-                raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
             return _score_hierarchical_detection_batch(
                 items=items,
                 scorer=scorer,
                 taxonomy_store=taxonomy_store,
+                path_taxonomy_store=path_taxonomy_store,
                 family_top_k=family_top_k,
                 species_first_pass_top_k=species_first_pass_top_k,
                 species_rerank_top_k=species_rerank_top_k,
                 taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
+                taxonomy_text_embedding_index=taxonomy_text_embedding_index,
             )
         return _score_detection_batch(
             items=items,
@@ -1360,12 +1381,37 @@ def _score_hierarchical_detection_batch(
     *,
     items: list[dict[str, Any]],
     scorer: ObjectBioClipScorer,
-    taxonomy_store: FiveRankTaxonomyStore,
+    taxonomy_store: FiveRankTaxonomyStore | None,
+    path_taxonomy_store: PathTaxonomyStore | None,
     family_top_k: int,
     species_first_pass_top_k: int,
     species_rerank_top_k: int,
     taxonomy_text_embedding_cache: pl.DataFrame | None = None,
+    taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
 ) -> list[dict[str, Any]]:
+    if path_taxonomy_store is not None:
+        if taxonomy_text_embedding_index is None:
+            raise ValueError(
+                "taxonomy_text_embedding_index is required for classification-v3 "
+                "hierarchical scoring"
+            )
+        results = classify_path_cascade_batch(
+            items=items,
+            embedding_scorer=scorer,
+            taxonomy_store=path_taxonomy_store,
+            taxonomy_text_embedding_index=taxonomy_text_embedding_index,
+            rank_beam_width=family_top_k,
+        )
+        return [
+            path_cascade_result_to_object_score_row(
+                item=item,
+                result=result,
+                scorer=scorer,
+            )
+            for item, result in zip(items, results, strict=True)
+        ]
+    if taxonomy_store is None:
+        raise ValueError("legacy taxonomy_store is required for five-rank hierarchical scoring")
     results = classify_five_rank_crops_batch(
         items=items,
         scorer=scorer,

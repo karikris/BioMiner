@@ -46,6 +46,39 @@ def test_path_store_loads_verified_v3_artifacts_and_enabled_paths(tmp_path: Path
     ]
 
 
+def test_path_store_builds_validated_cloud_equivalent_from_exact_frames(
+    tmp_path: Path,
+) -> None:
+    local = PathTaxonomyStore.read(_write_registry(tmp_path))
+
+    restored = PathTaxonomyStore.from_frames(
+        sources=local.sources,
+        nodes=local.nodes,
+        edges=local.edges,
+        gbif_mappings=local.gbif_mappings,
+        leaf_paths=local.leaf_paths,
+        prompt_labels=local.prompt_labels,
+        qa_findings=local.qa_findings,
+        manifest=local.manifest,
+    )
+
+    assert restored.classification_fingerprint == local.classification_fingerprint
+    assert restored.hierarchy_fingerprint == local.hierarchy_fingerprint
+    assert restored.enabled_paths().equals(local.enabled_paths())
+
+    with pytest.raises(ValueError, match="artifact schema mismatch: nodes"):
+        PathTaxonomyStore.from_frames(
+            sources=local.sources,
+            nodes=local.nodes.with_columns(pl.col("enabled").cast(pl.Int8)),
+            edges=local.edges,
+            gbif_mappings=local.gbif_mappings,
+            leaf_paths=local.leaf_paths,
+            prompt_labels=local.prompt_labels,
+            qa_findings=local.qa_findings,
+            manifest=local.manifest,
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [

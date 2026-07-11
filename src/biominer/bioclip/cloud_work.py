@@ -36,6 +36,10 @@ from biominer.bioclip.object_runner import (
     _segmentation_status,
     _visual_mode_status,
 )
+from biominer.bioclip.path_cascade_classifier import classify_path_cascade_batch
+from biominer.bioclip.path_cascade_output import path_cascade_result_to_object_score_row
+from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
+from biominer.bioclip.taxonomy_embedding_cache import TaxonomyTextEmbeddingIndex
 from biominer.detection.policy import DetectionPolicy
 from biominer.detection.segmentation import SegmentationUnavailable
 from biominer.species.context import SpeciesContext
@@ -272,6 +276,8 @@ def run_cloud_bioclip_batch(
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
     taxonomy_store: FiveRankTaxonomyStore | None = None,
     taxonomy_text_embedding_cache: pl.DataFrame | None = None,
+    path_taxonomy_store: PathTaxonomyStore | None = None,
+    taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
 ) -> CloudBioClipBatchResult:
     if crop_batch_size <= 0:
         raise ValueError("crop_batch_size must be positive")
@@ -280,16 +286,22 @@ def run_cloud_bioclip_batch(
     if min_crop_batch_size > crop_batch_size:
         raise ValueError("min_crop_batch_size must be <= crop_batch_size")
     classification_mode = normalize_classification_mode(classification_mode)
+    hierarchical_backend: str | None = None
+    active_taxonomy_store: FiveRankTaxonomyStore | PathTaxonomyStore | None = None
+    if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+        hierarchical_backend, active_taxonomy_store = _hierarchical_cloud_backend(
+            taxonomy_store=taxonomy_store,
+            path_taxonomy_store=path_taxonomy_store,
+            taxonomy_text_embedding_index=taxonomy_text_embedding_index,
+        )
     _validate_cloud_bioclip_work_contract(
         work_items=work_items,
         classification_mode=classification_mode,
         family_top_k=family_top_k,
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
-        taxonomy_store=taxonomy_store,
+        taxonomy_store=active_taxonomy_store,
     )
-    if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION and taxonomy_store is None:
-        raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
     rows: list[dict[str, Any]] = []
     requested_modes: list[str] = []
     scored_by_mode: dict[str, int] = {}
@@ -377,8 +389,23 @@ def run_cloud_bioclip_batch(
 
     for mode, score_items in score_items_by_mode.items():
         if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+            if hierarchical_backend == "path_cascade":
+                assert path_taxonomy_store is not None
+                assert taxonomy_text_embedding_index is not None
+                score_mode_batches(
+                    mode=mode,
+                    score_items=score_items,
+                    score_batch=lambda score_chunk: _score_path_cascade_cloud_batch(
+                        items=score_chunk,
+                        scorer=scorer,
+                        taxonomy_store=path_taxonomy_store,
+                        taxonomy_text_embedding_index=taxonomy_text_embedding_index,
+                        rank_beam_width=family_top_k,
+                    ),
+                )
+                continue
             if taxonomy_store is None:
-                raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
+                raise AssertionError("legacy taxonomy store was not resolved")
             score_mode_batches(
                 mode=mode,
                 score_items=score_items,
@@ -483,7 +510,7 @@ def _validate_cloud_bioclip_work_contract(
     family_top_k: int,
     species_first_pass_top_k: int,
     species_rerank_top_k: int,
-    taxonomy_store: FiveRankTaxonomyStore | None,
+    taxonomy_store: FiveRankTaxonomyStore | PathTaxonomyStore | None,
 ) -> None:
     expected_mode = normalize_classification_mode(classification_mode)
     expected_top_k = {
@@ -543,12 +570,38 @@ def _validate_cloud_bioclip_work_contract(
             )
 
 
-def _taxonomy_table_version(taxonomy_store: FiveRankTaxonomyStore) -> str:
+def _taxonomy_table_version(
+    taxonomy_store: FiveRankTaxonomyStore | PathTaxonomyStore,
+) -> str:
     return taxonomy_store.classification_version
 
 
-def _taxonomy_prompt_variant_version(taxonomy_store: FiveRankTaxonomyStore) -> str:
+def _taxonomy_prompt_variant_version(
+    taxonomy_store: FiveRankTaxonomyStore | PathTaxonomyStore,
+) -> str:
     return taxonomy_store.prompt_version
+
+
+def _hierarchical_cloud_backend(
+    *,
+    taxonomy_store: FiveRankTaxonomyStore | None,
+    path_taxonomy_store: PathTaxonomyStore | None,
+    taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None,
+) -> tuple[str, FiveRankTaxonomyStore | PathTaxonomyStore]:
+    if taxonomy_text_embedding_index is not None:
+        if path_taxonomy_store is None:
+            raise ValueError(
+                "path_taxonomy_store is required when taxonomy_text_embedding_index is provided"
+            )
+        return "path_cascade", path_taxonomy_store
+    if path_taxonomy_store is not None:
+        raise ValueError(
+            "taxonomy_text_embedding_index is required for classification-v3 "
+            "hierarchical cloud scoring"
+        )
+    if taxonomy_store is None:
+        raise ValueError("taxonomy_store is required for hierarchical_butterfly_classification")
+    return "legacy_five_rank", taxonomy_store
 
 
 def _score_hierarchical_cloud_batch(
@@ -578,6 +631,36 @@ def _score_hierarchical_cloud_batch(
             family_top_k=family_top_k,
             species_first_pass_top_k=species_first_pass_top_k,
             species_rerank_top_k=species_rerank_top_k,
+        )
+        for item, result in zip(items, results, strict=True)
+    ]
+
+
+def _score_path_cascade_cloud_batch(
+    *,
+    items: list[dict[str, Any]],
+    scorer: ObjectBioClipScorer,
+    taxonomy_store: PathTaxonomyStore,
+    taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex,
+    rank_beam_width: int,
+) -> list[dict[str, Any]]:
+    if not callable(getattr(scorer, "embed_image_items", None)):
+        raise ValueError(
+            "classification-v3 hierarchical cloud scoring requires "
+            "scorer.embed_image_items"
+        )
+    results = classify_path_cascade_batch(
+        items=items,
+        embedding_scorer=scorer,  # type: ignore[arg-type]
+        taxonomy_store=taxonomy_store,
+        taxonomy_text_embedding_index=taxonomy_text_embedding_index,
+        rank_beam_width=rank_beam_width,
+    )
+    return [
+        path_cascade_result_to_object_score_row(
+            item=item,
+            result=result,
+            scorer=scorer,
         )
         for item, result in zip(items, results, strict=True)
     ]
