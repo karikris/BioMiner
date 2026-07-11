@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 import json
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from biominer.bioclip.path_cascade_classifier import (
     RankCandidateScore,
     RankStepResult,
 )
+from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 from biominer.registry.classification_v3 import CLASSIFICATION_RANKS
 from biominer.storage.parquet import DEFAULT_PARQUET_COMPRESSION, write_parquet
 
@@ -188,6 +190,113 @@ def path_cascade_result_to_output_row(result: PathCascadeResult) -> dict[str, An
     return path_cascade_output_frame([row]).row(0, named=True)
 
 
+def path_cascade_result_to_object_score_row(
+    *,
+    item: Mapping[str, Any],
+    result: PathCascadeResult,
+    scorer: Any,
+) -> dict[str, Any]:
+    audit = path_cascade_result_to_output_row(result)
+    selected_path = {
+        score.rank: {
+            "node_id": score.node_id,
+            "scientific_name": score.scientific_name,
+            "raw_similarity": score.raw_similarity,
+        }
+        for score in result.final_winning_path
+    }
+    return {
+        "source": str(item.get("source") or ""),
+        "flickr_photo_id": str(item.get("flickr_photo_id") or ""),
+        "detection_id": str(item.get("detection_id") or ""),
+        "crop_hash": str(item.get("crop_hash") or ""),
+        "visual_input_id": str(item.get("visual_input_id") or ""),
+        "visual_input_kind": str(item.get("visual_input_kind") or "detector_crop"),
+        "bioclip_gate_mode": item.get("bioclip_gate_mode"),
+        "bioclip_gate_reason": item.get("bioclip_gate_reason"),
+        "model_id": str(scorer.model_id),
+        "model_version": str(getattr(scorer, "model_version", "")),
+        "model_checkpoint": str(scorer.model_checkpoint),
+        "candidate_set_id": result.taxonomy_fingerprint,
+        "classified_at": datetime.now(UTC).isoformat(),
+        "classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        "candidate_selection_mode": "reviewed_global_rank_top_k",
+        "candidate_source": "reviewed_classification_v3",
+        "taxonomy_table_version": result.classification_version,
+        "taxonomy_prompt_variant_version": result.prompt_version,
+        "ablation_mode": str(item.get("ablation_mode") or "detector_crop"),
+        "species_first_pass_top_k": DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+        "species_rerank_top_k": DEFAULT_SPECIES_RERANK_TOP_K,
+        "species_rerank_strategy": "distinct_species_rerank_prompts",
+        "triage_group_top": "butterfly_like",
+        "triage_group_scores": {
+            "butterfly_like": float(item.get("detector_score") or 0.0)
+        },
+        **audit,
+        # Deliberately empty: reviewed overlay node IDs are not GBIF accepted keys.
+        "family_top3_accepted_taxon_keys": [],
+        "selected_family_key": None,
+        "genus_top8": [],
+        "genus_top1": audit["genus_top1"],
+        "genus_top1_score": audit["genus_top1_score"],
+        "genus_margin": audit["genus_margin"],
+        "species_candidate_family_key": None,
+        "species_candidate_family": None,
+        "species_candidate_count": audit["candidate_counts_by_rank"]["SPECIES"],
+        "species_top20_scores": audit["species_top20_first_pass_scores"],
+        "species_top5_scores": audit["species_top5_rerank_scores"],
+        "species_top1_scientific_name": audit["species_top1"],
+        "accepted_taxon_key": audit["species_top1_accepted_taxon_key"],
+        "species_top1_score": audit["species_top1_rerank_score"],
+        "target_accepted_taxon_key": None,
+        "target_species_score": None,
+        "target_species_rank": None,
+        "geospatial_prior_score": 0.0,
+        "geospatial_prior_reason": "not_applied_open_classification",
+        "text_evidence_score": 0.0,
+        "comment_evidence_score": 0.0,
+        "is_target_positive": False,
+        "is_negative_material": False,
+        "occurrence_bin": "in_review",
+        "bin_reason": "hierarchical_open_classification_requires_review",
+        "selected_subfamily_key": None,
+        "selected_tribe_key": None,
+        "selected_genus_key": None,
+        "taxonomy_source_release": None,
+        "taxonomy_fingerprint": result.taxonomy_fingerprint,
+        "classification_path_json": json.dumps(
+            selected_path,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "rank_candidates_json": json.dumps(
+            {
+                rank.casefold(): audit[f"{rank.casefold()}_top3_node_ids"]
+                for rank in CLASSIFICATION_RANKS[:-1]
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "candidate_counts_json": json.dumps(
+            audit["candidate_counts_by_rank"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "pruning_decisions_json": audit["pruning_trace_json"],
+        "skipped_level_reasons_json": json.dumps(
+            {
+                step.rank: step.skip_reason
+                for step in result.rank_steps
+                if step.skip_reason
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "rerank_mode": "distinct_species_rerank_prompts",
+        "species_rerank_candidate_count": result.species_rerank_step.candidate_count,
+    }
+
+
 def _species_output_values(result: PathCascadeResult) -> dict[str, Any]:
     species_top1 = result.species_top1
     return {
@@ -317,6 +426,7 @@ __all__ = [
     "empty_path_cascade_output_frame",
     "path_cascade_output_frame",
     "path_cascade_result_to_output_row",
+    "path_cascade_result_to_object_score_row",
     "validate_path_cascade_output_frame",
     "write_path_cascade_output",
 ]

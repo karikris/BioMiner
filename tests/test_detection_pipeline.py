@@ -1145,7 +1145,7 @@ def test_xie_style_evaluation_uses_iou_and_species_correctness() -> None:
     assert report["species_top1_accuracy"] == pytest.approx(1.0)
     assert report["species_top5_accuracy"] == pytest.approx(1.0)
     assert report["family_top3_accuracy"] == pytest.approx(1.0)
-    assert report["genus_top8_accuracy"] == pytest.approx(1.0)
+    assert report["genus_top3_accuracy"] == pytest.approx(1.0)
     assert report["joint_map50"] == pytest.approx(1.0)
 
 
@@ -1363,4 +1363,4 @@ def test_xie_style_taxonomic_accuracy_counts_missed_ground_truth_as_wrong() -> N
     assert report["species_top1_accuracy"] == pytest.approx(0.5)
     assert report["species_top5_accuracy"] == pytest.approx(0.5)
     assert report["family_top3_accuracy"] == pytest.approx(0.5)
-    assert report["genus_top8_accuracy"] == pytest.approx(0.5)
+    assert report["genus_top3_accuracy"] == pytest.approx(0.5)

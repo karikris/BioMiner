@@ -18,6 +18,13 @@ from biominer.bioclip.path_cascade_classifier import (
     score_rank_candidates,
 )
 from biominer.bioclip.path_cascade_output import path_cascade_result_to_output_row
+from biominer.bioclip.path_cascade_output import path_cascade_result_to_object_score_row
+from biominer.bioclip.object_runner import (
+    OBJECT_SCORE_OUTPUT_SCHEMA,
+    PHOTO_EVIDENCE_SUMMARY_SCHEMA,
+    _object_evidence_joined,
+    _photo_summary,
+)
 from biominer.bioclip.taxonomy_embedding_cache import (
     TaxonomyTextEmbeddingIndex,
     build_taxonomy_text_embedding_cache,
@@ -279,6 +286,75 @@ def test_family_rank_three_preserves_true_branch_but_rank_four_cannot_reenter() 
     assert _label("sf:d1") not in called_labels
     assert _label("s:d1") not in called_labels
     assert all(score.node_id != "s:d1" for score in pruned.species_top20)
+
+
+def test_cascade_object_audit_survives_join_and_summarizes_winning_genus() -> None:
+    store = _store()
+    result = classify_path_cascade(
+        item={},
+        taxonomy_store=store,
+        scorer=_scorer(
+            store,
+            {
+                "f:a": 0.99,
+                "f:b": 0.90,
+                "f:c": 0.80,
+                "f:d": 0.70,
+                "sf:c1": 0.99,
+                "sf:a1": 0.90,
+                "sf:b1": 0.80,
+                "t:c1": 0.99,
+                "t:a1": 0.90,
+                "t:b1": 0.80,
+                "g:c1": 0.99,
+                "g:a1": 0.90,
+                "g:b1": 0.80,
+                "s:c1": 0.99,
+            },
+        ),
+    )
+    scorer = _scorer(store, {})
+    item = {
+        "source": "flickr",
+        "flickr_photo_id": "photo-1",
+        "detection_id": "detection-1",
+        "crop_hash": "sha256:crop",
+        "visual_input_id": "visual-1",
+        "detector_score": 0.95,
+    }
+    row = path_cascade_result_to_object_score_row(
+        item=item,
+        result=result,
+        scorer=scorer,
+    )
+    scores = pl.DataFrame([row], schema=OBJECT_SCORE_OUTPUT_SCHEMA)
+    canonical = pl.DataFrame([{"source": "flickr", "flickr_photo_id": "photo-1"}])
+    detections = pl.DataFrame(
+        [
+            {
+                "source": "flickr",
+                "flickr_photo_id": "photo-1",
+                "detection_id": "detection-1",
+            }
+        ]
+    )
+
+    joined = _object_evidence_joined(
+        canonical=canonical,
+        detections=detections,
+        scores=scores,
+    )
+    summary = _photo_summary(scores)
+
+    assert joined["family_top3_node_ids"][0].to_list() == ["f:a", "f:b", "f:c"]
+    assert joined["family_top3_accepted_taxon_keys"][0].to_list() == []
+    assert joined["selected_family_node_id"][0] == "f:c"
+    assert joined["selected_genus_node_id"][0] == "g:c1"
+    assert summary.schema == PHOTO_EVIDENCE_SUMMARY_SCHEMA
+    assert summary["photo_selected_family"][0] == "Gammaidae"
+    assert summary["photo_selected_genus"][0] == "GammaOne"
+    assert summary["photo_selected_genus_node_id"][0] == "g:c1"
+    assert summary["photo_species_top1_key"][0] == "gbif:2201"
 
 
 def test_genus_beam_is_three_and_excluded_genus_species_are_never_scored() -> None:

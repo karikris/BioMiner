@@ -94,6 +94,34 @@ def test_evaluate_hierarchical_predictions_counts_family_top3_when_top1_wrong() 
     assert metrics["selected_family_accuracy"] == 0.0
 
 
+def test_path_cascade_family_metrics_use_rank_and_selected_names_not_overlay_ids() -> None:
+    prediction = _prediction(
+        family_top3=["Nymphalidae", "Papilionidae", "Pieridae"],
+        family_top3_keys=["fixture:family:nymph", "fixture:family:papilio"],
+        selected_family="Nymphalidae",
+        selected_family_key="fixture:family:nymph",
+    )
+    prediction.update(
+        {
+            "classifier_schema_version": "butterfly-cascade-output-v1.0.0",
+            "family_top1": "Nymphalidae",
+            "family_top3_node_ids": [
+                "fixture:family:nymph",
+                "fixture:family:papilio",
+                "fixture:family:pieris",
+            ],
+        }
+    )
+    metrics = evaluate_hierarchical_predictions(
+        object_scores=pl.DataFrame([prediction]),
+        reviewed_labels=pl.DataFrame([_label()]),
+    )
+
+    assert metrics["family_top1_accuracy"] == 0.0
+    assert metrics["family_top3_recall"] == 1.0
+    assert metrics["selected_family_accuracy"] == 0.0
+
+
 def test_evaluate_hierarchical_predictions_handles_missing_prediction() -> None:
     metrics = evaluate_hierarchical_predictions(
         object_scores=pl.DataFrame([]),

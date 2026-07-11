@@ -19,6 +19,10 @@ HIERARCHICAL_REVIEW_QUEUE_SCHEMA: dict[str, pl.DataType] = {
     "review_priority": pl.Int64,
     "review_reason": pl.String,
     "selected_family": pl.String,
+    "selected_family_node_id": pl.String,
+    "selected_genus": pl.String,
+    "selected_genus_node_id": pl.String,
+    "skipped_ranks": pl.List(pl.String),
     "family_top3": pl.List(pl.String),
     "species_top5": pl.List(pl.String),
     "species_top1_scientific_name": pl.String,
@@ -67,7 +71,11 @@ def build_hierarchical_review_queue(
                 "classification_mode": _text(row.get("classification_mode")),
                 "review_priority": priority,
                 "review_reason": ";".join(reasons),
-                "selected_family": _first_text(row, "selected_family", "family_top1", "family"),
+                "selected_family": _selected_rank_name(row, "family"),
+                "selected_family_node_id": _first_text(row, "selected_family_node_id"),
+                "selected_genus": _selected_rank_name(row, "genus"),
+                "selected_genus_node_id": _first_text(row, "selected_genus_node_id"),
+                "skipped_ranks": _taxon_name_list(row.get("skipped_ranks")),
                 "family_top3": _taxon_name_list(row.get("family_top3")),
                 "species_top5": _taxon_name_list(row.get("species_top5")),
                 "species_top1_scientific_name": _first_text(row, "species_top1_scientific_name", "species_top1"),
@@ -118,6 +126,8 @@ def _review_priority(
 
     if _missing_bioclip_score(row) and _is_butterfly_like_detection(row):
         add("missing_bioclip_score", policy.missing_bioclip_review_priority)
+    if _missing_required_cascade_rank(row):
+        add("missing_required_cascade_rank", policy.missing_bioclip_review_priority)
     if _hard_negative_metadata_conflict(row):
         add("hard_negative_metadata_conflict", policy.hard_negative_review_priority)
     if _metadata_species_conflict(row):
@@ -167,7 +177,13 @@ def _merge_photo_object_row(photo_row: Mapping[str, Any], object_row: Mapping[st
 def _distinct_species_by_photo(object_evidence: pl.DataFrame) -> dict[tuple[str, str], set[str]]:
     output: dict[tuple[str, str], set[str]] = {}
     for row in object_evidence.to_dicts():
-        species = _species_name(row)
+        species = _first_text(
+            row,
+            "species_top1_accepted_taxon_key",
+            "accepted_taxon_key",
+            "species_top1_scientific_name",
+            "species_top1",
+        )
         if not species:
             continue
         key = (_text(row.get("source")), _text(row.get("flickr_photo_id")))
@@ -177,6 +193,18 @@ def _distinct_species_by_photo(object_evidence: pl.DataFrame) -> dict[tuple[str,
 
 def _missing_bioclip_score(row: Mapping[str, Any]) -> bool:
     return _optional_float(row.get("species_top1_score")) is None and not _species_name(row)
+
+
+def _missing_required_cascade_rank(row: Mapping[str, Any]) -> bool:
+    if not _is_path_cascade_row(row):
+        return False
+    for prefix in ("family", "subfamily", "tribe", "genus"):
+        if not _taxon_name_list(row.get(f"{prefix}_top3")):
+            return True
+        if not _selected_rank_name(row, prefix):
+            return True
+    skipped = set(_taxon_name_list(row.get("skipped_ranks")))
+    return not _selected_rank_name(row, "subtribe") and "SUBTRIBE" not in skipped
 
 
 def _is_butterfly_like_detection(row: Mapping[str, Any]) -> bool:
@@ -234,6 +262,8 @@ def _metadata_species_conflict(row: Mapping[str, Any]) -> bool:
 
 
 def _family_species_conflict(row: Mapping[str, Any]) -> bool:
+    if _is_path_cascade_row(row):
+        return False
     selected_key = _first_text(row, "selected_family_key", "family_top1_accepted_taxon_key")
     species_family_key = _first_text(row, "species_candidate_family_key", "species_top1_family_key")
     if selected_key and species_family_key and selected_key != species_family_key:
@@ -241,6 +271,19 @@ def _family_species_conflict(row: Mapping[str, Any]) -> bool:
     selected_family = _first_text(row, "selected_family", "family_top1", "family").casefold()
     species_family = _first_text(row, "species_candidate_family", "species_top1_family").casefold()
     return bool(selected_family and species_family and selected_family != species_family)
+
+
+def _is_path_cascade_row(row: Mapping[str, Any]) -> bool:
+    return _text(row.get("classifier_schema_version")).startswith(
+        "butterfly-cascade-output-"
+    )
+
+
+def _selected_rank_name(row: Mapping[str, Any], prefix: str) -> str:
+    selected = _text(row.get(f"selected_{prefix}"))
+    if _is_path_cascade_row(row):
+        return selected
+    return selected or _first_text(row, f"{prefix}_top1", prefix)
 
 
 def _high_detector_weak_species(row: Mapping[str, Any], *, policy: VisionBucketPolicy) -> bool:

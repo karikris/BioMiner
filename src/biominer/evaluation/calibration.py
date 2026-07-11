@@ -121,7 +121,11 @@ def add_uncertainty_fields(
         family_margin = _optional_float(row.get("family_margin"))
         if family_margin is None:
             family_margin = score_margin(row, "family_top3_scores")
-        entropy = topk_entropy(row.get("species_top5_scores"))
+        entropy = (
+            None
+            if _is_path_cascade_row(row)
+            else topk_entropy(row.get("species_top5_scores"))
+        )
         low_margin = any(
             margin is not None and margin <= low_margin_threshold
             for margin in (species_margin, family_margin)
@@ -146,6 +150,8 @@ def add_uncertainty_fields(
 
 
 def _family_species_conflict(row: Mapping[str, Any]) -> bool:
+    if _is_path_cascade_row(row):
+        return False
     selected_key = _text(row.get("selected_family_key"))
     species_family_key = _text(row.get("species_candidate_family_key"))
     if selected_key and species_family_key and selected_key != species_family_key:
@@ -153,6 +159,12 @@ def _family_species_conflict(row: Mapping[str, Any]) -> bool:
     selected_name = _text(row.get("selected_family")).casefold()
     species_family = _text(row.get("species_candidate_family")).casefold()
     return bool(selected_name and species_family and selected_name != species_family)
+
+
+def _is_path_cascade_row(row: Mapping[str, Any]) -> bool:
+    return _text(row.get("classifier_schema_version")).startswith(
+        "butterfly-cascade-output-"
+    )
 
 
 def _confidence(value: object) -> float | None:

@@ -55,7 +55,7 @@ def evaluate_xie_style(
             "species_top1_accuracy": None,
             "species_top5_accuracy": None,
             "family_top3_accuracy": None,
-            "genus_top8_accuracy": None,
+            "genus_top3_accuracy": None,
             "joint_map50": None,
             "joint_top5_map50": None,
         }
@@ -68,9 +68,13 @@ def evaluate_xie_style(
         lambda prediction, truth: _norm(truth.get("family")) in {_norm(value) for value in prediction.get("family_top3", [])},
         truth_count=len(truth_rows),
     )
-    genus_top8 = _accuracy(
+    genus_top3 = _accuracy(
         matches,
-        lambda prediction, truth: _norm(truth.get("genus")) in {_norm(value) for value in prediction.get("genus_top8", [])},
+        lambda prediction, truth: _norm(truth.get("genus"))
+        in {
+            _norm(value)
+            for value in _genus_top3(prediction)
+        },
         truth_count=len(truth_rows),
     )
     return {
@@ -85,7 +89,7 @@ def evaluate_xie_style(
         "species_top1_accuracy": species_top1,
         "species_top5_accuracy": species_top5,
         "family_top3_accuracy": family_top3,
-        "genus_top8_accuracy": genus_top8,
+        "genus_top3_accuracy": genus_top3,
         "joint_map50": _joint_ap(
             prediction_rows,
             truth_rows,
@@ -109,6 +113,11 @@ def evaluate_xie_style(
             ),
         ),
     }
+
+
+def _genus_top3(prediction: dict[str, Any]) -> list[Any]:
+    values = prediction.get("genus_top3") or prediction.get("genus_top8") or []
+    return list(values)[:3]
 
 
 def _best_matches(

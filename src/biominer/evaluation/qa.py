@@ -67,7 +67,7 @@ def _append_row_findings(findings: list[dict[str, str]], row: Mapping[str, Any],
                 "rerun hierarchical scoring and verify family top-k output",
             )
         )
-    if _species_top20_outside_selected_family(row):
+    if not _is_path_cascade_row(row) and _species_top20_outside_selected_family(row):
         findings.append(
             _finding(
                 "fatal",
@@ -77,6 +77,8 @@ def _append_row_findings(findings: list[dict[str, str]], row: Mapping[str, Any],
                 "rebuild the classification table and rerun family-first species filtering",
             )
         )
+    if _is_path_cascade_row(row):
+        _append_path_cascade_findings(findings, row)
     if _species_top5_not_subset_top20(row):
         findings.append(
             _finding(
@@ -276,6 +278,78 @@ def _species_top20_outside_selected_family(row: Mapping[str, Any]) -> bool:
     return bool(selected_family and species_candidate_family and selected_family != species_candidate_family)
 
 
+def _append_path_cascade_findings(
+    findings: list[dict[str, str]],
+    row: Mapping[str, Any],
+) -> None:
+    for prefix in ("family", "subfamily", "tribe", "genus"):
+        if not _string_list(row.get(f"{prefix}_top3")) or not _text(
+            row.get(f"selected_{prefix}")
+        ):
+            findings.append(
+                _finding(
+                    "fatal",
+                    "hierarchical_missing_rank_result",
+                    row,
+                    f"global cascade output is missing required {prefix.upper()} results",
+                    "rebuild classification-v3 artifacts and rerun the global cascade",
+                )
+            )
+    skipped = set(_string_list(row.get("skipped_ranks")))
+    if not _text(row.get("selected_subtribe")) and "SUBTRIBE" not in skipped:
+        findings.append(
+            _finding(
+                "fatal",
+                "hierarchical_missing_subtribe_or_skip",
+                row,
+                "global cascade output has neither a selected SUBTRIBE nor reviewed skip",
+                "repair reviewed SUBTRIBE path evidence and rerun classification",
+            )
+        )
+    for prefix in ("family", "subfamily", "tribe", "subtribe", "genus"):
+        lengths = {
+            len(_list_like(row.get(f"{prefix}_top3"))),
+            len(_list_like(row.get(f"{prefix}_top3_node_ids"))),
+            len(_list_like(row.get(f"{prefix}_top3_scores"))),
+        }
+        if len(lengths) != 1:
+            findings.append(
+                _finding(
+                    "fatal",
+                    "cascade_top3_arrays_misaligned",
+                    row,
+                    f"{prefix.upper()} top-three names, node IDs, and scores are misaligned",
+                    "regenerate the versioned cascade output row",
+                )
+            )
+    overlay_ids = {
+        _text(value)
+        for prefix in ("family", "subfamily", "tribe", "subtribe", "genus")
+        for value in _list_like(row.get(f"{prefix}_top3_node_ids"))
+        if _text(value)
+    }
+    accepted_keys = {
+        _text(value)
+        for column in (
+            "species_top20_accepted_taxon_keys",
+            "species_top5_accepted_taxon_keys",
+            "species_top3_accepted_taxon_keys",
+        )
+        for value in _list_like(row.get(column))
+        if _text(value)
+    }
+    if overlay_ids & accepted_keys:
+        findings.append(
+            _finding(
+                "fatal",
+                "overlay_node_id_in_accepted_taxon_keys",
+                row,
+                "reviewed classification node ID appears in a GBIF accepted-key field",
+                "regenerate outputs with species mappings and node-ID fields separated",
+            )
+        )
+
+
 def _species_top5_not_subset_top20(row: Mapping[str, Any]) -> bool:
     top5_names = {_norm(value) for value in _string_list(row.get("species_top5"))}
     top20_names = {_norm(value) for value in _string_list(row.get("species_top20"))}
@@ -340,7 +414,16 @@ def _is_butterfly_like_detection(row: Mapping[str, Any]) -> bool:
 
 
 def _selected_family(row: Mapping[str, Any]) -> str:
-    return _first_text(row, "selected_family", "family_top1")
+    selected = _text(row.get("selected_family"))
+    if _is_path_cascade_row(row):
+        return selected
+    return selected or _text(row.get("family_top1"))
+
+
+def _is_path_cascade_row(row: Mapping[str, Any]) -> bool:
+    return _text(row.get("classifier_schema_version")).startswith(
+        "butterfly-cascade-output-"
+    )
 
 
 def _species_name(row: Mapping[str, Any]) -> str:

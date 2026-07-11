@@ -59,6 +59,31 @@ def test_visual_qa_valid_evidence_has_no_fatal_findings() -> None:
     assert findings.filter(pl.col("severity") == "fatal").is_empty()
 
 
+def test_visual_qa_allows_global_top20_across_families_and_reviewed_subtribe_skip() -> None:
+    findings = build_visual_qa_findings(
+        object_evidence=pl.DataFrame(
+            [
+                _cascade_row(
+                    species_top20_families=["Papilionidae", "Nymphalidae"],
+                )
+            ]
+        )
+    )
+
+    fatal_types = findings.filter(pl.col("severity") == "fatal")["finding_type"].to_list()
+    assert "species_top20_outside_selected_family" not in fatal_types
+    assert "hierarchical_missing_subtribe_or_skip" not in fatal_types
+    assert not fatal_types
+
+
+def test_visual_qa_rejects_path_cascade_without_subtribe_or_reviewed_skip() -> None:
+    findings = build_visual_qa_findings(
+        object_evidence=pl.DataFrame([_cascade_row(skipped_ranks=[])])
+    )
+
+    assert "hierarchical_missing_subtribe_or_skip" in findings["finding_type"].to_list()
+
+
 def test_visual_qa_does_not_flag_bare_object_scores_as_noneligible_detections() -> None:
     row = _row()
     row.pop("detector_label")
@@ -141,6 +166,37 @@ def _row(**overrides: object) -> dict[str, object]:
         "occurrence_bin": "in_review",
         "bin_reason": "hierarchical_open_classification_requires_review",
     }
+    row.update(overrides)
+    return row
+
+
+def _cascade_row(**overrides: object) -> dict[str, object]:
+    row = _row(
+        classifier_schema_version="butterfly-cascade-output-v1.0.0",
+        selected_family_node_id="fixture:family:papilionidae",
+        selected_subfamily="Papilioninae",
+        selected_tribe="Papilionini",
+        selected_subtribe=None,
+        selected_genus="Papilio",
+        skipped_ranks=["SUBTRIBE"],
+        family_top3=["Papilionidae"],
+        family_top3_node_ids=["fixture:family:papilionidae"],
+        family_top3_scores=[0.9],
+        subfamily_top3=["Papilioninae"],
+        subfamily_top3_node_ids=["fixture:subfamily:papilioninae"],
+        subfamily_top3_scores=[0.8],
+        tribe_top3=["Papilionini"],
+        tribe_top3_node_ids=["fixture:tribe:papilionini"],
+        tribe_top3_scores=[0.7],
+        subtribe_top3=[],
+        subtribe_top3_node_ids=[],
+        subtribe_top3_scores=[],
+        genus_top3=["Papilio"],
+        genus_top3_node_ids=["fixture:genus:papilio"],
+        genus_top3_scores=[0.6],
+        species_top3=["Papilio demoleus"],
+        species_top3_accepted_taxon_keys=["gbif:100"],
+    )
     row.update(overrides)
     return row
 

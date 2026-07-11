@@ -133,6 +133,24 @@ def test_review_queue_uses_photo_summary_fallback_fields() -> None:
     assert row["bin_reason"] == "ambiguous_species_margin"
 
 
+def test_review_queue_accepts_reviewed_subtribe_skip_and_routes_missing_skip() -> None:
+    queue = build_hierarchical_review_queue(
+        object_evidence=pl.DataFrame(
+            [
+                _cascade_row(flickr_photo_id="valid-skip"),
+                _cascade_row(flickr_photo_id="missing-skip", skipped_ranks=[]),
+            ]
+        )
+    )
+
+    rows = {row["flickr_photo_id"]: row for row in queue.to_dicts()}
+    assert queue.schema == HIERARCHICAL_REVIEW_QUEUE_SCHEMA
+    assert "missing_required_cascade_rank" not in rows["valid-skip"]["review_reason"]
+    assert rows["valid-skip"]["selected_genus"] == "Papilio"
+    assert rows["valid-skip"]["skipped_ranks"] == ["SUBTRIBE"]
+    assert "missing_required_cascade_rank" in rows["missing-skip"]["review_reason"]
+
+
 def _row(**overrides: object) -> dict[str, object]:
     row: dict[str, object] = {
         "source": "flickr",
@@ -157,5 +175,27 @@ def _row(**overrides: object) -> dict[str, object]:
         "occurrence_bin": "in_review",
         "bin_reason": "hierarchical_open_classification_requires_review",
     }
+    row.update(overrides)
+    return row
+
+
+def _cascade_row(**overrides: object) -> dict[str, object]:
+    row = _row(
+        classifier_schema_version="butterfly-cascade-output-v1.0.0",
+        selected_family_node_id="fixture:family:papilionidae",
+        selected_subfamily="Papilioninae",
+        selected_subfamily_node_id="fixture:subfamily:papilioninae",
+        selected_tribe="Papilionini",
+        selected_tribe_node_id="fixture:tribe:papilionini",
+        selected_subtribe=None,
+        selected_subtribe_node_id=None,
+        selected_genus="Papilio",
+        selected_genus_node_id="fixture:genus:papilio",
+        subfamily_top3=["Papilioninae"],
+        tribe_top3=["Papilionini"],
+        subtribe_top3=[],
+        genus_top3=["Papilio"],
+        skipped_ranks=["SUBTRIBE"],
+    )
     row.update(overrides)
     return row

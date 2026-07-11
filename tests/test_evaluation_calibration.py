@@ -92,3 +92,22 @@ def test_add_uncertainty_fields_marks_low_margin_and_family_conflict() -> None:
     assert row["species_top5_entropy"] is not None
     assert row["low_margin_flag"] is True
     assert row["family_species_conflict_flag"] is True
+
+
+def test_path_cascade_raw_cosines_do_not_produce_probability_entropy() -> None:
+    frame = add_uncertainty_fields(
+        pl.DataFrame(
+            [
+                {
+                    "classifier_schema_version": "butterfly-cascade-output-v1.0.0",
+                    "species_top5_scores": [0.20, -0.10, -0.30],
+                    "species_top1_margin": 0.30,
+                    "selected_family": "Papilionidae",
+                }
+            ]
+        )
+    )
+
+    row = frame.to_dicts()[0]
+    assert row["species_top5_entropy"] is None
+    assert row["family_species_conflict_flag"] is False

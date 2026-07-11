@@ -26,6 +26,7 @@ from biominer.bioclip.five_rank_classifier import (
     five_rank_result_to_object_score_row,
 )
 from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
+from biominer.bioclip.path_cascade_output import PATH_CASCADE_OUTPUT_SCHEMA
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage
@@ -114,6 +115,8 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "bin_reason": pl.String,
 }
 OBJECT_SCORE_OUTPUT_SCHEMA.update(FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS)
+for _cascade_field, _cascade_dtype in PATH_CASCADE_OUTPUT_SCHEMA.items():
+    OBJECT_SCORE_OUTPUT_SCHEMA.setdefault(_cascade_field, _cascade_dtype)
 OBJECT_EVIDENCE_JOINED_SCHEMA: dict[str, pl.DataType] = {
     **OBJECT_SCORE_OUTPUT_SCHEMA,
     **DETECTION_OUTPUT_SCHEMA,
@@ -147,7 +150,11 @@ PHOTO_EVIDENCE_SUMMARY_SCHEMA: dict[str, pl.DataType] = {
     "all_detection_ids": pl.List(pl.String),
     "all_candidate_species": pl.List(pl.String),
     "all_selected_families": pl.List(pl.String),
+    "all_selected_genera": pl.List(pl.String),
     "photo_selected_family": pl.String,
+    "photo_selected_family_node_id": pl.String,
+    "photo_selected_genus": pl.String,
+    "photo_selected_genus_node_id": pl.String,
     "photo_species_top1": pl.String,
     "photo_species_top1_key": pl.String,
     "photo_species_confidence_score": pl.Float64,
@@ -1726,7 +1733,11 @@ def _photo_summary(
             if fallback is not None:
                 rows.append(fallback)
                 summarized_keys.add(key)
-    return pl.DataFrame(rows) if rows else empty_photo_summary_frame()
+    if not rows:
+        return empty_photo_summary_frame()
+    return _ensure_columns(pl.DataFrame(rows), PHOTO_EVIDENCE_SUMMARY_SCHEMA).select(
+        list(PHOTO_EVIDENCE_SUMMARY_SCHEMA)
+    )
 
 
 def empty_photo_summary_frame() -> pl.DataFrame:
@@ -1950,13 +1961,22 @@ def _summary_candidate_species(scored_rows: list[dict[str, Any]]) -> list[str]:
 
 def _hierarchical_photo_summary_fields(sorted_rows: list[dict[str, Any]], best: dict[str, Any]) -> dict[str, Any]:
     selected_families = _unique(
-        row.get("selected_family") or row.get("family_top1")
+        _selected_rank_name(row, "family")
+        for row in sorted_rows
+        if str(row.get("classification_mode") or "") == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    )
+    selected_genera = _unique(
+        _selected_rank_name(row, "genus")
         for row in sorted_rows
         if str(row.get("classification_mode") or "") == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
     )
     top1_species = _summary_species_top1(best)
-    species_by_detection = _unique(
-        _summary_species_top1(row)
+    species_identities = _unique(
+        str(
+            row.get("species_top1_accepted_taxon_key")
+            or row.get("accepted_taxon_key")
+            or _summary_species_top1(row)
+        )
         for row in sorted_rows
         if str(row.get("classification_mode") or "") == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
     )
@@ -1966,7 +1986,11 @@ def _hierarchical_photo_summary_fields(sorted_rows: list[dict[str, Any]], best: 
     )
     return {
         "all_selected_families": selected_families,
-        "photo_selected_family": str(best.get("selected_family") or best.get("family_top1") or "") or None,
+        "all_selected_genera": selected_genera,
+        "photo_selected_family": _selected_rank_name(best, "family") or None,
+        "photo_selected_family_node_id": _selected_rank_node_id(best, "family") or None,
+        "photo_selected_genus": _selected_rank_name(best, "genus") or None,
+        "photo_selected_genus_node_id": _selected_rank_node_id(best, "genus") or None,
         "photo_species_top1": top1_species or None,
         "photo_species_top1_key": str(
             best.get("species_top1_accepted_taxon_key") or best.get("accepted_taxon_key") or ""
@@ -1974,7 +1998,14 @@ def _hierarchical_photo_summary_fields(sorted_rows: list[dict[str, Any]], best: 
         or None,
         "photo_species_confidence_score": _summary_object_score(best) if top1_species else None,
         "photo_species_margin": _summary_species_margin(best),
-        "photo_multi_object_conflict": bool(is_hierarchical and len(species_by_detection) > 1),
+        "photo_multi_object_conflict": bool(
+            is_hierarchical
+            and (
+                len(selected_families) > 1
+                or len(selected_genera) > 1
+                or len(species_identities) > 1
+            )
+        ),
         "photo_review_reason": "",
     }
 
@@ -1982,7 +2013,11 @@ def _hierarchical_photo_summary_fields(sorted_rows: list[dict[str, Any]], best: 
 def _empty_photo_prediction_fields(*, photo_review_reason: str = "") -> dict[str, Any]:
     return {
         "all_selected_families": [],
+        "all_selected_genera": [],
         "photo_selected_family": None,
+        "photo_selected_family_node_id": None,
+        "photo_selected_genus": None,
+        "photo_selected_genus_node_id": None,
         "photo_species_top1": None,
         "photo_species_top1_key": None,
         "photo_species_confidence_score": None,
@@ -1990,6 +2025,17 @@ def _empty_photo_prediction_fields(*, photo_review_reason: str = "") -> dict[str
         "photo_multi_object_conflict": False,
         "photo_review_reason": photo_review_reason,
     }
+
+
+def _selected_rank_name(row: dict[str, Any], prefix: str) -> str:
+    selected = str(row.get(f"selected_{prefix}") or "")
+    if str(row.get("classifier_schema_version") or "").startswith("butterfly-cascade-output-"):
+        return selected
+    return selected or str(row.get(f"{prefix}_top1") or "")
+
+
+def _selected_rank_node_id(row: dict[str, Any], prefix: str) -> str:
+    return str(row.get(f"selected_{prefix}_node_id") or "")
 
 
 def _photo_summary_sort_key(row: dict[str, Any]) -> tuple[float, float, str]:

@@ -226,9 +226,11 @@ def _predicted_confusion_taxon(prediction: Mapping[str, Any] | None, *, level: s
     if prediction is None:
         return "missing_prediction", "missing_prediction"
     if level == "family":
+        is_path_cascade = _is_path_cascade_prediction(prediction)
         return _taxon_or_missing(
-            prediction.get("selected_family_key"),
-            prediction.get("selected_family") or prediction.get("family_top1"),
+            None if is_path_cascade else prediction.get("selected_family_key"),
+            prediction.get("selected_family")
+            or (None if is_path_cascade else prediction.get("family_top1")),
             missing="missing_prediction",
         )
     return _taxon_or_missing(
@@ -239,6 +241,13 @@ def _predicted_confusion_taxon(prediction: Mapping[str, Any] | None, *, level: s
 
 
 def _family_top1_correct(label: Mapping[str, Any], prediction: Mapping[str, Any]) -> bool:
+    if _is_path_cascade_prediction(prediction):
+        return _matches_taxon(
+            label_key=label.get("family_key"),
+            label_name=label.get("family"),
+            prediction_key=None,
+            prediction_name=prediction.get("family_top1"),
+        )
     top_keys = _as_list(prediction.get("family_top3_accepted_taxon_keys"))
     top_names = _as_list(prediction.get("family_top3"))
     selected_key = _text(prediction.get("selected_family_key"))
@@ -254,20 +263,33 @@ def _family_top1_correct(label: Mapping[str, Any], prediction: Mapping[str, Any]
 
 
 def _family_in_top3(label: Mapping[str, Any], prediction: Mapping[str, Any]) -> bool:
+    prediction_keys = (
+        []
+        if _is_path_cascade_prediction(prediction)
+        else _as_list(prediction.get("family_top3_accepted_taxon_keys"))
+    )
     return _matches_any_taxon(
         label_key=label.get("family_key"),
         label_name=label.get("family"),
-        prediction_keys=_as_list(prediction.get("family_top3_accepted_taxon_keys")),
+        prediction_keys=prediction_keys,
         prediction_names=_as_list(prediction.get("family_top3")),
     )
 
 
 def _selected_family_correct(label: Mapping[str, Any], prediction: Mapping[str, Any]) -> bool:
+    is_path_cascade = _is_path_cascade_prediction(prediction)
     return _matches_taxon(
         label_key=label.get("family_key"),
         label_name=label.get("family"),
-        prediction_key=prediction.get("selected_family_key"),
-        prediction_name=prediction.get("selected_family") or prediction.get("family_top1"),
+        prediction_key=None if is_path_cascade else prediction.get("selected_family_key"),
+        prediction_name=prediction.get("selected_family")
+        or (None if is_path_cascade else prediction.get("family_top1")),
+    )
+
+
+def _is_path_cascade_prediction(prediction: Mapping[str, Any]) -> bool:
+    return _text(prediction.get("classifier_schema_version")).startswith(
+        "butterfly-cascade-output-"
     )
 
 
