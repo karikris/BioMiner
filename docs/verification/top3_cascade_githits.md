@@ -1223,3 +1223,106 @@ Repository verification:
 Post-implementation solution ID reused only for the canonical-hash comparison:
 
 `a04caaf5-9c66-4bcf-9e7b-8d08dbe3a062`.
+
+## Phase 7 — Deterministic cascade acceptance benchmarks
+
+### Pre-implementation verification — 2026-07-11
+
+Research questions:
+
+- How should a model-free classifier benchmark make ranking regressions
+  mutation-sensitive and deterministic?
+- Which top-k invariants expose false success when the candidate universe is
+  too small or ties are left implicit?
+- Which per-stage candidate, retention, work, and timing measurements are
+  useful without turning wall-clock values into correctness assertions?
+- How should historical and current beam algorithms be compared without
+  restoring the historical classifier to production?
+
+Strict GitHits calls:
+
+1. A delegated strict-licence query for deterministic benchmark rankings and
+   top-k recall hit the rolling generated-example quota with an exact retry
+   estimate of 62800 seconds.
+2. A delegated strict-licence query for stage timing and candidate-count
+   telemetry hit the same quota with an exact retry estimate of 62783 seconds.
+3. A main-agent strict-licence query combining classifier benchmarks, ranking
+   invariants, top-k recall, and per-stage telemetry hit the quota with an
+   exact retry estimate of 62620 seconds.
+
+No call returned a solution ID, and no new Phase 7 solution ID is claimed.
+The directly relevant Phase 3 strict solutions remain reusable evidence for
+global-frontier and stable-order behavior:
+
+- `ff07eee2-f883-4dce-a4cd-37c584518675`;
+- `01e56d9b-226c-474c-8d7e-85891e70c457`.
+
+GitHits immutable source verification then inspected
+`scikit-learn/scikit-learn@6b9e392862ac86f6a3f3b71ee89622d5af49bb4e`.
+`COPYING:1-29` establishes BSD-3-Clause. Exact source/test windows were:
+
+```text
+code_read(sklearn/metrics/_ranking.py, 2138:2248)
+code_read(sklearn/metrics/tests/test_ranking.py, 2121:2231)
+code_read(sklearn/model_selection/_search_successive_halving.py, 335:405)
+code_read(examples/miscellaneous/plot_outlier_detection_bench.py, 87:96)
+```
+
+The source establishes these patterns:
+
+- top-k tie behavior is documented rather than inherited accidentally;
+- labels are required to be unique and ordered before scoring;
+- a stable sort is used before slicing the top-k candidates;
+- `k >= candidate_count` is identified as a meaningless perfect result;
+- fixed score matrices assert exact top-1, top-2, and top-3 outcomes;
+- a seeded fixture checks that top-k success is monotonic as k grows;
+- an explicit equal-score fixture asserts the documented tie result;
+- successive-halving telemetry stores candidates entering each iteration,
+  iteration/resource metadata, and candidates retained after pruning;
+- elapsed duration is bracketed with `perf_counter()` around the operation
+  being measured.
+
+The source's exact numeric-index tie policy is not BioMiner's identity policy.
+BioMiner will retain its explicit taxonomic secondary keys: scientific name
+and stable node ID. Scikit-learn is evidence for documenting and testing a
+tie policy, not a dependency or an algorithm to copy.
+
+Constraints adopted:
+
+- Use fixed synthetic scores and exact expected node orders. Do not load a
+  real model, network resource, or biological taxonomy in acceptance tests.
+- Validate a seven-family fixture through the real classification-v3 frame,
+  QA, fingerprint, and `PathTaxonomyStore` contracts.
+- Record candidate count, retained actual-node count, active paths before and
+  after, unique labels scored, reviewed skip count, and elapsed duration for
+  every rank/prompt stage.
+- Treat timing as non-negative telemetry only. Exact durations and throughput
+  are not test invariants.
+- Make top-k monotonicity non-decreasing, because plateaus are valid.
+- Ensure selected benchmark branches contain more than 20 species so top-20
+  assertions cannot pass trivially.
+- Keep the historical cumulative selector private to benchmark/test code and
+  assert exact differing subfamily IDs against the production result.
+
+Patterns explicitly rejected:
+
+- using a trained estimator or real BioCLIP weights in the core benchmark;
+- treating a perfect result with `k >= candidate_count` as useful evidence;
+- relying on input order or an undocumented numeric index for ties;
+- asserting exact wall time or minimum throughput in unit tests;
+- reducing active-path count to beam width, because one retained taxon node
+  can legitimately represent many species paths;
+- counting reviewed skipped SUBTRIBE paths as retained beam nodes;
+- placing historical cumulative pruning in `src/biominer/bioclip/` or calling
+  the legacy five-rank classifier.
+
+Morph MCP was invoked for the required benchmark/call-site discovery and
+failed with the exact response `Error: 429 status code (no body)`. Focused
+local reads and `rg` supplied the repository evidence; no Morph-derived claim
+is made.
+
+Pre-implementation solution IDs reused from the earlier strict ranking
+verification:
+
+`ff07eee2-f883-4dce-a4cd-37c584518675`,
+`01e56d9b-226c-474c-8d7e-85891e70c457`.
