@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
 import json
+from itertools import chain
 import logging
 from pathlib import Path
 import re
@@ -45,6 +47,7 @@ from biominer.registry.translation_sources import (
     translation_candidates_frame,
     translation_source_display_names,
 )
+from biominer.storage.parquet import DEFAULT_PARQUET_READ_BATCH_SIZE, ParquetRowSource
 
 
 logger = logging.getLogger(__name__)
@@ -76,6 +79,7 @@ MYMEMORY_MONTHLY_REQUEST_LIMIT = 10_000
 MYMEMORY_MONTHLY_INPUT_WORD_LIMIT = 10_000
 MYMEMORY_MONTHLY_BANDWIDTH_MB_LIMIT = 10_240
 MYMEMORY_RESPONSE_BYTE_RESERVATION = 1_048_576
+DEFAULT_TRANSLATION_UNIT_BATCH_SIZE = 500
 MYMEMORY_SOURCE_VERSION = "mymemory-get-v1"
 WIKIMEDIA_SOURCE_VERSION = "mediawiki-langlinks-pageprops-wikispecies-v3"
 MYMEMORY_BASE_URL = "https://api.mymemory.translated.net"
@@ -642,6 +646,8 @@ def build_translation_candidates_from_registry(
     translation_workers: int = 1,
     translation_language_shards: int = 0,
     limit: int = 0,
+    read_batch_size: int = DEFAULT_PARQUET_READ_BATCH_SIZE,
+    translation_unit_batch_size: int = DEFAULT_TRANSLATION_UNIT_BATCH_SIZE,
 ) -> dict[str, Any]:
     started = monotonic()
     registry = Path(registry_dir)
@@ -652,17 +658,15 @@ def build_translation_candidates_from_registry(
     translation_worker_count = max(1, translation_workers)
     language_shard_count = max(1, translation_language_shards or translation_worker_count)
 
-    taxa = pl.read_parquet(registry / "taxa.parquet")
-    species_rows = taxa.filter(pl.col("rank") == "SPECIES").sort(["family", "genus", "scientific_name"]).to_dicts()
-    if limit:
-        species_rows = species_rows[:limit]
-    contexts = [
-        SpeciesTranslationContext(
-            accepted_taxon_key=str(row.get("accepted_taxon_key") or ""),
-            accepted_scientific_name=str(row.get("scientific_name") or ""),
-        )
-        for row in species_rows
-    ]
+    if read_batch_size <= 0:
+        raise ValueError("read_batch_size must be positive")
+    if translation_unit_batch_size <= 0:
+        raise ValueError("translation_unit_batch_size must be positive")
+    taxa_path = registry / "taxa.parquet"
+    names_path = registry / "names.parquet"
+    context_query = _translation_context_query(taxa_path, limit=limit)
+    context_count = int(context_query.select(pl.len()).collect(engine="streaming").item())
+    contexts = _iter_translation_contexts(context_query, batch_size=read_batch_size)
 
     checkpoint_writer = TranslationCheckpointWriter(
         output,
@@ -684,8 +688,11 @@ def build_translation_candidates_from_registry(
     )
     checkpoint_writer.mymemory_budget = mymemory_budget
 
-    names = pl.read_parquet(registry / "names.parquet")
-    seeds_by_taxon = _seed_names_by_taxon(taxa=taxa, names=names, source_assertions=checkpoint_writer.existing_assertions)
+    seeds_by_taxon = _seed_names_by_taxon(
+        taxa_rows=ParquetRowSource(taxa_path, batch_size=read_batch_size),
+        name_rows=ParquetRowSource(names_path, batch_size=read_batch_size),
+        source_assertions=checkpoint_writer.existing_assertions,
+    )
     wikidata_items_by_taxon = _wikidata_items_by_taxon(registry, output)
     completed_work = {
         str(row.get("work_key") or "")
@@ -708,11 +715,48 @@ def build_translation_candidates_from_registry(
     )
     mymemory_units: list[TranslationWorkUnit] = []
 
+    def drain_mymemory_units(*, force: bool = False) -> Iterator[TranslationBatch]:
+        while mymemory_units and (force or len(mymemory_units) >= translation_unit_batch_size):
+            chunk_size = min(len(mymemory_units), translation_unit_batch_size)
+            unit_chunk = tuple(mymemory_units[:chunk_size])
+            del mymemory_units[:chunk_size]
+            logger.info(
+                "registry.translation.mymemory.batch units=%d translation_workers=%d language_shards=%d",
+                len(unit_chunk),
+                translation_worker_count,
+                language_shard_count,
+            )
+            if translation_worker_count <= 1 or len(unit_chunk) <= 1:
+                provider = _new_mymemory_provider(mymemory_provider_spec)
+                for unit in unit_chunk:
+                    yield _harvest_single_mymemory_unit(
+                        unit,
+                        provider=provider,
+                        budget=budget,
+                        mymemory_budget=mymemory_budget,
+                        max_candidates_per_name=max_candidates_per_name,
+                    )
+                    if budget.exhausted or mymemory_budget.exhausted:
+                        return
+            else:
+                yield from _harvest_mymemory_units_parallel(
+                    unit_chunk,
+                    target_locales=target_locales,
+                    language_shards=language_shard_count,
+                    max_workers=translation_worker_count,
+                    provider_spec=mymemory_provider_spec,
+                    budget=budget,
+                    mymemory_budget=mymemory_budget,
+                    max_candidates_per_name=max_candidates_per_name,
+                )
+            if budget.exhausted or mymemory_budget.exhausted:
+                return
+
     logger.info(
         "registry.translation.start registry=%s enrichment_dir=%s species=%d sources=%s target_locales=%d daily_request_limit=%d checkpoint_every=%d checkpoint_seconds=%.1f translation_workers=%d translation_language_shards=%d",
         registry,
         output,
-        len(contexts),
+        context_count,
         ",".join(source_order),
         len(target_locales),
         daily_request_limit,
@@ -768,51 +812,31 @@ def build_translation_candidates_from_registry(
                         config_hash=mymemory_config_hash,
                     )
                 )
-        if index % 100 == 0 or index == len(contexts):
+                for batch in drain_mymemory_units():
+                    checkpoint_writer.append(batch)
+                    completed_work.update(
+                        str(row.get("work_key") or "")
+                        for row in batch.translation_work
+                        if str(row.get("status") or "") == "complete"
+                    )
+                    if checkpoint_writer.should_flush():
+                        checkpoint_writer.flush(status="running")
+        if index % 100 == 0 or index == context_count:
             logger.info(
                 "registry.translation.progress completed=%d/%d wikimedia_assertions=%d mymemory_candidates=%d requests=%d elapsed_seconds=%.1f",
                 index,
-                len(contexts),
+                context_count,
                 checkpoint_writer.assertion_counts["wikimedia"],
                 checkpoint_writer.candidate_counts["mymemory"],
                 sum(checkpoint_writer.request_counts.values()),
                 monotonic() - started,
             )
         if budget.exhausted or mymemory_budget.exhausted:
-            logger.info("registry.translation.budget_exhausted completed=%d/%d request_limit=%d", index, len(contexts), daily_request_limit)
+            logger.info("registry.translation.budget_exhausted completed=%d/%d request_limit=%d", index, context_count, daily_request_limit)
             break
 
     if mymemory_units and not budget.exhausted and not mymemory_budget.exhausted:
-        logger.info(
-            "registry.translation.mymemory.start units=%d translation_workers=%d language_shards=%d",
-            len(mymemory_units),
-            translation_worker_count,
-            language_shard_count,
-        )
-        if translation_worker_count <= 1 or len(mymemory_units) <= 1:
-            mymemory_provider = _new_mymemory_provider(mymemory_provider_spec)
-            mymemory_batches = (
-                _harvest_single_mymemory_unit(
-                    unit,
-                    provider=mymemory_provider,
-                    budget=budget,
-                    mymemory_budget=mymemory_budget,
-                    max_candidates_per_name=max_candidates_per_name,
-                )
-                for unit in mymemory_units
-            )
-        else:
-            mymemory_batches = _harvest_mymemory_units_parallel(
-                tuple(mymemory_units),
-                target_locales=target_locales,
-                language_shards=language_shard_count,
-                max_workers=translation_worker_count,
-                provider_spec=mymemory_provider_spec,
-                budget=budget,
-                mymemory_budget=mymemory_budget,
-                max_candidates_per_name=max_candidates_per_name,
-            )
-        for batch in mymemory_batches:
+        for batch in drain_mymemory_units(force=True):
             checkpoint_writer.append(batch)
             completed_work.update(str(row.get("work_key") or "") for row in batch.translation_work if str(row.get("status") or "") == "complete")
             if checkpoint_writer.should_flush():
@@ -1589,15 +1613,39 @@ def _update_translation_manifest(
     return manifest
 
 
-def _seed_names_by_taxon(*, taxa: pl.DataFrame, names: pl.DataFrame, source_assertions: list[dict[str, Any]]) -> dict[str, list[TranslationSeed]]:
+def _translation_context_query(taxa_path: Path, *, limit: int) -> pl.LazyFrame:
+    contexts = (
+        pl.scan_parquet(taxa_path)
+        .filter(pl.col("rank") == "SPECIES")
+        .select("accepted_taxon_key", "scientific_name", "family", "genus")
+        .sort(["family", "genus", "scientific_name", "accepted_taxon_key"])
+    )
+    return contexts.head(limit) if limit else contexts
+
+
+def _iter_translation_contexts(contexts: pl.LazyFrame, *, batch_size: int) -> Iterator[SpeciesTranslationContext]:
+    for batch in contexts.collect_batches(chunk_size=batch_size, maintain_order=True, engine="streaming"):
+        for row in batch.iter_rows(named=True):
+            yield SpeciesTranslationContext(
+                accepted_taxon_key=str(row.get("accepted_taxon_key") or ""),
+                accepted_scientific_name=str(row.get("scientific_name") or ""),
+            )
+
+
+def _seed_names_by_taxon(
+    *,
+    taxa_rows: Iterable[dict[str, Any]],
+    name_rows: Iterable[dict[str, Any]],
+    source_assertions: list[dict[str, Any]],
+) -> dict[str, list[TranslationSeed]]:
     species = {
         str(row.get("accepted_taxon_key") or ""): str(row.get("scientific_name") or "")
-        for row in taxa.filter(pl.col("rank") == "SPECIES").to_dicts()
+        for row in taxa_rows
+        if str(row.get("rank") or "") == "SPECIES"
     }
-    rows = [*names.to_dicts(), *source_assertions]
     seeds: dict[str, list[TranslationSeed]] = {}
     seen: set[tuple[str, str, str]] = set()
-    for row in rows:
+    for row in chain(name_rows, source_assertions):
         accepted_taxon_key = str(row.get("accepted_taxon_key") or "")
         if accepted_taxon_key not in species:
             continue

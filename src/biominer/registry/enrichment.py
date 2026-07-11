@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -23,6 +23,7 @@ from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.normalize import parse_language_tag, normalize_name_key
 from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES, TRANSLATION_CANDIDATES_FILE, translation_candidate_schema, translation_source_display_names
 from biominer.registry.trust_policy import decide_name_trust
+from biominer.storage.parquet import DEFAULT_PARQUET_READ_BATCH_SIZE, ParquetRowSource
 
 
 ENRICHMENT_SCHEMA_VERSION = "registry-enrichment-v1"
@@ -151,19 +152,16 @@ def build_enrichment_sources_from_registry(
     limit: int = 0,
     inaturalist_daily_request_limit: int = INATURALIST_DAILY_REQUEST_LIMIT,
     report_dir: str | Path = "reports",
+    read_batch_size: int = DEFAULT_PARQUET_READ_BATCH_SIZE,
 ) -> dict[str, Any]:
     _validate_runtime_options(workers=workers, progress_every=progress_every, checkpoint_every=checkpoint_every, max_retries=max_retries, limit=limit)
     started = monotonic()
     registry = Path(registry_dir)
     output = Path(enrichment_dir) if enrichment_dir is not None else registry
-    taxa = pl.read_parquet(registry / "taxa.parquet")
-    names = pl.read_parquet(registry / "names.parquet")
-    species_rows = taxa.filter(pl.col("rank") == "SPECIES").sort(["family", "genus", "scientific_name"]).to_dicts()
-    if limit:
-        species_rows = species_rows[:limit]
-    names_by_taxon: dict[str, list[str]] = {}
-    for row in names.sort(["accepted_taxon_key", "display_name"]).to_dicts():
-        names_by_taxon.setdefault(str(row.get("accepted_taxon_key") or ""), []).append(str(row.get("display_name") or ""))
+    taxa_path = registry / "taxa.parquet"
+    names_path = registry / "names.parquet"
+    species_contexts = _species_context_query(taxa_path=taxa_path, names_path=names_path, limit=limit)
+    species_count = int(species_contexts.select(pl.len()).collect(engine="streaming").item())
 
     source_order = tuple(sources)
     allowed_source_names = set(_source_display_names(source_order))
@@ -200,12 +198,12 @@ def build_enrichment_sources_from_registry(
             existing_rows=work_ledger,
         )
     }
-    contexts = [_species_context(row, names_by_taxon) for row in species_rows]
+    contexts = _iter_species_contexts(species_contexts, batch_size=read_batch_size)
     registry_version = _registry_version(registry)
     logger.info(
         "registry.enrichment.start registry=%s species=%d sources=%s workers=%d source_worker_limits=%s progress_every=%d checkpoint_every=%d max_retries=%d limit=%d",
         registry,
-        len(contexts),
+        species_count,
         ",".join(source_order),
         workers,
         _source_worker_limits(source_order, workers),
@@ -221,8 +219,8 @@ def build_enrichment_sources_from_registry(
         client_factory=client_factory,
         max_retries=max_retries,
         completed_work=completed_work,
-        taxa_rows=taxa.to_dicts(),
-        name_rows=names.to_dicts(),
+        taxa_rows=ParquetRowSource(taxa_path, batch_size=read_batch_size),
+        name_rows=ParquetRowSource(names_path, batch_size=read_batch_size),
         name_assertions=name_assertions,
         external_links=external_links,
         source_snapshots=source_snapshots,
@@ -247,17 +245,17 @@ def build_enrichment_sources_from_registry(
         source_snapshots.extend(result.source_snapshots)
         errors.extend(result.errors)
         work_ledger.extend(result.work_records)
-        if completed % progress_every == 0 or completed == len(contexts):
+        if completed % progress_every == 0 or completed == species_count:
             logger.info(
                 "registry.enrichment.progress completed=%d/%d name_assertion_rows=%d external_taxon_link_rows=%d errors=%d elapsed_seconds=%.1f",
                 completed,
-                len(contexts),
+                species_count,
                 len(name_assertions),
                 len(external_links),
                 len(errors),
                 monotonic() - started,
             )
-        if completed % checkpoint_every == 0 or completed == len(contexts):
+        if completed % checkpoint_every == 0 or completed == species_count:
             _write_enrichment_checkpoint(
                 output,
                 name_assertions=name_assertions,
@@ -266,7 +264,7 @@ def build_enrichment_sources_from_registry(
                 errors=errors,
                 work_ledger=work_ledger,
                 completed=completed,
-                total=len(contexts),
+                total=species_count,
                 source_order=source_order,
                 workers=workers,
                 source_worker_limits=_source_worker_limits(source_order, workers),
@@ -276,12 +274,12 @@ def build_enrichment_sources_from_registry(
                 limit=limit,
                 started=started,
                 base_registry_dir=registry,
-                status=_run_status(completed=completed, total=len(contexts), budgets=budgets),
+                status=_run_status(completed=completed, total=species_count, budgets=budgets),
                 bulk_coverage=bulk_coverage,
             )
 
-    if not contexts or not per_species_sources:
-        completed_without_species_work = 0 if not contexts else len(contexts)
+    if species_count == 0 or not per_species_sources:
+        completed_without_species_work = 0 if species_count == 0 else species_count
         _write_enrichment_checkpoint(
             output,
             name_assertions=name_assertions,
@@ -290,7 +288,7 @@ def build_enrichment_sources_from_registry(
             errors=errors,
             work_ledger=work_ledger,
             completed=completed_without_species_work,
-            total=len(contexts),
+            total=species_count,
             source_order=source_order,
             workers=workers,
             source_worker_limits=_source_worker_limits(source_order, workers),
@@ -402,7 +400,35 @@ def write_enrichment_sources(
     return manifest
 
 
-def _species_context(species: dict[str, Any], names_by_taxon: dict[str, list[str]]) -> SpeciesContext:
+def _species_context_query(*, taxa_path: Path, names_path: Path, limit: int) -> pl.LazyFrame:
+    current_names = (
+        pl.scan_parquet(names_path)
+        .select(
+            pl.col("accepted_taxon_key").cast(pl.String),
+            pl.col("display_name").cast(pl.String),
+        )
+        .filter(pl.col("display_name").is_not_null() & (pl.col("display_name") != ""))
+        .group_by("accepted_taxon_key")
+        .agg(pl.col("display_name").unique().sort().alias("current_names"))
+    )
+    contexts = (
+        pl.scan_parquet(taxa_path)
+        .filter(pl.col("rank") == "SPECIES")
+        .join(current_names, on="accepted_taxon_key", how="left")
+        .sort(["family", "genus", "scientific_name", "accepted_taxon_key"])
+    )
+    return contexts.head(limit) if limit else contexts
+
+
+def _iter_species_contexts(contexts: pl.LazyFrame, *, batch_size: int) -> Iterator[SpeciesContext]:
+    if batch_size <= 0:
+        raise ValueError("read_batch_size must be positive")
+    for batch in contexts.collect_batches(chunk_size=batch_size, maintain_order=True, engine="streaming"):
+        for row in batch.iter_rows(named=True):
+            yield _species_context(row)
+
+
+def _species_context(species: dict[str, Any]) -> SpeciesContext:
     key = str(species.get("accepted_taxon_key") or "")
     return SpeciesContext(
         accepted_taxon_key=key,
@@ -411,13 +437,13 @@ def _species_context(species: dict[str, Any], names_by_taxon: dict[str, list[str
         family=str(species.get("family") or ""),
         genus_key=str(species.get("genus_key") or ""),
         genus=str(species.get("genus") or ""),
-        current_names=tuple(names_by_taxon.get(key, [])),
+        current_names=tuple(str(name) for name in (species.get("current_names") or ())),
     )
 
 
 def _enrichment_iterator(
     *,
-    contexts: list[SpeciesContext],
+    contexts: Iterable[SpeciesContext],
     sources: tuple[str, ...],
     clients: dict[str, Any] | None,
     client_factory: ClientBundleFactory | None,
@@ -426,8 +452,6 @@ def _enrichment_iterator(
     completed_work: set[tuple[str, str]],
     budgets: dict[str, DailyRequestBudget],
 ) -> Iterator[SpeciesEnrichmentResult]:
-    if not contexts:
-        return iter(())
     if workers == 1:
         bundle = clients or (client_factory() if client_factory else default_enrichment_clients(max_retries=max_retries))
         return (
@@ -542,8 +566,8 @@ def _run_bulk_enrichment_sources(
     client_factory: ClientBundleFactory | None,
     max_retries: int,
     completed_work: set[tuple[str, str]],
-    taxa_rows: list[dict[str, Any]],
-    name_rows: list[dict[str, Any]],
+    taxa_rows: Iterable[dict[str, Any]],
+    name_rows: Iterable[dict[str, Any]],
     name_assertions: list[dict[str, Any]],
     external_links: list[dict[str, Any]],
     source_snapshots: list[dict[str, Any]],

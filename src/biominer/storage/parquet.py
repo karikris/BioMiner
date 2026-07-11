@@ -28,6 +28,18 @@ class ParquetPartWrite:
     compression: str | None
 
 
+@dataclass(frozen=True)
+class ParquetRowSource:
+    """Reusable, bounded row iterator over a Parquet file."""
+
+    path: str | Path
+    batch_size: int = DEFAULT_PARQUET_READ_BATCH_SIZE
+
+    def __iter__(self) -> Iterator[dict[str, object]]:
+        for batch in iter_parquet_batches(self.path, batch_size=self.batch_size):
+            yield from batch.iter_rows(named=True)
+
+
 def write_parquet(
     frame: pl.DataFrame,
     path: str | Path,

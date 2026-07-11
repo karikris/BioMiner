@@ -348,7 +348,11 @@ def test_mymemory_work_units_are_keyed_by_language_and_skip_completed(tmp_path) 
     _write_registry(registry)
     taxa = pl.read_parquet(registry / "taxa.parquet")
     names = pl.read_parquet(registry / "names.parquet")
-    seeds = _seed_names_by_taxon(taxa=taxa, names=names, source_assertions=[])["gbif:100"]
+    seeds = _seed_names_by_taxon(
+        taxa_rows=taxa.iter_rows(named=True),
+        name_rows=names.iter_rows(named=True),
+        source_assertions=[],
+    )["gbif:100"]
     context = SpeciesTranslationContext("gbif:100", "Papilio demoleus")
     config_hash = _translation_config_hash(
         "mymemory",
@@ -483,12 +487,44 @@ def test_mymemory_parallel_workers_create_provider_per_language_shard(tmp_path) 
     assert sorted(tuple(provider.calls) for provider in providers) == [("de", "fi"), ("sv", "fr")]
 
 
+def test_mymemory_parallel_work_is_drained_in_bounded_unit_batches(tmp_path, monkeypatch) -> None:
+    registry = tmp_path / "registry"
+    _write_registry(registry)
+    locales = tmp_path / "locales.json"
+    locales.write_text(json.dumps(["de", "sv", "fi", "fr"]), encoding="utf-8")
+    batch_sizes: list[int] = []
+    original_harvest = harvester._harvest_mymemory_units_parallel
+
+    def recording_harvest(units, **kwargs):  # noqa: ANN001, ANN003, ANN202 - wraps the production helper.
+        batch_sizes.append(len(units))
+        return original_harvest(units, **kwargs)
+
+    monkeypatch.setattr(harvester, "_harvest_mymemory_units_parallel", recording_harvest)
+
+    build_translation_candidates_from_registry(
+        registry_dir=registry,
+        enrichment_dir=registry / "enrichment",
+        translation_sources=("mymemory",),
+        target_locales_json=locales,
+        providers={"mymemory": RecordingMyMemoryProvider},
+        translation_workers=2,
+        translation_language_shards=2,
+        translation_unit_batch_size=2,
+    )
+
+    assert batch_sizes == [2, 2]
+
+
 def test_mymemory_work_units_preserve_bcp47_target_locales_and_api_codes(tmp_path) -> None:
     registry = tmp_path / "registry"
     _write_registry(registry)
     taxa = pl.read_parquet(registry / "taxa.parquet")
     names = pl.read_parquet(registry / "names.parquet")
-    seeds = _seed_names_by_taxon(taxa=taxa, names=names, source_assertions=[])["gbif:100"]
+    seeds = _seed_names_by_taxon(
+        taxa_rows=taxa.iter_rows(named=True),
+        name_rows=names.iter_rows(named=True),
+        source_assertions=[],
+    )["gbif:100"]
     context = SpeciesTranslationContext("gbif:100", "Papilio demoleus")
     target_locales = ("pt", "pt-BR", "zh-Hant")
     config_hash = _translation_config_hash(

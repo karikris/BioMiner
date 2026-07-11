@@ -10,7 +10,7 @@ import pytest
 import biominer.storage.s3 as s3_module
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.local import LocalStorageBackend
-from biominer.storage.parquet import write_parquet_batches, write_parquet_part
+from biominer.storage.parquet import ParquetRowSource, write_parquet_batches, write_parquet_part
 from biominer.storage.paths import (
     build_evidence_shard_uri,
     build_raw_flickr_response_uri,
@@ -90,6 +90,15 @@ def test_local_storage_rejects_invalid_parquet_batch_size(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="batch_size must be positive"):
         list(storage.iter_parquet_batches(target, batch_size=0))
+
+
+def test_parquet_row_source_is_bounded_and_reiterable(tmp_path) -> None:
+    target = tmp_path / "rows.parquet"
+    pl.DataFrame({"row_id": [0, 1, 2]}).write_parquet(target)
+    rows = ParquetRowSource(target, batch_size=1)
+
+    assert [row["row_id"] for row in rows] == [0, 1, 2]
+    assert [row["row_id"] for row in rows] == [0, 1, 2]
 
 
 def test_local_storage_writes_parquet_batches(tmp_path) -> None:
