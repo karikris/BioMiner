@@ -579,3 +579,120 @@ Post-implementation solution IDs:
 
 `0eaddf09-f3db-493a-8533-ea91a4138e5b`,
 `e1eefff4-fa7c-405a-a9f2-fadd7208e6fe`.
+
+## Phase 4 — Raw OpenCLIP similarities and distinct species reranking
+
+### Pre-implementation verification — 2026-07-11
+
+The application metadata in `src/biominer/cli.py` identifies
+`open_clip_torch==3.3.0` and BioCLIP revision
+`191d741545e4c741cdef4b22c6eb69c945c1e592`; the root `uv.lock` deliberately
+does not contain the sidecar-only vision dependencies. The expected dedicated
+runtime is absent on this host. Moreover, the current setup script installs
+OpenCLIP and PyTorch without exact pins, so 3.3.0 is the source target for this
+API review, not proof of the absent runtime's installed version. GitHits
+`pkg_info` resolved PyPI `open-clip-torch` 3.3.0 to
+`mlfoundations/open_clip`, MIT. A package-scoped `search` resolved that release
+to immutable source commit `30573618fc375b12f094ef64cb3a1391cf611c45`.
+
+Primary strict call:
+
+```text
+get_example(
+  query="OpenCLIP Python encode one image batch and one text prompt batch, L2 normalize both embeddings, compute raw cosine similarities or pre-softmax logits, keep tensors device-safe for Apple MPS and transfer scalar results to CPU",
+  language="Python",
+  license_mode="strict",
+  format="json"
+)
+```
+
+Solution ID: `5028e074-f077-484a-b607-cae57531390b`. Its generated
+references were MIT-licensed CLIP ecosystem issue examples. They were useful
+as a search lead, but the implementation decision was verified against the
+immutable OpenCLIP package source rather than mutable issue pages.
+
+Three additional strict calls supplied independent implementation evidence:
+
+- `7e71f8b6-3dfd-4ee2-8358-97a83bd40fc8` showed normalized OpenCLIP
+  image/text embeddings and a raw cosine matrix. Durable sources included
+  `alimoridnejad/neural-search@00ef5a2d56a8cd5b800c362d220efd379af7b48a`
+  (MIT), `AnyLoc/AnyLoc@a9fda68c55083f765b019df148a1b67614f90ee2`
+  (BSD-3-Clause), `kerrj/lerf@db08d578038d884542688511bd9ad7b489a65673`
+  (MIT), and
+  `zai-org/Inf-DiT@e710c3f0530adc15ee92e0635164d44261cc68da`
+  (Apache-2.0).
+- `0768879f-03d4-4612-8572-958d1fca077a` covered precomputed normalized text
+  embeddings and cosine ranking. Its remote-API/NumPy workflow and mutable
+  issue provenance were rejected as implementation precedent.
+- `19c1ebb4-8791-4cf5-8af4-367ccbb702d6` corroborated same-device MPS
+  inference, CUDA-only autocast, and CPU-safe output. Its mutable references
+  were treated only as corroboration. The broader first MPS query failed with
+  GitHits HTTP 500 and produced no solution ID; the narrower retry succeeded.
+
+Exact package-source GitHits calls:
+
+```text
+pkg_info(pypi:open_clip_torch)
+search(pypi:open_clip_torch@3.3.0, encode_image/encode_text/normalize/logit_scale/softmax)
+code_read(LICENSE, 1:23)
+code_read(src/open_clip/model.py, 430:479)
+code_read(src/open_clip/zero_shot_classifier.py, 21:68)
+code_read(src/open_clip_train/zero_shot.py, 17:42)
+code_read(tests/test_inference_simple.py, 25:51)
+```
+
+The pinned source establishes:
+
+- `encode_image(..., normalize=True)` and `encode_text(..., normalize=True)`
+  produce unit features in the model forward path;
+- pre-softmax image logits are the dot product of normalized image and text
+  features multiplied by the positive learned `exp(logit_scale)` (plus an
+  optional model bias), so cosine and those logits have the same ordering for
+  a fixed checkpoint;
+- zero-shot text templates are encoded in bounded batches, averaged per
+  class, normalized again, and concatenated;
+- OpenCLIP's evaluation path ranks directly from logits; softmax is an output
+  interpretation over the current candidate set, not a stable candidate
+  score;
+- tensors are kept on the selected device for encoding and matrix products.
+  BioMiner will transfer only final normalized embedding rows to CPU through
+  its existing persistent-worker boundary, which is compatible with CUDA,
+  MPS, and CPU without retaining accelerator tensors in the taxonomy index.
+
+Constraints adopted:
+
+- encode every image batch once and reuse the normalized image embedding for
+  all adaptive taxonomy stages;
+- cache normalized text embeddings and use raw cosine dot products for every
+  selection decision;
+- make probabilities an explicitly diagnostic, candidate-set-relative API;
+- fingerprint classification version, hierarchy, prompt version and stage,
+  exact label text, model ID, and checkpoint before cache reuse;
+- batch missing direct-mode text labels and reuse them across images;
+- use a physically compact float32 index rather than Python tuples of float64
+  values for the full butterfly label set;
+- give species first-pass and rerank separate prompt stages and disjoint label
+  sets, then rerank exactly the retained 20.
+
+Patterns rejected:
+
+- `(100 * image @ text.T).softmax(...)` as a rank-selection API, because adding
+  or removing candidates changes every reported probability;
+- comparing softmax probabilities produced from different rank candidate
+  universes;
+- re-embedding one crop at each adaptive rank;
+- using an unvalidated label-only cache that can silently cross prompt stages,
+  taxonomy revisions, or model checkpoints;
+- calling the same species prompt set twice and describing the second call as
+  reranking.
+
+Morph MCP was also invoked for the required local call-site review and failed
+with the exact response `Error: 429 status code (no body)`. Focused `rg` and
+source reads were used for local navigation; no Morph-derived claim is made.
+
+Pre-implementation solution IDs:
+
+`5028e074-f077-484a-b607-cae57531390b`,
+`7e71f8b6-3dfd-4ee2-8358-97a83bd40fc8`,
+`0768879f-03d4-4612-8572-958d1fca077a`,
+`19c1ebb4-8791-4cf5-8af4-367ccbb702d6`.
