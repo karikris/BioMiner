@@ -326,6 +326,35 @@ def test_fully_skipped_subtribe_records_skip_without_scoring_placeholders() -> N
     assert len(scorer.calls) == 5  # FAMILY, SUBFAMILY, TRIBE, GENUS, SPECIES
 
 
+def test_mixed_optional_rank_rejects_paths_without_node_or_reviewed_skip() -> None:
+    store = _store()
+    rows = store.leaf_paths.filter(
+        pl.col("species_node_id").is_in(["s:a1b", "s:a1:00"])
+    ).to_dicts()
+    malformed = next(row for row in rows if row["species_node_id"] == "s:a1b")
+    malformed["subtribe_node_id"] = ""
+    malformed["subtribe"] = ""
+    malformed["skipped_ranks"] = []
+    malformed["path_completeness"] = "incomplete"
+    malformed["rank_path"] = [rank for rank in malformed["rank_path"] if rank != "SUBTRIBE"]
+    malformed["rank_path_node_ids"] = [
+        node_id for node_id in malformed["rank_path_node_ids"] if node_id != "u:a1"
+    ]
+    malformed["hierarchy_hash"] = "sha256:malformed-optional-path"
+    paths = pl.DataFrame(rows, schema=LEAF_PATH_SCHEMA)
+    store = replace(
+        store,
+        leaf_paths=paths,
+        _enabled_hierarchy_hashes=frozenset(paths["hierarchy_hash"].to_list()),
+    )
+
+    with pytest.raises(PathCascadeClassificationError) as captured:
+        classify_path_cascade(item={}, scorer=_scorer(store, {}), taxonomy_store=store)
+
+    assert captured.value.code == "incomplete_optional_rank_coverage"
+    assert captured.value.rank == "SUBTRIBE"
+
+
 def test_species_top_twenty_uses_species_score_only_beneath_genus_top_three() -> None:
     store = _store()
     overrides = {
@@ -366,7 +395,7 @@ def test_species_top_twenty_uses_species_score_only_beneath_genus_top_three() ->
     assert len(scorer.calls[-1]) == 27
 
 
-@pytest.mark.parametrize("mode", ["missing", "duplicate", "nonaccepted"])
+@pytest.mark.parametrize("mode", ["missing", "duplicate", "nonaccepted", "mismatched_key"])
 def test_retained_species_requires_exactly_one_accepted_gbif_mapping(mode: str) -> None:
     store = _only_species_prefix(_store(), "s:a1:00")
     species_id = "s:a1:00"
@@ -375,12 +404,19 @@ def test_retained_species_requires_exactly_one_accepted_gbif_mapping(mode: str) 
     elif mode == "duplicate":
         row = store.gbif_mappings.filter(pl.col("species_node_id") == species_id)
         mappings = pl.concat([store.gbif_mappings, row])
-    else:
+    elif mode == "nonaccepted":
         mappings = store.gbif_mappings.with_columns(
             pl.when(pl.col("species_node_id") == species_id)
             .then(pl.lit("DOUBTFUL"))
             .otherwise(pl.col("taxonomic_status"))
             .alias("taxonomic_status")
+        )
+    else:
+        mappings = store.gbif_mappings.with_columns(
+            pl.when(pl.col("species_node_id") == species_id)
+            .then(pl.lit("gbif:999999"))
+            .otherwise(pl.col("accepted_taxon_key"))
+            .alias("accepted_taxon_key")
         )
     store = replace(store, gbif_mappings=mappings)
 

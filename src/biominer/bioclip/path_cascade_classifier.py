@@ -245,9 +245,22 @@ def classify_path_cascade(
         parent_node_ids = _parent_node_ids(active_paths, rank)
         candidates = taxonomy_store.candidate_nodes_in_paths(active_paths, rank)
         reviewed_skips = taxonomy_store.reviewed_skip_paths(active_paths, rank)
+        if rank in OPTIONAL_CLASSIFICATION_RANKS:
+            asserted_paths = taxonomy_store.paths_with_asserted_rank(active_paths, rank)
+            active_hashes = set(active_paths["hierarchy_hash"].to_list())
+            covered_hashes = set(asserted_paths["hierarchy_hash"].to_list()) | set(
+                reviewed_skips["hierarchy_hash"].to_list()
+            )
+            if active_hashes != covered_hashes:
+                raise PathCascadeClassificationError(
+                    code="incomplete_optional_rank_coverage",
+                    rank=rank,
+                    candidate_count=candidates.height,
+                    active_path_count=active_before,
+                    message="optional rank paths require either an asserted node or reviewed skip evidence",
+                )
         if candidates.is_empty():
             if rank in OPTIONAL_CLASSIFICATION_RANKS:
-                active_hashes = set(active_paths["hierarchy_hash"].to_list())
                 skip_hashes = set(reviewed_skips["hierarchy_hash"].to_list())
                 if active_hashes and active_hashes == skip_hashes:
                     rank_steps.append(
@@ -429,6 +442,8 @@ def _attach_species_mappings(
             or str(rows[0].get("taxonomic_status") or "") != "ACCEPTED"
             or not str(rows[0].get("accepted_taxon_key") or "")
             or not str(rows[0].get("gbif_species_key") or "")
+            or _bare_gbif_key(rows[0].get("accepted_taxon_key"))
+            != _bare_gbif_key(rows[0].get("gbif_species_key"))
         ):
             raise PathCascadeClassificationError(
                 code="invalid_species_mapping",
@@ -445,6 +460,11 @@ def _attach_species_mappings(
             )
         )
     return tuple(mapped)
+
+
+def _bare_gbif_key(value: object) -> str:
+    text = str(value or "")
+    return text.split(":", 1)[1] if text.casefold().startswith("gbif:") else text
 
 
 def _winning_path_scores(

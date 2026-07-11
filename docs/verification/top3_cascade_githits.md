@@ -481,3 +481,101 @@ Pre-implementation solution IDs:
 
 `ff07eee2-f883-4dce-a4cd-37c584518675`,
 `01e56d9b-226c-474c-8d7e-85891e70c457`.
+
+### Post-implementation verification — 2026-07-11
+
+Strict post call 1:
+
+```text
+get_example(
+  query="Python implementation score one combined candidate frontier, globally sort by score, retain top k once, deterministic tie breaking with stable secondary key, with regression tests",
+  language="Python",
+  license_mode="strict",
+  format="json"
+)
+```
+
+Solution ID: `0eaddf09-f3db-493a-8533-ea91a4138e5b`.
+Generated references were `vllm-project/vllm` PR 47348 (Apache-2.0) and
+`raikonenfnu/tokenspeed` issue 24 (MIT).
+
+Strict post call 2:
+
+```text
+get_example(
+  query="Python deterministic top k records sorted by descending numeric score then ascending name and stable identifier, independent of input order, with tests",
+  language="Python",
+  license_mode="strict",
+  format="json"
+)
+```
+
+Solution ID: `e1eefff4-fa7c-405a-a9f2-fadd7208e6fe`.
+Its generated reference was the same TokenSpeed issue. Both solution IDs are
+useful supplemental confirmation, but mutable PR/issue locations are not
+durable source provenance.
+
+The post-verification therefore re-read the immutable Phase 3 source:
+`mberlanda/quantik-core-py@bd468bfce026c02c7755d70f4a6c36d56256f84c`
+(`exact_current`, MIT). Exact GitHits reads were:
+
+```text
+code_read(LICENSE, 1:30)
+code_read(src/quantik_core/beam_search.py, 500:575)
+code_read(tests/test_beam_search.py, 180:215)
+code_read(tests/test_beam_search.py, 295:335)
+```
+
+The immutable source again confirmed a combined frontier, one global sort,
+and one top-width slice, supported by determinism and mutation-sensitive
+ranking tests.
+
+Implementation audit:
+
+- `score_rank_candidates` deduplicates by stable `node_id`, requests one label
+  vector, aggregates only the current node’s prompt similarities, and sorts
+  once by `(-raw_similarity, scientific_name, node_id)`.
+- `classify_path_cascade` takes one `scores[:3]` slice for every intermediate
+  rank and filters active paths once by those global IDs.
+- No parent score is read during selection. Source search found no
+  `cumulative`, `stage_scores`, `_PathState`, `child_candidates`, or per-parent
+  pruning machinery in the new classifier.
+- Species candidates are the deduplicated union under genus top three, sorted
+  by species raw similarity alone, and limited to 20 only after all eligible
+  species are scored.
+- Reviewed skip paths are carried from the already active parent set without
+  becoming candidates or consuming beam slots.
+
+The code review found one mixed-optional hardening gap: when some SUBTRIBE
+nodes existed, a malformed path with neither an asserted node nor reviewed
+skip evidence could previously disappear during filtering. The final code now
+requires
+`asserted_path_hashes union reviewed_skip_hashes == active_path_hashes` before
+scoring any optional rank. It also verifies that each retained species mapping
+has matching prefixed accepted and bare GBIF keys.
+
+Decisive tests prove:
+
+- the three retained subfamilies can all belong to one family;
+- current child score defeats a higher earlier-rank branch score;
+- a pruned family and its score-1.00 descendants cannot re-enter;
+- repeated leaf paths score each ancestor node once;
+- genus retains at most three actual nodes;
+- species outside genus top three are never sent to the scorer;
+- mixed and fully skipped SUBTRIBE behavior does not consume beam positions;
+- species top 20 is ordered by species score only;
+- mapping cardinality, accepted status, and key consistency fail closed;
+- result models are frozen and contain no complete-path selection score.
+
+Repository verification:
+
+- `uv run ruff check src/biominer/bioclip/path_cascade_classifier.py src/biominer/bioclip/path_taxonomy_store.py tests/test_path_cascade_classifier.py tests/test_path_taxonomy_store.py tests/test_registry_classification_v3.py`:
+  passed;
+- `.venv/bin/pytest -q tests/test_path_cascade_classifier.py tests/test_path_taxonomy_store.py tests/test_registry_classification_v3.py`:
+  `57 passed`;
+- `.venv/bin/pytest -q`: `923 passed`.
+
+Post-implementation solution IDs:
+
+`0eaddf09-f3db-493a-8533-ea91a4138e5b`,
+`e1eefff4-fa7c-405a-a9f2-fadd7208e6fe`.
