@@ -92,9 +92,51 @@ def test_zstd_parquet_roundtrip_preserves_nested_schema(tmp_path) -> None:
 def test_output_rejects_version_and_physical_schema_drift() -> None:
     with pytest.raises(ValueError, match="classifier schema version mismatch"):
         path_cascade_output_frame([{"classifier_schema_version": "legacy"}])
+    with pytest.raises(ValueError, match="unknown columns: genus_top8"):
+        path_cascade_output_frame([{"genus_top8": ["Papilio"]}])
+
+    null_version = path_cascade_output_frame([{}]).with_columns(
+        pl.lit(None, dtype=pl.String).alias("classifier_schema_version")
+    )
+    with pytest.raises(ValueError, match="classifier schema version mismatch"):
+        validate_path_cascade_output_frame(null_version)
 
     frame = path_cascade_output_frame([{}]).with_columns(
         pl.col("rank_beam_width").cast(pl.UInt16)
     )
     with pytest.raises(ValueError, match="physical schema mismatch"):
         validate_path_cascade_output_frame(frame)
+
+
+@pytest.mark.parametrize("trace_version", [None, "legacy-trace"])
+def test_output_rejects_missing_or_unsupported_pruning_trace_version(
+    trace_version: str | None,
+) -> None:
+    frame = path_cascade_output_frame([{}]).with_columns(
+        pl.lit(trace_version, dtype=pl.String).alias("pruning_trace_version")
+    )
+    with pytest.raises(ValueError, match="pruning trace version mismatch"):
+        validate_path_cascade_output_frame(frame)
+
+
+def test_output_rejects_misaligned_or_oversized_candidate_arrays() -> None:
+    misaligned = path_cascade_output_frame([{}]).with_columns(
+        pl.Series(
+            "species_top3_rerank_scores",
+            [[0.9]],
+            dtype=pl.List(pl.Float32),
+        )
+    )
+    with pytest.raises(ValueError, match="candidate arrays are invalid or misaligned"):
+        validate_path_cascade_output_frame(misaligned)
+
+    with pytest.raises(ValueError, match="candidate arrays are invalid or misaligned"):
+        path_cascade_output_frame(
+            [
+                {
+                    "family_top3": ["a", "b", "c", "d"],
+                    "family_top3_node_ids": ["a", "b", "c", "d"],
+                    "family_top3_scores": [0.4, 0.3, 0.2, 0.1],
+                }
+            ]
+        )

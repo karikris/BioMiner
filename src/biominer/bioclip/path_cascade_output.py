@@ -28,6 +28,56 @@ RANK_COUNT_DTYPE = pl.Struct({rank: pl.UInt32 for rank in CLASSIFICATION_RANKS})
 _INTERMEDIATE_RANK_PREFIXES = tuple(rank.casefold() for rank in CLASSIFICATION_RANKS[:-1])
 
 
+def _parallel_candidate_columns() -> tuple[tuple[tuple[str, ...], int], ...]:
+    groups: list[tuple[tuple[str, ...], int]] = []
+    for prefix in _INTERMEDIATE_RANK_PREFIXES:
+        groups.append(
+            (
+                (
+                    f"{prefix}_top3",
+                    f"{prefix}_top3_node_ids",
+                    f"{prefix}_top3_scores",
+                ),
+                3,
+            )
+        )
+    groups.extend(
+        (
+            (
+                (
+                    "species_top20",
+                    "species_top20_node_ids",
+                    "species_top20_accepted_taxon_keys",
+                    "species_top20_first_pass_scores",
+                ),
+                20,
+            ),
+            (
+                (
+                    "species_top5",
+                    "species_top5_node_ids",
+                    "species_top5_accepted_taxon_keys",
+                    "species_top5_rerank_scores",
+                ),
+                5,
+            ),
+            (
+                (
+                    "species_top3",
+                    "species_top3_node_ids",
+                    "species_top3_accepted_taxon_keys",
+                    "species_top3_rerank_scores",
+                ),
+                3,
+            ),
+        )
+    )
+    return tuple(groups)
+
+
+_PARALLEL_CANDIDATE_COLUMNS = _parallel_candidate_columns()
+
+
 def _rank_output_schema() -> dict[str, pl.DataType]:
     schema: dict[str, pl.DataType] = {}
     for prefix in _INTERMEDIATE_RANK_PREFIXES:
@@ -109,9 +159,42 @@ def validate_path_cascade_output_frame(frame: pl.DataFrame) -> pl.DataFrame:
         raise ValueError("path cascade output columns do not match the versioned schema")
     if dict(frame.schema) != PATH_CASCADE_OUTPUT_SCHEMA:
         raise ValueError("path cascade output physical schema mismatch")
-    versions = set(frame["classifier_schema_version"].drop_nulls().to_list())
-    if versions and versions != {PATH_CASCADE_OUTPUT_SCHEMA_VERSION}:
+    version_column = frame["classifier_schema_version"]
+    versions = set(version_column.drop_nulls().to_list())
+    if not frame.is_empty() and (
+        version_column.null_count()
+        or versions != {PATH_CASCADE_OUTPUT_SCHEMA_VERSION}
+    ):
         raise ValueError("path cascade output classifier schema version mismatch")
+    trace_version_column = frame["pruning_trace_version"]
+    trace_versions = set(trace_version_column.drop_nulls().to_list())
+    if not frame.is_empty() and (
+        trace_version_column.null_count()
+        or trace_versions != {PATH_CASCADE_PRUNING_TRACE_VERSION}
+    ):
+        raise ValueError("path cascade output pruning trace version mismatch")
+    candidate_checks: list[pl.Expr] = []
+    columns_by_check: dict[str, tuple[str, ...]] = {}
+    for index, (columns, limit) in enumerate(_PARALLEL_CANDIDATE_COLUMNS):
+        lengths = [pl.col(column).list.len() for column in columns]
+        check_name = f"candidate_group_{index}"
+        columns_by_check[check_name] = columns
+        candidate_checks.append(
+            pl.any_horizontal(
+                *[pl.col(column).is_null() for column in columns],
+                *[length != lengths[0] for length in lengths[1:]],
+                lengths[0] > limit,
+            )
+            .any()
+            .alias(check_name)
+        )
+    invalid_groups = frame.select(candidate_checks).row(0, named=True)
+    for check_name, invalid in invalid_groups.items():
+        if bool(invalid):
+            raise ValueError(
+                "path cascade output candidate arrays are invalid or misaligned: "
+                + ", ".join(columns_by_check[check_name])
+            )
     return frame.select(list(PATH_CASCADE_OUTPUT_SCHEMA))
 
 
@@ -400,6 +483,11 @@ def _pruning_trace_json(result: PathCascadeResult) -> str:
 
 
 def _normalize_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    unknown_columns = sorted(str(name) for name in row if name not in PATH_CASCADE_OUTPUT_SCHEMA)
+    if unknown_columns:
+        raise ValueError(
+            "path cascade output contains unknown columns: " + ", ".join(unknown_columns)
+        )
     provided_version = row.get("classifier_schema_version")
     if provided_version not in (None, "", PATH_CASCADE_OUTPUT_SCHEMA_VERSION):
         raise ValueError("path cascade output classifier schema version mismatch")

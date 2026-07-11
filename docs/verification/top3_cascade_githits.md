@@ -911,3 +911,117 @@ Pre-implementation solution IDs:
 
 `77cf4806-5805-4e4b-b866-6fb623606bcc`,
 `59c46397-efc0-48a6-b63e-5a7529e18947`.
+
+### Post-implementation verification — 2026-07-11
+
+A strict post-implementation `get_example` call for a versioned Polars
+classifier schema, fixed Struct counts, typed empty frames, deterministic JSON
+traces, and Zstandard round trips returned the exact GitHits error:
+
+```text
+You have reached the limit of 50 generated examples in a rolling 24-hour
+window. Please try again in about 67161 seconds.
+```
+
+It produced no solution ID, and none is claimed. GitHits package/source
+navigation remained available, so post-verification continued against the
+same immutable dependency releases behind the two successful strict Phase 5
+solutions rather than treating the generated-example quota as dependency API
+failure.
+
+Exact post reads:
+
+```text
+code_read(
+  pola-rs/polars@599a503a0997188a74750926a5cdaa47585cf8aa,
+  py-polars/src/polars/dataframe/frame.py,
+  4118:4205
+)
+code_read(
+  pola-rs/polars@599a503a0997188a74750926a5cdaa47585cf8aa,
+  py-polars/tests/unit/constructors/test_constructors.py,
+  1358:1430
+)
+code_read(
+  pola-rs/polars@599a503a0997188a74750926a5cdaa47585cf8aa,
+  py-polars/tests/unit/io/test_parquet.py,
+  115:140
+)
+code_read(
+  apache/arrow@31b4b6c0a0a7e7c117312d285541a21446675ec6,
+  python/pyarrow/tests/parquet/test_parquet_writer.py,
+  1:80
+)
+```
+
+The post reads reconfirmed the exact APIs now exercised by BioMiner:
+
+- Polars 1.41.2 declares native `DataFrame.write_parquet` with default
+  `compression="zstd"`, supports explicit compression levels, and uses
+  `use_pyarrow=False` by default;
+- its constructor tests build nullable `List(Struct(...))` data, nested inner
+  lists including empty lists, and an exact zero-row frame from the same
+  explicit schema;
+- its Parquet tests write/read list columns from buffers across native and
+  PyArrow engines and assert frame equality;
+- Arrow 24.0.0 imports `pyarrow.parquet as pq`, creates a writer from an exact
+  schema, writes repeated tables, closes it, and reads the result back.
+
+Implementation audit:
+
+- The post-audit found three contract holes: the physical-schema validator
+  dropped null classifier versions before its uniqueness check; row
+  normalisation silently discarded unknown legacy fields such as
+  `genus_top8`; and null or unsupported pruning-trace versions could pass.
+  Validation now rejects all three, with regressions alongside legacy-version
+  and physical-dtype drift cases.
+- `PATH_CASCADE_OUTPUT_SCHEMA_VERSION` establishes a new physical contract;
+  classification-v2 rows are not reinterpreted as it.
+- Important top-k names, reviewed node IDs, GBIF species keys, and raw scores
+  are aligned typed list columns. A single vectorised validation pass rejects
+  null, misaligned, or oversized candidate arrays. No non-species accepted-key
+  column exists in the new cascade schema.
+- Four fixed six-field Struct columns hold candidate, retained, and active-path
+  counts. Typed empty frames and reviewed skipped SUBTRIBE rows round-trip with
+  the exact schema under Zstandard.
+- Rank-stage top1 fields come only from the rank step. `selected_*` fields come
+  only from the reranked winning species path. A regression proves these can
+  legitimately differ.
+- Every screen stage stores the full sorted union IDs and raw scores, retained
+  IDs, pruned IDs, parents, counts, path counts, reviewed-skip count, and skip
+  reason. The compact deterministic trace contains six rank/first-pass steps
+  plus the distinct species rerank and contains no cumulative score.
+- Object evidence projection retains the new fields. Photo summaries expose
+  winning family and genus and compare accepted species keys before name
+  aliases when detecting multi-object disagreement.
+- Review and QA accept a reviewed missing SUBTRIBE, reject an unexplained one,
+  and no longer apply the invalid v2 rule that every global top20 species must
+  lie under the final winning family.
+- Evaluation uses family names for v3 rank/selected metrics instead of
+  comparing reviewed overlay IDs with GBIF family keys. Raw cosines are not
+  converted into a fake entropy diagnostic. The genus metric is top3, with a
+  temporary read fallback for historical top8 rows.
+
+Patterns rejected after comparison:
+
+- a durable `List(Struct)` trace whose evolution would force nested schema
+  migration; first-class arrays plus compact JSON are clearer here;
+- inferred schema for empty or skipped-rank output;
+- nullable list values where `[]` has a precise audit meaning;
+- overlay IDs in any GBIF accepted-key list;
+- fallback from missing v3 selected rank to rank-stage top1;
+- candidate-set probability assumptions for raw cosine scores;
+- diagonal merging or silent reinterpretation of historical Parquet parts.
+
+Repository verification:
+
+- focused Ruff over schema, classifier, object propagation, review, QA,
+  calibration, evaluation, and tests: passed;
+- broad focused pytest including cloud work and production skeleton:
+  `302 passed`;
+- final `.venv/bin/pytest -q`: `953 passed`.
+
+Post-implementation solution IDs used for the immutable-source comparison:
+
+`77cf4806-5805-4e4b-b866-6fb623606bcc`,
+`59c46397-efc0-48a6-b63e-5a7529e18947`.

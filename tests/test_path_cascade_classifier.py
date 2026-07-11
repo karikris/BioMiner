@@ -266,9 +266,15 @@ def test_family_rank_three_preserves_true_branch_but_rank_four_cannot_reenter() 
         scores = output[f"{prefix}_top3_scores"]
         assert len(names) == len(node_ids) == len(scores) <= 3
         overlay_node_ids.update(node_ids)
-    for prefix in ("species_top20", "species_top5", "species_top3"):
+    species_score_columns = {
+        "species_top20": "species_top20_first_pass_scores",
+        "species_top5": "species_top5_rerank_scores",
+        "species_top3": "species_top3_rerank_scores",
+    }
+    for prefix, score_column in species_score_columns.items():
         assert len(output[prefix]) == len(output[f"{prefix}_node_ids"])
         assert len(output[prefix]) == len(output[f"{prefix}_accepted_taxon_keys"])
+        assert len(output[prefix]) == len(output[score_column])
     accepted_keys = set(output["species_top20_accepted_taxon_keys"])
     assert all(key.startswith("gbif:") for key in accepted_keys)
     assert overlay_node_ids.isdisjoint(accepted_keys)
