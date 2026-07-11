@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 import json
 import os
 import sys
@@ -12,6 +13,8 @@ DEFAULT_DEVICE = "auto"
 VALID_DEVICES = {"auto", "cuda", "mps", "cpu"}
 DEFAULT_TEXT_FEATURE_BATCH_SIZE = 512
 TEXT_FEATURE_BATCH_SIZE_ENV = "BIOMINER_BIOCLIP_TEXT_FEATURE_BATCH_SIZE"
+DEFAULT_TEXT_FEATURE_CACHE_ENTRIES = 8
+TEXT_FEATURE_CACHE_ENTRIES_ENV = "BIOMINER_BIOCLIP_TEXT_FEATURE_CACHE_ENTRIES"
 
 
 def main() -> None:
@@ -258,7 +261,7 @@ class _LoadedBioClipModel:
         self.torch = torch
         self.device = device
         self.gpu_name = gpu_name
-        self._text_features_by_labels: dict[tuple[str, ...], object] = {}
+        self._text_features_by_labels: OrderedDict[tuple[str, ...], object] = OrderedDict()
 
     @classmethod
     def load(cls, *, model_name: str, checkpoint: str, device: str = DEFAULT_DEVICE) -> "_LoadedBioClipModel":
@@ -371,8 +374,9 @@ class _LoadedBioClipModel:
     def _text_features(self, labels: Sequence[str], *, cache: bool = True):
         label_key = tuple(labels)
         if cache:
-            cached = self._text_features_by_labels.get(label_key)
+            cached = self._text_features_by_labels.pop(label_key, None)
             if cached is not None:
+                self._text_features_by_labels[label_key] = cached
                 return cached
         label_list = list(labels)
         batch_size = text_feature_batch_size()
@@ -386,6 +390,8 @@ class _LoadedBioClipModel:
             text_features = self.torch.cat(batches, dim=0)
         if cache:
             self._text_features_by_labels[label_key] = text_features
+            while len(self._text_features_by_labels) > text_feature_cache_entries():
+                self._text_features_by_labels.popitem(last=False)
         return text_features
 
     def _encode_text_features(self, labels: Sequence[str]):
@@ -406,6 +412,19 @@ def text_feature_batch_size() -> int:
         raise ValueError(f"{TEXT_FEATURE_BATCH_SIZE_ENV} must be a positive integer") from exc
     if parsed <= 0:
         raise ValueError(f"{TEXT_FEATURE_BATCH_SIZE_ENV} must be a positive integer")
+    return parsed
+
+
+def text_feature_cache_entries() -> int:
+    raw_value = os.environ.get(TEXT_FEATURE_CACHE_ENTRIES_ENV)
+    if raw_value is None:
+        return DEFAULT_TEXT_FEATURE_CACHE_ENTRIES
+    try:
+        parsed = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{TEXT_FEATURE_CACHE_ENTRIES_ENV} must be a positive integer") from exc
+    if parsed <= 0:
+        raise ValueError(f"{TEXT_FEATURE_CACHE_ENTRIES_ENV} must be a positive integer")
     return parsed
 
 

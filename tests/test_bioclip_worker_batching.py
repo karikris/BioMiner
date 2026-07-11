@@ -104,6 +104,26 @@ def test_loaded_model_does_not_cache_one_off_text_embedding_batches(monkeypatch)
     assert fake_model.encoded_text_batch_lengths == [2, 1]
 
 
+def test_loaded_model_bounds_text_feature_cache_with_lru_eviction(monkeypatch) -> None:  # noqa: ANN001 - pytest fixture.
+    monkeypatch.setenv("BIOMINER_BIOCLIP_TEXT_FEATURE_CACHE_ENTRIES", "2")
+    fake_model = FakeModel()
+    loaded = bioclip_worker._LoadedBioClipModel(  # noqa: SLF001 - worker cache contract.
+        model=fake_model,
+        preprocess=lambda image: FakeTensor(f"preprocessed:{image.path}"),
+        tokenizer=FakeTokenizer(),
+        torch=FakeTorch(),
+        device="mps",
+        gpu_name="Apple MPS",
+    )
+
+    loaded._text_features(["one"])  # noqa: SLF001 - focused worker cache contract.
+    loaded._text_features(["two"])  # noqa: SLF001 - focused worker cache contract.
+    loaded._text_features(["one"])  # noqa: SLF001 - mark the first entry most-recently-used.
+    loaded._text_features(["three"])  # noqa: SLF001 - evicts the second entry.
+
+    assert list(loaded._text_features_by_labels) == [("one",), ("three",)]  # noqa: SLF001 - focused worker cache contract.
+
+
 class FakeTorch:
     def __init__(self) -> None:
         self.stacked_lengths: list[int] = []
