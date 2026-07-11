@@ -10,7 +10,7 @@ The production command is `biominer run`. It executes a resumable staged pipelin
 2. compile atomic Flickr query definitions;
 3. fetch metadata only;
 4. filter metadata and run YOLOE detection;
-5. classify eligible crops through `FAMILY → SUBFAMILY → TRIBE → GENUS → SPECIES`;
+5. classify eligible crops through `FAMILY → SUBFAMILY → TRIBE → SUBTRIBE → GENUS → SPECIES`;
 6. join evidence, assign review buckets, and optionally evaluate Flickr comments.
 
 The rolling vision worker is the only production visual path. It uses bounded queues, immutable Parquet parts, commit-ordered cleanup, and persistent model workers. Direct detect, screen, score, rolling-screen, and ablation commands have been removed.
@@ -25,14 +25,15 @@ The base registry contains accepted GBIF taxa and names. The classifier consumes
 Family:    Papilionidae
 Subfamily: Papilioninae
 Tribe:     Papilionini
+Subtribe:  [reviewed skip]
 Genus:     Papilio
 Species:   Papilio demoleus
 GBIF key:  1938069
 ```
 
-Every enabled node, edge, and species mapping records authority, release, citation, retrieval date, evidence, reviewer, and review date. Missing, conflicting, or unreviewed paths remain disabled. The current curated seed is intentionally narrow; unmapped accepted GBIF species are emitted as explicit QA gaps.
+Every enabled node, edge, and species mapping records authority, release, citation, retrieval date, evidence, reviewer, and review date. A missing SUBTRIBE is allowed only as an explicit reviewed `TRIBE → GENUS` skip; BioMiner does not invent a subtribe. Missing, conflicting, or unreviewed paths remain disabled. The current curated seed is intentionally narrow; unmapped accepted GBIF species are emitted as explicit QA gaps.
 
-Classification-v2 artifacts:
+Classification-v3 artifacts:
 
 ```text
 classification_sources.parquet
@@ -44,6 +45,21 @@ classification_prompt_labels.parquet
 classification_qa_findings.parquet
 classification_manifest.json
 ```
+
+Production uses one fixed `global_rank_top_k` beam of 3. At each rank from
+FAMILY through GENUS, it scores the deduplicated union of actual nodes in the
+surviving paths and keeps the global three by current-rank raw similarity. The
+three may share one parent; there is no per-parent quota or cumulative path
+score. Reviewed SUBTRIBE skips pass through without consuming a beam position.
+The surviving genus paths define the species universe, followed by a fixed
+species top 20, distinct-prompt rerank top 5, and reported top 3.
+
+Classification output separates rank-local `<rank>_top1` fields from
+`selected_<rank>` fields on the final species-winning path. It also persists
+`classification_fingerprint`, `hierarchy_fingerprint`, and
+`embedding_cache_fingerprint`. Hierarchical production requires a complete
+classification-v3 cache built for the active BioCLIP model and checkpoint;
+missing or mismatched caches fail closed.
 
 ## Installation
 
@@ -97,7 +113,7 @@ Inspect a production run without executing stages:
 
 ```bash
 uv run biominer --config config/biominer.local.example.toml run \
-  --taxon Papilionoidea \
+  --taxon Papilionidae \
   --rank family \
   --registry-dir data/registry/butterflies-v2 \
   --taxonomy-candidate-table data/registry/butterflies-v2 \
@@ -109,7 +125,9 @@ uv run biominer --config config/biominer.local.example.toml run \
   --dry-run
 ```
 
-Remove `--dry-run` only after storage, workstore, registry, taxonomy cache, model runtime, and API credentials pass validation.
+`--dry-run` resolves the scope and emits the run plan without executing stages;
+it does not load or validate classification-v3 artifacts or the embedding cache.
+Those inputs fail closed when the hierarchical vision stage initializes.
 
 ## Supported command surface
 
@@ -125,6 +143,7 @@ Developer benchmarks remain model-free where possible:
 ```bash
 uv run biominer dev vision benchmark-plumbing --records 1000 --output-dir reports/vision_benchmarks/plumbing
 uv run biominer dev vision benchmark-rolling-matrix --records 1000 --output-dir reports/vision_benchmarks/rolling
+uv run biominer dev vision benchmark-cascade --output-dir reports/vision_benchmarks/cascade
 ```
 
 ## Verification

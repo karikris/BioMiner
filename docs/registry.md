@@ -16,7 +16,7 @@ BioCLIP classification uses the ordered rank contract:
 FAMILY → SUBFAMILY → TRIBE → SUBTRIBE → GENUS → SPECIES
 ```
 
-GBIF does not reliably expose subfamily, tribe, and subtribe in the butterfly backbone. Those ranks therefore come from reviewed source records, never suffix inference or name guessing. SUBTRIBE is optional only through an explicit, sourced, reviewed `TRIBE → GENUS` rank-skip edge; it is never invented. The production source catalog is `config/taxonomy/papilionoidea_classification_v3.json`; v2 remains a historical fixture during migration.
+GBIF does not reliably expose subfamily, tribe, and subtribe in the butterfly backbone. Those ranks therefore come from reviewed source records, never suffix inference or name guessing. SUBTRIBE is optional only through an explicit, sourced, reviewed `TRIBE → GENUS` rank-skip edge; it is never invented. The production source catalog is `config/taxonomy/papilionoidea_classification_v3.json`.
 
 An enabled path requires:
 
@@ -29,6 +29,18 @@ An enabled path requires:
 - every mandatory rank (`FAMILY`, `SUBFAMILY`, `TRIBE`, `GENUS`, `SPECIES`) and either a sourced SUBTRIBE or a reviewed skip.
 
 Fatal findings block artifact promotion. Accepted species without a reviewed path remain in the GBIF registry but receive `unmapped_accepted_species` warnings and are unavailable to the hierarchical classifier.
+
+The classification manifest carries two deterministic identities:
+
+- `classification_fingerprint` covers the versioned sources, nodes, edges, GBIF mappings, leaf paths, and staged prompt labels;
+- `hierarchy_fingerprint` covers the rank order, nodes, edges, GBIF mappings, and leaf paths independently of prompt wording.
+
+The separately built text-embedding artifact carries
+`embedding_cache_fingerprint`. Its exact classification version, prompt
+version, hierarchy fingerprint, prompt-stage label set, model ID, model
+checkpoint, dimensions, normalized vectors, and self-fingerprint are validated
+before production scoring. A cache from another taxonomy, prompt set, model, or
+checkpoint is not accepted.
 
 ## Names and Flickr queries
 
