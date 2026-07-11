@@ -7,6 +7,7 @@ from typing import Any, Mapping, Protocol
 import polars as pl
 
 from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore, RANK_SCREEN_PROMPT_STAGE
+from biominer.registry.classification_v3 import CLASSIFICATION_RANKS, OPTIONAL_CLASSIFICATION_RANKS
 
 
 GLOBAL_RANK_TOP_K_BEAM_STRATEGY = "global_rank_top_k"
@@ -213,6 +214,141 @@ def raw_similarity_margin(scores: tuple[RankCandidateScore, ...]) -> float | Non
     return scores[0].raw_similarity - scores[1].raw_similarity if len(scores) > 1 else None
 
 
+def classify_path_cascade(
+    *,
+    item: dict[str, Any],
+    scorer: PathCascadeScorer,
+    taxonomy_store: PathTaxonomyStore,
+    rank_beam_width: int = DEFAULT_RANK_BEAM_WIDTH,
+    embedding_cache_fingerprint: str | None = None,
+) -> PathCascadeResult:
+    if rank_beam_width != DEFAULT_RANK_BEAM_WIDTH:
+        raise ValueError(f"rank_beam_width is fixed at {DEFAULT_RANK_BEAM_WIDTH}")
+    active_paths = taxonomy_store.enabled_paths()
+    if active_paths.is_empty():
+        raise PathCascadeClassificationError(
+            code="no_active_paths",
+            rank="FAMILY",
+            candidate_count=0,
+            active_path_count=0,
+            message="taxonomy store has no enabled classification paths",
+        )
+    rank_steps: list[RankStepResult] = []
+    fully_skipped_ranks: list[str] = []
+    for rank in INTERMEDIATE_CLASSIFICATION_RANKS:
+        active_before = active_paths.height
+        parent_node_ids = _parent_node_ids(active_paths, rank)
+        candidates = taxonomy_store.candidate_nodes_in_paths(active_paths, rank)
+        reviewed_skips = taxonomy_store.reviewed_skip_paths(active_paths, rank)
+        if candidates.is_empty():
+            if rank in OPTIONAL_CLASSIFICATION_RANKS:
+                active_hashes = set(active_paths["hierarchy_hash"].to_list())
+                skip_hashes = set(reviewed_skips["hierarchy_hash"].to_list())
+                if active_hashes and active_hashes == skip_hashes:
+                    fully_skipped_ranks.append(rank)
+                    rank_steps.append(
+                        RankStepResult(
+                            rank=rank,
+                            candidate_count=0,
+                            retained_count=0,
+                            active_path_count_before=active_before,
+                            active_path_count_after=active_before,
+                            top_candidates=(),
+                            top1_margin=None,
+                            parent_node_ids=parent_node_ids,
+                            skipped=True,
+                            skip_reason="all_active_paths_reviewed_rank_skip",
+                        )
+                    )
+                    continue
+                code = "incomplete_optional_rank_coverage"
+                message = "optional rank has neither asserted nodes nor reviewed skips for every active path"
+            else:
+                code = "no_rank_candidates"
+                message = "mandatory rank has no candidates in the active path union"
+            raise PathCascadeClassificationError(
+                code=code,
+                rank=rank,
+                candidate_count=0,
+                active_path_count=active_before,
+                message=message,
+            )
+        scores = score_rank_candidates(
+            item=item,
+            scorer=scorer,
+            taxonomy_store=taxonomy_store,
+            candidates=candidates,
+            prompt_stage=RANK_SCREEN_PROMPT_STAGE,
+        )
+        if not scores:
+            raise PathCascadeClassificationError(
+                code="unscorable_rank_candidates",
+                rank=rank,
+                candidate_count=candidates.height,
+                active_path_count=active_before,
+                message="rank candidates produced no raw similarity scores",
+            )
+        selected = scores[:rank_beam_width]
+        active_paths = taxonomy_store.filter_paths_by_rank_nodes(
+            active_paths,
+            rank,
+            tuple(score.node_id for score in selected),
+            carry_reviewed_skip_paths=True,
+        )
+        if active_paths.is_empty():
+            raise PathCascadeClassificationError(
+                code="no_active_paths_after_pruning",
+                rank=rank,
+                candidate_count=len(scores),
+                active_path_count=0,
+                message="global rank pruning removed every active path",
+            )
+        rank_steps.append(
+            RankStepResult(
+                rank=rank,
+                candidate_count=len(scores),
+                retained_count=len(selected),
+                active_path_count_before=active_before,
+                active_path_count_after=active_paths.height,
+                top_candidates=selected,
+                top1_margin=raw_similarity_margin(scores),
+                parent_node_ids=parent_node_ids,
+                skipped=False,
+                skip_reason=None,
+            )
+        )
+    return PathCascadeResult(
+        classification_version=taxonomy_store.classification_version,
+        prompt_version=taxonomy_store.prompt_version,
+        taxonomy_fingerprint=taxonomy_store.hierarchy_fingerprint,
+        classification_fingerprint=taxonomy_store.classification_fingerprint,
+        embedding_cache_fingerprint=embedding_cache_fingerprint,
+        beam_strategy=GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
+        rank_beam_width=rank_beam_width,
+        rank_steps=tuple(rank_steps),
+        species_top20=(),
+        species_top5=(),
+        species_top3=(),
+        species_top1=None,
+        final_winning_path=(),
+        skipped_ranks=tuple(fully_skipped_ranks),
+    )
+
+
+def _parent_node_ids(active_paths: pl.DataFrame, rank: str) -> tuple[str, ...]:
+    rank_index = CLASSIFICATION_RANKS.index(rank)
+    if rank_index == 0:
+        return ()
+    parent_ids: set[str] = set()
+    for path in active_paths.iter_rows(named=True):
+        for parent_rank in reversed(CLASSIFICATION_RANKS[:rank_index]):
+            node_id = str(path.get(f"{parent_rank.casefold()}_node_id") or "")
+            if node_id:
+                parent_ids.add(node_id)
+                break
+    return tuple(sorted(parent_ids))
+
+
 __all__ = [
     "DEFAULT_RANK_BEAM_WIDTH",
     "DEFAULT_SPECIES_FIRST_PASS_TOP_K",
@@ -223,6 +359,7 @@ __all__ = [
     "PathCascadeScorer",
     "RankCandidateScore",
     "RankStepResult",
+    "classify_path_cascade",
     "raw_similarity_margin",
     "score_rank_candidates",
 ]
