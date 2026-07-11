@@ -68,7 +68,8 @@ Constraints adopted:
 
 - Use explicit `pl.List(pl.String)` fields and `[]` defaults. Never let a
   generic string default populate a nested column.
-- Sort canonical rows and every identity-bearing list before serialisation.
+- Sort canonical rows and normalize identity-bearing lists to their semantic
+  order before serialisation. Ordered rank paths are never lexically sorted.
 - Use canonical JSON with sorted keys and SHA-256 for hierarchy and artifact
   fingerprints.
 - Validate node existence, self-loops, cycles and enabled single-parent
@@ -109,3 +110,107 @@ Pre-implementation solution IDs:
 `a04caaf5-9c66-4bcf-9e7b-8d08dbe3a062`,
 `b6ea6462-b3ec-441b-8a56-39bc29c59fb8`.
 
+### Post-implementation verification — 2026-07-11
+
+The post-implementation queries targeted the operations actually present in
+`classification_v3.py`; all example searches used strict licence mode.
+
+Directed-graph call:
+
+```text
+get_example(
+  language="Python",
+  license_mode="strict",
+  format="json",
+  query="Python deterministic directed graph validation implementation using depth-first search with active recursion path for cycle detection, sorted node and child traversal, and enforcing that every enabled child has at most one enabled parent"
+)
+```
+
+Solution ID: `b4cedb7f-90a3-4a70-a5f9-889932e7b78a`.
+Immutable sources:
+
+- `abhisek2004/45-Days-Python-Development-Challenge@e8b37e63eca01feba74c10d6a2e006341178e113`
+  (MIT);
+- `cy-suite/InvokeAI@6b18f270dda57e74ff3d9640d9caf131d20f0c3d`
+  (Apache-2.0).
+
+Adopted: separate visited/active DFS state, sorted roots and children, parent
+identity deduplication, and enabled-endpoint filtering for the single-parent
+invariant. Reviewed rank-skip edges remain real graph edges. Rejected:
+dictionary/set iteration as output order, excluding skip edges, and treating
+duplicate copies of one edge as distinct parents.
+
+Canonical-fingerprint call:
+
+```text
+get_example(
+  language="Python",
+  license_mode="strict",
+  format="json",
+  query="Python deterministic content fingerprint for a list of record dictionaries: normalize nested dictionaries and lists, sort records independently of input row order, serialize canonical JSON using sorted keys and compact separators, then SHA-256 digest"
+)
+```
+
+Solution ID: `e75c1d38-3897-418b-800a-5fdeefc6c825`.
+Immutable sources:
+
+- `ai-blaise/nmoe@f8a28d78321e1aae8f8e8bb0a799351624b2b92e`
+  (Apache-2.0);
+- `Noumena-Network/nmoe@970a146433f9c649d09ddab36f675974f53dd905`
+  (Apache-2.0).
+
+Adopted: recursive dictionary canonicalisation, explicit row sorting,
+`sort_keys=True`, compact JSON separators, UTF-8 and SHA-256. Rejected: Python
+`hash()`, Polars `hash_rows()`, MD5, and sorting semantically ordered nested
+lists. The implemented tests prove row-order invariance; changes to ordered
+`rank_path`, `rank_path_node_ids`, or `skipped_ranks` remain identity changes.
+
+Pinned Polars source verification targeted repository
+`pola-rs/polars` at tag `py-1.41.2`, immutable commit
+`599a503a0997188a74750926a5cdaa47585cf8aa`. GitHits reported exact-current
+resolution, and `code_read(LICENSE, 1:30)` confirmed MIT. Exact calls and
+findings:
+
+- `code_grep("class List", path_prefix="py-polars/src/polars/datatypes")`
+  followed by `code_read(classes.py, 1050:1115)` confirmed that `List` is the
+  variable-length nested type whose constructor accepts an inner datatype.
+  This verifies `pl.List(pl.String)`. Indexed content hash:
+  `ecd0fa8bae9f3cca968dbafa40203c265cbfe1630e5d7d2025ff33f1b0552489`.
+- `code_grep("strict: bool = True", path_prefix="py-polars/src/polars/dataframe")`
+  followed by `code_read(frame.py, 365:445)` confirmed explicit `schema` and
+  `strict` constructor parameters and their forwarding for sequence input.
+  Indexed content hash:
+  `c6b96fe46fff30450f01c3f6c725aefab32ab0e4416024e43efc2b22543cd9aa`.
+- `code_grep("def group_by(", path_prefix="py-polars/src/polars/dataframe")`,
+  `code_read(frame.py, 7120:7200)`, `code_grep("def len(",
+  path_prefix="py-polars/src/polars/dataframe/group_by.py")`, and
+  `code_read(group_by.py, 572:630)` confirmed list-valued grouping keys,
+  `GroupBy.len()` naming its count column `len`, and the lack of output-order
+  guarantees when `maintain_order=False`. GroupBy content hash:
+  `7518b84acca31ae537913d41e9a99f036d92195c42da5d2de0fc1d00b5ee4d4f`.
+
+Implementation comparison:
+
+- `_typed_frame` supplies exact schemas and type-correct list defaults. Its
+  deliberate `strict=False` coercion is bounded by normalization and strict
+  cross-table QA rather than trusted as source validation.
+- `_append_duplicate_findings` uses the verified
+  `group_by(...).len().filter(pl.col("len") > 1)` API and explicitly sorts
+  findings afterward; it does not pay for or depend on `maintain_order=True`.
+- `_first_cycle` sorts roots and children, while `_validate_edges` uses sets
+  only for membership/deduplication and sorts them before persistence.
+- `_canonical_rows` preserves within-row semantic list order but sorts records
+  independently of source or DataFrame row order.
+
+Repository verification:
+
+- `uv run ruff check src/biominer/registry tests/test_registry_classification_v3.py`:
+  passed;
+- `.venv/bin/pytest -q tests/test_registry_classification_v3.py`:
+  `18 passed`;
+- `.venv/bin/pytest -q`: `884 passed`.
+
+Post-implementation solution IDs:
+
+`b4cedb7f-90a3-4a70-a5f9-889932e7b78a`,
+`e75c1d38-3897-418b-800a-5fdeefc6c825`.
