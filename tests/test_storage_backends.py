@@ -10,7 +10,7 @@ import pytest
 import biominer.storage.s3 as s3_module
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.local import LocalStorageBackend
-from biominer.storage.parquet import write_parquet_part
+from biominer.storage.parquet import write_parquet_batches, write_parquet_part
 from biominer.storage.paths import (
     build_evidence_shard_uri,
     build_raw_flickr_response_uri,
@@ -89,6 +89,27 @@ def test_local_storage_writes_parquet_batches(tmp_path) -> None:
     assert storage.read_parquet(target).to_dicts() == [
         {"photo_id": "1", "score": 0.7},
         {"photo_id": "2", "score": 0.4},
+    ]
+
+
+def test_write_parquet_batches_casts_each_part_to_the_explicit_schema(tmp_path) -> None:
+    target = tmp_path / "parts.parquet"
+    schema = {"label": pl.String, "bbox": pl.List(pl.Float64)}
+
+    write_parquet_batches(
+        (
+            pl.DataFrame({"label": ["butterfly"], "bbox": [[0.0, 1.0]]}),
+            pl.DataFrame({"label": [None], "bbox": [None]}),
+        ),
+        target,
+        schema=schema,
+    )
+
+    frame = pl.read_parquet(target)
+    assert frame.schema == schema
+    assert frame.to_dicts() == [
+        {"label": "butterfly", "bbox": [0.0, 1.0]},
+        {"label": None, "bbox": None},
     ]
 
 

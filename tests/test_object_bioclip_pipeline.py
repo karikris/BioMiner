@@ -927,15 +927,15 @@ def test_screen_object_detections_keeps_materialized_detector_crops_after_parque
 
     import biominer.bioclip.object_runner as object_runner_module
 
-    original_write_parquet = object_runner_module.write_parquet
+    original_write_parquet_batches = object_runner_module.write_parquet_batches
 
-    def failing_final_write(frame, path, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors write_parquet.
+    def failing_final_write(batches, path, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors batch writer.
         target = Path(path)
         if target.name == "object_scores.parquet":
             raise RuntimeError("parquet commit failed")
-        return original_write_parquet(frame, target, **kwargs)
+        return original_write_parquet_batches(batches, target, **kwargs)
 
-    monkeypatch.setattr(object_runner_module, "write_parquet", failing_final_write)
+    monkeypatch.setattr(object_runner_module, "write_parquet_batches", failing_final_write)
     crop_root = tmp_path / "crops"
     crop_scorer = EphemeralCropBioClipScorer(
         scorer=PathBatchScorer(),

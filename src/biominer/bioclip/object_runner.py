@@ -39,7 +39,7 @@ from biominer.detection.segmentation import (
     detector_masked_crop_bytes,
 )
 from biominer.species.context import SpeciesContext
-from biominer.storage.parquet import write_parquet
+from biominer.storage.parquet import write_parquet, write_parquet_batches
 from biominer.vision.gates import BioClipGatePolicy, bioclip_score_input_decision
 from biominer.vision.score_inputs import score_item_gate_fields, visual_input_id_for
 
@@ -958,8 +958,12 @@ def screen_object_detections(
         flush_score_items()
         if output is not None and batch_dir is not None:
             _flush_score_row_buffer(row_buffer=row_buffer, batch_paths=batch_paths, batch_dir=batch_dir)
-            frame = _read_score_batches(batch_paths)
-            write_parquet(frame, output)
+            write_parquet_batches(
+                (pl.read_parquet(path) for path in batch_paths),
+                output,
+                schema=OBJECT_SCORE_OUTPUT_SCHEMA,
+            )
+            frame = _ensure_columns(pl.read_parquet(output), OBJECT_SCORE_OUTPUT_SCHEMA)
         else:
             frame = _ensure_columns(pl.DataFrame(rows), OBJECT_SCORE_OUTPUT_SCHEMA) if rows else empty_object_score_frame()
         result = ObjectScreenResult(
@@ -1074,13 +1078,6 @@ def _flush_score_row_buffer(*, row_buffer: list[dict[str, Any]], batch_paths: li
     write_parquet(pl.DataFrame(row_buffer), batch_path)
     batch_paths.append(batch_path)
     row_buffer.clear()
-
-
-def _read_score_batches(batch_paths: list[Path]) -> pl.DataFrame:
-    if not batch_paths:
-        return empty_object_score_frame()
-    frames = [pl.read_parquet(path) for path in batch_paths]
-    return _ensure_columns(pl.concat(frames, how="diagonal_relaxed"), OBJECT_SCORE_OUTPUT_SCHEMA)
 
 
 def empty_object_score_frame() -> pl.DataFrame:

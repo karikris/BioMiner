@@ -55,6 +55,7 @@ def write_parquet_batches(
     *,
     compression: str | None = DEFAULT_PARQUET_COMPRESSION,
     overwrite: bool = True,
+    schema: dict[str, pl.DataType] | None = None,
 ) -> Path:
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -66,6 +67,8 @@ def write_parquet_batches(
     try:
         with ExitStack() as stack:
             for frame in batches:
+                if schema is not None:
+                    frame = _frame_with_schema(frame, schema)
                 if frame.is_empty():
                     continue
                 table = frame.to_arrow()
@@ -80,13 +83,16 @@ def write_parquet_batches(
                 writer.close()
                 writer = None
         if not wrote_any:
-            _write_frame(pl.DataFrame(), tmp, compression=compression)
+            _write_frame(pl.DataFrame(schema=schema or {}), tmp, compression=compression)
         if not overwrite and output.exists():
             raise FileExistsError(output)
         tmp.replace(output)
     finally:
         if writer is not None:
-            writer.close()
+            try:
+                writer.close()
+            except Exception:  # noqa: BLE001 - preserve the original write failure.
+                pass
         tmp.unlink(missing_ok=True)
     return output
 
@@ -124,6 +130,13 @@ def _write_frame(frame: pl.DataFrame, path: Path, *, compression: str | None) ->
         frame.write_parquet(path)
         return
     frame.write_parquet(path, compression=compression)
+
+
+def _frame_with_schema(frame: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.DataFrame:
+    missing = [name for name in schema if name not in frame.columns]
+    if missing:
+        frame = frame.with_columns([pl.lit(None, dtype=schema[name]).alias(name) for name in missing])
+    return frame.select(list(schema)).cast(schema)
 
 
 def _temporary_output_path(output: Path) -> Path:

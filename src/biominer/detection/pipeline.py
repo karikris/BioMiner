@@ -14,8 +14,8 @@ import polars as pl
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage, ObjectDetector
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, detection_is_bioclip_eligible
-from biominer.detection.schema import build_detection_rows, detection_id_for, empty_detection_frame
-from biominer.storage.parquet import write_parquet
+from biominer.detection.schema import DETECTION_OUTPUT_SCHEMA, build_detection_rows, detection_id_for, empty_detection_frame
+from biominer.storage.parquet import write_parquet, write_parquet_batches
 
 
 ImageLoader = Callable[[dict[str, Any]], DecodedImage]
@@ -169,8 +169,12 @@ def run_detection_pipeline(
                 parquet_batch_rows=runtime.parquet_batch_rows,
             )
         _flush_detection_row_buffer(row_buffer=row_buffer, batch_paths=batch_paths, batch_dir=batch_dir)
-        frame = _read_detection_batches(batch_paths)
-        output = write_parquet(frame, output_target)
+        output = write_parquet_batches(
+            (pl.read_parquet(path) for path in batch_paths),
+            output_target,
+            schema=DETECTION_OUTPUT_SCHEMA,
+        )
+        frame = pl.read_parquet(output)
         return DetectionPipelineResult(
             frame=frame,
             output_path=output,
@@ -230,13 +234,6 @@ def _flush_detection_row_buffer(*, row_buffer: list[dict[str, Any]], batch_paths
     write_parquet(pl.DataFrame(row_buffer), batch_path)
     batch_paths.append(batch_path)
     row_buffer.clear()
-
-
-def _read_detection_batches(batch_paths: list[Path]) -> pl.DataFrame:
-    if not batch_paths:
-        return empty_detection_frame()
-    frames = [pl.read_parquet(path) for path in batch_paths]
-    return pl.concat(frames, how="diagonal_relaxed")
 
 
 def _load_images_bounded(
