@@ -16,6 +16,7 @@ from biominer.registry.classification_v3 import (
     GBIF_MAPPING_SCHEMA,
     LEAF_PATH_SCHEMA,
     NODE_SCHEMA,
+    OPTIONAL_CLASSIFICATION_RANKS,
     PROMPT_LABEL_SCHEMA,
     QA_FINDING_SCHEMA,
     SOURCE_SCHEMA,
@@ -120,14 +121,42 @@ class PathTaxonomyStore:
         active_paths: pl.DataFrame,
         rank: str,
         selected_node_ids: Sequence[str],
+        *,
+        carry_reviewed_skip_paths: bool = False,
     ) -> pl.DataFrame:
         normalized_rank = _rank(rank)
         paths = _active_paths(active_paths)
         selected_ids = _node_ids(selected_node_ids)
-        if not selected_ids:
+        selected_paths = (
+            paths.filter(pl.col(f"{normalized_rank.casefold()}_node_id").is_in(selected_ids))
+            if selected_ids
+            else pl.DataFrame(schema=LEAF_PATH_SCHEMA)
+        )
+        if not carry_reviewed_skip_paths:
+            return _deduplicate_paths(selected_paths)
+        skip_paths = self.reviewed_skip_paths(paths, normalized_rank)
+        if selected_paths.is_empty() and skip_paths.is_empty():
+            return pl.DataFrame(schema=LEAF_PATH_SCHEMA)
+        return _deduplicate_paths(pl.concat([selected_paths, skip_paths]))
+
+    def paths_with_asserted_rank(self, active_paths: pl.DataFrame, rank: str) -> pl.DataFrame:
+        normalized_rank = _rank(rank)
+        paths = _active_paths(active_paths)
+        return _deduplicate_paths(
+            paths.filter(pl.col(f"{normalized_rank.casefold()}_node_id") != "")
+        )
+
+    def reviewed_skip_paths(self, active_paths: pl.DataFrame, rank: str) -> pl.DataFrame:
+        normalized_rank = _rank(rank)
+        paths = _active_paths(active_paths)
+        if normalized_rank not in OPTIONAL_CLASSIFICATION_RANKS:
             return pl.DataFrame(schema=LEAF_PATH_SCHEMA)
         return _deduplicate_paths(
-            paths.filter(pl.col(f"{normalized_rank.casefold()}_node_id").is_in(selected_ids))
+            paths.filter(
+                (pl.col(f"{normalized_rank.casefold()}_node_id") == "")
+                & pl.col("skipped_ranks").list.contains(normalized_rank)
+                & (pl.col("path_completeness") == "reviewed_optional_skip")
+            )
         )
 
     def species_nodes_in_paths(self, active_paths: pl.DataFrame) -> pl.DataFrame:
