@@ -8,6 +8,13 @@ import polars as pl
 import pytest
 
 import biominer.run.orchestrator as run_orchestrator_module
+from biominer.bioclip.cascade_contract import (
+    DEFAULT_RANK_BEAM_WIDTH,
+    DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    DEFAULT_SPECIES_REPORT_TOP_K,
+    DEFAULT_SPECIES_RERANK_TOP_K,
+    GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
+)
 from biominer.bioclip.object_runner import PRIMARY_VISUAL_CLASSIFIER
 from biominer.bioclip.classification_modes import (
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
@@ -157,9 +164,12 @@ def test_run_paths_and_dry_run_manifest(tmp_path) -> None:
     assert manifest.model_configs["primary_visual_classifier"] == PRIMARY_VISUAL_CLASSIFIER
     assert manifest.model_configs["visual_modes"] == ["detector_crop"]
     assert manifest.model_configs["classification_mode"] == TARGET_SCOPE_OBJECT_SCREENING
-    assert manifest.model_configs["family_top_k"] == 3
+    assert manifest.model_configs["beam_strategy"] == GLOBAL_RANK_TOP_K_BEAM_STRATEGY
+    assert manifest.model_configs["rank_beam_width"] == DEFAULT_RANK_BEAM_WIDTH
     assert manifest.model_configs["species_first_pass_top_k"] == 20
     assert manifest.model_configs["species_rerank_top_k"] == 5
+    assert manifest.model_configs["species_report_top_k"] == 3
+    assert "family_top_k" not in manifest.model_configs
     assert manifest.query_counts == {"compiled_definitions": 0, "enqueued_work_items": 0}
     assert manifest.detection_counts == {"images_seen": 0, "detections": 0, "crops_created": 0}
     assert manifest.bioclip_counts == {"objects_scored": 0, "whole_images_scored": 0, "segmentation_crops_scored": 0}
@@ -218,9 +228,6 @@ def test_production_run_plan_records_hierarchical_classification_config_for_dry_
         dry_run=True,
         classification_mode="hierarchical",
         taxonomy_candidate_table="s3://biominer/registry/current",
-        family_top_k=4,
-        species_first_pass_top_k=25,
-        species_rerank_top_k=7,
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
 
@@ -228,9 +235,19 @@ def test_production_run_plan_records_hierarchical_classification_config_for_dry_
     assert plan.to_dict()["request"]["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
     assert plan.to_dict()["request"]["taxonomy_candidate_table"] == "s3://biominer/registry/current"
     assert plan.manifest.model_configs["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-    assert plan.manifest.model_configs["family_top_k"] == 4
-    assert plan.manifest.model_configs["species_first_pass_top_k"] == 25
-    assert plan.manifest.model_configs["species_rerank_top_k"] == 7
+    request_config = plan.to_dict()["request"]
+    assert request_config["beam_strategy"] == GLOBAL_RANK_TOP_K_BEAM_STRATEGY
+    assert request_config["rank_beam_width"] == DEFAULT_RANK_BEAM_WIDTH
+    assert request_config["species_first_pass_top_k"] == DEFAULT_SPECIES_FIRST_PASS_TOP_K
+    assert request_config["species_rerank_top_k"] == DEFAULT_SPECIES_RERANK_TOP_K
+    assert request_config["species_report_top_k"] == DEFAULT_SPECIES_REPORT_TOP_K
+    assert "family_top_k" not in request_config
+    assert plan.manifest.model_configs["beam_strategy"] == GLOBAL_RANK_TOP_K_BEAM_STRATEGY
+    assert plan.manifest.model_configs["rank_beam_width"] == DEFAULT_RANK_BEAM_WIDTH
+    assert plan.manifest.model_configs["species_first_pass_top_k"] == DEFAULT_SPECIES_FIRST_PASS_TOP_K
+    assert plan.manifest.model_configs["species_rerank_top_k"] == DEFAULT_SPECIES_RERANK_TOP_K
+    assert plan.manifest.model_configs["species_report_top_k"] == DEFAULT_SPECIES_REPORT_TOP_K
+    assert "family_top_k" not in plan.manifest.model_configs
 
 
 def test_production_run_hierarchical_dry_run_skips_score_stage_with_plan_metadata(tmp_path) -> None:
@@ -303,15 +320,33 @@ def test_production_run_hierarchical_score_stage_validates_table_then_requires_s
     assert plan.manifest.stages[0].metrics["taxonomy_species_candidate_count"] == 4
 
 
-def test_production_run_request_validates_visual_classification_top_k() -> None:
-    with pytest.raises(ValueError, match="family_top_k must be positive"):
-        ProductionRunRequest(taxon="Danaus plexippus", family_top_k=0)
-    with pytest.raises(ValueError, match="species_first_pass_top_k must be positive"):
-        ProductionRunRequest(taxon="Danaus plexippus", species_first_pass_top_k=0)
-    with pytest.raises(ValueError, match="species_rerank_top_k must be positive"):
-        ProductionRunRequest(taxon="Danaus plexippus", species_rerank_top_k=0)
-    with pytest.raises(ValueError, match="species_rerank_top_k must be <= species_first_pass_top_k"):
-        ProductionRunRequest(taxon="Danaus plexippus", species_first_pass_top_k=3, species_rerank_top_k=4)
+@pytest.mark.parametrize(
+    ("override", "expected_field"),
+    [
+        ({"beam_strategy": "per_parent_top_k"}, "beam_strategy"),
+        ({"rank_beam_width": 4}, "rank_beam_width"),
+        ({"species_first_pass_top_k": 19}, "species_first_pass_top_k"),
+        ({"species_rerank_top_k": 4}, "species_rerank_top_k"),
+        ({"species_report_top_k": 2}, "species_report_top_k"),
+    ],
+)
+def test_production_run_request_rejects_non_production_cascade_contract(
+    override: dict[str, object],
+    expected_field: str,
+) -> None:
+    with pytest.raises(ValueError, match=expected_field):
+        ProductionRunRequest(taxon="Danaus plexippus", **override)  # type: ignore[arg-type]
+
+
+def test_production_run_request_has_one_fixed_cascade_contract() -> None:
+    request = ProductionRunRequest(taxon="Danaus plexippus")
+
+    assert request.beam_strategy == GLOBAL_RANK_TOP_K_BEAM_STRATEGY
+    assert request.rank_beam_width == DEFAULT_RANK_BEAM_WIDTH
+    assert request.species_first_pass_top_k == DEFAULT_SPECIES_FIRST_PASS_TOP_K
+    assert request.species_rerank_top_k == DEFAULT_SPECIES_RERANK_TOP_K
+    assert request.species_report_top_k == DEFAULT_SPECIES_REPORT_TOP_K
+    assert not hasattr(request, "family_top_k")
 
 
 def test_run_artifact_uris_are_s3_safe_and_species_scoped() -> None:
@@ -1076,8 +1111,6 @@ def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(tmp_path
         classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
         taxonomy_candidate_table=str(registry),
         stages=(RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP, RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE),
-        species_first_pass_top_k=20,
-        species_rerank_top_k=5,
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
     _write_hierarchical_source_records(plan.paths)
@@ -1985,7 +2018,7 @@ def test_orchestrator_reuses_registered_cloud_bioclip_part(tmp_path) -> None:
         model_checkpoint=scorer.model_checkpoint,
         candidate_set_id=candidate_set.candidate_set_id,
         classification_mode=request.classification_mode,
-        family_top_k=request.family_top_k,
+        family_top_k=request.rank_beam_width,
         species_first_pass_top_k=request.species_first_pass_top_k,
         species_rerank_top_k=request.species_rerank_top_k,
     )

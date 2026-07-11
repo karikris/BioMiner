@@ -311,9 +311,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     production_run.add_argument("--taxonomy-candidate-table")
     production_run.add_argument("--taxonomy-text-embedding-cache")
-    production_run.add_argument("--family-top-k", type=int, default=DEFAULT_FAMILY_TOP_K)
-    production_run.add_argument("--species-first-pass-top-k", type=int, default=DEFAULT_SPECIES_FIRST_PASS_TOP_K)
-    production_run.add_argument("--species-rerank-top-k", type=int, default=DEFAULT_SPECIES_RERANK_TOP_K)
     production_run.add_argument("--crop-padding-ratio", type=float)
     production_run.add_argument("--parquet-compression")
     production_run.add_argument("--delete-images-after-commit", action=argparse.BooleanOptionalAction, default=None)
@@ -1164,9 +1161,6 @@ def _run_production_command(args: argparse.Namespace) -> int:
             classification_mode=args.classification_mode,
             taxonomy_candidate_table=args.taxonomy_candidate_table,
             taxonomy_text_embedding_cache=args.taxonomy_text_embedding_cache,
-            family_top_k=args.family_top_k,
-            species_first_pass_top_k=args.species_first_pass_top_k,
-            species_rerank_top_k=args.species_rerank_top_k,
             worker_id="local" if allow_local and args.dry_run else config.runtime.worker_id or ("local" if allow_local else ""),
             stages=stages,
             dry_run=args.dry_run,

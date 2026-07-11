@@ -296,7 +296,7 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
         _production_vision_settings_from_args(invalid)
 
 
-def test_run_cli_parses_classification_mode_and_top_k_controls() -> None:
+def test_run_cli_parses_classification_mode_with_fixed_cascade_contract() -> None:
     parser = build_parser()
     args = parser.parse_args(
         [
@@ -311,20 +311,17 @@ def test_run_cli_parses_classification_mode_and_top_k_controls() -> None:
             "hierarchical",
             "--taxonomy-candidate-table",
             "s3://biominer/biominer/registry/current",
-            "--family-top-k",
-            "4",
-            "--species-first-pass-top-k",
-            "25",
-            "--species-rerank-top-k",
-            "7",
         ]
     )
 
     assert args.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
     assert args.taxonomy_candidate_table.endswith("registry/current")
-    assert args.family_top_k == 4
-    assert args.species_first_pass_top_k == 25
-    assert args.species_rerank_top_k == 7
+    assert not hasattr(args, "family_top_k")
+    assert not hasattr(args, "beam_strategy")
+    assert not hasattr(args, "rank_beam_width")
+    assert not hasattr(args, "species_first_pass_top_k")
+    assert not hasattr(args, "species_rerank_top_k")
+    assert not hasattr(args, "species_report_top_k")
 
     default_args = parser.parse_args(
         [
@@ -339,9 +336,36 @@ def test_run_cli_parses_classification_mode_and_top_k_controls() -> None:
     )
 
     assert default_args.classification_mode == TARGET_SCOPE_OBJECT_SCREENING
-    assert default_args.family_top_k == 3
-    assert default_args.species_first_pass_top_k == 20
-    assert default_args.species_rerank_top_k == 5
+
+
+@pytest.mark.parametrize(
+    "removed_option",
+    (
+        "--family-top-k",
+        "--beam-strategy",
+        "--rank-beam-width",
+        "--species-first-pass-top-k",
+        "--species-rerank-top-k",
+        "--species-report-top-k",
+    ),
+)
+def test_run_cli_rejects_removed_production_width_overrides(removed_option: str) -> None:
+    parser = build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "run",
+                "--taxon",
+                "Papilio demoleus",
+                "--registry-dir",
+                "s3://biominer/biominer/registry/current",
+                "--output-prefix",
+                "s3://biominer/biominer/runs/papilio_demoleus",
+                removed_option,
+                "4",
+            ]
+        )
 
 
 def test_registry_build_parses_regional_and_static_source_options() -> None:

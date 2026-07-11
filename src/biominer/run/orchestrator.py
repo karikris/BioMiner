@@ -7,11 +7,16 @@ import os
 from pathlib import Path
 from typing import Any
 
+from biominer.bioclip.cascade_contract import (
+    DEFAULT_RANK_BEAM_WIDTH,
+    DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    DEFAULT_SPECIES_REPORT_TOP_K,
+    DEFAULT_SPECIES_RERANK_TOP_K,
+    GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
+    validate_production_cascade_settings,
+)
 from biominer.bioclip.classification_modes import (
     DEFAULT_CLASSIFICATION_MODE,
-    DEFAULT_FAMILY_TOP_K,
-    DEFAULT_SPECIES_FIRST_PASS_TOP_K,
-    DEFAULT_SPECIES_RERANK_TOP_K,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     ClassificationMode,
     normalize_classification_mode,
@@ -100,9 +105,11 @@ class ProductionRunRequest:
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE
     taxonomy_candidate_table: str | Path | None = None
     taxonomy_text_embedding_cache: str | Path | None = None
-    family_top_k: int = DEFAULT_FAMILY_TOP_K
+    beam_strategy: str = GLOBAL_RANK_TOP_K_BEAM_STRATEGY
+    rank_beam_width: int = DEFAULT_RANK_BEAM_WIDTH
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K
+    species_report_top_k: int = DEFAULT_SPECIES_REPORT_TOP_K
     worker_id: str = "local"
     stages: tuple[RunStage, ...] = DEFAULT_PRODUCTION_STAGES
     dry_run: bool = False
@@ -111,13 +118,25 @@ class ProductionRunRequest:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "classification_mode", normalize_classification_mode(self.classification_mode))
-        for field_name in ("family_top_k", "species_first_pass_top_k", "species_rerank_top_k"):
-            value = int(getattr(self, field_name))
-            if value <= 0:
-                raise ValueError(f"{field_name} must be positive")
+        settings = validate_production_cascade_settings(
+            beam_strategy=self.beam_strategy,
+            rank_beam_width=self.rank_beam_width,
+            species_first_pass_top_k=self.species_first_pass_top_k,
+            species_rerank_top_k=self.species_rerank_top_k,
+            species_report_top_k=self.species_report_top_k,
+        )
+        for field_name, value in zip(
+            (
+                "beam_strategy",
+                "rank_beam_width",
+                "species_first_pass_top_k",
+                "species_rerank_top_k",
+                "species_report_top_k",
+            ),
+            settings,
+            strict=True,
+        ):
             object.__setattr__(self, field_name, value)
-        if self.species_rerank_top_k > self.species_first_pass_top_k:
-            raise ValueError("species_rerank_top_k must be <= species_first_pass_top_k")
 
     def resolved_run_id(self) -> str:
         if self.run_id:
@@ -152,9 +171,11 @@ class ProductionRunPlan:
                 "taxonomy_text_embedding_cache": str(self.request.taxonomy_text_embedding_cache)
                 if self.request.taxonomy_text_embedding_cache
                 else None,
-                "family_top_k": self.request.family_top_k,
+                "beam_strategy": self.request.beam_strategy,
+                "rank_beam_width": self.request.rank_beam_width,
                 "species_first_pass_top_k": self.request.species_first_pass_top_k,
                 "species_rerank_top_k": self.request.species_rerank_top_k,
+                "species_report_top_k": self.request.species_report_top_k,
                 "worker_id": self.request.worker_id,
                 "stages": [stage.value for stage in self.request.stages],
                 "dry_run": self.request.dry_run,
@@ -206,9 +227,11 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
             "taxonomy_text_embedding_cache": str(request.taxonomy_text_embedding_cache)
             if request.taxonomy_text_embedding_cache
             else None,
-            "family_top_k": request.family_top_k,
+            "beam_strategy": request.beam_strategy,
+            "rank_beam_width": request.rank_beam_width,
             "species_first_pass_top_k": request.species_first_pass_top_k,
             "species_rerank_top_k": request.species_rerank_top_k,
+            "species_report_top_k": request.species_report_top_k,
             "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
             "visual_modes": [PRODUCTION_VISUAL_MODE],
         },
@@ -756,7 +779,7 @@ class ProductionRunOrchestrator:
             classification_mode=self.request.classification_mode,
             taxonomy_table_version=_taxonomy_manifest_value(taxonomy_store, "classification_table_version"),
             taxonomy_prompt_variant_version=_taxonomy_manifest_value(taxonomy_store, "prompt_variant_version"),
-            family_top_k=self.request.family_top_k,
+            family_top_k=self.request.rank_beam_width,
             species_first_pass_top_k=self.request.species_first_pass_top_k,
             species_rerank_top_k=self.request.species_rerank_top_k,
             limit=int(self.request.limits.get("records") or 0) or None,
@@ -839,7 +862,7 @@ class ProductionRunOrchestrator:
                 classification_mode=self.request.classification_mode,
                 taxonomy_table_version=_taxonomy_manifest_value(taxonomy_store, "classification_table_version"),
                 taxonomy_prompt_variant_version=_taxonomy_manifest_value(taxonomy_store, "prompt_variant_version"),
-                family_top_k=self.request.family_top_k,
+                family_top_k=self.request.rank_beam_width,
                 species_first_pass_top_k=self.request.species_first_pass_top_k,
                 species_rerank_top_k=self.request.species_rerank_top_k,
                 taxonomy_store=taxonomy_store,
@@ -1033,9 +1056,10 @@ class ProductionRunOrchestrator:
             adaptive_batching=self.request.vision_settings.adaptive_batching,
             min_bioclip_batch_size=self.request.vision_settings.min_crop_batch_size,
             classification_mode=self.request.classification_mode,
-            family_top_k=self.request.family_top_k,
+            rank_beam_width=self.request.rank_beam_width,
             species_first_pass_top_k=self.request.species_first_pass_top_k,
             species_rerank_top_k=self.request.species_rerank_top_k,
+            species_report_top_k=self.request.species_report_top_k,
             taxonomy_store=taxonomy_store,
             taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
         )
@@ -1732,14 +1756,28 @@ def _score_primary_visual_mode(
     adaptive_batching: bool = False,
     min_bioclip_batch_size: int = 1,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
-    family_top_k: int = DEFAULT_FAMILY_TOP_K,
+    rank_beam_width: int = DEFAULT_RANK_BEAM_WIDTH,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
+    species_report_top_k: int = DEFAULT_SPECIES_REPORT_TOP_K,
     taxonomy_store: FiveRankTaxonomyStore | None = None,
     taxonomy_text_embedding_cache: Any | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     from biominer.bioclip.object_runner import screen_object_detections
 
+    (
+        _beam_strategy,
+        rank_beam_width,
+        species_first_pass_top_k,
+        species_rerank_top_k,
+        _species_report_top_k,
+    ) = validate_production_cascade_settings(
+        beam_strategy=GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
+        rank_beam_width=rank_beam_width,
+        species_first_pass_top_k=species_first_pass_top_k,
+        species_rerank_top_k=species_rerank_top_k,
+        species_report_top_k=species_report_top_k,
+    )
     result = screen_object_detections(
         canonical_records=canonical_records,
         detections=detections,
@@ -1752,7 +1790,7 @@ def _score_primary_visual_mode(
         adaptive_batching=adaptive_batching,
         min_bioclip_batch_size=min_bioclip_batch_size,
         classification_mode=classification_mode,
-        family_top_k=family_top_k,
+        family_top_k=rank_beam_width,
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
         taxonomy_store=taxonomy_store,
@@ -1808,9 +1846,11 @@ def _visual_classification_config_metrics(
     return {
         "classification_mode": request.classification_mode,
         "taxonomy_candidate_table": candidate_table,
-        "family_top_k": request.family_top_k,
+        "beam_strategy": request.beam_strategy,
+        "rank_beam_width": request.rank_beam_width,
         "species_first_pass_top_k": request.species_first_pass_top_k,
         "species_rerank_top_k": request.species_rerank_top_k,
+        "species_report_top_k": request.species_report_top_k,
     }
 
 

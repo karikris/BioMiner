@@ -5,8 +5,11 @@ import pytest
 from biominer.bioclip.classification_modes import (
     DEFAULT_CLASSIFICATION_MODE,
     DEFAULT_FAMILY_TOP_K,
+    DEFAULT_RANK_BEAM_WIDTH,
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    DEFAULT_SPECIES_REPORT_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
+    GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     TARGET_SCOPE_OBJECT_SCREENING,
     normalize_classification_mode,
@@ -37,7 +40,10 @@ def test_explicit_hierarchical_mode_never_falls_back_to_target_screening() -> No
     assert normalize_classification_mode("hierarchical") == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 
 
-def test_default_visual_classification_top_k_values_are_phase1_contract() -> None:
+def test_default_visual_classification_widths_include_global_cascade_contract() -> None:
+    assert GLOBAL_RANK_TOP_K_BEAM_STRATEGY == "global_rank_top_k"
+    assert DEFAULT_RANK_BEAM_WIDTH == 3
     assert DEFAULT_FAMILY_TOP_K == 3
     assert DEFAULT_SPECIES_FIRST_PASS_TOP_K == 20
     assert DEFAULT_SPECIES_RERANK_TOP_K == 5
+    assert DEFAULT_SPECIES_REPORT_TOP_K == 3

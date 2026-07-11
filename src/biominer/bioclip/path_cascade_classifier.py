@@ -6,6 +6,13 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 import polars as pl
 
+from biominer.bioclip.cascade_contract import (
+    DEFAULT_RANK_BEAM_WIDTH,
+    DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+    DEFAULT_SPECIES_REPORT_TOP_K,
+    DEFAULT_SPECIES_RERANK_TOP_K,
+    GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
+)
 from biominer.bioclip.path_taxonomy_store import (
     RANK_SCREEN_PROMPT_STAGE,
     SPECIES_FIRST_PASS_PROMPT_STAGE,
@@ -20,11 +27,6 @@ from biominer.bioclip.taxonomy_embedding_cache import (
 from biominer.registry.classification_v3 import CLASSIFICATION_RANKS, OPTIONAL_CLASSIFICATION_RANKS
 
 
-GLOBAL_RANK_TOP_K_BEAM_STRATEGY = "global_rank_top_k"
-DEFAULT_RANK_BEAM_WIDTH = 3
-DEFAULT_SPECIES_FIRST_PASS_TOP_K = 20
-DEFAULT_SPECIES_RERANK_TOP_K = 5
-DEFAULT_SPECIES_REPORT_TOP_K = 3
 INTERMEDIATE_CLASSIFICATION_RANKS = (
     "FAMILY",
     "SUBFAMILY",
