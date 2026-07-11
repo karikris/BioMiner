@@ -309,3 +309,92 @@ Pre-implementation solution IDs:
 `511fc304-02b1-49b4-872f-1b5882d08a10`,
 `95dff618-be06-4f89-8098-4a80075eef2d`,
 `95fc44d5-7d13-42f2-b2b0-6e836ecb9cbd`.
+
+### Post-implementation verification — 2026-07-11
+
+The strict post-implementation searches mirrored the store operations exactly:
+
+1. `get_example`: “Python Polars DataFrame semi join candidate rows against a
+   one-column key DataFrame, preserving only matching left rows”.
+   Solution ID: `78ded640-7add-4677-8a43-d652116d3eed`.
+   Durable source:
+   `graphistry/pygraphistry@8a7668e43aff3c7ee1773d809b39bd1a1c218dbf`
+   (BSD-3-Clause); mutable issue references were supplemental only.
+2. `get_example`: “Python Polars filter scalar column membership with is_in
+   and filter list column with list.contains”.
+   Solution ID: `ca6b81e3-0f4d-41d3-8af8-1ee3fd6c3b3b`.
+   Durable sources included
+   `pola-rs/polars@57f20cae8a79db98dac5ee5cea1ebfacbf74dae5`
+   and `narwhals-dev/narwhals@272197529389f123972c8610e15ebc46014c7f4c`
+   (MIT), plus the immutable Graphistry source above.
+3. `get_example`: “Python Polars deterministic deduplicate rows using sort
+   then unique subset keep first maintain_order”.
+   Solution ID: `fc033682-87c8-47c9-8ad1-4f320d14f4a3`.
+   Durable sources:
+   `yedivanseven/swak@96394dae9a2161bbd4b1b8c35aab6353f1535119`
+   and `phurwicz/hover@dccdaaeb616b87d56c0b7bc83c72b781c402e6a8`
+   (MIT).
+4. `get_example`: “Python Polars lazily scan Parquet, project selected
+   columns, then collect with the streaming engine”.
+   Solution ID: `561375ba-a8e2-4200-a275-c494f366acb6`.
+   Durable sources included
+   `rapidsai/cudf@3aa656886f0d450cac82a69c095fc0d6b9b97ca2`
+   and `marimo-team/marimo@1f1bb633df7e635899ffb88479576944dd15b543`
+   (Apache-2.0), plus
+   `ancoleman/ai-design-components@76551b7b19ebc667764ec75da14990d0aef8b6e5`
+   (MIT).
+
+Pinned Polars verification used the exact Phase 1 target again:
+`pola-rs/polars@599a503a0997188a74750926a5cdaa47585cf8aa`
+(`py-1.41.2`, MIT). `code_grep` and `code_read` confirmed:
+
+- `DataFrame.join(..., how="semi")` at `frame.py:8207-8255`;
+- `DataFrame.unique(subset=..., keep="first", maintain_order=...)` at
+  `frame.py:11173-11199`;
+- `Expr.is_in(Collection)` at `expr.py:6405-6447`;
+- `Expr.list.contains` at `list.py:779-811`;
+- Parquet scan projection pushdown at `io/parquet/functions.py:467-502`;
+- `LazyFrame.collect(engine="streaming")` at
+  `lazyframe/frame.py:2406-2423` and `:2482-2500`;
+- same-schema vertical concatenation in `functions/eager.py:32-115`.
+
+Implementation comparison:
+
+- Candidate extraction uses a one-column semi-join and an explicit final
+  `(scientific_name, node_id)` sort.
+- Small selected node beams use scalar `is_in`; reviewed skip detection uses
+  the typed `List(String).list.contains` operation.
+- Path unions use ordinary vertical `pl.concat` because exact schemas are a
+  store invariant. Relaxed or diagonal concatenation is rejected.
+- Deduplication sorts first, then uses `hierarchy_hash`, `keep="first"` and
+  `maintain_order=True`, followed by another explicit semantic sort.
+- Artifact loading uses projected `scan_parquet` and the pinned
+  `collect(engine="streaming")` spelling. A generated example’s deprecated
+  `collect(streaming=True)` spelling was rejected.
+- Join order, `unique(keep="any")`, and `maintain_order` without deterministic
+  pre-sorting were rejected as identity/order mechanisms.
+
+The post-review comparison found that Polars drops null filter predicates, so
+`filter(~pl.col("enabled"))` did not reject `enabled=null`. The final store now
+requires zero nulls and `Series.all() is true`. The same review also led to:
+
+- exact physical Parquet schema validation before collection;
+- binding active paths to the store’s validated hierarchy-hash set;
+- cached access to already validated manifest fingerprints rather than full
+  graph recanonicalisation on every property access;
+- a read-only top-level manifest mapping.
+
+Repository verification:
+
+- `uv run ruff check src/biominer/bioclip/path_taxonomy_store.py tests/test_path_taxonomy_store.py tests/test_registry_classification_v3.py`:
+  passed;
+- `.venv/bin/pytest -q tests/test_path_taxonomy_store.py tests/test_registry_classification_v3.py tests/test_five_rank_taxonomy_store.py`:
+  `44 passed`;
+- `.venv/bin/pytest -q`: `907 passed`.
+
+Post-implementation solution IDs:
+
+`78ded640-7add-4677-8a43-d652116d3eed`,
+`ca6b81e3-0f4d-41d3-8af8-1ee3fd6c3b3b`,
+`fc033682-87c8-47c9-8ad1-4f320d14f4a3`,
+`561375ba-a8e2-4200-a275-c494f366acb6`.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
 
@@ -95,6 +96,16 @@ def test_path_store_rejects_every_tampered_artifact(tmp_path: Path, artifact: st
         PathTaxonomyStore.read(registry)
 
 
+def test_path_store_rejects_wrong_physical_artifact_schema(tmp_path: Path) -> None:
+    registry = _write_registry(tmp_path)
+    path = classification_v3_artifact_paths(registry)["leaf_paths"]
+    pl.read_parquet(path).with_columns(pl.col("enabled").cast(pl.Int8)).write_parquet(path)
+    _refresh_artifact_metadata(registry, "leaf_paths")
+
+    with pytest.raises(ValueError, match="artifact schema mismatch: leaf_paths"):
+        PathTaxonomyStore.read(registry)
+
+
 def test_rank_candidates_are_path_reachable_unique_and_id_based(tmp_path: Path) -> None:
     store = PathTaxonomyStore.read(_write_registry(tmp_path))
 
@@ -160,6 +171,18 @@ def test_active_path_queries_deduplicate_nodes_and_filter_deterministically(tmp_
         "fixture:species:a2",
         "fixture:species:c1",
     ]
+
+
+def test_active_path_queries_reject_foreign_and_nullable_rows(tmp_path: Path) -> None:
+    store = PathTaxonomyStore.read(_write_registry(tmp_path))
+    active = store.enabled_paths()
+    foreign = active.head(1).with_columns(pl.lit("sha256:foreign").alias("hierarchy_hash"))
+    nullable = active.head(1).with_columns(pl.lit(None, dtype=pl.Boolean).alias("enabled"))
+
+    with pytest.raises(ValueError, match="do not belong to this taxonomy store"):
+        store.candidate_nodes_in_paths(foreign, "FAMILY")
+    with pytest.raises(ValueError, match="contain disabled rows"):
+        store.candidate_nodes_in_paths(nullable, "FAMILY")
 
 
 def test_species_path_lookups_are_sorted_and_singular(tmp_path: Path) -> None:
@@ -290,6 +313,17 @@ def _write_registry(tmp_path: Path) -> Path:
     )
     write_classification_v3_artifacts(registry, source_path=source_path)
     return registry
+
+
+def _refresh_artifact_metadata(registry: Path, artifact: str) -> None:
+    paths = classification_v3_artifact_paths(registry)
+    artifact_path = paths[artifact]
+    manifest_path = paths["manifest"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    metadata = manifest["artifacts"][artifact]
+    metadata["bytes"] = artifact_path.stat().st_size
+    metadata["sha256"] = "sha256:" + hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
 def _classification_fixture() -> tuple[dict[str, object], pl.DataFrame]:

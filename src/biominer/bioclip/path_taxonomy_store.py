@@ -4,7 +4,8 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
-from typing import Self, Sequence
+from types import MappingProxyType
+from typing import Mapping, Self, Sequence
 
 import polars as pl
 
@@ -54,7 +55,8 @@ class PathTaxonomyStore:
     leaf_paths: pl.DataFrame
     prompt_labels: pl.DataFrame
     qa_findings: pl.DataFrame
-    manifest: dict[str, object]
+    manifest: Mapping[str, object]
+    _enabled_hierarchy_hashes: frozenset[str]
 
     @classmethod
     def read(cls, root: str | Path) -> Self:
@@ -66,15 +68,26 @@ class PathTaxonomyStore:
         manifest = _read_manifest(paths["manifest"])
         _validate_manifest_header(manifest)
         _validate_artifact_checksums(paths, manifest)
+        sources = _scan(paths["sources"], SOURCE_SCHEMA, artifact="sources")
+        nodes = _scan(paths["nodes"], NODE_SCHEMA, artifact="nodes")
+        edges = _scan(paths["edges"], EDGE_SCHEMA, artifact="edges")
+        gbif_mappings = _scan(paths["gbif_mappings"], GBIF_MAPPING_SCHEMA, artifact="gbif_mappings")
+        leaf_paths = _scan(paths["leaf_paths"], LEAF_PATH_SCHEMA, artifact="leaf_paths")
+        prompt_labels = _scan(paths["prompt_labels"], PROMPT_LABEL_SCHEMA, artifact="prompt_labels")
+        qa_findings = _scan(paths["qa_findings"], QA_FINDING_SCHEMA, artifact="qa_findings")
         store = cls(
-            sources=_scan(paths["sources"], SOURCE_SCHEMA),
-            nodes=_scan(paths["nodes"], NODE_SCHEMA),
-            edges=_scan(paths["edges"], EDGE_SCHEMA),
-            gbif_mappings=_scan(paths["gbif_mappings"], GBIF_MAPPING_SCHEMA),
-            leaf_paths=_scan(paths["leaf_paths"], LEAF_PATH_SCHEMA),
-            prompt_labels=_scan(paths["prompt_labels"], PROMPT_LABEL_SCHEMA),
-            qa_findings=_scan(paths["qa_findings"], QA_FINDING_SCHEMA),
-            manifest=manifest,
+            sources=sources,
+            nodes=nodes,
+            edges=edges,
+            gbif_mappings=gbif_mappings,
+            leaf_paths=leaf_paths,
+            prompt_labels=prompt_labels,
+            qa_findings=qa_findings,
+            manifest=MappingProxyType(manifest),
+            _enabled_hierarchy_hashes=frozenset(
+                str(value)
+                for value in leaf_paths.filter(pl.col("enabled"))["hierarchy_hash"].to_list()
+            ),
         )
         store._validate_loaded_frames()
         return store
@@ -89,11 +102,11 @@ class PathTaxonomyStore:
 
     @property
     def classification_fingerprint(self) -> str:
-        return classification_v3_fingerprint(self._classification_frames())
+        return str(self.manifest.get("classification_fingerprint") or "")
 
     @property
     def hierarchy_fingerprint(self) -> str:
-        return hierarchy_fingerprint(self._classification_frames())
+        return str(self.manifest.get("hierarchy_fingerprint") or "")
 
     def validation_findings(self) -> list[dict[str, object]]:
         return [dict(row) for row in self.qa_findings.iter_rows(named=True)]
@@ -106,7 +119,7 @@ class PathTaxonomyStore:
 
     def candidate_nodes_in_paths(self, active_paths: pl.DataFrame, rank: str) -> pl.DataFrame:
         normalized_rank = _rank(rank)
-        paths = _active_paths(active_paths)
+        paths = self._active_paths(active_paths)
         node_ids = _rank_node_ids(paths, normalized_rank)
         if node_ids.is_empty():
             return pl.DataFrame(schema=NODE_SCHEMA)
@@ -125,7 +138,7 @@ class PathTaxonomyStore:
         carry_reviewed_skip_paths: bool = False,
     ) -> pl.DataFrame:
         normalized_rank = _rank(rank)
-        paths = _active_paths(active_paths)
+        paths = self._active_paths(active_paths)
         selected_ids = _node_ids(selected_node_ids)
         selected_paths = (
             paths.filter(pl.col(f"{normalized_rank.casefold()}_node_id").is_in(selected_ids))
@@ -141,14 +154,14 @@ class PathTaxonomyStore:
 
     def paths_with_asserted_rank(self, active_paths: pl.DataFrame, rank: str) -> pl.DataFrame:
         normalized_rank = _rank(rank)
-        paths = _active_paths(active_paths)
+        paths = self._active_paths(active_paths)
         return _deduplicate_paths(
             paths.filter(pl.col(f"{normalized_rank.casefold()}_node_id") != "")
         )
 
     def reviewed_skip_paths(self, active_paths: pl.DataFrame, rank: str) -> pl.DataFrame:
         normalized_rank = _rank(rank)
-        paths = _active_paths(active_paths)
+        paths = self._active_paths(active_paths)
         if normalized_rank not in OPTIONAL_CLASSIFICATION_RANKS:
             return pl.DataFrame(schema=LEAF_PATH_SCHEMA)
         return _deduplicate_paths(
@@ -217,6 +230,22 @@ class PathTaxonomyStore:
             prompt_labels=self.prompt_labels,
         )
 
+    def _active_paths(self, active_paths: pl.DataFrame) -> pl.DataFrame:
+        paths = _normalize_active_paths(active_paths)
+        foreign_hashes = sorted(
+            {
+                str(value)
+                for value in paths["hierarchy_hash"].to_list()
+                if str(value) not in self._enabled_hierarchy_hashes
+            }
+        )
+        if foreign_hashes:
+            raise ValueError(
+                "active classification paths do not belong to this taxonomy store: "
+                + ", ".join(foreign_hashes)
+            )
+        return paths
+
     def _validate_loaded_frames(self) -> None:
         versioned_frames = {
             "sources": self.sources,
@@ -239,11 +268,12 @@ class PathTaxonomyStore:
             raise ValueError("classification-v3 fatal QA count mismatch")
         if warning_count != int(self.manifest.get("warning_finding_count") or 0):
             raise ValueError("classification-v3 warning QA count mismatch")
-        expected_hierarchy = str(self.manifest.get("hierarchy_fingerprint") or "")
-        if not expected_hierarchy or self.hierarchy_fingerprint != expected_hierarchy:
+        frames = self._classification_frames()
+        expected_hierarchy = self.hierarchy_fingerprint
+        if not expected_hierarchy or hierarchy_fingerprint(frames) != expected_hierarchy:
             raise ValueError("classification-v3 hierarchy fingerprint mismatch")
-        expected_classification = str(self.manifest.get("classification_fingerprint") or "")
-        if not expected_classification or self.classification_fingerprint != expected_classification:
+        expected_classification = self.classification_fingerprint
+        if not expected_classification or classification_v3_fingerprint(frames) != expected_classification:
             raise ValueError("classification-v3 classification fingerprint mismatch")
 
 
@@ -254,7 +284,7 @@ def _read_manifest(path: Path) -> dict[str, object]:
     return payload
 
 
-def _validate_manifest_header(manifest: dict[str, object]) -> None:
+def _validate_manifest_header(manifest: Mapping[str, object]) -> None:
     if manifest.get("classification_version") != CLASSIFICATION_V3_VERSION:
         raise ValueError("classification-v3 manifest version mismatch")
     if manifest.get("prompt_version") != CLASSIFICATION_V3_PROMPT_VERSION:
@@ -263,7 +293,7 @@ def _validate_manifest_header(manifest: dict[str, object]) -> None:
         raise ValueError("classification-v3 manifest did not pass fatal QA")
 
 
-def _validate_artifact_checksums(paths: dict[str, Path], manifest: dict[str, object]) -> None:
+def _validate_artifact_checksums(paths: dict[str, Path], manifest: Mapping[str, object]) -> None:
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict):
         raise ValueError("classification-v3 manifest has no artifact checksums")
@@ -280,8 +310,11 @@ def _validate_artifact_checksums(paths: dict[str, Path], manifest: dict[str, obj
             raise ValueError(f"classification-v3 artifact checksum mismatch: {key}")
 
 
-def _scan(path: Path, schema: dict[str, pl.DataType]) -> pl.DataFrame:
-    return pl.scan_parquet(path).select(list(schema)).collect(engine="streaming")
+def _scan(path: Path, schema: dict[str, pl.DataType], *, artifact: str) -> pl.DataFrame:
+    lazy = pl.scan_parquet(path)
+    if dict(lazy.collect_schema()) != schema:
+        raise ValueError(f"classification-v3 artifact schema mismatch: {artifact}")
+    return lazy.select(list(schema)).collect(engine="streaming")
 
 
 def _rank(value: str) -> str:
@@ -311,7 +344,7 @@ def _rank_node_ids(paths: pl.DataFrame, rank: str) -> pl.DataFrame:
     )
 
 
-def _active_paths(paths: pl.DataFrame) -> pl.DataFrame:
+def _normalize_active_paths(paths: pl.DataFrame) -> pl.DataFrame:
     missing = [column for column in LEAF_PATH_SCHEMA if column not in paths.columns]
     if missing:
         raise ValueError("active classification paths are missing columns: " + ", ".join(missing))
@@ -319,7 +352,7 @@ def _active_paths(paths: pl.DataFrame) -> pl.DataFrame:
     versions = set(selected["classification_version"].to_list())
     if versions and versions != {CLASSIFICATION_V3_VERSION}:
         raise ValueError("active classification paths have a version mismatch")
-    if selected.filter(~pl.col("enabled")).height:
+    if selected["enabled"].null_count() or not selected["enabled"].all():
         raise ValueError("active classification paths contain disabled rows")
     return _sort_paths(selected)
 
