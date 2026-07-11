@@ -177,6 +177,7 @@ def build_classification_taxa_frame(
         family = _text(row.get("family"))
         genus_key = _text(row.get("genus_key"))
         genus = _text(row.get("genus"))
+        taxonomic_status = _text(row.get("taxonomic_status"), row.get("status")).upper() or "ACCEPTED"
         disabled_reasons = []
         if not accepted_taxon_key:
             disabled_reasons.append("missing_accepted_taxon_key")
@@ -186,6 +187,8 @@ def build_classification_taxa_frame(
             disabled_reasons.append("missing_family_key")
         if not family:
             disabled_reasons.append("missing_family")
+        if taxonomic_status != "ACCEPTED":
+            disabled_reasons.append(f"non_accepted_taxonomic_status:{taxonomic_status.casefold()}")
         rows.append(
             {
                 "registry_version": registry_version,
@@ -199,7 +202,7 @@ def build_classification_taxa_frame(
                 "scientific_name": scientific_name,
                 "canonical_name": canonical_name,
                 "rank": "SPECIES",
-                "taxonomic_status": _text(row.get("taxonomic_status"), row.get("status")) or "accepted",
+                "taxonomic_status": taxonomic_status,
                 "family_key": family_key,
                 "family": family,
                 "genus_key": genus_key,

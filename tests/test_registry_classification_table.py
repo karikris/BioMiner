@@ -93,6 +93,31 @@ def test_classification_taxa_missing_family_disables_row_without_crashing() -> N
     assert row["classification_disabled_reason"] == "missing_family_key,missing_family"
 
 
+def test_classification_taxa_disables_non_accepted_species() -> None:
+    frame = build_classification_taxa_frame(
+        _taxa_fixture(
+            [
+                _taxon(
+                    "gbif:100",
+                    "Papilio doubtful",
+                    "SPECIES",
+                    family_key="gbif:9417",
+                    family="Papilionidae",
+                    genus_key="gbif:90",
+                    genus="Papilio",
+                    taxonomic_status="DOUBTFUL",
+                )
+            ]
+        ),
+        registry_manifest={"registry_version": "registry-v1"},
+    )
+
+    row = frame.to_dicts()[0]
+    assert row["taxonomic_status"] == "DOUBTFUL"
+    assert row["classification_enabled"] is False
+    assert row["classification_disabled_reason"] == "non_accepted_taxonomic_status:doubtful"
+
+
 def test_gbif_key_and_epithet_helpers() -> None:
     assert bare_gbif_key("gbif:123") == "123"
     assert bare_gbif_key("123") == "123"
@@ -294,6 +319,7 @@ def _taxa_fixture(rows: list[dict[str, object]]) -> pl.DataFrame:
             "genus": pl.String,
             "species_key": pl.String,
             "species": pl.String,
+            "taxonomic_status": pl.String,
             "in_scope": pl.Boolean,
         },
     )
@@ -311,6 +337,7 @@ def _taxon(
     species_key: str | None = None,
     species: str | None = None,
     in_scope: bool = True,
+    taxonomic_status: str = "ACCEPTED",
 ) -> dict[str, object]:
     return {
         "registry_schema_version": "registry-foundation-v1",
@@ -325,6 +352,7 @@ def _taxon(
         "genus": genus,
         "species_key": species_key if species_key is not None else (accepted_taxon_key if rank == "SPECIES" else ""),
         "species": species if species is not None else (scientific_name if rank == "SPECIES" else ""),
+        "taxonomic_status": taxonomic_status,
         "in_scope": in_scope,
     }
 

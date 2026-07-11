@@ -529,9 +529,9 @@ def test_rank_species_with_cached_text_embeddings_mean_aggregates_prompt_templat
         top_k=2,
     )
 
-    assert [score.scientific_name for score in ranked] == ["Papilio species02", "Papilio species01"]
+    assert [score.scientific_name for score in ranked] == ["Papilio species01", "Papilio species02"]
     assert ranked[0].score > ranked[1].score
-    assert ranked[1].score == pytest.approx(1.0 / 3.0)
+    assert ranked[0].score == pytest.approx(1.0 / 3.0)
 
 
 def test_hierarchical_batch_uses_taxonomy_text_embedding_cache_for_species_first_pass() -> None:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from math import exp
+import os
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 import polars as pl
@@ -28,7 +30,9 @@ from biominer.registry.classification_table import (
 
 HIERARCHICAL_CANDIDATE_SELECTION_MODE = "gbif_family_first"
 HIERARCHICAL_SPECIES_RERANK_STRATEGY = "rerank_all_first_pass_top20"
-_CACHE_INDEX_BY_FRAME_AND_FAMILY: dict[tuple[int, str, str, str], "_CachedFamilySpeciesIndex"] = {}
+DEFAULT_FAMILY_INDEX_CACHE_ENTRIES = 16
+FAMILY_INDEX_CACHE_ENTRIES_ENV = "BIOMINER_FAMILY_INDEX_CACHE_ENTRIES"
+_CACHE_INDEX_BY_FRAME_AND_FAMILY: OrderedDict[tuple[int, str, str, str], "_CachedFamilySpeciesIndex"] = OrderedDict()
 
 TAXON_SCORE_SCHEMA: dict[str, pl.DataType] = {
     "accepted_taxon_key": pl.String,
@@ -547,7 +551,10 @@ def _rank_species_with_validated_cached_text_embeddings(
         if norm == 0.0:
             label_scores = _np.zeros(len(index.labels), dtype=_np.float32)
         else:
-            label_scores = index.matrix @ (image / norm)
+            similarities = index.matrix @ (image / norm)
+            logits = 100.0 * similarities
+            shifted = logits - _np.max(logits)
+            label_scores = _np.exp(shifted) / _np.sum(_np.exp(shifted))
         scores = [
             _taxon_score_from_label_scores(
                 metadata=index.taxon_metadata_by_key[taxon_key],
@@ -558,17 +565,29 @@ def _rank_species_with_validated_cached_text_embeddings(
             for taxon_key, indices in index.label_indices_by_taxon_key.items()
         ]
     else:
+        label_scores = _softmax(
+            [100.0 * _cosine_similarity(image_vector, embedding_vector) for embedding_vector in index.embedding_vectors]
+        )
         scores = [
             _taxon_score_from_values(
                 metadata=index.taxon_metadata_by_key[taxon_key],
                 values_by_label={
-                    index.labels[index_index]: _cosine_similarity(image_vector, index.embedding_vectors[index_index])
+                    index.labels[index_index]: label_scores[index_index]
                     for index_index in indices
                 },
             )
             for taxon_key, indices in index.label_indices_by_taxon_key.items()
         ]
     return sorted(scores, key=lambda score: (-score.score, score.scientific_name, score.accepted_taxon_key))[:limit]
+
+
+def _softmax(values: Sequence[float]) -> list[float]:
+    if not values:
+        return []
+    maximum = max(values)
+    weights = [exp(value - maximum) for value in values]
+    total = sum(weights)
+    return [weight / total for weight in weights] if total else [0.0 for _value in values]
 
 
 @dataclass(frozen=True)
@@ -600,8 +619,9 @@ def _cached_family_species_index(
     model_checkpoint: str,
 ) -> _CachedFamilySpeciesIndex:
     cache_key = (id(text_embedding_cache), family_key, model_id, model_checkpoint)
-    cached = _CACHE_INDEX_BY_FRAME_AND_FAMILY.get(cache_key)
+    cached = _CACHE_INDEX_BY_FRAME_AND_FAMILY.pop(cache_key, None)
     if cached is not None:
+        _CACHE_INDEX_BY_FRAME_AND_FAMILY[cache_key] = cached
         return cached
     taxa_by_key = {str(row["accepted_taxon_key"]): row for row in species_taxa.to_dicts()}
     species_rows = (
@@ -649,6 +669,8 @@ def _cached_family_species_index(
         taxon_metadata_by_key=taxon_metadata_by_key,
     )
     _CACHE_INDEX_BY_FRAME_AND_FAMILY[cache_key] = index
+    while len(_CACHE_INDEX_BY_FRAME_AND_FAMILY) > family_index_cache_entries():
+        _CACHE_INDEX_BY_FRAME_AND_FAMILY.popitem(last=False)
     return index
 
 
@@ -658,6 +680,23 @@ def _embedding_matrix(embedding_vectors: Sequence[Sequence[float]]) -> Any | Non
     matrix = _np.asarray(embedding_vectors, dtype=_np.float32)
     norms = _np.linalg.norm(matrix, axis=1, keepdims=True)
     return matrix / _np.where(norms == 0.0, 1.0, norms)
+
+
+def family_index_cache_entries() -> int:
+    raw_value = os.environ.get(FAMILY_INDEX_CACHE_ENTRIES_ENV)
+    if raw_value is None:
+        return DEFAULT_FAMILY_INDEX_CACHE_ENTRIES
+    try:
+        parsed = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{FAMILY_INDEX_CACHE_ENTRIES_ENV} must be a positive integer") from exc
+    if parsed <= 0:
+        raise ValueError(f"{FAMILY_INDEX_CACHE_ENTRIES_ENV} must be a positive integer")
+    return parsed
+
+
+def clear_family_embedding_index_cache() -> None:
+    _CACHE_INDEX_BY_FRAME_AND_FAMILY.clear()
 
 
 def _taxon_score_from_label_scores(
@@ -1095,6 +1134,8 @@ __all__ = [
     "butterfly_cascade_results_frame",
     "classify_butterfly_crops_hierarchical_batch",
     "classify_butterfly_crop_hierarchical",
+    "clear_family_embedding_index_cache",
+    "family_index_cache_entries",
     "hierarchical_result_to_object_score_row",
     "rank_species_with_cached_text_embeddings",
     "taxon_score_to_dict",

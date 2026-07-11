@@ -196,6 +196,7 @@ def _taxa_frame(rows: list[dict[str, Any]], *, scope_id: str) -> pl.DataFrame:
                 "genus": str(row.get("genus") or ""),
                 "species_key": str(row.get("species_key") or ""),
                 "species": str(row.get("species") or ""),
+                "taxonomic_status": str(row.get("taxonomic_status") or row.get("status") or "ACCEPTED").upper(),
                 "in_scope": True,
             }
             for row in rows
@@ -213,6 +214,7 @@ def _taxa_frame(rows: list[dict[str, Any]], *, scope_id: str) -> pl.DataFrame:
             "genus": pl.String,
             "species_key": pl.String,
             "species": pl.String,
+            "taxonomic_status": pl.String,
             "in_scope": pl.Boolean,
         },
     )

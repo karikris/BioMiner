@@ -130,10 +130,26 @@ def build_gbif_source_snapshot(
 
         species_rows: list[dict[str, Any]] = []
         for genus in client.children(family_key, rank="GENUS", limit=page_limit):
+            if not _is_accepted_usage(genus):
+                logger.warning(
+                    "registry.gbif.skip_non_accepted family=%s rank=GENUS key=%s status=%s",
+                    family_name,
+                    genus.get("key"),
+                    _taxonomic_status(genus),
+                )
+                continue
             genus_key = genus.get("key")
             family_taxa.append(_taxon_row(genus, parent_key=f"gbif:{family_key}", family=family_usage, genus=genus))
             family_base_names.append(_scientific_name_row(genus, name_class="accepted_scientific"))
             for species in client.children(genus_key, rank="SPECIES", limit=page_limit):
+                if not _is_accepted_usage(species):
+                    logger.warning(
+                        "registry.gbif.skip_non_accepted family=%s rank=SPECIES key=%s status=%s",
+                        family_name,
+                        species.get("key"),
+                        _taxonomic_status(species),
+                    )
+                    continue
                 species_key = species.get("key")
                 if species_key is None:
                     continue
@@ -492,7 +508,16 @@ def _taxon_row(
         "genus": _scientific_name(genus or {}),
         "species_key": f"gbif:{(species or {}).get('key')}" if (species or {}).get("key") else "",
         "species": _scientific_name(species or {}) if rank == "SPECIES" else "",
+        "taxonomic_status": _taxonomic_status(usage),
     }
+
+
+def _taxonomic_status(usage: dict[str, Any]) -> str:
+    return str(usage.get("taxonomicStatus") or usage.get("status") or "ACCEPTED").upper()
+
+
+def _is_accepted_usage(usage: dict[str, Any]) -> bool:
+    return _taxonomic_status(usage) == "ACCEPTED"
 
 
 def _scientific_name_row(usage: dict[str, Any], *, name_class: str, accepted_key: object | None = None) -> dict[str, object]:

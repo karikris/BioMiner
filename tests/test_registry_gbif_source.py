@@ -59,7 +59,14 @@ def test_build_gbif_source_snapshot_resolves_scope_and_traverses_species_names()
                         "scientificName": "Papilio",
                         "rank": "GENUS",
                         "parentKey": 10,
-                    }
+                    },
+                    {
+                        "key": 91,
+                        "scientificName": "Doubtful genus",
+                        "rank": "GENUS",
+                        "taxonomicStatus": "DOUBTFUL",
+                        "parentKey": 10,
+                    },
                 ]
             },
             ("/species/90/children", (("limit", 1000), ("rank", "SPECIES"))): {
@@ -70,7 +77,15 @@ def test_build_gbif_source_snapshot_resolves_scope_and_traverses_species_names()
                         "canonicalName": "Papilio demoleus",
                         "rank": "SPECIES",
                         "parentKey": 90,
-                    }
+                    },
+                    {
+                        "key": 101,
+                        "scientificName": "Papilio doubtful",
+                        "canonicalName": "Papilio doubtful",
+                        "rank": "SPECIES",
+                        "taxonomicStatus": "DOUBTFUL",
+                        "parentKey": 90,
+                    },
                 ]
             },
             ("/species/100/synonyms", (("limit", 1000),)): {
