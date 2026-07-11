@@ -29,6 +29,7 @@ from biominer.registry.classification_v3 import (
 
 
 RANK_SCREEN_PROMPT_STAGE = "rank_screen"
+SPECIES_FIRST_PASS_PROMPT_STAGE = "species_first_pass"
 _CHECKSUM_ARTIFACTS = (
     "sources",
     "nodes",
@@ -200,12 +201,22 @@ class PathTaxonomyStore:
         prompt_stage: str,
     ) -> pl.DataFrame:
         stage = str(prompt_stage or "").strip().casefold()
-        if stage != RANK_SCREEN_PROMPT_STAGE:
+        ids = _node_ids(node_ids)
+        if stage == SPECIES_FIRST_PASS_PROMPT_STAGE:
+            species_ids = set(
+                self.nodes.filter(
+                    pl.col("enabled")
+                    & (pl.col("rank") == "SPECIES")
+                    & pl.col("node_id").is_in(ids)
+                )["node_id"].to_list()
+            )
+            if species_ids != set(ids):
+                raise ValueError("species_first_pass prompts require only enabled SPECIES node IDs")
+        elif stage != RANK_SCREEN_PROMPT_STAGE:
             raise ValueError(
                 f"classification-v3 prompt stage is unavailable: {prompt_stage}; "
-                f"expected {RANK_SCREEN_PROMPT_STAGE}"
+                f"expected {RANK_SCREEN_PROMPT_STAGE} or {SPECIES_FIRST_PASS_PROMPT_STAGE}"
             )
-        ids = _node_ids(node_ids)
         if not ids:
             return pl.DataFrame(schema=PROMPT_LABEL_SCHEMA)
         return _sort_prompts(
@@ -394,4 +405,8 @@ def _sha256_file(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-__all__ = ["PathTaxonomyStore", "RANK_SCREEN_PROMPT_STAGE"]
+__all__ = [
+    "PathTaxonomyStore",
+    "RANK_SCREEN_PROMPT_STAGE",
+    "SPECIES_FIRST_PASS_PROMPT_STAGE",
+]

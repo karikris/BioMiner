@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import isfinite
 from typing import Any, Mapping, Protocol
 
 import polars as pl
 
-from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore, RANK_SCREEN_PROMPT_STAGE
+from biominer.bioclip.path_taxonomy_store import (
+    RANK_SCREEN_PROMPT_STAGE,
+    SPECIES_FIRST_PASS_PROMPT_STAGE,
+    PathTaxonomyStore,
+)
 from biominer.registry.classification_v3 import CLASSIFICATION_RANKS, OPTIONAL_CLASSIFICATION_RANKS
 
 
@@ -31,6 +35,8 @@ class RankCandidateScore:
     best_label: str
     best_label_similarity: float
     label_count: int
+    accepted_taxon_key: str | None = None
+    gbif_species_key: str | None = None
 
     def __post_init__(self) -> None:
         if not self.node_id or not self.rank or not self.scientific_name:
@@ -234,7 +240,6 @@ def classify_path_cascade(
             message="taxonomy store has no enabled classification paths",
         )
     rank_steps: list[RankStepResult] = []
-    fully_skipped_ranks: list[str] = []
     for rank in INTERMEDIATE_CLASSIFICATION_RANKS:
         active_before = active_paths.height
         parent_node_ids = _parent_node_ids(active_paths, rank)
@@ -245,7 +250,6 @@ def classify_path_cascade(
                 active_hashes = set(active_paths["hierarchy_hash"].to_list())
                 skip_hashes = set(reviewed_skips["hierarchy_hash"].to_list())
                 if active_hashes and active_hashes == skip_hashes:
-                    fully_skipped_ranks.append(rank)
                     rank_steps.append(
                         RankStepResult(
                             rank=rank,
@@ -317,6 +321,63 @@ def classify_path_cascade(
                 skip_reason=None,
             )
         )
+    species_candidates = taxonomy_store.species_nodes_in_paths(active_paths)
+    if species_candidates.is_empty():
+        raise PathCascadeClassificationError(
+            code="no_species_candidates",
+            rank="SPECIES",
+            candidate_count=0,
+            active_path_count=active_paths.height,
+            message="genus beam contains no enabled species candidates",
+        )
+    species_scores = score_rank_candidates(
+        item=item,
+        scorer=scorer,
+        taxonomy_store=taxonomy_store,
+        candidates=species_candidates,
+        prompt_stage=SPECIES_FIRST_PASS_PROMPT_STAGE,
+    )
+    species_top20_unmapped = species_scores[:DEFAULT_SPECIES_FIRST_PASS_TOP_K]
+    species_top20 = _attach_species_mappings(
+        taxonomy_store=taxonomy_store,
+        scores=species_top20_unmapped,
+        active_path_count=active_paths.height,
+    )
+    species_active_paths = taxonomy_store.filter_paths_by_rank_nodes(
+        active_paths,
+        "SPECIES",
+        tuple(score.node_id for score in species_top20),
+    )
+    rank_steps.append(
+        RankStepResult(
+            rank="SPECIES",
+            candidate_count=len(species_scores),
+            retained_count=len(species_top20),
+            active_path_count_before=active_paths.height,
+            active_path_count_after=species_active_paths.height,
+            top_candidates=species_top20,
+            top1_margin=raw_similarity_margin(species_scores),
+            parent_node_ids=_parent_node_ids(active_paths, "SPECIES"),
+            skipped=False,
+            skip_reason=None,
+        )
+    )
+    species_top5 = species_top20[:5]
+    species_top3 = species_top20[:3]
+    species_top1 = species_top20[0] if species_top20 else None
+    if species_top1 is None:
+        raise PathCascadeClassificationError(
+            code="unscorable_species_candidates",
+            rank="SPECIES",
+            candidate_count=species_candidates.height,
+            active_path_count=active_paths.height,
+            message="species candidates produced no retained raw similarity scores",
+        )
+    winning_path_row = taxonomy_store.path_for_species_node(species_top1.node_id)
+    winning_path = _winning_path_scores(
+        path_row=winning_path_row,
+        rank_steps=tuple(rank_steps),
+    )
     return PathCascadeResult(
         classification_version=taxonomy_store.classification_version,
         prompt_version=taxonomy_store.prompt_version,
@@ -326,12 +387,12 @@ def classify_path_cascade(
         beam_strategy=GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
         rank_beam_width=rank_beam_width,
         rank_steps=tuple(rank_steps),
-        species_top20=(),
-        species_top5=(),
-        species_top3=(),
-        species_top1=None,
-        final_winning_path=(),
-        skipped_ranks=tuple(fully_skipped_ranks),
+        species_top20=species_top20,
+        species_top5=species_top5,
+        species_top3=species_top3,
+        species_top1=species_top1,
+        final_winning_path=winning_path,
+        skipped_ranks=tuple(str(rank) for rank in winning_path_row.get("skipped_ranks") or ()),
     )
 
 
@@ -347,6 +408,71 @@ def _parent_node_ids(active_paths: pl.DataFrame, rank: str) -> tuple[str, ...]:
                 parent_ids.add(node_id)
                 break
     return tuple(sorted(parent_ids))
+
+
+def _attach_species_mappings(
+    *,
+    taxonomy_store: PathTaxonomyStore,
+    scores: tuple[RankCandidateScore, ...],
+    active_path_count: int,
+) -> tuple[RankCandidateScore, ...]:
+    node_ids = tuple(score.node_id for score in scores)
+    mappings = taxonomy_store.mappings_for_species_nodes(node_ids)
+    rows_by_node: dict[str, list[dict[str, Any]]] = {}
+    for mapping in mappings.iter_rows(named=True):
+        rows_by_node.setdefault(str(mapping["species_node_id"]), []).append(dict(mapping))
+    mapped: list[RankCandidateScore] = []
+    for score in scores:
+        rows = rows_by_node.get(score.node_id, [])
+        if (
+            len(rows) != 1
+            or str(rows[0].get("taxonomic_status") or "") != "ACCEPTED"
+            or not str(rows[0].get("accepted_taxon_key") or "")
+            or not str(rows[0].get("gbif_species_key") or "")
+        ):
+            raise PathCascadeClassificationError(
+                code="invalid_species_mapping",
+                rank="SPECIES",
+                candidate_count=len(scores),
+                active_path_count=active_path_count,
+                message=f"retained species must have exactly one accepted GBIF mapping: {score.node_id}",
+            )
+        mapped.append(
+            replace(
+                score,
+                accepted_taxon_key=str(rows[0]["accepted_taxon_key"]),
+                gbif_species_key=str(rows[0]["gbif_species_key"]),
+            )
+        )
+    return tuple(mapped)
+
+
+def _winning_path_scores(
+    *,
+    path_row: dict[str, object],
+    rank_steps: tuple[RankStepResult, ...],
+) -> tuple[RankCandidateScore, ...]:
+    score_by_node = {
+        score.node_id: score
+        for step in rank_steps
+        for score in step.top_candidates
+    }
+    winning: list[RankCandidateScore] = []
+    for rank in CLASSIFICATION_RANKS:
+        node_id = str(path_row.get(f"{rank.casefold()}_node_id") or "")
+        if not node_id:
+            continue
+        score = score_by_node.get(node_id)
+        if score is None:
+            raise PathCascadeClassificationError(
+                code="winning_path_score_missing",
+                rank=rank,
+                candidate_count=0,
+                active_path_count=1,
+                message=f"winning species path has no retained rank score for node: {node_id}",
+            )
+        winning.append(score)
+    return tuple(winning)
 
 
 __all__ = [
