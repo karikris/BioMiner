@@ -19,7 +19,7 @@ ClassificationMode = Literal[
 TARGET_SCOPE_OBJECT_SCREENING: ClassificationMode = "target_scope_object_screening"
 HIERARCHICAL_BUTTERFLY_CLASSIFICATION: ClassificationMode = "hierarchical_butterfly_classification"
 DEFAULT_CLASSIFICATION_MODE: ClassificationMode = TARGET_SCOPE_OBJECT_SCREENING
-DEFAULT_FAMILY_TOP_K = 3
+TARGET_FAMILY_REPORT_TOP_K = 3
 
 SUPPORTED_CLASSIFICATION_MODES: tuple[ClassificationMode, ...] = (
     TARGET_SCOPE_OBJECT_SCREENING,
@@ -57,7 +57,6 @@ def is_hierarchical_classification(mode: str | None) -> TypeGuard[Literal["hiera
 __all__ = [
     "CLASSIFICATION_MODE_ALIASES",
     "DEFAULT_CLASSIFICATION_MODE",
-    "DEFAULT_FAMILY_TOP_K",
     "DEFAULT_RANK_BEAM_WIDTH",
     "DEFAULT_SPECIES_FIRST_PASS_TOP_K",
     "DEFAULT_SPECIES_REPORT_TOP_K",
@@ -66,6 +65,7 @@ __all__ = [
     "HIERARCHICAL_BUTTERFLY_CLASSIFICATION",
     "SUPPORTED_CLASSIFICATION_MODES",
     "TARGET_SCOPE_OBJECT_SCREENING",
+    "TARGET_FAMILY_REPORT_TOP_K",
     "ClassificationMode",
     "is_hierarchical_classification",
     "normalize_classification_mode",

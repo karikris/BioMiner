@@ -374,7 +374,6 @@ def test_cascade_object_audit_survives_join_and_summarizes_winning_genus() -> No
     summary = _photo_summary(scores)
 
     assert joined["family_top3_node_ids"][0].to_list() == ["f:a", "f:b", "f:c"]
-    assert joined["family_top3_accepted_taxon_keys"][0].to_list() == []
     assert joined["selected_family_node_id"][0] == "f:c"
     assert joined["selected_genus_node_id"][0] == "g:c1"
     assert summary.schema == PHOTO_EVIDENCE_SUMMARY_SCHEMA

@@ -14,7 +14,7 @@ import polars as pl
 
 from biominer.bioclip.candidate_sets import build_candidate_set
 from biominer.bioclip.classification_modes import (
-    DEFAULT_FAMILY_TOP_K,
+    DEFAULT_RANK_BEAM_WIDTH,
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
@@ -149,7 +149,7 @@ def run_vision_plumbing_benchmark(
     classification_mode: ClassificationMode = HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     taxonomy_candidate_table: str | Path | None = None,
     output_dir: str | Path,
-    family_top_k: int = DEFAULT_FAMILY_TOP_K,
+    rank_beam_width: int = DEFAULT_RANK_BEAM_WIDTH,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> VisionPlumbingBenchmarkResult:
@@ -234,7 +234,7 @@ def run_vision_plumbing_benchmark(
             scorer=scorer,
             output_path=scores_path,
             classification_mode=mode,
-            family_top_k=family_top_k,
+            rank_beam_width=rank_beam_width,
             species_first_pass_top_k=species_first_pass_top_k,
             species_rerank_top_k=species_rerank_top_k,
             path_taxonomy_store=(

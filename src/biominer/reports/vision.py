@@ -155,7 +155,7 @@ def _detection_metrics(
 def _bioclip_metrics(scores: pl.DataFrame | None, *, detections: pl.DataFrame | None, runtime: dict[str, Any]) -> dict[str, Any]:
     crops_scored = _height(scores)
     score_inputs_seen = _runtime_int(runtime, "bioclip_score_inputs", "score_inputs_seen")
-    candidate_counts = _numeric_values(scores, "species_candidate_count")
+    candidate_counts = _rank_count_values(scores, rank="SPECIES")
     return {
         "bioclip_gate_mode": _runtime_string(runtime, "bioclip_gate_mode"),
         "score_inputs_seen": score_inputs_seen,
@@ -275,10 +275,14 @@ def _list_length_sum(frame: pl.DataFrame | None, column: str) -> int | None:
     return total
 
 
-def _numeric_values(frame: pl.DataFrame | None, column: str) -> list[float]:
-    if frame is None or frame.is_empty() or column not in frame.columns:
+def _rank_count_values(frame: pl.DataFrame | None, *, rank: str) -> list[float]:
+    if frame is None or frame.is_empty() or "candidate_counts_by_rank" not in frame.columns:
         return []
-    return [float(value) for value in frame.select(column).to_series().to_list() if value is not None]
+    return [
+        float(counts[rank])
+        for counts in frame.get_column("candidate_counts_by_rank").drop_nulls().to_list()
+        if isinstance(counts, dict) and counts.get(rank) is not None
+    ]
 
 
 def _direct_prompt_scoring_used(frame: pl.DataFrame | None) -> bool | None:

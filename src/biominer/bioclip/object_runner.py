@@ -18,15 +18,13 @@ from biominer.bioclip.cascade_contract import (
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
 from biominer.bioclip.classification_modes import (
     DEFAULT_CLASSIFICATION_MODE,
-    DEFAULT_FAMILY_TOP_K,
+    DEFAULT_RANK_BEAM_WIDTH,
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+    TARGET_FAMILY_REPORT_TOP_K,
     ClassificationMode,
     normalize_classification_mode,
-)
-from biominer.bioclip.five_rank_classifier import (
-    FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS,
 )
 from biominer.bioclip.path_cascade_classifier import classify_path_cascade_batch
 from biominer.bioclip.path_cascade_output import (
@@ -75,41 +73,15 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "classification_mode": pl.String,
     "candidate_selection_mode": pl.String,
     "candidate_source": pl.String,
-    "taxonomy_table_version": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["taxonomy_table_version"],
-    "taxonomy_prompt_variant_version": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["taxonomy_prompt_variant_version"],
+    "taxonomy_table_version": pl.String,
+    "taxonomy_prompt_variant_version": pl.String,
     "ablation_mode": pl.String,
-    "species_first_pass_top_k": pl.Int64,
-    "species_rerank_top_k": pl.Int64,
     "species_rerank_strategy": pl.String,
     "triage_group_top": pl.String,
     "triage_group_scores": pl.Struct({"butterfly_like": pl.Float64}),
-    "family_top3": pl.List(pl.String),
-    "family_top3_accepted_taxon_keys": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["family_top3_accepted_taxon_keys"],
-    "family_top3_scores": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["family_top3_scores"],
-    "family_top1": pl.String,
-    "family_top1_score": pl.Float64,
-    "family_margin": pl.Float64,
-    "selected_family_key": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["selected_family_key"],
-    "selected_family": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["selected_family"],
-    "genus_top8": pl.List(pl.String),
-    "genus_top1": pl.String,
-    "genus_top1_score": pl.Float64,
-    "genus_margin": pl.Float64,
-    "species_candidate_family_key": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_candidate_family_key"],
-    "species_candidate_family": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_candidate_family"],
-    "species_candidate_count": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_candidate_count"],
-    "species_top20": pl.List(pl.String),
-    "species_top20_accepted_taxon_keys": pl.List(pl.String),
-    "species_top20_scores": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_top20_scores"],
-    "species_top5": pl.List(pl.String),
-    "species_top5_accepted_taxon_keys": pl.List(pl.String),
-    "species_top5_scores": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_top5_scores"],
-    "species_top1": pl.String,
     "species_top1_scientific_name": pl.String,
-    "species_top1_accepted_taxon_key": pl.String,
     "accepted_taxon_key": pl.String,
     "species_top1_score": pl.Float64,
-    "species_top1_margin": pl.Float64,
     "target_accepted_taxon_key": pl.String,
     "target_species_score": pl.Float64,
     "target_species_rank": pl.Int64,
@@ -122,9 +94,9 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "occurrence_bin": pl.String,
     "bin_reason": pl.String,
 }
-OBJECT_SCORE_OUTPUT_SCHEMA.update(FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS)
-for _cascade_field, _cascade_dtype in PATH_CASCADE_OUTPUT_SCHEMA.items():
-    OBJECT_SCORE_OUTPUT_SCHEMA.setdefault(_cascade_field, _cascade_dtype)
+# The versioned cascade schema is authoritative for all overlapping physical
+# types. Target-screening rows leave cascade-only columns null.
+OBJECT_SCORE_OUTPUT_SCHEMA.update(PATH_CASCADE_OUTPUT_SCHEMA)
 OBJECT_EVIDENCE_JOINED_SCHEMA: dict[str, pl.DataType] = {
     **OBJECT_SCORE_OUTPUT_SCHEMA,
     **DETECTION_OUTPUT_SCHEMA,
@@ -798,7 +770,7 @@ def screen_object_detections(
     adaptive_batching: bool = False,
     min_bioclip_batch_size: int = 1,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
-    family_top_k: int = DEFAULT_FAMILY_TOP_K,
+    rank_beam_width: int = DEFAULT_RANK_BEAM_WIDTH,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
     path_taxonomy_store: PathTaxonomyStore | None = None,
@@ -819,15 +791,14 @@ def screen_object_detections(
             "classification-v3 path_taxonomy_store and taxonomy_text_embedding_index "
             "are required for hierarchical_butterfly_classification"
         )
-    family_top_k, species_first_pass_top_k, species_rerank_top_k = _validate_visual_top_k(
-        family_top_k=family_top_k,
+    species_first_pass_top_k, species_rerank_top_k = _validate_species_top_k(
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
     )
     if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
         validate_production_cascade_settings(
             beam_strategy=GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
-            rank_beam_width=family_top_k,
+            rank_beam_width=rank_beam_width,
             species_first_pass_top_k=species_first_pass_top_k,
             species_rerank_top_k=species_rerank_top_k,
             species_report_top_k=DEFAULT_SPECIES_REPORT_TOP_K,
@@ -881,7 +852,6 @@ def screen_object_detections(
             ablation_mode=ablation_mode,
             geo_prior_table=geo_prior_table,
             classification_mode=classification_mode,
-            family_top_k=family_top_k,
             species_first_pass_top_k=species_first_pass_top_k,
             species_rerank_top_k=species_rerank_top_k,
         )
@@ -1130,10 +1100,13 @@ def object_score_audit_metrics(frame: pl.DataFrame) -> dict[str, Any]:
         "taxonomy_table_versions": _string_values(frame, "taxonomy_table_version"),
         "taxonomy_prompt_variant_versions": _string_values(frame, "taxonomy_prompt_variant_version"),
         "selected_family_counts": _string_value_counts(frame, "selected_family"),
-        "selected_family_key_counts": _string_value_counts(frame, "selected_family_key"),
         "species_top1_counts": _string_value_counts(frame, "species_top1_scientific_name"),
         "accepted_taxon_key_counts": _string_value_counts(frame, "accepted_taxon_key"),
-        **_numeric_summary(frame, "species_candidate_count"),
+        **_rank_count_summary(
+            frame,
+            rank="SPECIES",
+            prefix="species_candidate_count",
+        ),
     }
 
 
@@ -1231,15 +1204,13 @@ def _score_detection(
     ablation_mode: AblationMode,
     geo_prior_table: pl.DataFrame | None = None,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
-    family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> dict[str, Any]:
     classification_mode = normalize_classification_mode(classification_mode)
     _raise_if_hierarchical_classification(classification_mode)
     item_ablation_mode = _ablation_mode({**item, "ablation_mode": item.get("ablation_mode") or ablation_mode})
-    family_top_k, species_first_pass_top_k, species_rerank_top_k = _validate_visual_top_k(
-        family_top_k=family_top_k,
+    species_first_pass_top_k, species_rerank_top_k = _validate_species_top_k(
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
     )
@@ -1275,7 +1246,6 @@ def _score_detection(
         rerank_scores=rerank_scores,
         geo_prior_table=geo_prior_table,
         classification_mode=classification_mode,
-        family_top_k=family_top_k,
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
     )
@@ -1290,7 +1260,6 @@ def _score_detection_batch(
     ablation_mode: AblationMode,
     geo_prior_table: pl.DataFrame | None = None,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
-    family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
 ) -> list[dict[str, Any]]:
@@ -1298,8 +1267,7 @@ def _score_detection_batch(
         return []
     classification_mode = normalize_classification_mode(classification_mode)
     _raise_if_hierarchical_classification(classification_mode)
-    family_top_k, species_first_pass_top_k, species_rerank_top_k = _validate_visual_top_k(
-        family_top_k=family_top_k,
+    species_first_pass_top_k, species_rerank_top_k = _validate_species_top_k(
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
     )
@@ -1369,7 +1337,6 @@ def _score_detection_batch(
                 rerank_scores=rerank_scores_by_index[index],
                 geo_prior_table=geo_prior_table,
                 classification_mode=classification_mode,
-                family_top_k=family_top_k,
                 species_first_pass_top_k=species_first_pass_top_k,
                 species_rerank_top_k=species_rerank_top_k,
             )
@@ -1416,7 +1383,6 @@ def _score_detection_from_scores(
     rerank_scores: dict[str, float],
     geo_prior_table: pl.DataFrame | None,
     classification_mode: ClassificationMode,
-    family_top_k: int,
     species_first_pass_top_k: int,
     species_rerank_top_k: int,
 ) -> dict[str, Any]:
@@ -1468,24 +1434,48 @@ def _score_detection_from_scores(
         "species_rerank_strategy": _target_scope_species_rerank_strategy(species_first_pass_top_k),
         "triage_group_top": "butterfly_like",
         "triage_group_scores": {"butterfly_like": float(item.get("detector_score") or 0.0)},
-        "family_top3": [name for name, _score in ranked_families[:family_top_k]],
+        "taxonomy_table_version": candidate_set.registry_version,
+        "taxonomy_prompt_variant_version": candidate_set.prompt_variant_version,
+        "family_top3": [name for name, _score in ranked_families[:TARGET_FAMILY_REPORT_TOP_K]],
+        "family_top3_scores": [score for _name, score in ranked_families[:TARGET_FAMILY_REPORT_TOP_K]],
         "family_top1": ranked_families[0][0] if ranked_families else None,
         "family_top1_score": ranked_families[0][1] if ranked_families else 0.0,
         "family_margin": family_margin,
-        "genus_top8": [name for name, _score in ranked_genera[:8]],
+        "genus_top3": [name for name, _score in ranked_genera[:3]],
+        "genus_top3_scores": [score for _name, score in ranked_genera[:3]],
         "genus_top1": ranked_genera[0][0] if ranked_genera else None,
         "genus_top1_score": ranked_genera[0][1] if ranked_genera else 0.0,
         "genus_margin": genus_margin,
         "species_top20": species_top20,
         "species_top20_accepted_taxon_keys": [_taxon_key_for_name(taxon_key_by_name, name) for name in species_top20],
+        "species_top20_first_pass_scores": [score for _name, score in ranked_species_top20],
         "species_top5": species_top5,
         "species_top5_accepted_taxon_keys": [_taxon_key_for_name(taxon_key_by_name, name) for name in species_top5],
+        "species_top5_rerank_scores": [score for _name, score in ranked_species[:species_rerank_top_k]],
+        "species_top3": [name for name, _score in ranked_species[:3]],
+        "species_top3_accepted_taxon_keys": [
+            _taxon_key_for_name(taxon_key_by_name, name)
+            for name, _score in ranked_species[:3]
+        ],
+        "species_top3_rerank_scores": [score for _name, score in ranked_species[:3]],
         "species_top1": top1_name,
         "species_top1_scientific_name": top1_name,
         "species_top1_accepted_taxon_key": top1_taxon_key,
+        "species_top1_first_pass_score": _target_score(ranked_species_top20, top1_name or ""),
+        "species_top1_rerank_score": top1_score,
         "accepted_taxon_key": top1_taxon_key,
         "species_top1_score": top1_score,
         "species_top1_margin": margin,
+        "selected_family": top1_candidate.family if top1_candidate else None,
+        "selected_genus": top1_candidate.genus if top1_candidate else None,
+        "candidate_counts_by_rank": {
+            "FAMILY": len(ranked_families),
+            "SUBFAMILY": 0,
+            "TRIBE": 0,
+            "SUBTRIBE": 0,
+            "GENUS": len(ranked_genera),
+            "SPECIES": len(ranked_species_top20),
+        },
         "target_accepted_taxon_key": context.accepted_taxon_key,
         "target_species_score": target_score,
         "target_species_rank": target_rank,
@@ -1522,24 +1512,20 @@ def _raise_if_hierarchical_classification(classification_mode: ClassificationMod
         )
 
 
-def _validate_visual_top_k(
+def _validate_species_top_k(
     *,
-    family_top_k: int,
     species_first_pass_top_k: int,
     species_rerank_top_k: int,
-) -> tuple[int, int, int]:
-    family = int(family_top_k)
+) -> tuple[int, int]:
     first_pass = int(species_first_pass_top_k)
     rerank = int(species_rerank_top_k)
-    if family <= 0:
-        raise ValueError("family_top_k must be positive")
     if first_pass <= 0:
         raise ValueError("species_first_pass_top_k must be positive")
     if rerank <= 0:
         raise ValueError("species_rerank_top_k must be positive")
     if rerank > first_pass:
         raise ValueError("species_rerank_top_k must be <= species_first_pass_top_k")
-    return family, first_pass, rerank
+    return first_pass, rerank
 
 
 def _score_label_sets_for_items(
@@ -2383,23 +2369,32 @@ def _string_values(frame: pl.DataFrame, column: str) -> list[str]:
     )
 
 
-def _numeric_summary(frame: pl.DataFrame, column: str) -> dict[str, float | int | None]:
+def _rank_count_summary(
+    frame: pl.DataFrame,
+    *,
+    rank: str,
+    prefix: str,
+) -> dict[str, float | int | None]:
     empty = {
-        f"{column}_non_null_count": 0,
-        f"{column}_min": None,
-        f"{column}_max": None,
-        f"{column}_mean": None,
+        f"{prefix}_non_null_count": 0,
+        f"{prefix}_min": None,
+        f"{prefix}_max": None,
+        f"{prefix}_mean": None,
     }
-    if frame.is_empty() or column not in frame.columns:
+    if frame.is_empty() or "candidate_counts_by_rank" not in frame.columns:
         return empty
-    values = [float(value) for value in frame.get_column(column).drop_nulls().to_list()]
+    values = [
+        float(counts[rank])
+        for counts in frame.get_column("candidate_counts_by_rank").drop_nulls().to_list()
+        if isinstance(counts, dict) and counts.get(rank) is not None
+    ]
     if not values:
         return empty
     return {
-        f"{column}_non_null_count": len(values),
-        f"{column}_min": min(values),
-        f"{column}_max": max(values),
-        f"{column}_mean": sum(values) / len(values),
+        f"{prefix}_non_null_count": len(values),
+        f"{prefix}_min": min(values),
+        f"{prefix}_max": max(values),
+        f"{prefix}_mean": sum(values) / len(values),
     }
 
 

@@ -7,7 +7,7 @@ import pytest
 
 from biominer.bioclip.classification_modes import (
     DEFAULT_CLASSIFICATION_MODE,
-    DEFAULT_FAMILY_TOP_K,
+    DEFAULT_RANK_BEAM_WIDTH,
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
@@ -33,7 +33,7 @@ def test_phase4_m5pro_profile_and_classifier_defaults_remain_acceptance_values()
     assert settings.adaptive_batching is False
     assert DEFAULT_CLASSIFICATION_MODE == TARGET_SCOPE_OBJECT_SCREENING
     assert HIERARCHICAL_BUTTERFLY_CLASSIFICATION == "hierarchical_butterfly_classification"
-    assert DEFAULT_FAMILY_TOP_K == 3
+    assert DEFAULT_RANK_BEAM_WIDTH == 3
     assert DEFAULT_SPECIES_FIRST_PASS_TOP_K == 20
     assert DEFAULT_SPECIES_RERANK_TOP_K == 5
 

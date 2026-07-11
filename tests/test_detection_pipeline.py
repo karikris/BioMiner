@@ -1115,7 +1115,7 @@ def test_xie_style_evaluation_uses_iou_and_species_correctness() -> None:
                 "species_top1_scientific_name": "Danaus plexippus",
                 "species_top5": ["Danaus plexippus", "Danaus gilippus"],
                 "family_top3": ["Nymphalidae"],
-                "genus_top8": ["Danaus"],
+                "genus_top3": ["Danaus"],
                 "species_top1_score": 0.9,
             },
             {
@@ -1125,7 +1125,7 @@ def test_xie_style_evaluation_uses_iou_and_species_correctness() -> None:
                 "species_top1_scientific_name": "Danaus gilippus",
                 "species_top5": ["Danaus gilippus"],
                 "family_top3": ["Nymphalidae"],
-                "genus_top8": ["Danaus"],
+                "genus_top3": ["Danaus"],
                 "species_top1_score": 0.8,
             },
         ],
@@ -1334,7 +1334,7 @@ def test_xie_style_taxonomic_accuracy_counts_missed_ground_truth_as_wrong() -> N
                 "species_top1_scientific_name": "Danaus plexippus",
                 "species_top5": ["Danaus plexippus"],
                 "family_top3": ["Nymphalidae"],
-                "genus_top8": ["Danaus"],
+                "genus_top3": ["Danaus"],
                 "species_top1_score": 0.95,
             }
         ],

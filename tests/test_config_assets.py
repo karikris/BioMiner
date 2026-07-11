@@ -15,7 +15,6 @@ def test_authoritative_docs_and_classification_source_exist() -> None:
         Path("docs/production.md"),
         Path("docs/vision.md"),
         Path("docs/migrations/classification-v3.md"),
-        Path("config/taxonomy/papilionoidea_classification_v2.json"),
         Path("config/taxonomy/papilionoidea_classification_v3.json"),
         Path("config/vision_profiles/mac_m5pro_64gb.json"),
     ):
@@ -41,10 +40,20 @@ def test_classification_v3_cutover_doc_preserves_version_and_output_boundaries()
         assert required in text
 
 
-def test_classification_source_has_reviewed_five_rank_path() -> None:
-    payload = json.loads(Path("config/taxonomy/papilionoidea_classification_v2.json").read_text(encoding="utf-8"))
+def test_classification_source_has_reviewed_six_rank_path_with_subtribe_skip() -> None:
+    payload = json.loads(
+        Path("config/taxonomy/papilionoidea_classification_v3.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
-    assert [node["rank"] for node in payload["nodes"]] == ["FAMILY", "SUBFAMILY", "TRIBE", "GENUS", "SPECIES"]
+    assert [node["rank"] for node in payload["nodes"]] == [
+        "FAMILY",
+        "SUBFAMILY",
+        "TRIBE",
+        "GENUS",
+        "SPECIES",
+    ]
     assert [node["scientific_name"] for node in payload["nodes"]] == [
         "Papilionidae",
         "Papilioninae",
@@ -52,8 +61,26 @@ def test_classification_source_has_reviewed_five_rank_path() -> None:
         "Papilio",
         "Papilio demoleus",
     ]
+    skip = next(
+        edge
+        for edge in payload["edges"]
+        if edge["edge_type"] == "reviewed_rank_skip"
+    )
+    assert skip["skipped_ranks"] == ["SUBTRIBE"]
+    assert skip["reviewed"] is True
     assert payload["species_mappings"][0]["gbif_species_key"] == "1938069"
     assert all(row["review_status"] == "reviewed" for row in [*payload["nodes"], *payload["edges"], *payload["species_mappings"]])
+
+
+def test_superseded_classification_v2_assets_are_removed() -> None:
+    for path in (
+        Path("src/biominer/registry/classification_v2.py"),
+        Path("src/biominer/bioclip/five_rank_classifier.py"),
+        Path("src/biominer/bioclip/five_rank_store.py"),
+        Path("src/biominer/bioclip/five_rank_embedding_cache.py"),
+        Path("config/taxonomy/papilionoidea_classification_v2.json"),
+    ):
+        assert not path.exists(), path
 
 
 def test_removed_visual_commands_have_no_parser_aliases() -> None:

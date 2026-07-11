@@ -17,10 +17,11 @@ from biominer.bioclip.cascade_contract import (
 from biominer.bioclip.candidate_sets import CandidateSet
 from biominer.bioclip.classification_modes import (
     DEFAULT_CLASSIFICATION_MODE,
-    DEFAULT_FAMILY_TOP_K,
+    DEFAULT_RANK_BEAM_WIDTH,
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+    TARGET_FAMILY_REPORT_TOP_K,
     ClassificationMode,
     normalize_classification_mode,
 )
@@ -102,7 +103,6 @@ def enqueue_bioclip_work_from_detection_shards(
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
     taxonomy_table_version: str | None = None,
     taxonomy_prompt_variant_version: str | None = None,
-    family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
     cascade_identity: dict[str, Any] | None = None,
@@ -157,7 +157,6 @@ def enqueue_bioclip_work_from_detection_shards(
                             classification_mode=classification_mode,
                             taxonomy_table_version=taxonomy_table_version,
                             taxonomy_prompt_variant_version=taxonomy_prompt_variant_version,
-                            family_top_k=family_top_k,
                             species_first_pass_top_k=species_first_pass_top_k,
                             species_rerank_top_k=species_rerank_top_k,
                             cascade_identity=cascade_identity,
@@ -193,7 +192,6 @@ def bioclip_score_work_item(
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
     taxonomy_table_version: str | None = None,
     taxonomy_prompt_variant_version: str | None = None,
-    family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
     cascade_identity: dict[str, Any] | None = None,
@@ -231,7 +229,7 @@ def bioclip_score_work_item(
         top_k_settings = None
     else:
         top_k_settings = {
-            "family_top_k": int(family_top_k),
+            "target_family_report_top_k": TARGET_FAMILY_REPORT_TOP_K,
             "species_first_pass_top_k": int(species_first_pass_top_k),
             "species_rerank_top_k": int(species_rerank_top_k),
         }
@@ -308,7 +306,7 @@ def run_cloud_bioclip_batch(
     adaptive_batching: bool = False,
     min_crop_batch_size: int = 1,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
-    family_top_k: int = DEFAULT_FAMILY_TOP_K,
+    rank_beam_width: int = DEFAULT_RANK_BEAM_WIDTH,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
     path_taxonomy_store: PathTaxonomyStore | None = None,
@@ -325,7 +323,7 @@ def run_cloud_bioclip_batch(
     if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
         validate_production_cascade_settings(
             beam_strategy=GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
-            rank_beam_width=family_top_k,
+            rank_beam_width=rank_beam_width,
             species_first_pass_top_k=species_first_pass_top_k,
             species_rerank_top_k=species_rerank_top_k,
             species_report_top_k=DEFAULT_SPECIES_REPORT_TOP_K,
@@ -349,7 +347,6 @@ def run_cloud_bioclip_batch(
     _validate_cloud_bioclip_work_contract(
         work_items=work_items,
         classification_mode=classification_mode,
-        family_top_k=family_top_k,
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
         taxonomy_store=path_taxonomy_store,
@@ -468,7 +465,6 @@ def run_cloud_bioclip_batch(
                         ablation_mode=mode,  # type: ignore[arg-type]
                         geo_prior_table=geo_prior_table,
                         classification_mode=classification_mode,
-                        family_top_k=family_top_k,
                         species_first_pass_top_k=species_first_pass_top_k,
                         species_rerank_top_k=species_rerank_top_k,
                     )
@@ -487,7 +483,6 @@ def run_cloud_bioclip_batch(
                 ablation_mode=mode,  # type: ignore[arg-type]
                 geo_prior_table=geo_prior_table,
                 classification_mode=classification_mode,
-                family_top_k=family_top_k,
                 species_first_pass_top_k=species_first_pass_top_k,
                 species_rerank_top_k=species_rerank_top_k,
             ),
@@ -542,7 +537,6 @@ def _validate_cloud_bioclip_work_contract(
     *,
     work_items: list[dict[str, Any]],
     classification_mode: ClassificationMode,
-    family_top_k: int,
     species_first_pass_top_k: int,
     species_rerank_top_k: int,
     taxonomy_store: PathTaxonomyStore | None,
@@ -556,7 +550,7 @@ def _validate_cloud_bioclip_work_contract(
         expected_top_k = None
     else:
         expected_top_k = {
-            "family_top_k": int(family_top_k),
+            "target_family_report_top_k": TARGET_FAMILY_REPORT_TOP_K,
             "species_first_pass_top_k": int(species_first_pass_top_k),
             "species_rerank_top_k": int(species_rerank_top_k),
         }

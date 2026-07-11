@@ -10,8 +10,14 @@ import polars as pl
 CALIBRATION_MODE = "candidate_set_relative_heuristic"
 
 
-def score_margin(row: dict[str, object], score_column: str = "species_top5_scores") -> float | None:
-    scores = _float_list(row.get(score_column))
+def score_margin(
+    row: dict[str, object],
+    score_column: str = "species_top5_rerank_scores",
+) -> float | None:
+    value = row.get(score_column)
+    if value is None and score_column == "species_top5_rerank_scores":
+        value = row.get("species_top5_scores")
+    scores = _float_list(value)
     if len(scores) < 2:
         return None
     return float(scores[0] - scores[1])
@@ -117,14 +123,17 @@ def add_uncertainty_fields(
     for row in frame.to_dicts():
         species_margin = _optional_float(row.get("species_top1_margin"))
         if species_margin is None:
-            species_margin = score_margin(row, "species_top5_scores")
+            species_margin = score_margin(row)
         family_margin = _optional_float(row.get("family_margin"))
         if family_margin is None:
             family_margin = score_margin(row, "family_top3_scores")
         entropy = (
             None
             if _is_path_cascade_row(row)
-            else topk_entropy(row.get("species_top5_scores"))
+            else topk_entropy(
+                row.get("species_top5_rerank_scores")
+                or row.get("species_top5_scores")
+            )
         )
         low_margin = any(
             margin is not None and margin <= low_margin_threshold

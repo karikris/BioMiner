@@ -116,7 +116,7 @@ def evaluate_xie_style(
 
 
 def _genus_top3(prediction: dict[str, Any]) -> list[Any]:
-    values = prediction.get("genus_top3") or prediction.get("genus_top8") or []
+    values = prediction.get("genus_top3") or []
     return list(values)[:3]
 
 

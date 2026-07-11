@@ -17,7 +17,7 @@ import polars as pl
 
 from biominer.bioclip.classification_modes import (
     DEFAULT_CLASSIFICATION_MODE,
-    DEFAULT_FAMILY_TOP_K,
+    DEFAULT_RANK_BEAM_WIDTH,
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
@@ -392,7 +392,7 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
         default=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     )
     benchmark.add_argument("--taxonomy-candidate-table")
-    benchmark.add_argument("--family-top-k", type=int, default=DEFAULT_FAMILY_TOP_K)
+    benchmark.add_argument("--rank-beam-width", type=int, default=DEFAULT_RANK_BEAM_WIDTH)
     benchmark.add_argument("--species-first-pass-top-k", type=int, default=DEFAULT_SPECIES_FIRST_PASS_TOP_K)
     benchmark.add_argument("--species-rerank-top-k", type=int, default=DEFAULT_SPECIES_RERANK_TOP_K)
     benchmark.add_argument("--output-dir", required=True)
@@ -1457,7 +1457,7 @@ def _run_vision_benchmark_plumbing(args: argparse.Namespace) -> int:
             classification_mode=args.classification_mode,
             taxonomy_candidate_table=args.taxonomy_candidate_table,
             output_dir=args.output_dir,
-            family_top_k=args.family_top_k,
+            rank_beam_width=args.rank_beam_width,
             species_first_pass_top_k=args.species_first_pass_top_k,
             species_rerank_top_k=args.species_rerank_top_k,
         )

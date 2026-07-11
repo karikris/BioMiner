@@ -96,6 +96,12 @@ def test_enqueue_bioclip_work_from_detection_shards_only_uses_detected_butterfli
     assert payload["ablation_mode"] == "detector_crop"
     assert payload["candidate_set_id"] == "candidate-set-1"
     assert payload["classification_mode"] == "target_scope_object_screening"
+    assert payload["top_k_settings"] == {
+        "target_family_report_top_k": 3,
+        "species_first_pass_top_k": 20,
+        "species_rerank_top_k": 5,
+    }
+    assert "family_top_k" not in payload["top_k_settings"]
     assert payload["model"]["checkpoint"] == "bioclip-2.5"
     assert payload["detection"]["flickr_photo_id"] == "photo-1"
     assert payload["detection"]["detector_label"] == "butterfly_like"

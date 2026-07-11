@@ -434,7 +434,9 @@ def _species_margin(row: Mapping[str, Any]) -> float | None:
     explicit = _optional_float(row.get("species_top1_margin"))
     if explicit is not None:
         return explicit
-    scores = _float_list(row.get("species_top5_scores"))
+    scores = _float_list(
+        row.get("species_top5_rerank_scores") or row.get("species_top5_scores")
+    )
     if len(scores) < 2:
         return None
     return float(scores[0] - scores[1])

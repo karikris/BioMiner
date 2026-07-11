@@ -39,7 +39,6 @@ from biominer.registry.classification_v3 import (
     classification_v3_artifact_paths,
     write_classification_v3_artifacts,
 )
-from biominer.registry.classification_v2 import write_classification_v2_artifacts
 from biominer.registry.trust_policy import (
     TrustTier,
     decide_name_trust,
@@ -298,7 +297,7 @@ def test_production_run_hierarchical_score_stage_requires_taxonomy_table(tmp_pat
     assert plan.manifest.stages[0].metrics["taxonomy_candidate_table_status"] == "missing"
 
 
-def test_hierarchical_production_rejects_valid_classification_v2_artifacts(
+def test_hierarchical_production_rejects_classification_v2_manifest_version(
     tmp_path: Path,
 ) -> None:
     registry = tmp_path / "classification-v2"
@@ -320,7 +319,14 @@ def test_hierarchical_production_rejects_valid_classification_v2_artifacts(
         '{"registry_version":"butterflies-v2"}',
         encoding="utf-8",
     )
-    write_classification_v2_artifacts(registry)
+    write_classification_v3_artifacts(registry)
+    classification_manifest = registry / "classification_manifest.json"
+    manifest_payload = json.loads(classification_manifest.read_text(encoding="utf-8"))
+    manifest_payload["classification_version"] = "butterfly-classification-v2.0.0"
+    classification_manifest.write_text(
+        json.dumps(manifest_payload, sort_keys=True),
+        encoding="utf-8",
+    )
 
     orchestrator = ProductionRunOrchestrator(
         ProductionRunRequest(
@@ -1287,12 +1293,13 @@ def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(tmp_path
     assert score["flickr_photo_id"] == "photo-butterfly"
     assert score["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
     assert score["family_top3"][:2] == ["Papilionidae", "Nymphalidae"]
-    assert score["selected_family_key"] is None
     assert score["selected_family_node_id"] == "family:papilionidae"
-    assert score["species_candidate_count"] == 4
+    assert score["candidate_counts_by_rank"]["SPECIES"] == 4
     assert set(score["species_top20_accepted_taxon_keys"]) == {"gbif:100", "gbif:101", "gbif:200", "gbif:301"}
     assert score["species_top20"][0] == "Papilio machaon"
     assert score["species_top5"][0] == "Papilio demoleus"
+    assert score["species_top20_first_pass_scores"]
+    assert score["species_top5_rerank_scores"]
     assert score["species_top1_scientific_name"] == "Papilio demoleus"
     assert score["accepted_taxon_key"] == "gbif:100"
     assert score["target_species_score"] is None
@@ -2145,7 +2152,6 @@ def test_orchestrator_reuses_registered_cloud_bioclip_part(tmp_path) -> None:
         model_checkpoint=scorer.model_checkpoint,
         candidate_set_id=candidate_set.candidate_set_id,
         classification_mode=request.classification_mode,
-        family_top_k=request.rank_beam_width,
         species_first_pass_top_k=request.species_first_pass_top_k,
         species_rerank_top_k=request.species_rerank_top_k,
     )
@@ -2793,7 +2799,7 @@ def _join_stage_input_frames() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame
                 "family_top1": "Nymphalidae",
                 "family_top1_score": 0.95,
                 "family_margin": 0.40,
-                "genus_top8": ["Danaus"],
+                "genus_top3": ["Danaus"],
                 "genus_top1": "Danaus",
                 "genus_top1_score": 0.90,
                 "genus_margin": 0.35,

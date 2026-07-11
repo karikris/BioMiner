@@ -24,6 +24,7 @@ from biominer.bioclip.object_runner import (
     screen_object_detections,
     write_object_evidence_outputs,
 )
+from biominer.bioclip.path_cascade_output import PATH_CASCADE_OUTPUT_SCHEMA
 from biominer.detection.detector_base import DecodedImage
 from biominer.detection.policy import DetectionPolicy
 from biominer.detection.segmentation import make_segmenter
@@ -74,6 +75,28 @@ def test_object_visual_modes_are_segmentation_not_enhancement() -> None:
             violations[str(path)] = matches
 
     assert violations == {}
+
+
+def test_object_score_schema_preserves_exact_versioned_cascade_dtypes() -> None:
+    assert {
+        field: OBJECT_SCORE_OUTPUT_SCHEMA[field]
+        for field in PATH_CASCADE_OUTPUT_SCHEMA
+    } == PATH_CASCADE_OUTPUT_SCHEMA
+    for legacy_field in (
+        "family_top3_accepted_taxon_keys",
+        "genus_top8",
+        "selected_family_key",
+        "species_top20_scores",
+        "species_top5_scores",
+        "taxonomy_fingerprint",
+        "classification_path_json",
+        "rank_candidates_json",
+        "candidate_counts_json",
+        "pruning_decisions_json",
+        "skipped_level_reasons_json",
+        "rerank_mode",
+    ):
+        assert legacy_field not in OBJECT_SCORE_OUTPUT_SCHEMA
 
 
 def _species_context(
@@ -1683,7 +1706,7 @@ def test_object_bioclip_empty_scores_write_stable_schema(tmp_path) -> None:
         "family_top1",
         "family_top1_score",
         "family_margin",
-        "genus_top8",
+        "genus_top3",
         "genus_top1",
         "genus_top1_score",
         "genus_margin",
@@ -1899,9 +1922,9 @@ def test_object_bioclip_scores_family_genus_and_species_stages_separately(tmp_pa
         candidate_set.prompt_labels("species"),
     ]
     assert row["family_top3"] == ["Nymphalidae"]
-    assert row["family_top1_score"] == 0.61
-    assert row["genus_top8"] == ["Danaus", "Limenitis"]
-    assert row["genus_top1_score"] == 0.72
+    assert row["family_top1_score"] == pytest.approx(0.61)
+    assert row["genus_top3"] == ["Danaus", "Limenitis"]
+    assert row["genus_top1_score"] == pytest.approx(0.72)
     assert row["species_top5"] == ["Danaus plexippus", "Danaus gilippus", "Limenitis archippus"]
     assert row["target_species_score"] == 0.83
 
@@ -2061,7 +2084,6 @@ def test_object_bioclip_top_k_settings_control_first_pass_and_rerank_candidates(
         scorer=scorer,
         output_path=tmp_path / "object_scores.parquet",
         ablation_mode="detector_crop",
-        family_top_k=1,
         species_first_pass_top_k=4,
         species_rerank_top_k=2,
     )

@@ -21,6 +21,7 @@ from biominer.registry.classification_v3 import (
     PROMPT_LABEL_SCHEMA,
     QA_FINDING_SCHEMA,
     RANK_SCREEN_PROMPT_STAGE,
+    REVIEWED_RANK_SKIP_EDGE,
     SOURCE_SCHEMA,
     SPECIES_FIRST_PASS_PROMPT_STAGE,
     SPECIES_RERANK_PROMPT_STAGE,
@@ -436,6 +437,40 @@ def test_prompt_change_updates_classification_but_not_hierarchy_fingerprint() ->
 
     assert classification_v3_fingerprint(changed) != classification_v3_fingerprint(frames)
     assert hierarchy_fingerprint(changed) == hierarchy_fingerprint(frames)
+
+
+def test_v3_fatal_qa_persists_findings_without_promoting_artifacts(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "registry"
+    output = tmp_path / "classification-v3"
+    registry.mkdir()
+    _taxa().write_parquet(registry / "taxa.parquet")
+    source = load_classification_v3_source()
+    skip = next(
+        edge
+        for edge in source["edges"]
+        if edge["edge_type"] == REVIEWED_RANK_SKIP_EDGE
+    )
+    skip["reviewed"] = False
+    skip["review_status"] = "unreviewed"
+    source_path = tmp_path / "invalid-classification-source.json"
+    source_path.write_text(json.dumps(source), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="classification-v3 fatal QA"):
+        write_classification_v3_artifacts(
+            registry,
+            output_dir=output,
+            source_path=source_path,
+        )
+
+    paths = classification_v3_artifact_paths(output)
+    findings = pl.read_parquet(paths["qa_findings"])
+    assert "unreviewed_rank_skip" in findings.filter(
+        pl.col("severity") == "fatal"
+    )["code"].to_list()
+    assert not paths["nodes"].exists()
+    assert not paths["manifest"].exists()
 
 
 def test_v3_writer_refuses_v2_manifest_without_overwriting_it(tmp_path: Path) -> None:

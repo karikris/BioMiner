@@ -280,14 +280,6 @@ def path_cascade_result_to_object_score_row(
     scorer: Any,
 ) -> dict[str, Any]:
     audit = path_cascade_result_to_output_row(result)
-    selected_path = {
-        score.rank: {
-            "node_id": score.node_id,
-            "scientific_name": score.scientific_name,
-            "raw_similarity": score.raw_similarity,
-        }
-        for score in result.final_winning_path
-    }
     return {
         "source": str(item.get("source") or ""),
         "flickr_photo_id": str(item.get("flickr_photo_id") or ""),
@@ -316,18 +308,6 @@ def path_cascade_result_to_object_score_row(
             "butterfly_like": float(item.get("detector_score") or 0.0)
         },
         **audit,
-        # Deliberately empty: reviewed overlay node IDs are not GBIF accepted keys.
-        "family_top3_accepted_taxon_keys": [],
-        "selected_family_key": None,
-        "genus_top8": [],
-        "genus_top1": audit["genus_top1"],
-        "genus_top1_score": audit["genus_top1_score"],
-        "genus_margin": audit["genus_margin"],
-        "species_candidate_family_key": None,
-        "species_candidate_family": None,
-        "species_candidate_count": audit["candidate_counts_by_rank"]["SPECIES"],
-        "species_top20_scores": audit["species_top20_first_pass_scores"],
-        "species_top5_scores": audit["species_top5_rerank_scores"],
         "species_top1_scientific_name": audit["species_top1"],
         "accepted_taxon_key": audit["species_top1_accepted_taxon_key"],
         "species_top1_score": audit["species_top1_rerank_score"],
@@ -342,41 +322,6 @@ def path_cascade_result_to_object_score_row(
         "is_negative_material": False,
         "occurrence_bin": "in_review",
         "bin_reason": "hierarchical_open_classification_requires_review",
-        "selected_subfamily_key": None,
-        "selected_tribe_key": None,
-        "selected_genus_key": None,
-        "taxonomy_source_release": None,
-        "taxonomy_fingerprint": result.taxonomy_fingerprint,
-        "classification_path_json": json.dumps(
-            selected_path,
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        "rank_candidates_json": json.dumps(
-            {
-                rank.casefold(): audit[f"{rank.casefold()}_top3_node_ids"]
-                for rank in CLASSIFICATION_RANKS[:-1]
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        "candidate_counts_json": json.dumps(
-            audit["candidate_counts_by_rank"],
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        "pruning_decisions_json": audit["pruning_trace_json"],
-        "skipped_level_reasons_json": json.dumps(
-            {
-                step.rank: step.skip_reason
-                for step in result.rank_steps
-                if step.skip_reason
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        "rerank_mode": "distinct_species_rerank_prompts",
-        "species_rerank_candidate_count": result.species_rerank_step.candidate_count,
     }
 
 
