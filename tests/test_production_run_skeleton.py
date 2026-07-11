@@ -39,6 +39,7 @@ from biominer.registry.classification_v3 import (
     classification_v3_artifact_paths,
     write_classification_v3_artifacts,
 )
+from biominer.registry.classification_v2 import write_classification_v2_artifacts
 from biominer.registry.trust_policy import (
     TrustTier,
     decide_name_trust,
@@ -295,6 +296,51 @@ def test_production_run_hierarchical_score_stage_requires_taxonomy_table(tmp_pat
     assert plan.manifest.stages[0].metrics["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
     assert plan.manifest.stages[0].metrics["taxonomy_candidate_table"].endswith("data/registry/current")
     assert plan.manifest.stages[0].metrics["taxonomy_candidate_table_status"] == "missing"
+
+
+def test_hierarchical_production_rejects_valid_classification_v2_artifacts(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "classification-v2"
+    registry.mkdir()
+    pl.DataFrame(
+        [
+            {
+                "registry_version": "butterflies-v2",
+                "accepted_taxon_key": "gbif:1938069",
+                "species_key": "gbif:1938069",
+                "scientific_name": "Papilio demoleus",
+                "species": "Papilio demoleus",
+                "rank": "SPECIES",
+                "taxonomic_status": "ACCEPTED",
+            }
+        ]
+    ).write_parquet(registry / "taxa.parquet")
+    (registry / "manifest.json").write_text(
+        '{"registry_version":"butterflies-v2"}',
+        encoding="utf-8",
+    )
+    write_classification_v2_artifacts(registry)
+
+    orchestrator = ProductionRunOrchestrator(
+        ProductionRunRequest(
+            taxon="Papilio demoleus",
+            output_root=tmp_path / "runs",
+            classification_mode="hierarchical",
+            taxonomy_candidate_table=registry,
+            stages=(RunStage.SCORE_BIOCLIP,),
+        ),
+        taxon_scope=TaxonScope.from_species_context(_species_context()),
+    )
+
+    store, status = orchestrator._load_valid_hierarchical_taxonomy_store()
+
+    assert store is None
+    assert status.status is StageStatus.FAILED
+    assert status.message == (
+        "invalid_taxonomy_candidate_table: classification-v3 manifest version mismatch"
+    )
+    assert status.metrics["taxonomy_candidate_table_status"] == "invalid"
 
 
 def test_production_run_hierarchical_score_stage_validates_table_then_requires_score_inputs(tmp_path) -> None:
