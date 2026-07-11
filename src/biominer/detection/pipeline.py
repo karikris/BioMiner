@@ -14,7 +14,7 @@ import polars as pl
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage, ObjectDetector
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, detection_is_bioclip_eligible
-from biominer.detection.schema import DETECTION_OUTPUT_SCHEMA, build_detection_rows, detection_id_for, empty_detection_frame
+from biominer.detection.schema import DETECTION_OUTPUT_SCHEMA, build_detection_rows, detection_id_for
 from biominer.storage.parquet import write_parquet, write_parquet_batches
 
 

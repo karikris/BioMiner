@@ -45,7 +45,7 @@ def write_synthetic_evaluation_fixture(output_dir: str | Path) -> dict[str, str]
     output = Path(output_dir)
     fixture = build_synthetic_evaluation_fixture()
     paths = {
-        "classification_taxa": output / "butterfly_classification_taxa.parquet",
+        "classification_taxa": output / "evaluation_classification_taxa.parquet",
         "object_detections": output / "object_detections.parquet",
         "object_scores": output / "object_scores.parquet",
         "reviewed_labels": output / "reviewed_labels.parquet",

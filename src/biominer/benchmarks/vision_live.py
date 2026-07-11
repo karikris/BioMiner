@@ -19,8 +19,8 @@ from biominer.bioclip.classification_modes import (
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
 )
 from biominer.bioclip.model_registry import BioClipRuntime
+from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
 from biominer.bioclip.object_runner import EphemeralCropBioClipScorer, screen_object_detections
-from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
 from biominer.detection.image_io import load_decoded_image_from_record
 from biominer.detection.pipeline import run_detection_pipeline
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
@@ -100,7 +100,7 @@ def validate_live_m5pro_benchmark_request(request: LiveM5ProBenchmarkRequest) ->
 
 def validate_live_taxonomy_store(path: Path) -> dict[str, Any] | None:
     try:
-        ButterflyTaxonomyStore.read(path)
+        FiveRankTaxonomyStore.read(path)
     except FileNotFoundError as exc:
         return {
             "error": "missing_taxonomy_candidate_table",
@@ -135,7 +135,7 @@ def run_live_m5pro_benchmark(
     if records.is_empty():
         raise ValueError("input benchmark records are empty after applying --limit")
     canonical_records_path = write_parquet(records, request.output_dir / "canonical_source_records.parquet")
-    taxonomy_store = ButterflyTaxonomyStore.read(request.taxonomy_candidate_table)
+    taxonomy_store = FiveRankTaxonomyStore.read(request.taxonomy_candidate_table)
     species_context = species_context_from_taxonomy_store(taxonomy_store)
     candidate_set = build_candidate_set(species_context, records=records.to_dicts(), allow_single_target_fixture=True)
     stage_seconds["load_inputs"] = _elapsed(stage_start)
@@ -263,23 +263,23 @@ def run_live_m5pro_benchmark(
     return LiveM5ProBenchmarkResult(metrics=metrics, output_dir=request.output_dir, metrics_path=metrics_path, summary_path=summary_path)
 
 
-def species_context_from_taxonomy_store(taxonomy_store: ButterflyTaxonomyStore) -> SpeciesContext:
-    taxa = taxonomy_store.classification_taxa.filter(pl.col("classification_enabled")).sort(
-        ["family", "genus", "scientific_name", "accepted_taxon_key"]
+def species_context_from_taxonomy_store(taxonomy_store: FiveRankTaxonomyStore) -> SpeciesContext:
+    paths = taxonomy_store.leaf_paths.filter(pl.col("enabled")).sort(
+        ["family", "subfamily", "tribe", "genus", "species", "accepted_taxon_key"]
     )
-    if taxa.is_empty():
+    if paths.is_empty():
         raise ValueError("taxonomy candidate table has no enabled species")
-    row = taxa.to_dicts()[0]
+    row = paths.to_dicts()[0]
     return SpeciesContext(
-        scientific_name=str(row.get("scientific_name") or ""),
+        scientific_name=str(row.get("species") or ""),
         accepted_taxon_key=str(row.get("accepted_taxon_key") or ""),
-        canonical_name=str(row.get("canonical_name") or row.get("scientific_name") or ""),
+        canonical_name=str(row.get("species") or ""),
         family=str(row.get("family") or ""),
         genus=str(row.get("genus") or ""),
-        family_key=str(row.get("family_key") or ""),
-        genus_key=str(row.get("genus_key") or ""),
-        species_key=str(row.get("species_key") or row.get("accepted_taxon_key") or ""),
-        registry_version=str(row.get("registry_version") or ""),
+        family_key=str(row.get("family_node_id") or ""),
+        genus_key=str(row.get("genus_node_id") or ""),
+        species_key=str(row.get("gbif_species_key") or row.get("accepted_taxon_key") or ""),
+        registry_version=str(taxonomy_store.manifest.get("registry_version") or ""),
     )
 
 

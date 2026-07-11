@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import hashlib
 from pathlib import Path
 from typing import Any, Callable
 
 import polars as pl
 
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
-from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
 from biominer.storage.parquet import write_parquet
 
 
@@ -32,22 +30,6 @@ IMAGE_EMBEDDING_COLUMNS = (
     "model_id",
     "model_checkpoint",
     "embedding_dim",
-    "embedding",
-    "created_at",
-)
-TAXONOMY_TEXT_EMBEDDING_COLUMNS = (
-    "classification_table_version",
-    "prompt_variant_version",
-    "label_scope",
-    "label",
-    "label_hash",
-    "accepted_taxon_key",
-    "family_key",
-    "rank",
-    "model_id",
-    "model_checkpoint",
-    "embedding_dim",
-    "embedding_dtype",
     "embedding",
     "created_at",
 )
@@ -108,75 +90,6 @@ def prepare_candidate_text_embedding_cache(
     return upsert_text_embedding_cache(rows, path, embed_labels=embed_labels, batch_size=batch_size, created_at=created_at)
 
 
-def taxonomy_text_embedding_rows(
-    taxonomy_store: ButterflyTaxonomyStore,
-    *,
-    model_id: str,
-    model_checkpoint: str,
-    embedding_dtype: str = "float32",
-) -> list[dict[str, Any]]:
-    manifest = dict(taxonomy_store.manifest or {})
-    classification_table_version = str(manifest.get("classification_table_version") or _first_value(taxonomy_store.classification_taxa, "classification_table_version") or "")
-    prompt_variant_version = str(manifest.get("prompt_variant_version") or _first_value(taxonomy_store.family_labels, "prompt_variant_version") or "")
-    rows: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str, str]] = set()
-    for row in _taxonomy_label_rows(taxonomy_store):
-        label = " ".join(str(row.get("label") or "").split())
-        if not label:
-            continue
-        output = {
-            "classification_table_version": classification_table_version,
-            "prompt_variant_version": prompt_variant_version,
-            "label_scope": row["label_scope"],
-            "label": label,
-            "label_hash": _label_hash(label),
-            "accepted_taxon_key": row["accepted_taxon_key"],
-            "family_key": row["family_key"],
-            "rank": row["rank"],
-            "model_id": model_id,
-            "model_checkpoint": model_checkpoint,
-            "embedding_dtype": embedding_dtype,
-        }
-        row_key = _key(output, ["classification_table_version", "prompt_variant_version", "label", "model_id", "model_checkpoint"])
-        if row_key in seen:
-            continue
-        seen.add(row_key)
-        rows.append(output)
-    return rows
-
-
-def prepare_taxonomy_text_embedding_cache(
-    taxonomy_store: ButterflyTaxonomyStore,
-    path: str | Path,
-    *,
-    model_id: str,
-    model_checkpoint: str,
-    embed_labels: Callable[[list[str]], list[list[float]]],
-    batch_size: int | None = None,
-    embedding_dtype: str = "float32",
-    created_at: str | None = None,
-) -> EmbeddingCacheUpdate:
-    rows = taxonomy_text_embedding_rows(
-        taxonomy_store,
-        model_id=model_id,
-        model_checkpoint=model_checkpoint,
-        embedding_dtype=embedding_dtype,
-    )
-    update = upsert_taxonomy_text_embedding_cache(
-        rows,
-        path,
-        embed_labels=embed_labels,
-        batch_size=batch_size,
-        created_at=created_at,
-    )
-    validate_taxonomy_text_embedding_cache(
-        update.frame,
-        taxonomy_store,
-        model_id=model_id,
-        model_checkpoint=model_checkpoint,
-        embedding_dtype=embedding_dtype,
-    )
-    return update
 
 
 def prepare_object_image_embedding_cache(
@@ -224,9 +137,6 @@ def write_image_embedding_cache(rows: list[dict[str, Any]], path: str | Path) ->
     return write_parquet(frame, path)
 
 
-def write_taxonomy_text_embedding_cache(rows: list[dict[str, Any]], path: str | Path) -> Path:
-    frame = _dedupe(pl.DataFrame(rows), ["classification_table_version", "prompt_variant_version", "label", "model_id", "model_checkpoint"])
-    return write_parquet(frame, path)
 
 
 def upsert_text_embedding_cache(
@@ -267,43 +177,6 @@ def upsert_text_embedding_cache(
     )
 
 
-def upsert_taxonomy_text_embedding_cache(
-    rows: list[dict[str, Any]],
-    path: str | Path,
-    *,
-    embed_labels: Callable[[list[str]], list[list[float]]],
-    batch_size: int | None = None,
-    created_at: str | None = None,
-) -> EmbeddingCacheUpdate:
-    cache = read_embedding_cache(path)
-    row_keys = ["classification_table_version", "prompt_variant_version", "label", "model_id", "model_checkpoint"]
-    requested = _dedupe_request_rows(rows, row_keys)
-    existing_keys = _row_keys(cache, row_keys)
-    missing = [row for row in requested if _key(row, row_keys) not in existing_keys]
-    rows_reused = len(requested) - len(missing)
-    labels = [str(row.get("label") or "") for row in missing]
-    embeddings = _embed_label_batches(labels, embed_labels=embed_labels, batch_size=batch_size)
-    if len(embeddings) != len(missing):
-        raise ValueError("embed_labels must return one embedding per missing taxonomy label")
-    new_rows = [
-        {
-            **row,
-            "embedding_dim": len(embedding),
-            "embedding": [float(value) for value in embedding],
-            "created_at": created_at or _now_iso(),
-        }
-        for row, embedding in zip(missing, embeddings, strict=True)
-    ]
-    frame = _append_and_dedupe(cache, new_rows, row_keys)
-    output = write_parquet(frame, path) if new_rows else Path(path)
-    return EmbeddingCacheUpdate(
-        output_path=output,
-        frame=frame,
-        rows_total=frame.height,
-        rows_added=len(new_rows),
-        rows_reused=rows_reused,
-        embeddings_computed=len(embeddings),
-    )
 
 
 def upsert_image_embedding_cache(
@@ -391,148 +264,6 @@ def cached_crop_hashes(cache: pl.DataFrame, *, model_id: str, model_checkpoint: 
     )
 
 
-def missing_taxonomy_text_embedding_labels(
-    cache: pl.DataFrame,
-    taxonomy_store: ButterflyTaxonomyStore,
-    *,
-    model_id: str,
-    model_checkpoint: str,
-) -> list[str]:
-    requested = taxonomy_text_embedding_rows(taxonomy_store, model_id=model_id, model_checkpoint=model_checkpoint)
-    if not requested:
-        return []
-    cache_keys = _row_keys(
-        cache.filter((pl.col("model_id") == model_id) & (pl.col("model_checkpoint") == model_checkpoint))
-        if not cache.is_empty() and {"model_id", "model_checkpoint"}.issubset(set(cache.columns))
-        else pl.DataFrame(),
-        ["classification_table_version", "prompt_variant_version", "label", "model_id", "model_checkpoint"],
-    )
-    return [
-        str(row["label"])
-        for row in requested
-        if _key(row, ["classification_table_version", "prompt_variant_version", "label", "model_id", "model_checkpoint"]) not in cache_keys
-    ]
-
-
-def validate_taxonomy_text_embedding_cache(
-    cache: pl.DataFrame,
-    taxonomy_store: ButterflyTaxonomyStore,
-    *,
-    model_id: str,
-    model_checkpoint: str,
-    embedding_dtype: str | None = None,
-) -> None:
-    if cache.is_empty():
-        raise ValueError("taxonomy text embedding cache is empty")
-    required = set(TAXONOMY_TEXT_EMBEDDING_COLUMNS)
-    missing_columns = sorted(required - set(cache.columns))
-    if missing_columns:
-        raise ValueError("taxonomy text embedding cache is missing columns: " + ", ".join(missing_columns))
-    matching = cache.filter((pl.col("model_id") == model_id) & (pl.col("model_checkpoint") == model_checkpoint))
-    if matching.is_empty():
-        raise ValueError(f"taxonomy text embedding cache has no rows for model_checkpoint={model_checkpoint!r}")
-    missing_labels = missing_taxonomy_text_embedding_labels(cache, taxonomy_store, model_id=model_id, model_checkpoint=model_checkpoint)
-    if missing_labels:
-        preview = ", ".join(missing_labels[:5])
-        suffix = "" if len(missing_labels) <= 5 else f" (+{len(missing_labels) - 5} more)"
-        raise ValueError(f"taxonomy text embedding cache missing labels: {preview}{suffix}")
-    requested = taxonomy_text_embedding_rows(taxonomy_store, model_id=model_id, model_checkpoint=model_checkpoint)
-    _validate_taxonomy_text_embedding_metadata(
-        matching,
-        requested,
-        expected_embedding_dtype=embedding_dtype,
-    )
-
-
-def _validate_taxonomy_text_embedding_metadata(
-    matching: pl.DataFrame,
-    requested: list[dict[str, Any]],
-    *,
-    expected_embedding_dtype: str | None = None,
-) -> None:
-    keys = ["classification_table_version", "prompt_variant_version", "label", "model_id", "model_checkpoint"]
-    requested_by_key = {_key(row, keys): row for row in requested}
-    expected_dims: set[int] = set()
-    embedding_dtypes: set[str] = set()
-    for row in matching.to_dicts():
-        expected = requested_by_key.get(_key(row, keys))
-        if expected is None:
-            continue
-        label = str(row.get("label") or "")
-        expected_label_hash = str(expected.get("label_hash") or "")
-        if str(row.get("label_hash") or "") != expected_label_hash:
-            raise ValueError(f"taxonomy text embedding cache label_hash mismatch for label={label!r}")
-        embedding_dtype = str(row.get("embedding_dtype") or "").strip()
-        if not embedding_dtype:
-            raise ValueError(f"taxonomy text embedding cache missing embedding_dtype for label={label!r}")
-        if expected_embedding_dtype is not None and embedding_dtype != expected_embedding_dtype:
-            raise ValueError(
-                f"taxonomy text embedding cache embedding_dtype mismatch for label={label!r}: "
-                f"{embedding_dtype!r} != {expected_embedding_dtype!r}"
-            )
-        embedding_dtypes.add(embedding_dtype)
-        row_dim = _positive_embedding_dim(row.get("embedding_dim"), label=label)
-        embedding = row.get("embedding")
-        if embedding is None:
-            raise ValueError(f"taxonomy text embedding cache missing embedding for label={label!r}")
-        vector = [float(value) for value in embedding]
-        if len(vector) != row_dim:
-            raise ValueError(f"taxonomy text embedding cache embedding_dim mismatch for label={label!r}")
-        expected_dims.add(row_dim)
-    if len(expected_dims) > 1:
-        raise ValueError("taxonomy text embedding cache has inconsistent embedding_dim values")
-    if len(embedding_dtypes) > 1:
-        raise ValueError("taxonomy text embedding cache has inconsistent embedding_dtype values")
-
-
-def _positive_embedding_dim(value: Any, *, label: str) -> int:
-    try:
-        dim = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"taxonomy text embedding cache invalid embedding_dim for label={label!r}") from exc
-    if dim <= 0:
-        raise ValueError(f"taxonomy text embedding cache invalid embedding_dim for label={label!r}")
-    return dim
-
-
-def _taxonomy_label_rows(taxonomy_store: ButterflyTaxonomyStore) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    for row in taxonomy_store.family_labels.to_dicts():
-        if row.get("enabled") is False:
-            continue
-        rows.append(
-            {
-                "label_scope": "family",
-                "label": str(row.get("label") or ""),
-                "accepted_taxon_key": str(row.get("family_key") or ""),
-                "family_key": str(row.get("family_key") or ""),
-                "rank": "FAMILY",
-            }
-        )
-    for row in taxonomy_store.species_labels.to_dicts():
-        if row.get("enabled") is False:
-            continue
-        rows.append(
-            {
-                "label_scope": "species",
-                "label": str(row.get("label") or ""),
-                "accepted_taxon_key": str(row.get("accepted_taxon_key") or ""),
-                "family_key": str(row.get("family_key") or ""),
-                "rank": "SPECIES",
-            }
-        )
-    return rows
-
-
-def _first_value(frame: pl.DataFrame, column: str) -> object:
-    if column not in frame.columns or frame.is_empty():
-        return None
-    values = frame.select(column).to_series().drop_nulls().to_list()
-    return values[0] if values else None
-
-
-def _label_hash(label: str) -> str:
-    return "sha256:" + hashlib.sha256(label.encode("utf-8")).hexdigest()
 
 
 def _dedupe(frame: pl.DataFrame, keys: list[str]) -> pl.DataFrame:

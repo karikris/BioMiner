@@ -19,8 +19,8 @@ from biominer.bioclip.classification_modes import (
     normalize_classification_mode,
 )
 from biominer.bioclip.cloud_work import bioclip_score_work_item, run_cloud_bioclip_batch
+from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
 from biominer.bioclip.object_runner import ObjectBioClipScorer
-from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
 from biominer.detection.cloud_work import detection_work_item, run_cloud_detection_batch
 from biominer.detection.detector_base import ObjectDetector
 from biominer.detection.pipeline import ImageLoader
@@ -289,7 +289,7 @@ def run_cloud_rolling_vision_batch(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
-    taxonomy_store: ButterflyTaxonomyStore | None = None,
+    taxonomy_store: FiveRankTaxonomyStore | None = None,
 ) -> CloudRollingVisionBatchResult:
     payload = _work_payload(work_item)
     records = [dict(row) for row in payload.get("source_records") or [] if isinstance(row, dict)]

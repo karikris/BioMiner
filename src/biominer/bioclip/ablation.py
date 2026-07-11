@@ -22,7 +22,7 @@ from biominer.bioclip.object_runner import (
     object_score_audit_metrics,
     screen_object_detections,
 )
-from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
+from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
 from biominer.species.context import SpeciesContext
 
 
@@ -51,7 +51,7 @@ def run_object_ablations(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
-    taxonomy_store: ButterflyTaxonomyStore | None = None,
+    taxonomy_store: FiveRankTaxonomyStore | None = None,
     taxonomy_text_embedding_cache: pl.DataFrame | None = None,
 ) -> AblationRunReport:
     base = Path(output_dir)

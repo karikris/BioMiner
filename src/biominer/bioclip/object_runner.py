@@ -20,18 +20,13 @@ from biominer.bioclip.classification_modes import (
     ClassificationMode,
     normalize_classification_mode,
 )
-from biominer.bioclip.hierarchical_classifier import HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS
-from biominer.bioclip.hierarchical_classifier import (
-    classify_butterfly_crops_hierarchical_batch,
-    hierarchical_result_to_object_score_row,
-)
 from biominer.bioclip.five_rank_classifier import (
+    FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS,
     classify_five_rank_crops_batch,
     five_rank_result_to_object_score_row,
 )
 from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
 from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
-from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage
 from biominer.detection.policy import DetectionPolicy, detection_is_bioclip_eligible
@@ -71,8 +66,8 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "classification_mode": pl.String,
     "candidate_selection_mode": pl.String,
     "candidate_source": pl.String,
-    "taxonomy_table_version": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["taxonomy_table_version"],
-    "taxonomy_prompt_variant_version": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["taxonomy_prompt_variant_version"],
+    "taxonomy_table_version": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["taxonomy_table_version"],
+    "taxonomy_prompt_variant_version": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["taxonomy_prompt_variant_version"],
     "ablation_mode": pl.String,
     "species_first_pass_top_k": pl.Int64,
     "species_rerank_top_k": pl.Int64,
@@ -80,26 +75,26 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "triage_group_top": pl.String,
     "triage_group_scores": pl.Struct({"butterfly_like": pl.Float64}),
     "family_top3": pl.List(pl.String),
-    "family_top3_accepted_taxon_keys": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["family_top3_accepted_taxon_keys"],
-    "family_top3_scores": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["family_top3_scores"],
+    "family_top3_accepted_taxon_keys": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["family_top3_accepted_taxon_keys"],
+    "family_top3_scores": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["family_top3_scores"],
     "family_top1": pl.String,
     "family_top1_score": pl.Float64,
     "family_margin": pl.Float64,
-    "selected_family_key": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["selected_family_key"],
-    "selected_family": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["selected_family"],
+    "selected_family_key": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["selected_family_key"],
+    "selected_family": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["selected_family"],
     "genus_top8": pl.List(pl.String),
     "genus_top1": pl.String,
     "genus_top1_score": pl.Float64,
     "genus_margin": pl.Float64,
-    "species_candidate_family_key": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_candidate_family_key"],
-    "species_candidate_family": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_candidate_family"],
-    "species_candidate_count": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_candidate_count"],
+    "species_candidate_family_key": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_candidate_family_key"],
+    "species_candidate_family": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_candidate_family"],
+    "species_candidate_count": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_candidate_count"],
     "species_top20": pl.List(pl.String),
     "species_top20_accepted_taxon_keys": pl.List(pl.String),
-    "species_top20_scores": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_top20_scores"],
+    "species_top20_scores": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_top20_scores"],
     "species_top5": pl.List(pl.String),
     "species_top5_accepted_taxon_keys": pl.List(pl.String),
-    "species_top5_scores": HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_top5_scores"],
+    "species_top5_scores": FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS["species_top5_scores"],
     "species_top1": pl.String,
     "species_top1_scientific_name": pl.String,
     "species_top1_accepted_taxon_key": pl.String,
@@ -118,7 +113,7 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "occurrence_bin": pl.String,
     "bin_reason": pl.String,
 }
-OBJECT_SCORE_OUTPUT_SCHEMA.update(HIERARCHICAL_OBJECT_SCORE_SCHEMA_EXTENSIONS)
+OBJECT_SCORE_OUTPUT_SCHEMA.update(FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS)
 OBJECT_EVIDENCE_JOINED_SCHEMA: dict[str, pl.DataType] = {
     **OBJECT_SCORE_OUTPUT_SCHEMA,
     **DETECTION_OUTPUT_SCHEMA,
@@ -782,7 +777,7 @@ def screen_object_detections(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
-    taxonomy_store: ButterflyTaxonomyStore | None = None,
+    taxonomy_store: FiveRankTaxonomyStore | None = None,
     taxonomy_text_embedding_cache: pl.DataFrame | None = None,
 ) -> ObjectScreenResult:
     if bioclip_batch_size <= 0:
@@ -1349,44 +1344,23 @@ def _score_hierarchical_detection_batch(
     *,
     items: list[dict[str, Any]],
     scorer: ObjectBioClipScorer,
-    taxonomy_store: ButterflyTaxonomyStore,
+    taxonomy_store: FiveRankTaxonomyStore,
     family_top_k: int,
     species_first_pass_top_k: int,
     species_rerank_top_k: int,
     taxonomy_text_embedding_cache: pl.DataFrame | None = None,
 ) -> list[dict[str, Any]]:
-    if isinstance(taxonomy_store, FiveRankTaxonomyStore):
-        results = classify_five_rank_crops_batch(
-            items=items,
-            scorer=scorer,
-            taxonomy_store=taxonomy_store,
-            beam_widths={"FAMILY": family_top_k},
-            species_first_pass_top_k=species_first_pass_top_k,
-            species_rerank_top_k=species_rerank_top_k,
-            taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
-        )
-        return [
-            five_rank_result_to_object_score_row(
-                item=item,
-                result=result,
-                scorer=scorer,
-                family_top_k=family_top_k,
-                species_first_pass_top_k=species_first_pass_top_k,
-                species_rerank_top_k=species_rerank_top_k,
-            )
-            for item, result in zip(items, results, strict=True)
-        ]
-    results = classify_butterfly_crops_hierarchical_batch(
+    results = classify_five_rank_crops_batch(
         items=items,
         scorer=scorer,
         taxonomy_store=taxonomy_store,
-        family_top_k=family_top_k,
+        beam_widths={"FAMILY": family_top_k},
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
         taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
     )
     return [
-        hierarchical_result_to_object_score_row(
+        five_rank_result_to_object_score_row(
             item=item,
             result=result,
             scorer=scorer,

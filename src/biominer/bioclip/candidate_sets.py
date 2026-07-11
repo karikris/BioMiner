@@ -359,6 +359,9 @@ def _candidate_group_lookup(rows: list[dict[str, Any]]) -> dict[str, tuple[Candi
 
 
 def _candidate_from_row(row: dict[str, Any]) -> CandidateTaxon | None:
+    rank = (_first_text(row, "rank", "taxon_rank") or "species").casefold()
+    if rank != "species":
+        return None
     scientific_name = _first_text(row, "scientific_name", "accepted_scientific_name", "canonical_name", "species")
     if not scientific_name:
         return None
@@ -366,7 +369,7 @@ def _candidate_from_row(row: dict[str, Any]) -> CandidateTaxon | None:
     return CandidateTaxon(
         scientific_name=scientific_name,
         accepted_taxon_key=_first_text(row, "accepted_taxon_key", "source_taxon_id", "taxon_id", "taxonID", "species_key"),
-        rank=(_first_text(row, "rank", "taxon_rank") or "species").casefold(),
+        rank=rank,
         family=_first_text(row, "family"),
         genus=genus,
         common_names=_split_names(_first_value(row, "common_names", "vernacular_names")),

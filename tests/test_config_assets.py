@@ -1,245 +1,99 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pytest
 
-def test_env_example_exists() -> None:
-    assert Path(".env.example").exists()
-
-
-def test_env_example_contains_only_variable_names() -> None:
-    text = Path(".env.example").read_text(encoding="utf-8")
-
-    assert "FLICKR_API_KEY=" in text
-    assert "FLICKR_API_KEY=your_flickr_api_key_here" in text
+from biominer.cli import build_parser
 
 
-def test_removed_papilio_demoleus_seed_config_paths_are_not_documented() -> None:
-    text = Path(".gitignore").read_text(encoding="utf-8")
-
-    assert "config/papilio_demoleus_flickr_estimator.sh2" not in text
-    assert "config/papilio_demoleus_multilingual_keywords.json" not in text
-
-
-def test_metadata_keyword_path_helpers_are_not_documented() -> None:
-    tracked_text = "\n".join(
-        Path(path).read_text(encoding="utf-8")
-        for path in (
-            "README.md",
-            "docs/cloud_storage.md",
-            "docs/cloud_provider_config.md",
-            "src/biominer/filter/metadata_flags.py",
-            "src/biominer/filter/__init__.py",
-        )
-    )
-    assert "load_metadata_keyword_groups" not in tracked_text
-    assert "flag_metadata_parquet" not in tracked_text
-
-
-def test_papilio_species_example_documents_generic_object_pipeline() -> None:
-    path = Path("examples/species/papilio_demoleus/object_pipeline.md")
-    assert path.exists()
-
-    text = path.read_text(encoding="utf-8")
-    for command in (
-        "biominer vision detect",
-        "biominer vision score",
-        "biominer vision ablate",
-        "biominer evidence join",
+def test_authoritative_docs_and_classification_source_exist() -> None:
+    for path in (
+        Path("README.md"),
+        Path("docs/registry.md"),
+        Path("docs/production.md"),
+        Path("docs/vision.md"),
+        Path("config/taxonomy/papilionoidea_classification_v2.json"),
+        Path("config/vision_profiles/mac_m5pro_64gb.json"),
     ):
-        assert command in text
-    assert '--species-context runs/local_debug/papilio_demoleus/species_context.json' in text
-    assert "--image-max-side-px" in text
-    assert "fetch_papilio_demoleus_multilingual_metadata.py" not in text
-    assert "classify_papilio_demoleus" not in text
-
-
-def test_production_workflow_docs_exist_and_match_current_surface() -> None:
-    required_docs = (
-        Path("docs/production_workflow.md"),
-        Path("docs/registry_trust_tiers.md"),
-        Path("docs/vision_workflow.md"),
-        Path("docs/storage_postgres_s3.md"),
-    )
-    for path in required_docs:
         assert path.exists(), path
 
-    production = Path("docs/production_workflow.md").read_text(encoding="utf-8")
-    for expected in (
-        "biominer run",
-        "auto",
-        "family",
-        "genus",
-        "species",
-        "S3",
-        "Postgres",
-        "metadata flags",
-    ):
-        assert expected in production
 
-    registry = Path("docs/registry_trust_tiers.md").read_text(encoding="utf-8")
-    for expected in (
-        "T1",
-        "T5",
-        "enabled",
-        "query_definition_id",
-        "enabled_t5_name_rows",
-        "t5_query_definition_rows",
-    ):
-        assert expected in registry
-    assert "T3  Wikidata labels and aliases with confident external taxon links" in registry
-    assert "external taxon linkage is confident" in registry
-    assert "weaker interpretation" not in registry
+def test_classification_source_has_reviewed_five_rank_path() -> None:
+    payload = json.loads(Path("config/taxonomy/papilionoidea_classification_v2.json").read_text(encoding="utf-8"))
 
-    vision = Path("docs/vision_workflow.md").read_text(encoding="utf-8")
-    for expected in (
+    assert [node["rank"] for node in payload["nodes"]] == ["FAMILY", "SUBFAMILY", "TRIBE", "GENUS", "SPECIES"]
+    assert [node["scientific_name"] for node in payload["nodes"]] == [
+        "Papilionidae",
+        "Papilioninae",
+        "Papilionini",
+        "Papilio",
+        "Papilio demoleus",
+    ]
+    assert payload["species_mappings"][0]["gbif_species_key"] == "1938069"
+    assert all(row["review_status"] == "reviewed" for row in [*payload["nodes"], *payload["edges"], *payload["species_mappings"]])
+
+
+def test_removed_visual_commands_have_no_parser_aliases() -> None:
+    parser = build_parser()
+    for command in (
+        ["vision", "detect"],
+        ["vision", "screen"],
+        ["vision", "rolling-screen"],
+        ["vision", "score"],
+        ["vision", "ablate"],
+        ["bioclip", "screen"],
+    ):
+        with pytest.raises(SystemExit):
+            parser.parse_args(command)
+
+
+def test_readme_and_authoritative_docs_do_not_reference_removed_commands() -> None:
+    text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (Path("README.md"), Path("docs/registry.md"), Path("docs/production.md"), Path("docs/vision.md"))
+    )
+    for removed in (
         "biominer vision detect",
-        "biominer dev vision yoloe26-runtime-check",
-        "BioCLIP",
-        "object finder",
-        "user-provided coarse-object checkpoint",
-        "detector_crop_segmentation",
-        "--species-candidates data/registry/current/species_candidates.parquet",
-        "runs/local_debug/papilio_demoleus",
+        "biominer vision screen",
+        "biominer vision rolling-screen",
+        "biominer vision score",
+        "biominer vision ablate",
+        "biominer bioclip screen",
+        "build-classification-table",
     ):
-        assert expected in vision
-    assert "YOLOE/YOLO26 output must not be interpreted as species classification" in vision
-    assert "does not store reviewed boxes" in vision
-
-    storage = Path("docs/storage_postgres_s3.md").read_text(encoding="utf-8")
-    for expected in (
-        "BIOMINER_S3_ENDPOINT_URL",
-        "BIOMINER_WORKSTORE_DSN",
-        "--storage-backend local",
-        "--workstore-backend sqlite",
-    ):
-        assert expected in storage
+        assert removed not in text
 
 
-def test_mac_vision_setup_scripts_report_runtime_and_mps_contracts() -> None:
-    for script_path in (
-        Path("scripts/setup_yoloe26_user_py312.sh"),
-        Path("scripts/setup_bioclip25_user_py312.sh"),
-    ):
-        script = script_path.read_text(encoding="utf-8")
-        for expected in (
-            "WARNING: Python 3.12 was not found on PATH.",
-            "Runtime python:",
-            "Cache directories:",
-            "mps_available",
-            "WARNING: MPS is unavailable",
-            "PYTORCH_ENABLE_MPS_FALLBACK",
-        ):
-            assert expected in script
+def test_production_run_defaults_to_rolling_worker_without_public_switch() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "run",
+            "--taxon",
+            "Papilionoidea",
+            "--rank",
+            "family",
+            "--registry-dir",
+            "registry",
+            "--output-prefix",
+            "runs",
+        ]
+    )
 
-
-def test_production_examples_cover_family_genus_species_runs() -> None:
-    path = Path("examples/production_workflow.md")
-    assert path.exists()
-
-    text = path.read_text(encoding="utf-8")
-    for expected in (
-        "BIOMINER_S3_ENDPOINT_URL",
-        "BIOMINER_WORKSTORE_DSN",
-        "FLICKR_API_KEY",
-        "--taxon \"Papilio demoleus\"",
-        "--rank species",
-        "--taxon \"Papilio\"",
-        "--rank genus",
-        "--taxon \"Papilionidae\"",
-        "--rank family",
-        "--storage-backend s3",
-        "--workstore-backend postgres",
-        "--vision-backend yoloe26",
-        "bash scripts/setup_yoloe26_user_py312.sh",
-        "bash scripts/setup_bioclip25_user_py312.sh",
-        "PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer dev vision yoloe26-runtime-check",
-        "PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer vision rolling-screen",
-        "PYTORCH_ENABLE_MPS_FALLBACK=1 uv run biominer run",
-        "imageomics/bioclip-2.5-vith14",
-    ):
-        assert expected in text
-    assert "broad seed" not in text.lower()
-    assert "YOLO species" not in text
-
-
-def test_command_surface_adr_includes_migration_notes() -> None:
-    text = Path("docs/adr/command_surface_policy.md").read_text(encoding="utf-8")
-
-    for expected in (
-        "biominer run --taxon <name> --rank auto|family|genus|species",
-        "registry build/audit",
-        "One-off scripts, root wrappers, and prototype commands are removed",
-    ):
-        assert expected in text
-
-
-def test_removed_command_docs_name_deleted_source_entrypoints() -> None:
-    text = Path("docs/deprecated_removed_commands.md").read_text(encoding="utf-8")
-
-    for expected in (
-        "flicker_miner.py",
-        "scripts/run_flickr_text_search.py",
-        "scripts/generate_bioclip_species_visual_report.py",
-        "biominer dev vision yoloe26-prototype-run",
-        "Durable decisions belong under `docs/adr/`",
-    ):
-        assert expected in text
-
-
-def test_artifact_tracking_policy_rejects_tracked_reports() -> None:
-    policy = Path("docs/adr/artifact_tracking_policy.md").read_text(encoding="utf-8")
-    ignore = Path(".gitignore").read_text(encoding="utf-8")
-
-    for expected in (
-        "generated reports",
-        "not committed to the repository",
-        "move only the decision into `docs/adr/`",
-    ):
-        assert expected in policy
-    assert "reports/*" in ignore
-    assert "!reports/*.md" not in ignore
-
-
-def test_cloud_local_boundary_adr_records_stage_contract() -> None:
-    text = Path("docs/adr/cloud_local_run_boundary.md").read_text(encoding="utf-8")
-
-    for expected in (
-        "local filesystem plus SQLite",
-        "object storage and a workstore backend",
-        "Cloud support must be explicit per stage",
-        "must fail clearly",
-    ):
-        assert expected in text
-
-
-def test_vision_docs_do_not_recommend_training_dataset_storage() -> None:
-    text = Path("docs/vision_workflow.md").read_text(encoding="utf-8")
-
-    for forbidden in (
-        "reviewed box dataset",
-        "supervised YOLO",
-        "fine-tuning",
-    ):
-        assert forbidden not in text
-    assert "does not store reviewed boxes or a training dataset" in text
-    assert "yoloe26_prototype.md" not in Path("README.md").read_text(encoding="utf-8")
-
-
-def test_readme_keeps_broad_probe_recipe_out_of_production_workflow() -> None:
-    text = Path("README.md").read_text(encoding="utf-8")
-
-    for removed_phrase in (
-        "Explicit broad-probe coverage",
-        "reviewed anchored broad terms",
-        "Broad probes are not implicit production seeds",
-        "Broad searches do not recursively count-probe",
-        "A broad term such as `butterfly`",
-    ):
-        assert removed_phrase not in text
-    assert "work items must be created from registry-derived query definitions" in text
-    assert "reviewed/corroborated translation names retained with low-trust provenance" in text
-    assert "query-eligible species-level registry name" in text
-    assert "register-based processing" not in text
-    assert "register-based classification helpers" not in text
-    assert "object-first scoring" in text
+    assert args.vision_worker == "rolling"
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "run",
+                "--taxon",
+                "Papilionoidea",
+                "--registry-dir",
+                "registry",
+                "--output-prefix",
+                "runs",
+                "--vision-worker",
+                "serial",
+            ]
+        )

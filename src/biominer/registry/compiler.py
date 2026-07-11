@@ -13,10 +13,6 @@ from biominer.registry.normalize import parse_language_tag, normalize_language_c
 from biominer.registry.query_curation import QueryCurationRule, apply_query_curation, load_query_curation_rules
 from biominer.registry.query_eligibility import SCIENTIFIC_NAME_CLASSES, assess_name_query_eligibility
 from biominer.registry.scope import load_scope
-from biominer.registry.classification_table import (
-    BUTTERFLY_CLASSIFICATION_MANIFEST_FILE,
-    build_classification_artifact_frames,
-)
 from biominer.storage.parquet import write_parquet
 
 
@@ -34,7 +30,6 @@ def compile_registry_fixture(
     global_names_for_collision: pl.DataFrame | None = None,
     query_curation_json: str | Path | None = None,
     query_curation_rules: tuple[QueryCurationRule, ...] = (),
-    include_classification_tables: bool = True,
 ) -> dict[str, Any]:
     source = Path(source_path)
     output = Path(output_dir)
@@ -49,44 +44,12 @@ def compile_registry_fixture(
         global_names_for_collision=global_names_for_collision,
         query_curation_json=query_curation_json,
         query_curation_rules=query_curation_rules,
-        include_classification_tables=include_classification_tables,
     )
 
     for filename, frame in frames.items():
         write_parquet(frame, output / filename)
-    if include_classification_tables and isinstance(manifest.get("classification_table"), dict):
-        manifest = {
-            **manifest,
-            "classification_table": _classification_manifest_with_local_sizes(
-                dict(manifest["classification_table"]),
-                output,
-            ),
-        }
-        (output / BUTTERFLY_CLASSIFICATION_MANIFEST_FILE).write_text(
-            json.dumps(manifest["classification_table"], indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     return manifest
-
-
-def _classification_manifest_with_local_sizes(manifest: dict[str, Any], output: Path) -> dict[str, Any]:
-    artifact_keys = {
-        "classification_taxa": "butterfly_classification_taxa.parquet",
-        "family_labels": "butterfly_family_labels.parquet",
-        "species_labels": "butterfly_species_labels.parquet",
-        "qa_findings": "butterfly_classification_qa_findings.parquet",
-    }
-    sizes = {
-        key: (output / filename).stat().st_size
-        for key, filename in artifact_keys.items()
-        if (output / filename).exists()
-    }
-    return {
-        **manifest,
-        "artifact_file_sizes": sizes,
-        "estimated_metadata_only_size_mb": round(float(sizes.get("classification_taxa", 0)) / (1024 * 1024), 6),
-    }
 
 
 def compile_registry_frames(
@@ -99,26 +62,11 @@ def compile_registry_frames(
     global_names_for_collision: pl.DataFrame | None = None,
     query_curation_json: str | Path | None = None,
     query_curation_rules: tuple[QueryCurationRule, ...] = (),
-    include_classification_tables: bool = True,
 ) -> tuple[dict[str, pl.DataFrame], dict[str, Any]]:
     scope = load_scope(scope_path)
     taxa = _taxa_frame(source_payload.get("taxa", []), scope_id=scope.scope_id)
     names = _names_frame(source_payload.get("names", []), registry_version=registry_version)
     snapshots = _source_snapshots_frame(source_payload, source_ref=source_ref)
-    classification_manifest: dict[str, Any] | None = None
-    classification_frames: dict[str, pl.DataFrame] = {}
-    if include_classification_tables:
-        classification_taxa, family_labels, species_labels, classification_qa, classification_manifest = build_classification_artifact_frames(
-            taxa,
-            registry_manifest={"registry_version": registry_version, "scope_id": scope.scope_id},
-            source_snapshots=snapshots,
-        )
-        classification_frames = {
-            "butterfly_classification_taxa.parquet": classification_taxa,
-            "butterfly_family_labels.parquet": family_labels,
-            "butterfly_species_labels.parquet": species_labels,
-            "butterfly_classification_qa_findings.parquet": classification_qa,
-        }
     query_curation = query_curation_rules or load_query_curation_rules(query_curation_json)
     collision_names = _ensure_query_eligibility_columns(global_names_for_collision) if global_names_for_collision is not None else names
     name_collision_ledger = _name_collision_ledger_frame(collision_names, registry_version=registry_version)
@@ -131,7 +79,6 @@ def compile_registry_frames(
     frames = {
         "taxa.parquet": taxa,
         "taxon_relations.parquet": _taxon_relations_frame(taxa),
-        **classification_frames,
         "names.parquet": names,
         "name_collision_ledger.parquet": name_collision_ledger,
         "name_evidence.parquet": evidence,
@@ -143,7 +90,6 @@ def compile_registry_frames(
         registry_version=registry_version,
         scope_id=scope.scope_id,
         taxa=taxa,
-        classification_manifest=classification_manifest,
         names=names,
         name_collision_ledger=name_collision_ledger,
         queries=queries,
@@ -152,7 +98,6 @@ def compile_registry_frames(
         output_ref=output_ref,
         source_hash=_source_hash(source_payload, source_ref),
         query_curation_rule_count=len(query_curation),
-        include_classification_tables=include_classification_tables,
     )
     return frames, manifest
 
@@ -631,7 +576,6 @@ def _manifest(
     registry_version: str,
     scope_id: str,
     taxa: pl.DataFrame,
-    classification_manifest: dict[str, Any] | None,
     names: pl.DataFrame,
     name_collision_ledger: pl.DataFrame,
     queries: pl.DataFrame,
@@ -640,7 +584,6 @@ def _manifest(
     output_ref: str | Path,
     source_hash: str,
     query_curation_rule_count: int = 0,
-    include_classification_tables: bool = True,
 ) -> dict[str, Any]:
     fatal_count = qa.filter(pl.col("severity") == "fatal").height if not qa.is_empty() else 0
     warning_count = qa.filter(pl.col("severity") == "warning").height if not qa.is_empty() else 0
@@ -653,13 +596,6 @@ def _manifest(
         "source_path": str(source_ref),
         "output_dir": str(output_ref),
         "taxa_rows": taxa.height,
-        "classification_table_skipped": not include_classification_tables,
-        "classification_table": classification_manifest,
-        "classification_taxa_rows": (classification_manifest or {}).get("classification_taxa_rows", (classification_manifest or {}).get("species_count")),
-        "classification_family_count": (classification_manifest or {}).get("family_count"),
-        "classification_species_count": (classification_manifest or {}).get("species_count"),
-        "classification_family_label_rows": (classification_manifest or {}).get("family_label_count"),
-        "classification_species_label_rows": (classification_manifest or {}).get("species_label_count"),
         "name_rows": names.height,
         "query_eligible_name_rows": names.filter(pl.col("query_eligible")).height if "query_eligible" in names.columns else None,
         "query_ineligible_name_rows": names.filter(pl.col("enabled") & ~pl.col("query_eligible")).height if "query_eligible" in names.columns else None,

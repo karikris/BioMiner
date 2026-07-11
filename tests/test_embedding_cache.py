@@ -6,28 +6,13 @@ import polars as pl
 
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
 from biominer.bioclip.embedding_cache import (
-    TAXONOMY_TEXT_EMBEDDING_COLUMNS,
     candidate_text_embedding_rows,
-    missing_taxonomy_text_embedding_labels,
     prepare_candidate_text_embedding_cache,
     prepare_object_image_embedding_cache,
-    prepare_taxonomy_text_embedding_cache,
-    taxonomy_text_embedding_rows,
     upsert_image_embedding_cache,
     upsert_text_embedding_cache,
-    validate_taxonomy_text_embedding_cache,
     write_image_embedding_cache,
     write_text_embedding_cache,
-    write_taxonomy_text_embedding_cache,
-)
-from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
-from biominer.registry.classification_table import (
-    CLASSIFICATION_TABLE_VERSION,
-    CLASSIFICATION_TAXA_SCHEMA,
-    PROMPT_VARIANT_VERSION,
-    build_family_label_frame,
-    build_species_label_frame,
-    ensure_classification_taxa_schema,
 )
 
 
@@ -191,7 +176,6 @@ def test_candidate_text_embedding_rows_include_family_genus_and_species_stages()
         ("a photo of Danaus plexippus", "species", "gbif:5131654"),
     ]
 
-
 def test_candidate_text_embedding_rows_include_same_family_genus_stage_labels() -> None:
     candidate_set = CandidateSet(
         candidate_set_id="candidate-set-family-genera",
@@ -267,144 +251,6 @@ def test_prepare_candidate_text_embedding_cache_uses_candidate_set_and_reuses_ca
     ]
 
 
-def test_taxonomy_text_embedding_rows_include_versions_hashes_and_dedupe() -> None:
-    store = _butterfly_taxonomy_store()
-    duplicate_family_label = store.family_labels.head(1)
-    store = ButterflyTaxonomyStore(
-        classification_taxa=store.classification_taxa,
-        family_labels=pl.concat([store.family_labels, duplicate_family_label], how="diagonal_relaxed"),
-        species_labels=store.species_labels,
-        manifest=store.manifest,
-    )
-
-    rows = taxonomy_text_embedding_rows(
-        store,
-        model_id="bioclip",
-        model_checkpoint="checkpoint-a",
-        embedding_dtype="float16",
-    )
-
-    assert len(rows) == 12
-    first = rows[0]
-    assert first["classification_table_version"] == CLASSIFICATION_TABLE_VERSION
-    assert first["prompt_variant_version"] == PROMPT_VARIANT_VERSION
-    assert first["label_hash"].startswith("sha256:")
-    assert first["embedding_dtype"] == "float16"
-    assert {row["label_scope"] for row in rows} == {"family", "species"}
-
-
-def test_prepare_taxonomy_text_embedding_cache_reuses_cached_labels(tmp_path: Path) -> None:
-    cache_path = tmp_path / "taxonomy_text_embeddings.parquet"
-    store = _butterfly_taxonomy_store()
-    calls: list[list[str]] = []
-
-    def embed(labels: list[str]) -> list[list[float]]:
-        calls.append(labels)
-        return [[float(index), float(index + 1), float(index + 2)] for index, _label in enumerate(labels)]
-
-    first = prepare_taxonomy_text_embedding_cache(
-        store,
-        cache_path,
-        model_id="bioclip",
-        model_checkpoint="checkpoint-a",
-        embed_labels=embed,
-        batch_size=4,
-        embedding_dtype="float16",
-        created_at="2026-01-02T00:00:00+00:00",
-    )
-    second = prepare_taxonomy_text_embedding_cache(
-        store,
-        cache_path,
-        model_id="bioclip",
-        model_checkpoint="checkpoint-a",
-        embed_labels=embed,
-        batch_size=4,
-        embedding_dtype="float16",
-        created_at="2026-01-03T00:00:00+00:00",
-    )
-    frame = pl.read_parquet(cache_path)
-
-    assert [len(call) for call in calls] == [4, 4, 4]
-    assert first.rows_added == 12
-    assert first.embeddings_computed == 12
-    assert second.rows_added == 0
-    assert second.rows_reused == 12
-    assert set(TAXONOMY_TEXT_EMBEDDING_COLUMNS).issubset(frame.columns)
-    assert set(frame.get_column("embedding_dtype").to_list()) == {"float16"}
-    validate_taxonomy_text_embedding_cache(frame, store, model_id="bioclip", model_checkpoint="checkpoint-a")
-
-
-def test_prepare_taxonomy_text_embedding_cache_rejects_reused_wrong_dtype(tmp_path: Path) -> None:
-    cache_path = tmp_path / "taxonomy_text_embeddings.parquet"
-    store = _butterfly_taxonomy_store()
-    first = prepare_taxonomy_text_embedding_cache(
-        store,
-        cache_path,
-        model_id="bioclip",
-        model_checkpoint="checkpoint-a",
-        embed_labels=lambda labels: [[1.0, 0.0] for _label in labels],
-        embedding_dtype="float16",
-    )
-    write_taxonomy_text_embedding_cache(first.frame.to_dicts(), cache_path)
-
-    try:
-        prepare_taxonomy_text_embedding_cache(
-            store,
-            cache_path,
-            model_id="bioclip",
-            model_checkpoint="checkpoint-a",
-            embed_labels=lambda labels: [[0.0, 1.0] for _label in labels],
-            embedding_dtype="float32",
-        )
-    except ValueError as exc:
-        assert "embedding_dtype mismatch" in str(exc)
-    else:
-        raise AssertionError("taxonomy text embedding cache with wrong dtype should be rejected")
-
-
-def test_validate_taxonomy_text_embedding_cache_rejects_wrong_checkpoint(tmp_path: Path) -> None:
-    store = _butterfly_taxonomy_store()
-    update = prepare_taxonomy_text_embedding_cache(
-        store,
-        tmp_path / "taxonomy_text_embeddings.parquet",
-        model_id="bioclip",
-        model_checkpoint="checkpoint-a",
-        embed_labels=lambda labels: [[1.0, 0.0] for _label in labels],
-    )
-
-    try:
-        validate_taxonomy_text_embedding_cache(update.frame, store, model_id="bioclip", model_checkpoint="checkpoint-b")
-    except ValueError as exc:
-        assert "checkpoint-b" in str(exc)
-    else:
-        raise AssertionError("wrong checkpoint should be rejected")
-
-
-def test_missing_taxonomy_text_embedding_labels_detects_incomplete_cache(tmp_path: Path) -> None:
-    store = _butterfly_taxonomy_store()
-    update = prepare_taxonomy_text_embedding_cache(
-        store,
-        tmp_path / "taxonomy_text_embeddings.parquet",
-        model_id="bioclip",
-        model_checkpoint="checkpoint-a",
-        embed_labels=lambda labels: [[1.0, 0.0] for _label in labels],
-    )
-    incomplete = update.frame.head(update.frame.height - 1)
-
-    missing = missing_taxonomy_text_embedding_labels(
-        incomplete,
-        store,
-        model_id="bioclip",
-        model_checkpoint="checkpoint-a",
-    )
-
-    assert len(missing) == 1
-    try:
-        validate_taxonomy_text_embedding_cache(incomplete, store, model_id="bioclip", model_checkpoint="checkpoint-a")
-    except ValueError as exc:
-        assert "missing labels" in str(exc)
-    else:
-        raise AssertionError("incomplete cache should be rejected")
 
 
 def test_image_embedding_cache_reuses_existing_crop_hash_without_recomputing(tmp_path: Path) -> None:
@@ -528,74 +374,3 @@ def test_prepare_object_image_embedding_cache_uses_crop_paths_without_persisting
         {"detection_id": "det-2", "embedding": [0.9, 0.1]},
         {"detection_id": "det-3", "embedding": [0.2, 0.8]},
     ]
-
-
-def _butterfly_taxonomy_store() -> ButterflyTaxonomyStore:
-    taxa = ensure_classification_taxa_schema(
-        pl.DataFrame(
-            [
-                _classification_taxon(
-                    accepted_taxon_key="gbif:7017001",
-                    scientific_name="Danaus plexippus",
-                    family_key="gbif:7017",
-                    family="Nymphalidae",
-                    genus_key="gbif:190",
-                    genus="Danaus",
-                ),
-                _classification_taxon(
-                    accepted_taxon_key="gbif:9417001",
-                    scientific_name="Papilio demoleus",
-                    family_key="gbif:9417",
-                    family="Papilionidae",
-                    genus_key="gbif:90",
-                    genus="Papilio",
-                ),
-            ],
-            schema=CLASSIFICATION_TAXA_SCHEMA,
-        )
-    )
-    return ButterflyTaxonomyStore(
-        classification_taxa=taxa,
-        family_labels=build_family_label_frame(taxa),
-        species_labels=build_species_label_frame(taxa),
-        manifest={
-            "registry_version": "registry-v1",
-            "classification_table_version": CLASSIFICATION_TABLE_VERSION,
-            "prompt_variant_version": PROMPT_VARIANT_VERSION,
-        },
-    )
-
-
-def _classification_taxon(
-    *,
-    accepted_taxon_key: str,
-    scientific_name: str,
-    family_key: str,
-    family: str,
-    genus_key: str,
-    genus: str,
-) -> dict[str, object]:
-    return {
-        "registry_version": "registry-v1",
-        "classification_table_version": CLASSIFICATION_TABLE_VERSION,
-        "source": "GBIF",
-        "source_version": "",
-        "retrieved_at": "",
-        "scope_id": "scope",
-        "accepted_taxon_key": accepted_taxon_key,
-        "gbif_species_key": accepted_taxon_key.removeprefix("gbif:"),
-        "scientific_name": scientific_name,
-        "canonical_name": scientific_name,
-        "rank": "SPECIES",
-        "taxonomic_status": "accepted",
-        "family_key": family_key,
-        "family": family,
-        "genus_key": genus_key,
-        "genus": genus,
-        "species_key": accepted_taxon_key,
-        "species": scientific_name,
-        "species_epithet": scientific_name.split()[-1],
-        "in_scope": True,
-        "classification_enabled": True,
-        "classification_disabled_reason": "",
-    }

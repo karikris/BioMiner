@@ -157,6 +157,8 @@ class ClassificationV2Frames:
 
 def load_classification_v2_source(path: str | Path = DEFAULT_CLASSIFICATION_V2_SOURCE) -> dict[str, Any]:
     source_path = Path(path)
+    if not source_path.exists() and source_path == DEFAULT_CLASSIFICATION_V2_SOURCE:
+        source_path = Path(__file__).resolve().parents[3] / DEFAULT_CLASSIFICATION_V2_SOURCE
     payload = json.loads(source_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"classification source must be a JSON object: {source_path}")
@@ -175,42 +177,21 @@ def write_classification_v2_artifacts(
     if not taxa_path.exists():
         raise FileNotFoundError(f"missing required registry artifact: {taxa_path}")
     registry_manifest = _read_json_optional(registry / "manifest.json")
-    taxa = pl.read_parquet(taxa_path)
-    frames = build_classification_v2_frames(taxa, load_classification_v2_source(source_path))
-    findings = validate_classification_v2(frames, taxa=taxa)
-    qa_findings = classification_v2_qa_frame(findings)
-    manifest = build_classification_v2_manifest(
-        frames,
+    artifact_frames, manifest = compile_classification_v2_artifacts(
+        pl.read_parquet(taxa_path),
+        source_path=source_path,
         registry_version=_text(registry_manifest.get("registry_version")),
     )
-    manifest["classification_fingerprint"] = classification_v2_fingerprint(frames)
-    manifest["fatal_finding_count"] = sum(1 for finding in findings if finding["severity"] == "fatal")
-    manifest["warning_finding_count"] = sum(1 for finding in findings if finding["severity"] == "warning")
-    manifest["qa_status"] = "failed" if manifest["fatal_finding_count"] else "passed"
-    accepted_species = _accepted_species_rows(taxa)
-    enabled_keys = set(frames.leaf_paths.filter(pl.col("enabled"))["accepted_taxon_key"].to_list())
-    manifest["accepted_species_count"] = len(accepted_species)
-    manifest["unmapped_accepted_species_count"] = sum(
-        1 for row in accepted_species if _text(row.get("accepted_taxon_key")) not in enabled_keys
-    )
-    manifest["coverage_by_family"] = _coverage_by_family(accepted_species, enabled_keys)
     output.mkdir(parents=True, exist_ok=True)
     paths = classification_v2_artifact_paths(output)
-    write_parquet(qa_findings, paths["qa_findings"])
+    write_parquet(artifact_frames["qa_findings"], paths["qa_findings"])
     if manifest["fatal_finding_count"]:
+        fatal_codes = artifact_frames["qa_findings"].filter(pl.col("severity") == "fatal")["code"].to_list()
         raise ValueError(
-            "classification-v2 fatal QA: "
-            + ", ".join(str(finding["code"]) for finding in findings if finding["severity"] == "fatal")
+            "classification-v2 fatal QA: " + ", ".join(str(code) for code in fatal_codes)
         )
-    for key, frame in (
-        ("sources", frames.sources),
-        ("nodes", frames.nodes),
-        ("edges", frames.edges),
-        ("gbif_mappings", frames.gbif_mappings),
-        ("leaf_paths", frames.leaf_paths),
-        ("prompt_labels", frames.prompt_labels),
-    ):
-        write_parquet(frame, paths[key])
+    for key in ("sources", "nodes", "edges", "gbif_mappings", "leaf_paths", "prompt_labels"):
+        write_parquet(artifact_frames[key], paths[key])
     manifest["artifacts"] = {
         key: {
             "file": path.name,
@@ -227,6 +208,40 @@ def write_classification_v2_artifacts(
     }
     paths["manifest"].write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     return {**manifest, "outputs": {key: str(path) for key, path in paths.items()}}
+
+
+def compile_classification_v2_artifacts(
+    taxa: pl.DataFrame,
+    *,
+    source_path: str | Path = DEFAULT_CLASSIFICATION_V2_SOURCE,
+    registry_version: str = "",
+) -> tuple[dict[str, pl.DataFrame], dict[str, Any]]:
+    frames = build_classification_v2_frames(taxa, load_classification_v2_source(source_path))
+    findings = validate_classification_v2(frames, taxa=taxa)
+    manifest = build_classification_v2_manifest(frames, registry_version=registry_version)
+    manifest["classification_fingerprint"] = classification_v2_fingerprint(frames)
+    manifest["fatal_finding_count"] = sum(1 for finding in findings if finding["severity"] == "fatal")
+    manifest["warning_finding_count"] = sum(1 for finding in findings if finding["severity"] == "warning")
+    manifest["qa_status"] = "failed" if manifest["fatal_finding_count"] else "passed"
+    accepted_species = _accepted_species_rows(taxa)
+    enabled_keys = set(frames.leaf_paths.filter(pl.col("enabled"))["accepted_taxon_key"].to_list())
+    manifest["accepted_species_count"] = len(accepted_species)
+    manifest["unmapped_accepted_species_count"] = sum(
+        1 for row in accepted_species if _text(row.get("accepted_taxon_key")) not in enabled_keys
+    )
+    manifest["coverage_by_family"] = _coverage_by_family(accepted_species, enabled_keys)
+    return (
+        {
+            "sources": frames.sources,
+            "nodes": frames.nodes,
+            "edges": frames.edges,
+            "gbif_mappings": frames.gbif_mappings,
+            "leaf_paths": frames.leaf_paths,
+            "prompt_labels": frames.prompt_labels,
+            "qa_findings": classification_v2_qa_frame(findings),
+        },
+        manifest,
+    )
 
 
 def validate_classification_v2(
@@ -994,6 +1009,7 @@ __all__ = [
     "classification_v2_artifact_paths",
     "classification_v2_artifact_uris",
     "classification_v2_fingerprint",
+    "compile_classification_v2_artifacts",
     "load_classification_v2_source",
     "write_classification_v2_artifacts",
 ]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import UTC, datetime
 from html import escape
 import io
@@ -15,9 +15,6 @@ from typing import Any
 
 import polars as pl
 
-from biominer.bioclip.bioclip import PersistentBioClipScorer
-from biominer.bioclip.ablation import run_object_ablations
-from biominer.bioclip.candidate_sets import build_candidate_set
 from biominer.bioclip.classification_modes import (
     DEFAULT_CLASSIFICATION_MODE,
     DEFAULT_FAMILY_TOP_K,
@@ -27,41 +24,21 @@ from biominer.bioclip.classification_modes import (
     SUPPORTED_CLASSIFICATION_MODES,
     normalize_classification_mode,
 )
-from biominer.bioclip.embedding_cache import (
-    prepare_candidate_text_embedding_cache,
-    prepare_object_image_embedding_cache,
-    prepare_taxonomy_text_embedding_cache,
-    read_embedding_cache,
-)
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
 from biominer.bioclip.object_runner import (
-    CachedObjectEmbeddingScorer,
-    EphemeralCropBioClipScorer,
-    PRIMARY_VISUAL_CLASSIFIER,
-    materialize_detector_crop_inputs,
-    screen_object_detections,
     write_object_evidence_outputs,
 )
-from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
 from biominer.benchmarks.vision_live import (
     LiveM5ProBenchmarkRequest,
     run_live_m5pro_benchmark,
     validate_live_m5pro_benchmark_request,
 )
 from biominer.benchmarks.vision_plumbing import run_rolling_worker_benchmark_matrix, run_vision_plumbing_benchmark
-from biominer.detection.detector_base import DecodedImage, DetectionCandidate, FakeObjectDetector
 from biominer.detection.evaluate import evaluate_xie_style
-from biominer.detection.image_io import load_decoded_image_from_record
-from biominer.detection.pipeline import run_detection_pipeline
 from biominer.detection.policy import (
-    DetectionPolicy,
-    DetectionRunPolicy,
     VisionRuntimeSettings,
-    detection_is_bioclip_eligible,
-    runtime_profile,
     vision_runtime_settings,
 )
-from biominer.detection.segmentation import make_segmenter
 from biominer.evaluation.labels import read_reviewed_labels, validate_reviewed_label_frame
 from biominer.evaluation.review_queue import build_hierarchical_review_queue
 from biominer.evaluation.reports import write_evaluation_report, write_evaluation_report_to_storage
@@ -77,7 +54,7 @@ from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry
-from biominer.registry.classification_table import build_classification_tables_from_registry_dir
+from biominer.registry.classification_v2 import DEFAULT_CLASSIFICATION_V2_SOURCE, write_classification_v2_artifacts
 from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST_DAILY_REQUEST_LIMIT, build_enrichment_sources_from_registry, compile_enriched_registry
 from biominer.registry.gbif import GBIFClient
@@ -90,7 +67,6 @@ from biominer.registry.translation_harvester import (
     MYMEMORY_RESPONSE_BYTE_RESERVATION,
 )
 from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES, DEFAULT_TRANSLATION_TARGET_LOCALES_JSON
-from biominer.reports.vision import build_vision_stage_metrics, write_vision_stage_reports
 from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR, YOLOE26_DIR
 from biominer.run import ProductionRunOrchestrator, ProductionRunRequest, RunStage
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES
@@ -100,17 +76,6 @@ from biominer.config import ConfigError, create_workstore, load_biominer_config,
 from biominer.storage.factory import create_storage_backend
 from biominer.storage.parquet import write_parquet
 from biominer.storage.uri import is_cloud_uri, join_uri, normalize_local_uri
-from biominer.vision.gates import BioClipGateMode, BioClipGatePolicy
-from biominer.vision.rolling_worker import (
-    BioCLIPWorker,
-    CommitWorker,
-    ImageStager,
-    RollingVisionWorker,
-    RollingVisionWorkerSettings,
-    ScoreInputMaterializer,
-    YOLOWorker,
-    load_staged_or_cached_image,
-)
 
 
 STANDARD_EVALUATION_PROFILE = "standard"
@@ -173,123 +138,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config")
     parser.add_argument("--version", action="store_true")
     subparsers = parser.add_subparsers(dest="command")
-    bioclip = subparsers.add_parser("bioclip")
-    bioclip_subparsers = bioclip.add_subparsers(dest="bioclip_command")
-    bioclip_screen = bioclip_subparsers.add_parser("screen")
-    _add_bioclip_screen_args(bioclip_screen)
-    vision = subparsers.add_parser("vision")
-    vision_subparsers = vision.add_subparsers(dest="vision_command")
-    vision_detect = vision_subparsers.add_parser("detect")
-    vision_detect.add_argument("--input", required=True)
-    vision_detect.add_argument("--output", required=True)
-    vision_detect.add_argument("--backend", default="yoloe26", choices=("yoloe26", "yolo26", "fake"))
-    vision_detect.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
-    vision_detect.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    vision_detect.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
-    vision_detect.add_argument("--yolo-sidecar-transport", default="json_b64", choices=("json_b64", "image_path"))
-    vision_detect.add_argument("--imgsz", type=int, default=640)
-    vision_detect.add_argument("--conf", type=float, default=0.20)
-    vision_detect.add_argument("--iou", type=float, default=0.50)
-    vision_detect.add_argument("--max-det", type=int, default=8)
-    vision_detect.add_argument("--prompt-class", action="append", default=[])
-    vision_detect.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
-    _add_detection_policy_args(vision_detect)
-    vision_screen = vision_subparsers.add_parser("screen")
-    vision_screen.add_argument("--input", required=True)
-    vision_screen.add_argument("--output-dir", required=True)
-    vision_screen.add_argument("--species-context", required=True)
-    vision_screen.add_argument("--species-candidates")
-    vision_screen.add_argument("--vision-profile", default="mac_m5pro_64gb")
-    vision_screen.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"))
-    vision_screen.add_argument("--yolo-sidecar-transport", choices=("json_b64", "image_path"))
-    vision_screen.add_argument("--yolo-runtime-python", default=YOLOE26_RUNTIME_PYTHON)
-    vision_screen.add_argument("--bioclip-runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
-    vision_screen.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
-    vision_screen.add_argument("--cache-root", default="data/cache/images")
-    vision_screen.add_argument("--crop-temp-dir", default="data/cache/object_crops")
-    vision_screen.add_argument("--chunk-rows", type=int)
-    vision_screen.add_argument("--limit", type=int)
-    vision_screen.add_argument("--parquet-part-rows", type=int)
-    vision_screen.add_argument("--prompt-class", action="append", default=[])
-    vision_screen.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
-    vision_screen.add_argument("--delete-images-after-commit", action=argparse.BooleanOptionalAction, default=None)
-    vision_screen.add_argument("--retain-debug-crops", action="store_true")
-    vision_rolling_screen = vision_subparsers.add_parser("rolling-screen")
-    vision_rolling_screen.add_argument("--input", required=True)
-    vision_rolling_screen.add_argument("--output-dir", required=True)
-    vision_rolling_screen.add_argument("--species-context", required=True)
-    vision_rolling_screen.add_argument("--species-candidates")
-    vision_rolling_screen.add_argument("--vision-profile", default="mac_m5pro_64gb")
-    vision_rolling_screen.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"))
-    vision_rolling_screen.add_argument("--yolo-sidecar-transport", default="image_path", choices=("json_b64", "image_path"))
-    vision_rolling_screen.add_argument("--yolo-runtime-python", default=YOLOE26_RUNTIME_PYTHON)
-    vision_rolling_screen.add_argument("--bioclip-runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
-    vision_rolling_screen.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
-    vision_rolling_screen.add_argument("--cache-root", default="data/cache/images")
-    vision_rolling_screen.add_argument("--crop-temp-dir", default="data/cache/object_crops")
-    vision_rolling_screen.add_argument("--limit", type=int)
-    vision_rolling_screen.add_argument("--parquet-part-rows", type=int)
-    vision_rolling_screen.add_argument("--prompt-class", action="append", default=[])
-    vision_rolling_screen.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
-    vision_rolling_screen.add_argument("--delete-images-after-commit", action=argparse.BooleanOptionalAction, default=None)
-    vision_rolling_screen.add_argument("--retain-debug-crops", action="store_true")
-    vision_rolling_screen.add_argument("--vision-batch-rows", type=int, default=500)
-    vision_rolling_screen.add_argument("--image-prefetch-batches", type=int, default=4)
-    vision_rolling_screen.add_argument("--target-ready-yolo-batches", type=int, default=3)
-    vision_rolling_screen.add_argument("--bioclip-gate-mode", choices=tuple(mode.value for mode in BioClipGateMode), default=BioClipGateMode.EXCLUDE_HARD_NEGATIVE.value)
-    vision_rolling_screen.add_argument("--score-no-detection-whole-image", action=argparse.BooleanOptionalAction, default=True)
-    vision_rolling_screen.add_argument("--accelerator-concurrency", type=int, default=1)
-    vision_rolling_screen.add_argument("--bioclip-preprocess-workers", type=int, default=1)
-    vision_score = vision_subparsers.add_parser("score")
-    vision_score.add_argument("--input", required=True)
-    vision_score.add_argument("--detections", required=True)
-    vision_score.add_argument("--species-context", required=True)
-    vision_score.add_argument("--species-candidates")
-    vision_score.add_argument("--geo-prior-table")
-    vision_score.add_argument("--output", required=True)
-    vision_score.add_argument("--ablation-mode", choices=("whole_image", "detector_crop", "detector_crop_segmentation"), default="detector_crop")
-    vision_score.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
-    vision_score.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
-    vision_score.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    vision_score.add_argument("--cache-root", default="data/cache/images")
-    vision_score.add_argument("--crop-temp-dir", default="data/cache/object_crops")
-    vision_score.add_argument("--crop-target-px", type=int, default=336)
-    vision_score.add_argument("--crop-padding-ratio", type=float, default=0.12)
-    vision_score.add_argument("--bioclip-batch", type=int, default=24)
-    vision_score.add_argument("--adaptive-batching", action="store_true")
-    vision_score.add_argument("--min-bioclip-batch", type=int, default=1)
-    vision_score.add_argument("--parquet-batch-rows", type=int, default=10000)
-    vision_score.add_argument("--retain-debug-crops", action="store_true")
-    vision_score.add_argument("--text-embedding-batch-size", type=int, default=256)
-    vision_score.add_argument("--candidate-text-embedding-cache")
-    vision_score.add_argument("--object-image-embedding-cache")
-    _add_direct_vision_classification_args(vision_score)
-    vision_score.add_argument("--segmenter", default="none", choices=("none", "sam", "sam2"))
-    vision_ablate = vision_subparsers.add_parser("ablate")
-    vision_ablate.add_argument("--input", required=True)
-    vision_ablate.add_argument("--detections", required=True)
-    vision_ablate.add_argument("--species-context", required=True)
-    vision_ablate.add_argument("--species-candidates")
-    vision_ablate.add_argument("--geo-prior-table")
-    vision_ablate.add_argument("--output-dir", required=True)
-    vision_ablate.add_argument("--modes", default="whole_image,detector_crop,detector_crop_segmentation")
-    vision_ablate.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
-    vision_ablate.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
-    vision_ablate.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    vision_ablate.add_argument("--cache-root", default="data/cache/images")
-    vision_ablate.add_argument("--crop-temp-dir", default="data/cache/object_crops")
-    vision_ablate.add_argument("--crop-target-px", type=int, default=336)
-    vision_ablate.add_argument("--crop-padding-ratio", type=float, default=0.12)
-    vision_ablate.add_argument("--bioclip-batch", type=int, default=24)
-    vision_ablate.add_argument("--adaptive-batching", action="store_true")
-    vision_ablate.add_argument("--min-bioclip-batch", type=int, default=1)
-    vision_ablate.add_argument("--parquet-batch-rows", type=int, default=10000)
-    vision_ablate.add_argument("--retain-debug-crops", action="store_true")
-    vision_ablate.add_argument("--text-embedding-batch-size", type=int, default=256)
-    vision_ablate.add_argument("--candidate-text-embedding-cache")
-    vision_ablate.add_argument("--object-image-embedding-cache")
-    _add_direct_vision_classification_args(vision_ablate)
-    vision_ablate.add_argument("--segmenter", default="none", choices=("none", "sam", "sam2"))
     evidence = subparsers.add_parser("evidence")
     evidence_subparsers = evidence.add_subparsers(dest="evidence_command")
     evidence_join = evidence_subparsers.add_parser("join")
@@ -363,10 +211,11 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--skip-language-targets", action="store_true")
     registry_build.add_argument("--skip-curated-static-sources", action="store_true")
     registry_build.add_argument("--skip-enrichment", action="store_true")
-    registry_build.add_argument("--skip-classification-table", action="store_true")
-    registry_classification = registry_subparsers.add_parser("build-classification-table")
+    registry_build.add_argument("--skip-classification", action="store_true")
+    registry_classification = registry_subparsers.add_parser("build-classification")
     registry_classification.add_argument("--registry-dir", required=True)
     registry_classification.add_argument("--output-dir")
+    registry_classification.add_argument("--source-json", default=str(DEFAULT_CLASSIFICATION_V2_SOURCE))
     registry_audit = registry_subparsers.add_parser("audit")
     registry_audit.add_argument("--registry-dir", required=True)
     registry_audit.add_argument("--report-dir", default="reports")
@@ -446,7 +295,7 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--storage-backend", default="s3", choices=("s3", "local"))
     production_run.add_argument("--workstore-backend", default="postgres", choices=("postgres", "sqlite"))
     production_run.add_argument("--vision-backend", default="yoloe26")
-    production_run.add_argument("--vision-worker", default="serial", choices=("serial", "rolling"))
+    production_run.set_defaults(vision_worker="rolling")
     production_run.add_argument("--vision-profile", choices=("mac_m5pro_64gb",))
     production_run.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"))
     production_run.add_argument("--yolo-checkpoint")
@@ -496,80 +345,12 @@ def _add_poll_once_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config")
 
 
-def _add_direct_vision_classification_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--classification-mode",
-        type=_classification_mode_arg,
-        choices=SUPPORTED_CLASSIFICATION_MODES,
-        default=DEFAULT_CLASSIFICATION_MODE,
-    )
-    parser.add_argument("--taxonomy-candidate-table")
-    parser.add_argument("--family-top-k", type=int, default=DEFAULT_FAMILY_TOP_K)
-    parser.add_argument("--species-first-pass-top-k", type=int, default=DEFAULT_SPECIES_FIRST_PASS_TOP_K)
-    parser.add_argument("--species-rerank-top-k", type=int, default=DEFAULT_SPECIES_RERANK_TOP_K)
-    parser.add_argument("--taxonomy-text-embedding-cache")
-
-
-def _add_bioclip_screen_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--detections", required=True)
-    parser.add_argument("--species-context", required=True)
-    parser.add_argument("--species-candidates")
-    parser.add_argument("--geo-prior-table")
-    parser.add_argument("--output", required=True)
-    parser.add_argument(
-        "--ablation-mode",
-        choices=("whole_image", "detector_crop", "detector_crop_segmentation"),
-        default="detector_crop",
-    )
-    parser.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
-    parser.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
-    parser.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    parser.add_argument("--cache-root", default="data/cache/images")
-    parser.add_argument("--crop-temp-dir", default="data/cache/object_crops")
-    parser.add_argument("--crop-target-px", type=int, default=336)
-    parser.add_argument("--crop-padding-ratio", type=float, default=0.12)
-    parser.add_argument("--bioclip-batch", type=int, default=24)
-    parser.add_argument("--adaptive-batching", action="store_true")
-    parser.add_argument("--min-bioclip-batch", type=int, default=1)
-    parser.add_argument("--parquet-batch-rows", type=int, default=10000)
-    parser.add_argument("--retain-debug-crops", action="store_true")
-    parser.add_argument("--text-embedding-batch-size", type=int, default=256)
-    parser.add_argument("--candidate-text-embedding-cache")
-    parser.add_argument("--object-image-embedding-cache")
-    _add_direct_vision_classification_args(parser)
-    parser.add_argument("--segmenter", default="none", choices=("none", "sam", "sam2"))
-
-
 def _add_object_evidence_join_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", required=True)
     parser.add_argument("--detections", required=True)
     parser.add_argument("--scores", required=True)
     parser.add_argument("--joined-output", required=True)
     parser.add_argument("--photo-summary-output", required=True)
-
-
-def _add_detection_policy_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--profile", choices=("mac_m5pro_64gb",))
-    parser.add_argument("--box-score-threshold", type=float)
-    parser.add_argument("--nms-iou-threshold", type=float)
-    parser.add_argument("--min-box-area-ratio", type=float)
-    parser.add_argument("--max-boxes-per-image", type=int)
-    parser.add_argument("--crop-padding-ratio", type=float)
-    parser.add_argument("--image-max-side-px", type=int)
-    parser.add_argument("--crop-target-px", type=int)
-    parser.add_argument("--retain-debug-crops", action="store_true")
-    parser.add_argument("--debug-crop-limit", type=int)
-    parser.add_argument("--download-workers", type=int)
-    parser.add_argument("--decode-workers", type=int)
-    parser.add_argument("--detector-workers", type=int)
-    parser.add_argument("--max-inflight-images", type=int)
-    parser.add_argument("--max-inflight-crops", type=int)
-    parser.add_argument("--detector-batch-size", type=int)
-    parser.add_argument("--adaptive-batching", action="store_true")
-    parser.add_argument("--min-detector-batch-size", type=int)
-    parser.add_argument("--crop-batch-size", type=int)
-    parser.add_argument("--parquet-batch-rows", type=int)
 
 
 def _add_dev_vision_commands(subparsers: Any) -> None:
@@ -658,21 +439,7 @@ def run(args: argparse.Namespace) -> int:
     if args.version:
         print("biominer 0.1.0")
         return 0
-    if args.command == "bioclip":
-        if args.bioclip_command == "screen":
-            return _run_bioclip_screen_objects(args)
-        return 2
-    if args.command == "vision" or (args.command == "dev" and args.dev_command == "vision"):
-        if args.vision_command == "detect":
-            return _run_detect_boxes(args)
-        if args.vision_command == "screen":
-            return _run_vision_screen(args)
-        if args.vision_command == "rolling-screen":
-            return _run_vision_rolling_screen(args)
-        if args.vision_command == "score":
-            return _run_bioclip_screen_objects(args)
-        if args.vision_command == "ablate":
-            return _run_bioclip_ablate_objects(args)
+    if args.command == "dev" and args.dev_command == "vision":
         if args.vision_command == "bioclip-runtime-check":
             return _run_bioclip_runtime_check(args)
         if args.vision_command == "bioclip-prefetch-model":
@@ -819,18 +586,19 @@ def run(args: argparse.Namespace) -> int:
                     skip_language_targets=args.skip_language_targets,
                     skip_curated_static_sources=args.skip_curated_static_sources,
                     skip_enrichment=args.skip_enrichment,
-                    skip_classification_table=args.skip_classification_table,
+                    skip_classification_table=args.skip_classification,
                 )
             except (FileNotFoundError, ValueError) as exc:
                 print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
                 return 2
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
-        if args.registry_command == "build-classification-table":
+        if args.registry_command == "build-classification":
             try:
-                payload = build_classification_tables_from_registry_dir(
+                payload = write_classification_v2_artifacts(
                     registry_dir=args.registry_dir,
                     output_dir=args.output_dir,
+                    source_path=args.source_json,
                 )
             except (FileNotFoundError, ValueError) as exc:
                 print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
@@ -1485,48 +1253,6 @@ def _run_bioclip_prefetch_model(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_detect_boxes(args: argparse.Namespace) -> int:
-    records = pl.read_parquet(args.input).to_dicts()
-    try:
-        detector, image_loader = _detect_boxes_backend(args, records)
-    except (RuntimeError, ValueError) as exc:
-        print(json.dumps({"error": str(exc), "backend": args.backend, "runtime_python": args.runtime_python}, indent=2, sort_keys=True))
-        return 2
-    detection_policy = _detection_policy_from_args(args)
-    run_policy = _detection_run_policy_from_args(args)
-    result = run_detection_pipeline(
-        records=records,
-        detector=detector,
-        output_path=args.output,
-        image_loader=image_loader,
-        detection_policy=detection_policy,
-        run_policy=run_policy,
-    )
-    print(
-        json.dumps(
-            {
-                "output": str(result.output_path),
-                "rows": result.frame.height,
-                "profile": args.profile,
-                "backend": detector.backend,
-                "records_seen": result.records_seen,
-                "images_loaded": result.images_loaded,
-                "detections_written": result.detections_written,
-                "crops_created": result.crops_created,
-                "parquet_batches_written": result.parquet_batches_written,
-                "adaptive_batching_enabled": getattr(result, "adaptive_batching_enabled", run_policy.adaptive_batching),
-                "detector_batch_retries": getattr(result, "detector_batch_retries", 0),
-                "detector_batch_size_initial": getattr(result, "detector_batch_size_initial", run_policy.detector_batch_size),
-                "detector_batch_size_final": getattr(result, "detector_batch_size_final", run_policy.detector_batch_size),
-                "detector_batch_size_min": getattr(result, "detector_batch_size_min", run_policy.min_detector_batch_size),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
 def _run_yoloe26_runtime_check(args: argparse.Namespace) -> int:
     runtime_python = Path(args.runtime_python).expanduser()
     if not runtime_python.exists():
@@ -1737,56 +1463,6 @@ def _run_vision_benchmark_live_m5pro(args: argparse.Namespace) -> int:
     return 0
 
 
-def _detect_boxes_backend(args: argparse.Namespace, records: list[dict[str, object]]):
-    if args.backend == "fake":
-        return FakeObjectDetector([_fake_detections_for_record(record) for record in records]), _blank_decoded_image
-    if args.backend == "yoloe26":
-        from biominer.detection.yoloe26_detector import YoloE26ObjectDetector, YoloE26SidecarObjectDetector
-
-        prompts = _yoloe26_prompt_classes(args)
-        kwargs = {
-            "checkpoint": args.checkpoint,
-            "device": args.device,
-            "imgsz": args.imgsz,
-            "conf": args.conf,
-            "iou": args.iou,
-            "max_det": args.max_det,
-            "prompt_classes": prompts,
-        }
-        if _use_vision_sidecar(args.runtime_python):
-            return (
-                YoloE26SidecarObjectDetector(
-                    runtime_python=args.runtime_python,
-                    transport=getattr(args, "yolo_sidecar_transport", "json_b64"),
-                    **kwargs,
-                ),
-                load_decoded_image_from_record,
-            )
-        return YoloE26ObjectDetector(**kwargs), load_decoded_image_from_record
-    if args.backend == "yolo26":
-        from biominer.detection.yolo26_detector import Yolo26ObjectDetector, Yolo26SidecarObjectDetector
-
-        kwargs = {
-            "checkpoint": _explicit_yolo26_checkpoint(args),
-            "device": args.device,
-            "imgsz": args.imgsz,
-            "conf": args.conf,
-            "iou": args.iou,
-            "max_det": args.max_det,
-        }
-        if _use_vision_sidecar(args.runtime_python):
-            return Yolo26SidecarObjectDetector(runtime_python=args.runtime_python, **kwargs), load_decoded_image_from_record
-        return Yolo26ObjectDetector(**kwargs), load_decoded_image_from_record
-    raise RuntimeError(f"unsupported detection backend: {args.backend}")
-
-
-def _explicit_yolo26_checkpoint(args: argparse.Namespace) -> str:
-    checkpoint = str(getattr(args, "checkpoint", "") or "").strip()
-    if not checkpoint or checkpoint == "yoloe-26s-seg.pt":
-        raise ValueError("YOLO26 inference requires --checkpoint pointing to a user-provided coarse object checkpoint")
-    return checkpoint
-
-
 def _yoloe26_prompt_classes(args: argparse.Namespace) -> tuple[str, ...]:
     prompts = tuple(str(value) for value in getattr(args, "prompt_class", []) if str(value).strip())
     if prompts:
@@ -1845,45 +1521,6 @@ def _value_counts(frame: pl.DataFrame, column: str) -> dict[str, int]:
             continue
         counts[text] = counts.get(text, 0) + 1
     return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
-
-
-def _detection_policy_from_args(args: argparse.Namespace) -> DetectionPolicy:
-    profile = runtime_profile(args.profile).detection_policy if getattr(args, "profile", None) else DetectionPolicy()
-    return DetectionPolicy(
-        backend=args.backend,
-        box_score_threshold=args.box_score_threshold if args.box_score_threshold is not None else profile.box_score_threshold,
-        nms_iou_threshold=args.nms_iou_threshold if args.nms_iou_threshold is not None else profile.nms_iou_threshold,
-        min_box_area_ratio=args.min_box_area_ratio if args.min_box_area_ratio is not None else profile.min_box_area_ratio,
-        max_boxes_per_image=args.max_boxes_per_image if args.max_boxes_per_image is not None else profile.max_boxes_per_image,
-        crop_padding_ratio=args.crop_padding_ratio if args.crop_padding_ratio is not None else profile.crop_padding_ratio,
-        image_max_side_px=args.image_max_side_px if args.image_max_side_px is not None else profile.image_max_side_px,
-        crop_target_px=args.crop_target_px if args.crop_target_px is not None else profile.crop_target_px,
-        retain_debug_crops=args.retain_debug_crops or profile.retain_debug_crops,
-        debug_crop_limit=args.debug_crop_limit if args.debug_crop_limit is not None else profile.debug_crop_limit,
-    )
-
-
-def _detection_run_policy_from_args(args: argparse.Namespace) -> DetectionRunPolicy:
-    profile = runtime_profile(args.profile).run_policy if getattr(args, "profile", None) else DetectionRunPolicy()
-    return DetectionRunPolicy(
-        download_workers=args.download_workers if args.download_workers is not None else profile.download_workers,
-        decode_workers=args.decode_workers if args.decode_workers is not None else profile.decode_workers,
-        detector_workers=args.detector_workers if args.detector_workers is not None else profile.detector_workers,
-        max_inflight_images=args.max_inflight_images if args.max_inflight_images is not None else profile.max_inflight_images,
-        max_inflight_crops=args.max_inflight_crops if args.max_inflight_crops is not None else profile.max_inflight_crops,
-        detector_batch_size=args.detector_batch_size if args.detector_batch_size is not None else profile.detector_batch_size,
-        crop_batch_size=args.crop_batch_size if args.crop_batch_size is not None else profile.crop_batch_size,
-        parquet_batch_rows=args.parquet_batch_rows if args.parquet_batch_rows is not None else profile.parquet_batch_rows,
-        adaptive_batching=args.adaptive_batching if getattr(args, "adaptive_batching", False) else profile.adaptive_batching,
-        min_detector_batch_size=args.min_detector_batch_size if args.min_detector_batch_size is not None else profile.min_detector_batch_size,
-    )
-
-
-def _use_vision_sidecar(runtime_python: str) -> bool:
-    path = Path(runtime_python)
-    if not path.exists():
-        return False
-    return path.resolve() != Path(sys.executable).resolve()
 
 
 def _run_detect_crop_preview(args: argparse.Namespace) -> int:
@@ -2030,727 +1667,6 @@ def _run_detect_eval(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_vision_screen(args: argparse.Namespace) -> int:
-    from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
-    from biominer.storage.parquet import write_parquet
-
-    started_at = datetime.now(UTC)
-    yolo_python = Path(args.yolo_runtime_python).expanduser()
-    bioclip_python = Path(args.bioclip_runtime_python).expanduser()
-    if not yolo_python.exists():
-        print(json.dumps({"error": f"YOLOE-26 runtime Python not found: {yolo_python}"}, indent=2, sort_keys=True))
-        return 2
-    if not bioclip_python.exists():
-        print(json.dumps({"error": f"BioCLIP runtime Python not found: {bioclip_python}"}, indent=2, sort_keys=True))
-        return 2
-
-    settings = vision_runtime_settings(args.vision_profile)
-    overrides: dict[str, object] = {}
-    if args.device:
-        overrides["device"] = args.device
-    if args.yolo_sidecar_transport:
-        overrides["yolo_sidecar_transport"] = args.yolo_sidecar_transport
-    if args.parquet_part_rows is not None:
-        overrides["parquet_part_rows"] = args.parquet_part_rows
-    if args.retain_debug_crops:
-        overrides["retain_debug_crops"] = True
-    settings = settings.with_overrides(**overrides)
-    delete_images_after_commit = (
-        settings.delete_images_after_commit
-        if args.delete_images_after_commit is None
-        else bool(args.delete_images_after_commit)
-    )
-    chunk_rows = int(args.chunk_rows or settings.parquet_part_rows)
-    if chunk_rows <= 0:
-        print(json.dumps({"error": "chunk_rows must be positive"}, indent=2, sort_keys=True))
-        return 2
-
-    output_dir = Path(args.output_dir)
-    canonical_dir = output_dir / "canonical_source_records"
-    detection_dir = output_dir / "object_detections"
-    score_dir = output_dir / "object_bioclip_scores"
-    joined_dir = output_dir / "object_evidence_joined"
-    summary_dir = output_dir / "photo_evidence_summary"
-    for directory in (canonical_dir, detection_dir, score_dir, joined_dir, summary_dir):
-        directory.mkdir(parents=True, exist_ok=True)
-
-    records = pl.read_parquet(args.input)
-    if args.limit is not None and args.limit > 0:
-        records = records.head(args.limit)
-    context = SpeciesContext.read_json(args.species_context)
-    candidate_set = _build_candidate_set_for_cli(
-        context,
-        command="vision screen",
-        species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None,
-        records=records.to_dicts(),
-    )
-    if isinstance(candidate_set, int):
-        return candidate_set
-
-    detection_policy = settings.to_detection_policy(DetectionPolicy(backend="yoloe26"))
-    run_policy = settings.to_detection_run_policy()
-    detector = YoloE26SidecarObjectDetector(
-        runtime_python=str(yolo_python),
-        checkpoint=settings.yolo_checkpoint,
-        device=settings.device,
-        imgsz=settings.yolo_imgsz,
-        conf=settings.yolo_conf,
-        iou=settings.yolo_iou,
-        max_det=settings.yolo_max_det,
-        prompt_classes=_yoloe26_prompt_classes(args),
-        transport=settings.yolo_sidecar_transport,
-    )
-    bioclip_scorer = PersistentBioClipScorer(
-        runtime=_bioclip_runtime(runtime_python=bioclip_python),
-        hf_cache_dir=args.hf_cache_dir,
-        device=settings.device,
-        preprocess_workers=getattr(args, "bioclip_preprocess_workers", 1),
-    )
-
-    metrics: dict[str, object] = {
-        "records_seen": 0,
-        "images_loaded": 0,
-        "image_failures": 0,
-        "detections_written": 0,
-        "crops_created": 0,
-        "crops_scored": 0,
-        "detection_parts": 0,
-        "score_parts": 0,
-        "joined_parts": 0,
-        "summary_parts": 0,
-        "cached_images_deleted": 0,
-        "detector_batch_retries": 0,
-        "detector_batch_size_final": settings.detector_batch_size,
-        "bioclip_batch_retries": 0,
-        "bioclip_batch_size_final": settings.crop_batch_size,
-    }
-    part_outputs: list[dict[str, str]] = []
-    cached_paths_by_record: dict[tuple[str, str], set[Path]] = {}
-
-    def tracked_image_loader(record: dict[str, object]) -> DecodedImage:
-        decoded = load_decoded_image_from_record(record, cache_root=args.cache_root)
-        cached_path = _decoded_image_source_path(decoded)
-        if cached_path is not None:
-            cached_paths_by_record.setdefault(_record_identity(record), set()).add(cached_path)
-        return decoded
-
-    try:
-        object_scorer = EphemeralCropBioClipScorer(
-            scorer=bioclip_scorer,
-            image_loader=tracked_image_loader,
-            temp_dir=args.crop_temp_dir,
-            crop_padding_ratio=settings.crop_padding_ratio,
-            crop_target_px=settings.crop_target_px,
-            model_id="bioclip2_5",
-            model_version="bioclip2_5_huge",
-            model_checkpoint=BIOCLIP_25_HUGE_REVISION,
-            retain_debug_crops=settings.retain_debug_crops,
-            debug_crop_limit=settings.debug_crop_limit,
-            segmenter=make_segmenter("none"),
-        )
-        for part_index, offset in enumerate(range(0, records.height, chunk_rows)):
-            cached_paths_by_record.clear()
-            chunk = records.slice(offset, chunk_rows)
-            part_name = f"part-{part_index:06d}.parquet"
-            canonical_part = write_parquet(chunk, canonical_dir / part_name)
-            detection_part = detection_dir / part_name
-            score_part = score_dir / part_name
-            joined_part = joined_dir / part_name
-            summary_part = summary_dir / part_name
-            detection_result = run_detection_pipeline(
-                records=chunk.to_dicts(),
-                detector=detector,
-                output_path=detection_part,
-                image_loader=tracked_image_loader,
-                detection_policy=detection_policy,
-                run_policy=run_policy,
-            )
-            score_result = screen_object_detections(
-                canonical_records=chunk,
-                detections=detection_result.frame,
-                species_context=context,
-                candidate_set=candidate_set,
-                scorer=object_scorer,
-                output_path=score_part,
-                ablation_mode="detector_crop",
-                parquet_batch_rows=settings.parquet_part_rows,
-                bioclip_batch_size=settings.crop_batch_size,
-                adaptive_batching=settings.adaptive_batching,
-                min_bioclip_batch_size=settings.min_crop_batch_size,
-            )
-            evidence_outputs = write_object_evidence_outputs(
-                canonical_records_path=canonical_part,
-                detections_path=detection_part,
-                scores_path=score_part,
-                joined_output_path=joined_part,
-                photo_summary_output_path=summary_part,
-                species_context=context,
-            )
-            if delete_images_after_commit:
-                chunk_record_keys = {_record_identity(row) for row in chunk.to_dicts()}
-                metrics["cached_images_deleted"] = int(metrics["cached_images_deleted"]) + _delete_cached_image_paths(
-                    _cached_paths_for_record_keys(cached_paths_by_record, chunk_record_keys)
-                )
-            metrics["records_seen"] = int(metrics["records_seen"]) + detection_result.records_seen
-            metrics["images_loaded"] = int(metrics["images_loaded"]) + detection_result.images_loaded
-            metrics["image_failures"] = int(metrics["image_failures"]) + detection_result.image_failures
-            metrics["detections_written"] = int(metrics["detections_written"]) + detection_result.detections_written
-            metrics["crops_created"] = int(metrics["crops_created"]) + detection_result.crops_created
-            metrics["detector_batch_retries"] = int(metrics["detector_batch_retries"]) + int(
-                getattr(detection_result, "detector_batch_retries", 0)
-            )
-            metrics["detector_batch_size_final"] = min(
-                int(metrics["detector_batch_size_final"]),
-                int(getattr(detection_result, "detector_batch_size_final", settings.detector_batch_size)),
-            )
-            metrics["crops_scored"] = int(metrics["crops_scored"]) + score_result.crops_scored
-            metrics["bioclip_batch_retries"] = int(metrics["bioclip_batch_retries"]) + int(
-                getattr(score_result, "bioclip_batch_retries", 0)
-            )
-            metrics["bioclip_batch_size_final"] = min(
-                int(metrics["bioclip_batch_size_final"]),
-                int(getattr(score_result, "bioclip_batch_size_final", settings.crop_batch_size)),
-            )
-            metrics["detection_parts"] = int(metrics["detection_parts"]) + 1
-            metrics["score_parts"] = int(metrics["score_parts"]) + 1
-            metrics["joined_parts"] = int(metrics["joined_parts"]) + 1
-            metrics["summary_parts"] = int(metrics["summary_parts"]) + 1
-            part_outputs.append(
-                {
-                    "canonical_source_records": str(canonical_part),
-                    "object_detections": str(detection_part),
-                    "object_bioclip_scores": str(score_part),
-                    "object_evidence_joined": str(evidence_outputs.object_evidence_joined),
-                    "photo_evidence_summary": str(evidence_outputs.photo_evidence_summary),
-                }
-            )
-    finally:
-        bioclip_scorer.close()
-        close_detector = getattr(detector, "close", None)
-        if callable(close_detector):
-            close_detector()
-
-    ended_at = datetime.now(UTC)
-    manifest = {
-        "command": "vision screen",
-        "started_at": started_at.isoformat(),
-        "ended_at": ended_at.isoformat(),
-        "status": "complete",
-        "input": str(args.input),
-        "output_dir": str(output_dir),
-        "species_context": str(args.species_context),
-        "species_candidates": str(args.species_candidates) if args.species_candidates else None,
-        "vision_profile": args.vision_profile,
-        "vision_settings": asdict(settings),
-        "delete_images_after_commit_requested": delete_images_after_commit,
-        "image_cleanup_status": "commit_aware" if delete_images_after_commit else "disabled",
-        "part_outputs": part_outputs,
-    }
-    metrics = {
-        **metrics,
-        "run_id": started_at.strftime("vision-screen-%Y%m%dT%H%M%S%fZ"),
-        "status": "complete",
-        "vision_profile": args.vision_profile,
-        "device": settings.device,
-        "adaptive_batching_enabled": settings.adaptive_batching,
-        "detector_batch_size": settings.detector_batch_size,
-        "detector_batch_size_initial": settings.detector_batch_size,
-        "detector_batch_size_final": metrics["detector_batch_size_final"],
-        "detector_batch_size_min": settings.min_detector_batch_size,
-        "detector_batch_retries": metrics["detector_batch_retries"],
-        "crop_batch_size": settings.crop_batch_size,
-        "bioclip_batch_size_initial": settings.crop_batch_size,
-        "bioclip_batch_size_final": metrics["bioclip_batch_size_final"],
-        "bioclip_batch_size_min": settings.min_crop_batch_size,
-        "bioclip_batch_retries": metrics["bioclip_batch_retries"],
-        "parquet_compression": settings.parquet_compression,
-        "elapsed_seconds": (ended_at - started_at).total_seconds(),
-    }
-    vision_stage_metrics = build_vision_stage_metrics(
-        detections=_read_part_output_frames(part_outputs, "object_detections"),
-        scores=_read_part_output_frames(part_outputs, "object_bioclip_scores"),
-        joined=_read_part_output_frames(part_outputs, "object_evidence_joined"),
-        photo_summary=_read_part_output_frames(part_outputs, "photo_evidence_summary"),
-        stage_metrics=metrics,
-        detection_policy=detection_policy,
-    )
-    vision_report_paths = write_vision_stage_reports(vision_stage_metrics, output_dir)
-    manifest_path = output_dir / "vision_screen_manifest.json"
-    metrics_path = output_dir / "vision_screen_metrics.json"
-    manifest["vision_stage_metrics"] = str(vision_report_paths["metrics"])
-    manifest["vision_stage_summary"] = str(vision_report_paths["summary"])
-    metrics["vision_stage_metrics"] = str(vision_report_paths["metrics"])
-    metrics["vision_stage_summary"] = str(vision_report_paths["summary"])
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-    metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
-    print(
-        json.dumps(
-            {
-                "output_dir": str(output_dir),
-                "manifest": str(manifest_path),
-                "metrics": str(metrics_path),
-                "records_seen": metrics["records_seen"],
-                "detections_written": metrics["detections_written"],
-                "crops_scored": metrics["crops_scored"],
-                "image_cleanup_status": manifest["image_cleanup_status"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_vision_rolling_screen(args: argparse.Namespace) -> int:
-    from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
-
-    started_at = datetime.now(UTC)
-    yolo_python = Path(args.yolo_runtime_python).expanduser()
-    bioclip_python = Path(args.bioclip_runtime_python).expanduser()
-    if not yolo_python.exists():
-        print(json.dumps({"error": f"YOLOE-26 runtime Python not found: {yolo_python}"}, indent=2, sort_keys=True))
-        return 2
-    if not bioclip_python.exists():
-        print(json.dumps({"error": f"BioCLIP runtime Python not found: {bioclip_python}"}, indent=2, sort_keys=True))
-        return 2
-
-    settings = vision_runtime_settings(args.vision_profile)
-    overrides: dict[str, object] = {}
-    if args.device:
-        overrides["device"] = args.device
-    if args.yolo_sidecar_transport:
-        overrides["yolo_sidecar_transport"] = args.yolo_sidecar_transport
-    if args.parquet_part_rows is not None:
-        overrides["parquet_part_rows"] = args.parquet_part_rows
-    if args.retain_debug_crops:
-        overrides["retain_debug_crops"] = True
-    settings = settings.with_overrides(**overrides)
-    delete_images_after_commit = (
-        settings.delete_images_after_commit
-        if args.delete_images_after_commit is None
-        else bool(args.delete_images_after_commit)
-    )
-
-    records = pl.read_parquet(args.input)
-    if args.limit is not None and args.limit > 0:
-        records = records.head(args.limit)
-    context = SpeciesContext.read_json(args.species_context)
-    candidate_set = _build_candidate_set_for_cli(
-        context,
-        command="vision rolling-screen",
-        species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None,
-        records=records.to_dicts(),
-    )
-    if isinstance(candidate_set, int):
-        return candidate_set
-
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    detection_policy = settings.to_detection_policy(DetectionPolicy(backend="yoloe26"))
-    run_policy = settings.to_detection_run_policy()
-    detector = YoloE26SidecarObjectDetector(
-        runtime_python=str(yolo_python),
-        checkpoint=settings.yolo_checkpoint,
-        device=settings.device,
-        imgsz=settings.yolo_imgsz,
-        conf=settings.yolo_conf,
-        iou=settings.yolo_iou,
-        max_det=settings.yolo_max_det,
-        prompt_classes=_yoloe26_prompt_classes(args),
-        transport=settings.yolo_sidecar_transport,
-    )
-    bioclip_scorer = PersistentBioClipScorer(
-        runtime=_bioclip_runtime(runtime_python=bioclip_python),
-        hf_cache_dir=args.hf_cache_dir,
-        device=settings.device,
-        preprocess_workers=args.bioclip_preprocess_workers,
-    )
-    image_stager = ImageStager(output_dir=output_dir, cache_root=args.cache_root)
-    gate_policy = BioClipGatePolicy(
-        mode=args.bioclip_gate_mode,
-        score_no_detection_whole_image=bool(args.score_no_detection_whole_image),
-    )
-    try:
-        object_scorer = EphemeralCropBioClipScorer(
-            scorer=bioclip_scorer,
-            image_loader=load_staged_or_cached_image,
-            temp_dir=args.crop_temp_dir,
-            crop_padding_ratio=settings.crop_padding_ratio,
-            crop_target_px=settings.crop_target_px,
-            model_id="bioclip2_5",
-            model_version="bioclip2_5_huge",
-            model_checkpoint=BIOCLIP_25_HUGE_REVISION,
-            retain_debug_crops=settings.retain_debug_crops,
-            debug_crop_limit=settings.debug_crop_limit,
-            segmenter=make_segmenter("none"),
-        )
-        worker = RollingVisionWorker(
-            settings=RollingVisionWorkerSettings(
-                vision_batch_rows=args.vision_batch_rows,
-                image_prefetch_batches=args.image_prefetch_batches,
-                target_ready_yolo_batches=args.target_ready_yolo_batches,
-                accelerator_concurrency=args.accelerator_concurrency,
-                bioclip_preprocess_workers=args.bioclip_preprocess_workers,
-                bioclip_gate_mode=args.bioclip_gate_mode,
-                score_no_detection_whole_image=bool(args.score_no_detection_whole_image),
-            ),
-            image_stage=image_stager,
-            detection_stage=YOLOWorker(
-                detector=detector,
-                output_dir=output_dir,
-                image_loader=load_staged_or_cached_image,
-                detection_policy=detection_policy,
-                run_policy=run_policy,
-            ),
-            score_input_stage=ScoreInputMaterializer(
-                output_dir=output_dir,
-                image_loader=load_staged_or_cached_image,
-                gate_policy=gate_policy,
-                crop_padding_ratio=settings.crop_padding_ratio,
-                crop_target_px=settings.crop_target_px,
-            ),
-            score_stage=BioCLIPWorker(
-                species_context=context,
-                candidate_set=candidate_set,
-                scorer=object_scorer,
-                output_dir=output_dir,
-                bioclip_batch_size=settings.crop_batch_size,
-                adaptive_batching=settings.adaptive_batching,
-                min_bioclip_batch_size=settings.min_crop_batch_size,
-            ),
-            commit_stage=CommitWorker(
-                output_dir=output_dir,
-                species_context=context,
-                delete_images_after_commit=delete_images_after_commit,
-            ),
-        )
-        result = worker.run(records)
-    finally:
-        image_stager.close()
-        bioclip_scorer.close()
-        close_detector = getattr(detector, "close", None)
-        if callable(close_detector):
-            close_detector()
-
-    ended_at = datetime.now(UTC)
-    part_outputs = [dict(part) for part in result.part_outputs]
-    metrics = {
-        **result.metrics,
-        "run_id": started_at.strftime("vision-rolling-screen-%Y%m%dT%H%M%S%fZ"),
-        "status": result.status,
-        "command": "vision rolling-screen",
-        "records_seen": records.height,
-        "batches_seen": result.batches_seen,
-        "batches_committed": result.batches_committed,
-        "vision_profile": args.vision_profile,
-        "device": settings.device,
-        "yolo_sidecar_transport": settings.yolo_sidecar_transport,
-        "bioclip_gate_mode": args.bioclip_gate_mode,
-        "score_no_detection_whole_image": bool(args.score_no_detection_whole_image),
-        "delete_images_after_commit_requested": delete_images_after_commit,
-        "image_cleanup_status": "commit_aware" if delete_images_after_commit else "disabled",
-        "elapsed_seconds": (ended_at - started_at).total_seconds(),
-    }
-    vision_stage_metrics = build_vision_stage_metrics(
-        detections=_read_part_output_frames(part_outputs, "object_detections"),
-        scores=_read_part_output_frames(part_outputs, "object_bioclip_scores"),
-        joined=_read_part_output_frames(part_outputs, "object_evidence_joined"),
-        photo_summary=_read_part_output_frames(part_outputs, "photo_evidence_summary"),
-        stage_metrics=metrics,
-        detection_policy=detection_policy,
-    )
-    vision_report_paths = write_vision_stage_reports(vision_stage_metrics, output_dir)
-    manifest = {
-        "command": "vision rolling-screen",
-        "started_at": started_at.isoformat(),
-        "ended_at": ended_at.isoformat(),
-        "status": result.status,
-        "input": str(args.input),
-        "output_dir": str(output_dir),
-        "species_context": str(args.species_context),
-        "species_candidates": str(args.species_candidates) if args.species_candidates else None,
-        "vision_profile": args.vision_profile,
-        "vision_settings": asdict(settings),
-        "rolling_settings": asdict(
-            RollingVisionWorkerSettings(
-                vision_batch_rows=args.vision_batch_rows,
-                image_prefetch_batches=args.image_prefetch_batches,
-                target_ready_yolo_batches=args.target_ready_yolo_batches,
-                accelerator_concurrency=args.accelerator_concurrency,
-                bioclip_preprocess_workers=args.bioclip_preprocess_workers,
-                bioclip_gate_mode=args.bioclip_gate_mode,
-                score_no_detection_whole_image=bool(args.score_no_detection_whole_image),
-            )
-        ),
-        "delete_images_after_commit_requested": delete_images_after_commit,
-        "image_cleanup_status": metrics["image_cleanup_status"],
-        "part_outputs": part_outputs,
-        "vision_stage_metrics": str(vision_report_paths["metrics"]),
-        "vision_stage_summary": str(vision_report_paths["summary"]),
-    }
-    metrics["vision_stage_metrics"] = str(vision_report_paths["metrics"])
-    metrics["vision_stage_summary"] = str(vision_report_paths["summary"])
-    manifest_path = output_dir / "vision_rolling_screen_manifest.json"
-    metrics_path = output_dir / "vision_rolling_screen_metrics.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-    metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
-    print(
-        json.dumps(
-            {
-                "output_dir": str(output_dir),
-                "manifest": str(manifest_path),
-                "metrics": str(metrics_path),
-                "records_seen": records.height,
-                "batches_committed": result.batches_committed,
-                "image_cleanup_status": metrics["image_cleanup_status"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _record_identity(record: dict[str, object]) -> tuple[str, str]:
-    return (str(record.get("source") or "flickr"), str(record.get("flickr_photo_id") or record.get("id") or ""))
-
-
-def _eligible_bioclip_record_keys(frame: pl.DataFrame, *, detection_policy: DetectionPolicy) -> set[tuple[str, str]]:
-    if frame.is_empty():
-        return set()
-    return {
-        _record_identity(row)
-        for row in frame.to_dicts()
-        if detection_is_bioclip_eligible(row, detection_policy)
-    }
-
-
-def _decoded_image_source_path(image: DecodedImage) -> Path | None:
-    if not image.source_uri:
-        return None
-    path = Path(image.source_uri)
-    return path if path.exists() else None
-
-
-def _cached_paths_for_record_keys(
-    cached_paths_by_record: dict[tuple[str, str], set[Path]],
-    record_keys: set[tuple[str, str]],
-) -> set[Path]:
-    paths: set[Path] = set()
-    for key in record_keys:
-        paths.update(cached_paths_by_record.get(key, set()))
-    return paths
-
-
-def _read_part_output_frames(part_outputs: list[dict[str, str]], key: str) -> pl.DataFrame:
-    frames = [pl.read_parquet(path) for part in part_outputs if (path := part.get(key))]
-    return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
-
-
-def _delete_cached_image_paths(paths: set[Path]) -> int:
-    deleted = 0
-    for path in sorted(paths):
-        if not path.exists():
-            continue
-        path.unlink()
-        deleted += 1
-    return deleted
-
-
-def _run_bioclip_screen_objects(args: argparse.Namespace) -> int:
-    runtime_python = Path(args.runtime_python)
-    if not runtime_python.exists():
-        print(json.dumps({"error": f"BioCLIP runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
-        return 2
-    context = SpeciesContext.read_json(args.species_context)
-    records = pl.read_parquet(args.input)
-    detections = pl.read_parquet(args.detections)
-    geo_prior_table = _optional_parquet(getattr(args, "geo_prior_table", None))
-    classification_mode = normalize_classification_mode(args.classification_mode)
-    taxonomy_store, taxonomy_error = _load_taxonomy_store_for_cli(args=args, classification_mode=classification_mode)
-    if taxonomy_error is not None:
-        print(json.dumps({"error": taxonomy_error, "command": "vision score"}, indent=2, sort_keys=True))
-        return 2
-    cache_error = _validate_object_image_cache_args(args=args, modes=(args.ablation_mode,), classification_mode=classification_mode)
-    if cache_error is not None:
-        print(json.dumps({"error": cache_error}, indent=2, sort_keys=True))
-        return 2
-    candidate_set = _build_candidate_set_for_cli(
-        context,
-        command="vision score",
-        species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None,
-        records=records.to_dicts(),
-        geospatial_scope=str(args.geo_prior_table) if getattr(args, "geo_prior_table", None) else None,
-        geo_prior_table=geo_prior_table,
-        allow_single_target_fixture=classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-    )
-    if isinstance(candidate_set, int):
-        return candidate_set
-    runtime = _bioclip_runtime(runtime_python=runtime_python)
-    scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
-    try:
-        text_cache_payload = _prepare_candidate_text_embedding_cache_if_requested(args=args, candidate_set=candidate_set, scorer=scorer)
-        taxonomy_cache_payload = _prepare_taxonomy_text_embedding_cache_if_requested(args=args, taxonomy_store=taxonomy_store, scorer=scorer)
-        taxonomy_text_embedding_cache = (
-            read_embedding_cache(args.taxonomy_text_embedding_cache)
-            if getattr(args, "taxonomy_text_embedding_cache", None)
-            else None
-        )
-        object_cache_payload = _prepare_object_image_embedding_cache_if_requested(
-            args=args,
-            records=records,
-            detections=detections,
-            scorer=scorer,
-        )
-        object_scorer = _object_scorer_for_args(
-            args=args,
-            scorer=scorer,
-            candidate_set_id=candidate_set.candidate_set_id,
-        )
-        result = screen_object_detections(
-            canonical_records=records,
-            detections=detections,
-            species_context=context,
-            candidate_set=candidate_set,
-            scorer=object_scorer,
-            output_path=args.output,
-            ablation_mode=args.ablation_mode,
-            geo_prior_table=geo_prior_table,
-            parquet_batch_rows=args.parquet_batch_rows,
-            bioclip_batch_size=args.bioclip_batch,
-            adaptive_batching=args.adaptive_batching,
-            min_bioclip_batch_size=args.min_bioclip_batch,
-            classification_mode=classification_mode,
-            family_top_k=args.family_top_k,
-            species_first_pass_top_k=args.species_first_pass_top_k,
-            species_rerank_top_k=args.species_rerank_top_k,
-            taxonomy_store=taxonomy_store,
-            taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
-        )
-    finally:
-        scorer.close()
-    print(
-        json.dumps(
-            {
-                "output": str(result.output_path),
-                "rows": result.frame.height,
-                "records_seen": result.records_seen,
-                "detections_seen": result.detections_seen,
-                "crops_scored": result.crops_scored,
-                "score_batches_written": result.score_batches_written,
-                "primary_visual_classifier": result.visual_classifier,
-                "visual_mode": result.visual_mode,
-                "visual_mode_status": result.visual_mode_status,
-                "adaptive_batching_enabled": getattr(result, "adaptive_batching_enabled", False),
-                "bioclip_batch_retries": getattr(result, "bioclip_batch_retries", 0),
-                "bioclip_batch_size_initial": getattr(result, "bioclip_batch_size_initial", args.bioclip_batch),
-                "bioclip_batch_size_final": getattr(result, "bioclip_batch_size_final", args.bioclip_batch),
-                "bioclip_batch_size_min": getattr(result, "bioclip_batch_size_min", args.min_bioclip_batch),
-                "segmentation_unavailable_count": result.segmentation_unavailable_count,
-                "segmentation_unavailable_reason": result.segmentation_unavailable_reason,
-                "candidate_set_id": candidate_set.candidate_set_id,
-                "scorer": "cached_object_embedding" if object_cache_payload is not None else "ephemeral_crop_bioclip",
-                **({"candidate_text_embedding_cache": text_cache_payload} if text_cache_payload is not None else {}),
-                **({"taxonomy_text_embedding_cache": taxonomy_cache_payload} if taxonomy_cache_payload is not None else {}),
-                **({"object_image_embedding_cache": object_cache_payload} if object_cache_payload is not None else {}),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_bioclip_ablate_objects(args: argparse.Namespace) -> int:
-    runtime_python = Path(args.runtime_python)
-    if not runtime_python.exists():
-        print(json.dumps({"error": f"BioCLIP runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
-        return 2
-    context = SpeciesContext.read_json(args.species_context)
-    records = pl.read_parquet(args.input)
-    detections = pl.read_parquet(args.detections)
-    geo_prior_table = _optional_parquet(getattr(args, "geo_prior_table", None))
-    classification_mode = normalize_classification_mode(args.classification_mode)
-    taxonomy_store, taxonomy_error = _load_taxonomy_store_for_cli(args=args, classification_mode=classification_mode)
-    if taxonomy_error is not None:
-        print(json.dumps({"error": taxonomy_error, "command": "vision ablate"}, indent=2, sort_keys=True))
-        return 2
-    modes = tuple(part.strip() for part in args.modes.split(",") if part.strip())
-    cache_error = _validate_object_image_cache_args(args=args, modes=modes, classification_mode=classification_mode)
-    if cache_error is not None:
-        print(json.dumps({"error": cache_error}, indent=2, sort_keys=True))
-        return 2
-    candidate_set = _build_candidate_set_for_cli(
-        context,
-        command="vision ablate",
-        species_candidate_path=args.species_candidates if getattr(args, "species_candidates", None) else None,
-        records=records.to_dicts(),
-        geospatial_scope=str(args.geo_prior_table) if getattr(args, "geo_prior_table", None) else None,
-        geo_prior_table=geo_prior_table,
-        allow_single_target_fixture=classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-    )
-    if isinstance(candidate_set, int):
-        return candidate_set
-    runtime = _bioclip_runtime(runtime_python=runtime_python)
-    scorer = PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache_dir, device=args.device)
-    try:
-        text_cache_payload = _prepare_candidate_text_embedding_cache_if_requested(args=args, candidate_set=candidate_set, scorer=scorer)
-        taxonomy_cache_payload = _prepare_taxonomy_text_embedding_cache_if_requested(args=args, taxonomy_store=taxonomy_store, scorer=scorer)
-        taxonomy_text_embedding_cache = (
-            read_embedding_cache(args.taxonomy_text_embedding_cache)
-            if getattr(args, "taxonomy_text_embedding_cache", None)
-            else None
-        )
-        object_cache_payload = _prepare_object_image_embedding_cache_if_requested(
-            args=args,
-            records=records,
-            detections=detections,
-            scorer=scorer,
-        )
-        object_scorer = _object_scorer_for_args(
-            args=args,
-            scorer=scorer,
-            candidate_set_id=candidate_set.candidate_set_id,
-        )
-        report = run_object_ablations(
-            canonical_records=records,
-            detections=detections,
-            species_context=context,
-            candidate_set=candidate_set,
-            scorer=object_scorer,
-            output_dir=args.output_dir,
-            modes=modes,  # type: ignore[arg-type]
-            geo_prior_table=geo_prior_table,
-            parquet_batch_rows=args.parquet_batch_rows,
-            bioclip_batch_size=args.bioclip_batch,
-            adaptive_batching=args.adaptive_batching,
-            min_bioclip_batch_size=args.min_bioclip_batch,
-            classification_mode=classification_mode,
-            family_top_k=args.family_top_k,
-            species_first_pass_top_k=args.species_first_pass_top_k,
-            species_rerank_top_k=args.species_rerank_top_k,
-            taxonomy_store=taxonomy_store,
-            taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
-        )
-    finally:
-        scorer.close()
-    print(
-        json.dumps(
-            {
-                "output_dir": str(report.output_dir),
-                "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
-                **report.report,
-                **({"candidate_text_embedding_cache": text_cache_payload} if text_cache_payload is not None else {}),
-                **({"taxonomy_text_embedding_cache": taxonomy_cache_payload} if taxonomy_cache_payload is not None else {}),
-                **({"object_image_embedding_cache": object_cache_payload} if object_cache_payload is not None else {}),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
 def _run_bioclip_join_object_evidence(args: argparse.Namespace) -> int:
     context = SpeciesContext.read_json(args.species_context) if getattr(args, "species_context", None) else None
     outputs = write_object_evidence_outputs(
@@ -2774,229 +1690,6 @@ def _run_bioclip_join_object_evidence(args: argparse.Namespace) -> int:
     return 0
 
 
-def _build_candidate_set_for_cli(
-    context: SpeciesContext,
-    *,
-    command: str,
-    species_candidate_path: str | Path | None = None,
-    records: list[dict[str, Any]] | None = None,
-    geospatial_scope: str | None = None,
-    geo_prior_table: pl.DataFrame | None = None,
-    allow_single_target_fixture: bool = False,
-):
-    try:
-        return build_candidate_set(
-            context,
-            species_candidate_path=species_candidate_path,
-            records=records,
-            geospatial_scope=geospatial_scope,
-            geo_prior_table=geo_prior_table,
-            allow_single_target_fixture=allow_single_target_fixture,
-        )
-    except ValueError as exc:
-        print(
-            json.dumps(
-                {
-                    "error": str(exc),
-                    "command": command,
-                    "hint": "Provide --species-candidates with same-genus/same-family registry candidates, "
-                    "or include query/geospatial provenance that expands beyond the target species.",
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 2
-
-
-def _optional_parquet(path: str | Path | None) -> pl.DataFrame | None:
-    if not path:
-        return None
-    return pl.read_parquet(path)
-
-
-def _prepare_candidate_text_embedding_cache_if_requested(
-    *,
-    args: argparse.Namespace,
-    candidate_set: object,
-    scorer: PersistentBioClipScorer,
-) -> dict[str, object] | None:
-    cache_path = getattr(args, "candidate_text_embedding_cache", None)
-    if not cache_path:
-        return None
-    update = prepare_candidate_text_embedding_cache(
-        candidate_set,  # type: ignore[arg-type]
-        cache_path,
-        model_id="bioclip2_5",
-        model_checkpoint=BIOCLIP_25_HUGE_REVISION,
-        embed_labels=scorer.embed_text_labels,
-        batch_size=args.text_embedding_batch_size,
-    )
-    return {
-        "output_path": str(update.output_path),
-        "rows_total": update.rows_total,
-        "rows_added": update.rows_added,
-        "rows_reused": update.rows_reused,
-        "embeddings_computed": update.embeddings_computed,
-        "text_embedding_batch_size": args.text_embedding_batch_size,
-    }
-
-
-def _prepare_taxonomy_text_embedding_cache_if_requested(
-    *,
-    args: argparse.Namespace,
-    taxonomy_store: ButterflyTaxonomyStore | None,
-    scorer: PersistentBioClipScorer,
-) -> dict[str, object] | None:
-    cache_path = getattr(args, "taxonomy_text_embedding_cache", None)
-    if not cache_path:
-        return None
-    if taxonomy_store is None:
-        raise ValueError("--taxonomy-text-embedding-cache requires a loaded taxonomy candidate table")
-    update = prepare_taxonomy_text_embedding_cache(
-        taxonomy_store,
-        cache_path,
-        model_id="bioclip2_5",
-        model_checkpoint=BIOCLIP_25_HUGE_REVISION,
-        embed_labels=scorer.embed_text_labels,
-        batch_size=args.text_embedding_batch_size,
-        embedding_dtype="float32",
-    )
-    return {
-        "output_path": str(update.output_path),
-        "rows_total": update.rows_total,
-        "rows_added": update.rows_added,
-        "rows_reused": update.rows_reused,
-        "embeddings_computed": update.embeddings_computed,
-        "text_embedding_batch_size": args.text_embedding_batch_size,
-    }
-
-
-def _load_taxonomy_store_for_cli(
-    *,
-    args: argparse.Namespace,
-    classification_mode: str,
-) -> tuple[ButterflyTaxonomyStore | None, str | None]:
-    if classification_mode != HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
-        return None, None
-    table = getattr(args, "taxonomy_candidate_table", None)
-    if not table:
-        return None, "--taxonomy-candidate-table is required for hierarchical_butterfly_classification"
-    try:
-        return ButterflyTaxonomyStore.read(table), None
-    except FileNotFoundError as exc:
-        return None, f"missing_taxonomy_candidate_table: {exc}"
-    except ValueError as exc:
-        return None, f"invalid_taxonomy_candidate_table: {exc}"
-
-
-def _validate_object_image_cache_args(
-    *,
-    args: argparse.Namespace,
-    modes: tuple[str, ...],
-    classification_mode: str = DEFAULT_CLASSIFICATION_MODE,
-) -> str | None:
-    if getattr(args, "taxonomy_text_embedding_cache", None):
-        if classification_mode != HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
-            return "--taxonomy-text-embedding-cache requires --classification-mode hierarchical"
-        if not getattr(args, "taxonomy_candidate_table", None):
-            return "--taxonomy-text-embedding-cache requires --taxonomy-candidate-table"
-    if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION and (
-        getattr(args, "candidate_text_embedding_cache", None) or getattr(args, "object_image_embedding_cache", None)
-    ):
-        return "--candidate-text-embedding-cache and --object-image-embedding-cache are target-scope caches; use --taxonomy-text-embedding-cache for hierarchical taxonomy labels"
-    if not getattr(args, "object_image_embedding_cache", None):
-        return None
-    if not getattr(args, "candidate_text_embedding_cache", None):
-        return "--object-image-embedding-cache requires --candidate-text-embedding-cache for cached dot-product scoring"
-    unsupported = sorted(set(modes) - {"detector_crop"})
-    if unsupported:
-        return "--object-image-embedding-cache is only valid for detector_crop mode; unsupported modes: " + ",".join(unsupported)
-    return None
-
-
-def _prepare_object_image_embedding_cache_if_requested(
-    *,
-    args: argparse.Namespace,
-    records: pl.DataFrame,
-    detections: pl.DataFrame,
-    scorer: PersistentBioClipScorer,
-) -> dict[str, object] | None:
-    cache_path = getattr(args, "object_image_embedding_cache", None)
-    if not cache_path:
-        return None
-    materialized = materialize_detector_crop_inputs(
-        canonical_records=records,
-        detections=detections,
-        image_loader=lambda item: load_decoded_image_from_record(item, cache_root=args.cache_root),
-        temp_dir=args.crop_temp_dir,
-        crop_padding_ratio=args.crop_padding_ratio,
-        crop_target_px=args.crop_target_px,
-    )
-    try:
-        update = prepare_object_image_embedding_cache(
-            materialized.rows,
-            cache_path,
-            model_id="bioclip2_5",
-            model_checkpoint=BIOCLIP_25_HUGE_REVISION,
-            crop_path_by_hash=materialized.crop_path_by_hash,
-            embed_image_paths=scorer.embed_image_paths,
-        )
-    finally:
-        materialized.cleanup()
-    return {
-        "output_path": str(update.output_path),
-        "rows_total": update.rows_total,
-        "rows_added": update.rows_added,
-        "rows_reused": update.rows_reused,
-        "embeddings_computed": update.embeddings_computed,
-    }
-
-
-def _object_scorer_for_args(
-    *,
-    args: argparse.Namespace,
-    scorer: PersistentBioClipScorer,
-    candidate_set_id: str,
-) -> object:
-    if getattr(args, "object_image_embedding_cache", None):
-        return CachedObjectEmbeddingScorer(
-            text_embeddings=read_embedding_cache(args.candidate_text_embedding_cache),
-            image_embeddings=read_embedding_cache(args.object_image_embedding_cache),
-            candidate_set_id=candidate_set_id,
-            model_id="bioclip2_5",
-            model_version="bioclip2_5_huge",
-            model_checkpoint=BIOCLIP_25_HUGE_REVISION,
-        )
-    return EphemeralCropBioClipScorer(
-        scorer=scorer,
-        image_loader=lambda item: load_decoded_image_from_record(item, cache_root=args.cache_root),
-        temp_dir=args.crop_temp_dir,
-        crop_padding_ratio=args.crop_padding_ratio,
-        crop_target_px=args.crop_target_px,
-        model_id="bioclip2_5",
-        model_version="bioclip2_5_huge",
-        model_checkpoint=BIOCLIP_25_HUGE_REVISION,
-        retain_debug_crops=args.retain_debug_crops,
-        segmenter=make_segmenter(getattr(args, "segmenter", "none")),
-    )
-
-
-def _fake_detections_for_record(record: dict[str, object]) -> list[DetectionCandidate]:
-    bbox = record.get("bbox_xyxy")
-    width = int(record.get("image_width") or record.get("width") or 1)
-    height = int(record.get("image_height") or record.get("height") or 1)
-    if isinstance(bbox, list | tuple) and len(bbox) == 4:
-        values = tuple(float(value) for value in bbox)
-    else:
-        values = (0.0, 0.0, float(width), float(height))
-    return [DetectionCandidate(label="butterfly_like", score=1.0, bbox_xyxy=values, objectness_score=1.0)]
-
-
-def _blank_decoded_image(record: dict[str, object]) -> DecodedImage:
-    width = max(1, int(record.get("image_width") or record.get("width") or 1))
-    height = max(1, int(record.get("image_height") or record.get("height") or 1))
-    return DecodedImage(width=width, height=height, mode="RGB", data=b"\x00\x00\x00" * width * height)
 
 
 def _bioclip_runtime(*, runtime_python: Path) -> BioClipRuntime:

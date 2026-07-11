@@ -17,10 +17,6 @@ from biominer.bioclip.classification_modes import (
     ClassificationMode,
     normalize_classification_mode,
 )
-from biominer.bioclip.hierarchical_classifier import (
-    classify_butterfly_crops_hierarchical_batch,
-    hierarchical_result_to_object_score_row,
-)
 from biominer.bioclip.five_rank_classifier import (
     classify_five_rank_crops_batch,
     five_rank_result_to_object_score_row,
@@ -40,13 +36,8 @@ from biominer.bioclip.object_runner import (
     _segmentation_status,
     _visual_mode_status,
 )
-from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
 from biominer.detection.policy import DetectionPolicy
 from biominer.detection.segmentation import SegmentationUnavailable
-from biominer.registry.classification_table import (
-    CLASSIFICATION_TABLE_VERSION,
-    PROMPT_VARIANT_VERSION,
-)
 from biominer.species.context import SpeciesContext
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.parquet import DEFAULT_PARQUET_READ_BATCH_SIZE
@@ -279,7 +270,7 @@ def run_cloud_bioclip_batch(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
-    taxonomy_store: ButterflyTaxonomyStore | None = None,
+    taxonomy_store: FiveRankTaxonomyStore | None = None,
     taxonomy_text_embedding_cache: pl.DataFrame | None = None,
 ) -> CloudBioClipBatchResult:
     if crop_batch_size <= 0:
@@ -492,7 +483,7 @@ def _validate_cloud_bioclip_work_contract(
     family_top_k: int,
     species_first_pass_top_k: int,
     species_rerank_top_k: int,
-    taxonomy_store: ButterflyTaxonomyStore | None,
+    taxonomy_store: FiveRankTaxonomyStore | None,
 ) -> None:
     expected_mode = normalize_classification_mode(classification_mode)
     expected_top_k = {
@@ -552,73 +543,35 @@ def _validate_cloud_bioclip_work_contract(
             )
 
 
-def _taxonomy_table_version(taxonomy_store: ButterflyTaxonomyStore) -> str:
-    manifest = taxonomy_store.manifest or {}
-    return str(
-        manifest.get("classification_table_version")
-        or _first_value(taxonomy_store.classification_taxa, "classification_table_version")
-        or CLASSIFICATION_TABLE_VERSION
-    )
+def _taxonomy_table_version(taxonomy_store: FiveRankTaxonomyStore) -> str:
+    return taxonomy_store.classification_version
 
 
-def _taxonomy_prompt_variant_version(taxonomy_store: ButterflyTaxonomyStore) -> str:
-    manifest = taxonomy_store.manifest or {}
-    return str(
-        manifest.get("prompt_variant_version")
-        or _first_value(taxonomy_store.family_labels, "prompt_variant_version")
-        or PROMPT_VARIANT_VERSION
-    )
-
-
-def _first_value(frame: pl.DataFrame, column: str) -> object:
-    if column not in frame.columns or frame.is_empty():
-        return None
-    values = frame.select(column).drop_nulls().get_column(column)
-    return values.item(0) if values.len() else None
+def _taxonomy_prompt_variant_version(taxonomy_store: FiveRankTaxonomyStore) -> str:
+    return taxonomy_store.prompt_version
 
 
 def _score_hierarchical_cloud_batch(
     *,
     items: list[dict[str, Any]],
     scorer: ObjectBioClipScorer,
-    taxonomy_store: ButterflyTaxonomyStore,
+    taxonomy_store: FiveRankTaxonomyStore,
     family_top_k: int,
     species_first_pass_top_k: int,
     species_rerank_top_k: int,
     taxonomy_text_embedding_cache: pl.DataFrame | None = None,
 ) -> list[dict[str, Any]]:
-    if isinstance(taxonomy_store, FiveRankTaxonomyStore):
-        results = classify_five_rank_crops_batch(
-            items=items,
-            scorer=scorer,
-            taxonomy_store=taxonomy_store,
-            beam_widths={"FAMILY": family_top_k},
-            species_first_pass_top_k=species_first_pass_top_k,
-            species_rerank_top_k=species_rerank_top_k,
-            taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
-        )
-        return [
-            five_rank_result_to_object_score_row(
-                item=item,
-                result=result,
-                scorer=scorer,
-                family_top_k=family_top_k,
-                species_first_pass_top_k=species_first_pass_top_k,
-                species_rerank_top_k=species_rerank_top_k,
-            )
-            for item, result in zip(items, results, strict=True)
-        ]
-    results = classify_butterfly_crops_hierarchical_batch(
+    results = classify_five_rank_crops_batch(
         items=items,
         scorer=scorer,
         taxonomy_store=taxonomy_store,
-        family_top_k=family_top_k,
+        beam_widths={"FAMILY": family_top_k},
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
         taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
     )
     return [
-        hierarchical_result_to_object_score_row(
+        five_rank_result_to_object_score_row(
             item=item,
             result=result,
             scorer=scorer,

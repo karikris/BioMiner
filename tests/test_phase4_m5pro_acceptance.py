@@ -76,7 +76,7 @@ def test_phase4_heavy_vision_runtimes_are_not_required_dependencies() -> None:
     assert "pillow" not in dependencies
 
 
-def test_phase4_docs_and_cli_expose_benchmarks_and_runbook_commands() -> None:
+def test_phase4_docs_and_cli_expose_supported_developer_benchmarks() -> None:
     parser = build_parser()
     live_args = parser.parse_args(
         [
@@ -100,16 +100,15 @@ def test_phase4_docs_and_cli_expose_benchmarks_and_runbook_commands() -> None:
             "reports/vision_benchmarks/plumbing",
         ]
     )
-    runbook = Path("docs/m5pro_64gb_runbook.md").read_text(encoding="utf-8")
+    vision_doc = Path("docs/vision.md").read_text(encoding="utf-8")
     readme = Path("README.md").read_text(encoding="utf-8")
 
     assert live_args.vision_command == "benchmark-live-m5pro"
     assert plumbing_args.vision_command == "benchmark-plumbing"
-    assert "uv run biominer dev vision benchmark-plumbing" in runbook
-    assert "uv run biominer dev vision benchmark-live-m5pro" in runbook
-    assert "--taxonomy-text-embedding-cache" in runbook
-    assert "--adaptive-batching" in runbook
-    assert "Whole-image BioCLIP is still not an all-image production default" in readme
+    assert "uv run biominer dev vision benchmark-plumbing" in vision_doc
+    assert "uv run biominer dev vision benchmark-rolling-matrix" in vision_doc
+    assert "persistent worker" in vision_doc
+    assert "Direct detect, screen, score" in readme
 
 
 def _dependency_name(value: object) -> str:

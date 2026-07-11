@@ -21,14 +21,17 @@ from biominer.bioclip.classification_modes import (
     normalize_classification_mode,
 )
 from biominer.bioclip.object_runner import screen_object_detections
-from biominer.bioclip.taxonomy_store import ButterflyTaxonomyStore
+from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate
 from biominer.detection.pipeline import run_detection_pipeline
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, detection_is_bioclip_eligible
 from biominer.evidence.join import write_object_evidence_outputs
-from biominer.registry.classification_table import (
-    build_classification_artifact_frames,
-    classification_artifact_paths,
+from biominer.registry.classification_v2 import (
+    build_classification_v2_frames,
+    build_classification_v2_manifest,
+    classification_v2_artifact_paths,
+    classification_v2_fingerprint,
+    write_classification_v2_artifacts,
 )
 from biominer.species.context import SpeciesContext
 from biominer.storage.parquet import write_parquet
@@ -164,7 +167,7 @@ def run_vision_plumbing_benchmark(
         if not taxonomy_path.exists():
             write_benchmark_taxonomy_store(taxonomy_path)
             taxonomy_fixture_created = True
-        taxonomy_store = ButterflyTaxonomyStore.read(taxonomy_path)
+        taxonomy_store = FiveRankTaxonomyStore.read(taxonomy_path)
         taxonomy_store_reads += 1
         species_context = benchmark_species_context()
         candidate_set = build_candidate_set(species_context, records=canonical.to_dicts(), allow_single_target_fixture=True)
@@ -379,17 +382,18 @@ def write_benchmark_taxonomy_store(root: str | Path) -> dict[str, Path]:
     output = Path(root)
     base = output.parent if output.suffix == ".parquet" else output
     base.mkdir(parents=True, exist_ok=True)
-    taxa = benchmark_taxa_frame()
-    classification_taxa, family_labels, species_labels, qa_findings, manifest = build_classification_artifact_frames(
-        taxa,
-        registry_manifest={"registry_version": BENCHMARK_TAXONOMY_REGISTRY_VERSION, "qa_status": "benchmark_fixture"},
+    write_parquet(benchmark_taxa_frame(), base / "taxa.parquet")
+    (base / "manifest.json").write_text(
+        json.dumps({"registry_version": BENCHMARK_TAXONOMY_REGISTRY_VERSION}, sort_keys=True),
+        encoding="utf-8",
     )
-    paths = classification_artifact_paths(output)
-    write_parquet(classification_taxa, paths["classification_taxa"])
-    write_parquet(family_labels, paths["family_labels"])
-    write_parquet(species_labels, paths["species_labels"])
-    write_parquet(qa_findings, paths["qa_findings"])
-    paths["manifest"].write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    source_path = base / "benchmark_classification_source.json"
+    source_path.write_text(json.dumps(_benchmark_classification_source(), sort_keys=True), encoding="utf-8")
+    try:
+        write_classification_v2_artifacts(base, source_path=source_path)
+    finally:
+        source_path.unlink(missing_ok=True)
+    paths = classification_v2_artifact_paths(base)
     return paths
 
 
@@ -402,6 +406,134 @@ def benchmark_taxa_frame() -> pl.DataFrame:
         _taxon_row("gbif:7002", BENCHMARK_SECOND_OUTGROUP_SPECIES, "gbif:7017", "Nymphalidae", "gbif:7000", "Metricsus", now),
     ]
     return pl.DataFrame(rows)
+
+
+def benchmark_taxonomy_store() -> FiveRankTaxonomyStore:
+    frames = build_classification_v2_frames(benchmark_taxa_frame(), _benchmark_classification_source())
+    manifest = build_classification_v2_manifest(
+        frames,
+        registry_version=BENCHMARK_TAXONOMY_REGISTRY_VERSION,
+    )
+    manifest.update(
+        {
+            "classification_fingerprint": classification_v2_fingerprint(frames),
+            "fatal_finding_count": 0,
+            "qa_status": "passed",
+        }
+    )
+    return FiveRankTaxonomyStore(
+        sources=frames.sources,
+        nodes=frames.nodes,
+        edges=frames.edges,
+        gbif_mappings=frames.gbif_mappings,
+        leaf_paths=frames.leaf_paths,
+        prompt_labels=frames.prompt_labels,
+        manifest=manifest,
+    )
+
+
+def _benchmark_classification_source() -> dict[str, Any]:
+    reviewed = {
+        "reviewed": True,
+        "review_status": "reviewed",
+        "reviewed_by": "BioMiner benchmark fixture",
+        "reviewed_at": "2026-07-11",
+        "enabled": True,
+    }
+    source_id = "benchmark-taxonomy-source"
+    lineages = (
+        (
+            "Papilionidae",
+            "Papilioninae",
+            "Papilionini",
+            "Benchmarkus",
+            (("gbif:9401", BENCHMARK_PRIMARY_SPECIES), ("gbif:9402", BENCHMARK_SECONDARY_SPECIES)),
+        ),
+        (
+            "Nymphalidae",
+            "Nymphalinae",
+            "Nymphalini",
+            "Metricsus",
+            (("gbif:7001", BENCHMARK_OUTGROUP_SPECIES), ("gbif:7002", BENCHMARK_SECOND_OUTGROUP_SPECIES)),
+        ),
+    )
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    mappings: list[dict[str, Any]] = []
+    for family, subfamily, tribe, genus, species_rows in lineages:
+        ranked_names = (("FAMILY", family), ("SUBFAMILY", subfamily), ("TRIBE", tribe), ("GENUS", genus))
+        parent_id: str | None = None
+        for rank, name in ranked_names:
+            node_id = f"{rank.casefold()}:{name.casefold()}"
+            nodes.append(
+                {
+                    "node_id": node_id,
+                    "rank": rank,
+                    "scientific_name": name,
+                    "source_id": source_id,
+                    "evidence": "model-free benchmark fixture",
+                    **reviewed,
+                }
+            )
+            if parent_id is not None:
+                edges.append(
+                    {
+                        "parent_node_id": parent_id,
+                        "child_node_id": node_id,
+                        "source_id": source_id,
+                        "evidence": "model-free benchmark fixture",
+                        **reviewed,
+                    }
+                )
+            parent_id = node_id
+        for taxon_key, species in species_rows:
+            species_id = f"species:{species.casefold().replace(' ', '-')}"
+            nodes.append(
+                {
+                    "node_id": species_id,
+                    "rank": "SPECIES",
+                    "scientific_name": species,
+                    "source_id": source_id,
+                    "evidence": "model-free benchmark fixture",
+                    **reviewed,
+                }
+            )
+            edges.append(
+                {
+                    "parent_node_id": parent_id,
+                    "child_node_id": species_id,
+                    "source_id": source_id,
+                    "evidence": "model-free benchmark fixture",
+                    **reviewed,
+                }
+            )
+            mappings.append(
+                {
+                    "gbif_species_key": taxon_key,
+                    "accepted_scientific_name": species,
+                    "species_node_id": species_id,
+                    "source_id": source_id,
+                    "evidence": "exact benchmark key and name",
+                    **reviewed,
+                }
+            )
+    return {
+        "classification_version": "butterfly-classification-v2.0.0",
+        "sources": [
+            {
+                "source_id": source_id,
+                "authority": "BioMiner benchmark fixture",
+                "release": "v2",
+                "citation": "model-free internal benchmark taxonomy",
+                "retrieved_at": "2026-07-11",
+                "evidence_url": "https://example.invalid/biominer-benchmark-taxonomy",
+                "evidence": "Synthetic classification used only by model-free benchmarks.",
+            }
+        ],
+        "nodes": nodes,
+        "edges": edges,
+        "species_mappings": mappings,
+    }
 
 
 def benchmark_species_context() -> SpeciesContext:

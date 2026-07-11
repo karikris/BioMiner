@@ -1,9 +1,9 @@
-# Command Surface Policy
+# ADR: production command surface
 
-Status: accepted
+Status: accepted.
 
-The maintained production entrypoint is `biominer run --taxon <name> --rank auto|family|genus|species`, with explicit storage and workstore backends for local or cloud execution.
+`biominer run` is the sole production workflow. Registry build/classification/audit, evaluation, and infrastructure doctors remain public because they create or validate production inputs rather than execute a competing visual pipeline.
 
-Step-specific commands remain available when they are reusable package workflows: registry build/audit, Flickr metadata polling, vision detect/screen/score/ablate, evidence join, comment review, and evaluation. One-off scripts, root wrappers, and prototype commands are removed once their behavior is covered by maintained package commands and tests.
+Runtime checks, model prefetch, smoke tests, previews, and benchmarks are nested under `biominer dev`. Direct detect, screen, rolling-screen, score, and ablation commands are removed immediately and have no aliases.
 
-Migration notes should live in current workflow docs, not generated report files. Removed commands must either be absent from docs or listed in `docs/deprecated_removed_commands.md` when users need a historical mapping.
+The parser and tests must reject removed commands. Current documentation describes only supported commands; historical migration and deprecation documents are not maintained.

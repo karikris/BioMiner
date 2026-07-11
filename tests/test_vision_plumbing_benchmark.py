@@ -131,10 +131,9 @@ def test_vision_plumbing_benchmark_guards_structural_performance_invariants(tmp_
     assert set(scores.get_column("ablation_mode").to_list()) == {"detector_crop"}
     assert "whole_image" not in set(scores.get_column("ablation_mode").to_list())
 
-    assert scorer["score_calls"] == 0
-    assert scorer["label_set_batch_calls"] > 0
-    assert scorer["label_set_batch_calls"] < metrics["crops_scored"]
-    assert max(scorer["batch_sizes"]) <= 24
+    assert scorer["score_calls"] == metrics["crops_scored"] * 6
+    assert scorer["label_set_batch_calls"] == 0
+    assert scorer["label_evaluations"] == metrics["crops_scored"] * 16
     assert len(set(scorer["scored_detection_ids"])) == metrics["crops_scored"]
     assert set(scorer["scored_detection_ids"]) == eligible_ids
     assert all(

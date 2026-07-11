@@ -20,6 +20,36 @@ DEFAULT_BEAM_WIDTHS: dict[str, int] = {
     "GENUS": 5,
 }
 
+FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS: dict[str, pl.DataType] = {
+    "taxonomy_table_version": pl.String,
+    "taxonomy_prompt_variant_version": pl.String,
+    "selected_family_key": pl.String,
+    "selected_family": pl.String,
+    "family_top3_accepted_taxon_keys": pl.List(pl.String),
+    "family_top3_scores": pl.List(pl.Float64),
+    "species_candidate_family_key": pl.String,
+    "species_candidate_family": pl.String,
+    "species_candidate_count": pl.Int64,
+    "species_top20_scores": pl.List(pl.Float64),
+    "species_top5_scores": pl.List(pl.Float64),
+    "selected_subfamily_key": pl.String,
+    "selected_subfamily": pl.String,
+    "selected_tribe_key": pl.String,
+    "selected_tribe": pl.String,
+    "selected_genus_key": pl.String,
+    "selected_genus": pl.String,
+    "taxonomy_source_release": pl.String,
+    "taxonomy_fingerprint": pl.String,
+    "embedding_cache_fingerprint": pl.String,
+    "classification_path_json": pl.String,
+    "rank_candidates_json": pl.String,
+    "candidate_counts_json": pl.String,
+    "pruning_decisions_json": pl.String,
+    "skipped_level_reasons_json": pl.String,
+    "rerank_mode": pl.String,
+    "species_rerank_candidate_count": pl.Int64,
+}
+
 
 class FiveRankScorer(Protocol):
     model_id: str
@@ -522,6 +552,7 @@ def _score_margin(scores: Sequence[RankCandidateScore]) -> float | None:
 
 __all__ = [
     "DEFAULT_BEAM_WIDTHS",
+    "FIVE_RANK_OBJECT_SCORE_SCHEMA_EXTENSIONS",
     "FiveRankCascadeResult",
     "PruningDecision",
     "RankCandidateScore",

@@ -13,7 +13,6 @@ from biominer.bioclip.classification_modes import (
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     TARGET_SCOPE_OBJECT_SCREENING,
 )
-from biominer.bioclip.hierarchical_classifier import HIERARCHICAL_SPECIES_RERANK_STRATEGY
 from biominer.bioclip.candidate_sets import build_candidate_set_for_taxon_scope
 from biominer.bioclip.cloud_work import (
     bioclip_score_batch_id,
@@ -24,7 +23,11 @@ from biominer.detection.detector_base import DecodedImage, FakeObjectDetector
 from biominer.detection.policy import DetectionPolicy, VisionRuntimeSettings
 from biominer.evidence import build_object_evidence_frames, build_review_queue, evidence_count_metrics
 from biominer.evidence.join import write_object_evidence_outputs
-from biominer.registry.classification_table import PROMPT_VARIANT_VERSION, build_classification_tables_from_registry_dir
+from biominer.registry.classification_v2 import (
+    CLASSIFICATION_V2_PROMPT_VERSION as PROMPT_VARIANT_VERSION,
+    classification_v2_artifact_paths,
+    write_classification_v2_artifacts,
+)
 from biominer.registry.trust_policy import (
     TrustTier,
     decide_name_trust,
@@ -217,7 +220,7 @@ def test_production_run_plan_records_hierarchical_classification_config_for_dry_
         output_root=tmp_path,
         dry_run=True,
         classification_mode="hierarchical",
-        taxonomy_candidate_table="s3://biominer/registry/current/butterfly_classification_taxa.parquet",
+        taxonomy_candidate_table="s3://biominer/registry/current",
         family_top_k=4,
         species_first_pass_top_k=25,
         species_rerank_top_k=7,
@@ -226,7 +229,7 @@ def test_production_run_plan_records_hierarchical_classification_config_for_dry_
 
     assert request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
     assert plan.to_dict()["request"]["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-    assert plan.to_dict()["request"]["taxonomy_candidate_table"] == "s3://biominer/registry/current/butterfly_classification_taxa.parquet"
+    assert plan.to_dict()["request"]["taxonomy_candidate_table"] == "s3://biominer/registry/current"
     assert plan.manifest.model_configs["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
     assert plan.manifest.model_configs["family_top_k"] == 4
     assert plan.manifest.model_configs["species_first_pass_top_k"] == 25
@@ -261,7 +264,7 @@ def test_production_run_hierarchical_score_stage_requires_taxonomy_table(tmp_pat
         storage_backend="local",
         workstore_backend="sqlite",
         classification_mode="hierarchical",
-        taxonomy_candidate_table="data/registry/current/butterfly_classification_taxa.parquet",
+        taxonomy_candidate_table="data/registry/current",
         stages=(RunStage.SCORE_BIOCLIP,),
     )
 
@@ -271,7 +274,7 @@ def test_production_run_hierarchical_score_stage_requires_taxonomy_table(tmp_pat
     assert plan.manifest.stages[0].status is StageStatus.FAILED
     assert plan.manifest.stages[0].message.startswith("missing_taxonomy_candidate_table:")
     assert plan.manifest.stages[0].metrics["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-    assert plan.manifest.stages[0].metrics["taxonomy_candidate_table"].endswith("butterfly_classification_taxa.parquet")
+    assert plan.manifest.stages[0].metrics["taxonomy_candidate_table"].endswith("data/registry/current")
     assert plan.manifest.stages[0].metrics["taxonomy_candidate_table_status"] == "missing"
 
 
@@ -1092,7 +1095,7 @@ def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(tmp_path
         storage_backend="local",
         workstore_backend="sqlite",
         classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_candidate_table=str(registry / "butterfly_classification_taxa.parquet"),
+        taxonomy_candidate_table=str(registry),
         stages=(RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP, RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE),
         species_first_pass_top_k=20,
         species_rerank_top_k=5,
@@ -1146,16 +1149,15 @@ def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(tmp_path
     assert score["flickr_photo_id"] == "photo-butterfly"
     assert score["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
     assert score["family_top3"][:2] == ["Papilionidae", "Nymphalidae"]
-    assert score["selected_family_key"] == "gbif:10"
-    assert score["species_candidate_count"] == 3
-    assert "gbif:200" not in score["species_top20_accepted_taxon_keys"]
-    assert set(score["species_top20_accepted_taxon_keys"]) == {"gbif:100", "gbif:101", "gbif:301"}
+    assert score["selected_family_key"] == "family:papilionidae"
+    assert score["species_candidate_count"] == 4
+    assert set(score["species_top20_accepted_taxon_keys"]) == {"gbif:100", "gbif:101", "gbif:200", "gbif:301"}
     assert score["species_top20"][0] == "Papilio machaon"
     assert score["species_top5"][0] == "Papilio demoleus"
     assert score["species_top1_scientific_name"] == "Papilio demoleus"
     assert score["accepted_taxon_key"] == "gbif:100"
     assert score["target_species_score"] is None
-    assert score["species_rerank_strategy"] == HIERARCHICAL_SPECIES_RERANK_STRATEGY
+    assert score["species_rerank_strategy"] == "rerank_all_first_pass_top20"
 
     joined = pl.read_parquet(result.paths.object_evidence_path)
     assert joined.height == 5
@@ -1172,7 +1174,7 @@ def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(tmp_path
     butterfly_summary = summaries["photo-butterfly"]
     assert butterfly_summary["best_object_species_top1"] == "Papilio demoleus"
     assert butterfly_summary["best_object_occurrence_bin"] == "in_review"
-    assert butterfly_summary["photo_bin_reason"] == "hierarchical_open_classification_requires_review"
+    assert butterfly_summary["photo_bin_reason"] == "five_rank_open_classification_requires_review"
     assert "Papilio machaon" in butterfly_summary["all_candidate_species"]
     assert summaries["photo-no-detection"]["photo_occurrence_bin"] == "bin"
 
@@ -2629,8 +2631,97 @@ def _write_rank_registry(registry: Path) -> Path:
     ).write_parquet(registry / "names.parquet")
     pl.DataFrame([{"source": "GBIF", "source_version": "fixture", "retrieved_at": "2026-01-01T00:00:00Z"}]).write_parquet(registry / "source_snapshots.parquet")
     (registry / "manifest.json").write_text(json.dumps({"registry_version": "rank-registry-v1"}), encoding="utf-8")
-    build_classification_tables_from_registry_dir(registry)
+    classification_source = registry / "classification_source.json"
+    classification_source.write_text(json.dumps(_rank_classification_source(), sort_keys=True), encoding="utf-8")
+    try:
+        write_classification_v2_artifacts(registry, source_path=classification_source)
+    finally:
+        classification_source.unlink(missing_ok=True)
     return registry
+
+
+def _rank_classification_source() -> dict[str, object]:
+    reviewed = {
+        "reviewed": True,
+        "review_status": "reviewed",
+        "reviewed_by": "test fixture",
+        "reviewed_at": "2026-07-11",
+        "enabled": True,
+    }
+    source_id = "test-five-rank-source"
+    paths = (
+        ("Papilionidae", "Papilioninae", "Papilionini", "Papilio", (("gbif:100", "Papilio demoleus"), ("gbif:101", "Papilio machaon"))),
+        ("Papilionidae", "Papilioninae", "Papilionini", "Shared name", (("gbif:301", "Shared name"),)),
+        ("Nymphalidae", "Danainae", "Danaini", "Danaus", (("gbif:200", "Danaus plexippus"),)),
+    )
+    nodes_by_id: dict[str, dict[str, object]] = {}
+    edges_by_pair: dict[tuple[str, str], dict[str, object]] = {}
+    mappings: list[dict[str, object]] = []
+    for family, subfamily, tribe, genus, species_rows in paths:
+        parent_id: str | None = None
+        for rank, name in (("FAMILY", family), ("SUBFAMILY", subfamily), ("TRIBE", tribe), ("GENUS", genus)):
+            node_id = f"{rank.casefold()}:{name.casefold().replace(' ', '-')}"
+            nodes_by_id[node_id] = {
+                "node_id": node_id,
+                "rank": rank,
+                "scientific_name": name,
+                "source_id": source_id,
+                "evidence": "deterministic five-rank test fixture",
+                **reviewed,
+            }
+            if parent_id is not None:
+                edges_by_pair[(parent_id, node_id)] = {
+                    "parent_node_id": parent_id,
+                    "child_node_id": node_id,
+                    "source_id": source_id,
+                    "evidence": "deterministic five-rank test fixture",
+                    **reviewed,
+                }
+            parent_id = node_id
+        for taxon_key, species in species_rows:
+            species_id = f"species:{species.casefold().replace(' ', '-')}"
+            nodes_by_id[species_id] = {
+                "node_id": species_id,
+                "rank": "SPECIES",
+                "scientific_name": species,
+                "source_id": source_id,
+                "evidence": "deterministic five-rank test fixture",
+                **reviewed,
+            }
+            edges_by_pair[(str(parent_id), species_id)] = {
+                "parent_node_id": parent_id,
+                "child_node_id": species_id,
+                "source_id": source_id,
+                "evidence": "deterministic five-rank test fixture",
+                **reviewed,
+            }
+            mappings.append(
+                {
+                    "gbif_species_key": taxon_key,
+                    "accepted_scientific_name": species,
+                    "species_node_id": species_id,
+                    "source_id": source_id,
+                    "evidence": "exact fixture key and name",
+                    **reviewed,
+                }
+            )
+    return {
+        "classification_version": "butterfly-classification-v2.0.0",
+        "sources": [
+            {
+                "source_id": source_id,
+                "authority": "BioMiner test fixture",
+                "release": "v2",
+                "citation": "deterministic test classification",
+                "retrieved_at": "2026-07-11",
+                "evidence_url": "https://example.invalid/test-classification",
+                "evidence": "Tests only.",
+            }
+        ],
+        "nodes": list(nodes_by_id.values()),
+        "edges": list(edges_by_pair.values()),
+        "species_mappings": mappings,
+    }
 
 
 def _write_query_definitions(registry: Path) -> None:
@@ -2977,7 +3068,7 @@ class _HierarchicalRerankObjectScorer:
 
     def score(self, item: dict[str, object], labels: tuple[str, ...]) -> dict[str, float]:
         label_tuple = tuple(str(label) for label in labels)
-        if any(_contains_any(label, ("Papilio demoleus", "Papilio machaon", "Shared name", "Danaus plexippus")) for label in label_tuple):
+        if any("butterfly species" in label for label in label_tuple):
             crop_hash = str(item.get("crop_hash") or "")
             species_call = self._species_calls_by_crop_hash.get(crop_hash, 0)
             self._species_calls_by_crop_hash[crop_hash] = species_call + 1
@@ -3099,18 +3190,13 @@ def _is_forbidden_local_artifact(path: str | Path, *, root: Path) -> bool:
 def _seed_cloud_registry(storage: _FakeRunStorage, registry_uri: str, registry: Path) -> None:
     storage.parquet_payloads[f"{registry_uri}/taxa.parquet"] = pl.read_parquet(registry / "taxa.parquet")
     storage.parquet_payloads[f"{registry_uri}/names.parquet"] = pl.read_parquet(registry / "names.parquet")
-    storage.parquet_payloads[f"{registry_uri}/butterfly_classification_taxa.parquet"] = pl.read_parquet(
-        registry / "butterfly_classification_taxa.parquet"
-    )
-    storage.parquet_payloads[f"{registry_uri}/butterfly_family_labels.parquet"] = pl.read_parquet(registry / "butterfly_family_labels.parquet")
-    storage.parquet_payloads[f"{registry_uri}/butterfly_species_labels.parquet"] = pl.read_parquet(registry / "butterfly_species_labels.parquet")
-    storage.parquet_payloads[f"{registry_uri}/butterfly_classification_qa_findings.parquet"] = pl.read_parquet(
-        registry / "butterfly_classification_qa_findings.parquet"
-    )
+    for key, path in classification_v2_artifact_paths(registry).items():
+        uri = f"{registry_uri}/{path.name}"
+        if key == "manifest":
+            storage.json_payloads[uri] = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            storage.parquet_payloads[uri] = pl.read_parquet(path)
     storage.parquet_payloads[f"{registry_uri}/source_snapshots.parquet"] = pl.read_parquet(registry / "source_snapshots.parquet")
-    storage.json_payloads[f"{registry_uri}/butterfly_classification_manifest.json"] = json.loads(
-        (registry / "butterfly_classification_manifest.json").read_text(encoding="utf-8")
-    )
     query_definitions = registry / "flickr_query_definitions.parquet"
     if query_definitions.exists():
         storage.parquet_payloads[f"{registry_uri}/flickr_query_definitions.parquet"] = pl.read_parquet(query_definitions)
@@ -3180,6 +3266,7 @@ def _taxon_row(
         "accepted_taxon_key": accepted_taxon_key,
         "scientific_name": scientific_name,
         "rank": rank,
+        "taxonomic_status": "ACCEPTED",
         "parent_key": parent_key,
         "family_key": family_key,
         "family": family,

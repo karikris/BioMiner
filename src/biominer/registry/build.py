@@ -14,7 +14,11 @@ import polars as pl
 
 from biominer.registry import enrichment as registry_enrichment
 from biominer.registry.compiler import compile_registry_fixture, compile_registry_frames
-from biominer.registry.classification_table import BUTTERFLY_CLASSIFICATION_MANIFEST_FILE
+from biominer.registry.classification_v2 import (
+    classification_v2_artifact_uris,
+    compile_classification_v2_artifacts,
+    write_classification_v2_artifacts,
+)
 from biominer.registry.enrichment import (
     DEFAULT_ENRICHMENT_SOURCES,
     INATURALIST_DAILY_REQUEST_LIMIT,
@@ -218,17 +222,19 @@ def build_cloud_registry(
         registry_version=registry_version,
         scope_path=scope_path,
         query_curation_json=query_curation_json,
-        include_classification_tables=not skip_classification_table,
+    )
+    manifest = _add_cloud_classification_v2_outputs(
+        storage=storage,
+        registry_prefix=registry_prefix,
+        registry_version=registry_version,
+        taxa=frames["taxa.parquet"],
+        manifest=manifest,
+        skip=skip_classification_table,
     )
     for filename, frame in frames.items():
         storage.write_parquet_shard(
             build_registry_version_uri(base_prefix, registry_version=registry_version, filename=filename),
             frame,
-        )
-    if not skip_classification_table and isinstance(manifest.get("classification_table"), dict):
-        storage.write_json(
-            build_registry_version_uri(base_prefix, registry_version=registry_version, filename=BUTTERFLY_CLASSIFICATION_MANIFEST_FILE),
-            manifest["classification_table"],
         )
     manifest_uri = build_registry_version_uri(base_prefix, registry_version=registry_version, filename="manifest.json")
     storage.write_json(manifest_uri, manifest)
@@ -370,7 +376,6 @@ def build_local_registry(
         registry_version=registry_version,
         scope_path=scope_path,
         query_curation_json=query_curation_json,
-        include_classification_tables=not skip_classification_table,
     )
     logger.info(
         "registry.build.compile_base.complete status=%s taxa=%s names=%s queries=%s",
@@ -389,7 +394,6 @@ def build_local_registry(
             registry_version=registry_version,
             scope_path=scope_path,
             query_curation_json=query_curation_json,
-            include_classification_tables=not skip_classification_table,
         )
         manifest = _add_regional_outputs(
             registry_dir=output,
@@ -400,6 +404,11 @@ def build_local_registry(
             skip_range_discovery=skip_range_discovery,
             skip_language_targets=skip_language_targets,
             retrieved_at=retrieved,
+        )
+        manifest = _add_local_classification_v2_outputs(
+            registry_dir=output,
+            manifest=manifest,
+            skip=skip_classification_table,
         )
     else:
         run_id = _run_id(retrieved)
@@ -480,7 +489,6 @@ def build_local_registry(
             requested_sources=effective_enrichment_sources,
             requested_translation_sources=effective_translation_sources,
             query_curation_json=query_curation_json,
-            include_classification_tables=not skip_classification_table,
         )
         manifest = _add_regional_outputs(
             registry_dir=canonical_dir,
@@ -491,6 +499,11 @@ def build_local_registry(
             skip_range_discovery=skip_range_discovery,
             skip_language_targets=skip_language_targets,
             retrieved_at=retrieved,
+        )
+        manifest = _add_local_classification_v2_outputs(
+            registry_dir=canonical_dir,
+            manifest=manifest,
+            skip=skip_classification_table,
         )
         logger.info(
             "registry.build.compile_enriched.complete status=%s taxa=%s names=%s queries=%s enrichment_names=%s source_errors=%s",
@@ -587,6 +600,54 @@ def _add_regional_outputs(
     updated = {**manifest, **regional_manifest}
     (registry_dir / "manifest.json").write_text(json.dumps(updated, indent=2, sort_keys=True), encoding="utf-8")
     return updated
+
+
+def _add_local_classification_v2_outputs(
+    *,
+    registry_dir: Path,
+    manifest: dict[str, Any],
+    skip: bool,
+) -> dict[str, Any]:
+    classification: dict[str, Any] | None = None
+    if not skip:
+        result = write_classification_v2_artifacts(registry_dir)
+        classification = {key: value for key, value in result.items() if key != "outputs"}
+    updated = {
+        **manifest,
+        "classification_skipped": skip,
+        "classification": classification,
+    }
+    (registry_dir / "manifest.json").write_text(json.dumps(updated, indent=2, sort_keys=True), encoding="utf-8")
+    return updated
+
+
+def _add_cloud_classification_v2_outputs(
+    *,
+    storage: CloudStorage,
+    registry_prefix: str,
+    registry_version: str,
+    taxa: pl.DataFrame,
+    manifest: dict[str, Any],
+    skip: bool,
+) -> dict[str, Any]:
+    classification: dict[str, Any] | None = None
+    if not skip:
+        frames, classification = compile_classification_v2_artifacts(
+            taxa,
+            registry_version=registry_version,
+        )
+        if int(classification.get("fatal_finding_count") or 0):
+            fatal_codes = frames["qa_findings"].filter(pl.col("severity") == "fatal")["code"].to_list()
+            raise ValueError("classification-v2 fatal QA: " + ", ".join(str(code) for code in fatal_codes))
+        uris = classification_v2_artifact_uris(registry_prefix)
+        for key, frame in frames.items():
+            storage.write_parquet_shard(uris[key], frame)
+        storage.write_json(uris["manifest"], classification)
+    return {
+        **manifest,
+        "classification_skipped": skip,
+        "classification": classification,
+    }
 
 
 def _write_regional_outputs(
@@ -707,14 +768,15 @@ def _build_report(
         "progress_every": source_payload.get("metrics", {}).get("progress_every"),
         "resumed_species": source_payload.get("metrics", {}).get("resumed_species"),
         "taxa_rows": manifest.get("taxa_rows"),
-        "classification_table_skipped": manifest.get("classification_table_skipped"),
-        "classification_table_version": (manifest.get("classification_table") or {}).get("classification_table_version")
-        if isinstance(manifest.get("classification_table"), dict)
+        "classification_skipped": manifest.get("classification_skipped"),
+        "classification_version": (manifest.get("classification") or {}).get("classification_version")
+        if isinstance(manifest.get("classification"), dict)
         else None,
-        "classification_species_count": manifest.get("classification_species_count"),
-        "classification_family_count": manifest.get("classification_family_count"),
-        "classification_family_label_rows": manifest.get("classification_family_label_rows"),
-        "classification_species_label_rows": manifest.get("classification_species_label_rows"),
+        "classification_species_count": ((manifest.get("classification") or {}).get("enabled_node_counts_by_rank") or {}).get("SPECIES"),
+        "classification_family_count": ((manifest.get("classification") or {}).get("enabled_node_counts_by_rank") or {}).get("FAMILY"),
+        "classification_prompt_label_rows": (manifest.get("classification") or {}).get("prompt_label_count")
+        if isinstance(manifest.get("classification"), dict)
+        else None,
         "name_rows": manifest.get("name_rows"),
         "query_definition_rows": manifest.get("query_definition_rows"),
         "query_definition_unique_term_count": manifest.get("query_definition_unique_term_count"),
@@ -799,10 +861,10 @@ def _report_markdown(report: dict[str, Any]) -> str:
             f"- Status: {report['status']}",
             f"- Source: {report['source']} {report['source_version']}",
             f"- Taxa rows: {report['taxa_rows']}",
-            f"- Classification table skipped: {report['classification_table_skipped']}",
-            f"- Classification table version: {report['classification_table_version']}",
+            f"- Classification skipped: {report['classification_skipped']}",
+            f"- Classification version: {report['classification_version']}",
             f"- Classification species/families: {report['classification_species_count']}/{report['classification_family_count']}",
-            f"- Classification family/species label rows: {report['classification_family_label_rows']}/{report['classification_species_label_rows']}",
+            f"- Classification prompt labels: {report['classification_prompt_label_rows']}",
             f"- Name rows: {report['name_rows']}",
             f"- Query definitions: {report['query_definition_rows']}",
             f"- Query unique terms: {report['query_definition_unique_term_count']}",
@@ -859,11 +921,14 @@ def _canonical_registry_files() -> tuple[str, ...]:
         "taxa.parquet",
         "taxon_relations.parquet",
         "names.parquet",
-        "butterfly_classification_taxa.parquet",
-        "butterfly_family_labels.parquet",
-        "butterfly_species_labels.parquet",
-        "butterfly_classification_qa_findings.parquet",
-        BUTTERFLY_CLASSIFICATION_MANIFEST_FILE,
+        "classification_sources.parquet",
+        "classification_nodes.parquet",
+        "classification_edges.parquet",
+        "species_gbif_mappings.parquet",
+        "classification_leaf_paths.parquet",
+        "classification_prompt_labels.parquet",
+        "classification_qa_findings.parquet",
+        "classification_manifest.json",
         "name_evidence.parquet",
         "source_snapshots.parquet",
         "flickr_query_definitions.parquet",
