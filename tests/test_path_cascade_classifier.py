@@ -16,6 +16,7 @@ from biominer.bioclip.path_cascade_classifier import (
     classify_path_cascade_batch,
     score_rank_candidates,
 )
+from biominer.bioclip.path_cascade_output import path_cascade_result_to_output_row
 from biominer.bioclip.taxonomy_embedding_cache import (
     TaxonomyTextEmbeddingIndex,
     build_taxonomy_text_embedding_cache,
@@ -224,6 +225,14 @@ def test_family_rank_three_preserves_true_branch_but_rank_four_cannot_reenter() 
     assert _step(result, "FAMILY").top_candidates[0].node_id == "f:a"
     assert result.species_top1 is not None and result.species_top1.node_id == "s:c1"
     assert result.final_winning_path[0].node_id == "f:c"
+    output = path_cascade_result_to_output_row(result)
+    assert output["family_top1"] == "Alphaidae"
+    assert output["family_top1_node_id"] == "f:a"
+    assert output["selected_family"] == "Gammaidae"
+    assert output["selected_family_node_id"] == "f:c"
+    assert output["family_top3_node_ids"] == ["f:a", "f:b", "f:c"]
+    assert output["species_top1_node_id"] == "s:c1"
+    assert output["species_top1_accepted_taxon_key"] == "gbif:2201"
 
     pruned_scorer = _scorer(
         store,
