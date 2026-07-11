@@ -1025,3 +1025,101 @@ Post-implementation solution IDs used for the immutable-source comparison:
 
 `77cf4806-5805-4e4b-b866-6fb623606bcc`,
 `59c46397-efc0-48a6-b63e-5a7529e18947`.
+
+## Phase 6 — Production work identity and retry-safe cascade wiring
+
+### Pre-implementation verification — 2026-07-11
+
+Research questions:
+
+- Which output-affecting settings must participate in a deterministic cascade
+  work key?
+- How should desired-computation identity remain distinct from serialized
+  output checksums and queue attempt identity?
+- What queue contract remains safe under worker loss, redelivery, and stale
+  claims?
+- Which rank and taxonomy settings must be explicit rather than inherited from
+  ambient production defaults?
+
+Repository dependency evidence:
+
+- `pyproject.toml` requires Python 3.14 or newer.
+- `uv.lock` pins Polars 1.41.2, PyArrow 24.0.0, DuckDB 1.5.4,
+  HTTPX 0.28.1, and Pydantic 2.13.4. Phase 6 work-key hashing uses Python's
+  standard JSON and SHA-256 APIs; the dependency inventory was inspected
+  before querying external implementation patterns.
+
+GitHits calls and results:
+
+1. Two delegated strict-licence `get_example` calls for deterministic
+   content-addressed work keys, immutable batch identity, retry-safe queues,
+   and configuration fingerprints hit the rolling 50-example quota. The
+   exact retry estimates were 66513 and 66465 seconds. A concurrent main-agent
+   call already in flight returned the same error with 66402 seconds. These
+   calls issued no solution ID, and none is claimed.
+2. The earlier strict solution
+   `a04caaf5-9c66-4bcf-9e7b-8d08dbe3a062` was re-used only for its directly
+   relevant canonical-adjacency/content-hash evidence. Its immutable MIT and
+   Apache-2.0 sources remain recorded in Phase 1; it is not presented as new
+   queue evidence.
+3. `code_read` inspected
+   `iterative/dvc@f74c1c0e709de61f571905802bc0c75035dc6ef2`:
+   `dvc/utils/__init__.py:20-51`, `dvc/stage/cache.py:20-80`, and
+   `LICENSE:1-5`. DVC is Apache-2.0. The source recursively normalizes a
+   mapping, serializes it with sorted JSON keys, hashes UTF-8 bytes with
+   SHA-256, and distinguishes a stage-input key from an output-content value.
+4. `code_read` inspected
+   `celery/celery@1432d9b6c6868a77e7ee2ede1650da00a8d187ac`:
+   `celery/worker/request.py:670-705`,
+   `t/unit/worker/test_request.py:398-450`, and `LICENSE:1-38`. Celery is
+   BSD-3-Clause. Its late-acknowledgement path stores the result before
+   acknowledgement, and its worker-loss tests verify that requeued work is
+   redelivered without a premature terminal failure.
+5. Morph MCP was called first for the required local production call-site
+   trace and failed with the exact response
+   `Error: 429 status code (no body)`. Focused `rg` and source reads identified
+   the local paths; no Morph-derived claim is made.
+
+Constraints adopted:
+
+- Canonicalize the complete output-affecting settings mapping with sorted
+  keys, compact separators, UTF-8, an explicit contract version, and SHA-256.
+- Preserve semantic list order. The six-rank order is identity-bearing; any
+  unordered collection must be sorted before hashing.
+- Include beam strategy and width, ordered ranks, classification and prompt
+  versions, taxonomy and embedding-cache fingerprints, species first-pass,
+  rerank and report widths, and the rerank prompt version.
+- Keep the stable computation work key, batch/part identity, durable output
+  checksum, and mutable queue attempt/claim identity separate.
+- Assume at-least-once execution: publish durable output before completion,
+  reclaim expired claims, and make repeated publication checksum-idempotent.
+- A retry of the same immutable computation retains the same work key. Any
+  output-affecting configuration change produces a new work key.
+
+Patterns explicitly rejected:
+
+- Python `hash()`, `repr`, pickle, timestamps, attempt numbers, and random IDs
+  as durable work identity.
+- Excluding a setting merely because it currently equals a default; ambient
+  defaults change and must not reinterpret old work.
+- Mutating the mapping while deriving its key, as DVC's specialized
+  `key=True` transformation does for its own stage representation.
+- Claiming exactly-once delivery, acknowledging before durable publication,
+  marking worker loss terminal, or allowing a stale claimant to overwrite a
+  committed shard.
+- Treating object existence alone as successful concurrent publication; an
+  existing object must have the expected immutable checksum and identity.
+
+Effect on BioMiner's design:
+
+- The public family-only width is replaced by one fixed global rank beam.
+- Production requests and manifests carry the full cascade contract instead
+  of reconstructing it from scattered defaults.
+- Rolling and cloud work keys will use one canonical settings payload and
+  include taxonomy/cache fingerprints so stale v2 or stale-cache work cannot
+  collide with classification-v3 output.
+- Queue retry/claim fields will not participate in the computation key.
+
+Pre-implementation solution ID used for the canonical-hash comparison:
+
+`a04caaf5-9c66-4bcf-9e7b-8d08dbe3a062`.
