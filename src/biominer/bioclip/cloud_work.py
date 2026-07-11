@@ -7,6 +7,10 @@ from typing import Any
 
 import polars as pl
 
+from biominer.bioclip.cascade_contract import (
+    production_cascade_work_identity,
+    validate_cascade_work_identity,
+)
 from biominer.bioclip.candidate_sets import CandidateSet
 from biominer.bioclip.classification_modes import (
     DEFAULT_CLASSIFICATION_MODE,
@@ -42,6 +46,7 @@ from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
 from biominer.bioclip.taxonomy_embedding_cache import TaxonomyTextEmbeddingIndex
 from biominer.detection.policy import DetectionPolicy
 from biominer.detection.segmentation import SegmentationUnavailable
+from biominer.registry.classification_v3 import CLASSIFICATION_V3_VERSION
 from biominer.species.context import SpeciesContext
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.parquet import DEFAULT_PARQUET_READ_BATCH_SIZE
@@ -102,6 +107,7 @@ def enqueue_bioclip_work_from_detection_shards(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
+    cascade_identity: dict[str, Any] | None = None,
     read_batch_size: int = DEFAULT_PARQUET_READ_BATCH_SIZE,
 ) -> BioClipWorkPlanResult:
     shards = workstore.list_candidate_shards(
@@ -156,6 +162,7 @@ def enqueue_bioclip_work_from_detection_shards(
                             family_top_k=family_top_k,
                             species_first_pass_top_k=species_first_pass_top_k,
                             species_rerank_top_k=species_rerank_top_k,
+                            cascade_identity=cascade_identity,
                             gate_decision=gate_decision,
                         )
                     )
@@ -191,6 +198,7 @@ def bioclip_score_work_item(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
+    cascade_identity: dict[str, Any] | None = None,
     gate_decision: ScoreInputDecision | None = None,
 ) -> dict[str, Any]:
     normalized_mode = normalize_classification_mode(classification_mode)
@@ -198,11 +206,37 @@ def bioclip_score_work_item(
         detection,
         BioClipGatePolicy.legacy_butterfly_like_only(),
     )
-    top_k_settings = {
-        "family_top_k": int(family_top_k),
-        "species_first_pass_top_k": int(species_first_pass_top_k),
-        "species_rerank_top_k": int(species_rerank_top_k),
-    }
+    normalized_cascade_identity = (
+        validate_cascade_work_identity(cascade_identity)
+        if cascade_identity is not None
+        else None
+    )
+    if (
+        normalized_cascade_identity is not None
+        and normalized_mode != HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    ):
+        raise ValueError("cascade identity is valid only for hierarchical classification")
+    if (
+        normalized_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+        and str(taxonomy_table_version or "") == CLASSIFICATION_V3_VERSION
+        and normalized_cascade_identity is None
+    ):
+        raise ValueError("classification-v3 work requires cascade identity")
+    if normalized_cascade_identity is not None:
+        if str(taxonomy_table_version or "") != normalized_cascade_identity["classification_version"]:
+            raise ValueError("taxonomy_table_version does not match cascade identity")
+        if (
+            str(taxonomy_prompt_variant_version or "")
+            != normalized_cascade_identity["prompt_version"]
+        ):
+            raise ValueError("taxonomy_prompt_variant_version does not match cascade identity")
+        top_k_settings = None
+    else:
+        top_k_settings = {
+            "family_top_k": int(family_top_k),
+            "species_first_pass_top_k": int(species_first_pass_top_k),
+            "species_rerank_top_k": int(species_rerank_top_k),
+        }
     crop_identity = {
         "crop_hash": str(detection.get("crop_hash") or ""),
         "crop_padding_ratio": _jsonable_value(detection.get("crop_padding_ratio")),
@@ -222,13 +256,15 @@ def bioclip_score_work_item(
         "classification_mode": normalized_mode,
         "taxonomy_table_version": str(taxonomy_table_version or ""),
         "taxonomy_prompt_variant_version": str(taxonomy_prompt_variant_version or ""),
-        "top_k_settings": top_k_settings,
+        "cascade_identity": normalized_cascade_identity,
         "ablation_mode": str(ablation_mode or ""),
         "bioclip_gate_mode": active_gate_decision.bioclip_gate_mode,
         "bioclip_gate_decision": active_gate_decision.bioclip_gate_decision,
         "bioclip_gate_reason": active_gate_decision.bioclip_gate_reason,
     }
-    return {
+    if top_k_settings is not None:
+        key_payload["top_k_settings"] = top_k_settings
+    payload = {
         "work_key": f"{run_id}:bioclip:{_stable_hash(key_payload)}",
         "run_id": run_id,
         "source": key_payload["source"],
@@ -242,12 +278,15 @@ def bioclip_score_work_item(
         "classification_mode": normalized_mode,
         "taxonomy_table_version": taxonomy_table_version,
         "taxonomy_prompt_variant_version": taxonomy_prompt_variant_version,
-        "top_k_settings": top_k_settings,
+        "cascade_identity": normalized_cascade_identity,
         "ablation_mode": ablation_mode,
         "bioclip_gate_mode": active_gate_decision.bioclip_gate_mode,
         "bioclip_gate_decision": active_gate_decision.bioclip_gate_decision,
         "bioclip_gate_reason": active_gate_decision.bioclip_gate_reason,
     }
+    if top_k_settings is not None:
+        payload["top_k_settings"] = top_k_settings
+    return payload
 
 
 def detection_from_bioclip_work_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -288,12 +327,23 @@ def run_cloud_bioclip_batch(
     classification_mode = normalize_classification_mode(classification_mode)
     hierarchical_backend: str | None = None
     active_taxonomy_store: FiveRankTaxonomyStore | PathTaxonomyStore | None = None
+    expected_cascade_identity: dict[str, Any] | None = None
     if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
         hierarchical_backend, active_taxonomy_store = _hierarchical_cloud_backend(
             taxonomy_store=taxonomy_store,
             path_taxonomy_store=path_taxonomy_store,
             taxonomy_text_embedding_index=taxonomy_text_embedding_index,
         )
+        if hierarchical_backend == "path_cascade":
+            assert path_taxonomy_store is not None
+            assert taxonomy_text_embedding_index is not None
+            expected_cascade_identity = production_cascade_work_identity(
+                classification_version=path_taxonomy_store.classification_version,
+                prompt_version=path_taxonomy_store.prompt_version,
+                taxonomy_fingerprint=path_taxonomy_store.classification_fingerprint,
+                hierarchy_fingerprint=path_taxonomy_store.hierarchy_fingerprint,
+                embedding_cache_fingerprint=taxonomy_text_embedding_index.cache_fingerprint,
+            )
     _validate_cloud_bioclip_work_contract(
         work_items=work_items,
         classification_mode=classification_mode,
@@ -301,6 +351,7 @@ def run_cloud_bioclip_batch(
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
         taxonomy_store=active_taxonomy_store,
+        expected_cascade_identity=expected_cascade_identity,
     )
     rows: list[dict[str, Any]] = []
     requested_modes: list[str] = []
@@ -511,13 +562,20 @@ def _validate_cloud_bioclip_work_contract(
     species_first_pass_top_k: int,
     species_rerank_top_k: int,
     taxonomy_store: FiveRankTaxonomyStore | PathTaxonomyStore | None,
+    expected_cascade_identity: dict[str, Any] | None,
 ) -> None:
     expected_mode = normalize_classification_mode(classification_mode)
-    expected_top_k = {
-        "family_top_k": int(family_top_k),
-        "species_first_pass_top_k": int(species_first_pass_top_k),
-        "species_rerank_top_k": int(species_rerank_top_k),
-    }
+    if expected_cascade_identity is not None:
+        expected_cascade_identity = validate_cascade_work_identity(
+            expected_cascade_identity
+        )
+        expected_top_k = None
+    else:
+        expected_top_k = {
+            "family_top_k": int(family_top_k),
+            "species_first_pass_top_k": int(species_first_pass_top_k),
+            "species_rerank_top_k": int(species_rerank_top_k),
+        }
     taxonomy_table_version: str | None = None
     prompt_variant_version: str | None = None
     if expected_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
@@ -539,22 +597,35 @@ def _validate_cloud_bioclip_work_contract(
                 f"does not match batch classification_mode {expected_mode!r}"
             )
 
-        top_k_settings = payload.get("top_k_settings")
-        if not isinstance(top_k_settings, dict):
-            raise ValueError(f"work item {work_key} is missing top_k_settings")
-        for key, expected in expected_top_k.items():
-            actual = top_k_settings.get(key)
-            try:
-                actual_int = int(actual)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"work item {work_key} has invalid top_k_settings.{key}") from exc
-            if actual_int != expected:
+        if expected_cascade_identity is not None:
+            payload_identity = payload.get("cascade_identity")
+            if not isinstance(payload_identity, dict):
+                raise ValueError(f"work item {work_key} is missing cascade_identity")
+            if validate_cascade_work_identity(payload_identity) != expected_cascade_identity:
                 raise ValueError(
-                    f"work item {work_key} top_k_settings.{key}={actual_int} "
-                    f"does not match batch {key}={expected}"
+                    f"work item {work_key} cascade_identity does not match taxonomy/cache"
                 )
 
+        if expected_top_k is not None:
+            top_k_settings = payload.get("top_k_settings")
+            if not isinstance(top_k_settings, dict):
+                raise ValueError(f"work item {work_key} is missing top_k_settings")
+            for key, expected in expected_top_k.items():
+                actual = top_k_settings.get(key)
+                try:
+                    actual_int = int(actual)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"work item {work_key} has invalid top_k_settings.{key}"
+                    ) from exc
+                if actual_int != expected:
+                    raise ValueError(
+                        f"work item {work_key} top_k_settings.{key}={actual_int} "
+                        f"does not match batch {key}={expected}"
+                    )
+
         if expected_mode != HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+            _validate_bioclip_work_key(work_key, payload)
             continue
         if str(payload.get("taxonomy_table_version") or "") != taxonomy_table_version:
             raise ValueError(
@@ -568,6 +639,48 @@ def _validate_cloud_bioclip_work_contract(
                 f"{str(payload.get('taxonomy_prompt_variant_version') or '')!r} does not match taxonomy store "
                 f"{prompt_variant_version!r}"
             )
+        _validate_bioclip_work_key(work_key, payload)
+
+
+def _validate_bioclip_work_key(work_key: str, payload: dict[str, Any]) -> None:
+    detection = payload.get("detection")
+    model = payload.get("model")
+    if not isinstance(detection, dict) or not isinstance(model, dict):
+        raise ValueError(f"work item {work_key} has incomplete immutable identity")
+    crop_identity = {
+        "crop_hash": str(payload.get("crop_hash") or detection.get("crop_hash") or ""),
+        "crop_padding_ratio": _jsonable_value(detection.get("crop_padding_ratio")),
+        "crop_width": _jsonable_value(detection.get("crop_width")),
+        "crop_height": _jsonable_value(detection.get("crop_height")),
+    }
+    key_payload = {
+        "run_id": str(payload.get("run_id") or ""),
+        "source": str(payload.get("source") or ""),
+        "flickr_photo_id": str(payload.get("flickr_photo_id") or ""),
+        "detection_id": str(payload.get("detection_id") or ""),
+        "crop": crop_identity,
+        "model_id": str(model.get("model_id") or ""),
+        "model_version": str(model.get("model_version") or ""),
+        "model_checkpoint": str(model.get("checkpoint") or ""),
+        "candidate_set_id": str(payload.get("candidate_set_id") or ""),
+        "classification_mode": normalize_classification_mode(
+            payload.get("classification_mode")
+        ),
+        "taxonomy_table_version": str(payload.get("taxonomy_table_version") or ""),
+        "taxonomy_prompt_variant_version": str(
+            payload.get("taxonomy_prompt_variant_version") or ""
+        ),
+        "cascade_identity": payload.get("cascade_identity"),
+        "ablation_mode": str(payload.get("ablation_mode") or ""),
+        "bioclip_gate_mode": payload.get("bioclip_gate_mode"),
+        "bioclip_gate_decision": payload.get("bioclip_gate_decision"),
+        "bioclip_gate_reason": payload.get("bioclip_gate_reason"),
+    }
+    if "top_k_settings" in payload:
+        key_payload["top_k_settings"] = payload.get("top_k_settings")
+    expected = f"{key_payload['run_id']}:bioclip:{_stable_hash(key_payload)}"
+    if work_key != expected:
+        raise ValueError(f"work item {work_key} key does not match immutable payload identity")
 
 
 def _taxonomy_table_version(

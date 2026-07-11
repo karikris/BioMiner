@@ -13,6 +13,7 @@ from biominer.bioclip.cascade_contract import (
     DEFAULT_SPECIES_REPORT_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
     GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
+    production_cascade_work_identity,
     validate_production_cascade_settings,
 )
 from biominer.bioclip.classification_modes import (
@@ -711,6 +712,7 @@ class ProductionRunOrchestrator:
 
         path_taxonomy_store: PathTaxonomyStore | None = None
         taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None
+        cascade_identity: dict[str, Any] | None = None
         taxonomy_metrics: dict[str, Any] = {}
         if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
             path_taxonomy_store, taxonomy_status = self._load_valid_hierarchical_taxonomy_store()
@@ -728,6 +730,14 @@ class ProductionRunOrchestrator:
                     message=cache_status.message,
                     metrics=taxonomy_metrics,
                 )
+            assert taxonomy_text_embedding_index is not None
+            cascade_identity = production_cascade_work_identity(
+                classification_version=path_taxonomy_store.classification_version,
+                prompt_version=path_taxonomy_store.prompt_version,
+                taxonomy_fingerprint=path_taxonomy_store.classification_fingerprint,
+                hierarchy_fingerprint=path_taxonomy_store.hierarchy_fingerprint,
+                embedding_cache_fingerprint=taxonomy_text_embedding_index.cache_fingerprint,
+            )
 
         from biominer.bioclip.candidate_sets import build_candidate_set_for_taxon_scope
 
@@ -780,6 +790,7 @@ class ProductionRunOrchestrator:
             family_top_k=self.request.rank_beam_width,
             species_first_pass_top_k=self.request.species_first_pass_top_k,
             species_rerank_top_k=self.request.species_rerank_top_k,
+            cascade_identity=cascade_identity,
             limit=int(self.request.limits.get("records") or 0) or None,
         )
         claimed = self.workstore.claim_next_batch(
@@ -865,6 +876,7 @@ class ProductionRunOrchestrator:
                 species_rerank_top_k=self.request.species_rerank_top_k,
                 path_taxonomy_store=path_taxonomy_store,
                 taxonomy_text_embedding_index=taxonomy_text_embedding_index,
+                cascade_identity=cascade_identity,
             )
 
         def commit(item: dict[str, Any], batch_result: Any) -> Any:

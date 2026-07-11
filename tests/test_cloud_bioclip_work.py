@@ -6,16 +6,22 @@ from types import SimpleNamespace
 import polars as pl
 import pytest
 
+import biominer.bioclip.cascade_contract as cascade_contract
 import biominer.bioclip.cloud_work as cloud_work
 from biominer.bioclip.candidate_sets import build_candidate_set
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-from biominer.bioclip.cloud_work import bioclip_score_work_item, enqueue_bioclip_work_from_detection_shards, run_cloud_bioclip_batch
+from biominer.bioclip.cloud_work import (
+    bioclip_score_work_item,
+    enqueue_bioclip_work_from_detection_shards,
+    run_cloud_bioclip_batch,
+)
 from biominer.benchmarks.vision_plumbing import benchmark_taxonomy_store
 from biominer.registry.classification_v2 import (
     CLASSIFICATION_V2_PROMPT_VERSION as PROMPT_VARIANT_VERSION,
     CLASSIFICATION_V2_VERSION as CLASSIFICATION_TABLE_VERSION,
 )
 from biominer.registry.classification_v3 import (
+    CLASSIFICATION_RANKS,
     CLASSIFICATION_V3_PROMPT_VERSION,
     CLASSIFICATION_V3_VERSION,
 )
@@ -175,13 +181,21 @@ def test_enqueue_bioclip_work_can_use_exclude_hard_negative_gate(tmp_path: Path)
     assert payloads[-1]["bioclip_gate_reason"] == "no_detection_whole_image_fallback"
 
 
-def test_bioclip_work_item_key_changes_by_classification_mode_and_taxonomy_version() -> None:
-    detection = _detection_row("photo-1", "det-1", "sha256:crop-1", "butterfly_like", "detected")
+def test_legacy_v2_bioclip_work_item_key_changes_by_classification_mode_and_taxonomy_version() -> (
+    None
+):
+    detection = _detection_row(
+        "photo-1", "det-1", "sha256:crop-1", "butterfly_like", "detected"
+    )
     target = bioclip_score_work_item(
         detection,
         run_id="run-1",
         detection_shard_uri="s3://biominer/detections.parquet",
-        model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
+        model={
+            "model_id": "fake-bioclip",
+            "model_version": "test",
+            "checkpoint": "fake-checkpoint",
+        },
         candidate_set_id="candidate-set-1",
         ablation_mode="detector_crop",
     )
@@ -189,7 +203,11 @@ def test_bioclip_work_item_key_changes_by_classification_mode_and_taxonomy_versi
         detection,
         run_id="run-1",
         detection_shard_uri="s3://biominer/detections.parquet",
-        model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
+        model={
+            "model_id": "fake-bioclip",
+            "model_version": "test",
+            "checkpoint": "fake-checkpoint",
+        },
         candidate_set_id="candidate-set-1",
         ablation_mode="detector_crop",
         classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
@@ -203,88 +221,81 @@ def test_bioclip_work_item_key_changes_by_classification_mode_and_taxonomy_versi
     assert hierarchical["taxonomy_prompt_variant_version"] == PROMPT_VARIANT_VERSION
 
 
-def test_bioclip_work_item_key_changes_by_model_top_k_and_crop_identity() -> None:
-    detection = _detection_row("photo-1", "det-1", "sha256:crop-1", "butterfly_like", "detected")
-    base = bioclip_score_work_item(
-        detection,
-        run_id="run-1",
-        detection_shard_uri="s3://biominer/detections.parquet",
-        model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
-        candidate_set_id="candidate-set-1",
-        ablation_mode="detector_crop",
-        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_table_version=CLASSIFICATION_TABLE_VERSION,
-        taxonomy_prompt_variant_version=PROMPT_VARIANT_VERSION,
-        family_top_k=3,
-        species_first_pass_top_k=20,
-        species_rerank_top_k=20,
+@pytest.mark.parametrize(
+    "identity_field",
+    (
+        "contract_version",
+        "beam_strategy",
+        "rank_beam_width",
+        "rank_order",
+        "classification_version",
+        "prompt_version",
+        "taxonomy_fingerprint",
+        "hierarchy_fingerprint",
+        "embedding_cache_fingerprint",
+        "species_first_pass_top_k",
+        "species_rerank_top_k",
+        "species_report_top_k",
+        "species_rerank_prompt_version",
+    ),
+)
+def test_bioclip_v3_work_key_changes_by_every_cascade_identity_field(
+    identity_field: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    detection = _detection_row(
+        "photo-1", "det-1", "sha256:crop-1", "butterfly_like", "detected"
     )
-    model_changed = bioclip_score_work_item(
-        detection,
-        run_id="run-1",
-        detection_shard_uri="s3://biominer/detections.parquet",
-        model={"model_id": "fake-bioclip-large", "model_version": "test", "checkpoint": "fake-checkpoint"},
-        candidate_set_id="candidate-set-1",
-        ablation_mode="detector_crop",
-        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_table_version=CLASSIFICATION_TABLE_VERSION,
-        taxonomy_prompt_variant_version=PROMPT_VARIANT_VERSION,
-        family_top_k=3,
-        species_first_pass_top_k=20,
-        species_rerank_top_k=20,
+    base_identity = _v3_cascade_identity()
+    base = _v3_bioclip_payload(detection, cascade_identity=base_identity)
+    changed_identity = _changed_v3_cascade_identity(identity_field, monkeypatch)
+    changed = _v3_bioclip_payload(detection, cascade_identity=changed_identity)
+
+    assert base["work_key"] != changed["work_key"]
+    assert base["cascade_identity"] == base_identity
+    assert tuple(base_identity["rank_order"]) == CLASSIFICATION_RANKS
+    assert len(base_identity["rank_order"]) == 6
+    assert "top_k_settings" not in base
+    assert "family_top_k" not in base_identity
+
+
+def test_bioclip_v3_work_key_changes_by_model_and_crop_identity() -> None:
+    detection = _detection_row(
+        "photo-1", "det-1", "sha256:crop-1", "butterfly_like", "detected"
     )
-    taxonomy_changed = bioclip_score_work_item(
+    identity = _v3_cascade_identity()
+    base = _v3_bioclip_payload(detection, cascade_identity=identity)
+    model_changed = _v3_bioclip_payload(
         detection,
-        run_id="run-1",
-        detection_shard_uri="s3://biominer/detections.parquet",
-        model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
-        candidate_set_id="candidate-set-1",
-        ablation_mode="detector_crop",
-        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_table_version="classification-table-v-next",
-        taxonomy_prompt_variant_version=PROMPT_VARIANT_VERSION,
-        family_top_k=3,
-        species_first_pass_top_k=20,
-        species_rerank_top_k=20,
+        cascade_identity=identity,
+        model_id="fake-bioclip-large",
     )
-    top_k_changed = bioclip_score_work_item(
-        detection,
-        run_id="run-1",
-        detection_shard_uri="s3://biominer/detections.parquet",
-        model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
-        candidate_set_id="candidate-set-1",
-        ablation_mode="detector_crop",
-        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_table_version=CLASSIFICATION_TABLE_VERSION,
-        taxonomy_prompt_variant_version=PROMPT_VARIANT_VERSION,
-        family_top_k=5,
-        species_first_pass_top_k=20,
-        species_rerank_top_k=20,
-    )
-    crop_changed = bioclip_score_work_item(
+    crop_changed = _v3_bioclip_payload(
         {**detection, "crop_hash": "sha256:crop-2", "crop_padding_ratio": 0.18},
-        run_id="run-1",
-        detection_shard_uri="s3://biominer/detections.parquet",
-        model={"model_id": "fake-bioclip", "model_version": "test", "checkpoint": "fake-checkpoint"},
-        candidate_set_id="candidate-set-1",
-        ablation_mode="detector_crop",
-        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_table_version=CLASSIFICATION_TABLE_VERSION,
-        taxonomy_prompt_variant_version=PROMPT_VARIANT_VERSION,
-        family_top_k=3,
-        species_first_pass_top_k=20,
-        species_rerank_top_k=20,
+        cascade_identity=identity,
     )
 
     assert base["work_key"] != model_changed["work_key"]
-    assert base["work_key"] != taxonomy_changed["work_key"]
-    assert base["work_key"] != top_k_changed["work_key"]
     assert base["work_key"] != crop_changed["work_key"]
-    assert base["top_k_settings"] == {
-        "family_top_k": 3,
-        "species_first_pass_top_k": 20,
-        "species_rerank_top_k": 20,
-    }
+
+
+def test_bioclip_v3_work_key_ignores_retry_and_attempt_metadata() -> None:
+    detection = _detection_row(
+        "photo-1", "det-1", "sha256:crop-1", "butterfly_like", "detected"
+    )
+    identity = _v3_cascade_identity()
+    base = _v3_bioclip_payload(detection, cascade_identity=identity)
+    retried = _v3_bioclip_payload(
+        {
+            **detection,
+            "attempt_count": 3,
+            "retry_count": 2,
+            "last_error": "transient timeout",
+        },
+        cascade_identity=identity,
+    )
+
+    assert retried["work_key"] == base["work_key"]
 
 
 def test_run_cloud_bioclip_batch_chunks_detector_crops_by_crop_batch_size() -> None:
@@ -532,14 +543,20 @@ def test_run_cloud_bioclip_batch_v3_uses_cached_path_cascade_once_per_crop_batch
             self.image_batches: list[tuple[str, ...]] = []
 
         def embed_image_items(self, items):  # noqa: ANN001, ANN201 - cascade protocol fake.
-            self.image_batches.append(tuple(str(item["detection_id"]) for item in items))
+            self.image_batches.append(
+                tuple(str(item["detection_id"]) for item in items)
+            )
             return [[1.0, 0.0] for _item in items]
 
     path_store = SimpleNamespace(
         classification_version=CLASSIFICATION_V3_VERSION,
         prompt_version=CLASSIFICATION_V3_PROMPT_VERSION,
+        classification_fingerprint="sha256:classification-v1",
+        hierarchy_fingerprint="sha256:hierarchy-v1",
     )
-    embedding_index = object()
+    embedding_index = SimpleNamespace(
+        cache_fingerprint="sha256:embedding-cache-v1",
+    )
     cascade_calls: list[tuple[str, ...]] = []
 
     def fake_classify_path_cascade_batch(
@@ -583,7 +600,9 @@ def test_run_cloud_bioclip_batch_v3_uses_cached_path_cascade_once_per_crop_batch
     monkeypatch.setattr(
         cloud_work,
         "classify_five_rank_crops_batch",
-        lambda **_kwargs: pytest.fail("classification-v3 must not use five-rank dispatch"),
+        lambda **_kwargs: pytest.fail(
+            "classification-v3 must not use five-rank dispatch"
+        ),
     )
     context = _context()
     candidate_set = build_candidate_set(context, allow_single_target_fixture=True)
@@ -615,6 +634,41 @@ def test_run_cloud_bioclip_batch_v3_uses_cached_path_cascade_once_per_crop_batch
     assert result.frame["taxonomy_table_version"].unique().to_list() == [
         CLASSIFICATION_V3_VERSION
     ]
+
+
+def test_run_cloud_bioclip_batch_rejects_v3_cascade_identity_mismatch() -> None:
+    context = _context()
+    candidate_set = build_candidate_set(context, allow_single_target_fixture=True)
+    stale_identity = _v3_cascade_identity(
+        taxonomy_fingerprint="sha256:classification-stale"
+    )
+    payload = _v3_bioclip_payload(
+        _detection_row(
+            "photo-1", "det-1", "sha256:crop-1", "butterfly_like", "detected"
+        ),
+        candidate_set_id=candidate_set.candidate_set_id,
+        cascade_identity=stale_identity,
+    )
+    path_store = SimpleNamespace(
+        classification_version=CLASSIFICATION_V3_VERSION,
+        prompt_version=CLASSIFICATION_V3_PROMPT_VERSION,
+        classification_fingerprint="sha256:classification-v1",
+        hierarchy_fingerprint="sha256:hierarchy-v1",
+    )
+    embedding_index = SimpleNamespace(
+        cache_fingerprint="sha256:embedding-cache-v1",
+    )
+
+    with pytest.raises(ValueError, match="cascade_identity"):
+        run_cloud_bioclip_batch(
+            work_items=[{"work_key": payload["work_key"], "payload": payload}],
+            species_context=context,
+            candidate_set=candidate_set,
+            scorer=_StaticBatchScorer({}),
+            classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+            path_taxonomy_store=path_store,  # type: ignore[arg-type]
+            taxonomy_text_embedding_index=embedding_index,  # type: ignore[arg-type]
+        )
 
 
 def test_run_cloud_bioclip_batch_v3_requires_embedding_index() -> None:
@@ -803,6 +857,104 @@ def _detection_row(photo_id: str, detection_id: str, crop_hash: str, label: str,
     }
 
 
+def _v3_cascade_identity(
+    *,
+    classification_version: str = CLASSIFICATION_V3_VERSION,
+    prompt_version: str = CLASSIFICATION_V3_PROMPT_VERSION,
+    taxonomy_fingerprint: str = "sha256:classification-v1",
+    hierarchy_fingerprint: str = "sha256:hierarchy-v1",
+    embedding_cache_fingerprint: str = "sha256:embedding-cache-v1",
+) -> dict[str, object]:
+    return cascade_contract.production_cascade_work_identity(
+        classification_version=classification_version,
+        prompt_version=prompt_version,
+        taxonomy_fingerprint=taxonomy_fingerprint,
+        hierarchy_fingerprint=hierarchy_fingerprint,
+        embedding_cache_fingerprint=embedding_cache_fingerprint,
+    )
+
+
+def _changed_v3_cascade_identity(
+    field: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, object]:
+    if field == "contract_version":
+        monkeypatch.setattr(
+            cascade_contract,
+            "CASCADE_WORK_IDENTITY_VERSION",
+            "butterfly-cascade-work-identity-v-next",
+        )
+    elif field == "beam_strategy":
+        monkeypatch.setattr(
+            cascade_contract, "GLOBAL_RANK_TOP_K_BEAM_STRATEGY", "global_rank_top_k_v2"
+        )
+    elif field == "rank_beam_width":
+        monkeypatch.setattr(cascade_contract, "DEFAULT_RANK_BEAM_WIDTH", 4)
+    elif field == "rank_order":
+        monkeypatch.setattr(
+            cascade_contract,
+            "CASCADE_RANK_ORDER",
+            ("FAMILY", "SUBFAMILY", "TRIBE", "GENUS", "SUBTRIBE", "SPECIES"),
+        )
+    elif field == "classification_version":
+        monkeypatch.setattr(
+            cascade_contract,
+            "CLASSIFICATION_V3_VERSION",
+            "butterfly-classification-v3.1.0",
+        )
+        return _v3_cascade_identity(
+            classification_version="butterfly-classification-v3.1.0"
+        )
+    elif field == "prompt_version":
+        return _v3_cascade_identity(prompt_version="butterfly-six-rank-prompts-v-next")
+    elif field == "taxonomy_fingerprint":
+        return _v3_cascade_identity(taxonomy_fingerprint="sha256:classification-v2")
+    elif field == "hierarchy_fingerprint":
+        return _v3_cascade_identity(hierarchy_fingerprint="sha256:hierarchy-v2")
+    elif field == "embedding_cache_fingerprint":
+        return _v3_cascade_identity(
+            embedding_cache_fingerprint="sha256:embedding-cache-v2"
+        )
+    elif field == "species_first_pass_top_k":
+        monkeypatch.setattr(cascade_contract, "DEFAULT_SPECIES_FIRST_PASS_TOP_K", 21)
+    elif field == "species_rerank_top_k":
+        monkeypatch.setattr(cascade_contract, "DEFAULT_SPECIES_RERANK_TOP_K", 6)
+    elif field == "species_report_top_k":
+        monkeypatch.setattr(cascade_contract, "DEFAULT_SPECIES_REPORT_TOP_K", 4)
+    elif field == "species_rerank_prompt_version":
+        monkeypatch.setattr(
+            cascade_contract, "SPECIES_RERANK_PROMPT_STAGE", "species_rerank_v2"
+        )
+    else:  # pragma: no cover - parameter list is exhaustive.
+        raise AssertionError(f"unsupported cascade identity field: {field}")
+    return _v3_cascade_identity()
+
+
+def _v3_bioclip_payload(
+    detection: dict[str, object],
+    *,
+    cascade_identity: dict[str, object],
+    candidate_set_id: str = "candidate-set-1",
+    model_id: str = "fake-bioclip",
+) -> dict[str, object]:
+    return bioclip_score_work_item(
+        detection,
+        run_id="run-1",
+        detection_shard_uri="s3://biominer/detections.parquet",
+        model={
+            "model_id": model_id,
+            "model_version": "test",
+            "checkpoint": "fake-checkpoint",
+        },
+        candidate_set_id=candidate_set_id,
+        ablation_mode="detector_crop",
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        taxonomy_table_version=str(cascade_identity["classification_version"]),
+        taxonomy_prompt_variant_version=str(cascade_identity["prompt_version"]),
+        cascade_identity=cascade_identity,
+    )
+
+
 def _hierarchical_work_item(
     index: int,
     *,
@@ -810,6 +962,18 @@ def _hierarchical_work_item(
     taxonomy_table_version: str,
     taxonomy_prompt_variant_version: str,
 ) -> dict[str, object]:
+    version_kwargs: dict[str, object]
+    if taxonomy_table_version == CLASSIFICATION_V3_VERSION:
+        version_kwargs = {
+            "taxonomy_table_version": taxonomy_table_version,
+            "taxonomy_prompt_variant_version": taxonomy_prompt_variant_version,
+            "cascade_identity": _v3_cascade_identity(),
+        }
+    else:
+        version_kwargs = {
+            "taxonomy_table_version": taxonomy_table_version,
+            "taxonomy_prompt_variant_version": taxonomy_prompt_variant_version,
+        }
     payload = bioclip_score_work_item(
         _detection_row(
             f"photo-{index}",
@@ -828,8 +992,7 @@ def _hierarchical_work_item(
         candidate_set_id=candidate_set_id,
         ablation_mode="detector_crop",
         classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_table_version=taxonomy_table_version,
-        taxonomy_prompt_variant_version=taxonomy_prompt_variant_version,
+        **version_kwargs,
     )
     return {"work_key": payload["work_key"], "payload": payload}
 

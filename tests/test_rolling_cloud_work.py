@@ -6,7 +6,13 @@ from typing import Any
 import polars as pl
 import pytest
 
+import biominer.bioclip.cascade_contract as cascade_contract
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+from biominer.registry.classification_v3 import (
+    CLASSIFICATION_RANKS,
+    CLASSIFICATION_V3_PROMPT_VERSION,
+    CLASSIFICATION_V3_VERSION,
+)
 from biominer.detection.policy import VisionRuntimeSettings
 from biominer.storage.parquet import ParquetPartWrite
 from biominer.vision.cloud_work import (
@@ -20,7 +26,28 @@ from biominer.vision.cloud_work import (
 from biominer.workstore.sqlite import SQLiteWorkStore
 
 
-def test_rolling_vision_work_key_changes_by_output_affecting_settings() -> None:
+@pytest.mark.parametrize(
+    "identity_field",
+    (
+        "contract_version",
+        "beam_strategy",
+        "rank_beam_width",
+        "rank_order",
+        "classification_version",
+        "prompt_version",
+        "taxonomy_fingerprint",
+        "hierarchy_fingerprint",
+        "embedding_cache_fingerprint",
+        "species_first_pass_top_k",
+        "species_rerank_top_k",
+        "species_report_top_k",
+        "species_rerank_prompt_version",
+    ),
+)
+def test_rolling_vision_work_key_changes_by_every_v3_cascade_identity_field(
+    identity_field: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     records = [
         {
             "source": "flickr",
@@ -29,35 +56,42 @@ def test_rolling_vision_work_key_changes_by_output_affecting_settings() -> None:
             "image_url": "https://live.staticflickr.com/photo-1.jpg",
         }
     ]
-    detector = {"backend": "yoloe26", "model_id": "yoloe26", "model_version": "test", "checkpoint": "yoloe-26s-seg.pt"}
-    bioclip_model = {"model_id": "bioclip-2.5", "model_version": "test", "checkpoint": "hf-hub:imageomics/bioclip-2.5-vith14"}
+    detector = {
+        "backend": "yoloe26",
+        "model_id": "yoloe26",
+        "model_version": "test",
+        "checkpoint": "yoloe-26s-seg.pt",
+    }
+    bioclip_model = {
+        "model_id": "bioclip-2.5",
+        "model_version": "test",
+        "checkpoint": "hf-hub:imageomics/bioclip-2.5-vith14",
+    }
+    base_identity = _v3_cascade_identity()
     base_settings = rolling_vision_settings_key(
         detector=detector,
-        vision_settings=VisionRuntimeSettings(yolo_imgsz=768, yolo_conf=0.20, yolo_iou=0.50, yolo_max_det=8),
+        vision_settings=VisionRuntimeSettings(
+            yolo_imgsz=768, yolo_conf=0.20, yolo_iou=0.50, yolo_max_det=8
+        ),
         bioclip_gate_mode="exclude_hard_negative",
         score_no_detection_whole_image=True,
         bioclip_model=bioclip_model,
         candidate_set_id="candidate-set-v1",
         classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_table_version="taxonomy-v1",
-        taxonomy_prompt_variant_version="prompt-v1",
-        family_top_k=3,
-        species_first_pass_top_k=20,
-        species_rerank_top_k=20,
+        cascade_identity=base_identity,
     )
+    changed_identity = _changed_v3_cascade_identity(identity_field, monkeypatch)
     changed_settings = rolling_vision_settings_key(
         detector=detector,
-        vision_settings=VisionRuntimeSettings(yolo_imgsz=640, yolo_conf=0.20, yolo_iou=0.50, yolo_max_det=8),
+        vision_settings=VisionRuntimeSettings(
+            yolo_imgsz=768, yolo_conf=0.20, yolo_iou=0.50, yolo_max_det=8
+        ),
         bioclip_gate_mode="exclude_hard_negative",
         score_no_detection_whole_image=True,
         bioclip_model=bioclip_model,
         candidate_set_id="candidate-set-v1",
         classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_table_version="taxonomy-v1",
-        taxonomy_prompt_variant_version="prompt-v1",
-        family_top_k=3,
-        species_first_pass_top_k=20,
-        species_rerank_top_k=20,
+        cascade_identity=changed_identity,
     )
 
     base = rolling_vision_work_item(
@@ -81,16 +115,75 @@ def test_rolling_vision_work_key_changes_by_output_affecting_settings() -> None:
     assert base["settings_key"]["detector"]["yolo_imgsz"] == 768
     assert base["settings_key"]["crop"]["crop_target_px"] == 336
     assert base["settings_key"]["bioclip_gate"]["mode"] == "exclude_hard_negative"
-    assert base["settings_key"]["bioclip_gate"]["score_no_detection_whole_image"] is True
-    assert base["settings_key"]["bioclip_model"]["checkpoint"] == "hf-hub:imageomics/bioclip-2.5-vith14"
-    assert base["settings_key"]["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-    assert base["settings_key"]["taxonomy_table_version"] == "taxonomy-v1"
-    assert base["settings_key"]["taxonomy_prompt_variant_version"] == "prompt-v1"
-    assert base["settings_key"]["top_k_settings"] == {
-        "family_top_k": 3,
-        "species_first_pass_top_k": 20,
-        "species_rerank_top_k": 20,
+    assert (
+        base["settings_key"]["bioclip_gate"]["score_no_detection_whole_image"] is True
+    )
+    assert (
+        base["settings_key"]["bioclip_model"]["checkpoint"]
+        == "hf-hub:imageomics/bioclip-2.5-vith14"
+    )
+    assert (
+        base["settings_key"]["classification_mode"]
+        == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    )
+    assert base["settings_key"]["cascade_identity"] == base_identity
+    assert tuple(base_identity["rank_order"]) == CLASSIFICATION_RANKS
+    assert len(base_identity["rank_order"]) == 6
+    assert "top_k_settings" not in base["settings_key"]
+    assert "family_top_k" not in base_identity
+
+
+def test_rolling_vision_work_key_ignores_retry_and_attempt_metadata() -> None:
+    record = {
+        "source": "flickr",
+        "flickr_photo_id": "photo-1",
+        "source_record_hash": "sha256:source-1",
+        "image_url": "https://live.staticflickr.com/photo-1.jpg",
     }
+    settings = rolling_vision_settings_key(
+        detector={
+            "backend": "yoloe26",
+            "model_id": "yoloe26",
+            "model_version": "test",
+            "checkpoint": "ckpt",
+        },
+        vision_settings=VisionRuntimeSettings(yolo_imgsz=768),
+        bioclip_gate_mode="exclude_hard_negative",
+        score_no_detection_whole_image=True,
+        bioclip_model={
+            "model_id": "bioclip",
+            "model_version": "test",
+            "checkpoint": "model",
+        },
+        candidate_set_id="candidate-set-v1",
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+        cascade_identity=_v3_cascade_identity(),
+    )
+    base = rolling_vision_work_item(
+        [record],
+        run_id="run-1",
+        batch_index=0,
+        vision_batch_rows=500,
+        source_shard_uris=["s3://biominer/source.parquet"],
+        settings_key=settings,
+    )
+    retried = rolling_vision_work_item(
+        [
+            {
+                **record,
+                "attempt_count": 3,
+                "retry_count": 2,
+                "last_error": "transient timeout",
+            }
+        ],
+        run_id="run-1",
+        batch_index=0,
+        vision_batch_rows=500,
+        source_shard_uris=["s3://biominer/source.parquet"],
+        settings_key=settings,
+    )
+
+    assert retried["work_key"] == base["work_key"]
 
 
 def test_enqueue_rolling_vision_work_batches_source_shards_deterministically(tmp_path: Path) -> None:
@@ -222,6 +315,79 @@ def _source_record(photo_id: str) -> dict[str, str]:
         "source_record_hash": f"sha256:{photo_id}",
         "image_url": f"https://live.staticflickr.com/{photo_id}.jpg",
     }
+
+
+def _v3_cascade_identity(
+    *,
+    classification_version: str = CLASSIFICATION_V3_VERSION,
+    prompt_version: str = CLASSIFICATION_V3_PROMPT_VERSION,
+    taxonomy_fingerprint: str = "sha256:classification-v1",
+    hierarchy_fingerprint: str = "sha256:hierarchy-v1",
+    embedding_cache_fingerprint: str = "sha256:embedding-cache-v1",
+) -> dict[str, Any]:
+    return cascade_contract.production_cascade_work_identity(
+        classification_version=classification_version,
+        prompt_version=prompt_version,
+        taxonomy_fingerprint=taxonomy_fingerprint,
+        hierarchy_fingerprint=hierarchy_fingerprint,
+        embedding_cache_fingerprint=embedding_cache_fingerprint,
+    )
+
+
+def _changed_v3_cascade_identity(
+    field: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Any]:
+    if field == "contract_version":
+        monkeypatch.setattr(
+            cascade_contract,
+            "CASCADE_WORK_IDENTITY_VERSION",
+            "butterfly-cascade-work-identity-v-next",
+        )
+    elif field == "beam_strategy":
+        monkeypatch.setattr(
+            cascade_contract, "GLOBAL_RANK_TOP_K_BEAM_STRATEGY", "global_rank_top_k_v2"
+        )
+    elif field == "rank_beam_width":
+        monkeypatch.setattr(cascade_contract, "DEFAULT_RANK_BEAM_WIDTH", 4)
+    elif field == "rank_order":
+        monkeypatch.setattr(
+            cascade_contract,
+            "CASCADE_RANK_ORDER",
+            ("FAMILY", "SUBFAMILY", "TRIBE", "GENUS", "SUBTRIBE", "SPECIES"),
+        )
+    elif field == "classification_version":
+        monkeypatch.setattr(
+            cascade_contract,
+            "CLASSIFICATION_V3_VERSION",
+            "butterfly-classification-v3.1.0",
+        )
+        return _v3_cascade_identity(
+            classification_version="butterfly-classification-v3.1.0"
+        )
+    elif field == "prompt_version":
+        return _v3_cascade_identity(prompt_version="butterfly-six-rank-prompts-v-next")
+    elif field == "taxonomy_fingerprint":
+        return _v3_cascade_identity(taxonomy_fingerprint="sha256:classification-v2")
+    elif field == "hierarchy_fingerprint":
+        return _v3_cascade_identity(hierarchy_fingerprint="sha256:hierarchy-v2")
+    elif field == "embedding_cache_fingerprint":
+        return _v3_cascade_identity(
+            embedding_cache_fingerprint="sha256:embedding-cache-v2"
+        )
+    elif field == "species_first_pass_top_k":
+        monkeypatch.setattr(cascade_contract, "DEFAULT_SPECIES_FIRST_PASS_TOP_K", 21)
+    elif field == "species_rerank_top_k":
+        monkeypatch.setattr(cascade_contract, "DEFAULT_SPECIES_RERANK_TOP_K", 6)
+    elif field == "species_report_top_k":
+        monkeypatch.setattr(cascade_contract, "DEFAULT_SPECIES_REPORT_TOP_K", 4)
+    elif field == "species_rerank_prompt_version":
+        monkeypatch.setattr(
+            cascade_contract, "SPECIES_RERANK_PROMPT_STAGE", "species_rerank_v2"
+        )
+    else:  # pragma: no cover - parameter list is exhaustive.
+        raise AssertionError(f"unsupported cascade identity field: {field}")
+    return _v3_cascade_identity()
 
 
 class _FakeCloudStorage:

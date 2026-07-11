@@ -11,11 +11,13 @@ from typing import Any
 import polars as pl
 
 from biominer.bioclip.candidate_sets import CandidateSet
+from biominer.bioclip.cascade_contract import validate_cascade_work_identity
 from biominer.bioclip.classification_modes import (
     DEFAULT_CLASSIFICATION_MODE,
     DEFAULT_FAMILY_TOP_K,
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
+    HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     ClassificationMode,
     normalize_classification_mode,
 )
@@ -28,6 +30,7 @@ from biominer.detection.cloud_work import CloudDetectionBatchResult, detection_w
 from biominer.detection.detector_base import ObjectDetector
 from biominer.detection.pipeline import ImageLoader
 from biominer.detection.policy import DetectionPolicy
+from biominer.registry.classification_v3 import CLASSIFICATION_V3_VERSION
 from biominer.evidence.join import build_object_evidence_frames
 from biominer.species.context import SpeciesContext
 from biominer.storage.cloud import CloudStorage
@@ -141,6 +144,7 @@ def enqueue_rolling_vision_work_from_source_shards(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
+    cascade_identity: dict[str, Any] | None = None,
     limit: int | None = None,
 ) -> RollingVisionWorkPlanResult:
     if vision_batch_rows <= 0:
@@ -175,6 +179,7 @@ def enqueue_rolling_vision_work_from_source_shards(
         family_top_k=family_top_k,
         species_first_pass_top_k=species_first_pass_top_k,
         species_rerank_top_k=species_rerank_top_k,
+        cascade_identity=cascade_identity,
     )
 
     def flush_pending() -> None:
@@ -274,8 +279,26 @@ def rolling_vision_settings_key(
     family_top_k: int = DEFAULT_FAMILY_TOP_K,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K,
+    cascade_identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    normalized_cascade_identity = (
+        validate_cascade_work_identity(cascade_identity)
+        if cascade_identity is not None
+        else None
+    )
+    normalized_mode = normalize_classification_mode(classification_mode)
+    if (
+        normalized_cascade_identity is not None
+        and normalized_mode != HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+    ):
+        raise ValueError("cascade identity is valid only for hierarchical classification")
+    if (
+        normalized_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+        and str(taxonomy_table_version or "") == CLASSIFICATION_V3_VERSION
+        and normalized_cascade_identity is None
+    ):
+        raise ValueError("classification-v3 rolling work requires cascade identity")
+    settings = {
         "detector": {
             "backend": str(detector.get("backend") or ""),
             "model_id": str(detector.get("model_id") or ""),
@@ -300,15 +323,18 @@ def rolling_vision_settings_key(
             "checkpoint": str(bioclip_model.get("checkpoint") or ""),
         },
         "candidate_set_id": str(candidate_set_id or ""),
-        "classification_mode": normalize_classification_mode(classification_mode),
+        "classification_mode": normalized_mode,
         "taxonomy_table_version": str(taxonomy_table_version or ""),
         "taxonomy_prompt_variant_version": str(taxonomy_prompt_variant_version or ""),
-        "top_k_settings": {
+        "cascade_identity": normalized_cascade_identity,
+    }
+    if normalized_cascade_identity is None:
+        settings["top_k_settings"] = {
             "family_top_k": int(family_top_k),
             "species_first_pass_top_k": int(species_first_pass_top_k),
             "species_rerank_top_k": int(species_rerank_top_k),
-        },
-    }
+        }
+    return settings
 
 
 def detect_cloud_rolling_vision_batch(
@@ -322,6 +348,7 @@ def detect_cloud_rolling_vision_batch(
     min_detector_batch_size: int = 1,
 ) -> CloudRollingDetectionBatch:
     payload = _work_payload(work_item)
+    _validate_rolling_vision_work_item(work_item, payload)
     records = [dict(row) for row in payload.get("source_records") or [] if isinstance(row, dict)]
     batch_id = str(payload.get("batch_id") or "")
     part_id = str(payload.get("part_id") or batch_id or "part-000000")
@@ -390,6 +417,7 @@ def score_cloud_rolling_detection_batch(
     taxonomy_text_embedding_cache: pl.DataFrame | None = None,
     path_taxonomy_store: PathTaxonomyStore | None = None,
     taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
+    cascade_identity: dict[str, Any] | None = None,
 ) -> CloudRollingVisionBatchResult:
     score_inputs = materialize_bioclip_score_inputs(
         canonical_records=batch.canonical,
@@ -407,26 +435,30 @@ def score_cloud_rolling_detection_batch(
         "model_version": scorer.model_version,
         "checkpoint": scorer.model_checkpoint,
     }
-    score_work_items = [
-        {
-            "work_key": f"{str(batch.work_item.get('work_key') or batch.batch_id)}:score:{index:06d}",
-            "payload": bioclip_score_work_item(
-                dict(item),
-                run_id=str(batch.payload.get("run_id") or ""),
-                detection_shard_uri=f"rolling://{batch.batch_id}/object_detections/{batch.part_id}",
-                model=model,
-                candidate_set_id=candidate_set.candidate_set_id,
-                ablation_mode=str(item.get("visual_input_kind") or item.get("ablation_mode") or "detector_crop"),
-                classification_mode=classification_mode,
-                taxonomy_table_version=taxonomy_table_version,
-                taxonomy_prompt_variant_version=taxonomy_prompt_variant_version,
-                family_top_k=family_top_k,
-                species_first_pass_top_k=species_first_pass_top_k,
-                species_rerank_top_k=species_rerank_top_k,
+    score_work_items: list[dict[str, Any]] = []
+    for item in score_inputs.items:
+        payload = bioclip_score_work_item(
+            dict(item),
+            run_id=str(batch.payload.get("run_id") or ""),
+            detection_shard_uri=(
+                f"rolling://{batch.batch_id}/object_detections/{batch.part_id}"
             ),
-        }
-        for index, item in enumerate(score_inputs.items)
-    ]
+            model=model,
+            candidate_set_id=candidate_set.candidate_set_id,
+            ablation_mode=str(
+                item.get("visual_input_kind")
+                or item.get("ablation_mode")
+                or "detector_crop"
+            ),
+            classification_mode=classification_mode,
+            taxonomy_table_version=taxonomy_table_version,
+            taxonomy_prompt_variant_version=taxonomy_prompt_variant_version,
+            family_top_k=family_top_k,
+            species_first_pass_top_k=species_first_pass_top_k,
+            species_rerank_top_k=species_rerank_top_k,
+            cascade_identity=cascade_identity,
+        )
+        score_work_items.append({"work_key": payload["work_key"], "payload": payload})
     score_result = run_cloud_bioclip_batch(
         work_items=score_work_items,
         species_context=species_context,
@@ -510,6 +542,7 @@ def run_cloud_rolling_vision_batch(
     taxonomy_text_embedding_cache: pl.DataFrame | None = None,
     path_taxonomy_store: PathTaxonomyStore | None = None,
     taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
+    cascade_identity: dict[str, Any] | None = None,
 ) -> CloudRollingVisionBatchResult:
     detected = detect_cloud_rolling_vision_batch(
         work_item=work_item,
@@ -543,6 +576,7 @@ def run_cloud_rolling_vision_batch(
         taxonomy_text_embedding_cache=taxonomy_text_embedding_cache,
         path_taxonomy_store=path_taxonomy_store,
         taxonomy_text_embedding_index=taxonomy_text_embedding_index,
+        cascade_identity=cascade_identity,
     )
 
 
@@ -716,6 +750,44 @@ def _work_payload(work_item: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"work item {work_item.get('work_key')} has invalid payload")
     return payload
+
+
+def _validate_rolling_vision_work_item(
+    work_item: dict[str, Any],
+    payload: dict[str, Any],
+) -> None:
+    settings = payload.get("settings_key")
+    if not isinstance(settings, dict):
+        raise ValueError("rolling vision work item has no settings_key mapping")
+    cascade_identity = settings.get("cascade_identity")
+    if cascade_identity is not None:
+        if not isinstance(cascade_identity, dict):
+            raise ValueError("rolling vision cascade_identity must be a mapping")
+        validate_cascade_work_identity(cascade_identity)
+    if (
+        normalize_classification_mode(settings.get("classification_mode"))
+        == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+        and str(settings.get("taxonomy_table_version") or "")
+        == CLASSIFICATION_V3_VERSION
+        and cascade_identity is None
+    ):
+        raise ValueError("classification-v3 rolling work is missing cascade_identity")
+    records = [dict(row) for row in payload.get("source_records") or [] if isinstance(row, dict)]
+    record_identities = [_source_record_identity(record) for record in records]
+    if payload.get("source_record_identities") != record_identities:
+        raise ValueError("rolling vision source record identities do not match payload")
+    key_payload = {
+        "run_id": str(payload.get("run_id") or ""),
+        "batch_id": str(payload.get("batch_id") or ""),
+        "batch_index": int(payload.get("batch_index") or 0),
+        "vision_batch_rows": int(payload.get("vision_batch_rows") or 0),
+        "source_records": record_identities,
+        "settings": settings,
+    }
+    expected = f"{key_payload['run_id']}:rolling-vision:{_stable_hash(key_payload)}"
+    actual = str(work_item.get("work_key") or payload.get("work_key") or "")
+    if actual != expected:
+        raise ValueError("rolling vision work key does not match immutable payload identity")
 
 
 def _record_is_detectable(record: dict[str, Any]) -> bool:
