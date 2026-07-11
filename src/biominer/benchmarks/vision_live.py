@@ -13,14 +13,12 @@ import polars as pl
 from biominer.bioclip.bioclip import PersistentBioClipScorer
 from biominer.bioclip.candidate_sets import build_candidate_set
 from biominer.bioclip.classification_modes import (
-    DEFAULT_FAMILY_TOP_K,
-    DEFAULT_SPECIES_FIRST_PASS_TOP_K,
-    DEFAULT_SPECIES_RERANK_TOP_K,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
 )
 from biominer.bioclip.model_registry import BioClipRuntime
-from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
 from biominer.bioclip.object_runner import EphemeralCropBioClipScorer, screen_object_detections
+from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
+from biominer.bioclip.taxonomy_embedding_cache import TaxonomyTextEmbeddingIndex
 from biominer.detection.image_io import load_decoded_image_from_record
 from biominer.detection.pipeline import run_detection_pipeline
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
@@ -38,6 +36,7 @@ LIVE_M5PRO_BENCHMARK_KIND = "vision_live_m5pro"
 class LiveM5ProBenchmarkRequest:
     input_path: Path
     taxonomy_candidate_table: Path
+    taxonomy_text_embedding_cache: Path
     vision_runtime_python: Path
     bioclip_runtime_python: Path
     hf_cache_dir: Path
@@ -58,9 +57,6 @@ class LiveM5ProBenchmarkRequest:
     crop_target_px: int
     parquet_batch_rows: int
     prompt_classes: tuple[str, ...]
-    family_top_k: int = DEFAULT_FAMILY_TOP_K
-    species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K
-    species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K
 
 
 @dataclass(frozen=True)
@@ -89,6 +85,12 @@ def validate_live_m5pro_benchmark_request(request: LiveM5ProBenchmarkRequest) ->
     taxonomy_error = validate_live_taxonomy_store(request.taxonomy_candidate_table)
     if taxonomy_error is not None:
         return taxonomy_error
+    if not request.taxonomy_text_embedding_cache.exists():
+        return {
+            "error": "missing_taxonomy_text_embedding_cache",
+            "benchmark_kind": LIVE_M5PRO_BENCHMARK_KIND,
+            "taxonomy_text_embedding_cache": str(request.taxonomy_text_embedding_cache),
+        }
     if request.limit <= 0:
         return {"error": "invalid_limit", "message": "--limit must be positive"}
     if request.yolo_batch <= 0 or request.bioclip_batch <= 0:
@@ -100,7 +102,7 @@ def validate_live_m5pro_benchmark_request(request: LiveM5ProBenchmarkRequest) ->
 
 def validate_live_taxonomy_store(path: Path) -> dict[str, Any] | None:
     try:
-        FiveRankTaxonomyStore.read(path)
+        PathTaxonomyStore.read(path)
     except FileNotFoundError as exc:
         return {
             "error": "missing_taxonomy_candidate_table",
@@ -135,7 +137,13 @@ def run_live_m5pro_benchmark(
     if records.is_empty():
         raise ValueError("input benchmark records are empty after applying --limit")
     canonical_records_path = write_parquet(records, request.output_dir / "canonical_source_records.parquet")
-    taxonomy_store = FiveRankTaxonomyStore.read(request.taxonomy_candidate_table)
+    taxonomy_store = PathTaxonomyStore.read(request.taxonomy_candidate_table)
+    taxonomy_embedding_index = TaxonomyTextEmbeddingIndex.from_frame(
+        pl.read_parquet(request.taxonomy_text_embedding_cache),
+        taxonomy_store=taxonomy_store,
+        model_id=bioclip_runtime.model.model_name,
+        model_checkpoint=bioclip_runtime.model.checkpoint,
+    )
     species_context = species_context_from_taxonomy_store(taxonomy_store)
     candidate_set = build_candidate_set(species_context, records=records.to_dicts(), allow_single_target_fixture=True)
     stage_seconds["load_inputs"] = _elapsed(stage_start)
@@ -196,8 +204,8 @@ def run_live_m5pro_benchmark(
             temp_dir=request.crop_temp_dir,
             crop_padding_ratio=request.crop_padding_ratio,
             crop_target_px=request.crop_target_px,
-            model_id=bioclip_runtime.model.model_id,
-            model_version=bioclip_runtime.model.model_id,
+            model_id=bioclip_runtime.model.model_name,
+            model_version=bioclip_runtime.package_version,
             model_checkpoint=bioclip_runtime.model.checkpoint,
             retain_debug_crops=False,
             segmenter=make_segmenter("none"),
@@ -210,10 +218,8 @@ def run_live_m5pro_benchmark(
             scorer=object_scorer,
             output_path=scores_path,
             classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-            family_top_k=request.family_top_k,
-            species_first_pass_top_k=request.species_first_pass_top_k,
-            species_rerank_top_k=request.species_rerank_top_k,
-            taxonomy_store=taxonomy_store,
+            path_taxonomy_store=taxonomy_store,
+            taxonomy_text_embedding_index=taxonomy_embedding_index,
             parquet_batch_rows=request.parquet_batch_rows,
             bioclip_batch_size=request.bioclip_batch,
         )
@@ -248,6 +254,8 @@ def run_live_m5pro_benchmark(
         actual_gpu_name=actual_gpu_name,
         stage_seconds=stage_seconds,
         total_start=total_start,
+        taxonomy_store=taxonomy_store,
+        taxonomy_embedding_index=taxonomy_embedding_index,
         outputs={
             "canonical_source_records": canonical_records_path,
             "object_detections": detection_result.output_path,
@@ -263,7 +271,7 @@ def run_live_m5pro_benchmark(
     return LiveM5ProBenchmarkResult(metrics=metrics, output_dir=request.output_dir, metrics_path=metrics_path, summary_path=summary_path)
 
 
-def species_context_from_taxonomy_store(taxonomy_store: FiveRankTaxonomyStore) -> SpeciesContext:
+def species_context_from_taxonomy_store(taxonomy_store: PathTaxonomyStore) -> SpeciesContext:
     paths = taxonomy_store.leaf_paths.filter(pl.col("enabled")).sort(
         ["family", "subfamily", "tribe", "genus", "species", "accepted_taxon_key"]
     )
@@ -296,6 +304,8 @@ def _live_metrics(
     actual_gpu_name: str | None,
     stage_seconds: Mapping[str, float],
     total_start: float,
+    taxonomy_store: PathTaxonomyStore,
+    taxonomy_embedding_index: TaxonomyTextEmbeddingIndex,
     outputs: Mapping[str, Path | None],
 ) -> dict[str, Any]:
     detections = detection_result.frame
@@ -308,6 +318,14 @@ def _live_metrics(
         "classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
         "input": str(request.input_path),
         "taxonomy_candidate_table": str(request.taxonomy_candidate_table),
+        "taxonomy_text_embedding_cache": str(request.taxonomy_text_embedding_cache),
+        "taxonomy_contract": {
+            "classification_version": taxonomy_store.classification_version,
+            "prompt_version": taxonomy_store.prompt_version,
+            "classification_fingerprint": taxonomy_store.classification_fingerprint,
+            "hierarchy_fingerprint": taxonomy_store.hierarchy_fingerprint,
+            "embedding_cache_fingerprint": taxonomy_embedding_index.cache_fingerprint,
+        },
         "records_requested_limit": request.limit,
         "records_loaded": records.height,
         "model_metadata": {

@@ -10,6 +10,7 @@ from biominer.benchmarks.vision_plumbing import (
 )
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 from biominer.cli import build_parser, run
+from biominer.registry.classification_v3 import CLASSIFICATION_V3_VERSION
 
 
 def test_vision_plumbing_benchmark_runs_model_free_pipeline(tmp_path) -> None:
@@ -48,6 +49,11 @@ def test_vision_plumbing_benchmark_runs_model_free_pipeline(tmp_path) -> None:
     assert (output / "object_bioclip_scores.parquet").exists()
     assert (output / "object_evidence_joined.parquet").exists()
     assert (output / "photo_evidence_summary.parquet").exists()
+    assert set(
+        pl.read_parquet(output / "object_bioclip_scores.parquet")
+        .get_column("classification_version")
+        .to_list()
+    ) == {CLASSIFICATION_V3_VERSION}
 
 
 def test_dev_vision_benchmark_plumbing_cli_writes_metrics(tmp_path, capsys) -> None:
@@ -131,15 +137,20 @@ def test_vision_plumbing_benchmark_guards_structural_performance_invariants(tmp_
     assert set(scores.get_column("ablation_mode").to_list()) == {"detector_crop"}
     assert "whole_image" not in set(scores.get_column("ablation_mode").to_list())
 
-    assert scorer["score_calls"] == metrics["crops_scored"] * 6
+    assert scorer["score_calls"] == 0
     assert scorer["label_set_batch_calls"] == 0
-    assert scorer["label_evaluations"] == metrics["crops_scored"] * 16
+    assert scorer["label_evaluations"] == 0
+    assert scorer["image_embedding_calls"] == (metrics["crops_scored"] + 23) // 24
+    assert scorer["images_embedded"] == metrics["crops_scored"]
+    assert all(size <= 24 for size in scorer["image_embedding_batch_sizes"])
     assert len(set(scorer["scored_detection_ids"])) == metrics["crops_scored"]
     assert set(scorer["scored_detection_ids"]) == eligible_ids
-    assert all(
-        all(str(name).split(":", maxsplit=1)[0] in {"family", "species", "rerank"} for name in names)
-        for names in scorer["label_set_names_by_batch"]
+    assert scorer["label_set_names_by_batch"] == []
+    embedding_cache_fingerprints = set(
+        scores.get_column("embedding_cache_fingerprint").to_list()
     )
+    assert len(embedding_cache_fingerprints) == 1
+    assert all(embedding_cache_fingerprints)
 
     assert metrics["taxonomy_store_reads"] == 1
     assert metrics["taxonomy_fixture_created"] is True

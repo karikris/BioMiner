@@ -1123,3 +1123,103 @@ Effect on BioMiner's design:
 Pre-implementation solution ID used for the canonical-hash comparison:
 
 `a04caaf5-9c66-4bcf-9e7b-8d08dbe3a062`.
+
+### Post-implementation verification — 2026-07-11
+
+Two strict-licence post-implementation `get_example` calls for canonical work
+identity, retry-safe publication, and redelivery-safe queue handling hit the
+rolling 50-example quota. The exact retry estimates were 63771 and 63750
+seconds. Neither call produced a solution ID, and none is claimed.
+
+Post-verification therefore used immutable source reads from the same licensed
+projects inspected before implementation:
+
+```text
+code_read(
+  iterative/dvc@f74c1c0e709de61f571905802bc0c75035dc6ef2,
+  dvc/stage/cache.py,
+  150:195
+)
+code_read(
+  celery/celery@1432d9b6c6868a77e7ee2ede1650da00a8d187ac,
+  celery/worker/request.py,
+  677:696
+)
+code_read(
+  celery/celery@1432d9b6c6868a77e7ee2ede1650da00a8d187ac,
+  t/unit/worker/test_request.py,
+  398:450
+)
+```
+
+DVC is Apache-2.0. Its stage cache keeps the deterministic input-derived key
+separate from the output value, detects an already-identical cached entry, and
+publishes through a temporary location followed by a move. Celery is
+BSD-3-Clause. Its late-acknowledgement path stores a successful result before
+acknowledgement, while worker-loss tests verify requeue and redelivery without
+premature terminal failure. These are implementation-pattern comparisons, not
+production dependencies.
+
+Morph MCP was invoked again for the required post-implementation call-site
+audit and failed with the exact response `Error: 429 status code (no body)`.
+Focused `rg`, source reads, and executable tests supplied the local evidence;
+no Morph-derived claim is made.
+
+Implementation audit:
+
+- One fixed production cascade contract now owns global current-rank top 3,
+  the ordered six ranks, species first-pass top 20, distinct rerank top 5, and
+  report top 3. Production CLI width switches were removed.
+- Hierarchical production requires classification-v3 artifacts and a validated
+  model-matched taxonomy text-embedding cache. Missing, stale, v2, or
+  fingerprint-mismatched inputs fail explicitly; there is no direct-prompt or
+  v2 fallback.
+- Each worker or stage loads one taxonomy index, embeds each crop once per
+  batch, and uses cached dot products for every rank and species prompt.
+- Work identity includes the beam strategy and width, ordered ranks,
+  classification and prompt versions, taxonomy and hierarchy fingerprints,
+  embedding-cache fingerprint, all three species widths, and rerank prompt
+  version. Workers recompute this immutable identity before work. Attempt,
+  lease, and retry metadata are deliberately excluded.
+- The rolling score stage previously wrapped the canonical BioCLIP work key in
+  an ad-hoc `:score:` key. That defect was removed; rolling and cloud now use
+  the same canonical computation key and preserve retry identity.
+- Local and cloud fake-input regressions serialize equivalent v3 rows. The
+  rolling worker remains the sole cloud production visual route; the direct
+  local path is explicitly development-only.
+- The first full-suite gate found three untested developer plumbing failures:
+  the benchmark still loaded `FiveRankTaxonomyStore` and passed the removed
+  `taxonomy_store=` argument. The benchmark now builds validated v3 artifacts,
+  records reviewed SUBTRIBE skips, constructs one in-memory fake-model cache,
+  and asserts one image embedding per eligible crop.
+- The follow-up call-site audit found the same stale contract in the live M5
+  Pro benchmark. It now requires `--taxonomy-text-embedding-cache`, validates
+  the cache against the exact BioCLIP model name and checkpoint before detector
+  work, records all taxonomy/cache fingerprints, and no longer exposes the
+  obsolete family/species width flags.
+
+Patterns rejected after comparison:
+
+- ambient defaults, partial hashes, Python `hash()`, or attempt numbers in a
+  durable computation key;
+- acknowledging completion before durable publication or claiming
+  exactly-once queue execution;
+- treating object existence as success without identity and checksum
+  agreement;
+- family-only or independent per-rank production widths;
+- classification-v2 reuse, stale-cache reuse, and direct text-prompt fallback;
+- model-free benchmark metrics that fabricate the retired six-score-call path
+  instead of measuring the one-image-embedding v3 path.
+
+Repository verification:
+
+- the first full gate reported the stale benchmark contract exactly as
+  `3 failed, 992 passed`; the failures were fixed rather than hidden;
+- final repository-wide `uv run ruff check .`: passed;
+- expanded rolling, cloud, orchestrator, CLI, production, plumbing, and live
+  benchmark focused suite: `207 passed`;
+- final `.venv/bin/pytest -q`: `996 passed`.
+
+Post-implementation solution ID reused only for the canonical-hash comparison:
+
+`a04caaf5-9c66-4bcf-9e7b-8d08dbe3a062`.

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import product
 import json
+from math import sqrt
 from pathlib import Path
 from time import perf_counter
 import tracemalloc
@@ -21,17 +22,20 @@ from biominer.bioclip.classification_modes import (
     normalize_classification_mode,
 )
 from biominer.bioclip.object_runner import screen_object_detections
-from biominer.bioclip.five_rank_store import FiveRankTaxonomyStore
+from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
+from biominer.bioclip.taxonomy_embedding_cache import (
+    TaxonomyTextEmbeddingIndex,
+    build_taxonomy_text_embedding_cache,
+)
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate
 from biominer.detection.pipeline import run_detection_pipeline
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, detection_is_bioclip_eligible
 from biominer.evidence.join import write_object_evidence_outputs
-from biominer.registry.classification_v2 import (
-    build_classification_v2_frames,
-    build_classification_v2_manifest,
-    classification_v2_artifact_paths,
-    classification_v2_fingerprint,
-    write_classification_v2_artifacts,
+from biominer.registry.classification_v3 import (
+    CLASSIFICATION_V3_VERSION,
+    REVIEWED_RANK_SKIP_EDGE,
+    classification_v3_artifact_paths,
+    write_classification_v3_artifacts,
 )
 from biominer.species.context import SpeciesContext
 from biominer.storage.parquet import write_parquet
@@ -101,9 +105,19 @@ class BenchmarkBioClipScorer:
         self.score_calls = 0
         self.batch_calls = 0
         self.label_evaluations = 0
+        self.image_embedding_calls = 0
+        self.images_embedded = 0
         self.scored_detection_ids: list[str] = []
         self.batch_sizes: list[int] = []
+        self.image_embedding_batch_sizes: list[int] = []
         self.label_set_names_by_batch: list[list[str]] = []
+
+    def embed_image_items(self, items: Sequence[dict[str, Any]]) -> list[list[float]]:
+        self.image_embedding_calls += 1
+        self.images_embedded += len(items)
+        self.image_embedding_batch_sizes.append(len(items))
+        self.scored_detection_ids.extend(str(item.get("detection_id") or "") for item in items)
+        return [[1.0, 0.0] for _item in items]
 
     def score(self, item: dict[str, Any], labels: tuple[str, ...]) -> dict[str, float]:
         self.score_calls += 1
@@ -164,11 +178,27 @@ def run_vision_plumbing_benchmark(
         stage_seconds["generate_records"] = _elapsed(stage_start)
 
         stage_start = perf_counter()
-        if not taxonomy_path.exists():
-            write_benchmark_taxonomy_store(taxonomy_path)
-            taxonomy_fixture_created = True
-        taxonomy_store = FiveRankTaxonomyStore.read(taxonomy_path)
-        taxonomy_store_reads += 1
+        scorer = BenchmarkBioClipScorer()
+        taxonomy_store: PathTaxonomyStore | None = None
+        taxonomy_embedding_index: TaxonomyTextEmbeddingIndex | None = None
+        if mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+            if not taxonomy_path.exists():
+                write_benchmark_taxonomy_store(taxonomy_path)
+                taxonomy_fixture_created = True
+            taxonomy_store = PathTaxonomyStore.read(taxonomy_path)
+            taxonomy_store_reads += 1
+            taxonomy_embedding_cache = build_taxonomy_text_embedding_cache(
+                taxonomy_store,
+                model_id=scorer.model_id,
+                model_checkpoint=scorer.model_checkpoint,
+                embed_labels=_benchmark_text_embeddings,
+            )
+            taxonomy_embedding_index = TaxonomyTextEmbeddingIndex.from_frame(
+                taxonomy_embedding_cache,
+                taxonomy_store=taxonomy_store,
+                model_id=scorer.model_id,
+                model_checkpoint=scorer.model_checkpoint,
+            )
         species_context = benchmark_species_context()
         candidate_set = build_candidate_set(species_context, records=canonical.to_dicts(), allow_single_target_fixture=True)
         stage_seconds["load_taxonomy"] = _elapsed(stage_start)
@@ -195,7 +225,6 @@ def run_vision_plumbing_benchmark(
         stage_seconds["detect_objects"] = _elapsed(stage_start)
 
         stage_start = perf_counter()
-        scorer = BenchmarkBioClipScorer()
         scores_path = output / "object_bioclip_scores.parquet"
         score_result = screen_object_detections(
             canonical_records=canonical,
@@ -208,7 +237,16 @@ def run_vision_plumbing_benchmark(
             family_top_k=family_top_k,
             species_first_pass_top_k=species_first_pass_top_k,
             species_rerank_top_k=species_rerank_top_k,
-            taxonomy_store=taxonomy_store if mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION else None,
+            path_taxonomy_store=(
+                taxonomy_store
+                if mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+                else None
+            ),
+            taxonomy_text_embedding_index=(
+                taxonomy_embedding_index
+                if mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+                else None
+            ),
             detection_policy=detection_policy,
             parquet_batch_rows=5000,
             bioclip_batch_size=24,
@@ -379,8 +417,7 @@ def rolling_worker_benchmark_variants() -> list[dict[str, Any]]:
 
 
 def write_benchmark_taxonomy_store(root: str | Path) -> dict[str, Path]:
-    output = Path(root)
-    base = output.parent if output.suffix == ".parquet" else output
+    base = Path(root)
     base.mkdir(parents=True, exist_ok=True)
     write_parquet(benchmark_taxa_frame(), base / "taxa.parquet")
     (base / "manifest.json").write_text(
@@ -390,11 +427,10 @@ def write_benchmark_taxonomy_store(root: str | Path) -> dict[str, Path]:
     source_path = base / "benchmark_classification_source.json"
     source_path.write_text(json.dumps(_benchmark_classification_source(), sort_keys=True), encoding="utf-8")
     try:
-        write_classification_v2_artifacts(base, source_path=source_path)
+        write_classification_v3_artifacts(base, source_path=source_path)
     finally:
         source_path.unlink(missing_ok=True)
-    paths = classification_v2_artifact_paths(base)
-    return paths
+    return classification_v3_artifact_paths(base)
 
 
 def benchmark_taxa_frame() -> pl.DataFrame:
@@ -406,30 +442,6 @@ def benchmark_taxa_frame() -> pl.DataFrame:
         _taxon_row("gbif:7002", BENCHMARK_SECOND_OUTGROUP_SPECIES, "gbif:7017", "Nymphalidae", "gbif:7000", "Metricsus", now),
     ]
     return pl.DataFrame(rows)
-
-
-def benchmark_taxonomy_store() -> FiveRankTaxonomyStore:
-    frames = build_classification_v2_frames(benchmark_taxa_frame(), _benchmark_classification_source())
-    manifest = build_classification_v2_manifest(
-        frames,
-        registry_version=BENCHMARK_TAXONOMY_REGISTRY_VERSION,
-    )
-    manifest.update(
-        {
-            "classification_fingerprint": classification_v2_fingerprint(frames),
-            "fatal_finding_count": 0,
-            "qa_status": "passed",
-        }
-    )
-    return FiveRankTaxonomyStore(
-        sources=frames.sources,
-        nodes=frames.nodes,
-        edges=frames.edges,
-        gbif_mappings=frames.gbif_mappings,
-        leaf_paths=frames.leaf_paths,
-        prompt_labels=frames.prompt_labels,
-        manifest=manifest,
-    )
 
 
 def _benchmark_classification_source() -> dict[str, Any]:
@@ -476,15 +488,25 @@ def _benchmark_classification_source() -> dict[str, Any]:
                 }
             )
             if parent_id is not None:
-                edges.append(
-                    {
-                        "parent_node_id": parent_id,
-                        "child_node_id": node_id,
-                        "source_id": source_id,
-                        "evidence": "model-free benchmark fixture",
-                        **reviewed,
-                    }
-                )
+                edge = {
+                    "parent_node_id": parent_id,
+                    "child_node_id": node_id,
+                    "source_id": source_id,
+                    "evidence": "model-free benchmark fixture",
+                    **reviewed,
+                }
+                if rank == "GENUS":
+                    edge.update(
+                        {
+                            "edge_type": REVIEWED_RANK_SKIP_EDGE,
+                            "skipped_ranks": ["SUBTRIBE"],
+                            "skip_reason": (
+                                "reviewed synthetic benchmark fixture has no supported "
+                                "subtribe assertion"
+                            ),
+                        }
+                    )
+                edges.append(edge)
             parent_id = node_id
         for taxon_key, species in species_rows:
             species_id = f"species:{species.casefold().replace(' ', '-')}"
@@ -518,12 +540,12 @@ def _benchmark_classification_source() -> dict[str, Any]:
                 }
             )
     return {
-        "classification_version": "butterfly-classification-v2.0.0",
+        "classification_version": CLASSIFICATION_V3_VERSION,
         "sources": [
             {
                 "source_id": source_id,
                 "authority": "BioMiner benchmark fixture",
-                "release": "v2",
+                "release": "v3",
                 "citation": "model-free internal benchmark taxonomy",
                 "retrieved_at": "2026-07-11",
                 "evidence_url": "https://example.invalid/biominer-benchmark-taxonomy",
@@ -686,8 +708,11 @@ def _benchmark_metrics(
             "score_calls": scorer.score_calls,
             "label_set_batch_calls": scorer.batch_calls,
             "label_evaluations": scorer.label_evaluations,
+            "image_embedding_calls": scorer.image_embedding_calls,
+            "images_embedded": scorer.images_embedded,
             "scored_detection_ids": list(scorer.scored_detection_ids),
             "batch_sizes": list(scorer.batch_sizes),
+            "image_embedding_batch_sizes": list(scorer.image_embedding_batch_sizes),
             "label_set_names_by_batch": list(scorer.label_set_names_by_batch),
         },
         "rows": rows,
@@ -807,11 +832,7 @@ def _fake_label_scores(labels: Sequence[str]) -> dict[str, float]:
     scores: dict[str, float] = {}
     for label in labels:
         text = label.casefold()
-        if "papilionidae" in text:
-            score = 0.92
-        elif "nymphalidae" in text:
-            score = 0.36
-        elif BENCHMARK_PRIMARY_SPECIES.casefold() in text:
+        if BENCHMARK_PRIMARY_SPECIES.casefold() in text:
             score = 0.86
         elif BENCHMARK_SECONDARY_SPECIES.casefold() in text:
             score = 0.52
@@ -819,10 +840,22 @@ def _fake_label_scores(labels: Sequence[str]) -> dict[str, float]:
             score = 0.30
         elif BENCHMARK_SECOND_OUTGROUP_SPECIES.casefold() in text:
             score = 0.22
+        elif "papilionidae" in text:
+            score = 0.92
+        elif "nymphalidae" in text:
+            score = 0.36
         else:
             score = 0.05
         scores[str(label)] = score
     return scores
+
+
+def _benchmark_text_embeddings(labels: list[str]) -> list[list[float]]:
+    scores = _fake_label_scores(labels)
+    return [
+        [scores[label], sqrt(1.0 - scores[label] * scores[label])]
+        for label in labels
+    ]
 
 
 def _temporary_directories_left(output: Path) -> list[str]:

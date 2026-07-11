@@ -401,6 +401,7 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     live_benchmark = subparsers.add_parser("benchmark-live-m5pro")
     live_benchmark.add_argument("--input", required=True)
     live_benchmark.add_argument("--taxonomy-candidate-table", required=True)
+    live_benchmark.add_argument("--taxonomy-text-embedding-cache", required=True)
     live_benchmark.add_argument("--vision-runtime-python", default=YOLOE26_RUNTIME_PYTHON)
     live_benchmark.add_argument("--bioclip-runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
     live_benchmark.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
@@ -422,9 +423,6 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     live_benchmark.add_argument("--parquet-batch-rows", type=int, default=10000)
     live_benchmark.add_argument("--prompt-class", action="append", default=[])
     live_benchmark.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
-    live_benchmark.add_argument("--family-top-k", type=int, default=DEFAULT_FAMILY_TOP_K)
-    live_benchmark.add_argument("--species-first-pass-top-k", type=int, default=DEFAULT_SPECIES_FIRST_PASS_TOP_K)
-    live_benchmark.add_argument("--species-rerank-top-k", type=int, default=DEFAULT_SPECIES_RERANK_TOP_K)
     detect_crop_preview = subparsers.add_parser("crop-preview")
     detect_crop_preview.add_argument("--detections", required=True)
     detect_crop_preview.add_argument("--output", required=True)
@@ -1508,6 +1506,7 @@ def _run_vision_benchmark_live_m5pro(args: argparse.Namespace) -> int:
     request = LiveM5ProBenchmarkRequest(
         input_path=Path(args.input).expanduser(),
         taxonomy_candidate_table=Path(args.taxonomy_candidate_table).expanduser(),
+        taxonomy_text_embedding_cache=Path(args.taxonomy_text_embedding_cache).expanduser(),
         vision_runtime_python=Path(args.vision_runtime_python).expanduser(),
         bioclip_runtime_python=Path(args.bioclip_runtime_python).expanduser(),
         hf_cache_dir=Path(args.hf_cache_dir).expanduser(),
@@ -1528,9 +1527,6 @@ def _run_vision_benchmark_live_m5pro(args: argparse.Namespace) -> int:
         crop_target_px=args.crop_target_px,
         parquet_batch_rows=args.parquet_batch_rows,
         prompt_classes=_yoloe26_prompt_classes(args),
-        family_top_k=args.family_top_k,
-        species_first_pass_top_k=args.species_first_pass_top_k,
-        species_rerank_top_k=args.species_rerank_top_k,
     )
     validation = validate_live_m5pro_benchmark_request(request)
     if validation is not None:
