@@ -214,3 +214,98 @@ Post-implementation solution IDs:
 
 `b4cedb7f-90a3-4a70-a5f9-889932e7b78a`,
 `e75c1d38-3897-418b-800a-5fdeefc6c825`.
+
+## Phase 2 — Path-aware taxonomy store
+
+### Pre-implementation verification — 2026-07-11
+
+Research questions:
+
+- How should enabled nodes be extracted from a denormalized active-path table?
+- When is a semi-join preferable to `is_in`?
+- Which uniqueness and ordering guarantees are explicit in pinned Polars?
+- Does a moderate, already-loaded taxonomy table benefit from LazyFrame APIs?
+
+All four example queries used `language="Python"`, `license_mode="strict"`
+and `format="json"`.
+
+1. Path list filtering, exploding, uniqueness and sorting.
+   Solution ID: `1b65243e-51a3-4304-9821-eab4f2570fe0`.
+   Immutable source:
+   `Neural-Dragon-AI/Cynde@332b79f1de1d7671e917f5034a63cfbfc3b74e23`
+   (Apache-2.0).
+2. Deterministic semi-join filtering.
+   Solution ID: `511fc304-02b1-49b4-872f-1b5882d08a10`.
+   Immutable sources included
+   `rapidsai/cudf@3aa656886f0d450cac82a69c095fc0d6b9b97ca2`
+   (Apache-2.0),
+   `graphistry/pygraphistry@8a7668e43aff3c7ee1773d809b39bd1a1c218dbf`
+   (BSD-3-Clause), and
+   `narwhals-dev/narwhals@272197529389f123972c8610e15ebc46014c7f4c`
+   (MIT).
+3. Lazy collection and common-subplan elimination.
+   Solution ID: `95dff618-be06-4f89-8098-4a80075eef2d`.
+   Immutable sources included
+   `pola-rs/polars@57f20cae8a79db98dac5ee5cea1ebfacbf74dae5`
+   (MIT) and
+   `henryodibi11/Odibi@fc613c2d8dcdf3920e435c82403d90f7385ce00f`
+   (Apache-2.0).
+4. Extracting distinct identifiers across several columns with explicit final
+   sorting.
+   Solution ID: `95fc44d5-7d13-42f2-b2b0-6e836ecb9cbd`.
+   Immutable sources included
+   `narwhals-dev/narwhals@272197529389f123972c8610e15ebc46014c7f4c`
+   and `goldenmatch/goldenmatch@38728c14c5e8fa994b5822c93bc3b65ad29a5540`
+   (both MIT).
+
+Pinned dependency verification again targeted `pola-rs/polars` tag
+`py-1.41.2`, immutable commit
+`599a503a0997188a74750926a5cdaa47585cf8aa`; `code_read(LICENSE)` confirmed
+MIT. Exact source reads established:
+
+- `DataFrame.join` in `py-polars/src/polars/dataframe/frame.py:8206` accepts
+  `semi` and `anti`; its documentation at line 8280 states that output order
+  is unspecified unless requested and that leaving it unspecified permits
+  more optimisation.
+- `DataFrame.unique` at line 11173 documents that `keep="any"` does not select
+  a predictable retained row, while `maintain_order=True` is more expensive
+  and blocks streaming.
+- `collect_all` in `py-polars/src/polars/functions/lazy.py:2058` combines query
+  graphs and applies common-subplan elimination.
+- `Expr.list.contains` and `Expr.list.explode` are implemented in
+  `py-polars/src/polars/expr/list.py:779` and `:1115`.
+- Exact eager and lazy semi/anti join tests exist in
+  `py-polars/tests/unit/operations/test_join.py:29`.
+
+Patterns adopted:
+
+- Load projected v3 Parquet frames once and use eager queries for this
+  moderate, repeatedly queried store.
+- Extract nonblank stable node IDs from direct rank columns, deduplicate by
+  `node_id`, then semi-join against enabled canonical nodes.
+- Use `is_in` for one small scalar ID set and semi-joins when IDs are already
+  a frame or keys become composite.
+- Explicitly sort every public result; no query relies on join, group, input,
+  or set iteration order.
+- Preserve distinct IDs even when scientific names collide.
+
+Patterns rejected:
+
+- The first generated example claimed that filtering an active leaf before
+  exploding proves every ancestor is active. BioMiner rejects that inference:
+  extracted IDs must still be joined to enabled canonical nodes.
+- `any_horizontal(list.contains(...))` scales the expression graph with the
+  beam size; direct rank-column filtering is simpler for top-k node IDs.
+- `unique(keep="any")` is not used when duplicates could differ.
+- Lazy execution is not assumed faster. `collect_all` is reserved for future
+  shared scans or branching plans demonstrated by profiling; it adds needless
+  collection boundaries after the store has already loaded moderate frames.
+- PR- or issue-only links without immutable source commits were not accepted
+  as durable implementation evidence.
+
+Pre-implementation solution IDs:
+
+`1b65243e-51a3-4304-9821-eab4f2570fe0`,
+`511fc304-02b1-49b4-872f-1b5882d08a10`,
+`95dff618-be06-4f89-8098-4a80075eef2d`,
+`95fc44d5-7d13-42f2-b2b0-6e836ecb9cbd`.
