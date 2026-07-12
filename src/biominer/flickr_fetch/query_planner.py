@@ -9,6 +9,9 @@ from typing import Any, Iterable, Literal
 
 import polars as pl
 
+from biominer.registry.normalize import normalize_name_key
+from biominer.registry.unified import stable_identity
+
 
 SearchField = Literal["text", "tags"]
 QueryLane = Literal["count_probe", "normal_page", "bbox_page"]
@@ -49,6 +52,12 @@ class FlickrQuery:
     language: str
     search_field: SearchField
     lane: QueryLane
+    normalized_term: str | None = None
+    logical_query_id: str | None = None
+    canonical_keyword_id: str | None = None
+    keyword_id: str | None = None
+    original_trust_tier: str | None = None
+    effective_trust_tier: str | None = None
     api_language_code: str | None = None
     bcp47: str | None = None
     page: int = 1
@@ -113,14 +122,31 @@ def load_registry_flickr_queries_from_frame(
         ["search_priority", "normalized_match_key", "query_definition_id"]
     ).to_dicts()
     queries: list[FlickrQuery] = []
+    seen_logical_queries: set[tuple[str, str]] = set()
     for row in rows:
         field = str(row.get("search_field") or "text")
         if field not in {"text", "tags"}:
             continue
+        normalized_term = str(row.get("normalized_match_key") or normalize_name_key(row.get("source_term")))
+        logical_key = (normalized_term, field)
+        if not normalized_term or logical_key in seen_logical_queries:
+            continue
+        seen_logical_queries.add(logical_key)
         bbox = str(row.get("bbox") or "") or None
+        logical_query_id = str(row.get("logical_query_id") or "") or stable_identity(
+            "flickr-logical-query", normalized_term, field
+        )
         queries.append(
             FlickrQuery(
                 term=str(row.get("source_term") or row.get("normalized_query_term") or ""),
+                normalized_term=normalized_term,
+                logical_query_id=logical_query_id,
+                canonical_keyword_id=str(row.get("canonical_keyword_id") or "") or stable_identity(
+                    "canonical-keyword", normalized_term
+                ),
+                keyword_id=str(row.get("keyword_id") or row.get("name_id") or "") or None,
+                original_trust_tier=str(row.get("original_trust_tier") or row.get("trust_tier") or "") or None,
+                effective_trust_tier=str(row.get("effective_trust_tier") or row.get("trust_tier") or "") or None,
                 language=str(row.get("language") or "und"),
                 api_language_code=str(row.get("api_language_code") or "") or None,
                 bcp47=str(row.get("bcp47") or "") or None,
@@ -407,6 +433,12 @@ def deduplicate_photo_records(records: Iterable[dict[str, Any]]) -> list[dict[st
 def _page_query(probe: FlickrQuery, *, page: int, per_page: int, lane: QueryLane) -> FlickrQuery:
     return FlickrQuery(
         term=probe.term,
+        normalized_term=probe.normalized_term,
+        logical_query_id=probe.logical_query_id,
+        canonical_keyword_id=probe.canonical_keyword_id,
+        keyword_id=probe.keyword_id,
+        original_trust_tier=probe.original_trust_tier,
+        effective_trust_tier=probe.effective_trust_tier,
         language=probe.language,
         api_language_code=probe.api_language_code,
         bcp47=probe.bcp47,
@@ -457,6 +489,18 @@ def _split_probe(
 ) -> FlickrQuery:
     return FlickrQuery(
         term=term or probe.term,
+        normalized_term=normalize_name_key(term or probe.normalized_term or probe.term),
+        logical_query_id=(
+            stable_identity("flickr-logical-query", normalize_name_key(term), probe.search_field)
+            if term
+            else probe.logical_query_id
+        ),
+        canonical_keyword_id=(
+            stable_identity("canonical-keyword", normalize_name_key(term)) if term else probe.canonical_keyword_id
+        ),
+        keyword_id=probe.keyword_id,
+        original_trust_tier=probe.original_trust_tier,
+        effective_trust_tier=probe.effective_trust_tier,
         language=probe.language,
         api_language_code=probe.api_language_code,
         bcp47=probe.bcp47,
@@ -494,6 +538,12 @@ def _split_probe(
 def _copy_registry_provenance(query: FlickrQuery, source: FlickrQuery) -> FlickrQuery:
     return replace(
         query,
+        normalized_term=source.normalized_term,
+        logical_query_id=source.logical_query_id,
+        canonical_keyword_id=source.canonical_keyword_id,
+        keyword_id=source.keyword_id,
+        original_trust_tier=source.original_trust_tier,
+        effective_trust_tier=source.effective_trust_tier,
         registry_version=source.registry_version,
         query_definition_id=source.query_definition_id,
         accepted_taxon_key=source.accepted_taxon_key,
@@ -512,9 +562,17 @@ def _query_hash(query: FlickrQuery) -> str:
     import hashlib
 
     payload_dict = {
-        key: value
-        for key, value in query.__dict__.items()
-        if key not in {"api_language_code", "bcp47"}
+        "normalized_term": normalize_name_key(query.normalized_term or query.term),
+        "search_field": query.search_field,
+        "lane": query.lane,
+        "page": query.page,
+        "per_page": query.per_page,
+        "has_geo": query.has_geo,
+        "bbox": query.bbox,
+        "min_taken_date": query.min_taken_date,
+        "max_taken_date": query.max_taken_date,
+        "min_upload_date": query.min_upload_date,
+        "max_upload_date": query.max_upload_date,
     }
     payload = json.dumps(payload_dict, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

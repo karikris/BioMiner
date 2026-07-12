@@ -174,6 +174,9 @@ def _query_provenance_summary(frame: pl.DataFrame | None) -> dict[str, Any]:
 
 def _state_work_summary(path: Path) -> dict[str, Any]:
     fallback = {
+        "logical_flickr_requests": "not_instrumented",
+        "physical_flickr_requests": "not_instrumented",
+        "photo_keyword_evidence_links": "not_instrumented",
         "count_probes_completed": "not_instrumented",
         "page_fetches_completed": "not_instrumented",
         "split_probes_enqueued_by_reason": "not_instrumented",
@@ -201,6 +204,9 @@ def _state_work_summary(path: Path) -> dict[str, Any]:
             page1_completed = _slice_page1_completed(conn)
             remaining_pages = _remaining_pages_enqueued_from_page1(conn)
             return {
+                "logical_flickr_requests": _one(conn, "SELECT count(*) FROM flickr_logical_queries") if "flickr_logical_queries" in tables else "not_instrumented",
+                "physical_flickr_requests": _one(conn, "SELECT count(*) FROM flickr_physical_requests") if "flickr_physical_requests" in tables else "not_instrumented",
+                "photo_keyword_evidence_links": _one(conn, "SELECT count(*) FROM photo_keyword_evidence") if "photo_keyword_evidence" in tables else "not_instrumented",
                 "count_probes_completed": _one(conn, "SELECT count(*) FROM flickr_work_items WHERE lane = 'count_probe' AND status = 'completed'"),
                 "page_fetches_completed": _one(conn, "SELECT count(*) FROM flickr_work_items WHERE lane IN ('normal_page', 'bbox_page') AND status = 'completed'"),
                 "split_probes_enqueued_by_reason": _split_counts(conn),

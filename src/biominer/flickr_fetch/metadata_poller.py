@@ -29,6 +29,8 @@ from biominer.flickr_fetch.query_planner import (
     query_min_date,
     split_priority,
 )
+from biominer.registry.normalize import normalize_name_key
+from biominer.registry.unified import stable_identity, tier_number
 from biominer.storage.parquet import write_parquet
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.config import StorageConfig, load_storage_config_from_env
@@ -99,12 +101,141 @@ class MetadataPollState:
         self._init_db()
 
     def enqueue_initial_work_items(self, queries: tuple[FlickrQuery, ...]) -> int:
-        if self.work_item_count() > 0:
-            return 0
         inserted = 0
         for query in queries:
             inserted += self.enqueue_work_item(query)
         return inserted
+
+    def register_registry(self, registry_dir: str | Path) -> dict[str, int]:
+        registry = Path(registry_dir)
+        names = pl.read_parquet(registry / "names.parquet")
+        definitions = pl.read_parquet(registry / "flickr_query_definitions.parquet")
+        return self.register_query_definitions(definitions, keyword_associations=names)
+
+    def register_query_definitions(
+        self,
+        definitions: pl.DataFrame,
+        *,
+        keyword_associations: pl.DataFrame | None = None,
+    ) -> dict[str, int]:
+        """Upsert registry associations without making Flickr request identity versioned."""
+
+        canonical_inserted = 0
+        associations_inserted = 0
+        logical_inserted = 0
+        backfilled = 0
+        association_frame = keyword_associations if keyword_associations is not None else definitions
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for row in association_frame.iter_rows(named=True):
+                normalized = str(row.get("normalized_match_key") or row.get("normalized_query_term") or "")
+                if not normalized:
+                    continue
+                canonical_id = str(row.get("canonical_keyword_id") or "") or stable_identity(
+                    "canonical-keyword", normalized
+                )
+                keyword_id = str(row.get("keyword_id") or row.get("name_id") or "") or stable_identity(
+                    "keyword-association",
+                    row.get("accepted_taxon_key"),
+                    normalized,
+                    row.get("source"),
+                    row.get("source_record_id"),
+                )
+                effective_tier = str(row.get("effective_trust_tier") or row.get("trust_tier") or "T4")
+                original_tier = str(row.get("original_trust_tier") or row.get("trust_tier") or effective_tier)
+                now = _timestamp()
+                result = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO canonical_keywords (
+                        canonical_keyword_id, normalized_term, canonical_keyword_id_source,
+                        canonical_term, effective_trust_tier, first_seen_at, last_seen_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (canonical_id, normalized, keyword_id, str(row.get("display_name") or row.get("source_term") or normalized), effective_tier, now, now),
+                )
+                canonical_inserted += int(result.rowcount)
+                conn.execute(
+                    """
+                    UPDATE canonical_keywords
+                    SET effective_trust_tier = CASE
+                            WHEN CAST(substr(effective_trust_tier, 2) AS INTEGER) <= CAST(substr(?, 2) AS INTEGER)
+                            THEN effective_trust_tier ELSE ? END,
+                        canonical_keyword_id_source = CASE WHEN ? THEN ? ELSE canonical_keyword_id_source END,
+                        canonical_term = CASE WHEN ? THEN ? ELSE canonical_term END,
+                        last_seen_at = ?
+                    WHERE canonical_keyword_id = ?
+                    """,
+                    (
+                        effective_tier,
+                        effective_tier,
+                        bool(row.get("is_canonical_keyword", False)),
+                        keyword_id,
+                        bool(row.get("is_canonical_keyword", False)),
+                        str(row.get("display_name") or row.get("source_term") or normalized),
+                        now,
+                        canonical_id,
+                    ),
+                )
+                result = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO keyword_associations (
+                        keyword_id, canonical_keyword_id, query_definition_id,
+                        accepted_taxon_id, original_trust_tier, source, name_class,
+                        language, registry_version, first_seen_at, last_seen_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        keyword_id,
+                        canonical_id,
+                        str(row.get("query_definition_id") or ""),
+                        str(row.get("accepted_taxon_key") or row.get("accepted_taxon_id") or ""),
+                        original_tier,
+                        str(row.get("source") or ""),
+                        str(row.get("name_class") or ""),
+                        str(row.get("language") or ""),
+                        str(row.get("registry_version") or ""),
+                        now,
+                        now,
+                    ),
+                )
+                associations_inserted += int(result.rowcount)
+                if result.rowcount:
+                    backfilled += _backfill_keyword_evidence(conn, keyword_id=keyword_id, canonical_keyword_id=canonical_id)
+            for row in definitions.iter_rows(named=True):
+                normalized = str(row.get("normalized_match_key") or row.get("normalized_query_term") or "")
+                field = str(row.get("search_field") or "")
+                if not normalized or field not in {"tags", "text"}:
+                    continue
+                canonical_id = str(row.get("canonical_keyword_id") or "") or stable_identity("canonical-keyword", normalized)
+                logical_id = str(row.get("logical_query_id") or row.get("query_definition_id") or "") or stable_identity(
+                    "flickr-logical-query", normalized, field
+                )
+                tier = str(row.get("effective_trust_tier") or row.get("trust_tier") or "T4")
+                result = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO flickr_logical_queries (
+                        logical_query_id, canonical_keyword_id, search_field,
+                        effective_trust_tier, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, 'active', ?, ?)
+                    """,
+                    (logical_id, canonical_id, field, tier, _timestamp(), _timestamp()),
+                )
+                logical_inserted += int(result.rowcount)
+                conn.execute(
+                    """
+                    UPDATE flickr_logical_queries
+                    SET effective_trust_tier = ?, updated_at = ?
+                    WHERE logical_query_id = ?
+                    """,
+                    (tier, _timestamp(), logical_id),
+                )
+            conn.execute("COMMIT")
+        return {
+            "canonical_keywords_inserted": canonical_inserted,
+            "keyword_associations_inserted": associations_inserted,
+            "logical_queries_inserted": logical_inserted,
+            "existing_results_backfilled": backfilled,
+        }
 
     def work_item_count(self) -> int:
         with self._connect() as conn:
@@ -114,6 +245,22 @@ class MetadataPollState:
         with self._connect() as conn:
             result = _insert_work_item(conn, query)
         return int(result.rowcount)
+
+    def enqueue_incremental_work_item(self, query: FlickrQuery) -> int:
+        logical_id = query.logical_query_id or stable_identity(
+            "flickr-logical-query", normalize_name_key(query.normalized_term or query.term), query.search_field
+        )
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT last_completed_upload_date FROM flickr_logical_queries WHERE logical_query_id = ?",
+                (logical_id,),
+            ).fetchone()
+        last_completed = str(row[0] or "") if row else ""
+        if last_completed and (not query.min_upload_date or query.min_upload_date <= last_completed):
+            raise ValueError(
+                f"incremental upload interval must start after {last_completed} for logical query {logical_id}"
+            )
+        return self.enqueue_work_item(query)
 
     def ensure_reported_pages(self, query: FlickrQuery, *, response_pages: int, response_perpage: int | None = None) -> PageEnsureResult:
         if query.lane == "count_probe" or response_pages <= 0:
@@ -264,11 +411,21 @@ class MetadataPollState:
             if claim_limit <= 0:
                 conn.execute("COMMIT")
                 return []
+            active_tier = conn.execute(
+                """
+                SELECT MIN(CASE upper(COALESCE(effective_trust_tier, trust_tier, 'T4'))
+                    WHEN 'T1' THEN 1 WHEN 'T2' THEN 2 WHEN 'T3' THEN 3 WHEN 'T4' THEN 4 WHEN 'T5' THEN 5 ELSE 4 END)
+                FROM flickr_work_items WHERE status = ?
+                """,
+                (PENDING,),
+            ).fetchone()[0]
             rows = conn.execute(
                 """
                 SELECT work_item_id, query_json
                 FROM flickr_work_items
                 WHERE status = ?
+                  AND CASE upper(COALESCE(effective_trust_tier, trust_tier, 'T4'))
+                    WHEN 'T1' THEN 1 WHEN 'T2' THEN 2 WHEN 'T3' THEN 3 WHEN 'T4' THEN 4 WHEN 'T5' THEN 5 ELSE 4 END = ?
                 ORDER BY
                     CASE lane WHEN 'count_probe' THEN 0 WHEN 'normal_page' THEN 1 WHEN 'bbox_page' THEN 1 ELSE 99 END,
                     COALESCE(query_priority, 999999),
@@ -286,7 +443,7 @@ class MetadataPollState:
                     COALESCE(query_hash, work_item_id)
                 LIMIT ?
                 """,
-                (PENDING, claim_limit),
+                (PENDING, active_tier, claim_limit),
             ).fetchall()
             timestamp = _timestamp(now)
             unix_timestamp = _unix_timestamp(now)
@@ -423,6 +580,25 @@ class MetadataPollState:
                     work_item_id,
                 ),
             )
+            conn.execute(
+                "UPDATE flickr_physical_requests SET status = ?, completed_at = ?, error = NULL WHERE physical_request_id = ?",
+                (COMPLETED, _timestamp(), work_item_id),
+            )
+            conn.execute(
+                """
+                UPDATE flickr_logical_queries
+                SET last_completed_upload_date = CASE
+                        WHEN COALESCE(last_completed_upload_date, '') >= COALESCE((
+                            SELECT max_date FROM flickr_work_items WHERE work_item_id = ?
+                        ), '') THEN last_completed_upload_date
+                        ELSE (SELECT max_date FROM flickr_work_items WHERE work_item_id = ?) END,
+                    updated_at = ?
+                WHERE logical_query_id = (
+                    SELECT logical_query_id FROM flickr_work_items WHERE work_item_id = ?
+                )
+                """,
+                (work_item_id, work_item_id, _timestamp(), work_item_id),
+            )
 
     def fail_work_item(self, work_item_id: str, error: str) -> None:
         with self._connect() as conn:
@@ -430,6 +606,31 @@ class MetadataPollState:
                 "UPDATE flickr_work_items SET status = ?, completed_at = ?, error = ? WHERE work_item_id = ?",
                 (FAILED, _timestamp(), error, work_item_id),
             )
+            conn.execute(
+                """
+                UPDATE flickr_physical_requests
+                SET status = 'deferred', completed_at = ?, error = ?, retry_count = retry_count + 1
+                WHERE physical_request_id = ?
+                """,
+                (_timestamp(), error, work_item_id),
+            )
+
+    def reclaim_deferred(self) -> int:
+        """Explicitly reclaim exhausted work before a resumed polling run."""
+        with self._connect() as conn:
+            physical = conn.execute(
+                "UPDATE flickr_physical_requests SET status = ? WHERE status = 'deferred'",
+                (PENDING,),
+            )
+            conn.execute(
+                """
+                UPDATE flickr_work_items SET status = ?, error = NULL, completed_at = NULL
+                WHERE work_item_id IN (SELECT physical_request_id FROM flickr_physical_requests WHERE status = ?)
+                  AND status = ?
+                """,
+                (PENDING, PENDING, FAILED),
+            )
+        return int(physical.rowcount)
 
     def work_items_snapshot(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -467,7 +668,7 @@ class MetadataPollState:
                     continue
                 source_record_hash = _source_record_hash(record)
                 image_url_kind = "url_l" if record.get("url_l") else "url_m"
-                conn.execute(
+                image_url_result = conn.execute(
                     """
                     INSERT OR IGNORE INTO source_record_image_urls (
                         source, flickr_photo_id, image_url, image_url_kind, first_seen_at
@@ -514,6 +715,13 @@ class MetadataPollState:
                 terms_added, duplicate_terms = _merge_query_provenance(conn, "flickr", photo_id, source_query)
                 query_terms_added += terms_added
                 duplicate_query_terms += duplicate_terms
+                _record_query_and_keyword_evidence(
+                    conn,
+                    source="flickr",
+                    photo_id=photo_id,
+                    record=record,
+                    query=source_query,
+                )
                 if source_inserted:
                     inserted += 1
                     queue_result = conn.execute(
@@ -537,7 +745,51 @@ class MetadataPollState:
                     queued += int(queue_result.rowcount)
                 else:
                     skipped += 1
+                    if image_url_result.rowcount:
+                        queue_result = conn.execute(
+                            """
+                            INSERT OR IGNORE INTO image_triage_queue (
+                                source, flickr_photo_id, image_url, image_url_kind,
+                                source_record_hash, status, created_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            ("flickr", photo_id, image_url, image_url_kind, source_record_hash, PENDING, _timestamp()),
+                        )
+                        queued += int(queue_result.rowcount)
         return inserted, skipped, queued, query_terms_added, duplicate_query_terms
+
+    def photo_keyword_evidence_frame(self) -> pl.DataFrame:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT flickr_photo_id, keyword_id, canonical_keyword_id,
+                       query_execution_id, accepted_taxon_id,
+                       original_trust_tier, effective_trust_tier, search_field,
+                       match_basis, returned_by_query, metadata_match,
+                       first_seen_at, last_seen_at
+                FROM photo_keyword_evidence
+                ORDER BY flickr_photo_id, keyword_id, search_field, match_basis
+                """
+            ).fetchall()
+        return pl.DataFrame([dict(row) for row in rows]) if rows else pl.DataFrame()
+
+    def discovery_metrics(self) -> dict[str, int]:
+        with self._connect() as conn:
+            scalar = lambda sql: int(conn.execute(sql).fetchone()[0])  # noqa: E731
+            return {
+                "canonical_keywords": scalar("SELECT count(*) FROM canonical_keywords"),
+                "keyword_associations": scalar("SELECT count(*) FROM keyword_associations"),
+                "logical_flickr_requests": scalar("SELECT count(*) FROM flickr_logical_queries"),
+                "physical_flickr_requests": scalar("SELECT count(*) FROM flickr_physical_requests"),
+                "completed_physical_requests": scalar("SELECT count(*) FROM flickr_physical_requests WHERE status = 'completed'"),
+                "api_requests_avoided_by_deduplication": scalar(
+                    "SELECT COALESCE(sum(duplicate_query_hit_count), 0) FROM source_records"
+                ),
+                "known_photos_skipped_from_image_processing": scalar(
+                    "SELECT COALESCE(sum(duplicate_query_hit_count), 0) FROM source_records"
+                ),
+                "photo_keyword_evidence_links": scalar("SELECT count(*) FROM photo_keyword_evidence"),
+            }
 
     def source_records_with_query_provenance(self) -> pl.DataFrame:
         with self._connect() as conn:
@@ -673,6 +925,91 @@ class MetadataPollState:
 
     def _init_db(self) -> None:
         with self._connect() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS canonical_keywords (
+                    canonical_keyword_id TEXT PRIMARY KEY,
+                    normalized_term TEXT NOT NULL UNIQUE,
+                    canonical_keyword_id_source TEXT NOT NULL,
+                    canonical_term TEXT NOT NULL,
+                    effective_trust_tier TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS keyword_associations (
+                    keyword_id TEXT PRIMARY KEY,
+                    canonical_keyword_id TEXT NOT NULL REFERENCES canonical_keywords(canonical_keyword_id),
+                    query_definition_id TEXT NOT NULL,
+                    accepted_taxon_id TEXT NOT NULL,
+                    original_trust_tier TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    name_class TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    registry_version TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS keyword_associations_canonical_idx
+                    ON keyword_associations(canonical_keyword_id);
+                CREATE TABLE IF NOT EXISTS flickr_logical_queries (
+                    logical_query_id TEXT PRIMARY KEY,
+                    canonical_keyword_id TEXT NOT NULL REFERENCES canonical_keywords(canonical_keyword_id),
+                    search_field TEXT NOT NULL,
+                    effective_trust_tier TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    last_completed_upload_date TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(canonical_keyword_id, search_field)
+                );
+                CREATE TABLE IF NOT EXISTS flickr_physical_requests (
+                    physical_request_id TEXT PRIMARY KEY,
+                    logical_query_id TEXT NOT NULL,
+                    search_field TEXT NOT NULL,
+                    lane TEXT NOT NULL,
+                    min_upload_date TEXT NOT NULL,
+                    max_upload_date TEXT NOT NULL,
+                    bbox TEXT NOT NULL,
+                    page INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    UNIQUE(logical_query_id, lane, min_upload_date, max_upload_date, bbox, page)
+                );
+                CREATE TABLE IF NOT EXISTS flickr_query_results (
+                    query_execution_id TEXT NOT NULL,
+                    physical_request_id TEXT NOT NULL,
+                    logical_query_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    flickr_photo_id TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    PRIMARY KEY(physical_request_id, source, flickr_photo_id)
+                );
+                CREATE INDEX IF NOT EXISTS flickr_query_results_logical_idx
+                    ON flickr_query_results(logical_query_id, source, flickr_photo_id);
+                CREATE TABLE IF NOT EXISTS photo_keyword_evidence (
+                    source TEXT NOT NULL,
+                    flickr_photo_id TEXT NOT NULL,
+                    keyword_id TEXT NOT NULL,
+                    canonical_keyword_id TEXT NOT NULL,
+                    query_execution_id TEXT NOT NULL,
+                    accepted_taxon_id TEXT NOT NULL,
+                    original_trust_tier TEXT NOT NULL,
+                    effective_trust_tier TEXT NOT NULL,
+                    search_field TEXT NOT NULL,
+                    match_basis TEXT NOT NULL,
+                    returned_by_query INTEGER NOT NULL,
+                    metadata_match INTEGER NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    PRIMARY KEY(source, flickr_photo_id, keyword_id, search_field, match_basis)
+                );
+                CREATE INDEX IF NOT EXISTS photo_keyword_evidence_photo_idx
+                    ON photo_keyword_evidence(source, flickr_photo_id);
+                """
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS api_call_ledger (
@@ -715,6 +1052,9 @@ class MetadataPollState:
                     term_type TEXT,
                     term_confidence TEXT,
                     trust_tier TEXT,
+                    effective_trust_tier TEXT,
+                    logical_query_id TEXT,
+                    canonical_keyword_id TEXT,
                     query_hash TEXT,
                     registry_version TEXT,
                     query_definition_id TEXT,
@@ -811,6 +1151,9 @@ class MetadataPollState:
             "term_type": "TEXT",
             "term_confidence": "TEXT",
             "trust_tier": "TEXT",
+            "effective_trust_tier": "TEXT",
+            "logical_query_id": "TEXT",
+            "canonical_keyword_id": "TEXT",
             "query_hash": "TEXT",
             "registry_version": "TEXT",
             "query_definition_id": "TEXT",
@@ -1161,6 +1504,174 @@ def _json_list(value: str | None) -> list[str]:
     return [str(item) for item in parsed if item not in (None, "")]
 
 
+def _record_query_and_keyword_evidence(
+    conn: sqlite3.Connection,
+    *,
+    source: str,
+    photo_id: str,
+    record: dict[str, Any],
+    query: FlickrQuery,
+) -> int:
+    normalized = normalize_name_key(query.normalized_term or query.term)
+    canonical_id = query.canonical_keyword_id or stable_identity("canonical-keyword", normalized)
+    logical_id = query.logical_query_id or stable_identity("flickr-logical-query", normalized, query.search_field)
+    execution_id = _work_item_id(query)
+    now = _timestamp()
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO flickr_query_results (
+            query_execution_id, physical_request_id, logical_query_id,
+            source, flickr_photo_id, first_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (execution_id, execution_id, logical_id, source, photo_id, now),
+    )
+    inserted = _insert_evidence_for_canonical(
+        conn,
+        source=source,
+        photo_id=photo_id,
+        canonical_keyword_id=canonical_id,
+        execution_id=execution_id,
+        search_field=query.search_field,
+        match_basis="query_return",
+        returned_by_query=True,
+        metadata_match=False,
+    )
+    for metadata_field, metadata_text in _metadata_text_fields(record):
+        normalized_text = normalize_name_key(metadata_text)
+        if not normalized_text:
+            continue
+        candidates = conn.execute(
+            """
+            SELECT canonical_keyword_id, normalized_term
+            FROM canonical_keywords
+            WHERE normalized_term <> '' AND instr(?, normalized_term) > 0
+            ORDER BY length(normalized_term) DESC, canonical_keyword_id
+            """,
+            (normalized_text,),
+        ).fetchall()
+        for candidate in candidates:
+            inserted += _insert_evidence_for_canonical(
+                conn,
+                source=source,
+                photo_id=photo_id,
+                canonical_keyword_id=str(candidate["canonical_keyword_id"]),
+                execution_id=execution_id,
+                search_field=query.search_field,
+                match_basis=f"metadata:{metadata_field}",
+                returned_by_query=False,
+                metadata_match=True,
+            )
+    return inserted
+
+
+def _insert_evidence_for_canonical(
+    conn: sqlite3.Connection,
+    *,
+    source: str,
+    photo_id: str,
+    canonical_keyword_id: str,
+    execution_id: str,
+    search_field: str,
+    match_basis: str,
+    returned_by_query: bool,
+    metadata_match: bool,
+    keyword_id: str | None = None,
+) -> int:
+    associations = conn.execute(
+        """
+        SELECT a.keyword_id, a.accepted_taxon_id, a.original_trust_tier,
+               c.effective_trust_tier
+        FROM keyword_associations AS a
+        JOIN canonical_keywords AS c USING (canonical_keyword_id)
+        WHERE a.canonical_keyword_id = ? AND (? IS NULL OR a.keyword_id = ?)
+        ORDER BY a.keyword_id
+        """,
+        (canonical_keyword_id, keyword_id, keyword_id),
+    ).fetchall()
+    inserted = 0
+    now = _timestamp()
+    for association in associations:
+        result = conn.execute(
+            """
+            INSERT INTO photo_keyword_evidence (
+                source, flickr_photo_id, keyword_id, canonical_keyword_id,
+                query_execution_id, accepted_taxon_id, original_trust_tier,
+                effective_trust_tier, search_field, match_basis,
+                returned_by_query, metadata_match, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source, flickr_photo_id, keyword_id, search_field, match_basis)
+            DO UPDATE SET last_seen_at = excluded.last_seen_at,
+                          returned_by_query = MAX(returned_by_query, excluded.returned_by_query),
+                          metadata_match = MAX(metadata_match, excluded.metadata_match),
+                          effective_trust_tier = excluded.effective_trust_tier
+            """,
+            (
+                source,
+                photo_id,
+                association["keyword_id"],
+                canonical_keyword_id,
+                execution_id,
+                association["accepted_taxon_id"],
+                association["original_trust_tier"],
+                association["effective_trust_tier"],
+                search_field,
+                match_basis,
+                int(returned_by_query),
+                int(metadata_match),
+                now,
+                now,
+            ),
+        )
+        inserted += int(result.rowcount)
+    return inserted
+
+
+def _backfill_keyword_evidence(
+    conn: sqlite3.Connection,
+    *,
+    keyword_id: str,
+    canonical_keyword_id: str,
+) -> int:
+    rows = conn.execute(
+        """
+        SELECT r.source, r.flickr_photo_id, r.query_execution_id, q.search_field
+        FROM flickr_query_results AS r
+        JOIN flickr_logical_queries AS q USING (logical_query_id)
+        WHERE q.canonical_keyword_id = ?
+        """,
+        (canonical_keyword_id,),
+    ).fetchall()
+    inserted = 0
+    for row in rows:
+        inserted += _insert_evidence_for_canonical(
+            conn,
+            source=str(row["source"]),
+            photo_id=str(row["flickr_photo_id"]),
+            canonical_keyword_id=canonical_keyword_id,
+            execution_id=str(row["query_execution_id"]),
+            search_field=str(row["search_field"]),
+            match_basis="query_return",
+            returned_by_query=True,
+            metadata_match=False,
+            keyword_id=keyword_id,
+        )
+    return inserted
+
+
+def _metadata_text_fields(record: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    def text(value: object) -> str:
+        if isinstance(value, dict):
+            return str(value.get("_content") or "")
+        if isinstance(value, list):
+            return " ".join(text(item) for item in value)
+        return str(value or "")
+
+    return tuple(
+        (field, text(record.get(field)))
+        for field in ("title", "tags", "machine_tags", "description", "comments")
+        if text(record.get(field))
+    )
 def _json_dump_list(values: list[str]) -> str:
     return json.dumps(values, ensure_ascii=False, separators=(",", ":"))
 
@@ -1504,6 +2015,92 @@ def _accessible_page_window(per_page: int) -> int:
 
 def _insert_work_item(conn: sqlite3.Connection, query: FlickrQuery) -> sqlite3.Cursor:
     work_item_id = _work_item_id(query)
+    normalized = normalize_name_key(query.normalized_term or query.term)
+    canonical_id = query.canonical_keyword_id or stable_identity("canonical-keyword", normalized)
+    logical_id = query.logical_query_id or stable_identity("flickr-logical-query", normalized, query.search_field)
+    effective_tier = query.effective_trust_tier or query.trust_tier or "T4"
+    now = _timestamp()
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO canonical_keywords (
+            canonical_keyword_id, normalized_term, canonical_keyword_id_source,
+            canonical_term, effective_trust_tier, first_seen_at, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (canonical_id, normalized, query.keyword_id or canonical_id, query.term, effective_tier, now, now),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO flickr_logical_queries (
+            logical_query_id, canonical_keyword_id, search_field,
+            effective_trust_tier, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'active', ?, ?)
+        """,
+        (logical_id, canonical_id, query.search_field, effective_tier, now, now),
+    )
+    if query.keyword_id:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO keyword_associations (
+                keyword_id, canonical_keyword_id, query_definition_id,
+                accepted_taxon_id, original_trust_tier, source, name_class,
+                language, registry_version, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?)
+            """,
+            (
+                query.keyword_id,
+                canonical_id,
+                query.query_definition_id or logical_id,
+                query.accepted_taxon_key or "",
+                query.original_trust_tier or effective_tier,
+                query.term_type or "",
+                query.language,
+                query.registry_version or "",
+                now,
+                now,
+            ),
+        )
+    overlap = conn.execute(
+        """
+        SELECT 1 FROM flickr_physical_requests
+        WHERE logical_query_id = ? AND ? <> '' AND ? <> ''
+          AND min_upload_date <> '' AND max_upload_date <> ''
+          AND NOT (min_upload_date = ? AND max_upload_date = ?)
+          AND min_upload_date <= ? AND max_upload_date >= ?
+        LIMIT 1
+        """,
+        (
+            logical_id,
+            query.min_upload_date or "",
+            query.max_upload_date or "",
+            query.min_upload_date or "",
+            query.max_upload_date or "",
+            query.max_upload_date or "",
+            query.min_upload_date or "",
+        ),
+    ).fetchone()
+    if overlap is not None:
+        raise ValueError(f"overlapping upload-date interval for logical query {logical_id}")
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO flickr_physical_requests (
+            physical_request_id, logical_query_id, search_field, lane,
+            min_upload_date, max_upload_date, bbox, page, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            work_item_id,
+            logical_id,
+            query.search_field,
+            query.lane,
+            query.min_upload_date or "",
+            query.max_upload_date or "",
+            query.bbox or "",
+            query.page,
+            PENDING,
+            now,
+        ),
+    )
     return conn.execute(
         """
         INSERT OR IGNORE INTO flickr_work_items (
@@ -1511,13 +2108,14 @@ def _insert_work_item(conn: sqlite3.Connection, query: FlickrQuery) -> sqlite3.C
             split_depth, split_priority, split_reason, parent_query_hash,
             parent_total, date_kind, min_date, max_date, bbox_index,
             slice_index, bbox_label, term, search_field, query_language,
-            term_type, term_confidence, trust_tier, query_hash, registry_version,
+            term_type, term_confidence, trust_tier, effective_trust_tier,
+            logical_query_id, canonical_keyword_id, query_hash, registry_version,
             query_definition_id, accepted_taxon_key, accepted_scientific_name,
             family_key, genus_key, species_key, query_priority, claimed_at,
             completed_at, error, records_returned, response_total,
             response_pages, response_page, response_perpage, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?)
         """,
         (
             work_item_id,
@@ -1543,6 +2141,9 @@ def _insert_work_item(conn: sqlite3.Connection, query: FlickrQuery) -> sqlite3.C
             query.term_type,
             query.term_confidence,
             query.trust_tier,
+            effective_tier,
+            logical_id,
+            canonical_id,
             query_hash(query),
             query.registry_version,
             query.query_definition_id,
@@ -1583,10 +2184,17 @@ def _pagination_rows(conn: sqlite3.Connection, query: FlickrQuery) -> list[sqlit
 
 
 def _pagination_identity(query: FlickrQuery) -> dict[str, Any]:
-    payload = asdict(query)
-    payload.pop("page", None)
-    payload.pop("per_page", None)
-    return payload
+    return {
+        "normalized_term": normalize_name_key(query.normalized_term or query.term),
+        "search_field": query.search_field,
+        "lane": query.lane,
+        "has_geo": query.has_geo,
+        "bbox": query.bbox,
+        "min_taken_date": query.min_taken_date,
+        "max_taken_date": query.max_taken_date,
+        "min_upload_date": query.min_upload_date,
+        "max_upload_date": query.max_upload_date,
+    }
 
 
 def _payload_photo_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1600,10 +2208,7 @@ def _photo_ids_from_records(records: list[dict[str, Any]]) -> set[str]:
 
 
 def _work_item_id(query: FlickrQuery) -> str:
-    payload = json.dumps(asdict(query), sort_keys=True, ensure_ascii=False)
-    import hashlib
-
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return query_hash(query)
 
 
 def _source_record_hash(record: dict[str, Any]) -> str:
