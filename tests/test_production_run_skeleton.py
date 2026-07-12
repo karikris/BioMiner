@@ -283,7 +283,7 @@ def test_production_run_hierarchical_score_stage_requires_taxonomy_table(tmp_pat
         storage_backend="local",
         workstore_backend="sqlite",
         classification_mode="hierarchical",
-        taxonomy_candidate_table="data/registry/current",
+        taxonomy_candidate_table=tmp_path / "missing-registry",
         stages=(RunStage.SCORE_BIOCLIP,),
     )
 
@@ -293,7 +293,7 @@ def test_production_run_hierarchical_score_stage_requires_taxonomy_table(tmp_pat
     assert plan.manifest.stages[0].status is StageStatus.FAILED
     assert plan.manifest.stages[0].message.startswith("missing_taxonomy_candidate_table:")
     assert plan.manifest.stages[0].metrics["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-    assert plan.manifest.stages[0].metrics["taxonomy_candidate_table"].endswith("data/registry/current")
+    assert plan.manifest.stages[0].metrics["taxonomy_candidate_table"].endswith("missing-registry")
     assert plan.manifest.stages[0].metrics["taxonomy_candidate_table_status"] == "missing"
 
 

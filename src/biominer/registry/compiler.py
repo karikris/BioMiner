@@ -71,7 +71,7 @@ def compile_registry_parquet_source(
 ) -> dict[str, Any]:
     """Compile a registry from the durable CoL XR Parquet source snapshot."""
 
-    from biominer.registry.checklistbank import SOURCE_NODES_FILE, col_xr_payload_from_parquet
+    from biominer.registry.checklistbank import col_xr_payload_from_parquet
 
     source = Path(source_dir)
     output = Path(output_dir)
@@ -79,7 +79,7 @@ def compile_registry_parquet_source(
     payload = col_xr_payload_from_parquet(source)
     frames, manifest = compile_registry_frames(
         payload,
-        source_ref=source / SOURCE_NODES_FILE,
+        source_ref=source,
         output_ref=output,
         registry_version=registry_version,
         scope_path=scope_path,
@@ -669,6 +669,14 @@ def _query_unique_term_counts_by_source(queries: pl.DataFrame) -> dict[str, int]
 
 def _source_hash(payload: dict[str, Any], source_ref: str | Path) -> str:
     path = Path(source_ref)
+    if path.is_dir():
+        digest = hashlib.sha256()
+        for child in sorted(path.glob("*.parquet"), key=lambda item: item.name):
+            digest.update(child.name.encode("utf-8"))
+            with child.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        return "sha256:" + digest.hexdigest()
     if path.exists():
         return _file_hash(path)
     return _payload_hash(payload)
