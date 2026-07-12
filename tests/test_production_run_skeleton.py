@@ -2379,10 +2379,10 @@ def test_review_queue_keeps_bronze_and_review_photo_summaries() -> None:
 
 
 def test_trust_policy_default_tiers_and_enablement() -> None:
-    assert source_default_trust_tier("GBIF", "vernacular") is TrustTier.T2
+    assert source_default_trust_tier("GBIF", "vernacular") is TrustTier.T1
     assert source_default_trust_tier("CoL", "scientific_synonym") is TrustTier.T1
     assert source_default_trust_tier("Wikidata", "vernacular") is TrustTier.T3
-    assert source_default_trust_tier("iNaturalist", "vernacular_alias") is TrustTier.T4
+    assert source_default_trust_tier("iNaturalist", "vernacular_alias") is TrustTier.T3
     assert source_default_trust_tier("LibreTranslate", "generated_translation") is TrustTier.T5
 
     assert should_enable_name_by_default(TrustTier.T1, "low", "collision") is True

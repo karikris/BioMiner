@@ -196,7 +196,7 @@ def test_registry_public_cli_exposes_only_build_and_audit() -> None:
     dev_choices = commands["dev"]._subparsers._group_actions[0].choices  # noqa: SLF001
     dev_registry_choices = dev_choices["registry"]._subparsers._group_actions[0].choices  # noqa: SLF001
 
-    assert set(registry_choices) == {"build", "audit", "publish"}
+    assert set(registry_choices) == {"build", "harvest-col-xr", "audit", "publish"}
     for internal in {"fetch-taxonomy", "compile-fixture", "compile-enriched", "enrich-sources", "seed-flickr-queries"}:
         assert internal not in registry_choices
         assert internal in dev_registry_choices

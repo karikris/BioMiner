@@ -22,11 +22,17 @@ _SOURCE_PRECEDENCE = {
     "open tree": 11,
     "itis": 12,
     "eol": 13,
+    "specialist authority": 14,
+    "reviewed curated": 15,
     "wikisspecies": 20,
     "wikispecies": 20,
     "wikidata": 21,
     "inaturalist": 22,
     "bold": 23,
+    "corroborated checklist": 24,
+    "community": 30,
+    "dictionary": 40,
+    "machine translation": 41,
 }
 _NAME_CLASS_PRECEDENCE = {
     "accepted_scientific": 0,
@@ -57,9 +63,23 @@ def normalize_trust_tier(value: object, *, source: object = "", name_class: obje
         return "T5"
     if source_key in {"col", "col xr", "gbif"}:
         return "T1"
-    if source_key in {"ncbi", "open tree", "itis", "eol"}:
+    if source_key in {
+        "ncbi",
+        "open tree",
+        "opentree",
+        "itis",
+        "eol",
+        "specialist authority",
+        "reviewed curated",
+    }:
         return "T2"
-    if source_key in {"wikispecies", "wikidata", "inaturalist", "bold"}:
+    if source_key in {
+        "wikispecies",
+        "wikidata",
+        "inaturalist",
+        "bold",
+        "corroborated checklist",
+    }:
         return "T3"
     return "T4"
 

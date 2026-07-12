@@ -206,7 +206,7 @@ class GBIFVernacularClient:
                     "source_record_id": f"gbif_vernacular:{source_record_id}",
                     "source_taxon_id": source_taxon_id,
                     "lineage_check": lineage_check,
-                    "trust_tier": "T3",
+                    "trust_tier": "T1",
                     "precision_tier": str(row.get("precision_tier") or "medium"),
                     "confidence": match_confidence,
                     "enabled": enabled,

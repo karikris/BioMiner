@@ -13,6 +13,8 @@ from biominer.flickr_fetch.metadata_poller import MetadataPollState, _work_item_
 from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries_from_frame
 from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.col_xr import extract_col_xr_snapshot
+from biominer.registry.checklistbank import _attach_lineage, _json_rows, _node_frame
+from biominer.registry.trust_policy import TrustTier, source_default_trust_tier
 
 
 FAMILIES = ("Hesperiidae", "Papilionidae", "Pieridae", "Lycaenidae", "Riodinidae", "Nymphalidae", "Hedylidae")
@@ -319,3 +321,50 @@ def test_unified_store_drives_bioclip_supported_rank_order(tmp_path) -> None:
     broad_output = path_cascade_result_to_output_row(broad)
     assert broad.rank_steps[1].shortlist_limit == 20
     assert broad_output["genus_routing_mode"] == "top20_then_top3"
+
+
+def test_checklistbank_grouped_synonyms_are_flattened_without_group_duplicates() -> None:
+    payload = {
+        "heterotypic": [
+            {"id": "syn:1", "name": {"scientificName": "Papilio example synonym"}}
+        ],
+        "heterotypicGroups": [
+            [{"id": "syn:1", "name": {"scientificName": "Papilio example synonym"}}]
+        ],
+    }
+
+    assert [row["id"] for row in _json_rows(payload)] == ["syn:1"]
+
+
+def test_checklistbank_lineage_uses_unique_col_genus_in_same_family() -> None:
+    nodes = _node_frame(
+        [
+            {"id": "family", "name": "Papilionidae", "rank": "FAMILY", "status": "accepted"},
+            {"id": "genus", "parentId": "family", "name": "Papilio", "rank": "GENUS", "status": "accepted"},
+            {
+                "id": "species",
+                "parentId": "family",
+                "name": "Papilio example",
+                "rank": "SPECIES",
+                "status": "accepted",
+            },
+        ]
+    )
+
+    species = _attach_lineage(nodes).filter(pl.col("source_taxon_id") == "species").row(0, named=True)
+
+    assert species["family_source_taxon_id"] == "family"
+    assert species["genus_source_taxon_id"] == "genus"
+    assert species["genus"] == "Papilio"
+
+
+def test_query_source_tiers_cover_requested_authorities() -> None:
+    assert source_default_trust_tier("CoL XR", "vernacular") == TrustTier.T1
+    assert source_default_trust_tier("GBIF", "vernacular") == TrustTier.T1
+    assert source_default_trust_tier("NCBI", "vernacular") == TrustTier.T2
+    assert source_default_trust_tier("Open Tree", "vernacular") == TrustTier.T2
+    assert source_default_trust_tier("ITIS", "vernacular") == TrustTier.T2
+    assert source_default_trust_tier("Wikispecies", "vernacular") == TrustTier.T3
+    assert source_default_trust_tier("BOLD", "vernacular") == TrustTier.T3
+    assert source_default_trust_tier("community", "vernacular") == TrustTier.T4
+    assert source_default_trust_tier("machine translation", "generated_translation") == TrustTier.T5

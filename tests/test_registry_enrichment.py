@@ -821,7 +821,7 @@ def test_gbif_vernacular_client_reuses_existing_names_for_accepted_and_synonym_m
     ]
     assert [row["name_class"] for row in assertions] == ["vernacular_alias", "vernacular", "vernacular"]
     assert {row["source"] for row in assertions} == {"GBIF"}
-    assert {row["trust_tier"] for row in assertions} == {"T3"}
+    assert {row["trust_tier"] for row in assertions} == {"T1"}
     assert result["external_links"] == [
         {
             "accepted_taxon_key": "gbif:100",

@@ -61,6 +61,38 @@ def compile_registry_fixture(
     return manifest
 
 
+def compile_registry_parquet_source(
+    source_dir: str | Path,
+    output_dir: str | Path,
+    *,
+    registry_version: str,
+    scope_path: str | Path = "config/butterfly_scope.json",
+    query_curation_json: str | Path | None = None,
+) -> dict[str, Any]:
+    """Compile a registry from the durable CoL XR Parquet source snapshot."""
+
+    from biominer.registry.checklistbank import SOURCE_NODES_FILE, col_xr_payload_from_parquet
+
+    source = Path(source_dir)
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    payload = col_xr_payload_from_parquet(source)
+    frames, manifest = compile_registry_frames(
+        payload,
+        source_ref=source / SOURCE_NODES_FILE,
+        output_ref=output,
+        registry_version=registry_version,
+        scope_path=scope_path,
+        query_curation_json=query_curation_json,
+    )
+    for filename, frame in frames.items():
+        write_parquet(frame, output / filename)
+    (output / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return manifest
+
+
 def compile_registry_frames(
     source_payload: dict[str, Any],
     *,
