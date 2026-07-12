@@ -15,6 +15,7 @@ from biominer.bioclip.path_cascade_classifier import (
     PathCascadeResult,
     RankCandidateScore,
     RankStepResult,
+    GENUS_TOP1_CONFIDENCE_GUARDRAIL,
 )
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 from biominer.registry.classification_v3 import CLASSIFICATION_RANKS
@@ -43,6 +44,14 @@ def _parallel_candidate_columns() -> tuple[tuple[tuple[str, ...], int], ...]:
         )
     groups.extend(
         (
+            (
+                (
+                    "genus_top20",
+                    "genus_top20_node_ids",
+                    "genus_top20_scores",
+                ),
+                20,
+            ),
             (
                 (
                     "species_top20",
@@ -98,6 +107,22 @@ def _rank_output_schema() -> dict[str, pl.DataType]:
     return schema
 
 
+def _butterfly_funnel_output_schema() -> dict[str, pl.DataType]:
+    return {
+        "workflow": pl.String,
+        "family_candidate_count": pl.UInt32,
+        "genus_candidate_count_within_top1_family": pl.UInt32,
+        "genus_top1_confidence": pl.Float32,
+        "genus_top1_confidence_guardrail": pl.Float32,
+        "genus_routing_mode": pl.String,
+        "genus_top20": pl.List(pl.String),
+        "genus_top20_node_ids": pl.List(pl.String),
+        "genus_top20_scores": pl.List(pl.Float32),
+        "species_candidate_count_within_top3_genera": pl.UInt32,
+        "species_top1_selected_from_top5": pl.Boolean,
+    }
+
+
 PATH_CASCADE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "classifier_schema_version": pl.String,
     "classification_version": pl.String,
@@ -111,6 +136,7 @@ PATH_CASCADE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "species_rerank_top_k": pl.UInt8,
     "species_report_top_k": pl.UInt8,
     **_rank_output_schema(),
+    **_butterfly_funnel_output_schema(),
     "species_top20": pl.List(pl.String),
     "species_top20_node_ids": pl.List(pl.String),
     "species_top20_accepted_taxon_keys": pl.List(pl.String),
@@ -210,6 +236,8 @@ def write_path_cascade_output(
 
 def path_cascade_result_to_output_row(result: PathCascadeResult) -> dict[str, Any]:
     steps_by_rank = {step.rank: step for step in result.rank_steps}
+    if tuple(step.rank for step in result.rank_steps) == ("FAMILY", "GENUS", "SPECIES"):
+        return _supported_butterfly_funnel_output_row(result, steps_by_rank)
     if set(steps_by_rank) != set(CLASSIFICATION_RANKS):
         missing = sorted(set(CLASSIFICATION_RANKS) - set(steps_by_rank))
         raise ValueError("path cascade result is missing rank steps: " + ", ".join(missing))
@@ -271,6 +299,96 @@ def path_cascade_result_to_output_row(result: PathCascadeResult) -> dict[str, An
         )
     row.update(_species_output_values(result))
     return path_cascade_output_frame([row]).row(0, named=True)
+
+
+def _supported_butterfly_funnel_output_row(
+    result: PathCascadeResult,
+    steps_by_rank: Mapping[str, RankStepResult],
+) -> dict[str, Any]:
+    family = steps_by_rank["FAMILY"]
+    genus = steps_by_rank["GENUS"]
+    species = steps_by_rank["SPECIES"]
+    family_top1 = family.top_candidates[0] if family.top_candidates else None
+    genus_top20 = genus.shortlist_candidates
+    genus_top3 = genus.top_candidates
+    row: dict[str, Any] = {
+        "classifier_schema_version": "butterfly-family-genus-species-funnel-v1",
+        "classification_version": result.classification_version,
+        "prompt_version": result.prompt_version,
+        "hierarchy_fingerprint": result.taxonomy_fingerprint,
+        "classification_fingerprint": result.classification_fingerprint,
+        "embedding_cache_fingerprint": result.embedding_cache_fingerprint,
+        "beam_strategy": result.beam_strategy,
+        "rank_beam_width": result.rank_beam_width,
+        "species_first_pass_top_k": DEFAULT_SPECIES_FIRST_PASS_TOP_K,
+        "species_rerank_top_k": DEFAULT_SPECIES_RERANK_TOP_K,
+        "species_report_top_k": 1,
+        "skipped_ranks": [],
+        "fully_skipped_ranks": [],
+        "workflow": "family_top1_genus_top20_top3_species_top20_top5_top1",
+        "family_candidate_count": family.candidate_count,
+        "family_top1": family_top1.scientific_name if family_top1 else None,
+        "family_top1_node_id": family_top1.node_id if family_top1 else None,
+        "family_top1_score": family_top1.raw_similarity if family_top1 else None,
+        "family_top1_margin": family.top1_margin,
+        "family_top3": [family_top1.scientific_name] if family_top1 else [],
+        "family_top3_node_ids": [family_top1.node_id] if family_top1 else [],
+        "family_top3_scores": [family_top1.raw_similarity] if family_top1 else [],
+        "selected_family": family_top1.scientific_name if family_top1 else None,
+        "selected_family_node_id": family_top1.node_id if family_top1 else None,
+        "selected_family_score": family_top1.raw_similarity if family_top1 else None,
+        "genus_candidate_count_within_top1_family": genus.candidate_count,
+        "genus_top1_confidence": genus.top_candidates[0].raw_similarity if genus.top_candidates else None,
+        "genus_top1_confidence_guardrail": GENUS_TOP1_CONFIDENCE_GUARDRAIL,
+        "genus_routing_mode": "top1_above_90pct" if genus.shortlist_limit == 1 else "top20_then_top3",
+        "genus_top20": [score.scientific_name for score in genus_top20],
+        "genus_top20_node_ids": [score.node_id for score in genus_top20],
+        "genus_top20_scores": [score.raw_similarity for score in genus_top20],
+        "genus_top3": [score.scientific_name for score in genus_top3],
+        "genus_top3_node_ids": [score.node_id for score in genus_top3],
+        "genus_top3_scores": [score.raw_similarity for score in genus_top3],
+        "selected_genus": next((score.scientific_name for score in result.final_winning_path if score.rank == "GENUS"), None),
+        "selected_genus_node_id": next((score.node_id for score in result.final_winning_path if score.rank == "GENUS"), None),
+        "selected_genus_score": next((score.raw_similarity for score in result.final_winning_path if score.rank == "GENUS"), None),
+        "species_candidate_count_within_top3_genera": species.candidate_count,
+        **_species_output_values(result),
+        "species_top1_selected_from_top5": True,
+        "candidate_counts_by_rank": {
+            "FAMILY": family.candidate_count,
+            "SUBFAMILY": 0,
+            "TRIBE": 0,
+            "SUBTRIBE": 0,
+            "GENUS": genus.candidate_count,
+            "SPECIES": species.candidate_count,
+        },
+        "retained_counts_by_rank": {
+            "FAMILY": family.retained_count,
+            "SUBFAMILY": 0,
+            "TRIBE": 0,
+            "SUBTRIBE": 0,
+            "GENUS": genus.retained_count,
+            "SPECIES": species.retained_count,
+        },
+        "active_path_counts_before_by_rank": {
+            "FAMILY": family.active_path_count_before,
+            "SUBFAMILY": 0,
+            "TRIBE": 0,
+            "SUBTRIBE": 0,
+            "GENUS": genus.active_path_count_before,
+            "SPECIES": species.active_path_count_before,
+        },
+        "active_path_counts_after_by_rank": {
+            "FAMILY": family.active_path_count_after,
+            "SUBFAMILY": 0,
+            "TRIBE": 0,
+            "SUBTRIBE": 0,
+            "GENUS": genus.active_path_count_after,
+            "SPECIES": species.active_path_count_after,
+        },
+        "pruning_trace_version": "butterfly-funnel-v1",
+        "pruning_trace_json": _pruning_trace_json(result),
+    }
+    return row
 
 
 def path_cascade_result_to_object_score_row(

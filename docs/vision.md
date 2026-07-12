@@ -11,50 +11,33 @@ embedding dimensions, and cache fingerprint. Image embeddings are batched and
 compared with normalized cached text embeddings. A missing, stale, incomplete,
 or model-mismatched cache fails the hierarchical production stage.
 
-## Six-rank global cascade
+## Butterfly family/genus/species funnel
 
-The ordered production hierarchy is:
+The registry stores BioCLIP's supported identity hierarchy:
 
 ```text
-FAMILY → SUBFAMILY → TRIBE → SUBTRIBE → GENUS → SPECIES
+KINGDOM → PHYLUM → CLASS → ORDER → FAMILY → GENUS → SPECIES
 ```
 
-At each intermediate rank, the candidates are the deduplicated union of actual
-nodes in the surviving reviewed leaf paths. Each node is ordered only by its
-current-rank raw similarity: the mean normalized image/text embedding dot
-product across that node's reviewed prompts. The fixed
-`global_rank_top_k` beam retains at most 3 nodes across the whole rank. All
-three may belong to one parent. It is not top 3 per parent, and no cumulative,
-multiplied, or averaged cross-rank path score affects pruning.
-
-SUBTRIBE remains a real position in the rank order. A path without a supported
-subtribe survives only through a sourced, reviewed SUBTRIBE skip. Skip paths
-are carried forward without a fabricated node, score, or beam position; actual
-SUBTRIBE nodes in other active paths still compete for the same global top 3.
-
-The global genus top 3 defines the species candidate universe. Species are
-ordered solely by the species first-pass prompt score and truncated to top 20.
-Exactly those candidates are scored again with the distinct species-rerank
-prompt stage. The reranked top 5 and reported top 3 are persisted; the reranked
-top 1 determines the final winning taxonomic path. Target injection is not
-used for open classification.
+Visual routing first scores all seven butterfly families and keeps family top
+1. Genera belonging to that family are ranked to top 20, then narrowed to top
+3. Species beneath those genera are ranked to top 20, exactly those species
+are reranked with distinct prompts to top 5, and top 1 is selected from that
+top 5. If genus top-1 confidence is strictly above 0.90, only that genus is
+used for the species universe; otherwise the top-20 then top-3 genus route is
+used. Target injection is not used for open classification.
 
 Each crop records:
 
-- `<rank>_top3`, `<rank>_top3_node_ids`, and `<rank>_top3_scores` for FAMILY through GENUS;
-- rank-local `<rank>_top1`, `<rank>_top1_node_id`, `<rank>_top1_score`, and `<rank>_margin` fields;
+- family candidate count, top 1 identity, score, and margin;
+- genus top 20 and top 3 identities, node IDs, scores, confidence threshold, and routing mode;
 - final winning-path `selected_<rank>`, `selected_<rank>_node_id`, and `selected_<rank>_score` fields;
 - `species_top20` with first-pass scores, reranked `species_top5`, and reported `species_top3` with accepted GBIF keys;
-- candidate, retained, and active-path counts by rank, plus the versioned pruning trace and reviewed skip reasons;
+- candidate, retained, and active-path counts, plus the versioned routing trace;
 - `classification_version`, `prompt_version`, `classification_fingerprint`, `hierarchy_fingerprint`, and `embedding_cache_fingerprint`.
 
-Rank-local top 1 and final selected path answer different questions. For
-example, `family_top1` is the highest family raw similarity at the FAMILY step;
-`selected_family` is the family containing the final reranked species winner
-and may differ. A reviewed SUBTRIBE skip on the winning path leaves its selected
-SUBTRIBE fields null and is recorded in `skipped_ranks`;
-`fully_skipped_ranks` identifies a rank skipped by every active path at that
-step.
+Every shortlist remains available for audit even when the >0.90 genus shortcut
+is used.
 
 Classifier output remains screening evidence. Open classifications enter `in_review`; GBIF and reviewed registry evidence define identity.
 

@@ -48,11 +48,10 @@ def test_authoritative_examples_separate_base_overlay_cache_and_run_roots() -> N
     )
 
     for required in (
-        "--output-dir data/registry/classification-v3",
-        "--taxonomy-candidate-table data/registry/classification-v3",
-        "--output data/cache/classification-v3/classification_text_embeddings.parquet",
-        "--taxonomy-candidate-table s3://biominer/registry/classification-v3",
-        "--taxonomy-text-embedding-cache s3://biominer/cache/classification-v3/classification_text_embeddings.parquet",
+        "--output-dir data/registry/current",
+        "--registry-dir data/registry/current",
+        "--output data/cache/taxonomy/current/classification_text_embeddings.parquet",
+        "--taxonomy-text-embedding-cache s3://biominer/cache/taxonomy/current/classification_text_embeddings.parquet",
     ):
         assert required in text
     for forbidden in (
@@ -132,7 +131,6 @@ def test_readme_and_authoritative_docs_do_not_reference_removed_commands() -> No
         "biominer vision rolling-screen",
         "biominer vision score",
         "biominer vision ablate",
-        "biominer bioclip screen",
         "build-classification-table",
     ):
         assert removed not in text

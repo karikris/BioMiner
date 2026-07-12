@@ -34,6 +34,7 @@ INTERMEDIATE_CLASSIFICATION_RANKS = (
     "SUBTRIBE",
     "GENUS",
 )
+GENUS_TOP1_CONFIDENCE_GUARDRAIL = 0.90
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,8 @@ class RankStepResult:
     reviewed_skip_path_count: int
     skipped: bool
     skip_reason: str | None
+    shortlist_candidates: tuple[RankCandidateScore, ...] = ()
+    shortlist_limit: int = 0
 
     def __post_init__(self) -> None:
         counts = (
@@ -118,6 +121,10 @@ class RankStepResult:
             raise ValueError("rank-step reviewed skip path count must be nonnegative")
         if self.skipped and self.retained_count:
             raise ValueError("a skipped rank cannot retain scored nodes")
+        if self.shortlist_limit < 0 or len(self.shortlist_candidates) > self.shortlist_limit:
+            raise ValueError("rank-step shortlist exceeds its configured limit")
+        if any(score.node_id not in self.candidate_node_ids for score in self.shortlist_candidates):
+            raise ValueError("rank-step shortlist must be drawn from scored candidates")
 
 
 @dataclass(frozen=True)
@@ -419,6 +426,9 @@ def classify_path_cascade(
     if rank_beam_width != DEFAULT_RANK_BEAM_WIDTH:
         raise ValueError(f"rank_beam_width is fixed at {DEFAULT_RANK_BEAM_WIDTH}")
     active_paths = taxonomy_store.enabled_paths()
+    rank_order = tuple(getattr(taxonomy_store, "rank_order", CLASSIFICATION_RANKS))
+    intermediate_ranks = rank_order[:-1]
+    optional_ranks = OPTIONAL_CLASSIFICATION_RANKS if rank_order == CLASSIFICATION_RANKS else ()
     if active_paths.is_empty():
         raise PathCascadeClassificationError(
             code="no_active_paths",
@@ -427,13 +437,22 @@ def classify_path_cascade(
             active_path_count=0,
             message="taxonomy store has no enabled classification paths",
         )
+    if rank_order == ("KINGDOM", "PHYLUM", "CLASS", "ORDER", "FAMILY", "GENUS", "SPECIES"):
+        return _classify_supported_butterfly_funnel(
+            item=item,
+            scorer=scorer,
+            taxonomy_store=taxonomy_store,
+            active_paths=active_paths,
+            rank_beam_width=rank_beam_width,
+            embedding_cache_fingerprint=embedding_cache_fingerprint,
+        )
     rank_steps: list[RankStepResult] = []
-    for rank in INTERMEDIATE_CLASSIFICATION_RANKS:
+    for rank in intermediate_ranks:
         active_before = active_paths.height
-        parent_node_ids = _parent_node_ids(active_paths, rank)
+        parent_node_ids = _parent_node_ids(active_paths, rank, rank_order=rank_order)
         candidates = taxonomy_store.candidate_nodes_in_paths(active_paths, rank)
         reviewed_skips = taxonomy_store.reviewed_skip_paths(active_paths, rank)
-        if rank in OPTIONAL_CLASSIFICATION_RANKS:
+        if rank in optional_ranks:
             asserted_paths = taxonomy_store.paths_with_asserted_rank(active_paths, rank)
             active_hashes = set(active_paths["hierarchy_hash"].to_list())
             covered_hashes = set(asserted_paths["hierarchy_hash"].to_list()) | set(
@@ -448,7 +467,7 @@ def classify_path_cascade(
                     message="optional rank paths require either an asserted node or reviewed skip evidence",
                 )
         if candidates.is_empty():
-            if rank in OPTIONAL_CLASSIFICATION_RANKS:
+            if rank in optional_ranks:
                 skip_hashes = set(reviewed_skips["hierarchy_hash"].to_list())
                 if active_hashes and active_hashes == skip_hashes:
                     rank_steps.append(
@@ -575,7 +594,7 @@ def classify_path_cascade(
             active_path_count_after=species_active_paths.height,
             top_candidates=species_top20,
             top1_margin=raw_similarity_margin(species_scores),
-            parent_node_ids=_parent_node_ids(active_paths, "SPECIES"),
+            parent_node_ids=_parent_node_ids(active_paths, "SPECIES", rank_order=rank_order),
             candidate_node_ids=tuple(score.node_id for score in species_scores),
             candidate_raw_similarities=tuple(score.raw_similarity for score in species_scores),
             retained_node_ids=tuple(score.node_id for score in species_top20),
@@ -662,6 +681,7 @@ def classify_path_cascade(
         path_row=winning_path_row,
         rank_steps=tuple(rank_steps),
         species_score=species_top1,
+        rank_order=rank_order,
     )
     return PathCascadeResult(
         classification_version=taxonomy_store.classification_version,
@@ -683,13 +703,255 @@ def classify_path_cascade(
     )
 
 
-def _parent_node_ids(active_paths: pl.DataFrame, rank: str) -> tuple[str, ...]:
-    rank_index = CLASSIFICATION_RANKS.index(rank)
+def _classify_supported_butterfly_funnel(
+    *,
+    item: dict[str, Any],
+    scorer: PathCascadeScorer,
+    taxonomy_store: PathTaxonomyStore,
+    active_paths: pl.DataFrame,
+    rank_beam_width: int,
+    embedding_cache_fingerprint: str | None,
+) -> PathCascadeResult:
+    rank_steps: list[RankStepResult] = []
+
+    family_candidates = taxonomy_store.candidate_nodes_in_paths(active_paths, "FAMILY")
+    family_scores = score_rank_candidates(
+        item=item,
+        scorer=scorer,
+        taxonomy_store=taxonomy_store,
+        candidates=family_candidates,
+    )
+    if not family_scores:
+        raise PathCascadeClassificationError(
+            code="no_family_candidates",
+            rank="FAMILY",
+            candidate_count=0,
+            active_path_count=active_paths.height,
+            message="seven-rank registry has no enabled butterfly families",
+        )
+    family_top1 = family_scores[:1]
+    family_paths = taxonomy_store.filter_paths_by_rank_nodes(
+        active_paths, "FAMILY", (family_top1[0].node_id,)
+    )
+    rank_steps.append(
+        _funnel_rank_step(
+            rank="FAMILY",
+            scores=family_scores,
+            retained=family_top1,
+            shortlist=family_top1,
+            shortlist_limit=1,
+            active_before=active_paths,
+            active_after=family_paths,
+            parent_node_ids=(),
+        )
+    )
+
+    genus_candidates = taxonomy_store.candidate_nodes_in_paths(family_paths, "GENUS")
+    genus_scores = score_rank_candidates(
+        item=item,
+        scorer=scorer,
+        taxonomy_store=taxonomy_store,
+        candidates=genus_candidates,
+    )
+    genus_top1_confidence = _guardrail_confidence(genus_scores)
+    high_confidence_genus = genus_top1_confidence > GENUS_TOP1_CONFIDENCE_GUARDRAIL
+    genus_top20 = genus_scores[:1] if high_confidence_genus else genus_scores[:20]
+    genus_top3 = genus_top20[:1] if high_confidence_genus else genus_top20[:3]
+    if not genus_top3:
+        raise PathCascadeClassificationError(
+            code="no_genus_candidates",
+            rank="GENUS",
+            candidate_count=0,
+            active_path_count=family_paths.height,
+            message="top family has no enabled genus candidates",
+        )
+    genus_paths = taxonomy_store.filter_paths_by_rank_nodes(
+        family_paths, "GENUS", tuple(score.node_id for score in genus_top3)
+    )
+    rank_steps.append(
+        _funnel_rank_step(
+            rank="GENUS",
+            scores=genus_scores,
+            retained=genus_top3,
+            shortlist=genus_top20,
+            shortlist_limit=1 if high_confidence_genus else 20,
+            active_before=family_paths,
+            active_after=genus_paths,
+            parent_node_ids=(family_top1[0].node_id,),
+        )
+    )
+
+    species_candidates = taxonomy_store.species_nodes_in_paths(genus_paths)
+    species_scores = score_rank_candidates(
+        item=item,
+        scorer=scorer,
+        taxonomy_store=taxonomy_store,
+        candidates=species_candidates,
+        prompt_stage=SPECIES_FIRST_PASS_PROMPT_STAGE,
+    )
+    species_top20 = _attach_species_mappings(
+        taxonomy_store=taxonomy_store,
+        scores=species_scores[:DEFAULT_SPECIES_FIRST_PASS_TOP_K],
+        active_path_count=genus_paths.height,
+    )
+    species_top20 = tuple(
+        replace(score, first_pass_raw_similarity=score.raw_similarity)
+        for score in species_top20
+    )
+    if not species_top20:
+        raise PathCascadeClassificationError(
+            code="no_species_candidates",
+            rank="SPECIES",
+            candidate_count=0,
+            active_path_count=genus_paths.height,
+            message="top three genera contain no enabled species candidates",
+        )
+    species_paths = taxonomy_store.filter_paths_by_rank_nodes(
+        genus_paths, "SPECIES", tuple(score.node_id for score in species_top20)
+    )
+    rank_steps.append(
+        _funnel_rank_step(
+            rank="SPECIES",
+            scores=species_scores,
+            retained=species_top20,
+            shortlist=species_top20,
+            shortlist_limit=20,
+            active_before=genus_paths,
+            active_after=species_paths,
+            parent_node_ids=tuple(score.node_id for score in genus_top3),
+            prompt_stage=SPECIES_FIRST_PASS_PROMPT_STAGE,
+        )
+    )
+
+    rerank_candidates = taxonomy_store.species_nodes_in_paths(species_paths)
+    rerank_unmapped = score_rank_candidates(
+        item=item,
+        scorer=scorer,
+        taxonomy_store=taxonomy_store,
+        candidates=rerank_candidates,
+        prompt_stage=SPECIES_RERANK_PROMPT_STAGE,
+    )
+    if {score.node_id for score in rerank_unmapped} != {score.node_id for score in species_top20}:
+        raise PathCascadeClassificationError(
+            code="incomplete_species_rerank",
+            rank="SPECIES",
+            candidate_count=len(rerank_unmapped),
+            active_path_count=species_paths.height,
+            message="species top-five rerank must score exactly the first-pass top twenty",
+        )
+    rerank_mapped = _attach_species_mappings(
+        taxonomy_store=taxonomy_store,
+        scores=rerank_unmapped,
+        active_path_count=species_paths.height,
+    )
+    first_pass = {score.node_id: score.raw_similarity for score in species_top20}
+    species_reranked_top20 = tuple(
+        replace(
+            score,
+            first_pass_raw_similarity=first_pass[score.node_id],
+            rerank_raw_similarity=score.raw_similarity,
+        )
+        for score in rerank_mapped
+    )
+    species_top5 = species_reranked_top20[:DEFAULT_SPECIES_RERANK_TOP_K]
+    species_top3 = species_top5[:DEFAULT_SPECIES_REPORT_TOP_K]
+    species_top1 = species_top5[0]
+    top5_paths = taxonomy_store.filter_paths_by_rank_nodes(
+        species_paths, "SPECIES", tuple(score.node_id for score in species_top5)
+    )
+    rerank_step = _funnel_rank_step(
+        rank="SPECIES",
+        scores=species_reranked_top20,
+        retained=species_top5,
+        shortlist=species_top5,
+        shortlist_limit=5,
+        active_before=species_paths,
+        active_after=top5_paths,
+        parent_node_ids=tuple(score.node_id for score in genus_top3),
+        prompt_stage=SPECIES_RERANK_PROMPT_STAGE,
+    )
+    winning_path = _winning_path_scores(
+        path_row=taxonomy_store.path_for_species_node(species_top1.node_id),
+        rank_steps=tuple(rank_steps),
+        species_score=species_top1,
+        rank_order=("FAMILY", "GENUS", "SPECIES"),
+    )
+    return PathCascadeResult(
+        classification_version=taxonomy_store.classification_version,
+        prompt_version=taxonomy_store.prompt_version,
+        taxonomy_fingerprint=taxonomy_store.hierarchy_fingerprint,
+        classification_fingerprint=taxonomy_store.classification_fingerprint,
+        embedding_cache_fingerprint=embedding_cache_fingerprint,
+        beam_strategy=GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
+        rank_beam_width=rank_beam_width,
+        rank_steps=tuple(rank_steps),
+        species_rerank_step=rerank_step,
+        species_top20=species_top20,
+        species_reranked_top20=species_reranked_top20,
+        species_top5=species_top5,
+        species_top3=species_top3,
+        species_top1=species_top1,
+        final_winning_path=winning_path,
+        skipped_ranks=(),
+    )
+
+
+def _funnel_rank_step(
+    *,
+    rank: str,
+    scores: tuple[RankCandidateScore, ...],
+    retained: tuple[RankCandidateScore, ...],
+    shortlist: tuple[RankCandidateScore, ...],
+    shortlist_limit: int,
+    active_before: pl.DataFrame,
+    active_after: pl.DataFrame,
+    parent_node_ids: tuple[str, ...],
+    prompt_stage: str = RANK_SCREEN_PROMPT_STAGE,
+) -> RankStepResult:
+    retained_ids = tuple(score.node_id for score in retained)
+    return RankStepResult(
+        rank=rank,
+        prompt_stage=prompt_stage,
+        candidate_count=len(scores),
+        retained_count=len(retained),
+        active_path_count_before=active_before.height,
+        active_path_count_after=active_after.height,
+        top_candidates=retained,
+        top1_margin=raw_similarity_margin(scores),
+        parent_node_ids=parent_node_ids,
+        candidate_node_ids=tuple(score.node_id for score in scores),
+        candidate_raw_similarities=tuple(score.raw_similarity for score in scores),
+        retained_node_ids=retained_ids,
+        pruned_node_ids=tuple(score.node_id for score in scores if score.node_id not in set(retained_ids)),
+        reviewed_skip_path_count=0,
+        skipped=False,
+        skip_reason=None,
+        shortlist_candidates=shortlist,
+        shortlist_limit=shortlist_limit,
+    )
+
+
+def _guardrail_confidence(scores: Sequence[RankCandidateScore]) -> float:
+    if not scores:
+        return 0.0
+    # BioCLIP deployments may provide calibrated 0..1 similarities. Keep the
+    # routing threshold explicit and bounded; calibration can replace this
+    # adapter without changing the funnel contract.
+    return max(0.0, min(1.0, float(scores[0].raw_similarity)))
+
+
+def _parent_node_ids(
+    active_paths: pl.DataFrame,
+    rank: str,
+    *,
+    rank_order: Sequence[str] = CLASSIFICATION_RANKS,
+) -> tuple[str, ...]:
+    rank_index = rank_order.index(rank)
     if rank_index == 0:
         return ()
     parent_ids: set[str] = set()
     for path in active_paths.iter_rows(named=True):
-        for parent_rank in reversed(CLASSIFICATION_RANKS[:rank_index]):
+        for parent_rank in reversed(rank_order[:rank_index]):
             node_id = str(path.get(f"{parent_rank.casefold()}_node_id") or "")
             if node_id:
                 parent_ids.add(node_id)
@@ -746,6 +1008,7 @@ def _winning_path_scores(
     path_row: dict[str, object],
     rank_steps: tuple[RankStepResult, ...],
     species_score: RankCandidateScore,
+    rank_order: Sequence[str] = CLASSIFICATION_RANKS,
 ) -> tuple[RankCandidateScore, ...]:
     score_by_node = {
         score.node_id: score
@@ -754,7 +1017,7 @@ def _winning_path_scores(
     }
     score_by_node[species_score.node_id] = species_score
     winning: list[RankCandidateScore] = []
-    for rank in CLASSIFICATION_RANKS:
+    for rank in rank_order:
         node_id = str(path_row.get(f"{rank.casefold()}_node_id") or "")
         if not node_id:
             continue
@@ -778,6 +1041,7 @@ __all__ = [
     "DEFAULT_SPECIES_RERANK_TOP_K",
     "GLOBAL_RANK_TOP_K_BEAM_STRATEGY",
     "INTERMEDIATE_CLASSIFICATION_RANKS",
+    "GENUS_TOP1_CONFIDENCE_GUARDRAIL",
     "PathCascadeClassificationError",
     "PathCascadeEmbeddingScorer",
     "PathCascadeResult",

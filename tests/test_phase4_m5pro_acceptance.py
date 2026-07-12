@@ -110,7 +110,7 @@ def test_phase4_docs_and_cli_expose_supported_developer_benchmarks() -> None:
     assert "uv run biominer dev vision benchmark-plumbing" in vision_doc
     assert "uv run biominer dev vision benchmark-rolling-matrix" in vision_doc
     assert "persistent worker" in vision_doc
-    assert "Direct detect, screen, score" in readme
+    assert "family top 1" in readme
 
 
 def _dependency_name(value: object) -> str:

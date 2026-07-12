@@ -44,7 +44,6 @@ from biominer.flickr_fetch.cloud_poller import CloudMetadataPoller, flickr_query
 from biominer.storage.parquet import write_parquet
 from biominer.flickr_fetch.metadata_poller import DEFAULT_STALE_CLAIM_SECONDS, SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries_from_frame
-from biominer.registry.classification_v3 import classification_v3_artifact_uris
 from biominer.reports.vision import build_vision_stage_metrics, write_vision_stage_reports
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import RunArtifactUris, RunPaths
@@ -105,7 +104,7 @@ class ProductionRunRequest:
     vision_profile: str | None = None
     vision_settings: VisionRuntimeSettings = field(default_factory=VisionRuntimeSettings)
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE
-    taxonomy_candidate_table: str | Path | None = None
+    taxonomy_candidate_table: str | Path | None = None  # Deprecated; registry_dir is canonical.
     taxonomy_text_embedding_cache: str | Path | None = None
     beam_strategy: str = GLOBAL_RANK_TOP_K_BEAM_STRATEGY
     rank_beam_width: int = DEFAULT_RANK_BEAM_WIDTH
@@ -169,6 +168,7 @@ class ProductionRunPlan:
                 "vision_profile": self.request.vision_profile,
                 "vision_settings": asdict(self.request.vision_settings),
                 "classification_mode": self.request.classification_mode,
+                "registry_taxonomy": self.request.registry_dir,
                 "taxonomy_candidate_table": str(self.request.taxonomy_candidate_table) if self.request.taxonomy_candidate_table else None,
                 "taxonomy_text_embedding_cache": str(self.request.taxonomy_text_embedding_cache)
                 if self.request.taxonomy_text_embedding_cache
@@ -225,6 +225,7 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
             "vision_profile": request.vision_profile,
             "vision_settings": asdict(request.vision_settings),
             "classification_mode": request.classification_mode,
+            "registry_taxonomy": request.registry_dir,
             "taxonomy_candidate_table": str(request.taxonomy_candidate_table) if request.taxonomy_candidate_table else None,
             "taxonomy_text_embedding_cache": str(request.taxonomy_text_embedding_cache)
             if request.taxonomy_text_embedding_cache
@@ -284,9 +285,7 @@ class ProductionRunOrchestrator:
         self.registry_builder = registry_builder
         self.flickr_api_key = flickr_api_key
         self.species_candidate_path = self._resolve_species_candidate_path(
-            request_taxonomy_candidate_table=species_candidate_path
-            if species_candidate_path is not None
-            else self.request.taxonomy_candidate_table,
+            registry_taxonomy_override=species_candidate_path or self.request.taxonomy_candidate_table,
             resolved_registry_dir=self.request.registry_dir,
         )
         self.allow_single_target_fixture = allow_single_target_fixture
@@ -295,11 +294,11 @@ class ProductionRunOrchestrator:
     def _resolve_species_candidate_path(
         self,
         *,
-        request_taxonomy_candidate_table: str | Path | None,
+        registry_taxonomy_override: str | Path | None,
         resolved_registry_dir: str | None,
     ) -> str | Path | None:
-        if request_taxonomy_candidate_table is not None:
-            return request_taxonomy_candidate_table
+        if registry_taxonomy_override is not None:
+            return registry_taxonomy_override
         if not resolved_registry_dir:
             return None
         if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
@@ -1089,7 +1088,7 @@ class ProductionRunOrchestrator:
                 StageExecutionResult(
                     status=StageStatus.FAILED,
                     message="missing_taxonomy_candidate_table",
-                    metrics={**base_metrics, "taxonomy_candidate_table_status": "missing"},
+                    metrics={**base_metrics, "registry_taxonomy_status": "missing", "taxonomy_candidate_table_status": "missing"},
                 ),
             )
         try:
@@ -1100,7 +1099,7 @@ class ProductionRunOrchestrator:
                 StageExecutionResult(
                     status=StageStatus.FAILED,
                     message=f"missing_taxonomy_candidate_table: {exc}",
-                    metrics={**base_metrics, "taxonomy_candidate_table_status": "missing"},
+                    metrics={**base_metrics, "registry_taxonomy_status": "missing", "taxonomy_candidate_table_status": "missing"},
                 ),
             )
         except ValueError as exc:
@@ -1109,7 +1108,7 @@ class ProductionRunOrchestrator:
                 StageExecutionResult(
                     status=StageStatus.FAILED,
                     message=f"invalid_taxonomy_candidate_table: {exc}",
-                    metrics={**base_metrics, "taxonomy_candidate_table_status": "invalid"},
+                    metrics={**base_metrics, "registry_taxonomy_status": "invalid", "taxonomy_candidate_table_status": "invalid"},
                 ),
             )
         findings = store.validation_findings()
@@ -1122,8 +1121,8 @@ class ProductionRunOrchestrator:
                     message="invalid_taxonomy_candidate_table: " + ", ".join(str(finding.get("code")) for finding in fatal),
                     metrics={
                         **base_metrics,
-                        **_butterfly_taxonomy_store_metrics(store, taxonomy_candidate_table_status="invalid"),
-                        "taxonomy_candidate_table_fatal_findings": len(fatal),
+                        **_butterfly_taxonomy_store_metrics(store, registry_taxonomy_status="invalid"),
+                        "registry_taxonomy_fatal_findings": len(fatal),
                     },
                 ),
             )
@@ -1132,9 +1131,9 @@ class ProductionRunOrchestrator:
             StageExecutionResult(
                 metrics={
                     **base_metrics,
-                    **_butterfly_taxonomy_store_metrics(store, taxonomy_candidate_table_status="valid"),
-                    "taxonomy_candidate_table_fatal_findings": 0,
-                    "taxonomy_candidate_table_warning_findings": sum(1 for finding in findings if finding.get("severity") == "warning"),
+                    **_butterfly_taxonomy_store_metrics(store, registry_taxonomy_status="valid"),
+                    "registry_taxonomy_fatal_findings": 0,
+                    "registry_taxonomy_warning_findings": sum(1 for finding in findings if finding.get("severity") == "warning"),
                 }
             ),
         )
@@ -1142,35 +1141,11 @@ class ProductionRunOrchestrator:
     def _read_butterfly_taxonomy_store(self, location: str | Path) -> PathTaxonomyStore:
         if is_cloud_uri(str(location)):
             if self.storage is None:
-                raise ValueError("storage_backend_required_for_taxonomy_candidate_table")
-            v3_uris = classification_v3_artifact_uris(str(location))
-            required = {
-                "sources",
-                "nodes",
-                "edges",
-                "gbif_mappings",
-                "leaf_paths",
-                "prompt_labels",
-                "qa_findings",
-                "manifest",
-            }
-            missing_v3 = [
-                uri
-                for key, uri in v3_uris.items()
-                if key in required and not self.storage.exists(uri)
-            ]
-            if missing_v3:
-                raise FileNotFoundError(", ".join(missing_v3))
-            return PathTaxonomyStore.from_frames(
-                sources=self.storage.read_parquet(v3_uris["sources"]),
-                nodes=self.storage.read_parquet(v3_uris["nodes"]),
-                edges=self.storage.read_parquet(v3_uris["edges"]),
-                gbif_mappings=self.storage.read_parquet(v3_uris["gbif_mappings"]),
-                leaf_paths=self.storage.read_parquet(v3_uris["leaf_paths"]),
-                prompt_labels=self.storage.read_parquet(v3_uris["prompt_labels"]),
-                qa_findings=self.storage.read_parquet(v3_uris["qa_findings"]),
-                manifest=self.storage.read_json(v3_uris["manifest"]),
-            )
+                raise ValueError("storage_backend_required_for_registry_taxonomy")
+            paths_uri = join_uri(str(location), "species_paths.parquet")
+            if not self.storage.exists(paths_uri):
+                raise FileNotFoundError(paths_uri)
+            return PathTaxonomyStore.from_species_paths(self.storage.read_parquet(paths_uri))
         v3_root = Path(location).parent if Path(location).suffix == ".parquet" else Path(location)
         return PathTaxonomyStore.read(v3_root)
 
@@ -1186,7 +1161,7 @@ class ProductionRunOrchestrator:
                     status=StageStatus.FAILED,
                     message=(
                         "missing_taxonomy_text_embedding_cache: hierarchical production "
-                        "requires a validated classification-v3 cache"
+                        "requires an embedding cache built from registry species_paths.parquet"
                     ),
                     metrics={
                         "taxonomy_text_embedding_cache_rows": 0,
@@ -1924,10 +1899,11 @@ def _visual_classification_config_metrics(
     candidate_table = (
         str(species_candidate_path)
         if species_candidate_path is not None
-        else (str(request.taxonomy_candidate_table) if request.taxonomy_candidate_table is not None else None)
+        else request.registry_dir
     )
     return {
         "classification_mode": request.classification_mode,
+        "registry_taxonomy": candidate_table,
         "taxonomy_candidate_table": candidate_table,
         "beam_strategy": request.beam_strategy,
         "rank_beam_width": request.rank_beam_width,
@@ -1940,13 +1916,14 @@ def _visual_classification_config_metrics(
 def _butterfly_taxonomy_store_metrics(
     store: PathTaxonomyStore,
     *,
-    taxonomy_candidate_table_status: str,
+    registry_taxonomy_status: str,
 ) -> dict[str, Any]:
     manifest = dict(store.manifest or {})
     family_count = store.rank_candidates("FAMILY").height
     species_count = store.leaf_paths.filter(store.leaf_paths["enabled"]).height
     return {
-        "taxonomy_candidate_table_status": taxonomy_candidate_table_status,
+        "registry_taxonomy_status": registry_taxonomy_status,
+        "taxonomy_candidate_table_status": registry_taxonomy_status,
         "classification_table_version": manifest.get("classification_version"),
         "classification_prompt_variant_version": manifest.get("prompt_version"),
         "classification_registry_version": manifest.get("registry_version"),
