@@ -231,7 +231,9 @@ def _flush_detection_row_buffer(*, row_buffer: list[dict[str, Any]], batch_paths
         return
     batch_dir.mkdir(parents=True, exist_ok=True)
     batch_path = batch_dir / f"batch-{len(batch_paths):06d}.parquet"
-    write_parquet(pl.DataFrame(row_buffer), batch_path)
+    # Use the durable schema explicitly. Polars' bounded inference can otherwise
+    # infer a Null column from early None values and reject a later real value.
+    write_parquet(pl.DataFrame(row_buffer, schema=DETECTION_OUTPUT_SCHEMA), batch_path)
     batch_paths.append(batch_path)
     row_buffer.clear()
 

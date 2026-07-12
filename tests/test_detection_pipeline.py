@@ -396,6 +396,30 @@ def test_detection_pipeline_empty_input_writes_stable_schema(tmp_path) -> None:
     }.issubset(frame.columns)
 
 
+def test_detection_pipeline_buffer_uses_schema_beyond_polars_inference_window(tmp_path) -> None:
+    records = [
+        {
+            "source": "flickr",
+            "flickr_photo_id": f"photo-{index:03d}",
+            "image_url": f"https://example.test/{index}.jpg",
+        }
+        for index in range(101)
+    ]
+    detected = [DetectionCandidate(label="butterfly_like", score=0.9, bbox_xyxy=(0, 0, 4, 4))]
+    detector = FakeObjectDetector([detected] * 100 + [[]])
+
+    result = run_detection_pipeline(
+        records=records,
+        detector=detector,
+        output_path=tmp_path / "mixed-null-buffer.parquet",
+        image_loader=lambda _record: _image(),
+        run_policy=DetectionRunPolicy(detector_batch_size=101, parquet_batch_rows=500),
+    )
+
+    assert result.frame.height == 101
+    assert result.frame["failure_reason"].tail(1).item() == "no_butterfly_like_object"
+
+
 def test_cropper_clamps_edge_bbox_adds_padding_and_hashes_deterministically() -> None:
     crop = crop_with_padding(_image(), bbox_xyxy=(-1.0, -1.0, 2.0, 2.0), padding_ratio=0.25, target_px=3)
     same = crop_with_padding(_image(), bbox_xyxy=(-1.0, -1.0, 2.0, 2.0), padding_ratio=0.25, target_px=3)

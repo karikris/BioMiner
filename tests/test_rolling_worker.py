@@ -12,6 +12,7 @@ from biominer.bioclip.object_runner import empty_object_score_frame
 from biominer.storage.parquet import write_parquet
 from biominer.vision.rolling_worker import (
     BatchPlanner,
+    BioCLIPWorker,
     CommitResult,
     CommitWorker,
     DetectionBatch,
@@ -23,6 +24,7 @@ from biominer.vision.rolling_worker import (
     ScoreBatch,
     ScoreInputBatch,
 )
+import biominer.vision.rolling_worker as rolling_worker_module
 from factories import canonical_records, object_detection_row, object_detections
 
 
@@ -205,6 +207,35 @@ def test_rolling_worker_logs_stage_progress_and_heartbeat(caplog) -> None:  # no
     assert any("vision_heartbeat active=" in message for message in messages)
     assert any("vision_stage_finished stage=bioclip_scoring" in message for message in messages)
     assert any("vision_run_finished" in message for message in messages)
+
+
+def test_bioclip_worker_dispatches_hierarchical_batches(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    calls: list[tuple[int, object, object]] = []
+
+    def fake_hierarchical(*, items, scorer, path_taxonomy_store, taxonomy_text_embedding_index):  # noqa: ANN001, ANN202
+        del scorer
+        calls.append((len(items), path_taxonomy_store, taxonomy_text_embedding_index))
+        return []
+
+    monkeypatch.setattr(rolling_worker_module, "_score_hierarchical_detection_batch", fake_hierarchical)
+    taxonomy_store = object()
+    embedding_index = object()
+    worker = BioCLIPWorker(
+        species_context=object(),  # type: ignore[arg-type]
+        candidate_set=object(),  # type: ignore[arg-type]
+        scorer=object(),  # type: ignore[arg-type]
+        output_dir=tmp_path,
+        classification_mode="hierarchical_butterfly_classification",
+        path_taxonomy_store=taxonomy_store,  # type: ignore[arg-type]
+        taxonomy_text_embedding_index=embedding_index,  # type: ignore[arg-type]
+    )
+    image_batch = ImageBatch(0, "batch-0", "part-0", pl.DataFrame({"flickr_photo_id": ["photo-1"]}))
+    detection_batch = DetectionBatch(image_batch, pl.DataFrame({"detection_id": ["det-1"]}))
+
+    result = worker(ScoreInputBatch(detection_batch, detection_batch.frame, items=({},)))
+
+    assert calls == [(1, taxonomy_store, embedding_index)]
+    assert result.frame.is_empty()
 
 
 def test_rolling_worker_image_slots_never_exceed_prefetch_limit() -> None:

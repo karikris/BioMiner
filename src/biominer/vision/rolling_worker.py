@@ -22,9 +22,18 @@ from biominer.bioclip.object_runner import (
     ObjectBioClipScorer,
     _ensure_columns,
     _score_detection_batch,
+    _score_hierarchical_detection_batch,
     is_bioclip_memory_error,
     write_object_evidence_outputs,
 )
+from biominer.bioclip.classification_modes import (
+    DEFAULT_CLASSIFICATION_MODE,
+    HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+    ClassificationMode,
+    normalize_classification_mode,
+)
+from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
+from biominer.bioclip.taxonomy_embedding_cache import TaxonomyTextEmbeddingIndex
 from biominer.detection.detector_base import DecodedImage, ObjectDetector
 from biominer.detection.image_io import load_decoded_image_from_record
 from biominer.detection.pipeline import DetectionPipelineResult, run_detection_pipeline
@@ -304,6 +313,9 @@ class BioCLIPWorker:
         bioclip_batch_size: int = 24,
         adaptive_batching: bool = False,
         min_bioclip_batch_size: int = 1,
+        classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
+        path_taxonomy_store: PathTaxonomyStore | None = None,
+        taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
     ) -> None:
         if bioclip_batch_size <= 0:
             raise ValueError("bioclip_batch_size must be positive")
@@ -318,6 +330,14 @@ class BioCLIPWorker:
         self.bioclip_batch_size = bioclip_batch_size
         self.adaptive_batching = adaptive_batching
         self.min_bioclip_batch_size = min_bioclip_batch_size
+        self.classification_mode = normalize_classification_mode(classification_mode)
+        self.path_taxonomy_store = path_taxonomy_store
+        self.taxonomy_text_embedding_index = taxonomy_text_embedding_index
+        if self.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+            if self.path_taxonomy_store is None or self.taxonomy_text_embedding_index is None:
+                raise ValueError(
+                    "hierarchical BioCLIP worker requires path taxonomy and text embedding indexes"
+                )
 
     def __call__(self, batch: ScoreInputBatch) -> ScoreBatch:
         self.score_dir.mkdir(parents=True, exist_ok=True)
@@ -328,14 +348,31 @@ class BioCLIPWorker:
         while pending:
             chunk = pending.pop(0)
             try:
-                rows.extend(
-                    _score_detection_batch(
+                if self.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+                    assert self.path_taxonomy_store is not None
+                    assert self.taxonomy_text_embedding_index is not None
+                    score_rows = _score_hierarchical_detection_batch(
+                        items=chunk,
+                        scorer=self.scorer,
+                        path_taxonomy_store=self.path_taxonomy_store,
+                        taxonomy_text_embedding_index=self.taxonomy_text_embedding_index,
+                    )
+                else:
+                    score_rows = _score_detection_batch(
                         items=chunk,
                         context=self.species_context,
                         candidate_set=self.candidate_set,
                         scorer=self.scorer,
                         ablation_mode="detector_crop",
                     )
+                rows.extend(score_rows)
+                logger.info(
+                    "bioclip_chunk_finished batch_id=%s chunk_rows=%d scored_total=%d pending_chunks=%d mode=%s",
+                    batch.detection_batch.image_batch.batch_id,
+                    len(chunk),
+                    len(rows),
+                    len(pending),
+                    self.classification_mode,
                 )
             except RuntimeError as exc:
                 if (
