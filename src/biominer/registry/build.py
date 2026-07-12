@@ -14,11 +14,6 @@ import polars as pl
 
 from biominer.registry import enrichment as registry_enrichment
 from biominer.registry.compiler import compile_registry_fixture, compile_registry_frames
-from biominer.registry.classification_v3 import (
-    classification_v3_artifact_uris,
-    compile_classification_v3_artifacts,
-    write_classification_v3_artifacts,
-)
 from biominer.registry.enrichment import (
     DEFAULT_ENRICHMENT_SOURCES,
     INATURALIST_DAILY_REQUEST_LIMIT,
@@ -608,14 +603,12 @@ def _add_local_classification_v3_outputs(
     manifest: dict[str, Any],
     skip: bool,
 ) -> dict[str, Any]:
-    classification: dict[str, Any] | None = None
-    if not skip:
-        result = write_classification_v3_artifacts(registry_dir)
-        classification = {key: value for key, value in result.items() if key != "outputs"}
     updated = {
         **manifest,
-        "classification_skipped": skip,
-        "classification": classification,
+        "classification_skipped": True,
+        "classification": None,
+        "taxonomy_input": "species_paths.parquet",
+        "legacy_classification_overlay_removed": True,
     }
     (registry_dir / "manifest.json").write_text(json.dumps(updated, indent=2, sort_keys=True), encoding="utf-8")
     return updated
@@ -630,23 +623,12 @@ def _add_cloud_classification_v3_outputs(
     manifest: dict[str, Any],
     skip: bool,
 ) -> dict[str, Any]:
-    classification: dict[str, Any] | None = None
-    if not skip:
-        frames, classification = compile_classification_v3_artifacts(
-            taxa,
-            registry_version=registry_version,
-        )
-        if int(classification.get("fatal_finding_count") or 0):
-            fatal_codes = frames["qa_findings"].filter(pl.col("severity") == "fatal")["code"].to_list()
-            raise ValueError("classification-v3 fatal QA: " + ", ".join(str(code) for code in fatal_codes))
-        uris = classification_v3_artifact_uris(registry_prefix)
-        for key, frame in frames.items():
-            storage.write_parquet_shard(uris[key], frame)
-        storage.write_json(uris["manifest"], classification)
     return {
         **manifest,
-        "classification_skipped": skip,
-        "classification": classification,
+        "classification_skipped": True,
+        "classification": None,
+        "taxonomy_input": "species_paths.parquet",
+        "legacy_classification_overlay_removed": True,
     }
 
 
@@ -919,16 +901,10 @@ def _promote_canonical_registry(staged_dir: Path, output_dir: Path, *, manifest:
 def _canonical_registry_files() -> tuple[str, ...]:
     return (
         "taxa.parquet",
+        "species_paths.parquet",
         "taxon_relations.parquet",
         "names.parquet",
-        "classification_sources.parquet",
-        "classification_nodes.parquet",
-        "classification_edges.parquet",
-        "species_gbif_mappings.parquet",
-        "classification_leaf_paths.parquet",
-        "classification_prompt_labels.parquet",
-        "classification_qa_findings.parquet",
-        "classification_manifest.json",
+        "name_collision_ledger.parquet",
         "name_evidence.parquet",
         "source_snapshots.parquet",
         "flickr_query_definitions.parquet",

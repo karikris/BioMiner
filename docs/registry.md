@@ -1,62 +1,48 @@
-# Registry and taxonomy
+# Unified butterfly registry
 
-Step 0 is mandatory. It produces an accepted GBIF taxonomic/name registry and a separate reviewed classification overlay.
+BioMiner uses one CoL XR identity registry for taxonomy, BioCLIP routing, and Flickr discovery evidence. The pinned primary source is ChecklistBank dataset `315557`, release `COL26.6 XR`, DOI `10.48580/dgy8b`.
 
-## GBIF spine
+## BioCLIP paths
 
-The configured root is Papilionoidea, GBIF key 1875. Production scope pins Hesperiidae, Papilionidae, Pieridae, Lycaenidae, Riodinidae, Nymphalidae, and Hedylidae. Accepted GBIF species keys are the durable identity. Synonyms, vernaculars, translations, and external identifiers are evidence attached to that identity.
-
-The base build writes `taxa.parquet`, `taxon_relations.parquet`, `names.parquet`, `name_evidence.parquet`, `source_snapshots.parquet`, `flickr_query_definitions.parquet`, `qa_findings.parquet`, and `manifest.json`. Checkpoints are family-scoped, atomic, versioned, and rejected when schema, scope, source, or registry version differs.
-
-## Reviewed classification overlay
-
-BioCLIP classification uses the ordered rank contract:
+Every accepted species has one row in `species_paths.parquet` using the ranks BioCLIP supports:
 
 ```text
-FAMILY → SUBFAMILY → TRIBE → SUBTRIBE → GENUS → SPECIES
+KINGDOM → PHYLUM → CLASS → ORDER → FAMILY → GENUS → SPECIES
 ```
 
-GBIF does not reliably expose subfamily, tribe, and subtribe in the butterfly backbone. Those ranks therefore come from reviewed source records, never suffix inference or name guessing. SUBTRIBE is optional only through an explicit, sourced, reviewed `TRIBE → GENUS` rank-skip edge; it is never invented. The production source catalog is `config/taxonomy/papilionoidea_classification_v3.json`.
+When an intermediate source rank is absent, the nearest observed parent is carried forward as a routing proxy. Proxy rows retain `target_rank`, their true semantic rank, `candidate_kind=carry_forward_proxy`, and `proxy_source_node_id`. Prompt text uses the semantic rank and never asserts that the parent belongs to the missing rank. A proxy score is routing evidence, not taxonomy.
 
-An enabled path requires:
+The classifier reads `species_paths.parquet` directly from `--registry-dir`. New commands do not expose a separate taxonomy-candidate-table input. A hidden compatibility alias remains temporarily for old local scripts.
 
-- allowed adjacent rank transitions, or the single reviewed optional-SUBTRIBE skip;
-- one enabled parent per child;
-- no cycles;
-- complete authority, release, citation, retrieval date, and evidence;
-- explicit reviewer identity and review date;
-- one accepted GBIF mapping per species node;
-- every mandatory rank (`FAMILY`, `SUBFAMILY`, `TRIBE`, `GENUS`, `SPECIES`) and either a sourced SUBTRIBE or a reviewed skip.
+## Canonical Flickr keywords
 
-Fatal findings block artifact promotion. Accepted species without a reviewed path remain in the GBIF registry but receive `unmapped_accepted_species` warnings and are unavailable to the hierarchical classifier.
+`names.parquet` retains every keyword/source/taxon association. Unicode NFKC normalization, case folding, whitespace collapse, and typographic punctuation normalization produce the request identity. Exactly one row per normalized term is canonical; lower-priority identical terms are marked `suppressed_duplicate` while retaining their associations.
 
-The classification manifest carries two deterministic identities:
+Trust order is T1 through T5. A term's highest available trust becomes `effective_trust_tier`. `flickr_query_definitions.parquet` contains exactly two logical definitions per actionable normalized term: one `tags` request and one `text` request. Registry version, language, taxon, and source are association data and do not enter logical or physical request identity.
 
-- `classification_fingerprint` covers the versioned sources, nodes, edges, GBIF mappings, leaf paths, and staged prompt labels;
-- `hierarchy_fingerprint` covers the rank order, nodes, edges, GBIF mappings, and leaf paths independently of prompt wording.
+The persistent SQLite discovery ledger stores canonical keywords, keyword associations, logical queries, physical requests, query results, and relational photo-keyword evidence. Completed physical partitions are never recreated. Newly associated keyword IDs are backfilled from existing results without calling Flickr or re-queuing a known image.
 
-The separately built text-embedding artifact carries
-`embedding_cache_fingerprint`. Its exact classification version, prompt
-version, hierarchy fingerprint, prompt-stage label set, model ID, model
-checkpoint, dimensions, normalized vectors, and self-fingerprint are validated
-before production scoring. A cache from another taxonomy, prompt set, model, or
-checkpoint is not accepted.
+## Published artifacts
 
-V2 artifacts are not upgraded or read as v3. Follow the
-[classification-v3 cutover runbook](migrations/classification-v3.md) to rebuild
-the overlay and cache in new versioned roots.
+`registry publish` validates complete species paths, unique canonical terms, logical-query uniqueness, and fatal QA, then publishes only:
 
-## Names and Flickr queries
+```text
+taxa.parquet
+species_paths.parquet
+names.parquet
+flickr_query_definitions.parquet
+source_snapshots.parquet
+qa_findings.parquet
+manifest.json
+```
 
-Source authority order is GBIF/CoL taxonomy, established vernacular sources, then generated translation candidates. Raw translations are T5 candidates and do not become enabled queries without review.
-
-Flickr definitions contain one normalized term and one field (`tags` or `text`). Scientific species terms run before common names, genus/family terms, broad butterfly terms, and experimental translations. Discovery evidence is retained even when repeated photo processing is deduplicated.
+`manifest.json` is written last.
 
 ## Commands
 
 ```bash
-uv run biominer registry build --output-dir data/registry/butterflies-v2 --registry-version butterflies-v2
-uv run biominer registry build-classification --registry-dir data/registry/butterflies-v2 --output-dir data/registry/classification-v3
-uv run biominer dev vision build-text-embedding-cache --taxonomy-candidate-table data/registry/classification-v3 --output data/cache/classification-v3/classification_text_embeddings.parquet
-uv run biominer registry audit --registry-dir data/registry/butterflies-v2 --report-dir reports
+uv run biominer registry build --output-dir data/registry/build --registry-version COL26.6-XR
+uv run biominer registry audit --registry-dir data/registry/build --report-dir reports
+uv run biominer registry publish --registry-dir data/registry/build --output-dir data/registry/current --replace-existing
+uv run biominer dev vision build-text-embedding-cache --registry-dir data/registry/current --output data/cache/taxonomy/current/classification_text_embeddings.parquet
 ```

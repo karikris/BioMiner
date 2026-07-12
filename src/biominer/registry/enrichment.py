@@ -1279,6 +1279,11 @@ def _source_taxon_row(row: dict[str, Any]) -> dict[str, Any]:
         "genus": str(row.get("genus") or ""),
         "species_key": str(row.get("species_key") or ""),
         "species": str(row.get("species") or ""),
+        "status": str(row.get("taxonomic_status") or "ACCEPTED"),
+        "source_taxon_id": str(row.get("source_taxon_id") or ""),
+        "scientific_name_authorship": str(row.get("scientific_name_authorship") or ""),
+        "source_dataset_key": str(row.get("source_dataset_key") or ""),
+        "source_release": str(row.get("source_release") or ""),
     }
 
 

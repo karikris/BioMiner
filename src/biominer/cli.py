@@ -25,6 +25,7 @@ from biominer.bioclip.classification_modes import (
     normalize_classification_mode,
 )
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
+from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
 from biominer.bioclip.object_runner import (
     write_object_evidence_outputs,
 )
@@ -55,12 +56,13 @@ from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry
-from biominer.registry.classification_v3 import DEFAULT_CLASSIFICATION_V3_SOURCE, write_classification_v3_artifacts
 from biominer.registry.compiler import compile_registry_fixture
+from biominer.registry.col_xr import extract_col_xr_snapshot
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST_DAILY_REQUEST_LIMIT, build_enrichment_sources_from_registry, compile_enriched_registry
 from biominer.registry.gbif import GBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
 from biominer.registry.scope import load_scope
+from biominer.registry.publish import publish_registry
 from biominer.registry.translation_harvester import (
     MYMEMORY_MONTHLY_BANDWIDTH_MB_LIMIT,
     MYMEMORY_MONTHLY_INPUT_WORD_LIMIT,
@@ -165,6 +167,16 @@ def build_parser() -> argparse.ArgumentParser:
     evaluation_review_queue.add_argument("--photo-summary")
     evaluation_review_queue.add_argument("--output", required=True)
     evaluation_review_queue.add_argument("--max-rows", type=int)
+    bioclip = subparsers.add_parser("bioclip")
+    bioclip_subparsers = bioclip.add_subparsers(dest="bioclip_command")
+    bioclip_screen = bioclip_subparsers.add_parser("screen")
+    bioclip_screen.add_argument("--input", required=True)
+    bioclip_screen.add_argument("--output-dir", required=True)
+    bioclip_screen.add_argument("--registry-dir", required=True, help="Unified registry containing species_paths.parquet")
+    bioclip_screen.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
+    bioclip_screen.add_argument("--taxonomy-text-embedding-cache")
+    bioclip_screen.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    bioclip_screen.add_argument("--dry-run", action="store_true")
     registry = subparsers.add_parser("registry")
     registry_subparsers = registry.add_subparsers(dest="registry_command")
     registry_build = registry_subparsers.add_parser("build")
@@ -172,6 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--registry-version", required=True)
     registry_build.add_argument("--scope-json", default="config/butterfly_scope.json")
     registry_build.add_argument("--source-json")
+    registry_build.add_argument("--col-xr-archive", help="Pinned CoL XR Darwin Core archive for dataset 315557")
     registry_build.add_argument("--reuse-source-json", action="store_true")
     registry_build.add_argument("--report-dir", default="reports")
     registry_build.add_argument("--retrieved-at")
@@ -212,14 +225,14 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--skip-language-targets", action="store_true")
     registry_build.add_argument("--skip-curated-static-sources", action="store_true")
     registry_build.add_argument("--skip-enrichment", action="store_true")
-    registry_build.add_argument("--skip-classification", action="store_true")
-    registry_classification = registry_subparsers.add_parser("build-classification")
-    registry_classification.add_argument("--registry-dir", required=True)
-    registry_classification.add_argument("--output-dir")
-    registry_classification.add_argument("--source-json", default=str(DEFAULT_CLASSIFICATION_V3_SOURCE))
+    registry_build.add_argument("--skip-classification", action="store_true", help=argparse.SUPPRESS)
     registry_audit = registry_subparsers.add_parser("audit")
     registry_audit.add_argument("--registry-dir", required=True)
     registry_audit.add_argument("--report-dir", default="reports")
+    registry_publish = registry_subparsers.add_parser("publish")
+    registry_publish.add_argument("--registry-dir", required=True)
+    registry_publish.add_argument("--output-dir", default="data/registry/current")
+    registry_publish.add_argument("--replace-existing", action="store_true")
     dev = subparsers.add_parser("dev")
     dev_subparsers = dev.add_subparsers(dest="dev_command")
     dev_vision = dev_subparsers.add_parser("vision")
@@ -292,6 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--taxon", required=True)
     production_run.add_argument("--rank", default="auto", choices=("auto", "family", "genus", "species"))
     production_run.add_argument("--registry-dir", required=True)
+    production_run.add_argument("--taxonomy-candidate-table", help=argparse.SUPPRESS)
     production_run.add_argument("--output-prefix", required=True)
     production_run.add_argument("--storage-backend", default="s3", choices=("s3", "local"))
     production_run.add_argument("--workstore-backend", default="postgres", choices=("postgres", "sqlite"))
@@ -310,7 +324,6 @@ def build_parser() -> argparse.ArgumentParser:
         choices=SUPPORTED_CLASSIFICATION_MODES,
         default=DEFAULT_CLASSIFICATION_MODE,
     )
-    production_run.add_argument("--taxonomy-candidate-table")
     production_run.add_argument("--taxonomy-text-embedding-cache")
     production_run.add_argument("--crop-padding-ratio", type=float)
     production_run.add_argument("--parquet-compression")
@@ -361,7 +374,9 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     bioclip_prefetch.add_argument("--revision", default=BIOCLIP_25_HUGE_REVISION)
     bioclip_prefetch.add_argument("--max-workers", type=int, default=8)
     text_embedding_cache = subparsers.add_parser("build-text-embedding-cache")
-    text_embedding_cache.add_argument("--taxonomy-candidate-table", required=True)
+    text_embedding_registry = text_embedding_cache.add_mutually_exclusive_group(required=True)
+    text_embedding_registry.add_argument("--registry-dir")
+    text_embedding_registry.add_argument("--taxonomy-candidate-table", dest="registry_dir", help=argparse.SUPPRESS)
     text_embedding_cache.add_argument("--output", required=True)
     text_embedding_cache.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
     text_embedding_cache.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
@@ -391,7 +406,8 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
         choices=SUPPORTED_CLASSIFICATION_MODES,
         default=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     )
-    benchmark.add_argument("--taxonomy-candidate-table")
+    benchmark.add_argument("--registry-dir")
+    benchmark.add_argument("--taxonomy-candidate-table", dest="registry_dir", help=argparse.SUPPRESS)
     benchmark.add_argument("--rank-beam-width", type=int, default=DEFAULT_RANK_BEAM_WIDTH)
     benchmark.add_argument("--species-first-pass-top-k", type=int, default=DEFAULT_SPECIES_FIRST_PASS_TOP_K)
     benchmark.add_argument("--species-rerank-top-k", type=int, default=DEFAULT_SPECIES_RERANK_TOP_K)
@@ -403,7 +419,9 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     cascade_benchmark.add_argument("--output-dir", required=True)
     live_benchmark = subparsers.add_parser("benchmark-live-m5pro")
     live_benchmark.add_argument("--input", required=True)
-    live_benchmark.add_argument("--taxonomy-candidate-table", required=True)
+    live_registry = live_benchmark.add_mutually_exclusive_group(required=True)
+    live_registry.add_argument("--registry-dir")
+    live_registry.add_argument("--taxonomy-candidate-table", dest="registry_dir", help=argparse.SUPPRESS)
     live_benchmark.add_argument("--taxonomy-text-embedding-cache", required=True)
     live_benchmark.add_argument("--vision-runtime-python", default=YOLOE26_RUNTIME_PYTHON)
     live_benchmark.add_argument("--bioclip-runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
@@ -468,6 +486,28 @@ def run(args: argparse.Namespace) -> int:
         if args.vision_command == "eval":
             return _run_detect_eval(args)
         return 2
+    if args.command == "bioclip":
+        if args.bioclip_command != "screen":
+            return 2
+        registry = Path(args.registry_dir)
+        try:
+            store = PathTaxonomyStore.read(registry)
+        except (FileNotFoundError, ValueError) as exc:
+            print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+            return 2
+        payload = {
+            "status": "validated" if args.dry_run else "ready",
+            "input": args.input,
+            "output_dir": args.output_dir,
+            "registry_dir": str(registry),
+            "rank_order": list(getattr(store, "rank_order", ("FAMILY", "SUBFAMILY", "TRIBE", "SUBTRIBE", "GENUS", "SPECIES"))),
+            "classification_fingerprint": store.classification_fingerprint,
+            "dry_run": bool(args.dry_run),
+        }
+        if not args.dry_run:
+            payload["next_command"] = "biominer run (screen execution remains orchestrated through the production run command)"
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
     if args.command == "evidence":
         if args.evidence_command == "join":
             return _run_bioclip_join_object_evidence(args)
@@ -553,12 +593,27 @@ def run(args: argparse.Namespace) -> int:
                 force=True,
             )
             try:
+                source_json = args.source_json
+                reuse_source_json = args.reuse_source_json
+                if args.col_xr_archive:
+                    if is_cloud_uri(str(args.output_dir)):
+                        raise ValueError("--col-xr-archive currently requires a local build directory")
+                    source_snapshot = extract_col_xr_snapshot(
+                        args.col_xr_archive,
+                        scope_path=args.scope_json,
+                        retrieved_at=args.retrieved_at,
+                    )
+                    source_path = Path(args.output_dir) / "col_xr_source_snapshot.json"
+                    source_path.parent.mkdir(parents=True, exist_ok=True)
+                    source_path.write_text(json.dumps(source_snapshot, indent=2, sort_keys=True), encoding="utf-8")
+                    source_json = str(source_path)
+                    reuse_source_json = True
                 payload = build_registry(
                     output_dir=args.output_dir,
                     registry_version=args.registry_version,
                     scope_path=args.scope_json,
-                    source_json=args.source_json,
-                    reuse_source_json=args.reuse_source_json,
+                    source_json=source_json,
+                    reuse_source_json=reuse_source_json,
                     report_dir=args.report_dir,
                     retrieved_at=args.retrieved_at,
                     workers=args.workers,
@@ -600,21 +655,10 @@ def run(args: argparse.Namespace) -> int:
                 return 2
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
-        if args.registry_command == "build-classification":
-            try:
-                payload = write_classification_v3_artifacts(
-                    registry_dir=args.registry_dir,
-                    output_dir=args.output_dir,
-                    source_path=args.source_json,
-                )
-            except (FileNotFoundError, ValueError) as exc:
-                print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-                return 2
-            print(json.dumps(payload, indent=2, sort_keys=True))
-            return 0
         if args.registry_command == "seed-flickr-queries":
             queries = load_registry_flickr_queries(args.query_definitions)
             state = MetadataPollState(args.state_db)
+            registration = state.register_query_definitions(pl.read_parquet(args.query_definitions))
             inserted = sum(state.enqueue_work_item(query) for query in queries)
             print(
                 json.dumps(
@@ -623,6 +667,7 @@ def run(args: argparse.Namespace) -> int:
                         "state_db": args.state_db,
                         "work_items_seen": len(queries),
                         "work_items_inserted": inserted,
+                        **registration,
                     },
                     indent=2,
                     sort_keys=True,
@@ -631,6 +676,18 @@ def run(args: argparse.Namespace) -> int:
             return 0
         if args.registry_command == "audit":
             print(json.dumps(audit_registry(args.registry_dir, report_dir=args.report_dir), indent=2, sort_keys=True))
+            return 0
+        if args.registry_command == "publish":
+            try:
+                payload = publish_registry(
+                    args.registry_dir,
+                    output_dir=args.output_dir,
+                    replace_existing=args.replace_existing,
+                )
+            except (FileExistsError, FileNotFoundError, ValueError) as exc:
+                print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+                return 2
+            print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
         return 2
     return 2
@@ -1333,7 +1390,7 @@ def _run_build_text_embedding_cache(args: argparse.Namespace) -> int:
         device=args.device,
     )
     try:
-        store = PathTaxonomyStore.read(args.taxonomy_candidate_table)
+        store = PathTaxonomyStore.read(args.registry_dir)
         frame = build_taxonomy_text_embedding_cache(
             store,
             model_id=scorer.runtime.model.model_name,
@@ -1455,7 +1512,7 @@ def _run_vision_benchmark_plumbing(args: argparse.Namespace) -> int:
             butterfly_rate=args.butterfly_rate,
             detections_per_butterfly=args.detections_per_butterfly,
             classification_mode=args.classification_mode,
-            taxonomy_candidate_table=args.taxonomy_candidate_table,
+            taxonomy_candidate_table=args.registry_dir,
             output_dir=args.output_dir,
             rank_beam_width=args.rank_beam_width,
             species_first_pass_top_k=args.species_first_pass_top_k,
@@ -1535,7 +1592,7 @@ def _run_path_cascade_benchmark(args: argparse.Namespace) -> int:
 def _run_vision_benchmark_live_m5pro(args: argparse.Namespace) -> int:
     request = LiveM5ProBenchmarkRequest(
         input_path=Path(args.input).expanduser(),
-        taxonomy_candidate_table=Path(args.taxonomy_candidate_table).expanduser(),
+        taxonomy_candidate_table=Path(args.registry_dir).expanduser(),
         taxonomy_text_embedding_cache=Path(args.taxonomy_text_embedding_cache).expanduser(),
         vision_runtime_python=Path(args.vision_runtime_python).expanduser(),
         bioclip_runtime_python=Path(args.bioclip_runtime_python).expanduser(),

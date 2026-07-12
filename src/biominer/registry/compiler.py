@@ -13,11 +13,20 @@ from biominer.registry.normalize import parse_language_tag, normalize_language_c
 from biominer.registry.query_curation import QueryCurationRule, apply_query_curation, load_query_curation_rules
 from biominer.registry.query_eligibility import SCIENTIFIC_NAME_CLASSES, assess_name_query_eligibility
 from biominer.registry.scope import load_scope
+from biominer.registry.unified import (
+    COL_XR_DATASET_KEY,
+    COL_XR_DOI,
+    COL_XR_RELEASE,
+    canonical_query_rows,
+    canonicalize_keyword_rows,
+    collision_metrics,
+    compile_species_paths,
+)
 from biominer.storage.parquet import write_parquet
 
 
-REGISTRY_SCHEMA_VERSION = "registry-foundation-v2"
-COMPILER_VERSION = "registry-compiler-v2"
+REGISTRY_SCHEMA_VERSION = "unified-butterfly-registry-v1"
+COMPILER_VERSION = "unified-registry-compiler-v1"
 COLLISION_REVIEW_STATES = {"reviewed", "curator_reviewed", "manual_reviewed", "query_approved"}
 
 
@@ -70,14 +79,20 @@ def compile_registry_frames(
     query_curation = query_curation_rules or load_query_curation_rules(query_curation_json)
     collision_names = _ensure_query_eligibility_columns(global_names_for_collision) if global_names_for_collision is not None else names
     name_collision_ledger = _name_collision_ledger_frame(collision_names, registry_version=registry_version)
-    names = _apply_name_collision_policy(names, name_collision_ledger)
     names = apply_query_curation(names, query_curation)
+    names = canonicalize_keyword_rows(names)
     evidence = _name_evidence_frame(source_payload.get("names", []), registry_version=registry_version, source_payload=source_payload)
     queries = _query_definitions_frame(names, taxa, registry_version=registry_version, query_curation_rules=query_curation)
-    qa_findings = _qa_findings(taxa, names, queries, scope)
+    species_paths = compile_species_paths(
+        taxa,
+        registry_version=registry_version,
+        source_release=str(source_payload.get("source_version") or COL_XR_RELEASE),
+    )
+    qa_findings = [*_qa_findings(taxa, names, queries, scope), *_species_path_qa(taxa, species_paths)]
     qa = pl.DataFrame(qa_findings) if qa_findings else _empty_qa_frame()
     frames = {
         "taxa.parquet": taxa,
+        "species_paths.parquet": species_paths,
         "taxon_relations.parquet": _taxon_relations_frame(taxa),
         "names.parquet": names,
         "name_collision_ledger.parquet": name_collision_ledger,
@@ -90,6 +105,7 @@ def compile_registry_frames(
         registry_version=registry_version,
         scope_id=scope.scope_id,
         taxa=taxa,
+        species_paths=species_paths,
         names=names,
         name_collision_ledger=name_collision_ledger,
         queries=queries,
@@ -126,8 +142,7 @@ def query_definitions_from_names(
 
 
 def _taxa_frame(rows: list[dict[str, Any]], *, scope_id: str) -> pl.DataFrame:
-    return pl.DataFrame(
-        [
+    normalized_rows = [
             {
                 "registry_schema_version": REGISTRY_SCHEMA_VERSION,
                 "scope_id": scope_id,
@@ -142,10 +157,16 @@ def _taxa_frame(rows: list[dict[str, Any]], *, scope_id: str) -> pl.DataFrame:
                 "species_key": str(row.get("species_key") or ""),
                 "species": str(row.get("species") or ""),
                 "taxonomic_status": str(row.get("taxonomic_status") or row.get("status") or "ACCEPTED").upper(),
+                "source_taxon_id": str(row.get("source_taxon_id") or ""),
+                "scientific_name_authorship": str(row.get("scientific_name_authorship") or ""),
+                "source_dataset_key": str(row.get("source_dataset_key") or ""),
+                "source_release": str(row.get("source_release") or ""),
                 "in_scope": True,
             }
             for row in rows
-        ],
+        ]
+    return pl.DataFrame(
+        normalized_rows,
         schema={
             "registry_schema_version": pl.String,
             "scope_id": pl.String,
@@ -160,6 +181,10 @@ def _taxa_frame(rows: list[dict[str, Any]], *, scope_id: str) -> pl.DataFrame:
             "species_key": pl.String,
             "species": pl.String,
             "taxonomic_status": pl.String,
+            "source_taxon_id": pl.String,
+            "scientific_name_authorship": pl.String,
+            "source_dataset_key": pl.String,
+            "source_release": pl.String,
             "in_scope": pl.Boolean,
         },
     )
@@ -198,6 +223,12 @@ def _names_frame(rows: list[dict[str, Any]], *, registry_version: str) -> pl.Dat
             "disabled_reason": str(row.get("disabled_reason") or ""),
             "review_state": str(row.get("review_state") or ("accepted" if enabled else "disabled")),
             "corroborated": _boolish(row.get("corroborated", False)),
+            "keyword_id": "",
+            "canonical_keyword_id": "",
+            "original_trust_tier": "",
+            "effective_trust_tier": "",
+            "is_canonical_keyword": False,
+            "suppressed_duplicate": False,
         }
         query_decision = assess_name_query_eligibility(name_row)
         normalized_rows.setdefault(
@@ -274,84 +305,18 @@ def _query_definitions_frame(
 ) -> pl.DataFrame:
     if names.is_empty():
         return pl.DataFrame([], schema=_query_schema())
-    taxa_lookup = taxa.select(
-        "accepted_taxon_key",
-        "scientific_name",
-        "rank",
-        "family_key",
-        "family",
-        "genus_key",
-        "genus",
-        "species_key",
-        "species",
-    )
     names = _ensure_query_eligibility_columns(names)
-    collision_names = _ensure_query_eligibility_columns(global_names_for_collision) if global_names_for_collision is not None else names
-    names = _apply_name_collision_policy(names, _name_collision_ledger_frame(collision_names, registry_version=registry_version))
     names = apply_query_curation(names, query_curation_rules)
-    enabled_names = names.filter(pl.col("enabled") & pl.col("query_eligible"))
-    rows: list[dict[str, Any]] = []
-    joined = enabled_names.join(taxa_lookup, on="accepted_taxon_key", how="left").to_dicts()
-    for item in joined:
-        for field in ("tags", "text"):
-            priority = _search_priority(item, field)
-            rows.append(
-                {
-                    "query_definition_id": _stable_id(
-                        "flickr-query",
-                        registry_version,
-                        item["accepted_taxon_key"],
-                        item["name_id"],
-                        field,
-                        item["normalized_match_key"],
-                        item["language"],
-                        item["region"],
-                        item["bbox"],
-                        item["name_class"],
-                        item["source"],
-                        item["source_record_id"],
-                    ),
-                    "registry_schema_version": REGISTRY_SCHEMA_VERSION,
-                    "compiler_version": COMPILER_VERSION,
-                    "registry_version": registry_version,
-                    "accepted_taxon_key": item["accepted_taxon_key"],
-                    "accepted_scientific_name": item.get("scientific_name") or "",
-                    "accepted_rank": item.get("rank") or "",
-                    "family_key": item.get("family_key") or "",
-                    "family": item.get("family") or "",
-                    "genus_key": item.get("genus_key") or "",
-                    "genus": item.get("genus") or "",
-                    "species_key": item.get("species_key") or "",
-                    "species": item.get("species") or "",
-                    "name_id": item["name_id"],
-                    "source_term": item["display_name"],
-                    "normalized_query_term": item["normalized_match_key"],
-                    "normalized_match_key": item["normalized_match_key"],
-                    "language": item["language"],
-                    "api_language_code": item["api_language_code"],
-                    "script": item["script"],
-                    "region": item["region"],
-                    "bcp47": item["bcp47"],
-                    "bbox": item["bbox"],
-                    "name_class": item["name_class"],
-                    "source": item["source"],
-                    "source_taxon_id": item.get("source_taxon_id") or "",
-                    "lineage_check": item.get("lineage_check") or "",
-                    "trust_tier": item["trust_tier"],
-                    "confidence": item["confidence"],
-                    "precision_tier": item["precision_tier"],
-                    "search_field": field,
-                    "search_priority": priority,
-                    "enabled": True,
-                    "disabled_reason": "",
-                    "query_eligible": item["query_eligible"],
-                    "query_disabled_reason": item["query_disabled_reason"],
-                    "species_specificity_score": item["species_specificity_score"],
-                }
-            )
+    if "canonical_keyword_id" not in names.columns or names.filter(pl.col("canonical_keyword_id") != "").is_empty():
+        names = canonicalize_keyword_rows(names)
+    rows = canonical_query_rows(
+        names,
+        taxa,
+        registry_version=registry_version,
+        registry_schema_version=REGISTRY_SCHEMA_VERSION,
+        compiler_version=COMPILER_VERSION,
+    )
     return pl.DataFrame(rows, schema=_query_schema()).sort(["search_priority", "normalized_match_key", "query_definition_id"])
-
-
 def _taxon_relations_frame(taxa: pl.DataFrame) -> pl.DataFrame:
     rows = []
     for item in taxa.to_dicts():
@@ -498,6 +463,19 @@ def _qa_findings(taxa: pl.DataFrame, names: pl.DataFrame, queries: pl.DataFrame,
     return findings
 
 
+def _species_path_qa(taxa: pl.DataFrame, paths: pl.DataFrame) -> list[dict[str, str]]:
+    accepted_species = taxa.filter(
+        (pl.col("rank") == "SPECIES") & (pl.col("taxonomic_status") == "ACCEPTED")
+    )
+    findings: list[dict[str, str]] = []
+    if paths.height != accepted_species.height or paths["accepted_taxon_key"].n_unique() != paths.height:
+        findings.append(_finding("fatal", "species_path_cardinality_mismatch", str(paths.height)))
+    incomplete = paths.filter(~pl.col("enabled"))
+    if not incomplete.is_empty():
+        findings.append(_finding("fatal", "structurally_incomplete_species_paths", str(incomplete.height)))
+    return findings
+
+
 def _finding(severity: str, code: str, subject: str) -> dict[str, str]:
     return {"severity": severity, "code": code, "subject": subject}
 
@@ -576,6 +554,7 @@ def _manifest(
     registry_version: str,
     scope_id: str,
     taxa: pl.DataFrame,
+    species_paths: pl.DataFrame,
     names: pl.DataFrame,
     name_collision_ledger: pl.DataFrame,
     queries: pl.DataFrame,
@@ -587,6 +566,7 @@ def _manifest(
 ) -> dict[str, Any]:
     fatal_count = qa.filter(pl.col("severity") == "fatal").height if not qa.is_empty() else 0
     warning_count = qa.filter(pl.col("severity") == "warning").height if not qa.is_empty() else 0
+    keyword_metrics = collision_metrics(names)
     return {
         "registry_version": registry_version,
         "registry_schema_version": REGISTRY_SCHEMA_VERSION,
@@ -596,6 +576,12 @@ def _manifest(
         "source_path": str(source_ref),
         "output_dir": str(output_ref),
         "taxa_rows": taxa.height,
+        "species_path_rows": species_paths.height,
+        "species_paths_with_proxies": species_paths.filter(
+            pl.any_horizontal(
+                *(pl.col(f"{rank}_candidate_kind") == "carry_forward_proxy" for rank in ("kingdom", "phylum", "class", "order", "family", "genus", "species"))
+            )
+        ).height if not species_paths.is_empty() else 0,
         "name_rows": names.height,
         "query_eligible_name_rows": names.filter(pl.col("query_eligible")).height if "query_eligible" in names.columns else None,
         "query_ineligible_name_rows": names.filter(pl.col("enabled") & ~pl.col("query_eligible")).height if "query_eligible" in names.columns else None,
@@ -613,6 +599,13 @@ def _manifest(
         "qa_warning_count": warning_count,
         "qa_status": "failed" if fatal_count else "passed",
         "source_hash": source_hash,
+        "identity_source": {
+            "authority": "Catalogue of Life XR",
+            "dataset_key": COL_XR_DATASET_KEY,
+            "release": COL_XR_RELEASE,
+            "doi": COL_XR_DOI,
+        },
+        **keyword_metrics,
     }
 
 
@@ -710,6 +703,12 @@ def _names_schema() -> dict[str, pl.DataType]:
         "query_eligible": pl.Boolean,
         "query_disabled_reason": pl.String,
         "species_specificity_score": pl.Float64,
+        "keyword_id": pl.String,
+        "canonical_keyword_id": pl.String,
+        "original_trust_tier": pl.String,
+        "effective_trust_tier": pl.String,
+        "is_canonical_keyword": pl.Boolean,
+        "suppressed_duplicate": pl.Boolean,
     }
 
 
@@ -750,6 +749,9 @@ def _name_collision_ledger_schema() -> dict[str, pl.DataType]:
 def _query_schema() -> dict[str, pl.DataType]:
     return {
         "query_definition_id": pl.String,
+        "logical_query_id": pl.String,
+        "canonical_keyword_id": pl.String,
+        "keyword_id": pl.String,
         "registry_schema_version": pl.String,
         "compiler_version": pl.String,
         "registry_version": pl.String,
@@ -777,6 +779,8 @@ def _query_schema() -> dict[str, pl.DataType]:
         "source_taxon_id": pl.String,
         "lineage_check": pl.String,
         "trust_tier": pl.String,
+        "original_trust_tier": pl.String,
+        "effective_trust_tier": pl.String,
         "confidence": pl.String,
         "precision_tier": pl.String,
         "search_field": pl.String,

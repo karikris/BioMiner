@@ -29,6 +29,8 @@ def audit_registry(registry_dir: str | Path, *, report_dir: str | Path = "report
         }
     registry_version = _registry_version(base)
     language_report = _language_target_coverage_report(base, registry_version=registry_version)
+    names = pl.read_parquet(base / "names.parquet")
+    keyword_metrics = _keyword_metrics(names)
     gap_report = _curated_gap_report(language_report)
     report_paths = _write_language_reports(
         report_dir=Path(report_dir),
@@ -36,7 +38,30 @@ def audit_registry(registry_dir: str | Path, *, report_dir: str | Path = "report
         language_report=language_report,
         gap_report=gap_report,
     )
-    return {**summary, **report_paths}
+    return {**summary, **keyword_metrics, **report_paths}
+
+
+def _keyword_metrics(names: pl.DataFrame) -> dict[str, Any]:
+    if names.is_empty() or "canonical_keyword_id" not in names.columns:
+        return {}
+    enabled = names.filter(pl.col("enabled"))
+    tiers = (
+        enabled.filter(pl.col("is_canonical_keyword"))
+        .group_by("effective_trust_tier")
+        .agg(pl.col("canonical_keyword_id").n_unique().alias("count"))
+        .sort("effective_trust_tier")
+        .to_dicts()
+    )
+    collisions = enabled.group_by("canonical_keyword_id").agg(
+        pl.col("accepted_taxon_key").n_unique().alias("taxa"),
+        pl.col("original_trust_tier").n_unique().alias("tiers"),
+    )
+    return {
+        "unique_normalized_terms_by_tier": {str(row["effective_trust_tier"]): int(row["count"]) for row in tiers},
+        "duplicate_keyword_rows_suppressed": names.filter(pl.col("suppressed_duplicate")).height,
+        "cross_species_collisions": collisions.filter(pl.col("taxa") > 1).height,
+        "cross_tier_collisions": collisions.filter(pl.col("tiers") > 1).height,
+    }
 
 
 def _count_map(conn: duckdb.DuckDBPyConnection, parquet_path: Path, column: str, *, where: str = "true") -> dict[str, int]:

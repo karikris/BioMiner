@@ -483,7 +483,7 @@ def test_query_definitions_recompute_stale_query_eligibility_columns() -> None:
     assert queries.select("normalized_match_key").to_series().to_list() == ["papilio demoleus", "papilio demoleus"]
 
 
-def test_compile_registry_fixture_disables_cross_species_common_name_collisions(tmp_path) -> None:
+def test_compile_registry_fixture_canonicalizes_cross_species_common_name_collisions(tmp_path) -> None:
     source = tmp_path / "source.json"
     output = tmp_path / "registry"
     _write_fixture(source)
@@ -547,10 +547,18 @@ def test_compile_registry_fixture_disables_cross_species_common_name_collisions(
     ledger = pl.read_parquet(output / "name_collision_ledger.parquet")
     lime_names = names.filter(pl.col("normalized_match_key") == "lime butterfly").sort("accepted_taxon_key")
 
-    assert lime_names.select("query_eligible").to_series().to_list() == [False, False]
-    assert lime_names.select("query_disabled_reason").to_series().to_list() == ["normalized_name_language_collision", "normalized_name_language_collision"]
-    assert not queries.filter(pl.col("normalized_match_key") == "lime butterfly").height
-    assert set(queries["normalized_match_key"].to_list()) == {"papilio demoleus", "danaus plexippus"}
+    assert lime_names.select("query_eligible").to_series().to_list() == [True, True]
+    assert lime_names.select("query_disabled_reason").to_series().to_list() == ["", ""]
+    assert lime_names.filter(pl.col("is_canonical_keyword")).height == 1
+    assert lime_names.filter(pl.col("suppressed_duplicate")).height == 1
+    lime_queries = queries.filter(pl.col("normalized_match_key") == "lime butterfly")
+    assert lime_queries.height == 2
+    assert set(lime_queries["search_field"].to_list()) == {"tags", "text"}
+    assert set(queries["normalized_match_key"].to_list()) == {
+        "papilio demoleus",
+        "danaus plexippus",
+        "lime butterfly",
+    }
     assert ledger.height == 1
     assert ledger.row(0, named=True)["normalized_match_key"] == "lime butterfly"
     assert ledger.row(0, named=True)["language"] == "eng"
@@ -628,13 +636,15 @@ def test_compile_registry_fixture_does_not_warn_for_cross_language_same_text(tmp
     assert lime_names.select("language").to_series().to_list() == ["eng", "spa"]
     assert lime_names.select("query_eligible").to_series().to_list() == [True, True]
     assert ledger.is_empty()
-    assert queries.filter(pl.col("normalized_match_key") == "lime butterfly").height == 4
+    lime_queries = queries.filter(pl.col("normalized_match_key") == "lime butterfly")
+    assert lime_queries.height == 2
+    assert set(lime_queries["search_field"].to_list()) == {"tags", "text"}
     assert not any(row["code"] == "normalized_name_collision" and row["subject"] == "lime butterfly" for row in qa)
     assert manifest["name_collision_ledger_rows"] == 0
     assert manifest["query_blocking_name_collision_rows"] == 0
 
 
-def test_compile_registry_fixture_blocks_reviewed_collision_without_species_specific_signal(tmp_path) -> None:
+def test_compile_registry_fixture_canonicalizes_reviewed_collision_without_species_specific_signal(tmp_path) -> None:
     source = tmp_path / "source.json"
     output = tmp_path / "registry"
     _write_fixture(source)
@@ -702,9 +712,11 @@ def test_compile_registry_fixture_blocks_reviewed_collision_without_species_spec
     queries = pl.read_parquet(output / "flickr_query_definitions.parquet")
     lime_names = names.filter(pl.col("normalized_match_key") == "lime butterfly").sort("accepted_taxon_key")
 
-    assert lime_names.select("query_eligible").to_series().to_list() == [False, False]
-    assert lime_names.select("query_disabled_reason").to_series().to_list() == ["normalized_name_language_collision", "normalized_name_language_collision"]
-    assert queries.filter(pl.col("normalized_match_key") == "lime butterfly").is_empty()
+    assert lime_names.select("query_eligible").to_series().to_list() == [True, True]
+    assert lime_names.select("query_disabled_reason").to_series().to_list() == ["", ""]
+    assert lime_names.filter(pl.col("is_canonical_keyword")).height == 1
+    assert lime_names.filter(pl.col("suppressed_duplicate")).height == 1
+    assert queries.filter(pl.col("normalized_match_key") == "lime butterfly").height == 2
 
 
 def test_compile_registry_fixture_allows_query_approved_species_specific_collision(tmp_path) -> None:
@@ -777,7 +789,9 @@ def test_compile_registry_fixture_allows_query_approved_species_specific_collisi
 
     assert lime_names.select("query_eligible").to_series().to_list() == [True, True]
     assert lime_names.select("query_disabled_reason").to_series().to_list() == ["", ""]
-    assert queries.filter(pl.col("normalized_match_key") == "lime butterfly").height == 4
+    assert lime_names.filter(pl.col("is_canonical_keyword")).height == 1
+    assert lime_names.filter(pl.col("suppressed_duplicate")).height == 1
+    assert queries.filter(pl.col("normalized_match_key") == "lime butterfly").height == 2
 
 
 def test_accepted_scientific_queries_schedule_before_synonyms(tmp_path) -> None:

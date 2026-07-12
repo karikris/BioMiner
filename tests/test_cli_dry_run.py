@@ -41,7 +41,7 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert "evidence" in commands
     assert "storage" in commands
     assert "workstore" in commands
-    assert "bioclip" not in commands
+    assert "bioclip" in commands
     assert "detect" not in commands
     assert "species" not in commands
     assert "dev" in commands
@@ -196,7 +196,7 @@ def test_registry_public_cli_exposes_only_build_and_audit() -> None:
     dev_choices = commands["dev"]._subparsers._group_actions[0].choices  # noqa: SLF001
     dev_registry_choices = dev_choices["registry"]._subparsers._group_actions[0].choices  # noqa: SLF001
 
-    assert set(registry_choices) == {"build", "build-classification", "audit"}
+    assert set(registry_choices) == {"build", "audit", "publish"}
     for internal in {"fetch-taxonomy", "compile-fixture", "compile-enriched", "enrich-sources", "seed-flickr-queries"}:
         assert internal not in registry_choices
         assert internal in dev_registry_choices
@@ -1741,69 +1741,6 @@ def test_registry_build_cli_skip_classification_omits_artifacts(tmp_path, capsys
     assert not (output / "classification_nodes.parquet").exists()
     assert not (output / "classification_edges.parquet").exists()
     assert not (output / "classification_leaf_paths.parquet").exists()
-
-
-def test_registry_build_classification_cli_writes_v3_outputs(tmp_path, capsys) -> None:
-    registry = tmp_path / "registry"
-    registry.mkdir()
-    pl.DataFrame(
-        [
-            {
-                "registry_schema_version": "registry-foundation-v2",
-                "scope_id": "scope",
-                "accepted_taxon_key": "gbif:1938069",
-                "scientific_name": "Papilio demoleus",
-                "rank": "SPECIES",
-                "parent_key": "gbif:90",
-                "family_key": "gbif:9417",
-                "family": "Papilionidae",
-                "genus_key": "gbif:90",
-                "genus": "Papilio",
-                "species_key": "gbif:1938069",
-                "species": "Papilio demoleus",
-                "taxonomic_status": "ACCEPTED",
-                "in_scope": True,
-            },
-            {
-                "registry_schema_version": "registry-foundation-v2",
-                "scope_id": "scope",
-                "accepted_taxon_key": "gbif:101",
-                "scientific_name": "Papilio machaon",
-                "rank": "SPECIES",
-                "parent_key": "gbif:90",
-                "family_key": "gbif:9417",
-                "family": "Papilionidae",
-                "genus_key": "gbif:90",
-                "genus": "Papilio",
-                "species_key": "gbif:101",
-                "species": "Papilio machaon",
-                "in_scope": True,
-            },
-        ]
-    ).write_parquet(registry / "taxa.parquet")
-    (registry / "manifest.json").write_text(json.dumps({"registry_version": "registry-v1", "qa_status": "passed"}), encoding="utf-8")
-    parser = build_parser()
-
-    assert run(parser.parse_args(["registry", "build-classification", "--registry-dir", str(registry)])) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["classification_version"] == "butterfly-classification-v3.0.0"
-    assert payload["enabled_leaf_path_count"] == 1
-    assert payload["prompt_label_count"] == 12
-    assert payload["reviewed_rank_skip_count"] == 1
-    assert (registry / "classification_nodes.parquet").exists()
-    assert (registry / "classification_edges.parquet").exists()
-    assert (registry / "classification_leaf_paths.parquet").exists()
-    assert (registry / "classification_manifest.json").exists()
-
-
-def test_registry_build_classification_cli_reports_missing_taxa(tmp_path, capsys) -> None:
-    parser = build_parser()
-
-    assert run(parser.parse_args(["registry", "build-classification", "--registry-dir", str(tmp_path)])) == 2
-
-    payload = json.loads(capsys.readouterr().out)
-    assert "taxa.parquet" in payload["error"]
 
 
 def test_registry_seed_flickr_queries_cli_loads_query_definitions_into_state(tmp_path, capsys) -> None:

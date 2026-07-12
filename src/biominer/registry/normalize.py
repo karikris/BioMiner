@@ -10,6 +10,24 @@ import unicodedata
 
 _WHITESPACE = re.compile(r"\s+")
 _PUNCTUATION_SPACING = re.compile(r"\s*([,;:/()\-])\s*")
+_TYPOGRAPHIC_PUNCTUATION = str.maketrans(
+    {
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2212": "-",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201a": "'",
+        "\u201b": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u201e": '"',
+        "\u00a0": " ",
+    }
+)
 _LANGUAGE_ALIASES = {
     "arabic": "ara",
     "ar": "ara",
@@ -65,7 +83,7 @@ class LanguageTag:
 
 
 def normalize_name_key(value: object) -> str:
-    text = unicodedata.normalize("NFC", str(value or "")).strip()
+    text = unicodedata.normalize("NFKC", str(value or "")).translate(_TYPOGRAPHIC_PUNCTUATION).strip()
     text = _WHITESPACE.sub(" ", text)
     text = _PUNCTUATION_SPACING.sub(r"\1", text)
     return text.casefold()
