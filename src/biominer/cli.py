@@ -63,6 +63,10 @@ from biominer.registry.col_xr import extract_col_xr_snapshot
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST_DAILY_REQUEST_LIMIT, build_enrichment_sources_from_registry, compile_enriched_registry
 from biominer.registry.gbif import GBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
+from biominer.registry.hierarchy_enrichment import (
+    harvest_gbif_genus_evidence,
+    harvest_open_tree_genus_evidence,
+)
 from biominer.registry.scope import load_scope
 from biominer.registry.publish import publish_registry
 from biominer.registry.translation_harvester import (
@@ -239,6 +243,12 @@ def build_parser() -> argparse.ArgumentParser:
     registry_harvest_col.add_argument("--max-retries", type=int, default=4)
     registry_harvest_col.add_argument("--skip-names", action="store_true")
     registry_harvest_col.add_argument("--name-limit", type=int, default=0)
+    registry_enrich_hierarchy = registry_subparsers.add_parser("enrich-hierarchy")
+    registry_enrich_hierarchy.add_argument("--registry-dir", required=True)
+    registry_enrich_hierarchy.add_argument("--source-dir", required=True)
+    registry_enrich_hierarchy.add_argument("--sources", default="gbif,open_tree")
+    registry_enrich_hierarchy.add_argument("--workers", type=int, default=8)
+    registry_enrich_hierarchy.add_argument("--max-retries", type=int, default=4)
     registry_audit = registry_subparsers.add_parser("audit")
     registry_audit.add_argument("--registry-dir", required=True)
     registry_audit.add_argument("--report-dir", default="reports")
@@ -558,6 +568,33 @@ def run(args: argparse.Namespace) -> int:
                     )
                 )
             print(json.dumps({"taxonomy": taxonomy, "names": names}, indent=2, sort_keys=True))
+            return 0
+        if args.registry_command == "enrich-hierarchy":
+            requested = tuple(part.strip().casefold() for part in args.sources.split(",") if part.strip())
+            unknown = set(requested) - {"gbif", "open_tree"}
+            if unknown:
+                print(json.dumps({"error": f"unknown hierarchy sources: {sorted(unknown)}"}, indent=2))
+                return 2
+            result: dict[str, Any] = {}
+            if "gbif" in requested:
+                result["gbif"] = asyncio.run(
+                    harvest_gbif_genus_evidence(
+                        args.registry_dir,
+                        args.source_dir,
+                        workers=args.workers,
+                        max_retries=args.max_retries,
+                    )
+                )
+            if "open_tree" in requested:
+                result["open_tree"] = asyncio.run(
+                    harvest_open_tree_genus_evidence(
+                        args.registry_dir,
+                        args.source_dir,
+                        workers=min(args.workers, 4),
+                        max_retries=args.max_retries,
+                    )
+                )
+            print(json.dumps(result, indent=2, sort_keys=True))
             return 0
         if args.registry_command == "fetch-taxonomy":
             retrieved_at = args.retrieved_at or datetime.now(UTC).isoformat()

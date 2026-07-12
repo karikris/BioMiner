@@ -296,9 +296,17 @@ def compile_species_paths(
             row[f"{prefix}_semantic_rank"] = semantic_rank
             row[f"{prefix}_candidate_kind"] = candidate_kind
             row[f"{prefix}_proxy_source_node_id"] = proxy_source
-            row[f"{prefix}_supersedes_node_id"] = ""
-            row[f"{prefix}_source_release"] = source_release
-            row[f"{prefix}_evidence_ids"] = [node_id] if candidate_kind == "observed_taxon" else [proxy_source]
+            row[f"{prefix}_supersedes_node_id"] = (
+                str(node.get("supersedes_node_id") or "") if node else ""
+            )
+            row[f"{prefix}_source_release"] = (
+                str(node.get("source_release") or source_release) if node else source_release
+            )
+            row[f"{prefix}_evidence_ids"] = (
+                [str(value) for value in (node.get("evidence_ids") or [node_id])]
+                if node
+                else [proxy_source]
+            )
         identity = {key: row[key] for key in row if key.endswith("_node_id") or key in {"accepted_taxon_key", "source_release"}}
         row["path_fingerprint"] = stable_identity("species-path", json.dumps(identity, sort_keys=True))
         compiled.append(row)
@@ -373,7 +381,19 @@ def _observed_lineage(species: dict[str, Any], by_id: dict[str, dict[str, Any]])
         key = str(species.get(f"{prefix}_key") or (species.get("accepted_taxon_key") if rank == "SPECIES" else ""))
         name = str(species.get(prefix) or (species.get("scientific_name") if rank == "SPECIES" else ""))
         if key and name:
-            observed.setdefault(rank, {"node_id": key, "name": name, "rank": rank})
+            observed.setdefault(
+                rank,
+                {
+                    "node_id": key,
+                    "name": name,
+                    "rank": rank,
+                    "source_release": str(species.get(f"{prefix}_source_release") or ""),
+                    "evidence_ids": [
+                        str(value) for value in (species.get(f"{prefix}_evidence_ids") or [key])
+                    ],
+                    "supersedes_node_id": str(species.get(f"{prefix}_supersedes_node_id") or ""),
+                },
+            )
     return observed
 
 

@@ -272,11 +272,32 @@ def col_xr_payload_from_parquet(source_dir: str | Path) -> dict[str, Any]:
     if nodes.is_empty():
         raise ValueError(f"CoL XR Parquet source has no nodes: {source}")
     nodes = _attach_lineage(nodes)
+    from biominer.registry.hierarchy_enrichment import HIERARCHY_EVIDENCE_FILE
+
+    evidence_path = source / HIERARCHY_EVIDENCE_FILE
+    evidence_by_taxon: dict[str, dict[str, Any]] = {}
+    if evidence_path.is_file():
+        evidence = pl.read_parquet(evidence_path).filter(pl.col("applied"))
+        evidence_by_taxon = {
+            str(row["accepted_taxon_id"]).removeprefix("col:"): dict(row)
+            for row in evidence.iter_rows(named=True)
+        }
     taxa_rows: list[dict[str, Any]] = []
     for row in nodes.iter_rows(named=True):
         rank = str(row["rank"])
         taxon_id = str(row["source_taxon_id"])
         key = f"col:{taxon_id}"
+        hierarchy_evidence = evidence_by_taxon.get(taxon_id)
+        genus_key = (
+            str(hierarchy_evidence["supplied_source_taxon_id"])
+            if hierarchy_evidence
+            else _source_key(str(row["genus_source_taxon_id"]))
+        )
+        genus_name = (
+            str(hierarchy_evidence["supplied_name"])
+            if hierarchy_evidence
+            else str(row["genus"])
+        )
         taxa_rows.append(
             {
                 "accepted_taxon_key": key,
@@ -285,8 +306,23 @@ def col_xr_payload_from_parquet(source_dir: str | Path) -> dict[str, Any]:
                 "parent_key": f"col:{row['parent_source_taxon_id']}" if row["parent_source_taxon_id"] else "",
                 "family_key": f"col:{row['family_source_taxon_id']}" if row["family_source_taxon_id"] else "",
                 "family": row["family"],
-                "genus_key": f"col:{row['genus_source_taxon_id']}" if row["genus_source_taxon_id"] else "",
-                "genus": row["genus"],
+                "genus_key": genus_key,
+                "genus": genus_name,
+                "genus_source_release": (
+                    str(hierarchy_evidence["source_release"])
+                    if hierarchy_evidence
+                    else COL_XR_RELEASE
+                ),
+                "genus_evidence_ids": (
+                    [str(hierarchy_evidence["evidence_id"])]
+                    if hierarchy_evidence
+                    else ([genus_key] if genus_key else [])
+                ),
+                "genus_supersedes_node_id": (
+                    str(hierarchy_evidence["supersedes_node_id"])
+                    if hierarchy_evidence
+                    else ""
+                ),
                 "species_key": key if rank == "SPECIES" else "",
                 "species": row["scientific_name"] if rank == "SPECIES" else "",
                 "status": "ACCEPTED",
@@ -641,6 +677,14 @@ def _snapshot_retrieved_at(source: Path) -> str:
         return datetime.now(UTC).isoformat()
     rows = pl.read_parquet(path)
     return str(rows["retrieved_at"][0]) if rows.height else datetime.now(UTC).isoformat()
+
+
+def _source_key(source_taxon_id: str) -> str:
+    if not source_taxon_id:
+        return ""
+    if ":" in source_taxon_id:
+        return source_taxon_id
+    return f"col:{source_taxon_id}"
 
 
 __all__ = [
