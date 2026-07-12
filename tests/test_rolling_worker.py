@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 from threading import Event
+from time import sleep
 
 import httpx
 import polars as pl
@@ -166,6 +168,43 @@ def test_rolling_worker_starts_next_yolo_batch_before_bioclip_finishes_previous(
     assert events.index("yolo:1") < events.index("score-end:0")
     assert result.batches_seen == 2
     assert result.batches_committed == 2
+
+
+def test_rolling_worker_logs_stage_progress_and_heartbeat(caplog) -> None:  # noqa: ANN001
+    def image_stage(planned: PlannedBatch) -> ImageBatch:
+        return ImageBatch(planned.batch_index, planned.batch_id, planned.part_id, planned.records)
+
+    def detection_stage(batch: ImageBatch) -> DetectionBatch:
+        sleep(0.04)
+        return DetectionBatch(batch, pl.DataFrame({"detection_id": ["det-1"]}))
+
+    def score_input_stage(batch: DetectionBatch) -> ScoreInputBatch:
+        return ScoreInputBatch(batch, batch.frame)
+
+    def score_stage(batch: ScoreInputBatch) -> ScoreBatch:
+        sleep(0.04)
+        return ScoreBatch(batch, batch.frame)
+
+    worker = RollingVisionWorker(
+        settings=RollingVisionWorkerSettings(vision_batch_rows=1, heartbeat_interval_seconds=0.01),
+        image_stage=image_stage,
+        detection_stage=detection_stage,
+        score_input_stage=score_input_stage,
+        score_stage=score_stage,
+        commit_stage=lambda batch: CommitResult(
+            batch.score_input_batch.detection_batch.image_batch.batch_id,
+            {},
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger="biominer.vision.rolling_worker"):
+        worker.run(pl.DataFrame({"flickr_photo_id": ["photo-1"]}))
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("vision_stage_started stage=yolo_detection" in message for message in messages)
+    assert any("vision_heartbeat active=" in message for message in messages)
+    assert any("vision_stage_finished stage=bioclip_scoring" in message for message in messages)
+    assert any("vision_run_finished" in message for message in messages)
 
 
 def test_rolling_worker_image_slots_never_exceed_prefetch_limit() -> None:
