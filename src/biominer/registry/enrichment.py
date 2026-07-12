@@ -19,7 +19,7 @@ from typing import Any
 
 import polars as pl
 
-from biominer.registry.compiler import compile_registry_fixture
+from biominer.registry.compiler import compile_registry_frames
 from biominer.registry.normalize import parse_language_tag, normalize_name_key
 from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES, TRANSLATION_CANDIDATES_FILE, translation_candidate_schema, translation_source_display_names
 from biominer.registry.trust_policy import decide_name_trust
@@ -38,6 +38,8 @@ ENRICHMENT_MANIFEST_FILE = "enrichment_manifest.json"
 TRANSLATION_WORK_LEDGER_FILE = "translation_work_ledger.parquet"
 DEFAULT_ENRICHMENT_SOURCES = (
     "col",
+    "ncbi",
+    "open_tree",
     "inaturalist",
     "itis",
     "tmd_de",
@@ -58,6 +60,8 @@ STATIC_VERNACULAR_SOURCE_KEYS = (
 BULK_ENRICHMENT_SOURCES = frozenset(
     {
         "gbif_vernacular",
+        "ncbi",
+        "open_tree",
         "taxref_fr",
         "tmd_de",
         "boi_india_en",
@@ -164,28 +168,13 @@ def build_enrichment_sources_from_registry(
     species_count = int(species_contexts.select(pl.len()).collect(engine="streaming").item())
 
     source_order = tuple(sources)
-    allowed_source_names = set(_source_display_names(source_order))
-    allowed_error_sources = set((*source_order, *allowed_source_names))
-    name_assertions: list[dict[str, Any]] = [
-        row for row in _read_or_empty(output / SOURCE_ASSERTIONS_FILE, _name_assertion_schema()).to_dicts()
-        if str(row.get("source") or "") in allowed_source_names
-    ]
-    external_links: list[dict[str, Any]] = [
-        row for row in _read_or_empty(output / EXTERNAL_LINKS_FILE, _external_link_schema()).to_dicts()
-        if str(row.get("source") or "") in allowed_source_names
-    ]
-    source_snapshots: list[dict[str, Any]] = [
-        row for row in _read_or_empty(output / ENRICHMENT_SOURCE_SNAPSHOTS_FILE, _source_snapshot_schema()).to_dicts()
-        if str(row.get("source") or "") in allowed_source_names
-    ]
-    errors: list[dict[str, str]] = [
-        row for row in _read_or_empty(output / SOURCE_ERRORS_FILE, _source_error_schema()).to_dicts()
-        if str(row.get("source") or "") in allowed_error_sources
-    ]
-    work_ledger: list[dict[str, Any]] = [
-        row for row in _read_or_empty(output / SOURCE_WORK_LEDGER_FILE, _source_work_schema()).to_dicts()
-        if str(row.get("source") or "") in source_order
-    ]
+    # The operational source ledger is cumulative. A run that adds one source
+    # must not erase assertions or completed work from earlier source passes.
+    name_assertions = _read_or_empty(output / SOURCE_ASSERTIONS_FILE, _name_assertion_schema()).to_dicts()
+    external_links = _read_or_empty(output / EXTERNAL_LINKS_FILE, _external_link_schema()).to_dicts()
+    source_snapshots = _read_or_empty(output / ENRICHMENT_SOURCE_SNAPSHOTS_FILE, _source_snapshot_schema()).to_dicts()
+    errors = _read_or_empty(output / SOURCE_ERRORS_FILE, _source_error_schema()).to_dicts()
+    work_ledger = _read_or_empty(output / SOURCE_WORK_LEDGER_FILE, _source_work_schema()).to_dicts()
     completed_work = {
         (str(row.get("source") or ""), str(row.get("accepted_taxon_key") or ""))
         for row in work_ledger
@@ -334,10 +323,12 @@ def default_enrichment_clients(
     static_source_snapshot_dir: str | Path | None = "data/source_snapshots",
     include_static_sources: bool = True,
 ) -> dict[str, Any]:
-    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, GBIFVernacularClient, INaturalistClient, ITISClient, StaticVernacularSourceClient, TAXREFFrenchClient, TMDGermanClient, WikidataClient
+    from biominer.registry.enrichment_sources import CatalogueOfLifeClient, GBIFVernacularClient, INaturalistClient, ITISClient, NCBIBulkClient, OpenTreeBulkClient, StaticVernacularSourceClient, TAXREFFrenchClient, TMDGermanClient, WikidataClient
 
     clients: dict[str, Any] = {
         "col": CatalogueOfLifeClient(max_retries=max_retries),
+        "ncbi": NCBIBulkClient(),
+        "open_tree": OpenTreeBulkClient(max_retries=max_retries),
         "inaturalist": INaturalistClient(max_retries=max_retries),
         "itis": ITISClient(max_retries=max_retries),
         "tmd_de": TMDGermanClient(max_retries=max_retries),
@@ -819,16 +810,16 @@ def compile_enriched_registry(
     enabled_enrichment = candidates.filter(pl.col("enabled") & (pl.col("disabled_reason") == ""))
     combined_names = _combine_names(base_names, enabled_enrichment)
     source_payload = _source_payload(taxa, combined_names, base, enrichment)
-    source_json = output / "combined_source_snapshot.json"
-    source_json.write_text(json.dumps(source_payload, indent=2, sort_keys=True), encoding="utf-8")
-
-    manifest = compile_registry_fixture(
-        source_json,
-        output,
+    frames, manifest = compile_registry_frames(
+        source_payload,
+        source_ref=f"parquet-bundle:{enrichment}",
+        output_ref=output,
         registry_version=registry_version,
         scope_path=scope_path,
         query_curation_json=query_curation_json,
     )
+    for filename, frame in frames.items():
+        frame.write_parquet(output / filename)
     candidate_output = candidates.filter(~(pl.col("enabled") & (pl.col("disabled_reason") == "")))
     candidate_output.write_parquet(output / NAME_CANDIDATES_FILE)
     translation_candidates.write_parquet(output / TRANSLATION_CANDIDATES_FILE)
@@ -1495,6 +1486,8 @@ def _source_display_names(sources: tuple[str, ...]) -> tuple[str, ...]:
         "inaturalist": "iNaturalist",
         "karnataka_chitte_kn": "Karnataka Chitte",
         "mymemory": "MyMemory",
+        "ncbi": "NCBI",
+        "open_tree": "Open Tree",
         "papilio_demoleus_multilingual_t5": "Multilingual T5",
         "taxref_fr": "TAXREF",
         "tmd_de": "TMD",

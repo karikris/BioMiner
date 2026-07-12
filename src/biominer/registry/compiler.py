@@ -105,18 +105,26 @@ def compile_registry_frames(
     query_curation_rules: tuple[QueryCurationRule, ...] = (),
 ) -> tuple[dict[str, pl.DataFrame], dict[str, Any]]:
     scope = load_scope(scope_path)
-    taxa = _taxa_frame(source_payload.get("taxa", []), scope_id=scope.scope_id)
-    names = _names_frame(source_payload.get("names", []), registry_version=registry_version)
+    source_taxa = source_payload.get("taxa", [])
+    lineage_taxa = _taxa_frame(source_taxa, scope_id=scope.scope_id, supported_only=False)
+    taxa = _taxa_frame(source_taxa, scope_id=scope.scope_id)
+    retained_taxon_keys = set(taxa["accepted_taxon_key"].to_list())
+    retained_name_rows = [
+        row
+        for row in source_payload.get("names", [])
+        if str(row.get("accepted_taxon_key") or "") in retained_taxon_keys
+    ]
+    names = _names_frame(retained_name_rows, registry_version=registry_version)
     snapshots = _source_snapshots_frame(source_payload, source_ref=source_ref)
     query_curation = query_curation_rules or load_query_curation_rules(query_curation_json)
     collision_names = _ensure_query_eligibility_columns(global_names_for_collision) if global_names_for_collision is not None else names
     name_collision_ledger = _name_collision_ledger_frame(collision_names, registry_version=registry_version)
     names = apply_query_curation(names, query_curation)
     names = canonicalize_keyword_rows(names)
-    evidence = _name_evidence_frame(source_payload.get("names", []), registry_version=registry_version, source_payload=source_payload)
+    evidence = _name_evidence_frame(retained_name_rows, registry_version=registry_version, source_payload=source_payload)
     queries = _query_definitions_frame(names, taxa, registry_version=registry_version, query_curation_rules=query_curation)
     species_paths = compile_species_paths(
-        taxa,
+        lineage_taxa,
         registry_version=registry_version,
         source_release=str(source_payload.get("source_version") or COL_XR_RELEASE),
     )
@@ -173,7 +181,13 @@ def query_definitions_from_names(
     )
 
 
-def _taxa_frame(rows: list[dict[str, Any]], *, scope_id: str) -> pl.DataFrame:
+def _taxa_frame(
+    rows: list[dict[str, Any]],
+    *,
+    scope_id: str,
+    supported_only: bool = True,
+) -> pl.DataFrame:
+    supported_ranks = {"KINGDOM", "PHYLUM", "CLASS", "ORDER", "FAMILY", "GENUS", "SPECIES"}
     normalized_rows = [
             {
                 "registry_schema_version": REGISTRY_SCHEMA_VERSION,
@@ -199,6 +213,7 @@ def _taxa_frame(rows: list[dict[str, Any]], *, scope_id: str) -> pl.DataFrame:
                 "in_scope": True,
             }
             for row in rows
+            if not supported_only or str(row.get("rank") or "").upper() in supported_ranks
         ]
     return pl.DataFrame(
         normalized_rows,
@@ -446,7 +461,8 @@ def _row_has_blocking_collision_reason(row: dict[str, Any]) -> bool:
 
 def _qa_findings(taxa: pl.DataFrame, names: pl.DataFrame, queries: pl.DataFrame, scope) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
-    if taxa.filter((pl.col("scientific_name") == scope.root_scientific_name) & (pl.col("rank") == scope.root_rank)).is_empty():
+    stored_ranks = {"KINGDOM", "PHYLUM", "CLASS", "ORDER", "FAMILY", "GENUS", "SPECIES"}
+    if scope.root_rank in stored_ranks and taxa.filter((pl.col("scientific_name") == scope.root_scientific_name) & (pl.col("rank") == scope.root_rank)).is_empty():
         findings.append(_finding("fatal", "missing_scope_root", scope.root_scientific_name))
     families = set(taxa.filter(pl.col("rank") == "FAMILY").select("scientific_name").to_series().to_list())
     missing = [family for family in scope.included_families if family not in families]

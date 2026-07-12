@@ -142,7 +142,7 @@ def test_compile_registry_fixture_writes_normalized_parquet_and_manifest(tmp_pat
     manifest = compile_registry_fixture(source, output, registry_version="test-registry")
 
     assert manifest["registry_version"] == "test-registry"
-    assert manifest["taxa_rows"] == 9
+    assert manifest["taxa_rows"] == 8
     assert manifest["name_rows"] == 3
     assert manifest["query_definition_rows"] == 4
     assert manifest["qa_status"] == "passed"
@@ -156,6 +156,17 @@ def test_compile_registry_fixture_writes_normalized_parquet_and_manifest(tmp_pat
     assert json.loads((output / "manifest.json").read_text(encoding="utf-8")) == manifest
     assert manifest["name_collision_ledger_rows"] == 0
     assert manifest["query_blocking_name_collision_rows"] == 0
+
+    taxa = pl.read_parquet(output / "taxa.parquet")
+    assert set(taxa["rank"]) <= {
+        "KINGDOM",
+        "PHYLUM",
+        "CLASS",
+        "ORDER",
+        "FAMILY",
+        "GENUS",
+        "SPECIES",
+    }
 
     names = pl.read_parquet(output / "names.parquet")
     assert names.select("normalized_match_key").to_series().to_list() == [

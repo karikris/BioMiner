@@ -25,6 +25,7 @@ from biominer.registry.enrichment_sources import (
     GBIFVernacularClient,
     INaturalistClient,
     ITISClient,
+    OpenTreeBulkClient,
     StaticVernacularSourceClient,
     TAXREFFrenchClient,
     TMDGermanClient,
@@ -457,6 +458,55 @@ def test_inaturalist_source_uses_non_truncating_taxa_page_size() -> None:
     client.enrich_species(_species_context())
 
     assert requests == [("/v1/taxa", {"q": "Papilio demoleus", "rank": "species", "per_page": 200})]
+
+
+def test_open_tree_bulk_source_keeps_exact_names_and_synonyms_at_t2() -> None:
+    requests = []
+
+    def fake_post(path, payload):  # noqa: ANN001, ANN202 - source test double.
+        requests.append((path, payload))
+        return {
+            "results": [
+                {
+                    "name": "Papilio demoleus",
+                    "matches": [
+                        {
+                            "matched_name": "Papilio demoleus",
+                            "score": 1.0,
+                            "taxon": {
+                                "ott_id": 123,
+                                "name": "Papilio demoleus",
+                                "rank": "species",
+                                "synonyms": ["Princeps demoleus"],
+                                "is_suppressed": False,
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+
+    result = OpenTreeBulkClient(json_post=fake_post).enrich_registry(
+        taxa_rows=[
+            {
+                "accepted_taxon_key": "col:100",
+                "scientific_name": "Papilio demoleus",
+                "rank": "SPECIES",
+                "family_key": "col:10",
+                "family": "Papilionidae",
+                "genus_key": "col:90",
+                "genus": "Papilio",
+            }
+        ],
+        name_rows=[],
+    )
+
+    assert requests[0][0] == "/tnrs/match_names"
+    assert [(row["display_name"], row["name_class"], row["trust_tier"]) for row in result["name_assertions"]] == [
+        ("Papilio demoleus", "accepted_scientific", "T2"),
+        ("Princeps demoleus", "scientific_synonym", "T2"),
+    ]
+    assert result["external_links"][0]["source_taxon_id"] == "123"
 
 
 def test_wikidata_source_name_assertions_preserve_same_taxon_binding() -> None:
@@ -2643,6 +2693,8 @@ def test_default_enrichment_clients_include_wikidata_gbif_vernacular_and_taxref(
 
     assert list(clients) == [
         "col",
+        "ncbi",
+        "open_tree",
         "inaturalist",
         "itis",
         "tmd_de",
@@ -2654,6 +2706,8 @@ def test_default_enrichment_clients_include_wikidata_gbif_vernacular_and_taxref(
         "karnataka_chitte_kn",
         "papilio_demoleus_multilingual_t5",
     ]
+    assert clients["ncbi"].__class__.__name__ == "NCBIBulkClient"
+    assert clients["open_tree"].__class__.__name__ == "OpenTreeBulkClient"
     assert clients["gbif_vernacular"].__class__.__name__ == "GBIFVernacularClient"
     assert clients["taxref_fr"].__class__.__name__ == "TAXREFFrenchClient"
     assert clients["boi_india_en"].__class__.__name__ == "StaticVernacularSourceClient"
