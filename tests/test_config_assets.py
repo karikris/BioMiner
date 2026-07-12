@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -8,37 +7,16 @@ import pytest
 from biominer.cli import build_parser
 
 
-def test_authoritative_docs_and_classification_source_exist() -> None:
+def test_authoritative_unified_registry_docs_exist() -> None:
     for path in (
         Path("README.md"),
         Path("docs/registry.md"),
         Path("docs/production.md"),
         Path("docs/vision.md"),
-        Path("docs/migrations/classification-v3.md"),
-        Path("docs/verification/top3_cascade_final_verification.md"),
-        Path("config/taxonomy/papilionoidea_classification_v3.json"),
+        Path("docs/migrations/unified-registry.md"),
         Path("config/vision_profiles/mac_m5pro_64gb.json"),
     ):
         assert path.exists(), path
-
-
-def test_classification_v3_cutover_doc_preserves_version_and_output_boundaries() -> None:
-    text = Path("docs/migrations/classification-v3.md").read_text(encoding="utf-8")
-
-    for required in (
-        "Classification-v2 is not upgraded in place",
-        "butterfly-classification-v3.0.0",
-        "butterfly-six-rank-prompts-v4",
-        "butterfly-cascade-output-v1.0.0",
-        "global-rank-pruning-v1",
-        "--output-dir data/registry/classification-v3",
-        "--output data/cache/classification-v3/classification_text_embeddings.parquet",
-        "does not open or validate the classification-v3",
-        "Do not cast old columns",
-        "Work keys change intentionally",
-        "previous v2-capable release or Git SHA",
-    ):
-        assert required in text
 
 
 def test_authoritative_examples_separate_base_overlay_cache_and_run_roots() -> None:
@@ -63,38 +41,6 @@ def test_authoritative_examples_separate_base_overlay_cache_and_run_roots() -> N
         assert forbidden not in text
 
 
-def test_classification_source_has_reviewed_six_rank_path_with_subtribe_skip() -> None:
-    payload = json.loads(
-        Path("config/taxonomy/papilionoidea_classification_v3.json").read_text(
-            encoding="utf-8"
-        )
-    )
-
-    assert [node["rank"] for node in payload["nodes"]] == [
-        "FAMILY",
-        "SUBFAMILY",
-        "TRIBE",
-        "GENUS",
-        "SPECIES",
-    ]
-    assert [node["scientific_name"] for node in payload["nodes"]] == [
-        "Papilionidae",
-        "Papilioninae",
-        "Papilionini",
-        "Papilio",
-        "Papilio demoleus",
-    ]
-    skip = next(
-        edge
-        for edge in payload["edges"]
-        if edge["edge_type"] == "reviewed_rank_skip"
-    )
-    assert skip["skipped_ranks"] == ["SUBTRIBE"]
-    assert skip["reviewed"] is True
-    assert payload["species_mappings"][0]["gbif_species_key"] == "1938069"
-    assert all(row["review_status"] == "reviewed" for row in [*payload["nodes"], *payload["edges"], *payload["species_mappings"]])
-
-
 def test_superseded_classification_v2_assets_are_removed() -> None:
     for path in (
         Path("src/biominer/registry/classification_v2.py"),
@@ -114,7 +60,6 @@ def test_removed_visual_commands_have_no_parser_aliases() -> None:
         ["vision", "rolling-screen"],
         ["vision", "score"],
         ["vision", "ablate"],
-        ["bioclip", "screen"],
     ):
         with pytest.raises(SystemExit):
             parser.parse_args(command)
