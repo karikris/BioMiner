@@ -12,10 +12,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+geo = [
+    "h3>=4.5,<5",
+]
 postgres = [
     "psycopg[binary]>=3.2",
 ]
 test = [
+    "h3>=4.5,<5",
     "matplotlib>=3.10",
     "pytest>=8",
 ]
