@@ -1,0 +1,16 @@
+{
+  "schema_version": "reference-api-fixture-manifest-v1",
+  "recorded_at": "2026-07-14",
+  "fixtures": [
+    {
+      "file": "gbif_occurrence_search_v1.json",
+      "source": "GBIF",
+      "sha256": "b79c67c1fc9961357e7c2cf80ae5bae4daf6c6269ba5c3b65acb93a782e95f4f"
+    },
+    {
+      "file": "inaturalist_observation_search_v1.json",
+      "source": "iNaturalist",
+      "sha256": "96ba9ffdf5ba245ee5c020088de1e6df5a4aa30ec83969345095cd898614c263"
+    }
+  ]
+}

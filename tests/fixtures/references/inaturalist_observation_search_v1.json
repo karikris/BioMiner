@@ -1,0 +1,258 @@
+{
+  "_fixture": {
+    "schema_version": "reference-api-recording-v1",
+    "source": "iNaturalist observation search",
+    "endpoint": "https://api.inaturalist.org/v1/observations",
+    "recorded_at": "2026-07-14",
+    "request": {
+      "taxon_id": "51583",
+      "quality_grade": "research",
+      "rank": "species",
+      "captive": "false",
+      "photos": "true",
+      "taxon_is_active": "true",
+      "per_page": 200
+    },
+    "reduction": "One Papilio demoleus observation retained per named response; one photo retained per observation.",
+    "redactions": [
+      "Observer identifiers, names, and attribution names replaced with recorded-observer labels.",
+      "Street-level place text reduced to city or country scope."
+    ],
+    "notes": [
+      "Default search responses retain community_taxon_id but do not hydrate community_taxon.",
+      "The duplicate_pair response is the direct iNaturalist source of the retained GBIF occurrence."
+    ]
+  },
+  "responses": {
+    "duplicate_pair": {
+      "total_results": 1,
+      "page": 1,
+      "per_page": 200,
+      "results": [
+        {
+          "id": 333386897,
+          "uri": "https://www.inaturalist.org/observations/333386897",
+          "quality_grade": "research",
+          "taxon": {
+            "id": 51583,
+            "name": "Papilio demoleus",
+            "rank": "species"
+          },
+          "community_taxon_id": 51583,
+          "time_observed_at": "2026-01-04T10:15:00+07:00",
+          "geojson": {
+            "type": "Point",
+            "coordinates": [
+              96.7493993,
+              4.695135
+            ]
+          },
+          "location": "4.695135,96.7493993",
+          "positional_accuracy": 229400,
+          "public_positional_accuracy": 229400,
+          "geoprivacy": null,
+          "place_guess": "Aceh, Indonesia",
+          "license_code": "cc-by-nc",
+          "num_identification_disagreements": 0,
+          "captive": false,
+          "obscured": false,
+          "user": {
+            "id": 9000001,
+            "login": "recorded-observer-1",
+            "name": null
+          },
+          "photos": [
+            {
+              "id": 605252670,
+              "license_code": "cc-by-nc",
+              "original_dimensions": {
+                "width": 2048,
+                "height": 1536
+              },
+              "url": "https://inaturalist-open-data.s3.amazonaws.com/photos/605252670/square.jpg",
+              "attribution": "recorded-observer-1, CC BY-NC"
+            }
+          ],
+          "annotations": []
+        }
+      ]
+    },
+    "fallback_level_0_empty": {
+      "total_results": 0,
+      "page": 1,
+      "per_page": 200,
+      "results": []
+    },
+    "fallback_level_1": {
+      "total_results": 1,
+      "page": 1,
+      "per_page": 200,
+      "results": [
+        {
+          "id": 381003225,
+          "uri": "https://www.inaturalist.org/observations/381003225",
+          "quality_grade": "research",
+          "taxon": {
+            "id": 51583,
+            "name": "Papilio demoleus",
+            "rank": "species"
+          },
+          "community_taxon_id": 51583,
+          "time_observed_at": "2026-05-17T16:35:00+05:30",
+          "geojson": {
+            "type": "Point",
+            "coordinates": [
+              77.5923063,
+              12.8915028
+            ]
+          },
+          "location": "12.8915028,77.5923063",
+          "positional_accuracy": 207,
+          "public_positional_accuracy": 207,
+          "geoprivacy": null,
+          "place_guess": "Bengaluru, India",
+          "license_code": "cc-by-nc",
+          "num_identification_disagreements": 0,
+          "captive": false,
+          "obscured": false,
+          "user": {
+            "id": 9000002,
+            "login": "recorded-observer-2",
+            "name": null
+          },
+          "photos": [
+            {
+              "id": 697089916,
+              "license_code": "cc-by-nc",
+              "original_dimensions": {
+                "width": 2048,
+                "height": 1536
+              },
+              "url": "https://inaturalist-open-data.s3.amazonaws.com/photos/697089916/square.jpg",
+              "attribution": "recorded-observer-2, CC BY-NC"
+            }
+          ],
+          "annotations": []
+        }
+      ]
+    },
+    "fallback_level_2": {
+      "total_results": 1,
+      "page": 1,
+      "per_page": 200,
+      "results": [
+        {
+          "id": 380993706,
+          "uri": "https://www.inaturalist.org/observations/380993706",
+          "quality_grade": "research",
+          "taxon": {
+            "id": 51583,
+            "name": "Papilio demoleus",
+            "rank": "species"
+          },
+          "community_taxon_id": 51583,
+          "time_observed_at": "2026-07-12T17:36:39+05:30",
+          "geojson": {
+            "type": "Point",
+            "coordinates": [
+              82.3542633056,
+              21.6690063333
+            ]
+          },
+          "location": "21.6690063333,82.3542633056",
+          "positional_accuracy": null,
+          "public_positional_accuracy": null,
+          "geoprivacy": null,
+          "place_guess": "Chhattisgarh, India",
+          "license_code": "cc-by-nc",
+          "num_identification_disagreements": 0,
+          "captive": false,
+          "obscured": false,
+          "user": {
+            "id": 9000003,
+            "login": "recorded-observer-3",
+            "name": "recorded-observer-3"
+          },
+          "photos": [
+            {
+              "id": 697083583,
+              "license_code": "cc-by-nc",
+              "original_dimensions": {
+                "width": 1536,
+                "height": 2048
+              },
+              "url": "https://inaturalist-open-data.s3.amazonaws.com/photos/697083583/square.jpg",
+              "attribution": "recorded-observer-3, CC BY-NC"
+            }
+          ],
+          "annotations": [
+            {
+              "controlled_attribute_id": 1,
+              "controlled_value_id": 2,
+              "concatenated_attr_val": "1|2"
+            }
+          ]
+        }
+      ]
+    },
+    "fallback_level_3": {
+      "total_results": 1,
+      "page": 1,
+      "per_page": 200,
+      "results": [
+        {
+          "id": 380977018,
+          "uri": "https://www.inaturalist.org/observations/380977018",
+          "quality_grade": "research",
+          "taxon": {
+            "id": 51583,
+            "name": "Papilio demoleus",
+            "rank": "species"
+          },
+          "community_taxon_id": 51583,
+          "time_observed_at": "2026-07-13T15:21:03+09:30",
+          "geojson": {
+            "type": "Point",
+            "coordinates": [
+              135.7270076405,
+              -16.6842998844
+            ]
+          },
+          "location": "-16.6842998844,135.7270076405",
+          "positional_accuracy": 8,
+          "public_positional_accuracy": 8,
+          "geoprivacy": null,
+          "place_guess": "Northern Territory, Australia",
+          "license_code": "cc-by-nc",
+          "num_identification_disagreements": 0,
+          "captive": false,
+          "obscured": false,
+          "user": {
+            "id": 9000004,
+            "login": "recorded-observer-4",
+            "name": "recorded-observer-4"
+          },
+          "photos": [
+            {
+              "id": 697053553,
+              "license_code": "cc-by-nc",
+              "original_dimensions": {
+                "width": 1536,
+                "height": 2048
+              },
+              "url": "https://inaturalist-open-data.s3.amazonaws.com/photos/697053553/square.jpg",
+              "attribution": "recorded-observer-4, CC BY-NC"
+            }
+          ],
+          "annotations": [
+            {
+              "controlled_attribute_id": 1,
+              "controlled_value_id": 2,
+              "concatenated_attr_val": "1|2"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

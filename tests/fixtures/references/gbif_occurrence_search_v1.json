@@ -1,0 +1,103 @@
+{
+  "_fixture": {
+    "schema_version": "reference-api-recording-v1",
+    "source": "GBIF occurrence search",
+    "endpoint": "https://api.gbif.org/v1/occurrence/search",
+    "recorded_at": "2026-07-14",
+    "request": {
+      "taxon_key": "1938069",
+      "media_type": "StillImage",
+      "has_coordinate": "true",
+      "limit": 300
+    },
+    "reduction": "Two Papilio demoleus records and one media item per record retained; pagination reset to the retained subset.",
+    "redactions": [
+      "Observer names replaced with recorded-observer labels."
+    ]
+  },
+  "response": {
+    "offset": 0,
+    "limit": 300,
+    "count": 2,
+    "endOfRecords": true,
+    "results": [
+      {
+        "key": 5938133297,
+        "taxonKey": 1938069,
+        "acceptedTaxonKey": 1938069,
+        "speciesKey": 1938069,
+        "species": "Papilio demoleus",
+        "scientificName": "Papilio demoleus Linnaeus, 1758",
+        "basisOfRecord": "HUMAN_OBSERVATION",
+        "occurrenceStatus": "PRESENT",
+        "issues": [
+          "COORDINATE_ROUNDED",
+          "CONTINENT_DERIVED_FROM_COORDINATES",
+          "TAXON_ID_NOT_FOUND"
+        ],
+        "identificationVerificationStatus": null,
+        "eventDate": "2026-01-04T10:15",
+        "decimalLatitude": 4.695135,
+        "decimalLongitude": 96.749399,
+        "coordinateUncertaintyInMeters": 229400.0,
+        "country": "Indonesia",
+        "countryCode": "ID",
+        "datasetKey": "50c9509d-22c7-4a22-a47d-8c48425ef4a7",
+        "references": "https://www.inaturalist.org/observations/333386897",
+        "license": "http://creativecommons.org/licenses/by-nc/4.0/legalcode",
+        "recordedBy": "recorded-observer-1",
+        "media": [
+          {
+            "type": "StillImage",
+            "format": "image/jpeg",
+            "references": "https://www.inaturalist.org/photos/605252670",
+            "creator": "recorded-observer-1",
+            "publisher": "iNaturalist",
+            "license": "http://creativecommons.org/licenses/by-nc/4.0/",
+            "rightsHolder": "recorded-observer-1",
+            "identifier": "https://inaturalist-open-data.s3.amazonaws.com/photos/605252670/original.jpg"
+          }
+        ]
+      },
+      {
+        "key": 6129961782,
+        "taxonKey": 1938069,
+        "acceptedTaxonKey": 1938069,
+        "speciesKey": 1938069,
+        "species": "Papilio demoleus",
+        "scientificName": "Papilio demoleus Linnaeus, 1758",
+        "basisOfRecord": "HUMAN_OBSERVATION",
+        "occurrenceStatus": "PRESENT",
+        "issues": [
+          "COORDINATE_ROUNDED",
+          "CONTINENT_DERIVED_FROM_COORDINATES",
+          "TAXON_ID_NOT_FOUND"
+        ],
+        "identificationVerificationStatus": null,
+        "lifeStage": "Adult",
+        "sex": "Female",
+        "eventDate": "2026-01-21T14:30:25",
+        "decimalLatitude": 20.991745,
+        "decimalLongitude": 73.06863,
+        "country": "India",
+        "countryCode": "IN",
+        "datasetKey": "50c9509d-22c7-4a22-a47d-8c48425ef4a7",
+        "references": "https://www.inaturalist.org/observations/335589415",
+        "license": "http://creativecommons.org/licenses/by-nc/4.0/legalcode",
+        "recordedBy": "recorded-observer-2",
+        "media": [
+          {
+            "type": "StillImage",
+            "format": "image/jpeg",
+            "references": "https://www.inaturalist.org/photos/609675489",
+            "creator": "recorded-observer-2",
+            "publisher": "iNaturalist",
+            "license": "http://creativecommons.org/licenses/by-nc-nd/4.0/",
+            "rightsHolder": "recorded-observer-2",
+            "identifier": "https://inaturalist-open-data.s3.amazonaws.com/photos/609675489/original.jpg"
+          }
+        ]
+      }
+    ]
+  }
+}
