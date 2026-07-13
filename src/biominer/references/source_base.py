@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 from typing import Protocol, runtime_checkable
 
 import polars as pl
@@ -14,7 +15,7 @@ from biominer.references.schemas import (
 )
 
 
-REFERENCE_SOURCE_QUERY_VERSION = "reference-source-query-v1"
+REFERENCE_SOURCE_QUERY_VERSION = "reference-source-query-v2"
 REFERENCE_SOURCE_PAGE_VERSION = "reference-source-page-v1"
 
 
@@ -27,6 +28,9 @@ class ReferenceSourceQuery:
     source_taxon_id: str | None = None
     spatial_cell_ids: tuple[str, ...] = ()
     country_codes: tuple[str, ...] = ()
+    geometry_wkt: str | None = None
+    cluster_medoid_latitude: float | None = None
+    cluster_medoid_longitude: float | None = None
     page_size: int = 100
     source_snapshot_version: str = ""
 
@@ -43,6 +47,8 @@ class ReferenceSourceQuery:
             object.__setattr__(self, field, value)
         source_taxon_id = str(self.source_taxon_id or "").strip() or None
         object.__setattr__(self, "source_taxon_id", source_taxon_id)
+        geometry_wkt = str(self.geometry_wkt or "").strip() or None
+        object.__setattr__(self, "geometry_wkt", geometry_wkt)
         if isinstance(self.fallback_level, bool) or not isinstance(
             self.fallback_level, int
         ):
@@ -67,8 +73,14 @@ class ReferenceSourceQuery:
         )
         if any(len(value) != 2 for value in countries):
             raise ValueError("country_codes must contain ISO alpha-2 values")
+        medoid_latitude, medoid_longitude = _coordinate_pair(
+            self.cluster_medoid_latitude,
+            self.cluster_medoid_longitude,
+        )
         object.__setattr__(self, "spatial_cell_ids", cells)
         object.__setattr__(self, "country_codes", countries)
+        object.__setattr__(self, "cluster_medoid_latitude", medoid_latitude)
+        object.__setattr__(self, "cluster_medoid_longitude", medoid_longitude)
 
     @property
     def query_fingerprint(self) -> str:
@@ -82,6 +94,9 @@ class ReferenceSourceQuery:
                 "source_taxon_id": self.source_taxon_id,
                 "spatial_cell_ids": self.spatial_cell_ids,
                 "country_codes": self.country_codes,
+                "geometry_wkt": self.geometry_wkt,
+                "cluster_medoid_latitude": self.cluster_medoid_latitude,
+                "cluster_medoid_longitude": self.cluster_medoid_longitude,
                 "page_size": self.page_size,
                 "source_snapshot_version": self.source_snapshot_version,
             }
@@ -185,6 +200,25 @@ def _fingerprint(payload: Mapping[str, object]) -> str:
         ensure_ascii=True,
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _coordinate_pair(
+    latitude: object,
+    longitude: object,
+) -> tuple[float | None, float | None]:
+    if (latitude is None) != (longitude is None):
+        raise ValueError("cluster medoid latitude and longitude must be populated together")
+    if latitude is None:
+        return None, None
+    if isinstance(latitude, bool) or isinstance(longitude, bool):
+        raise TypeError("cluster medoid coordinates must be numeric")
+    lat = float(latitude)
+    lon = float(longitude)
+    if not math.isfinite(lat) or not math.isfinite(lon):
+        raise ValueError("cluster medoid coordinates must be finite")
+    if not -90.0 <= lat <= 90.0 or not -180.0 <= lon <= 180.0:
+        raise ValueError("cluster medoid coordinates are outside WGS84 bounds")
+    return lat, lon
 
 
 __all__ = [

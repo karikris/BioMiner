@@ -1,5 +1,20 @@
 """Reference metadata acquisition, review, and support-bank contracts."""
 
+from biominer.references.gbif import (
+    GBIF_IMAGE_CACHE_BASE_URL,
+    GBIF_OCCURRENCE_SEARCH_MAX_RECORDS,
+    GBIF_OCCURRENCE_SEARCH_PAGE_LIMIT,
+    GBIF_REFERENCE_CHECKPOINT_SCHEMA_VERSION,
+    GBIF_REFERENCE_SOURCE_VERSION,
+    GBIFReferenceAdapter,
+    GBIFReferenceBulkDownloadRequired,
+    GBIFReferenceCheckpoint,
+    build_gbif_reference_download_request,
+    gbif_image_cache_url,
+    load_gbif_reference_checkpoint,
+    load_gbif_reference_checkpoint_frames,
+    write_gbif_reference_checkpoint,
+)
 from biominer.references.schemas import (
     DOWNLOAD_STATUSES,
     LICENCE_POLICY_STATUSES,
@@ -38,6 +53,14 @@ from biominer.references.source_base import (
 
 __all__ = [
     "DOWNLOAD_STATUSES",
+    "GBIF_IMAGE_CACHE_BASE_URL",
+    "GBIF_OCCURRENCE_SEARCH_MAX_RECORDS",
+    "GBIF_OCCURRENCE_SEARCH_PAGE_LIMIT",
+    "GBIF_REFERENCE_CHECKPOINT_SCHEMA_VERSION",
+    "GBIF_REFERENCE_SOURCE_VERSION",
+    "GBIFReferenceAdapter",
+    "GBIFReferenceBulkDownloadRequired",
+    "GBIFReferenceCheckpoint",
     "LICENCE_POLICY_STATUSES",
     "REFERENCE_ACQUISITION_PLAN_FILE",
     "REFERENCE_ACQUISITION_PLAN_SCHEMA_VERSION",
@@ -52,6 +75,10 @@ __all__ = [
     "ReferenceMetadataPage",
     "ReferenceSourceAdapter",
     "ReferenceSourceQuery",
+    "build_gbif_reference_download_request",
+    "gbif_image_cache_url",
+    "load_gbif_reference_checkpoint",
+    "load_gbif_reference_checkpoint_frames",
     "make_acquisition_plan_id",
     "make_reference_media_id",
     "make_reference_observation_id",
@@ -68,4 +95,5 @@ __all__ = [
     "write_reference_acquisition_plan",
     "write_reference_media_candidates",
     "write_reference_observations",
+    "write_gbif_reference_checkpoint",
 ]

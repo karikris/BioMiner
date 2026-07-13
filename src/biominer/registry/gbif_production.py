@@ -29,6 +29,7 @@ class RetryingHTTPGet:
         self.max_retries = max_retries
         self.attempt_count = 0
         self.retry_count = 0
+        self.rate_limit_count = 0
         self._sleep = sleep
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
@@ -58,6 +59,11 @@ class RetryingHTTPGet:
                 httpx.HTTPStatusError,
             ) as exc:
                 last_error = exc
+                if (
+                    isinstance(exc, httpx.HTTPStatusError)
+                    and exc.response.status_code == 429
+                ):
+                    self.rate_limit_count += 1
                 if not _is_retryable(exc) or retry_index >= self.max_retries:
                     raise
                 self.retry_count += 1
@@ -106,6 +112,10 @@ class ProductionGBIFClient(GBIFClient):
     @property
     def retry_count(self) -> int:
         return self.transport.retry_count
+
+    @property
+    def rate_limit_count(self) -> int:
+        return self.transport.rate_limit_count
 
     def close(self) -> None:
         self.transport.close()
