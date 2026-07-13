@@ -1,0 +1,75 @@
+{
+  "schema_version": "competitor-relationship-source-v1.0.0",
+  "relationships": [
+    {
+      "subject_accepted_taxon_key": "gbif:1938069",
+      "object_scope_type": "genus",
+      "object_scope_id": "Graphium",
+      "relationship_type": "historical_false_positive_genus",
+      "source": "bioclip_pilot_observation",
+      "source_record_id": "target-reference-bank-policy:false-winning-genus:graphium",
+      "evidence_version": "papilio-demoleus-bioclip-pilot-false-winners-v1",
+      "evidence_note": "Recorded as a current false-winning genus in the reviewed target reference-bank policy.",
+      "review_status": "reviewed",
+      "reviewed_by": "project-owner",
+      "reviewed_at": "2026-07-13T00:00:00Z",
+      "enabled": true
+    },
+    {
+      "subject_accepted_taxon_key": "gbif:1938069",
+      "object_scope_type": "genus",
+      "object_scope_id": "Pachliopta",
+      "relationship_type": "historical_false_positive_genus",
+      "source": "bioclip_pilot_observation",
+      "source_record_id": "target-reference-bank-policy:false-winning-genus:pachliopta",
+      "evidence_version": "papilio-demoleus-bioclip-pilot-false-winners-v1",
+      "evidence_note": "Recorded as a current false-winning genus in the reviewed target reference-bank policy.",
+      "review_status": "reviewed",
+      "reviewed_by": "project-owner",
+      "reviewed_at": "2026-07-13T00:00:00Z",
+      "enabled": true
+    },
+    {
+      "subject_accepted_taxon_key": "gbif:1938069",
+      "object_scope_type": "genus",
+      "object_scope_id": "Ornithoptera",
+      "relationship_type": "historical_false_positive_genus",
+      "source": "bioclip_pilot_observation",
+      "source_record_id": "target-reference-bank-policy:false-winning-genus:ornithoptera",
+      "evidence_version": "papilio-demoleus-bioclip-pilot-false-winners-v1",
+      "evidence_note": "Recorded as a current false-winning genus in the reviewed target reference-bank policy.",
+      "review_status": "reviewed",
+      "reviewed_by": "project-owner",
+      "reviewed_at": "2026-07-13T00:00:00Z",
+      "enabled": true
+    },
+    {
+      "subject_accepted_taxon_key": "gbif:1938069",
+      "object_scope_type": "genus",
+      "object_scope_id": "Protographium",
+      "relationship_type": "historical_false_positive_genus",
+      "source": "bioclip_pilot_observation",
+      "source_record_id": "target-reference-bank-policy:false-winning-genus:protographium",
+      "evidence_version": "papilio-demoleus-bioclip-pilot-false-winners-v1",
+      "evidence_note": "Recorded as a current false-winning genus in the reviewed target reference-bank policy.",
+      "review_status": "reviewed",
+      "reviewed_by": "project-owner",
+      "reviewed_at": "2026-07-13T00:00:00Z",
+      "enabled": true
+    },
+    {
+      "subject_accepted_taxon_key": "gbif:1938069",
+      "object_scope_type": "genus",
+      "object_scope_id": "Losaria",
+      "relationship_type": "historical_false_positive_genus",
+      "source": "bioclip_pilot_observation",
+      "source_record_id": "target-reference-bank-policy:false-winning-genus:losaria",
+      "evidence_version": "papilio-demoleus-bioclip-pilot-false-winners-v1",
+      "evidence_note": "Recorded as a current false-winning genus in the reviewed target reference-bank policy.",
+      "review_status": "reviewed",
+      "reviewed_by": "project-owner",
+      "reviewed_at": "2026-07-13T00:00:00Z",
+      "enabled": true
+    }
+  ]
+}

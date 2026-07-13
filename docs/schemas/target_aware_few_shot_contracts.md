@@ -424,9 +424,14 @@ Required fields are `schema_version`, `subject_accepted_taxon_key`,
 `taxonomic_neighbour`, or `visual_neighbour`), `source`, `source_record_id`,
 `evidence_version`, `evidence_note`, `review_status`, `reviewed_by`,
 `reviewed_at`, `enabled`, and `relationship_fingerprint`. Visual-neighbour
-relationships additionally require prototype and model fingerprints. Curated
-relationships may influence inclusion and priority, never establish an image
-label.
+relationships additionally require nullable string fields `prototype_fingerprint`
+and `model_fingerprint`, both populated with full lowercase SHA-256 fingerprints
+for that relationship type and null otherwise. `reviewed_at` is a normalized UTC
+ISO 8601 string. An enabled row must be reviewed with reviewer and timestamp
+provenance; only one evidence version of a logical edge may be enabled. Genus
+scope IDs are accepted genus scientific names, while species scope IDs are
+accepted taxon keys. Curated relationships may influence inclusion and priority,
+never establish an image label.
 
 ## 5. Reference acquisition and review artifacts
 
