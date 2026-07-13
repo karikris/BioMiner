@@ -111,10 +111,30 @@ def test_density_border_assignment_is_adjacency_gated_and_distance_capped() -> N
     adjacent = cell_center(adjacent_cell)
     remote = cell_center(coordinate_to_cell(-33.8688, 151.2093, resolution=5))
     records = [
-        _record("core-1", float(core.latitude), float(core.longitude)),
-        _record("core-2", float(core.latitude), float(core.longitude)),
-        _record("border", float(adjacent.latitude), float(adjacent.longitude)),
-        _record("remote", float(remote.latitude), float(remote.longitude)),
+        _record(
+            "core-1",
+            float(core.latitude),
+            float(core.longitude),
+            country_code="AU",
+        ),
+        _record(
+            "core-2",
+            float(core.latitude),
+            float(core.longitude),
+            country_code="AU",
+        ),
+        _record(
+            "border",
+            float(adjacent.latitude),
+            float(adjacent.longitude),
+            country_code="AU",
+        ),
+        _record(
+            "remote",
+            float(remote.latitude),
+            float(remote.longitude),
+            country_code="AU",
+        ),
     ]
     permissive = FlickrGeoClusterConfig(
         minimum_images_per_cell=2,
@@ -257,3 +277,153 @@ def test_supports_configured_cell_resolution(config: FlickrGeoClusterConfig) -> 
     result = _build([_record("1", -27.4705, 153.026)], config=config)
     located = result.clusters.filter(pl.col("geo_cluster_id") != NO_GEO_CLUSTER_ID)
     assert located["source_resolution"].to_list() == [config.source_resolution]
+
+
+def test_dateline_candidates_share_compact_cluster_and_crossing_bounds() -> None:
+    result = _build(
+        [
+            _record("east", 0.0, 179.99),
+            _record("west", 0.0, -179.99),
+        ],
+        config=FlickrGeoClusterConfig(minimum_cluster_images=2),
+    )
+    located = result.clusters.filter(pl.col("geo_cluster_id") != NO_GEO_CLUSTER_ID)
+
+    assert located.height == 1
+    cluster = located.to_dicts()[0]
+    assert cluster["member_image_count"] == 2
+    assert cluster["member_cell_count"] == 1
+    assert cluster["bounding_geometry"]["crosses_dateline"] is True
+    assert cluster["bounding_geometry"]["west"] == pytest.approx(179.99)
+    assert cluster["bounding_geometry"]["east"] == pytest.approx(-179.99)
+    assert abs(abs(cluster["centroid"]["longitude"]) - 180.0) < 0.2
+    assert cluster["radius_quantiles_km"]["max"] < 10.0
+
+
+def test_flickr_accuracy_limits_which_coordinates_can_seed_clusters() -> None:
+    city = _build(
+        [_record("city", -27.4705, 153.026, accuracy=11)],
+        config=FlickrGeoClusterConfig(minimum_cluster_images=1),
+    )
+    region = _build(
+        [_record("region", -27.4705, 153.026, accuracy=6)],
+        config=FlickrGeoClusterConfig(minimum_cluster_images=1),
+    )
+    unknown = _build(
+        [_record("unknown", -27.4705, 153.026, accuracy=None)],
+        config=FlickrGeoClusterConfig(minimum_cluster_images=1),
+    )
+
+    assert city.assignments["geo_cluster_id"].to_list() != [NO_GEO_CLUSTER_ID]
+    for result in (region, unknown):
+        assignment = result.assignments.to_dicts()[0]
+        assert assignment["geo_cluster_id"] == NO_GEO_CLUSTER_ID
+        assert assignment["outlier"] is False
+        no_geo = result.clusters.to_dicts()[0]
+        assert no_geo["member_cell_count"] == 0
+        assert no_geo["source_resolution"] is None
+
+
+def test_sparse_precise_cell_is_an_explicit_no_geo_outlier() -> None:
+    result = _build(
+        [_record("sparse", -27.4705, 153.026, country_code="AU")],
+        config=FlickrGeoClusterConfig(
+            minimum_images_per_cell=1,
+            minimum_cluster_images=2,
+        ),
+    )
+    assignment = result.assignments.to_dicts()[0]
+    cluster = result.clusters.to_dicts()[0]
+
+    assert assignment["geo_cluster_id"] == NO_GEO_CLUSTER_ID
+    assert assignment["assignment_method"] == "no_geo"
+    assert assignment["outlier"] is True
+    assert cluster["geo_cluster_id"] == NO_GEO_CLUSTER_ID
+    assert cluster["member_image_count"] == 1
+
+
+def test_cluster_refresh_preserves_same_cell_identity_and_rekeys_new_member_cells() -> None:
+    core_cell = coordinate_to_cell(-27.4705, 153.026, resolution=5)
+    adjacent_cell = neighbour_cells(core_cell)[0]
+    core = cell_center(core_cell)
+    adjacent = cell_center(adjacent_cell)
+    config = FlickrGeoClusterConfig(
+        minimum_images_per_cell=2,
+        minimum_cluster_images=2,
+    )
+    initial_records = [
+        _record("core-1", float(core.latitude), float(core.longitude)),
+        _record("core-2", float(core.latitude), float(core.longitude)),
+    ]
+    initial = _build(initial_records, config=config)
+    same_cell_refresh = _build(
+        [
+            *initial_records,
+            _record("core-3", float(core.latitude), float(core.longitude)),
+        ],
+        config=config,
+    )
+    expanded_refresh = _build(
+        [
+            *initial_records,
+            _record("border", float(adjacent.latitude), float(adjacent.longitude)),
+        ],
+        config=config,
+    )
+
+    initial_cluster = initial.clusters.to_dicts()[0]
+    same_cell_cluster = same_cell_refresh.clusters.to_dicts()[0]
+    expanded_cluster = expanded_refresh.clusters.to_dicts()[0]
+    assert initial_cluster["geo_cluster_id"] == same_cell_cluster["geo_cluster_id"]
+    assert initial_cluster["member_cell_ids"] == same_cell_cluster["member_cell_ids"]
+    assert same_cell_cluster["member_image_count"] == 3
+    assert expanded_cluster["geo_cluster_id"] != initial_cluster["geo_cluster_id"]
+    assert expanded_cluster["member_cell_ids"] == sorted([core_cell, adjacent_cell])
+    assert expanded_refresh.assignments.height == 3
+
+
+def test_created_at_is_excluded_from_cluster_identity() -> None:
+    geography = build_flickr_geography_frame(
+        [_record("1", -27.4705, 153.026), _record("2", -27.471, 153.027)]
+    )
+    config = FlickrGeoClusterConfig(minimum_cluster_images=2)
+    first = build_flickr_geo_clusters(
+        geography,
+        target_accepted_taxon_key=TARGET_KEY,
+        config=config,
+        created_at="2026-07-13T00:00:00Z",
+    )
+    later = build_flickr_geo_clusters(
+        geography,
+        target_accepted_taxon_key=TARGET_KEY,
+        config=config,
+        created_at="2026-07-14T00:00:00Z",
+    )
+
+    assert first.clusters["geo_cluster_id"].to_list() == later.clusters[
+        "geo_cluster_id"
+    ].to_list()
+    assert first.clusters["created_at"].to_list() != later.clusters["created_at"].to_list()
+    assert first.assignments.equals(later.assignments)
+
+
+def test_cluster_artifacts_are_candidate_distribution_not_verified_range() -> None:
+    result = _build(
+        [_record("1", -27.4705, 153.026), _record("2", -27.471, 153.027)],
+        config=FlickrGeoClusterConfig(minimum_cluster_images=2),
+    )
+    forbidden_range_fields = {
+        "accepted_scientific_name",
+        "known_range_role",
+        "occurrence_status",
+        "range_inference_eligible",
+        "verified_occurrence",
+    }
+
+    assert forbidden_range_fields.isdisjoint(result.clusters.columns)
+    assert forbidden_range_fields.isdisjoint(result.assignments.columns)
+    assert result.clusters["candidate_distribution_only"].to_list() == [True]
+    assert result.assignments["target_accepted_taxon_key"].to_list() == [
+        TARGET_KEY,
+        TARGET_KEY,
+    ]
