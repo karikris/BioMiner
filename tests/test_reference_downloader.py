@@ -23,9 +23,13 @@ from biominer.references.downloader import (
     _PermanentResponse,
     _PinnedAddressHTTPTransport,
     _PinnedAddressNetworkBackend,
+    _backfill_legacy_media_object,
     _decode_image_isolated,
+    _legacy_checkpoint_binding,
+    _legacy_committed_object_fingerprint,
     ProviderMediaDownloadPolicy,
     ReferenceMediaDownloadConfig,
+    ReferenceMediaDownloadResult,
     download_reference_media,
 )
 from biominer.references.licensing import (
@@ -35,11 +39,14 @@ from biominer.references.licensing import (
 from biominer.references.schemas import (
     REFERENCE_ACQUISITION_SELECTIONS_SCHEMA_VERSION,
     REFERENCE_MEDIA_CANDIDATES_SCHEMA_VERSION,
+    REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION,
     make_reference_media_id,
     make_reference_observation_id,
     make_reference_selection_id,
     reference_acquisition_selections_frame,
     reference_media_candidates_frame,
+    reference_media_object_schema,
+    reference_media_objects_frame,
 )
 from biominer.storage.local import LocalStorageBackend
 
@@ -97,6 +104,20 @@ class _MemoryStorage:
             raise FileExistsError(uri)
         self.files[uri] = Path(source).read_bytes()
         return uri
+
+    def materialize_file(
+        self,
+        uri: str,
+        destination: str | Path,
+        *,
+        overwrite: bool = False,
+    ) -> str:
+        output = Path(destination)
+        if not overwrite and output.exists():
+            raise FileExistsError(destination)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(self.files[uri])
+        return str(destination)
 
     def write_json(self, uri: str, payload: dict[str, object]) -> str:
         self.operations.append(("json", uri))
@@ -358,6 +379,7 @@ def test_download_commits_exact_validated_source_then_checkpoint() -> None:
     assert row["source_byte_count"] == len(payload)
     assert (row["decoded_width"], row["decoded_height"]) == (3, 2)
     assert row["sha256"] == f"sha256:{digest}"
+    assert row["perceptual_hash"] == "dhash128-v1:" + "0" * 32
     assert row["source_object_uri"].endswith(f"/{digest}.png")
     assert storage.files[row["source_object_uri"]] == payload
     object_index = storage.operations.index(("file", row["source_object_uri"]))
@@ -444,6 +466,229 @@ def test_committed_checkpoint_resumes_without_http_or_object_overwrite() -> None
     assert second.report["counts"]["resumed"] == 1
     assert second.report["counts"]["http_requests"] == 0
     assert second.media_objects.equals(first.media_objects)
+
+
+def test_checkpoint_resume_preserves_derived_deduplication_annotations() -> None:
+    payload = _image_bytes("JPEG", size=(4, 3))
+    candidates, selections = _frames(
+        url="https://media.example.test/photos/101/original.jpg"
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "image/jpeg"},
+            content=payload,
+        )
+
+    storage = _MemoryStorage()
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        first = download_reference_media(
+            selections,
+            candidates,
+            storage=storage,
+            output_prefix="s3://references/bank-v1",
+            config=_config(),
+            http_client=client,
+            now=lambda: _NOW,
+        )
+        annotated_row = first.media_objects.row(0, named=True)
+        media_id = str(annotated_row["reference_media_id"])
+        annotated_row.update(
+            {
+                "duplicate_group_id": "reference-duplicate-group:" + "a" * 32,
+                "duplicate_type": "unique",
+                "canonical_reference_media_id": media_id,
+            }
+        )
+        storage.parquet[first.media_objects_uri] = reference_media_objects_frame(
+            [annotated_row]
+        )
+        resumed = download_reference_media(
+            selections,
+            candidates,
+            storage=storage,
+            output_prefix="s3://references/bank-v1",
+            config=_config(),
+            http_client=client,
+            now=lambda: _NOW,
+        )
+
+    row = resumed.media_objects.row(0, named=True)
+    assert row["object_fingerprint"] == annotated_row["object_fingerprint"]
+    assert row["perceptual_hash"] == annotated_row["perceptual_hash"]
+    assert row["duplicate_group_id"] == annotated_row["duplicate_group_id"]
+    assert row["duplicate_type"] == "unique"
+    assert row["canonical_reference_media_id"] == media_id
+
+
+def test_v1_checkpoint_is_backfilled_from_durable_object_without_provider_request() -> (
+    None
+):
+    payload = _image_bytes("PNG", size=(7, 5))
+    candidates, selections = _frames()
+    request_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "image/png"},
+            content=payload,
+        )
+
+    storage = _MemoryStorage()
+    config = _config()
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        first = download_reference_media(
+            selections,
+            candidates,
+            storage=storage,
+            output_prefix="s3://references/bank-v1",
+            config=config,
+            http_client=client,
+            now=lambda: _NOW,
+        )
+        checkpoint_uri, expected_perceptual_hash = _downgrade_reference_bank_to_v1(
+            storage,
+            first,
+            config=config,
+        )
+        resumed = download_reference_media(
+            selections,
+            candidates,
+            storage=storage,
+            output_prefix="s3://references/bank-v1",
+            config=config,
+            http_client=client,
+            now=lambda: _NOW,
+        )
+
+    row = resumed.media_objects.row(0, named=True)
+    assert request_count == 1
+    assert resumed.report["counts"]["resumed"] == 1
+    assert row["schema_version"] == REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION
+    assert row["perceptual_hash"] == expected_perceptual_hash
+    assert storage.json[checkpoint_uri]["schema_version"] == (
+        "reference-media-checkpoint-v2"
+    )
+    assert storage.json[checkpoint_uri]["object"]["perceptual_hash"] == (
+        expected_perceptual_hash
+    )
+
+
+def test_v1_unselected_inventory_rows_are_backfilled_during_incremental_merge() -> None:
+    first_candidates, first_selections = _frames(
+        provider_media_id="101",
+        observation_id="observation-101",
+        acquisition_plan_id="plan-101",
+    )
+    second_candidates, second_selections = _frames(
+        provider_media_id="202",
+        observation_id="observation-202",
+        url="https://media.example.test/photos/202/original.png",
+        acquisition_plan_id="plan-202",
+    )
+    storage = _MemoryStorage()
+    config = _config()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        color = (10, 20, 30) if "/101/" in request.url.path else (30, 20, 10)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "image/png"},
+            content=_image_bytes("PNG", size=(7, 5), color=color),
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        first = download_reference_media(
+            first_selections,
+            first_candidates,
+            storage=storage,
+            output_prefix="s3://references/bank-v1",
+            config=config,
+            http_client=client,
+            now=lambda: _NOW,
+        )
+        _checkpoint_uri, expected_perceptual_hash = _downgrade_reference_bank_to_v1(
+            storage,
+            first,
+            config=config,
+        )
+        merged = download_reference_media(
+            second_selections,
+            second_candidates,
+            storage=storage,
+            output_prefix="s3://references/bank-v1",
+            config=config,
+            http_client=client,
+            now=lambda: _NOW,
+        )
+
+    rows = {
+        str(row["reference_media_id"]): row
+        for row in merged.media_objects.iter_rows(named=True)
+    }
+    first_id = str(first_candidates["reference_media_id"].item())
+    assert merged.media_objects.height == 2
+    assert rows[first_id]["schema_version"] == REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION
+    assert rows[first_id]["perceptual_hash"] == expected_perceptual_hash
+
+
+@pytest.mark.parametrize(
+    ("row_updates", "config_updates", "error"),
+    [
+        (
+            {"source_byte_count": 33},
+            {"max_source_bytes": 32},
+            "current source byte limit",
+        ),
+        (
+            {"content_type": "image/gif"},
+            {"allowed_content_types": ("image/png",)},
+            "content type is not currently allowed",
+        ),
+    ],
+)
+def test_v1_inventory_backfill_rejects_current_policy_before_storage_access(
+    row_updates: dict[str, object],
+    config_updates: dict[str, object],
+    error: str,
+) -> None:
+    payload = _image_bytes("PNG", size=(7, 5))
+    candidates, selections = _frames()
+    storage = _MemoryStorage()
+    config = _config()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "image/png"},
+            content=payload,
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = download_reference_media(
+            selections,
+            candidates,
+            storage=storage,
+            output_prefix="s3://references/bank-v1",
+            config=config,
+            http_client=client,
+            now=lambda: _NOW,
+        )
+    _downgrade_reference_bank_to_v1(storage, result, config=config)
+    legacy_row = storage.parquet[result.media_objects_uri].row(0, named=True)
+    legacy_row.update(row_updates)
+    legacy_row["source_object_uri"] = "s3://references/must-not-be-read"
+
+    with pytest.raises(ValueError, match=error):
+        _backfill_legacy_media_object(
+            storage,
+            legacy_row,
+            config=_config(**config_updates),
+        )
 
 
 def test_committed_checkpoint_resume_does_not_require_live_dns() -> None:
@@ -1716,7 +1961,7 @@ def test_isolated_image_decode_succeeds_and_honours_hard_timeout(
         image_path,
         max_pixels=100,
         timeout_seconds=5.0,
-    ) == (4, 3, "image/png")
+    ) == (4, 3, "image/png", "dhash128-v1:" + "0" * 32)
     with pytest.raises(_PermanentResponse, match="item_deadline_exceeded"):
         _decode_image_isolated(
             image_path,
@@ -2509,6 +2754,67 @@ def _config(**overrides: object) -> ReferenceMediaDownloadConfig:
     }
     values.update(overrides)
     return ReferenceMediaDownloadConfig(**values)
+
+
+def _downgrade_reference_bank_to_v1(
+    storage: _MemoryStorage,
+    result: ReferenceMediaDownloadResult,
+    *,
+    config: ReferenceMediaDownloadConfig,
+) -> tuple[str, str]:
+    media_objects = result.media_objects
+    media_objects_uri = result.media_objects_uri
+    checkpoint_uri = next(uri for uri in storage.json if "/checkpoints/" in uri)
+    checkpoint = deepcopy(storage.json[checkpoint_uri])
+    legacy_binding = _legacy_checkpoint_binding(
+        checkpoint["binding"],
+        config=config,
+    )
+    final_url = checkpoint["download_evidence"]["final_url"]
+    checkpoint_row = dict(checkpoint["object"])
+    original_perceptual_hash = str(checkpoint_row["perceptual_hash"])
+    checkpoint_row.update(
+        {
+            "schema_version": "reference-media-objects-v1.0.0",
+            "perceptual_hash": None,
+            "duplicate_group_id": None,
+            "duplicate_type": None,
+            "canonical_reference_media_id": None,
+            "provider_mirror_ids": [],
+        }
+    )
+    checkpoint_row["object_fingerprint"] = _legacy_committed_object_fingerprint(
+        legacy_binding,
+        checkpoint_row,
+        final_url=final_url,
+    )
+    checkpoint.update(
+        {
+            "schema_version": "reference-media-checkpoint-v1",
+            "binding": legacy_binding,
+            "object": checkpoint_row,
+        }
+    )
+    storage.json[checkpoint_uri] = checkpoint
+
+    inventory_row = media_objects.row(0, named=True)
+    inventory_row.update(
+        {
+            "schema_version": "reference-media-objects-v1.0.0",
+            "perceptual_hash": None,
+            "duplicate_group_id": None,
+            "duplicate_type": None,
+            "canonical_reference_media_id": None,
+            "provider_mirror_ids": [],
+            "object_fingerprint": checkpoint_row["object_fingerprint"],
+        }
+    )
+    storage.parquet[media_objects_uri] = pl.DataFrame(
+        [inventory_row],
+        schema=reference_media_object_schema(),
+        orient="row",
+    )
+    return checkpoint_uri, original_perceptual_hash
 
 
 def _frames(

@@ -64,6 +64,14 @@ class CloudStorage(Protocol):
         overwrite: bool = True,
     ) -> str: ...
 
+    def materialize_file(
+        self,
+        uri: str,
+        destination: str | Path,
+        *,
+        overwrite: bool = False,
+    ) -> str: ...
+
     def write_json(self, uri: str, payload: dict[str, Any]) -> str: ...
 
     def read_json(self, uri: str) -> dict[str, Any]: ...

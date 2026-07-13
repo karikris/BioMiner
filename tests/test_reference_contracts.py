@@ -10,12 +10,15 @@ import pytest
 from biominer.references.licensing import (
     ReferenceLicencePolicy,
     canonicalise_creative_commons_licence,
+    canonicalise_creative_commons_licence_identity,
 )
 from biominer.references.schemas import (
     REFERENCE_ACQUISITION_PLAN_FILE,
     REFERENCE_ACQUISITION_PLAN_SCHEMA_VERSION,
     REFERENCE_MEDIA_CANDIDATES_FILE,
     REFERENCE_MEDIA_CANDIDATES_SCHEMA_VERSION,
+    REFERENCE_MEDIA_DUPLICATE_RELATIONSHIPS_FILE,
+    REFERENCE_MEDIA_DUPLICATE_RELATIONSHIPS_SCHEMA_VERSION,
     REFERENCE_MEDIA_OBJECTS_FILE,
     REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION,
     REFERENCE_MEDIA_RASTER_CONTENT_TYPES,
@@ -28,6 +31,8 @@ from biominer.references.schemas import (
     reference_acquisition_plan_schema,
     reference_media_candidate_schema,
     reference_media_candidates_frame,
+    reference_media_duplicate_relationship_schema,
+    reference_media_duplicate_relationships_frame,
     reference_media_object_schema,
     reference_media_objects_frame,
     reference_observation_schema,
@@ -49,6 +54,7 @@ OBSERVATION_HASH = "sha256:" + "a" * 64
 PLAN_FINGERPRINT = "sha256:" + "b" * 64
 OBJECT_SHA256 = "sha256:" + "d" * 64
 OBJECT_FINGERPRINT = "sha256:" + "e" * 64
+OBJECT_PERCEPTUAL_HASH = "dhash128-v1:" + "a" * 32
 
 
 @pytest.mark.parametrize(
@@ -71,6 +77,11 @@ def test_creative_commons_contract_rejects_unknown_versions_and_ports(
     canonical: str | None,
 ) -> None:
     assert canonicalise_creative_commons_licence(value) == canonical
+
+
+def test_creative_commons_identity_retains_explicit_version() -> None:
+    assert canonicalise_creative_commons_licence_identity("CC-BY-4.0") == ("cc-by-4.0")
+    assert canonicalise_creative_commons_licence_identity("CC-BY") == "cc-by"
 
 
 def test_reference_licence_policy_rejects_conflicting_explicit_versions() -> None:
@@ -302,7 +313,7 @@ def _media_object(
         "decoded_width": 32,
         "decoded_height": 24,
         "sha256": OBJECT_SHA256,
-        "perceptual_hash": None,
+        "perceptual_hash": OBJECT_PERCEPTUAL_HASH,
         "duplicate_group_id": None,
         "duplicate_type": None,
         "canonical_reference_media_id": None,
@@ -328,6 +339,7 @@ def _quarantined_media_object(
             "decoded_width": None,
             "decoded_height": None,
             "sha256": None,
+            "perceptual_hash": None,
             "downloaded_at": None,
             "download_attempt_count": 0,
             "licence_policy_status": "quarantined",
@@ -374,6 +386,9 @@ def test_reference_frames_have_exact_deterministic_physical_schemas() -> None:
         == reference_acquisition_plan_schema()
     )
     assert reference_media_objects_frame([]).schema == reference_media_object_schema()
+    assert reference_media_duplicate_relationships_frame([]).schema == (
+        reference_media_duplicate_relationship_schema()
+    )
 
 
 def test_reference_media_object_schema_matches_the_locked_contract() -> None:
@@ -403,6 +418,38 @@ def test_reference_media_object_schema_matches_the_locked_contract() -> None:
     )
 
 
+def test_reference_media_duplicate_relationship_schema_is_locked() -> None:
+    assert reference_media_duplicate_relationship_schema() == {
+        "schema_version": pl.String,
+        "duplicate_relationship_id": pl.String,
+        "duplicate_group_id": pl.String,
+        "canonical_reference_media_id": pl.String,
+        "left_reference_media_id": pl.String,
+        "right_reference_media_id": pl.String,
+        "left_reference_observation_id": pl.String,
+        "right_reference_observation_id": pl.String,
+        "left_source": pl.String,
+        "right_source": pl.String,
+        "left_provider_media_id": pl.String,
+        "right_provider_media_id": pl.String,
+        "relationship_type": pl.String,
+        "evidence_types": pl.List(pl.String),
+        "sha256_equal": pl.Boolean,
+        "perceptual_hash_distance": pl.UInt16,
+        "same_observation": pl.Boolean,
+        "provider_mirror": pl.Boolean,
+        "resolution_status": pl.String,
+        "policy_version": pl.String,
+        "policy_fingerprint": pl.String,
+    }
+    assert REFERENCE_MEDIA_DUPLICATE_RELATIONSHIPS_SCHEMA_VERSION == (
+        "reference-media-duplicate-relationships-v1.0.0"
+    )
+    assert REFERENCE_MEDIA_DUPLICATE_RELATIONSHIPS_FILE == (
+        "reference_media_duplicate_relationships.parquet"
+    )
+
+
 @pytest.mark.parametrize("licence_policy_status", ["allowed", "research_only"])
 def test_reference_media_object_accepts_committed_licensed_media(
     licence_policy_status: str,
@@ -413,7 +460,7 @@ def test_reference_media_object_accepts_committed_licensed_media(
 
     assert frame["sha256"].item() == OBJECT_SHA256
     assert frame["licence_policy_status"].item() == licence_policy_status
-    assert frame["perceptual_hash"].item() is None
+    assert frame["perceptual_hash"].item() == OBJECT_PERCEPTUAL_HASH
     assert frame["provider_mirror_ids"].to_list() == [[]]
 
 

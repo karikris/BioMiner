@@ -108,6 +108,20 @@ def test_local_storage_hash_distinguishes_same_size_payloads(tmp_path) -> None:
     assert storage.file_sha256(first) != storage.file_sha256(second)
 
 
+def test_local_storage_materializes_committed_file_without_overwrite(tmp_path) -> None:
+    storage = LocalStorageBackend()
+    source = tmp_path / "objects" / "source.jpg"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"committed-reference-bytes")
+    destination = tmp_path / "work" / "source.jpg"
+
+    assert storage.materialize_file(source, destination) == str(destination)
+    assert destination.read_bytes() == b"committed-reference-bytes"
+    with pytest.raises(FileExistsError):
+        storage.materialize_file(source, destination)
+    assert destination.read_bytes() == b"committed-reference-bytes"
+
+
 def test_local_storage_cleans_temporary_file_after_failed_copy(
     tmp_path,
     monkeypatch,
@@ -562,6 +576,11 @@ def test_s3_storage_streams_file_with_content_type_and_refuses_overwrite(
         backend.file_sha256(uri)
         == f"sha256:{sha256(b'reference-image-bytes').hexdigest()}"
     )
+    destination = tmp_path / "materialized" / "source.jpg"
+    assert backend.materialize_file(uri, destination) == str(destination)
+    assert destination.read_bytes() == b"reference-image-bytes"
+    with pytest.raises(FileExistsError):
+        backend.materialize_file(uri, destination)
     with pytest.raises(FileExistsError):
         backend.write_file(uri, source, overwrite=False)
     assert len(filesystem.paths) == 1

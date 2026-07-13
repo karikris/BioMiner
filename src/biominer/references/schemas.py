@@ -18,13 +18,19 @@ REFERENCE_ACQUISITION_PLAN_SCHEMA_VERSION = "reference-acquisition-plan-v1.1.0"
 REFERENCE_ACQUISITION_SELECTIONS_SCHEMA_VERSION = (
     "reference-acquisition-selections-v1.0.0"
 )
-REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION = "reference-media-objects-v1.0.0"
+REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION = "reference-media-objects-v1.1.0"
+REFERENCE_MEDIA_DUPLICATE_RELATIONSHIPS_SCHEMA_VERSION = (
+    "reference-media-duplicate-relationships-v1.0.0"
+)
 
 REFERENCE_OBSERVATIONS_FILE = "reference_observations.parquet"
 REFERENCE_MEDIA_CANDIDATES_FILE = "reference_media_candidates.parquet"
 REFERENCE_ACQUISITION_PLAN_FILE = "reference_acquisition_plan.parquet"
 REFERENCE_ACQUISITION_SELECTIONS_FILE = "reference_acquisition_selections.parquet"
 REFERENCE_MEDIA_OBJECTS_FILE = "reference_media_objects.parquet"
+REFERENCE_MEDIA_DUPLICATE_RELATIONSHIPS_FILE = (
+    "reference_media_duplicate_relationships.parquet"
+)
 
 TAXON_RECONCILIATION_STATUSES = frozenset(
     {"accepted_key_exact", "accepted_name_synonym", "unresolved", "conflict"}
@@ -49,6 +55,37 @@ DECODE_STATUSES = frozenset(
 )
 REFERENCE_MEDIA_RASTER_CONTENT_TYPES = frozenset(
     {"image/gif", "image/jpeg", "image/png", "image/tiff", "image/webp"}
+)
+DUPLICATE_TYPES = frozenset(
+    {
+        "unique",
+        "exact",
+        "provider_mirror",
+        "resized_copy",
+        "near_identical_burst",
+        "mixed",
+        "unresolved_perceptual_candidate",
+    }
+)
+DUPLICATE_RELATIONSHIP_TYPES = frozenset(
+    {
+        "exact",
+        "provider_mirror",
+        "resized_copy",
+        "near_identical_burst",
+        "perceptual_candidate",
+    }
+)
+DUPLICATE_RESOLUTION_STATUSES = frozenset({"resolved", "review_required", "conflict"})
+DUPLICATE_EVIDENCE_TYPES = frozenset(
+    {
+        "exact_sha256",
+        "perceptual_hash",
+        "provider_identifier",
+        "same_observation",
+        "metadata_conflict",
+        "component_metadata_conflict",
+    }
 )
 
 _OBSERVATION_SORT = ["source", "source_observation_id"]
@@ -79,7 +116,17 @@ _SELECTION_SORT = [
     "reference_media_id",
 ]
 _MEDIA_OBJECT_SORT = ["reference_media_id"]
+_MEDIA_DUPLICATE_RELATIONSHIP_SORT = [
+    "duplicate_group_id",
+    "left_reference_media_id",
+    "right_reference_media_id",
+]
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_PERCEPTUAL_HASH_PATTERN = re.compile(r"dhash128-v1:[0-9a-f]{32}\Z")
+_DUPLICATE_GROUP_ID_PATTERN = re.compile(r"reference-duplicate-group:[0-9a-f]{32}\Z")
+_DUPLICATE_RELATIONSHIP_ID_PATTERN = re.compile(
+    r"reference-duplicate-relationship:[0-9a-f]{32}\Z"
+)
 
 
 def reference_observation_schema() -> dict[str, pl.DataType]:
@@ -243,6 +290,32 @@ def reference_media_object_schema() -> dict[str, pl.DataType]:
     }
 
 
+def reference_media_duplicate_relationship_schema() -> dict[str, pl.DataType]:
+    return {
+        "schema_version": pl.String,
+        "duplicate_relationship_id": pl.String,
+        "duplicate_group_id": pl.String,
+        "canonical_reference_media_id": pl.String,
+        "left_reference_media_id": pl.String,
+        "right_reference_media_id": pl.String,
+        "left_reference_observation_id": pl.String,
+        "right_reference_observation_id": pl.String,
+        "left_source": pl.String,
+        "right_source": pl.String,
+        "left_provider_media_id": pl.String,
+        "right_provider_media_id": pl.String,
+        "relationship_type": pl.String,
+        "evidence_types": pl.List(pl.String),
+        "sha256_equal": pl.Boolean,
+        "perceptual_hash_distance": pl.UInt16,
+        "same_observation": pl.Boolean,
+        "provider_mirror": pl.Boolean,
+        "resolution_status": pl.String,
+        "policy_version": pl.String,
+        "policy_fingerprint": pl.String,
+    }
+
+
 def make_reference_observation_id(source: str, source_observation_id: str) -> str:
     return "reference-observation:" + _semantic_digest(
         {
@@ -377,6 +450,18 @@ def reference_media_objects_frame(
         sort_by=_MEDIA_OBJECT_SORT,
     )
     validate_reference_media_objects(frame)
+    return frame
+
+
+def reference_media_duplicate_relationships_frame(
+    rows: Sequence[Mapping[str, object]],
+) -> pl.DataFrame:
+    frame = _frame(
+        rows,
+        schema=reference_media_duplicate_relationship_schema(),
+        sort_by=_MEDIA_DUPLICATE_RELATIONSHIP_SORT,
+    )
+    validate_reference_media_duplicate_relationships(frame)
     return frame
 
 
@@ -674,14 +759,40 @@ def validate_reference_media_objects(frame: pl.DataFrame) -> None:
         ]
         if normalized_mirrors != sorted(set(normalized_mirrors)):
             raise ValueError("provider_mirror_ids must be sorted and unique")
-        for field in (
-            "perceptual_hash",
-            "duplicate_group_id",
-            "duplicate_type",
-            "canonical_reference_media_id",
+        perceptual_hash = row["perceptual_hash"]
+        if perceptual_hash is not None:
+            _perceptual_hash(perceptual_hash, field="perceptual_hash")
+        group_fields = (
+            row["duplicate_group_id"],
+            row["duplicate_type"],
+            row["canonical_reference_media_id"],
+        )
+        populated_group_fields = sum(value is not None for value in group_fields)
+        if populated_group_fields not in {0, len(group_fields)}:
+            raise ValueError("duplicate group fields must be populated together")
+        if populated_group_fields:
+            duplicate_group_id = _required_text(
+                row["duplicate_group_id"], field="duplicate_group_id"
+            )
+            if _DUPLICATE_GROUP_ID_PATTERN.fullmatch(duplicate_group_id) is None:
+                raise ValueError("duplicate_group_id has an unsupported namespace")
+            _choice(
+                row["duplicate_type"],
+                field="duplicate_type",
+                choices=DUPLICATE_TYPES,
+            )
+            _required_text(
+                row["canonical_reference_media_id"],
+                field="canonical_reference_media_id",
+            )
+        elif normalized_mirrors:
+            raise ValueError("provider mirror IDs require a resolved duplicate group")
+        if row["reference_media_id"] in normalized_mirrors:
+            raise ValueError("provider_mirror_ids cannot contain the row itself")
+        if any(
+            not value.startswith("reference-media:") for value in normalized_mirrors
         ):
-            if row[field] is not None:
-                _required_text(row[field], field=field)
+            raise ValueError("provider_mirror_ids has an unsupported namespace")
 
         if decode_status == "valid":
             if policy_status not in {"allowed", "research_only"}:
@@ -717,6 +828,7 @@ def validate_reference_media_objects(frame: pl.DataFrame) -> None:
                     "valid reference media requires positive object metrics"
                 )
             sha256 = _full_sha256(row["sha256"], field="sha256")
+            _perceptual_hash(row["perceptual_hash"], field="perceptual_hash")
             if sha256.removeprefix("sha256:") not in source_object_uri:
                 raise ValueError("source object URI must contain the SHA-256 digest")
             if row["downloaded_at"] is None:
@@ -740,6 +852,174 @@ def validate_reference_media_objects(frame: pl.DataFrame) -> None:
         if row["content_type"] is not None:
             _required_text(row["content_type"], field="content_type")
         _required_text(row["quarantine_reason"], field="quarantine_reason")
+        if perceptual_hash is not None or populated_group_fields or normalized_mirrors:
+            raise ValueError(
+                "non-valid reference media cannot populate deduplication state"
+            )
+
+    grouped = {
+        str(group_id[0] if isinstance(group_id, tuple) else group_id): group
+        for group_id, group in frame.filter(pl.col("duplicate_group_id").is_not_null())
+        .partition_by("duplicate_group_id", as_dict=True)
+        .items()
+    }
+    for group_id, group in grouped.items():
+        canonical_ids = group["canonical_reference_media_id"].unique().to_list()
+        if len(canonical_ids) != 1:
+            raise ValueError(
+                f"duplicate group {group_id} has inconsistent canonical IDs"
+            )
+        canonical_id = str(canonical_ids[0])
+        if canonical_id not in set(group["reference_media_id"].to_list()):
+            raise ValueError(f"duplicate group {group_id} canonical row is missing")
+        duplicate_types = group["duplicate_type"].unique().to_list()
+        if len(duplicate_types) != 1:
+            raise ValueError(
+                f"duplicate group {group_id} has inconsistent duplicate types"
+            )
+        if duplicate_types == ["unique"] and group.height != 1:
+            raise ValueError(
+                "unique duplicate groups must contain exactly one media row"
+            )
+
+
+def validate_reference_media_duplicate_relationships(frame: pl.DataFrame) -> None:
+    _validate_physical_frame(
+        frame,
+        schema=reference_media_duplicate_relationship_schema(),
+        schema_version=REFERENCE_MEDIA_DUPLICATE_RELATIONSHIPS_SCHEMA_VERSION,
+        sort_by=_MEDIA_DUPLICATE_RELATIONSHIP_SORT,
+        primary_key=["duplicate_relationship_id"],
+        artifact="reference media duplicate relationships",
+    )
+    if (
+        frame.select("left_reference_media_id", "right_reference_media_id")
+        .unique()
+        .height
+        != frame.height
+    ):
+        raise ValueError("duplicate relationship media pairs must be unique")
+    for row in frame.iter_rows(named=True):
+        relationship_id = _required_text(
+            row["duplicate_relationship_id"],
+            field="duplicate_relationship_id",
+        )
+        if _DUPLICATE_RELATIONSHIP_ID_PATTERN.fullmatch(relationship_id) is None:
+            raise ValueError("duplicate relationship ID has an unsupported namespace")
+        for field in (
+            "canonical_reference_media_id",
+            "left_reference_media_id",
+            "right_reference_media_id",
+            "left_reference_observation_id",
+            "right_reference_observation_id",
+            "left_source",
+            "right_source",
+            "left_provider_media_id",
+            "right_provider_media_id",
+            "policy_version",
+        ):
+            _required_text(row[field], field=field)
+        duplicate_group_id = _required_text(
+            row["duplicate_group_id"], field="duplicate_group_id"
+        )
+        if _DUPLICATE_GROUP_ID_PATTERN.fullmatch(duplicate_group_id) is None:
+            raise ValueError("duplicate_group_id has an unsupported namespace")
+        left_id = str(row["left_reference_media_id"])
+        right_id = str(row["right_reference_media_id"])
+        if left_id >= right_id:
+            raise ValueError(
+                "duplicate relationship media IDs must be ordered and distinct"
+            )
+        expected_left_id = make_reference_media_id(
+            str(row["left_source"]),
+            str(row["left_provider_media_id"]),
+            str(row["left_reference_observation_id"]),
+        )
+        expected_right_id = make_reference_media_id(
+            str(row["right_source"]),
+            str(row["right_provider_media_id"]),
+            str(row["right_reference_observation_id"]),
+        )
+        if left_id != expected_left_id or right_id != expected_right_id:
+            raise ValueError(
+                "duplicate relationship endpoint provenance conflicts with its media ID"
+            )
+        relationship_type = _choice(
+            row["relationship_type"],
+            field="relationship_type",
+            choices=DUPLICATE_RELATIONSHIP_TYPES,
+        )
+        evidence = row["evidence_types"]
+        if not isinstance(evidence, list) or not evidence:
+            raise ValueError("duplicate relationship evidence_types must be non-empty")
+        normalized_evidence = [
+            _choice(value, field="evidence_types", choices=DUPLICATE_EVIDENCE_TYPES)
+            for value in evidence
+        ]
+        if normalized_evidence != sorted(set(normalized_evidence)):
+            raise ValueError(
+                "duplicate relationship evidence_types must be sorted and unique"
+            )
+        expected_relationship_id = (
+            "reference-duplicate-relationship:"
+            + _semantic_digest(
+                {
+                    "left_reference_media_id": left_id,
+                    "right_reference_media_id": right_id,
+                    "evidence_types": normalized_evidence,
+                }
+            ).removeprefix("sha256:")[:32]
+        )
+        if relationship_id != expected_relationship_id:
+            raise ValueError("duplicate relationship ID does not match its evidence")
+        distance = row["perceptual_hash_distance"]
+        if distance is not None:
+            _nonnegative_int(distance, field="perceptual_hash_distance")
+            if distance > 128:
+                raise ValueError("perceptual_hash_distance cannot exceed 128")
+        if (distance is not None) != ("perceptual_hash" in normalized_evidence):
+            raise ValueError("perceptual distance must match perceptual hash evidence")
+        for field in ("sha256_equal", "same_observation", "provider_mirror"):
+            if row[field] is None:
+                raise ValueError(f"{field} must be a non-null Boolean")
+        sha256_equal = bool(row["sha256_equal"])
+        same_observation = bool(row["same_observation"])
+        provider_mirror = bool(row["provider_mirror"])
+        if sha256_equal != ("exact_sha256" in normalized_evidence):
+            raise ValueError("SHA-256 equality must match exact hash evidence")
+        if same_observation != ("same_observation" in normalized_evidence):
+            raise ValueError("same-observation flag must match observation evidence")
+        if provider_mirror != ("provider_identifier" in normalized_evidence):
+            raise ValueError(
+                "provider-mirror flag must match provider identifier evidence"
+            )
+        if sha256_equal != (relationship_type == "exact"):
+            raise ValueError("exact relationship type must match SHA-256 equality")
+        if relationship_type == "provider_mirror" and not provider_mirror:
+            raise ValueError(
+                "provider-mirror relationships require provider identifier evidence"
+            )
+        if relationship_type in {"resized_copy", "near_identical_burst"} and (
+            not same_observation or distance is None
+        ):
+            raise ValueError(
+                "resized and burst relationships require perceptual "
+                "same-observation evidence"
+            )
+        resolution_status = _choice(
+            row["resolution_status"],
+            field="resolution_status",
+            choices=DUPLICATE_RESOLUTION_STATUSES,
+        )
+        if relationship_type == "perceptual_candidate" and resolution_status == (
+            "resolved"
+        ):
+            raise ValueError("perceptual candidates cannot be resolved automatically")
+        if {"metadata_conflict", "component_metadata_conflict"} & set(
+            normalized_evidence
+        ) and resolution_status != "conflict":
+            raise ValueError("metadata conflict evidence requires conflict resolution")
+        _full_sha256(row["policy_fingerprint"], field="policy_fingerprint")
 
 
 def write_reference_observations(
@@ -808,6 +1088,20 @@ def write_reference_media_objects(
     return write_parquet(
         frame,
         _artifact_path(output, REFERENCE_MEDIA_OBJECTS_FILE),
+        overwrite=overwrite,
+    )
+
+
+def write_reference_media_duplicate_relationships(
+    frame: pl.DataFrame,
+    output: str | Path,
+    *,
+    overwrite: bool = True,
+) -> Path:
+    validate_reference_media_duplicate_relationships(frame)
+    return write_parquet(
+        frame,
+        _artifact_path(output, REFERENCE_MEDIA_DUPLICATE_RELATIONSHIPS_FILE),
         overwrite=overwrite,
     )
 
@@ -925,6 +1219,15 @@ def _full_sha256(value: object, *, field: str) -> str:
     return text
 
 
+def _perceptual_hash(value: object, *, field: str) -> str:
+    text = _required_text(value, field=field)
+    if _PERCEPTUAL_HASH_PATTERN.fullmatch(text) is None:
+        raise ValueError(
+            f"{field} must be a lowercase versioned 128-bit difference hash"
+        )
+    return text
+
+
 def _semantic_digest(payload: Mapping[str, object]) -> str:
     encoded = json.dumps(
         dict(payload),
@@ -943,6 +1246,10 @@ def _artifact_path(output: str | Path, filename: str) -> Path:
 __all__ = [
     "DECODE_STATUSES",
     "DOWNLOAD_STATUSES",
+    "DUPLICATE_EVIDENCE_TYPES",
+    "DUPLICATE_RELATIONSHIP_TYPES",
+    "DUPLICATE_RESOLUTION_STATUSES",
+    "DUPLICATE_TYPES",
     "LICENCE_POLICY_STATUSES",
     "REFERENCE_ACQUISITION_PLAN_FILE",
     "REFERENCE_ACQUISITION_PLAN_SCHEMA_VERSION",
@@ -952,6 +1259,8 @@ __all__ = [
     "REFERENCE_MEDIA_CANDIDATES_SCHEMA_VERSION",
     "REFERENCE_MEDIA_OBJECTS_FILE",
     "REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION",
+    "REFERENCE_MEDIA_DUPLICATE_RELATIONSHIPS_FILE",
+    "REFERENCE_MEDIA_DUPLICATE_RELATIONSHIPS_SCHEMA_VERSION",
     "REFERENCE_MEDIA_RASTER_CONTENT_TYPES",
     "REFERENCE_OBSERVATIONS_FILE",
     "REFERENCE_OBSERVATIONS_SCHEMA_VERSION",
@@ -969,16 +1278,20 @@ __all__ = [
     "reference_media_candidates_frame",
     "reference_media_object_schema",
     "reference_media_objects_frame",
+    "reference_media_duplicate_relationship_schema",
+    "reference_media_duplicate_relationships_frame",
     "reference_observation_schema",
     "reference_observations_frame",
     "validate_reference_acquisition_plan",
     "validate_reference_acquisition_selections",
     "validate_reference_media_candidates",
     "validate_reference_media_objects",
+    "validate_reference_media_duplicate_relationships",
     "validate_reference_observations",
     "write_reference_acquisition_plan",
     "write_reference_acquisition_selections",
     "write_reference_media_candidates",
     "write_reference_media_objects",
+    "write_reference_media_duplicate_relationships",
     "write_reference_observations",
 ]

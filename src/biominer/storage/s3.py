@@ -5,6 +5,8 @@ from contextlib import ExitStack
 from hashlib import sha256
 from pathlib import Path
 from shutil import copyfileobj
+import os
+from tempfile import NamedTemporaryFile
 import threading
 from typing import Any
 import json
@@ -230,6 +232,41 @@ class S3StorageBackend:
         finally:
             self._delete_path_if_present(filesystem, staging_path)
         return uri
+
+    def materialize_file(
+        self,
+        uri: str,
+        destination: str | Path,
+        *,
+        overwrite: bool = False,
+    ) -> str:
+        output = Path(destination)
+        if not overwrite and output.exists():
+            raise FileExistsError(destination)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with self._open_input_file(uri) as source_stream:
+                with NamedTemporaryFile(
+                    mode="wb",
+                    dir=output.parent,
+                    prefix=f".{output.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as temporary:
+                    temporary_path = Path(temporary.name)
+                    copyfileobj(source_stream, temporary)
+            if overwrite:
+                temporary_path.replace(output)
+            else:
+                try:
+                    os.link(temporary_path, output)
+                except FileExistsError as exc:
+                    raise FileExistsError(destination) from exc
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+        return str(destination)
 
     def write_json(self, uri: str, payload: dict[str, Any]) -> str:
         filesystem, path = self._filesystem_and_path(uri)

@@ -131,6 +131,44 @@ class LocalStorageBackend:
                 temporary_path.unlink(missing_ok=True)
         return _preserve_uri_string(uri)
 
+    def materialize_file(
+        self,
+        uri: str | Path,
+        destination: str | Path,
+        *,
+        overwrite: bool = False,
+    ) -> str:
+        source = normalize_local_uri(uri)
+        output = normalize_local_uri(destination)
+        if not source.is_file():
+            raise FileNotFoundError(uri)
+        if not overwrite and output.exists():
+            raise FileExistsError(destination)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with source.open("rb") as source_stream:
+                with NamedTemporaryFile(
+                    mode="wb",
+                    dir=output.parent,
+                    prefix=f".{output.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as temporary:
+                    temporary_path = Path(temporary.name)
+                    copyfileobj(source_stream, temporary)
+            if overwrite:
+                temporary_path.replace(output)
+            else:
+                try:
+                    os.link(temporary_path, output)
+                except FileExistsError as exc:
+                    raise FileExistsError(destination) from exc
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+        return str(destination)
+
     def write_json(self, uri: str | Path, payload: dict[str, Any]) -> str:
         output = normalize_local_uri(uri)
         output.parent.mkdir(parents=True, exist_ok=True)

@@ -31,6 +31,10 @@ import httpx
 from PIL import Image, UnidentifiedImageError
 import polars as pl
 
+from biominer.references.deduplication import (
+    REFERENCE_PERCEPTUAL_HASH_VERSION,
+    compute_reference_perceptual_hash,
+)
 from biominer.references.licensing import (
     ReferenceLicenceDecision,
     ReferenceLicencePolicy,
@@ -39,6 +43,7 @@ from biominer.references.schemas import (
     REFERENCE_MEDIA_OBJECTS_FILE,
     REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION,
     REFERENCE_MEDIA_RASTER_CONTENT_TYPES,
+    reference_media_object_schema,
     reference_media_objects_frame,
     validate_reference_acquisition_selections,
     validate_reference_media_candidates,
@@ -49,8 +54,12 @@ from biominer.storage.paths import build_report_uri, safe_path_component
 from biominer.storage.uri import join_uri
 
 
-REFERENCE_MEDIA_DOWNLOADER_VERSION = "reference-media-downloader-v1"
-REFERENCE_MEDIA_CHECKPOINT_VERSION = "reference-media-checkpoint-v1"
+REFERENCE_MEDIA_DOWNLOADER_VERSION = "reference-media-downloader-v2"
+REFERENCE_MEDIA_CHECKPOINT_VERSION = "reference-media-checkpoint-v2"
+_LEGACY_REFERENCE_MEDIA_DOWNLOADER_VERSION = "reference-media-downloader-v1"
+_LEGACY_REFERENCE_MEDIA_CHECKPOINT_VERSION = "reference-media-checkpoint-v1"
+_LEGACY_REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION = "reference-media-objects-v1.0.0"
+_REFERENCE_MEDIA_HASH_BACKFILL_VERSION = "reference-media-hash-backfill-v1"
 REFERENCE_MEDIA_DOWNLOAD_REPORT_VERSION = "reference-media-download-report-v1"
 REFERENCE_MEDIA_DOWNLOAD_REPORT_FILE = "reference_media_download_report.json"
 REFERENCE_MEDIA_DOWNLOAD_SUMMARY_FILE = "reference_media_download_summary.md"
@@ -86,6 +95,7 @@ _CONTENT_TYPE_EXTENSIONS = {
     "image/gif": "gif",
 }
 _CHECKSUM_ALGORITHMS = frozenset({"md5", "sha1", "sha256"})
+_DEFAULT_MAX_DECODE_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,10 +221,12 @@ def _default_provider_policies() -> tuple[ProviderMediaDownloadPolicy, ...]:
 class ReferenceMediaDownloadConfig:
     workers: int = 8
     max_inflight: int = 32
+    max_concurrent_decodes: int = 1
     max_attempts: int = 5
     max_redirects: int = 3
     max_source_bytes: int = 32 * 1024 * 1024
     max_decoded_pixels: int = 80_000_000
+    max_decode_memory_bytes: int = _DEFAULT_MAX_DECODE_MEMORY_BYTES
     timeout_seconds: float = 30.0
     max_download_seconds: float = 300.0
     backoff_base_seconds: float = 0.5
@@ -235,9 +247,11 @@ class ReferenceMediaDownloadConfig:
         for field_name in (
             "workers",
             "max_inflight",
+            "max_concurrent_decodes",
             "max_attempts",
             "max_source_bytes",
             "max_decoded_pixels",
+            "max_decode_memory_bytes",
         ):
             _positive_int(getattr(self, field_name), field=field_name)
         if self.max_inflight < self.workers:
@@ -327,6 +341,7 @@ class ReferenceMediaDownloadConfig:
                 "downloader_version": REFERENCE_MEDIA_DOWNLOADER_VERSION,
                 "max_source_bytes": self.max_source_bytes,
                 "max_decoded_pixels": self.max_decoded_pixels,
+                "max_decode_memory_bytes": self.max_decode_memory_bytes,
                 "allowed_content_types": self.allowed_content_types,
             }
         )
@@ -366,6 +381,7 @@ class _PreparedDownload:
     decoded_width: int | None
     decoded_height: int | None
     sha256: str | None
+    perceptual_hash: str | None
     final_url: str | None
     attempt_count: int
     retry_count: int
@@ -1082,6 +1098,7 @@ def _download_reference_media_impl(
         sleep=sleep,
         monotonic=monotonic,
     )
+    decode_limiter = threading.BoundedSemaphore(config.max_concurrent_decodes)
     _log_event(
         "reference_media_download_inputs_validated",
         run_id=run_id,
@@ -1185,6 +1202,8 @@ def _download_reference_media_impl(
                     ),
                     provider_policy=provider_policy,
                     expected_provider_media_id=str(item.candidate["provider_media_id"]),
+                    config=config,
+                    now=now,
                 )
             )
             resumed_count += 1
@@ -1244,6 +1263,7 @@ def _download_reference_media_impl(
                         client=client,
                         limiters=limiters,
                         host_validator=host_validator,
+                        decode_limiter=decode_limiter,
                         prevalidate_dns=uses_mock_transport,
                         isolate_decode=not uses_mock_transport,
                         now=now,
@@ -1301,6 +1321,7 @@ def _download_reference_media_impl(
         storage,
         media_objects_uri,
         current=run_frame,
+        config=config,
     )
     storage.write_parquet_shard(media_objects_uri, frame, overwrite=True)
     ended_at = _aware_utc(now())
@@ -1346,17 +1367,69 @@ def _merge_media_object_inventory(
     media_objects_uri: str,
     *,
     current: pl.DataFrame,
+    config: ReferenceMediaDownloadConfig,
 ) -> pl.DataFrame:
     if not storage.exists(media_objects_uri):
         return current
     existing = storage.read_parquet(media_objects_uri)
-    validate_reference_media_objects(existing)
+    if "schema_version" not in existing.columns:
+        raise ValueError("reference media inventory schema version is missing")
+    schema_versions = set(existing["schema_version"].drop_nulls().to_list())
+    current_ids = set(current["reference_media_id"].to_list())
+    if schema_versions == {_LEGACY_REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION}:
+        legacy_total = existing.height
+        migrated_rows: list[dict[str, object]] = []
+        for legacy_row in existing.iter_rows(named=True):
+            if legacy_row["reference_media_id"] in current_ids:
+                continue
+            migrated = _backfill_legacy_media_object(
+                storage,
+                legacy_row,
+                config=config,
+            )
+            if migrated["decode_status"] == "valid":
+                migrated["object_fingerprint"] = _fingerprint(
+                    {
+                        "backfill_version": _REFERENCE_MEDIA_HASH_BACKFILL_VERSION,
+                        "legacy_object_fingerprint": legacy_row["object_fingerprint"],
+                        "perceptual_hash": migrated["perceptual_hash"],
+                    }
+                )
+            migrated_rows.append(migrated)
+        existing = reference_media_objects_frame(migrated_rows)
+        _log_event(
+            "reference_media_inventory_migrated",
+            media_objects_uri=media_objects_uri,
+            migrated_count=len(migrated_rows),
+            replaced_by_checkpoint_count=legacy_total - len(migrated_rows),
+            from_schema=_LEGACY_REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION,
+            to_schema=REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION,
+        )
+    else:
+        validate_reference_media_objects(existing)
     rows_by_id = {
         str(row["reference_media_id"]): row for row in existing.iter_rows(named=True)
     }
-    rows_by_id.update(
-        {str(row["reference_media_id"]): row for row in current.iter_rows(named=True)}
-    )
+    for source_row in current.iter_rows(named=True):
+        row = dict(source_row)
+        media_id = str(row["reference_media_id"])
+        previous = rows_by_id.get(media_id)
+        if (
+            previous is not None
+            and row["decode_status"] == "valid"
+            and previous["decode_status"] == "valid"
+            and row["object_fingerprint"] == previous["object_fingerprint"]
+            and row["duplicate_group_id"] is None
+            and previous["duplicate_group_id"] is not None
+        ):
+            for field_name in (
+                "duplicate_group_id",
+                "duplicate_type",
+                "canonical_reference_media_id",
+                "provider_mirror_ids",
+            ):
+                row[field_name] = previous[field_name]
+        rows_by_id[media_id] = row
     return reference_media_objects_frame(list(rows_by_id.values()))
 
 
@@ -1532,6 +1605,7 @@ def _fetch_and_validate(
     client: httpx.Client,
     limiters: _OriginLimiterRegistry,
     host_validator: _HostValidator,
+    decode_limiter: threading.BoundedSemaphore,
     prevalidate_dns: bool,
     isolate_decode: bool,
     now: Callable[[], datetime],
@@ -1592,6 +1666,7 @@ def _fetch_and_validate(
                         deadline=deadline,
                         monotonic=monotonic,
                         isolate_decode=isolate_decode,
+                        decode_limiter=decode_limiter,
                     )
                 except _RetryableResponse as exc:
                     if exc.status_code == 429:
@@ -1707,6 +1782,7 @@ def _fetch_and_validate(
             decoded_width=response.decoded_width,
             decoded_height=response.decoded_height,
             sha256=response.sha256,
+            perceptual_hash=response.perceptual_hash,
             final_url=current_url,
             attempt_count=attempts,
             retry_count=retries,
@@ -1727,6 +1803,7 @@ def _request_once(
     deadline: float,
     monotonic: Callable[[], float],
     isolate_decode: bool,
+    decode_limiter: threading.BoundedSemaphore,
 ) -> _PreparedDownload | _Redirect:
     remaining = _remaining_seconds(deadline, monotonic)
     if remaining <= 0:
@@ -1765,6 +1842,7 @@ def _request_once(
             deadline=deadline,
             monotonic=monotonic,
             isolate_decode=isolate_decode,
+            decode_limiter=decode_limiter,
         )
 
 
@@ -1776,6 +1854,7 @@ def _consume_response(
     deadline: float,
     monotonic: Callable[[], float],
     isolate_decode: bool,
+    decode_limiter: threading.BoundedSemaphore,
 ) -> _PreparedDownload:
     if _remaining_seconds(deadline, monotonic) <= 0:
         raise _PermanentResponse("item_deadline_exceeded")
@@ -1888,18 +1967,27 @@ def _consume_response(
             )
         if _remaining_seconds(deadline, monotonic) <= 0:
             raise _PermanentResponse("item_deadline_exceeded")
-        decode_timeout = _remaining_seconds(deadline, monotonic)
-        if isolate_decode:
-            width, height, decoded_content_type = _decode_image_isolated(
-                temporary_path,
-                max_pixels=config.max_decoded_pixels,
-                timeout_seconds=decode_timeout,
-            )
-        else:
-            width, height, decoded_content_type = _decode_image(
-                temporary_path,
-                max_pixels=config.max_decoded_pixels,
-            )
+        decode_wait = _remaining_seconds(deadline, monotonic)
+        if not decode_limiter.acquire(timeout=decode_wait):
+            raise _PermanentResponse("item_deadline_exceeded")
+        try:
+            decode_timeout = _remaining_seconds(deadline, monotonic)
+            if isolate_decode:
+                width, height, decoded_content_type, perceptual_hash = (
+                    _decode_image_isolated(
+                        temporary_path,
+                        max_pixels=config.max_decoded_pixels,
+                        max_memory_bytes=config.max_decode_memory_bytes,
+                        timeout_seconds=decode_timeout,
+                    )
+                )
+            else:
+                width, height, decoded_content_type, perceptual_hash = _decode_image(
+                    temporary_path,
+                    max_pixels=config.max_decoded_pixels,
+                )
+        finally:
+            decode_limiter.release()
         if _remaining_seconds(deadline, monotonic) <= 0:
             raise _PermanentResponse("item_deadline_exceeded")
         if decoded_content_type != content_type:
@@ -1925,6 +2013,7 @@ def _consume_response(
             decoded_width=width,
             decoded_height=height,
             sha256="sha256:" + sha256.hexdigest(),
+            perceptual_hash=perceptual_hash,
             final_url=str(response.url),
             attempt_count=0,
             retry_count=0,
@@ -1943,15 +2032,16 @@ def _decode_image_isolated(
     path: Path,
     *,
     max_pixels: int,
+    max_memory_bytes: int = _DEFAULT_MAX_DECODE_MEMORY_BYTES,
     timeout_seconds: float,
-) -> tuple[int, int, str]:
+) -> tuple[int, int, str, str]:
     if timeout_seconds <= 0:
         raise _PermanentResponse("item_deadline_exceeded")
     context = multiprocessing.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
     process = context.Process(
         target=_decode_image_worker,
-        args=(str(path), max_pixels, sender),
+        args=(str(path), max_pixels, max_memory_bytes, sender),
         name="reference-image-decode",
         daemon=True,
     )
@@ -2001,20 +2091,27 @@ def _decode_image_isolated(
             content_type=content_type,
         )
     if (
-        len(payload) != 4
+        len(payload) != 5
         or not isinstance(payload[1], int)
         or not isinstance(payload[2], int)
         or not isinstance(payload[3], str)
+        or not isinstance(payload[4], str)
     ):
         raise _PayloadFailure(
             "image_decode_worker_returned_invalid_result",
             decode_status="decode_failed",
         )
-    return payload[1], payload[2], payload[3]
+    return payload[1], payload[2], payload[3], payload[4]
 
 
-def _decode_image_worker(path: str, max_pixels: int, sender: Any) -> None:
+def _decode_image_worker(
+    path: str,
+    max_pixels: int,
+    max_memory_bytes: int,
+    sender: Any,
+) -> None:
     try:
+        _apply_decode_memory_limit(max_memory_bytes)
         result = _decode_image(Path(path), max_pixels=max_pixels)
     except _PayloadFailure as exc:
         payload: tuple[object, ...] = ("error", exc.reason, exc.content_type)
@@ -2028,7 +2125,27 @@ def _decode_image_worker(path: str, max_pixels: int, sender: Any) -> None:
         sender.close()
 
 
-def _decode_image(path: Path, *, max_pixels: int) -> tuple[int, int, str]:
+def _apply_decode_memory_limit(max_memory_bytes: int) -> None:
+    if os.name != "posix":
+        return
+    try:
+        import resource
+
+        _soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        limit = (
+            max_memory_bytes
+            if hard == resource.RLIM_INFINITY
+            else min(
+                max_memory_bytes,
+                hard,
+            )
+        )
+        resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+    except (ImportError, OSError, ValueError) as exc:
+        raise RuntimeError("unable to enforce image decode memory limit") from exc
+
+
+def _decode_image(path: Path, *, max_pixels: int) -> tuple[int, int, str, str]:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -2048,6 +2165,7 @@ def _decode_image(path: Path, *, max_pixels: int) -> tuple[int, int, str]:
                 if image.size != (width, height):
                     raise ValueError("image dimensions changed after reopen")
                 image.load()
+                perceptual_hash = compute_reference_perceptual_hash(image)
     except (
         Image.DecompressionBombError,
         Image.DecompressionBombWarning,
@@ -2066,7 +2184,7 @@ def _decode_image(path: Path, *, max_pixels: int) -> tuple[int, int, str]:
             f"unsupported_decoded_format:{image_format or 'unknown'}",
             decode_status="invalid_content_type",
         )
-    return width, height, content_type
+    return width, height, content_type, perceptual_hash
 
 
 def _commit_prepared(
@@ -2093,6 +2211,7 @@ def _commit_prepared(
         )
     assert prepared.path is not None
     assert prepared.sha256 is not None
+    assert prepared.perceptual_hash is not None
     assert prepared.content_type is not None
     assert prepared.source_byte_count is not None
     assert prepared.decoded_width is not None
@@ -2116,7 +2235,7 @@ def _commit_prepared(
         "decoded_width": prepared.decoded_width,
         "decoded_height": prepared.decoded_height,
         "sha256": prepared.sha256,
-        "perceptual_hash": None,
+        "perceptual_hash": prepared.perceptual_hash,
         "duplicate_group_id": None,
         "duplicate_type": None,
         "canonical_reference_media_id": None,
@@ -2162,6 +2281,8 @@ def _commit_prepared(
                 ),
                 provider_policy=prepared.pending.provider_policy,
                 expected_provider_media_id=str(item.candidate["provider_media_id"]),
+                config=config,
+                now=now,
             )
         committed_at = _aware_utc(now())
         checkpoint = {
@@ -2202,6 +2323,7 @@ def _commit_prepared(
         source_byte_count=prepared.source_byte_count,
         decoded_width=prepared.decoded_width,
         decoded_height=prepared.decoded_height,
+        perceptual_hash=prepared.perceptual_hash,
     )
     return row
 
@@ -2271,6 +2393,7 @@ def _prepared_failure(
         decoded_width=None,
         decoded_height=None,
         sha256=None,
+        perceptual_hash=None,
         final_url=None,
         attempt_count=attempts,
         retry_count=retries,
@@ -2327,6 +2450,8 @@ def _load_committed_checkpoint(
     expected_evidence: Mapping[str, object],
     provider_policy: ProviderMediaDownloadPolicy,
     expected_provider_media_id: str,
+    config: ReferenceMediaDownloadConfig,
+    now: Callable[[], datetime],
 ) -> dict[str, object]:
     payload = storage.read_json(checkpoint_uri)
     if set(payload) != {
@@ -2337,9 +2462,19 @@ def _load_committed_checkpoint(
         "commit",
     }:
         raise ValueError("reference media checkpoint shape is incompatible")
-    if payload.get("schema_version") != REFERENCE_MEDIA_CHECKPOINT_VERSION:
+    schema_version = payload.get("schema_version")
+    if schema_version not in {
+        REFERENCE_MEDIA_CHECKPOINT_VERSION,
+        _LEGACY_REFERENCE_MEDIA_CHECKPOINT_VERSION,
+    }:
         raise ValueError("reference media checkpoint schema is incompatible")
-    if payload.get("binding") != dict(expected_binding):
+    legacy = schema_version == _LEGACY_REFERENCE_MEDIA_CHECKPOINT_VERSION
+    checkpoint_binding = (
+        _legacy_checkpoint_binding(expected_binding, config=config)
+        if legacy
+        else dict(expected_binding)
+    )
+    if payload.get("binding") != checkpoint_binding:
         raise ValueError("reference media checkpoint binding is incompatible")
     raw_object = payload.get("object")
     if not isinstance(raw_object, dict):
@@ -2349,7 +2484,16 @@ def _load_committed_checkpoint(
     if not isinstance(downloaded_at, str):
         raise ValueError("reference media checkpoint downloaded_at is invalid")
     row["downloaded_at"] = _aware_utc(datetime.fromisoformat(downloaded_at))
-    frame = reference_media_objects_frame([row])
+    if legacy:
+        _validate_legacy_media_object_row(row)
+        validation_row = dict(row)
+        validation_row["schema_version"] = REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION
+        validation_row["perceptual_hash"] = (
+            f"{REFERENCE_PERCEPTUAL_HASH_VERSION}:" + "0" * 32
+        )
+        frame = reference_media_objects_frame([validation_row])
+    else:
+        frame = reference_media_objects_frame([row])
     committed = frame.to_dicts()[0]
     if committed["reference_media_id"] != expected_binding["reference_media_id"]:
         raise ValueError("reference media checkpoint object identity is incompatible")
@@ -2376,12 +2520,20 @@ def _load_committed_checkpoint(
         )
     except ValueError as exc:
         raise ValueError("reference media checkpoint final URL is invalid") from exc
-    expected_fingerprint = _committed_object_fingerprint(
-        expected_binding,
-        committed,
-        final_url=final_url,
+    expected_fingerprint = (
+        _legacy_committed_object_fingerprint(
+            checkpoint_binding,
+            row,
+            final_url=final_url,
+        )
+        if legacy
+        else _committed_object_fingerprint(
+            expected_binding,
+            committed,
+            final_url=final_url,
+        )
     )
-    if committed["object_fingerprint"] != expected_fingerprint:
+    if row["object_fingerprint"] != expected_fingerprint:
         raise ValueError("reference media checkpoint object fingerprint is invalid")
     commit = payload.get("commit")
     if not isinstance(commit, dict) or set(commit) != {
@@ -2414,7 +2566,171 @@ def _load_committed_checkpoint(
         raise ValueError("reference media checkpoint object size is incompatible")
     if storage.file_sha256(object_uri) != str(committed["sha256"]):
         raise ValueError("reference media checkpoint object checksum is incompatible")
+    if legacy:
+        return _upgrade_legacy_committed_checkpoint(
+            storage,
+            checkpoint_uri=checkpoint_uri,
+            payload=payload,
+            legacy_row=row,
+            expected_binding=expected_binding,
+            final_url=final_url,
+            config=config,
+            now=now,
+        )
     return committed
+
+
+def _legacy_checkpoint_binding(
+    expected_binding: Mapping[str, object],
+    *,
+    config: ReferenceMediaDownloadConfig,
+) -> dict[str, object]:
+    binding = dict(expected_binding)
+    binding["downloader_version"] = _LEGACY_REFERENCE_MEDIA_DOWNLOADER_VERSION
+    binding["configuration_fingerprint"] = _fingerprint(
+        {
+            "downloader_version": _LEGACY_REFERENCE_MEDIA_DOWNLOADER_VERSION,
+            "max_source_bytes": config.max_source_bytes,
+            "max_decoded_pixels": config.max_decoded_pixels,
+            "allowed_content_types": config.allowed_content_types,
+        }
+    )
+    return binding
+
+
+def _validate_legacy_media_object_row(row: Mapping[str, object]) -> None:
+    if set(row) != set(reference_media_object_schema()):
+        raise ValueError("legacy reference media object shape is incompatible")
+    if row.get("schema_version") != _LEGACY_REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION:
+        raise ValueError("legacy reference media object schema is incompatible")
+    if (
+        any(
+            row.get(field_name) is not None
+            for field_name in (
+                "perceptual_hash",
+                "duplicate_group_id",
+                "duplicate_type",
+                "canonical_reference_media_id",
+            )
+        )
+        or row.get("provider_mirror_ids") != []
+    ):
+        raise ValueError("legacy reference media object has unexpected derived state")
+
+
+def _backfill_legacy_media_object(
+    storage: CloudStorage,
+    row: Mapping[str, object],
+    *,
+    config: ReferenceMediaDownloadConfig,
+) -> dict[str, object]:
+    _validate_legacy_media_object_row(row)
+    upgraded = dict(row)
+    upgraded["schema_version"] = REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION
+    if upgraded["decode_status"] != "valid":
+        return reference_media_objects_frame([upgraded]).to_dicts()[0]
+
+    object_uri = str(upgraded["source_object_uri"])
+    expected_size = int(upgraded["source_byte_count"])
+    expected_sha256 = str(upgraded["sha256"])
+    if not 0 < expected_size <= config.max_source_bytes:
+        raise ValueError(
+            "legacy reference media object exceeds the current source byte limit"
+        )
+    if upgraded["content_type"] not in config.allowed_content_types:
+        raise ValueError(
+            "legacy reference media object content type is not currently allowed"
+        )
+    if not storage.exists(object_uri):
+        raise ValueError("legacy reference media object is missing")
+    if storage.file_size(object_uri) != expected_size:
+        raise ValueError("legacy reference media object size is incompatible")
+    if storage.file_sha256(object_uri) != expected_sha256:
+        raise ValueError("legacy reference media object checksum is incompatible")
+
+    if config.temporary_directory is not None:
+        config.temporary_directory.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            mode="wb",
+            prefix="biominer-reference-backfill-",
+            suffix=".part",
+            dir=config.temporary_directory,
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+        storage.materialize_file(object_uri, temporary_path, overwrite=True)
+        if temporary_path.stat().st_size != expected_size:
+            raise ValueError("materialized legacy object size is incompatible")
+        if _path_sha256(temporary_path) != expected_sha256:
+            raise ValueError("materialized legacy object checksum is incompatible")
+        width, height, content_type, perceptual_hash = _decode_image_isolated(
+            temporary_path,
+            max_pixels=config.max_decoded_pixels,
+            max_memory_bytes=config.max_decode_memory_bytes,
+            timeout_seconds=config.max_download_seconds,
+        )
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+    if (width, height) != (
+        int(upgraded["decoded_width"]),
+        int(upgraded["decoded_height"]),
+    ):
+        raise ValueError("legacy reference media decoded dimensions changed")
+    if content_type != upgraded["content_type"]:
+        raise ValueError("legacy reference media decoded content type changed")
+    upgraded["perceptual_hash"] = perceptual_hash
+    return reference_media_objects_frame([upgraded]).to_dicts()[0]
+
+
+def _upgrade_legacy_committed_checkpoint(
+    storage: CloudStorage,
+    *,
+    checkpoint_uri: str,
+    payload: Mapping[str, object],
+    legacy_row: Mapping[str, object],
+    expected_binding: Mapping[str, object],
+    final_url: str,
+    config: ReferenceMediaDownloadConfig,
+    now: Callable[[], datetime],
+) -> dict[str, object]:
+    upgraded = _backfill_legacy_media_object(
+        storage,
+        legacy_row,
+        config=config,
+    )
+    upgraded["object_fingerprint"] = _committed_object_fingerprint(
+        expected_binding,
+        upgraded,
+        final_url=final_url,
+    )
+    validated = reference_media_objects_frame([upgraded]).to_dicts()[0]
+    original_commit = payload.get("commit")
+    if not isinstance(original_commit, Mapping):
+        raise ValueError("legacy reference media checkpoint commit is invalid")
+    migrated_at = max(_aware_utc(now()), validated["downloaded_at"])
+    migrated_payload = {
+        "schema_version": REFERENCE_MEDIA_CHECKPOINT_VERSION,
+        "binding": dict(expected_binding),
+        "object": _jsonable(validated),
+        "download_evidence": dict(payload["download_evidence"]),
+        "commit": {
+            "run_id": str(original_commit["run_id"]),
+            "committed_at": migrated_at.isoformat(),
+            "object_write_precedes_checkpoint": True,
+        },
+    }
+    storage.write_json(checkpoint_uri, migrated_payload)
+    _log_event(
+        "reference_media_checkpoint_migrated",
+        checkpoint_uri=checkpoint_uri,
+        reference_media_id=validated["reference_media_id"],
+        from_schema=_LEGACY_REFERENCE_MEDIA_CHECKPOINT_VERSION,
+        to_schema=REFERENCE_MEDIA_CHECKPOINT_VERSION,
+    )
+    return validated
 
 
 def _expected_checkpoint_evidence(
@@ -2452,10 +2768,44 @@ def _committed_object_fingerprint(
             "decoded_width": row["decoded_width"],
             "decoded_height": row["decoded_height"],
             "sha256": row["sha256"],
+            "perceptual_hash": row["perceptual_hash"],
             "licence_policy_status": row["licence_policy_status"],
             "final_url": final_url,
         }
     )
+
+
+def _legacy_committed_object_fingerprint(
+    binding: Mapping[str, object],
+    row: Mapping[str, object],
+    *,
+    final_url: object,
+) -> str:
+    return _fingerprint(
+        {
+            "reference_media_id": binding["reference_media_id"],
+            "candidate_fingerprint": binding["candidate_fingerprint"],
+            "configuration_fingerprint": binding["configuration_fingerprint"],
+            "licence_policy_fingerprint": binding["licence_policy_fingerprint"],
+            "provider_policy_fingerprint": binding["provider_policy_fingerprint"],
+            "source_object_uri": row["source_object_uri"],
+            "content_type": row["content_type"],
+            "source_byte_count": row["source_byte_count"],
+            "decoded_width": row["decoded_width"],
+            "decoded_height": row["decoded_height"],
+            "sha256": row["sha256"],
+            "licence_policy_status": row["licence_policy_status"],
+            "final_url": final_url,
+        }
+    )
+
+
+def _path_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
 
 
 def _checksum_preflight_reason(candidate: Mapping[str, object]) -> str | None:
@@ -2585,10 +2935,12 @@ def _download_settings(
     return {
         "workers": config.workers,
         "max_inflight": config.max_inflight,
+        "max_concurrent_decodes": config.max_concurrent_decodes,
         "max_attempts": config.max_attempts,
         "max_redirects": config.max_redirects,
         "max_source_bytes": config.max_source_bytes,
         "max_decoded_pixels": config.max_decoded_pixels,
+        "max_decode_memory_bytes": config.max_decode_memory_bytes,
         "timeout_seconds": config.timeout_seconds,
         "max_download_seconds": config.max_download_seconds,
         "backoff_base_seconds": config.backoff_base_seconds,
@@ -2631,6 +2983,7 @@ def _download_settings(
                 ),
             )
         ],
+        "perceptual_hash_version": REFERENCE_PERCEPTUAL_HASH_VERSION,
     }
 
 

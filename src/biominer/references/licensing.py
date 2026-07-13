@@ -187,6 +187,12 @@ def canonicalise_creative_commons_licence(value: object) -> str | None:
     return resolved.canonical if resolved is not None else None
 
 
+def canonicalise_creative_commons_licence_identity(value: object) -> str | None:
+    """Return the canonical Creative Commons suite and any explicit version."""
+    resolved = _parse_creative_commons_licence(value)
+    return _resolved_policy_identifier(resolved) if resolved is not None else None
+
+
 def _parse_creative_commons_licence(value: object) -> _ResolvedLicence | None:
     text = str(value or "").strip().casefold()
     if not text:
@@ -437,4 +443,5 @@ __all__ = [
     "ReferenceLicenceDecision",
     "ReferenceLicencePolicy",
     "canonicalise_creative_commons_licence",
+    "canonicalise_creative_commons_licence_identity",
 ]

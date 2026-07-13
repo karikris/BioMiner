@@ -517,7 +517,7 @@ synthetic support.
 
 This supporting artifact records committed source-image objects without
 mutating candidate metadata. Grain and primary key: one
-`reference_media_id`. Schema version: `reference-media-objects-v1.0.0`.
+`reference_media_id`. Schema version: `reference-media-objects-v1.1.0`.
 
 Required fields are `schema_version`, `reference_media_id`, `source_object_uri`,
 `content_type`, `source_byte_count`, `decoded_width`, `decoded_height`,
@@ -526,6 +526,14 @@ Required fields are `schema_version`, `reference_media_id`, `source_object_uri`,
 `download_attempt_count`, `licence_policy_status`, `decode_status`,
 `quarantine_reason`, and `object_fingerprint`. Provider relationships and every
 source row remain available after deduplication.
+
+Every valid decoded object has a lowercase `sha256:` content digest and a
+versioned `dhash128-v1:` perceptual hash. The latter reads EXIF orientation,
+resamples to a bounded 9x9 image with LANCZOS, applies the corresponding
+orientation transform, composites transparency onto white, converts to
+grayscale, and concatenates 64 horizontal with 64 vertical difference bits.
+The preprocessing and hash version are part of the downloader and deduplication
+policy fingerprints. Hashes from another version are rejected, not compared.
 
 The downloader consumes acquisition selections only and never mutates media
 candidates. It evaluates the configurable media-licence policy before network
@@ -553,12 +561,19 @@ origin throttling, bounded DNS resolution, connect/TLS, response headers, body
 streaming, and image validation. Production image decoding runs in a disposable
 spawned process that is terminated when the remaining item budget expires;
 per-operation `timeout_seconds` remains the stricter idle/connect bound where
-applicable.
+applicable. A separate decode semaphore bounds concurrent decoder processes,
+and each POSIX child receives a configured address-space limit. Perceptual hash
+alpha compositing and grayscale conversion operate on the 9x9 representation.
+Palette and bilevel inputs use one temporary full-resolution RGB(A) or grayscale
+buffer so Pillow can apply LANCZOS rather than its forced nearest-neighbour
+resampler; pixel limits, the decode semaphore, and the child address-space limit
+bound that buffer.
 
 A source payload is eligible for commit only when its declared MIME type,
 signature, and decoder format agree; it is a decodable single-frame raster
 within byte and pixel limits; and any provider checksum matches. The downloader
-records SHA-256, source bytes, and decoded dimensions. It writes the
+records SHA-256, the perceptual hash, source bytes, and decoded dimensions. It
+writes the
 content-addressed object first, reads back its size and SHA-256, then writes the
 per-media checkpoint. Resume revalidates the immutable input/policy binding and
 the durable object's size and SHA-256 without another media request or object
@@ -570,12 +585,85 @@ single-writer invariant. Do not run concurrent download invocations against the
 same prefix: each run reads, merges, validates, and atomically promotes the
 cumulative inventory. Worker concurrency is internal to one invocation.
 
+Intrinsic object state (`sha256`, `perceptual_hash`, decoded dimensions, and
+object fingerprint) is committed by the downloader. Duplicate-group fields are
+mutable derived inventory state. A checkpoint resume preserves those derived
+fields only when the new committed row has the same intrinsic object
+fingerprint; changed content clears them for recomputation.
+
+Checkpoint v1 and object-inventory v1.0 rows are migrated explicitly. The
+migrator revalidates the durable object's size and SHA-256, materializes that
+object from storage, recomputes the perceptual hash in the isolated decoder,
+and atomically promotes checkpoint v2 without another provider request.
+Unselected legacy inventory rows use the same durable-object backfill during
+the cumulative single-writer merge. Current source-byte and MIME policy is
+checked before any legacy object storage access. Unknown, mixed, or malformed
+legacy state fails closed.
+
 Each invocation writes JSON and Markdown audit artifacts below its own
 `reports/run_id=.../` prefix. The readable run component is bounded and paired
 with a hash; generated run IDs are collision resistant. The Markdown summary is
 promoted first and the JSON report last as the run-report commit marker. Fatal
 validation, checkpoint, inventory, or storage errors use the same report schema
 with `status=failed` and explicit `null` or `not_instrumented` metrics.
+
+#### Duplicate relationship ledger
+
+`reference_media_duplicate_relationships.parquet` stores direct duplicate and
+provider-mirror evidence without deleting or coalescing candidate, observation,
+or object provenance. Grain and primary key: one ordered media pair and
+`duplicate_relationship_id`. Schema version:
+`reference-media-duplicate-relationships-v1.0.0`.
+
+Required fields are `schema_version`, `duplicate_relationship_id`,
+`duplicate_group_id`, `canonical_reference_media_id`, ordered left/right media,
+observation, source, and provider-media identifiers, `relationship_type`,
+sorted `evidence_types`, `sha256_equal`, nullable
+`perceptual_hash_distance`, `same_observation`, `provider_mirror`,
+`resolution_status`, `policy_version`, and `policy_fingerprint`.
+
+Exact SHA-256 equality is resolved duplicate evidence. Informative perceptual
+matches within the stricter cross-observation threshold remain review-required;
+same-observation matches within the configured threshold may be resolved as a
+`resized_copy` or `near_identical_burst` when aspect ratios are compatible.
+Low-information hashes, metadata conflicts, and visually incompatible provider
+mirrors are never silently resolved. Licence identity includes an explicit
+Creative Commons version, and component-level taxon/licence aggregation detects
+conflicts even when the conflicting members are not adjacent in the sparse
+ledger. The ledger stores a deterministic sparse spanning set of direct
+threshold edges rather than a quadratic complete graph.
+Dense Hamming neighborhoods beyond the configured bound fail closed. Connected
+components provide leakage groups, while a linear, conservative varying-bit
+distance upper bound prevents an A-B-C chain from being reported as a resolved
+visual duplicate group.
+
+Result validation binds every endpoint to the original normalized candidate and
+observation inventories, requires candidate and observation sources to agree,
+and requires each endpoint to belong to exactly one group. It recomputes exact,
+perceptual, same-observation, and provider-mirror claims plus relationship type
+and resolution from hashes, thresholds, informativeness, dimensions, metadata,
+and provider provenance. Whole-result validation regenerates the deterministic
+sparse ledger from intrinsic inputs, rejecting omitted required links, split
+identical objects, and redundant noncanonical edges. Canonical selection is deterministic
+and prefers allowed licences, accepted review and taxonomy evidence,
+research-grade identity, configured source priority, larger decoded area,
+larger source bytes, then media ID. Metadata-only
+GBIF/iNaturalist aliases may participate in relationship evidence even when the
+excluded mirror was never downloaded. All source IDs remain in the normalized
+ledger and `provider_mirror_ids`; only the canonical ID identifies the preferred
+physical object.
+
+Deduplication publication uses an immutable, bounded run component. Annotated
+objects and relationship Parquet are written below that run prefix, followed by
+the Markdown summary; the run-scoped JSON report is written last as the commit
+marker and records artifact URIs, bytes, and SHA-256 values. A failed
+publication writes `status=failed` when report storage remains available and
+never overwrites another run. The local writer stages a complete directory and
+atomically renames it, so no path can expose a complete report with partial
+Parquet state. Successful and failed cloud publications use the same structured
+report shape and emit structured INFO start/completion/failure events. Their
+Markdown includes command, run ID, PID, git SHA, timestamps, elapsed time,
+input/output fingerprints, and artifact URIs.
 
 ### 5.5 Review state
 
@@ -996,13 +1084,14 @@ phase applies:
 | Registry | `taxon_geographic_spread.parquet`, `taxon_geographic_summary.parquet` |
 | Flickr geography | `flickr_geo_clusters.parquet`, `flickr_geo_assignments.parquet` |
 | Candidate generation | `regional_taxon_occurrence.parquet`, `regional_candidate_species.parquet`, `competitor_relationships.parquet` |
-| Reference acquisition | `reference_observations.parquet`, `reference_media_candidates.parquet`, `reference_acquisition_plan.parquet`, `reference_review_queue.parquet`, `reference_bank_summary.parquet`, `reference_bank_readiness.json` |
+| Reference acquisition | `reference_observations.parquet`, `reference_media_candidates.parquet`, `reference_acquisition_plan.parquet`, `reference_media_objects.parquet`, `reference_media_duplicate_relationships.parquet`, `reference_review_queue.parquet`, `reference_bank_summary.parquet`, `reference_bank_readiness.json` |
 | Few-shot model | `reference_embeddings.parquet`, `reference_prototypes.parquet`, `visual_neighbour_species.parquet`, `few_shot_training_features.parquet`, `dataset_split_manifest.parquet`, `classifier_manifest.json`, `classifier_arrays.npz`, `calibration_artifacts.json`, `calibration_arrays.npz` |
 | Inference | `target_aware_object_scores.parquet`, `target_aware_photo_summary.parquet`, `target_aware_review_queue.parquet` |
 | Evaluation | `target_evaluation_metrics.json`, `target_evaluation_summary.md`, `target_calibration_bins.parquet`, `target_competitor_confusions.parquet`, `target_errors_for_review.parquet`, `target_metrics_by_geo_cluster.parquet`, `target_metrics_by_life_stage.parquet`, `target_metrics_by_visual_domain.parquet`, `target_ablation_results.parquet` |
 
 Supporting normalized artifacts introduced in this contract are
 `flickr_geography.parquet`, `reference_media_objects.parquet`,
+`reference_media_duplicate_relationships.parquet`,
 `reference_review_decisions.parquet`, `reference_support_manifest.parquet`,
 `flickr_embeddings.parquet`, `target_aware_candidate_scores.parquet`, and
 `calibration_report.parquet`. They prevent mutable stage overloading and retain
