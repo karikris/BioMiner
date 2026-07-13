@@ -230,6 +230,18 @@ Schema version: `flickr-geography-v1.0.0`.
 | `geography_warnings` | `list<str>` | Complete sorted warning codes |
 | `geography_config_fingerprint` | `str` | Grid and reconciliation configuration |
 
+`coordinate_quality` is one of `missing`, `invalid`, `unknown_precision`,
+`flickr_world`, `flickr_country`, `flickr_region`, `flickr_city`, or
+`flickr_street` under `flickr-accuracy-v1.0.0`. Flickr accuracy is retained as
+the documented ordinal 1-16 level; it is never converted to metres. World and
+country levels populate no H3 cells, region level populates only the coarse
+cell, city level populates coarse and regional cells, and street level
+populates all configured cells. A valid pair can therefore have
+`geotag_available = true` while finer cell fields remain null. Unknown or
+nonstandard accuracy populates no cells. Country and `admin1` values are
+accepted only from explicit source fields; this projection performs no reverse
+geocoding or location-name inference.
+
 ### 3.2 `flickr_geo_clusters.parquet`
 
 Grain: one target scope and geographic cluster. Primary key and sort order:
