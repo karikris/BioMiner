@@ -668,28 +668,53 @@ input/output fingerprints, and artifact URIs.
 ### 5.5 Review state
 
 `reference_review_queue.parquet` is a deterministic materialized queue; it is
-not overwritten with decisions. Grain: one review request and media item.
-Primary key: `review_request_id`. Schema version:
-`reference-review-queue-v1.0.0`.
+not overwritten with decisions. Grain: one review request and media item;
+primary key: `review_request_id`. Schema version:
+`reference-review-queue-v1.0.0`. Its exact fields are `schema_version`,
+`review_request_id`, `reference_media_id`, `reference_observation_id`,
+`canonical_reference_media_id`, nullable `accepted_taxon_key`, nullable
+`scientific_name`, `durable_preview_uri`, `media_object_fingerprint`,
+`duplicate_group_id`, `source`, `provider_media_id`,
+`provider_verification_status`, `creator`, `rights_holder`, `licence`,
+`licence_uri`, `licence_policy_status`, `attribution`, `life_stage`,
+`visual_domain`, `view`, `review_reason`, `review_priority`,
+`required_review_count`, `review_status`, `created_at`,
+`reference_bank_version`, and `input_fingerprint`.
 
-It includes `schema_version`, `review_request_id`, `reference_media_id`,
-`reference_observation_id`, `accepted_taxon_key`, `scientific_name`,
-`durable_preview_uri`, `duplicate_group_id`, provider identification evidence,
-licence evidence, proposed `life_stage`, `visual_domain`, and `view`,
-`review_reason`, `review_priority`, `required_review_count`, `review_status`,
-`created_at`, `reference_bank_version`, and input fingerprints.
+Allowed queue `review_status` values are `pending`, `in_review`, `completed`,
+`conflict`, `second_review_required`, and `cancelled`. The queue owns this
+pending/conflict/second-review workflow projection; none of those states is a
+human scientific disposition. Proposed `life_stage`, `visual_domain`, and
+`view` values are nullable because the planner's provisional vocabulary is not
+a human judgment. Any nonnull proposal uses the same closed vocabulary as a
+decision; queue construction preserves null when upstream evidence cannot
+supply a responsible mapping. In particular, it does not relabel planner
+`unreviewed` or `field` values as reviewed `ambiguous` or `live_field` values.
 
 `reference_review_decisions.parquet` is the append-only scientific decision
 record. Grain and primary key: one `review_decision_id`; sort by
 `(reference_media_id, review_round, reviewed_at, review_decision_id)`. Schema
 version: `reference-review-decisions-v1.0.0`.
 
-It includes `schema_version`, `review_decision_id`, `review_request_id`,
-`reference_media_id`, `review_round`, `reviewer_id`, `reviewed_at`,
-`target_identity_verified: bool?`, `verification_status`, `life_stage`,
-`visual_domain`, `view`, `review_confidence`, `review_notes`,
-`exclusion_reason`, `second_review_required`, `conflicts_with_decision_id`, and
-`decision_source_hash`.
+Its exact fields are `schema_version`, `review_decision_id`,
+`review_request_id`, `reference_media_id`, `review_round`, `verified_by`,
+`reviewed_at`, `target_identity_verified: bool?`, `verification_status`,
+`life_stage`, `visual_domain`, `view`, `review_confidence`, `review_notes`,
+`exclusion_reason`, `second_review_required`,
+`conflicts_with_decision_id`, and `decision_source_hash`. `verified_by` is the
+single authoritative human actor for every disposition. A decision is never
+updated in place; correction or disagreement produces a new decision row. The
+base decisions writer uses atomic create-only publication and refuses an
+existing target, including under concurrent first writers. Task 5.4 must merge
+and validate retained history before publishing a new immutable ledger version
+or append-only part.
+
+`decision_source_hash` is the full lowercase SHA-256 of the canonical imported
+source decision record, excluding transport paths and generated ledger IDs.
+The importer recomputes it. It is deliberately excluded from the semantic
+decision ID so delivery retries remain idempotent; merge validation must reject
+an existing decision ID paired with a different source hash, and one source
+hash cannot identify multiple semantic decisions.
 
 Allowed values are:
 
@@ -698,13 +723,32 @@ Allowed values are:
   `tattoo`, `partial_wing`, `dead_or_damaged_specimen`, `ambiguous`,
   `unsuitable`;
 - `view`: `dorsal`, `ventral`, `lateral`, `frontal`, `oblique`, `unknown`;
-- `verification_status`: `pending`, `verified`, `excluded`, `uncertain`,
-  `conflict`, `second_review_required`.
+- `verification_status`: `verified`, `excluded`, `uncertain`;
+- `review_confidence`: `high`, `medium`, `low`, `unknown`.
 
-`review_confidence` is reviewer metadata, not a calibrated model probability.
-Only a resolved `verified` decision with `target_identity_verified=true`, an
-accepted licence, a resolved duplicate group, and an allowed route may enter a
-production support split.
+Decision rows require a value from each `life_stage`, `visual_domain`, and
+`view` vocabulary. In those fields, `unknown` means that the human inspected
+the media but could not determine the value; null means no judgment and is not
+valid in a human disposition. `review_confidence` is categorical review
+metadata, not a calibrated probability or model score.
+
+A `verified` disposition requires `target_identity_verified=true` and no
+`exclusion_reason`. An `excluded` disposition requires a nonblank
+`exclusion_reason`; its identity value is deliberately tri-state because an
+image may depict the target and still be unusable. In particular,
+`target_identity_verified=false` means that the target identity was
+affirmatively disproved, not merely that the media was unsuitable. An
+`uncertain` disposition requires `target_identity_verified=null`, nonblank
+`review_notes`, and `second_review_required=true`.
+
+`conflicts_with_decision_id` is optional source provenance for the human row;
+when populated it resolves to an earlier decision for the same request and
+media from a distinct human. It does not turn `conflict` into a decision
+disposition. Task 5.4 derives normalized conflict groups and the queue's
+conflict/second-review projection from the append-only decisions. Only a
+resolved `verified` decision with `target_identity_verified=true`, an accepted
+licence, a resolved duplicate group, and an allowed route may enter a production
+support split.
 
 ### 5.6 Frozen support and readiness
 

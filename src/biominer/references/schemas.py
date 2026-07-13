@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
+from uuid import uuid4
 
 import polars as pl
 
@@ -22,6 +25,8 @@ REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION = "reference-media-objects-v1.1.0"
 REFERENCE_MEDIA_DUPLICATE_RELATIONSHIPS_SCHEMA_VERSION = (
     "reference-media-duplicate-relationships-v1.0.0"
 )
+REFERENCE_REVIEW_QUEUE_SCHEMA_VERSION = "reference-review-queue-v1.0.0"
+REFERENCE_REVIEW_DECISIONS_SCHEMA_VERSION = "reference-review-decisions-v1.0.0"
 
 REFERENCE_OBSERVATIONS_FILE = "reference_observations.parquet"
 REFERENCE_MEDIA_CANDIDATES_FILE = "reference_media_candidates.parquet"
@@ -31,6 +36,8 @@ REFERENCE_MEDIA_OBJECTS_FILE = "reference_media_objects.parquet"
 REFERENCE_MEDIA_DUPLICATE_RELATIONSHIPS_FILE = (
     "reference_media_duplicate_relationships.parquet"
 )
+REFERENCE_REVIEW_QUEUE_FILE = "reference_review_queue.parquet"
+REFERENCE_REVIEW_DECISIONS_FILE = "reference_review_decisions.parquet"
 
 TAXON_RECONCILIATION_STATUSES = frozenset(
     {"accepted_key_exact", "accepted_name_synonym", "unresolved", "conflict"}
@@ -87,6 +94,35 @@ DUPLICATE_EVIDENCE_TYPES = frozenset(
         "component_metadata_conflict",
     }
 )
+REFERENCE_LIFE_STAGES = frozenset({"adult", "larva", "pupa", "egg", "unknown"})
+REFERENCE_VISUAL_DOMAINS = frozenset(
+    {
+        "live_field",
+        "pinned_specimen",
+        "artwork",
+        "logo",
+        "tattoo",
+        "partial_wing",
+        "dead_or_damaged_specimen",
+        "ambiguous",
+        "unsuitable",
+    }
+)
+REFERENCE_VIEWS = frozenset(
+    {"dorsal", "ventral", "lateral", "frontal", "oblique", "unknown"}
+)
+REFERENCE_REVIEW_CONFIDENCE_VALUES = frozenset({"high", "medium", "low", "unknown"})
+REFERENCE_REVIEW_QUEUE_STATUSES = frozenset(
+    {
+        "pending",
+        "in_review",
+        "completed",
+        "conflict",
+        "second_review_required",
+        "cancelled",
+    }
+)
+REFERENCE_REVIEW_DECISION_STATUSES = frozenset({"verified", "excluded", "uncertain"})
 
 _OBSERVATION_SORT = ["source", "source_observation_id"]
 _MEDIA_SORT = ["source", "provider_media_id", "reference_observation_id"]
@@ -121,12 +157,27 @@ _MEDIA_DUPLICATE_RELATIONSHIP_SORT = [
     "left_reference_media_id",
     "right_reference_media_id",
 ]
+_REFERENCE_REVIEW_QUEUE_SORT = [
+    "review_priority",
+    "reference_media_id",
+    "review_request_id",
+]
+_REFERENCE_REVIEW_DECISION_SORT = [
+    "reference_media_id",
+    "review_round",
+    "reviewed_at",
+    "review_decision_id",
+]
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _PERCEPTUAL_HASH_PATTERN = re.compile(r"dhash128-v1:[0-9a-f]{32}\Z")
 _DUPLICATE_GROUP_ID_PATTERN = re.compile(r"reference-duplicate-group:[0-9a-f]{32}\Z")
 _DUPLICATE_RELATIONSHIP_ID_PATTERN = re.compile(
     r"reference-duplicate-relationship:[0-9a-f]{32}\Z"
 )
+_REVIEW_REQUEST_ID_PATTERN = re.compile(r"reference-review-request:[0-9a-f]{64}\Z")
+_REVIEW_DECISION_ID_PATTERN = re.compile(r"reference-review-decision:[0-9a-f]{64}\Z")
+_REFERENCE_MEDIA_ID_PATTERN = re.compile(r"reference-media:[0-9a-f]{64}\Z")
+_REFERENCE_OBSERVATION_ID_PATTERN = re.compile(r"reference-observation:[0-9a-f]{64}\Z")
 
 
 def reference_observation_schema() -> dict[str, pl.DataType]:
@@ -316,6 +367,63 @@ def reference_media_duplicate_relationship_schema() -> dict[str, pl.DataType]:
     }
 
 
+def reference_review_queue_schema() -> dict[str, pl.DataType]:
+    return {
+        "schema_version": pl.String,
+        "review_request_id": pl.String,
+        "reference_media_id": pl.String,
+        "reference_observation_id": pl.String,
+        "canonical_reference_media_id": pl.String,
+        "accepted_taxon_key": pl.String,
+        "scientific_name": pl.String,
+        "durable_preview_uri": pl.String,
+        "media_object_fingerprint": pl.String,
+        "duplicate_group_id": pl.String,
+        "source": pl.String,
+        "provider_media_id": pl.String,
+        "provider_verification_status": pl.String,
+        "creator": pl.String,
+        "rights_holder": pl.String,
+        "licence": pl.String,
+        "licence_uri": pl.String,
+        "licence_policy_status": pl.String,
+        "attribution": pl.String,
+        "life_stage": pl.String,
+        "visual_domain": pl.String,
+        "view": pl.String,
+        "review_reason": pl.String,
+        "review_priority": pl.UInt32,
+        "required_review_count": pl.UInt8,
+        "review_status": pl.String,
+        "created_at": pl.Datetime("us", "UTC"),
+        "reference_bank_version": pl.String,
+        "input_fingerprint": pl.String,
+    }
+
+
+def reference_review_decision_schema() -> dict[str, pl.DataType]:
+    return {
+        "schema_version": pl.String,
+        "review_decision_id": pl.String,
+        "review_request_id": pl.String,
+        "reference_media_id": pl.String,
+        "review_round": pl.UInt16,
+        "verified_by": pl.String,
+        "reviewed_at": pl.Datetime("us", "UTC"),
+        "target_identity_verified": pl.Boolean,
+        "verification_status": pl.String,
+        "life_stage": pl.String,
+        "visual_domain": pl.String,
+        "view": pl.String,
+        "review_confidence": pl.String,
+        "review_notes": pl.String,
+        "exclusion_reason": pl.String,
+        "second_review_required": pl.Boolean,
+        "conflicts_with_decision_id": pl.String,
+        "decision_source_hash": pl.String,
+    }
+
+
 def make_reference_observation_id(source: str, source_observation_id: str) -> str:
     return "reference-observation:" + _semantic_digest(
         {
@@ -403,6 +511,117 @@ def make_reference_selection_id(
     ).removeprefix("sha256:")
 
 
+def make_reference_review_request_id(
+    *,
+    reference_media_id: str,
+    media_object_fingerprint: str,
+    reference_bank_version: str,
+    input_fingerprint: str,
+) -> str:
+    return "reference-review-request:" + _semantic_digest(
+        {
+            "schema_version": REFERENCE_REVIEW_QUEUE_SCHEMA_VERSION,
+            "reference_media_id": _canonical_required_text(
+                reference_media_id,
+                field="reference_media_id",
+            ),
+            "media_object_fingerprint": _canonical_full_sha256(
+                media_object_fingerprint,
+                field="media_object_fingerprint",
+            ),
+            "reference_bank_version": _canonical_required_text(
+                reference_bank_version,
+                field="reference_bank_version",
+            ),
+            "input_fingerprint": _canonical_full_sha256(
+                input_fingerprint,
+                field="input_fingerprint",
+            ),
+        }
+    ).removeprefix("sha256:")
+
+
+def make_reference_review_decision_id(
+    *,
+    review_request_id: str,
+    reference_media_id: str,
+    review_round: int,
+    verified_by: str,
+    reviewed_at: datetime,
+    target_identity_verified: bool | None,
+    verification_status: str,
+    life_stage: str,
+    visual_domain: str,
+    view: str,
+    review_confidence: str,
+    review_notes: str | None,
+    exclusion_reason: str | None,
+    second_review_required: bool,
+    conflicts_with_decision_id: str | None,
+) -> str:
+    if target_identity_verified is not None and not isinstance(
+        target_identity_verified,
+        bool,
+    ):
+        raise ValueError("target_identity_verified must be Boolean or null")
+    if not isinstance(second_review_required, bool):
+        raise ValueError("second_review_required must be Boolean")
+    return "reference-review-decision:" + _semantic_digest(
+        {
+            "schema_version": REFERENCE_REVIEW_DECISIONS_SCHEMA_VERSION,
+            "review_request_id": _canonical_required_text(
+                review_request_id,
+                field="review_request_id",
+            ),
+            "reference_media_id": _canonical_required_text(
+                reference_media_id,
+                field="reference_media_id",
+            ),
+            "review_round": _positive_int(review_round, field="review_round"),
+            "verified_by": _canonical_required_text(
+                verified_by,
+                field="verified_by",
+            ),
+            "reviewed_at": _utc_datetime_text(reviewed_at, field="reviewed_at"),
+            "target_identity_verified": target_identity_verified,
+            "verification_status": _canonical_choice(
+                verification_status,
+                field="verification_status",
+                choices=REFERENCE_REVIEW_DECISION_STATUSES,
+            ),
+            "life_stage": _canonical_choice(
+                life_stage,
+                field="life_stage",
+                choices=REFERENCE_LIFE_STAGES,
+            ),
+            "visual_domain": _canonical_choice(
+                visual_domain,
+                field="visual_domain",
+                choices=REFERENCE_VISUAL_DOMAINS,
+            ),
+            "view": _canonical_choice(view, field="view", choices=REFERENCE_VIEWS),
+            "review_confidence": _canonical_choice(
+                review_confidence,
+                field="review_confidence",
+                choices=REFERENCE_REVIEW_CONFIDENCE_VALUES,
+            ),
+            "review_notes": _nullable_nonblank_text(
+                review_notes,
+                field="review_notes",
+            ),
+            "exclusion_reason": _nullable_nonblank_text(
+                exclusion_reason,
+                field="exclusion_reason",
+            ),
+            "second_review_required": second_review_required,
+            "conflicts_with_decision_id": _nullable_nonblank_text(
+                conflicts_with_decision_id,
+                field="conflicts_with_decision_id",
+            ),
+        }
+    ).removeprefix("sha256:")
+
+
 def reference_observations_frame(
     rows: Sequence[Mapping[str, object]],
 ) -> pl.DataFrame:
@@ -462,6 +681,30 @@ def reference_media_duplicate_relationships_frame(
         sort_by=_MEDIA_DUPLICATE_RELATIONSHIP_SORT,
     )
     validate_reference_media_duplicate_relationships(frame)
+    return frame
+
+
+def reference_review_queue_frame(
+    rows: Sequence[Mapping[str, object]],
+) -> pl.DataFrame:
+    frame = _frame(
+        rows,
+        schema=reference_review_queue_schema(),
+        sort_by=_REFERENCE_REVIEW_QUEUE_SORT,
+    )
+    validate_reference_review_queue(frame)
+    return frame
+
+
+def reference_review_decisions_frame(
+    rows: Sequence[Mapping[str, object]],
+) -> pl.DataFrame:
+    frame = _frame(
+        rows,
+        schema=reference_review_decision_schema(),
+        sort_by=_REFERENCE_REVIEW_DECISION_SORT,
+    )
+    validate_reference_review_decisions(frame)
     return frame
 
 
@@ -1022,6 +1265,321 @@ def validate_reference_media_duplicate_relationships(frame: pl.DataFrame) -> Non
         _full_sha256(row["policy_fingerprint"], field="policy_fingerprint")
 
 
+def validate_reference_review_queue(frame: pl.DataFrame) -> None:
+    _validate_physical_frame(
+        frame,
+        schema=reference_review_queue_schema(),
+        schema_version=REFERENCE_REVIEW_QUEUE_SCHEMA_VERSION,
+        sort_by=_REFERENCE_REVIEW_QUEUE_SORT,
+        primary_key=["review_request_id"],
+        artifact="reference review queue",
+    )
+    for row in frame.iter_rows(named=True):
+        request_id = _canonical_required_text(
+            row["review_request_id"],
+            field="review_request_id",
+        )
+        if _REVIEW_REQUEST_ID_PATTERN.fullmatch(request_id) is None:
+            raise ValueError("review_request_id has an unsupported namespace")
+        reference_media_id = _canonical_required_text(
+            row["reference_media_id"],
+            field="reference_media_id",
+        )
+        if _REFERENCE_MEDIA_ID_PATTERN.fullmatch(reference_media_id) is None:
+            raise ValueError("reference_media_id has an unsupported namespace")
+        for field in (
+            "reference_observation_id",
+            "canonical_reference_media_id",
+            "durable_preview_uri",
+            "source",
+            "provider_media_id",
+            "licence",
+            "review_reason",
+            "reference_bank_version",
+        ):
+            _canonical_required_text(row[field], field=field)
+        canonical_media_id = str(row["canonical_reference_media_id"])
+        if _REFERENCE_MEDIA_ID_PATTERN.fullmatch(canonical_media_id) is None:
+            raise ValueError(
+                "canonical_reference_media_id has an unsupported namespace"
+            )
+        observation_id = str(row["reference_observation_id"])
+        if _REFERENCE_OBSERVATION_ID_PATTERN.fullmatch(observation_id) is None:
+            raise ValueError("reference_observation_id has an unsupported namespace")
+        expected_media_id = make_reference_media_id(
+            str(row["source"]),
+            str(row["provider_media_id"]),
+            observation_id,
+        )
+        if reference_media_id != expected_media_id:
+            raise ValueError(
+                "reference_media_id does not match its provider provenance"
+            )
+        duplicate_group_id = _canonical_required_text(
+            row["duplicate_group_id"],
+            field="duplicate_group_id",
+        )
+        if _DUPLICATE_GROUP_ID_PATTERN.fullmatch(duplicate_group_id) is None:
+            raise ValueError("duplicate_group_id has an unsupported namespace")
+        media_object_fingerprint = _canonical_full_sha256(
+            row["media_object_fingerprint"],
+            field="media_object_fingerprint",
+        )
+        input_fingerprint = _canonical_full_sha256(
+            row["input_fingerprint"],
+            field="input_fingerprint",
+        )
+        reference_bank_version = str(row["reference_bank_version"])
+        expected_id = make_reference_review_request_id(
+            reference_media_id=reference_media_id,
+            media_object_fingerprint=media_object_fingerprint,
+            reference_bank_version=reference_bank_version,
+            input_fingerprint=input_fingerprint,
+        )
+        if request_id != expected_id:
+            raise ValueError("review request ID does not match its immutable inputs")
+        accepted_key = _nullable_nonblank_text(
+            row["accepted_taxon_key"],
+            field="accepted_taxon_key",
+        )
+        scientific_name = _nullable_nonblank_text(
+            row["scientific_name"],
+            field="scientific_name",
+        )
+        if (accepted_key is None) != (scientific_name is None):
+            raise ValueError(
+                "accepted_taxon_key and scientific_name must be populated together"
+            )
+        _canonical_choice(
+            row["provider_verification_status"],
+            field="provider_verification_status",
+            choices=VERIFICATION_STATUSES,
+        )
+        _canonical_choice(
+            row["licence_policy_status"],
+            field="licence_policy_status",
+            choices=LICENCE_POLICY_STATUSES,
+        )
+        proposed_values = (
+            ("life_stage", REFERENCE_LIFE_STAGES),
+            ("visual_domain", REFERENCE_VISUAL_DOMAINS),
+            ("view", REFERENCE_VIEWS),
+        )
+        for field, choices in proposed_values:
+            if row[field] is not None:
+                _canonical_choice(row[field], field=field, choices=choices)
+        _canonical_choice(
+            row["review_status"],
+            field="review_status",
+            choices=REFERENCE_REVIEW_QUEUE_STATUSES,
+        )
+        _nonnegative_int(row["review_priority"], field="review_priority")
+        _positive_int(
+            row["required_review_count"],
+            field="required_review_count",
+        )
+        _utc_datetime_text(row["created_at"], field="created_at")
+        for field in (
+            "creator",
+            "rights_holder",
+            "licence_uri",
+            "attribution",
+        ):
+            _nullable_nonblank_text(row[field], field=field)
+    inconsistent_groups = (
+        frame.group_by("duplicate_group_id")
+        .agg(pl.col("canonical_reference_media_id").n_unique().alias("canonical_count"))
+        .filter(pl.col("canonical_count") > 1)
+    )
+    if not inconsistent_groups.is_empty():
+        raise ValueError("a duplicate group cannot name multiple canonical media items")
+    inconsistent_canonicals = (
+        frame.group_by("canonical_reference_media_id")
+        .agg(pl.col("duplicate_group_id").n_unique().alias("group_count"))
+        .filter(pl.col("group_count") > 1)
+    )
+    if not inconsistent_canonicals.is_empty():
+        raise ValueError("a canonical media item cannot belong to multiple groups")
+
+
+def validate_reference_review_decisions(frame: pl.DataFrame) -> None:
+    _validate_physical_frame(
+        frame,
+        schema=reference_review_decision_schema(),
+        schema_version=REFERENCE_REVIEW_DECISIONS_SCHEMA_VERSION,
+        sort_by=_REFERENCE_REVIEW_DECISION_SORT,
+        primary_key=["review_decision_id"],
+        artifact="reference review decisions",
+    )
+    decision_rows = list(frame.iter_rows(named=True))
+    decisions_by_id = {str(row["review_decision_id"]): row for row in decision_rows}
+    duplicate_votes = (
+        frame.group_by("review_request_id", "review_round", "verified_by")
+        .len()
+        .filter(pl.col("len") > 1)
+    )
+    if not duplicate_votes.is_empty():
+        raise ValueError("a reviewer may record only one decision per request round")
+    if frame["decision_source_hash"].n_unique() != frame.height:
+        raise ValueError("each source decision record may produce only one decision")
+    request_media_conflicts = (
+        frame.group_by("review_request_id")
+        .agg(pl.col("reference_media_id").n_unique().alias("media_count"))
+        .filter(pl.col("media_count") > 1)
+    )
+    if not request_media_conflicts.is_empty():
+        raise ValueError("a review request cannot refer to multiple media items")
+    for row in decision_rows:
+        decision_id = _canonical_required_text(
+            row["review_decision_id"],
+            field="review_decision_id",
+        )
+        if _REVIEW_DECISION_ID_PATTERN.fullmatch(decision_id) is None:
+            raise ValueError("review_decision_id has an unsupported namespace")
+        review_request_id = _canonical_required_text(
+            row["review_request_id"],
+            field="review_request_id",
+        )
+        if _REVIEW_REQUEST_ID_PATTERN.fullmatch(review_request_id) is None:
+            raise ValueError("review_request_id has an unsupported namespace")
+        reference_media_id = _canonical_required_text(
+            row["reference_media_id"],
+            field="reference_media_id",
+        )
+        if _REFERENCE_MEDIA_ID_PATTERN.fullmatch(reference_media_id) is None:
+            raise ValueError("reference_media_id has an unsupported namespace")
+        review_round = _positive_int(row["review_round"], field="review_round")
+        verified_by = _canonical_required_text(
+            row["verified_by"],
+            field="verified_by",
+        )
+        reviewed_at = row["reviewed_at"]
+        _utc_datetime_text(reviewed_at, field="reviewed_at")
+        target_identity_verified = row["target_identity_verified"]
+        if target_identity_verified is not None and not isinstance(
+            target_identity_verified,
+            bool,
+        ):
+            raise ValueError("target_identity_verified must be Boolean or null")
+        verification_status = _canonical_choice(
+            row["verification_status"],
+            field="verification_status",
+            choices=REFERENCE_REVIEW_DECISION_STATUSES,
+        )
+        life_stage = _canonical_choice(
+            row["life_stage"],
+            field="life_stage",
+            choices=REFERENCE_LIFE_STAGES,
+        )
+        visual_domain = _canonical_choice(
+            row["visual_domain"],
+            field="visual_domain",
+            choices=REFERENCE_VISUAL_DOMAINS,
+        )
+        view = _canonical_choice(row["view"], field="view", choices=REFERENCE_VIEWS)
+        review_confidence = _canonical_choice(
+            row["review_confidence"],
+            field="review_confidence",
+            choices=REFERENCE_REVIEW_CONFIDENCE_VALUES,
+        )
+        review_notes = _nullable_nonblank_text(
+            row["review_notes"],
+            field="review_notes",
+        )
+        exclusion_reason = _nullable_nonblank_text(
+            row["exclusion_reason"],
+            field="exclusion_reason",
+        )
+        second_review_required = row["second_review_required"]
+        if not isinstance(second_review_required, bool):
+            raise ValueError("second_review_required must be Boolean")
+        conflicts_with_decision_id = _nullable_nonblank_text(
+            row["conflicts_with_decision_id"],
+            field="conflicts_with_decision_id",
+        )
+        if conflicts_with_decision_id is not None:
+            if (
+                _REVIEW_DECISION_ID_PATTERN.fullmatch(conflicts_with_decision_id)
+                is None
+            ):
+                raise ValueError(
+                    "conflicts_with_decision_id has an unsupported namespace"
+                )
+            if conflicts_with_decision_id == decision_id:
+                raise ValueError("a review decision cannot conflict with itself")
+            conflicting_row = decisions_by_id.get(conflicts_with_decision_id)
+            if conflicting_row is None:
+                raise ValueError(
+                    "conflicts_with_decision_id must resolve in the decision ledger"
+                )
+            if (
+                conflicting_row["review_request_id"] != review_request_id
+                or conflicting_row["reference_media_id"] != reference_media_id
+            ):
+                raise ValueError(
+                    "conflicting decisions must concern the same request and media"
+                )
+            if conflicting_row["verified_by"] == verified_by:
+                raise ValueError("a reviewer cannot conflict with their own decision")
+            conflicting_reviewed_at = conflicting_row["reviewed_at"]
+            _utc_datetime_text(
+                conflicting_reviewed_at,
+                field="conflicting reviewed_at",
+            )
+            if conflicting_reviewed_at >= reviewed_at:
+                raise ValueError("a conflict pointer must identify an earlier decision")
+        _canonical_full_sha256(
+            row["decision_source_hash"],
+            field="decision_source_hash",
+        )
+
+        if verification_status == "verified":
+            if target_identity_verified is not True:
+                raise ValueError("verified decisions require confirmed target identity")
+            if exclusion_reason is not None:
+                raise ValueError("verified decisions cannot have an exclusion reason")
+            if second_review_required or conflicts_with_decision_id is not None:
+                raise ValueError(
+                    "verified decisions cannot require or identify a conflicting review"
+                )
+        elif verification_status == "excluded":
+            if exclusion_reason is None:
+                raise ValueError("excluded decisions require an exclusion reason")
+            if second_review_required or conflicts_with_decision_id is not None:
+                raise ValueError(
+                    "excluded decisions cannot require or identify a conflicting review"
+                )
+        else:
+            if target_identity_verified is not None:
+                raise ValueError("uncertain decisions cannot assert target identity")
+            if review_notes is None:
+                raise ValueError("uncertain decisions require review notes")
+            if exclusion_reason is not None:
+                raise ValueError("uncertain decisions cannot have an exclusion reason")
+            if not second_review_required:
+                raise ValueError("uncertain decisions require a second review")
+
+        expected_id = make_reference_review_decision_id(
+            review_request_id=review_request_id,
+            reference_media_id=reference_media_id,
+            review_round=review_round,
+            verified_by=verified_by,
+            reviewed_at=reviewed_at,
+            target_identity_verified=target_identity_verified,
+            verification_status=verification_status,
+            life_stage=life_stage,
+            visual_domain=visual_domain,
+            view=view,
+            review_confidence=review_confidence,
+            review_notes=review_notes,
+            exclusion_reason=exclusion_reason,
+            second_review_required=second_review_required,
+            conflicts_with_decision_id=conflicts_with_decision_id,
+        )
+        if decision_id != expected_id:
+            raise ValueError("review decision ID does not match its semantic content")
+
+
 def write_reference_observations(
     frame: pl.DataFrame,
     output: str | Path,
@@ -1103,6 +1661,31 @@ def write_reference_media_duplicate_relationships(
         frame,
         _artifact_path(output, REFERENCE_MEDIA_DUPLICATE_RELATIONSHIPS_FILE),
         overwrite=overwrite,
+    )
+
+
+def write_reference_review_queue(
+    frame: pl.DataFrame,
+    output: str | Path,
+    *,
+    overwrite: bool = True,
+) -> Path:
+    validate_reference_review_queue(frame)
+    return write_parquet(
+        frame,
+        _artifact_path(output, REFERENCE_REVIEW_QUEUE_FILE),
+        overwrite=overwrite,
+    )
+
+
+def write_reference_review_decisions(
+    frame: pl.DataFrame,
+    output: str | Path,
+) -> Path:
+    validate_reference_review_decisions(frame)
+    return _write_parquet_create_only(
+        frame,
+        _artifact_path(output, REFERENCE_REVIEW_DECISIONS_FILE),
     )
 
 
@@ -1200,10 +1783,31 @@ def _choice(value: object, *, field: str, choices: frozenset[str]) -> str:
     return text
 
 
+def _canonical_choice(
+    value: object,
+    *,
+    field: str,
+    choices: frozenset[str],
+) -> str:
+    text = _canonical_required_text(value, field=field)
+    if text not in choices:
+        raise ValueError(f"{field} must be one of {sorted(choices)}")
+    return text
+
+
 def _required_text(value: object, *, field: str) -> str:
     text = str(value or "").strip()
     if not text:
         raise ValueError(f"{field} must be nonblank")
+    return text
+
+
+def _canonical_required_text(value: object, *, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be text")
+    text = _required_text(value, field=field)
+    if value != text:
+        raise ValueError(f"{field} must not have surrounding whitespace")
     return text
 
 
@@ -1212,8 +1816,36 @@ def _optional_text(value: object) -> str | None:
     return text or None
 
 
+def _nullable_nonblank_text(value: object, *, field: str) -> str | None:
+    if value is None:
+        return None
+    return _canonical_required_text(value, field=field)
+
+
+def _utc_datetime_text(value: object, *, field: str) -> str:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError(f"{field} must be a timezone-aware UTC datetime")
+    if value.utcoffset() != timezone.utc.utcoffset(value):
+        raise ValueError(f"{field} must be a timezone-aware UTC datetime")
+    return (
+        value.astimezone(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace(
+            "+00:00",
+            "Z",
+        )
+    )
+
+
 def _full_sha256(value: object, *, field: str) -> str:
     text = _required_text(value, field=field)
+    if _SHA256_PATTERN.fullmatch(text) is None:
+        raise ValueError(f"{field} must be a full lowercase sha256 digest")
+    return text
+
+
+def _canonical_full_sha256(value: object, *, field: str) -> str:
+    text = _canonical_required_text(value, field=field)
     if _SHA256_PATTERN.fullmatch(text) is None:
         raise ValueError(f"{field} must be a full lowercase sha256 digest")
     return text
@@ -1243,6 +1875,16 @@ def _artifact_path(output: str | Path, filename: str) -> Path:
     return path if path.suffix.casefold() == ".parquet" else path / filename
 
 
+def _write_parquet_create_only(frame: pl.DataFrame, output: Path) -> Path:
+    staged = output.with_name(f".{output.name}.{uuid4().hex}.tmp")
+    try:
+        write_parquet(frame, staged, overwrite=False)
+        os.link(staged, output)
+    finally:
+        staged.unlink(missing_ok=True)
+    return output
+
+
 __all__ = [
     "DECODE_STATUSES",
     "DOWNLOAD_STATUSES",
@@ -1264,9 +1906,21 @@ __all__ = [
     "REFERENCE_MEDIA_RASTER_CONTENT_TYPES",
     "REFERENCE_OBSERVATIONS_FILE",
     "REFERENCE_OBSERVATIONS_SCHEMA_VERSION",
+    "REFERENCE_LIFE_STAGES",
+    "REFERENCE_REVIEW_CONFIDENCE_VALUES",
+    "REFERENCE_REVIEW_DECISIONS_FILE",
+    "REFERENCE_REVIEW_DECISIONS_SCHEMA_VERSION",
+    "REFERENCE_REVIEW_DECISION_STATUSES",
+    "REFERENCE_REVIEW_QUEUE_FILE",
+    "REFERENCE_REVIEW_QUEUE_SCHEMA_VERSION",
+    "REFERENCE_REVIEW_QUEUE_STATUSES",
+    "REFERENCE_VIEWS",
+    "REFERENCE_VISUAL_DOMAINS",
     "TAXON_RECONCILIATION_STATUSES",
     "VERIFICATION_STATUSES",
     "make_acquisition_plan_id",
+    "make_reference_review_decision_id",
+    "make_reference_review_request_id",
     "make_reference_selection_id",
     "reference_acquisition_selection_schema",
     "reference_acquisition_selections_frame",
@@ -1282,16 +1936,24 @@ __all__ = [
     "reference_media_duplicate_relationships_frame",
     "reference_observation_schema",
     "reference_observations_frame",
+    "reference_review_decision_schema",
+    "reference_review_decisions_frame",
+    "reference_review_queue_frame",
+    "reference_review_queue_schema",
     "validate_reference_acquisition_plan",
     "validate_reference_acquisition_selections",
     "validate_reference_media_candidates",
     "validate_reference_media_objects",
     "validate_reference_media_duplicate_relationships",
     "validate_reference_observations",
+    "validate_reference_review_decisions",
+    "validate_reference_review_queue",
     "write_reference_acquisition_plan",
     "write_reference_acquisition_selections",
     "write_reference_media_candidates",
     "write_reference_media_objects",
     "write_reference_media_duplicate_relationships",
     "write_reference_observations",
+    "write_reference_review_decisions",
+    "write_reference_review_queue",
 ]
