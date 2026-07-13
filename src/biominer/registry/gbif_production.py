@@ -10,6 +10,7 @@ from biominer.registry.gbif import GBIF_BASE_URL, GBIFClient, JSONPayload
 
 
 logger = logging.getLogger(__name__)
+GBIF_USER_AGENT = "BioMiner/0.1 (+https://github.com/karikris/BioMiner)"
 
 
 class RetryingHTTPGet:
@@ -33,6 +34,7 @@ class RetryingHTTPGet:
             base_url=base_url.rstrip("/"),
             timeout=httpx.Timeout(timeout_seconds),
             limits=httpx.Limits(max_connections=max_connections, max_keepalive_connections=max_connections),
+            headers={"User-Agent": GBIF_USER_AGENT},
             transport=transport,
         )
 
