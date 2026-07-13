@@ -81,6 +81,8 @@ def _observation(
         "source_record_hash": OBSERVATION_HASH,
         "retrieved_at": NOW,
         "source_snapshot_version": "gbif-occurrence-2026-07-13",
+        "source_query_fingerprint": "sha256:" + "c" * 64,
+        "fallback_level": 0,
         "geospatial_issue": False,
         "preserved_specimen": False,
         "fossil": False,
@@ -149,6 +151,7 @@ def _plan() -> dict[str, object]:
         "visual_domain": "field",
         "source": "GBIF",
         "requested_count": 20,
+        "existing_support_count": 0,
         "available_candidate_count": 15,
         "selected_candidate_count": 15,
         "shortfall_count": 5,
@@ -285,6 +288,22 @@ def test_source_query_normalizes_scope_and_has_stable_fingerprint() -> None:
     assert first.spatial_cell_ids == ("cell-a", "cell-b")
     assert first.country_codes == ("AU", "NZ")
     assert first.query_fingerprint == second.query_fingerprint
+
+
+def test_reference_contracts_reject_undefined_fallback_levels() -> None:
+    with pytest.raises(ValueError, match="between 0 and 3"):
+        ReferenceSourceQuery(
+            accepted_taxon_key="gbif:1938069",
+            scientific_name="Papilio demoleus",
+            geo_cluster_id="cluster-au",
+            fallback_level=4,
+            source_snapshot_version="gbif-2026-07-13",
+        )
+
+    observation = _observation()
+    observation["fallback_level"] = 4
+    with pytest.raises(ValueError, match="between 0 and 3"):
+        reference_observations_frame([observation])
 
 
 def test_source_adapter_protocol_and_normalized_page_linkage() -> None:

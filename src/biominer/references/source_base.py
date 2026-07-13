@@ -15,7 +15,7 @@ from biominer.references.schemas import (
 )
 
 
-REFERENCE_SOURCE_QUERY_VERSION = "reference-source-query-v2"
+REFERENCE_SOURCE_QUERY_VERSION = "reference-source-query-v3"
 REFERENCE_SOURCE_PAGE_VERSION = "reference-source-page-v1"
 
 
@@ -55,8 +55,8 @@ class ReferenceSourceQuery:
             self.fallback_level, int
         ):
             raise TypeError("fallback_level must be an integer")
-        if not 0 <= self.fallback_level <= 255:
-            raise ValueError("fallback_level must be between 0 and 255")
+        if not 0 <= self.fallback_level <= 3:
+            raise ValueError("fallback_level must be between 0 and 3")
         if isinstance(self.page_size, bool) or not isinstance(self.page_size, int):
             raise TypeError("page_size must be an integer")
         if self.page_size <= 0:

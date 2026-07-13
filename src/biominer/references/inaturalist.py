@@ -612,6 +612,8 @@ def _normalise_observation(
         "source_record_hash": _semantic_hash(record),
         "retrieved_at": retrieved_at,
         "source_snapshot_version": query.source_snapshot_version,
+        "source_query_fingerprint": query.query_fingerprint,
+        "fallback_level": query.fallback_level,
         "geospatial_issue": geospatial_issue,
         # The API does not expose authoritative specimen/fossil/absence flags.
         "preserved_specimen": None,

@@ -344,6 +344,14 @@ def write_regional_candidate_species(
     *,
     overwrite: bool = True,
 ) -> Path:
+    validate_regional_candidate_species(frame)
+    destination = Path(output)
+    if destination.suffix.casefold() != ".parquet":
+        destination /= REGIONAL_CANDIDATE_SPECIES_FILE
+    return write_parquet(frame, destination, overwrite=overwrite)
+
+
+def validate_regional_candidate_species(frame: pl.DataFrame) -> None:
     if not isinstance(frame, pl.DataFrame):
         raise TypeError("frame must be a Polars DataFrame")
     if frame.schema != regional_candidate_species_schema():
@@ -353,7 +361,12 @@ def write_regional_candidate_species(
     )
     if not frame.equals(expected):
         raise ValueError("regional candidate species frame is not in deterministic sort order")
+    cluster_sets: dict[tuple[str, str], str] = {}
     for (candidate_set_id,), group in frame.group_by("candidate_set_id"):
+        if set(group["schema_version"].to_list()) != {
+            REGIONAL_CANDIDATE_SPECIES_SCHEMA_VERSION
+        }:
+            raise ValueError("unsupported regional candidate species schema version")
         priorities = group.sort("candidate_priority")["candidate_priority"].to_list()
         if priorities != list(range(group.height)):
             raise ValueError(f"candidate set {candidate_set_id!r} has invalid priorities")
@@ -363,10 +376,31 @@ def write_regional_candidate_species(
             raise ValueError(f"candidate set {candidate_set_id!r} contains duplicate species")
         if group["candidate_set_fingerprint"].n_unique() != 1:
             raise ValueError(f"candidate set {candidate_set_id!r} has conflicting fingerprints")
-    destination = Path(output)
-    if destination.suffix.casefold() != ".parquet":
-        destination /= REGIONAL_CANDIDATE_SPECIES_FILE
-    return write_parquet(frame, destination, overwrite=overwrite)
+        target_keys = set(group["target_accepted_taxon_key"].to_list())
+        if len(target_keys) != 1:
+            raise ValueError(f"candidate set {candidate_set_id!r} has conflicting targets")
+        target_key = str(next(iter(target_keys)))
+        target_row = group.filter(pl.col("target_candidate"))
+        if target_row["candidate_accepted_taxon_key"].item() != target_key:
+            raise ValueError(
+                f"candidate set {candidate_set_id!r} target flag does not identify its target"
+            )
+        cluster_ids = set(group["geo_cluster_id"].to_list())
+        if len(cluster_ids) != 1:
+            raise ValueError(f"candidate set {candidate_set_id!r} spans multiple clusters")
+        cluster_id = str(next(iter(cluster_ids)))
+        cluster_key = (target_key, cluster_id)
+        previous = cluster_sets.setdefault(cluster_key, str(candidate_set_id))
+        if previous != str(candidate_set_id):
+            raise ValueError(
+                "regional candidate input contains multiple candidate sets for "
+                f"target/cluster {cluster_key}: {previous!r}, {candidate_set_id!r}"
+            )
+        fingerprint = str(group["candidate_set_fingerprint"].unique().item())
+        if not fingerprint.startswith("sha256:") or len(fingerprint) != 71:
+            raise ValueError(
+                f"candidate set {candidate_set_id!r} has an invalid fingerprint"
+            )
 
 
 def _accepted_species_taxonomy(taxa: pl.DataFrame) -> dict[str, _Taxon]:
@@ -811,5 +845,6 @@ __all__ = [
     "RegionalCandidateConfig",
     "build_regional_candidate_species",
     "regional_candidate_species_schema",
+    "validate_regional_candidate_species",
     "write_regional_candidate_species",
 ]

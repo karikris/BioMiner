@@ -12,13 +12,17 @@ import polars as pl
 from biominer.storage.parquet import write_parquet
 
 
-REFERENCE_OBSERVATIONS_SCHEMA_VERSION = "reference-observations-v1.1.0"
+REFERENCE_OBSERVATIONS_SCHEMA_VERSION = "reference-observations-v1.2.0"
 REFERENCE_MEDIA_CANDIDATES_SCHEMA_VERSION = "reference-media-candidates-v1.0.0"
-REFERENCE_ACQUISITION_PLAN_SCHEMA_VERSION = "reference-acquisition-plan-v1.0.0"
+REFERENCE_ACQUISITION_PLAN_SCHEMA_VERSION = "reference-acquisition-plan-v1.1.0"
+REFERENCE_ACQUISITION_SELECTIONS_SCHEMA_VERSION = (
+    "reference-acquisition-selections-v1.0.0"
+)
 
 REFERENCE_OBSERVATIONS_FILE = "reference_observations.parquet"
 REFERENCE_MEDIA_CANDIDATES_FILE = "reference_media_candidates.parquet"
 REFERENCE_ACQUISITION_PLAN_FILE = "reference_acquisition_plan.parquet"
+REFERENCE_ACQUISITION_SELECTIONS_FILE = "reference_acquisition_selections.parquet"
 
 TAXON_RECONCILIATION_STATUSES = frozenset(
     {"accepted_key_exact", "accepted_name_synonym", "unresolved", "conflict"}
@@ -43,6 +47,22 @@ _PLAN_SORT = [
     "visual_domain",
     "source",
     "fallback_level",
+]
+_PLAN_PRIMARY_KEY = [
+    "acquisition_plan_id",
+    "candidate_accepted_taxon_key",
+    "geo_cluster_id",
+    "life_stage",
+    "visual_domain",
+]
+_SELECTION_SORT = [
+    "acquisition_plan_id",
+    "candidate_accepted_taxon_key",
+    "geo_cluster_id",
+    "life_stage",
+    "visual_domain",
+    "selection_rank",
+    "reference_media_id",
 ]
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
@@ -82,6 +102,8 @@ def reference_observation_schema() -> dict[str, pl.DataType]:
         "source_record_hash": pl.String,
         "retrieved_at": pl.Datetime("us", "UTC"),
         "source_snapshot_version": pl.String,
+        "source_query_fingerprint": pl.String,
+        "fallback_level": pl.UInt8,
         "geospatial_issue": pl.Boolean,
         "preserved_specimen": pl.Boolean,
         "fossil": pl.Boolean,
@@ -134,6 +156,7 @@ def reference_acquisition_plan_schema() -> dict[str, pl.DataType]:
         "visual_domain": pl.String,
         "source": pl.String,
         "requested_count": pl.UInt32,
+        "existing_support_count": pl.UInt32,
         "available_candidate_count": pl.UInt32,
         "selected_candidate_count": pl.UInt32,
         "shortfall_count": pl.UInt32,
@@ -145,6 +168,39 @@ def reference_acquisition_plan_schema() -> dict[str, pl.DataType]:
         "source_snapshot_version": pl.String,
         "plan_configuration_fingerprint": pl.String,
         "created_at": pl.Datetime("us", "UTC"),
+    }
+
+
+def reference_acquisition_selection_schema() -> dict[str, pl.DataType]:
+    return {
+        "schema_version": pl.String,
+        "reference_selection_id": pl.String,
+        "acquisition_plan_id": pl.String,
+        "target_accepted_taxon_key": pl.String,
+        "candidate_set_id": pl.String,
+        "source_candidate_set_id": pl.String,
+        "candidate_accepted_taxon_key": pl.String,
+        "scientific_name": pl.String,
+        "geo_cluster_id": pl.String,
+        "life_stage": pl.String,
+        "visual_domain": pl.String,
+        "reference_media_id": pl.String,
+        "reference_observation_id": pl.String,
+        "source": pl.String,
+        "fallback_level": pl.UInt8,
+        "selection_rank": pl.UInt32,
+        "selection_round": pl.String,
+        "distance_to_cluster_medoid_km": pl.Float64,
+        "observer_id": pl.String,
+        "observed_date": pl.Date,
+        "locality": pl.String,
+        "background_group_id": pl.String,
+        "licence": pl.String,
+        "source_snapshot_version": pl.String,
+        "selection_strategy": pl.String,
+        "selection_seed": pl.UInt64,
+        "plan_configuration_fingerprint": pl.String,
+        "selected_at": pl.Datetime("us", "UTC"),
     }
 
 
@@ -205,6 +261,36 @@ def make_acquisition_plan_id(
     ).removeprefix("sha256:")
 
 
+def make_reference_selection_id(
+    *,
+    acquisition_plan_id: str,
+    reference_media_id: str,
+    candidate_accepted_taxon_key: str,
+    geo_cluster_id: str,
+    life_stage: str,
+    visual_domain: str,
+) -> str:
+    return "reference-selection:" + _semantic_digest(
+        {
+            "acquisition_plan_id": _required_text(
+                acquisition_plan_id,
+                field="acquisition_plan_id",
+            ),
+            "reference_media_id": _required_text(
+                reference_media_id,
+                field="reference_media_id",
+            ),
+            "candidate_accepted_taxon_key": _required_text(
+                candidate_accepted_taxon_key,
+                field="candidate_accepted_taxon_key",
+            ),
+            "geo_cluster_id": _required_text(geo_cluster_id, field="geo_cluster_id"),
+            "life_stage": _required_text(life_stage, field="life_stage"),
+            "visual_domain": _required_text(visual_domain, field="visual_domain"),
+        }
+    ).removeprefix("sha256:")
+
+
 def reference_observations_frame(
     rows: Sequence[Mapping[str, object]],
 ) -> pl.DataFrame:
@@ -226,6 +312,18 @@ def reference_acquisition_plan_frame(
 ) -> pl.DataFrame:
     frame = _frame(rows, schema=reference_acquisition_plan_schema(), sort_by=_PLAN_SORT)
     validate_reference_acquisition_plan(frame)
+    return frame
+
+
+def reference_acquisition_selections_frame(
+    rows: Sequence[Mapping[str, object]],
+) -> pl.DataFrame:
+    frame = _frame(
+        rows,
+        schema=reference_acquisition_selection_schema(),
+        sort_by=_SELECTION_SORT,
+    )
+    validate_reference_acquisition_selections(frame)
     return frame
 
 
@@ -268,6 +366,11 @@ def validate_reference_observations(frame: pl.DataFrame) -> None:
         if status in {"unresolved", "conflict"} and not row["uncertain_taxon_match"]:
             raise ValueError("unresolved reconciliation must be marked uncertain")
         _full_sha256(row["source_record_hash"], field="source_record_hash")
+        _full_sha256(
+            row["source_query_fingerprint"],
+            field="source_query_fingerprint",
+        )
+        _fallback_level(row["fallback_level"])
         if row["retrieved_at"] is None:
             raise ValueError("retrieved_at is required")
         observed_at = row["observed_at"]
@@ -361,7 +464,7 @@ def validate_reference_acquisition_plan(frame: pl.DataFrame) -> None:
         schema=reference_acquisition_plan_schema(),
         schema_version=REFERENCE_ACQUISITION_PLAN_SCHEMA_VERSION,
         sort_by=_PLAN_SORT,
-        primary_key=_PLAN_SORT,
+        primary_key=_PLAN_PRIMARY_KEY,
         artifact="reference acquisition plan",
     )
     for row in frame.iter_rows(named=True):
@@ -397,6 +500,7 @@ def validate_reference_acquisition_plan(frame: pl.DataFrame) -> None:
         ):
             _required_text(row[field], field=field)
         requested = int(row["requested_count"])
+        existing = int(row["existing_support_count"])
         available = int(row["available_candidate_count"])
         selected = int(row["selected_candidate_count"])
         shortfall = int(row["shortfall_count"])
@@ -404,9 +508,81 @@ def validate_reference_acquisition_plan(frame: pl.DataFrame) -> None:
             raise ValueError("selected reference count exceeds requested or available")
         if shortfall != requested - selected:
             raise ValueError("reference shortfall must equal requested minus selected")
+        if existing < 0:
+            raise ValueError("existing support count must be nonnegative")
+        _fallback_level(row["fallback_level"])
         _optional_nonnegative_finite(row["max_distance_km"], field="max_distance_km")
         if row["created_at"] is None:
             raise ValueError("created_at is required")
+
+
+def validate_reference_acquisition_selections(frame: pl.DataFrame) -> None:
+    _validate_physical_frame(
+        frame,
+        schema=reference_acquisition_selection_schema(),
+        schema_version=REFERENCE_ACQUISITION_SELECTIONS_SCHEMA_VERSION,
+        sort_by=_SELECTION_SORT,
+        primary_key=["reference_selection_id"],
+        artifact="reference acquisition selections",
+    )
+    if frame["reference_selection_id"].n_unique() != frame.height:
+        raise ValueError("reference selection IDs must be unique")
+    selected_media_count = frame.select(
+        pl.struct(["acquisition_plan_id", "reference_media_id"]).n_unique()
+    ).item()
+    if selected_media_count != frame.height:
+        raise ValueError("reference media may be selected only once per acquisition plan")
+    selected_observation_count = frame.select(
+        pl.struct(["acquisition_plan_id", "reference_observation_id"]).n_unique()
+    ).item()
+    if selected_observation_count != frame.height:
+        raise ValueError(
+            "reference observations may fill only one quota slot per acquisition plan"
+        )
+    for row in frame.iter_rows(named=True):
+        for field in (
+            "acquisition_plan_id",
+            "target_accepted_taxon_key",
+            "candidate_set_id",
+            "source_candidate_set_id",
+            "candidate_accepted_taxon_key",
+            "scientific_name",
+            "geo_cluster_id",
+            "life_stage",
+            "visual_domain",
+            "reference_media_id",
+            "reference_observation_id",
+            "source",
+            "selection_strategy",
+            "source_snapshot_version",
+        ):
+            _required_text(row[field], field=field)
+        expected_id = make_reference_selection_id(
+            acquisition_plan_id=str(row["acquisition_plan_id"]),
+            reference_media_id=str(row["reference_media_id"]),
+            candidate_accepted_taxon_key=str(row["candidate_accepted_taxon_key"]),
+            geo_cluster_id=str(row["geo_cluster_id"]),
+            life_stage=str(row["life_stage"]),
+            visual_domain=str(row["visual_domain"]),
+        )
+        if row["reference_selection_id"] != expected_id:
+            raise ValueError("reference selection ID mismatch")
+        if row["selection_round"] not in {
+            "independent_observation",
+            "same_observation_fallback",
+        }:
+            raise ValueError("unsupported reference selection round")
+        _fallback_level(row["fallback_level"])
+        _optional_nonnegative_finite(
+            row["distance_to_cluster_medoid_km"],
+            field="distance_to_cluster_medoid_km",
+        )
+        _full_sha256(
+            row["plan_configuration_fingerprint"],
+            field="plan_configuration_fingerprint",
+        )
+        if row["selected_at"] is None:
+            raise ValueError("selected_at is required")
 
 
 def write_reference_observations(
@@ -447,6 +623,20 @@ def write_reference_acquisition_plan(
     return write_parquet(
         frame,
         _artifact_path(output, REFERENCE_ACQUISITION_PLAN_FILE),
+        overwrite=overwrite,
+    )
+
+
+def write_reference_acquisition_selections(
+    frame: pl.DataFrame,
+    output: str | Path,
+    *,
+    overwrite: bool = True,
+) -> Path:
+    validate_reference_acquisition_selections(frame)
+    return write_parquet(
+        frame,
+        _artifact_path(output, REFERENCE_ACQUISITION_SELECTIONS_FILE),
         overwrite=overwrite,
     )
 
@@ -513,6 +703,13 @@ def _optional_nonnegative_finite(value: object, *, field: str) -> float | None:
     return parsed
 
 
+def _fallback_level(value: object) -> int:
+    parsed = int(value)
+    if not 0 <= parsed <= 3:
+        raise ValueError("fallback_level must be between 0 and 3")
+    return parsed
+
+
 def _choice(value: object, *, field: str, choices: frozenset[str]) -> str:
     text = _required_text(value, field=field)
     if text not in choices:
@@ -559,6 +756,8 @@ __all__ = [
     "LICENCE_POLICY_STATUSES",
     "REFERENCE_ACQUISITION_PLAN_FILE",
     "REFERENCE_ACQUISITION_PLAN_SCHEMA_VERSION",
+    "REFERENCE_ACQUISITION_SELECTIONS_FILE",
+    "REFERENCE_ACQUISITION_SELECTIONS_SCHEMA_VERSION",
     "REFERENCE_MEDIA_CANDIDATES_FILE",
     "REFERENCE_MEDIA_CANDIDATES_SCHEMA_VERSION",
     "REFERENCE_OBSERVATIONS_FILE",
@@ -566,6 +765,9 @@ __all__ = [
     "TAXON_RECONCILIATION_STATUSES",
     "VERIFICATION_STATUSES",
     "make_acquisition_plan_id",
+    "make_reference_selection_id",
+    "reference_acquisition_selection_schema",
+    "reference_acquisition_selections_frame",
     "make_reference_media_id",
     "make_reference_observation_id",
     "reference_acquisition_plan_frame",
@@ -575,9 +777,11 @@ __all__ = [
     "reference_observation_schema",
     "reference_observations_frame",
     "validate_reference_acquisition_plan",
+    "validate_reference_acquisition_selections",
     "validate_reference_media_candidates",
     "validate_reference_observations",
     "write_reference_acquisition_plan",
+    "write_reference_acquisition_selections",
     "write_reference_media_candidates",
     "write_reference_observations",
 ]

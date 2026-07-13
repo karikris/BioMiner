@@ -15,6 +15,7 @@ from biominer.candidates.regional_union import (
     RegionalCandidateConfig,
     build_regional_candidate_species,
     regional_candidate_species_schema,
+    validate_regional_candidate_species,
     write_regional_candidate_species,
 )
 from biominer.candidates.relationships import (
@@ -43,6 +44,7 @@ __all__ = [
     "competitor_relationships_schema",
     "load_competitor_relationship_source",
     "regional_candidate_species_schema",
+    "validate_regional_candidate_species",
     "regional_scope_membership_schema",
     "regional_taxon_occurrence_schema",
     "write_regional_taxon_occurrence",

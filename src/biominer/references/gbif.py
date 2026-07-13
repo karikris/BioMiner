@@ -479,6 +479,8 @@ def _normalize_occurrence(
         "source_record_hash": record_hash,
         "retrieved_at": retrieved_at,
         "source_snapshot_version": query.source_snapshot_version,
+        "source_query_fingerprint": query.query_fingerprint,
+        "fallback_level": query.fallback_level,
         "geospatial_issue": geospatial_issue,
         "preserved_specimen": preserved_specimen,
         "fossil": fossil,
