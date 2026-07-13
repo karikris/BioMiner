@@ -12,7 +12,7 @@ import polars as pl
 from biominer.storage.parquet import write_parquet
 
 
-REFERENCE_OBSERVATIONS_SCHEMA_VERSION = "reference-observations-v1.0.0"
+REFERENCE_OBSERVATIONS_SCHEMA_VERSION = "reference-observations-v1.1.0"
 REFERENCE_MEDIA_CANDIDATES_SCHEMA_VERSION = "reference-media-candidates-v1.0.0"
 REFERENCE_ACQUISITION_PLAN_SCHEMA_VERSION = "reference-acquisition-plan-v1.0.0"
 
@@ -63,6 +63,8 @@ def reference_observation_schema() -> dict[str, pl.DataType]:
         "community_taxon_status": pl.String,
         "identification_disagreement": pl.Boolean,
         "captive_or_cultivated": pl.Boolean,
+        "observer_id": pl.String,
+        "locality": pl.String,
         "life_stage": pl.String,
         "sex": pl.String,
         "observed_at": pl.Datetime("us", "UTC"),
@@ -291,14 +293,7 @@ def validate_reference_observations(frame: pl.DataFrame) -> None:
             len(country_code) != 2 or country_code != country_code.upper()
         ):
             raise ValueError("country_code must be uppercase ISO alpha-2")
-        for field in (
-            "geospatial_issue",
-            "preserved_specimen",
-            "fossil",
-            "occurrence_absent",
-            "uncertain_taxon_match",
-            "basis_of_record_suitable",
-        ):
+        for field in ("uncertain_taxon_match", "basis_of_record_suitable"):
             if row[field] is None:
                 raise ValueError(f"{field} must be boolean")
 

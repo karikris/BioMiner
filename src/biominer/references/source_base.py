@@ -28,7 +28,9 @@ class ReferenceSourceQuery:
     source_taxon_id: str | None = None
     spatial_cell_ids: tuple[str, ...] = ()
     country_codes: tuple[str, ...] = ()
+    source_place_ids: tuple[str, ...] = ()
     geometry_wkt: str | None = None
+    bounding_box: tuple[float, float, float, float] | None = None
     cluster_medoid_latitude: float | None = None
     cluster_medoid_longitude: float | None = None
     page_size: int = 100
@@ -73,12 +75,19 @@ class ReferenceSourceQuery:
         )
         if any(len(value) != 2 for value in countries):
             raise ValueError("country_codes must contain ISO alpha-2 values")
+        source_place_ids = _normalized_values(
+            self.source_place_ids,
+            field="source_place_ids",
+        )
+        bounding_box = _bounding_box(self.bounding_box)
         medoid_latitude, medoid_longitude = _coordinate_pair(
             self.cluster_medoid_latitude,
             self.cluster_medoid_longitude,
         )
         object.__setattr__(self, "spatial_cell_ids", cells)
         object.__setattr__(self, "country_codes", countries)
+        object.__setattr__(self, "source_place_ids", source_place_ids)
+        object.__setattr__(self, "bounding_box", bounding_box)
         object.__setattr__(self, "cluster_medoid_latitude", medoid_latitude)
         object.__setattr__(self, "cluster_medoid_longitude", medoid_longitude)
 
@@ -94,7 +103,9 @@ class ReferenceSourceQuery:
                 "source_taxon_id": self.source_taxon_id,
                 "spatial_cell_ids": self.spatial_cell_ids,
                 "country_codes": self.country_codes,
+                "source_place_ids": self.source_place_ids,
                 "geometry_wkt": self.geometry_wkt,
+                "bounding_box": self.bounding_box,
                 "cluster_medoid_latitude": self.cluster_medoid_latitude,
                 "cluster_medoid_longitude": self.cluster_medoid_longitude,
                 "page_size": self.page_size,
@@ -219,6 +230,25 @@ def _coordinate_pair(
     if not -90.0 <= lat <= 90.0 or not -180.0 <= lon <= 180.0:
         raise ValueError("cluster medoid coordinates are outside WGS84 bounds")
     return lat, lon
+
+
+def _bounding_box(
+    value: object,
+) -> tuple[float, float, float, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, tuple) or len(value) != 4:
+        raise TypeError("bounding_box must be a four-value tuple")
+    if any(isinstance(item, bool) for item in value):
+        raise TypeError("bounding_box values must be numeric")
+    south, west, north, east = (float(item) for item in value)
+    if not all(math.isfinite(item) for item in (south, west, north, east)):
+        raise ValueError("bounding_box values must be finite")
+    if not -90.0 <= south < north <= 90.0:
+        raise ValueError("bounding_box latitude bounds are invalid")
+    if not -180.0 <= west < east <= 180.0:
+        raise ValueError("bounding_box longitude bounds are invalid")
+    return south, west, north, east
 
 
 __all__ = [

@@ -62,6 +62,8 @@ def _observation(
         "community_taxon_status": "species",
         "identification_disagreement": False,
         "captive_or_cultivated": False,
+        "observer_id": "observer-1",
+        "locality": "Sydney",
         "life_stage": "adult",
         "sex": None,
         "observed_at": datetime(2025, 1, 2, 3, 4, tzinfo=UTC),

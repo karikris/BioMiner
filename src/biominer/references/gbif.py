@@ -12,6 +12,14 @@ import time
 import httpx
 import polars as pl
 
+from biominer.geography import GeographicCoordinate, great_circle_distance_km
+from biominer.references.checkpoints import (
+    REFERENCE_PAGE_CHECKPOINT_SCHEMA_VERSION,
+    ReferencePageCheckpoint,
+    load_reference_page_checkpoint,
+    load_reference_page_checkpoint_frames,
+    write_reference_page_checkpoint,
+)
 from biominer.references.schemas import (
     REFERENCE_MEDIA_CANDIDATES_SCHEMA_VERSION,
     REFERENCE_OBSERVATIONS_SCHEMA_VERSION,
@@ -26,11 +34,10 @@ from biominer.references.source_base import (
 )
 from biominer.registry.gbif import JSONPayload
 from biominer.registry.gbif_production import GBIF_USER_AGENT, RetryingHTTPGet
-from biominer.storage.parquet import write_parquet
 
 
 GBIF_REFERENCE_SOURCE_VERSION = "gbif-occurrence-reference-v1"
-GBIF_REFERENCE_CHECKPOINT_SCHEMA_VERSION = "gbif-reference-checkpoint-v1"
+GBIF_REFERENCE_CHECKPOINT_SCHEMA_VERSION = REFERENCE_PAGE_CHECKPOINT_SCHEMA_VERSION
 GBIF_OCCURRENCE_SEARCH_PAGE_LIMIT = 300
 GBIF_OCCURRENCE_SEARCH_MAX_RECORDS = 100_000
 GBIF_IMAGE_CACHE_BASE_URL = "https://api.gbif.org/v1/image/cache"
@@ -291,163 +298,45 @@ def write_gbif_reference_checkpoint(
 ) -> GBIFReferenceCheckpoint:
     if page.source != GBIFReferenceAdapter.source:
         raise ValueError("GBIF checkpoints cannot contain pages from another source")
-    if page.query_fingerprint != query.query_fingerprint:
-        raise ValueError("GBIF checkpoint page does not match the source query")
-    directory = _checkpoint_directory(query, output)
-    directory.mkdir(parents=True, exist_ok=True)
-    state_path = directory / "state.json"
-    state = _read_checkpoint_state(query, directory, allow_missing=True)
-    if state is None:
-        if any(directory.iterdir()):
-            raise ValueError("GBIF checkpoint directory is partial: state.json is missing")
-        pages: list[dict[str, object]] = []
-        expected_cursor = "0"
-    else:
-        if bool(state["complete"]):
-            raise ValueError("GBIF checkpoint is already complete")
-        pages = [dict(value) for value in _page_entries(state)]
-        expected_cursor = str(state["next_cursor"])
-    if page.page_cursor != expected_cursor:
-        raise ValueError(
-            f"GBIF checkpoint expected page cursor {expected_cursor}, got {page.page_cursor}"
-        )
-    page_number = _page_offset(page.page_cursor)
-    prefix = f"page-{page_number:09d}"
-    observations_name = f"{prefix}-observations.parquet"
-    media_name = f"{prefix}-media.parquet"
-    observations_path = write_parquet(page.observations, directory / observations_name)
-    media_path = write_parquet(page.media_candidates, directory / media_name)
-    entry = {
-        "page_cursor": page.page_cursor,
-        "next_cursor": page.next_cursor,
-        "complete": page.complete,
-        "observation_file": observations_name,
-        "observation_rows": page.observations.height,
-        "observation_sha256": _file_sha256(observations_path),
-        "media_file": media_name,
-        "media_rows": page.media_candidates.height,
-        "media_sha256": _file_sha256(media_path),
-        "request_count": page.request_count,
-        "retry_count": page.retry_count,
-        "rate_limit_count": page.rate_limit_count,
-    }
-    pages.append(entry)
-    new_state = {
-        "schema_version": GBIF_REFERENCE_CHECKPOINT_SCHEMA_VERSION,
-        "source": GBIFReferenceAdapter.source,
-        "source_version": GBIF_REFERENCE_SOURCE_VERSION,
-        "query_fingerprint": query.query_fingerprint,
-        "source_snapshot_version": query.source_snapshot_version,
-        "next_cursor": page.next_cursor,
-        "complete": page.complete,
-        "pages": pages,
-    }
-    _write_json_atomic(new_state, state_path)
-    checkpoint = load_gbif_reference_checkpoint(query, output)
-    assert checkpoint is not None
-    return checkpoint
+    return _gbif_checkpoint(write_reference_page_checkpoint(query, page, output))
 
 
 def load_gbif_reference_checkpoint(
     query: ReferenceSourceQuery,
     output: str | Path,
 ) -> GBIFReferenceCheckpoint | None:
-    directory = _checkpoint_directory(query, output)
-    if not directory.exists():
-        return None
-    state = _read_checkpoint_state(query, directory, allow_missing=False)
-    assert state is not None
-    pages = _page_entries(state)
-    expected_cursor = "0"
-    observation_count = 0
-    media_count = 0
-    for index, entry in enumerate(pages):
-        cursor = str(entry.get("page_cursor") or "")
-        if cursor != expected_cursor:
-            raise ValueError(f"GBIF checkpoint page {index} breaks the cursor chain")
-        observation_path = _checkpoint_file(directory, entry, "observation_file")
-        media_path = _checkpoint_file(directory, entry, "media_file")
-        _verify_checkpoint_file(
-            observation_path,
-            expected_hash=entry.get("observation_sha256"),
-        )
-        _verify_checkpoint_file(media_path, expected_hash=entry.get("media_sha256"))
-        observation_rows = _nonnegative_int(
-            entry.get("observation_rows"),
-            field="observation_rows",
-        )
-        media_rows = _nonnegative_int(entry.get("media_rows"), field="media_rows")
-        if _parquet_row_count(observation_path) != observation_rows:
-            raise ValueError("GBIF checkpoint observation row count mismatch")
-        if _parquet_row_count(media_path) != media_rows:
-            raise ValueError("GBIF checkpoint media row count mismatch")
-        observation_count += observation_rows
-        media_count += media_rows
-        complete = bool(entry.get("complete"))
-        next_cursor = entry.get("next_cursor")
-        if complete:
-            if next_cursor is not None or index != len(pages) - 1:
-                raise ValueError("GBIF checkpoint has a non-terminal complete page")
-            expected_cursor = ""
-        else:
-            expected_cursor = str(next_cursor or "")
-            if not expected_cursor:
-                raise ValueError("GBIF checkpoint incomplete page lacks a next cursor")
-    complete = bool(state.get("complete"))
-    state_next_cursor = state.get("next_cursor")
-    if complete:
-        if not pages or state_next_cursor is not None or expected_cursor != "":
-            raise ValueError("GBIF checkpoint complete state is inconsistent")
-        resume_cursor = None
-    else:
-        resume_cursor = str(state_next_cursor or "")
-        if resume_cursor != expected_cursor:
-            raise ValueError("GBIF checkpoint state cursor does not match its final page")
-    return GBIFReferenceCheckpoint(
-        query_fingerprint=query.query_fingerprint,
-        source_snapshot_version=query.source_snapshot_version,
-        next_cursor=resume_cursor,
-        complete=complete,
-        page_count=len(pages),
-        observation_count=observation_count,
-        media_candidate_count=media_count,
-        checkpoint_directory=directory,
+    checkpoint = load_reference_page_checkpoint(
+        query,
+        source=GBIFReferenceAdapter.source,
+        source_version=GBIF_REFERENCE_SOURCE_VERSION,
+        output=output,
     )
+    return None if checkpoint is None else _gbif_checkpoint(checkpoint)
 
 
 def load_gbif_reference_checkpoint_frames(
     query: ReferenceSourceQuery,
     output: str | Path,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    checkpoint = load_gbif_reference_checkpoint(query, output)
-    if checkpoint is None:
-        return reference_observations_frame([]), reference_media_candidates_frame([])
-    state = _read_checkpoint_state(query, checkpoint.checkpoint_directory)
-    assert state is not None
-    observation_frames: list[pl.DataFrame] = []
-    media_frames: list[pl.DataFrame] = []
-    for entry in _page_entries(state):
-        observation_frames.append(
-            pl.read_parquet(
-                _checkpoint_file(
-                    checkpoint.checkpoint_directory,
-                    entry,
-                    "observation_file",
-                )
-            )
-        )
-        media_frames.append(
-            pl.read_parquet(
-                _checkpoint_file(checkpoint.checkpoint_directory, entry, "media_file")
-            )
-        )
-    observations = reference_observations_frame(
-        [row for frame in observation_frames for row in frame.iter_rows(named=True)]
+    return load_reference_page_checkpoint_frames(
+        query,
+        source=GBIFReferenceAdapter.source,
+        source_version=GBIF_REFERENCE_SOURCE_VERSION,
+        output=output,
     )
-    media = reference_media_candidates_frame(
-        [row for frame in media_frames for row in frame.iter_rows(named=True)]
+
+
+def _gbif_checkpoint(checkpoint: ReferencePageCheckpoint) -> GBIFReferenceCheckpoint:
+    return GBIFReferenceCheckpoint(
+        query_fingerprint=checkpoint.query_fingerprint,
+        source_snapshot_version=checkpoint.source_snapshot_version,
+        next_cursor=checkpoint.next_cursor,
+        complete=checkpoint.complete,
+        page_count=checkpoint.page_count,
+        observation_count=checkpoint.observation_count,
+        media_candidate_count=checkpoint.media_candidate_count,
+        checkpoint_directory=checkpoint.checkpoint_directory,
     )
-    return observations, media
 
 
 def _search_params(
@@ -562,6 +451,12 @@ def _normalize_occurrence(
         "identification_disagreement": uncertain_taxon_match,
         "captive_or_cultivated": _optional_bool(
             _value(record, "captive", "captiveOrCultivated")
+        ),
+        "observer_id": _optional_text(
+            _value(record, "recordedByID", "recordedBy", "identifiedByID")
+        ),
+        "locality": _optional_text(
+            _value(record, "locality", "verbatimLocality", "stateProvince")
         ),
         "life_stage": _life_stage(record.get("lifeStage")),
         "sex": _optional_text(record.get("sex")),
@@ -741,17 +636,13 @@ def _distance_to_medoid(
         or query.cluster_medoid_longitude is None
     ):
         return None
-    lat1 = math.radians(query.cluster_medoid_latitude)
-    lon1 = math.radians(query.cluster_medoid_longitude)
-    lat2 = math.radians(latitude)
-    lon2 = math.radians(longitude)
-    delta_lat = lat2 - lat1
-    delta_lon = lon2 - lon1
-    haversine = (
-        math.sin(delta_lat / 2.0) ** 2
-        + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lon / 2.0) ** 2
+    return great_circle_distance_km(
+        GeographicCoordinate(latitude=latitude, longitude=longitude),
+        GeographicCoordinate(
+            latitude=query.cluster_medoid_latitude,
+            longitude=query.cluster_medoid_longitude,
+        ),
     )
-    return 6371.0088 * 2.0 * math.asin(min(1.0, math.sqrt(haversine)))
 
 
 def _coordinate_pair(latitude: object, longitude: object) -> tuple[float | None, float | None]:
@@ -841,99 +732,6 @@ def _source_record_url(record: Mapping[str, object], occurrence_key: str) -> str
     return f"https://api.gbif.org/v1/occurrence/{occurrence_key}"
 
 
-def _checkpoint_directory(query: ReferenceSourceQuery, output: str | Path) -> Path:
-    digest = query.query_fingerprint.removeprefix("sha256:")
-    return Path(output) / f"gbif-{digest}"
-
-
-def _read_checkpoint_state(
-    query: ReferenceSourceQuery,
-    directory: Path,
-    *,
-    allow_missing: bool = False,
-) -> dict[str, object] | None:
-    state_path = directory / "state.json"
-    if not state_path.exists():
-        if allow_missing:
-            return None
-        raise ValueError("GBIF checkpoint directory is partial: state.json is missing")
-    try:
-        payload = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError("GBIF checkpoint state is unreadable") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("GBIF checkpoint state must be a JSON object")
-    expected = {
-        "schema_version": GBIF_REFERENCE_CHECKPOINT_SCHEMA_VERSION,
-        "source": GBIFReferenceAdapter.source,
-        "source_version": GBIF_REFERENCE_SOURCE_VERSION,
-        "query_fingerprint": query.query_fingerprint,
-        "source_snapshot_version": query.source_snapshot_version,
-    }
-    for field, value in expected.items():
-        if payload.get(field) != value:
-            raise ValueError(f"GBIF checkpoint {field} is incompatible")
-    _page_entries(payload)
-    return payload
-
-
-def _page_entries(state: Mapping[str, object]) -> list[Mapping[str, object]]:
-    pages = state.get("pages")
-    if not isinstance(pages, list) or not all(isinstance(page, dict) for page in pages):
-        raise ValueError("GBIF checkpoint pages must be an array of objects")
-    return pages
-
-
-def _checkpoint_file(
-    directory: Path,
-    entry: Mapping[str, object],
-    field: str,
-) -> Path:
-    name = _required_text(entry.get(field), field=field)
-    path = directory / name
-    if path.parent != directory or path.name != name:
-        raise ValueError("GBIF checkpoint contains an unsafe artifact path")
-    return path
-
-
-def _verify_checkpoint_file(path: Path, *, expected_hash: object) -> None:
-    if not path.is_file():
-        raise ValueError(f"GBIF checkpoint artifact is missing: {path.name}")
-    if _file_sha256(path) != _required_sha256(expected_hash, field=f"{path.name} sha256"):
-        raise ValueError(f"GBIF checkpoint artifact checksum mismatch: {path.name}")
-
-
-def _parquet_row_count(path: Path) -> int:
-    import pyarrow.parquet as pq
-
-    parquet_file = pq.ParquetFile(path)
-    try:
-        return int(parquet_file.metadata.num_rows)
-    finally:
-        parquet_file.close()
-
-
-def _write_json_atomic(payload: Mapping[str, object], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    try:
-        temporary.write_text(
-            json.dumps(dict(payload), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
-
-
 def _semantic_hash(record: Mapping[str, object]) -> str:
     encoded = json.dumps(
         dict(record),
@@ -980,13 +778,6 @@ def _required_text(value: object, *, field: str) -> str:
     text = _optional_text(value)
     if text is None:
         raise ValueError(f"{field} must be nonblank")
-    return text
-
-
-def _required_sha256(value: object, *, field: str) -> str:
-    text = _required_text(value, field=field)
-    if not text.startswith("sha256:") or len(text) != 71:
-        raise ValueError(f"{field} must be a full sha256 digest")
     return text
 
 
