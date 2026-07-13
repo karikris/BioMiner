@@ -240,7 +240,10 @@ populates all configured cells. A valid pair can therefore have
 `geotag_available = true` while finer cell fields remain null. Unknown or
 nonstandard accuracy populates no cells. Country and `admin1` values are
 accepted only from explicit source fields; this projection performs no reverse
-geocoding or location-name inference.
+geocoding or location-name inference. Flickr's `latitude=0`, `longitude=0`,
+`accuracy=0` response placeholder is normalized as missing geography with the
+`flickr_zero_geo_sentinel` warning. A `(0,0)` pair carrying a documented
+accuracy from 1 through 16 remains a usable but explicitly warned coordinate.
 
 ### 3.2 `flickr_geo_clusters.parquet`
 

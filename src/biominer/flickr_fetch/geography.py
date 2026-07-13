@@ -27,6 +27,7 @@ FLICKR_ACCURACY_POLICY_VERSION = "flickr-accuracy-v1.0.0"
 FLICKR_GEOGRAPHY_FILE = "flickr_geography.parquet"
 
 _WARNING_PRIORITY = (
+    "flickr_zero_geo_sentinel",
     "coordinate_pair_incomplete",
     "invalid_latitude",
     "invalid_longitude",
@@ -206,24 +207,31 @@ def _project_flickr_record(
             longitude = None
             coordinate_quality = "invalid"
         else:
-            geotag_available = True
-            coordinate_quality, supported_resolutions = _coordinate_quality_and_resolutions(
-                coordinate_accuracy,
-                config=config,
-                warnings=warnings,
-            )
-            if latitude == 0.0 and longitude == 0.0:
-                warnings.add("coordinate_at_null_island")
-            if supported_resolutions:
-                projection = project_coordinate(
-                    GeographicCoordinate(latitude=latitude, longitude=longitude),
-                    resolutions=config.resolutions,
-                    grid=grid,
+            if latitude == 0.0 and longitude == 0.0 and coordinate_accuracy == 0.0:
+                latitude = None
+                longitude = None
+                coordinate_source = None
+                coordinate_quality = "missing"
+                warnings.add("flickr_zero_geo_sentinel")
+            else:
+                geotag_available = True
+                coordinate_quality, supported_resolutions = _coordinate_quality_and_resolutions(
+                    coordinate_accuracy,
+                    config=config,
+                    warnings=warnings,
                 )
-                cells = {
-                    resolution: projection.cell_at(resolution)
-                    for resolution in supported_resolutions
-                }
+                if latitude == 0.0 and longitude == 0.0:
+                    warnings.add("coordinate_at_null_island")
+                if supported_resolutions:
+                    projection = project_coordinate(
+                        GeographicCoordinate(latitude=latitude, longitude=longitude),
+                        resolutions=config.resolutions,
+                        grid=grid,
+                    )
+                    cells = {
+                        resolution: projection.cell_at(resolution)
+                        for resolution in supported_resolutions
+                    }
 
     sorted_warnings = sorted(warnings)
     return {

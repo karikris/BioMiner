@@ -145,6 +145,27 @@ def test_unknown_accuracy_preserves_value_without_claiming_spatial_precision() -
     assert rows["null-island"]["geography_warning"] == "coordinate_at_null_island"
 
 
+def test_flickr_zero_geo_sentinel_is_missing_not_null_island() -> None:
+    row = build_flickr_geography_frame(
+        [_record("sentinel", latitude=0, longitude=0, accuracy=0)]
+    ).to_dicts()[0]
+
+    assert row["latitude"] is None
+    assert row["longitude"] is None
+    assert row["coordinate_accuracy"] == 0.0
+    assert row["coordinate_source"] is None
+    assert row["geotag_available"] is False
+    assert row["coordinate_quality"] == "missing"
+    assert row["coarse_cell_id"] is None
+    assert row["regional_cell_id"] is None
+    assert row["local_cell_id"] is None
+    assert row["geography_warning"] == "flickr_zero_geo_sentinel"
+    assert row["geography_warnings"] == [
+        "coordinate_accuracy_out_of_range",
+        "flickr_zero_geo_sentinel",
+    ]
+
+
 def test_nested_flickr_location_and_explicit_coordinate_source_are_preserved() -> None:
     frame = build_flickr_geography_frame(
         [
