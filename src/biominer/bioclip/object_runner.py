@@ -55,7 +55,23 @@ PRIMARY_VISUAL_CLASSIFIER = "bioclip_object"
 OBJECT_VISUAL_MODES: tuple[str, ...] = ("whole_image", "detector_crop", "detector_crop_segmentation")
 AblationMode = Literal["whole_image", "detector_crop", "detector_crop_segmentation"]
 TARGET_SCOPE_CANDIDATE_SELECTION_MODE = "taxon_scope_or_species_context"
-TARGET_SCOPE_SPECIES_RERANK_STRATEGY = "first_pass_top20"
+TARGET_SCOPE_SPECIES_RERANK_STRATEGY = "complete_first_pass_top20_target_required"
+SPECIES_CANDIDATE_PROVENANCE_VERSION = "species-candidate-provenance-v1"
+SPECIES_CANDIDATE_PROVENANCE_SCHEMA = pl.Struct(
+    {
+        "accepted_taxon_key": pl.String,
+        "scientific_name": pl.String,
+        "candidate_reason": pl.List(pl.String),
+        "source_versions": pl.List(pl.String),
+        "target_candidate": pl.Boolean,
+        "candidate_priority": pl.UInt32,
+        "first_pass_rank": pl.UInt32,
+        "first_pass_score": pl.Float64,
+        "family_text_priority_match": pl.Boolean,
+        "included_in_reference_comparison": pl.Boolean,
+        "rerank_score": pl.Float64,
+    }
+)
 OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "source": pl.String,
     "flickr_photo_id": pl.String,
@@ -69,6 +85,7 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "model_version": pl.String,
     "model_checkpoint": pl.String,
     "candidate_set_id": pl.String,
+    "candidate_contract_version": pl.String,
     "classified_at": pl.String,
     "classification_mode": pl.String,
     "candidate_selection_mode": pl.String,
@@ -77,6 +94,8 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "taxonomy_prompt_variant_version": pl.String,
     "ablation_mode": pl.String,
     "species_rerank_strategy": pl.String,
+    "species_candidate_provenance_version": pl.String,
+    "species_candidate_provenance": pl.List(SPECIES_CANDIDATE_PROVENANCE_SCHEMA),
     "triage_group_top": pl.String,
     "triage_group_scores": pl.Struct({"butterfly_like": pl.Float64}),
     "species_top1_scientific_name": pl.String,
@@ -1218,7 +1237,15 @@ def _score_detection(
     family_scores = scorer.score(item, labels.family) if labels.family else {}
     genus_scores = scorer.score(item, labels.genus) if labels.genus else {}
     species_scores = scorer.score(item, labels.species)
-    ranked_species_top20 = _rank_species(candidate_set.species_candidates, species_scores)[:species_first_pass_top_k]
+    ranked_species_first_pass = _rank_species(
+        candidate_set.species_candidates,
+        species_scores,
+    )
+    ranked_species_top20 = _species_reference_comparison(
+        ranked_species_first_pass,
+        target_scientific_name=context.scientific_name,
+        limit=species_first_pass_top_k,
+    )
     ranked_families = _rank_labels(labels.family, family_scores) if labels.family else []
     family_top1 = ranked_families[0][0] if ranked_families else None
     family_filtered_ranked_species_top20 = _rank_species_for_family(
@@ -1240,7 +1267,7 @@ def _score_detection(
         labels=labels,
         family_scores=family_scores,
         genus_scores=genus_scores,
-        ranked_species_full_top20=ranked_species_top20,
+        ranked_species_first_pass=ranked_species_first_pass,
         ranked_species_top20=family_filtered_ranked_species_top20,
         rerank_candidates=rerank_candidates,
         rerank_scores=rerank_scores,
@@ -1280,14 +1307,22 @@ def _score_detection_batch(
     initial_label_sets["species"] = labels.species
     initial_scores = _score_label_sets_for_items(scorer, items, initial_label_sets)
     ranked_species_top20_by_index: list[list[tuple[str, float]]] = []
+    ranked_species_first_pass_by_index: list[list[tuple[str, float]]] = []
     family_ranked_species_top20_by_index: list[list[tuple[str, float]]] = []
     rerank_candidates_by_index: list[tuple[CandidateTaxon, ...]] = []
     rerank_scores_by_index: list[dict[str, float]] = [{} for _item in items]
 
     for index, _item in enumerate(items):
-        ranked_species_top20 = _rank_species(candidate_set.species_candidates, initial_scores["species"][index])[
-            :species_first_pass_top_k
-        ]
+        ranked_species_first_pass = _rank_species(
+            candidate_set.species_candidates,
+            initial_scores["species"][index],
+        )
+        ranked_species_first_pass_by_index.append(ranked_species_first_pass)
+        ranked_species_top20 = _species_reference_comparison(
+            ranked_species_first_pass,
+            target_scientific_name=context.scientific_name,
+            limit=species_first_pass_top_k,
+        )
         ranked_species_top20_by_index.append(ranked_species_top20)
         ranked_families = _rank_labels(labels.family, initial_scores["family"][index]) if labels.family else []
         family_top1 = ranked_families[0][0] if ranked_families else None
@@ -1331,7 +1366,7 @@ def _score_detection_batch(
                 labels=labels,
                 family_scores=family_scores[index],
                 genus_scores=genus_scores[index],
-                ranked_species_full_top20=ranked_species_top20_by_index[index],
+                ranked_species_first_pass=ranked_species_first_pass_by_index[index],
                 ranked_species_top20=family_ranked_species_top20_by_index[index],
                 rerank_candidates=rerank_candidates_by_index[index],
                 rerank_scores=rerank_scores_by_index[index],
@@ -1377,7 +1412,7 @@ def _score_detection_from_scores(
     labels: _ObjectScoringLabels,
     family_scores: dict[str, float],
     genus_scores: dict[str, float],
-    ranked_species_full_top20: list[tuple[str, float]],
+    ranked_species_first_pass: list[tuple[str, float]],
     ranked_species_top20: list[tuple[str, float]],
     rerank_candidates: tuple[CandidateTaxon, ...],
     rerank_scores: dict[str, float],
@@ -1389,7 +1424,7 @@ def _score_detection_from_scores(
     ranked_families = _rank_labels(labels.family, family_scores)
     ranked_genera = _rank_labels(labels.genus, genus_scores)
     ranked_species = _rank_species(rerank_candidates, rerank_scores) if rerank_candidates else ranked_species_top20
-    target_score = _target_score(ranked_species_full_top20, context.scientific_name)
+    target_score = _target_score(ranked_species_first_pass, context.scientific_name)
     top1_name = ranked_species[0][0] if ranked_species else None
     species_top20 = [name for name, _score in ranked_species_top20]
     species_top5 = [name for name, _score in ranked_species[:species_rerank_top_k]]
@@ -1397,7 +1432,7 @@ def _score_detection_from_scores(
     top1_taxon_key = _taxon_key_for_name(taxon_key_by_name, top1_name)
     top1_candidate = _candidate_for_name(candidate_set.species_candidates, top1_name)
     top1_score = ranked_species[0][1] if ranked_species else 0.0
-    target_rank = _target_rank(ranked_species_full_top20, context.scientific_name)
+    target_rank = _target_rank(ranked_species_first_pass, context.scientific_name)
     margin = _margin(ranked_species)
     family_margin = _margin(ranked_families)
     genus_margin = _margin(ranked_genera)
@@ -1424,6 +1459,7 @@ def _score_detection_from_scores(
         "model_version": scorer.model_version,
         "model_checkpoint": scorer.model_checkpoint,
         "candidate_set_id": candidate_set.candidate_set_id,
+        "candidate_contract_version": candidate_set.candidate_contract_version,
         "classified_at": datetime.now(UTC).isoformat(),
         "classification_mode": classification_mode,
         "candidate_selection_mode": TARGET_SCOPE_CANDIDATE_SELECTION_MODE,
@@ -1432,6 +1468,16 @@ def _score_detection_from_scores(
         "species_first_pass_top_k": int(species_first_pass_top_k),
         "species_rerank_top_k": int(species_rerank_top_k),
         "species_rerank_strategy": _target_scope_species_rerank_strategy(species_first_pass_top_k),
+        "species_candidate_provenance_version": SPECIES_CANDIDATE_PROVENANCE_VERSION,
+        "species_candidate_provenance": _species_candidate_provenance(
+            candidate_set=candidate_set,
+            target_accepted_taxon_key=context.accepted_taxon_key,
+            target_scientific_name=context.scientific_name,
+            ranked_species_first_pass=ranked_species_first_pass,
+            ranked_species_comparison=ranked_species_top20,
+            ranked_species_rerank=ranked_species,
+            family_top1=ranked_families[0][0] if ranked_families else None,
+        ),
         "triage_group_top": "butterfly_like",
         "triage_group_scores": {"butterfly_like": float(item.get("detector_score") or 0.0)},
         "taxonomy_table_version": candidate_set.registry_version,
@@ -1474,7 +1520,7 @@ def _score_detection_from_scores(
             "TRIBE": 0,
             "SUBTRIBE": 0,
             "GENUS": len(ranked_genera),
-            "SPECIES": len(ranked_species_top20),
+            "SPECIES": len(ranked_species_first_pass),
         },
         "target_accepted_taxon_key": context.accepted_taxon_key,
         "target_species_score": target_score,
@@ -1570,7 +1616,28 @@ def _rank_species(candidates: tuple[CandidateTaxon, ...], scores: dict[str, floa
     for candidate in candidates:
         labels = _candidate_species_labels(candidate)
         ranked.append((candidate.scientific_name, max(float(scores.get(label, 0.0)) for label in labels)))
-    return sorted(ranked, key=lambda item: item[1], reverse=True)
+    return sorted(ranked, key=lambda item: (-item[1], item[0].casefold()))
+
+
+def _species_reference_comparison(
+    ranked_species: list[tuple[str, float]],
+    *,
+    target_scientific_name: str,
+    limit: int,
+) -> list[tuple[str, float]]:
+    if limit <= 0:
+        raise ValueError("species reference comparison limit must be positive")
+    target_key = _norm(target_scientific_name)
+    target = next(
+        (item for item in ranked_species if _norm(item[0]) == target_key),
+        None,
+    )
+    if target is None:
+        raise ValueError("target species is absent from the scored candidate set")
+    selected = list(ranked_species[:limit])
+    if all(_norm(name) != target_key for name, _score in selected):
+        selected.append(target)
+    return selected
 
 
 def _species_rerank_candidates(
@@ -1612,16 +1679,83 @@ def _rank_species_for_family(
     if not family_metadata_present:
         return ranked_species
 
-    filtered = [
-        (name, score)
-        for name, score in ranked_species
-        if candidate_family_by_name.get(_norm(name)) == family_norm
-    ]
-    return filtered if filtered else ranked_species
+    return sorted(
+        ranked_species,
+        key=lambda item: (
+            candidate_family_by_name.get(_norm(item[0])) != family_norm,
+            ranked_species.index(item),
+        ),
+    )
 
 
 def _target_scope_species_rerank_strategy(species_first_pass_top_k: int) -> str:
-    return f"first_pass_top{int(species_first_pass_top_k)}"
+    return f"complete_first_pass_top{int(species_first_pass_top_k)}_target_required"
+
+
+def _species_candidate_provenance(
+    *,
+    candidate_set: CandidateSet,
+    target_accepted_taxon_key: str,
+    target_scientific_name: str,
+    ranked_species_first_pass: list[tuple[str, float]],
+    ranked_species_comparison: list[tuple[str, float]],
+    ranked_species_rerank: list[tuple[str, float]],
+    family_top1: str | None,
+) -> list[dict[str, object]]:
+    first_pass = {
+        _norm(name): (rank, float(score))
+        for rank, (name, score) in enumerate(ranked_species_first_pass, start=1)
+    }
+    comparison_names = {_norm(name) for name, _score in ranked_species_comparison}
+    rerank = {_norm(name): float(score) for name, score in ranked_species_rerank}
+    target_key = _norm(target_accepted_taxon_key)
+    target_name = _norm(target_scientific_name)
+    family_key = _norm(family_top1)
+    rows: list[dict[str, object]] = []
+    for candidate in candidate_set.species_candidates:
+        name_key = _norm(candidate.scientific_name)
+        if name_key not in first_pass:
+            raise ValueError(
+                "candidate provenance cannot omit a scored species: "
+                f"{candidate.scientific_name}"
+            )
+        first_pass_rank, first_pass_score = first_pass[name_key]
+        accepted_key = str(candidate.accepted_taxon_key or "") or None
+        target_candidate = bool(
+            candidate.target_candidate
+            or (accepted_key and _norm(accepted_key) == target_key)
+            or name_key == target_name
+        )
+        rows.append(
+            {
+                "accepted_taxon_key": accepted_key,
+                "scientific_name": candidate.scientific_name,
+                "candidate_reason": list(
+                    candidate.candidate_reasons or ("candidate_set",)
+                ),
+                "source_versions": list(
+                    candidate.source_versions or candidate_set.source_evidence
+                ),
+                "target_candidate": target_candidate,
+                "candidate_priority": candidate.candidate_priority,
+                "first_pass_rank": first_pass_rank,
+                "first_pass_score": first_pass_score,
+                "family_text_priority_match": (
+                    _norm(candidate.family) == family_key if family_key else None
+                ),
+                "included_in_reference_comparison": name_key in comparison_names,
+                "rerank_score": rerank.get(name_key),
+            }
+        )
+    if sum(bool(row["target_candidate"]) for row in rows) != 1:
+        raise ValueError("species candidate provenance must identify exactly one target")
+    return sorted(
+        rows,
+        key=lambda row: (
+            int(row["first_pass_rank"]),
+            str(row["scientific_name"]),
+        ),
+    )
 
 
 def _species_prompt_labels(candidates: tuple[CandidateTaxon, ...]) -> tuple[str, ...]:

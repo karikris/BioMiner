@@ -53,6 +53,20 @@ def _context() -> SpeciesContext:
     )
 
 
+def _papilio_context() -> SpeciesContext:
+    return SpeciesContext(
+        scientific_name="Papilio demoleus",
+        accepted_taxon_key="gbif:1938069",
+        canonical_name="Papilio demoleus",
+        family="Papilionidae",
+        genus="Papilio",
+        family_key="gbif:9417",
+        genus_key="gbif:1938068",
+        species_key="gbif:1938069",
+        registry_version="registry-v1",
+    )
+
+
 def _fixture_candidate_set():
     return build_candidate_set(_context(), allow_single_target_fixture=True)
 
@@ -185,6 +199,84 @@ def test_candidate_set_uses_species_context_and_same_genus_family_candidates(tmp
     assert [candidate.scientific_name for candidate in candidate_set.genus_candidates] == ["Danaus plexippus", "Danaus gilippus"]
     assert "a photo of Danaus plexippus" in candidate_set.prompt_labels("species")
     assert "monarch butterfly" in candidate_set.prompt_labels("species")
+
+
+def test_candidate_set_preserves_regional_union_identity_and_provenance(
+    tmp_path,
+) -> None:
+    path = tmp_path / "regional_candidate_species.parquet"
+    fingerprint = "sha256:" + "a" * 64
+    candidates = [
+        (
+            "gbif:5131654",
+            "Danaus plexippus",
+            "Nymphalidae",
+            "Danaus",
+            ["target"],
+            True,
+        ),
+        (
+            "gbif:5131655",
+            "Danaus gilippus",
+            "Nymphalidae",
+            "Danaus",
+            ["same_genus_range_overlap"],
+            False,
+        ),
+        (
+            "gbif:1902000",
+            "Papilio machaon",
+            "Papilionidae",
+            "Papilio",
+            ["known_mimic"],
+            False,
+        ),
+    ]
+    pl.DataFrame(
+        [
+            {
+                "schema_version": "regional-candidate-species-v1.0.0",
+                "candidate_set_id": "regional:test-set",
+                "target_accepted_taxon_key": "gbif:5131654",
+                "geo_cluster_id": "no_geo",
+                "candidate_accepted_taxon_key": key,
+                "scientific_name": name,
+                "family": family,
+                "genus": genus,
+                "candidate_reason": reasons,
+                "target_candidate": target,
+                "candidate_priority": priority,
+                "source_versions": ["registry:registry-v1", "occurrence:test-v1"],
+                "candidate_set_fingerprint": fingerprint,
+            }
+            for priority, (key, name, family, genus, reasons, target) in enumerate(
+                candidates
+            )
+        ]
+    ).write_parquet(path)
+
+    candidate_set = build_candidate_set(
+        _context(),
+        species_candidate_path=path,
+        geospatial_scope="no_geo",
+    )
+
+    assert candidate_set.candidate_set_id == "regional:test-set"
+    assert [candidate.accepted_taxon_key for candidate in candidate_set.species_candidates] == [
+        "gbif:5131654",
+        "gbif:5131655",
+        "gbif:1902000",
+    ]
+    assert candidate_set.species_candidates[0].target_candidate is True
+    assert candidate_set.species_candidates[2].candidate_reasons == ("known_mimic",)
+    assert candidate_set.species_candidates[2].source_versions == (
+        "registry:registry-v1",
+        "occurrence:test-v1",
+    )
+    assert {candidate.genus for candidate in candidate_set.genus_candidates} == {
+        "Danaus",
+        "Papilio",
+    }
 
 
 def test_candidate_set_requires_expansion_unless_fixture_mode() -> None:
@@ -2095,21 +2187,24 @@ def test_object_bioclip_top_k_settings_control_first_pass_and_rerank_candidates(
     assert "a photo of Danaus erippus" in scorer.species_calls[1]
     assert "a photo of Danaus eresimus" in scorer.species_calls[1]
     assert "a photo of Limenitis archippus" in scorer.species_calls[1]
-    assert "a photo of Danaus plexippus" not in scorer.species_calls[1]
+    assert "a photo of Danaus plexippus" in scorer.species_calls[1]
     assert row["family_top3"] == ["Nymphalidae"]
     assert row["species_top20"] == [
         "Danaus gilippus",
         "Danaus erippus",
         "Danaus eresimus",
         "Limenitis archippus",
+        "Danaus plexippus",
     ]
-    assert row["species_top5"] == ["Danaus gilippus", "Danaus erippus"]
+    assert row["species_top5"] == ["Danaus plexippus", "Danaus gilippus"]
     assert row["species_first_pass_top_k"] == 4
     assert row["species_rerank_top_k"] == 2
-    assert row["species_rerank_strategy"] == "first_pass_top4"
+    assert row["species_rerank_strategy"] == "complete_first_pass_top4_target_required"
 
 
-def test_object_bioclip_family_filter_excludes_cross_family_candidates_from_first_pass(tmp_path) -> None:
+def test_object_bioclip_family_rank_prioritizes_without_deleting_candidates(
+    tmp_path,
+) -> None:
     context = _context()
     candidate_set = CandidateSet(
         candidate_set_id="test_family_filtered",
@@ -2193,13 +2288,17 @@ def test_object_bioclip_family_filter_excludes_cross_family_candidates_from_firs
     )
 
     row = result.frame.to_dicts()[0]
-    assert "Papilio machaon" not in row["species_top20"]
-    assert row["species_top20"] == ["Danaus gilippus", "Limenitis archippus", "Danaus plexippus"]
+    assert row["species_top20"] == [
+        "Danaus gilippus",
+        "Limenitis archippus",
+        "Danaus plexippus",
+        "Papilio machaon",
+    ]
     assert len(scorer.species_calls) == 2
     assert "Nymphalidae" not in scorer.species_calls[0]
     assert "Papilionidae" not in scorer.species_calls[0]
     assert len(scorer.species_calls) == 2
-    assert "a photo of Papilio machaon" not in scorer.species_calls[1]
+    assert "a photo of Papilio machaon" in scorer.species_calls[1]
     assert "a photo of Danaus gilippus" in scorer.species_calls[1]
     assert "a photo of Limenitis archippus" in scorer.species_calls[1]
     assert "a photo of Danaus eresimus" not in scorer.species_calls[1]
@@ -2207,7 +2306,106 @@ def test_object_bioclip_family_filter_excludes_cross_family_candidates_from_firs
     assert row["species_top5"][1] == "Limenitis archippus"
     assert row["target_species_rank"] == 4
     assert row["target_species_score"] == 0.50
-    assert row["species_rerank_strategy"] == "first_pass_top4"
+    assert row["species_rerank_strategy"] == "complete_first_pass_top4_target_required"
+    provenance = {
+        candidate["scientific_name"]: candidate
+        for candidate in row["species_candidate_provenance"]
+    }
+    assert set(provenance) == {
+        candidate.scientific_name for candidate in candidate_set.species_candidates
+    }
+    assert provenance["Papilio machaon"]["included_in_reference_comparison"] is True
+    assert provenance["Papilio machaon"]["family_text_priority_match"] is False
+
+
+def test_papilio_ranked_twentieth_stays_in_species_reference_comparison(
+    tmp_path,
+) -> None:
+    context = _papilio_context()
+    genera = [f"Genus{index:02d}" for index in range(1, 20)] + ["Papilio"]
+    species = tuple(
+        CandidateTaxon(
+            scientific_name=(
+                "Papilio demoleus" if genus == "Papilio" else f"{genus} species"
+            ),
+            accepted_taxon_key=(
+                "gbif:1938069" if genus == "Papilio" else f"gbif:test-{index:02d}"
+            ),
+            family="Papilionidae",
+            genus=genus,
+            candidate_reasons=(
+                ("target",) if genus == "Papilio" else ("regional_same_family",)
+            ),
+            source_versions=("regional-candidate-test-v1",),
+            target_candidate=genus == "Papilio",
+            candidate_priority=index,
+        )
+        for index, genus in enumerate(genera)
+    )
+    candidate_set = CandidateSet(
+        candidate_set_id="regional:papilio-rank20",
+        registry_version=context.registry_version,
+        target_accepted_taxon_key=context.accepted_taxon_key,
+        target_scientific_name=context.scientific_name,
+        family_candidates=species,
+        genus_candidates=species,
+        species_candidates=species,
+        prompt_variant_version="object-bioclip-prompts-v1",
+        geospatial_scope="cluster-papilio",
+        source_evidence=("regional-candidate-test-v1",),
+    )
+
+    class RankTwentyScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def __init__(self) -> None:
+            self.species_calls: list[tuple[str, ...]] = []
+
+        def score(
+            self,
+            item: dict[str, object],
+            labels: tuple[str, ...],
+        ) -> dict[str, float]:
+            del item
+            scores = {label: 0.0 for label in labels}
+            if labels == ("Papilionidae",):
+                scores["Papilionidae"] = 1.0
+                return scores
+            if "Papilio" in labels and "Papilio demoleus" not in labels:
+                for rank, genus in enumerate(genera, start=1):
+                    scores[genus] = float(len(genera) - rank)
+                return scores
+            self.species_calls.append(labels)
+            for index, candidate in enumerate(species):
+                scores[f"a photo of {candidate.scientific_name}"] = 1.0 - index / 100.0
+            return scores
+
+    scorer = RankTwentyScorer()
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=_detections().head(1),
+        species_context=context,
+        candidate_set=candidate_set,
+        scorer=scorer,
+        output_path=tmp_path / "object_scores.parquet",
+        species_first_pass_top_k=20,
+        species_rerank_top_k=5,
+    )
+
+    row = result.frame.row(0, named=True)
+    assert row["genus_top3"] == ["Genus01", "Genus02", "Genus03"]
+    assert "Papilio" not in row["genus_top3"]
+    assert "a photo of Papilio demoleus" in scorer.species_calls[1]
+    target_provenance = next(
+        item
+        for item in row["species_candidate_provenance"]
+        if item["target_candidate"]
+    )
+    assert target_provenance["scientific_name"] == "Papilio demoleus"
+    assert target_provenance["included_in_reference_comparison"] is True
+    assert target_provenance["rerank_score"] is not None
 
 
 def test_object_bioclip_rejects_incoherent_top_k_settings(tmp_path) -> None:

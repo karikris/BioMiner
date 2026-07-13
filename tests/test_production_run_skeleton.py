@@ -1881,7 +1881,9 @@ def test_orchestrator_runs_local_detection_and_object_scoring_with_injected_fake
     assert result.manifest.metrics["visual_modes_scored"] == ["detector_crop"]
     assert result.manifest.metrics["classification_mode_counts"] == {TARGET_SCOPE_OBJECT_SCREENING: 1}
     assert result.manifest.metrics["candidate_selection_mode_counts"] == {"taxon_scope_or_species_context": 1}
-    assert result.manifest.metrics["species_rerank_strategy_counts"] == {"first_pass_top20": 1}
+    assert result.manifest.metrics["species_rerank_strategy_counts"] == {
+        "complete_first_pass_top20_target_required": 1
+    }
     assert result.manifest.metrics["species_top1_counts"] == {"Danaus plexippus": 1}
     scores = pl.read_parquet(result.paths.object_scores_path).sort("ablation_mode")
     assert scores.height == 1

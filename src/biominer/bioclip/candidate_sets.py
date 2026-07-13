@@ -13,6 +13,20 @@ from biominer.species.context import SpeciesContext
 
 
 PROMPT_VARIANT_VERSION = "object-bioclip-prompts-v1"
+CANDIDATE_SET_CONTRACT_VERSION = "object-bioclip-candidates-v2"
+REGIONAL_CANDIDATE_SCHEMA_VERSION = "regional-candidate-species-v1.0.0"
+_REGIONAL_CANDIDATE_FIELDS = {
+    "schema_version",
+    "candidate_set_id",
+    "target_accepted_taxon_key",
+    "geo_cluster_id",
+    "candidate_accepted_taxon_key",
+    "candidate_reason",
+    "target_candidate",
+    "candidate_priority",
+    "source_versions",
+    "candidate_set_fingerprint",
+}
 
 
 @dataclass(frozen=True)
@@ -23,6 +37,19 @@ class CandidateTaxon:
     family: str | None = None
     genus: str | None = None
     common_names: tuple[str, ...] = ()
+    candidate_reasons: tuple[str, ...] = ()
+    source_versions: tuple[str, ...] = ()
+    target_candidate: bool = False
+    candidate_priority: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.candidate_priority is not None:
+            if isinstance(self.candidate_priority, bool) or not isinstance(
+                self.candidate_priority, int
+            ):
+                raise TypeError("candidate_priority must be an integer or null")
+            if self.candidate_priority < 0:
+                raise ValueError("candidate_priority must be nonnegative")
 
 
 @dataclass(frozen=True)
@@ -37,6 +64,14 @@ class CandidateSet:
     prompt_variant_version: str
     geospatial_scope: str | None
     source_evidence: tuple[str, ...]
+    candidate_contract_version: str = CANDIDATE_SET_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if self.candidate_contract_version != CANDIDATE_SET_CONTRACT_VERSION:
+            raise ValueError(
+                "unsupported candidate contract version: "
+                f"{self.candidate_contract_version}"
+            )
 
     def prompt_labels(self, rank: str) -> tuple[str, ...]:
         if rank == "family":
@@ -69,25 +104,38 @@ def build_candidate_set(
     candidate_rows = _candidate_rows(species_candidate_path) if species_candidate_path else []
     if candidate_rows:
         source_evidence.append(str(species_candidate_path))
+    candidate_rows, regional_candidate_set_id, regional_source_versions = (
+        _select_regional_candidate_rows(
+            candidate_rows,
+            context=context,
+            geospatial_scope=geospatial_scope,
+        )
+    )
+    if regional_candidate_set_id:
+        source_evidence.append(f"regional_candidate_set:{regional_candidate_set_id}")
+        source_evidence.extend(
+            f"regional_candidate_source:{version}" for version in regional_source_versions
+        )
     geo_prior_rows = geo_prior_table.to_dicts() if geo_prior_table is not None and not geo_prior_table.is_empty() else []
     if geo_prior_rows:
         source_evidence.append("geospatial_prior_table")
     species = _species_candidates(context, candidate_rows)
-    species, _ = _add_geospatial_prior_candidates(species, context, geo_prior_rows)
-    species, query_provenance_added = _add_query_provenance_candidates(
-        species,
-        records or [],
-        candidate_lookup=_candidate_lookup(candidate_rows),
-        group_lookup=_candidate_group_lookup(candidate_rows),
-    )
-    if query_provenance_added:
-        source_evidence.append("query_provenance")
-    species, metadata_text_added = _add_metadata_text_candidates(species, records or [])
-    if metadata_text_added:
-        source_evidence.append("metadata_text")
-    species, comment_added = _add_comment_candidates(species, records or [])
-    if comment_added:
-        source_evidence.append("comments")
+    if regional_candidate_set_id is None:
+        species, _ = _add_geospatial_prior_candidates(species, context, geo_prior_rows)
+        species, query_provenance_added = _add_query_provenance_candidates(
+            species,
+            records or [],
+            candidate_lookup=_candidate_lookup(candidate_rows),
+            group_lookup=_candidate_group_lookup(candidate_rows),
+        )
+        if query_provenance_added:
+            source_evidence.append("query_provenance")
+        species, metadata_text_added = _add_metadata_text_candidates(species, records or [])
+        if metadata_text_added:
+            source_evidence.append("metadata_text")
+        species, comment_added = _add_comment_candidates(species, records or [])
+        if comment_added:
+            source_evidence.append("comments")
     if not any(_norm(candidate.scientific_name) == _norm(context.scientific_name) for candidate in species):
         species.insert(0, target)
     species = _dedupe_taxa(species)
@@ -98,9 +146,21 @@ def build_candidate_set(
         )
     if len(species) <= 1:
         source_evidence.append("single_target_fixture")
-    genus = tuple(candidate for candidate in species if _norm(candidate.genus) == _norm(context.genus))
+    genus = tuple(
+        candidate
+        for candidate in species
+        if candidate.genus
+        and (
+            regional_candidate_set_id is not None
+            or _norm(candidate.genus) == _norm(context.genus)
+        )
+    )
     family = tuple(candidate for candidate in species if candidate.family)
-    candidate_set_id = _candidate_set_id(context=context, species=species, geospatial_scope=geospatial_scope)
+    candidate_set_id = regional_candidate_set_id or _candidate_set_id(
+        context=context,
+        species=species,
+        geospatial_scope=geospatial_scope,
+    )
     return CandidateSet(
         candidate_set_id=candidate_set_id,
         registry_version=context.registry_version,
@@ -206,6 +266,10 @@ def _target_candidate(context: SpeciesContext) -> CandidateTaxon:
         family=context.family,
         genus=context.genus,
         common_names=tuple(name.name for name in context.common_names),
+        candidate_reasons=("target",),
+        source_versions=(f"registry:{context.registry_version}",),
+        target_candidate=True,
+        candidate_priority=0,
     )
 
 
@@ -213,7 +277,95 @@ def _candidate_rows(path: str | Path) -> list[dict[str, Any]]:
     return pl.read_parquet(path).to_dicts()
 
 
+def _select_regional_candidate_rows(
+    rows: list[dict[str, Any]],
+    *,
+    context: SpeciesContext,
+    geospatial_scope: str | None,
+) -> tuple[list[dict[str, Any]], str | None, tuple[str, ...]]:
+    if not rows:
+        return rows, None, ()
+    if not _is_regional_candidate_rows(rows):
+        if any(
+            "candidate_accepted_taxon_key" in row
+            or str(row.get("schema_version") or "").startswith(
+                "regional-candidate-species-"
+            )
+            for row in rows
+        ):
+            raise ValueError("regional candidate rows do not satisfy the versioned contract")
+        return rows, None, ()
+    if any(row.get("schema_version") != REGIONAL_CANDIDATE_SCHEMA_VERSION for row in rows):
+        raise ValueError("regional candidate rows have an unsupported schema version")
+
+    target_rows = [
+        row
+        for row in rows
+        if _norm(row.get("target_accepted_taxon_key"))
+        == _norm(context.accepted_taxon_key)
+    ]
+    if not target_rows:
+        raise ValueError("regional candidate artifact has no set for the target taxon")
+    cluster_ids = sorted({_first_text(row, "geo_cluster_id") or "" for row in target_rows})
+    requested_scope = str(geospatial_scope or "").strip()
+    if requested_scope in cluster_ids:
+        target_rows = [
+            row for row in target_rows if _first_text(row, "geo_cluster_id") == requested_scope
+        ]
+    elif len(cluster_ids) != 1:
+        raise ValueError(
+            "regional candidate artifact contains multiple geographic clusters; "
+            "geospatial_scope must select one geo_cluster_id"
+        )
+
+    candidate_set_ids = {
+        _first_text(row, "candidate_set_id") or "" for row in target_rows
+    }
+    if len(candidate_set_ids) != 1 or "" in candidate_set_ids:
+        raise ValueError("regional candidate selection must resolve to one candidate set")
+    candidate_set_id = next(iter(candidate_set_ids))
+    target_candidates = [row for row in target_rows if row.get("target_candidate") is True]
+    if len(target_candidates) != 1:
+        raise ValueError("regional candidate set must contain exactly one target candidate")
+    target_candidate_key = _first_text(
+        target_candidates[0], "candidate_accepted_taxon_key"
+    )
+    if _norm(target_candidate_key) != _norm(context.accepted_taxon_key):
+        raise ValueError("regional target candidate does not match the target taxon")
+    priorities = sorted(_required_nonnegative_int(row.get("candidate_priority")) for row in target_rows)
+    if priorities != list(range(len(target_rows))):
+        raise ValueError("regional candidate priorities must be contiguous")
+    if len({_first_text(row, "candidate_accepted_taxon_key") for row in target_rows}) != len(
+        target_rows
+    ):
+        raise ValueError("regional candidate set contains duplicate species")
+    if len({_first_text(row, "candidate_set_fingerprint") for row in target_rows}) != 1:
+        raise ValueError("regional candidate set contains conflicting fingerprints")
+    source_versions = _unique(
+        version
+        for row in target_rows
+        for version in _split_names(row.get("source_versions"))
+    )
+    ordered = sorted(
+        target_rows,
+        key=lambda row: (
+            _required_nonnegative_int(row.get("candidate_priority")),
+            _first_text(row, "candidate_accepted_taxon_key") or "",
+        ),
+    )
+    return ordered, candidate_set_id, source_versions
+
+
+def _is_regional_candidate_rows(rows: list[dict[str, Any]]) -> bool:
+    return bool(rows) and all(_REGIONAL_CANDIDATE_FIELDS <= set(row) for row in rows)
+
+
 def _species_candidates(context: SpeciesContext, rows: list[dict[str, Any]]) -> list[CandidateTaxon]:
+    if _is_regional_candidate_rows(rows):
+        candidates = [candidate for row in rows if (candidate := _candidate_from_row(row))]
+        if not any(candidate.target_candidate for candidate in candidates):
+            raise ValueError("regional candidate set has no target candidate")
+        return _dedupe_taxa(candidates)
     target = _target_candidate(context)
     candidates: list[CandidateTaxon] = [target]
     for row in rows:
@@ -368,11 +520,23 @@ def _candidate_from_row(row: dict[str, Any]) -> CandidateTaxon | None:
     genus = _first_text(row, "genus") or scientific_name.split(" ", 1)[0]
     return CandidateTaxon(
         scientific_name=scientific_name,
-        accepted_taxon_key=_first_text(row, "accepted_taxon_key", "source_taxon_id", "taxon_id", "taxonID", "species_key"),
+        accepted_taxon_key=_first_text(
+            row,
+            "candidate_accepted_taxon_key",
+            "accepted_taxon_key",
+            "source_taxon_id",
+            "taxon_id",
+            "taxonID",
+            "species_key",
+        ),
         rank=rank,
         family=_first_text(row, "family"),
         genus=genus,
         common_names=_split_names(_first_value(row, "common_names", "vernacular_names")),
+        candidate_reasons=_split_names(_first_value(row, "candidate_reason")),
+        source_versions=_split_names(_first_value(row, "source_versions")),
+        target_candidate=bool(row.get("target_candidate") is True),
+        candidate_priority=_optional_nonnegative_int(row.get("candidate_priority")),
     )
 
 
@@ -461,6 +625,7 @@ def _comment_candidate_names(record: dict[str, Any]) -> tuple[str, ...]:
 
 def _candidate_set_id(*, context: SpeciesContext, species: list[CandidateTaxon], geospatial_scope: str | None) -> str:
     payload = {
+        "candidate_contract_version": CANDIDATE_SET_CONTRACT_VERSION,
         "registry_version": context.registry_version,
         "target": context.accepted_taxon_key,
         "species": [
@@ -471,6 +636,10 @@ def _candidate_set_id(*, context: SpeciesContext, species: list[CandidateTaxon],
                 "family": candidate.family,
                 "genus": candidate.genus,
                 "common_names": candidate.common_names,
+                "candidate_reasons": candidate.candidate_reasons,
+                "source_versions": candidate.source_versions,
+                "target_candidate": candidate.target_candidate,
+                "candidate_priority": candidate.candidate_priority,
             }
             for candidate in species
         ],
@@ -489,6 +658,7 @@ def _candidate_set_id_for_scope(
     geospatial_scope: str | None,
 ) -> str:
     payload = {
+        "candidate_contract_version": CANDIDATE_SET_CONTRACT_VERSION,
         "registry_version": registry_version,
         "target": target_accepted_taxon_key,
         "target_scientific_name": target_scientific_name,
@@ -500,6 +670,10 @@ def _candidate_set_id_for_scope(
                 "family": candidate.family,
                 "genus": candidate.genus,
                 "common_names": candidate.common_names,
+                "candidate_reasons": candidate.candidate_reasons,
+                "source_versions": candidate.source_versions,
+                "target_candidate": candidate.target_candidate,
+                "candidate_priority": candidate.candidate_priority,
             }
             for candidate in species
         ],
@@ -535,6 +709,20 @@ def _first_value(row: dict[str, Any], *keys: str) -> Any:
         if value not in (None, ""):
             return value
     return None
+
+
+def _optional_nonnegative_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return _required_nonnegative_int(value)
+
+
+def _required_nonnegative_int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("candidate_priority must be an integer")
+    if value < 0:
+        raise ValueError("candidate_priority must be nonnegative")
+    return value
 
 
 def _split_names(value: Any) -> tuple[str, ...]:

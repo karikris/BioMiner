@@ -409,6 +409,16 @@ occurrence-count-weighted coordinate confidence. Missing confidence in any
 selected source leaves the score null. The score remains soft evidence and is
 stored as float32 before fingerprinting.
 
+The BioCLIP candidate adapter contract is `object-bioclip-candidates-v2`.
+It preserves the regional set ID, accepted key, target flag, ordinal, inclusion
+reasons, and source versions on every candidate. Family and genus text results
+may reorder a first-pass comparison but cannot delete its members. The target is
+force-retained when it falls below the configured first-pass width. Target-scope
+object rows persist `species-candidate-provenance-v1` for every species scored in
+the first pass, including its regional provenance, first-pass rank and score,
+comparison membership, family-priority diagnostic, and rerank score when
+compared.
+
 ### 4.3 `competitor_relationships.parquet`
 
 Grain: one directed subject/object relationship and evidence version. Primary
