@@ -41,6 +41,7 @@ uv run biominer registry audit \
   --registry-dir data/registry/build \
   --report-dir reports
 
+# After the geographic spread and summary builders populate this build directory:
 uv run biominer registry publish \
   --registry-dir data/registry/build \
   --output-dir data/registry/current \
@@ -53,7 +54,16 @@ uv run biominer dev vision build-text-embedding-cache \
 uv run biominer bioclip screen --help
 ```
 
-`registry publish` emits only `taxa.parquet`, `species_paths.parquet`, `names.parquet`, `flickr_query_definitions.parquet`, `source_snapshots.parquet`, `qa_findings.parquet`, and `manifest.json`, with the manifest written last.
+`registry publish` requires completed geographic spread and summary builds. It
+merges geographic provenance and QA into the registry audit tables, then emits
+`taxa.parquet`, `species_paths.parquet`, `names.parquet`,
+`flickr_query_definitions.parquet`, `source_snapshots.parquet`,
+`qa_findings.parquet`, `taxon_geographic_spread.parquet`,
+`taxon_geographic_summary.parquet`, and `manifest.json`. The manifest is written
+last and contains row counts, byte counts, and checksums for every published
+Parquet artifact. A data-deficient species or an empty spread is publishable;
+absence of geographic evidence means unknown, never taxonomic or biological
+absence.
 
 ## Verification
 

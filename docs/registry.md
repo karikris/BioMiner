@@ -24,7 +24,11 @@ The persistent SQLite discovery ledger stores canonical keywords, keyword associ
 
 ## Published artifacts
 
-`registry publish` validates complete species paths, unique canonical terms, logical-query uniqueness, and fatal QA, then publishes only:
+`registry publish` validates complete species paths, unique canonical terms,
+logical-query uniqueness, exact geographic schemas, geographic summary coverage
+for every accepted species, and fatal QA. Geographic build QA is merged into the
+registry QA table, and geographic occurrence provenance is merged into the
+registry source-snapshot table. Publication then emits:
 
 ```text
 taxa.parquet
@@ -33,10 +37,21 @@ names.parquet
 flickr_query_definitions.parquet
 source_snapshots.parquet
 qa_findings.parquet
+taxon_geographic_spread.parquet
+taxon_geographic_summary.parquet
 manifest.json
 ```
 
-`manifest.json` is written last.
+The geographic build staging directory must also contain
+`geographic_occurrence_evidence.parquet`, `geographic_qa_findings.parquet`,
+`geographic_spread_manifest.json`, and `geographic_summary_manifest.json`.
+These support validation and provenance merging but are not copied into the
+runtime registry.
+
+`manifest.json` is written last and inventories every published Parquet file by
+row count, byte count, and SHA-256 checksum. A summary row marked
+`data_deficient` is valid. A species with no spread rows is also valid: missing
+geographic evidence is unknown evidence, not a hard-negative range assertion.
 
 ## Commands
 

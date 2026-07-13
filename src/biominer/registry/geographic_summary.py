@@ -143,6 +143,11 @@ def geographic_qa_schema() -> dict[str, pl.DataType]:
     return {"severity": pl.String, "code": pl.String, "subject": pl.String}
 
 
+def geographic_spread_fingerprint(spread: pl.DataFrame) -> str:
+    _require_schema(spread, geographic_spread_schema(), name="geographic spread")
+    return _fingerprint_rows(spread.to_dicts())
+
+
 def build_geographic_summary(
     *,
     spread: pl.DataFrame,
@@ -941,5 +946,6 @@ __all__ = [
     "TAXON_GEOGRAPHIC_SUMMARY_FILE",
     "build_geographic_summary",
     "geographic_qa_schema",
+    "geographic_spread_fingerprint",
     "geographic_summary_schema",
 ]
