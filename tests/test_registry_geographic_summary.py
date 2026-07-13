@@ -267,6 +267,36 @@ def test_geographic_summary_and_fingerprints_are_input_order_independent(
     assert ordered.qa.equals(reversed_input.qa)
 
 
+def test_geographic_summary_uses_a_minimal_cross_dateline_envelope(tmp_path: Path) -> None:
+    spread, evidence = _build_spread(
+        tmp_path / "spread",
+        (
+            _occurrence("east", latitude=-17.75, longitude=179.8),
+            _occurrence("west", latitude=-17.75, longitude=-179.8),
+        ),
+    )
+
+    result = build_geographic_summary(
+        spread=spread,
+        occurrence_evidence=evidence,
+        taxa=_taxa(),
+        registry_version=REGISTRY_VERSION,
+        policy=GeographicSummaryPolicy(
+            component_resolution=5,
+            min_eligible_occurrences=1,
+            min_occupied_cells=1,
+        ),
+        output_dir=tmp_path / "summary",
+        created_at=RETRIEVED_AT,
+    )
+
+    envelope = result.summary.row(0, named=True)["occupied_envelope"]
+    assert envelope["crosses_dateline"] is True
+    assert envelope["west"] > 0.0
+    assert envelope["east"] < 0.0
+    assert (envelope["east"] - envelope["west"]) % 360.0 < 5.0
+
+
 def _build_spread(
     output: Path,
     records: tuple[dict[str, object], ...],

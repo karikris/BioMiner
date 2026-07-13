@@ -505,6 +505,72 @@ def test_resume_adopts_an_atomic_part_written_before_checkpoint_state(
     assert result.spread["occurrence_count"].to_list() == [1, 1, 1]
 
 
+def test_completed_checkpoint_rebuild_does_not_call_the_source(tmp_path: Path) -> None:
+    batch = OccurrenceBatch(
+        cursor=0,
+        next_cursor=1,
+        records=(_occurrence("1"),),
+        end_of_records=True,
+        total_records=1,
+    )
+    kwargs = {
+        "accepted_taxon_key": TARGET_KEY,
+        "scientific_name": "Papilio demoleus",
+        "registry_version": "butterflies-v1",
+        "resolutions": GeographicResolutions(coarse=3, regional=5, local=7),
+        "output_dir": tmp_path / "output",
+        "checkpoint_dir": tmp_path / "checkpoint",
+        "retrieved_at": RETRIEVED_AT,
+    }
+    first = build_taxon_geographic_spread(source=FakeBatchSource((batch,)), **kwargs)
+    source_must_not_run = FakeBatchSource((batch,), fail_after_batches=0)
+
+    resumed = build_taxon_geographic_spread(source=source_must_not_run, **kwargs)
+
+    assert first.spread.equals(resumed.spread)
+    assert resumed.resumed is True
+    assert source_must_not_run.start_cursors == []
+
+
+def test_resume_rejects_corrupted_checkpoint_part(tmp_path: Path) -> None:
+    batches = (
+        OccurrenceBatch(
+            cursor=0,
+            next_cursor=1,
+            records=(_occurrence("1"),),
+            end_of_records=False,
+            total_records=2,
+        ),
+        OccurrenceBatch(
+            cursor=1,
+            next_cursor=2,
+            records=(_occurrence("2"),),
+            end_of_records=True,
+            total_records=2,
+        ),
+    )
+    kwargs = {
+        "accepted_taxon_key": TARGET_KEY,
+        "scientific_name": "Papilio demoleus",
+        "registry_version": "butterflies-v1",
+        "resolutions": GeographicResolutions(coarse=3, regional=5, local=7),
+        "output_dir": tmp_path / "output",
+        "checkpoint_dir": tmp_path / "checkpoint",
+        "retrieved_at": RETRIEVED_AT,
+    }
+    with pytest.raises(RuntimeError, match="injected source interruption"):
+        build_taxon_geographic_spread(
+            source=FakeBatchSource(batches, fail_after_batches=1),
+            **kwargs,
+        )
+    part = tmp_path / "checkpoint" / "parts" / "part-000000000000.parquet"
+    with part.open("ab") as handle:
+        handle.write(b"corrupt")
+
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        build_taxon_geographic_spread(source=FakeBatchSource(batches), **kwargs)
+
+
 def _occurrence(
     gbif_id: str,
     *,

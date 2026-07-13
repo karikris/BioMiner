@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -9,12 +10,15 @@ import polars as pl
 import pytest
 
 from biominer.cli import build_parser, run
+from biominer.geography import GeographicResolutions
 from biominer.registry.geographic_spread import (
     GEOGRAPHIC_OCCURRENCE_EVIDENCE_FILE,
     GEOGRAPHIC_SPREAD_MANIFEST_FILE,
     TAXON_GEOGRAPHIC_SPREAD_FILE,
     geographic_occurrence_evidence_schema,
     geographic_spread_schema,
+    OccurrenceBatch,
+    build_taxon_geographic_spread,
 )
 from biominer.registry.geographic_summary import (
     GEOGRAPHIC_QA_FINDINGS_FILE,
@@ -23,6 +27,8 @@ from biominer.registry.geographic_summary import (
     geographic_qa_schema,
     geographic_spread_fingerprint,
     geographic_summary_schema,
+    GeographicSummaryPolicy,
+    build_geographic_summary,
 )
 from biominer.registry.publish import PUBLISHED_REGISTRY_ARTIFACTS, publish_registry
 
@@ -155,12 +161,53 @@ def test_registry_publish_cli_smoke(tmp_path: Path, capsys: pytest.CaptureFixtur
     assert (output / "manifest.json").exists()
 
 
+def test_real_geographic_builders_publish_a_fixture_backed_registry(tmp_path: Path) -> None:
+    registry = tmp_path / "build"
+    _write_publishable_registry(registry)
+    spread_result = build_taxon_geographic_spread(
+        accepted_taxon_key=TARGET_KEY,
+        scientific_name="Papilio demoleus",
+        registry_version=REGISTRY_VERSION,
+        source=_IntegrationBatchSource(),
+        resolutions=GeographicResolutions(coarse=3, regional=5, local=7),
+        output_dir=registry,
+        checkpoint_dir=registry / "checkpoints" / "geographic",
+        retrieved_at=RETRIEVED_AT,
+    )
+    summary_result = build_geographic_summary(
+        spread=spread_result.spread,
+        occurrence_evidence=pl.read_parquet(spread_result.evidence_path),
+        taxa=pl.read_parquet(registry / "taxa.parquet"),
+        registry_version=REGISTRY_VERSION,
+        policy=GeographicSummaryPolicy(
+            component_resolution=5,
+            min_eligible_occurrences=1,
+            min_occupied_cells=1,
+        ),
+        output_dir=registry,
+        created_at=RETRIEVED_AT,
+    )
+
+    publish_registry(registry, output_dir=tmp_path / "current")
+
+    published = tmp_path / "current"
+    assert pl.read_parquet(published / TAXON_GEOGRAPHIC_SPREAD_FILE).height == 3
+    summary = pl.read_parquet(published / TAXON_GEOGRAPHIC_SUMMARY_FILE)
+    assert summary.equals(summary_result.summary)
+    assert summary.row(0, named=True)["data_deficient"] is False
+    snapshots = pl.read_parquet(published / "source_snapshots.parquet")
+    snapshot = snapshots.filter(pl.col("source_version") == "gbif-download:integration")
+    assert snapshot.height == 1
+    assert snapshot.row(0, named=True)["citation"] == "Fixture GBIF occurrence citation"
+
+
 def _write_publishable_registry(registry: Path) -> None:
     registry.mkdir(parents=True)
     pl.DataFrame(
         [
             {
                 "accepted_taxon_key": TARGET_KEY,
+                "scientific_name": "Papilio demoleus",
                 "rank": "SPECIES",
                 "taxonomic_status": "ACCEPTED",
             }
@@ -281,6 +328,42 @@ def _write_publishable_registry(registry: Path) -> None:
         encoding="utf-8",
     )
     _refresh_geographic_manifests(registry)
+
+
+class _IntegrationBatchSource:
+    source = "GBIF"
+    source_query_hash = "sha256:" + ("8" * 64)
+    source_snapshot_version = "gbif-download:integration"
+
+    def iter_batches(self, *, start_cursor: int = 0) -> Iterator[OccurrenceBatch]:
+        records = (
+            {
+                "key": "fixture-occurrence-1",
+                "acceptedTaxonKey": 1_938_069,
+                "speciesKey": 1_938_069,
+                "acceptedScientificName": "Papilio demoleus",
+                "decimalLatitude": -27.4705,
+                "decimalLongitude": 153.0260,
+                "coordinateUncertaintyInMeters": 25.0,
+                "countryCode": "AU",
+                "stateProvince": "Queensland",
+                "datasetKey": "fixture-dataset",
+                "datasetCitation": "Fixture GBIF occurrence citation",
+                "basisOfRecord": "HUMAN_OBSERVATION",
+                "establishmentMeans": "NATIVE",
+                "occurrenceStatus": "PRESENT",
+                "eventDate": "2025-01-01",
+                "issues": [],
+            },
+        )
+        selected = records[start_cursor:]
+        yield OccurrenceBatch(
+            cursor=start_cursor,
+            next_cursor=len(records),
+            records=selected,
+            end_of_records=True,
+            total_records=len(records),
+        )
 
 
 def _refresh_geographic_manifests(registry: Path) -> None:
