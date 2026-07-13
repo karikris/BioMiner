@@ -167,7 +167,7 @@ class ImageStager:
     def __call__(self, planned: PlannedBatch) -> ImageBatch:
         started_at = datetime.now(UTC).isoformat()
         rows: list[dict[str, Any]] = []
-        staged_records: list[dict[str, Any]] = []
+        staged_image_paths: list[str | None] = []
         cached_paths: list[Path] = []
         failed: list[dict[str, Any]] = []
         for record in planned.records.to_dicts():
@@ -198,15 +198,34 @@ class ImageStager:
                     staged["staged_image_path"] = str(cached.path)
                     cached_paths.append(cached.path)
             rows.append(row)
-            staged_records.append(staged)
+            staged_image_paths.append(str(staged.get("staged_image_path") or "") or None)
         self.manifest_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = write_parquet(pl.DataFrame(rows), self.manifest_dir / f"{planned.part_id}.parquet")
+        manifest_path = write_parquet(
+            pl.DataFrame(
+                rows,
+                schema={
+                    "source": pl.String,
+                    "flickr_photo_id": pl.String,
+                    "image_url": pl.String,
+                    "image_cache_path": pl.String,
+                    "image_hash": pl.String,
+                    "image_cache_status": pl.String,
+                    "failure_reason": pl.String,
+                    "batch_id": pl.String,
+                    "part_id": pl.String,
+                },
+            ),
+            self.manifest_dir / f"{planned.part_id}.parquet",
+        )
+        staged_frame = planned.records.with_columns(
+            pl.Series("staged_image_path", staged_image_paths, dtype=pl.String)
+        )
         ended_at = datetime.now(UTC).isoformat()
         return ImageBatch(
             batch_index=planned.batch_index,
             batch_id=planned.batch_id,
             part_id=planned.part_id,
-            records=pl.DataFrame(staged_records),
+            records=staged_frame,
             image_batch_manifest=manifest_path,
             cached_image_paths=tuple(cached_paths),
             failed_image_records=tuple(failed),

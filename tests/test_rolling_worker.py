@@ -117,6 +117,26 @@ def test_image_stager_caches_http_images_and_writes_manifest(tmp_path) -> None:
     assert manifest["image_cache_path"].to_list() == [str(batch.cached_image_paths[0])]
 
 
+def test_image_stager_preserves_typed_list_columns_beyond_inference_window(tmp_path) -> None:
+    records = pl.DataFrame(
+        {
+            "source": pl.Series(["flickr"] * 101, dtype=pl.String),
+            "flickr_photo_id": pl.Series([f"photo-{index:03d}" for index in range(101)], dtype=pl.String),
+            "image_url": pl.Series([""] * 101, dtype=pl.String),
+            "machine_tags": pl.Series([[] for _ in range(100)] + [["uploaded:by=instagram"]], dtype=pl.List(pl.String)),
+        }
+    )
+    stager = ImageStager(output_dir=tmp_path / "out", cache_root=tmp_path / "cache")
+    try:
+        batch = stager(PlannedBatch(0, "batch-0", "part-0", records))
+    finally:
+        stager.close()
+
+    assert batch.records.schema["machine_tags"] == pl.List(pl.String)
+    assert batch.records["machine_tags"].tail(1).to_list() == [["uploaded:by=instagram"]]
+    assert batch.records.schema["staged_image_path"] == pl.String
+
+
 def test_rolling_worker_starts_next_yolo_batch_before_bioclip_finishes_previous() -> None:
     records = pl.DataFrame({"source": ["flickr"] * 2, "flickr_photo_id": ["photo-1", "photo-2"]})
     second_yolo_started = Event()
