@@ -292,6 +292,20 @@ No assignment may attach a photo to a remote cluster merely because that
 cluster is mathematically nearest. `no_geo` and rejected remote assignments are
 explicit and broaden candidate generation rather than deleting the target.
 
+`h3-density-components-v1.0.0` selects cells meeting the configured minimum
+image density, forms components using sorted H3 grid adjacency, and rejects
+components below the configured image minimum. Occupied cells below the density
+threshold may join only an adjacent component, and only when every candidate in
+that cell is within the configured great-circle assignment distance after the
+cluster medoid is recomputed. Final cluster IDs cover the target scope, complete
+configuration hash, and sorted core-plus-adjacency member cells. The centroid
+is the image-count-weighted spherical centroid of member cell centres; the
+medoid is the member cell centre nearest that centroid by great-circle
+distance. Low-precision coordinates may use a country or configured broad
+bioregion only when that scope identifies exactly one cluster. Missing,
+ambiguous, sparse, and remote candidates remain explicit `no_geo` assignments.
+The target key scopes this candidate workload and never labels its images.
+
 ## 4. Regional candidate artifacts
 
 ### 4.1 `regional_taxon_occurrence.parquet`
