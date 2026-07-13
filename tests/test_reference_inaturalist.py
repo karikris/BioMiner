@@ -293,6 +293,34 @@ def test_inaturalist_adapter_requires_explicit_species_level_community_taxon() -
     assert "uncertain_taxon_match" in str(media["exclusion_reason"])
 
 
+def test_inaturalist_adapter_reconciles_compact_search_community_taxon_id() -> None:
+    record = _observation(2101)
+    record["community_taxon_id"] = 12345
+    record.pop("community_taxon")
+
+    page = _adapter(RecordedINaturalist([_payload([record])])).fetch_page(_query())
+    observation = page.observations.row(0, named=True)
+    media = page.media_candidates.row(0, named=True)
+
+    assert observation["source_taxon_id"] == "12345"
+    assert observation["accepted_taxon_key"] == "gbif:1938069"
+    assert observation["taxon_reconciliation_status"] == "accepted_key_exact"
+    assert observation["community_taxon_status"] == "species"
+    assert media["download_status"] == "pending"
+
+    conflict = _observation(2102)
+    conflict["community_taxon_id"] = 999
+    conflict.pop("community_taxon")
+    conflict_page = _adapter(
+        RecordedINaturalist([_payload([conflict])])
+    ).fetch_page(_query())
+    conflict_observation = conflict_page.observations.row(0, named=True)
+
+    assert conflict_observation["source_taxon_id"] == "999"
+    assert conflict_observation["accepted_taxon_key"] is None
+    assert conflict_observation["taxon_reconciliation_status"] == "conflict"
+
+
 def test_inaturalist_adapter_rejects_unordered_or_nonadvancing_results() -> None:
     unordered = RecordedINaturalist(
         [_payload([_observation(1002), _observation(1001)])]

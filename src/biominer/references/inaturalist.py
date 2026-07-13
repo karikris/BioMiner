@@ -541,12 +541,34 @@ def _normalise_observation(
         "iNaturalist",
         observation_id,
     )
+    taxon = record.get("taxon")
+    taxon = taxon if isinstance(taxon, dict) else {}
     community_taxon = record.get("community_taxon")
     community_taxon = community_taxon if isinstance(community_taxon, dict) else {}
-    source_taxon_id = _optional_positive_id(community_taxon.get("id"))
+    compact_community_taxon_id = _optional_positive_id(
+        record.get("community_taxon_id")
+    )
+    expanded_community_taxon_id = _optional_positive_id(community_taxon.get("id"))
+    source_taxon_id = compact_community_taxon_id or expanded_community_taxon_id
+    observation_taxon_id = _optional_positive_id(taxon.get("id"))
     expected_taxon_id = _source_taxon_id(query.source_taxon_id)
-    taxon_rank = str(community_taxon.get("rank") or "").strip().casefold()
-    exact_taxon = source_taxon_id == expected_taxon_id and taxon_rank == "species"
+    taxon_rank = str(
+        community_taxon.get("rank") or taxon.get("rank") or ""
+    ).strip().casefold()
+    community_identity_consistent = (
+        source_taxon_id is not None
+        and observation_taxon_id == source_taxon_id
+        and (
+            compact_community_taxon_id is None
+            or expanded_community_taxon_id is None
+            or compact_community_taxon_id == expanded_community_taxon_id
+        )
+    )
+    exact_taxon = (
+        source_taxon_id == expected_taxon_id
+        and community_identity_consistent
+        and taxon_rank == "species"
+    )
     quality_grade = str(record.get("quality_grade") or "").strip().casefold()
     research_grade = quality_grade == "research"
     captive = _optional_bool(record.get("captive"))
@@ -572,7 +594,9 @@ def _normalise_observation(
         "source": "iNaturalist",
         "source_observation_id": observation_id,
         "source_taxon_id": source_taxon_id,
-        "supplied_scientific_name": _optional_text(community_taxon.get("name")),
+        "supplied_scientific_name": _optional_text(
+            community_taxon.get("name") or taxon.get("name")
+        ),
         "accepted_taxon_key": query.accepted_taxon_key if exact_taxon else None,
         "reconciled_scientific_name": query.scientific_name if exact_taxon else None,
         "registry_version": registry_version,
