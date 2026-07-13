@@ -29,7 +29,9 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
+    { name = "httpcore" },
     { name = "httpx" },
+    { name = "pillow" },
     { name = "polars" },
     { name = "pyarrow" },
     { name = "pydantic" },
@@ -53,8 +55,10 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.2" },
     { name = "h3", marker = "extra == 'geo'", specifier = ">=4.5,<5" },
     { name = "h3", marker = "extra == 'test'", specifier = ">=4.5,<5" },
-    { name = "httpx", specifier = ">=0.28" },
+    { name = "httpcore", specifier = ">=1.0.9,<1.1" },
+    { name = "httpx", specifier = ">=0.28,<1" },
     { name = "matplotlib", marker = "extra == 'test'", specifier = ">=3.10" },
+    { name = "pillow", specifier = ">=12" },
     { name = "polars", specifier = ">=1.30" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
     { name = "pyarrow", specifier = ">=18" },

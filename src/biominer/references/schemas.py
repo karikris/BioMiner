@@ -18,11 +18,13 @@ REFERENCE_ACQUISITION_PLAN_SCHEMA_VERSION = "reference-acquisition-plan-v1.1.0"
 REFERENCE_ACQUISITION_SELECTIONS_SCHEMA_VERSION = (
     "reference-acquisition-selections-v1.0.0"
 )
+REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION = "reference-media-objects-v1.0.0"
 
 REFERENCE_OBSERVATIONS_FILE = "reference_observations.parquet"
 REFERENCE_MEDIA_CANDIDATES_FILE = "reference_media_candidates.parquet"
 REFERENCE_ACQUISITION_PLAN_FILE = "reference_acquisition_plan.parquet"
 REFERENCE_ACQUISITION_SELECTIONS_FILE = "reference_acquisition_selections.parquet"
+REFERENCE_MEDIA_OBJECTS_FILE = "reference_media_objects.parquet"
 
 TAXON_RECONCILIATION_STATUSES = frozenset(
     {"accepted_key_exact", "accepted_name_synonym", "unresolved", "conflict"}
@@ -35,6 +37,18 @@ VERIFICATION_STATUSES = frozenset(
 )
 LICENCE_POLICY_STATUSES = frozenset(
     {"unreviewed", "allowed", "research_only", "quarantined", "denied"}
+)
+DECODE_STATUSES = frozenset(
+    {
+        "not_attempted",
+        "valid",
+        "invalid_content_type",
+        "decode_failed",
+        "download_failed",
+    }
+)
+REFERENCE_MEDIA_RASTER_CONTENT_TYPES = frozenset(
+    {"image/gif", "image/jpeg", "image/png", "image/tiff", "image/webp"}
 )
 
 _OBSERVATION_SORT = ["source", "source_observation_id"]
@@ -64,6 +78,7 @@ _SELECTION_SORT = [
     "selection_rank",
     "reference_media_id",
 ]
+_MEDIA_OBJECT_SORT = ["reference_media_id"]
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
@@ -204,6 +219,30 @@ def reference_acquisition_selection_schema() -> dict[str, pl.DataType]:
     }
 
 
+def reference_media_object_schema() -> dict[str, pl.DataType]:
+    return {
+        "schema_version": pl.String,
+        "reference_media_id": pl.String,
+        "source_object_uri": pl.String,
+        "content_type": pl.String,
+        "source_byte_count": pl.UInt64,
+        "decoded_width": pl.UInt32,
+        "decoded_height": pl.UInt32,
+        "sha256": pl.String,
+        "perceptual_hash": pl.String,
+        "duplicate_group_id": pl.String,
+        "duplicate_type": pl.String,
+        "canonical_reference_media_id": pl.String,
+        "provider_mirror_ids": pl.List(pl.String),
+        "downloaded_at": pl.Datetime("us", "UTC"),
+        "download_attempt_count": pl.UInt32,
+        "licence_policy_status": pl.String,
+        "decode_status": pl.String,
+        "quarantine_reason": pl.String,
+        "object_fingerprint": pl.String,
+    }
+
+
 def make_reference_observation_id(source: str, source_observation_id: str) -> str:
     return "reference-observation:" + _semantic_digest(
         {
@@ -294,7 +333,9 @@ def make_reference_selection_id(
 def reference_observations_frame(
     rows: Sequence[Mapping[str, object]],
 ) -> pl.DataFrame:
-    frame = _frame(rows, schema=reference_observation_schema(), sort_by=_OBSERVATION_SORT)
+    frame = _frame(
+        rows, schema=reference_observation_schema(), sort_by=_OBSERVATION_SORT
+    )
     validate_reference_observations(frame)
     return frame
 
@@ -324,6 +365,18 @@ def reference_acquisition_selections_frame(
         sort_by=_SELECTION_SORT,
     )
     validate_reference_acquisition_selections(frame)
+    return frame
+
+
+def reference_media_objects_frame(
+    rows: Sequence[Mapping[str, object]],
+) -> pl.DataFrame:
+    frame = _frame(
+        rows,
+        schema=reference_media_object_schema(),
+        sort_by=_MEDIA_OBJECT_SORT,
+    )
+    validate_reference_media_objects(frame)
     return frame
 
 
@@ -531,7 +584,9 @@ def validate_reference_acquisition_selections(frame: pl.DataFrame) -> None:
         pl.struct(["acquisition_plan_id", "reference_media_id"]).n_unique()
     ).item()
     if selected_media_count != frame.height:
-        raise ValueError("reference media may be selected only once per acquisition plan")
+        raise ValueError(
+            "reference media may be selected only once per acquisition plan"
+        )
     selected_observation_count = frame.select(
         pl.struct(["acquisition_plan_id", "reference_observation_id"]).n_unique()
     ).item()
@@ -583,6 +638,108 @@ def validate_reference_acquisition_selections(frame: pl.DataFrame) -> None:
         )
         if row["selected_at"] is None:
             raise ValueError("selected_at is required")
+
+
+def validate_reference_media_objects(frame: pl.DataFrame) -> None:
+    _validate_physical_frame(
+        frame,
+        schema=reference_media_object_schema(),
+        schema_version=REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION,
+        sort_by=_MEDIA_OBJECT_SORT,
+        primary_key=_MEDIA_OBJECT_SORT,
+        artifact="reference media objects",
+    )
+    for row in frame.iter_rows(named=True):
+        _required_text(row["reference_media_id"], field="reference_media_id")
+        policy_status = _choice(
+            row["licence_policy_status"],
+            field="licence_policy_status",
+            choices=LICENCE_POLICY_STATUSES,
+        )
+        decode_status = _choice(
+            row["decode_status"],
+            field="decode_status",
+            choices=DECODE_STATUSES,
+        )
+        _full_sha256(row["object_fingerprint"], field="object_fingerprint")
+        attempt_count = _nonnegative_int(
+            row["download_attempt_count"],
+            field="download_attempt_count",
+        )
+        mirrors = row["provider_mirror_ids"]
+        if not isinstance(mirrors, list):
+            raise ValueError("provider_mirror_ids must be a non-null list")
+        normalized_mirrors = [
+            _required_text(value, field="provider_mirror_ids") for value in mirrors
+        ]
+        if normalized_mirrors != sorted(set(normalized_mirrors)):
+            raise ValueError("provider_mirror_ids must be sorted and unique")
+        for field in (
+            "perceptual_hash",
+            "duplicate_group_id",
+            "duplicate_type",
+            "canonical_reference_media_id",
+        ):
+            if row[field] is not None:
+                _required_text(row[field], field=field)
+
+        if decode_status == "valid":
+            if policy_status not in {"allowed", "research_only"}:
+                raise ValueError(
+                    "valid reference media requires an allowed or research-only licence"
+                )
+            source_object_uri = _required_text(
+                row["source_object_uri"],
+                field="source_object_uri",
+            )
+            _choice(
+                row["content_type"],
+                field="content_type",
+                choices=REFERENCE_MEDIA_RASTER_CONTENT_TYPES,
+            )
+            source_byte_count = _positive_int(
+                row["source_byte_count"],
+                field="source_byte_count",
+            )
+            decoded_width = _positive_int(
+                row["decoded_width"],
+                field="decoded_width",
+            )
+            decoded_height = _positive_int(
+                row["decoded_height"],
+                field="decoded_height",
+            )
+            if (
+                min(source_byte_count, decoded_width, decoded_height, attempt_count)
+                <= 0
+            ):
+                raise ValueError(
+                    "valid reference media requires positive object metrics"
+                )
+            sha256 = _full_sha256(row["sha256"], field="sha256")
+            if sha256.removeprefix("sha256:") not in source_object_uri:
+                raise ValueError("source object URI must contain the SHA-256 digest")
+            if row["downloaded_at"] is None:
+                raise ValueError("valid reference media requires downloaded_at")
+            if row["quarantine_reason"] is not None:
+                raise ValueError(
+                    "valid reference media cannot have a quarantine reason"
+                )
+            continue
+
+        for field in (
+            "source_object_uri",
+            "source_byte_count",
+            "decoded_width",
+            "decoded_height",
+            "sha256",
+            "downloaded_at",
+        ):
+            if row[field] is not None:
+                raise ValueError(f"non-valid reference media cannot populate {field}")
+        if row["content_type"] is not None:
+            _required_text(row["content_type"], field="content_type")
+        _required_text(row["quarantine_reason"], field="quarantine_reason")
 
 
 def write_reference_observations(
@@ -641,6 +798,20 @@ def write_reference_acquisition_selections(
     )
 
 
+def write_reference_media_objects(
+    frame: pl.DataFrame,
+    output: str | Path,
+    *,
+    overwrite: bool = True,
+) -> Path:
+    validate_reference_media_objects(frame)
+    return write_parquet(
+        frame,
+        _artifact_path(output, REFERENCE_MEDIA_OBJECTS_FILE),
+        overwrite=overwrite,
+    )
+
+
 def _frame(
     rows: Sequence[Mapping[str, object]],
     *,
@@ -653,7 +824,9 @@ def _frame(
     unknown = sorted(set().union(*(set(row) for row in materialized)) - set(schema))
     if unknown:
         raise ValueError(f"reference rows have unknown fields: {unknown}")
-    missing = sorted(set(schema) - set.intersection(*(set(row) for row in materialized)))
+    missing = sorted(
+        set(schema) - set.intersection(*(set(row) for row in materialized))
+    )
     if missing:
         raise ValueError(f"reference rows are missing fields: {missing}")
     return pl.DataFrame(materialized, schema=schema, strict=True).sort(sort_by)
@@ -700,6 +873,22 @@ def _optional_nonnegative_finite(value: object, *, field: str) -> float | None:
     parsed = float(value)
     if not math.isfinite(parsed) or parsed < 0.0:
         raise ValueError(f"{field} must be finite and nonnegative")
+    return parsed
+
+
+def _nonnegative_int(value: object, *, field: str) -> int:
+    if value is None or isinstance(value, bool):
+        raise ValueError(f"{field} must be a nonnegative integer")
+    parsed = int(value)
+    if parsed < 0:
+        raise ValueError(f"{field} must be a nonnegative integer")
+    return parsed
+
+
+def _positive_int(value: object, *, field: str) -> int:
+    parsed = _nonnegative_int(value, field=field)
+    if parsed == 0:
+        raise ValueError(f"{field} must be positive")
     return parsed
 
 
@@ -752,6 +941,7 @@ def _artifact_path(output: str | Path, filename: str) -> Path:
 
 
 __all__ = [
+    "DECODE_STATUSES",
     "DOWNLOAD_STATUSES",
     "LICENCE_POLICY_STATUSES",
     "REFERENCE_ACQUISITION_PLAN_FILE",
@@ -760,6 +950,9 @@ __all__ = [
     "REFERENCE_ACQUISITION_SELECTIONS_SCHEMA_VERSION",
     "REFERENCE_MEDIA_CANDIDATES_FILE",
     "REFERENCE_MEDIA_CANDIDATES_SCHEMA_VERSION",
+    "REFERENCE_MEDIA_OBJECTS_FILE",
+    "REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION",
+    "REFERENCE_MEDIA_RASTER_CONTENT_TYPES",
     "REFERENCE_OBSERVATIONS_FILE",
     "REFERENCE_OBSERVATIONS_SCHEMA_VERSION",
     "TAXON_RECONCILIATION_STATUSES",
@@ -774,14 +967,18 @@ __all__ = [
     "reference_acquisition_plan_schema",
     "reference_media_candidate_schema",
     "reference_media_candidates_frame",
+    "reference_media_object_schema",
+    "reference_media_objects_frame",
     "reference_observation_schema",
     "reference_observations_frame",
     "validate_reference_acquisition_plan",
     "validate_reference_acquisition_selections",
     "validate_reference_media_candidates",
+    "validate_reference_media_objects",
     "validate_reference_observations",
     "write_reference_acquisition_plan",
     "write_reference_acquisition_selections",
     "write_reference_media_candidates",
+    "write_reference_media_objects",
     "write_reference_observations",
 ]

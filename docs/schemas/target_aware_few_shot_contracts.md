@@ -525,8 +525,57 @@ Required fields are `schema_version`, `reference_media_id`, `source_object_uri`,
 `canonical_reference_media_id`, `provider_mirror_ids`, `downloaded_at`,
 `download_attempt_count`, `licence_policy_status`, `decode_status`,
 `quarantine_reason`, and `object_fingerprint`. Provider relationships and every
-source row remain available after deduplication. Only a manifest-committed S3
-object is `download_status=complete`.
+source row remain available after deduplication.
+
+The downloader consumes acquisition selections only and never mutates media
+candidates. It evaluates the configurable media-licence policy before network
+access, distinguishes broadly reusable from research-only media, quarantines
+missing or contradictory licence evidence, and retains attribution in the
+committed checkpoint. Creative Commons codes and URIs must name a known suite
+version and agree when both state a version.
+
+Each provider policy names exact reviewed hosts, allowed schemes, URL rules,
+and origin limits. iNaturalist downloads use sanctioned photo paths and the
+configured image style. GBIF is an aggregator, so publisher media hosts are
+configured explicitly; there is no arbitrary-public-host fallback. Default
+ports and public DNS resolution are required where provider policy enables
+network validation. Production connections disable environment proxies,
+resolve on each new TCP connection, reject mixed public/private answers, and
+dial only the validated numeric address while retaining the reviewed hostname
+for the HTTP origin, Host header, TLS SNI, and certificate verification. The
+injectable HTTP client is restricted to `MockTransport` test doubles; production
+callers cannot replace this transport. Disabling public-address enforcement is
+an explicit per-provider opt-out for reviewed private infrastructure.
+
+`max_attempts` is one item-wide HTTP request budget and is never reset by a
+redirect. `max_download_seconds` is an item-wide wall-clock deadline spanning
+origin throttling, bounded DNS resolution, connect/TLS, response headers, body
+streaming, and image validation. Production image decoding runs in a disposable
+spawned process that is terminated when the remaining item budget expires;
+per-operation `timeout_seconds` remains the stricter idle/connect bound where
+applicable.
+
+A source payload is eligible for commit only when its declared MIME type,
+signature, and decoder format agree; it is a decodable single-frame raster
+within byte and pixel limits; and any provider checksum matches. The downloader
+records SHA-256, source bytes, and decoded dimensions. It writes the
+content-addressed object first, reads back its size and SHA-256, then writes the
+per-media checkpoint. Resume revalidates the immutable input/policy binding and
+the durable object's size and SHA-256 without another media request or object
+overwrite. A valid row therefore means both object and checkpoint commits
+succeeded; candidate lifecycle state remains a separate artifact.
+
+Runs against one bank prefix may be incremental, but inventory compaction has a
+single-writer invariant. Do not run concurrent download invocations against the
+same prefix: each run reads, merges, validates, and atomically promotes the
+cumulative inventory. Worker concurrency is internal to one invocation.
+
+Each invocation writes JSON and Markdown audit artifacts below its own
+`reports/run_id=.../` prefix. The readable run component is bounded and paired
+with a hash; generated run IDs are collision resistant. The Markdown summary is
+promoted first and the JSON report last as the run-report commit marker. Fatal
+validation, checkpoint, inventory, or storage errors use the same report schema
+with `status=failed` and explicit `null` or `not_instrumented` metrics.
 
 ### 5.5 Review state
 

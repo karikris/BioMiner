@@ -18,7 +18,9 @@ from biominer.cli import build_parser
 from biominer.detection.policy import vision_runtime_settings
 
 
-def test_phase4_m5pro_profile_and_classifier_defaults_remain_acceptance_values() -> None:
+def test_phase4_m5pro_profile_and_classifier_defaults_remain_acceptance_values() -> (
+    None
+):
     settings = vision_runtime_settings("mac_m5pro_64gb")
 
     assert settings.device == "mps"
@@ -32,7 +34,9 @@ def test_phase4_m5pro_profile_and_classifier_defaults_remain_acceptance_values()
     assert settings.delete_images_after_commit is True
     assert settings.adaptive_batching is False
     assert DEFAULT_CLASSIFICATION_MODE == TARGET_SCOPE_OBJECT_SCREENING
-    assert HIERARCHICAL_BUTTERFLY_CLASSIFICATION == "hierarchical_butterfly_classification"
+    assert (
+        HIERARCHICAL_BUTTERFLY_CLASSIFICATION == "hierarchical_butterfly_classification"
+    )
     assert DEFAULT_RANK_BEAM_WIDTH == 3
     assert DEFAULT_SPECIES_FIRST_PASS_TOP_K == 20
     assert DEFAULT_SPECIES_RERANK_TOP_K == 5
@@ -49,12 +53,32 @@ def test_phase4_species_prompt_variants_rank_by_mean_not_best_single_prompt() ->
             "a close-up photo of Papilio machaon butterfly": 0.50,
         },
         variants=[
-            PromptVariant("a photo of Papilio demoleus", "Papilio demoleus", "scientific"),
-            PromptVariant("a field photo of Papilio demoleus adult butterfly", "Papilio demoleus", "field_adult"),
-            PromptVariant("a close-up photo of Papilio demoleus butterfly", "Papilio demoleus", "close_adult"),
-            PromptVariant("a photo of Papilio machaon", "Papilio machaon", "scientific"),
-            PromptVariant("a field photo of Papilio machaon adult butterfly", "Papilio machaon", "field_adult"),
-            PromptVariant("a close-up photo of Papilio machaon butterfly", "Papilio machaon", "close_adult"),
+            PromptVariant(
+                "a photo of Papilio demoleus", "Papilio demoleus", "scientific"
+            ),
+            PromptVariant(
+                "a field photo of Papilio demoleus adult butterfly",
+                "Papilio demoleus",
+                "field_adult",
+            ),
+            PromptVariant(
+                "a close-up photo of Papilio demoleus butterfly",
+                "Papilio demoleus",
+                "close_adult",
+            ),
+            PromptVariant(
+                "a photo of Papilio machaon", "Papilio machaon", "scientific"
+            ),
+            PromptVariant(
+                "a field photo of Papilio machaon adult butterfly",
+                "Papilio machaon",
+                "field_adult",
+            ),
+            PromptVariant(
+                "a close-up photo of Papilio machaon butterfly",
+                "Papilio machaon",
+                "close_adult",
+            ),
         ],
         top_k=2,
     )
@@ -67,13 +91,14 @@ def test_phase4_species_prompt_variants_rank_by_mean_not_best_single_prompt() ->
 
 def test_phase4_heavy_vision_runtimes_are_not_required_dependencies() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-    dependencies = {_dependency_name(value) for value in pyproject["project"]["dependencies"]}
+    dependencies = {
+        _dependency_name(value) for value in pyproject["project"]["dependencies"]
+    }
 
     assert "torch" not in dependencies
     assert "open-clip-torch" not in dependencies
     assert "open_clip_torch" not in dependencies
     assert "ultralytics" not in dependencies
-    assert "pillow" not in dependencies
 
 
 def test_phase4_docs_and_cli_expose_supported_developer_benchmarks() -> None:

@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from typing import Any
+from hashlib import sha256
 import json
+import os
 from pathlib import Path
+from shutil import copyfileobj
+from tempfile import NamedTemporaryFile
 
 import polars as pl
 
@@ -58,7 +62,9 @@ class LocalStorageBackend:
         overwrite: bool = True,
     ) -> str:
         output = normalize_local_uri(uri)
-        write_parquet_batches(batches, output, compression=compression, overwrite=overwrite)
+        write_parquet_batches(
+            batches, output, compression=compression, overwrite=overwrite
+        )
         return _preserve_uri_string(uri)
 
     def write_parquet_part(
@@ -70,7 +76,9 @@ class LocalStorageBackend:
         overwrite: bool = False,
     ) -> ParquetPartWrite:
         output = normalize_local_uri(uri)
-        result = write_parquet_part(frame, output, compression=compression, overwrite=overwrite)
+        result = write_parquet_part(
+            frame, output, compression=compression, overwrite=overwrite
+        )
         return ParquetPartWrite(
             uri=_preserve_uri_string(uri),
             row_count=result.row_count,
@@ -85,6 +93,43 @@ class LocalStorageBackend:
         if not root.exists():
             return []
         return sorted(str(path) for path in root.rglob("*.parquet") if path.is_file())
+
+    def write_file(
+        self,
+        uri: str | Path,
+        source: str | Path,
+        *,
+        content_type: str | None = None,
+        overwrite: bool = True,
+    ) -> str:
+        output = normalize_local_uri(uri)
+        source_path = normalize_local_uri(source)
+        if not overwrite and output.exists():
+            raise FileExistsError(uri)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with source_path.open("rb") as source_stream:
+                with NamedTemporaryFile(
+                    mode="wb",
+                    dir=output.parent,
+                    prefix=f".{output.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as temporary:
+                    temporary_path = Path(temporary.name)
+                    copyfileobj(source_stream, temporary)
+            if overwrite:
+                temporary_path.replace(output)
+            else:
+                try:
+                    os.link(temporary_path, output)
+                except FileExistsError as exc:
+                    raise FileExistsError(uri) from exc
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+        return _preserve_uri_string(uri)
 
     def write_json(self, uri: str | Path, payload: dict[str, Any]) -> str:
         output = normalize_local_uri(uri)
@@ -120,6 +165,22 @@ class LocalStorageBackend:
 
     def exists(self, uri: str | Path) -> bool:
         return normalize_local_uri(uri).exists()
+
+    def file_size(self, uri: str | Path) -> int:
+        path = normalize_local_uri(uri)
+        if not path.is_file():
+            raise FileNotFoundError(uri)
+        return path.stat().st_size
+
+    def file_sha256(self, uri: str | Path) -> str:
+        path = normalize_local_uri(uri)
+        if not path.is_file():
+            raise FileNotFoundError(uri)
+        digest = sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return f"sha256:{digest.hexdigest()}"
 
 
 def _preserve_uri_string(uri: str | Path) -> str:
