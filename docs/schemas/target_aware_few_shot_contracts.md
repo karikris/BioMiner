@@ -391,6 +391,24 @@ The target row is mandatory even with no geography, zero occurrence support,
 or poor text rank. Family and genus text ranks are not candidate deletion
 inputs.
 
+Candidate generation is a union, not a hierarchy gate. It merges target,
+same-genus range overlap, local same-family occurrence, reviewed relationship,
+historical false-positive, and versioned visual-neighbour evidence. Country and
+bioregion same-family rows are added only below the configured local-candidate
+minimum. `no_geo` expands to the accepted same-family registry rather than
+shrinking the comparison. A species can retain multiple sorted reasons.
+
+`candidate_priority` is a deterministic ordinal derived after the union from
+reason class, soft geographic evidence, occurrence support, taxonomy, and
+accepted key. It authorizes ordering only. The set fingerprint covers the
+complete sorted union, cluster, target, policy, and all registry, occurrence,
+cluster, relationship, false-positive, and visual source versions.
+Geographic evidence uses fixed overlap weights `exact=1.0`, `buffer=0.8`,
+`country=0.5`, `bioregion=0.35`, and `global=0.1`, multiplied by the
+occurrence-count-weighted coordinate confidence. Missing confidence in any
+selected source leaves the score null. The score remains soft evidence and is
+stored as float32 before fingerprinting.
+
 ### 4.3 `competitor_relationships.parquet`
 
 Grain: one directed subject/object relationship and evidence version. Primary
