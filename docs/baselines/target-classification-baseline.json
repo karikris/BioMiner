@@ -1,0 +1,182 @@
+{
+  "schema_version": "target-classification-baseline-v1",
+  "recorded_at": "2026-07-13T10:48:30Z",
+  "task": "phase-0-task-0.1",
+  "target": {
+    "scientific_name": "Papilio demoleus",
+    "pilot_stream_status": "unreviewed_flickr_search_candidates",
+    "truth_warning": "Counts from the Flickr candidate stream are screening outputs, not verified taxonomic truth."
+  },
+  "repository": {
+    "branch": "main",
+    "starting_commit_sha": "f73afe42f8b2c6c7773878e6d65c88ed6c9a7138",
+    "tracked_worktree_clean": true,
+    "untracked_entries_observed": [
+      "config/papilio_demoleus_flickr_estimator.sh2",
+      "config/papilio_demoleus_multilingual_keywords.json",
+      "docs/superpowers/",
+      "duplicate_query_terms_skipped",
+      "logs/",
+      "query_terms_added"
+    ]
+  },
+  "runtime": {
+    "python_version": "3.14.5",
+    "dependency_lock": {
+      "path": "uv.lock",
+      "sha256": "4925abc898f1ea60f4795f4f894fa572a1dd13ab23b80eb40d644a06bd1776d4",
+      "pyproject_sha256": "be79d998a73a3d641e3d9196ea4659848f3965e470c31021b2baa1fe6283f3d0",
+      "check_command": "uv lock --check",
+      "check_status": "passed",
+      "resolved_package_count": 35
+    }
+  },
+  "tests": {
+    "command": "uv run pytest -q",
+    "status": "passed",
+    "passed": 966,
+    "failed": 0,
+    "duration_seconds": 37.23
+  },
+  "current_classification": {
+    "default_mode": "target_scope_object_screening",
+    "supported_modes": [
+      "target_scope_object_screening",
+      "hierarchical_butterfly_classification"
+    ],
+    "classification_version": "butterfly-classification-v3.0.0",
+    "prompt_version": "butterfly-six-rank-prompts-v4",
+    "model": {
+      "model_id": "bioclip2_5_huge",
+      "repository_id": "imageomics/bioclip-2.5-vith14",
+      "revision": "191d741545e4c741cdef4b22c6eb69c945c1e592",
+      "runtime_package": "open_clip_torch",
+      "runtime_package_version": "3.3.0"
+    },
+    "target_scope_object_screening": {
+      "species_first_pass_top_k": 20,
+      "species_rerank_top_k": 5,
+      "family_report_top_k": 3,
+      "species_candidate_filter": "first-pass top 20 filtered to family top 1 when family metadata is present, with unfiltered fallback when the family filter is empty",
+      "genus_scores_control_species_eligibility": false,
+      "rerank_evidence": "second text-prompt score pass over the retained species candidates",
+      "target_verification_calibrated": false
+    },
+    "hierarchical_butterfly_classification": {
+      "rank_order": [
+        "FAMILY",
+        "SUBFAMILY",
+        "TRIBE",
+        "SUBTRIBE",
+        "GENUS",
+        "SPECIES"
+      ],
+      "beam_strategy": "global_rank_top_k",
+      "rank_beam_width": 3,
+      "species_first_pass_top_k": 20,
+      "species_rerank_top_k": 5,
+      "species_report_top_k": 3,
+      "legacy_seven_rank_layout": {
+        "family_top_k": 1,
+        "genus_shortlist_top_k": 20,
+        "genus_retained_top_k": 3,
+        "genus_top1_guardrail": 0.9,
+        "guardrail_comparison": "strictly_greater_than"
+      }
+    },
+    "visual_inputs": {
+      "gate_mode": "exclude_hard_negative",
+      "detected_non_hard_negative": "detector_crop",
+      "no_detection": "whole_image",
+      "hard_negative": "excluded",
+      "crop_padding_ratio": 0.12,
+      "crop_target_px": 336,
+      "image_max_side_px": 1280,
+      "bioclip_top_k": 10
+    },
+    "thresholds": {
+      "vision_bucket_policy_schema_version": "vision-bucket-policy-v1",
+      "high_confidence_species_top1_score": 0.7,
+      "low_confidence_species_score": 0.35,
+      "minimum_species_margin": 0.05,
+      "minimum_family_margin": 0.05,
+      "high_detector_score": 0.8,
+      "detector_box_score": 0.2,
+      "detector_nms_iou": 0.5,
+      "calibration_status": "raw BioCLIP scores and margins are not calibrated probabilities"
+    }
+  },
+  "existing_benchmarks": {
+    "current_cascade_fixture": {
+      "path": "reports/vision_benchmarks/cascade/benchmark_metrics.json",
+      "benchmark_version": "path-cascade-model-free-v1",
+      "benchmark_kind": "path_cascade_model_free_global_beam",
+      "synthetic_fixture": true,
+      "papilio_demoleus_metrics_eligible": false,
+      "reason": "The fixture declares synthetic taxonomy and is not a biological or GBIF-authoritative benchmark."
+    },
+    "papilio_demoleus_historical_run": {
+      "status": "available_with_incomplete_requested_metrics",
+      "run_root": "data/live_runs/papilio_demoleus_global_multilingual_20260609_071759",
+      "recorded_at": "2026-06-09T14:19:18.192093+00:00",
+      "design": "flat zero-shot scoring against 2000 species candidates with ten stored candidates per image",
+      "model_id": "bioclip2_5",
+      "model_version": "bioclip2_5_huge_species_2000_batched",
+      "records_seen": 13489,
+      "papilionidae_top1_mapped_count": 5567,
+      "papilionidae_count_definition": "Top-1 predicted species joined to the candidate taxonomy family; this is not a count of verified Papilionidae images.",
+      "top1_family_unmapped_count": 309,
+      "papilio_genus_top20_recall": {
+        "value": null,
+        "status": "not_available",
+        "reason": "The artifact contains no genus ranking and no reviewed truth labels."
+      },
+      "papilio_genus_top3_survival": {
+        "value": null,
+        "status": "not_available",
+        "reason": "The artifact contains no genus ranking."
+      },
+      "papilio_demoleus_species_top20_count": {
+        "value": null,
+        "status": "not_available",
+        "reason": "Every artifact row stores exactly ten species candidates, not twenty."
+      },
+      "papilio_demoleus_species_top5_count": 8297,
+      "papilio_demoleus_species_top1_count": 5567,
+      "papilio_demoleus_species_top10_count_supplemental": 9311,
+      "visual_mode": {
+        "value": null,
+        "status": "not_recorded",
+        "reason": "The historical output schema has no visual_input_kind or crop provenance fields."
+      },
+      "threshold_configuration": {
+        "value": null,
+        "status": "not_recorded",
+        "reason": "The run summary records model and batching settings but no versioned decision-threshold policy."
+      },
+      "artifacts": [
+        {
+          "path": "data/live_runs/papilio_demoleus_global_multilingual_20260609_071759/bioclip25_species_all_global_2000_candidates_7families_batched/summary.json",
+          "sha256": "c1125b518e3c32bde97a3729e34b35210de072144d71a25f8f6b9665b764bbbb"
+        },
+        {
+          "path": "data/live_runs/papilio_demoleus_global_multilingual_20260609_071759/bioclip25_species_all_global_2000_candidates_7families_batched/image_triage_species_all.parquet",
+          "sha256": "bef18dd78be900bc5b2b1e8073054e1ebc9e8b710c87c269da9d26c2fc40b80f"
+        },
+        {
+          "path": "data/live_runs/papilio_demoleus_global_multilingual_20260609_071759/bioclip25_species_sample_1000_2000_candidates_7families/butterfly_species_candidates_2000.parquet",
+          "sha256": "876189af936f6cb548a4c0100102231a677071fa7bbd62049c3152d4d0c8576b"
+        },
+        {
+          "path": "data/live_runs/papilio_demoleus_global_multilingual_20260609_071759/bioclip25_species_all_global_2000_candidates_7families_batched/visual_report_papilio_demoleus_only/report_summary.json",
+          "sha256": "225b354ed401b537eff33725ac74f4a2425385c7ab0ed357760a743aeac8529a"
+        }
+      ]
+    }
+  },
+  "collection_notes": [
+    "No benchmark value was fabricated; unavailable requested fields are explicit nulls with reasons.",
+    "The historical Papilio demoleus counts measure classifier containment or top-1 assignment on an unreviewed Flickr search-candidate stream, not recall or accuracy.",
+    "Morph codebase navigation was attempted during discovery and returned HTTP 429; focused local source inspection was used instead."
+  ]
+}
