@@ -283,7 +283,7 @@ def test_production_run_hierarchical_score_stage_requires_taxonomy_table(tmp_pat
         storage_backend="local",
         workstore_backend="sqlite",
         classification_mode="hierarchical",
-        taxonomy_candidate_table="data/registry/current",
+        taxonomy_candidate_table=tmp_path / "missing-registry",
         stages=(RunStage.SCORE_BIOCLIP,),
     )
 
@@ -293,7 +293,7 @@ def test_production_run_hierarchical_score_stage_requires_taxonomy_table(tmp_pat
     assert plan.manifest.stages[0].status is StageStatus.FAILED
     assert plan.manifest.stages[0].message.startswith("missing_taxonomy_candidate_table:")
     assert plan.manifest.stages[0].metrics["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-    assert plan.manifest.stages[0].metrics["taxonomy_candidate_table"].endswith("data/registry/current")
+    assert plan.manifest.stages[0].metrics["taxonomy_candidate_table"].endswith("missing-registry")
     assert plan.manifest.stages[0].metrics["taxonomy_candidate_table_status"] == "missing"
 
 
@@ -2379,10 +2379,10 @@ def test_review_queue_keeps_bronze_and_review_photo_summaries() -> None:
 
 
 def test_trust_policy_default_tiers_and_enablement() -> None:
-    assert source_default_trust_tier("GBIF", "vernacular") is TrustTier.T2
+    assert source_default_trust_tier("GBIF", "vernacular") is TrustTier.T1
     assert source_default_trust_tier("CoL", "scientific_synonym") is TrustTier.T1
     assert source_default_trust_tier("Wikidata", "vernacular") is TrustTier.T3
-    assert source_default_trust_tier("iNaturalist", "vernacular_alias") is TrustTier.T4
+    assert source_default_trust_tier("iNaturalist", "vernacular_alias") is TrustTier.T3
     assert source_default_trust_tier("LibreTranslate", "generated_translation") is TrustTier.T5
 
     assert should_enable_name_by_default(TrustTier.T1, "low", "collision") is True

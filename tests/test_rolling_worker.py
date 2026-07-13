@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 from threading import Event
+from time import sleep
 
 import httpx
 import polars as pl
@@ -10,6 +12,7 @@ from biominer.bioclip.object_runner import empty_object_score_frame
 from biominer.storage.parquet import write_parquet
 from biominer.vision.rolling_worker import (
     BatchPlanner,
+    BioCLIPWorker,
     CommitResult,
     CommitWorker,
     DetectionBatch,
@@ -21,6 +24,7 @@ from biominer.vision.rolling_worker import (
     ScoreBatch,
     ScoreInputBatch,
 )
+import biominer.vision.rolling_worker as rolling_worker_module
 from factories import canonical_records, object_detection_row, object_detections
 
 
@@ -113,6 +117,26 @@ def test_image_stager_caches_http_images_and_writes_manifest(tmp_path) -> None:
     assert manifest["image_cache_path"].to_list() == [str(batch.cached_image_paths[0])]
 
 
+def test_image_stager_preserves_typed_list_columns_beyond_inference_window(tmp_path) -> None:
+    records = pl.DataFrame(
+        {
+            "source": pl.Series(["flickr"] * 101, dtype=pl.String),
+            "flickr_photo_id": pl.Series([f"photo-{index:03d}" for index in range(101)], dtype=pl.String),
+            "image_url": pl.Series([""] * 101, dtype=pl.String),
+            "machine_tags": pl.Series([[] for _ in range(100)] + [["uploaded:by=instagram"]], dtype=pl.List(pl.String)),
+        }
+    )
+    stager = ImageStager(output_dir=tmp_path / "out", cache_root=tmp_path / "cache")
+    try:
+        batch = stager(PlannedBatch(0, "batch-0", "part-0", records))
+    finally:
+        stager.close()
+
+    assert batch.records.schema["machine_tags"] == pl.List(pl.String)
+    assert batch.records["machine_tags"].tail(1).to_list() == [["uploaded:by=instagram"]]
+    assert batch.records.schema["staged_image_path"] == pl.String
+
+
 def test_rolling_worker_starts_next_yolo_batch_before_bioclip_finishes_previous() -> None:
     records = pl.DataFrame({"source": ["flickr"] * 2, "flickr_photo_id": ["photo-1", "photo-2"]})
     second_yolo_started = Event()
@@ -166,6 +190,72 @@ def test_rolling_worker_starts_next_yolo_batch_before_bioclip_finishes_previous(
     assert events.index("yolo:1") < events.index("score-end:0")
     assert result.batches_seen == 2
     assert result.batches_committed == 2
+
+
+def test_rolling_worker_logs_stage_progress_and_heartbeat(caplog) -> None:  # noqa: ANN001
+    def image_stage(planned: PlannedBatch) -> ImageBatch:
+        return ImageBatch(planned.batch_index, planned.batch_id, planned.part_id, planned.records)
+
+    def detection_stage(batch: ImageBatch) -> DetectionBatch:
+        sleep(0.04)
+        return DetectionBatch(batch, pl.DataFrame({"detection_id": ["det-1"]}))
+
+    def score_input_stage(batch: DetectionBatch) -> ScoreInputBatch:
+        return ScoreInputBatch(batch, batch.frame)
+
+    def score_stage(batch: ScoreInputBatch) -> ScoreBatch:
+        sleep(0.04)
+        return ScoreBatch(batch, batch.frame)
+
+    worker = RollingVisionWorker(
+        settings=RollingVisionWorkerSettings(vision_batch_rows=1, heartbeat_interval_seconds=0.01),
+        image_stage=image_stage,
+        detection_stage=detection_stage,
+        score_input_stage=score_input_stage,
+        score_stage=score_stage,
+        commit_stage=lambda batch: CommitResult(
+            batch.score_input_batch.detection_batch.image_batch.batch_id,
+            {},
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger="biominer.vision.rolling_worker"):
+        worker.run(pl.DataFrame({"flickr_photo_id": ["photo-1"]}))
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("vision_stage_started stage=yolo_detection" in message for message in messages)
+    assert any("vision_heartbeat active=" in message for message in messages)
+    assert any("vision_stage_finished stage=bioclip_scoring" in message for message in messages)
+    assert any("vision_run_finished" in message for message in messages)
+
+
+def test_bioclip_worker_dispatches_hierarchical_batches(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    calls: list[tuple[int, object, object]] = []
+
+    def fake_hierarchical(*, items, scorer, path_taxonomy_store, taxonomy_text_embedding_index):  # noqa: ANN001, ANN202
+        del scorer
+        calls.append((len(items), path_taxonomy_store, taxonomy_text_embedding_index))
+        return []
+
+    monkeypatch.setattr(rolling_worker_module, "_score_hierarchical_detection_batch", fake_hierarchical)
+    taxonomy_store = object()
+    embedding_index = object()
+    worker = BioCLIPWorker(
+        species_context=object(),  # type: ignore[arg-type]
+        candidate_set=object(),  # type: ignore[arg-type]
+        scorer=object(),  # type: ignore[arg-type]
+        output_dir=tmp_path,
+        classification_mode="hierarchical_butterfly_classification",
+        path_taxonomy_store=taxonomy_store,  # type: ignore[arg-type]
+        taxonomy_text_embedding_index=embedding_index,  # type: ignore[arg-type]
+    )
+    image_batch = ImageBatch(0, "batch-0", "part-0", pl.DataFrame({"flickr_photo_id": ["photo-1"]}))
+    detection_batch = DetectionBatch(image_batch, pl.DataFrame({"detection_id": ["det-1"]}))
+
+    result = worker(ScoreInputBatch(detection_batch, detection_batch.frame, items=({},)))
+
+    assert calls == [(1, taxonomy_store, embedding_index)]
+    assert result.frame.is_empty()
 
 
 def test_rolling_worker_image_slots_never_exceed_prefetch_limit() -> None:

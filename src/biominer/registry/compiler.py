@@ -61,6 +61,38 @@ def compile_registry_fixture(
     return manifest
 
 
+def compile_registry_parquet_source(
+    source_dir: str | Path,
+    output_dir: str | Path,
+    *,
+    registry_version: str,
+    scope_path: str | Path = "config/butterfly_scope.json",
+    query_curation_json: str | Path | None = None,
+) -> dict[str, Any]:
+    """Compile a registry from the durable CoL XR Parquet source snapshot."""
+
+    from biominer.registry.checklistbank import col_xr_payload_from_parquet
+
+    source = Path(source_dir)
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    payload = col_xr_payload_from_parquet(source)
+    frames, manifest = compile_registry_frames(
+        payload,
+        source_ref=source,
+        output_ref=output,
+        registry_version=registry_version,
+        scope_path=scope_path,
+        query_curation_json=query_curation_json,
+    )
+    for filename, frame in frames.items():
+        write_parquet(frame, output / filename)
+    (output / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return manifest
+
+
 def compile_registry_frames(
     source_payload: dict[str, Any],
     *,
@@ -73,18 +105,26 @@ def compile_registry_frames(
     query_curation_rules: tuple[QueryCurationRule, ...] = (),
 ) -> tuple[dict[str, pl.DataFrame], dict[str, Any]]:
     scope = load_scope(scope_path)
-    taxa = _taxa_frame(source_payload.get("taxa", []), scope_id=scope.scope_id)
-    names = _names_frame(source_payload.get("names", []), registry_version=registry_version)
+    source_taxa = source_payload.get("taxa", [])
+    lineage_taxa = _taxa_frame(source_taxa, scope_id=scope.scope_id, supported_only=False)
+    taxa = _taxa_frame(source_taxa, scope_id=scope.scope_id)
+    retained_taxon_keys = set(taxa["accepted_taxon_key"].to_list())
+    retained_name_rows = [
+        row
+        for row in source_payload.get("names", [])
+        if str(row.get("accepted_taxon_key") or "") in retained_taxon_keys
+    ]
+    names = _names_frame(retained_name_rows, registry_version=registry_version)
     snapshots = _source_snapshots_frame(source_payload, source_ref=source_ref)
     query_curation = query_curation_rules or load_query_curation_rules(query_curation_json)
     collision_names = _ensure_query_eligibility_columns(global_names_for_collision) if global_names_for_collision is not None else names
     name_collision_ledger = _name_collision_ledger_frame(collision_names, registry_version=registry_version)
     names = apply_query_curation(names, query_curation)
     names = canonicalize_keyword_rows(names)
-    evidence = _name_evidence_frame(source_payload.get("names", []), registry_version=registry_version, source_payload=source_payload)
+    evidence = _name_evidence_frame(retained_name_rows, registry_version=registry_version, source_payload=source_payload)
     queries = _query_definitions_frame(names, taxa, registry_version=registry_version, query_curation_rules=query_curation)
     species_paths = compile_species_paths(
-        taxa,
+        lineage_taxa,
         registry_version=registry_version,
         source_release=str(source_payload.get("source_version") or COL_XR_RELEASE),
     )
@@ -141,7 +181,13 @@ def query_definitions_from_names(
     )
 
 
-def _taxa_frame(rows: list[dict[str, Any]], *, scope_id: str) -> pl.DataFrame:
+def _taxa_frame(
+    rows: list[dict[str, Any]],
+    *,
+    scope_id: str,
+    supported_only: bool = True,
+) -> pl.DataFrame:
+    supported_ranks = {"KINGDOM", "PHYLUM", "CLASS", "ORDER", "FAMILY", "GENUS", "SPECIES"}
     normalized_rows = [
             {
                 "registry_schema_version": REGISTRY_SCHEMA_VERSION,
@@ -154,6 +200,9 @@ def _taxa_frame(rows: list[dict[str, Any]], *, scope_id: str) -> pl.DataFrame:
                 "family": str(row.get("family") or ""),
                 "genus_key": str(row.get("genus_key") or ""),
                 "genus": str(row.get("genus") or ""),
+                "genus_source_release": str(row.get("genus_source_release") or ""),
+                "genus_evidence_ids": [str(value) for value in (row.get("genus_evidence_ids") or [])],
+                "genus_supersedes_node_id": str(row.get("genus_supersedes_node_id") or ""),
                 "species_key": str(row.get("species_key") or ""),
                 "species": str(row.get("species") or ""),
                 "taxonomic_status": str(row.get("taxonomic_status") or row.get("status") or "ACCEPTED").upper(),
@@ -164,6 +213,7 @@ def _taxa_frame(rows: list[dict[str, Any]], *, scope_id: str) -> pl.DataFrame:
                 "in_scope": True,
             }
             for row in rows
+            if not supported_only or str(row.get("rank") or "").upper() in supported_ranks
         ]
     return pl.DataFrame(
         normalized_rows,
@@ -178,6 +228,9 @@ def _taxa_frame(rows: list[dict[str, Any]], *, scope_id: str) -> pl.DataFrame:
             "family": pl.String,
             "genus_key": pl.String,
             "genus": pl.String,
+            "genus_source_release": pl.String,
+            "genus_evidence_ids": pl.List(pl.String),
+            "genus_supersedes_node_id": pl.String,
             "species_key": pl.String,
             "species": pl.String,
             "taxonomic_status": pl.String,
@@ -408,7 +461,8 @@ def _row_has_blocking_collision_reason(row: dict[str, Any]) -> bool:
 
 def _qa_findings(taxa: pl.DataFrame, names: pl.DataFrame, queries: pl.DataFrame, scope) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
-    if taxa.filter((pl.col("scientific_name") == scope.root_scientific_name) & (pl.col("rank") == scope.root_rank)).is_empty():
+    stored_ranks = {"KINGDOM", "PHYLUM", "CLASS", "ORDER", "FAMILY", "GENUS", "SPECIES"}
+    if scope.root_rank in stored_ranks and taxa.filter((pl.col("scientific_name") == scope.root_scientific_name) & (pl.col("rank") == scope.root_rank)).is_empty():
         findings.append(_finding("fatal", "missing_scope_root", scope.root_scientific_name))
     families = set(taxa.filter(pl.col("rank") == "FAMILY").select("scientific_name").to_series().to_list())
     missing = [family for family in scope.included_families if family not in families]
@@ -637,6 +691,14 @@ def _query_unique_term_counts_by_source(queries: pl.DataFrame) -> dict[str, int]
 
 def _source_hash(payload: dict[str, Any], source_ref: str | Path) -> str:
     path = Path(source_ref)
+    if path.is_dir():
+        digest = hashlib.sha256()
+        for child in sorted(path.glob("*.parquet"), key=lambda item: item.name):
+            digest.update(child.name.encode("utf-8"))
+            with child.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        return "sha256:" + digest.hexdigest()
     if path.exists():
         return _file_hash(path)
     return _payload_hash(payload)

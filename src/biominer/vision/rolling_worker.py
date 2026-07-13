@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+import logging
 import os
 from pathlib import Path
 from queue import Queue
@@ -21,9 +22,18 @@ from biominer.bioclip.object_runner import (
     ObjectBioClipScorer,
     _ensure_columns,
     _score_detection_batch,
+    _score_hierarchical_detection_batch,
     is_bioclip_memory_error,
     write_object_evidence_outputs,
 )
+from biominer.bioclip.classification_modes import (
+    DEFAULT_CLASSIFICATION_MODE,
+    HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+    ClassificationMode,
+    normalize_classification_mode,
+)
+from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
+from biominer.bioclip.taxonomy_embedding_cache import TaxonomyTextEmbeddingIndex
 from biominer.detection.detector_base import DecodedImage, ObjectDetector
 from biominer.detection.image_io import load_decoded_image_from_record
 from biominer.detection.pipeline import DetectionPipelineResult, run_detection_pipeline
@@ -32,6 +42,9 @@ from biominer.species.context import SpeciesContext
 from biominer.storage.parquet import write_parquet
 from biominer.vision.gates import BioClipGatePolicy
 from biominer.vision.score_inputs import materialize_bioclip_score_inputs
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -45,6 +58,7 @@ class RollingVisionWorkerSettings:
     bioclip_preprocess_workers: int = 1
     bioclip_gate_mode: str = "exclude_hard_negative"
     score_no_detection_whole_image: bool = True
+    heartbeat_interval_seconds: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -153,7 +167,7 @@ class ImageStager:
     def __call__(self, planned: PlannedBatch) -> ImageBatch:
         started_at = datetime.now(UTC).isoformat()
         rows: list[dict[str, Any]] = []
-        staged_records: list[dict[str, Any]] = []
+        staged_image_paths: list[str | None] = []
         cached_paths: list[Path] = []
         failed: list[dict[str, Any]] = []
         for record in planned.records.to_dicts():
@@ -184,15 +198,34 @@ class ImageStager:
                     staged["staged_image_path"] = str(cached.path)
                     cached_paths.append(cached.path)
             rows.append(row)
-            staged_records.append(staged)
+            staged_image_paths.append(str(staged.get("staged_image_path") or "") or None)
         self.manifest_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = write_parquet(pl.DataFrame(rows), self.manifest_dir / f"{planned.part_id}.parquet")
+        manifest_path = write_parquet(
+            pl.DataFrame(
+                rows,
+                schema={
+                    "source": pl.String,
+                    "flickr_photo_id": pl.String,
+                    "image_url": pl.String,
+                    "image_cache_path": pl.String,
+                    "image_hash": pl.String,
+                    "image_cache_status": pl.String,
+                    "failure_reason": pl.String,
+                    "batch_id": pl.String,
+                    "part_id": pl.String,
+                },
+            ),
+            self.manifest_dir / f"{planned.part_id}.parquet",
+        )
+        staged_frame = planned.records.with_columns(
+            pl.Series("staged_image_path", staged_image_paths, dtype=pl.String)
+        )
         ended_at = datetime.now(UTC).isoformat()
         return ImageBatch(
             batch_index=planned.batch_index,
             batch_id=planned.batch_id,
             part_id=planned.part_id,
-            records=pl.DataFrame(staged_records),
+            records=staged_frame,
             image_batch_manifest=manifest_path,
             cached_image_paths=tuple(cached_paths),
             failed_image_records=tuple(failed),
@@ -299,6 +332,9 @@ class BioCLIPWorker:
         bioclip_batch_size: int = 24,
         adaptive_batching: bool = False,
         min_bioclip_batch_size: int = 1,
+        classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
+        path_taxonomy_store: PathTaxonomyStore | None = None,
+        taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None,
     ) -> None:
         if bioclip_batch_size <= 0:
             raise ValueError("bioclip_batch_size must be positive")
@@ -313,6 +349,14 @@ class BioCLIPWorker:
         self.bioclip_batch_size = bioclip_batch_size
         self.adaptive_batching = adaptive_batching
         self.min_bioclip_batch_size = min_bioclip_batch_size
+        self.classification_mode = normalize_classification_mode(classification_mode)
+        self.path_taxonomy_store = path_taxonomy_store
+        self.taxonomy_text_embedding_index = taxonomy_text_embedding_index
+        if self.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+            if self.path_taxonomy_store is None or self.taxonomy_text_embedding_index is None:
+                raise ValueError(
+                    "hierarchical BioCLIP worker requires path taxonomy and text embedding indexes"
+                )
 
     def __call__(self, batch: ScoreInputBatch) -> ScoreBatch:
         self.score_dir.mkdir(parents=True, exist_ok=True)
@@ -323,14 +367,31 @@ class BioCLIPWorker:
         while pending:
             chunk = pending.pop(0)
             try:
-                rows.extend(
-                    _score_detection_batch(
+                if self.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
+                    assert self.path_taxonomy_store is not None
+                    assert self.taxonomy_text_embedding_index is not None
+                    score_rows = _score_hierarchical_detection_batch(
+                        items=chunk,
+                        scorer=self.scorer,
+                        path_taxonomy_store=self.path_taxonomy_store,
+                        taxonomy_text_embedding_index=self.taxonomy_text_embedding_index,
+                    )
+                else:
+                    score_rows = _score_detection_batch(
                         items=chunk,
                         context=self.species_context,
                         candidate_set=self.candidate_set,
                         scorer=self.scorer,
                         ablation_mode="detector_crop",
                     )
+                rows.extend(score_rows)
+                logger.info(
+                    "bioclip_chunk_finished batch_id=%s chunk_rows=%d scored_total=%d pending_chunks=%d mode=%s",
+                    batch.detection_batch.image_batch.batch_id,
+                    len(chunk),
+                    len(rows),
+                    len(pending),
+                    self.classification_mode,
                 )
             except RuntimeError as exc:
                 if (
@@ -461,6 +522,47 @@ class RollingVisionWorker:
         detection_ready_at: dict[str, float] = {}
         score_ready_at: dict[str, float] = {}
         sentinel = object()
+        heartbeat_stop = Event()
+        active_stages: dict[str, tuple[str, float]] = {}
+        active_stages_lock = Lock()
+
+        def stage_started(stage: str, batch_id: str) -> None:
+            with active_stages_lock:
+                active_stages[stage] = (batch_id, perf_counter())
+            logger.info("vision_stage_started stage=%s batch_id=%s", stage, batch_id)
+
+        def stage_finished(stage: str, batch_id: str, *, rows: int) -> None:
+            with active_stages_lock:
+                active = active_stages.pop(stage, None)
+            elapsed = perf_counter() - active[1] if active is not None else 0.0
+            logger.info(
+                "vision_stage_finished stage=%s batch_id=%s rows=%d elapsed_seconds=%.3f",
+                stage,
+                batch_id,
+                rows,
+                elapsed,
+            )
+
+        def heartbeat_worker() -> None:
+            interval = float(self.settings.heartbeat_interval_seconds)
+            while not heartbeat_stop.wait(interval):
+                now = perf_counter()
+                with active_stages_lock:
+                    snapshot = dict(active_stages)
+                if snapshot:
+                    state = ",".join(
+                        f"{stage}:{batch_id}:{now - began:.1f}s"
+                        for stage, (batch_id, began) in sorted(snapshot.items())
+                    )
+                else:
+                    state = "idle_between_batches"
+                logger.info(
+                    "vision_heartbeat active=%s batches_seen=%d batches_committed=%d stop_requested=%s",
+                    state,
+                    batches_seen,
+                    len(committed),
+                    stop.is_set(),
+                )
 
         def remember_error(exc: BaseException) -> None:
             if not first_error:
@@ -477,12 +579,14 @@ class RollingVisionWorker:
                     resident.increment()
                     self.max_resident_image_batches = max(self.max_resident_image_batches, resident.value)
                     stage_start = perf_counter()
+                    stage_started("image_staging", planned.batch_id)
                     staged = self._image_stage(planned)
                     batches_seen += 1
                     metrics.add_stage_seconds("image_staging", perf_counter() - stage_start)
                     metrics.add_count("images_staged", staged.records.height)
                     image_ready_at[staged.batch_id] = perf_counter()
                     staged_image_batches.put(staged)
+                    stage_finished("image_staging", staged.batch_id, rows=staged.records.height)
             except BaseException as exc:  # noqa: BLE001 - propagate across worker boundary.
                 remember_error(exc)
             finally:
@@ -500,6 +604,7 @@ class RollingVisionWorker:
                         perf_counter() - image_ready_at.pop(image_batch.batch_id, perf_counter()),
                     )
                     stage_start = perf_counter()
+                    stage_started("yolo_detection", image_batch.batch_id)
                     detected = self._detection_stage(image_batch)  # type: ignore[arg-type]
                     metrics.add_stage_seconds("yolo_detection", perf_counter() - stage_start)
                     metrics.add_count("images_detected", detected.image_batch.records.height)
@@ -507,6 +612,7 @@ class RollingVisionWorker:
                     metrics.add_count("detector_batch_retries", int(detected.metrics.get("detector_batch_retries", 0) or 0))
                     detection_ready_at[detected.image_batch.batch_id] = perf_counter()
                     yolo_to_score_batches.put(detected)
+                    stage_finished("yolo_detection", detected.image_batch.batch_id, rows=detected.frame.height)
             except BaseException as exc:  # noqa: BLE001
                 remember_error(exc)
             finally:
@@ -524,18 +630,26 @@ class RollingVisionWorker:
                         perf_counter() - detection_ready_at.pop(detection_batch.image_batch.batch_id, perf_counter()),
                     )
                     stage_start = perf_counter()
+                    stage_started("score_input_materialization", detection_batch.image_batch.batch_id)
                     score_inputs = self._score_input_stage(detection_batch)  # type: ignore[arg-type]
                     metrics.add_stage_seconds("score_input_materialization", perf_counter() - stage_start)
                     metrics.add_count("bioclip_score_inputs", score_inputs.frame.height)
                     resident.decrement()
                     image_slots.release()
+                    stage_finished(
+                        "score_input_materialization",
+                        detection_batch.image_batch.batch_id,
+                        rows=score_inputs.frame.height,
+                    )
                     stage_start = perf_counter()
+                    stage_started("bioclip_scoring", detection_batch.image_batch.batch_id)
                     scored = self._score_stage(score_inputs)
                     metrics.add_stage_seconds("bioclip_scoring", perf_counter() - stage_start)
                     metrics.add_count("bioclip_inputs_scored", scored.frame.height)
                     metrics.add_count("bioclip_batch_retries", int(scored.metrics.get("bioclip_batch_retries", 0) or 0))
                     score_ready_at[scored.score_input_batch.detection_batch.image_batch.batch_id] = perf_counter()
                     score_to_commit_batches.put(scored)
+                    stage_finished("bioclip_scoring", detection_batch.image_batch.batch_id, rows=scored.frame.height)
             except BaseException as exc:  # noqa: BLE001
                 remember_error(exc)
             finally:
@@ -554,10 +668,12 @@ class RollingVisionWorker:
                         perf_counter() - score_ready_at.pop(batch_id, perf_counter()),
                     )
                     stage_start = perf_counter()
+                    stage_started("commit", batch_id)
                     result = self._commit_stage(score_batch)  # type: ignore[arg-type]
                     metrics.add_stage_seconds("commit", perf_counter() - stage_start)
                     metrics.add_count("cleanup_paths_deleted", result.cleanup_paths_deleted)
                     committed.append(result)
+                    stage_finished("commit", batch_id, rows=1)
             except BaseException as exc:  # noqa: BLE001
                 remember_error(exc)
 
@@ -567,14 +683,31 @@ class RollingVisionWorker:
             Thread(target=score_worker, name="rolling-bioclip-worker"),
             Thread(target=commit_worker, name="rolling-commit-worker"),
         ]
+        heartbeat = Thread(target=heartbeat_worker, name="rolling-vision-heartbeat", daemon=True)
+        logger.info(
+            "vision_run_started records=%d batch_rows=%d heartbeat_seconds=%.1f",
+            records.height,
+            self.settings.vision_batch_rows,
+            self.settings.heartbeat_interval_seconds,
+        )
+        heartbeat.start()
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
+        heartbeat_stop.set()
+        heartbeat.join(timeout=max(1.0, self.settings.heartbeat_interval_seconds))
         if first_error:
+            logger.exception("vision_run_failed error=%s", first_error[0], exc_info=first_error[0])
             raise first_error[0]
         ended_at = datetime.now(UTC).isoformat()
         metric_payload = metrics.to_dict(max_resident_image_batches=self.max_resident_image_batches)
+        logger.info(
+            "vision_run_finished records=%d batches_seen=%d batches_committed=%d",
+            records.height,
+            batches_seen,
+            len(committed),
+        )
         return RollingVisionWorkerResult(
             started_at=started_at,
             ended_at=ended_at,
@@ -687,6 +820,8 @@ def _validate_settings(settings: RollingVisionWorkerSettings) -> None:
     ):
         if int(getattr(settings, name)) <= 0:
             raise ValueError(f"{name} must be positive")
+    if float(settings.heartbeat_interval_seconds) <= 0:
+        raise ValueError("heartbeat_interval_seconds must be positive")
 
 
 def _default_image_stage(planned: PlannedBatch) -> ImageBatch:

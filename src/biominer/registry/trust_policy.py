@@ -13,11 +13,11 @@ class TrustTier(StrEnum):
 
 
 TRUST_TIER_DEFINITIONS: dict[TrustTier, str] = {
-    TrustTier.T1: "accepted scientific names and taxonomically verified scientific synonyms",
-    TrustTier.T2: "curated biodiversity authority vernacular names",
-    TrustTier.T3: "Wikidata labels and aliases with confident external taxon links",
-    TrustTier.T4: "community or weakly curated names",
-    TrustTier.T5: "dictionary or generated translations",
+    TrustTier.T1: "CoL XR accepted names, scientific synonyms, and CoL/GBIF vernaculars bound to accepted taxa",
+    TrustTier.T2: "NCBI, Open Tree, ITIS/EOL, specialist authorities, and reviewed curated vernaculars",
+    TrustTier.T3: "confidently linked Wikispecies, Wikidata, iNaturalist, BOLD, and corroborated checklist names",
+    TrustTier.T4: "community names, homonyms, weak aliases, spelling variants, and unreviewed regional terms",
+    TrustTier.T5: "machine-generated and dictionary-derived translations",
 }
 
 ACCEPTED_REVIEW_STATES = {"accepted", "reviewed", "enabled"}
@@ -34,6 +34,26 @@ AUTHORITY_VERNACULAR_SOURCES = {
     "itis",
     "tmd",
     "tmd_de",
+}
+T1_SOURCES = {"catalogue_of_life", "col", "col_xr", "gbif"}
+T2_SOURCES = {
+    "ncbi",
+    "open_tree",
+    "opentree",
+    "itis",
+    "eol",
+    "specialist_authority",
+    "reviewed_curated",
+    "tmd",
+    "tmd_de",
+}
+T3_SOURCES = {
+    "wikispecies",
+    "wikidata",
+    "inaturalist",
+    "inat",
+    "bold",
+    "corroborated_checklist",
 }
 COMMUNITY_SOURCES = {"inaturalist", "inat", "flickr", "community"}
 GENERATED_SOURCES = {"dictionary", "generated", "libretranslate", "machine_translation", "translation"}
@@ -64,9 +84,11 @@ def source_default_trust_tier(source: str | None, name_class: str | None) -> Tru
     class_key = _norm(name_class)
     if class_key in {"accepted_scientific", "scientific", "scientific_name", "scientific_synonym", "synonym"}:
         return TrustTier.T1
-    if source_key in AUTHORITY_VERNACULAR_SOURCES:
+    if source_key in T1_SOURCES:
+        return TrustTier.T1
+    if source_key in T2_SOURCES or source_key in AUTHORITY_VERNACULAR_SOURCES:
         return TrustTier.T2
-    if source_key == "wikidata":
+    if source_key in T3_SOURCES:
         return TrustTier.T3
     if source_key in GENERATED_SOURCES or "translation" in source_key or "generated" in class_key:
         return TrustTier.T5
@@ -98,6 +120,8 @@ def should_enable_name_by_default(
     if tier == TrustTier.T4:
         return confidence_key not in LOW_CONFIDENCE_VALUES
     if tier == TrustTier.T5:
+        # Keep the assertion in names.parquet for audit and deduplication.
+        # Query eligibility separately blocks unreviewed generated terms.
         return True
     return False
 

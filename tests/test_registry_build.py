@@ -253,6 +253,8 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
     source.write_text(json.dumps(_gbif_snapshot()), encoding="utf-8")
     clients = {
         "col": RecordingSourceClient("CoL", "Lime Swallowtail"),
+        "ncbi": EmptyStaticClient("NCBI"),
+        "open_tree": EmptyStaticClient("Open Tree"),
         "gbif_vernacular": GBIFVernacularClient(),
         "itis": RecordingSourceClient("ITIS", "Lime Butterfly"),
         "inaturalist": RecordingSourceClient("iNaturalist", "Chequered Swallowtail"),
@@ -290,6 +292,8 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
     assert result["manifest"]["classification"] is None
     assert manifest["enrichment_sources"] == [
         "col",
+        "ncbi",
+        "open_tree",
         "inaturalist",
         "itis",
         "tmd_de",
@@ -532,6 +536,8 @@ def test_registry_build_quarantines_source_errors_without_siloing_successful_nam
     source.write_text(json.dumps(_gbif_snapshot()), encoding="utf-8")
     clients = {
         "col": RecordingSourceClient("CoL", "Lime Swallowtail"),
+        "ncbi": EmptyStaticClient("NCBI"),
+        "open_tree": EmptyStaticClient("Open Tree"),
         "gbif_vernacular": GBIFVernacularClient(),
         "itis": RecordingSourceClient("ITIS", "Broken ITIS", raise_error=True),
         "inaturalist": RecordingSourceClient("iNaturalist", "Chequered Swallowtail"),

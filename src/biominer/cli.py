@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
 from html import escape
@@ -56,11 +57,16 @@ from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry
-from biominer.registry.compiler import compile_registry_fixture
+from biominer.registry.compiler import compile_registry_fixture, compile_registry_parquet_source
+from biominer.registry.checklistbank import harvest_col_xr_names, harvest_col_xr_taxonomy
 from biominer.registry.col_xr import extract_col_xr_snapshot
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST_DAILY_REQUEST_LIMIT, build_enrichment_sources_from_registry, compile_enriched_registry
 from biominer.registry.gbif import GBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
+from biominer.registry.hierarchy_enrichment import (
+    harvest_gbif_genus_evidence,
+    harvest_open_tree_genus_evidence,
+)
 from biominer.registry.scope import load_scope
 from biominer.registry.publish import publish_registry
 from biominer.registry.translation_harvester import (
@@ -185,6 +191,10 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--scope-json", default="config/butterfly_scope.json")
     registry_build.add_argument("--source-json")
     registry_build.add_argument("--col-xr-archive", help="Pinned CoL XR Darwin Core archive for dataset 315557")
+    registry_build.add_argument(
+        "--col-xr-parquet-source",
+        help="Parquet source directory produced by registry harvest-col-xr",
+    )
     registry_build.add_argument("--reuse-source-json", action="store_true")
     registry_build.add_argument("--report-dir", default="reports")
     registry_build.add_argument("--retrieved-at")
@@ -226,6 +236,19 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--skip-curated-static-sources", action="store_true")
     registry_build.add_argument("--skip-enrichment", action="store_true")
     registry_build.add_argument("--skip-classification", action="store_true", help=argparse.SUPPRESS)
+    registry_harvest_col = registry_subparsers.add_parser("harvest-col-xr")
+    registry_harvest_col.add_argument("--output-dir", default="data/sources/col/COL26.6-XR")
+    registry_harvest_col.add_argument("--scope-json", default="config/butterfly_scope.json")
+    registry_harvest_col.add_argument("--workers", type=int, default=32)
+    registry_harvest_col.add_argument("--max-retries", type=int, default=4)
+    registry_harvest_col.add_argument("--skip-names", action="store_true")
+    registry_harvest_col.add_argument("--name-limit", type=int, default=0)
+    registry_enrich_hierarchy = registry_subparsers.add_parser("enrich-hierarchy")
+    registry_enrich_hierarchy.add_argument("--registry-dir", required=True)
+    registry_enrich_hierarchy.add_argument("--source-dir", required=True)
+    registry_enrich_hierarchy.add_argument("--sources", default="gbif,open_tree")
+    registry_enrich_hierarchy.add_argument("--workers", type=int, default=8)
+    registry_enrich_hierarchy.add_argument("--max-retries", type=int, default=4)
     registry_audit = registry_subparsers.add_parser("audit")
     registry_audit.add_argument("--registry-dir", required=True)
     registry_audit.add_argument("--report-dir", default="reports")
@@ -525,6 +548,54 @@ def run(args: argparse.Namespace) -> int:
     if args.command == "dev" and args.dev_command == "flickr":
         return _run_dev_flickr_command(args)
     if args.command == "registry" or (args.command == "dev" and args.dev_command == "registry"):
+        if args.registry_command == "harvest-col-xr":
+            taxonomy = asyncio.run(
+                harvest_col_xr_taxonomy(
+                    args.output_dir,
+                    scope_path=args.scope_json,
+                    workers=args.workers,
+                    max_retries=args.max_retries,
+                )
+            )
+            names = None
+            if not args.skip_names:
+                names = asyncio.run(
+                    harvest_col_xr_names(
+                        args.output_dir,
+                        workers=args.workers,
+                        max_retries=args.max_retries,
+                        limit=args.name_limit,
+                    )
+                )
+            print(json.dumps({"taxonomy": taxonomy, "names": names}, indent=2, sort_keys=True))
+            return 0
+        if args.registry_command == "enrich-hierarchy":
+            requested = tuple(part.strip().casefold() for part in args.sources.split(",") if part.strip())
+            unknown = set(requested) - {"gbif", "open_tree"}
+            if unknown:
+                print(json.dumps({"error": f"unknown hierarchy sources: {sorted(unknown)}"}, indent=2))
+                return 2
+            result: dict[str, Any] = {}
+            if "gbif" in requested:
+                result["gbif"] = asyncio.run(
+                    harvest_gbif_genus_evidence(
+                        args.registry_dir,
+                        args.source_dir,
+                        workers=args.workers,
+                        max_retries=args.max_retries,
+                    )
+                )
+            if "open_tree" in requested:
+                result["open_tree"] = asyncio.run(
+                    harvest_open_tree_genus_evidence(
+                        args.registry_dir,
+                        args.source_dir,
+                        workers=min(args.workers, 4),
+                        max_retries=args.max_retries,
+                    )
+                )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
         if args.registry_command == "fetch-taxonomy":
             retrieved_at = args.retrieved_at or datetime.now(UTC).isoformat()
             snapshot = build_gbif_source_snapshot(
@@ -593,6 +664,20 @@ def run(args: argparse.Namespace) -> int:
                 force=True,
             )
             try:
+                if args.col_xr_parquet_source:
+                    if args.source_json or args.col_xr_archive:
+                        raise ValueError(
+                            "--col-xr-parquet-source cannot be combined with --source-json or --col-xr-archive"
+                        )
+                    payload = compile_registry_parquet_source(
+                        args.col_xr_parquet_source,
+                        args.output_dir,
+                        registry_version=args.registry_version,
+                        scope_path=args.scope_json,
+                        query_curation_json=args.query_curation_json,
+                    )
+                    print(json.dumps(payload, indent=2, sort_keys=True))
+                    return 0
                 source_json = args.source_json
                 reuse_source_json = args.reuse_source_json
                 if args.col_xr_archive:

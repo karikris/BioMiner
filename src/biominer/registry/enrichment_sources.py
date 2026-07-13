@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import random
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -13,6 +13,7 @@ from time import sleep as default_sleep
 from typing import Any
 
 import httpx
+import polars as pl
 
 from biominer.registry.enrichment import SpeciesContext
 from biominer.registry.normalize import parse_language_tag, normalize_name_key
@@ -20,6 +21,7 @@ from biominer.registry.normalize import parse_language_tag, normalize_name_key
 
 HTTPGet = Callable[[str, dict[str, object]], dict[str, Any]]
 GraphQLPost = Callable[[dict[str, Any]], dict[str, Any]]
+JSONPost = Callable[[str, dict[str, Any]], dict[str, Any]]
 logger = logging.getLogger(__name__)
 RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
 USER_AGENT = "BioMiner/0.1 registry-enrichment"
@@ -35,6 +37,7 @@ TAXREF_SOURCE_PATH = f"{TAXREF_BASE_URL}{TAXREF_TAXA_SEARCH_PATH}"
 TAXREF_SOURCE_VERSION = "taxref-web-api-taxa-search"
 WIKIDATA_WDQS_URL = "https://query.wikidata.org"
 WIKIDATA_SOURCE_VERSION = "wikidata-wdqs-p225-p846-p1843-labels-aliases"
+OPEN_TREE_SOURCE_VERSION = "opentree-v3-tnrs"
 COL_NAME_USAGE_SEARCH_LIMIT = 1000
 INATURALIST_TAXA_PER_PAGE = 200
 TAXREF_SEARCH_ROWS_PER_TAXON = 50
@@ -206,7 +209,7 @@ class GBIFVernacularClient:
                     "source_record_id": f"gbif_vernacular:{source_record_id}",
                     "source_taxon_id": source_taxon_id,
                     "lineage_check": lineage_check,
-                    "trust_tier": "T3",
+                    "trust_tier": "T1",
                     "precision_tier": str(row.get("precision_tier") or "medium"),
                     "confidence": match_confidence,
                     "enabled": enabled,
@@ -842,6 +845,181 @@ class ITISClient:
         return {"name_assertions": assertions, "external_links": links, "source_snapshots": [_snapshot("ITIS", "itis-jsonservice")]}
 
 
+class OpenTreeBulkClient:
+    def __init__(self, *, json_post: JSONPost | None = None, max_retries: int = 5, batch_size: int = 250) -> None:
+        self._json_post = json_post or _json_post("https://api.opentreeoflife.org/v3", max_retries=max_retries)
+        self.batch_size = batch_size
+
+    def enrich_registry(self, *, taxa_rows: Iterable[dict[str, Any]], name_rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
+        del name_rows
+        species = [dict(row) for row in taxa_rows if str(row.get("rank") or "") == "SPECIES"]
+        lookup: dict[str, list[dict[str, Any]]] = {}
+        for row in species:
+            lookup.setdefault(normalize_name_key(row.get("scientific_name")), []).append(row)
+        assertions: list[dict[str, Any]] = []
+        links: list[dict[str, Any]] = []
+        matched = 0
+        ambiguous = 0
+        request_count = 0
+        for offset in range(0, len(species), self.batch_size):
+            names = [str(row.get("scientific_name") or "") for row in species[offset : offset + self.batch_size]]
+            payload = self._json_post(
+                "/tnrs/match_names",
+                {"names": names, "do_approximate_matching": False},
+            )
+            request_count += 1
+            for result in payload.get("results") or []:
+                if not isinstance(result, dict):
+                    continue
+                source_name = str(result.get("name") or "")
+                candidates = lookup.get(normalize_name_key(source_name), [])
+                exact = [
+                    match
+                    for match in (result.get("matches") or [])
+                    if isinstance(match, dict)
+                    and float(match.get("score") or 0.0) == 1.0
+                    and str(match.get("matched_name") or "") == source_name
+                    and not bool((match.get("taxon") or {}).get("is_suppressed"))
+                ]
+                if len(candidates) != 1 or len(exact) != 1:
+                    ambiguous += 1
+                    continue
+                row = candidates[0]
+                taxon = exact[0].get("taxon") or {}
+                ott_id = str(taxon.get("ott_id") or "")
+                if not ott_id or str(taxon.get("rank") or "") != "species":
+                    continue
+                context = SpeciesContext(
+                    accepted_taxon_key=str(row.get("accepted_taxon_key") or ""),
+                    accepted_scientific_name=str(row.get("scientific_name") or ""),
+                    family_key=str(row.get("family_key") or ""),
+                    family=str(row.get("family") or ""),
+                    genus_key=str(row.get("genus_key") or ""),
+                    genus=str(row.get("genus") or ""),
+                    current_names=(),
+                )
+                links.append(
+                    _external_link(
+                        context,
+                        source="Open Tree",
+                        source_taxon_id=ott_id,
+                        match_method="exact_scientific_name",
+                    )
+                )
+                values = [str(taxon.get("name") or ""), *[str(value) for value in (taxon.get("synonyms") or [])]]
+                for value in values:
+                    if not value:
+                        continue
+                    assertions.append(
+                        _name_assertion(
+                            context,
+                            value,
+                            source="Open Tree",
+                            source_record_id=f"opentree:{ott_id}:{value}",
+                            source_taxon_id=ott_id,
+                            lineage_check="exact_scientific_name",
+                            language="la",
+                            script="Latn",
+                            name_class=(
+                                "accepted_scientific"
+                                if normalize_name_key(value) == normalize_name_key(context.accepted_scientific_name)
+                                else "scientific_synonym"
+                            ),
+                            trust_tier="T2",
+                            precision_tier="high",
+                            confidence="high",
+                            enabled=True,
+                            review_state="accepted",
+                        )
+                    )
+                matched += 1
+        return {
+            "name_assertions": assertions,
+            "external_links": links,
+            "source_snapshots": [_snapshot("Open Tree", OPEN_TREE_SOURCE_VERSION)],
+            "coverage": {
+                "species_inspected": len(species),
+                "species_matched": matched,
+                "ambiguous_or_unmatched": ambiguous,
+                "names_extracted": len(assertions),
+                "request_count": request_count,
+            },
+        }
+
+
+class NCBIBulkClient:
+    def __init__(self, *, source_dir: str | Path = "data/sources/ncbi/current") -> None:
+        self.source_dir = Path(source_dir)
+
+    def enrich_registry(self, *, taxa_rows: Iterable[dict[str, Any]], name_rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
+        del name_rows
+        from biominer.registry.ncbi_taxonomy import NCBI_NAMES_FILE, NCBI_TAXA_FILE
+
+        accepted_keys = {
+            str(row.get("accepted_taxon_key") or "")
+            for row in taxa_rows
+            if str(row.get("rank") or "") == "SPECIES"
+        }
+        taxa = pl.read_parquet(self.source_dir / NCBI_TAXA_FILE).filter(
+            (pl.col("match_status") == "accepted")
+            & pl.col("accepted_taxon_key").is_in(accepted_keys)
+        )
+        names = pl.read_parquet(self.source_dir / NCBI_NAMES_FILE).filter(
+            pl.col("accepted_taxon_key").is_in(accepted_keys)
+        )
+        assertions = [
+            {
+                "accepted_taxon_key": str(row["accepted_taxon_key"]),
+                "verbatim_name": str(row["display_name"]),
+                "display_name": str(row["display_name"]),
+                "language": str(row["language"]),
+                "script": "Latn" if str(row["language"]) in {"la", "eng"} else "",
+                "region": "",
+                "bbox": "",
+                "name_class": str(row["name_class"]),
+                "source": "NCBI",
+                "source_record_id": f"ncbi:{row['ncbi_tax_id']}:{row['ncbi_name_class']}:{row['display_name']}",
+                "source_taxon_id": str(row["ncbi_tax_id"]),
+                "lineage_check": "accepted_scientific_name+family",
+                "trust_tier": "T2",
+                "precision_tier": "high",
+                "confidence": "high",
+                "enabled": True,
+                "review_state": "accepted",
+                "disabled_reason": "",
+                "licence": "United States Government Work",
+            }
+            for row in names.iter_rows(named=True)
+        ]
+        links = [
+            {
+                "accepted_taxon_key": str(row["accepted_taxon_key"]),
+                "source": "NCBI",
+                "source_taxon_id": str(row["ncbi_tax_id"]),
+                "match_method": "accepted_scientific_name",
+                "match_confidence": "high",
+                "lineage_check": "accepted_scientific_name+family",
+            }
+            for row in taxa.iter_rows(named=True)
+        ]
+        return {
+            "name_assertions": assertions,
+            "external_links": links,
+            "source_snapshots": [
+                _snapshot(
+                    "NCBI",
+                    "new_taxdump",
+                    query=str(self.source_dir),
+                )
+            ],
+            "coverage": {
+                "species_matched": taxa.height,
+                "names_extracted": len(assertions),
+                "request_count": 0,
+            },
+        }
+
+
 class INaturalistClient:
     def __init__(self, *, http_get: HTTPGet | None = None, max_retries: int = 5) -> None:
         self._http_get = http_get or _json_get("https://api.inaturalist.org", max_retries=max_retries)
@@ -874,7 +1052,7 @@ class INaturalistClient:
                         source_record_id=f"inaturalist:{taxon_id}:preferred_common_name",
                         language="eng",
                         script="Latn",
-                        trust_tier="T2",
+                        trust_tier="T3",
                         precision_tier="medium",
                         confidence="high",
                     )
@@ -1297,6 +1475,35 @@ def _graphql_post(
                     wait_seconds,
                 )
                 sleep(wait_seconds)
+
+    return post
+
+
+def _json_post(
+    base_url: str,
+    *,
+    max_retries: int = 5,
+    sleep: Callable[[float], None] = default_sleep,
+) -> JSONPost:
+    client = httpx.Client(base_url=base_url, timeout=45.0, headers={"User-Agent": USER_AGENT})
+
+    def post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                response = client.post(path, json=payload)
+                status_code = int(getattr(response, "status_code", 200))
+                if status_code in RETRYABLE_STATUS_CODES and attempt <= max_retries:
+                    sleep(_retry_after_seconds(response.headers.get("Retry-After")) or _backoff_seconds(attempt))
+                    continue
+                response.raise_for_status()
+                result = response.json()
+                return result if isinstance(result, dict) else {"results": result}
+            except (httpx.TimeoutException, httpx.TransportError, json.JSONDecodeError):
+                if attempt > max_retries:
+                    raise
+                sleep(_backoff_seconds(attempt))
 
     return post
 
