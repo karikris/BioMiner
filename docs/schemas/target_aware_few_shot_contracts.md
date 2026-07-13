@@ -341,6 +341,22 @@ Schema version: `regional-taxon-occurrence-v1.0.0`.
 | `evidence_version` | `str` | Source and reconciliation policy identity |
 | `registry_version` | `str` | Taxonomic identity used for reconciliation |
 
+Only records already marked range-inference eligible, present, taxon-key
+matched, coordinate-valid, non-fossil, non-specimen, and free of declared
+geospatial issues contribute. Their accepted keys are joined to accepted
+species in `taxa.parquet`; names from occurrence sources are never authoritative
+join keys. Reviewed subfamily and tribe values are added only from an enabled,
+registry-consistent classification path.
+
+Scope overlap precedence is `exact`, `buffer`, `country`, `bioregion`, then
+`global`. For one scope, species, and source, only records from the strongest
+available tier contribute, preventing broad fallbacks from inflating exact
+support. Coordinate confidence is a versioned evidence score, not a
+probability: version `inverse-uncertainty-100km-v1.0.0` averages
+`1 / (1 + uncertainty_metres / 100000)` only when every selected record has a
+reported uncertainty; otherwise it is null. The policy version is appended to
+`evidence_version`.
+
 ### 4.2 `regional_candidate_species.parquet`
 
 Grain: one candidate set and candidate species. Primary key and sort order:
