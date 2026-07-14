@@ -11,11 +11,14 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from biominer.evaluation.target_metrics import (
+    EVALUATION_BOOTSTRAP_COMPONENT_FILE,
     STRATIFICATION_FIELDS,
     TARGET_CALIBRATION_RELIABILITY_FILE,
     TARGET_CALIBRATION_RELIABILITY_SCHEMA,
     TARGET_MARGIN_DISTRIBUTION_SCHEMA,
     TARGET_MARGIN_DISTRIBUTION_FILE,
+    TARGET_METRIC_CONFIDENCE_INTERVAL_FILE,
+    TARGET_METRIC_CONFIDENCE_INTERVAL_SCHEMA,
     TARGET_THRESHOLD_OPERATING_POINTS_FILE,
     TARGET_THRESHOLD_OPERATING_POINT_SCHEMA,
     TARGET_VERIFICATION_EVALUATION_SCHEMA,
@@ -208,10 +211,26 @@ def test_evaluation_and_report_are_deterministic() -> None:
 
 
 def test_metric_report_publication_is_immutable_and_audited(tmp_path: Path) -> None:
-    report = compute_target_verification_metrics(
+    point_only = compute_target_verification_metrics(
         target_verification_evaluation_frame(_natural_rows())
     )
-    validate_target_verification_metric_report(report)
+    validate_target_verification_metric_report(point_only)
+    with pytest.raises(ValueError, match="require grouped uncertainty"):
+        publish_target_verification_metric_report(
+            point_only,
+            tmp_path / "point-only",
+        )
+    challenge, natural = _frozen_holdout_pair()
+    report = evaluate_target_verification(
+        target_verification_evaluation_frame(
+            _rows_for_frozen_holdouts(challenge, natural)
+        ),
+        challenge,
+        natural,
+        _leakage_register(challenge, natural),
+        TargetVerificationMetricsConfig(bootstrap_replicate_count=64),
+    )
+    validate_target_verification_metric_report(report, require_uncertainty=True)
 
     publication = publish_target_verification_metric_report(
         report,
@@ -229,6 +248,14 @@ def test_metric_report_publication_is_immutable_and_audited(tmp_path: Path) -> N
         publication.threshold_operating_points_path.name
         == TARGET_THRESHOLD_OPERATING_POINTS_FILE
     )
+    assert (
+        publication.confidence_intervals_path.name
+        == TARGET_METRIC_CONFIDENCE_INTERVAL_FILE
+    )
+    assert (
+        publication.bootstrap_components_path.name
+        == EVALUATION_BOOTSTRAP_COMPONENT_FILE
+    )
     assert publication.report_json_path.name == TARGET_VERIFICATION_REPORT_FILE
     assert (
         publication.report_markdown_path.name
@@ -238,6 +265,12 @@ def test_metric_report_publication_is_immutable_and_audited(tmp_path: Path) -> N
     assert payload["status"] == "complete"
     assert payload["report_fingerprint"] == report.report_fingerprint
     assert payload["artifacts"]["metrics"]["sha256"].startswith("sha256:")
+    assert payload["artifacts"]["confidence_intervals"]["sha256"].startswith(
+        "sha256:"
+    )
+    assert payload["improvement_claim_policy"] == (
+        "point_estimates_alone_do_not_establish_improvement"
+    )
     assert payload["calibration_reports"][0]["calibration_method"] == "sigmoid"
     assert payload["calibration_reports"][0]["calibration_split_fingerprint"] == _sha(
         "evaluation-split"
@@ -263,12 +296,34 @@ def test_official_evaluation_revalidates_leakage_and_frozen_item_coverage() -> N
         challenge,
         natural,
         leakage_register,
+        TargetVerificationMetricsConfig(bootstrap_replicate_count=64),
     )
 
     assert set(report.metrics["evaluation_set"]) == {
         "balanced_challenge",
         "natural_stream",
     }
+    assert report.uncertainty is not None
+    assert report.uncertainty.intervals.schema == (
+        TARGET_METRIC_CONFIDENCE_INTERVAL_SCHEMA
+    )
+    assert set(report.uncertainty.intervals["evaluation_set"]) == {
+        "balanced_challenge",
+        "natural_stream",
+    }
+    assert set(report.uncertainty.components["partition"]) == {
+        "balanced_challenge",
+        "natural_stream",
+    }
+    overall = report.metrics.filter(pl.col("scope") == "overall")
+    point_lookup = {
+        (row["evaluation_set"], row["metric_name"]): row["metric_value"]
+        for row in overall.iter_rows(named=True)
+    }
+    for row in report.uncertainty.intervals.iter_rows(named=True):
+        assert row["point_estimate"] == point_lookup[
+            (row["evaluation_set"], row["metric_name"])
+        ]
     incomplete = frame.filter(
         pl.col("evaluation_item_id") != frame["evaluation_item_id"][0]
     )

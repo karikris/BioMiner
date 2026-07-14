@@ -410,6 +410,11 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
                 "ece_bin_count",
                 "threshold_operating_points",
                 "calibration_confidence_level",
+                "bootstrap_replicate_count",
+                "bootstrap_confidence_level",
+                "bootstrap_random_seed",
+                "bootstrap_minimum_valid_fraction",
+                "bootstrap_minimum_component_count",
             }
         ),
         required=frozenset(
@@ -425,6 +430,11 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
             "ece_bin_count": 10,
             "threshold_operating_points": (0.50, 0.70, 0.90, 0.95, 0.99),
             "calibration_confidence_level": 0.95,
+            "bootstrap_replicate_count": 2_000,
+            "bootstrap_confidence_level": 0.95,
+            "bootstrap_random_seed": 20_260_714,
+            "bootstrap_minimum_valid_fraction": 0.80,
+            "bootstrap_minimum_component_count": 2,
         },
     ),
 }
@@ -669,6 +679,11 @@ def add_reference_workflow_parsers(
     evaluate.add_argument("--ece-bin-count", type=int)
     evaluate.add_argument("--threshold-operating-points", type=_float_csv)
     evaluate.add_argument("--calibration-confidence-level", type=float)
+    evaluate.add_argument("--bootstrap-replicate-count", type=int)
+    evaluate.add_argument("--bootstrap-confidence-level", type=float)
+    evaluate.add_argument("--bootstrap-random-seed", type=int)
+    evaluate.add_argument("--bootstrap-minimum-valid-fraction", type=float)
+    evaluate.add_argument("--bootstrap-minimum-component-count", type=int)
 
 
 def is_reference_workflow_command(value: object) -> bool:
@@ -981,6 +996,8 @@ def _run_evaluate_target_verifier(
             "threshold_operating_points": str(
                 publication.threshold_operating_points_path
             ),
+            "confidence_intervals": str(publication.confidence_intervals_path),
+            "bootstrap_components": str(publication.bootstrap_components_path),
             "report": str(publication.report_json_path),
             "summary": str(publication.report_markdown_path),
         },
@@ -1275,6 +1292,15 @@ def _target_verification_metrics_config(values: Mapping[str, object]) -> object:
         ece_bin_count=values["ece_bin_count"],
         threshold_operating_points=tuple(raw_thresholds),
         calibration_confidence_level=values["calibration_confidence_level"],
+        bootstrap_replicate_count=values["bootstrap_replicate_count"],
+        bootstrap_confidence_level=values["bootstrap_confidence_level"],
+        bootstrap_random_seed=values["bootstrap_random_seed"],
+        bootstrap_minimum_valid_fraction=values[
+            "bootstrap_minimum_valid_fraction"
+        ],
+        bootstrap_minimum_component_count=values[
+            "bootstrap_minimum_component_count"
+        ],
     )
 
 

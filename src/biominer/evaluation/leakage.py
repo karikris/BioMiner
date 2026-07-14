@@ -15,7 +15,11 @@ from biominer.common.semantic_hash import canonical_semantic_fingerprint
 
 EVALUATION_LEAKAGE_REGISTER_SCHEMA_VERSION = "evaluation-leakage-register-v1.0.0"
 EVALUATION_LEAKAGE_FINDING_SCHEMA_VERSION = "evaluation-leakage-finding-v1.0.0"
+EVALUATION_IDENTITY_COMPONENT_SCHEMA_VERSION = (
+    "evaluation-identity-component-v1.0.0"
+)
 EVALUATION_LEAKAGE_REGISTER_FILE = "evaluation_leakage_register.parquet"
+EVALUATION_BOOTSTRAP_COMPONENT_FILE = "evaluation_bootstrap_components.parquet"
 
 BALANCED_CHALLENGE_PARTITION = "balanced_challenge"
 NATURAL_STREAM_PARTITION = "natural_stream"
@@ -64,6 +68,15 @@ EVALUATION_LEAKAGE_FINDING_SCHEMA: dict[str, pl.DataType] = {
     "identity_value": pl.String,
     "partitions": pl.List(pl.String),
     "item_ids": pl.List(pl.String),
+}
+
+EVALUATION_IDENTITY_COMPONENT_SCHEMA: dict[str, pl.DataType] = {
+    "schema_version": pl.String,
+    "register_fingerprint": pl.String,
+    "partition": pl.String,
+    "bootstrap_component_id": pl.String,
+    "component_size": pl.UInt32,
+    "item_id": pl.String,
 }
 
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -222,6 +235,83 @@ def build_evaluation_leakage_register(
     )
     validate_evaluation_leakage_register(frame)
     return frame
+
+
+def build_evaluation_identity_components(register: pl.DataFrame) -> pl.DataFrame:
+    """Collapse all within-partition identity links into bootstrap components."""
+
+    if not isinstance(register, pl.DataFrame):
+        raise TypeError("register must be a Polars DataFrame")
+    normalized = register.sort("item_id")
+    validate_evaluation_leakage_register(normalized)
+    evaluation = normalized.filter(pl.col("partition").is_in(EVALUATION_PARTITIONS))
+    if evaluation.is_empty():
+        return pl.DataFrame(schema=EVALUATION_IDENTITY_COMPONENT_SCHEMA)
+    register_fingerprint = _single_text(normalized, "register_fingerprint")
+    parents = {
+        str(item_id): str(item_id) for item_id in evaluation["item_id"].to_list()
+    }
+
+    def find(item_id: str) -> str:
+        parent = parents[item_id]
+        while parent != parents[parent]:
+            parent = parents[parent]
+        while item_id != parent:
+            next_item = parents[item_id]
+            parents[item_id] = parent
+            item_id = next_item
+        return parent
+
+    def union(left: str, right: str) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root == right_root:
+            return
+        first, second = sorted((left_root, right_root))
+        parents[second] = first
+
+    token_owner: dict[tuple[str, str, str], str] = {}
+    for row in evaluation.iter_rows(named=True):
+        item_id = str(row["item_id"])
+        partition = str(row["partition"])
+        for dimension, identity_value in _identity_tokens(row):
+            token = (partition, dimension, identity_value)
+            owner = token_owner.setdefault(token, item_id)
+            union(item_id, owner)
+
+    members: dict[tuple[str, str], list[str]] = defaultdict(list)
+    partition_by_item = {
+        str(row["item_id"]): str(row["partition"])
+        for row in evaluation.iter_rows(named=True)
+    }
+    for item_id in sorted(parents):
+        members[(partition_by_item[item_id], find(item_id))].append(item_id)
+    rows: list[dict[str, object]] = []
+    for (partition, _root), item_ids in sorted(members.items()):
+        component_id = canonical_semantic_fingerprint(
+            {
+                "schema_version": EVALUATION_IDENTITY_COMPONENT_SCHEMA_VERSION,
+                "register_fingerprint": register_fingerprint,
+                "partition": partition,
+                "item_ids": item_ids,
+            }
+        )
+        rows.extend(
+            {
+                "schema_version": EVALUATION_IDENTITY_COMPONENT_SCHEMA_VERSION,
+                "register_fingerprint": register_fingerprint,
+                "partition": partition,
+                "bootstrap_component_id": component_id,
+                "component_size": len(item_ids),
+                "item_id": item_id,
+            }
+            for item_id in item_ids
+        )
+    return pl.DataFrame(
+        rows,
+        schema=EVALUATION_IDENTITY_COMPONENT_SCHEMA,
+        orient="row",
+    ).sort("partition", "bootstrap_component_id", "item_id")
 
 
 def find_evaluation_leakage(register: pl.DataFrame) -> pl.DataFrame:
@@ -589,6 +679,9 @@ def _sha256(value: object, *, field: str) -> str:
 __all__ = [
     "BALANCED_CHALLENGE_ARTIFACT_KIND",
     "BALANCED_CHALLENGE_PARTITION",
+    "EVALUATION_BOOTSTRAP_COMPONENT_FILE",
+    "EVALUATION_IDENTITY_COMPONENT_SCHEMA",
+    "EVALUATION_IDENTITY_COMPONENT_SCHEMA_VERSION",
     "EVALUATION_LEAKAGE_FINDING_SCHEMA",
     "EVALUATION_LEAKAGE_FINDING_SCHEMA_VERSION",
     "EVALUATION_LEAKAGE_REGISTER_FILE",
@@ -602,6 +695,7 @@ __all__ = [
     "NATURAL_STREAM_ARTIFACT_KIND",
     "NATURAL_STREAM_PARTITION",
     "REFERENCE_PARTITIONS",
+    "build_evaluation_identity_components",
     "build_evaluation_leakage_register",
     "empty_evaluation_leakage_findings",
     "empty_evaluation_leakage_register",

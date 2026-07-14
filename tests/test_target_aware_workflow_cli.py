@@ -8,8 +8,10 @@ import pytest
 
 from biominer.cli import _parse_run_stages, build_parser, run
 from biominer.evaluation.target_metrics import (
+    EVALUATION_BOOTSTRAP_COMPONENT_FILE,
     TARGET_CALIBRATION_RELIABILITY_FILE,
     TARGET_MARGIN_DISTRIBUTION_FILE,
+    TARGET_METRIC_CONFIDENCE_INTERVAL_FILE,
     TARGET_THRESHOLD_OPERATING_POINTS_FILE,
     TARGET_VERIFICATION_METRICS_FILE,
     TARGET_VERIFICATION_REPORT_FILE,
@@ -448,6 +450,8 @@ def test_target_verifier_evaluation_publishes_frozen_holdout_metrics(
                 str(output),
                 "--ece-bin-count",
                 "7",
+                "--bootstrap-replicate-count",
+                "64",
             ]
         )
     )
@@ -462,11 +466,17 @@ def test_target_verifier_evaluation_publishes_frozen_holdout_metrics(
     assert stdout["sample_count"] == evaluation_frame.height
     assert stdout["status"] == "complete"
     assert stdout["artifacts"] == {
+        "bootstrap_components": str(
+            output / EVALUATION_BOOTSTRAP_COMPONENT_FILE
+        ),
         "calibration_reliability": str(
             output / TARGET_CALIBRATION_RELIABILITY_FILE
         ),
         "margin_distribution": str(output / TARGET_MARGIN_DISTRIBUTION_FILE),
         "metrics": str(output / TARGET_VERIFICATION_METRICS_FILE),
+        "confidence_intervals": str(
+            output / TARGET_METRIC_CONFIDENCE_INTERVAL_FILE
+        ),
         "report": str(output / TARGET_VERIFICATION_REPORT_FILE),
         "summary": str(output / TARGET_VERIFICATION_REPORT_MARKDOWN_FILE),
         "threshold_operating_points": str(
@@ -477,6 +487,8 @@ def test_target_verifier_evaluation_publishes_frozen_holdout_metrics(
     assert (output / TARGET_MARGIN_DISTRIBUTION_FILE).is_file()
     assert (output / TARGET_CALIBRATION_RELIABILITY_FILE).is_file()
     assert (output / TARGET_THRESHOLD_OPERATING_POINTS_FILE).is_file()
+    assert (output / TARGET_METRIC_CONFIDENCE_INTERVAL_FILE).is_file()
+    assert (output / EVALUATION_BOOTSTRAP_COMPONENT_FILE).is_file()
     assert (output / TARGET_VERIFICATION_REPORT_MARKDOWN_FILE).is_file()
 
 

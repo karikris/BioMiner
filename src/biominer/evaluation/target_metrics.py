@@ -34,7 +34,20 @@ from biominer.evaluation.calibration import (
     build_target_calibration_diagnostics,
     validate_target_calibration_diagnostics,
 )
-from biominer.evaluation.leakage import validate_reference_and_holdout_leakage
+from biominer.evaluation.leakage import (
+    EVALUATION_BOOTSTRAP_COMPONENT_FILE,
+    EVALUATION_IDENTITY_COMPONENT_SCHEMA,
+    build_evaluation_identity_components,
+    validate_reference_and_holdout_leakage,
+)
+from biominer.evaluation.uncertainty import (
+    TARGET_METRIC_CONFIDENCE_INTERVAL_FILE,
+    TARGET_METRIC_CONFIDENCE_INTERVAL_SCHEMA,
+    GroupedBootstrapConfig,
+    GroupedBootstrapResult,
+    build_grouped_metric_confidence_intervals,
+    validate_grouped_bootstrap_result,
+)
 from biominer.flickr_fetch.geographic_clustering import NO_GEO_CLUSTER_ID
 from biominer.ml.calibration import CALIBRATION_METHODS
 from biominer.ml.nonmatch import ABSTAIN, CLASSIFICATION_OUTCOMES, TARGET_CONFIRMED
@@ -43,9 +56,9 @@ from biominer.storage.parquet import write_parquet
 
 
 TARGET_VERIFICATION_EVALUATION_SCHEMA_VERSION = "target-verification-evaluation-v1.1.0"
-TARGET_VERIFICATION_METRIC_SCHEMA_VERSION = "target-verification-metric-v1.1.0"
+TARGET_VERIFICATION_METRIC_SCHEMA_VERSION = "target-verification-metric-v1.2.0"
 TARGET_MARGIN_DISTRIBUTION_SCHEMA_VERSION = "target-margin-distribution-v1.0.0"
-TARGET_VERIFICATION_REPORT_SCHEMA_VERSION = "target-verification-report-v1.1.0"
+TARGET_VERIFICATION_REPORT_SCHEMA_VERSION = "target-verification-report-v1.2.0"
 
 TARGET_VERIFICATION_METRICS_FILE = "target_verification_metrics.parquet"
 TARGET_MARGIN_DISTRIBUTION_FILE = "target_competitor_margin_distribution.parquet"
@@ -55,6 +68,25 @@ TARGET_VERIFICATION_REPORT_FILE = "target_verification_report.json"
 TARGET_VERIFICATION_REPORT_MARKDOWN_FILE = "target_verification_report.md"
 
 EVALUATION_SET_VALUES = frozenset({"balanced_challenge", "natural_stream"})
+
+_PRIMARY_TARGET_METRIC_NAMES = (
+    "precision",
+    "recall",
+    "f1",
+    "pr_auc",
+    "roc_auc",
+    "specificity",
+    "false_positive_rate",
+    "false_negative_rate",
+    "coverage",
+    "abstention_rate",
+    "selective_risk",
+    "brier_score",
+    "log_loss",
+    "expected_calibration_error",
+    "ood_false_positive_rate",
+    "detector_gate_recall",
+)
 
 TARGET_VERIFICATION_EVALUATION_SCHEMA: dict[str, pl.DataType] = {
     "schema_version": pl.String,
@@ -193,6 +225,11 @@ class TargetVerificationMetricsConfig:
     ece_bin_count: int = 10
     threshold_operating_points: tuple[float, ...] = DEFAULT_CALIBRATION_THRESHOLDS
     calibration_confidence_level: float = 0.95
+    bootstrap_replicate_count: int = 2_000
+    bootstrap_confidence_level: float = 0.95
+    bootstrap_random_seed: int = 20_260_714
+    bootstrap_minimum_valid_fraction: float = 0.80
+    bootstrap_minimum_component_count: int = 2
     family_recall_ks: tuple[int, ...] = (1, 3, 5)
     genus_recall_ks: tuple[int, ...] = (1, 3, 5)
     species_recall_ks: tuple[int, ...] = (1, 5, 20)
@@ -245,6 +282,34 @@ class TargetVerificationMetricsConfig:
             "calibration_confidence_level",
             float(confidence),
         )
+        bootstrap = GroupedBootstrapConfig(
+            replicate_count=self.bootstrap_replicate_count,
+            confidence_level=self.bootstrap_confidence_level,
+            random_seed=self.bootstrap_random_seed,
+            minimum_valid_fraction=self.bootstrap_minimum_valid_fraction,
+            minimum_component_count=self.bootstrap_minimum_component_count,
+        )
+        object.__setattr__(
+            self,
+            "bootstrap_replicate_count",
+            bootstrap.replicate_count,
+        )
+        object.__setattr__(
+            self,
+            "bootstrap_confidence_level",
+            bootstrap.confidence_level,
+        )
+        object.__setattr__(self, "bootstrap_random_seed", bootstrap.random_seed)
+        object.__setattr__(
+            self,
+            "bootstrap_minimum_valid_fraction",
+            bootstrap.minimum_valid_fraction,
+        )
+        object.__setattr__(
+            self,
+            "bootstrap_minimum_component_count",
+            bootstrap.minimum_component_count,
+        )
         for field in (
             "family_recall_ks",
             "genus_recall_ks",
@@ -267,6 +332,9 @@ class TargetVerificationMetricsConfig:
                 "ece_bin_count": self.ece_bin_count,
                 "threshold_operating_points": list(self.threshold_operating_points),
                 "calibration_confidence_level": self.calibration_confidence_level,
+                "bootstrap_configuration_fingerprint": (
+                    self.bootstrap_config.fingerprint
+                ),
                 "family_recall_ks": list(self.family_recall_ks),
                 "genus_recall_ks": list(self.genus_recall_ks),
                 "species_recall_ks": list(self.species_recall_ks),
@@ -278,12 +346,33 @@ class TargetVerificationMetricsConfig:
             }
         )
 
+    @property
+    def bootstrap_config(self) -> GroupedBootstrapConfig:
+        return GroupedBootstrapConfig(
+            replicate_count=self.bootstrap_replicate_count,
+            confidence_level=self.bootstrap_confidence_level,
+            random_seed=self.bootstrap_random_seed,
+            minimum_valid_fraction=self.bootstrap_minimum_valid_fraction,
+            minimum_component_count=self.bootstrap_minimum_component_count,
+        )
+
+    @property
+    def primary_metric_names(self) -> tuple[str, ...]:
+        return (
+            *_PRIMARY_TARGET_METRIC_NAMES,
+            *(
+                _precision_metric_name(target)
+                for target in self.precision_targets
+            ),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class TargetVerificationMetricReport:
     metrics: pl.DataFrame
     margin_distribution: pl.DataFrame
     calibration_diagnostics: TargetCalibrationDiagnostics
+    uncertainty: GroupedBootstrapResult | None
     input_fingerprint: str
     configuration_fingerprint: str
     report_fingerprint: str
@@ -296,6 +385,8 @@ class TargetVerificationMetricPublication:
     margin_distribution_path: Path
     calibration_reliability_path: Path
     threshold_operating_points_path: Path
+    confidence_intervals_path: Path
+    bootstrap_components_path: Path
     report_json_path: Path
     report_markdown_path: Path
     report: Mapping[str, object]
@@ -446,12 +537,19 @@ def evaluate_target_verification(
         balanced_challenge,
         natural_stream,
     )
-    return compute_target_verification_metrics(frame, config)
+    bootstrap_components = build_evaluation_identity_components(leakage_register)
+    return compute_target_verification_metrics(
+        frame,
+        config,
+        bootstrap_components=bootstrap_components,
+    )
 
 
 def compute_target_verification_metrics(
     frame: pl.DataFrame,
     config: TargetVerificationMetricsConfig | None = None,
+    *,
+    bootstrap_components: pl.DataFrame | None = None,
 ) -> TargetVerificationMetricReport:
     """Compute each frozen set independently and across required strata."""
 
@@ -530,10 +628,37 @@ def compute_target_verification_metrics(
         thresholds=active.threshold_operating_points,
         confidence_level=active.calibration_confidence_level,
     )
+    uncertainty: GroupedBootstrapResult | None = None
+    if bootstrap_components is not None:
+        overall = metrics.filter(pl.col("scope") == "overall")
+        primary_names = active.primary_metric_names
+        primary_name_set = set(primary_names)
+        point_estimates = {
+            (str(row["evaluation_set"]), str(row["metric_name"])): row[
+                "metric_value"
+            ]
+            for row in overall.iter_rows(named=True)
+            if str(row["metric_name"]) in primary_name_set
+        }
+        uncertainty = build_grouped_metric_confidence_intervals(
+            frame,
+            bootstrap_components,
+            metric_names=primary_names,
+            point_estimates=point_estimates,
+            metric_evaluator=lambda sample: _primary_metric_values(
+                sample,
+                input_fingerprint=input_fingerprint,
+                config=active,
+            ),
+            input_fingerprint=input_fingerprint,
+            metric_configuration_fingerprint=active.fingerprint,
+            config=active.bootstrap_config,
+        )
     report_fingerprint = _report_fingerprint(
         metrics,
         margins,
         calibration_diagnostics,
+        uncertainty,
         input_fingerprint=input_fingerprint,
         configuration_fingerprint=active.fingerprint,
     )
@@ -541,6 +666,7 @@ def compute_target_verification_metrics(
         metrics=metrics,
         margin_distribution=margins,
         calibration_diagnostics=calibration_diagnostics,
+        uncertainty=uncertainty,
         input_fingerprint=input_fingerprint,
         configuration_fingerprint=active.fingerprint,
         report_fingerprint=report_fingerprint,
@@ -549,6 +675,8 @@ def compute_target_verification_metrics(
 
 def validate_target_verification_metric_report(
     report: TargetVerificationMetricReport,
+    *,
+    require_uncertainty: bool = False,
 ) -> None:
     if not isinstance(report, TargetVerificationMetricReport):
         raise TypeError("report must be a TargetVerificationMetricReport")
@@ -559,6 +687,13 @@ def validate_target_verification_metric_report(
     if report.metrics.is_empty() or report.margin_distribution.is_empty():
         raise ValueError("target verification report artifacts must not be empty")
     validate_target_calibration_diagnostics(report.calibration_diagnostics)
+    if report.uncertainty is None:
+        if require_uncertainty:
+            raise ValueError(
+                "official target verification reports require grouped uncertainty"
+            )
+    else:
+        _validate_report_uncertainty(report)
     metric_sort = report.metrics.sort(
         "evaluation_set",
         "scope",
@@ -602,11 +737,49 @@ def validate_target_verification_metric_report(
         report.metrics,
         report.margin_distribution,
         report.calibration_diagnostics,
+        report.uncertainty,
         input_fingerprint=report.input_fingerprint,
         configuration_fingerprint=report.configuration_fingerprint,
     )
     if report.report_fingerprint != expected:
         raise ValueError("target verification report_fingerprint is invalid")
+
+
+def _validate_report_uncertainty(report: TargetVerificationMetricReport) -> None:
+    uncertainty = report.uncertainty
+    assert uncertainty is not None
+    validate_grouped_bootstrap_result(uncertainty)
+    intervals = uncertainty.intervals
+    if set(intervals["input_fingerprint"].to_list()) != {
+        report.input_fingerprint
+    }:
+        raise ValueError("uncertainty input_fingerprint is inconsistent")
+    if set(intervals["metric_configuration_fingerprint"].to_list()) != {
+        report.configuration_fingerprint
+    }:
+        raise ValueError("uncertainty metric configuration is inconsistent")
+    overall = report.metrics.filter(pl.col("scope") == "overall")
+    point_estimates = {
+        (str(row["evaluation_set"]), str(row["metric_name"])): row[
+            "metric_value"
+        ]
+        for row in overall.iter_rows(named=True)
+    }
+    interval_keys: set[tuple[str, str]] = set()
+    for row in intervals.iter_rows(named=True):
+        key = (str(row["evaluation_set"]), str(row["metric_name"]))
+        if key in interval_keys:
+            raise ValueError("uncertainty metric keys must be unique")
+        interval_keys.add(key)
+        if key not in point_estimates:
+            raise ValueError(f"uncertainty metric has no overall point estimate: {key}")
+        expected = point_estimates[key]
+        observed = row["point_estimate"]
+        if expected is None or observed is None:
+            if expected is not observed:
+                raise ValueError(f"uncertainty point estimate mismatch: {key}")
+        elif abs(float(expected) - float(observed)) > 1e-12:
+            raise ValueError(f"uncertainty point estimate mismatch: {key}")
 
 
 def publish_target_verification_metric_report(
@@ -617,7 +790,9 @@ def publish_target_verification_metric_report(
 ) -> TargetVerificationMetricPublication:
     """Atomically publish metric tables and compact JSON/Markdown audit reports."""
 
-    validate_target_verification_metric_report(report)
+    validate_target_verification_metric_report(report, require_uncertainty=True)
+    uncertainty = report.uncertainty
+    assert uncertainty is not None
     started_at = datetime.now(UTC)
     effective_run_id = str(
         run_id
@@ -662,6 +837,16 @@ def publish_target_verification_metric_report(
             staging / TARGET_THRESHOLD_OPERATING_POINTS_FILE,
             overwrite=False,
         )
+        intervals_staged = write_parquet(
+            uncertainty.intervals,
+            staging / TARGET_METRIC_CONFIDENCE_INTERVAL_FILE,
+            overwrite=False,
+        )
+        components_staged = write_parquet(
+            uncertainty.components,
+            staging / EVALUATION_BOOTSTRAP_COMPONENT_FILE,
+            overwrite=False,
+        )
         ended_at = datetime.now(UTC)
         payload = _publication_payload(
             report,
@@ -669,6 +854,8 @@ def publish_target_verification_metric_report(
             margins_path=margins_staged,
             calibration_path=calibration_staged,
             operating_points_path=operating_points_staged,
+            confidence_intervals_path=intervals_staged,
+            bootstrap_components_path=components_staged,
             final_output_dir=destination,
             run_id=effective_run_id,
             started_at=started_at,
@@ -690,10 +877,14 @@ def publish_target_verification_metric_report(
     margins_path = destination / TARGET_MARGIN_DISTRIBUTION_FILE
     calibration_path = destination / TARGET_CALIBRATION_RELIABILITY_FILE
     operating_points_path = destination / TARGET_THRESHOLD_OPERATING_POINTS_FILE
+    confidence_intervals_path = destination / TARGET_METRIC_CONFIDENCE_INTERVAL_FILE
+    bootstrap_components_path = destination / EVALUATION_BOOTSTRAP_COMPONENT_FILE
     loaded_metrics = pl.read_parquet(metrics_path)
     loaded_margins = pl.read_parquet(margins_path)
     loaded_calibration = pl.read_parquet(calibration_path)
     loaded_operating_points = pl.read_parquet(operating_points_path)
+    loaded_intervals = pl.read_parquet(confidence_intervals_path)
+    loaded_components = pl.read_parquet(bootstrap_components_path)
     if not report.metrics.equals(loaded_metrics):
         raise ValueError("target verification metrics Parquet round-trip mismatch")
     if not report.margin_distribution.equals(loaded_margins):
@@ -704,6 +895,10 @@ def publish_target_verification_metric_report(
         loaded_operating_points
     ):
         raise ValueError("target threshold operating-point Parquet round-trip mismatch")
+    if not uncertainty.intervals.equals(loaded_intervals):
+        raise ValueError("target metric confidence-interval Parquet round-trip mismatch")
+    if not uncertainty.components.equals(loaded_components):
+        raise ValueError("evaluation bootstrap-component Parquet round-trip mismatch")
     _log_event(
         "target_verification_report_publish_completed",
         command="evaluation.publish_target_verification_metrics",
@@ -713,6 +908,8 @@ def publish_target_verification_metric_report(
         margin_rows=report.margin_distribution.height,
         calibration_rows=report.calibration_diagnostics.reliability.height,
         operating_point_rows=report.calibration_diagnostics.operating_points.height,
+        confidence_interval_rows=uncertainty.intervals.height,
+        bootstrap_component_rows=uncertainty.components.height,
         report_fingerprint=report.report_fingerprint,
     )
     return TargetVerificationMetricPublication(
@@ -721,6 +918,8 @@ def publish_target_verification_metric_report(
         margin_distribution_path=margins_path,
         calibration_reliability_path=calibration_path,
         threshold_operating_points_path=operating_points_path,
+        confidence_intervals_path=confidence_intervals_path,
+        bootstrap_components_path=bootstrap_components_path,
         report_json_path=destination / TARGET_VERIFICATION_REPORT_FILE,
         report_markdown_path=(destination / TARGET_VERIFICATION_REPORT_MARKDOWN_FILE),
         report=payload,
@@ -1145,6 +1344,37 @@ def _evaluate_group(
     return rows
 
 
+def _primary_metric_values(
+    frame: pl.DataFrame,
+    *,
+    input_fingerprint: str,
+    config: TargetVerificationMetricsConfig,
+) -> dict[str, float | None]:
+    evaluation_sets = frame["evaluation_set"].unique().to_list()
+    if len(evaluation_sets) != 1:
+        raise ValueError("bootstrap metric samples must contain one evaluation set")
+    evaluation_set = str(evaluation_sets[0])
+    rows = _evaluate_group(
+        frame,
+        evaluation_set=evaluation_set,
+        scope="overall",
+        dimension="overall",
+        value="all",
+        input_fingerprint=input_fingerprint,
+        config=config,
+    )
+    primary_names = set(config.primary_metric_names)
+    values = {
+        str(row["metric_name"]): row["metric_value"]
+        for row in rows
+        if str(row["metric_name"]) in primary_names
+    }
+    missing = sorted(primary_names - set(values))
+    if missing:
+        raise ValueError(f"primary metric evaluator omitted metrics: {missing}")
+    return values
+
+
 def _margin_distribution_rows(
     frame: pl.DataFrame,
     *,
@@ -1283,6 +1513,7 @@ def _report_fingerprint(
     metrics: pl.DataFrame,
     margins: pl.DataFrame,
     calibration_diagnostics: TargetCalibrationDiagnostics,
+    uncertainty: GroupedBootstrapResult | None,
     *,
     input_fingerprint: str,
     configuration_fingerprint: str,
@@ -1303,6 +1534,18 @@ def _report_fingerprint(
             "threshold_operating_point_rows": (
                 calibration_diagnostics.operating_points.to_dicts()
             ),
+            "uncertainty": (
+                None
+                if uncertainty is None
+                else {
+                    "uncertainty_fingerprint": uncertainty.uncertainty_fingerprint,
+                    "bootstrap_configuration_fingerprint": (
+                        uncertainty.bootstrap_configuration_fingerprint
+                    ),
+                    "confidence_interval_rows": uncertainty.intervals.to_dicts(),
+                    "bootstrap_component_rows": uncertainty.components.to_dicts(),
+                }
+            ),
         }
     )
 
@@ -1314,22 +1557,51 @@ def _publication_payload(
     margins_path: Path,
     calibration_path: Path,
     operating_points_path: Path,
+    confidence_intervals_path: Path,
+    bootstrap_components_path: Path,
     final_output_dir: Path,
     run_id: str,
     started_at: datetime,
     ended_at: datetime,
 ) -> dict[str, object]:
+    uncertainty = report.uncertainty
+    assert uncertainty is not None
+    interval_lookup = {
+        (str(row["evaluation_set"]), str(row["metric_name"])): row
+        for row in uncertainty.intervals.iter_rows(named=True)
+    }
     overall = report.metrics.filter(pl.col("scope") == "overall")
     summary: dict[str, dict[str, object]] = {}
     for evaluation_set in sorted(set(overall["evaluation_set"].to_list())):
         rows = overall.filter(pl.col("evaluation_set") == evaluation_set)
-        summary[evaluation_set] = {
-            str(row["metric_name"]): {
+        metrics: dict[str, object] = {}
+        for row in rows.iter_rows(named=True):
+            metric_name = str(row["metric_name"])
+            entry: dict[str, object] = {
                 "value": row["metric_value"],
                 "undefined_reason": row["undefined_reason"],
             }
-            for row in rows.iter_rows(named=True)
-        }
+            interval = interval_lookup.get((evaluation_set, metric_name))
+            if interval is not None:
+                entry.update(
+                    {
+                        "confidence_interval_lower": interval[
+                            "confidence_interval_lower"
+                        ],
+                        "confidence_interval_upper": interval[
+                            "confidence_interval_upper"
+                        ],
+                        "confidence_level": interval["confidence_level"],
+                        "interval_status": interval["interval_status"],
+                        "valid_replicates": interval["valid_replicates"],
+                        "undefined_replicates": interval[
+                            "undefined_replicates"
+                        ],
+                    }
+                )
+            metrics[metric_name] = entry
+        summary[evaluation_set] = metrics
+    uncertainty_reports = _uncertainty_publication_summary(uncertainty.intervals)
     return {
         "schema_version": TARGET_VERIFICATION_REPORT_SCHEMA_VERSION,
         "command": "evaluation.publish_target_verification_metrics",
@@ -1355,6 +1627,16 @@ def _publication_payload(
         "calibration_diagnostics_fingerprint": (
             report.calibration_diagnostics.diagnostics_fingerprint
         ),
+        "uncertainty_fingerprint": uncertainty.uncertainty_fingerprint,
+        "bootstrap_configuration_fingerprint": (
+            uncertainty.bootstrap_configuration_fingerprint
+        ),
+        "confidence_interval_row_count": uncertainty.intervals.height,
+        "bootstrap_component_row_count": uncertainty.components.height,
+        "improvement_claim_policy": uncertainty.intervals[
+            "improvement_claim_policy"
+        ][0],
+        "uncertainty_reports": uncertainty_reports,
         "calibration_reports": _calibration_publication_summary(
             report.calibration_diagnostics.reliability
         ),
@@ -1383,6 +1665,18 @@ def _publication_payload(
                 "row_count": report.calibration_diagnostics.operating_points.height,
                 "byte_count": operating_points_path.stat().st_size,
                 "sha256": _file_sha256(operating_points_path),
+            },
+            "confidence_intervals": {
+                "path": str(final_output_dir / confidence_intervals_path.name),
+                "row_count": uncertainty.intervals.height,
+                "byte_count": confidence_intervals_path.stat().st_size,
+                "sha256": _file_sha256(confidence_intervals_path),
+            },
+            "bootstrap_components": {
+                "path": str(final_output_dir / bootstrap_components_path.name),
+                "row_count": uncertainty.components.height,
+                "byte_count": bootstrap_components_path.stat().st_size,
+                "sha256": _file_sha256(bootstrap_components_path),
             },
         },
     }
@@ -1436,6 +1730,39 @@ def _calibration_publication_summary(
     return summaries
 
 
+def _uncertainty_publication_summary(
+    intervals: pl.DataFrame,
+) -> list[dict[str, object]]:
+    summaries: list[dict[str, object]] = []
+    for evaluation_set in sorted(set(intervals["evaluation_set"].to_list())):
+        selected = intervals.filter(pl.col("evaluation_set") == evaluation_set)
+        first = selected.row(0, named=True)
+        status_counts = {
+            str(row["interval_status"]): int(row["len"])
+            for row in selected.group_by("interval_status")
+            .len()
+            .sort("interval_status")
+            .iter_rows(named=True)
+        }
+        summaries.append(
+            {
+                "evaluation_set": evaluation_set,
+                "interval_method": first["interval_method"],
+                "confidence_level": first["confidence_level"],
+                "bootstrap_replicates": first["bootstrap_replicates"],
+                "minimum_valid_replicates": first["minimum_valid_replicates"],
+                "independent_component_count": first[
+                    "independent_component_count"
+                ],
+                "minimum_component_size": first["minimum_component_size"],
+                "maximum_component_size": first["maximum_component_size"],
+                "random_seed": first["random_seed"],
+                "interval_status_counts": status_counts,
+            }
+        )
+    return summaries
+
+
 def _publication_markdown(payload: Mapping[str, object]) -> str:
     overall = payload["overall_metrics"]
     assert isinstance(overall, Mapping)
@@ -1454,6 +1781,18 @@ def _publication_markdown(payload: Mapping[str, object]) -> str:
         (
             "- Threshold operating-point rows: "
             f"`{payload['threshold_operating_point_row_count']}`"
+        ),
+        (
+            "- Grouped confidence-interval rows: "
+            f"`{payload['confidence_interval_row_count']}`"
+        ),
+        (
+            "- Bootstrap component rows: "
+            f"`{payload['bootstrap_component_row_count']}`"
+        ),
+        (
+            "- Improvement policy: "
+            "point estimates alone do not establish improvement"
         ),
     ]
     for evaluation_set, metrics in sorted(overall.items()):
@@ -1476,7 +1815,30 @@ def _publication_markdown(payload: Mapping[str, object]) -> str:
             value = entry.get("value")
             reason = entry.get("undefined_reason")
             display = value if value is not None else f"undefined ({reason})"
+            interval_status = entry.get("interval_status")
+            if interval_status == "complete":
+                display = (
+                    f"{display}; {float(entry['confidence_level']) * 100:.1f}% CI "
+                    f"[{entry['confidence_interval_lower']}, "
+                    f"{entry['confidence_interval_upper']}]"
+                )
+            elif interval_status is not None:
+                display = f"{display}; CI {interval_status}"
             lines.append(f"- {name}: `{display}`")
+    uncertainty_reports = payload.get("uncertainty_reports")
+    if isinstance(uncertainty_reports, list):
+        lines.extend(["", "## Uncertainty provenance", ""])
+        for entry in uncertainty_reports:
+            if not isinstance(entry, Mapping):
+                continue
+            lines.append(
+                "- "
+                f"{entry.get('evaluation_set')}: "
+                f"components={entry.get('independent_component_count')}, "
+                f"replicates={entry.get('bootstrap_replicates')}, "
+                f"method={entry.get('interval_method')}, "
+                f"statuses={entry.get('interval_status_counts')}"
+            )
     calibration_reports = payload.get("calibration_reports")
     if isinstance(calibration_reports, list):
         lines.extend(["", "## Calibration provenance", ""])
@@ -1533,6 +1895,8 @@ def _zero_reason(denominator: float) -> str | None:
 
 
 __all__ = [
+    "EVALUATION_BOOTSTRAP_COMPONENT_FILE",
+    "EVALUATION_IDENTITY_COMPONENT_SCHEMA",
     "EVALUATION_SET_VALUES",
     "STRATIFICATION_FIELDS",
     "TARGET_CALIBRATION_RELIABILITY_FILE",
@@ -1540,6 +1904,8 @@ __all__ = [
     "TARGET_MARGIN_DISTRIBUTION_FILE",
     "TARGET_MARGIN_DISTRIBUTION_SCHEMA",
     "TARGET_MARGIN_DISTRIBUTION_SCHEMA_VERSION",
+    "TARGET_METRIC_CONFIDENCE_INTERVAL_FILE",
+    "TARGET_METRIC_CONFIDENCE_INTERVAL_SCHEMA",
     "TARGET_THRESHOLD_OPERATING_POINTS_FILE",
     "TARGET_THRESHOLD_OPERATING_POINT_SCHEMA",
     "TARGET_VERIFICATION_EVALUATION_SCHEMA",
