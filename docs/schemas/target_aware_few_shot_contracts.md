@@ -1341,6 +1341,31 @@ The table includes:
 Query source terms, Flickr discovery labels, or any other field that directly
 leaks the reviewed answer are prohibited features.
 
+The builder accepts only typed, normalized evidence rather than arbitrary source
+columns. `MODEL_FEATURE_COLUMNS` is an explicit allowlist disjoint from label
+and provenance columns; query terms, query-definition IDs, discovery taxon
+keys, and source labels do not exist in the physical schema. Labels remain in
+the artifact solely as supervised outcomes.
+
+Reference competitor features use balanced-pool centroid similarity. Each named
+competitor category is reduced independently by maximum similarity.
+`target_minus_best_competitor_margin` subtracts the maximum across regional,
+same-genus, historical-false-positive, and family-negative categories from the
+target centroid similarity; domain negatives retain their own margin. Target
+prototype distance is `1 - target_global_prototype_similarity` and nearest-
+support distance is `1 - target_nearest_reference_similarity`. Text margin
+uses the analogous target-minus-best-competitor subtraction. Absent inputs
+produce null outputs rather than zeroes or shortened fixed-k statistics.
+
+Geographic distances are kilometres and must be non-negative. A `no_geo` row
+has `missing_geo=true` and null regional overlap/distance values. Image width,
+height, short side, long side, megapixels, and a short-side-below-224 indicator
+are derived from the immutable visual input. The feature-schema fingerprint
+binds the ordered model allowlist, dtypes, embedding dimension, derivation
+versions, and prohibited-source list. The training-data fingerprint binds all
+sorted row fingerprints. Leakage, observation, owner, duplicate, burst, and
+provider-mirror groups may each occur in only one dataset split.
+
 ### 7.2 `dataset_split_manifest.parquet`
 
 Grain: one source item/group membership and split version. Primary key:
