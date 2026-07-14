@@ -1310,11 +1310,11 @@ and detections when their transformation identity is identical.
 ### 6.5 Versioned taxonomic prompt ensembles
 
 Target-aware text evidence uses prompt schema
-`taxonomic-prompt-ensemble-v1.0.0` and prompt version
+`taxonomic-prompt-ensemble-v1.1.0` and prompt version
 `bioclip-taxonomic-prompts-v1.0.0`. One ensemble is bound to an accepted species
 key, accepted scientific name, route, life stage, root-to-species path, taxonomy
-source/version/fingerprint, sorted evidence exclusions, and an ensemble
-fingerprint over that complete semantic record.
+source/version/fingerprint, sorted evidence exclusions, an explicit geography
+policy, and an ensemble fingerprint over that complete semantic record.
 
 The deterministic built-in variants are the accepted scientific name, a literal
 butterfly-species description, a route-compatible life-stage description, a
@@ -1330,9 +1330,10 @@ Generated translations, T4/T5 assertions, weak homonyms, rejected/disabled
 names, and unsupported name classes are excluded. Free-form prompt aliases
 require an accepted human review state and reviewer identity; route/stage
 mismatches and specimen aliases outside the specimen route are excluded. Raw
-Flickr query/search terms are not an input to this builder. Exclusion reason and
-source-record identity remain fingerprinted audit evidence rather than silently
-becoming a prompt.
+Flickr query/search terms are not an input to this builder. Reviewed aliases
+marked as geography-bearing are also excluded and must use the explicit
+geographic ablation contract below. Exclusion reason and source-record identity
+remain fingerprinted audit evidence rather than silently becoming a prompt.
 
 Legacy classifiers may project an ensemble to ordered `PromptVariant` labels,
 but prompt-score pooling is a separate, versioned operation. Prompt generation
@@ -1340,8 +1341,8 @@ does not average or otherwise collapse text evidence.
 
 ### 6.6 Prompt pooling and diagnostics
 
-Prompt pooling results use schema `prompt-ensemble-pooling-result-v1.0.0` and
-algorithm version `bioclip-prompt-pooling-v1.0.0`. Pooling consumes normalized
+Prompt pooling results use schema `prompt-ensemble-pooling-result-v1.1.0` and
+algorithm version `bioclip-prompt-pooling-v1.1.0`. Pooling consumes normalized
 image and per-prompt text embeddings from one model fingerprint. The raw
 per-prompt values are cosine similarities in `[-1,1]`; the label-set softmax
 from the legacy BioCLIP worker is not a substitute and is not called raw
@@ -1361,11 +1362,49 @@ fingerprints. Final-test-derived weights are invalid.
 Selection is controlled by a fingerprinted route, life-stage, and visual-domain
 subset policy. The default stage/domain builder includes accepted taxonomy
 prompts but does not silently add vernacular or reviewed-alias prompts; those
-families require explicit inclusion. Every result persists every ensemble
-prompt's label, kind, template, variant fingerprint, raw similarity, subset and
-contribution flags, pooling weight, and selection reason, including prompts
-outside the active subset. It also binds normalized image/text embedding-set,
-model, ensemble, subset, optional weight-artifact, and result fingerprints.
+families require explicit inclusion. Geography-bearing kinds are rejected by
+generic subset selection unless a separate geography-ablation flag is true and
+matches the ensemble's ablation fingerprint. Every result persists every
+ensemble prompt's label, kind, template, variant fingerprint, raw similarity,
+geography marker, subset and contribution flags, pooling weight, and selection
+reason, including prompts outside the active subset. It also binds normalized
+image/text embedding-set, model, ensemble, subset, optional weight-artifact,
+geography-ablation, and result fingerprints.
+
+### 6.7 Structured geography and prompt ablations
+
+The default prompt policy is `structured_evidence_only`. A normal taxonomic
+ensemble contains no geographic evidence object, no geography-bearing prompt,
+and no ablation fingerprint. Country, administrative region, bioregion,
+locality, occurrence overlap, and distance remain structured candidate or
+model features from the versioned geography artifacts in Sections 2 through 4.
+They are not appended to visual text and do not modify visual similarity.
+
+`structured-geographic-prompt-evidence-v1.0.0` is a narrow, fingerprinted
+reference used only to define an experiment. It carries the accepted taxon key,
+scope type and ID, display name and language, optional ISO country code, source
+artifact and schema version, source record ID and fingerprint, and its own
+semantic fingerprint. It neither creates a range assertion nor replaces the
+source geography row. Accepted source contracts are the versioned taxon spread,
+taxon summary, regional occurrence, and regional candidate artifacts; Flickr
+query-hit or free-form metadata records are invalid sources.
+
+A geography-bearing prompt can be derived only through
+`bioclip-geographic-prompt-ablation-v1.0.0`. The builder requires a literal
+explicit opt-in, a named ablation, a geography-free base ensemble, and structured
+evidence for the same accepted taxon. It emits one marked variant and binds the
+base ensemble fingerprint, complete evidence payload, prompt fingerprint, and
+ablation fingerprint. Nested ablations, mismatched taxa, arbitrary location
+strings, and geography-marked reviewed aliases in the normal builder fail
+closed.
+
+Default stage/domain pooling excludes the ablation even when its raw diagnostic
+similarity is available. A subset that contains the geographic prompt kind must
+separately enable the exact linked ablation. Pooling records whether that flag
+was enabled, the ablation fingerprint, the selected geographic-prompt count,
+and per-prompt `geography_bearing` state. This keeps country-conditioned text an
+auditable validation experiment rather than a production morphology signal;
+scenery or background correlation cannot enter the default score silently.
 
 ## 7. Training, classifier, and calibration artifacts
 

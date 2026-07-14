@@ -10,6 +10,7 @@ import re
 import numpy as np
 
 from biominer.bioclip.prompt_templates import (
+    EXPLICIT_GEOGRAPHY_PROMPT_ABLATION,
     TAXONOMIC_PROMPT_VERSION,
     PromptVariant,
     TaxonomicPromptEnsemble,
@@ -18,10 +19,10 @@ from biominer.bioclip.prompt_templates import (
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
 
 
-PROMPT_POOLING_SCHEMA_VERSION = "prompt-ensemble-pooling-result-v1.0.0"
-PROMPT_POOLING_VERSION = "bioclip-prompt-pooling-v1.0.0"
-PROMPT_SUBSET_SCHEMA_VERSION = "prompt-subset-policy-v1.0.0"
-PROMPT_SUBSET_VERSION = "stage-domain-prompt-subsets-v1.0.0"
+PROMPT_POOLING_SCHEMA_VERSION = "prompt-ensemble-pooling-result-v1.1.0"
+PROMPT_POOLING_VERSION = "bioclip-prompt-pooling-v1.1.0"
+PROMPT_SUBSET_SCHEMA_VERSION = "prompt-subset-policy-v1.1.0"
+PROMPT_SUBSET_VERSION = "stage-domain-prompt-subsets-v1.1.0"
 PROMPT_WEIGHT_SCHEMA_VERSION = "learned-prompt-weights-v1.0.0"
 PROMPT_WEIGHT_VERSION = "validation-learned-prompt-weights-v1.0.0"
 
@@ -60,6 +61,8 @@ class PromptSubsetPolicy:
     life_stage: str
     visual_domain: str
     prompt_kinds: tuple[str, ...]
+    geography_prompt_ablation_enabled: bool
+    geography_ablation_fingerprint: str | None
     subset_fingerprint: str
 
 
@@ -87,6 +90,7 @@ class PromptScoreDiagnostic:
     evidence_id: str | None
     trust_tier: str | None
     language: str | None
+    geography_bearing: bool
     raw_similarity: float
     in_subset: bool
     contributed: bool
@@ -108,6 +112,8 @@ class PromptPoolingResult:
     route: str
     life_stage: str
     visual_domain: str
+    geography_prompt_ablation_enabled: bool
+    geography_ablation_fingerprint: str | None
     model_fingerprint: str
     image_embedding_fingerprint: str
     text_embedding_set_fingerprint: str
@@ -118,6 +124,7 @@ class PromptPoolingResult:
     best_prompt_variant_fingerprint: str
     best_prompt_label: str
     selected_prompt_count: int
+    selected_geography_prompt_count: int
     contributing_prompt_count: int
     prompt_scores: tuple[PromptScoreDiagnostic, ...]
     result_fingerprint: str
@@ -129,10 +136,15 @@ def build_prompt_subset_policy(
     subset_id: str,
     visual_domain: str,
     prompt_kinds: Sequence[str],
+    enable_geography_prompt_ablation: bool = False,
 ) -> PromptSubsetPolicy:
     """Create a canonical prompt-kind subset bound to one route/stage ensemble."""
 
     taxonomic_prompt_ensemble_payload(ensemble)
+    _require_boolean(
+        enable_geography_prompt_ablation,
+        field="enable_geography_prompt_ablation",
+    )
     identifier = _canonical_text(subset_id, field="subset_id")
     domain = _canonical_text(visual_domain, field="visual_domain").casefold()
     expected_domain = _ROUTE_VISUAL_DOMAIN[ensemble.route]
@@ -154,6 +166,23 @@ def build_prompt_subset_policy(
             if variant.prompt_kind in requested
         )
     )
+    selected_geography = any(
+        variant.geography_bearing and variant.prompt_kind in requested
+        for variant in ensemble.variants
+    )
+    if selected_geography and not enable_geography_prompt_ablation:
+        raise ValueError(
+            "geography-bearing prompt kinds require explicit ablation enablement"
+        )
+    if enable_geography_prompt_ablation and not selected_geography:
+        raise ValueError(
+            "geography prompt ablation enablement requires a geographic prompt kind"
+        )
+    if enable_geography_prompt_ablation and (
+        ensemble.geography_mode != EXPLICIT_GEOGRAPHY_PROMPT_ABLATION
+        or ensemble.geography_ablation_fingerprint is None
+    ):
+        raise ValueError("prompt ensemble has no compatible geography ablation")
     semantics = {
         "schema_version": PROMPT_SUBSET_SCHEMA_VERSION,
         "subset_version": PROMPT_SUBSET_VERSION,
@@ -164,6 +193,8 @@ def build_prompt_subset_policy(
         "life_stage": ensemble.life_stage,
         "visual_domain": domain,
         "prompt_kinds": list(ordered_kinds),
+        "geography_prompt_ablation_enabled": enable_geography_prompt_ablation,
+        "geography_ablation_fingerprint": (ensemble.geography_ablation_fingerprint),
     }
     return PromptSubsetPolicy(
         schema_version=PROMPT_SUBSET_SCHEMA_VERSION,
@@ -175,6 +206,8 @@ def build_prompt_subset_policy(
         life_stage=ensemble.life_stage,
         visual_domain=domain,
         prompt_kinds=ordered_kinds,
+        geography_prompt_ablation_enabled=enable_geography_prompt_ablation,
+        geography_ablation_fingerprint=ensemble.geography_ablation_fingerprint,
         subset_fingerprint=canonical_semantic_fingerprint(semantics),
     )
 
@@ -192,7 +225,10 @@ def build_stage_domain_prompt_subset(
     taxonomic_prompt_ensemble_payload(ensemble)
     kinds: list[str] = []
     for variant in ensemble.variants:
-        include = variant.evidence_kind == "accepted_taxonomy"
+        include = (
+            not variant.geography_bearing
+            and variant.evidence_kind == "accepted_taxonomy"
+        )
         include = include or (
             include_vernacular_names and variant.evidence_kind == "vernacular_name"
         )
@@ -215,6 +251,7 @@ def build_stage_domain_prompt_subset(
         ),
         visual_domain=_ROUTE_VISUAL_DOMAIN[ensemble.route],
         prompt_kinds=kinds,
+        enable_geography_prompt_ablation=False,
     )
 
 
@@ -426,6 +463,8 @@ def pool_prompt_ensemble(
         "route": ensemble.route,
         "life_stage": ensemble.life_stage,
         "visual_domain": subset.visual_domain,
+        "geography_prompt_ablation_enabled": (subset.geography_prompt_ablation_enabled),
+        "geography_ablation_fingerprint": subset.geography_ablation_fingerprint,
         "model_fingerprint": model,
         "image_embedding_fingerprint": image_fingerprint,
         "text_embedding_set_fingerprint": text_fingerprint,
@@ -440,6 +479,9 @@ def pool_prompt_ensemble(
         "best_prompt_variant_fingerprint": variants[best_index].variant_fingerprint,
         "best_prompt_label": variants[best_index].label,
         "selected_prompt_count": len(subset_indices),
+        "selected_geography_prompt_count": sum(
+            variants[index].geography_bearing for index in subset_indices
+        ),
         "contributing_prompt_count": sum(item.contributed for item in diagnostics),
         "prompt_scores": diagnostics,
     }
@@ -468,6 +510,7 @@ def _validate_subset(
     ensemble: TaxonomicPromptEnsemble,
     subset: PromptSubsetPolicy,
 ) -> None:
+    taxonomic_prompt_ensemble_payload(ensemble)
     if not isinstance(subset, PromptSubsetPolicy):
         raise TypeError("subset must be a PromptSubsetPolicy")
     if (
@@ -481,11 +524,28 @@ def _validate_subset(
         or subset.route != ensemble.route
         or subset.life_stage != ensemble.life_stage
         or subset.visual_domain != _ROUTE_VISUAL_DOMAIN[ensemble.route]
+        or subset.geography_ablation_fingerprint
+        != ensemble.geography_ablation_fingerprint
     ):
         raise ValueError("prompt subset identity does not match ensemble")
     available = {variant.prompt_kind for variant in ensemble.variants}
     if not subset.prompt_kinds or not set(subset.prompt_kinds) <= available:
         raise ValueError("prompt subset kinds are incompatible with ensemble")
+    _require_boolean(
+        subset.geography_prompt_ablation_enabled,
+        field="geography_prompt_ablation_enabled",
+    )
+    selected_geography = any(
+        variant.geography_bearing and variant.prompt_kind in subset.prompt_kinds
+        for variant in ensemble.variants
+    )
+    if selected_geography != subset.geography_prompt_ablation_enabled:
+        raise ValueError("prompt subset geography enablement is inconsistent")
+    if subset.geography_prompt_ablation_enabled and (
+        ensemble.geography_mode != EXPLICIT_GEOGRAPHY_PROMPT_ABLATION
+        or subset.geography_ablation_fingerprint is None
+    ):
+        raise ValueError("prompt subset geography ablation is incompatible")
     semantics = {
         "schema_version": subset.schema_version,
         "subset_version": subset.subset_version,
@@ -496,6 +556,8 @@ def _validate_subset(
         "life_stage": subset.life_stage,
         "visual_domain": subset.visual_domain,
         "prompt_kinds": list(subset.prompt_kinds),
+        "geography_prompt_ablation_enabled": (subset.geography_prompt_ablation_enabled),
+        "geography_ablation_fingerprint": subset.geography_ablation_fingerprint,
     }
     fingerprint = _sha256(subset.subset_fingerprint, field="subset_fingerprint")
     if canonical_semantic_fingerprint(semantics) != fingerprint:
@@ -601,7 +663,11 @@ def _prompt_diagnostic(
 ) -> PromptScoreDiagnostic:
     contributed = pooling_weight > 0.0
     if not in_subset:
-        reason = "outside_prompt_subset"
+        reason = (
+            "geography_ablation_disabled"
+            if variant.geography_bearing
+            else "outside_prompt_subset"
+        )
     elif contributed:
         reason = "contributed"
     else:
@@ -615,6 +681,7 @@ def _prompt_diagnostic(
         evidence_id=variant.evidence_id,
         trust_tier=variant.trust_tier,
         language=variant.language,
+        geography_bearing=variant.geography_bearing,
         raw_similarity=raw_similarity,
         in_subset=in_subset,
         contributed=contributed,
@@ -643,6 +710,10 @@ def _result_semantic_payload(values: Mapping[str, object]) -> dict[str, object]:
         "route": values["route"],
         "life_stage": values["life_stage"],
         "visual_domain": values["visual_domain"],
+        "geography_prompt_ablation_enabled": values[
+            "geography_prompt_ablation_enabled"
+        ],
+        "geography_ablation_fingerprint": values["geography_ablation_fingerprint"],
         "model_fingerprint": values["model_fingerprint"],
         "image_embedding_fingerprint": values["image_embedding_fingerprint"],
         "text_embedding_set_fingerprint": values["text_embedding_set_fingerprint"],
@@ -655,6 +726,7 @@ def _result_semantic_payload(values: Mapping[str, object]) -> dict[str, object]:
         "best_prompt_variant_fingerprint": values["best_prompt_variant_fingerprint"],
         "best_prompt_label": values["best_prompt_label"],
         "selected_prompt_count": values["selected_prompt_count"],
+        "selected_geography_prompt_count": values["selected_geography_prompt_count"],
         "contributing_prompt_count": values["contributing_prompt_count"],
         "prompt_scores": [
             {
@@ -666,6 +738,7 @@ def _result_semantic_payload(values: Mapping[str, object]) -> dict[str, object]:
                 "evidence_id": item.evidence_id,
                 "trust_tier": item.trust_tier,
                 "language": item.language,
+                "geography_bearing": item.geography_bearing,
                 "raw_similarity": item.raw_similarity,
                 "in_subset": item.in_subset,
                 "contributed": item.contributed,

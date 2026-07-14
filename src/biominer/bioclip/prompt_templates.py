@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import isfinite
 import re
 
@@ -9,8 +9,17 @@ from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.references.readiness import REFERENCE_ROUTES
 
 
-TAXONOMIC_PROMPT_ENSEMBLE_SCHEMA_VERSION = "taxonomic-prompt-ensemble-v1.0.0"
+TAXONOMIC_PROMPT_ENSEMBLE_SCHEMA_VERSION = "taxonomic-prompt-ensemble-v1.1.0"
 TAXONOMIC_PROMPT_VERSION = "bioclip-taxonomic-prompts-v1.0.0"
+GEOGRAPHIC_PROMPT_EVIDENCE_SCHEMA_VERSION = (
+    "structured-geographic-prompt-evidence-v1.0.0"
+)
+GEOGRAPHIC_PROMPT_ABLATION_VERSION = "bioclip-geographic-prompt-ablation-v1.0.0"
+STRUCTURED_GEOGRAPHY_ONLY = "structured_evidence_only"
+EXPLICIT_GEOGRAPHY_PROMPT_ABLATION = "explicit_prompt_ablation"
+PROMPT_GEOGRAPHY_MODES = frozenset(
+    {STRUCTURED_GEOGRAPHY_ONLY, EXPLICIT_GEOGRAPHY_PROMPT_ABLATION}
+)
 BUTTERFLY_ROOT_SCIENTIFIC_NAME = "Papilionoidea"
 BUTTERFLY_ROOT_ACCEPTED_TAXON_KEY = "gbif:1875"
 TRUSTED_VERNACULAR_TIERS = frozenset({"T1", "T2", "T3"})
@@ -59,7 +68,16 @@ _GENERATED_NAME_CLASSES = frozenset(
 _REJECTED_REVIEW_STATES = frozenset(
     {"denied", "disabled", "excluded", "rejected", "quarantined"}
 )
+_GEOGRAPHIC_PROMPT_SCOPE_TYPES = frozenset({"country", "admin1", "bioregion"})
+_GEOGRAPHIC_PROMPT_SOURCE_SCHEMAS = {
+    "taxon_geographic_spread.parquet": "taxon-geographic-spread-v1.0.0",
+    "taxon_geographic_summary.parquet": "taxon-geographic-summary-v1.0.0",
+    "regional_taxon_occurrence.parquet": "regional-taxon-occurrence-v1.0.0",
+    "regional_candidate_species.parquet": "regional-candidate-species-v1.0.0",
+}
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_COUNTRY_CODE_PATTERN = re.compile(r"[A-Z]{2}\Z")
+_LANGUAGE_TAG_PATTERN = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +230,7 @@ class ReviewedPromptAlias:
     reviewed_by: str | None
     route: str | None = None
     life_stage: str | None = None
+    geography_bearing: bool = False
     weak_homonym: bool = False
     enabled: bool = True
 
@@ -243,6 +262,7 @@ class ReviewedPromptAlias:
                 raise ValueError(f"unsupported prompt alias life stage: {stage}")
         object.__setattr__(self, "route", route)
         object.__setattr__(self, "life_stage", stage)
+        _require_boolean(self.geography_bearing, field="geography_bearing")
         _require_boolean(self.weak_homonym, field="weak_homonym")
         _require_boolean(self.enabled, field="enabled")
 
@@ -252,6 +272,97 @@ class PromptEvidenceExclusion:
     evidence_kind: str
     evidence_id: str
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class StructuredGeographicPromptEvidence:
+    """One versioned geographic fact usable only by an explicit prompt ablation."""
+
+    accepted_taxon_key: str
+    scope_type: str
+    scope_id: str
+    display_name: str
+    source_artifact: str
+    source_schema_version: str
+    source_record_id: str
+    source_record_fingerprint: str
+    display_language: str = "und"
+    country_code: str | None = None
+    schema_version: str = GEOGRAPHIC_PROMPT_EVIDENCE_SCHEMA_VERSION
+    evidence_fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        key = _canonical_text(self.accepted_taxon_key, field="accepted_taxon_key")
+        scope_type = _normalized_token(self.scope_type, field="scope_type")
+        if scope_type not in _GEOGRAPHIC_PROMPT_SCOPE_TYPES:
+            raise ValueError(f"unsupported geographic prompt scope: {scope_type}")
+        scope_id = _canonical_text(self.scope_id, field="scope_id")
+        display_name = _canonical_text(self.display_name, field="display_name")
+        source_artifact = _canonical_text(
+            self.source_artifact,
+            field="source_artifact",
+        )
+        source_schema_version = _canonical_text(
+            self.source_schema_version,
+            field="source_schema_version",
+        )
+        expected_source_schema = _GEOGRAPHIC_PROMPT_SOURCE_SCHEMAS.get(source_artifact)
+        if expected_source_schema is None:
+            raise ValueError("unsupported geographic prompt evidence source artifact")
+        if source_schema_version != expected_source_schema:
+            raise ValueError("geographic prompt evidence source schema is incompatible")
+        source_record_id = _canonical_text(
+            self.source_record_id,
+            field="source_record_id",
+        )
+        source_record_fingerprint = _sha256(
+            self.source_record_fingerprint,
+            field="source_record_fingerprint",
+        )
+        display_language = _canonical_text(
+            self.display_language,
+            field="display_language",
+        )
+        if _LANGUAGE_TAG_PATTERN.fullmatch(display_language) is None:
+            raise ValueError("display_language must be a BCP 47 language tag")
+        country_code = _optional_text(self.country_code)
+        if country_code is not None:
+            country_code = country_code.upper()
+            if _COUNTRY_CODE_PATTERN.fullmatch(country_code) is None:
+                raise ValueError("country_code must be ISO 3166-1 alpha-2")
+        if scope_type in {"country", "admin1"} and country_code is None:
+            raise ValueError(f"{scope_type} geographic evidence requires country_code")
+        if self.schema_version != GEOGRAPHIC_PROMPT_EVIDENCE_SCHEMA_VERSION:
+            raise ValueError(
+                "geographic prompt evidence schema version is incompatible"
+            )
+        object.__setattr__(self, "accepted_taxon_key", key)
+        object.__setattr__(self, "scope_type", scope_type)
+        object.__setattr__(self, "scope_id", scope_id)
+        object.__setattr__(self, "display_name", display_name)
+        object.__setattr__(self, "source_artifact", source_artifact)
+        object.__setattr__(self, "source_schema_version", source_schema_version)
+        object.__setattr__(self, "source_record_id", source_record_id)
+        object.__setattr__(
+            self,
+            "source_record_fingerprint",
+            source_record_fingerprint,
+        )
+        object.__setattr__(self, "display_language", display_language)
+        object.__setattr__(self, "country_code", country_code)
+        expected = canonical_semantic_fingerprint(
+            _structured_geographic_evidence_semantics(self)
+        )
+        if self.evidence_fingerprint:
+            supplied = _sha256(
+                self.evidence_fingerprint,
+                field="evidence_fingerprint",
+            )
+            if supplied != expected:
+                raise ValueError(
+                    "geographic prompt evidence fingerprint is inconsistent"
+                )
+        object.__setattr__(self, "evidence_fingerprint", expected)
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +399,12 @@ class TaxonomicPromptEnsemble:
     taxonomy_fingerprint: str
     taxonomic_status: str
     taxonomic_path: tuple[TaxonomicPathNode, ...]
+    geography_mode: str
+    geographic_evidence: StructuredGeographicPromptEvidence | None
+    geography_ablation_version: str | None
+    geography_ablation_id: str | None
+    base_ensemble_fingerprint: str | None
+    geography_ablation_fingerprint: str | None
     variants: tuple[PromptVariant, ...]
     exclusions: tuple[PromptEvidenceExclusion, ...]
     ensemble_fingerprint: str
@@ -504,29 +621,7 @@ def build_taxonomic_prompt_ensemble(
         )
     )
     variants_tuple = tuple(variants)
-    semantics = {
-        "schema_version": TAXONOMIC_PROMPT_ENSEMBLE_SCHEMA_VERSION,
-        "prompt_version": TAXONOMIC_PROMPT_VERSION,
-        "accepted_taxon_key": context.accepted_taxon_key,
-        "scientific_name": context.scientific_name,
-        "route": route_value,
-        "life_stage": stage,
-        "taxonomy_source": context.taxonomy_source,
-        "taxonomy_version": context.taxonomy_version,
-        "taxonomy_fingerprint": context.taxonomy_fingerprint,
-        "taxonomic_status": context.taxonomic_status,
-        "taxonomic_path": [_path_node_payload(node) for node in context.taxonomic_path],
-        "variants": [_variant_payload(variant) for variant in variants_tuple],
-        "exclusions": [
-            {
-                "evidence_kind": item.evidence_kind,
-                "evidence_id": item.evidence_id,
-                "reason": item.reason,
-            }
-            for item in exclusions_tuple
-        ],
-    }
-    return TaxonomicPromptEnsemble(
+    ensemble = TaxonomicPromptEnsemble(
         schema_version=TAXONOMIC_PROMPT_ENSEMBLE_SCHEMA_VERSION,
         prompt_version=TAXONOMIC_PROMPT_VERSION,
         accepted_taxon_key=context.accepted_taxon_key,
@@ -538,10 +633,109 @@ def build_taxonomic_prompt_ensemble(
         taxonomy_fingerprint=context.taxonomy_fingerprint,
         taxonomic_status=context.taxonomic_status,
         taxonomic_path=context.taxonomic_path,
+        geography_mode=STRUCTURED_GEOGRAPHY_ONLY,
+        geographic_evidence=None,
+        geography_ablation_version=None,
+        geography_ablation_id=None,
+        base_ensemble_fingerprint=None,
+        geography_ablation_fingerprint=None,
         variants=variants_tuple,
         exclusions=exclusions_tuple,
-        ensemble_fingerprint=canonical_semantic_fingerprint(semantics),
+        ensemble_fingerprint="",
     )
+    return replace(
+        ensemble,
+        ensemble_fingerprint=canonical_semantic_fingerprint(
+            _ensemble_semantic_payload(ensemble)
+        ),
+    )
+
+
+def build_geography_prompt_ablation(
+    *,
+    ensemble: TaxonomicPromptEnsemble,
+    geographic_evidence: StructuredGeographicPromptEvidence,
+    ablation_id: str,
+    explicit_opt_in: bool,
+) -> TaxonomicPromptEnsemble:
+    """Derive a geography-bearing ensemble only for an explicit ablation."""
+
+    taxonomic_prompt_ensemble_payload(ensemble)
+    _require_boolean(explicit_opt_in, field="explicit_opt_in")
+    if not explicit_opt_in:
+        raise ValueError("geography-bearing prompts require explicit ablation opt-in")
+    if ensemble.geography_mode != STRUCTURED_GEOGRAPHY_ONLY or any(
+        variant.geography_bearing for variant in ensemble.variants
+    ):
+        raise ValueError(
+            "geography prompt ablations must start from a visual-only ensemble"
+        )
+    if not isinstance(geographic_evidence, StructuredGeographicPromptEvidence):
+        raise TypeError(
+            "geographic_evidence must be StructuredGeographicPromptEvidence"
+        )
+    evidence_payload = structured_geographic_prompt_evidence_payload(
+        geographic_evidence
+    )
+    if geographic_evidence.accepted_taxon_key != ensemble.accepted_taxon_key:
+        raise ValueError("geographic evidence taxon does not match prompt ensemble")
+    identifier = _canonical_text(ablation_id, field="ablation_id")
+    label = _geography_ablation_prompt_label(ensemble, geographic_evidence)
+    if label.casefold() in {variant.label.casefold() for variant in ensemble.variants}:
+        raise ValueError("geography ablation prompt duplicates an existing prompt")
+    variant_values: dict[str, object] = {
+        "label": label,
+        "taxon_key": ensemble.scientific_name,
+        "prompt_kind": f"geography_ablation_{geographic_evidence.scope_type}",
+        "accepted_taxon_key": ensemble.accepted_taxon_key,
+        "prompt_version": ensemble.prompt_version,
+        "template_id": (
+            f"geography_ablation_{ensemble.route}_{ensemble.life_stage}_"
+            f"{geographic_evidence.scope_type}_v1"
+        ),
+        "route": ensemble.route,
+        "life_stage": ensemble.life_stage,
+        "evidence_kind": "structured_geographic_evidence",
+        "evidence_id": geographic_evidence.source_record_id,
+        "evidence_source": geographic_evidence.source_artifact,
+        "trust_tier": None,
+        "language": geographic_evidence.display_language,
+        "review_state": "explicit_ablation",
+        "reviewed_by": None,
+        "geography_bearing": True,
+    }
+    variant = PromptVariant(
+        **variant_values,
+        variant_fingerprint=canonical_semantic_fingerprint(variant_values),
+    )
+    ablation_semantics = {
+        "ablation_version": GEOGRAPHIC_PROMPT_ABLATION_VERSION,
+        "ablation_id": identifier,
+        "base_ensemble_fingerprint": ensemble.ensemble_fingerprint,
+        "structured_geographic_evidence": evidence_payload,
+        "geography_prompt_variant": _variant_payload(variant),
+    }
+    derived = replace(
+        ensemble,
+        geography_mode=EXPLICIT_GEOGRAPHY_PROMPT_ABLATION,
+        geographic_evidence=geographic_evidence,
+        geography_ablation_version=GEOGRAPHIC_PROMPT_ABLATION_VERSION,
+        geography_ablation_id=identifier,
+        base_ensemble_fingerprint=ensemble.ensemble_fingerprint,
+        geography_ablation_fingerprint=canonical_semantic_fingerprint(
+            ablation_semantics
+        ),
+        variants=(*ensemble.variants, variant),
+        ensemble_fingerprint="",
+    )
+    result = replace(
+        derived,
+        ensemble_fingerprint=canonical_semantic_fingerprint(
+            _ensemble_semantic_payload(derived)
+        ),
+    )
+    taxonomic_prompt_ensemble_payload(result)
+    return result
 
 
 def build_species_prompt_variants(
@@ -621,6 +815,7 @@ def taxonomic_prompt_ensemble_payload(
             fingerprint
         ):
             raise ValueError("taxonomic prompt variant fingerprint is inconsistent")
+    _validate_geography_policy(ensemble)
     expected_exclusions = tuple(
         sorted(
             ensemble.exclusions,
@@ -631,30 +826,7 @@ def taxonomic_prompt_ensemble_payload(
         isinstance(item, PromptEvidenceExclusion) for item in ensemble.exclusions
     ):
         raise ValueError("taxonomic prompt exclusions are not canonical")
-    semantics = {
-        "schema_version": ensemble.schema_version,
-        "prompt_version": ensemble.prompt_version,
-        "accepted_taxon_key": ensemble.accepted_taxon_key,
-        "scientific_name": ensemble.scientific_name,
-        "route": ensemble.route,
-        "life_stage": ensemble.life_stage,
-        "taxonomy_source": ensemble.taxonomy_source,
-        "taxonomy_version": ensemble.taxonomy_version,
-        "taxonomy_fingerprint": ensemble.taxonomy_fingerprint,
-        "taxonomic_status": ensemble.taxonomic_status,
-        "taxonomic_path": [
-            _path_node_payload(node) for node in ensemble.taxonomic_path
-        ],
-        "variants": [_variant_payload(variant) for variant in ensemble.variants],
-        "exclusions": [
-            {
-                "evidence_kind": item.evidence_kind,
-                "evidence_id": item.evidence_id,
-                "reason": item.reason,
-            }
-            for item in ensemble.exclusions
-        ],
-    }
+    semantics = _ensemble_semantic_payload(ensemble)
     fingerprint = _sha256(
         ensemble.ensemble_fingerprint,
         field="ensemble_fingerprint",
@@ -662,6 +834,23 @@ def taxonomic_prompt_ensemble_payload(
     if canonical_semantic_fingerprint(semantics) != fingerprint:
         raise ValueError("taxonomic prompt ensemble fingerprint is inconsistent")
     return {**semantics, "ensemble_fingerprint": fingerprint}
+
+
+def structured_geographic_prompt_evidence_payload(
+    evidence: StructuredGeographicPromptEvidence,
+) -> dict[str, object]:
+    """Validate and serialize structured geography without turning it into text."""
+
+    if not isinstance(evidence, StructuredGeographicPromptEvidence):
+        raise TypeError("evidence must be StructuredGeographicPromptEvidence")
+    semantics = _structured_geographic_evidence_semantics(evidence)
+    fingerprint = _sha256(
+        evidence.evidence_fingerprint,
+        field="evidence_fingerprint",
+    )
+    if canonical_semantic_fingerprint(semantics) != fingerprint:
+        raise ValueError("geographic prompt evidence fingerprint is inconsistent")
+    return {**semantics, "evidence_fingerprint": fingerprint}
 
 
 def aggregate_prompt_scores(
@@ -766,6 +955,8 @@ def _alias_exclusion_reason(
 ) -> str | None:
     if not value.enabled:
         return "disabled_evidence"
+    if value.geography_bearing:
+        return "geography_requires_explicit_ablation"
     if value.weak_homonym:
         return "weak_homonym"
     if value.review_state not in REVIEWED_PROMPT_ALIAS_STATES:
@@ -803,6 +994,178 @@ def _validated_unique_evidence(
             raise ValueError(f"{field} evidence IDs must identify one immutable record")
         by_id[evidence_id] = value
     return tuple(sorted(by_id.values(), key=lambda item: str(getattr(item, id_field))))
+
+
+def _validate_geography_policy(ensemble: TaxonomicPromptEnsemble) -> None:
+    mode = _canonical_text(ensemble.geography_mode, field="geography_mode")
+    if mode not in PROMPT_GEOGRAPHY_MODES or mode != ensemble.geography_mode:
+        raise ValueError("taxonomic prompt geography mode is incompatible")
+    for variant in ensemble.variants:
+        _require_boolean(variant.geography_bearing, field="geography_bearing")
+    geography_variants = tuple(
+        variant for variant in ensemble.variants if variant.geography_bearing
+    )
+    policy_values = (
+        ensemble.geographic_evidence,
+        ensemble.geography_ablation_version,
+        ensemble.geography_ablation_id,
+        ensemble.base_ensemble_fingerprint,
+        ensemble.geography_ablation_fingerprint,
+    )
+    if mode == STRUCTURED_GEOGRAPHY_ONLY:
+        if geography_variants or any(value is not None for value in policy_values):
+            raise ValueError(
+                "visual-only prompt ensembles cannot contain geographic prompt evidence"
+            )
+        return
+
+    if len(geography_variants) != 1:
+        raise ValueError("geography prompt ablation must contain exactly one variant")
+    if ensemble.variants[-1] is not geography_variants[0]:
+        raise ValueError("geography prompt ablation variant must be canonical and last")
+    evidence = ensemble.geographic_evidence
+    if not isinstance(evidence, StructuredGeographicPromptEvidence):
+        raise ValueError("geography prompt ablation requires structured evidence")
+    evidence_payload = structured_geographic_prompt_evidence_payload(evidence)
+    if evidence.accepted_taxon_key != ensemble.accepted_taxon_key:
+        raise ValueError("geographic evidence taxon does not match prompt ensemble")
+    if ensemble.geography_ablation_version != GEOGRAPHIC_PROMPT_ABLATION_VERSION:
+        raise ValueError("geography prompt ablation version is incompatible")
+    identifier = _canonical_text(
+        ensemble.geography_ablation_id,
+        field="geography_ablation_id",
+    )
+    if identifier != ensemble.geography_ablation_id:
+        raise ValueError("geography prompt ablation ID is not canonical")
+    base_fingerprint = _sha256(
+        ensemble.base_ensemble_fingerprint,
+        field="base_ensemble_fingerprint",
+    )
+    ablation_fingerprint = _sha256(
+        ensemble.geography_ablation_fingerprint,
+        field="geography_ablation_fingerprint",
+    )
+    variant = geography_variants[0]
+    expected_prompt_kind = f"geography_ablation_{evidence.scope_type}"
+    expected_template = (
+        f"geography_ablation_{ensemble.route}_{ensemble.life_stage}_"
+        f"{evidence.scope_type}_v1"
+    )
+    if (
+        variant.label != _geography_ablation_prompt_label(ensemble, evidence)
+        or variant.prompt_kind != expected_prompt_kind
+        or variant.template_id != expected_template
+        or variant.evidence_kind != "structured_geographic_evidence"
+        or variant.evidence_id != evidence.source_record_id
+        or variant.evidence_source != evidence.source_artifact
+        or variant.language != evidence.display_language
+        or variant.review_state != "explicit_ablation"
+        or variant.reviewed_by is not None
+        or variant.trust_tier is not None
+    ):
+        raise ValueError("geography prompt variant does not match structured evidence")
+    base = replace(
+        ensemble,
+        geography_mode=STRUCTURED_GEOGRAPHY_ONLY,
+        geographic_evidence=None,
+        geography_ablation_version=None,
+        geography_ablation_id=None,
+        base_ensemble_fingerprint=None,
+        geography_ablation_fingerprint=None,
+        variants=tuple(
+            item for item in ensemble.variants if not item.geography_bearing
+        ),
+        ensemble_fingerprint="",
+    )
+    expected_base_fingerprint = canonical_semantic_fingerprint(
+        _ensemble_semantic_payload(base)
+    )
+    if base_fingerprint != expected_base_fingerprint:
+        raise ValueError("geography prompt ablation base ensemble is inconsistent")
+    expected_ablation_fingerprint = canonical_semantic_fingerprint(
+        {
+            "ablation_version": ensemble.geography_ablation_version,
+            "ablation_id": identifier,
+            "base_ensemble_fingerprint": base_fingerprint,
+            "structured_geographic_evidence": evidence_payload,
+            "geography_prompt_variant": _variant_payload(variant),
+        }
+    )
+    if ablation_fingerprint != expected_ablation_fingerprint:
+        raise ValueError("geography prompt ablation fingerprint is inconsistent")
+
+
+def _ensemble_semantic_payload(
+    ensemble: TaxonomicPromptEnsemble,
+) -> dict[str, object]:
+    return {
+        "schema_version": ensemble.schema_version,
+        "prompt_version": ensemble.prompt_version,
+        "accepted_taxon_key": ensemble.accepted_taxon_key,
+        "scientific_name": ensemble.scientific_name,
+        "route": ensemble.route,
+        "life_stage": ensemble.life_stage,
+        "taxonomy_source": ensemble.taxonomy_source,
+        "taxonomy_version": ensemble.taxonomy_version,
+        "taxonomy_fingerprint": ensemble.taxonomy_fingerprint,
+        "taxonomic_status": ensemble.taxonomic_status,
+        "taxonomic_path": [
+            _path_node_payload(node) for node in ensemble.taxonomic_path
+        ],
+        "geography_policy": {
+            "mode": ensemble.geography_mode,
+            "structured_geographic_evidence": (
+                structured_geographic_prompt_evidence_payload(
+                    ensemble.geographic_evidence
+                )
+                if ensemble.geographic_evidence is not None
+                else None
+            ),
+            "ablation_version": ensemble.geography_ablation_version,
+            "ablation_id": ensemble.geography_ablation_id,
+            "base_ensemble_fingerprint": ensemble.base_ensemble_fingerprint,
+            "ablation_fingerprint": ensemble.geography_ablation_fingerprint,
+        },
+        "variants": [_variant_payload(variant) for variant in ensemble.variants],
+        "exclusions": [
+            {
+                "evidence_kind": item.evidence_kind,
+                "evidence_id": item.evidence_id,
+                "reason": item.reason,
+            }
+            for item in ensemble.exclusions
+        ],
+    }
+
+
+def _structured_geographic_evidence_semantics(
+    evidence: StructuredGeographicPromptEvidence,
+) -> dict[str, object]:
+    return {
+        "schema_version": evidence.schema_version,
+        "accepted_taxon_key": evidence.accepted_taxon_key,
+        "scope_type": evidence.scope_type,
+        "scope_id": evidence.scope_id,
+        "display_name": evidence.display_name,
+        "display_language": evidence.display_language,
+        "country_code": evidence.country_code,
+        "source_artifact": evidence.source_artifact,
+        "source_schema_version": evidence.source_schema_version,
+        "source_record_id": evidence.source_record_id,
+        "source_record_fingerprint": evidence.source_record_fingerprint,
+    }
+
+
+def _geography_ablation_prompt_label(
+    ensemble: TaxonomicPromptEnsemble,
+    evidence: StructuredGeographicPromptEvidence,
+) -> str:
+    visual_prompt = _life_stage_prompt(
+        ensemble.scientific_name,
+        route=ensemble.route,
+        stage=ensemble.life_stage,
+    )
+    return f"{visual_prompt} in {evidence.display_name}"
 
 
 def _variant_payload(value: PromptVariant) -> dict[str, object]:
@@ -907,8 +1270,13 @@ def _require_boolean(value: object, *, field: str) -> None:
 __all__ = [
     "BUTTERFLY_ROOT_ACCEPTED_TAXON_KEY",
     "BUTTERFLY_ROOT_SCIENTIFIC_NAME",
+    "EXPLICIT_GEOGRAPHY_PROMPT_ABLATION",
+    "GEOGRAPHIC_PROMPT_ABLATION_VERSION",
+    "GEOGRAPHIC_PROMPT_EVIDENCE_SCHEMA_VERSION",
+    "PROMPT_GEOGRAPHY_MODES",
     "REVIEWED_PROMPT_ALIAS_STATES",
     "SPECIES_PROMPT_AGGREGATION_DEFAULT",
+    "STRUCTURED_GEOGRAPHY_ONLY",
     "SUPPORTED_PROMPT_LIFE_STAGES",
     "TAXONOMIC_PROMPT_ENSEMBLE_SCHEMA_VERSION",
     "TAXONOMIC_PROMPT_VERSION",
@@ -919,10 +1287,13 @@ __all__ = [
     "PromptNameEvidence",
     "PromptVariant",
     "ReviewedPromptAlias",
+    "StructuredGeographicPromptEvidence",
     "TaxonomicPathNode",
     "TaxonomicPromptEnsemble",
     "aggregate_prompt_scores",
+    "build_geography_prompt_ablation",
     "build_species_prompt_variants",
     "build_taxonomic_prompt_ensemble",
+    "structured_geographic_prompt_evidence_payload",
     "taxonomic_prompt_ensemble_payload",
 ]
