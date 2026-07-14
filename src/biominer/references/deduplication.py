@@ -1129,6 +1129,29 @@ def validate_reference_media_deduplication_result(
         )
 
 
+def validate_reference_media_deduplication_artifacts(
+    *,
+    media_objects: pl.DataFrame,
+    relationships: pl.DataFrame,
+    media_candidates: pl.DataFrame,
+    observations: pl.DataFrame,
+    report: Mapping[str, object],
+) -> None:
+    """Validate a loose artifact set against its committed deduplication report."""
+
+    normalized_report = dict(report)
+    validate_reference_media_deduplication_result(
+        ReferenceMediaDeduplicationResult(
+            media_objects=media_objects,
+            relationships=relationships,
+            media_candidates=media_candidates,
+            observations=observations,
+            report=normalized_report,
+            markdown=_deduplication_markdown(normalized_report),
+        )
+    )
+
+
 def write_reference_media_deduplication_result(
     result: ReferenceMediaDeduplicationResult,
     output: str | Path,
@@ -2223,6 +2246,7 @@ __all__ = [
     "deduplicate_reference_media",
     "perceptual_hash_distance",
     "publish_reference_media_deduplication_result",
+    "validate_reference_media_deduplication_artifacts",
     "validate_reference_media_deduplication_result",
     "write_reference_media_deduplication_result",
 ]

@@ -39,6 +39,7 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert "run" in commands
     assert "vision" not in commands
     assert "evidence" in commands
+    assert "references" in commands
     assert "storage" in commands
     assert "workstore" in commands
     assert "bioclip" in commands

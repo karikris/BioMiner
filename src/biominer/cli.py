@@ -76,6 +76,17 @@ from biominer.registry.translation_harvester import (
     MYMEMORY_RESPONSE_BYTE_RESERVATION,
 )
 from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES, DEFAULT_TRANSLATION_TARGET_LOCALES_JSON
+from biominer.references.review import (
+    advance_reference_review_history_head,
+    build_reference_review_queue,
+    import_reference_review_decisions,
+    initialize_reference_review_history_head,
+    validate_reference_review_history_head,
+    validate_reference_review_history_head_destination,
+    validate_reference_review_packet_artifact,
+    write_reference_review_export,
+    write_reference_review_import,
+)
 from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR, YOLOE26_DIR
 from biominer.run import ProductionRunOrchestrator, ProductionRunRequest, RunStage
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES
@@ -173,6 +184,29 @@ def build_parser() -> argparse.ArgumentParser:
     evaluation_review_queue.add_argument("--photo-summary")
     evaluation_review_queue.add_argument("--output", required=True)
     evaluation_review_queue.add_argument("--max-rows", type=int)
+    references = subparsers.add_parser("references")
+    references_subparsers = references.add_subparsers(dest="references_command")
+    references_export = references_subparsers.add_parser("export-review-queue")
+    references_export.add_argument("--acquisition-selections", required=True)
+    references_export.add_argument("--observations", required=True)
+    references_export.add_argument("--media-candidates", required=True)
+    references_export.add_argument("--media-objects", required=True)
+    references_export.add_argument("--duplicate-relationships", required=True)
+    references_export.add_argument("--deduplication-report", required=True)
+    references_export.add_argument("--reference-bank-version", required=True)
+    references_export.add_argument("--output-dir", required=True)
+    references_export.add_argument("--history-head", required=True)
+    references_export.add_argument("--run-id")
+    references_export.add_argument("--include-research-only", action="store_true")
+    references_import = references_subparsers.add_parser("import-review-decisions")
+    references_import.add_argument("--review-queue", required=True)
+    references_import.add_argument("--queue-provenance", required=True)
+    references_import.add_argument("--decisions", required=True)
+    references_import.add_argument("--existing-decisions", required=True)
+    references_import.add_argument("--prior-review-report", required=True)
+    references_import.add_argument("--history-head", required=True)
+    references_import.add_argument("--output-dir", required=True)
+    references_import.add_argument("--run-id")
     bioclip = subparsers.add_parser("bioclip")
     bioclip_subparsers = bioclip.add_subparsers(dest="bioclip_command")
     bioclip_screen = bioclip_subparsers.add_parser("screen")
@@ -537,6 +571,8 @@ def run(args: argparse.Namespace) -> int:
         return 2
     if args.command == "evaluation":
         return _run_evaluation_command(args)
+    if args.command == "references":
+        return _run_references_command(args)
     if args.command == "storage":
         return _run_storage_command(args)
     if args.command == "workstore":
@@ -876,6 +912,124 @@ def _run_evaluation_command(args: argparse.Namespace) -> int:
     if args.evaluation_command == "review-queue":
         return _run_evaluation_review_queue(args)
     return 2
+
+
+def _run_references_command(args: argparse.Namespace) -> int:
+    try:
+        if args.references_command == "export-review-queue":
+            validate_reference_review_history_head_destination(
+                args.history_head,
+                args.output_dir,
+            )
+            result = build_reference_review_queue(
+                _read_reference_parquet(
+                    args.acquisition_selections,
+                    artifact="acquisition selections",
+                ),
+                _read_reference_parquet(args.media_objects, artifact="media objects"),
+                _read_reference_parquet(
+                    args.media_candidates,
+                    artifact="media candidates",
+                ),
+                _read_reference_parquet(args.observations, artifact="observations"),
+                _read_reference_parquet(
+                    args.duplicate_relationships,
+                    artifact="duplicate relationships",
+                ),
+                deduplication_report=_read_reference_json(
+                    args.deduplication_report,
+                    artifact="deduplication report",
+                ),
+                reference_bank_version=args.reference_bank_version,
+                include_research_only=args.include_research_only,
+            )
+            artifacts = write_reference_review_export(
+                result,
+                Path(args.output_dir),
+                run_id=args.run_id,
+            )
+            initialize_reference_review_history_head(
+                args.history_head,
+                artifacts["report"],
+            )
+        elif args.references_command == "import-review-decisions":
+            prior_report, prior_report_sha256 = validate_reference_review_history_head(
+                args.history_head,
+                args.prior_review_report,
+            )
+            for logical_name, path in (
+                ("queue", args.review_queue),
+                ("queue_provenance", args.queue_provenance),
+                ("decisions", args.existing_decisions),
+            ):
+                validate_reference_review_packet_artifact(
+                    prior_report,
+                    logical_name,
+                    path,
+                )
+            existing_decisions = _read_reference_parquet(
+                args.existing_decisions,
+                artifact="existing decisions",
+            )
+            result = import_reference_review_decisions(
+                _read_reference_parquet(args.decisions, artifact="decisions"),
+                queue=_read_reference_parquet(
+                    args.review_queue,
+                    artifact="review queue",
+                ),
+                queue_provenance=_read_reference_parquet(
+                    args.queue_provenance,
+                    artifact="review queue provenance",
+                ),
+                existing_decisions=existing_decisions,
+                prior_report=prior_report,
+                prior_report_sha256=prior_report_sha256,
+            )
+            artifacts = write_reference_review_import(
+                result,
+                Path(args.output_dir),
+                run_id=args.run_id,
+            )
+            advance_reference_review_history_head(
+                args.history_head,
+                prior_report_path=args.prior_review_report,
+                next_report_path=artifacts["report"],
+            )
+        else:
+            return 2
+    except (OSError, ValueError, pl.exceptions.PolarsError) as exc:
+        print(json.dumps({"error": str(exc)}, sort_keys=True))
+        return 2
+
+    payload = {
+        "artifacts": {str(name): str(path) for name, path in sorted(artifacts.items())},
+        "command": f"references {args.references_command}",
+        "output_dir": str(args.output_dir),
+        "status": "complete",
+    }
+    print(json.dumps(payload, sort_keys=True))
+    return 0
+
+
+def _read_reference_parquet(path: str | Path, *, artifact: str) -> pl.DataFrame:
+    input_path = Path(path)
+    if not input_path.exists():
+        raise FileNotFoundError(f"{artifact} path does not exist: {input_path}")
+    if not input_path.is_file():
+        raise ValueError(f"{artifact} path is not a file: {input_path}")
+    return pl.read_parquet(input_path)
+
+
+def _read_reference_json(path: str | Path, *, artifact: str) -> dict[str, object]:
+    input_path = Path(path)
+    if not input_path.exists():
+        raise FileNotFoundError(f"{artifact} path does not exist: {input_path}")
+    if not input_path.is_file():
+        raise ValueError(f"{artifact} path is not a file: {input_path}")
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"{artifact} must contain a JSON object: {input_path}")
+    return payload
 
 
 def _run_evaluation_classify(args: argparse.Namespace) -> int:

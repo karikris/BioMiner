@@ -681,6 +681,17 @@ primary key: `review_request_id`. Schema version:
 `required_review_count`, `review_status`, `created_at`,
 `reference_bank_version`, and `input_fingerprint`.
 
+`reference_review_queue_provenance.parquet` has one row per review request and
+schema version `reference-review-queue-provenance-v1.0.0`. Its exact fields are
+`schema_version`, `review_request_id`, `reference_media_id`,
+`source_binding_fingerprint`, `source_leaf_fingerprints: list[str]`,
+`queue_semantics_fingerprint`, `queue_row_fingerprint`, and
+`input_fingerprint`. Source-leaf fingerprints are sorted, unique, full
+lowercase SHA-256 values. The source-set fingerprint binds only evidence
+reachable from that request, while the queue-row fingerprint covers every
+immutable queue column and permits only the derived `review_status` projection
+to change between imports.
+
 Allowed queue `review_status` values are `pending`, `in_review`, `completed`,
 `conflict`, `second_review_required`, and `cancelled`. The queue owns this
 pending/conflict/second-review workflow projection; none of those states is a
@@ -690,6 +701,9 @@ a human judgment. Any nonnull proposal uses the same closed vocabulary as a
 decision; queue construction preserves null when upstream evidence cannot
 supply a responsible mapping. In particular, it does not relabel planner
 `unreviewed` or `field` values as reviewed `ambiguous` or `live_field` values.
+The current workflow does not define an attributable cancellation record, so it
+rejects a supplied `cancelled` state rather than trusting an unaudited queue
+edit. The schema value is reserved for a later explicit cancellation command.
 
 `reference_review_decisions.parquet` is the append-only scientific decision
 record. Grain and primary key: one `review_decision_id`; sort by
@@ -741,14 +755,157 @@ affirmatively disproved, not merely that the media was unsuitable. An
 `uncertain` disposition requires `target_identity_verified=null`, nonblank
 `review_notes`, and `second_review_required=true`.
 
+The manual workflow has two commands:
+
+```bash
+biominer references export-review-queue \
+  --acquisition-selections reference_acquisition_selections.parquet \
+  --observations reference_observations.parquet \
+  --media-candidates reference_media_candidates.parquet \
+  --media-objects reference_media_objects.parquet \
+  --duplicate-relationships reference_media_duplicate_relationships.parquet \
+  --deduplication-report reference_media_deduplication_report.json \
+  --reference-bank-version <version> \
+  --output-dir <review-packet-directory> \
+  --history-head <review-history-head>.json \
+  [--include-research-only] \
+  [--run-id <run-id>]
+```
+
+The export first validates the complete media-object, candidate, observation,
+and relationship set against its committed deduplication report. It rejects a
+truncated or mixed-run artifact set, including a canonical-only subset that
+would otherwise resemble a legitimate singleton. It then collapses fully
+resolved selected duplicate groups to their canonical media item. Selected
+objects in an unresolved or conflicting group
+remain separate review requests, so a provisional duplicate link cannot
+transfer a human decision between media IDs. Each request retains
+`source_object_uri` as `durable_preview_uri`; the export does not create an
+untracked second image archive. The packet contains the validated queue, a
+`reference_review_queue_provenance.parquet` companion, a typed decision
+template, and an explicit typed empty `reference_review_decisions.parquet`
+ledger. It is staged and published as one immutable,
+create-only directory, so an existing packet is never silently replaced and a
+failed export cannot expose a completed partial packet.
+Each queue `input_fingerprint` combines the review-visible queue semantics with
+a deterministic source-set binding. The companion records fingerprints for
+every relevant selection, selected and canonical media record, source
+observation, duplicate-group member, and duplicate relationship. Changing a
+plan fingerprint, taxonomy, object identity, licence, source snapshot,
+duplicate policy, proposal, or review quorum invalidates the request before any
+retained decision is used; unrelated inventory rows do not. Operational changes
+such as retrieval timestamps, transport URLs, queue timestamps, display
+priority, or reason text change the packet-level queue-row fingerprint but do
+not discard a still-applicable human decision.
+Only `allowed` licence-policy rows are queued by default. The explicit
+`--include-research-only` option permits scientific review of non-production
+assets, but those rows remain blocked from production support selection.
+
+Reviewers fill the exported Parquet decision template and import it with:
+
+```bash
+biominer references import-review-decisions \
+  --review-queue <review-packet-directory>/reference_review_queue.parquet \
+  --queue-provenance <review-packet-directory>/reference_review_queue_provenance.parquet \
+  --decisions <completed-decisions>.parquet \
+  --existing-decisions <review-packet-directory>/reference_review_decisions.parquet \
+  --prior-review-report <authoritative-prior-report>.json \
+  --history-head <review-history-head>.json \
+  --output-dir <review-import-directory> \
+  [--run-id <run-id>]
+```
+
+The decision input is Parquet with the exact physical schema returned by
+`reference_review_decision_import_schema()`. CSV is not a supported review or
+import format. The importer rejects unknown or missing fields, stale request or
+media bindings, non-UTC timestamps, and invalid vocabulary values before it
+publishes anything. It canonicalizes each source row, recomputes its source
+hash and semantic decision ID, merges the required complete prior ledger, and
+treats an identical re-delivery as idempotent. The importer proves that the
+supplied queue is exactly the projection of that prior ledger before accepting
+new rows; omitting conflict or uncertainty history is therefore rejected. The
+initial export supplies the required typed empty ledger. Every continuation
+must use the queue, provenance companion, and complete ledger from the latest
+successful packet. The imported queue projection and complete
+decision ledger are new immutable artifacts; neither the original queue nor a
+prior decision row is updated in place.
+Each import packet also stores the exact submitted
+`reference_review_decision_import.parquet`. Its byte-bound frame fingerprint
+and row count make the reported imported and idempotent-replay counts
+recomputable; history-head advancement additionally binds the claimed existing
+ledger count and fingerprint to the authoritative parent packet.
+
+The history-head JSON is a mutable, lock-protected compare-and-swap pointer and
+must live outside immutable packet directories. It pins the byte digest,
+revision, path, and history ID of the only authoritative packet. Before import,
+the CLI verifies the prior report against that head and verifies the queue,
+provenance, and decision-ledger byte hashes recorded in the report. After the
+new immutable packet commits, the head advances only if the parent digest is
+still current. Reusing the root packet, a stale ancestor, a modified report, or
+a recomputed sidecar is rejected; concurrent continuations can produce at most
+one authoritative successor.
+Root export requires a new, nonexistent head path and rejects a head inside the
+output packet before writing any artifact. Revision zero uses
+`reference_review_export_report.json`; revision one and later use the latest
+`reference_review_import_report.json`.
+
+The import packet also contains `reference_review_outcomes.parquet`,
+`reference_review_conflicts.parquet`, `verified_reference_media.parquet`, and
+`excluded_reference_media.parquet`. Outcomes are deterministic projections of
+the queue and complete decision ledger. Conflict rows retain both open and
+resolved conflict groups; correcting a dissent closes its prior group but does
+not delete the audit history. Before publication, the writer recomputes every
+projection, row count, and artifact fingerprint. The JSON report is written
+last as the packet commit marker. Packet validation enforces every documented
+artifact filename as well as its absolute URI, byte count, SHA-256 digest, and
+Parquet projection.
+
+Within each `(review_request_id, verified_by)` history, `review_round` is a
+reviewer-local revision number. It starts at one and must be contiguous; a
+correction is the next revision from that reviewer. Resolution retains every
+revision for audit but uses only the latest revision from each reviewer as that
+reviewer's effective judgment. Timestamps order evidence but cannot overwrite
+a higher revision. Provider-supplied `verification_status` remains source
+metadata exposed as `provider_verification_status`; importing a human decision
+does not mutate it. Reviewer identifiers are canonical lowercase ASCII opaque
+IDs; whitespace variants, Unicode confusables, and display names are rejected
+instead of being counted as distinct reviewers. `verified_by` is an asserted
+ledger identity, not a cryptographic signature: the production import
+environment must authenticate the submitter and authorize that identity before
+the decision Parquet reaches this command.
+
+An effective `uncertain` judgment keeps the request unresolved and requests a
+distinct second reviewer. A second review is another attributable decision,
+not an in-place edit by the first reviewer. Effective judgments conflict when
+their scientific disposition differs in verification status, target identity,
+life stage, visual domain, or view. Differences in confidence or notes alone do
+not create a conflict. Conflict is a derived queue state, not a human decision
+status, and an explicit `conflicts_with_decision_id` remains provenance for the
+disagreement. A majority never overwrites a dissenting effective scientific
+judgment; the request stays `conflict` until a reviewer records a new revision
+that removes the disagreement.
+
 `conflicts_with_decision_id` is optional source provenance for the human row;
 when populated it resolves to an earlier decision for the same request and
 media from a distinct human. It does not turn `conflict` into a decision
-disposition. Task 5.4 derives normalized conflict groups and the queue's
-conflict/second-review projection from the append-only decisions. Only a
-resolved `verified` decision with `target_identity_verified=true`, an accepted
-licence, a resolved duplicate group, and an allowed route may enter a production
-support split.
+disposition. The workflow derives normalized conflict groups and the queue's
+conflict/second-review projection from the append-only decisions.
+Verified and excluded files use schema
+`reference-review-resolved-media-v1.0.0`. They preserve the immutable queue
+proposal in `life_stage`, `visual_domain`, and `view`, and expose the human
+determination separately as `resolved_life_stage`, `resolved_visual_domain`,
+and `resolved_view`, with the resolved disposition, identity flag, effective
+decision/reviewer IDs, and exclusion reasons. This keeps each request and input
+fingerprint auditable without presenting the planner proposal as a human fact.
+`select_verified_reference_media()` emits only media whose resolved human
+disposition is `verified` with `target_identity_verified=true` and whose
+per-item taxonomy, canonical identity, licence, attribution, duplicate state,
+and visual-domain gates pass. Excluded, uncertain, incomplete, conflicting,
+research-only, noncanonical, unresolved-duplicate, and prohibited-domain rows
+are absent. Production consumers use its `resolved_life_stage`,
+`resolved_visual_domain`, and `resolved_view` fields. Bank-level quota,
+diversity, lifecycle separation, and split checks remain independent readiness
+gates.
 
 ### 5.6 Frozen support and readiness
 
