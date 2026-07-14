@@ -494,6 +494,7 @@ def write_probability_calibrator(
     *,
     git_sha: str,
     created_at: datetime | None = None,
+    decision_policy: Mapping[str, object] | None = None,
 ) -> CalibrationArtifactPaths:
     """Write arrays, reliability report, then the canonical commit manifest."""
 
@@ -516,7 +517,18 @@ def write_probability_calibrator(
     report_bytes = _report_parquet_bytes(fit.report)
     if len(report_bytes) > MAX_CALIBRATION_REPORT_BYTES:
         raise ValueError("calibration report exceeds the configured size limit")
-    decision_policy = _pending_decision_policy(fit)
+    policy_payload = (
+        _pending_decision_policy(fit)
+        if decision_policy is None
+        else _validated_embedded_decision_policy(
+            decision_policy,
+            calibration_fingerprint=fit.calibration_fingerprint,
+            classifier_fingerprint=fit.calibrator.classifier_fingerprint,
+            split_fingerprint=fit.calibrator.split_fingerprint,
+            target_task=fit.calibrator.target_task,
+            route=fit.calibrator.route,
+        )
+    )
     manifest = {
         "schema_version": CALIBRATION_MANIFEST_SCHEMA_VERSION,
         "calibration_version": CALIBRATION_VERSION,
@@ -529,7 +541,7 @@ def write_probability_calibrator(
         "parameters": fit.semantic_payload["parameters"],
         "metrics": fit.semantic_payload["metrics"],
         "arrays": fit.semantic_payload["arrays"],
-        "decision_policy": decision_policy,
+        "decision_policy": policy_payload,
         "report": {
             "schema_version": CALIBRATION_REPORT_SCHEMA_VERSION,
             "file_name": CALIBRATION_REPORT_FILE,
@@ -1554,7 +1566,19 @@ def _validate_manifest(payload: Mapping[str, object]) -> dict[str, object]:
     arrays = _mapping(payload["arrays"], field="arrays")
     _validate_arrays_manifest(arrays, method)
     decision_policy = _mapping(payload["decision_policy"], field="decision_policy")
-    _validate_pending_decision_policy(decision_policy, payload)
+    if decision_policy.get("schema_version") == (
+        "few-shot-decision-policy-pending-v1.0.0"
+    ):
+        _validate_pending_decision_policy(decision_policy, payload)
+    else:
+        _validated_embedded_decision_policy(
+            decision_policy,
+            calibration_fingerprint=str(payload["calibration_fingerprint"]),
+            classifier_fingerprint=str(identity["classifier_fingerprint"]),
+            split_fingerprint=str(provenance["split_fingerprint"]),
+            target_task=str(identity["target_task"]),
+            route=str(identity["route"]),
+        )
     report = _mapping(payload["report"], field="report")
     _validate_report_manifest(report)
     libraries = _mapping(payload["libraries"], field="libraries")
@@ -1782,6 +1806,206 @@ def _validate_pending_decision_policy(
     semantics.pop("decision_policy_fingerprint")
     if canonical_semantic_fingerprint(semantics) != fingerprint:
         raise ValueError("pending decision policy fingerprint is invalid")
+
+
+def _validated_embedded_decision_policy(
+    value: Mapping[str, object],
+    *,
+    calibration_fingerprint: str,
+    classifier_fingerprint: str,
+    split_fingerprint: str,
+    target_task: str,
+    route: str,
+) -> dict[str, object]:
+    payload = _mapping(value, field="decision_policy")
+    _expect_keys(
+        payload,
+        {
+            "abstention_rules",
+            "achieved_metrics",
+            "calibration_fingerprint",
+            "calibration_group_count",
+            "calibration_sample_count",
+            "calibration_sample_fingerprint",
+            "classifier_fingerprint",
+            "competitor_margin_threshold",
+            "decision_policy_fingerprint",
+            "eligible_calibration_sample_count",
+            "model_fingerprint",
+            "negative_sample_count",
+            "optimization_metric",
+            "policy_version",
+            "positive_sample_count",
+            "requirements",
+            "route",
+            "schema_version",
+            "split_fingerprint",
+            "status",
+            "status_reason",
+            "target_confirmation_enabled",
+            "target_precision_objective",
+            "target_probability_threshold",
+            "target_task",
+            "threshold_grid_size",
+        },
+        field="decision_policy",
+    )
+    if payload["schema_version"] != "few-shot-decision-policy-v1.0.0":
+        raise ValueError("decision policy schema version is incompatible")
+    if payload["policy_version"] != "precision-constrained-selective-policy-v1.0.0":
+        raise ValueError("decision policy version is incompatible")
+    if payload["optimization_metric"] != "weighted_target_recall_at_precision":
+        raise ValueError("decision policy optimization metric is incompatible")
+    if (
+        payload["calibration_fingerprint"] != calibration_fingerprint
+        or payload["classifier_fingerprint"] != classifier_fingerprint
+        or payload["split_fingerprint"] != split_fingerprint
+        or payload["target_task"] != target_task
+        or payload["route"] != route
+    ):
+        raise ValueError("decision policy identity does not match calibration")
+    _sha256(payload["model_fingerprint"], field="decision_policy.model_fingerprint")
+    _sha256(
+        payload["calibration_sample_fingerprint"],
+        field="decision_policy.calibration_sample_fingerprint",
+    )
+    for field in (
+        "calibration_fingerprint",
+        "classifier_fingerprint",
+        "split_fingerprint",
+    ):
+        _sha256(payload[field], field=f"decision_policy.{field}")
+    status = _required_choice(
+        payload["status"],
+        field="decision_policy.status",
+        allowed=frozenset({"fitted", "infeasible"}),
+    )
+    enabled = payload["target_confirmation_enabled"]
+    if not isinstance(enabled, bool):
+        raise ValueError("decision policy confirmation flag must be boolean")
+    objective = _unit_interval(
+        payload["target_precision_objective"],
+        field="decision_policy.target_precision_objective",
+    )
+    if objective <= 0.0:
+        raise ValueError("decision policy precision objective must be positive")
+    sample_count = _positive_integer(
+        payload["calibration_sample_count"],
+        field="decision_policy.calibration_sample_count",
+    )
+    eligible_count = _nonnegative_integer(
+        payload["eligible_calibration_sample_count"],
+        field="decision_policy.eligible_calibration_sample_count",
+    )
+    group_count = _integer_at_least(
+        payload["calibration_group_count"],
+        minimum=2,
+        field="decision_policy.calibration_group_count",
+    )
+    positive_count = _positive_integer(
+        payload["positive_sample_count"],
+        field="decision_policy.positive_sample_count",
+    )
+    negative_count = _positive_integer(
+        payload["negative_sample_count"],
+        field="decision_policy.negative_sample_count",
+    )
+    grid_size = _nonnegative_integer(
+        payload["threshold_grid_size"],
+        field="decision_policy.threshold_grid_size",
+    )
+    if (
+        eligible_count > sample_count
+        or group_count > sample_count
+        or positive_count + negative_count != sample_count
+        or grid_size > eligible_count * eligible_count
+        or (eligible_count == 0) != (grid_size == 0)
+    ):
+        raise ValueError("decision policy calibration counts are inconsistent")
+    requirements = _mapping(
+        payload["requirements"], field="decision_policy.requirements"
+    )
+    expected_requirements = {
+        "route_compatible": True,
+        "reference_coverage_sufficient": True,
+        "domain_negative_absent": True,
+        "out_of_distribution_absent": True,
+        "visual_detail_sufficient": True,
+        "no_geo_global_fallback_absent": True,
+    }
+    if dict(requirements) != expected_requirements:
+        raise ValueError("decision policy requirements are incompatible")
+    expected_rules = [
+        "decision_policy_infeasible",
+        "incompatible_route",
+        "domain_negative_without_supported_outcome",
+        "out_of_distribution",
+        "insufficient_visual_detail",
+        "insufficient_reference_coverage",
+        "no_geo_global_fallback",
+        "calibrated_non_target_dominates",
+        "missing_calibrated_target_probability",
+        "target_probability_below_threshold",
+        "missing_competitor_margin",
+        "competitor_margin_below_threshold",
+    ]
+    if payload["abstention_rules"] != expected_rules:
+        raise ValueError("decision policy abstention rules are incompatible")
+    metrics = _mapping(
+        payload["achieved_metrics"], field="decision_policy.achieved_metrics"
+    )
+    metric_fields = {
+        "weighted_precision",
+        "weighted_recall",
+        "weighted_coverage",
+        "unweighted_precision",
+        "unweighted_recall",
+        "unweighted_coverage",
+    }
+    _expect_keys(metrics, metric_fields, field="decision_policy.achieved_metrics")
+    probability_threshold = payload["target_probability_threshold"]
+    margin_threshold = payload["competitor_margin_threshold"]
+    if status == "fitted":
+        if not enabled or payload["status_reason"] != "precision_objective_met":
+            raise ValueError("fitted decision policy status metadata is invalid")
+        _unit_interval(
+            probability_threshold,
+            field="decision_policy.target_probability_threshold",
+        )
+        margin = _finite_number(
+            margin_threshold,
+            field="decision_policy.competitor_margin_threshold",
+        )
+        if not -2.0 <= margin <= 2.0:
+            raise ValueError("decision policy competitor margin threshold is invalid")
+        achieved = {
+            field: _unit_interval(
+                metrics[field],
+                field=f"decision_policy.achieved_metrics.{field}",
+            )
+            for field in metric_fields
+        }
+        if achieved["weighted_precision"] + 1e-15 < objective or grid_size == 0:
+            raise ValueError("decision policy does not meet its precision objective")
+    else:
+        if (
+            enabled
+            or payload["status_reason"]
+            != "no_threshold_pair_meets_target_precision_objective"
+            or probability_threshold is not None
+            or margin_threshold is not None
+            or any(metrics[field] is not None for field in metric_fields)
+        ):
+            raise ValueError("infeasible decision policy metadata is invalid")
+    fingerprint = _sha256(
+        payload["decision_policy_fingerprint"],
+        field="decision_policy.decision_policy_fingerprint",
+    )
+    semantics = dict(payload)
+    semantics.pop("decision_policy_fingerprint")
+    if canonical_semantic_fingerprint(semantics) != fingerprint:
+        raise ValueError("decision policy fingerprint is invalid")
+    return dict(payload)
 
 
 def _validate_report_manifest(payload: Mapping[str, object]) -> None:

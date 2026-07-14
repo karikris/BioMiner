@@ -1598,10 +1598,30 @@ and softmax scaling using numeric parameters alone.
 Reliability rows use `probability_kind=calibrated_probability`, include every
 ordered class and fixed equal-width bin (including empty bins), and never rename
 the input `estimator_decision_score` as probability. The manifest is the commit
-marker after deterministic NPZ and Parquet publication. Until Task 9.4 learns a
-threshold and abstention policy, it carries a fingerprinted `not_fitted`
-decision-policy record with `target_confirmation_enabled=false`; this pending
-record is deliberately not threshold provenance.
+marker after deterministic NPZ and Parquet publication. Before policy fitting,
+the writer carries a fingerprinted `not_fitted` decision-policy record with
+`target_confirmation_enabled=false`; that pending record is not threshold
+provenance.
+
+A fitted selective policy uses schema version
+`few-shot-decision-policy-v1.0.0`. Its calibration-only samples retain the
+independent group ID, target label, calibrated target probability, competitor
+margin, sample weight, and the route, reference-coverage, domain-negative, OOD,
+visual-detail, and geo gates. Policy fitting searches the joint grid of observed
+target-probability and competitor-margin thresholds. It maximizes weighted
+target recall subject to an explicit weighted target-precision objective, with
+deterministic ties resolved by precision, coverage, unweighted precision, and
+then stricter thresholds. There is no default `0.90` threshold. If no joint
+threshold satisfies the objective, the policy is persisted as `infeasible`
+with null thresholds and target confirmation disabled.
+
+The immutable policy record persists its status and version, both learned
+thresholds, optimization metric and precision objective, achieved weighted and
+unweighted calibration metrics, sample/group/class/grid counts, model,
+classifier, calibrator, split, and sample fingerprints, all runtime requirements
+and ordered abstention rules, and a fingerprint over that complete record.
+Calibration loading recomputes the policy fingerprint and rejects identity,
+threshold, metric, requirement, or rule tampering.
 
 ## 8. Target-aware inference artifacts
 
@@ -1725,8 +1745,8 @@ they need not be the same species. Generic non-target evidence yields
 `abstain`, not a fabricated biological category. Maxima use stable taxon and
 evidence-ID tie breaks, and the scoring fingerprint covers the complete sorted
 input evidence plus every derived value. This layer exposes the closed decision
-vocabulary but does not choose target-confirmation thresholds; Task 9.4 owns
-that selective policy.
+vocabulary; the calibrated selective policy applies the learned joint
+target-probability and competitor-margin thresholds plus its fail-closed gates.
 
 Quality and structured-evidence fields:
 
