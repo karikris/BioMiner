@@ -6,19 +6,21 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
-import io
 import json
 from math import isfinite
 import os
 from pathlib import Path
 import re
 import shutil
-import stat
 from typing import Any
 from uuid import uuid4
-import zipfile
 
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
+from biominer.ml._numeric_artifacts import (
+    deterministic_numeric_npz,
+    load_numeric_npz,
+    numeric_array_manifest_entry,
+)
 from biominer.ml.classifiers import (
     CLASSIFIER_TRAINING_VERSION,
     CV_SPLIT_VERSION,
@@ -685,41 +687,11 @@ def _validate_extracted_array_shapes(
 
 
 def _deterministic_npz(arrays: Mapping[str, Any]) -> bytes:
-    np = _load_numpy()
-    output = io.BytesIO()
-    with zipfile.ZipFile(
-        output,
-        mode="w",
-        compression=zipfile.ZIP_STORED,
-        strict_timestamps=True,
-    ) as archive:
-        for name in sorted(arrays):
-            array = arrays[name]
-            buffer = io.BytesIO()
-            np.lib.format.write_array(
-                buffer,
-                array,
-                version=(2, 0),
-                allow_pickle=False,
-            )
-            info = zipfile.ZipInfo(
-                filename=f"{name}.npy",
-                date_time=(1980, 1, 1, 0, 0, 0),
-            )
-            info.compress_type = zipfile.ZIP_STORED
-            info.create_system = 3
-            info.external_attr = (stat.S_IFREG | 0o600) << 16
-            archive.writestr(info, buffer.getvalue())
-    return output.getvalue()
+    return deterministic_numeric_npz(arrays)
 
 
 def _array_manifest_entry(array: Any) -> dict[str, object]:
-    return {
-        "dtype": array.dtype.str,
-        "shape": list(array.shape),
-        "size_bytes": int(array.nbytes),
-        "raw_sha256": _bytes_sha256(array.tobytes(order="C")),
-    }
+    return numeric_array_manifest_entry(array)
 
 
 def _read_manifest(path: Path) -> dict[str, object]:
@@ -1199,59 +1171,40 @@ def _load_array_archive(
     feature_layout: ClassifierFeatureLayout,
     class_count: int,
 ) -> dict[str, Any]:
-    expected_members = tuple(sorted(f"{name}.npy" for name in specs))
-    try:
-        with zipfile.ZipFile(io.BytesIO(value), mode="r") as archive:
-            infos = archive.infolist()
-            member_names = tuple(info.filename for info in infos)
-            if member_names != expected_members or len(set(member_names)) != len(infos):
-                raise ValueError("classifier archive members do not match the manifest")
-            total_size = 0
-            for info in infos:
-                if (
-                    info.is_dir()
-                    or info.flag_bits & 0x1
-                    or info.compress_type != zipfile.ZIP_STORED
-                    or info.file_size != info.compress_size
-                ):
-                    raise ValueError(
-                        "classifier archive members are not safe numeric files"
-                    )
-                total_size += info.file_size
-            if total_size > MAX_CLASSIFIER_ARRAY_UNCOMPRESSED_BYTES:
-                raise ValueError("classifier archive expands beyond the size limit")
-    except zipfile.BadZipFile as exc:
-        raise ValueError("invalid classifier array archive") from exc
-
     np = _load_numpy()
-    arrays: dict[str, Any] = {}
-    try:
-        with np.load(
-            io.BytesIO(value),
-            allow_pickle=False,
-            max_header_size=MAX_NUMPY_HEADER_BYTES,
-        ) as loaded:
-            if tuple(sorted(loaded.files)) != tuple(sorted(specs)):
-                raise ValueError("classifier archive members do not match the manifest")
-            for name in sorted(specs):
-                arrays[name] = np.array(loaded[name], copy=True, order="C")
-    except (EOFError, OSError, ValueError, zipfile.BadZipFile) as exc:
-        if isinstance(exc, ValueError) and "archive members" in str(exc):
-            raise
-        raise ValueError("invalid classifier array archive") from exc
-
-    for name, array in arrays.items():
-        spec = _mapping(specs[name], field=f"arrays.entries.{name}")
-        if array.dtype.hasobject or array.dtype.kind not in "fiu":
-            raise ValueError(f"classifier array {name} is not numeric")
-        if array.dtype.str != spec["dtype"] or list(array.shape) != spec["shape"]:
-            raise ValueError(f"classifier array {name} does not match its manifest")
-        if int(array.nbytes) != spec["size_bytes"]:
-            raise ValueError(f"classifier array {name} byte size is invalid")
-        if _bytes_sha256(array.tobytes(order="C")) != spec["raw_sha256"]:
-            raise ValueError(f"classifier array {name} checksum is invalid")
-        if array.dtype.kind == "f" and not bool(np.isfinite(array).all()):
-            raise ValueError(f"classifier array {name} contains non-finite values")
+    continuous_count = len(feature_layout.continuous_column_indices)
+    coefficient_rows = 1 if class_count == 2 else class_count
+    expected_shapes = {
+        COEFFICIENTS_ARRAY: (
+            coefficient_rows,
+            len(feature_layout.transformed_feature_names),
+        ),
+        INTERCEPTS_ARRAY: (coefficient_rows,),
+        CLASS_INDICES_ARRAY: (class_count,),
+        CONTINUOUS_IMPUTER_STATISTICS_ARRAY: (continuous_count,),
+        CONTINUOUS_SCALER_MEAN_ARRAY: (continuous_count,),
+        CONTINUOUS_SCALER_SCALE_ARRAY: (continuous_count,),
+        CONTINUOUS_SCALER_VARIANCE_ARRAY: (continuous_count,),
+    }
+    expected_keys = _expected_array_keys(feature_layout.feature_set)
+    expected_shapes = {
+        name: shape for name, shape in expected_shapes.items() if name in expected_keys
+    }
+    expected_dtypes = {
+        name: "<i8" if name == CLASS_INDICES_ARRAY else "<f8" for name in expected_keys
+    }
+    arrays = load_numeric_npz(
+        value,
+        specs={
+            name: _mapping(spec, field=f"arrays.entries.{name}")
+            for name, spec in specs.items()
+        },
+        expected_dtypes=expected_dtypes,
+        expected_shapes=expected_shapes,
+        max_uncompressed_bytes=MAX_CLASSIFIER_ARRAY_UNCOMPRESSED_BYTES,
+        artifact_label="classifier",
+        max_header_bytes=MAX_NUMPY_HEADER_BYTES,
+    )
     _validate_extracted_array_shapes(
         arrays,
         feature_layout=feature_layout,

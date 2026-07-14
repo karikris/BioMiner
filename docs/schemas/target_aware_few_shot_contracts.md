@@ -1573,6 +1573,36 @@ unweighted counts, mean prediction, observed frequency, route, split,
 calibrator/classifier fingerprints, and Brier/log-loss/ECE contributions. Raw
 similarity or SVC-margin bins cannot be labelled calibrated probability bins.
 
+The implemented calibration input is an explicit held-out prediction record:
+prediction and source-item IDs, leakage-component ID, fold index, exact
+`calibration` partition, true ordered class, estimator decision score vector,
+and positive sample weight. Every fold audit binds sorted estimator-fit and
+validation group sets. Validation requires the two sets to be disjoint within
+each fold, requires every prediction group in exactly one validation fold, and
+requires each fold's declared validation groups to equal its prediction groups.
+The independent-prediction fingerprint covers the score rows and complete fold
+group sets; the persisted fold summaries retain their counts and group-set
+fingerprints without exposing person or owner identifiers.
+
+`auto` fitting resolves to sigmoid calibration for binary tasks and temperature
+scaling for multiclass tasks; `auto` is never persisted as an artifact method.
+Sigmoid fitting uses Platt-smoothed targets and deterministic Newton steps with
+line search. Isotonic fitting is rejected below 1,000 held-out predictions or
+200 independent leakage components and stores its monotone knots and values as
+little-endian Float64 arrays. Multiclass temperature fitting minimizes weighted
+log loss over a bounded log inverse-temperature with a deterministic
+golden-section search. Only the fit path imports scikit-learn for isotonic PAVA;
+the strict runtime loader implements sigmoid, piecewise-linear interpolation,
+and softmax scaling using numeric parameters alone.
+
+Reliability rows use `probability_kind=calibrated_probability`, include every
+ordered class and fixed equal-width bin (including empty bins), and never rename
+the input `estimator_decision_score` as probability. The manifest is the commit
+marker after deterministic NPZ and Parquet publication. Until Task 9.4 learns a
+threshold and abstention policy, it carries a fingerprinted `not_fitted`
+decision-policy record with `target_confirmation_enabled=false`; this pending
+record is deliberately not threshold provenance.
+
 ## 8. Target-aware inference artifacts
 
 The production mode string is
