@@ -52,7 +52,13 @@ from biominer.references.readiness import (
 )
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import RunArtifactUris, RunPaths
-from biominer.run.stages import DEFAULT_PRODUCTION_STAGES, RunStage, StageStatus, default_stage_records
+from biominer.run.stages import (
+    DEFAULT_PRODUCTION_STAGES,
+    MANUAL_REVIEW_STAGES,
+    RunStage,
+    StageStatus,
+    default_stage_records,
+)
 from biominer.run.taxon_scope import InputRank, TaxonScope, resolve_taxon_scope_from_registry, resolve_taxon_scope_from_registry_frames
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.paths import build_evidence_shard_uri, safe_path_component
@@ -355,21 +361,45 @@ class ProductionRunOrchestrator:
                 manifest = plan.manifest.with_stage_status(stage, StageStatus.RUNNING, started_at=started_at)
                 plan = replace(plan, manifest=manifest)
                 result = self._run_stage(plan, stage)
+                if stage in MANUAL_REVIEW_STAGES and result.status is StageStatus.COMPLETE:
+                    result = replace(
+                        result,
+                        status=StageStatus.AWAITING_MANUAL_REVIEW,
+                        message=result.message or "manual_review_required",
+                    )
                 manifest = self._manifest_with_reference_bank_permit(plan.manifest)
                 manifest = manifest.with_stage_status(
                     stage,
                     result.status,
-                    ended_at=utc_now_iso(),
+                    ended_at=(
+                        None
+                        if result.status is StageStatus.AWAITING_MANUAL_REVIEW
+                        else utc_now_iso()
+                    ),
                     message=result.message,
                     metrics=result.metrics,
                     outputs=result.outputs,
                 )
                 manifest = _merge_stage_counts(manifest, stage=stage, result=result)
                 plan = replace(plan, manifest=manifest)
-            final_status = (
-                "failed" if any(stage.status == StageStatus.FAILED for stage in plan.manifest.stages) else "complete"
+                if result.status is StageStatus.AWAITING_MANUAL_REVIEW:
+                    break
+            if any(stage.status is StageStatus.FAILED for stage in plan.manifest.stages):
+                final_status = StageStatus.FAILED.value
+                ended_at = utc_now_iso()
+            elif any(
+                stage.status is StageStatus.AWAITING_MANUAL_REVIEW
+                for stage in plan.manifest.stages
+            ):
+                final_status = StageStatus.AWAITING_MANUAL_REVIEW.value
+                ended_at = None
+            else:
+                final_status = StageStatus.COMPLETE.value
+                ended_at = utc_now_iso()
+            plan = replace(
+                plan,
+                manifest=plan.manifest.with_status(final_status, ended_at=ended_at),
             )
-            plan = replace(plan, manifest=plan.manifest.with_status(final_status, ended_at=utc_now_iso()))
             self._write_manifest_if_local(plan)
             return plan
         finally:
@@ -415,6 +445,11 @@ class ProductionRunOrchestrator:
             )
         if self.request.dry_run:
             return StageExecutionResult(status=StageStatus.SKIPPED, message="dry_run")
+        if stage in MANUAL_REVIEW_STAGES:
+            return StageExecutionResult(
+                status=StageStatus.AWAITING_MANUAL_REVIEW,
+                message="manual_review_required",
+            )
         if stage == RunStage.BUILD_REGISTRY:
             return self._run_build_registry_stage(plan)
         if stage == RunStage.COMPILE_QUERIES:

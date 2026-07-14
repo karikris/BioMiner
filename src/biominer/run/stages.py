@@ -8,9 +8,25 @@ from typing import Any
 class RunStage(StrEnum):
     RESOLVE_TAXON_SCOPE = "resolve_taxon_scope"
     BUILD_REGISTRY = "build_registry"
+    GEOGRAPHIC_SPREAD = "geographic_spread"
     COMPILE_QUERIES = "compile_queries"
     ENQUEUE_FLICKR_WORK = "enqueue_flickr_work"
     POLL_FLICKR = "poll_flickr"
+    FLICKR_GEO_CLUSTERING = "flickr_geo_clustering"
+    REGIONAL_CANDIDATE_GENERATION = "regional_candidate_generation"
+    REFERENCE_METADATA = "reference_metadata"
+    REFERENCE_MEDIA = "reference_media"
+    REFERENCE_REVIEW = "reference_review"
+    REFERENCE_EMBEDDINGS = "reference_embeddings"
+    REFERENCE_PROTOTYPES = "reference_prototypes"
+    CLASSIFIER_TRAINING = "classifier_training"
+    CLASSIFIER_CALIBRATION = "classifier_calibration"
+    REFERENCE_READINESS = "reference_readiness"
+    FLICKR_DETECTION = "flickr_detection"
+    FLICKR_EMBEDDING = "flickr_embedding"
+    TARGET_AWARE_SCORING = "target_aware_scoring"
+    EVIDENCE = "evidence"
+    EVALUATION = "evaluation"
     DETECT_OBJECTS = "detect_objects"
     SCORE_BIOCLIP = "score_bioclip"
     JOIN_EVIDENCE = "join_evidence"
@@ -23,6 +39,7 @@ class RunStage(StrEnum):
 class StageStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
+    AWAITING_MANUAL_REVIEW = "awaiting_manual_review"
     COMPLETE = "complete"
     FAILED = "failed"
     SKIPPED = "skipped"
@@ -42,6 +59,34 @@ DEFAULT_PRODUCTION_STAGES: tuple[RunStage, ...] = (
     RunStage.REVIEW_COMMENTS,
     RunStage.APPLY_COMMENT_REVIEW,
 )
+
+
+REFERENCE_FIRST_PRODUCTION_STAGES: tuple[RunStage, ...] = (
+    RunStage.RESOLVE_TAXON_SCOPE,
+    RunStage.BUILD_REGISTRY,
+    RunStage.GEOGRAPHIC_SPREAD,
+    RunStage.COMPILE_QUERIES,
+    RunStage.ENQUEUE_FLICKR_WORK,
+    RunStage.POLL_FLICKR,
+    RunStage.FLICKR_GEO_CLUSTERING,
+    RunStage.REGIONAL_CANDIDATE_GENERATION,
+    RunStage.REFERENCE_METADATA,
+    RunStage.REFERENCE_MEDIA,
+    RunStage.REFERENCE_REVIEW,
+    RunStage.REFERENCE_EMBEDDINGS,
+    RunStage.REFERENCE_PROTOTYPES,
+    RunStage.CLASSIFIER_TRAINING,
+    RunStage.CLASSIFIER_CALIBRATION,
+    RunStage.REFERENCE_READINESS,
+    RunStage.FLICKR_DETECTION,
+    RunStage.FLICKR_EMBEDDING,
+    RunStage.TARGET_AWARE_SCORING,
+    RunStage.EVIDENCE,
+    RunStage.EVALUATION,
+)
+
+
+MANUAL_REVIEW_STAGES: frozenset[RunStage] = frozenset({RunStage.REFERENCE_REVIEW})
 
 
 @dataclass(frozen=True)

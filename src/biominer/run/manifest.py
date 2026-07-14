@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from biominer.run.stages import RunStage, StageRecord, StageStatus
+from biominer.run.stages import MANUAL_REVIEW_STAGES, RunStage, StageRecord, StageStatus
 from biominer.run.taxon_scope import TaxonScope
 
 
@@ -44,8 +44,76 @@ class RunManifest:
         metrics: dict[str, Any] | None = None,
         outputs: dict[str, str] | None = None,
     ) -> RunManifest:
+        return self._with_stage_status(
+            stage,
+            status,
+            started_at=started_at,
+            ended_at=ended_at,
+            message=message,
+            metrics=metrics,
+            outputs=outputs,
+            allow_manual_completion=False,
+        )
+
+    def with_manual_review_approval(
+        self,
+        stage: RunStage | str,
+        *,
+        reviewer: str,
+        approved_at: str | None = None,
+        message: str = "manual_review_approved",
+        metrics: dict[str, Any] | None = None,
+        outputs: dict[str, str] | None = None,
+    ) -> RunManifest:
+        target = RunStage(str(stage))
+        if target not in MANUAL_REVIEW_STAGES:
+            raise ValueError(f"stage is not a manual-review stage: {target.value}")
+        current = next((record for record in self.stages if record.stage == target), None)
+        if current is None or current.status is not StageStatus.AWAITING_MANUAL_REVIEW:
+            raise ValueError(
+                f"manual-review stage must be awaiting manual review before approval: {target.value}"
+            )
+        approved_by = " ".join(str(reviewer or "").split())
+        if not approved_by:
+            raise ValueError("reviewer must be non-empty")
+        approval_time = approved_at or utc_now_iso()
+        approval_metrics = {
+            **(metrics or {}),
+            "manual_review_approved_by": approved_by,
+            "manual_review_approved_at": approval_time,
+        }
+        return self._with_stage_status(
+            target,
+            StageStatus.COMPLETE,
+            ended_at=approval_time,
+            message=message,
+            metrics=approval_metrics,
+            outputs=outputs,
+            allow_manual_completion=True,
+        )
+
+    def _with_stage_status(
+        self,
+        stage: RunStage | str,
+        status: StageStatus | str,
+        *,
+        started_at: str | None = None,
+        ended_at: str | None = None,
+        message: str | None = None,
+        metrics: dict[str, Any] | None = None,
+        outputs: dict[str, str] | None = None,
+        allow_manual_completion: bool,
+    ) -> RunManifest:
         target = RunStage(str(stage))
         next_status = StageStatus(str(status))
+        if (
+            target in MANUAL_REVIEW_STAGES
+            and next_status is StageStatus.COMPLETE
+            and not allow_manual_completion
+        ):
+            raise ValueError(
+                f"manual-review stage cannot be completed automatically: {target.value}"
+            )
         updated: list[StageRecord] = []
         replaced = False
         for record in self.stages:
