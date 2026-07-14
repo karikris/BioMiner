@@ -409,6 +409,7 @@ def _classifier_example(
         burst_group_id=f"burst:{item_id}",
         provider_mirror_group_id=f"mirror:{item_id}",
         leakage_group_id=group_id,
+        geo_cluster_id=f"cluster:{group_id}",
         dataset_split=dataset_split,
         candidate_set_fingerprint=_sha(f"candidate-set:{item_id}"),
     )
@@ -426,7 +427,11 @@ def _classifier_example(
         embedding=vector,
         embedding_fingerprint=_sha(f"embedding:{item_id}"),
     )
-    reference = replace(base.reference, route=route)
+    reference = replace(
+        base.reference,
+        route=route,
+        geo_cluster_id=f"cluster:{group_id}",
+    )
     detection = replace(
         base.detection,
         yoloe_route=yoloe_route,

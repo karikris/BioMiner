@@ -1405,10 +1405,13 @@ def _validate_group_split_isolation(frame: pl.DataFrame) -> None:
         "duplicate_group_id",
         "burst_group_id",
         "provider_mirror_group_id",
+        "geo_cluster_id",
     ):
         assignments: dict[str, str] = {}
         for value, split in frame.select(field, "dataset_split").iter_rows():
-            if value is None:
+            if value is None or (
+                field == "geo_cluster_id" and value == NO_GEO_CLUSTER_ID
+            ):
                 continue
             key = str(value)
             previous = assignments.setdefault(key, str(split))

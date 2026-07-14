@@ -1474,6 +1474,39 @@ route, accepted class key, split (`support_train`, `model_selection`,
 artifact fingerprint, and split fingerprint. A group may occur in exactly one
 split. Loaders fail on leakage rather than repairing it silently.
 
+The implemented physical schema is `dataset-split-manifest-v1.0.0` and adds
+the general `stratification_label`, source, item fingerprint, configuration
+fingerprint, assignment-policy version, four integer partition weights,
+class-coverage policy, derived `leakage_component_id`, and component size.
+`DatasetSplitItem` keeps source-observation, source-owner, observer,
+photographer, Flickr-owner, generic duplicate, exact-hash, perceptual-duplicate,
+burst, provider-mirror, and geographic-cluster identities separate for audit.
+Person, owner, observation, and burst identities are source-scoped; global
+duplicate, provider-mirror, and real geographic-cluster identities may connect
+providers. `no_geo` means missing evidence and is never treated as one shared
+group.
+
+`transitive-multi-identity-leakage-groups-v1.0.0` computes connected components
+across every populated identity using union-find. The assignment unit is the
+complete connected component, including indirect chains through different
+identity types. `deterministic-class-aware-component-allocation-v1.0.0` orders
+components by class rarity, class breadth, size, and a seeded semantic hash,
+then greedily minimises exact rational deviations from the configured item,
+component, and class targets. Forward reservations prevent an early choice
+from consuming the last component needed by an uncovered partition. Production
+weights are 55/15/15/15 for support train, model selection, calibration, and
+final test. Defaults require every class in all four partitions and fail before
+assignment when a class has fewer than four independent components; all four
+partitions must be non-empty even when that class-coverage check is explicitly
+disabled.
+
+The split fingerprint binds the configuration and every sorted item
+fingerprint, derived component, and assignment. Readers validate the exact
+physical schema and ordering, rebuild item and component fingerprints, rerun
+the allocator, check every group namespace for cross-split reuse, and recompute
+the split fingerprint. Publication is immutable by default and verifies the
+Parquet round trip before returning.
+
 ### 7.3 `classifier_manifest.json` and `classifier_arrays.npz`
 
 `classifier_manifest.json` schema version is
