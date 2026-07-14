@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import replace
 from datetime import datetime, timezone
 import json
@@ -8,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from biominer.ml.calibration import (
+    CalibrationFit,
     fit_probability_calibrator,
     load_probability_calibrator,
     write_probability_calibrator,
@@ -17,6 +19,7 @@ from biominer.ml.decision_policy import (
     DECISION_POLICY_OPTIMIZATION_METRIC,
     DecisionPolicyCalibrationSample,
     SelectiveDecisionPolicyConfig,
+    SelectiveDecisionPolicy,
     SelectivePredictionEvidence,
     apply_selective_decision_policy,
     decision_policy_manifest_payload,
@@ -98,6 +101,25 @@ def _prediction_evidence(*, score=None, **changes) -> SelectivePredictionEvidenc
     }
     values.update(changes)
     return SelectivePredictionEvidence(**values)
+
+
+def _calibration_fit_and_policy() -> tuple[CalibrationFit, SelectiveDecisionPolicy]:
+    predictions, audits = _binary_inputs()
+    calibration_fit = fit_probability_calibrator(
+        predictions,
+        audits,
+        _binary_config(),
+    )
+    config = SelectiveDecisionPolicyConfig(
+        target_task="binary_target_verifier",
+        route="adult_field",
+        target_precision_objective=0.75,
+        model_fingerprint=_sha("manifest-model"),
+        classifier_fingerprint=calibration_fit.calibrator.classifier_fingerprint,
+        calibration_fingerprint=calibration_fit.calibration_fingerprint,
+        split_fingerprint=calibration_fit.calibrator.split_fingerprint,
+    )
+    return calibration_fit, fit_selective_decision_policy(_samples(), config)
 
 
 def test_joint_threshold_search_meets_precision_and_persists_provenance() -> None:
@@ -284,22 +306,7 @@ def test_policy_fingerprint_mismatch_fails_closed() -> None:
 
 
 def test_fitted_policy_is_embedded_in_calibration_manifest(tmp_path: Path) -> None:
-    predictions, audits = _binary_inputs()
-    calibration_fit = fit_probability_calibrator(
-        predictions,
-        audits,
-        _binary_config(),
-    )
-    config = SelectiveDecisionPolicyConfig(
-        target_task="binary_target_verifier",
-        route="adult_field",
-        target_precision_objective=0.75,
-        model_fingerprint=_sha("manifest-model"),
-        classifier_fingerprint=calibration_fit.calibrator.classifier_fingerprint,
-        calibration_fingerprint=calibration_fit.calibration_fingerprint,
-        split_fingerprint=calibration_fit.calibrator.split_fingerprint,
-    )
-    policy = fit_selective_decision_policy(_samples(), config)
+    calibration_fit, policy = _calibration_fit_and_policy()
 
     paths = write_probability_calibrator(
         calibration_fit,
@@ -335,6 +342,41 @@ def test_fitted_policy_is_embedded_in_calibration_manifest(tmp_path: Path) -> No
     )
     with pytest.raises(ValueError, match="decision policy fingerprint"):
         load_probability_calibrator(paths.directory)
+
+
+def test_target_confirmation_policy_requires_threshold_metadata(tmp_path: Path) -> None:
+    calibration_fit, policy = _calibration_fit_and_policy()
+    payload = decision_policy_manifest_payload(policy)
+    payload.pop("target_probability_threshold")
+
+    with pytest.raises(ValueError, match="decision_policy has an incompatible key set"):
+        write_probability_calibrator(
+            calibration_fit,
+            tmp_path / "missing-threshold",
+            git_sha=GIT_SHA,
+            created_at=CREATED_AT,
+            decision_policy=payload,
+        )
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    ("calibration.py", "decision_policy.py", "nonmatch.py"),
+)
+def test_target_aware_production_logic_has_no_fixed_point_ninety_threshold(
+    module_name: str,
+) -> None:
+    source_path = Path(__file__).parents[1] / "src" / "biominer" / "ml" / module_name
+    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    fixed_threshold_lines = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and type(node.value) is float
+        and node.value == 0.9
+    ]
+
+    assert fixed_threshold_lines == []
 
 
 REGIONAL_KEY = "gbif:1939773"

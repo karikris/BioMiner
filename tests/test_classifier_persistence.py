@@ -12,6 +12,7 @@ import pytest
 
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.ml.classifiers import (
+    ESTIMATOR_LINEAR_SVC,
     ESTIMATOR_RBF_SVC,
     LINEAR_SVC_EMBEDDING_MODEL,
     LINEAR_SVC_STRUCTURED_MODEL,
@@ -121,6 +122,30 @@ def test_round_trip_matches_fitted_binary_pipeline(
     assert loaded.probability_calibrated is False
     assert paths.manifest_path.name == CLASSIFIER_MANIFEST_FILE
     assert paths.arrays_path.name == CLASSIFIER_ARRAYS_FILE
+
+
+def test_svc_decision_margin_is_not_exposed_as_probability(
+    tmp_path: Path,
+    binary_training,
+) -> None:
+    frame, run = binary_training
+    candidate = next(
+        item for item in run.candidates if item.model_name == LINEAR_SVC_EMBEDDING_MODEL
+    )
+    paths = _write(
+        run,
+        tmp_path / "linear-svc-margin",
+        model_name=LINEAR_SVC_EMBEDDING_MODEL,
+    )
+    loaded = load_frozen_classifier(paths.directory)
+    manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
+    raw = materialize_classifier_feature_matrix(frame, candidate.feature_layout)
+
+    assert loaded.estimator_family == ESTIMATOR_LINEAR_SVC
+    assert loaded.decision_function(raw).ndim == 1
+    assert loaded.probability_calibrated is False
+    assert manifest["identity"]["probability_calibrated"] is False
+    assert not hasattr(loaded, "predict_proba")
 
 
 def test_round_trip_preserves_multiclass_class_order(
