@@ -11,6 +11,7 @@ from typing import Sequence
 
 DEFAULT_DEVICE = "auto"
 VALID_DEVICES = {"auto", "cuda", "mps", "cpu"}
+VALID_IMAGE_RESIZE_MODES = {"shortest", "longest", "squash"}
 DEFAULT_TEXT_FEATURE_BATCH_SIZE = 512
 TEXT_FEATURE_BATCH_SIZE_ENV = "BIOMINER_BIOCLIP_TEXT_FEATURE_BATCH_SIZE"
 DEFAULT_TEXT_FEATURE_CACHE_ENTRIES = 8
@@ -22,9 +23,12 @@ def main() -> None:
         run_persistent_worker()
         return
     request = json.loads(sys.stdin.read())
-    configure_hf_cache_env(Path(request.get("hf_cache_dir") or "data/cache/huggingface"))
+    configure_hf_cache_env(
+        Path(request.get("hf_cache_dir") or "data/cache/huggingface")
+    )
     image_paths = request.get("image_paths")
     device = device_from_request(request)
+    image_resize_mode = image_resize_mode_from_request(request)
     preprocess_workers = preprocess_workers_from_request(request)
     label_sets = request.get("label_sets")
     if label_sets is not None:
@@ -34,9 +38,18 @@ def main() -> None:
             model_name=request["model_name"],
             checkpoint=request["checkpoint"],
             device=device,
+            image_resize_mode=image_resize_mode,
             preprocess_workers=preprocess_workers,
         )
-        print(json.dumps({"scores_by_image_by_label_set": scores_by_image_by_label_set}, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "scores_by_image_by_label_set": scores_by_image_by_label_set,
+                    "image_resize_mode": image_resize_mode,
+                },
+                sort_keys=True,
+            )
+        )
         return
     if image_paths is None:
         scores = score_image(
@@ -45,9 +58,15 @@ def main() -> None:
             model_name=request["model_name"],
             checkpoint=request["checkpoint"],
             device=device,
+            image_resize_mode=image_resize_mode,
             preprocess_workers=preprocess_workers,
         )
-        print(json.dumps({"scores": scores}, sort_keys=True))
+        print(
+            json.dumps(
+                {"scores": scores, "image_resize_mode": image_resize_mode},
+                sort_keys=True,
+            )
+        )
         return
     scores_by_image = score_images(
         image_paths=[Path(path) for path in image_paths],
@@ -55,9 +74,18 @@ def main() -> None:
         model_name=request["model_name"],
         checkpoint=request["checkpoint"],
         device=device,
+        image_resize_mode=image_resize_mode,
         preprocess_workers=preprocess_workers,
     )
-    print(json.dumps({"scores_by_image": scores_by_image}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "scores_by_image": scores_by_image,
+                "image_resize_mode": image_resize_mode,
+            },
+            sort_keys=True,
+        )
+    )
 
 
 def configure_hf_cache_env(cache_dir: str | Path) -> Path:
@@ -85,26 +113,55 @@ def preprocess_workers_from_request(request: dict[str, object]) -> int:
     return value
 
 
+def image_resize_mode_from_request(request: dict[str, object]) -> str | None:
+    value = request.get("image_resize_mode")
+    if value is None:
+        return None
+    return normalize_image_resize_mode(str(value))
+
+
 def normalize_device(device: str) -> str:
     normalized = device.casefold().strip()
     if normalized not in VALID_DEVICES:
-        raise ValueError(f"Unsupported BioCLIP device {device!r}; expected one of {sorted(VALID_DEVICES)}")
+        raise ValueError(
+            f"Unsupported BioCLIP device {device!r}; expected one of {sorted(VALID_DEVICES)}"
+        )
+    return normalized
+
+
+def normalize_image_resize_mode(image_resize_mode: str | None) -> str | None:
+    if image_resize_mode is None:
+        return None
+    normalized = image_resize_mode.casefold().strip()
+    if normalized not in VALID_IMAGE_RESIZE_MODES:
+        raise ValueError(
+            f"Unsupported BioCLIP image resize mode {image_resize_mode!r}; "
+            f"expected one of {sorted(VALID_IMAGE_RESIZE_MODES)}"
+        )
     return normalized
 
 
 def run_persistent_worker() -> None:
     loaded: _LoadedBioClipModel | None = None
-    loaded_key: tuple[str, str, str] | None = None
+    loaded_key: tuple[str, str, str, str | None] | None = None
     try:
         for line in sys.stdin:
             try:
                 request = json.loads(line)
                 if request.get("shutdown"):
                     return
-                configure_hf_cache_env(Path(request.get("hf_cache_dir") or "data/cache/huggingface"))
+                configure_hf_cache_env(
+                    Path(request.get("hf_cache_dir") or "data/cache/huggingface")
+                )
                 device = device_from_request(request)
+                image_resize_mode = image_resize_mode_from_request(request)
                 preprocess_workers = preprocess_workers_from_request(request)
-                key = (str(request["model_name"]), str(request["checkpoint"]), device)
+                key = (
+                    str(request["model_name"]),
+                    str(request["checkpoint"]),
+                    device,
+                    image_resize_mode,
+                )
                 if loaded is None or loaded_key != key:
                     if loaded is not None:
                         loaded.close()
@@ -112,9 +169,21 @@ def run_persistent_worker() -> None:
                         model_name=key[0],
                         checkpoint=key[1],
                         device=key[2],
+                        image_resize_mode=key[3],
                     )
                     loaded_key = key
-                    print(json.dumps({"ready": True, "device": loaded.device, "gpu_name": loaded.gpu_name}, sort_keys=True), flush=True)
+                    print(
+                        json.dumps(
+                            {
+                                "ready": True,
+                                "device": loaded.device,
+                                "gpu_name": loaded.gpu_name,
+                                "image_resize_mode": loaded.image_resize_mode,
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
                 text_labels = request.get("text_labels")
                 if text_labels is not None:
                     embeddings = loaded.text_embeddings(list(text_labels))
@@ -122,9 +191,12 @@ def run_persistent_worker() -> None:
                         json.dumps(
                             {
                                 "text_embeddings": embeddings,
-                                "embedding_dim": len(embeddings[0]) if embeddings else 0,
+                                "embedding_dim": len(embeddings[0])
+                                if embeddings
+                                else 0,
                                 "device": loaded.device,
                                 "gpu_name": loaded.gpu_name,
+                                "image_resize_mode": loaded.image_resize_mode,
                             },
                             sort_keys=True,
                         ),
@@ -141,9 +213,12 @@ def run_persistent_worker() -> None:
                         json.dumps(
                             {
                                 "image_embeddings": embeddings,
-                                "embedding_dim": len(embeddings[0]) if embeddings else 0,
+                                "embedding_dim": len(embeddings[0])
+                                if embeddings
+                                else 0,
                                 "device": loaded.device,
                                 "gpu_name": loaded.gpu_name,
+                                "image_resize_mode": loaded.image_resize_mode,
                             },
                             sort_keys=True,
                         ),
@@ -155,7 +230,10 @@ def run_persistent_worker() -> None:
                 if label_sets is not None:
                     scores_by_image_by_label_set = loaded.score_image_label_sets(
                         [Path(path) for path in image_paths],
-                        {str(name): list(labels) for name, labels in label_sets.items()},
+                        {
+                            str(name): list(labels)
+                            for name, labels in label_sets.items()
+                        },
                         preprocess_workers=preprocess_workers,
                     )
                     print(
@@ -164,6 +242,7 @@ def run_persistent_worker() -> None:
                                 "scores_by_image_by_label_set": scores_by_image_by_label_set,
                                 "device": loaded.device,
                                 "gpu_name": loaded.gpu_name,
+                                "image_resize_mode": loaded.image_resize_mode,
                             },
                             sort_keys=True,
                         ),
@@ -176,7 +255,18 @@ def run_persistent_worker() -> None:
                         request["labels"],
                         preprocess_workers=preprocess_workers,
                     )[0]
-                    print(json.dumps({"scores": scores, "device": loaded.device, "gpu_name": loaded.gpu_name}, sort_keys=True), flush=True)
+                    print(
+                        json.dumps(
+                            {
+                                "scores": scores,
+                                "device": loaded.device,
+                                "gpu_name": loaded.gpu_name,
+                                "image_resize_mode": loaded.image_resize_mode,
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
                     continue
                 scores_by_image = loaded.score_images(
                     [Path(path) for path in image_paths],
@@ -185,7 +275,12 @@ def run_persistent_worker() -> None:
                 )
                 print(
                     json.dumps(
-                        {"scores_by_image": scores_by_image, "device": loaded.device, "gpu_name": loaded.gpu_name},
+                        {
+                            "scores_by_image": scores_by_image,
+                            "device": loaded.device,
+                            "gpu_name": loaded.gpu_name,
+                            "image_resize_mode": loaded.image_resize_mode,
+                        },
                         sort_keys=True,
                     ),
                     flush=True,
@@ -205,6 +300,7 @@ def score_image(
     checkpoint: str,
     device: str = DEFAULT_DEVICE,
     require_cuda: bool | None = None,
+    image_resize_mode: str | None = None,
     preprocess_workers: int = 1,
 ) -> dict[str, float]:
     return score_images(
@@ -213,6 +309,7 @@ def score_image(
         model_name=model_name,
         checkpoint=checkpoint,
         device=_coerce_device(device=device, require_cuda=require_cuda),
+        image_resize_mode=image_resize_mode,
         preprocess_workers=preprocess_workers,
     )[0]
 
@@ -225,14 +322,18 @@ def score_images(
     checkpoint: str,
     device: str = DEFAULT_DEVICE,
     require_cuda: bool | None = None,
+    image_resize_mode: str | None = None,
     preprocess_workers: int = 1,
 ) -> list[dict[str, float]]:
     model = _LoadedBioClipModel.load(
         model_name=model_name,
         checkpoint=checkpoint,
         device=_coerce_device(device=device, require_cuda=require_cuda),
+        image_resize_mode=image_resize_mode,
     )
-    return model.score_images(image_paths, labels, preprocess_workers=preprocess_workers)
+    return model.score_images(
+        image_paths, labels, preprocess_workers=preprocess_workers
+    )
 
 
 def score_image_label_sets(
@@ -243,14 +344,18 @@ def score_image_label_sets(
     checkpoint: str,
     device: str = DEFAULT_DEVICE,
     require_cuda: bool | None = None,
+    image_resize_mode: str | None = None,
     preprocess_workers: int = 1,
 ) -> dict[str, list[dict[str, float]]]:
     model = _LoadedBioClipModel.load(
         model_name=model_name,
         checkpoint=checkpoint,
         device=_coerce_device(device=device, require_cuda=require_cuda),
+        image_resize_mode=image_resize_mode,
     )
-    return model.score_image_label_sets(image_paths, label_sets, preprocess_workers=preprocess_workers)
+    return model.score_image_label_sets(
+        image_paths, label_sets, preprocess_workers=preprocess_workers
+    )
 
 
 def _coerce_device(*, device: str, require_cuda: bool | None) -> str:
@@ -260,17 +365,38 @@ def _coerce_device(*, device: str, require_cuda: bool | None) -> str:
 
 
 class _LoadedBioClipModel:
-    def __init__(self, *, model, preprocess, tokenizer, torch, device: str, gpu_name: str) -> None:  # noqa: ANN001 - external runtime objects.
+    def __init__(
+        self,
+        *,
+        model,
+        preprocess,
+        tokenizer,
+        torch,
+        device: str,
+        gpu_name: str,
+        image_resize_mode: str | None = None,
+    ) -> None:  # noqa: ANN001 - external runtime objects.
         self.model = model
         self.preprocess = preprocess
         self.tokenizer = tokenizer
         self.torch = torch
         self.device = device
         self.gpu_name = gpu_name
-        self._text_features_by_labels: OrderedDict[tuple[str, ...], object] = OrderedDict()
+        self.image_resize_mode = normalize_image_resize_mode(image_resize_mode)
+        self._text_features_by_labels: OrderedDict[tuple[str, ...], object] = (
+            OrderedDict()
+        )
 
     @classmethod
-    def load(cls, *, model_name: str, checkpoint: str, device: str = DEFAULT_DEVICE) -> "_LoadedBioClipModel":
+    def load(
+        cls,
+        *,
+        model_name: str,
+        checkpoint: str,
+        device: str = DEFAULT_DEVICE,
+        image_resize_mode: str | None = None,
+    ) -> "_LoadedBioClipModel":
+        normalized_resize_mode = normalize_image_resize_mode(image_resize_mode)
         try:
             import open_clip
             import torch
@@ -280,11 +406,26 @@ class _LoadedBioClipModel:
         resolved_device = resolve_torch_device(torch, device)
         gpu_name = torch_device_name(torch, resolved_device)
         model_args = open_clip_model_args(model_name, checkpoint)
-        model, _, preprocess = open_clip.create_model_and_transforms(model_args["model_name"], pretrained=model_args["pretrained"])
+        transform_kwargs: dict[str, str | None] = {
+            "pretrained": model_args["pretrained"]
+        }
+        if normalized_resize_mode is not None:
+            transform_kwargs["image_resize_mode"] = normalized_resize_mode
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            model_args["model_name"], **transform_kwargs
+        )
         tokenizer = open_clip.get_tokenizer(model_args["model_name"])
         model = model.to(resolved_device)
         model.eval()
-        return cls(model=model, preprocess=preprocess, tokenizer=tokenizer, torch=torch, device=resolved_device, gpu_name=gpu_name)
+        return cls(
+            model=model,
+            preprocess=preprocess,
+            tokenizer=tokenizer,
+            torch=torch,
+            device=resolved_device,
+            gpu_name=gpu_name,
+            image_resize_mode=normalized_resize_mode,
+        )
 
     def score_images(
         self,
@@ -301,12 +442,21 @@ class _LoadedBioClipModel:
         text_features = self._text_features(labels)
         with self.torch.no_grad():
             scores_by_image: list[dict[str, float]] = []
-            image_batch = self._image_batch(image_paths, Image, preprocess_workers=preprocess_workers)
+            image_batch = self._image_batch(
+                image_paths, Image, preprocess_workers=preprocess_workers
+            )
             image_features = self.model.encode_image(image_batch)
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-            probabilities_by_image = (100.0 * image_features @ text_features.T).softmax(dim=-1)
+            probabilities_by_image = (100.0 * image_features @ text_features.T).softmax(
+                dim=-1
+            )
             for probabilities in probabilities_by_image:
-                scores_by_image.append({label: float(probabilities[index].detach().cpu()) for index, label in enumerate(labels)})
+                scores_by_image.append(
+                    {
+                        label: float(probabilities[index].detach().cpu())
+                        for index, label in enumerate(labels)
+                    }
+                )
         return scores_by_image
 
     def score_image_label_sets(
@@ -321,17 +471,28 @@ class _LoadedBioClipModel:
         except Exception as exc:  # noqa: BLE001 - executed in the external model runtime.
             raise RuntimeError(f"BioCLIP dependencies are unavailable: {exc}") from exc
 
-        text_features_by_set = {name: self._text_features(labels) for name, labels in label_sets.items()}
-        scores_by_label_set: dict[str, list[dict[str, float]]] = {name: [] for name in label_sets}
+        text_features_by_set = {
+            name: self._text_features(labels) for name, labels in label_sets.items()
+        }
+        scores_by_label_set: dict[str, list[dict[str, float]]] = {
+            name: [] for name in label_sets
+        }
         with self.torch.no_grad():
-            image_batch = self._image_batch(image_paths, Image, preprocess_workers=preprocess_workers)
+            image_batch = self._image_batch(
+                image_paths, Image, preprocess_workers=preprocess_workers
+            )
             image_features = self.model.encode_image(image_batch)
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
             for label_set_name, labels in label_sets.items():
-                probabilities_by_image = (100.0 * image_features @ text_features_by_set[label_set_name].T).softmax(dim=-1)
+                probabilities_by_image = (
+                    100.0 * image_features @ text_features_by_set[label_set_name].T
+                ).softmax(dim=-1)
                 for probabilities in probabilities_by_image:
                     scores_by_label_set[label_set_name].append(
-                        {label: float(probabilities[index].detach().cpu()) for index, label in enumerate(labels)}
+                        {
+                            label: float(probabilities[index].detach().cpu())
+                            for index, label in enumerate(labels)
+                        }
                     )
         return scores_by_label_set
 
@@ -342,14 +503,18 @@ class _LoadedBioClipModel:
             for row in text_features
         ]
 
-    def image_embeddings(self, image_paths: Sequence[Path], *, preprocess_workers: int = 1) -> list[list[float]]:
+    def image_embeddings(
+        self, image_paths: Sequence[Path], *, preprocess_workers: int = 1
+    ) -> list[list[float]]:
         try:
             from PIL import Image
         except Exception as exc:  # noqa: BLE001 - executed in the external model runtime.
             raise RuntimeError(f"BioCLIP dependencies are unavailable: {exc}") from exc
 
         with self.torch.no_grad():
-            image_batch = self._image_batch(image_paths, Image, preprocess_workers=preprocess_workers)
+            image_batch = self._image_batch(
+                image_paths, Image, preprocess_workers=preprocess_workers
+            )
             image_features = self.model.encode_image(image_batch)
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         return [
@@ -357,15 +522,27 @@ class _LoadedBioClipModel:
             for row in image_features
         ]
 
-    def _image_batch(self, image_paths: Sequence[Path], image_module, *, preprocess_workers: int = 1):  # noqa: ANN001 - PIL module.
+    def _image_batch(
+        self, image_paths: Sequence[Path], image_module, *, preprocess_workers: int = 1
+    ):  # noqa: ANN001 - PIL module.
         workers = int(preprocess_workers)
         if workers <= 0:
             raise ValueError("preprocess_workers must be positive")
         if workers == 1 or len(image_paths) <= 1:
-            images = [self._preprocess_image_path(image_path, image_module) for image_path in image_paths]
+            images = [
+                self._preprocess_image_path(image_path, image_module)
+                for image_path in image_paths
+            ]
         else:
             with ThreadPoolExecutor(max_workers=workers) as executor:
-                images = list(executor.map(lambda image_path: self._preprocess_image_path(image_path, image_module), image_paths))
+                images = list(
+                    executor.map(
+                        lambda image_path: self._preprocess_image_path(
+                            image_path, image_module
+                        ),
+                        image_paths,
+                    )
+                )
         return self.torch.stack(images).to(self.device)
 
     def _preprocess_image_path(self, image_path: Path, image_module):  # noqa: ANN001 - PIL module.
@@ -412,7 +589,9 @@ class _LoadedBioClipModel:
         self.model = None
         self.preprocess = None
         self.tokenizer = None
-        accelerator = getattr(self.torch, "cuda" if self.device.startswith("cuda") else "mps", None)
+        accelerator = getattr(
+            self.torch, "cuda" if self.device.startswith("cuda") else "mps", None
+        )
         empty_cache = getattr(accelerator, "empty_cache", None)
         if callable(empty_cache):
             empty_cache()
@@ -425,7 +604,9 @@ def text_feature_batch_size() -> int:
     try:
         parsed = int(raw_value)
     except ValueError as exc:
-        raise ValueError(f"{TEXT_FEATURE_BATCH_SIZE_ENV} must be a positive integer") from exc
+        raise ValueError(
+            f"{TEXT_FEATURE_BATCH_SIZE_ENV} must be a positive integer"
+        ) from exc
     if parsed <= 0:
         raise ValueError(f"{TEXT_FEATURE_BATCH_SIZE_ENV} must be a positive integer")
     return parsed
@@ -438,7 +619,9 @@ def text_feature_cache_entries() -> int:
     try:
         parsed = int(raw_value)
     except ValueError as exc:
-        raise ValueError(f"{TEXT_FEATURE_CACHE_ENTRIES_ENV} must be a positive integer") from exc
+        raise ValueError(
+            f"{TEXT_FEATURE_CACHE_ENTRIES_ENV} must be a positive integer"
+        ) from exc
     if parsed <= 0:
         raise ValueError(f"{TEXT_FEATURE_CACHE_ENTRIES_ENV} must be a positive integer")
     return parsed
@@ -461,9 +644,13 @@ def resolve_torch_device(torch, requested_device: str = DEFAULT_DEVICE) -> str: 
             return "mps"
         return "cpu"
     if device == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("BioCLIP requested CUDA, but torch.cuda.is_available() is false")
+        raise RuntimeError(
+            "BioCLIP requested CUDA, but torch.cuda.is_available() is false"
+        )
     if device == "mps" and not _mps_available(torch):
-        raise RuntimeError("BioCLIP requested MPS, but torch.backends.mps.is_available() is false")
+        raise RuntimeError(
+            "BioCLIP requested MPS, but torch.backends.mps.is_available() is false"
+        )
     return device
 
 

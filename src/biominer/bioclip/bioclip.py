@@ -6,7 +6,13 @@ from pathlib import Path
 import subprocess
 from typing import IO, Any, Callable, Mapping, Sequence
 
-from biominer.bioclip.diagnostics import TRIAGE_LABEL_GROUPS, grouped_probability_summary, probability_entropy, topk_margin
+from biominer.bioclip.diagnostics import (
+    TRIAGE_LABEL_GROUPS,
+    grouped_probability_summary,
+    probability_entropy,
+    topk_margin,
+)
+from biominer.bioclip.bioclip_worker import normalize_image_resize_mode
 from biominer.bioclip.model_registry import BioClipRuntime
 from biominer.bioclip.prompt_templates import (
     SPECIES_PROMPT_AGGREGATION_DEFAULT,
@@ -15,7 +21,9 @@ from biominer.bioclip.prompt_templates import (
 )
 
 BioClipScorer = Callable[[Path, Sequence[str]], Mapping[str, float]]
-BioClipBatchScorer = Callable[[Sequence[Path], Sequence[str]], Sequence[Mapping[str, float]]]
+BioClipBatchScorer = Callable[
+    [Sequence[Path], Sequence[str]], Sequence[Mapping[str, float]]
+]
 SubprocessRunner = Callable[..., subprocess.CompletedProcess[str]]
 PopenFactory = Callable[..., subprocess.Popen[str]]
 LabelSets = Mapping[str, Sequence[str]]
@@ -67,7 +75,9 @@ NON_WILD_OR_CONFLICT_LABELS = {
 
 
 class BioClipClassifier:
-    def __init__(self, *, runtime: BioClipRuntime, scorer: BioClipScorer | None = None) -> None:
+    def __init__(
+        self, *, runtime: BioClipRuntime, scorer: BioClipScorer | None = None
+    ) -> None:
         self.runtime = runtime
         self._scorer = scorer
 
@@ -84,7 +94,9 @@ class BioClipClassifier:
         top_k: int = 10,
     ) -> dict[str, Any]:
         if not self.runtime.available:
-            raise RuntimeError(f"BioCLIP runtime is not available: {self.runtime.unavailable_reason}")
+            raise RuntimeError(
+                f"BioCLIP runtime is not available: {self.runtime.unavailable_reason}"
+            )
         scores = self._score(Path(image_path), labels)
         topk = sorted(
             ((label, float(scores.get(label, 0.0))) for label in labels),
@@ -109,7 +121,9 @@ class BioClipClassifier:
         top_k: int = 10,
     ) -> list[dict[str, Any]]:
         if not self.runtime.available:
-            raise RuntimeError(f"BioCLIP runtime is not available: {self.runtime.unavailable_reason}")
+            raise RuntimeError(
+                f"BioCLIP runtime is not available: {self.runtime.unavailable_reason}"
+            )
         image_paths = [Path(str(image["image_path"])) for image in images]
         scores_by_image = self._score_batch(image_paths, labels)
         records: list[dict[str, Any]] = []
@@ -125,7 +139,9 @@ class BioClipClassifier:
                     runtime=self.runtime,
                     image_hash=str(image["image_hash"]),
                     image_url_used=str(image["image_url_used"]),
-                    resolved_scientific_name=str(image.get("resolved_scientific_name") or ""),
+                    resolved_scientific_name=str(
+                        image.get("resolved_scientific_name") or ""
+                    ),
                     text_evidence_present=bool(image.get("text_evidence_present")),
                     topk=topk,
                 )
@@ -141,7 +157,9 @@ class BioClipClassifier:
         species_prompt_variants: Sequence[PromptVariant] | None = None,
     ) -> list[dict[str, Any]]:
         if not self.runtime.available:
-            raise RuntimeError(f"BioCLIP runtime is not available: {self.runtime.unavailable_reason}")
+            raise RuntimeError(
+                f"BioCLIP runtime is not available: {self.runtime.unavailable_reason}"
+            )
         image_paths = [Path(str(image["image_path"])) for image in images]
         scores_by_label_set = self._score_label_sets_batch(image_paths, label_sets)
         records: list[dict[str, Any]] = []
@@ -176,7 +194,9 @@ class BioClipClassifier:
                     runtime=self.runtime,
                     image_hash=str(image["image_hash"]),
                     image_url_used=str(image["image_url_used"]),
-                    resolved_scientific_name=str(image.get("resolved_scientific_name") or ""),
+                    resolved_scientific_name=str(
+                        image.get("resolved_scientific_name") or ""
+                    ),
                     text_evidence_present=bool(image.get("text_evidence_present")),
                     topk_by_label_set=topk_by_label_set,
                     species_prompt_topk=prompt_topk_by_label_set.get("species", []),
@@ -190,7 +210,9 @@ class BioClipClassifier:
             return self._scorer(image_path, labels)
         return _score_with_open_clip(image_path, labels, self.runtime)
 
-    def _score_batch(self, image_paths: Sequence[Path], labels: Sequence[str]) -> Sequence[Mapping[str, float]]:
+    def _score_batch(
+        self, image_paths: Sequence[Path], labels: Sequence[str]
+    ) -> Sequence[Mapping[str, float]]:
         if self._scorer is not None and hasattr(self._scorer, "score_batch"):
             return self._scorer.score_batch(image_paths, labels)  # type: ignore[attr-defined]
         if self._scorer is None:
@@ -224,19 +246,27 @@ class ExternalBioClipScorer:
         runner: SubprocessRunner = subprocess.run,
         device: str = "auto",
         require_cuda: bool | None = None,
+        image_resize_mode: str | None = None,
         preprocess_workers: int = 1,
     ) -> None:
         self.runtime = runtime
-        self.worker_script = Path(worker_script) if worker_script is not None else _default_worker_script()
+        self.worker_script = (
+            Path(worker_script)
+            if worker_script is not None
+            else _default_worker_script()
+        )
         self.hf_cache_dir = Path(hf_cache_dir)
         self.runner = runner
         self.device = _coerce_worker_device(device=device, require_cuda=require_cuda)
+        self.image_resize_mode = normalize_image_resize_mode(image_resize_mode)
         self.preprocess_workers = _positive_preprocess_workers(preprocess_workers)
 
     def __call__(self, image_path: Path, labels: Sequence[str]) -> Mapping[str, float]:
         return self.score_batch([image_path], labels)[0]
 
-    def score_batch(self, image_paths: Sequence[Path], labels: Sequence[str]) -> list[Mapping[str, float]]:
+    def score_batch(
+        self, image_paths: Sequence[Path], labels: Sequence[str]
+    ) -> list[Mapping[str, float]]:
         if self.runtime.venv_python is None:
             raise RuntimeError("BioCLIP runtime does not define a Python executable")
         request = {
@@ -248,6 +278,8 @@ class ExternalBioClipScorer:
             "device": self.device,
             "preprocess_workers": self.preprocess_workers,
         }
+        if self.image_resize_mode is not None:
+            request["image_resize_mode"] = self.image_resize_mode
         result = self.runner(
             [str(self.runtime.venv_python), str(self.worker_script)],
             input=json.dumps(request),
@@ -258,12 +290,15 @@ class ExternalBioClipScorer:
         if result.returncode != 0:
             raise RuntimeError(f"BioCLIP worker failed: {result.stderr.strip()}")
         payload = json.loads(result.stdout)
+        _validated_worker_image_resize_mode(payload, self.image_resize_mode)
         if "scores_by_image" in payload:
             return [
                 {str(label): float(score) for label, score in scores.items()}
                 for scores in payload["scores_by_image"]
             ]
-        return [{str(label): float(score) for label, score in payload["scores"].items()}]
+        return [
+            {str(label): float(score) for label, score in payload["scores"].items()}
+        ]
 
     def score_label_sets_batch(
         self,
@@ -281,6 +316,8 @@ class ExternalBioClipScorer:
             "device": self.device,
             "preprocess_workers": self.preprocess_workers,
         }
+        if self.image_resize_mode is not None:
+            request["image_resize_mode"] = self.image_resize_mode
         result = self.runner(
             [str(self.runtime.venv_python), str(self.worker_script)],
             input=json.dumps(request),
@@ -291,6 +328,7 @@ class ExternalBioClipScorer:
         if result.returncode != 0:
             raise RuntimeError(f"BioCLIP worker failed: {result.stderr.strip()}")
         payload = json.loads(result.stdout)
+        _validated_worker_image_resize_mode(payload, self.image_resize_mode)
         return _coerce_label_set_scores(payload["scores_by_image_by_label_set"])
 
 
@@ -308,10 +346,14 @@ def classify_species_agreement(
     if species_label in normalized_labels:
         return "exact_species_agreement" if text_evidence_present else "vision_only"
 
-    if normalized_labels & {_normalize_label(label) for label in BUTTERFLY_VISUAL_LABELS}:
+    if normalized_labels & {
+        _normalize_label(label) for label in BUTTERFLY_VISUAL_LABELS
+    }:
         return "same_family_agreement" if text_evidence_present else "vision_only"
 
-    if normalized_labels & {_normalize_label(label) for label in NON_WILD_OR_CONFLICT_LABELS}:
+    if normalized_labels & {
+        _normalize_label(label) for label in NON_WILD_OR_CONFLICT_LABELS
+    }:
         return "text_vision_conflict" if text_evidence_present else "non_butterfly"
 
     return "text_vision_conflict" if text_evidence_present else "uncertain"
@@ -390,7 +432,9 @@ def build_label_set_prediction_record(
         "image_hash": image_hash,
         "image_url_used": image_url_used,
         "species_top1_label": species_topk[0]["label"] if species_topk else None,
-        "species_top1_scientific_name": str(species_prompt_topk[0]["taxon_key"]) if species_prompt_topk else None,
+        "species_top1_scientific_name": str(species_prompt_topk[0]["taxon_key"])
+        if species_prompt_topk
+        else None,
         "species_top1_score": species_topk[0]["score"] if species_topk else None,
         "species_topk_json": species_topk,
         "species_prompt_topk_json": [dict(row) for row in species_prompt_topk],
@@ -424,7 +468,9 @@ def _normalize_label(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
-def _score_with_open_clip(image_path: Path, labels: Sequence[str], runtime: BioClipRuntime) -> Mapping[str, float]:
+def _score_with_open_clip(
+    image_path: Path, labels: Sequence[str], runtime: BioClipRuntime
+) -> Mapping[str, float]:
     with PersistentBioClipScorer(runtime=runtime) as scorer:
         return scorer(image_path, labels)
 
@@ -443,19 +489,28 @@ class PersistentBioClipScorer:
         popen: PopenFactory = subprocess.Popen,
         device: str = "auto",
         require_cuda: bool | None = None,
+        image_resize_mode: str | None = None,
         preprocess_workers: int = 1,
     ) -> None:
         self.runtime = runtime
-        self.worker_script = Path(worker_script) if worker_script is not None else _default_worker_script()
+        self.worker_script = (
+            Path(worker_script)
+            if worker_script is not None
+            else _default_worker_script()
+        )
         self.hf_cache_dir = Path(hf_cache_dir)
         self.popen = popen
-        self.requested_device = _coerce_worker_device(device=device, require_cuda=require_cuda)
+        self.requested_device = _coerce_worker_device(
+            device=device, require_cuda=require_cuda
+        )
+        self.image_resize_mode = normalize_image_resize_mode(image_resize_mode)
         self.preprocess_workers = _positive_preprocess_workers(preprocess_workers)
         self._process: subprocess.Popen[str] | None = None
         self._stdin: IO[str] | None = None
         self._stdout: IO[str] | None = None
         self.device: str | None = None
         self.gpu_name: str | None = None
+        self.effective_image_resize_mode: str | None = None
 
     def __enter__(self) -> "PersistentBioClipScorer":
         return self
@@ -466,10 +521,14 @@ class PersistentBioClipScorer:
     def __call__(self, image_path: Path, labels: Sequence[str]) -> Mapping[str, float]:
         return self.score_batch([image_path], labels)[0]
 
-    def score_batch(self, image_paths: Sequence[Path], labels: Sequence[str]) -> list[Mapping[str, float]]:
+    def score_batch(
+        self, image_paths: Sequence[Path], labels: Sequence[str]
+    ) -> list[Mapping[str, float]]:
         process = self._ensure_process()
         if process.poll() is not None:
-            raise RuntimeError(f"BioCLIP persistent worker exited early with code {process.returncode}")
+            raise RuntimeError(
+                f"BioCLIP persistent worker exited early with code {process.returncode}"
+            )
         request = {
             "image_paths": [str(image_path) for image_path in image_paths],
             "labels": list(labels),
@@ -479,6 +538,8 @@ class PersistentBioClipScorer:
             "device": self.requested_device,
             "preprocess_workers": self.preprocess_workers,
         }
+        if self.image_resize_mode is not None:
+            request["image_resize_mode"] = self.image_resize_mode
         assert self._stdin is not None
         assert self._stdout is not None
         self._stdin.write(json.dumps(request, sort_keys=True) + "\n")
@@ -486,23 +547,23 @@ class PersistentBioClipScorer:
         while True:
             line = self._stdout.readline()
             if not line:
-                raise RuntimeError("BioCLIP persistent worker closed stdout before returning scores")
+                raise RuntimeError(
+                    "BioCLIP persistent worker closed stdout before returning scores"
+                )
             payload = json.loads(line)
             if "error" in payload:
                 raise RuntimeError(f"BioCLIP worker failed: {payload['error']}")
+            self._record_worker_metadata(payload)
             if payload.get("ready"):
-                self.device = str(payload.get("device") or "")
-                self.gpu_name = str(payload.get("gpu_name") or "")
                 continue
-            if "device" in payload:
-                self.device = str(payload.get("device") or "")
-                self.gpu_name = str(payload.get("gpu_name") or "")
             if "scores_by_image" in payload:
                 return [
                     {str(label): float(score) for label, score in scores.items()}
                     for scores in payload["scores_by_image"]
                 ]
-            return [{str(label): float(score) for label, score in payload["scores"].items()}]
+            return [
+                {str(label): float(score) for label, score in payload["scores"].items()}
+            ]
 
     def score_label_sets_batch(
         self,
@@ -511,7 +572,9 @@ class PersistentBioClipScorer:
     ) -> dict[str, list[Mapping[str, float]]]:
         process = self._ensure_process()
         if process.poll() is not None:
-            raise RuntimeError(f"BioCLIP persistent worker exited early with code {process.returncode}")
+            raise RuntimeError(
+                f"BioCLIP persistent worker exited early with code {process.returncode}"
+            )
         request = {
             "image_paths": [str(image_path) for image_path in image_paths],
             "label_sets": {name: list(labels) for name, labels in label_sets.items()},
@@ -521,6 +584,8 @@ class PersistentBioClipScorer:
             "device": self.requested_device,
             "preprocess_workers": self.preprocess_workers,
         }
+        if self.image_resize_mode is not None:
+            request["image_resize_mode"] = self.image_resize_mode
         assert self._stdin is not None
         assert self._stdout is not None
         self._stdin.write(json.dumps(request, sort_keys=True) + "\n")
@@ -528,25 +593,27 @@ class PersistentBioClipScorer:
         while True:
             line = self._stdout.readline()
             if not line:
-                raise RuntimeError("BioCLIP persistent worker closed stdout before returning scores")
+                raise RuntimeError(
+                    "BioCLIP persistent worker closed stdout before returning scores"
+                )
             payload = json.loads(line)
             if "error" in payload:
                 raise RuntimeError(f"BioCLIP worker failed: {payload['error']}")
+            self._record_worker_metadata(payload)
             if payload.get("ready"):
-                self.device = str(payload.get("device") or "")
-                self.gpu_name = str(payload.get("gpu_name") or "")
                 continue
-            if "device" in payload:
-                self.device = str(payload.get("device") or "")
-                self.gpu_name = str(payload.get("gpu_name") or "")
             if "scores_by_image_by_label_set" in payload:
                 return _coerce_label_set_scores(payload["scores_by_image_by_label_set"])
-            raise RuntimeError("BioCLIP worker response did not include label-set scores")
+            raise RuntimeError(
+                "BioCLIP worker response did not include label-set scores"
+            )
 
     def embed_text_labels(self, labels: Sequence[str]) -> list[list[float]]:
         process = self._ensure_process()
         if process.poll() is not None:
-            raise RuntimeError(f"BioCLIP persistent worker exited early with code {process.returncode}")
+            raise RuntimeError(
+                f"BioCLIP persistent worker exited early with code {process.returncode}"
+            )
         request = {
             "text_labels": list(labels),
             "model_name": self.runtime.model.model_name,
@@ -555,6 +622,8 @@ class PersistentBioClipScorer:
             "device": self.requested_device,
             "preprocess_workers": self.preprocess_workers,
         }
+        if self.image_resize_mode is not None:
+            request["image_resize_mode"] = self.image_resize_mode
         assert self._stdin is not None
         assert self._stdout is not None
         self._stdin.write(json.dumps(request, sort_keys=True) + "\n")
@@ -562,25 +631,30 @@ class PersistentBioClipScorer:
         while True:
             line = self._stdout.readline()
             if not line:
-                raise RuntimeError("BioCLIP persistent worker closed stdout before returning text embeddings")
+                raise RuntimeError(
+                    "BioCLIP persistent worker closed stdout before returning text embeddings"
+                )
             payload = json.loads(line)
             if "error" in payload:
                 raise RuntimeError(f"BioCLIP worker failed: {payload['error']}")
+            self._record_worker_metadata(payload)
             if payload.get("ready"):
-                self.device = str(payload.get("device") or "")
-                self.gpu_name = str(payload.get("gpu_name") or "")
                 continue
-            if "device" in payload:
-                self.device = str(payload.get("device") or "")
-                self.gpu_name = str(payload.get("gpu_name") or "")
             if "text_embeddings" in payload:
-                return [[float(value) for value in embedding] for embedding in payload["text_embeddings"]]
-            raise RuntimeError("BioCLIP worker response did not include text embeddings")
+                return [
+                    [float(value) for value in embedding]
+                    for embedding in payload["text_embeddings"]
+                ]
+            raise RuntimeError(
+                "BioCLIP worker response did not include text embeddings"
+            )
 
     def embed_image_paths(self, image_paths: Sequence[Path]) -> list[list[float]]:
         process = self._ensure_process()
         if process.poll() is not None:
-            raise RuntimeError(f"BioCLIP persistent worker exited early with code {process.returncode}")
+            raise RuntimeError(
+                f"BioCLIP persistent worker exited early with code {process.returncode}"
+            )
         request = {
             "image_embedding_paths": [str(image_path) for image_path in image_paths],
             "model_name": self.runtime.model.model_name,
@@ -589,6 +663,8 @@ class PersistentBioClipScorer:
             "device": self.requested_device,
             "preprocess_workers": self.preprocess_workers,
         }
+        if self.image_resize_mode is not None:
+            request["image_resize_mode"] = self.image_resize_mode
         assert self._stdin is not None
         assert self._stdout is not None
         self._stdin.write(json.dumps(request, sort_keys=True) + "\n")
@@ -596,20 +672,33 @@ class PersistentBioClipScorer:
         while True:
             line = self._stdout.readline()
             if not line:
-                raise RuntimeError("BioCLIP persistent worker closed stdout before returning image embeddings")
+                raise RuntimeError(
+                    "BioCLIP persistent worker closed stdout before returning image embeddings"
+                )
             payload = json.loads(line)
             if "error" in payload:
                 raise RuntimeError(f"BioCLIP worker failed: {payload['error']}")
+            self._record_worker_metadata(payload)
             if payload.get("ready"):
-                self.device = str(payload.get("device") or "")
-                self.gpu_name = str(payload.get("gpu_name") or "")
                 continue
-            if "device" in payload:
-                self.device = str(payload.get("device") or "")
-                self.gpu_name = str(payload.get("gpu_name") or "")
             if "image_embeddings" in payload:
-                return [[float(value) for value in embedding] for embedding in payload["image_embeddings"]]
-            raise RuntimeError("BioCLIP worker response did not include image embeddings")
+                return [
+                    [float(value) for value in embedding]
+                    for embedding in payload["image_embeddings"]
+                ]
+            raise RuntimeError(
+                "BioCLIP worker response did not include image embeddings"
+            )
+
+    def _record_worker_metadata(self, payload: Mapping[str, object]) -> None:
+        if "device" in payload:
+            self.device = str(payload.get("device") or "")
+            self.gpu_name = str(payload.get("gpu_name") or "")
+        self.effective_image_resize_mode = _validated_worker_image_resize_mode(
+            payload,
+            self.image_resize_mode,
+            previous=self.effective_image_resize_mode,
+        )
 
     def close(self) -> None:
         process = self._process
@@ -632,7 +721,11 @@ class PersistentBioClipScorer:
             raise RuntimeError("BioCLIP runtime does not define a Python executable")
         if self._process is None:
             process = self.popen(
-                [str(self.runtime.venv_python), str(self.worker_script), "--persistent"],
+                [
+                    str(self.runtime.venv_python),
+                    str(self.worker_script),
+                    "--persistent",
+                ],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -641,14 +734,18 @@ class PersistentBioClipScorer:
             )
             if process.stdin is None or process.stdout is None:
                 process.terminate()
-                raise RuntimeError("BioCLIP persistent worker did not expose stdin/stdout pipes")
+                raise RuntimeError(
+                    "BioCLIP persistent worker did not expose stdin/stdout pipes"
+                )
             self._process = process
             self._stdin = process.stdin
             self._stdout = process.stdout
         return self._process
 
 
-def _coerce_label_set_scores(payload: Mapping[str, Sequence[Mapping[str, object]]]) -> dict[str, list[Mapping[str, float]]]:
+def _coerce_label_set_scores(
+    payload: Mapping[str, Sequence[Mapping[str, object]]],
+) -> dict[str, list[Mapping[str, float]]]:
     return {
         str(label_set_name): [
             {str(label): float(score) for label, score in scores.items()}
@@ -656,6 +753,29 @@ def _coerce_label_set_scores(payload: Mapping[str, Sequence[Mapping[str, object]
         ]
         for label_set_name, scores_by_image in payload.items()
     }
+
+
+def _validated_worker_image_resize_mode(
+    payload: Mapping[str, object],
+    requested: str | None,
+    *,
+    previous: str | None = None,
+) -> str | None:
+    if "image_resize_mode" not in payload:
+        if requested is not None:
+            raise RuntimeError(
+                "BioCLIP worker did not report the requested image resize mode"
+            )
+        return previous
+
+    value = payload.get("image_resize_mode")
+    effective = normalize_image_resize_mode(None if value is None else str(value))
+    if requested is not None and effective != requested:
+        raise RuntimeError(
+            "BioCLIP worker image resize mode mismatch: "
+            f"requested {requested!r}, got {effective!r}"
+        )
+    return effective
 
 
 def _coerce_worker_device(*, device: str, require_cuda: bool | None) -> str:

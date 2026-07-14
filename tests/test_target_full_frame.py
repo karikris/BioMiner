@@ -5,19 +5,27 @@ from typing import Any, Sequence
 
 import pytest
 
+from biominer.vision import target_full_frame
 from biominer.detection.detector_base import DecodedImage
 from biominer.detection.policy import DetectionRunPolicy
 from biominer.vision.target_full_frame import (
-    FOCUSED_FULL_FRAME_KIND,
     RAW_FULL_IMAGE_KIND,
     TARGET_AWARE_VISUAL_MODE,
-    FocusedFullFrameVariantRequest,
+    TARGET_FULL_FRAME_EMBEDDING_VERSION,
     RawFullFrameEmbedding,
     RawFullFrameVisualInput,
     TargetFullFrameScoringUnit,
     build_target_full_frame_plan,
     encode_target_full_frame_plan,
+    full_frame_embedding_id,
+    generate_target_full_frame_attention_variants,
     target_full_frame_detection_run_policy,
+)
+from biominer.vision.full_frame_attention import (
+    FOCUSED_FULL_FRAME_KIND,
+    MASKED_FULL_FRAME_KIND,
+    TARGET_FULL_FRAME_IMAGE_RESIZE_MODE,
+    TARGET_FULL_FRAME_PREPROCESSING,
 )
 
 
@@ -27,7 +35,15 @@ _PREPROCESSING_FINGERPRINT = "sha256:" + "c" * 64
 
 
 class RecordingEncoder:
-    def __init__(self) -> None:
+    image_resize_mode = TARGET_FULL_FRAME_IMAGE_RESIZE_MODE
+    preprocessing_contract_fingerprint = TARGET_FULL_FRAME_PREPROCESSING.fingerprint
+
+    def __init__(
+        self,
+        *,
+        preprocessing_fingerprint: str = _PREPROCESSING_FINGERPRINT,
+    ) -> None:
+        self.preprocessing_fingerprint = preprocessing_fingerprint
         self.batches: list[tuple[DecodedImage, ...]] = []
 
     def encode_images(self, images: Sequence[DecodedImage]) -> list[list[float]]:
@@ -76,7 +92,6 @@ def test_full_frame_plan_encodes_adult_and_larval_routes_once() -> None:
     plan = build_target_full_frame_plan(
         detection_rows=rows,
         image_loader=load,
-        request_focused_variants=True,
     )
 
     assert TARGET_AWARE_VISUAL_MODE == "whole_image_reference_ensemble"
@@ -95,13 +110,6 @@ def test_full_frame_plan_encodes_adult_and_larval_routes_once() -> None:
     assert adult.raw_visual_input_id == larval.raw_visual_input_id
     assert adult.scoring_unit_id != larval.scoring_unit_id
     assert adult.visual_mode == TARGET_AWARE_VISUAL_MODE
-    assert [
-        request.source_detection_id for request in adult.focused_variant_requests
-    ] == ["adult-1"]
-    assert [
-        request.source_detection_id for request in larval.focused_variant_requests
-    ] == ["larva-1"]
-
     encoder = RecordingEncoder()
     embedded = encode_target_full_frame_plan(
         plan,
@@ -112,6 +120,14 @@ def test_full_frame_plan_encodes_adult_and_larval_routes_once() -> None:
 
     assert encoder.batches == [(image,)]
     assert len(embedded.embeddings) == 1
+    embedding = embedded.embeddings[0]
+    assert embedding.embedding_version == TARGET_FULL_FRAME_EMBEDDING_VERSION
+    assert embedding.embedding_version == "target-full-frame-embedding-v2"
+    assert embedding.image_resize_mode == TARGET_FULL_FRAME_IMAGE_RESIZE_MODE
+    assert (
+        embedding.preprocessing_contract_fingerprint
+        == TARGET_FULL_FRAME_PREPROCESSING.fingerprint
+    )
     assert len(embedded.scoring_unit_references) == 2
     assert {reference.route for reference in embedded.scoring_unit_references} == {
         "adult_field",
@@ -121,6 +137,34 @@ def test_full_frame_plan_encodes_adult_and_larval_routes_once() -> None:
         len({reference.embedding_id for reference in embedded.scoring_unit_references})
         == 1
     )
+
+
+def test_embedding_identity_binds_target_preprocessing_contract(monkeypatch) -> None:
+    kwargs = {
+        "visual_input_id": "sha256:" + "a" * 64,
+        "model_fingerprint": _MODEL_FINGERPRINT,
+        "preprocessing_fingerprint": _PREPROCESSING_FINGERPRINT,
+    }
+    baseline = full_frame_embedding_id(**kwargs)
+
+    monkeypatch.setattr(
+        target_full_frame,
+        "TARGET_FULL_FRAME_IMAGE_RESIZE_MODE",
+        "shortest",
+    )
+    assert full_frame_embedding_id(**kwargs) != baseline
+
+    monkeypatch.setattr(
+        target_full_frame,
+        "TARGET_FULL_FRAME_IMAGE_RESIZE_MODE",
+        TARGET_FULL_FRAME_IMAGE_RESIZE_MODE,
+    )
+    monkeypatch.setattr(
+        target_full_frame,
+        "TARGET_FULL_FRAME_PREPROCESSING",
+        replace(TARGET_FULL_FRAME_PREPROCESSING, version="changed-contract-v2"),
+    )
+    assert full_frame_embedding_id(**kwargs) != baseline
 
 
 def test_visual_identity_ignores_detection_metadata_and_input_order() -> None:
@@ -205,13 +249,17 @@ def test_content_and_embedding_identities_have_separate_invalidation() -> None:
     )
     second = encode_target_full_frame_plan(
         plan,
-        encoder=RecordingEncoder(),
+        encoder=RecordingEncoder(
+            preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
+        ),
         model_fingerprint="sha256:" + "d" * 64,
         preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
     )
     third = encode_target_full_frame_plan(
         plan,
-        encoder=RecordingEncoder(),
+        encoder=RecordingEncoder(
+            preprocessing_fingerprint="sha256:" + "e" * 64,
+        ),
         model_fingerprint=_MODEL_FINGERPRINT,
         preprocessing_fingerprint="sha256:" + "e" * 64,
     )
@@ -229,7 +277,7 @@ def test_content_and_embedding_identities_have_separate_invalidation() -> None:
     )
 
 
-def test_focused_variants_are_requests_without_crop_materialization(
+def test_target_full_frame_plan_never_materializes_spatial_crops(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fail_crop(*_args: object, **_kwargs: object) -> None:
@@ -243,23 +291,10 @@ def test_focused_variants_are_requests_without_crop_materialization(
             _detection_row("photo-1", "det-a", bbox=(0.0, 0.0, 1.0, 2.0)),
         ],
         image_loader=lambda _row: image,
-        request_focused_variants=True,
     )
 
-    unit = plan.scoring_units[0]
-    assert [
-        request.source_detection_id for request in unit.focused_variant_requests
-    ] == [
-        "det-a",
-        "det-b",
-    ]
-    assert all(
-        request.visual_input_kind == FOCUSED_FULL_FRAME_KIND
-        for request in unit.focused_variant_requests
-    )
     assert len(plan.visual_inputs) == 1
     for output_type in (
-        FocusedFullFrameVariantRequest,
         RawFullFrameEmbedding,
         RawFullFrameVisualInput,
         TargetFullFrameScoringUnit,
@@ -267,6 +302,51 @@ def test_focused_variants_are_requests_without_crop_materialization(
         output_fields = {field.name for field in fields(output_type)}
         assert not any("crop" in name for name in output_fields)
         assert not any("path" in name for name in output_fields)
+
+
+def test_target_attention_adapter_preserves_raw_identity_and_detection_evidence() -> (
+    None
+):
+    image = _image(b"\x05" * (4 * 4 * 3), width=4, height=4)
+    plan = build_target_full_frame_plan(
+        detection_rows=[
+            _detection_row(
+                "photo-1",
+                "det-a",
+                bbox=(0.0, 0.0, 1.0, 1.0),
+                bbox_canvas=(2, 2),
+                mask_polygon_xyn=(
+                    (0.0, 0.0),
+                    (0.5, 0.0),
+                    (0.5, 0.5),
+                    (0.0, 0.5),
+                ),
+            )
+        ],
+        image_loader=lambda _row: image,
+    )
+    unit = plan.scoring_units[0]
+
+    result = generate_target_full_frame_attention_variants(
+        plan,
+        scoring_unit_id=unit.scoring_unit_id,
+    )
+
+    raw = next(
+        variant
+        for variant in result.variants
+        if variant.visual_input_kind == RAW_FULL_IMAGE_KIND
+    )
+    assert raw.visual_input_id == unit.raw_visual_input_id
+    assert {variant.visual_input_kind for variant in result.variants} == {
+        RAW_FULL_IMAGE_KIND,
+        FOCUSED_FULL_FRAME_KIND,
+        MASKED_FULL_FRAME_KIND,
+    }
+    assert {evidence.source_detection_ids for evidence in result.evidence} == {
+        ("det-a",)
+    }
+    assert all(evidence.route == "adult_field" for evidence in result.evidence)
 
 
 def test_normalized_detector_box_projects_to_original_full_frame() -> None:
@@ -530,6 +610,10 @@ def test_full_frame_encoder_rejects_invalid_outputs(
     )
 
     class StaticEncoder:
+        image_resize_mode = TARGET_FULL_FRAME_IMAGE_RESIZE_MODE
+        preprocessing_contract_fingerprint = TARGET_FULL_FRAME_PREPROCESSING.fingerprint
+        preprocessing_fingerprint = _PREPROCESSING_FINGERPRINT
+
         def encode_images(
             self,
             _images: Sequence[DecodedImage],
@@ -566,6 +650,45 @@ def test_full_frame_encoder_rejects_invalid_identity_fingerprints() -> None:
             model_fingerprint=_MODEL_FINGERPRINT,
             preprocessing_fingerprint="preprocess-v1",
         )
+
+
+def test_full_frame_encoder_requires_bound_longest_side_preprocessing() -> None:
+    plan = build_target_full_frame_plan(
+        detection_rows=[_detection_row("photo-1", "det-a")],
+        image_loader=lambda _row: _image(b"\x09" * 12, width=2, height=2),
+    )
+
+    wrong_mode = RecordingEncoder()
+    wrong_mode.image_resize_mode = "shortest"
+    with pytest.raises(ValueError, match="image_resize_mode"):
+        encode_target_full_frame_plan(
+            plan,
+            encoder=wrong_mode,
+            model_fingerprint=_MODEL_FINGERPRINT,
+            preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
+        )
+    assert wrong_mode.batches == []
+
+    wrong_contract = RecordingEncoder()
+    wrong_contract.preprocessing_contract_fingerprint = "sha256:" + "0" * 64
+    with pytest.raises(ValueError, match="contract fingerprint mismatch"):
+        encode_target_full_frame_plan(
+            plan,
+            encoder=wrong_contract,
+            model_fingerprint=_MODEL_FINGERPRINT,
+            preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
+        )
+    assert wrong_contract.batches == []
+
+    wrong_runtime_fingerprint = RecordingEncoder()
+    with pytest.raises(ValueError, match="preprocessing fingerprint mismatch"):
+        encode_target_full_frame_plan(
+            plan,
+            encoder=wrong_runtime_fingerprint,
+            model_fingerprint=_MODEL_FINGERPRINT,
+            preprocessing_fingerprint="sha256:" + "1" * 64,
+        )
+    assert wrong_runtime_fingerprint.batches == []
 
 
 def test_full_frame_encoder_rejects_stale_or_duplicate_plan_identity() -> None:
@@ -608,7 +731,7 @@ def test_full_frame_encoder_rejects_stale_or_duplicate_plan_identity() -> None:
         )
 
 
-def test_full_frame_encoder_rejects_stale_scoring_and_focus_identity() -> None:
+def test_full_frame_encoder_rejects_stale_scoring_identity() -> None:
     image = _image(b"\x0b" * 12, width=2, height=2)
     plan = build_target_full_frame_plan(
         detection_rows=[
@@ -616,7 +739,6 @@ def test_full_frame_encoder_rejects_stale_scoring_and_focus_identity() -> None:
             _detection_row("photo-1", "det-b", bbox=(1.0, 0.0, 2.0, 2.0)),
         ],
         image_loader=lambda _row: image,
-        request_focused_variants=True,
     )
     unit = plan.scoring_units[0]
 
@@ -624,30 +746,6 @@ def test_full_frame_encoder_rejects_stale_scoring_and_focus_identity() -> None:
     with pytest.raises(ValueError, match="detection from another route"):
         encode_target_full_frame_plan(
             stale_route,
-            encoder=RecordingEncoder(),
-            model_fingerprint=_MODEL_FINGERPRINT,
-            preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
-        )
-
-    stale_request = replace(
-        unit.focused_variant_requests[0],
-        source_detection_id="det-missing",
-    )
-    stale_focus = replace(
-        plan,
-        scoring_units=(
-            replace(
-                unit,
-                focused_variant_requests=(
-                    stale_request,
-                    *unit.focused_variant_requests[1:],
-                ),
-            ),
-        ),
-    )
-    with pytest.raises(ValueError, match="stale focused-variant request"):
-        encode_target_full_frame_plan(
-            stale_focus,
             encoder=RecordingEncoder(),
             model_fingerprint=_MODEL_FINGERPRINT,
             preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,

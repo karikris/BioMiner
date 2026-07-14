@@ -27,7 +27,10 @@ def test_loaded_model_encodes_image_batch_once_for_label_sets(monkeypatch) -> No
 
     scores = loaded.score_image_label_sets(
         [Path("/tmp/1.jpg"), Path("/tmp/2.jpg")],
-        {"species": ["a photo of Papilio demoleus"], "triage": ["a photo of an adult butterfly"]},
+        {
+            "species": ["a photo of Papilio demoleus"],
+            "triage": ["a photo of an adult butterfly"],
+        },
     )
 
     assert fake_torch.stacked_lengths == [2]
@@ -87,7 +90,9 @@ def test_loaded_model_chunks_large_text_feature_sets(monkeypatch) -> None:  # no
     assert fake_torch.cat_lengths == [3]
 
 
-def test_loaded_model_does_not_cache_one_off_text_embedding_batches(monkeypatch) -> None:  # noqa: ANN001 - pytest fixture.
+def test_loaded_model_does_not_cache_one_off_text_embedding_batches(
+    monkeypatch,
+) -> None:  # noqa: ANN001 - pytest fixture.
     monkeypatch.setenv("BIOMINER_BIOCLIP_TEXT_FEATURE_BATCH_SIZE", "2")
     fake_model = FakeModel()
     loaded = bioclip_worker._LoadedBioClipModel(  # noqa: SLF001 - worker text-batching contract.
@@ -126,36 +131,135 @@ def test_loaded_model_bounds_text_feature_cache_with_lru_eviction(monkeypatch) -
     assert list(loaded._text_features_by_labels) == [("one",), ("three",)]  # noqa: SLF001 - focused worker cache contract.
 
 
-def test_persistent_worker_clears_model_caches_on_replacement_and_shutdown(monkeypatch) -> None:  # noqa: ANN001 - pytest fixture.
+def test_persistent_worker_clears_model_caches_on_replacement_and_shutdown(
+    monkeypatch,
+) -> None:  # noqa: ANN001 - pytest fixture.
     loaded_models: list[FakePersistentLoadedModel] = []
 
-    def fake_load(*, model_name: str, checkpoint: str, device: str) -> FakePersistentLoadedModel:
-        loaded = FakePersistentLoadedModel(f"{model_name}:{checkpoint}:{device}")
+    def fake_load(
+        *, model_name: str, checkpoint: str, device: str, image_resize_mode: str | None
+    ) -> FakePersistentLoadedModel:
+        loaded = FakePersistentLoadedModel(
+            f"{model_name}:{checkpoint}:{device}:{image_resize_mode}"
+        )
         loaded_models.append(loaded)
         return loaded
 
     requests = (
-        {"model_name": "model-a", "checkpoint": "one", "device": "cpu", "text_labels": []},
-        {"model_name": "model-b", "checkpoint": "two", "device": "cpu", "text_labels": []},
+        {
+            "model_name": "model-a",
+            "checkpoint": "one",
+            "device": "cpu",
+            "text_labels": [],
+        },
+        {
+            "model_name": "model-b",
+            "checkpoint": "two",
+            "device": "cpu",
+            "text_labels": [],
+        },
         {"shutdown": True},
     )
-    monkeypatch.setattr(bioclip_worker._LoadedBioClipModel, "load", staticmethod(fake_load))  # noqa: SLF001
+    monkeypatch.setattr(
+        bioclip_worker._LoadedBioClipModel, "load", staticmethod(fake_load)
+    )  # noqa: SLF001
     monkeypatch.setattr(bioclip_worker, "configure_hf_cache_env", lambda _path: None)
-    monkeypatch.setattr(sys, "stdin", io.StringIO("".join(json.dumps(request) + "\n" for request in requests)))
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO("".join(json.dumps(request) + "\n" for request in requests)),
+    )
     monkeypatch.setattr(sys, "stdout", io.StringIO())
 
     bioclip_worker.run_persistent_worker()
 
-    assert [loaded.key for loaded in loaded_models] == ["model-a:one:cpu", "model-b:two:cpu"]
+    assert [loaded.key for loaded in loaded_models] == [
+        "model-a:one:cpu:None",
+        "model-b:two:cpu:None",
+    ]
     assert [loaded.close_calls for loaded in loaded_models] == [1, 1]
+
+
+def test_persistent_worker_keys_text_only_model_by_resize_mode_and_reports_it(
+    monkeypatch,
+) -> None:  # noqa: ANN001 - pytest fixture.
+    loaded_models: list[FakePersistentLoadedModel] = []
+
+    def fake_load(
+        *, model_name: str, checkpoint: str, device: str, image_resize_mode: str | None
+    ) -> FakePersistentLoadedModel:
+        loaded = FakePersistentLoadedModel(
+            f"{model_name}:{checkpoint}:{device}:{image_resize_mode}",
+            image_resize_mode=image_resize_mode,
+        )
+        loaded_models.append(loaded)
+        return loaded
+
+    requests = (
+        {
+            "model_name": "model-a",
+            "checkpoint": "one",
+            "device": "cpu",
+            "image_resize_mode": "shortest",
+            "text_labels": [],
+        },
+        {
+            "model_name": "model-a",
+            "checkpoint": "one",
+            "device": "cpu",
+            "image_resize_mode": "shortest",
+            "text_labels": [],
+        },
+        {
+            "model_name": "model-a",
+            "checkpoint": "one",
+            "device": "cpu",
+            "image_resize_mode": "longest",
+            "text_labels": [],
+        },
+        {"shutdown": True},
+    )
+    stdout = io.StringIO()
+    monkeypatch.setattr(
+        bioclip_worker._LoadedBioClipModel, "load", staticmethod(fake_load)
+    )  # noqa: SLF001
+    monkeypatch.setattr(bioclip_worker, "configure_hf_cache_env", lambda _path: None)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO("".join(json.dumps(request) + "\n" for request in requests)),
+    )
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    bioclip_worker.run_persistent_worker()
+
+    assert [loaded.key for loaded in loaded_models] == [
+        "model-a:one:cpu:shortest",
+        "model-a:one:cpu:longest",
+    ]
+    assert [loaded.close_calls for loaded in loaded_models] == [1, 1]
+    payloads = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    assert [
+        payload["image_resize_mode"] for payload in payloads if payload.get("ready")
+    ] == ["shortest", "longest"]
+    assert [
+        payload["image_resize_mode"]
+        for payload in payloads
+        if "text_embeddings" in payload
+    ] == [
+        "shortest",
+        "shortest",
+        "longest",
+    ]
 
 
 class FakePersistentLoadedModel:
     device = "cpu"
     gpu_name = "test-cpu"
 
-    def __init__(self, key: str) -> None:
+    def __init__(self, key: str, *, image_resize_mode: str | None = None) -> None:
         self.key = key
+        self.image_resize_mode = image_resize_mode
         self.close_calls = 0
 
     def text_embeddings(self, _labels):  # noqa: ANN001, ANN201 - fake worker protocol.

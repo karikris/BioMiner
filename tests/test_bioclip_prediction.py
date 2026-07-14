@@ -57,7 +57,9 @@ def test_classify_species_agreement_detects_exact_species_agreement() -> None:
     assert status == "exact_species_agreement"
 
 
-def test_classify_species_agreement_routes_conflicting_text_and_vision_to_review() -> None:
+def test_classify_species_agreement_routes_conflicting_text_and_vision_to_review() -> (
+    None
+):
     status = classify_species_agreement(
         resolved_scientific_name="Papilio demoleus",
         topk_labels=["a photo of a moth", "a photo of artwork or illustration"],
@@ -127,7 +129,9 @@ def test_bioclip_classifier_fails_when_runtime_unavailable() -> None:
         unavailable_reason="missing runtime",
     )
 
-    classifier = BioClipClassifier(runtime=unavailable, scorer=lambda image_path, labels: {})
+    classifier = BioClipClassifier(
+        runtime=unavailable, scorer=lambda image_path, labels: {}
+    )
 
     try:
         classifier.classify_image(
@@ -165,7 +169,9 @@ def test_external_bioclip_scorer_invokes_runtime_python_with_json() -> None:
         )
 
     scorer = ExternalBioClipScorer(runtime=_runtime(), runner=fake_run)
-    scores = scorer(Path("/tmp/image.jpg"), ["a photo of Papilio demoleus", "a photo of a moth"])
+    scores = scorer(
+        Path("/tmp/image.jpg"), ["a photo of Papilio demoleus", "a photo of a moth"]
+    )
 
     assert scores["a photo of Papilio demoleus"] == 0.97
     assert calls[0]["cmd"][0] == "/home/toffe/bioclip25/.venv/bin/python"
@@ -173,6 +179,44 @@ def test_external_bioclip_scorer_invokes_runtime_python_with_json() -> None:
     assert '"device": "auto"' in calls[0]["input"]
     assert "imageomics/bioclip-2" in calls[0]["input"]
     assert "data/cache/huggingface" in calls[0]["input"]
+    assert "image_resize_mode" not in calls[0]["input"]
+
+
+def test_bioclip_scorers_reject_invalid_image_resize_mode() -> None:
+    with pytest.raises(ValueError, match="Unsupported BioCLIP image resize mode"):
+        ExternalBioClipScorer(runtime=_runtime(), image_resize_mode="center_crop")
+    with pytest.raises(ValueError, match="Unsupported BioCLIP image resize mode"):
+        PersistentBioClipScorer(runtime=_runtime(), image_resize_mode="center_crop")
+
+
+@pytest.mark.parametrize(
+    ("worker_response", "error_match"),
+    [
+        ('{"scores":{"butterfly":1.0}}', "did not report"),
+        (
+            '{"scores":{"butterfly":1.0},"image_resize_mode":"shortest"}',
+            "resize mode mismatch",
+        ),
+    ],
+)
+def test_external_bioclip_scorer_requires_requested_resize_mode_acknowledgement(
+    worker_response: str,
+    error_match: str,
+) -> None:
+    def fake_run(cmd, *, input, capture_output, check, text):  # noqa: ANN001 - mirrors subprocess.run signature.
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout=worker_response,
+            stderr="",
+        )
+
+    scorer = ExternalBioClipScorer(
+        runtime=_runtime(), runner=fake_run, image_resize_mode="longest"
+    )
+
+    with pytest.raises(RuntimeError, match=error_match):
+        scorer(Path("/tmp/image.jpg"), ["butterfly"])
 
 
 def test_external_bioclip_scorer_formats_batch_request() -> None:
@@ -232,12 +276,17 @@ def test_external_bioclip_scorer_formats_label_set_request() -> None:
 
     assert scores["species"][0]["a photo of Papilio demoleus"] == 0.8
     assert scores["triage"][0]["a photo of an adult butterfly"] == 0.9
-    assert '"label_sets": {"species": ["a photo of Papilio demoleus"], "triage": ["a photo of an adult butterfly"]}' in calls[0]["input"]
+    assert (
+        '"label_sets": {"species": ["a photo of Papilio demoleus"], "triage": ["a photo of an adult butterfly"]}'
+        in calls[0]["input"]
+    )
 
 
 def test_external_bioclip_scorer_raises_with_worker_stderr() -> None:
     def fake_run(cmd, *, input, capture_output, check, text):  # noqa: ANN001 - mirrors subprocess.run signature.
-        return subprocess.CompletedProcess(args=cmd, returncode=2, stdout="", stderr="model missing")
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=2, stdout="", stderr="model missing"
+        )
 
     scorer = ExternalBioClipScorer(runtime=_runtime(), runner=fake_run)
 
@@ -250,7 +299,9 @@ def test_external_bioclip_scorer_raises_with_worker_stderr() -> None:
         raise AssertionError("expected worker failure to raise")
 
 
-def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_uses_auto_device() -> None:
+def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_uses_auto_device() -> (
+    None
+):
     writes: list[str] = []
 
     class FakeStdin:
@@ -301,7 +352,9 @@ def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_uses_auto_devic
         processes.append(process)
         return process
 
-    scorer = PersistentBioClipScorer(runtime=_runtime(), popen=fake_popen, preprocess_workers=4)
+    scorer = PersistentBioClipScorer(
+        runtime=_runtime(), popen=fake_popen, preprocess_workers=4
+    )
     try:
         first = scorer.score_batch(
             [Path("/tmp/1.jpg"), Path("/tmp/2.jpg")],
@@ -319,6 +372,7 @@ def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_uses_auto_devic
     assert '"image_paths": ["/tmp/1.jpg", "/tmp/2.jpg"]' in writes[0]
     assert '"device": "auto"' in writes[0]
     assert '"preprocess_workers": 4' in writes[0]
+    assert "image_resize_mode" not in writes[0]
     assert '"device": "auto"' in writes[1]
     assert '"preprocess_workers": 4' in writes[1]
     assert '"shutdown": true' in writes[-1]
@@ -387,7 +441,10 @@ def test_persistent_bioclip_scorer_reuses_worker_for_label_sets() -> None:
     assert scores["species"][0]["a photo of Papilio demoleus"] == 0.97
     assert scores["triage"][0]["a photo of an adult butterfly"] == 0.98
     assert len(processes) == 1
-    assert '"label_sets": {"species": ["a photo of Papilio demoleus"], "triage": ["a photo of an adult butterfly"]}' in writes[0]
+    assert (
+        '"label_sets": {"species": ["a photo of Papilio demoleus"], "triage": ["a photo of an adult butterfly"]}'
+        in writes[0]
+    )
 
 
 def test_persistent_bioclip_scorer_can_embed_text_labels_for_cache() -> None:
@@ -458,8 +515,8 @@ def test_persistent_bioclip_scorer_can_embed_image_paths_for_cache() -> None:
         def __init__(self) -> None:
             self.lines = iter(
                 [
-                    '{"ready":true,"device":"cuda","gpu_name":"NVIDIA GeForce RTX 3060"}\n',
-                    '{"image_embeddings":[[0.1,0.9],[0.8,0.2]],"embedding_dim":2}\n',
+                    '{"ready":true,"device":"cuda","gpu_name":"NVIDIA GeForce RTX 3060","image_resize_mode":"longest"}\n',
+                    '{"image_embeddings":[[0.1,0.9],[0.8,0.2]],"embedding_dim":2,"image_resize_mode":"longest"}\n',
                 ]
             )
 
@@ -487,23 +544,38 @@ def test_persistent_bioclip_scorer_can_embed_image_paths_for_cache() -> None:
     def fake_popen(cmd, **kwargs):  # noqa: ANN001, ANN202 - mirrors subprocess.Popen.
         return FakeProcess(cmd)
 
-    scorer = PersistentBioClipScorer(runtime=_runtime(), popen=fake_popen)
+    scorer = PersistentBioClipScorer(
+        runtime=_runtime(), popen=fake_popen, image_resize_mode="longest"
+    )
     try:
-        embeddings = scorer.embed_image_paths([Path("/tmp/crop-1.ppm"), Path("/tmp/crop-2.ppm")])
+        embeddings = scorer.embed_image_paths(
+            [Path("/tmp/crop-1.ppm"), Path("/tmp/crop-2.ppm")]
+        )
     finally:
         scorer.close()
 
     assert embeddings == [[0.1, 0.9], [0.8, 0.2]]
-    assert '"image_embedding_paths": ["/tmp/crop-1.ppm", "/tmp/crop-2.ppm"]' in writes[0]
+    assert (
+        '"image_embedding_paths": ["/tmp/crop-1.ppm", "/tmp/crop-2.ppm"]' in writes[0]
+    )
     assert '"device": "auto"' in writes[0]
+    assert '"image_resize_mode": "longest"' in writes[0]
+    assert scorer.effective_image_resize_mode == "longest"
 
 
-def test_bioclip_classifier_builds_species_and_triage_prediction_with_label_sets() -> None:
+def test_bioclip_classifier_builds_species_and_triage_prediction_with_label_sets() -> (
+    None
+):
     class FakeScorer:
         def score_label_sets_batch(self, image_paths, label_sets):  # noqa: ANN001 - test fake.
             assert label_sets["triage"] == ["a photo of an adult butterfly"]
             return {
-                "species": [{"a photo of Papilio demoleus": 0.91, "a photo of Papilio machaon": 0.09}],
+                "species": [
+                    {
+                        "a photo of Papilio demoleus": 0.91,
+                        "a photo of Papilio machaon": 0.09,
+                    }
+                ],
                 "triage": [{"a photo of an adult butterfly": 0.88}],
             }
 
@@ -539,8 +611,13 @@ def test_bioclip_classifier_builds_species_and_triage_prediction_with_label_sets
     assert "a photo of an adult butterfly" in DEFAULT_TRIAGE_LABELS
 
 
-def test_bioclip_classifier_ranks_species_prompt_variants_by_mean_not_best_prompt() -> None:
-    from biominer.bioclip.prompt_templates import SPECIES_PROMPT_AGGREGATION_DEFAULT, PromptVariant
+def test_bioclip_classifier_ranks_species_prompt_variants_by_mean_not_best_prompt() -> (
+    None
+):
+    from biominer.bioclip.prompt_templates import (
+        SPECIES_PROMPT_AGGREGATION_DEFAULT,
+        PromptVariant,
+    )
 
     assert SPECIES_PROMPT_AGGREGATION_DEFAULT == "mean"
 
@@ -578,9 +655,17 @@ def test_bioclip_classifier_ranks_species_prompt_variants_by_mean_not_best_promp
             "triage": ["a photo of an adult butterfly"],
         },
         species_prompt_variants=[
-            PromptVariant("a photo of Papilio demoleus", "Papilio demoleus", "scientific"),
-            PromptVariant("a field photo of Papilio demoleus adult butterfly", "Papilio demoleus", "field_adult"),
-            PromptVariant("a photo of Papilio machaon", "Papilio machaon", "scientific"),
+            PromptVariant(
+                "a photo of Papilio demoleus", "Papilio demoleus", "scientific"
+            ),
+            PromptVariant(
+                "a field photo of Papilio demoleus adult butterfly",
+                "Papilio demoleus",
+                "field_adult",
+            ),
+            PromptVariant(
+                "a photo of Papilio machaon", "Papilio machaon", "scientific"
+            ),
         ],
     )
 
@@ -590,4 +675,7 @@ def test_bioclip_classifier_ranks_species_prompt_variants_by_mean_not_best_promp
     assert record["species_top1_label"] == "a photo of Papilio machaon"
     assert record["species_prompt_topk_json"][1]["taxon_key"] == "Papilio demoleus"
     assert record["species_prompt_topk_json"][1]["score"] == pytest.approx(0.50)
-    assert record["species_prompt_topk_json"][1]["best_label"] == "a photo of Papilio demoleus"
+    assert (
+        record["species_prompt_topk_json"][1]["best_label"]
+        == "a photo of Papilio demoleus"
+    )

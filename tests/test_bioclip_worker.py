@@ -2,13 +2,25 @@ from __future__ import annotations
 
 import io
 import json
+import sys
+import types
+
+import pytest
 
 from biominer.bioclip import bioclip_worker
-from biominer.bioclip.bioclip_worker import configure_hf_cache_env, device_from_request, open_clip_model_args, resolve_torch_device
+from biominer.bioclip.bioclip_worker import (
+    configure_hf_cache_env,
+    device_from_request,
+    normalize_image_resize_mode,
+    open_clip_model_args,
+    resolve_torch_device,
+)
 
 
 def test_open_clip_model_args_use_hf_hub_prefix_for_model_ids() -> None:
-    assert open_clip_model_args("imageomics/bioclip-2", "BioCLIP 2.5 Huge OpenCLIP ViT-H/14 checkpoint") == {
+    assert open_clip_model_args(
+        "imageomics/bioclip-2", "BioCLIP 2.5 Huge OpenCLIP ViT-H/14 checkpoint"
+    ) == {
         "model_name": "hf-hub:imageomics/bioclip-2",
         "pretrained": None,
     }
@@ -29,7 +41,10 @@ def test_configure_hf_cache_env_sets_writable_cache(monkeypatch, tmp_path) -> No
     configure_hf_cache_env(tmp_path / "hf")
 
     assert str(tmp_path / "hf") in __import__("os").environ["HF_HOME"]
-    assert str(tmp_path / "hf" / "hub") in __import__("os").environ["HUGGINGFACE_HUB_CACHE"]
+    assert (
+        str(tmp_path / "hf" / "hub")
+        in __import__("os").environ["HUGGINGFACE_HUB_CACHE"]
+    )
     assert __import__("os").environ["PYTORCH_ENABLE_MPS_FALLBACK"] == "1"
 
 
@@ -39,19 +54,41 @@ def test_device_from_request_defaults_to_auto_and_preserves_legacy_cuda() -> Non
     assert device_from_request({"require_cuda": True, "device": "mps"}) == "mps"
 
 
+def test_image_resize_mode_validation_normalizes_supported_values() -> None:
+    assert normalize_image_resize_mode(None) is None
+    assert normalize_image_resize_mode(" Longest ") == "longest"
+    assert normalize_image_resize_mode("shortest") == "shortest"
+    assert normalize_image_resize_mode("SQUASH") == "squash"
+
+    with pytest.raises(ValueError, match="Unsupported BioCLIP image resize mode"):
+        normalize_image_resize_mode("center_crop")
+
+
 def test_resolve_torch_device_prefers_mps_when_cuda_is_unavailable() -> None:
     assert resolve_torch_device(FakeTorch(cuda=False, mps=True), "auto") == "mps"
 
 
-def test_worker_main_accepts_batch_request_without_loading_model(monkeypatch, tmp_path, capsys) -> None:
+def test_worker_main_accepts_batch_request_without_loading_model(
+    monkeypatch, tmp_path, capsys
+) -> None:
     calls: dict[str, object] = {}
 
-    def fake_score_images(*, image_paths, labels, model_name, checkpoint, device, preprocess_workers):  # noqa: ANN001 - mirrors worker signature.
+    def fake_score_images(  # noqa: ANN001 - mirrors worker signature.
+        *,
+        image_paths,
+        labels,
+        model_name,
+        checkpoint,
+        device,
+        image_resize_mode,
+        preprocess_workers,
+    ):
         calls["image_paths"] = image_paths
         calls["labels"] = labels
         calls["model_name"] = model_name
         calls["checkpoint"] = checkpoint
         calls["device"] = device
+        calls["image_resize_mode"] = image_resize_mode
         calls["preprocess_workers"] = preprocess_workers
         return [{"label-a": 0.7}, {"label-a": 0.8}]
 
@@ -66,6 +103,7 @@ def test_worker_main_accepts_batch_request_without_loading_model(monkeypatch, tm
                     "model_name": "ViT-H-14",
                     "checkpoint": "checkpoint",
                     "hf_cache_dir": str(tmp_path / "hf"),
+                    "image_resize_mode": "longest",
                 }
             )
         ),
@@ -77,7 +115,56 @@ def test_worker_main_accepts_batch_request_without_loading_model(monkeypatch, tm
     assert payload["scores_by_image"] == [{"label-a": 0.7}, {"label-a": 0.8}]
     assert [str(path) for path in calls["image_paths"]] == ["/tmp/1.jpg", "/tmp/2.jpg"]
     assert calls["device"] == "auto"
+    assert calls["image_resize_mode"] == "longest"
     assert calls["preprocess_workers"] == 1
+    assert payload["image_resize_mode"] == "longest"
+
+
+def test_loaded_model_only_overrides_open_clip_resize_mode_when_requested(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    fake_open_clip = types.ModuleType("open_clip")
+
+    def create_model_and_transforms(model_name: str, **kwargs):  # noqa: ANN001, ANN202 - fake OpenCLIP API.
+        calls.append((model_name, kwargs))
+        return FakeOpenClipModel(), None, object()
+
+    fake_open_clip.create_model_and_transforms = create_model_and_transforms
+    fake_open_clip.get_tokenizer = lambda _model_name: object()
+    monkeypatch.setitem(sys.modules, "open_clip", fake_open_clip)
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch(cuda=False, mps=False))
+
+    legacy = bioclip_worker._LoadedBioClipModel.load(  # noqa: SLF001 - worker integration contract.
+        model_name="imageomics/bioclip-2",
+        checkpoint="checkpoint",
+        device="cpu",
+    )
+    target = bioclip_worker._LoadedBioClipModel.load(  # noqa: SLF001 - target preprocessing contract.
+        model_name="imageomics/bioclip-2",
+        checkpoint="checkpoint",
+        device="cpu",
+        image_resize_mode="longest",
+    )
+
+    assert calls == [
+        ("hf-hub:imageomics/bioclip-2", {"pretrained": None}),
+        (
+            "hf-hub:imageomics/bioclip-2",
+            {"pretrained": None, "image_resize_mode": "longest"},
+        ),
+    ]
+    assert legacy.image_resize_mode is None
+    assert target.image_resize_mode == "longest"
+
+
+def test_loaded_model_rejects_invalid_resize_mode_before_importing_runtime() -> None:
+    with pytest.raises(ValueError, match="Unsupported BioCLIP image resize mode"):
+        bioclip_worker._LoadedBioClipModel.load(  # noqa: SLF001 - validation contract.
+            model_name="imageomics/bioclip-2",
+            checkpoint="checkpoint",
+            image_resize_mode="crop",
+        )
 
 
 class FakeTorch:
@@ -105,3 +192,11 @@ class FakeMps:
 
     def is_available(self) -> bool:
         return self.available
+
+
+class FakeOpenClipModel:
+    def to(self, _device):  # noqa: ANN001, ANN202 - fake OpenCLIP model.
+        return self
+
+    def eval(self) -> None:
+        return None
