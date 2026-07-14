@@ -16,7 +16,11 @@ from biominer.cli import (
     build_parser,
     run,
 )
-from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION, TARGET_SCOPE_OBJECT_SCREENING
+from biominer.bioclip.classification_modes import (
+    HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+    TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
+    TARGET_SCOPE_OBJECT_SCREENING,
+)
 from biominer.detection.detector_base import DecodedImage
 from biominer.detection.policy import VisionRuntimeSettings
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES
@@ -447,6 +451,24 @@ def test_run_cli_parses_classification_mode_with_fixed_cascade_contract() -> Non
     )
 
     assert default_args.classification_mode == TARGET_SCOPE_OBJECT_SCREENING
+
+
+def test_run_cli_accepts_explicit_target_aware_few_shot_mode() -> None:
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--taxon",
+            "Papilio demoleus",
+            "--registry-dir",
+            "s3://biominer/biominer/registry/current",
+            "--output-prefix",
+            "s3://biominer/biominer/runs/papilio_demoleus",
+            "--classification-mode",
+            "target-aware-few-shot-classification",
+        ]
+    )
+
+    assert args.classification_mode == TARGET_AWARE_FEW_SHOT_CLASSIFICATION
 
 
 @pytest.mark.parametrize(
