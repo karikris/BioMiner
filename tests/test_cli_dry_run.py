@@ -1291,6 +1291,74 @@ def test_production_run_cli_resolves_registry_and_writes_dry_run_manifest(tmp_pa
     assert (output / "run_id=species_papilio_demoleus" / "run_manifest.json").exists()
 
 
+def test_production_run_cli_requires_readiness_only_for_non_dry_vision(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_load_config(_path: str | None) -> object:
+        raise AssertionError("missing readiness must fail before runtime configuration")
+
+    monkeypatch.setattr("biominer.cli.load_biominer_config", fail_load_config)
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--taxon",
+            "Papilio demoleus",
+            "--registry-dir",
+            str(tmp_path / "registry"),
+            "--output-prefix",
+            str(tmp_path / "runs"),
+            "--storage-backend",
+            "local",
+            "--workstore-backend",
+            "sqlite",
+            "--stages",
+            "detect",
+        ]
+    )
+
+    assert run(args) == 2
+    assert "--reference-bank-readiness is required" in json.loads(
+        capsys.readouterr().out
+    )["error"]
+
+
+def test_production_run_cli_requires_trusted_readiness_digest_for_vision(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_load_config(_path: str | None) -> object:
+        raise AssertionError("missing readiness pin must fail before configuration")
+
+    monkeypatch.setattr("biominer.cli.load_biominer_config", fail_load_config)
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--taxon",
+            "Papilio demoleus",
+            "--registry-dir",
+            str(tmp_path / "registry"),
+            "--output-prefix",
+            str(tmp_path / "runs"),
+            "--storage-backend",
+            "local",
+            "--workstore-backend",
+            "sqlite",
+            "--stages",
+            "detect",
+            "--reference-bank-readiness",
+            str(tmp_path / "readiness"),
+        ]
+    )
+
+    assert run(args) == 2
+    assert "--reference-bank-readiness-sha256 is required" in json.loads(
+        capsys.readouterr().out
+    )["error"]
+
+
 def test_production_run_requires_cloud_config_by_default(tmp_path, capsys, monkeypatch) -> None:
     config = BioMinerConfig(
         storage=StorageConfig(

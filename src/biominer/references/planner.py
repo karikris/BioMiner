@@ -225,7 +225,7 @@ def plan_geographically_balanced_support_bank(
         )
     review_by_media = _review_metadata(review_metadata)
     built_at = _utc_datetime(created_at or datetime.now(UTC), field="created_at")
-    candidate_set_id = _composite_candidate_set_id(candidate_species)
+    candidate_set_id = make_reference_candidate_union_id(candidate_species)
     reference_input_fingerprint = _reference_input_fingerprint(
         observations,
         media_candidates,
@@ -1306,7 +1306,10 @@ def _review_metadata(
     return {str(row["reference_media_id"]): row for row in frame.iter_rows(named=True)}
 
 
-def _composite_candidate_set_id(frame: pl.DataFrame) -> str:
+def make_reference_candidate_union_id(frame: pl.DataFrame) -> str:
+    """Return the immutable planner identity for a regional candidate union."""
+
+    validate_regional_candidate_species(frame)
     payload = [
         {
             "candidate_set_id": str(row["candidate_set_id"]),
@@ -1494,6 +1497,7 @@ __all__ = [
     "ReferencePlanResult",
     "ReferencePlannerConfig",
     "ReferenceStratumQuota",
+    "make_reference_candidate_union_id",
     "plan_geographically_balanced_support_bank",
     "reference_plan_markdown",
     "validate_reference_plan_result",

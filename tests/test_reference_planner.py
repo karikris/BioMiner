@@ -15,6 +15,7 @@ from biominer.references.planner import (
     ReferencePlannerConfig,
     ReferencePlanResult,
     ReferenceStratumQuota,
+    make_reference_candidate_union_id,
     plan_geographically_balanced_support_bank,
     validate_reference_plan_result,
     write_reference_plan_result,
@@ -257,8 +258,9 @@ def test_planner_allocates_minimum_plus_sqrt_and_balances_class_quota() -> None:
                 }
             )
     observations, media, review = _reference_rows(specifications)
+    candidates = _candidate_species(("cluster-a", "cluster-b", "cluster-c"))
     result = plan_geographically_balanced_support_bank(
-        candidate_species=_candidate_species(("cluster-a", "cluster-b", "cluster-c")),
+        candidate_species=candidates,
         observations=observations,
         media_candidates=media,
         review_metadata=review,
@@ -280,6 +282,13 @@ def test_planner_allocates_minimum_plus_sqrt_and_balances_class_quota() -> None:
     assert set(requested_by_species["requested"].to_list()) == {10}
     assert result.report["summary"]["balanced_requested_quota"] is True
     assert result.report["summary"]["target_selected"] == 10
+    assert set(result.plan["candidate_set_id"]) == {
+        make_reference_candidate_union_id(candidates)
+    }
+    assert set(result.selections["source_candidate_set_id"]) == {
+        "regional:cluster-a",
+        "regional:cluster-b",
+    }
     assert (
         result.plan.filter(pl.col("candidate_accepted_taxon_key") == COMPETITOR_KEY)[
             "shortfall_count"

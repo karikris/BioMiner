@@ -276,6 +276,96 @@ def build_reference_review_queue(
     return result
 
 
+def validate_reference_review_queue_source_bindings(
+    queue: pl.DataFrame,
+    provenance: pl.DataFrame,
+    selections: pl.DataFrame,
+    media_objects: pl.DataFrame,
+    media_candidates: pl.DataFrame,
+    observations: pl.DataFrame,
+    duplicate_relationships: pl.DataFrame,
+    *,
+    deduplication_report: Mapping[str, object],
+    reference_bank_version: str,
+) -> None:
+    """Rebuild immutable review inputs and reject stale manual decisions."""
+
+    validate_reference_review_queue(queue)
+    _validate_queue_integrity(queue, provenance)
+    created_at_values = set(queue["created_at"].to_list())
+    if len(created_at_values) > 1:
+        raise ValueError("reference review queue has inconsistent creation times")
+    created_at = (
+        next(iter(created_at_values))
+        if created_at_values
+        else _default_queue_created_at(selections, media_objects)
+    )
+    include_research_only = bool(
+        not queue.is_empty()
+        and queue.filter(pl.col("licence_policy_status") == "research_only").height
+    )
+    rebuilt = _build_reference_review_queue(
+        selections,
+        media_objects,
+        media_candidates,
+        observations,
+        duplicate_relationships,
+        deduplication_report=deduplication_report,
+        reference_bank_version=reference_bank_version,
+        created_at=_utc_datetime(created_at, field="created_at"),
+        include_research_only=include_research_only,
+        report_started_at=datetime.now(UTC),
+    )
+    current_queue = {
+        str(row["reference_media_id"]): row for row in queue.iter_rows(named=True)
+    }
+    rebuilt_queue = {
+        str(row["reference_media_id"]): row
+        for row in rebuilt.queue.iter_rows(named=True)
+    }
+    if set(current_queue) != set(rebuilt_queue):
+        raise ValueError("reference review queue does not match current source inventory")
+    for media_id, row in current_queue.items():
+        expected = rebuilt_queue[media_id]
+        immutable_fields = (
+            "review_request_id",
+            "input_fingerprint",
+            "media_object_fingerprint",
+            "durable_preview_uri",
+        )
+        if any(row[field] != expected[field] for field in immutable_fields) or (
+            _queue_semantics_fingerprint(row)
+            != _queue_semantics_fingerprint(expected)
+        ):
+            raise ValueError(
+                "reference review queue is stale for current source inventory: "
+                + media_id
+            )
+
+    current_provenance = {
+        str(row["reference_media_id"]): row
+        for row in provenance.iter_rows(named=True)
+    }
+    rebuilt_provenance = {
+        str(row["reference_media_id"]): row
+        for row in rebuilt.provenance.iter_rows(named=True)
+    }
+    for media_id, row in current_provenance.items():
+        expected = rebuilt_provenance[media_id]
+        immutable_fields = (
+            "review_request_id",
+            "source_binding_fingerprint",
+            "source_leaf_fingerprints",
+            "queue_semantics_fingerprint",
+            "input_fingerprint",
+        )
+        if any(row[field] != expected[field] for field in immutable_fields):
+            raise ValueError(
+                "reference review source provenance is stale for current inventory: "
+                + media_id
+            )
+
+
 def _build_reference_review_queue(
     selections: pl.DataFrame,
     media_objects: pl.DataFrame,
@@ -3544,6 +3634,7 @@ __all__ = [
     "validate_reference_review_history_head",
     "validate_reference_review_history_head_destination",
     "validate_reference_review_packet_artifact",
+    "validate_reference_review_queue_source_bindings",
     "write_reference_review_export",
     "write_reference_review_import",
 ]

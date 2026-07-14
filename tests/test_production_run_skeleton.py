@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 import json
 from math import sqrt
 from pathlib import Path
@@ -66,6 +67,67 @@ from biominer.storage.parquet import ParquetPartWrite
 from biominer.vision.cloud_work import enqueue_rolling_vision_work_from_source_shards
 from biominer.workstore.sqlite import SQLiteWorkStore
 from factories import detection_candidate
+
+
+_READINESS_SHA256 = "sha256:" + "8" * 64
+
+
+@dataclass(frozen=True)
+class _ReadinessPermitFixture:
+    status: str = "ready"
+    reference_bank_version: str = "bank-v1"
+    registry_version: str = "test-v1"
+    target_accepted_taxon_key: str = "gbif:5130"
+    bank_fingerprint: str = "sha256:" + "1" * 64
+    policy_fingerprint: str = "sha256:" + "2" * 64
+    support_manifest_fingerprint: str = "sha256:" + "3" * 64
+    summary_fingerprint: str = "sha256:" + "4" * 64
+    split_assignments_fingerprint: str = "sha256:" + "5" * 64
+    model_input_fingerprint: str = "sha256:" + "6" * 64
+    model_name: str = "imageomics/bioclip-2.5-vith14"
+    model_version: str = "test"
+    checkpoint_sha256: str = "sha256:" + "7" * 64
+    preprocessing_version: str = "preprocess-v1"
+    input_contract_version: str = "input-v1"
+    readiness_sha256: str = _READINESS_SHA256
+    support_manifest_sha256: str = "sha256:" + "9" * 64
+    summary_sha256: str = "sha256:" + "a" * 64
+
+
+class _ClosableRuntimeFixture:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture
+def valid_reference_bank_readiness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    directory = tmp_path / "reference-bank-readiness"
+    directory.mkdir()
+
+    def load_fixture(output_dir: str | Path, **expected: object) -> _ReadinessPermitFixture:
+        assert Path(output_dir) == directory
+        assert expected["expected_readiness_sha256"] == _READINESS_SHA256
+        return replace(
+            _ReadinessPermitFixture(),
+            registry_version=str(expected["expected_registry_version"]),
+            target_accepted_taxon_key=str(
+                expected["expected_target_accepted_taxon_key"]
+            ),
+            model_name=str(expected["expected_model_name"]),
+        )
+
+    monkeypatch.setattr(
+        run_orchestrator_module,
+        "load_reference_bank_readiness",
+        load_fixture,
+    )
+    return directory
 
 
 def test_taxon_scope_construction_and_roundtrip() -> None:
@@ -274,7 +336,279 @@ def test_production_run_hierarchical_dry_run_skips_score_stage_with_plan_metadat
     assert plan.manifest.model_configs["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 
 
-def test_production_run_hierarchical_score_stage_requires_taxonomy_table(tmp_path) -> None:
+def test_production_vision_stage_requires_readiness_before_injected_handler_or_runtime(
+    tmp_path: Path,
+) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    handler_calls = 0
+    factory_calls = 0
+
+    def handler(_plan: object) -> StageExecutionResult:
+        nonlocal handler_calls
+        handler_calls += 1
+        return StageExecutionResult()
+
+    def factory():  # noqa: ANN202 - mirrors the injected runtime factory protocol.
+        nonlocal factory_calls
+        factory_calls += 1
+        return object(), lambda _record: object(), object(), []
+
+    orchestrator = ProductionRunOrchestrator(
+        ProductionRunRequest(
+            taxon="Danaus plexippus",
+            output_root=tmp_path / "runs",
+            stages=(RunStage.DETECT_OBJECTS,),
+        ),
+        taxon_scope=scope,
+        stage_handlers={RunStage.DETECT_OBJECTS: handler},
+        vision_runtime_factory=factory,
+    )
+
+    with pytest.raises(ValueError, match="reference_bank_readiness is required"):
+        orchestrator.run()
+
+    assert handler_calls == 0
+    assert factory_calls == 0
+
+
+@pytest.mark.parametrize("failure_mode", ["tampered", "blocked"])
+def test_production_vision_readiness_rejection_precedes_handler_and_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_mode: str,
+) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    handler_calls = 0
+    factory_calls = 0
+
+    def fake_load(*_args: object, **_kwargs: object) -> _ReadinessPermitFixture:
+        if failure_mode == "tampered":
+            raise ValueError("reference bank readiness checksum mismatch")
+        return _ReadinessPermitFixture(status="blocked_licence")
+
+    def handler(_plan: object) -> StageExecutionResult:
+        nonlocal handler_calls
+        handler_calls += 1
+        return StageExecutionResult()
+
+    def factory():  # noqa: ANN202 - mirrors the injected runtime factory protocol.
+        nonlocal factory_calls
+        factory_calls += 1
+        return object(), lambda _record: object(), object(), []
+
+    monkeypatch.setattr(run_orchestrator_module, "load_reference_bank_readiness", fake_load)
+    orchestrator = ProductionRunOrchestrator(
+        ProductionRunRequest(
+            taxon="Danaus plexippus",
+            output_root=tmp_path / "runs",
+            reference_bank_readiness=tmp_path / "reference-bank",
+            reference_bank_readiness_sha256=_READINESS_SHA256,
+            stages=(RunStage.DETECT_OBJECTS,),
+        ),
+        taxon_scope=scope,
+        stage_handlers={RunStage.DETECT_OBJECTS: handler},
+        vision_runtime_factory=factory,
+    )
+
+    with pytest.raises(ValueError, match="checksum mismatch|does not permit vision"):
+        orchestrator.run()
+
+    assert handler_calls == 0
+    assert factory_calls == 0
+
+
+def test_production_vision_reuses_valid_readiness_and_lazy_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    permit = _ReadinessPermitFixture()
+    calls = {"loader": 0, "factory": 0, "detect": 0, "score": 0}
+    resource = _ClosableRuntimeFixture()
+
+    def fake_load(path: str | Path, **expected: object) -> _ReadinessPermitFixture:
+        calls["loader"] += 1
+        assert path == tmp_path / "reference-bank"
+        assert expected == {
+            "expected_registry_version": "test-v1",
+            "expected_target_accepted_taxon_key": "gbif:5130",
+            "expected_model_name": "imageomics/bioclip-2.5-vith14",
+            "expected_readiness_sha256": _READINESS_SHA256,
+        }
+        return permit
+
+    def factory():  # noqa: ANN202 - mirrors the injected runtime factory protocol.
+        calls["factory"] += 1
+        return object(), lambda _record: object(), permit, [resource]
+
+    monkeypatch.setattr(run_orchestrator_module, "load_reference_bank_readiness", fake_load)
+    orchestrator = ProductionRunOrchestrator(
+        ProductionRunRequest(
+            taxon="Danaus plexippus",
+            output_root=tmp_path / "runs",
+            reference_bank_readiness=tmp_path / "reference-bank",
+            reference_bank_readiness_sha256=_READINESS_SHA256,
+            stages=(RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP),
+        ),
+        taxon_scope=scope,
+        vision_runtime_factory=factory,
+    )
+
+    def detect(_plan: object) -> StageExecutionResult:
+        calls["detect"] += 1
+        return StageExecutionResult()
+
+    def score(_plan: object) -> StageExecutionResult:
+        calls["score"] += 1
+        return StageExecutionResult()
+
+    monkeypatch.setattr(orchestrator, "_run_detect_objects_stage", detect)
+    monkeypatch.setattr(orchestrator, "_run_score_bioclip_stage", score)
+
+    plan = orchestrator.run()
+
+    assert calls == {"loader": 1, "factory": 1, "detect": 1, "score": 1}
+    assert resource.closed is True
+    readiness = plan.manifest.model_configs["reference_bank_readiness"]
+    assert readiness["artifact_path"] == str(tmp_path / "reference-bank")
+    assert readiness["reference_bank_version"] == "bank-v1"
+    assert readiness["readiness_sha256"] == permit.readiness_sha256
+    assert plan.manifest.metrics["reference_bank_readiness_status"] == "ready"
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "model_name",
+        "model_version",
+        "checkpoint_sha256",
+        "preprocessing_version",
+        "input_contract_version",
+        "model_input_fingerprint",
+    ],
+)
+def test_production_vision_rejects_lazy_runtime_identity_mismatch_before_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field_name: str,
+) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    permit = _ReadinessPermitFixture()
+    resource = _ClosableRuntimeFixture()
+    stage_calls = 0
+
+    monkeypatch.setattr(
+        run_orchestrator_module,
+        "load_reference_bank_readiness",
+        lambda *_args, **_kwargs: permit,
+    )
+
+    def factory():  # noqa: ANN202 - mirrors the injected runtime factory protocol.
+        scorer = replace(permit, **{field_name: "mismatch"})
+        return object(), lambda _record: object(), scorer, [resource]
+
+    def detect(_plan: object) -> StageExecutionResult:
+        nonlocal stage_calls
+        stage_calls += 1
+        return StageExecutionResult()
+
+    orchestrator = ProductionRunOrchestrator(
+        ProductionRunRequest(
+            taxon="Danaus plexippus",
+            output_root=tmp_path / "runs",
+            reference_bank_readiness=tmp_path / "reference-bank",
+            reference_bank_readiness_sha256=_READINESS_SHA256,
+            stages=(RunStage.DETECT_OBJECTS,),
+        ),
+        taxon_scope=scope,
+        vision_runtime_factory=factory,
+    )
+    monkeypatch.setattr(orchestrator, "_run_detect_objects_stage", detect)
+
+    with pytest.raises(ValueError, match=field_name):
+        orchestrator.run()
+
+    assert stage_calls == 0
+    assert resource.closed is True
+
+
+def test_production_vision_rejects_lazy_runtime_without_full_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    permit = _ReadinessPermitFixture()
+    resource = _ClosableRuntimeFixture()
+
+    monkeypatch.setattr(
+        run_orchestrator_module,
+        "load_reference_bank_readiness",
+        lambda *_args, **_kwargs: permit,
+    )
+
+    def factory():  # noqa: ANN202 - mirrors the injected runtime factory protocol.
+        return object(), lambda _record: object(), object(), [resource]
+
+    orchestrator = ProductionRunOrchestrator(
+        ProductionRunRequest(
+            taxon="Danaus plexippus",
+            output_root=tmp_path / "runs",
+            reference_bank_readiness=tmp_path / "reference-bank",
+            reference_bank_readiness_sha256=_READINESS_SHA256,
+            stages=(RunStage.DETECT_OBJECTS,),
+        ),
+        taxon_scope=scope,
+        vision_runtime_factory=factory,
+    )
+
+    with pytest.raises(ValueError, match="does not declare the full"):
+        orchestrator.run()
+
+    assert resource.closed is True
+
+
+def test_production_vision_rejects_injected_scorer_identity_before_handler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    permit = _ReadinessPermitFixture()
+    handler_calls = 0
+
+    monkeypatch.setattr(
+        run_orchestrator_module,
+        "load_reference_bank_readiness",
+        lambda *_args, **_kwargs: permit,
+    )
+
+    def handler(_plan: object) -> StageExecutionResult:
+        nonlocal handler_calls
+        handler_calls += 1
+        return StageExecutionResult()
+
+    orchestrator = ProductionRunOrchestrator(
+        ProductionRunRequest(
+            taxon="Danaus plexippus",
+            output_root=tmp_path / "runs",
+            reference_bank_readiness=tmp_path / "reference-bank",
+            reference_bank_readiness_sha256=_READINESS_SHA256,
+            stages=(RunStage.SCORE_BIOCLIP,),
+        ),
+        taxon_scope=scope,
+        object_scorer=replace(permit, model_input_fingerprint="mismatch"),
+        stage_handlers={RunStage.SCORE_BIOCLIP: handler},
+    )
+
+    with pytest.raises(ValueError, match="model_input_fingerprint"):
+        orchestrator.run()
+
+    assert handler_calls == 0
+
+
+def test_production_run_hierarchical_score_stage_requires_taxonomy_table(
+    tmp_path: Path,
+    valid_reference_bank_readiness: Path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
         taxon="Danaus plexippus",
@@ -284,6 +618,8 @@ def test_production_run_hierarchical_score_stage_requires_taxonomy_table(tmp_pat
         workstore_backend="sqlite",
         classification_mode="hierarchical",
         taxonomy_candidate_table=tmp_path / "missing-registry",
+        reference_bank_readiness=valid_reference_bank_readiness,
+        reference_bank_readiness_sha256=_READINESS_SHA256,
         stages=(RunStage.SCORE_BIOCLIP,),
     )
 
@@ -349,7 +685,10 @@ def test_hierarchical_production_rejects_classification_v2_manifest_version(
     assert status.metrics["taxonomy_candidate_table_status"] == "invalid"
 
 
-def test_production_run_hierarchical_score_stage_validates_table_then_requires_score_inputs(tmp_path) -> None:
+def test_production_run_hierarchical_score_stage_validates_table_then_requires_score_inputs(
+    tmp_path: Path,
+    valid_reference_bank_readiness: Path,
+) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
@@ -360,6 +699,8 @@ def test_production_run_hierarchical_score_stage_validates_table_then_requires_s
         workstore_backend="sqlite",
         classification_mode="hierarchical",
         taxonomy_candidate_table=str(registry),
+        reference_bank_readiness=valid_reference_bank_readiness,
+        reference_bank_readiness_sha256=_READINESS_SHA256,
         stages=(RunStage.SCORE_BIOCLIP,),
     )
 
@@ -1133,7 +1474,11 @@ def test_orchestrator_cloud_poll_reenqueues_reported_followup_pages(tmp_path, mo
     assert statuses_by_page == {1: "completed", 2: "pending"}
 
 
-def test_orchestrator_runs_fake_backed_cloud_workflow_end_to_end(tmp_path, monkeypatch) -> None:
+def test_orchestrator_runs_fake_backed_cloud_workflow_end_to_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    valid_reference_bank_readiness: Path,
+) -> None:
     monkeypatch.delenv("FLICKR_API_KEY", raising=False)
     registry = _write_rank_registry(tmp_path / "registry")
     _write_query_definitions(registry)
@@ -1156,6 +1501,8 @@ def test_orchestrator_runs_fake_backed_cloud_workflow_end_to_end(tmp_path, monke
         output_root="s3://biominer/runs",
         storage_backend="s3",
         workstore_backend="postgres",
+        reference_bank_readiness=valid_reference_bank_readiness,
+        reference_bank_readiness_sha256=_READINESS_SHA256,
         stages=(
             RunStage.COMPILE_QUERIES,
             RunStage.ENQUEUE_FLICKR_WORK,
@@ -1218,7 +1565,10 @@ def test_orchestrator_runs_fake_backed_cloud_workflow_end_to_end(tmp_path, monke
     assert summary["best_object_species_top1"] == "Papilio demoleus"
 
 
-def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(tmp_path) -> None:
+def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(
+    tmp_path: Path,
+    valid_reference_bank_readiness: Path,
+) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     embedding_cache = _write_rank_embedding_cache(
         registry,
@@ -1242,6 +1592,8 @@ def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(tmp_path
         classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
         taxonomy_candidate_table=str(registry),
         taxonomy_text_embedding_cache=str(embedding_cache),
+        reference_bank_readiness=valid_reference_bank_readiness,
+        reference_bank_readiness_sha256=_READINESS_SHA256,
         stages=(RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP, RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE),
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
@@ -1831,7 +2183,10 @@ def test_orchestrator_cloud_summarize_requires_storage_backend() -> None:
     assert result.manifest.stages[0].message == "storage_backend_required_for_summarize"
 
 
-def test_orchestrator_runs_local_detection_and_object_scoring_with_injected_fakes(tmp_path) -> None:
+def test_orchestrator_runs_local_detection_and_object_scoring_with_injected_fakes(
+    tmp_path: Path,
+    valid_reference_bank_readiness: Path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
         taxon="Danaus plexippus",
@@ -1839,6 +2194,8 @@ def test_orchestrator_runs_local_detection_and_object_scoring_with_injected_fake
         output_root=tmp_path / "runs",
         storage_backend="local",
         workstore_backend="sqlite",
+        reference_bank_readiness=valid_reference_bank_readiness,
+        reference_bank_readiness_sha256=_READINESS_SHA256,
         stages=(RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP),
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
@@ -1894,7 +2251,10 @@ def test_orchestrator_runs_local_detection_and_object_scoring_with_injected_fake
     assert result.manifest.stages[1].outputs["object_scores"] == str(result.paths.object_scores_path)
 
 
-def test_orchestrator_cloud_rolling_vision_commits_shards_and_reuses_downstream(tmp_path) -> None:
+def test_orchestrator_cloud_rolling_vision_commits_shards_and_reuses_downstream(
+    tmp_path: Path,
+    valid_reference_bank_readiness: Path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     storage = _FakeRunStorage()
     workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
@@ -1903,6 +2263,8 @@ def test_orchestrator_cloud_rolling_vision_commits_shards_and_reuses_downstream(
         rank="species",
         output_root="s3://biominer/runs",
         vision_settings=VisionRuntimeSettings(parquet_part_rows=500, detector_batch_size=1, crop_batch_size=1),
+        reference_bank_readiness=valid_reference_bank_readiness,
+        reference_bank_readiness_sha256=_READINESS_SHA256,
         stages=(RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP, RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE),
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
@@ -1981,7 +2343,10 @@ def test_orchestrator_cloud_rolling_vision_commits_shards_and_reuses_downstream(
     assert work_items[0]["payload"]["vision_batch_rows"] == 500
 
 
-def test_orchestrator_cloud_rolling_vision_requeues_stale_claim(tmp_path) -> None:
+def test_orchestrator_cloud_rolling_vision_requeues_stale_claim(
+    tmp_path: Path,
+    valid_reference_bank_readiness: Path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     storage = _FakeRunStorage()
     workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
@@ -1990,6 +2355,8 @@ def test_orchestrator_cloud_rolling_vision_requeues_stale_claim(tmp_path) -> Non
         rank="species",
         output_root="s3://biominer/runs",
         vision_settings=VisionRuntimeSettings(parquet_part_rows=500, detector_batch_size=1, crop_batch_size=1),
+        reference_bank_readiness=valid_reference_bank_readiness,
+        reference_bank_readiness_sha256=_READINESS_SHA256,
         stages=(RunStage.DETECT_OBJECTS,),
         limits={"stale_claim_seconds": 1},
     )
@@ -2079,12 +2446,16 @@ def test_orchestrator_cloud_rolling_vision_requeues_stale_claim(tmp_path) -> Non
     assert [item["status"] for item in work_items] == ["completed"]
 
 
-def test_orchestrator_cloud_detect_requires_storage_backend() -> None:
+def test_orchestrator_cloud_detect_requires_storage_backend(
+    valid_reference_bank_readiness: Path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
         taxon="Danaus plexippus",
         rank="species",
         output_root="s3://biominer/runs",
+        reference_bank_readiness=valid_reference_bank_readiness,
+        reference_bank_readiness_sha256=_READINESS_SHA256,
         stages=(RunStage.DETECT_OBJECTS,),
     )
 
@@ -2099,7 +2470,10 @@ def test_orchestrator_cloud_detect_requires_storage_backend() -> None:
     assert result.manifest.stages[0].message == "storage_backend_required_for_detect_objects"
 
 
-def test_orchestrator_reuses_registered_cloud_bioclip_part(tmp_path) -> None:
+def test_orchestrator_reuses_registered_cloud_bioclip_part(
+    tmp_path: Path,
+    valid_reference_bank_readiness: Path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     storage = _FakeRunStorage()
     workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
@@ -2107,6 +2481,8 @@ def test_orchestrator_reuses_registered_cloud_bioclip_part(tmp_path) -> None:
         taxon="Danaus plexippus",
         rank="species",
         output_root="s3://biominer/runs",
+        reference_bank_readiness=valid_reference_bank_readiness,
+        reference_bank_readiness_sha256=_READINESS_SHA256,
         stages=(RunStage.SCORE_BIOCLIP,),
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
@@ -2205,7 +2581,11 @@ def test_orchestrator_reuses_registered_cloud_bioclip_part(tmp_path) -> None:
     assert [item["status"] for item in work_items] == ["pending"]
 
 
-def test_production_cloud_run_does_not_write_durable_local_artifacts(monkeypatch, tmp_path) -> None:
+def test_production_cloud_run_does_not_write_durable_local_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    valid_reference_bank_readiness: Path,
+) -> None:
     monkeypatch.chdir(tmp_path)
     scope = TaxonScope.from_species_context(_species_context())
     storage = _FakeRunStorage()
@@ -2214,6 +2594,8 @@ def test_production_cloud_run_does_not_write_durable_local_artifacts(monkeypatch
         taxon="Danaus plexippus",
         rank="species",
         output_root="s3://biominer/runs",
+        reference_bank_readiness=valid_reference_bank_readiness,
+        reference_bank_readiness_sha256=_READINESS_SHA256,
         stages=(RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP, RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE),
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
@@ -2267,12 +2649,16 @@ def test_production_cloud_run_does_not_write_durable_local_artifacts(monkeypatch
     assert plan.artifact_uris.manifest_uri in storage.json_payloads
 
 
-def test_orchestrator_cloud_score_requires_storage_backend() -> None:
+def test_orchestrator_cloud_score_requires_storage_backend(
+    valid_reference_bank_readiness: Path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
         taxon="Danaus plexippus",
         rank="species",
         output_root="s3://biominer/runs",
+        reference_bank_readiness=valid_reference_bank_readiness,
+        reference_bank_readiness_sha256=_READINESS_SHA256,
         stages=(RunStage.SCORE_BIOCLIP,),
     )
 
@@ -2282,7 +2668,10 @@ def test_orchestrator_cloud_score_requires_storage_backend() -> None:
     assert result.manifest.stages[0].message == "storage_backend_required_for_score_bioclip"
 
 
-def test_orchestrator_detect_stage_fails_without_detector_runtime(tmp_path) -> None:
+def test_orchestrator_detect_stage_fails_without_detector_runtime(
+    tmp_path: Path,
+    valid_reference_bank_readiness: Path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
         taxon="Danaus plexippus",
@@ -2290,6 +2679,8 @@ def test_orchestrator_detect_stage_fails_without_detector_runtime(tmp_path) -> N
         output_root=tmp_path / "runs",
         storage_backend="local",
         workstore_backend="sqlite",
+        reference_bank_readiness=valid_reference_bank_readiness,
+        reference_bank_readiness_sha256=_READINESS_SHA256,
         stages=(RunStage.DETECT_OBJECTS,),
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
@@ -2908,6 +3299,10 @@ class _ConstantObjectScorer:
     model_id = "fake-bioclip"
     model_version = "test"
     model_checkpoint = "fake-checkpoint"
+    checkpoint_sha256 = "sha256:" + "7" * 64
+    preprocessing_version = "preprocess-v1"
+    input_contract_version = "input-v1"
+    model_input_fingerprint = "sha256:" + "6" * 64
 
     def __init__(self, scores: dict[str, float]) -> None:
         self.scores = scores
@@ -2930,6 +3325,10 @@ class _RaisingObjectScorer:
     model_id = "fake-bioclip"
     model_version = "test"
     model_checkpoint = "fake-checkpoint"
+    checkpoint_sha256 = "sha256:" + "7" * 64
+    preprocessing_version = "preprocess-v1"
+    input_contract_version = "input-v1"
+    model_input_fingerprint = "sha256:" + "6" * 64
 
     def score(self, _item: dict[str, object], _labels: tuple[str, ...]) -> dict[str, float]:
         raise AssertionError("BioCLIP scorer should not run")
@@ -2942,6 +3341,10 @@ class _HierarchicalRerankObjectScorer:
     model_id = "fake-bioclip"
     model_version = "test"
     model_checkpoint = "fake-checkpoint"
+    checkpoint_sha256 = "sha256:" + "7" * 64
+    preprocessing_version = "preprocess-v1"
+    input_contract_version = "input-v1"
+    model_input_fingerprint = "sha256:" + "6" * 64
 
     def __init__(self) -> None:
         self._species_calls_by_crop_hash: dict[str, int] = {}

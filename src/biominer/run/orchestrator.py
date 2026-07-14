@@ -45,6 +45,11 @@ from biominer.storage.parquet import write_parquet
 from biominer.flickr_fetch.metadata_poller import DEFAULT_STALE_CLAIM_SECONDS, SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries_from_frame
 from biominer.reports.vision import build_vision_stage_metrics, write_vision_stage_reports
+from biominer.references.readiness import (
+    ReferenceBankReadinessPermit,
+    load_reference_bank_readiness,
+    reference_readiness_allows_vision,
+)
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import RunArtifactUris, RunPaths
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES, RunStage, StageStatus, default_stage_records
@@ -88,6 +93,7 @@ class StageExecutionResult:
 
 
 StageHandler = Callable[[Any], StageExecutionResult]
+VisionRuntimeFactory = Callable[[], tuple[Any, Callable[[dict[str, Any]], Any], Any, list[Any]]]
 
 
 @dataclass(frozen=True)
@@ -106,6 +112,8 @@ class ProductionRunRequest:
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE
     taxonomy_candidate_table: str | Path | None = None  # Deprecated; registry_dir is canonical.
     taxonomy_text_embedding_cache: str | Path | None = None
+    reference_bank_readiness: str | Path | None = None
+    reference_bank_readiness_sha256: str | None = None
     beam_strategy: str = GLOBAL_RANK_TOP_K_BEAM_STRATEGY
     rank_beam_width: int = DEFAULT_RANK_BEAM_WIDTH
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K
@@ -173,6 +181,12 @@ class ProductionRunPlan:
                 "taxonomy_text_embedding_cache": str(self.request.taxonomy_text_embedding_cache)
                 if self.request.taxonomy_text_embedding_cache
                 else None,
+                "reference_bank_readiness": str(self.request.reference_bank_readiness)
+                if self.request.reference_bank_readiness
+                else None,
+                "reference_bank_readiness_sha256": (
+                    self.request.reference_bank_readiness_sha256
+                ),
                 "beam_strategy": self.request.beam_strategy,
                 "rank_beam_width": self.request.rank_beam_width,
                 "species_first_pass_top_k": self.request.species_first_pass_top_k,
@@ -230,6 +244,15 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
             "taxonomy_text_embedding_cache": str(request.taxonomy_text_embedding_cache)
             if request.taxonomy_text_embedding_cache
             else None,
+            "reference_bank_readiness": (
+                {
+                    "artifact_path": str(request.reference_bank_readiness),
+                    "expected_sha256": request.reference_bank_readiness_sha256,
+                    "validation_status": "not_validated",
+                }
+                if request.reference_bank_readiness
+                else None
+            ),
             "beam_strategy": request.beam_strategy,
             "rank_beam_width": request.rank_beam_width,
             "species_first_pass_top_k": request.species_first_pass_top_k,
@@ -272,6 +295,7 @@ class ProductionRunOrchestrator:
         species_candidate_path: str | Path | None = None,
         allow_single_target_fixture: bool = False,
         stage_handlers: Mapping[RunStage, StageHandler] | None = None,
+        vision_runtime_factory: VisionRuntimeFactory | None = None,
     ) -> None:
         self.request = request
         self.taxon_scope = taxon_scope
@@ -290,6 +314,11 @@ class ProductionRunOrchestrator:
         )
         self.allow_single_target_fixture = allow_single_target_fixture
         self.stage_handlers = dict(stage_handlers or {})
+        self.vision_runtime_factory = vision_runtime_factory
+        self._vision_runtime_initialized = False
+        self._vision_runtime_resources: list[Any] = []
+        self._vision_runtime_resources_closed = False
+        self._reference_bank_readiness_permit: ReferenceBankReadinessPermit | None = None
 
     def _resolve_species_candidate_path(
         self,
@@ -319,25 +348,31 @@ class ProductionRunOrchestrator:
         plan = self.plan()
         manifest = plan.manifest.with_status("running")
         plan = replace(plan, manifest=manifest)
-        for stage in self.request.stages:
-            started_at = utc_now_iso()
-            manifest = plan.manifest.with_stage_status(stage, StageStatus.RUNNING, started_at=started_at)
-            plan = replace(plan, manifest=manifest)
-            result = self._run_stage(plan, stage)
-            manifest = plan.manifest.with_stage_status(
-                stage,
-                result.status,
-                ended_at=utc_now_iso(),
-                message=result.message,
-                metrics=result.metrics,
-                outputs=result.outputs,
+        try:
+            for stage in self.request.stages:
+                started_at = utc_now_iso()
+                manifest = plan.manifest.with_stage_status(stage, StageStatus.RUNNING, started_at=started_at)
+                plan = replace(plan, manifest=manifest)
+                result = self._run_stage(plan, stage)
+                manifest = self._manifest_with_reference_bank_permit(plan.manifest)
+                manifest = manifest.with_stage_status(
+                    stage,
+                    result.status,
+                    ended_at=utc_now_iso(),
+                    message=result.message,
+                    metrics=result.metrics,
+                    outputs=result.outputs,
+                )
+                manifest = _merge_stage_counts(manifest, stage=stage, result=result)
+                plan = replace(plan, manifest=manifest)
+            final_status = (
+                "failed" if any(stage.status == StageStatus.FAILED for stage in plan.manifest.stages) else "complete"
             )
-            manifest = _merge_stage_counts(manifest, stage=stage, result=result)
-            plan = replace(plan, manifest=manifest)
-        final_status = "failed" if any(stage.status == StageStatus.FAILED for stage in plan.manifest.stages) else "complete"
-        plan = replace(plan, manifest=plan.manifest.with_status(final_status, ended_at=utc_now_iso()))
-        self._write_manifest_if_local(plan)
-        return plan
+            plan = replace(plan, manifest=plan.manifest.with_status(final_status, ended_at=utc_now_iso()))
+            self._write_manifest_if_local(plan)
+            return plan
+        finally:
+            self._close_vision_runtime_resources()
 
     def _resolve_taxon_scope(self) -> TaxonScope:
         if self.taxon_scope is not None:
@@ -364,6 +399,9 @@ class ProductionRunOrchestrator:
         return self.taxon_scope
 
     def _run_stage(self, plan: ProductionRunPlan, stage: RunStage) -> StageExecutionResult:
+        if not self.request.dry_run and stage in {RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP}:
+            self._load_reference_bank_readiness_permit(plan)
+            plan = replace(plan, manifest=self._manifest_with_reference_bank_permit(plan.manifest))
         handler = self.stage_handlers.get(stage)
         if handler is not None:
             return handler(plan)
@@ -385,8 +423,10 @@ class ProductionRunOrchestrator:
         if stage == RunStage.POLL_FLICKR:
             return self._run_poll_flickr_stage(plan)
         if stage == RunStage.DETECT_OBJECTS:
+            self._initialize_vision_runtime()
             return self._run_detect_objects_stage(plan)
         if stage == RunStage.SCORE_BIOCLIP:
+            self._initialize_vision_runtime()
             return self._run_score_bioclip_stage(plan)
         if stage == RunStage.JOIN_EVIDENCE:
             return self._run_join_evidence_stage(plan)
@@ -399,6 +439,166 @@ class ProductionRunOrchestrator:
         if stage == RunStage.APPLY_COMMENT_REVIEW:
             return self._run_apply_comment_review_stage(plan)
         return StageExecutionResult(status=StageStatus.SKIPPED, message="stage_not_implemented")
+
+    def _load_reference_bank_readiness_permit(
+        self,
+        plan: ProductionRunPlan,
+    ) -> ReferenceBankReadinessPermit:
+        if self._reference_bank_readiness_permit is not None:
+            return self._reference_bank_readiness_permit
+        readiness_path = self.request.reference_bank_readiness
+        if readiness_path is None:
+            raise ValueError(
+                "reference_bank_readiness is required before detect_objects or score_bioclip"
+            )
+        readiness_sha256 = self.request.reference_bank_readiness_sha256
+        if readiness_sha256 is None:
+            raise ValueError(
+                "reference_bank_readiness_sha256 is required before detect_objects or score_bioclip"
+            )
+        runtime_model_name = str(
+            getattr(self.object_scorer, "model_id", "") or self.request.bioclip_model
+        )
+        runtime_preprocessing_version = str(
+            getattr(self.object_scorer, "preprocessing_version", "") or ""
+        )
+        runtime_model_input_fingerprint = str(
+            getattr(self.object_scorer, "model_input_fingerprint", "") or ""
+        )
+        identity_expectations = {
+            "expected_registry_version": plan.manifest.taxon_scope.registry_version,
+            "expected_target_accepted_taxon_key": (
+                plan.manifest.taxon_scope.accepted_taxon_key
+            ),
+            "expected_model_name": runtime_model_name,
+            "expected_readiness_sha256": readiness_sha256,
+        }
+        if runtime_preprocessing_version:
+            identity_expectations["expected_preprocessing_version"] = (
+                runtime_preprocessing_version
+            )
+        if runtime_model_input_fingerprint:
+            identity_expectations["expected_model_input_fingerprint"] = (
+                runtime_model_input_fingerprint
+            )
+        permit = load_reference_bank_readiness(
+            readiness_path,
+            **identity_expectations,
+        )
+        if not reference_readiness_allows_vision(permit.status):
+            raise ValueError(
+                "reference bank readiness does not permit vision: "
+                f"status={permit.status}"
+            )
+        if self.object_scorer is not None:
+            self._validate_reference_runtime_identity(
+                scorer=self.object_scorer,
+                permit=permit,
+            )
+        self._reference_bank_readiness_permit = permit
+        return permit
+
+    def _initialize_vision_runtime(self) -> None:
+        if self._vision_runtime_initialized or self.vision_runtime_factory is None:
+            return
+        detector, image_loader, scorer, resources = self.vision_runtime_factory()
+        self._vision_runtime_resources.extend(resources)
+        permit = self._reference_bank_readiness_permit
+        if permit is None:
+            raise ValueError(
+                "reference bank readiness must be validated before vision runtime initialization"
+            )
+        self._validate_reference_runtime_identity(scorer=scorer, permit=permit)
+        self._vision_runtime_initialized = True
+        if self.object_detector is None:
+            self.object_detector = detector
+        if self.image_loader is None:
+            self.image_loader = image_loader
+        if self.object_scorer is None:
+            self.object_scorer = scorer
+
+    def _manifest_with_reference_bank_permit(self, manifest: RunManifest) -> RunManifest:
+        permit = self._reference_bank_readiness_permit
+        if permit is None:
+            return manifest
+        readiness_identity = {
+            "artifact_path": str(self.request.reference_bank_readiness),
+            "expected_sha256": self.request.reference_bank_readiness_sha256,
+            "validation_status": "validated",
+            **asdict(permit),
+        }
+        return replace(
+            manifest,
+            model_configs={
+                **manifest.model_configs,
+                "reference_bank_readiness": readiness_identity,
+            },
+            metrics={
+                **manifest.metrics,
+                "reference_bank_readiness_status": str(permit.status),
+                "reference_bank_readiness_sha256": permit.readiness_sha256,
+            },
+        )
+
+    def _close_vision_runtime_resources(self) -> None:
+        if self._vision_runtime_resources_closed:
+            return
+        self._vision_runtime_resources_closed = True
+        for resource in reversed(self._vision_runtime_resources):
+            close = getattr(resource, "close", None)
+            if callable(close):
+                close()
+
+    @staticmethod
+    def _validate_reference_runtime_identity(
+        *,
+        scorer: Any,
+        permit: ReferenceBankReadinessPermit,
+    ) -> None:
+        runtime_identity = {
+            "model_name": str(
+                getattr(scorer, "model_id", "")
+                or getattr(scorer, "model_name", "")
+                or ""
+            ),
+            "model_version": str(getattr(scorer, "model_version", "") or ""),
+            "checkpoint_sha256": str(
+                getattr(scorer, "checkpoint_sha256", "") or ""
+            ),
+            "preprocessing_version": str(
+                getattr(scorer, "preprocessing_version", "") or ""
+            ),
+            "input_contract_version": str(
+                getattr(scorer, "input_contract_version", "") or ""
+            ),
+            "model_input_fingerprint": str(
+                getattr(scorer, "model_input_fingerprint", "") or ""
+            ),
+        }
+        expected_identity = {
+            field_name: str(getattr(permit, field_name))
+            for field_name in runtime_identity
+        }
+        missing = sorted(
+            field_name
+            for field_name, value in runtime_identity.items()
+            if not value
+        )
+        if missing:
+            raise ValueError(
+                "vision runtime does not declare the full reference model input identity: "
+                + ", ".join(missing)
+            )
+        mismatches = sorted(
+            field_name
+            for field_name, value in runtime_identity.items()
+            if value != expected_identity[field_name]
+        )
+        if mismatches:
+            raise ValueError(
+                "vision runtime reference model input identity mismatch: "
+                + ", ".join(mismatches)
+            )
 
     def _run_build_registry_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if self._registry_is_cloud():

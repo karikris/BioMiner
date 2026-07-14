@@ -953,6 +953,13 @@ the output directory uncommitted and attempts to persist a sibling
 
 ### 5.6 Frozen support and readiness
 
+`reference_bank_split_assignments.parquet` has schema version
+`reference-bank-split-assignments-v1.0.0`. It assigns each media item explicitly
+to `support_train`, `model_selection`, `calibration`, or `final_test`, or records
+an exclusion reason. There is no implicit support split. Every assignment binds
+the split version, actor, timestamp, inclusion state, and semantic assignment
+fingerprint.
+
 `reference_support_manifest.parquet` is the immutable resolved projection used
 by embedding and split construction. Its grain is one canonical verified media
 item and route. It records all source observation/media IDs, content and
@@ -984,7 +991,52 @@ the reference-bank and support-manifest fingerprints.
 
 The JSON contains no fabricated pass. `ready_with_documented_shortfalls` is
 allowed only by an explicit versioned policy, and missing target adult support
-cannot be downgraded to a shortfall.
+cannot be downgraded to a shortfall. The policy must contain at least one
+cluster-scoped requirement for every geographic cluster in the candidate
+union; an empty geographic requirement set is invalid rather than a vacuous
+pass. Plans use the planner's composite candidate-union ID, while selections
+remain bound to their regional source candidate-set IDs. Observation registry,
+taxon/name, plan, selection, current media inventory, review queue, and review
+source-leaf identities are cross-validated before prior manual decisions are
+accepted.
+
+Compile and publish the three immutable readiness artifacts with:
+
+```bash
+biominer references validate-readiness \
+  --candidate-species regional_candidate_species.parquet \
+  --acquisition-plan reference_acquisition_plan.parquet \
+  --acquisition-selections reference_acquisition_selections.parquet \
+  --observations reference_observations.parquet \
+  --media-candidates reference_media_candidates.parquet \
+  --media-objects reference_media_objects.parquet \
+  --duplicate-relationships reference_media_duplicate_relationships.parquet \
+  --deduplication-report reference_media_deduplication_report.json \
+  --review-queue reference_review_queue.parquet \
+  --queue-provenance reference_review_queue_provenance.parquet \
+  --review-decisions reference_review_decisions.parquet \
+  --split-assignments reference_bank_split_assignments.parquet \
+  --readiness-policy reference_bank_readiness_policy.json \
+  --model-identity reference_model_input_identity.json \
+  --registry-version <registry-version> \
+  --reference-bank-version <bank-version> \
+  --output-dir <immutable-readiness-directory>
+```
+
+The command is local and performs no network requests. It publishes blocked
+business outcomes for audit and exits nonzero when vision is not permitted;
+malformed or inconsistent inputs leave no committed output directory. A
+non-dry production `run` that includes `detect_objects` or `score_bioclip`
+requires both `--reference-bank-readiness <immutable-readiness-directory>` and
+`--reference-bank-readiness-sha256 <trusted-sha256:-digest>`. The publication
+command prints that digest; it must be pinned outside the rewritable artifact
+directory. The orchestrator verifies the pin, artifact checksums, semantic
+fingerprints, target, registry, and the runtime's complete independently
+declared model-input identity before invoking a vision-stage handler or any
+scoring call. A scorer missing model version, checkpoint SHA-256,
+preprocessing version, input-contract version, or model-input fingerprint is
+rejected. Dry runs and non-vision stage subsets do not require readiness
+artifacts or a digest pin.
 
 ## 6. Embedding and prototype artifacts
 

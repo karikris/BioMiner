@@ -4,6 +4,7 @@ import argparse
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
+import hashlib
 from html import escape
 import io
 import json
@@ -78,6 +79,13 @@ from biominer.registry.translation_harvester import (
 from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES, DEFAULT_TRANSLATION_TARGET_LOCALES_JSON
 from biominer.references.negative_manifest import (
     publish_curated_visual_domain_negative_manifest,
+)
+from biominer.references.readiness import (
+    ReferenceBankReadinessPolicy,
+    ReferenceModelInputIdentity,
+    build_reference_bank_readiness,
+    publish_reference_bank_readiness,
+    reference_readiness_allows_vision,
 )
 from biominer.references.review import (
     advance_reference_review_history_head,
@@ -216,6 +224,25 @@ def build_parser() -> argparse.ArgumentParser:
     references_negatives.add_argument("--source-manifest", required=True)
     references_negatives.add_argument("--output-dir", required=True)
     references_negatives.add_argument("--run-id")
+    references_readiness = references_subparsers.add_parser("validate-readiness")
+    references_readiness.add_argument("--candidate-species", required=True)
+    references_readiness.add_argument("--acquisition-plan", required=True)
+    references_readiness.add_argument("--acquisition-selections", required=True)
+    references_readiness.add_argument("--observations", required=True)
+    references_readiness.add_argument("--media-candidates", required=True)
+    references_readiness.add_argument("--media-objects", required=True)
+    references_readiness.add_argument("--duplicate-relationships", required=True)
+    references_readiness.add_argument("--deduplication-report", required=True)
+    references_readiness.add_argument("--review-queue", required=True)
+    references_readiness.add_argument("--queue-provenance", required=True)
+    references_readiness.add_argument("--review-decisions", required=True)
+    references_readiness.add_argument("--split-assignments", required=True)
+    references_readiness.add_argument("--readiness-policy", required=True)
+    references_readiness.add_argument("--model-identity", required=True)
+    references_readiness.add_argument("--registry-version", required=True)
+    references_readiness.add_argument("--reference-bank-version", required=True)
+    references_readiness.add_argument("--output-dir", required=True)
+    references_readiness.add_argument("--run-id")
     bioclip = subparsers.add_parser("bioclip")
     bioclip_subparsers = bioclip.add_subparsers(dest="bioclip_command")
     bioclip_screen = bioclip_subparsers.add_parser("screen")
@@ -391,6 +418,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CLASSIFICATION_MODE,
     )
     production_run.add_argument("--taxonomy-text-embedding-cache")
+    production_run.add_argument(
+        "--reference-bank-readiness",
+        help="immutable reference-bank readiness artifact directory",
+    )
+    production_run.add_argument(
+        "--reference-bank-readiness-sha256",
+        help="trusted sha256: digest pin for reference_bank_readiness.json",
+    )
     production_run.add_argument("--crop-padding-ratio", type=float)
     production_run.add_argument("--parquet-compression")
     production_run.add_argument("--delete-images-after-commit", action=argparse.BooleanOptionalAction, default=None)
@@ -924,6 +959,9 @@ def _run_evaluation_command(args: argparse.Namespace) -> int:
 
 
 def _run_references_command(args: argparse.Namespace) -> int:
+    readiness_status: str | None = None
+    readiness_sha256: str | None = None
+    vision_permitted: bool | None = None
     try:
         if args.references_command == "export-review-queue":
             validate_reference_review_history_head_destination(
@@ -1013,9 +1051,84 @@ def _run_references_command(args: argparse.Namespace) -> int:
                 )
             except TypeError as exc:
                 raise ValueError(str(exc)) from exc
+        elif args.references_command == "validate-readiness":
+            policy = ReferenceBankReadinessPolicy.from_mapping(
+                _read_reference_json(
+                    args.readiness_policy,
+                    artifact="readiness policy",
+                )
+            )
+            model_identity = ReferenceModelInputIdentity.from_mapping(
+                _read_reference_json(
+                    args.model_identity,
+                    artifact="model identity",
+                )
+            )
+            result = build_reference_bank_readiness(
+                candidate_species=_read_reference_parquet(
+                    args.candidate_species,
+                    artifact="candidate species",
+                ),
+                acquisition_plan=_read_reference_parquet(
+                    args.acquisition_plan,
+                    artifact="acquisition plan",
+                ),
+                acquisition_selections=_read_reference_parquet(
+                    args.acquisition_selections,
+                    artifact="acquisition selections",
+                ),
+                observations=_read_reference_parquet(
+                    args.observations,
+                    artifact="observations",
+                ),
+                media_candidates=_read_reference_parquet(
+                    args.media_candidates,
+                    artifact="media candidates",
+                ),
+                media_objects=_read_reference_parquet(
+                    args.media_objects,
+                    artifact="media objects",
+                ),
+                duplicate_relationships=_read_reference_parquet(
+                    args.duplicate_relationships,
+                    artifact="duplicate relationships",
+                ),
+                deduplication_report=_read_reference_json(
+                    args.deduplication_report,
+                    artifact="deduplication report",
+                ),
+                review_queue=_read_reference_parquet(
+                    args.review_queue,
+                    artifact="review queue",
+                ),
+                queue_provenance=_read_reference_parquet(
+                    args.queue_provenance,
+                    artifact="review queue provenance",
+                ),
+                review_decisions=_read_reference_parquet(
+                    args.review_decisions,
+                    artifact="review decisions",
+                ),
+                split_assignments=_read_reference_parquet(
+                    args.split_assignments,
+                    artifact="split assignments",
+                ),
+                policy=policy,
+                registry_version=args.registry_version,
+                reference_bank_version=args.reference_bank_version,
+                model_identity=model_identity,
+            )
+            artifacts = publish_reference_bank_readiness(
+                result,
+                Path(args.output_dir),
+                run_id=args.run_id,
+            )
+            readiness_status = str(result.readiness["status"])
+            readiness_sha256 = _sha256_file_path(artifacts["readiness"])
+            vision_permitted = reference_readiness_allows_vision(result.readiness)
         else:
             return 2
-    except (OSError, ValueError, pl.exceptions.PolarsError) as exc:
+    except (OSError, TypeError, ValueError, pl.exceptions.PolarsError) as exc:
         print(json.dumps({"error": str(exc)}, sort_keys=True))
         return 2
 
@@ -1025,8 +1138,12 @@ def _run_references_command(args: argparse.Namespace) -> int:
         "output_dir": str(args.output_dir),
         "status": "complete",
     }
+    if readiness_status is not None:
+        payload["readiness"] = readiness_status
+        payload["readiness_sha256"] = readiness_sha256
+        payload["vision_permitted"] = vision_permitted
     print(json.dumps(payload, sort_keys=True))
-    return 0
+    return 0 if vision_permitted is not False else 2
 
 
 def _read_reference_parquet(path: str | Path, *, artifact: str) -> pl.DataFrame:
@@ -1036,6 +1153,14 @@ def _read_reference_parquet(path: str | Path, *, artifact: str) -> pl.DataFrame:
     if not input_path.is_file():
         raise ValueError(f"{artifact} path is not a file: {input_path}")
     return pl.read_parquet(input_path)
+
+
+def _sha256_file_path(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
 
 
 def _read_reference_json(path: str | Path, *, artifact: str) -> dict[str, object]:
@@ -1434,8 +1559,25 @@ def _classification_mode_arg(value: str) -> str:
 
 def _run_production_command(args: argparse.Namespace) -> int:
     config = None
-    runtime_resources: list[Any] = []
     try:
+        stages = _parse_run_stages(args.stages)
+        if (
+            not args.dry_run
+            and any(stage in {RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP} for stage in stages)
+            and not args.reference_bank_readiness
+        ):
+            raise ValueError(
+                "--reference-bank-readiness is required for non-dry detect_objects or score_bioclip stages"
+            )
+        if (
+            not args.dry_run
+            and any(stage in {RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP} for stage in stages)
+            and not args.reference_bank_readiness_sha256
+        ):
+            raise ValueError(
+                "--reference-bank-readiness-sha256 is required for non-dry "
+                "detect_objects or score_bioclip stages"
+            )
         config = load_biominer_config(args.config)
         config = replace(
             config,
@@ -1446,7 +1588,6 @@ def _run_production_command(args: argparse.Namespace) -> int:
         if (args.storage_backend == "local") != (args.workstore_backend == "sqlite"):
             raise ConfigError("local dev mode requires --storage-backend local --workstore-backend sqlite")
         validate_config(config, require_cloud_credentials=not allow_local, allow_local_backends=allow_local)
-        stages = _parse_run_stages(args.stages)
         storage = None
         registry_dir_is_cloud = is_cloud_uri(args.registry_dir)
         if args.storage_backend != "local" and (not args.dry_run or registry_dir_is_cloud):
@@ -1478,26 +1619,33 @@ def _run_production_command(args: argparse.Namespace) -> int:
             classification_mode=args.classification_mode,
             taxonomy_candidate_table=args.taxonomy_candidate_table,
             taxonomy_text_embedding_cache=args.taxonomy_text_embedding_cache,
+            reference_bank_readiness=args.reference_bank_readiness,
+            reference_bank_readiness_sha256=(
+                args.reference_bank_readiness_sha256
+            ),
             worker_id="local" if allow_local and args.dry_run else config.runtime.worker_id or ("local" if allow_local else ""),
             stages=stages,
             dry_run=args.dry_run,
             build_registry_if_missing=args.build_registry_if_missing,
             limits=limits,
         )
-        object_detector = None
-        image_loader = None
-        object_scorer = None
-        if not args.dry_run and RunStage.DETECT_OBJECTS in stages:
-            object_detector, image_loader, object_scorer, runtime_resources = _create_production_vision_runtime(
-                vision_settings
+        def create_vision_runtime() -> tuple[Any, Any, Any, list[Any]]:
+            return _create_production_vision_runtime(vision_settings)
+
+        vision_runtime_factory = (
+            create_vision_runtime
+            if not args.dry_run
+            and any(
+                stage in {RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP}
+                for stage in stages
             )
+            else None
+        )
         plan = ProductionRunOrchestrator(
             request,
             storage=storage,
             workstore=workstore,
-            object_detector=object_detector,
-            image_loader=image_loader,
-            object_scorer=object_scorer,
+            vision_runtime_factory=vision_runtime_factory,
             flickr_api_key=os.environ.get("FLICKR_API_KEY"),
         ).run()
     except (ConfigError, FileNotFoundError, ValueError) as exc:
@@ -1506,11 +1654,6 @@ def _run_production_command(args: argparse.Namespace) -> int:
             payload["config"] = redact_config(config)
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 2
-    finally:
-        for resource in reversed(runtime_resources):
-            close = getattr(resource, "close", None)
-            if callable(close):
-                close()
     print(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
     return 0
 
