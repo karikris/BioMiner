@@ -907,6 +907,50 @@ are absent. Production consumers use its `resolved_life_stage`,
 diversity, lifecycle separation, and split checks remain independent readiness
 gates.
 
+#### Curated visual-domain negative manifests
+
+`reference_visual_domain_negative_manifest.parquet` is a local, manually
+curated source ledger for explicit non-biological or unsuitable visual
+evidence. Its schema version is
+`reference-visual-domain-negative-manifest-v1.0.0`. The adapter accepts only a
+strict JSON source document with schema version
+`curated-visual-domain-negative-source-v1.0.0`; it performs no search, URL
+discovery, HTTP request, or media download.
+
+The closed negative categories are `artwork`, `logo`, `tattoo`,
+`non_butterfly_insect_illustration`, `partial_wing`, and
+`misleading_pattern`. Categories map deterministically to the existing visual
+domains: non-butterfly insect illustrations remain `artwork`, and misleading
+patterns remain `unsuitable`. `target_presence` is an independent manual label
+with values `present`, `absent`, or `unknown`; a domain-negative label never
+implies that the target is absent. This distinction is required for artwork,
+tattoos, and partial wings that may depict or contain target morphology.
+
+Every source row records a closed source kind, provider and record identity,
+landing and media URIs, source snapshot, optional source SHA-256, curator
+decision provenance, and explicit per-media rights metadata: creator, rights
+holder, raw licence, licence URI, attribution, and a rights-evidence URI. The
+compiler re-evaluates the raw licence with the central
+`ReferenceLicencePolicy` and preserves its canonical licence, policy status,
+reason, policy version, and policy fingerprint. Missing rights fields are
+fatal. Research-only, quarantined, denied, pending, and excluded rows remain
+auditable but cannot be enabled; an enabled row must be manually verified and
+have policy status `allowed`. Pending rows use `review_confidence=unknown`;
+verified and excluded rows require attributable review and a non-unknown
+confidence; enabled rows require high or medium confidence.
+
+The source and row schemas reject unknown fields, unknown categories, invalid
+absolute URIs, conflicting review provenance, duplicate source identities,
+duplicate media URIs, and duplicate supplied content hashes. Output is
+deterministically sorted and binds every row to a stable source identity and a
+complete row fingerprint. Publication is a create-only, atomic directory
+operation that writes the Parquet ledger before
+`reference_visual_domain_negative_manifest_report.json`. The report records
+input and output fingerprints, licence/category/review counts, process and git
+identity, and `network_requests = 0`. A failed validation or publication leaves
+the output directory uncommitted and attempts to persist a sibling
+`.failed.json` audit with the original error and timing metadata.
+
 ### 5.6 Frozen support and readiness
 
 `reference_support_manifest.parquet` is the immutable resolved projection used

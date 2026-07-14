@@ -76,6 +76,9 @@ from biominer.registry.translation_harvester import (
     MYMEMORY_RESPONSE_BYTE_RESERVATION,
 )
 from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES, DEFAULT_TRANSLATION_TARGET_LOCALES_JSON
+from biominer.references.negative_manifest import (
+    publish_curated_visual_domain_negative_manifest,
+)
 from biominer.references.review import (
     advance_reference_review_history_head,
     build_reference_review_queue,
@@ -207,6 +210,12 @@ def build_parser() -> argparse.ArgumentParser:
     references_import.add_argument("--history-head", required=True)
     references_import.add_argument("--output-dir", required=True)
     references_import.add_argument("--run-id")
+    references_negatives = references_subparsers.add_parser(
+        "compile-visual-domain-negatives"
+    )
+    references_negatives.add_argument("--source-manifest", required=True)
+    references_negatives.add_argument("--output-dir", required=True)
+    references_negatives.add_argument("--run-id")
     bioclip = subparsers.add_parser("bioclip")
     bioclip_subparsers = bioclip.add_subparsers(dest="bioclip_command")
     bioclip_screen = bioclip_subparsers.add_parser("screen")
@@ -995,6 +1004,15 @@ def _run_references_command(args: argparse.Namespace) -> int:
                 prior_report_path=args.prior_review_report,
                 next_report_path=artifacts["report"],
             )
+        elif args.references_command == "compile-visual-domain-negatives":
+            try:
+                artifacts = publish_curated_visual_domain_negative_manifest(
+                    args.source_manifest,
+                    Path(args.output_dir),
+                    run_id=args.run_id,
+                )
+            except TypeError as exc:
+                raise ValueError(str(exc)) from exc
         else:
             return 2
     except (OSError, ValueError, pl.exceptions.PolarsError) as exc:
