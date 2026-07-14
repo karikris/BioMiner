@@ -51,7 +51,11 @@ from biominer.references.readiness import (
     reference_readiness_allows_vision,
 )
 from biominer.run.manifest import RunManifest, utc_now_iso
-from biominer.run.paths import RunArtifactUris, RunPaths
+from biominer.run.paths import (
+    RUN_ARTIFACT_LAYOUT_VERSION,
+    RunArtifactUris,
+    RunPaths,
+)
 from biominer.run.stages import (
     DEFAULT_PRODUCTION_STAGES,
     MANUAL_REVIEW_STAGES,
@@ -234,15 +238,7 @@ class ProductionRunPlan:
                 "limits": dict(self.request.limits),
                 "build_registry_if_missing": self.request.build_registry_if_missing,
             },
-            "paths": {
-                "run_root": str(self.paths.run_root),
-                "manifest": str(self.paths.manifest_path),
-                "query_definitions": str(self.paths.query_definitions_path),
-                "object_detections": str(self.paths.object_detections_path),
-                "object_scores": str(self.paths.object_scores_path),
-                "object_evidence": str(self.paths.object_evidence_path),
-                "photo_summary": str(self.paths.photo_summary_path),
-            },
+            "paths": self.paths.to_dict(),
             "artifact_uris": self.artifact_uris.to_dict(),
             "species_artifacts": {
                 context.scientific_name: {
@@ -319,12 +315,16 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
             "species_report_top_k": request.species_report_top_k,
             "primary_visual_classifier": PRIMARY_VISUAL_CLASSIFIER,
             "visual_modes": [PRODUCTION_VISUAL_MODE],
+            "artifact_layout_version": RUN_ARTIFACT_LAYOUT_VERSION,
         },
         query_counts={"compiled_definitions": 0, "enqueued_work_items": 0},
         detection_counts={"images_seen": 0, "detections": 0, "crops_created": 0},
         bioclip_counts={"objects_scored": 0, "whole_images_scored": 0, "segmentation_crops_scored": 0},
         evidence_counts={"object_evidence_rows": 0, "photo_summary_rows": 0, "review_queue_rows": 0},
-        metrics={"expanded_species_count": taxon_scope.species_count},
+        metrics={
+            "expanded_species_count": taxon_scope.species_count,
+            **artifact_uris.audit_metrics(),
+        },
         outputs=artifact_uris.to_dict(),
     )
     return ProductionRunPlan(request=request, paths=paths, artifact_uris=artifact_uris, manifest=manifest)

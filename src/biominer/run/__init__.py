@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from biominer.run.manifest import RunManifest
 from biominer.run.orchestrator import ProductionRunOrchestrator, ProductionRunPlan, ProductionRunRequest, StageExecutionResult, build_run_plan
-from biominer.run.paths import RunArtifactUris, RunPaths
+from biominer.run.paths import (
+    REFERENCE_FIRST_ARTIFACT_KEYS,
+    RUN_ARTIFACT_DIRECTORY_KEYS,
+    RUN_ARTIFACT_LAYOUT_VERSION,
+    RUN_ARTIFACT_RELATIVE_PATHS,
+    RunArtifactUris,
+    RunPaths,
+)
 from biominer.run.stages import (
     MANUAL_REVIEW_STAGES,
     REFERENCE_FIRST_PRODUCTION_STAGES,
@@ -32,6 +39,10 @@ __all__ = [
     "RunManifest",
     "MANUAL_REVIEW_STAGES",
     "REFERENCE_FIRST_PRODUCTION_STAGES",
+    "REFERENCE_FIRST_ARTIFACT_KEYS",
+    "RUN_ARTIFACT_DIRECTORY_KEYS",
+    "RUN_ARTIFACT_LAYOUT_VERSION",
+    "RUN_ARTIFACT_RELATIVE_PATHS",
     "RunArtifactUris",
     "RunPaths",
     "RunStage",
