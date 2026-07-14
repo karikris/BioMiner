@@ -1196,6 +1196,43 @@ vector bytes.
 Embedding clusters may split a verified species/route group into prototypes;
 they may never change its accepted taxon key.
 
+#### Nearest-reference evidence contract
+
+`ReferenceEvidenceIndex` validates the frozen embedding and prototype artifacts
+once and can then score repeated queries. A query carries its unit embedding,
+route, full-frame visual-input kind, geographic cluster, and model fingerprint.
+Every supplied accepted species is scored; family or genus evidence cannot
+remove a candidate. Adult, larval, pupal, egg, and pinned-specimen observations
+remain in separate route/input indexes.
+
+Reference media are first collapsed to one unit vector per independent
+biological observation. `support_count` and `local_support_count` therefore
+count observations, not files or views. For each candidate, observations in
+the query's real geographic cluster are deterministically selected first and
+global observations fill the remainder. Selection is capped at the same
+configured `balanced_reference_count` for every class and is ranked by the
+seed, accepted taxon key, observation ID, route, and visual-input kind, never
+by the embedding value. `no_geo` has no fabricated local pool and falls back
+to global support.
+
+The scorer returns nearest support similarity, fixed top-three and top-five
+means, the normalized centroid of the selected balanced pool, persisted local
+and global prototype similarities, and distance to the nearest independent
+observation. The distance is cosine distance `1 - nearest_support_similarity`
+and lies in `[0, 2]`. Top-three or top-five values are null when fewer than
+three or five usable independent observations exist; the scorer never averages
+a shorter list under those names. It records selected IDs, usable and selected
+counts, local availability, and explicit insufficiency reasons.
+
+Raw and SimpleShot mean-centered methods use the matching prototype method.
+Mean-centered scoring reconstructs and attests the same seeded centering
+context used by prototype fitting. Query/support zero directions are rejected
+or reported as unusable rather than assigned a fabricated cosine. Optional
+observation and duplicate-group exclusions prevent self-reference; affected
+prototype means are recomputed from the retained observations. All returned
+cosines remain similarities in `[-1, 1]`, including negative values. None are
+probabilities or confidence estimates.
+
 ### 6.3 `visual_neighbour_species.parquet`
 
 Grain: one directed species-neighbour edge, route, and graph version. It records

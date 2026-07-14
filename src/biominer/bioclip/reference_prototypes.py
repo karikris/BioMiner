@@ -200,7 +200,9 @@ class ReferenceCenteringContext:
 
 
 @dataclass(frozen=True, slots=True)
-class _ObservationEmbedding:
+class ReferenceObservationEmbedding:
+    """One equally weighted biological observation in one scoring contract."""
+
     accepted_taxon_key: str
     scientific_name: str
     geo_cluster_id: str
@@ -209,6 +211,7 @@ class _ObservationEmbedding:
     route: str
     visual_input_kind: str
     reference_observation_id: str
+    duplicate_group_ids: tuple[str, ...]
     reference_count: int
     embedding: tuple[float, ...]
     contributor_fingerprints: tuple[str, ...]
@@ -219,7 +222,7 @@ class _ObservationEmbedding:
 class _PrototypeGroup:
     cluster_scope_type: str
     geo_cluster_id: str
-    observations: tuple[_ObservationEmbedding, ...]
+    observations: tuple[ReferenceObservationEmbedding, ...]
 
 
 def reference_prototypes_schema(
@@ -274,6 +277,15 @@ def build_reference_centering_contexts(
         embedding_dimension=dimension,
         balanced_sampling_seed=balanced_sampling_seed,
     )
+
+
+def aggregate_reference_observation_embeddings(
+    reference_embeddings: pl.DataFrame | str | Path,
+) -> tuple[ReferenceObservationEmbedding, ...]:
+    """Collapse support-training media to equally weighted observations."""
+
+    frame = _reference_embedding_frame(reference_embeddings)
+    return _observation_embeddings(_support_training_rows(frame))
 
 
 def mean_center_query_embedding(
@@ -658,7 +670,7 @@ def _support_training_rows(frame: pl.DataFrame) -> pl.DataFrame:
 
 def _observation_embeddings(
     support: pl.DataFrame,
-) -> tuple[_ObservationEmbedding, ...]:
+) -> tuple[ReferenceObservationEmbedding, ...]:
     group_fields = (
         "accepted_taxon_key",
         "scientific_name",
@@ -685,7 +697,7 @@ def _observation_embeddings(
             )
         grouped[key].append(row)
 
-    observations: list[_ObservationEmbedding] = []
+    observations: list[ReferenceObservationEmbedding] = []
     for key, rows in grouped.items():
         rows.sort(key=lambda row: str(row["embedding_fingerprint"]))
         dimension = int(rows[0]["embedding_dimension"])
@@ -703,6 +715,9 @@ def _observation_embeddings(
         contributor_fingerprints = tuple(
             str(row["embedding_fingerprint"]) for row in rows
         )
+        duplicate_group_ids = tuple(
+            sorted({str(row["duplicate_group_id"]) for row in rows})
+        )
         payload = {
             "accepted_taxon_key": key[0],
             "scientific_name": key[1],
@@ -716,7 +731,7 @@ def _observation_embeddings(
             "embedding": embedding,
         }
         observations.append(
-            _ObservationEmbedding(
+            ReferenceObservationEmbedding(
                 accepted_taxon_key=key[0],
                 scientific_name=key[1],
                 geo_cluster_id=key[2],
@@ -725,6 +740,7 @@ def _observation_embeddings(
                 route=key[5],
                 visual_input_kind=key[6],
                 reference_observation_id=key[7],
+                duplicate_group_ids=duplicate_group_ids,
                 reference_count=len(rows),
                 embedding=embedding,
                 contributor_fingerprints=contributor_fingerprints,
@@ -735,13 +751,15 @@ def _observation_embeddings(
 
 
 def _centering_contexts(
-    observations: Sequence[_ObservationEmbedding],
+    observations: Sequence[ReferenceObservationEmbedding],
     *,
     embedding_dimension: int,
     balanced_sampling_seed: int,
 ) -> tuple[ReferenceCenteringContext, ...]:
     seed = _sampling_seed(balanced_sampling_seed)
-    grouped: dict[tuple[str, str], list[_ObservationEmbedding]] = defaultdict(list)
+    grouped: dict[
+        tuple[str, str], list[ReferenceObservationEmbedding]
+    ] = defaultdict(list)
     for item in observations:
         grouped[(item.route, item.visual_input_kind)].append(item)
     contexts: list[ReferenceCenteringContext] = []
@@ -749,11 +767,11 @@ def _centering_contexts(
         grouped.items(),
         key=lambda item: (item[0][0], _VISUAL_INPUT_KIND_ORDER[item[0][1]]),
     ):
-        by_species: dict[str, list[_ObservationEmbedding]] = defaultdict(list)
+        by_species: dict[str, list[ReferenceObservationEmbedding]] = defaultdict(list)
         for item in items:
             by_species[item.accepted_taxon_key].append(item)
         balanced_count = min(len(values) for values in by_species.values())
-        selected: list[_ObservationEmbedding] = []
+        selected: list[ReferenceObservationEmbedding] = []
         for taxon_key in sorted(by_species):
             ranked = sorted(
                 by_species[taxon_key],
@@ -787,9 +805,11 @@ def _centering_contexts(
 
 
 def _prototype_groups(
-    observations: Sequence[_ObservationEmbedding],
+    observations: Sequence[ReferenceObservationEmbedding],
 ) -> tuple[_PrototypeGroup, ...]:
-    groups: dict[tuple[str, ...], list[_ObservationEmbedding]] = defaultdict(list)
+    groups: dict[
+        tuple[str, ...], list[ReferenceObservationEmbedding]
+    ] = defaultdict(list)
     for item in observations:
         base = (
             item.accepted_taxon_key,
@@ -960,7 +980,7 @@ def _sort_prototype_frame(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def _balanced_observation_rank(
-    item: _ObservationEmbedding,
+    item: ReferenceObservationEmbedding,
     *,
     balanced_sampling_seed: int,
 ) -> str:
@@ -1093,7 +1113,9 @@ def _vector_norm(values: Sequence[float]) -> float:
     return sqrt(fsum(value * value for value in values))
 
 
-def _observation_sort_key(item: _ObservationEmbedding) -> tuple[object, ...]:
+def _observation_sort_key(
+    item: ReferenceObservationEmbedding,
+) -> tuple[object, ...]:
     return (
         item.route,
         _VISUAL_INPUT_KIND_ORDER[item.visual_input_kind],
@@ -1183,6 +1205,8 @@ __all__ = [
     "REFERENCE_PROTOTYPE_METHODS",
     "REFERENCE_PROTOTYPE_SCOPE_TYPES",
     "ReferenceCenteringContext",
+    "ReferenceObservationEmbedding",
+    "aggregate_reference_observation_embeddings",
     "build_reference_centering_contexts",
     "build_reference_prototypes",
     "load_reference_prototypes",

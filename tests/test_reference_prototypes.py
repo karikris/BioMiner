@@ -28,6 +28,7 @@ from biominer.bioclip.reference_prototypes import (
     PROTOTYPE_SCOPE_REGIONAL,
     REFERENCE_PROTOTYPES_FILE,
     ReferenceCenteringContext,
+    ReferenceObservationEmbedding,
     build_reference_centering_contexts,
     build_reference_prototypes,
     load_reference_prototypes,
@@ -415,7 +416,7 @@ def test_raw_prototypes_do_not_depend_on_balanced_centering_seed(
 
 
 def test_balanced_selection_rank_does_not_depend_on_embedding_content() -> None:
-    item = reference_prototypes_module._ObservationEmbedding(  # noqa: SLF001 - protects the stable biological sampling key.
+    item = ReferenceObservationEmbedding(
         accepted_taxon_key=TARGET,
         scientific_name="Papilio demoleus",
         geo_cluster_id="cluster-a",
@@ -424,6 +425,7 @@ def test_balanced_selection_rank_does_not_depend_on_embedding_content() -> None:
         route="adult_field",
         visual_input_kind=RAW_FULL_IMAGE_KIND,
         reference_observation_id="stable-observation",
+        duplicate_group_ids=("duplicate:stable-observation",),
         reference_count=1,
         embedding=(1.0, 0.0, 0.0),
         contributor_fingerprints=(_sha("contributor-a"),),
