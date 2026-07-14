@@ -7,6 +7,7 @@ import math
 import numpy as np
 import pytest
 
+from biominer.bioclip import target_aware_fusion as target_fusion_module
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
 from biominer.bioclip.prompt_pooling import (
     MAX_PROMPT_SIMILARITY,
@@ -31,10 +32,18 @@ from biominer.bioclip.target_aware_fusion import (
     score_frozen_classifier,
     target_aware_fusion_result_payload,
 )
+from biominer.bioclip.taxonomic_evidence import (
+    DERIVED_PARENT_PROBABILITY_KIND,
+    DIRECT_TEXT_DIAGNOSTIC_SCORE_KIND,
+    derive_taxonomic_evidence,
+    taxonomic_evidence_result_payload,
+)
 from biominer.bioclip.target_aware_scoring import (
     TargetAwareAuxiliaryClass,
     build_target_aware_scoring_plan,
+    score_target_aware_candidate_union,
 )
+from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.ml.calibration import FrozenProbabilityCalibrator
 from biominer.ml.classifiers import (
     EMBEDDING_ONLY_FEATURE_SET,
@@ -118,6 +127,48 @@ def _candidate_set() -> CandidateSet:
 def _plan():
     return build_target_aware_scoring_plan(
         _candidate_set(),
+        known_negative_classes=(
+            TargetAwareAuxiliaryClass(
+                class_id="non_butterfly_insect",
+                display_name="non-butterfly insect",
+                source_versions=("negative-manifest-v1",),
+            ),
+            TargetAwareAuxiliaryClass(
+                class_id="visual_artifact",
+                display_name="visual artifact",
+                source_versions=("negative-manifest-v1",),
+            ),
+        ),
+        visual_domain_classes=(
+            TargetAwareAuxiliaryClass(
+                class_id="adult_field",
+                display_name="live adult butterfly in the field",
+                source_versions=("reference-domain-v1",),
+            ),
+            TargetAwareAuxiliaryClass(
+                class_id="pinned_specimen",
+                display_name="pinned butterfly specimen",
+                source_versions=("reference-domain-v1",),
+            ),
+        ),
+    )
+
+
+def _hierarchy_plan():
+    candidate_set = _candidate_set()
+    target, competitor, third = candidate_set.species_candidates
+    species = (
+        target,
+        replace(competitor, genus="Graphium"),
+        replace(third, family="Pieridae", genus="Pieris"),
+    )
+    return build_target_aware_scoring_plan(
+        replace(
+            candidate_set,
+            family_candidates=species,
+            genus_candidates=species,
+            species_candidates=species,
+        ),
         known_negative_classes=(
             TargetAwareAuxiliaryClass(
                 class_id="non_butterfly_insect",
@@ -508,11 +559,18 @@ def _domain_negatives() -> tuple[DomainNegativeEvidence, ...]:
     )
 
 
-def _fuse(*, references=None, structured=None, prompts=None, reference_top_k=3):
+def _fuse(
+    *,
+    plan=None,
+    references=None,
+    structured=None,
+    prompts=None,
+    reference_top_k=3,
+):
     prompt_values = prompts or _prompt_results()
     target_inference, regional_inference = _classifier_inferences()
     return fuse_target_aware_species_evidence(
-        plan=_plan(),
+        plan=plan or _plan(),
         prompt_results=prompt_values,
         reference_results=references or _reference_results(),
         target_classifier=target_inference,
@@ -527,6 +585,30 @@ def _fuse(*, references=None, structured=None, prompts=None, reference_top_k=3):
         ),
         reference_top_k=reference_top_k,
     )
+
+
+def _direct_text_result(plan, *, omit: str | None = None):
+    class DirectTextScorer:
+        def score(self, scoring_plan):
+            scores = {
+                item.scoring_class_id: 0.0
+                for item in scoring_plan.scoring_classes
+                if item.scoring_class_id != omit
+            }
+            scores.update(
+                {
+                    "family_diagnostic:Papilionidae": 0.1,
+                    "family_diagnostic:Pieridae": 2.5,
+                    "genus_diagnostic:Papilio": 1.8,
+                    "genus_diagnostic:Graphium": 0.4,
+                    "genus_diagnostic:Pieris": 0.2,
+                }
+            )
+            if omit is not None:
+                scores.pop(omit, None)
+            return scores
+
+    return score_target_aware_candidate_union(plan, DirectTextScorer())
 
 
 def test_frozen_classifier_keeps_raw_decisions_separate_from_calibration() -> None:
@@ -695,3 +777,156 @@ def test_fusion_fingerprint_detects_evidence_channel_tampering() -> None:
 
     with pytest.raises(ValueError, match="fusion fingerprint"):
         target_aware_fusion_result_payload(tampered)
+
+
+def test_taxonomic_evidence_is_derived_after_complete_species_scoring() -> None:
+    plan = _hierarchy_plan()
+    fusion = _fuse(plan=plan)
+    direct = _direct_text_result(plan)
+
+    result = derive_taxonomic_evidence(
+        plan=plan,
+        fusion_result=fusion,
+        direct_text_result=direct,
+    )
+
+    species = {item.accepted_taxon_key: item for item in fusion.species_scores}
+    families = {item.taxon_name: item for item in result.family_evidence}
+    genera = {item.taxon_name: item for item in result.genus_evidence}
+    papilionidae = families["Papilionidae"]
+    papilio = genera["Papilio"]
+
+    assert result.species_candidate_keys == tuple(
+        item.accepted_taxon_key for item in plan.species_classes
+    )
+    assert result.species_candidate_set_modified is False
+    assert result.species_probability_sum == pytest.approx(1.0)
+    assert sum(item.derived_probability for item in result.family_evidence) == (
+        pytest.approx(1.0)
+    )
+    assert sum(item.derived_probability for item in result.genus_evidence) == (
+        pytest.approx(1.0)
+    )
+    assert papilionidae.derived_probability == pytest.approx(
+        species[TARGET].regional_calibrated_probability
+        + species[COMPETITOR].regional_calibrated_probability
+    )
+    assert {item.accepted_taxon_key for item in papilionidae.member_species} == {
+        TARGET,
+        COMPETITOR,
+    }
+    target_member = next(
+        item for item in papilio.member_species if item.accepted_taxon_key == TARGET
+    )
+    assert target_member.calibrated_probability == pytest.approx(
+        species[TARGET].regional_calibrated_probability
+    )
+    assert target_member.calibrated_probability != pytest.approx(
+        species[TARGET].calibrated_probability
+    )
+    assert papilionidae.probability_kind == DERIVED_PARENT_PROBABILITY_KIND
+    assert papilionidae.direct_text_score_kind == DIRECT_TEXT_DIAGNOSTIC_SCORE_KIND
+    assert papilionidae.direct_text_decision_score == pytest.approx(0.1)
+    assert families["Pieridae"].direct_text_decision_score == pytest.approx(2.5)
+    assert result.derived_family_top1 == "Papilionidae"
+    assert result.direct_text_family_top1 == "Pieridae"
+    assert result.derived_genus_top1 == "Graphium"
+    assert result.direct_text_genus_top1 == "Papilio"
+    assert result.taxonomic_inconsistency is True
+    assert result.inconsistency_codes == (
+        "family_top1_disagreement",
+        "genus_top1_disagreement",
+    )
+    assert taxonomic_evidence_result_payload(result)["result_fingerprint"] == (
+        result.result_fingerprint
+    )
+
+
+def test_taxonomic_evidence_is_order_independent_and_does_not_prune_species() -> None:
+    plan = _hierarchy_plan()
+    fusion = _fuse(plan=plan)
+    direct = _direct_text_result(plan)
+
+    first = derive_taxonomic_evidence(
+        plan=plan,
+        fusion_result=fusion,
+        direct_text_result=direct,
+    )
+    second = derive_taxonomic_evidence(
+        plan=plan,
+        fusion_result=fusion,
+        direct_text_result=replace(
+            direct,
+            scored_classes=tuple(reversed(direct.scored_classes)),
+        ),
+    )
+
+    assert first.result_fingerprint == second.result_fingerprint
+    assert len(first.species_candidate_keys) == len(fusion.species_scores)
+    assert set(first.species_candidate_keys) == {
+        item.accepted_taxon_key for item in fusion.species_scores
+    }
+
+
+def test_taxonomic_evidence_rejects_identity_and_parent_coverage_mismatches() -> None:
+    plan = _hierarchy_plan()
+    fusion = _fuse(plan=plan)
+    direct = _direct_text_result(plan)
+
+    with pytest.raises(ValueError, match="candidate-set identity"):
+        derive_taxonomic_evidence(
+            plan=plan,
+            fusion_result=fusion,
+            direct_text_result=replace(
+                direct,
+                candidate_set_fingerprint=_sha("wrong-candidate-set"),
+            ),
+        )
+
+    incomplete = replace(
+        direct,
+        scored_classes=tuple(
+            item
+            for item in direct.scored_classes
+            if item.scoring_class_id != "genus_diagnostic:Graphium"
+        ),
+    )
+    with pytest.raises(ValueError, match="genus diagnostic coverage"):
+        derive_taxonomic_evidence(
+            plan=plan,
+            fusion_result=fusion,
+            direct_text_result=incomplete,
+        )
+
+
+def test_taxonomic_evidence_rejects_incomplete_regional_probability_mass() -> None:
+    plan = _hierarchy_plan()
+    fusion = _fuse(plan=plan)
+    changed_species = replace(
+        fusion.species_scores[0],
+        regional_calibrated_probability=(
+            fusion.species_scores[0].regional_calibrated_probability - 0.05
+        ),
+    )
+    changed = replace(
+        fusion,
+        species_scores=(changed_species, *fusion.species_scores[1:]),
+    )
+    values = {
+        name: getattr(changed, name)
+        for name in changed.__dataclass_fields__
+        if name != "fusion_fingerprint"
+    }
+    forged = replace(
+        changed,
+        fusion_fingerprint=canonical_semantic_fingerprint(
+            target_fusion_module._fusion_result_semantics(values)  # noqa: SLF001
+        ),
+    )
+
+    with pytest.raises(ValueError, match="probabilities must sum to one"):
+        derive_taxonomic_evidence(
+            plan=plan,
+            fusion_result=forged,
+            direct_text_result=_direct_text_result(plan),
+        )
