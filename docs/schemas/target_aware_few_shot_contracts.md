@@ -1366,6 +1366,46 @@ versions, and prohibited-source list. The training-data fingerprint binds all
 sorted row fingerprints. Leakage, observation, owner, duplicate, burst, and
 provider-mirror groups may each occur in only one dataset split.
 
+#### Nonparametric baseline runtime contract
+
+`NonparametricBaselineIndex` consumes the validated `support_train` subset of
+`reference_embeddings.parquet` and the matching complete
+`reference_prototypes.parquet`. Construction validates and indexes immutable
+reference evidence; it does not fit an sklearn estimator and exposes no
+`fit()` operation. Every prediction records the exact model, support manifest,
+support-embedding artifact, and prototype-artifact fingerprints.
+
+The supported methods are `nearest_centroid`,
+`mean_centered_nearest_centroid`, `top_k_nearest_neighbors`, and
+`multi_prototype_nearest_class`. The first two use persisted global aggregate
+prototypes. The mean-centered method reconstructs the seeded SimpleShot
+centering context from the same support artifact, verifies every persisted
+centering fingerprint, and applies that exact context to the query. A query or
+duplicate-group exclusion causes the affected class centroid to be recomputed
+from retained independent observations.
+
+The nearest-neighbour method uses one vector per independent biological
+observation and an exact positive `k`. It uses unweighted class votes; cosine
+sum and nearest cosine are deterministic tie evidence only. It never shortens
+`k`, treats negative cosine as a valid similarity rather than a negative vote,
+or calls vote fraction a probability. Candidate key is the final stable tie
+breaker.
+
+Multi-prototype scoring uses the finest global persisted representation for
+each reviewed metadata group: embedding-cluster children when present,
+otherwise the metadata centroid, and the aggregate centroid only when no
+metadata prototype exists. The class score is the maximum cosine over those
+prototypes. Prototypes containing an excluded observation or duplicate group
+are ineligible; clusters are never rebuilt during inference.
+
+All methods receive the complete caller-supplied candidate union and isolate
+support by YOLOE route and full-frame visual-input kind. A candidate with no
+matching support/prototype, an undersized exact-k pool, a model mismatch, or an
+unavailable SimpleShot context cannot be silently deleted. Recoverable
+coverage failures return an abstained result with stable reason codes; invalid
+artifact/query contracts fail closed. Outputs call raw values `raw_score` and
+`raw_margin`, never confidence or probability.
+
 ### 7.2 `dataset_split_manifest.parquet`
 
 Grain: one source item/group membership and split version. Primary key:
