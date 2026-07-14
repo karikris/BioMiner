@@ -94,6 +94,9 @@ DUPLICATE_EVIDENCE_TYPES = frozenset(
         "component_metadata_conflict",
     }
 )
+REFERENCE_ROUTES = frozenset(
+    {"adult_field", "larval", "pupal", "egg", "pinned_specimen"}
+)
 REFERENCE_LIFE_STAGES = frozenset({"adult", "larva", "pupa", "egg", "unknown"})
 REFERENCE_VISUAL_DOMAINS = frozenset(
     {
@@ -1907,6 +1910,7 @@ __all__ = [
     "REFERENCE_OBSERVATIONS_FILE",
     "REFERENCE_OBSERVATIONS_SCHEMA_VERSION",
     "REFERENCE_LIFE_STAGES",
+    "REFERENCE_ROUTES",
     "REFERENCE_REVIEW_CONFIDENCE_VALUES",
     "REFERENCE_REVIEW_DECISIONS_FILE",
     "REFERENCE_REVIEW_DECISIONS_SCHEMA_VERSION",

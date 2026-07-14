@@ -43,7 +43,11 @@ from biominer.detection.policy import (
     VisionRuntimeSettings,
     vision_runtime_settings,
 )
-from biominer.evaluation.labels import read_reviewed_labels, validate_reviewed_label_frame
+from biominer.evaluation.labels import (
+    normalize_reviewed_label_frame,
+    read_reviewed_labels,
+    validate_reviewed_label_frame,
+)
 from biominer.evaluation.review_queue import build_hierarchical_review_queue
 from biominer.evaluation.reports import write_evaluation_report, write_evaluation_report_to_storage
 from biominer.evaluation.xie_style import EVALUATION_PROFILE as XIE_STYLE_EVALUATION_PROFILE
@@ -1406,12 +1410,18 @@ def _read_storage_reviewed_labels(storage: object, uri: str) -> pl.DataFrame:
         raise FileNotFoundError(f"reviewed-labels path does not exist: {uri}")
     suffix = Path(uri).suffix.casefold()
     if suffix == ".parquet":
-        return storage.read_parquet(uri)
-    if suffix in {".jsonl", ".ndjson"}:
-        return pl.read_ndjson(io.BytesIO(storage.read_text(uri).encode("utf-8")))
-    if suffix == ".json":
-        return pl.read_json(io.BytesIO(storage.read_text(uri).encode("utf-8")))
-    raise ValueError(f"unsupported reviewed-label format: {suffix or '<none>'}")
+        frame = storage.read_parquet(uri)
+    elif suffix in {".jsonl", ".ndjson"}:
+        frame = pl.read_ndjson(
+            io.BytesIO(storage.read_text(uri).encode("utf-8"))
+        )
+    elif suffix == ".json":
+        frame = pl.read_json(io.BytesIO(storage.read_text(uri).encode("utf-8")))
+    else:
+        raise ValueError(
+            f"unsupported reviewed-label format: {suffix or '<none>'}"
+        )
+    return normalize_reviewed_label_frame(frame)
 
 
 def _evaluation_storage_from_config(args: argparse.Namespace) -> object:

@@ -6,6 +6,7 @@ from pathlib import Path
 import polars as pl
 
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+from biominer.evaluation.labels import migrate_v1_reviewed_label_frame
 from biominer.storage.parquet import write_parquet
 
 
@@ -202,8 +203,9 @@ def _object_scores() -> pl.DataFrame:
 
 
 def _reviewed_labels() -> pl.DataFrame:
-    return pl.DataFrame(
-        [
+    return migrate_v1_reviewed_label_frame(
+        pl.DataFrame(
+            [
             _label_row(
                 "photo-top1",
                 "det-top1",
@@ -267,7 +269,8 @@ def _reviewed_labels() -> pl.DataFrame:
                 "review_confidence": "high",
                 "review_notes": "synthetic non-butterfly detector row",
             },
-        ]
+            ]
+        )
     )
 
 

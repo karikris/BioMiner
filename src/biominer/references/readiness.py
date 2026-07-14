@@ -33,6 +33,7 @@ from biominer.references.review import (
     validate_reference_review_queue_source_bindings,
 )
 from biominer.references.schemas import (
+    REFERENCE_ROUTES,
     validate_reference_acquisition_plan,
     validate_reference_acquisition_selections,
     validate_reference_media_candidates,
@@ -80,10 +81,6 @@ READINESS_CHECK_STATUSES = frozenset({"passed", "failed", "pending", "warning"})
 REFERENCE_SUPPORT_SPLITS = frozenset(
     {"support_train", "model_selection", "calibration", "final_test"}
 )
-REFERENCE_ROUTES = frozenset(
-    {"adult_field", "larval", "pupal", "egg", "pinned_specimen"}
-)
-
 _REQUIRED_CHECK_IDS = (
     "artifact_integrity",
     "target_adult_minimum",
