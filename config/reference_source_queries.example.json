@@ -1,0 +1,30 @@
+{
+  "queries": [
+    {
+      "source": "GBIF",
+      "accepted_taxon_key": "gbif:1234567",
+      "scientific_name": "Genus species",
+      "geo_cluster_id": "regional-cluster-id",
+      "fallback_level": 0,
+      "source_taxon_id": "1234567",
+      "country_codes": ["AU"],
+      "geometry_wkt": "POLYGON((150 -35,155 -35,155 -25,150 -25,150 -35))",
+      "cluster_medoid_latitude": -30.0,
+      "cluster_medoid_longitude": 152.0,
+      "source_snapshot_version": "gbif-snapshot-version"
+    },
+    {
+      "source": "iNaturalist",
+      "accepted_taxon_key": "gbif:1234567",
+      "scientific_name": "Genus species",
+      "geo_cluster_id": "regional-cluster-id",
+      "fallback_level": 0,
+      "source_taxon_id": "1234567",
+      "country_codes": ["AU"],
+      "bounding_box": [-35.0, 150.0, -25.0, 155.0],
+      "cluster_medoid_latitude": -30.0,
+      "cluster_medoid_longitude": 152.0,
+      "source_snapshot_version": "inaturalist-snapshot-version"
+    }
+  ]
+}

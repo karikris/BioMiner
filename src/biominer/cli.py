@@ -98,8 +98,19 @@ from biominer.references.review import (
     write_reference_review_export,
     write_reference_review_import,
 )
+from biominer.reference_workflow_cli import (
+    ReferenceWorkflowRuntimeDefaults,
+    add_reference_workflow_parsers,
+    is_reference_workflow_command,
+    run_reference_workflow_command,
+)
 from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR, YOLOE26_DIR
-from biominer.run import ProductionRunOrchestrator, ProductionRunRequest, RunStage
+from biominer.run import (
+    REFERENCE_FIRST_PRODUCTION_STAGES,
+    ProductionRunOrchestrator,
+    ProductionRunRequest,
+    RunStage,
+)
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES
 from biominer.secrets_loader import load_runtime_secrets_env
 from biominer.species.context import SpeciesContext
@@ -152,6 +163,23 @@ RUN_STAGE_ALIASES = {
     "fetch": RunStage.POLL_FLICKR,
     "poll": RunStage.POLL_FLICKR,
     "poll_flickr": RunStage.POLL_FLICKR,
+    "geographic_spread": RunStage.GEOGRAPHIC_SPREAD,
+    "flickr_geo_clustering": RunStage.FLICKR_GEO_CLUSTERING,
+    "regional_candidates": RunStage.REGIONAL_CANDIDATE_GENERATION,
+    "regional_candidate_generation": RunStage.REGIONAL_CANDIDATE_GENERATION,
+    "reference_metadata": RunStage.REFERENCE_METADATA,
+    "reference_media": RunStage.REFERENCE_MEDIA,
+    "reference_review": RunStage.REFERENCE_REVIEW,
+    "reference_embeddings": RunStage.REFERENCE_EMBEDDINGS,
+    "reference_prototypes": RunStage.REFERENCE_PROTOTYPES,
+    "classifier_training": RunStage.CLASSIFIER_TRAINING,
+    "classifier_calibration": RunStage.CLASSIFIER_CALIBRATION,
+    "reference_readiness": RunStage.REFERENCE_READINESS,
+    "flickr_detection": RunStage.FLICKR_DETECTION,
+    "flickr_embedding": RunStage.FLICKR_EMBEDDING,
+    "target_aware_scoring": RunStage.TARGET_AWARE_SCORING,
+    "evidence": RunStage.EVIDENCE,
+    "evaluation": RunStage.EVALUATION,
     "detect": RunStage.DETECT_OBJECTS,
     "detect_objects": RunStage.DETECT_OBJECTS,
     "score": RunStage.SCORE_BIOCLIP,
@@ -201,6 +229,13 @@ def build_parser() -> argparse.ArgumentParser:
     evaluation_review_queue.add_argument("--max-rows", type=int)
     references = subparsers.add_parser("references")
     references_subparsers = references.add_subparsers(dest="references_command")
+    add_reference_workflow_parsers(
+        references_subparsers,
+        runtime_defaults=ReferenceWorkflowRuntimeDefaults(
+            runtime_python=BIOCLIP_RUNTIME_PYTHON,
+            hf_cache_dir=BIOCLIP_HF_CACHE_DIR,
+        ),
+    )
     references_export = references_subparsers.add_parser("export-review-queue")
     references_export.add_argument("--acquisition-selections", required=True)
     references_export.add_argument("--observations", required=True)
@@ -434,6 +469,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CLASSIFICATION_MODE,
     )
     production_run.add_argument("--taxonomy-text-embedding-cache")
+    production_run.add_argument("--regional-candidates")
+    production_run.add_argument("--reference-embeddings")
+    production_run.add_argument("--classifier-artifact")
+    production_run.add_argument("--calibrator-artifact")
     production_run.add_argument(
         "--reference-bank-readiness",
         help="immutable reference-bank readiness artifact directory",
@@ -446,6 +485,11 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--parquet-compression")
     production_run.add_argument("--delete-images-after-commit", action=argparse.BooleanOptionalAction, default=None)
     production_run.add_argument("--stages")
+    production_run.add_argument(
+        "--workflow",
+        choices=("legacy", "reference-first"),
+        default="legacy",
+    )
     production_run.add_argument("--dry-run", action="store_true")
     production_run.add_argument("--build-registry-if-missing", action="store_true")
     production_run.add_argument("--limit-species", type=int, default=0)
@@ -977,6 +1021,8 @@ def _run_evaluation_command(args: argparse.Namespace) -> int:
 
 
 def _run_references_command(args: argparse.Namespace) -> int:
+    if is_reference_workflow_command(args.references_command):
+        return run_reference_workflow_command(args)
     readiness_status: str | None = None
     readiness_sha256: str | None = None
     vision_permitted: bool | None = None
@@ -1592,7 +1638,7 @@ def _classification_mode_arg(value: str) -> str:
 def _run_production_command(args: argparse.Namespace) -> int:
     config = None
     try:
-        stages = _parse_run_stages(args.stages)
+        stages = _parse_run_stages(args.stages, workflow=args.workflow)
         if (
             not args.dry_run
             and any(stage in {RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP} for stage in stages)
@@ -1655,6 +1701,10 @@ def _run_production_command(args: argparse.Namespace) -> int:
             reference_bank_readiness_sha256=(
                 args.reference_bank_readiness_sha256
             ),
+            regional_candidates=args.regional_candidates,
+            reference_embeddings=args.reference_embeddings,
+            classifier_artifact=args.classifier_artifact,
+            calibrator_artifact=args.calibrator_artifact,
             worker_id="local" if allow_local and args.dry_run else config.runtime.worker_id or ("local" if allow_local else ""),
             stages=stages,
             dry_run=args.dry_run,
@@ -1749,16 +1799,27 @@ def _create_production_vision_runtime(
     return detector, image_loader, scorer, [persistent, detector]
 
 
-def _parse_run_stages(value: str | None) -> tuple[RunStage, ...]:
+def _parse_run_stages(
+    value: str | None,
+    *,
+    workflow: str = "legacy",
+) -> tuple[RunStage, ...]:
+    if workflow not in {"legacy", "reference-first"}:
+        raise ValueError("workflow must be legacy or reference-first")
+    workflow_stages = (
+        REFERENCE_FIRST_PRODUCTION_STAGES
+        if workflow == "reference-first"
+        else DEFAULT_PRODUCTION_STAGES
+    )
     if not value:
-        return DEFAULT_PRODUCTION_STAGES
+        return workflow_stages
     stages: list[RunStage] = []
     for raw_part in value.split(","):
         part = raw_part.strip().casefold()
         if not part:
             continue
         if part == "all":
-            return DEFAULT_PRODUCTION_STAGES
+            return workflow_stages
         stage = RUN_STAGE_ALIASES.get(part)
         if stage is None:
             try:
@@ -1768,7 +1829,7 @@ def _parse_run_stages(value: str | None) -> tuple[RunStage, ...]:
                 raise ValueError(f"unknown run stage {raw_part!r}; expected one of: {allowed}") from exc
         if stage not in stages:
             stages.append(stage)
-    return tuple(stages) or DEFAULT_PRODUCTION_STAGES
+    return tuple(stages) or workflow_stages
 
 
 def _run_bioclip_runtime_check(args: argparse.Namespace) -> int:

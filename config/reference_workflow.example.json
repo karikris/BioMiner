@@ -1,0 +1,116 @@
+{
+  "schema_version": "target-aware-reference-cli-settings-v1",
+  "commands": {
+    "build-geographic-spread": {
+      "accepted_taxon_key": "gbif:accepted-key",
+      "scientific_name": "Genus species",
+      "registry_version": "registry-version",
+      "source_snapshot_version": "gbif-snapshot-version",
+      "occurrences": "data/reference/gbif_occurrences.parquet",
+      "output_dir": "data/reference/geographic-spread",
+      "checkpoint_dir": "data/reference/checkpoints/geographic-spread",
+      "retrieved_at": "2026-01-01T00:00:00Z",
+      "coarse_resolution": 3,
+      "regional_resolution": 5,
+      "local_resolution": 7
+    },
+    "cluster-flickr-metadata": {
+      "geography": "data/flickr/flickr_geography.parquet",
+      "target_accepted_taxon_key": "gbif:accepted-key",
+      "output_dir": "data/flickr/geographic-clusters",
+      "minimum_cluster_images": 2,
+      "maximum_assignment_distance_km": 250.0
+    },
+    "plan": {
+      "candidate_species": "data/candidates/regional_candidate_species.parquet",
+      "observations": "data/reference/reference_observations.parquet",
+      "media_candidates": "data/reference/reference_media_candidates.parquet",
+      "output_dir": "data/reference/acquisition-plan",
+      "strata": [
+        {
+          "life_stage": "adult",
+          "visual_domain": "live_field",
+          "requested_per_species": 20
+        }
+      ],
+      "minimum_per_sufficient_cluster": 2,
+      "selection_seed": 42
+    },
+    "fetch-metadata": {
+      "queries": "config/reference_source_queries.example.json",
+      "registry_version": "registry-version",
+      "checkpoint_dir": "data/reference/checkpoints/metadata",
+      "output_dir": "data/reference/metadata",
+      "max_retries": 5,
+      "inaturalist_min_request_interval_seconds": 1.0
+    },
+    "download": {
+      "acquisition_selections": "data/reference/acquisition-plan/reference_acquisition_selections.parquet",
+      "media_candidates": "data/reference/metadata/reference_media_candidates.parquet",
+      "output_prefix": "data/reference/downloads",
+      "storage_backend": "local",
+      "workers": 8,
+      "max_inflight": 32,
+      "licence_policy": {
+        "version": "reference-licence-policy-v1",
+        "broadly_reusable": ["cc0", "cc-by", "cc-by-sa"],
+        "research_only": ["cc-by-nc", "cc-by-nc-sa"],
+        "attribution_required": ["cc-by", "cc-by-sa", "cc-by-nc", "cc-by-nc-sa"]
+      }
+    },
+    "build-support-embeddings": {
+      "readiness_dir": "data/reference/readiness",
+      "readiness_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "visual_inputs": "data/reference/reference_visual_inputs.parquet",
+      "output": "data/reference/embeddings",
+      "device": "auto",
+      "batch_size": 64,
+      "checkpoint_dir": "data/reference/checkpoints/embeddings",
+      "resume": true
+    },
+    "build-prototypes": {
+      "reference_embeddings": "data/reference/embeddings",
+      "output": "data/reference/prototypes",
+      "balanced_sampling_seed": 42,
+      "include_mean_centered": true,
+      "multi_prototype": true,
+      "maximum_embedding_cluster_count": 4
+    },
+    "train-classifier": {
+      "training_features": "data/reference/few_shot_training_features.parquet",
+      "output_dir": "data/reference/classifier",
+      "target_task": "binary_target_verifier",
+      "target_accepted_taxon_key": "gbif:accepted-key",
+      "route": "adult_field",
+      "n_splits": 3,
+      "preprocessing_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "reference_bank_version": "reference-bank-version",
+      "reference_bank_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "calibrate-classifier": {
+      "predictions": "data/reference/calibration_predictions.parquet",
+      "fold_audits": "data/reference/calibration_fold_audits.json",
+      "output_dir": "data/reference/calibrator",
+      "classifier_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "split_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "target_task": "binary_target_verifier",
+      "route": "adult_field",
+      "class_labels": ["__non_target__", "target"],
+      "positive_class_label": "target",
+      "method": "auto"
+    },
+    "score-target-aware": {
+      "candidate_set": "data/candidates/candidate_set.json",
+      "known_negative_classes": "config/known_negative_classes.json",
+      "visual_domain_classes": "config/visual_domain_classes.json",
+      "score_map": "data/scores/frozen_complete_set_scores.json",
+      "output": "data/scores/target_aware_complete_set_scores.json"
+    },
+    "evaluate-target-verifier": {
+      "predictions": "data/evaluation/target_predictions.parquet",
+      "labels": "data/evaluation/reviewed_target_labels.parquet",
+      "output_dir": "data/evaluation/target-verifier",
+      "threshold": 0.5
+    }
+  }
+}
