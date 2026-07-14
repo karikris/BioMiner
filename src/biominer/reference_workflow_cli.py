@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 import hashlib
 import json
-from math import isfinite, log
+from math import isfinite
 import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -18,8 +18,6 @@ from biominer.run import RunStage
 
 
 REFERENCE_WORKFLOW_SETTINGS_SCHEMA_VERSION = "target-aware-reference-cli-settings-v1"
-TARGET_VERIFIER_EVALUATION_FILE = "target_verifier_evaluation.json"
-TARGET_VERIFIER_EVALUATION_SUMMARY_FILE = "target_verifier_evaluation.md"
 _MAX_JSON_BYTES = 16 * 1024 * 1024
 
 
@@ -404,24 +402,24 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         stage=RunStage.EVALUATION,
         fields=frozenset(
             {
-                "predictions",
-                "labels",
+                "evaluation_frame",
+                "balanced_holdout",
+                "natural_holdout",
+                "leakage_register",
                 "output_dir",
-                "id_column",
-                "probability_column",
-                "label_column",
-                "weight_column",
-                "threshold",
+                "ece_bin_count",
             }
         ),
-        required=frozenset({"predictions", "labels", "output_dir"}),
-        defaults={
-            "id_column": "source_item_id",
-            "probability_column": "calibrated_target_probability",
-            "label_column": "target_present",
-            "weight_column": "sample_weight",
-            "threshold": 0.5,
-        },
+        required=frozenset(
+            {
+                "evaluation_frame",
+                "balanced_holdout",
+                "natural_holdout",
+                "leakage_register",
+                "output_dir",
+            }
+        ),
+        defaults={"ece_bin_count": 10},
     ),
 }
 
@@ -657,14 +655,12 @@ def add_reference_workflow_parsers(
 
     evaluate = subparsers.add_parser("evaluate-target-verifier")
     _common(evaluate, runtime_defaults)
-    evaluate.add_argument("--predictions")
-    evaluate.add_argument("--labels")
+    evaluate.add_argument("--evaluation-frame")
+    evaluate.add_argument("--balanced-holdout")
+    evaluate.add_argument("--natural-holdout")
+    evaluate.add_argument("--leakage-register")
     evaluate.add_argument("--output-dir")
-    evaluate.add_argument("--id-column")
-    evaluate.add_argument("--probability-column")
-    evaluate.add_argument("--label-column")
-    evaluate.add_argument("--weight-column")
-    evaluate.add_argument("--threshold", type=float)
+    evaluate.add_argument("--ece-bin-count", type=int)
 
 
 def is_reference_workflow_command(value: object) -> bool:
@@ -872,14 +868,7 @@ def _validate_effective_options(command: str, values: dict[str, Any]) -> None:
     elif command == "calibrate-classifier":
         _calibration_config(values)
     elif command == "evaluate-target-verifier":
-        if values["probability_column"] != "calibrated_target_probability":
-            raise ValueError(
-                "target verifier evaluation requires "
-                "probability_column=calibrated_target_probability"
-            )
-        threshold = _finite_float(values["threshold"], "threshold")
-        if not 0.0 <= threshold <= 1.0:
-            raise ValueError("threshold must be in [0, 1]")
+        _positive_integer(values["ece_bin_count"], "ece_bin_count")
 
 
 def _run_score_target_aware(
@@ -943,190 +932,45 @@ def _run_evaluate_target_verifier(
     resolved: ResolvedReferenceWorkflowOptions,
     _args: argparse.Namespace,
 ) -> dict[str, object]:
-    values = resolved.values
-    output = Path(str(values["output_dir"]))
-    metrics_path = output / TARGET_VERIFIER_EVALUATION_FILE
-    summary_path = output / TARGET_VERIFIER_EVALUATION_SUMMARY_FILE
-    _ensure_outputs_available((metrics_path, summary_path), overwrite=False)
-    predictions = pl.read_parquet(str(values["predictions"]))
-    labels = pl.read_parquet(str(values["labels"]))
-    metrics = _target_verifier_metrics(
-        predictions,
-        labels,
-        id_column=str(values["id_column"]),
-        probability_column=str(values["probability_column"]),
-        label_column=str(values["label_column"]),
-        weight_column=str(values["weight_column"]),
-        threshold=float(values["threshold"]),
+    from biominer.evaluation.target_metrics import (
+        TargetVerificationMetricsConfig,
+        evaluate_target_verification,
+        publish_target_verification_metric_report,
     )
-    metrics["settings_fingerprint"] = resolved.settings_fingerprint
-    _write_json_atomic(metrics_path, metrics, overwrite=False)
-    _write_text_atomic(
-        summary_path,
-        _target_verifier_summary(metrics),
-        overwrite=False,
+
+    values = resolved.values
+    evaluation_frame = pl.read_parquet(str(values["evaluation_frame"]))
+    balanced_holdout = pl.read_parquet(str(values["balanced_holdout"]))
+    natural_holdout = pl.read_parquet(str(values["natural_holdout"]))
+    leakage_register = pl.read_parquet(str(values["leakage_register"]))
+    report = evaluate_target_verification(
+        evaluation_frame,
+        balanced_holdout,
+        natural_holdout,
+        leakage_register,
+        TargetVerificationMetricsConfig(
+            ece_bin_count=int(values["ece_bin_count"]),
+        ),
+    )
+    publication = publish_target_verification_metric_report(
+        report,
+        Path(str(values["output_dir"])),
     )
     return {
         "artifacts": {
-            "metrics": str(metrics_path),
-            "summary": str(summary_path),
+            "metrics": str(publication.metrics_path),
+            "margin_distribution": str(publication.margin_distribution_path),
+            "report": str(publication.report_json_path),
+            "summary": str(publication.report_markdown_path),
         },
         "command": "references evaluate-target-verifier",
-        "sample_count": metrics["sample_count"],
+        "sample_count": evaluation_frame.height,
+        "report_fingerprint": report.report_fingerprint,
         "settings_fingerprint": resolved.settings_fingerprint,
         "status": "complete",
     }
 
 
-def _target_verifier_metrics(
-    predictions: pl.DataFrame,
-    labels: pl.DataFrame,
-    *,
-    id_column: str,
-    probability_column: str,
-    label_column: str,
-    weight_column: str,
-    threshold: float,
-) -> dict[str, object]:
-    _require_columns(predictions, {id_column, probability_column}, "predictions")
-    _require_columns(labels, {id_column, label_column}, "labels")
-    if predictions[id_column].null_count() or labels[id_column].null_count():
-        raise ValueError("target verifier item IDs cannot be null")
-    if predictions[id_column].n_unique() != predictions.height:
-        raise ValueError("target verifier predictions contain duplicate item IDs")
-    if labels[id_column].n_unique() != labels.height:
-        raise ValueError("target verifier labels contain duplicate item IDs")
-    predicted_ids = set(predictions[id_column].to_list())
-    labelled_ids = set(labels[id_column].to_list())
-    if predicted_ids != labelled_ids:
-        missing = len(labelled_ids - predicted_ids)
-        unexpected = len(predicted_ids - labelled_ids)
-        raise ValueError(
-            "target verifier prediction/label IDs differ: "
-            f"missing_predictions={missing}, unexpected_predictions={unexpected}"
-        )
-    selected_labels = labels.select(
-        [id_column, label_column]
-        + ([weight_column] if weight_column in labels.columns else [])
-    )
-    joined = predictions.select([id_column, probability_column]).join(
-        selected_labels,
-        on=id_column,
-        how="inner",
-        validate="1:1",
-    )
-    counts = {
-        key: 0
-        for key in (
-            "true_positive",
-            "true_negative",
-            "false_positive",
-            "false_negative",
-        )
-    }
-    weighted = {key: 0.0 for key in counts}
-    brier = 0.0
-    log_loss = 0.0
-    total_weight = 0.0
-    for row in joined.iter_rows(named=True):
-        probability = _finite_float(row[probability_column], probability_column)
-        if not 0.0 <= probability <= 1.0:
-            raise ValueError(
-                f"{probability_column} must contain probabilities in [0, 1]"
-            )
-        label = row[label_column]
-        if not isinstance(label, bool):
-            raise TypeError(f"{label_column} must contain Boolean values")
-        weight = (
-            _positive_float(row[weight_column], weight_column)
-            if weight_column in row and row[weight_column] is not None
-            else 1.0
-        )
-        predicted = probability >= threshold
-        if predicted and label:
-            bucket = "true_positive"
-        elif not predicted and not label:
-            bucket = "true_negative"
-        elif predicted:
-            bucket = "false_positive"
-        else:
-            bucket = "false_negative"
-        counts[bucket] += 1
-        weighted[bucket] += weight
-        target = 1.0 if label else 0.0
-        brier += weight * (probability - target) ** 2
-        clipped = min(max(probability, 1e-15), 1.0 - 1e-15)
-        log_loss -= weight * (
-            target * log(clipped) + (1.0 - target) * log(1.0 - clipped)
-        )
-        total_weight += weight
-    tp = weighted["true_positive"]
-    tn = weighted["true_negative"]
-    fp = weighted["false_positive"]
-    fn = weighted["false_negative"]
-    recall = _ratio(tp, tp + fn)
-    specificity = _ratio(tn, tn + fp)
-    precision = _ratio(tp, tp + fp)
-    return {
-        "schema_version": "target-verifier-evaluation-v1",
-        "probability_kind": "calibrated_target_probability",
-        "probability_column": probability_column,
-        "label_column": label_column,
-        "weight_column": weight_column if weight_column in labels.columns else None,
-        "threshold": threshold,
-        "sample_count": joined.height,
-        "total_weight": total_weight,
-        "positive_prevalence": _ratio(tp + fn, total_weight),
-        "confusion": counts,
-        "weighted_confusion": weighted,
-        "metrics": {
-            "accuracy": _ratio(tp + tn, total_weight),
-            "balanced_accuracy": (
-                None
-                if recall is None or specificity is None
-                else (recall + specificity) / 2.0
-            ),
-            "precision": precision,
-            "recall": recall,
-            "specificity": specificity,
-            "f1": (
-                None
-                if precision is None or recall is None or precision + recall == 0.0
-                else 2.0 * precision * recall / (precision + recall)
-            ),
-            "brier_score": _ratio(brier, total_weight),
-            "log_loss": _ratio(log_loss, total_weight),
-        },
-    }
-
-
-def _target_verifier_summary(metrics: Mapping[str, object]) -> str:
-    values = metrics["metrics"]
-    assert isinstance(values, Mapping)
-    confusion = metrics["confusion"]
-    assert isinstance(confusion, Mapping)
-    lines = [
-        "# Target Verifier Evaluation",
-        "",
-        f"- Probability: {metrics['probability_kind']}",
-        f"- Samples: {metrics['sample_count']}",
-        f"- Threshold: {metrics['threshold']}",
-        f"- Balanced accuracy: {values['balanced_accuracy']}",
-        f"- Precision: {values['precision']}",
-        f"- Recall: {values['recall']}",
-        f"- Specificity: {values['specificity']}",
-        f"- Brier score: {values['brier_score']}",
-        f"- Log loss: {values['log_loss']}",
-        "",
-        "## Confusion",
-        "",
-        f"- True positive: {confusion['true_positive']}",
-        f"- True negative: {confusion['true_negative']}",
-        f"- False positive: {confusion['false_positive']}",
-        f"- False negative: {confusion['false_negative']}",
-        "",
-    ]
-    return "\n".join(lines)
 
 
 def _candidate_set_from_mapping(payload: Mapping[str, object]) -> object:
@@ -1326,12 +1170,6 @@ def _reject_unknown(
         raise ValueError(f"{artifact} contains unknown fields: {', '.join(unexpected)}")
 
 
-def _require_columns(frame: pl.DataFrame, required: set[str], artifact: str) -> None:
-    missing = sorted(required - set(frame.columns))
-    if missing:
-        raise ValueError(f"{artifact} is missing columns: {', '.join(missing)}")
-
-
 def _string_tuple(value: object, *, field: str) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple)):
         raise TypeError(f"{field} must be an array")
@@ -1400,10 +1238,6 @@ def _nonnegative_float(value: object, field: str) -> float:
     if result < 0.0:
         raise ValueError(f"{field} must be nonnegative")
     return result
-
-
-def _ratio(numerator: float, denominator: float) -> float | None:
-    return None if denominator == 0.0 else numerator / denominator
 
 
 # Config builders are also called during dry-run so JSON values receive the same

@@ -107,10 +107,12 @@
       "output": "data/scores/target_aware_complete_set_scores.json"
     },
     "evaluate-target-verifier": {
-      "predictions": "data/evaluation/target_predictions.parquet",
-      "labels": "data/evaluation/reviewed_target_labels.parquet",
+      "evaluation_frame": "data/evaluation/target_verification_evaluation.parquet",
+      "balanced_holdout": "data/evaluation/balanced_challenge_holdout.parquet",
+      "natural_holdout": "data/evaluation/natural_stream_holdout.parquet",
+      "leakage_register": "data/evaluation/evaluation_leakage_register.parquet",
       "output_dir": "data/evaluation/target-verifier",
-      "threshold": 0.5
+      "ece_bin_count": 10
     }
   }
 }

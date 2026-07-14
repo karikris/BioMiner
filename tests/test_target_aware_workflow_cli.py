@@ -7,12 +7,21 @@ import polars as pl
 import pytest
 
 from biominer.cli import _parse_run_stages, build_parser, run
+from biominer.evaluation.target_metrics import (
+    TARGET_MARGIN_DISTRIBUTION_FILE,
+    TARGET_VERIFICATION_METRICS_FILE,
+    TARGET_VERIFICATION_REPORT_FILE,
+    TARGET_VERIFICATION_REPORT_MARKDOWN_FILE,
+    target_verification_evaluation_frame,
+)
 from biominer.flickr_fetch.geography import build_flickr_geography_frame
 from biominer.run import REFERENCE_FIRST_PRODUCTION_STAGES
 from biominer.reference_workflow_cli import (
     _reference_source_queries,
     resolve_reference_workflow_options,
 )
+from test_evaluation_holdouts import _frozen_holdout_pair, _leakage_register
+from test_target_verification_metrics import _rows_for_frozen_holdouts
 
 
 @pytest.mark.parametrize(
@@ -401,84 +410,87 @@ def test_target_aware_scoring_commits_complete_regional_union(
     assert stdout["artifacts"]["complete_set_scores"] == str(output)
 
 
-def test_target_verifier_evaluation_requires_calibrated_probabilities(
+def test_target_verifier_evaluation_publishes_frozen_holdout_metrics(
     tmp_path: Path,
     capsys,
 ) -> None:  # noqa: ANN001 - pytest fixture.
-    predictions = tmp_path / "predictions.parquet"
-    labels = tmp_path / "labels.parquet"
+    evaluation_frame_path = tmp_path / "evaluation-frame.parquet"
+    balanced_holdout_path = tmp_path / "balanced-holdout.parquet"
+    natural_holdout_path = tmp_path / "natural-holdout.parquet"
+    leakage_register_path = tmp_path / "leakage-register.parquet"
     output = tmp_path / "evaluation"
-    pl.DataFrame(
-        {
-            "source_item_id": ["a", "b", "c", "d"],
-            "calibrated_target_probability": [0.9, 0.8, 0.4, 0.1],
-        }
-    ).write_parquet(predictions)
-    pl.DataFrame(
-        {
-            "source_item_id": ["a", "b", "c", "d"],
-            "target_present": [True, False, True, False],
-            "sample_weight": [1.0, 1.0, 2.0, 2.0],
-        }
-    ).write_parquet(labels)
+    balanced_holdout, natural_holdout = _frozen_holdout_pair()
+    leakage_register = _leakage_register(balanced_holdout, natural_holdout)
+    evaluation_frame = target_verification_evaluation_frame(
+        _rows_for_frozen_holdouts(balanced_holdout, natural_holdout)
+    )
+    evaluation_frame.write_parquet(evaluation_frame_path)
+    balanced_holdout.write_parquet(balanced_holdout_path)
+    natural_holdout.write_parquet(natural_holdout_path)
+    leakage_register.write_parquet(leakage_register_path)
 
     rc = run(
         build_parser().parse_args(
             [
                 "references",
                 "evaluate-target-verifier",
-                "--predictions",
-                str(predictions),
-                "--labels",
-                str(labels),
+                "--evaluation-frame",
+                str(evaluation_frame_path),
+                "--balanced-holdout",
+                str(balanced_holdout_path),
+                "--natural-holdout",
+                str(natural_holdout_path),
+                "--leakage-register",
+                str(leakage_register_path),
                 "--output-dir",
                 str(output),
-                "--threshold",
-                "0.5",
+                "--ece-bin-count",
+                "7",
             ]
         )
     )
 
     assert rc == 0
-    metrics = json.loads(
-        (output / "target_verifier_evaluation.json").read_text(encoding="utf-8")
+    report = json.loads(
+        (output / TARGET_VERIFICATION_REPORT_FILE).read_text(encoding="utf-8")
     )
     stdout = json.loads(capsys.readouterr().out)
-    assert metrics["probability_kind"] == "calibrated_target_probability"
-    assert metrics["sample_count"] == 4
-    assert metrics["confusion"] == {
-        "false_negative": 1,
-        "false_positive": 1,
-        "true_negative": 1,
-        "true_positive": 1,
-    }
-    assert metrics["weighted_confusion"]["false_negative"] == 2.0
+    assert report["status"] == "complete"
+    assert report["report_fingerprint"] == stdout["report_fingerprint"]
+    assert stdout["sample_count"] == evaluation_frame.height
     assert stdout["status"] == "complete"
+    assert stdout["artifacts"] == {
+        "margin_distribution": str(output / TARGET_MARGIN_DISTRIBUTION_FILE),
+        "metrics": str(output / TARGET_VERIFICATION_METRICS_FILE),
+        "report": str(output / TARGET_VERIFICATION_REPORT_FILE),
+        "summary": str(output / TARGET_VERIFICATION_REPORT_MARKDOWN_FILE),
+    }
+    assert (output / TARGET_VERIFICATION_METRICS_FILE).is_file()
+    assert (output / TARGET_MARGIN_DISTRIBUTION_FILE).is_file()
+    assert (output / TARGET_VERIFICATION_REPORT_MARKDOWN_FILE).is_file()
 
 
-def test_target_verifier_evaluation_rejects_raw_score_column(capsys) -> None:  # noqa: ANN001
+def test_target_verifier_evaluation_requires_leakage_register(capsys) -> None:  # noqa: ANN001
     rc = run(
         build_parser().parse_args(
             [
                 "references",
                 "evaluate-target-verifier",
-                "--predictions",
-                "predictions.parquet",
-                "--labels",
-                "labels.parquet",
+                "--evaluation-frame",
+                "evaluation-frame.parquet",
+                "--balanced-holdout",
+                "balanced-holdout.parquet",
+                "--natural-holdout",
+                "natural-holdout.parquet",
                 "--output-dir",
                 "evaluation",
-                "--probability-column",
-                "species_top1_score",
                 "--dry-run",
             ]
         )
     )
 
     assert rc == 2
-    assert (
-        "calibrated_target_probability" in json.loads(capsys.readouterr().out)["error"]
-    )
+    assert "--leakage-register" in json.loads(capsys.readouterr().out)["error"]
 
 
 def _candidate_set() -> dict[str, object]:
