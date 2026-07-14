@@ -94,6 +94,9 @@ class _ReadinessPermitFixture:
     support_manifest_sha256: str = "sha256:" + "9" * 64
     summary_sha256: str = "sha256:" + "a" * 64
 
+    def bind_reference_readiness(self, _permit: object) -> None:
+        return None
+
 
 class _ClosableRuntimeFixture:
     def __init__(self) -> None:
@@ -477,6 +480,56 @@ def test_production_vision_reuses_valid_readiness_and_lazy_runtime(
     assert plan.manifest.metrics["reference_bank_readiness_status"] == "ready"
 
 
+def test_production_vision_canonicalizes_mac_hf_model_name_at_both_gates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    prefixed_model = "hf-hub:imageomics/bioclip-2.5-vith14"
+    canonical_model = "imageomics/bioclip-2.5-vith14"
+    permit = replace(_ReadinessPermitFixture(), model_name=prefixed_model)
+    scorer = replace(permit, model_name=canonical_model)
+    resource = _ClosableRuntimeFixture()
+
+    def fake_load(_path: str | Path, **expected: object) -> _ReadinessPermitFixture:
+        assert expected["expected_model_name"] == prefixed_model
+        return permit
+
+    monkeypatch.setattr(
+        run_orchestrator_module,
+        "load_reference_bank_readiness",
+        fake_load,
+    )
+    orchestrator = ProductionRunOrchestrator(
+        ProductionRunRequest(
+            taxon="Danaus plexippus",
+            output_root=tmp_path / "runs",
+            bioclip_model=prefixed_model,
+            vision_profile="mac_m5pro_64gb",
+            reference_bank_readiness=tmp_path / "reference-bank",
+            reference_bank_readiness_sha256=_READINESS_SHA256,
+            stages=(RunStage.DETECT_OBJECTS,),
+        ),
+        taxon_scope=scope,
+        vision_runtime_factory=lambda: (
+            object(),
+            lambda _record: object(),
+            scorer,
+            [resource],
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_run_detect_objects_stage",
+        lambda _plan: StageExecutionResult(),
+    )
+
+    plan = orchestrator.run()
+
+    assert plan.manifest.status == "complete"
+    assert resource.closed is True
+
+
 @pytest.mark.parametrize(
     "field_name",
     [
@@ -604,6 +657,42 @@ def test_production_vision_rejects_injected_scorer_identity_before_handler(
         orchestrator.run()
 
     assert handler_calls == 0
+
+
+def test_production_vision_rejects_unattested_injected_scorer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    permit = _ReadinessPermitFixture()
+
+    class UnattestedScorer:
+        model_id = permit.model_name
+        model_version = permit.model_version
+        checkpoint_sha256 = permit.checkpoint_sha256
+        preprocessing_version = permit.preprocessing_version
+        input_contract_version = permit.input_contract_version
+        model_input_fingerprint = permit.model_input_fingerprint
+
+    monkeypatch.setattr(
+        run_orchestrator_module,
+        "load_reference_bank_readiness",
+        lambda *_args, **_kwargs: permit,
+    )
+    orchestrator = ProductionRunOrchestrator(
+        ProductionRunRequest(
+            taxon="Danaus plexippus",
+            output_root=tmp_path / "runs",
+            reference_bank_readiness=tmp_path / "reference-bank",
+            reference_bank_readiness_sha256=_READINESS_SHA256,
+            stages=(RunStage.SCORE_BIOCLIP,),
+        ),
+        taxon_scope=scope,
+        object_scorer=UnattestedScorer(),
+    )
+
+    with pytest.raises(ValueError, match="cannot attest"):
+        orchestrator.run()
 
 
 def test_production_run_hierarchical_score_stage_requires_taxonomy_table(
@@ -2663,7 +2752,12 @@ def test_orchestrator_cloud_score_requires_storage_backend(
         stages=(RunStage.SCORE_BIOCLIP,),
     )
 
-    result = ProductionRunOrchestrator(request, taxon_scope=scope, object_scorer=_ConstantObjectScorer({})).run()
+    result = ProductionRunOrchestrator(
+        request,
+        taxon_scope=scope,
+        object_scorer=_ConstantObjectScorer({}),
+        allow_single_target_fixture=True,
+    ).run()
 
     assert result.manifest.status == "failed"
     assert result.manifest.stages[0].message == "storage_backend_required_for_score_bioclip"

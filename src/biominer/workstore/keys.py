@@ -5,6 +5,14 @@ import hashlib
 import json
 
 
+def publication_lock_digest(key: str) -> bytes:
+    if not isinstance(key, str):
+        raise TypeError("publication lock key must be a string")
+    if not key:
+        raise ValueError("publication lock key must not be empty")
+    return hashlib.sha256(key.encode("utf-8")).digest()
+
+
 def stable_work_key(payload: dict[str, Any], *, prefix: str | None = None) -> str:
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()

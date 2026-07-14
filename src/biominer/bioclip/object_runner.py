@@ -45,9 +45,15 @@ from biominer.detection.segmentation import (
     detector_crop_mask_available,
     detector_masked_crop_bytes,
 )
+from biominer.references.readiness import ReferenceBankReadinessPermit
 from biominer.species.context import SpeciesContext
 from biominer.storage.parquet import write_parquet, write_parquet_batches
 from biominer.vision.gates import BioClipGatePolicy, bioclip_score_input_decision
+from biominer.vision.full_frame_attention import (
+    FULL_FRAME_VISUAL_INPUT_VERSION,
+    TARGET_FULL_FRAME_IMAGE_RESIZE_MODE,
+    TargetPreprocessingContract,
+)
 from biominer.vision.score_inputs import score_item_gate_fields, visual_input_id_for
 
 
@@ -310,6 +316,89 @@ class EphemeralCropBioClipScorer:
         self._debug_crop_limit = debug_crop_limit
         self._debug_crops_written = 0
         self._segmenter = segmenter or NoneSegmenter()
+
+    def bind_reference_readiness(
+        self,
+        permit: ReferenceBankReadinessPermit,
+    ) -> None:
+        if not isinstance(permit, ReferenceBankReadinessPermit):
+            raise TypeError("permit must be a ReferenceBankReadinessPermit")
+        ensure_attestation = getattr(self._scorer, "ensure_model_attestation", None)
+        if not callable(ensure_attestation):
+            raise ValueError("BioCLIP scorer cannot attest its loaded model identity")
+        ensure_attestation()
+        contract = TargetPreprocessingContract()
+        actual = {
+            "model_name": str(getattr(self._scorer, "model_id", "") or ""),
+            "model_revision": str(
+                getattr(self._scorer, "model_revision", "") or ""
+            ),
+            "checkpoint_sha256": str(
+                getattr(self._scorer, "model_weights_sha256", "") or ""
+            ),
+            "open_clip_version": str(
+                getattr(self._scorer, "open_clip_version", "") or ""
+            ),
+            "open_clip_config_sha256": str(
+                getattr(self._scorer, "open_clip_config_sha256", "") or ""
+            ),
+            "preprocessing_attestation_fingerprint": str(
+                getattr(self._scorer, "preprocessing_fingerprint", "") or ""
+            ),
+            "preprocessing_contract_fingerprint": contract.fingerprint,
+            "preprocessing_version": contract.version,
+            "input_contract_version": FULL_FRAME_VISUAL_INPUT_VERSION,
+            "image_resize_mode": str(
+                getattr(self._scorer, "effective_image_resize_mode", "") or ""
+            ),
+        }
+        expected = {
+            "model_name": permit.model_name.removeprefix("hf-hub:"),
+            "model_revision": permit.model_revision,
+            "checkpoint_sha256": permit.checkpoint_sha256,
+            "open_clip_version": permit.open_clip_version,
+            "open_clip_config_sha256": permit.open_clip_config_sha256,
+            "preprocessing_attestation_fingerprint": (
+                permit.preprocessing_attestation_fingerprint
+            ),
+            "preprocessing_contract_fingerprint": (
+                permit.preprocessing_contract_fingerprint
+            ),
+            "preprocessing_version": permit.preprocessing_version,
+            "input_contract_version": permit.input_contract_version,
+            "image_resize_mode": TARGET_FULL_FRAME_IMAGE_RESIZE_MODE,
+        }
+        mismatches = sorted(
+            field for field, value in actual.items() if value != expected[field]
+        )
+        if mismatches:
+            raise ValueError(
+                "loaded BioCLIP model identity does not match reference readiness: "
+                + ", ".join(mismatches)
+            )
+        identity = permit.model_input_identity()
+        if identity.fingerprint != permit.model_input_fingerprint:
+            raise ValueError("reference readiness model input fingerprint mismatch")
+        pin_identity = getattr(
+            self._scorer,
+            "pin_reference_model_identity",
+            None,
+        )
+        if callable(pin_identity):
+            pin_identity(
+                model_weights_sha256=permit.checkpoint_sha256,
+                open_clip_version=permit.open_clip_version,
+                open_clip_config_sha256=permit.open_clip_config_sha256,
+                preprocessing_fingerprint=(
+                    permit.preprocessing_attestation_fingerprint
+                ),
+                image_resize_mode=TARGET_FULL_FRAME_IMAGE_RESIZE_MODE,
+            )
+        self.model_version = permit.model_version
+        self.checkpoint_sha256 = actual["checkpoint_sha256"]
+        self.preprocessing_version = contract.version
+        self.input_contract_version = FULL_FRAME_VISUAL_INPUT_VERSION
+        self.model_input_fingerprint = identity.fingerprint
 
     def score(self, item: dict[str, Any], labels: tuple[str, ...]) -> dict[str, float]:
         mode = _ablation_mode(item)

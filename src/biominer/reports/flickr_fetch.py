@@ -470,16 +470,21 @@ def environment_summary() -> dict[str, str | None]:
 
 
 def current_git_sha() -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except Exception:
-        return None
-    return result.stdout.strip() or None
+    repository_root = Path(__file__).resolve().parents[3]
+    for working_directory in (None, repository_root):
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=working_directory,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except Exception:
+            continue
+        if sha := result.stdout.strip():
+            return sha
+    return None
 
 
 def _tree_bytes(path: Path) -> int:

@@ -113,6 +113,7 @@ STANDARD_EVALUATION_PROFILE = "standard"
 XIE_STYLE_METRICS_FILE = "xie_style_metrics.json"
 BIOCLIP_25_HUGE_REPO_ID = "imageomics/bioclip-2.5-vith14"
 BIOCLIP_25_HUGE_REVISION = "191d741545e4c741cdef4b22c6eb69c945c1e592"
+BIOCLIP_OPENCLIP_VERSION = "3.3.0"
 BIOMINER_BASE_PATH = BASE_PATH
 YOLOE26_RUNTIME_ROOT = YOLOE26_DIR
 YOLOE26_RUNTIME_PYTHON = str(YOLOE26_RUNTIME_ROOT / "venv" / "bin" / "python")
@@ -121,6 +122,9 @@ YOLOE26_CACHE_ROOT = str(YOLOE26_RUNTIME_ROOT / "cache")
 BIOCLIP25_RUNTIME_ROOT = BIOCLIP25_DIR
 BIOCLIP_RUNTIME_PYTHON = str(BIOCLIP25_RUNTIME_ROOT / "venv" / "bin" / "python")
 BIOCLIP_HF_CACHE_DIR = str(BIOCLIP25_RUNTIME_ROOT / "cache" / "huggingface")
+BIOCLIP_WORKER_SCRIPT = str(
+    Path(__file__).with_name("bioclip") / "bioclip_worker.py"
+)
 BIOCLIP_PREFETCH_ALLOW_PATTERNS = (
     "open_clip_config.json",
     "open_clip_model.safetensors",
@@ -480,6 +484,8 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     bioclip_runtime.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
     bioclip_runtime.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
     bioclip_runtime.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
+    bioclip_runtime.add_argument("--model-name", default=BIOCLIP_25_HUGE_REPO_ID)
+    bioclip_runtime.add_argument("--revision", default=BIOCLIP_25_HUGE_REVISION)
     bioclip_prefetch = subparsers.add_parser("bioclip-prefetch-model")
     bioclip_prefetch.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
     bioclip_prefetch.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
@@ -1656,7 +1662,10 @@ def _run_production_command(args: argparse.Namespace) -> int:
             limits=limits,
         )
         def create_vision_runtime() -> tuple[Any, Any, Any, list[Any]]:
-            return _create_production_vision_runtime(vision_settings)
+            return _create_production_vision_runtime(
+                vision_settings,
+                classification_mode=args.classification_mode,
+            )
 
         vision_runtime_factory = (
             create_vision_runtime
@@ -1686,11 +1695,16 @@ def _run_production_command(args: argparse.Namespace) -> int:
 
 def _create_production_vision_runtime(
     vision_settings: VisionRuntimeSettings,
+    *,
+    classification_mode: str = DEFAULT_CLASSIFICATION_MODE,
 ) -> tuple[Any, Any, Any, list[Any]]:
     from biominer.bioclip.bioclip import PersistentBioClipScorer
     from biominer.bioclip.object_runner import EphemeralCropBioClipScorer
     from biominer.detection.image_io import load_decoded_image_from_record
     from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
+    from biominer.vision.full_frame_attention import (
+        TARGET_FULL_FRAME_IMAGE_RESIZE_MODE,
+    )
 
     detector = YoloE26SidecarObjectDetector(
         runtime_python=YOLOE26_RUNTIME_PYTHON,
@@ -1703,11 +1717,21 @@ def _create_production_vision_runtime(
         transport=vision_settings.yolo_sidecar_transport,
         temp_dir=Path("/tmp") / "biominer_yoloe26",
     )
-    runtime = _bioclip_runtime(runtime_python=Path(BIOCLIP_RUNTIME_PYTHON))
+    runtime = _bioclip_runtime(
+        runtime_python=Path(BIOCLIP_RUNTIME_PYTHON),
+        model_name=vision_settings.bioclip_model,
+    )
+    image_resize_mode = (
+        None
+        if normalize_classification_mode(classification_mode)
+        == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+        else TARGET_FULL_FRAME_IMAGE_RESIZE_MODE
+    )
     persistent = PersistentBioClipScorer(
         runtime=runtime,
         hf_cache_dir=BIOCLIP_HF_CACHE_DIR,
         device=vision_settings.device,
+        image_resize_mode=image_resize_mode,
         preprocess_workers=vision_settings.bioclip_preprocess_workers,
     )
     def image_loader(record: dict[str, Any]) -> Any:
@@ -1718,7 +1742,7 @@ def _create_production_vision_runtime(
         temp_dir=Path("/tmp") / "biominer_bioclip_crops",
         crop_padding_ratio=vision_settings.crop_padding_ratio,
         crop_target_px=vision_settings.crop_target_px,
-        model_id=runtime.model.model_name,
+        model_id=runtime.model.model_name.removeprefix("hf-hub:"),
         model_version=runtime.package_version,
         model_checkpoint=runtime.model.checkpoint,
     )
@@ -1759,6 +1783,10 @@ def _run_bioclip_runtime_check(args: argparse.Namespace) -> int:
             "-c",
             _BIOCLIP_RUNTIME_CHECK_SCRIPT,
             args.device,
+            args.model_name,
+            args.revision,
+            BIOCLIP_OPENCLIP_VERSION,
+            BIOCLIP_WORKER_SCRIPT,
         ],
         capture_output=True,
         check=False,
@@ -2308,24 +2336,28 @@ def _run_bioclip_join_object_evidence(args: argparse.Namespace) -> int:
 
 
 
-def _bioclip_runtime(*, runtime_python: Path) -> BioClipRuntime:
+def _bioclip_runtime(
+    *,
+    runtime_python: Path,
+    model_name: str = BIOCLIP_25_HUGE_REPO_ID,
+) -> BioClipRuntime:
     model = ModelConfig(
         model_id="bioclip2_5_huge",
         display_name="BioCLIP 2.5 Huge",
         role="preferred",
         status="use_if_available",
         task="biology image-text classification and embedding",
-        model_name=BIOCLIP_25_HUGE_REPO_ID,
+        model_name=str(model_name).strip(),
         checkpoint=BIOCLIP_25_HUGE_REVISION,
         package_name="open_clip_torch",
-        package_version="3.3.0",
+        package_version=BIOCLIP_OPENCLIP_VERSION,
         model_hash=f"hf-revision:{BIOCLIP_25_HUGE_REVISION}",
     )
     return BioClipRuntime(
         model=model,
         home=runtime_python.parent.parent,
         venv_python=runtime_python,
-        package_version="3.3.0",
+        package_version=BIOCLIP_OPENCLIP_VERSION,
         available=True,
     )
 
@@ -2344,51 +2376,57 @@ def _bioclip_worker_env(hf_cache_dir: str | Path) -> dict[str, str]:
 _BIOCLIP_RUNTIME_CHECK_SCRIPT = r"""
 from __future__ import annotations
 
-import importlib.metadata
 import json
+import importlib.util
 import os
+from pathlib import Path
 import sys
 
-import open_clip
 import torch
 
 requested = sys.argv[1]
+model_id = sys.argv[2]
+model_revision = sys.argv[3]
+expected_open_clip_version = sys.argv[4]
+worker_path = Path(sys.argv[5]).resolve(strict=True)
+spec = importlib.util.spec_from_file_location("_biominer_bioclip_runtime_worker", worker_path)
+if spec is None or spec.loader is None:
+    raise SystemExit("BioCLIP worker module could not be loaded")
+worker = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = worker
+spec.loader.exec_module(worker)
 mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-if requested == "auto":
-    if torch.cuda.is_available():
-        resolved = "cuda"
-    elif mps_available:
-        resolved = "mps"
-    else:
-        resolved = "cpu"
-elif requested == "cuda" and not torch.cuda.is_available():
-    raise SystemExit("CUDA was requested but is not available")
-elif requested == "mps" and not mps_available:
-    raise SystemExit("MPS was requested but is not available")
-else:
-    resolved = requested
-
-model_name = "hf-hub:imageomics/bioclip-2.5-vith14"
-model, _, _ = open_clip.create_model_and_transforms(model_name, pretrained=None)
-tokenizer = open_clip.get_tokenizer(model_name)
-model = model.to(resolved)
-model.eval()
-mps_fallback = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK")
-print(json.dumps({
-    "runtime_python": sys.executable,
-    "device_requested": requested,
-    "device_resolved": resolved,
-    "cuda_available": torch.cuda.is_available(),
-    "mps_available": mps_available,
-    "model_name": model_name,
-    "model_load": True,
-    "tokenizer_load": tokenizer is not None,
-    "open_clip_version": importlib.metadata.version("open_clip_torch"),
-    "pytorch_mps_fallback_env": mps_fallback,
-    "pytorch_mps_fallback_enabled": mps_fallback == "1",
-    "pytorch_mps_fallback_recommendation": "set PYTORCH_ENABLE_MPS_FALLBACK=1 for Apple MPS sidecar runs",
-    "torch_version": torch.__version__,
-}, sort_keys=True))
+loaded = worker._LoadedBioClipModel.load(
+    model_name=model_id,
+    checkpoint=model_revision,
+    device=requested,
+    image_resize_mode="longest",
+)
+try:
+    if loaded.open_clip_version != expected_open_clip_version:
+        raise SystemExit(
+            "OpenCLIP version mismatch: "
+            f"expected {expected_open_clip_version}, got {loaded.open_clip_version}"
+        )
+    if loaded.image_resize_mode != "longest":
+        raise SystemExit("BioCLIP runtime did not apply longest-side preprocessing")
+    mps_fallback = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK")
+    print(json.dumps({
+        "runtime_python": sys.executable,
+        "device_requested": requested,
+        "device_resolved": loaded.device,
+        "cuda_available": torch.cuda.is_available(),
+        "mps_available": mps_available,
+        "model_load": True,
+        "tokenizer_load": loaded.tokenizer is not None,
+        **loaded.worker_metadata,
+        "pytorch_mps_fallback_env": mps_fallback,
+        "pytorch_mps_fallback_enabled": mps_fallback == "1",
+        "pytorch_mps_fallback_recommendation": "set PYTORCH_ENABLE_MPS_FALLBACK=1 for Apple MPS sidecar runs",
+        "torch_version": torch.__version__,
+    }, sort_keys=True))
+finally:
+    loaded.close()
 """
 
 

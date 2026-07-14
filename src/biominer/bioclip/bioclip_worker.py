@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Mapping
+from dataclasses import dataclass
+import hashlib
 import json
+from math import isfinite
 import os
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Sequence
+
+from biominer.common.semantic_hash import canonical_semantic_fingerprint
 
 
 DEFAULT_DEVICE = "auto"
@@ -16,6 +23,21 @@ DEFAULT_TEXT_FEATURE_BATCH_SIZE = 512
 TEXT_FEATURE_BATCH_SIZE_ENV = "BIOMINER_BIOCLIP_TEXT_FEATURE_BATCH_SIZE"
 DEFAULT_TEXT_FEATURE_CACHE_ENTRIES = 8
 TEXT_FEATURE_CACHE_ENTRIES_ENV = "BIOMINER_BIOCLIP_TEXT_FEATURE_CACHE_ENTRIES"
+OPENCLIP_PREPROCESSING_ATTESTATION_VERSION = "openclip-preprocessing-attestation-v2"
+DECODED_IMAGE_CONTENT_HASH_VERSION = "decoded-image-content-v1"
+_HF_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
+_SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+
+@dataclass(frozen=True, slots=True)
+class OpenClipModelSource:
+    loader_model_name: str
+    pretrained: str | None
+    require_pretrained: bool
+    model_id: str
+    model_revision: str
+    model_weights_sha256: str | None
+    open_clip_config_sha256: str | None
 
 
 def main() -> None:
@@ -92,8 +114,8 @@ def configure_hf_cache_env(cache_dir: str | Path) -> Path:
     cache_path = Path(cache_dir).resolve()
     hub_path = cache_path / "hub"
     hub_path.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("HF_HOME", str(cache_path))
-    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(hub_path))
+    os.environ["HF_HOME"] = str(cache_path)
+    os.environ["HUGGINGFACE_HUB_CACHE"] = str(hub_path)
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     return cache_path
 
@@ -176,14 +198,24 @@ def run_persistent_worker() -> None:
                         json.dumps(
                             {
                                 "ready": True,
-                                "device": loaded.device,
-                                "gpu_name": loaded.gpu_name,
-                                "image_resize_mode": loaded.image_resize_mode,
+                                **loaded.worker_metadata,
                             },
                             sort_keys=True,
                         ),
                         flush=True,
                     )
+                if request.get("probe") is True:
+                    print(
+                        json.dumps(
+                            {
+                                "probed": True,
+                                **loaded.worker_metadata,
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
+                    continue
                 text_labels = request.get("text_labels")
                 if text_labels is not None:
                     embeddings = loaded.text_embeddings(list(text_labels))
@@ -194,9 +226,7 @@ def run_persistent_worker() -> None:
                                 "embedding_dim": len(embeddings[0])
                                 if embeddings
                                 else 0,
-                                "device": loaded.device,
-                                "gpu_name": loaded.gpu_name,
-                                "image_resize_mode": loaded.image_resize_mode,
+                                **loaded.worker_metadata,
                             },
                             sort_keys=True,
                         ),
@@ -205,7 +235,7 @@ def run_persistent_worker() -> None:
                     continue
                 image_embedding_paths = request.get("image_embedding_paths")
                 if image_embedding_paths is not None:
-                    embeddings = loaded.image_embeddings(
+                    embeddings, image_content_hashes = loaded.image_embeddings(
                         [Path(path) for path in image_embedding_paths],
                         preprocess_workers=preprocess_workers,
                     )
@@ -216,9 +246,8 @@ def run_persistent_worker() -> None:
                                 "embedding_dim": len(embeddings[0])
                                 if embeddings
                                 else 0,
-                                "device": loaded.device,
-                                "gpu_name": loaded.gpu_name,
-                                "image_resize_mode": loaded.image_resize_mode,
+                                "image_content_hashes": image_content_hashes,
+                                **loaded.worker_metadata,
                             },
                             sort_keys=True,
                         ),
@@ -240,9 +269,7 @@ def run_persistent_worker() -> None:
                         json.dumps(
                             {
                                 "scores_by_image_by_label_set": scores_by_image_by_label_set,
-                                "device": loaded.device,
-                                "gpu_name": loaded.gpu_name,
-                                "image_resize_mode": loaded.image_resize_mode,
+                                **loaded.worker_metadata,
                             },
                             sort_keys=True,
                         ),
@@ -259,9 +286,7 @@ def run_persistent_worker() -> None:
                         json.dumps(
                             {
                                 "scores": scores,
-                                "device": loaded.device,
-                                "gpu_name": loaded.gpu_name,
-                                "image_resize_mode": loaded.image_resize_mode,
+                                **loaded.worker_metadata,
                             },
                             sort_keys=True,
                         ),
@@ -277,9 +302,7 @@ def run_persistent_worker() -> None:
                     json.dumps(
                         {
                             "scores_by_image": scores_by_image,
-                            "device": loaded.device,
-                            "gpu_name": loaded.gpu_name,
-                            "image_resize_mode": loaded.image_resize_mode,
+                            **loaded.worker_metadata,
                         },
                         sort_keys=True,
                     ),
@@ -375,6 +398,14 @@ class _LoadedBioClipModel:
         device: str,
         gpu_name: str,
         image_resize_mode: str | None = None,
+        model_id: str = "",
+        model_revision: str = "",
+        model_weights_sha256: str | None = None,
+        open_clip_version: str = "",
+        open_clip_config_sha256: str | None = None,
+        preprocessing_version: str = "",
+        preprocessing_config: Mapping[str, object] | None = None,
+        preprocessing_fingerprint: str | None = None,
     ) -> None:  # noqa: ANN001 - external runtime objects.
         self.model = model
         self.preprocess = preprocess
@@ -383,6 +414,18 @@ class _LoadedBioClipModel:
         self.device = device
         self.gpu_name = gpu_name
         self.image_resize_mode = normalize_image_resize_mode(image_resize_mode)
+        self.model_id = str(model_id)
+        self.model_revision = str(model_revision)
+        self.model_weights_sha256 = model_weights_sha256
+        self.open_clip_version = str(open_clip_version)
+        self.open_clip_config_sha256 = open_clip_config_sha256
+        self.preprocessing_version = str(preprocessing_version)
+        self.preprocessing_config = (
+            canonical_preprocessing_config(preprocessing_config)
+            if preprocessing_config is not None
+            else None
+        )
+        self.preprocessing_fingerprint = preprocessing_fingerprint
         self._text_features_by_labels: OrderedDict[tuple[str, ...], object] = (
             OrderedDict()
         )
@@ -405,16 +448,33 @@ class _LoadedBioClipModel:
 
         resolved_device = resolve_torch_device(torch, device)
         gpu_name = torch_device_name(torch, resolved_device)
-        model_args = open_clip_model_args(model_name, checkpoint)
-        transform_kwargs: dict[str, str | None] = {
-            "pretrained": model_args["pretrained"]
+        model_source = resolve_open_clip_model_source(model_name, checkpoint)
+        transform_kwargs: dict[str, object] = {
+            "pretrained": model_source.pretrained,
+            "require_pretrained": model_source.require_pretrained,
         }
         if normalized_resize_mode is not None:
             transform_kwargs["image_resize_mode"] = normalized_resize_mode
         model, _, preprocess = open_clip.create_model_and_transforms(
-            model_args["model_name"], **transform_kwargs
+            model_source.loader_model_name, **transform_kwargs
         )
-        tokenizer = open_clip.get_tokenizer(model_args["model_name"])
+        tokenizer = open_clip.get_tokenizer(model_source.loader_model_name)
+        preprocessing_config = canonical_preprocessing_config(
+            open_clip.get_model_preprocess_cfg(model)
+        )
+        open_clip_version = _required_text(
+            getattr(open_clip, "__version__", ""),
+            field="OpenCLIP package version",
+        )
+        preprocessing_fingerprint = preprocessing_attestation_fingerprint(
+            open_clip_config_sha256=model_source.open_clip_config_sha256,
+            open_clip_version=open_clip_version,
+            preprocessing_config=preprocessing_config,
+            preprocessing_version=OPENCLIP_PREPROCESSING_ATTESTATION_VERSION,
+        )
+        effective_resize_mode = normalize_image_resize_mode(
+            str(preprocessing_config.get("resize_mode") or "")
+        )
         model = model.to(resolved_device)
         model.eval()
         return cls(
@@ -424,8 +484,34 @@ class _LoadedBioClipModel:
             torch=torch,
             device=resolved_device,
             gpu_name=gpu_name,
-            image_resize_mode=normalized_resize_mode,
+            image_resize_mode=effective_resize_mode,
+            model_id=model_source.model_id,
+            model_revision=model_source.model_revision,
+            model_weights_sha256=model_source.model_weights_sha256,
+            open_clip_version=open_clip_version,
+            open_clip_config_sha256=model_source.open_clip_config_sha256,
+            preprocessing_version=OPENCLIP_PREPROCESSING_ATTESTATION_VERSION,
+            preprocessing_config=preprocessing_config,
+            preprocessing_fingerprint=preprocessing_fingerprint,
         )
+
+    @property
+    def worker_metadata(self) -> dict[str, object]:
+        metadata: dict[str, object] = {
+            "device": self.device,
+            "gpu_name": self.gpu_name,
+            "image_resize_mode": self.image_resize_mode,
+            "model_id": self.model_id,
+            "model_revision": self.model_revision,
+            "open_clip_version": self.open_clip_version,
+            "open_clip_config_sha256": self.open_clip_config_sha256,
+            "preprocessing_version": self.preprocessing_version,
+            "preprocessing_config": self.preprocessing_config,
+            "preprocessing_fingerprint": self.preprocessing_fingerprint,
+        }
+        if self.model_weights_sha256 is not None:
+            metadata["model_weights_sha256"] = self.model_weights_sha256
+        return metadata
 
     def score_images(
         self,
@@ -505,22 +591,60 @@ class _LoadedBioClipModel:
 
     def image_embeddings(
         self, image_paths: Sequence[Path], *, preprocess_workers: int = 1
-    ) -> list[list[float]]:
+    ) -> tuple[list[list[float]], list[str]]:
         try:
             from PIL import Image
         except Exception as exc:  # noqa: BLE001 - executed in the external model runtime.
             raise RuntimeError(f"BioCLIP dependencies are unavailable: {exc}") from exc
 
-        with self.torch.no_grad():
-            image_batch = self._image_batch(
+        inference_mode = getattr(self.torch, "inference_mode", self.torch.no_grad)
+        with inference_mode():
+            image_batch, image_content_hashes = self._image_batch_with_content_hashes(
                 image_paths, Image, preprocess_workers=preprocess_workers
             )
-            image_features = self.model.encode_image(image_batch)
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-        return [
-            [float(value) for value in row.detach().cpu().tolist()]
-            for row in image_features
-        ]
+            image_features = self.model.encode_image(image_batch, normalize=True)
+        return (
+            [
+                [float(value) for value in row.detach().cpu().tolist()]
+                for row in image_features
+            ],
+            image_content_hashes,
+        )
+
+    def _image_batch_with_content_hashes(
+        self,
+        image_paths: Sequence[Path],
+        image_module,
+        *,
+        preprocess_workers: int = 1,
+    ):  # noqa: ANN001 - PIL module and external tensor.
+        workers = int(preprocess_workers)
+        if workers <= 0:
+            raise ValueError("preprocess_workers must be positive")
+        if workers == 1 or len(image_paths) <= 1:
+            prepared = [
+                self._preprocess_image_path_with_content_hash(
+                    image_path,
+                    image_module,
+                )
+                for image_path in image_paths
+            ]
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                prepared = list(
+                    executor.map(
+                        lambda image_path: (
+                            self._preprocess_image_path_with_content_hash(
+                                image_path,
+                                image_module,
+                            )
+                        ),
+                        image_paths,
+                    )
+                )
+        images = [image for image, _content_hash in prepared]
+        content_hashes = [content_hash for _image, content_hash in prepared]
+        return self.torch.stack(images).to(self.device), content_hashes
 
     def _image_batch(
         self, image_paths: Sequence[Path], image_module, *, preprocess_workers: int = 1
@@ -553,6 +677,23 @@ class _LoadedBioClipModel:
             close = getattr(image, "close", None)
             if callable(close):
                 close()
+
+    def _preprocess_image_path_with_content_hash(
+        self,
+        image_path: Path,
+        image_module,
+    ):  # noqa: ANN001 - PIL module and external tensor.
+        source_image = image_module.open(image_path)
+        rgb_image = None
+        try:
+            rgb_image = source_image.convert("RGB")
+            rgb_image.load()
+            content_hash = decoded_rgb_image_content_hash(rgb_image)
+            return self.preprocess(rgb_image), content_hash
+        finally:
+            if rgb_image is not None and rgb_image is not source_image:
+                _close_image(rgb_image)
+            _close_image(source_image)
 
     def _text_features(self, labels: Sequence[str], *, cache: bool = True):
         label_key = tuple(labels)
@@ -627,12 +768,211 @@ def text_feature_cache_entries() -> int:
     return parsed
 
 
-def open_clip_model_args(model_name: str, checkpoint: str) -> dict[str, str | None]:
-    if "/" in model_name and not model_name.startswith("hf-hub:"):
-        return {"model_name": f"hf-hub:{model_name}", "pretrained": None}
-    if model_name.startswith("hf-hub:"):
-        return {"model_name": model_name, "pretrained": None}
-    return {"model_name": model_name, "pretrained": checkpoint or None}
+def resolve_open_clip_model_source(
+    model_name: str,
+    checkpoint: str,
+) -> OpenClipModelSource:
+    normalized_model_name = str(model_name or "").strip()
+    normalized_checkpoint = str(checkpoint or "").strip()
+    if not normalized_model_name:
+        raise ValueError("BioCLIP model name must be non-empty")
+    if normalized_model_name.startswith("local-dir:"):
+        raise ValueError(
+            "BioCLIP local-dir model sources require an explicit canonical model identity"
+        )
+
+    model_id = normalized_model_name.removeprefix("hf-hub:")
+    if "/" not in model_id:
+        return OpenClipModelSource(
+            loader_model_name=normalized_model_name,
+            pretrained=normalized_checkpoint or None,
+            require_pretrained=bool(normalized_checkpoint),
+            model_id=normalized_model_name,
+            model_revision=normalized_checkpoint,
+            model_weights_sha256=None,
+            open_clip_config_sha256=None,
+        )
+
+    if _HF_COMMIT_PATTERN.fullmatch(normalized_checkpoint) is None:
+        raise ValueError(
+            "Hugging Face BioCLIP checkpoints must be an immutable "
+            "40-character commit revision"
+        )
+    try:
+        from huggingface_hub import snapshot_download
+    except Exception as exc:  # noqa: BLE001 - external model runtime dependency.
+        raise RuntimeError(
+            f"Hugging Face snapshot support is unavailable: {exc}"
+        ) from exc
+    snapshot = Path(
+        snapshot_download(
+            repo_id=model_id,
+            repo_type="model",
+            revision=normalized_checkpoint,
+            local_files_only=True,
+        )
+    ).resolve(strict=True)
+    if snapshot.name != normalized_checkpoint:
+        raise ValueError(
+            "Hugging Face snapshot resolved revision does not match the requested commit"
+        )
+    config_path = snapshot / "open_clip_config.json"
+    if not config_path.is_file():
+        raise FileNotFoundError(
+            f"prefetched BioCLIP snapshot is missing OpenCLIP config: {config_path}"
+        )
+    weights_path = snapshot / "open_clip_model.safetensors"
+    if not weights_path.is_file():
+        raise FileNotFoundError(
+            f"prefetched BioCLIP snapshot is missing frozen weights: {weights_path}"
+        )
+    return OpenClipModelSource(
+        loader_model_name=f"local-dir:{snapshot}",
+        pretrained=None,
+        require_pretrained=True,
+        model_id=model_id,
+        model_revision=normalized_checkpoint,
+        model_weights_sha256=_file_sha256(weights_path),
+        open_clip_config_sha256=_file_sha256(config_path),
+    )
+
+
+def canonical_preprocessing_config(config: object) -> dict[str, object]:
+    if not isinstance(config, Mapping) or not config:
+        raise ValueError("OpenCLIP preprocessing config must be a non-empty mapping")
+    return _canonical_json_mapping(config, field="OpenCLIP preprocessing config")
+
+
+def preprocessing_attestation_fingerprint(
+    *,
+    open_clip_config_sha256: str | None,
+    open_clip_version: str,
+    preprocessing_config: object,
+    preprocessing_version: str,
+) -> str:
+    config_sha256 = _optional_sha256(
+        open_clip_config_sha256,
+        field="OpenCLIP config SHA-256",
+    )
+    payload = {
+        "open_clip_config_sha256": config_sha256,
+        "open_clip_version": _required_text(
+            open_clip_version,
+            field="OpenCLIP package version",
+        ),
+        "preprocessing_config": canonical_preprocessing_config(preprocessing_config),
+        "preprocessing_version": _required_text(
+            preprocessing_version,
+            field="OpenCLIP preprocessing attestation version",
+        ),
+    }
+    return canonical_semantic_fingerprint(payload)
+
+
+def decoded_rgb_image_content_hash(image: object) -> str:
+    if str(getattr(image, "mode", "")) != "RGB":
+        raise ValueError("decoded image content hash requires RGB image data")
+    size = getattr(image, "size", None)
+    if (
+        not isinstance(size, (tuple, list))
+        or len(size) != 2
+        or isinstance(size[0], bool)
+        or isinstance(size[1], bool)
+        or not isinstance(size[0], int)
+        or not isinstance(size[1], int)
+    ):
+        raise ValueError("decoded image content hash requires a valid image size")
+    width = size[0]
+    height = size[1]
+    if width <= 0 or height <= 0:
+        raise ValueError("decoded image content hash requires positive dimensions")
+    tobytes = getattr(image, "tobytes", None)
+    if not callable(tobytes):
+        raise TypeError("decoded image content hash requires image byte access")
+    data = tobytes()
+    if not isinstance(data, bytes) or len(data) != width * height * 3:
+        raise ValueError("decoded image content hash requires packed RGB bytes")
+    header = json.dumps(
+        {
+            "height": height,
+            "mode": "RGB",
+            "version": DECODED_IMAGE_CONTENT_HASH_VERSION,
+            "width": width,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256()
+    digest.update(len(header).to_bytes(8, "big"))
+    digest.update(header)
+    digest.update(data)
+    return "sha256:" + digest.hexdigest()
+
+
+def _close_image(image: object) -> None:
+    close = getattr(image, "close", None)
+    if callable(close):
+        close()
+
+
+def _canonical_json_mapping(
+    value: Mapping[object, object],
+    *,
+    field: str,
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for raw_key, raw_value in value.items():
+        if not isinstance(raw_key, str) or not raw_key.strip():
+            raise ValueError(f"{field} keys must be non-empty strings")
+        result[raw_key] = _canonical_json_value(
+            raw_value,
+            field=f"{field}.{raw_key}",
+        )
+    return {key: result[key] for key in sorted(result)}
+
+
+def _canonical_json_value(value: object, *, field: str) -> object:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not isfinite(value):
+            raise ValueError(f"{field} must be finite")
+        return value
+    if isinstance(value, Mapping):
+        return _canonical_json_mapping(value, field=field)
+    if isinstance(value, (list, tuple)):
+        return [
+            _canonical_json_value(item, field=f"{field}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    raise TypeError(f"{field} contains unsupported value {type(value).__name__}")
+
+
+def _required_text(value: object, *, field: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError(f"{field} must be non-empty")
+    return normalized
+
+
+def _optional_sha256(value: object, *, field: str) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if _SHA256_PATTERN.fullmatch(normalized) is None:
+        raise ValueError(f"{field} must be a valid SHA-256")
+    return normalized
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    value = "sha256:" + digest.hexdigest()
+    if _SHA256_PATTERN.fullmatch(value) is None:  # pragma: no cover - defensive.
+        raise AssertionError("invalid SHA-256 digest")
+    return value
 
 
 def resolve_torch_device(torch, requested_device: str = DEFAULT_DEVICE) -> str:  # noqa: ANN001 - torch module.

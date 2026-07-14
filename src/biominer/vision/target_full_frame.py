@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-import hashlib
-import json
 import math
 import re
 from typing import Any, Protocol
 
+from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.detection.detector_base import (
     DecodedImage,
     normalize_mask_polygon_xyn,
@@ -35,8 +34,8 @@ from biominer.vision.full_frame_attention import (
 
 TARGET_AWARE_VISUAL_MODE = "whole_image_reference_ensemble"
 TARGET_FULL_FRAME_VISUAL_INPUT_VERSION = FULL_FRAME_VISUAL_INPUT_VERSION
-TARGET_FULL_FRAME_SCORING_UNIT_VERSION = "target-full-frame-scoring-unit-v2"
-TARGET_FULL_FRAME_EMBEDDING_VERSION = "target-full-frame-embedding-v2"
+TARGET_FULL_FRAME_SCORING_UNIT_VERSION = "target-full-frame-scoring-unit-v3"
+TARGET_FULL_FRAME_EMBEDDING_VERSION = "target-full-frame-embedding-v3"
 TARGET_FULL_FRAME_REQUIRES_CROP_METADATA = False
 TARGET_FULL_FRAME_MATERIALIZES_CROP_FILES = False
 
@@ -927,14 +926,7 @@ def _require_sha256(value: object, name: str) -> None:
 
 
 def _identity(payload: Mapping[str, object]) -> str:
-    encoded = json.dumps(
-        payload,
-        sort_keys=True,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+    return canonical_semantic_fingerprint(payload)
 
 
 __all__ = [

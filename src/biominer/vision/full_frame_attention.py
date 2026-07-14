@@ -6,11 +6,11 @@ from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import json
 import math
-from typing import Any
 
 import PIL
 from PIL import Image, ImageChops, ImageDraw
 
+from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.detection.detector_base import DecodedImage
 
 
@@ -18,10 +18,10 @@ RAW_FULL_IMAGE_KIND = "raw_full_image"
 FOCUSED_FULL_FRAME_KIND = "focused_full_frame"
 MASKED_FULL_FRAME_KIND = "masked_full_frame"
 MULTI_OBJECT_FULL_FRAME_KIND = "multi_object_full_frame"
-FULL_FRAME_VISUAL_INPUT_VERSION = "target-full-frame-visual-input-v1"
-FULL_FRAME_ATTENTION_TRANSFORMATION_VERSION = "full-frame-attention-transform-v1"
-FULL_FRAME_ATTENTION_EVIDENCE_VERSION = "full-frame-attention-evidence-v1"
-FULL_FRAME_ATTENTION_UNAVAILABLE_VERSION = "full-frame-attention-unavailable-v1"
+FULL_FRAME_VISUAL_INPUT_VERSION = "target-full-frame-visual-input-v2"
+FULL_FRAME_ATTENTION_TRANSFORMATION_VERSION = "full-frame-attention-transform-v2"
+FULL_FRAME_ATTENTION_EVIDENCE_VERSION = "full-frame-attention-evidence-v2"
+FULL_FRAME_ATTENTION_UNAVAILABLE_VERSION = "full-frame-attention-unavailable-v2"
 MASK_COVERAGE_BASIS_RASTERIZED_POLYGON = "rasterized_polygon_xyn"
 TARGET_FULL_FRAME_IMAGE_RESIZE_MODE = "longest"
 
@@ -29,17 +29,10 @@ _RAW_FULL_IMAGE_TRANSFORMATION = {
     "canvas": "complete_original_decoded_canvas",
     "colour_mode": "RGB",
     "operation": "identity",
-    "version": "raw-full-image-transform-v1",
+    "version": "raw-full-image-transform-v2",
 }
-RAW_FULL_IMAGE_TRANSFORMATION_FINGERPRINT = (
-    "sha256:"
-    + hashlib.sha256(
-        json.dumps(
-            _RAW_FULL_IMAGE_TRANSFORMATION,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
+RAW_FULL_IMAGE_TRANSFORMATION_FINGERPRINT = canonical_semantic_fingerprint(
+    _RAW_FULL_IMAGE_TRANSFORMATION
 )
 
 _VARIANT_ORDER = {
@@ -54,7 +47,7 @@ _VARIANT_ORDER = {
 class TargetPreprocessingContract:
     """Canvas-preserving OpenCLIP inference preprocessing for target mode."""
 
-    version: str = "target-full-frame-openclip-preprocess-v1"
+    version: str = "target-full-frame-openclip-preprocess-v2"
     image_size_px: int = 224
     patch_size_px: int = 14
     interpolation: str = "bicubic"
@@ -62,6 +55,16 @@ class TargetPreprocessingContract:
     padding_position: str = "center"
     padding_fill: int = 0
     implementation: str = "open_clip.ResizeKeepRatio+CenterCropOrPad"
+    normalization_mean: tuple[float, float, float] = (
+        0.48145466,
+        0.4578275,
+        0.40821073,
+    )
+    normalization_std: tuple[float, float, float] = (
+        0.26862954,
+        0.26130258,
+        0.27577711,
+    )
 
     def __post_init__(self) -> None:
         _require_non_empty(self.version, "preprocessing version")
@@ -74,6 +77,8 @@ class TargetPreprocessingContract:
             raise ValueError("preprocessing image and patch sizes must be integers")
         if self.image_size_px <= 0 or self.patch_size_px <= 0:
             raise ValueError("preprocessing image and patch sizes must be positive")
+        if self.patch_size_px != 14:
+            raise ValueError("BioCLIP 2.5 ViT-H/14 requires patch_size_px=14")
         if self.image_size_px % self.patch_size_px:
             raise ValueError("preprocessing image size must be divisible by patch size")
         if self.interpolation != "bicubic":
@@ -92,6 +97,25 @@ class TargetPreprocessingContract:
             raise ValueError(
                 "unsupported target full-frame preprocessing implementation"
             )
+        for field_name in ("normalization_mean", "normalization_std"):
+            raw_values = getattr(self, field_name)
+            if (
+                not isinstance(raw_values, (tuple, list))
+                or len(raw_values) != 3
+                or any(
+                    isinstance(value, bool) or not isinstance(value, (int, float))
+                    for value in raw_values
+                )
+            ):
+                raise ValueError(f"{field_name} must contain three finite values")
+            values = tuple(float(value) for value in raw_values)
+            if any(not math.isfinite(value) for value in values):
+                raise ValueError(f"{field_name} must contain three finite values")
+            if field_name == "normalization_std" and any(
+                value <= 0 for value in values
+            ):
+                raise ValueError("normalization_std values must be positive")
+            object.__setattr__(self, field_name, values)
 
     @property
     def fingerprint(self) -> str:
@@ -103,6 +127,8 @@ class TargetPreprocessingContract:
                 "padding_fill": self.padding_fill,
                 "padding_position": self.padding_position,
                 "patch_size_px": self.patch_size_px,
+                "normalization_mean": self.normalization_mean,
+                "normalization_std": self.normalization_std,
                 "resize_mode": self.resize_mode,
                 "version": self.version,
             }
@@ -189,7 +215,7 @@ class FullFrameTransformPolicy:
 
 @dataclass(frozen=True)
 class AttentionQualityPolicy:
-    version: str = "full-frame-attention-quality-v1"
+    version: str = "full-frame-attention-quality-v2"
     small_subject_area_ratio_threshold: float = 0.01
     low_resolution_min_side_px: int = 224
     max_relevant_detections: int = 8
@@ -1216,15 +1242,8 @@ def _optional_non_empty(value: object, name: str) -> str | None:
     return _require_non_empty(value, name)
 
 
-def _identity(payload: Mapping[str, Any]) -> str:
-    encoded = json.dumps(
-        payload,
-        sort_keys=True,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+def _identity(payload: Mapping[str, object]) -> str:
+    return canonical_semantic_fingerprint(payload)
 
 
 TARGET_FULL_FRAME_PREPROCESSING = TargetPreprocessingContract()

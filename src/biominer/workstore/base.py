@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
 class WorkStore(Protocol):
+    def publication_lock(self, key: str) -> AbstractContextManager[None]:
+        ...
+
     def get_or_create_run(
         self,
         *,

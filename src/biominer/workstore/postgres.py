@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 import hashlib
 import json
 
 from biominer.common.status import CLAIMED, COMPLETED, FAILED, PENDING, RUN_COMPLETED, RUN_FAILED, RUN_PLANNED, RUN_RUNNING
-from biominer.workstore.keys import scoped_work_item_key
+from biominer.workstore.keys import publication_lock_digest, scoped_work_item_key
 from biominer.workstore.schema import POSTGRES_CLAIM_SQL, POSTGRES_SCHEMA_SQL
+
+POSTGRES_PUBLICATION_LOCK_SQL = "SELECT pg_advisory_xact_lock(%s)"
 
 
 class PostgresWorkStore:
@@ -21,6 +24,18 @@ class PostgresWorkStore:
     def init_schema(self) -> None:
         with self._connect() as conn:
             conn.execute(POSTGRES_SCHEMA_SQL)
+
+    @contextmanager
+    def publication_lock(self, key: str) -> Iterator[None]:
+        lock_id = int.from_bytes(
+            publication_lock_digest(key)[:8],
+            byteorder="big",
+            signed=True,
+        )
+        with self._connect() as conn:
+            with conn.transaction():
+                conn.execute(POSTGRES_PUBLICATION_LOCK_SQL, (lock_id,))
+                yield
 
     def get_or_create_run(
         self,

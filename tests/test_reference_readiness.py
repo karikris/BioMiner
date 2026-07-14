@@ -33,6 +33,7 @@ from biominer.references.readiness import (
     reference_bank_split_assignments_schema,
     reference_bank_summary_schema,
     reference_readiness_allows_vision,
+    reference_support_manifest_fingerprint,
     reference_support_manifest_schema,
     validate_reference_bank_split_assignments,
     validate_reference_bank_summary,
@@ -576,9 +577,14 @@ def _model() -> ReferenceModelInputIdentity:
     return ReferenceModelInputIdentity(
         model_name="bioclip-2.5-huge",
         model_version="2.5.0",
+        model_revision="191d741545e4c741cdef4b22c6eb69c945c1e592",
         checkpoint_uri="s3://models/bioclip-2.5-huge/model.safetensors",
         checkpoint_sha256=_sha("bioclip-model"),
+        open_clip_version="3.3.0",
+        open_clip_config_sha256=_sha("openclip-config"),
         preprocessing_version="bioclip-preprocess-v2",
+        preprocessing_contract_fingerprint=_sha("preprocessing-contract"),
+        preprocessing_attestation_fingerprint=_sha("preprocessing-attestation"),
         input_contract_version="target-aware-reference-input-v1",
     )
 
@@ -630,6 +636,165 @@ def _replace_observations(
     )
 
 
+def _relocate_media_objects(fixture: _Fixture) -> _Fixture:
+    relocated_objects = fixture.objects.with_columns(
+        (
+            pl.lit("s3://relocated/reference-media/")
+            + pl.col("sha256").str.strip_prefix("sha256:")
+            + pl.lit(".jpg")
+        ).alias("source_object_uri")
+    )
+    deduplicated = deduplicate_reference_media(
+        relocated_objects,
+        fixture.candidates,
+        fixture.observations,
+        generated_at=NOW,
+    )
+    queue_result = build_reference_review_queue(
+        fixture.selections,
+        deduplicated.media_objects,
+        deduplicated.media_candidates,
+        deduplicated.observations,
+        deduplicated.relationships,
+        deduplication_report=deduplicated.report,
+        reference_bank_version=BANK_VERSION,
+        created_at=NOW + timedelta(hours=1),
+    )
+    return replace(
+        fixture,
+        observations=deduplicated.observations,
+        candidates=deduplicated.media_candidates,
+        objects=deduplicated.media_objects,
+        relationships=deduplicated.relationships,
+        deduplication_report=deduplicated.report,
+        queue=queue_result.queue,
+        provenance=queue_result.provenance,
+    )
+
+
+def _rebuild_fixture_with_operational_churn(fixture: _Fixture) -> _Fixture:
+    rebuilt_at = NOW + timedelta(days=7)
+    plan = fixture.acquisition_plan.with_columns(
+        pl.lit(rebuilt_at).cast(pl.Datetime("us", "UTC")).alias("created_at")
+    )
+    selections = fixture.selections.with_columns(
+        pl.lit(rebuilt_at).cast(pl.Datetime("us", "UTC")).alias("selected_at")
+    )
+    observations = fixture.observations.with_columns(
+        (
+            pl.lit("https://republished.example.test/records/")
+            + pl.col("source_observation_id")
+        ).alias("source_record_url"),
+        pl.lit(rebuilt_at).cast(pl.Datetime("us", "UTC")).alias("retrieved_at"),
+    )
+    candidates = fixture.candidates.with_columns(
+        (
+            pl.lit("https://republished.example.test/media/")
+            + pl.col("provider_media_id")
+        ).alias("media_identifier"),
+        pl.lit(rebuilt_at).cast(pl.Datetime("us", "UTC")).alias("retrieved_at"),
+    )
+    objects = fixture.objects.with_columns(
+        (
+            pl.lit("s3://republished-reference-media/")
+            + pl.col("sha256").str.strip_prefix("sha256:")
+            + pl.lit(".jpg")
+        ).alias("source_object_uri"),
+        pl.lit(rebuilt_at).cast(pl.Datetime("us", "UTC")).alias("downloaded_at"),
+        pl.lit(9, dtype=pl.UInt16).alias("download_attempt_count"),
+        pl.col("reference_media_id")
+        .map_elements(
+            lambda value: _sha(f"republished-object:{value}"),
+            return_dtype=pl.String,
+        )
+        .alias("object_fingerprint"),
+    )
+    deduplicated = deduplicate_reference_media(
+        objects,
+        candidates,
+        observations,
+        generated_at=rebuilt_at,
+    )
+    report = json.loads(json.dumps(deduplicated.report))
+    report["pid"] = 987654
+    report["git_sha"] = "a" * 40
+    report["generated_at"] = rebuilt_at.isoformat()
+    report["inputs"]["artifact_uris"] = {
+        "media_objects": "s3://republished/inputs/media-objects.parquet",
+        "media_candidates": "s3://republished/inputs/media-candidates.parquet",
+        "observations": "s3://republished/inputs/observations.parquet",
+    }
+    report["outputs"]["artifact_uris"] = {
+        "media_objects": "s3://republished/outputs/media-objects.parquet",
+        "relationships": "s3://republished/outputs/relationships.parquet",
+        "report": "s3://republished/reports/report.json",
+        "summary": "s3://republished/reports/summary.md",
+    }
+    queue_result = build_reference_review_queue(
+        selections,
+        deduplicated.media_objects,
+        deduplicated.media_candidates,
+        deduplicated.observations,
+        deduplicated.relationships,
+        deduplication_report=report,
+        reference_bank_version=BANK_VERSION,
+        created_at=rebuilt_at + timedelta(hours=1),
+    )
+    raw = queue_result.decision_template.with_columns(
+        pl.lit(1, dtype=pl.UInt16).alias("review_round"),
+        pl.lit("reviewer-after-republish").alias("verified_by"),
+        pl.lit(rebuilt_at + timedelta(hours=2))
+        .cast(pl.Datetime("us", "UTC"))
+        .alias("reviewed_at"),
+        pl.lit(True, dtype=pl.Boolean).alias("target_identity_verified"),
+        pl.lit("verified").alias("verification_status"),
+        pl.lit("adult").alias("life_stage"),
+        pl.lit("live_field").alias("visual_domain"),
+        pl.lit("dorsal").alias("view"),
+        pl.lit("high").alias("review_confidence"),
+        pl.lit("Diagnostic markings are visible.").alias("review_notes"),
+        pl.lit(None, dtype=pl.String).alias("exclusion_reason"),
+    )
+    decisions = import_reference_review_decisions(
+        raw,
+        queue=queue_result.queue,
+        queue_provenance=queue_result.provenance,
+        existing_decisions=reference_review_decisions_frame([]),
+        prior_report=queue_result.report,
+        prior_report_sha256=_report_sha256(queue_result.report),
+    ).decisions
+    assigned_at = rebuilt_at + timedelta(hours=3)
+    assignment_rows: list[dict[str, object]] = []
+    for prior in fixture.split_assignments.iter_rows(named=True):
+        row = dict(prior)
+        row["assigned_by"] = "split-republisher"
+        row["assigned_at"] = assigned_at
+        row["assignment_fingerprint"] = make_reference_split_assignment_fingerprint(
+            reference_media_id=str(row["reference_media_id"]),
+            split_version=str(row["split_version"]),
+            support_split=str(row["support_split"]),
+            included=bool(row["included"]),
+            exclusion_reason=row["exclusion_reason"],
+            assigned_by=str(row["assigned_by"]),
+            assigned_at=assigned_at,
+        )
+        assignment_rows.append(row)
+    return replace(
+        fixture,
+        acquisition_plan=plan,
+        selections=selections,
+        observations=deduplicated.observations,
+        candidates=deduplicated.media_candidates,
+        objects=deduplicated.media_objects,
+        relationships=deduplicated.relationships,
+        deduplication_report=report,
+        queue=queue_result.queue,
+        provenance=queue_result.provenance,
+        decisions=decisions,
+        split_assignments=reference_bank_split_assignments_frame(assignment_rows),
+    )
+
+
 def test_ready_build_publish_and_strict_load(tmp_path: Path) -> None:
     result = _build(_make_fixture())
 
@@ -672,9 +837,170 @@ def test_ready_build_publish_and_strict_load(tmp_path: Path) -> None:
     assert permit.registry_version == REGISTRY_VERSION
     assert permit.target_accepted_taxon_key == TARGET
     assert permit.model_input_fingerprint == _model().fingerprint
+    assert permit.model_revision == _model().model_revision
+    assert permit.checkpoint_uri == _model().checkpoint_uri
+    assert permit.open_clip_version == _model().open_clip_version
+    assert permit.open_clip_config_sha256 == _model().open_clip_config_sha256
+    assert (
+        permit.preprocessing_contract_fingerprint
+        == _model().preprocessing_contract_fingerprint
+    )
+    assert (
+        permit.preprocessing_attestation_fingerprint
+        == _model().preprocessing_attestation_fingerprint
+    )
     assert permit.support_manifest_sha256.startswith("sha256:")
     assert permit.summary_sha256.startswith("sha256:")
     assert permit.readiness_sha256.startswith("sha256:")
+    assert (
+        load_reference_bank_readiness(
+            tmp_path / "readiness",
+            expected_model_name="hf-hub:bioclip-2.5-huge",
+        ).model_name
+        == "bioclip-2.5-huge"
+    )
+
+
+def test_model_and_support_semantic_fingerprints_ignore_object_relocation() -> None:
+    model = _model()
+    assert replace(
+        model,
+        checkpoint_uri="s3://relocated/models/model.safetensors",
+    ).fingerprint == model.fingerprint
+
+    result = _build(_make_fixture())
+    original = result.support_manifest
+    relocated = original.with_columns(
+        (
+            pl.lit("s3://relocated/reference-media/")
+            + pl.col("reference_media_id")
+            + pl.lit(".jpg")
+        ).alias("source_object_uri"),
+        (
+            pl.lit("https://relocated.example.test/records/")
+            + pl.col("reference_media_id")
+        ).alias("source_record_url"),
+        pl.lit("https://relocated.example.test/licences/cc-by-4.0").alias(
+            "licence_uri"
+        ),
+        pl.lit(_sha("relocated-object")).alias("object_fingerprint"),
+        pl.lit(_sha("relocated-split-assignment")).alias(
+            "split_assignment_fingerprint"
+        ),
+        (pl.lit("review:relocated:") + pl.col("reference_media_id")).alias(
+            "review_request_id"
+        ),
+        pl.lit(["decision:relocated"], dtype=pl.List(pl.String)).alias(
+            "review_decision_ids"
+        ),
+        pl.lit(["reviewer:relocated"], dtype=pl.List(pl.String)).alias(
+            "reviewer_ids"
+        ),
+    )
+
+    validate_reference_support_manifest(relocated)
+    assert reference_support_manifest_fingerprint(relocated) == (
+        reference_support_manifest_fingerprint(original)
+    )
+
+    changed_rows: list[dict[str, object]] = []
+    for source_row in original.iter_rows(named=True):
+        row = dict(source_row)
+        row["image_sha256"] = _sha(
+            "scientifically-different-image:" + str(row["reference_media_id"])
+        )
+        row["support_row_fingerprint"] = readiness_module._support_row_fingerprint(  # noqa: SLF001 - verifies that direct image evidence remains semantic.
+            row
+        )
+        changed_rows.append(row)
+    scientifically_changed = pl.DataFrame(
+        changed_rows,
+        schema=reference_support_manifest_schema(),
+        orient="row",
+        strict=True,
+    )
+    validate_reference_support_manifest(scientifically_changed)
+    assert reference_support_manifest_fingerprint(scientifically_changed) != (
+        reference_support_manifest_fingerprint(original)
+    )
+
+
+def test_rebuilt_support_bank_ignores_media_object_relocation() -> None:
+    fixture = _make_fixture()
+    relocated_fixture = _relocate_media_objects(fixture)
+
+    assert fixture.queue["review_request_id"].to_list() == relocated_fixture.queue[
+        "review_request_id"
+    ].to_list()
+    assert fixture.objects["source_object_uri"].to_list() != relocated_fixture.objects[
+        "source_object_uri"
+    ].to_list()
+
+    original = _build(fixture)
+    relocated = _build(relocated_fixture)
+
+    assert original.readiness["inputs"] == relocated.readiness["inputs"]
+    assert original.readiness["bank_fingerprint"] == relocated.readiness[
+        "bank_fingerprint"
+    ]
+    assert original.readiness["support_manifest_fingerprint"] == relocated.readiness[
+        "support_manifest_fingerprint"
+    ]
+    assert original.summary.equals(relocated.summary)
+    assert original.support_manifest.drop("source_object_uri").equals(
+        relocated.support_manifest.drop("source_object_uri")
+    )
+
+
+def test_regenerated_upstream_audit_provenance_does_not_change_bank_identity() -> None:
+    fixture = _make_fixture()
+    regenerated_fixture = _rebuild_fixture_with_operational_churn(fixture)
+
+    assert fixture.objects["object_fingerprint"].to_list() != (
+        regenerated_fixture.objects["object_fingerprint"].to_list()
+    )
+    assert fixture.queue["review_request_id"].to_list() != (
+        regenerated_fixture.queue["review_request_id"].to_list()
+    )
+    assert fixture.decisions["review_decision_id"].to_list() != (
+        regenerated_fixture.decisions["review_decision_id"].to_list()
+    )
+    assert fixture.split_assignments["assignment_fingerprint"].to_list() != (
+        regenerated_fixture.split_assignments["assignment_fingerprint"].to_list()
+    )
+    assert fixture.observations["source_record_hash"].to_list() == (
+        regenerated_fixture.observations["source_record_hash"].to_list()
+    )
+    assert fixture.objects["sha256"].to_list() == (
+        regenerated_fixture.objects["sha256"].to_list()
+    )
+
+    original = _build(fixture)
+    regenerated = _build(
+        regenerated_fixture,
+        created_at=NOW + timedelta(days=8),
+    )
+
+    assert original.readiness["inputs"] == regenerated.readiness["inputs"]
+    assert original.readiness["bank_fingerprint"] == regenerated.readiness[
+        "bank_fingerprint"
+    ]
+    assert original.readiness["support_manifest_fingerprint"] == (
+        regenerated.readiness["support_manifest_fingerprint"]
+    )
+    assert original.readiness["split_assignments_fingerprint"] == (
+        regenerated.readiness["split_assignments_fingerprint"]
+    )
+    assert original.support_manifest["support_row_fingerprint"].to_list() == (
+        regenerated.support_manifest["support_row_fingerprint"].to_list()
+    )
+    assert original.summary.equals(regenerated.summary)
+    assert original.support_manifest["review_request_id"].to_list() != (
+        regenerated.support_manifest["review_request_id"].to_list()
+    )
+    assert original.support_manifest["reviewer_ids"].to_list() != (
+        regenerated.support_manifest["reviewer_ids"].to_list()
+    )
 
 
 def test_policy_requires_explicit_coverage_for_every_candidate_cluster() -> None:

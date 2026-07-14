@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
+from math import isfinite
 from pathlib import Path
+import re
 import subprocess
 from typing import IO, Any, Callable, Mapping, Sequence
 
@@ -12,7 +14,12 @@ from biominer.bioclip.diagnostics import (
     probability_entropy,
     topk_margin,
 )
-from biominer.bioclip.bioclip_worker import normalize_image_resize_mode
+from biominer.bioclip.bioclip_worker import (
+    OPENCLIP_PREPROCESSING_ATTESTATION_VERSION,
+    canonical_preprocessing_config,
+    normalize_image_resize_mode,
+    preprocessing_attestation_fingerprint,
+)
 from biominer.bioclip.model_registry import BioClipRuntime
 from biominer.bioclip.prompt_templates import (
     SPECIES_PROMPT_AGGREGATION_DEFAULT,
@@ -27,6 +34,16 @@ BioClipBatchScorer = Callable[
 SubprocessRunner = Callable[..., subprocess.CompletedProcess[str]]
 PopenFactory = Callable[..., subprocess.Popen[str]]
 LabelSets = Mapping[str, Sequence[str]]
+_SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_PREPROCESSING_ATTESTATION_FIELDS = frozenset(
+    {
+        "open_clip_version",
+        "open_clip_config_sha256",
+        "preprocessing_version",
+        "preprocessing_config",
+        "preprocessing_fingerprint",
+    }
+)
 
 
 DEFAULT_TRIAGE_LABELS = (
@@ -511,6 +528,22 @@ class PersistentBioClipScorer:
         self.device: str | None = None
         self.gpu_name: str | None = None
         self.effective_image_resize_mode: str | None = None
+        self.model_weights_sha256: str | None = None
+        self.open_clip_version: str | None = None
+        self.open_clip_config_sha256: str | None = None
+        self.preprocessing_version: str | None = None
+        self.preprocessing_config: dict[str, object] | None = None
+        self.preprocessing_fingerprint: str | None = None
+        self.last_image_content_hashes: list[str] | None = None
+        self._pinned_reference_model_identity: dict[str, str] | None = None
+
+    @property
+    def model_id(self) -> str:
+        return self.runtime.model.model_name.removeprefix("hf-hub:")
+
+    @property
+    def model_revision(self) -> str:
+        return self.runtime.model.checkpoint
 
     def __enter__(self) -> "PersistentBioClipScorer":
         return self
@@ -524,38 +557,18 @@ class PersistentBioClipScorer:
     def score_batch(
         self, image_paths: Sequence[Path], labels: Sequence[str]
     ) -> list[Mapping[str, float]]:
-        process = self._ensure_process()
-        if process.poll() is not None:
-            raise RuntimeError(
-                f"BioCLIP persistent worker exited early with code {process.returncode}"
-            )
         request = {
             "image_paths": [str(image_path) for image_path in image_paths],
             "labels": list(labels),
-            "model_name": self.runtime.model.model_name,
-            "checkpoint": self.runtime.model.checkpoint,
-            "hf_cache_dir": str(self.hf_cache_dir),
-            "device": self.requested_device,
-            "preprocess_workers": self.preprocess_workers,
+            **self._worker_request_metadata(),
         }
-        if self.image_resize_mode is not None:
-            request["image_resize_mode"] = self.image_resize_mode
-        assert self._stdin is not None
-        assert self._stdout is not None
-        self._stdin.write(json.dumps(request, sort_keys=True) + "\n")
-        self._stdin.flush()
-        while True:
-            line = self._stdout.readline()
-            if not line:
-                raise RuntimeError(
-                    "BioCLIP persistent worker closed stdout before returning scores"
-                )
-            payload = json.loads(line)
-            if "error" in payload:
-                raise RuntimeError(f"BioCLIP worker failed: {payload['error']}")
-            self._record_worker_metadata(payload)
-            if payload.get("ready"):
-                continue
+        try:
+            payload = self._request_payload(
+                request,
+                response_fields=("scores_by_image", "scores"),
+                response_description="scores",
+                require_model_attestation=True,
+            )
             if "scores_by_image" in payload:
                 return [
                     {str(label): float(score) for label, score in scores.items()}
@@ -564,58 +577,135 @@ class PersistentBioClipScorer:
             return [
                 {str(label): float(score) for label, score in payload["scores"].items()}
             ]
+        except Exception:
+            self._discard_process()
+            raise
 
     def score_label_sets_batch(
         self,
         image_paths: Sequence[Path],
         label_sets: LabelSets,
     ) -> dict[str, list[Mapping[str, float]]]:
-        process = self._ensure_process()
-        if process.poll() is not None:
-            raise RuntimeError(
-                f"BioCLIP persistent worker exited early with code {process.returncode}"
-            )
         request = {
             "image_paths": [str(image_path) for image_path in image_paths],
             "label_sets": {name: list(labels) for name, labels in label_sets.items()},
-            "model_name": self.runtime.model.model_name,
-            "checkpoint": self.runtime.model.checkpoint,
-            "hf_cache_dir": str(self.hf_cache_dir),
-            "device": self.requested_device,
-            "preprocess_workers": self.preprocess_workers,
+            **self._worker_request_metadata(),
         }
-        if self.image_resize_mode is not None:
-            request["image_resize_mode"] = self.image_resize_mode
-        assert self._stdin is not None
-        assert self._stdout is not None
-        self._stdin.write(json.dumps(request, sort_keys=True) + "\n")
-        self._stdin.flush()
-        while True:
-            line = self._stdout.readline()
-            if not line:
-                raise RuntimeError(
-                    "BioCLIP persistent worker closed stdout before returning scores"
-                )
-            payload = json.loads(line)
-            if "error" in payload:
-                raise RuntimeError(f"BioCLIP worker failed: {payload['error']}")
-            self._record_worker_metadata(payload)
-            if payload.get("ready"):
-                continue
-            if "scores_by_image_by_label_set" in payload:
-                return _coerce_label_set_scores(payload["scores_by_image_by_label_set"])
-            raise RuntimeError(
-                "BioCLIP worker response did not include label-set scores"
+        try:
+            payload = self._request_payload(
+                request,
+                response_fields=("scores_by_image_by_label_set",),
+                response_description="label-set scores",
+                require_model_attestation=True,
             )
+            return _coerce_label_set_scores(payload["scores_by_image_by_label_set"])
+        except Exception:
+            self._discard_process()
+            raise
 
     def embed_text_labels(self, labels: Sequence[str]) -> list[list[float]]:
-        process = self._ensure_process()
-        if process.poll() is not None:
-            raise RuntimeError(
-                f"BioCLIP persistent worker exited early with code {process.returncode}"
-            )
         request = {
             "text_labels": list(labels),
+            **self._worker_request_metadata(),
+        }
+        try:
+            payload = self._request_payload(
+                request,
+                response_fields=("text_embeddings",),
+                response_description="text embeddings",
+                require_model_attestation=True,
+            )
+            return [
+                [float(value) for value in embedding]
+                for embedding in payload["text_embeddings"]
+            ]
+        except Exception:
+            self._discard_process()
+            raise
+
+    def ensure_model_attestation(self) -> None:
+        request = {
+            "probe": True,
+            **self._worker_request_metadata(),
+        }
+        try:
+            self._request_payload(
+                request,
+                response_fields=("probed",),
+                response_description="model attestation probe",
+                require_model_attestation=True,
+            )
+        except Exception:
+            self._discard_process()
+            raise
+
+    def pin_reference_model_identity(
+        self,
+        *,
+        model_weights_sha256: str,
+        open_clip_version: str,
+        open_clip_config_sha256: str,
+        preprocessing_fingerprint: str,
+        image_resize_mode: str,
+    ) -> None:
+        expected = {
+            "model_weights_sha256": _required_fingerprint(
+                model_weights_sha256,
+                field="reference model weights SHA-256",
+            ),
+            "open_clip_version": _required_runtime_text(
+                open_clip_version,
+                field="reference OpenCLIP version",
+            ),
+            "open_clip_config_sha256": _required_fingerprint(
+                open_clip_config_sha256,
+                field="reference OpenCLIP config SHA-256",
+            ),
+            "preprocessing_fingerprint": _required_fingerprint(
+                preprocessing_fingerprint,
+                field="reference preprocessing fingerprint",
+            ),
+            "image_resize_mode": _required_runtime_text(
+                image_resize_mode,
+                field="reference image resize mode",
+            ),
+        }
+        previous = self._pinned_reference_model_identity
+        if previous is not None and previous != expected:
+            raise RuntimeError("BioCLIP reference model identity is already pinned")
+        self._pinned_reference_model_identity = expected
+        self._validate_pinned_reference_model_identity()
+
+    def embed_image_paths(self, image_paths: Sequence[Path]) -> list[list[float]]:
+        if not image_paths:
+            raise ValueError("at least one image path is required for embedding")
+        request = {
+            "image_embedding_paths": [str(image_path) for image_path in image_paths],
+            **self._worker_request_metadata(),
+        }
+        try:
+            payload = self._request_payload(
+                request,
+                response_fields=("image_embeddings",),
+                response_description="image embeddings",
+                require_model_attestation=True,
+            )
+            embeddings = _validated_image_embeddings(
+                payload,
+                expected_count=len(image_paths),
+            )
+            image_content_hashes = _validated_image_content_hashes(
+                payload,
+                expected_count=len(image_paths),
+            )
+            self.last_image_content_hashes = image_content_hashes
+            return embeddings
+        except Exception:
+            self._discard_process()
+            raise
+
+    def _worker_request_metadata(self) -> dict[str, object]:
+        metadata: dict[str, object] = {
             "model_name": self.runtime.model.model_name,
             "checkpoint": self.runtime.model.checkpoint,
             "hf_cache_dir": str(self.hf_cache_dir),
@@ -623,71 +713,57 @@ class PersistentBioClipScorer:
             "preprocess_workers": self.preprocess_workers,
         }
         if self.image_resize_mode is not None:
-            request["image_resize_mode"] = self.image_resize_mode
-        assert self._stdin is not None
-        assert self._stdout is not None
-        self._stdin.write(json.dumps(request, sort_keys=True) + "\n")
-        self._stdin.flush()
-        while True:
-            line = self._stdout.readline()
-            if not line:
-                raise RuntimeError(
-                    "BioCLIP persistent worker closed stdout before returning text embeddings"
-                )
-            payload = json.loads(line)
-            if "error" in payload:
-                raise RuntimeError(f"BioCLIP worker failed: {payload['error']}")
-            self._record_worker_metadata(payload)
-            if payload.get("ready"):
-                continue
-            if "text_embeddings" in payload:
-                return [
-                    [float(value) for value in embedding]
-                    for embedding in payload["text_embeddings"]
-                ]
-            raise RuntimeError(
-                "BioCLIP worker response did not include text embeddings"
-            )
+            metadata["image_resize_mode"] = self.image_resize_mode
+        return metadata
 
-    def embed_image_paths(self, image_paths: Sequence[Path]) -> list[list[float]]:
+    def _request_payload(
+        self,
+        request: Mapping[str, object],
+        *,
+        response_fields: Sequence[str],
+        response_description: str,
+        require_model_attestation: bool = False,
+    ) -> Mapping[str, object]:
         process = self._ensure_process()
         if process.poll() is not None:
             raise RuntimeError(
-                f"BioCLIP persistent worker exited early with code {process.returncode}"
+                "BioCLIP persistent worker exited early with code "
+                f"{getattr(process, 'returncode', None)}"
             )
-        request = {
-            "image_embedding_paths": [str(image_path) for image_path in image_paths],
-            "model_name": self.runtime.model.model_name,
-            "checkpoint": self.runtime.model.checkpoint,
-            "hf_cache_dir": str(self.hf_cache_dir),
-            "device": self.requested_device,
-            "preprocess_workers": self.preprocess_workers,
-        }
-        if self.image_resize_mode is not None:
-            request["image_resize_mode"] = self.image_resize_mode
-        assert self._stdin is not None
-        assert self._stdout is not None
+        if self._stdin is None or self._stdout is None:
+            raise RuntimeError(
+                "BioCLIP persistent worker did not expose stdin/stdout pipes"
+            )
         self._stdin.write(json.dumps(request, sort_keys=True) + "\n")
         self._stdin.flush()
+        ready_seen = False
         while True:
             line = self._stdout.readline()
             if not line:
                 raise RuntimeError(
-                    "BioCLIP persistent worker closed stdout before returning image embeddings"
+                    "BioCLIP persistent worker closed stdout before returning "
+                    f"{response_description}"
                 )
-            payload = json.loads(line)
+            decoded = json.loads(line)
+            if not isinstance(decoded, Mapping):
+                raise RuntimeError("BioCLIP worker response must be a JSON object")
+            payload = dict(decoded)
             if "error" in payload:
                 raise RuntimeError(f"BioCLIP worker failed: {payload['error']}")
             self._record_worker_metadata(payload)
-            if payload.get("ready"):
+            if require_model_attestation:
+                self._require_frozen_worker_model_identity(payload)
+            if payload.get("ready") is True:
+                if ready_seen:
+                    raise RuntimeError(
+                        "BioCLIP worker returned duplicate ready responses"
+                    )
+                ready_seen = True
                 continue
-            if "image_embeddings" in payload:
-                return [
-                    [float(value) for value in embedding]
-                    for embedding in payload["image_embeddings"]
-                ]
+            if any(field in payload for field in response_fields):
+                return payload
             raise RuntimeError(
-                "BioCLIP worker response did not include image embeddings"
+                f"BioCLIP worker response did not include {response_description}"
             )
 
     def _record_worker_metadata(self, payload: Mapping[str, object]) -> None:
@@ -699,19 +775,220 @@ class PersistentBioClipScorer:
             self.image_resize_mode,
             previous=self.effective_image_resize_mode,
         )
+        if "model_id" in payload:
+            model_id = str(payload.get("model_id") or "")
+            if model_id != self.model_id:
+                raise RuntimeError(
+                    "BioCLIP worker model ID mismatch: "
+                    f"requested {self.model_id!r}, got {model_id!r}"
+                )
+        if "model_revision" in payload:
+            revision = str(payload.get("model_revision") or "")
+            if revision != self.model_revision:
+                raise RuntimeError(
+                    "BioCLIP worker model revision mismatch: "
+                    f"requested {self.model_revision!r}, got {revision!r}"
+                )
+        if "model_weights_sha256" in payload:
+            raw_weights_sha256 = payload.get("model_weights_sha256")
+            if raw_weights_sha256 is not None:
+                weights_sha256 = str(raw_weights_sha256)
+                if _SHA256_PATTERN.fullmatch(weights_sha256) is None:
+                    raise RuntimeError(
+                        "BioCLIP worker did not report a valid model weights SHA-256"
+                    )
+                if (
+                    self.model_weights_sha256 is not None
+                    and weights_sha256 != self.model_weights_sha256
+                ):
+                    raise RuntimeError("BioCLIP worker model weights SHA-256 changed")
+                self.model_weights_sha256 = weights_sha256
+
+        attestation_fields = _PREPROCESSING_ATTESTATION_FIELDS.intersection(payload)
+        if not attestation_fields:
+            self._validate_pinned_reference_model_identity()
+            return
+        missing_fields = _PREPROCESSING_ATTESTATION_FIELDS.difference(payload)
+        if missing_fields:
+            raise RuntimeError(
+                "BioCLIP worker did not report complete preprocessing attestation: "
+                + ", ".join(sorted(missing_fields))
+            )
+        open_clip_version = str(payload.get("open_clip_version") or "").strip()
+        if not open_clip_version:
+            raise RuntimeError("BioCLIP worker OpenCLIP version must be non-empty")
+        if open_clip_version != self.runtime.package_version:
+            raise RuntimeError(
+                "BioCLIP worker OpenCLIP version mismatch: "
+                f"expected {self.runtime.package_version!r}, got {open_clip_version!r}"
+            )
+        raw_config_sha256 = payload.get("open_clip_config_sha256")
+        config_sha256 = None if raw_config_sha256 is None else str(raw_config_sha256)
+        if (
+            config_sha256 is not None
+            and _SHA256_PATTERN.fullmatch(config_sha256) is None
+        ):
+            raise RuntimeError(
+                "BioCLIP worker did not report a valid OpenCLIP config SHA-256"
+            )
+        preprocessing_version = str(payload.get("preprocessing_version") or "").strip()
+        if preprocessing_version != OPENCLIP_PREPROCESSING_ATTESTATION_VERSION:
+            raise RuntimeError(
+                "BioCLIP worker preprocessing attestation version mismatch: "
+                f"expected {OPENCLIP_PREPROCESSING_ATTESTATION_VERSION!r}, "
+                f"got {preprocessing_version!r}"
+            )
+        try:
+            preprocessing_config = canonical_preprocessing_config(
+                payload.get("preprocessing_config")
+            )
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"BioCLIP worker preprocessing config is invalid: {exc}"
+            ) from exc
+        preprocessing_fingerprint = str(payload.get("preprocessing_fingerprint") or "")
+        if _SHA256_PATTERN.fullmatch(preprocessing_fingerprint) is None:
+            raise RuntimeError(
+                "BioCLIP worker did not report a valid preprocessing fingerprint"
+            )
+        expected_fingerprint = preprocessing_attestation_fingerprint(
+            open_clip_config_sha256=config_sha256,
+            open_clip_version=open_clip_version,
+            preprocessing_config=preprocessing_config,
+            preprocessing_version=preprocessing_version,
+        )
+        if preprocessing_fingerprint != expected_fingerprint:
+            raise RuntimeError("BioCLIP worker preprocessing fingerprint mismatch")
+
+        if self.preprocessing_fingerprint is not None:
+            attestation_values = (
+                (
+                    "OpenCLIP version",
+                    self.open_clip_version,
+                    open_clip_version,
+                ),
+                (
+                    "OpenCLIP config SHA-256",
+                    self.open_clip_config_sha256,
+                    config_sha256,
+                ),
+                (
+                    "preprocessing version",
+                    self.preprocessing_version,
+                    preprocessing_version,
+                ),
+                (
+                    "preprocessing config",
+                    self.preprocessing_config,
+                    preprocessing_config,
+                ),
+                (
+                    "preprocessing fingerprint",
+                    self.preprocessing_fingerprint,
+                    preprocessing_fingerprint,
+                ),
+            )
+            for field, previous, current in attestation_values:
+                if previous != current:
+                    raise RuntimeError(f"BioCLIP worker {field} changed")
+
+        self.open_clip_version = open_clip_version
+        self.open_clip_config_sha256 = config_sha256
+        self.preprocessing_version = preprocessing_version
+        self.preprocessing_config = preprocessing_config
+        self.preprocessing_fingerprint = preprocessing_fingerprint
+        self._validate_pinned_reference_model_identity()
+
+    def _validate_pinned_reference_model_identity(self) -> None:
+        expected = self._pinned_reference_model_identity
+        if expected is None:
+            return
+        actual = {
+            "model_weights_sha256": self.model_weights_sha256,
+            "open_clip_version": self.open_clip_version,
+            "open_clip_config_sha256": self.open_clip_config_sha256,
+            "preprocessing_fingerprint": self.preprocessing_fingerprint,
+            "image_resize_mode": self.effective_image_resize_mode,
+        }
+        mismatches = sorted(
+            field for field, value in actual.items() if value != expected[field]
+        )
+        if mismatches:
+            raise RuntimeError(
+                "BioCLIP worker no longer matches pinned reference model identity: "
+                + ", ".join(mismatches)
+            )
+
+    def _require_frozen_worker_model_identity(
+        self,
+        payload: Mapping[str, object],
+    ) -> None:
+        if "model_id" not in payload or "model_revision" not in payload:
+            raise RuntimeError(
+                "BioCLIP worker did not report complete frozen model identity"
+            )
+        model_name = self.runtime.model.model_name
+        is_hugging_face_model = model_name.startswith("hf-hub:") or (
+            "/" in model_name and not model_name.startswith("local-dir:")
+        )
+        if is_hugging_face_model and (
+            "model_weights_sha256" not in payload
+            or payload.get("model_weights_sha256") is None
+        ):
+            raise RuntimeError(
+                "BioCLIP worker did not report frozen Hugging Face model weights"
+            )
+        if not _PREPROCESSING_ATTESTATION_FIELDS.issubset(payload):
+            raise RuntimeError(
+                "BioCLIP worker did not report complete preprocessing attestation"
+            )
+
+    def _discard_process(self) -> None:
+        process = self._process
+        try:
+            self._force_stop_process(process)
+        finally:
+            self._close_process_pipes(process)
+            self._process = None
+            self._stdin = None
+            self._stdout = None
+            self.device = None
+            self.gpu_name = None
+            self.effective_image_resize_mode = None
+            self.model_weights_sha256 = None
+            self.open_clip_version = None
+            self.open_clip_config_sha256 = None
+            self.preprocessing_version = None
+            self.preprocessing_config = None
+            self.preprocessing_fingerprint = None
+            self.last_image_content_hashes = None
 
     def close(self) -> None:
         process = self._process
         if process is None:
             return
-        if process.poll() is None and self._stdin is not None:
+        graceful = False
+        try:
+            running = process.poll() is None
+        except Exception:  # noqa: BLE001 - cleanup must remain best effort.
+            running = True
+        if running and self._stdin is not None:
             try:
                 self._stdin.write(json.dumps({"shutdown": True}, sort_keys=True) + "\n")
                 self._stdin.flush()
                 process.wait(timeout=10)
+                graceful = True
             except Exception:  # noqa: BLE001 - shutdown must not mask caller errors.
-                process.terminate()
+                graceful = False
+        elif not running:
+            try:
                 process.wait(timeout=10)
+                graceful = True
+            except Exception:  # noqa: BLE001 - cleanup must remain best effort.
+                graceful = False
+        if not graceful:
+            self._force_stop_process(process)
+        self._close_process_pipes(process)
         self._process = None
         self._stdin = None
         self._stdout = None
@@ -732,15 +1009,80 @@ class PersistentBioClipScorer:
                 text=True,
                 bufsize=1,
             )
-            if process.stdin is None or process.stdout is None:
-                process.terminate()
-                raise RuntimeError(
-                    "BioCLIP persistent worker did not expose stdin/stdout pipes"
-                )
             self._process = process
             self._stdin = process.stdin
             self._stdout = process.stdout
+            if process.stdin is None or process.stdout is None:
+                self._discard_process()
+                raise RuntimeError(
+                    "BioCLIP persistent worker did not expose stdin/stdout pipes"
+                )
         return self._process
+
+    @staticmethod
+    def _force_stop_process(process: object | None) -> None:
+        if process is None:
+            return
+        try:
+            running = process.poll() is None  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - cleanup must remain best effort.
+            running = True
+        if not running:
+            try:
+                process.wait(timeout=10)  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001 - cleanup must remain best effort.
+                pass
+            return
+
+        terminate_succeeded = False
+        terminate = getattr(process, "terminate", None)
+        if callable(terminate):
+            try:
+                terminate()
+                terminate_succeeded = True
+            except Exception:  # noqa: BLE001 - cleanup must remain best effort.
+                pass
+        if terminate_succeeded:
+            try:
+                process.wait(timeout=10)  # type: ignore[attr-defined]
+                return
+            except Exception:  # noqa: BLE001 - escalate to kill below.
+                pass
+
+        kill = getattr(process, "kill", None)
+        if callable(kill):
+            try:
+                kill()
+            except Exception:  # noqa: BLE001 - cleanup must remain best effort.
+                pass
+        wait = getattr(process, "wait", None)
+        if callable(wait):
+            try:
+                wait(timeout=10)
+            except Exception:  # noqa: BLE001 - cleanup must remain best effort.
+                pass
+
+    def _close_process_pipes(self, process: object | None) -> None:
+        pipes = [self._stdin, self._stdout]
+        if process is not None:
+            pipes.extend(
+                [
+                    getattr(process, "stdin", None),
+                    getattr(process, "stdout", None),
+                    getattr(process, "stderr", None),
+                ]
+            )
+        closed: set[int] = set()
+        for pipe in pipes:
+            if pipe is None or id(pipe) in closed:
+                continue
+            closed.add(id(pipe))
+            close = getattr(pipe, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001 - cleanup must remain best effort.
+                    pass
 
 
 def _coerce_label_set_scores(
@@ -753,6 +1095,85 @@ def _coerce_label_set_scores(
         ]
         for label_set_name, scores_by_image in payload.items()
     }
+
+
+def _validated_image_embeddings(
+    payload: Mapping[str, object],
+    *,
+    expected_count: int,
+) -> list[list[float]]:
+    raw_embeddings = payload.get("image_embeddings")
+    if not isinstance(raw_embeddings, list):
+        raise RuntimeError("BioCLIP worker image embeddings must be a list")
+    if len(raw_embeddings) != expected_count:
+        raise RuntimeError(
+            f"BioCLIP worker returned {len(raw_embeddings)} rows for "
+            f"{expected_count} images"
+        )
+    reported_dimension = payload.get("embedding_dim")
+    if (
+        isinstance(reported_dimension, bool)
+        or not isinstance(reported_dimension, int)
+        or reported_dimension <= 0
+    ):
+        raise RuntimeError(
+            "BioCLIP worker reported embedding dimension must be a positive integer"
+        )
+    result: list[list[float]] = []
+    row_dimensions: set[int] = set()
+    for raw_embedding in raw_embeddings:
+        if not isinstance(raw_embedding, list):
+            raise RuntimeError("BioCLIP worker embedding rows must be lists")
+        values: list[float] = []
+        for raw_value in raw_embedding:
+            if isinstance(raw_value, bool):
+                raise RuntimeError(
+                    "BioCLIP worker embedding vectors must contain finite values"
+                )
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "BioCLIP worker embedding vectors must contain finite values"
+                ) from exc
+            if not isfinite(value):
+                raise RuntimeError(
+                    "BioCLIP worker embedding vectors must contain finite values"
+                )
+            values.append(value)
+        row_dimensions.add(len(values))
+        result.append(values)
+    if len(row_dimensions) != 1:
+        raise RuntimeError("BioCLIP worker embedding dimension mismatch between rows")
+    actual_dimension = next(iter(row_dimensions), 0)
+    if actual_dimension != reported_dimension:
+        raise RuntimeError(
+            "BioCLIP worker reported embedding dimension does not match vector width"
+        )
+    return result
+
+
+def _validated_image_content_hashes(
+    payload: Mapping[str, object],
+    *,
+    expected_count: int,
+) -> list[str]:
+    raw_hashes = payload.get("image_content_hashes")
+    if not isinstance(raw_hashes, list):
+        raise RuntimeError("BioCLIP worker image content hashes must be a list")
+    if len(raw_hashes) != expected_count:
+        raise RuntimeError(
+            f"BioCLIP worker returned {len(raw_hashes)} image content hashes for "
+            f"{expected_count} images"
+        )
+    hashes: list[str] = []
+    for raw_hash in raw_hashes:
+        if not isinstance(raw_hash, str) or _SHA256_PATTERN.fullmatch(raw_hash) is None:
+            raise RuntimeError(
+                "BioCLIP worker image content hashes must be valid SHA-256 values"
+            )
+        hashes.append(raw_hash)
+    return hashes
 
 
 def _validated_worker_image_resize_mode(
@@ -792,3 +1213,17 @@ def _positive_preprocess_workers(value: int) -> int:
     if workers <= 0:
         raise ValueError("preprocess_workers must be positive")
     return workers
+
+
+def _required_runtime_text(value: object, *, field: str) -> str:
+    result = str(value or "").strip()
+    if not result:
+        raise ValueError(f"{field} must be non-empty")
+    return result
+
+
+def _required_fingerprint(value: object, *, field: str) -> str:
+    result = str(value or "")
+    if _SHA256_PATTERN.fullmatch(result) is None:
+        raise ValueError(f"{field} must be a valid SHA-256 fingerprint")
+    return result

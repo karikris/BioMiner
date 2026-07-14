@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+import fcntl
 import hashlib
 import json
+import os
 import sqlite3
+import stat
 
 from biominer.common.status import CLAIMED, COMPLETED, FAILED, PENDING, RUN_COMPLETED, RUN_FAILED, RUN_PLANNED, RUN_RUNNING
-from biominer.workstore.keys import scoped_work_item_key
+from biominer.workstore.keys import publication_lock_digest, scoped_work_item_key
 
 DEFAULT_STAGE = "default"
 
@@ -18,6 +23,36 @@ class SQLiteWorkStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+
+    @contextmanager
+    def publication_lock(self, key: str) -> Iterator[None]:
+        key_digest = publication_lock_digest(key).hex()
+        database_path = self.path.resolve()
+        lock_path = database_path.with_name(
+            f".{database_path.name}.publication.{key_digest}.lock"
+        )
+        flags = (
+            os.O_CREAT
+            | os.O_RDWR
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        lock_fd = os.open(lock_path, flags, 0o600)
+        acquired = False
+        try:
+            if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+                raise RuntimeError(
+                    f"publication lock path is not a regular file: {lock_path}"
+                )
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            acquired = True
+            yield
+        finally:
+            try:
+                if acquired:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
 
     def get_or_create_run(
         self,

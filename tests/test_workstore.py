@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import builtins
 from datetime import UTC, datetime, timedelta
+import hashlib
+import multiprocessing
 from typing import Any
 import sqlite3
 
@@ -9,6 +11,31 @@ import pytest
 
 from biominer.workstore.postgres import POSTGRES_CLAIM_SQL, POSTGRES_SCHEMA_SQL, PostgresWorkStore
 from biominer.workstore.sqlite import SQLiteWorkStore
+
+
+def _hold_sqlite_publication_lock(
+    database_path: str,
+    key: str,
+    acquired: Any,
+    release: Any,
+) -> None:
+    store = SQLiteWorkStore(database_path)
+    with store.publication_lock(key):
+        acquired.set()
+        if not release.wait(timeout=10):
+            raise TimeoutError("publication lock test holder was not released")
+
+
+def _wait_for_sqlite_publication_lock(
+    database_path: str,
+    key: str,
+    attempted: Any,
+    acquired: Any,
+) -> None:
+    store = SQLiteWorkStore(database_path)
+    attempted.set()
+    with store.publication_lock(key):
+        acquired.set()
 
 
 def test_sqlite_workstore_enqueue_claim_and_complete(tmp_path) -> None:
@@ -82,6 +109,46 @@ def test_sqlite_workstore_derives_deterministic_work_key_when_missing(tmp_path) 
     assert second == 0
     assert claimed[0]["work_key"].startswith("poll_once:")
     assert claimed[0]["payload"] == {"term": "butterfly"}
+
+
+def test_sqlite_publication_lock_serializes_processes_for_the_same_key(tmp_path) -> None:
+    database_path = tmp_path / "work.sqlite"
+    SQLiteWorkStore(database_path)
+    process_context = multiprocessing.get_context("spawn")
+    holder_acquired = process_context.Event()
+    release_holder = process_context.Event()
+    contender_attempted = process_context.Event()
+    contender_acquired = process_context.Event()
+    holder = process_context.Process(
+        target=_hold_sqlite_publication_lock,
+        args=(str(database_path), "reference-embeddings", holder_acquired, release_holder),
+    )
+    contender = process_context.Process(
+        target=_wait_for_sqlite_publication_lock,
+        args=(str(database_path), "reference-embeddings", contender_attempted, contender_acquired),
+    )
+
+    try:
+        holder.start()
+        assert holder_acquired.wait(timeout=5)
+        contender.start()
+        assert contender_attempted.wait(timeout=5)
+        assert not contender_acquired.wait(timeout=0.25)
+        release_holder.set()
+        assert contender_acquired.wait(timeout=5)
+    finally:
+        release_holder.set()
+        for process in (holder, contender):
+            if process.pid is not None:
+                process.join(timeout=5)
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=5)
+
+    assert holder.exitcode == 0
+    assert contender.exitcode == 0
+    lock_digest = hashlib.sha256(b"reference-embeddings").hexdigest()
+    assert list(tmp_path.glob(f".work.sqlite.publication.{lock_digest}.lock"))
 
 
 def test_sqlite_workstore_registers_shard_inventory(tmp_path) -> None:
@@ -159,6 +226,29 @@ def test_postgres_workstore_imports_without_psycopg_and_validates_lazily(monkeyp
 
     with pytest.raises(RuntimeError, match="psycopg"):
         store.claim_next_batch("worker", 1)
+
+
+def test_postgres_publication_lock_uses_transaction_scoped_signed_sha256_key() -> None:
+    connection = _RecordingPostgresLockConnection()
+    store = PostgresWorkStore(
+        "postgresql://user:pass@example.test/db",
+        connect=lambda: connection,
+    )
+    expected_lock_id = int.from_bytes(
+        hashlib.sha256(b"reference-embeddings").digest()[:8],
+        byteorder="big",
+        signed=True,
+    )
+
+    with store.publication_lock("reference-embeddings"):
+        assert connection.transaction_entered
+        assert not connection.transaction_exited
+
+    assert connection.transaction_exited
+    assert connection.exited
+    assert connection.calls == [
+        ("SELECT pg_advisory_xact_lock(%s)", (expected_lock_id,))
+    ]
 
 
 def test_postgres_workstore_contract_with_injected_connection() -> None:
@@ -308,6 +398,39 @@ class _FakeResult:
 
     def fetchall(self) -> list[dict[str, Any]]:
         return list(self._rows)
+
+
+class _RecordingPostgresLockConnection:
+    def __init__(self) -> None:
+        self.exited = False
+        self.transaction_entered = False
+        self.transaction_exited = False
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.exited = True
+
+    def transaction(self):
+        return _RecordingPostgresTransaction(self)
+
+    def execute(self, sql: str, params: tuple[Any, ...]) -> _FakeResult:
+        self.calls.append((" ".join(sql.split()), params))
+        return _FakeResult()
+
+
+class _RecordingPostgresTransaction:
+    def __init__(self, connection: _RecordingPostgresLockConnection) -> None:
+        self.connection = connection
+
+    def __enter__(self):
+        self.connection.transaction_entered = True
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.connection.transaction_exited = True
 
 
 class _FakePostgres:

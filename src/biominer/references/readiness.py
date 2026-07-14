@@ -20,6 +20,10 @@ from uuid import uuid4
 import polars as pl
 
 from biominer.candidates.regional_union import validate_regional_candidate_species
+from biominer.common.semantic_hash import (
+    canonical_semantic_bytes,
+    canonical_semantic_fingerprint,
+)
 from biominer.references.deduplication import (
     validate_reference_media_deduplication_artifacts,
 )
@@ -45,14 +49,14 @@ from biominer.storage.parquet import write_parquet
 REFERENCE_BANK_SPLIT_ASSIGNMENTS_SCHEMA_VERSION = (
     "reference-bank-split-assignments-v1.0.0"
 )
-REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION = "reference-support-manifest-v1.0.0"
+REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION = "reference-support-manifest-v2.0.0"
 REFERENCE_BANK_SUMMARY_SCHEMA_VERSION = "reference-bank-summary-v1.0.0"
-REFERENCE_BANK_READINESS_SCHEMA_VERSION = "reference-bank-readiness-v1.0.0"
+REFERENCE_BANK_READINESS_SCHEMA_VERSION = "reference-bank-readiness-v2.0.0"
 REFERENCE_BANK_READINESS_POLICY_SCHEMA_VERSION = (
     "reference-bank-readiness-policy-v1.0.0"
 )
 REFERENCE_MODEL_INPUT_IDENTITY_SCHEMA_VERSION = (
-    "reference-model-input-identity-v1.0.0"
+    "reference-model-input-identity-v2.0.0"
 )
 
 REFERENCE_SUPPORT_MANIFEST_FILE = "reference_support_manifest.parquet"
@@ -110,6 +114,282 @@ _SUPPORT_SORT = (
     "route",
     "support_split",
     "reference_media_id",
+)
+
+# Semantic identity is an explicit projection, not a hash of every physical
+# column. Operational audit fields remain persisted and validated, but a no-op
+# rebuild or publication must not create a different frozen bank.
+_READINESS_INPUT_SEMANTIC_FIELDS: dict[str, tuple[str, ...]] = {
+    "candidate_species": (
+        "schema_version",
+        "candidate_set_id",
+        "target_accepted_taxon_key",
+        "geo_cluster_id",
+        "candidate_accepted_taxon_key",
+        "scientific_name",
+        "family",
+        "genus",
+        "candidate_reason",
+        "geographic_evidence_score",
+        "occurrence_support",
+        "same_genus",
+        "same_family",
+        "known_mimic",
+        "historical_false_positive",
+        "visually_nearest",
+        "target_candidate",
+        "candidate_priority",
+        "source_versions",
+        "candidate_set_fingerprint",
+    ),
+    "acquisition_plan": (
+        "schema_version",
+        "acquisition_plan_id",
+        "target_accepted_taxon_key",
+        "candidate_set_id",
+        "candidate_accepted_taxon_key",
+        "scientific_name",
+        "geo_cluster_id",
+        "life_stage",
+        "visual_domain",
+        "source",
+        "requested_count",
+        "existing_support_count",
+        "available_candidate_count",
+        "selected_candidate_count",
+        "shortfall_count",
+        "fallback_level",
+        "selection_strategy",
+        "selection_seed",
+        "max_distance_km",
+        "licence_policy_version",
+        "source_snapshot_version",
+        "plan_configuration_fingerprint",
+    ),
+    "acquisition_selections": (
+        "schema_version",
+        "reference_selection_id",
+        "acquisition_plan_id",
+        "target_accepted_taxon_key",
+        "candidate_set_id",
+        "source_candidate_set_id",
+        "candidate_accepted_taxon_key",
+        "scientific_name",
+        "geo_cluster_id",
+        "life_stage",
+        "visual_domain",
+        "reference_media_id",
+        "reference_observation_id",
+        "source",
+        "fallback_level",
+        "selection_rank",
+        "selection_round",
+        "distance_to_cluster_medoid_km",
+        "observer_id",
+        "observed_date",
+        "locality",
+        "background_group_id",
+        "licence",
+        "source_snapshot_version",
+        "selection_strategy",
+        "selection_seed",
+        "plan_configuration_fingerprint",
+    ),
+    "observations": (
+        "schema_version",
+        "reference_observation_id",
+        "source",
+        "source_observation_id",
+        "source_taxon_id",
+        "supplied_scientific_name",
+        "accepted_taxon_key",
+        "reconciled_scientific_name",
+        "registry_version",
+        "taxon_reconciliation_status",
+        "identification_quality",
+        "community_taxon_status",
+        "identification_disagreement",
+        "captive_or_cultivated",
+        "observer_id",
+        "locality",
+        "life_stage",
+        "sex",
+        "observed_at",
+        "latitude",
+        "longitude",
+        "coordinate_uncertainty",
+        "coordinates_obscured",
+        "country",
+        "country_code",
+        "geo_cluster_id",
+        "distance_to_cluster_medoid_km",
+        "source_dataset_key",
+        "source_dataset_doi",
+        "source_record_hash",
+        "source_snapshot_version",
+        "source_query_fingerprint",
+        "fallback_level",
+        "geospatial_issue",
+        "preserved_specimen",
+        "fossil",
+        "occurrence_absent",
+        "uncertain_taxon_match",
+        "basis_of_record_suitable",
+    ),
+    "media_candidates": (
+        "schema_version",
+        "reference_media_id",
+        "reference_observation_id",
+        "provider_media_id",
+        "source",
+        "media_type",
+        "width",
+        "height",
+        "creator",
+        "rights_holder",
+        "licence",
+        "attribution",
+        "occurrence_licence",
+        "original_provider",
+        "media_position",
+        "source_checksum",
+        "source_checksum_algorithm",
+        "download_status",
+        "verification_status",
+        "exclusion_reason",
+        "licence_policy_status",
+        "source_snapshot_version",
+    ),
+    "media_objects": (
+        "schema_version",
+        "reference_media_id",
+        "content_type",
+        "decoded_width",
+        "decoded_height",
+        "sha256",
+        "perceptual_hash",
+        "duplicate_group_id",
+        "duplicate_type",
+        "canonical_reference_media_id",
+        "provider_mirror_ids",
+        "licence_policy_status",
+        "decode_status",
+        "quarantine_reason",
+    ),
+    "duplicate_relationships": (
+        "schema_version",
+        "duplicate_relationship_id",
+        "duplicate_group_id",
+        "canonical_reference_media_id",
+        "left_reference_media_id",
+        "right_reference_media_id",
+        "left_reference_observation_id",
+        "right_reference_observation_id",
+        "left_source",
+        "right_source",
+        "left_provider_media_id",
+        "right_provider_media_id",
+        "relationship_type",
+        "evidence_types",
+        "sha256_equal",
+        "perceptual_hash_distance",
+        "same_observation",
+        "provider_mirror",
+        "resolution_status",
+        "policy_version",
+        "policy_fingerprint",
+    ),
+    "review_queue": (
+        "schema_version",
+        "reference_media_id",
+        "reference_observation_id",
+        "canonical_reference_media_id",
+        "accepted_taxon_key",
+        "scientific_name",
+        "duplicate_group_id",
+        "source",
+        "provider_media_id",
+        "provider_verification_status",
+        "creator",
+        "rights_holder",
+        "licence",
+        "licence_policy_status",
+        "attribution",
+        "life_stage",
+        "visual_domain",
+        "view",
+        "required_review_count",
+        "review_status",
+        "reference_bank_version",
+    ),
+    "queue_provenance": (
+        "schema_version",
+        "reference_media_id",
+    ),
+    "review_decisions": (
+        "schema_version",
+        "reference_media_id",
+        "review_round",
+        "target_identity_verified",
+        "verification_status",
+        "life_stage",
+        "visual_domain",
+        "view",
+        "review_confidence",
+        "review_notes",
+        "exclusion_reason",
+        "second_review_required",
+    ),
+    "split_assignments": (
+        "schema_version",
+        "reference_media_id",
+        "split_version",
+        "support_split",
+        "included",
+        "exclusion_reason",
+    ),
+}
+
+_SUPPORT_ROW_SEMANTIC_FIELDS = (
+    "schema_version",
+    "reference_bank_version",
+    "registry_version",
+    "reference_media_id",
+    "canonical_reference_media_id",
+    "reference_observation_id",
+    "source",
+    "source_observation_id",
+    "provider_media_id",
+    "source_snapshot_version",
+    "source_dataset_key",
+    "accepted_taxon_key",
+    "scientific_name",
+    "target_candidate",
+    "geo_cluster_id",
+    "observer_id",
+    "observed_at",
+    "latitude",
+    "longitude",
+    "image_sha256",
+    "perceptual_hash",
+    "duplicate_group_id",
+    "duplicate_type",
+    "creator",
+    "rights_holder",
+    "licence",
+    "licence_policy_status",
+    "attribution",
+    "review_status",
+    "verification_status",
+    "target_identity_verified",
+    "life_stage",
+    "visual_domain",
+    "view",
+    "route",
+    "support_split",
+    "support_eligible",
+    "exclusion_reasons",
+    "reference_bank_fingerprint",
 )
 
 
@@ -392,9 +672,14 @@ class ReferenceBankReadinessPolicy:
 class ReferenceModelInputIdentity:
     model_name: str
     model_version: str
+    model_revision: str
     checkpoint_uri: str
     checkpoint_sha256: str
+    open_clip_version: str
+    open_clip_config_sha256: str
     preprocessing_version: str
+    preprocessing_contract_fingerprint: str
+    preprocessing_attestation_fingerprint: str
     input_contract_version: str
     schema_version: str = REFERENCE_MODEL_INPUT_IDENTITY_SCHEMA_VERSION
 
@@ -404,6 +689,8 @@ class ReferenceModelInputIdentity:
         for name in (
             "model_name",
             "model_version",
+            "model_revision",
+            "open_clip_version",
             "preprocessing_version",
             "input_contract_version",
         ):
@@ -422,19 +709,44 @@ class ReferenceModelInputIdentity:
             "checkpoint_sha256",
             _fingerprint(self.checkpoint_sha256, field="checkpoint_sha256"),
         )
+        for name in (
+            "open_clip_config_sha256",
+            "preprocessing_contract_fingerprint",
+            "preprocessing_attestation_fingerprint",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _fingerprint(getattr(self, name), field=name),
+            )
 
     @property
     def fingerprint(self) -> str:
-        return _sha256_json(self.to_dict())
+        return canonical_semantic_fingerprint(
+            {
+                key: value
+                for key, value in self.to_dict().items()
+                if key != "checkpoint_uri"
+            }
+        )
 
     def to_dict(self) -> dict[str, str]:
         return {
             "schema_version": self.schema_version,
             "model_name": self.model_name,
             "model_version": self.model_version,
+            "model_revision": self.model_revision,
             "checkpoint_uri": self.checkpoint_uri,
             "checkpoint_sha256": self.checkpoint_sha256,
+            "open_clip_version": self.open_clip_version,
+            "open_clip_config_sha256": self.open_clip_config_sha256,
             "preprocessing_version": self.preprocessing_version,
+            "preprocessing_contract_fingerprint": (
+                self.preprocessing_contract_fingerprint
+            ),
+            "preprocessing_attestation_fingerprint": (
+                self.preprocessing_attestation_fingerprint
+            ),
             "input_contract_version": self.input_contract_version,
         }
 
@@ -449,9 +761,14 @@ class ReferenceModelInputIdentity:
                 "schema_version",
                 "model_name",
                 "model_version",
+                "model_revision",
                 "checkpoint_uri",
                 "checkpoint_sha256",
+                "open_clip_version",
+                "open_clip_config_sha256",
                 "preprocessing_version",
+                "preprocessing_contract_fingerprint",
+                "preprocessing_attestation_fingerprint",
                 "input_contract_version",
             },
             optional=set(),
@@ -478,15 +795,42 @@ class ReferenceBankReadinessPermit:
     support_manifest_fingerprint: str
     summary_fingerprint: str
     split_assignments_fingerprint: str
+    model_input_schema_version: str
     model_name: str
     model_version: str
+    model_revision: str
+    checkpoint_uri: str
     checkpoint_sha256: str
+    open_clip_version: str
+    open_clip_config_sha256: str
     preprocessing_version: str
+    preprocessing_contract_fingerprint: str
+    preprocessing_attestation_fingerprint: str
     input_contract_version: str
     model_input_fingerprint: str
     readiness_sha256: str
     support_manifest_sha256: str
     summary_sha256: str
+
+    def model_input_identity(self) -> ReferenceModelInputIdentity:
+        return ReferenceModelInputIdentity(
+            schema_version=self.model_input_schema_version,
+            model_name=self.model_name,
+            model_version=self.model_version,
+            model_revision=self.model_revision,
+            checkpoint_uri=self.checkpoint_uri,
+            checkpoint_sha256=self.checkpoint_sha256,
+            open_clip_version=self.open_clip_version,
+            open_clip_config_sha256=self.open_clip_config_sha256,
+            preprocessing_version=self.preprocessing_version,
+            preprocessing_contract_fingerprint=(
+                self.preprocessing_contract_fingerprint
+            ),
+            preprocessing_attestation_fingerprint=(
+                self.preprocessing_attestation_fingerprint
+            ),
+            input_contract_version=self.input_contract_version,
+        )
 
 
 def reference_bank_split_assignments_schema() -> dict[str, pl.DataType]:
@@ -715,6 +1059,21 @@ def validate_reference_support_manifest(frame: pl.DataFrame) -> None:
             raise ValueError("support manifest row fingerprint is invalid")
 
 
+def reference_support_manifest_fingerprint(frame: pl.DataFrame) -> str:
+    validate_reference_support_manifest(frame)
+    return _support_manifest_fingerprint(frame)
+
+
+def reference_support_split_leakage(
+    frame: pl.DataFrame,
+) -> tuple[dict[str, object], ...]:
+    validate_reference_support_manifest(frame)
+    assigned_support = list(
+        frame.filter(pl.col("support_eligible")).iter_rows(named=True)
+    )
+    return tuple(_support_split_leakage(assigned_support))
+
+
 def validate_reference_bank_summary(frame: pl.DataFrame) -> None:
     _validate_exact_frame(
         frame,
@@ -832,21 +1191,60 @@ def build_reference_bank_readiness(
     )
 
     input_fingerprints = {
-        "candidate_species": _frame_fingerprint(candidate_species),
-        "acquisition_plan": _frame_fingerprint(acquisition_plan),
-        "acquisition_selections": _frame_fingerprint(acquisition_selections),
-        "observations": _frame_fingerprint(observations),
-        "media_candidates": _frame_fingerprint(media_candidates),
-        "media_objects": _frame_fingerprint(media_objects),
-        "duplicate_relationships": _frame_fingerprint(duplicate_relationships),
-        "deduplication_report": _sha256_json(deduplication_report),
-        "review_queue": _frame_fingerprint(review_queue),
-        "queue_provenance": _frame_fingerprint(queue_provenance),
-        "review_decisions": _frame_fingerprint(review_decisions),
-        "split_assignments": _frame_fingerprint(split_assignments),
+        "candidate_species": _semantic_frame_fingerprint(
+            candidate_species,
+            fields=_READINESS_INPUT_SEMANTIC_FIELDS["candidate_species"],
+        ),
+        "acquisition_plan": _semantic_frame_fingerprint(
+            acquisition_plan,
+            fields=_READINESS_INPUT_SEMANTIC_FIELDS["acquisition_plan"],
+        ),
+        "acquisition_selections": _semantic_frame_fingerprint(
+            acquisition_selections,
+            fields=_READINESS_INPUT_SEMANTIC_FIELDS["acquisition_selections"],
+        ),
+        "observations": _semantic_frame_fingerprint(
+            observations,
+            fields=_READINESS_INPUT_SEMANTIC_FIELDS["observations"],
+        ),
+        "media_candidates": _semantic_frame_fingerprint(
+            media_candidates,
+            fields=_READINESS_INPUT_SEMANTIC_FIELDS["media_candidates"],
+        ),
+        "media_objects": _semantic_frame_fingerprint(
+            media_objects,
+            fields=_READINESS_INPUT_SEMANTIC_FIELDS["media_objects"],
+        ),
+        "duplicate_relationships": _semantic_frame_fingerprint(
+            duplicate_relationships,
+            fields=_READINESS_INPUT_SEMANTIC_FIELDS["duplicate_relationships"],
+        ),
+        "deduplication_report": _deduplication_report_fingerprint(
+            deduplication_report,
+            media_objects=media_objects,
+            media_candidates=media_candidates,
+            observations=observations,
+            duplicate_relationships=duplicate_relationships,
+        ),
+        "review_queue": _semantic_frame_fingerprint(
+            review_queue,
+            fields=_READINESS_INPUT_SEMANTIC_FIELDS["review_queue"],
+        ),
+        "queue_provenance": _semantic_frame_fingerprint(
+            queue_provenance,
+            fields=_READINESS_INPUT_SEMANTIC_FIELDS["queue_provenance"],
+        ),
+        "review_decisions": _semantic_frame_fingerprint(
+            review_decisions,
+            fields=_READINESS_INPUT_SEMANTIC_FIELDS["review_decisions"],
+        ),
+        "split_assignments": _semantic_frame_fingerprint(
+            split_assignments,
+            fields=_READINESS_INPUT_SEMANTIC_FIELDS["split_assignments"],
+        ),
     }
     split_fingerprint = input_fingerprints["split_assignments"]
-    bank_fingerprint = _sha256_json(
+    bank_fingerprint = canonical_semantic_fingerprint(
         {
             "schema_version": REFERENCE_BANK_READINESS_SCHEMA_VERSION,
             "reference_bank_version": bank_version,
@@ -876,7 +1274,7 @@ def build_reference_bank_readiness(
         sort_by=_SUPPORT_SORT,
     )
     validate_reference_support_manifest(support_manifest)
-    support_fingerprint = _frame_fingerprint(support_manifest)
+    support_fingerprint = _support_manifest_fingerprint(support_manifest)
 
     summary = _build_reference_bank_summary(
         candidate_context=candidate_context,
@@ -973,7 +1371,7 @@ def validate_reference_bank_readiness(result: ReferenceBankReadinessResult) -> N
     validate_reference_bank_summary(result.summary)
     payload = result.readiness
     _validate_readiness_payload(payload, published=False)
-    if payload["support_manifest_fingerprint"] != _frame_fingerprint(
+    if payload["support_manifest_fingerprint"] != _support_manifest_fingerprint(
         result.support_manifest
     ):
         raise ValueError("readiness support manifest fingerprint mismatch")
@@ -1091,7 +1489,9 @@ def load_reference_bank_readiness(
     summary = pl.read_parquet(summary_path)
     validate_reference_support_manifest(support)
     validate_reference_bank_summary(summary)
-    if payload["support_manifest_fingerprint"] != _frame_fingerprint(support):
+    if payload["support_manifest_fingerprint"] != _support_manifest_fingerprint(
+        support
+    ):
         raise ValueError("reference support manifest semantic fingerprint mismatch")
     if payload["summary_fingerprint"] != _frame_fingerprint(summary):
         raise ValueError("reference bank summary semantic fingerprint mismatch")
@@ -1107,7 +1507,7 @@ def load_reference_bank_readiness(
         expected=expected_target_accepted_taxon_key,
     )
     model = payload["model_input_identity"]
-    _expect_identity(model, field="model_name", expected=expected_model_name)
+    _expect_model_name(model, expected=expected_model_name)
     _expect_identity(
         model,
         field="preprocessing_version",
@@ -1133,10 +1533,21 @@ def load_reference_bank_readiness(
         support_manifest_fingerprint=str(payload["support_manifest_fingerprint"]),
         summary_fingerprint=str(payload["summary_fingerprint"]),
         split_assignments_fingerprint=str(payload["split_assignments_fingerprint"]),
+        model_input_schema_version=str(model["schema_version"]),
         model_name=str(model["model_name"]),
         model_version=str(model["model_version"]),
+        model_revision=str(model["model_revision"]),
+        checkpoint_uri=str(model["checkpoint_uri"]),
         checkpoint_sha256=str(model["checkpoint_sha256"]),
+        open_clip_version=str(model["open_clip_version"]),
+        open_clip_config_sha256=str(model["open_clip_config_sha256"]),
         preprocessing_version=str(model["preprocessing_version"]),
+        preprocessing_contract_fingerprint=str(
+            model["preprocessing_contract_fingerprint"]
+        ),
+        preprocessing_attestation_fingerprint=str(
+            model["preprocessing_attestation_fingerprint"]
+        ),
         input_contract_version=str(model["input_contract_version"]),
         model_input_fingerprint=str(payload["model_input_fingerprint"]),
         readiness_sha256=readiness_sha,
@@ -1631,7 +2042,7 @@ def _build_reference_bank_summary(
     assert isinstance(target_by_key, Mapping)
     specs: dict[tuple[str, str, str, str, str, str], int] = {}
     for requirement in policy.requirements:
-        life_stage, visual_domain = _route_dimensions(requirement.route)
+        life_stage, visual_domain = reference_route_dimensions(requirement.route)
         key = (
             requirement.accepted_taxon_key,
             requirement.geo_cluster_id or "all",
@@ -2233,7 +2644,7 @@ def _requirement_plan_fingerprints(
     requirement: ReferenceBankRequirement,
     acquisition_plan: pl.DataFrame,
 ) -> set[str]:
-    life_stage, visual_domain = _route_dimensions(requirement.route)
+    life_stage, visual_domain = reference_route_dimensions(requirement.route)
     rows = acquisition_plan.filter(
         (pl.col("candidate_accepted_taxon_key") == requirement.accepted_taxon_key)
         & (pl.col("life_stage") == life_stage)
@@ -2622,7 +3033,7 @@ def _validate_readiness_payload(
         raise ValueError("readiness input fingerprints are missing")
     for field_name, value in inputs.items():
         _fingerprint(value, field=f"inputs.{field_name}")
-    expected_bank_fingerprint = _sha256_json(
+    expected_bank_fingerprint = canonical_semantic_fingerprint(
         {
             "schema_version": REFERENCE_BANK_READINESS_SCHEMA_VERSION,
             "reference_bank_version": payload["reference_bank_version"],
@@ -3001,11 +3412,14 @@ def _assignment_fingerprint(
 
 
 def _support_row_fingerprint(row: Mapping[str, object]) -> str:
-    return _sha256_json(
+    return canonical_semantic_fingerprint(
         {
-            key: value
-            for key, value in row.items()
-            if key != "support_row_fingerprint"
+            "projection_version": "reference-support-row-semantic-v2",
+            "row": _semantic_mapping_projection(
+                row,
+                fields=_SUPPORT_ROW_SEMANTIC_FIELDS,
+                artifact="reference support row",
+            ),
         }
     )
 
@@ -3035,7 +3449,7 @@ def _reference_route(*, life_stage: str, visual_domain: str) -> str | None:
     }.get(stage)
 
 
-def _route_dimensions(route: str) -> tuple[str, str]:
+def reference_route_dimensions(route: str) -> tuple[str, str]:
     try:
         return {
             "adult_field": ("adult", "live_field"),
@@ -3237,6 +3651,91 @@ def _frame_fingerprint(frame: pl.DataFrame) -> str:
     )
 
 
+def _semantic_frame_fingerprint(
+    frame: pl.DataFrame,
+    *,
+    fields: Sequence[str],
+) -> str:
+    selected = tuple(fields)
+    if len(set(selected)) != len(selected):
+        raise ValueError("semantic projection fields must be unique")
+    missing = sorted(set(selected) - set(frame.columns))
+    if missing:
+        raise ValueError(
+            "semantic projection fields are missing: " + ", ".join(missing)
+        )
+    rows = [{field: row[field] for field in selected} for row in frame.to_dicts()]
+    rows.sort(key=canonical_semantic_bytes)
+    return canonical_semantic_fingerprint(
+        {
+            "projection_version": "reference-readiness-input-semantic-v1",
+            "schema": [(name, str(frame.schema[name])) for name in selected],
+            "rows": rows,
+        }
+    )
+
+
+def _deduplication_report_fingerprint(
+    report: Mapping[str, object],
+    *,
+    media_objects: pl.DataFrame,
+    media_candidates: pl.DataFrame,
+    observations: pl.DataFrame,
+    duplicate_relationships: pl.DataFrame,
+) -> str:
+    settings = report.get("settings")
+    if not isinstance(settings, Mapping):
+        raise ValueError("reference media deduplication report settings are invalid")
+    return canonical_semantic_fingerprint(
+        {
+            "projection_version": "reference-deduplication-semantic-v1",
+            "schema_version": report.get("schema_version"),
+            "command": report.get("command"),
+            "status": report.get("status"),
+            "settings": dict(settings),
+            "artifacts": {
+                "observations": _semantic_frame_fingerprint(
+                    observations,
+                    fields=_READINESS_INPUT_SEMANTIC_FIELDS["observations"],
+                ),
+                "media_candidates": _semantic_frame_fingerprint(
+                    media_candidates,
+                    fields=_READINESS_INPUT_SEMANTIC_FIELDS["media_candidates"],
+                ),
+                "media_objects": _semantic_frame_fingerprint(
+                    media_objects,
+                    fields=_READINESS_INPUT_SEMANTIC_FIELDS["media_objects"],
+                ),
+                "duplicate_relationships": _semantic_frame_fingerprint(
+                    duplicate_relationships,
+                    fields=_READINESS_INPUT_SEMANTIC_FIELDS[
+                        "duplicate_relationships"
+                    ],
+                ),
+            },
+        }
+    )
+
+
+def _support_manifest_fingerprint(frame: pl.DataFrame) -> str:
+    return _semantic_frame_fingerprint(
+        frame,
+        fields=_SUPPORT_ROW_SEMANTIC_FIELDS,
+    )
+
+
+def _semantic_mapping_projection(
+    row: Mapping[str, object],
+    *,
+    fields: Sequence[str],
+    artifact: str,
+) -> dict[str, object]:
+    missing = sorted(set(fields) - set(row))
+    if missing:
+        raise ValueError(f"{artifact} semantic fields are missing: " + ", ".join(missing))
+    return {field: row[field] for field in fields}
+
+
 def _sha256_json(value: object) -> str:
     return "sha256:" + hashlib.sha256(
         json.dumps(
@@ -3408,6 +3907,23 @@ def _expect_identity(
         raise ValueError(
             f"reference bank readiness {field} mismatch: "
             f"expected {expected!r}, found {payload.get(field)!r}"
+        )
+
+
+def _expect_model_name(
+    payload: Mapping[str, object],
+    *,
+    expected: str | None,
+) -> None:
+    if expected is None:
+        return
+    found = payload.get("model_name")
+    canonical_expected = str(expected).strip().removeprefix("hf-hub:")
+    canonical_found = str(found or "").strip().removeprefix("hf-hub:")
+    if not canonical_expected or canonical_found != canonical_expected:
+        raise ValueError(
+            "reference bank readiness model_name mismatch: "
+            f"expected {expected!r}, found {found!r}"
         )
 
 

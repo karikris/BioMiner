@@ -110,7 +110,66 @@ def test_production_vision_runtime_wires_persistent_sidecars(monkeypatch) -> Non
     assert resources == [created["crop_scorer"]["scorer"], detector]
     assert created["detector"]["runtime_python"]
     assert created["persistent"]["device"] == "auto"
+    assert created["persistent"]["image_resize_mode"] == "longest"
     assert created["crop_scorer"]["model_checkpoint"] == "revision-1"
+
+
+def test_production_vision_runtime_honours_profile_model_without_target_resize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: dict[str, Any] = {}
+
+    class FakeDetector:
+        def __init__(self, **_kwargs):  # noqa: ANN003
+            pass
+
+    class FakePersistent:
+        def __init__(self, **kwargs):  # noqa: ANN003
+            created["persistent"] = kwargs
+
+    class FakeCropScorer:
+        def __init__(self, **kwargs):  # noqa: ANN003
+            created["crop_scorer"] = kwargs
+
+    def fake_runtime(**kwargs):  # noqa: ANN003, ANN202 - captures runtime wiring.
+        created["runtime_kwargs"] = kwargs
+        return SimpleNamespace(
+            model=SimpleNamespace(
+                model_name=kwargs["model_name"],
+                checkpoint="revision-1",
+            ),
+            package_version="3.3.0",
+        )
+
+    monkeypatch.setattr(
+        "biominer.detection.yoloe26_detector.YoloE26SidecarObjectDetector",
+        FakeDetector,
+    )
+    monkeypatch.setattr(
+        "biominer.bioclip.bioclip.PersistentBioClipScorer",
+        FakePersistent,
+    )
+    monkeypatch.setattr(
+        "biominer.bioclip.object_runner.EphemeralCropBioClipScorer",
+        FakeCropScorer,
+    )
+    monkeypatch.setattr("biominer.cli._bioclip_runtime", fake_runtime)
+    settings = VisionRuntimeSettings(
+        profile_name="mac_m5pro_64gb",
+        bioclip_model="hf-hub:imageomics/bioclip-2.5-vith14",
+    )
+
+    _create_production_vision_runtime(
+        settings,
+        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+    )
+
+    assert created["runtime_kwargs"]["model_name"] == settings.bioclip_model
+    assert created["persistent"]["image_resize_mode"] is None
+    assert (
+        created["crop_scorer"]["model_id"]
+        == "imageomics/bioclip-2.5-vith14"
+    )
 
 
 def test_build_text_embedding_cache_command_builds_v3_cache_and_closes_worker(tmp_path, monkeypatch, capsys) -> None:
@@ -941,7 +1000,7 @@ def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=0,
-            stdout='{"device_resolved":"mps","model_load":true,"mps_available":true,"pytorch_mps_fallback_enabled":true}\n',
+            stdout='{"device_resolved":"mps","image_resize_mode":"longest","model_load":true,"mps_available":true,"open_clip_config_sha256":"sha256:abc","open_clip_version":"3.3.0","preprocessing_fingerprint":"sha256:def","pytorch_mps_fallback_enabled":true}\n',
             stderr="",
         )
 
@@ -964,11 +1023,22 @@ def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch
     payload = json.loads(capsys.readouterr().out)
     assert payload["device_resolved"] == "mps"
     assert payload["model_load"] is True
+    assert payload["image_resize_mode"] == "longest"
+    assert payload["open_clip_version"] == "3.3.0"
+    assert payload["open_clip_config_sha256"] == "sha256:abc"
+    assert payload["preprocessing_fingerprint"] == "sha256:def"
     assert payload["pytorch_mps_fallback_enabled"] is True
     assert calls[0]["cmd"][0] == str(runtime_python)
-    assert calls[0]["cmd"][-1] == "auto"
-    assert "hf-hub:imageomics/bioclip-2.5-vith14" in calls[0]["cmd"][2]
-    assert "create_model_and_transforms" in calls[0]["cmd"][2]
+    assert calls[0]["cmd"][-5:-1] == [
+        "auto",
+        "imageomics/bioclip-2.5-vith14",
+        "191d741545e4c741cdef4b22c6eb69c945c1e592",
+        "3.3.0",
+    ]
+    assert calls[0]["cmd"][-1].endswith("/bioclip/bioclip_worker.py")
+    assert "worker._LoadedBioClipModel.load" in calls[0]["cmd"][2]
+    assert 'image_resize_mode="longest"' in calls[0]["cmd"][2]
+    assert "OpenCLIP version mismatch" in calls[0]["cmd"][2]
     assert calls[0]["env"]["HF_HOME"] == str((tmp_path / "hf").resolve())
     assert calls[0]["env"]["PYTORCH_ENABLE_MPS_FALLBACK"] == "1"
 

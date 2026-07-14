@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from pathlib import Path
 import subprocess
 
@@ -14,7 +16,114 @@ from biominer.bioclip.bioclip import (
     build_vision_prediction_record,
     classify_species_agreement,
 )
+from biominer.bioclip.bioclip_worker import (
+    OPENCLIP_PREPROCESSING_ATTESTATION_VERSION,
+    preprocessing_attestation_fingerprint,
+)
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
+
+
+REVISION = "191d741545e4c741cdef4b22c6eb69c945c1e592"
+WEIGHTS_SHA256 = "sha256:" + "a" * 64
+OPEN_CLIP_CONFIG_SHA256 = "sha256:" + "b" * 64
+IMAGE_CONTENT_HASH_1 = "sha256:" + "d" * 64
+IMAGE_CONTENT_HASH_2 = "sha256:" + "e" * 64
+PREPROCESSING_CONFIG: dict[str, object] = {
+    "fill_color": 0,
+    "interpolation": "bicubic",
+    "mean": [0.48145466, 0.4578275, 0.40821073],
+    "mode": "RGB",
+    "resize_mode": "longest",
+    "size": [224, 224],
+    "std": [0.26862954, 0.26130258, 0.27577711],
+}
+_MISSING = object()
+
+
+def _image_embedding_worker_metadata(
+    *,
+    weights_sha256: object = WEIGHTS_SHA256,
+    preprocessing_config: dict[str, object] | None = None,
+    open_clip_config_sha256: str | None = OPEN_CLIP_CONFIG_SHA256,
+    open_clip_version: str = "3.3.0",
+) -> dict[str, object]:
+    config = dict(preprocessing_config or PREPROCESSING_CONFIG)
+    metadata: dict[str, object] = {
+        "device": "cuda",
+        "gpu_name": "test-gpu",
+        "image_resize_mode": "longest",
+        "model_id": "imageomics/bioclip-2",
+        "model_revision": REVISION,
+        "open_clip_version": open_clip_version,
+        "open_clip_config_sha256": open_clip_config_sha256,
+        "preprocessing_version": OPENCLIP_PREPROCESSING_ATTESTATION_VERSION,
+        "preprocessing_config": config,
+        "preprocessing_fingerprint": preprocessing_attestation_fingerprint(
+            open_clip_config_sha256=open_clip_config_sha256,
+            open_clip_version=open_clip_version,
+            preprocessing_config=config,
+            preprocessing_version=OPENCLIP_PREPROCESSING_ATTESTATION_VERSION,
+        ),
+    }
+    if weights_sha256 is not _MISSING:
+        metadata["model_weights_sha256"] = weights_sha256
+    return metadata
+
+
+class _ProtocolStdin:
+    def __init__(self) -> None:
+        self.writes: list[str] = []
+        self.closed = False
+
+    def write(self, value: str) -> None:
+        self.writes.append(value)
+
+    def flush(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _ProtocolStdout:
+    def __init__(self, lines: list[str]) -> None:
+        self.lines = iter(lines)
+        self.closed = False
+
+    def readline(self) -> str:
+        return next(self.lines, "")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _ProtocolProcess:
+    def __init__(self, lines: list[str]) -> None:
+        self.stdin = _ProtocolStdin()
+        self.stdout = _ProtocolStdout(lines)
+        self.stderr = _ProtocolStdout([])
+        self.returncode: int | None = None
+        self.terminate_calls = 0
+        self.kill_calls = 0
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+        self.returncode = 0
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        self.returncode = -9
+
+    def wait(self, timeout=None) -> int:  # noqa: ANN001 - mirrors subprocess.Popen.
+        self.returncode = self.returncode or 0
+        return self.returncode
+
+
+def _json_lines(*payloads: Mapping[str, object]) -> list[str]:
+    return [json.dumps(payload) + "\n" for payload in payloads]
 
 
 def _runtime() -> BioClipRuntime:
@@ -25,7 +134,29 @@ def _runtime() -> BioClipRuntime:
         status="use_if_available",
         task="biology image-text classification and embedding",
         model_name="imageomics/bioclip-2",
-        checkpoint="BioCLIP 2.5 Huge OpenCLIP ViT-H/14 checkpoint",
+        checkpoint=REVISION,
+        package_name="open_clip_torch",
+        package_version="pin_when_installed",
+        model_hash="sha256:test",
+    )
+    return BioClipRuntime(
+        model=model,
+        home=Path("/home/toffe/bioclip25"),
+        venv_python=Path("/home/toffe/bioclip25/.venv/bin/python"),
+        package_version="3.3.0",
+        available=True,
+    )
+
+
+def _generic_runtime() -> BioClipRuntime:
+    model = ModelConfig(
+        model_id="generic-openclip",
+        display_name="Generic OpenCLIP",
+        role="test",
+        status="use_if_available",
+        task="image-text embedding",
+        model_name="ViT-H-14",
+        checkpoint="generic-checkpoint",
         package_name="open_clip_torch",
         package_version="pin_when_installed",
         model_hash="sha256:test",
@@ -84,7 +215,7 @@ def test_build_vision_prediction_record_preserves_model_and_topk_metadata() -> N
     assert record["model_family"] == "bioclip"
     assert record["model_name"] == "imageomics/bioclip-2"
     assert record["model_version"] == "bioclip2_5_huge"
-    assert record["model_checkpoint"] == "BioCLIP 2.5 Huge OpenCLIP ViT-H/14 checkpoint"
+    assert record["model_checkpoint"] == REVISION
     assert record["model_hash"] == "sha256:test"
     assert record["runtime_package_version"] == "3.3.0"
     assert record["top1_label"] == "a photo of Papilio demoleus"
@@ -313,11 +444,29 @@ def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_uses_auto_devic
 
     class FakeStdout:
         def __init__(self) -> None:
+            metadata = _image_embedding_worker_metadata()
             self.lines = iter(
                 [
-                    '{"ready":true,"device":"cuda","gpu_name":"NVIDIA GeForce RTX 3060"}\n',
-                    '{"scores_by_image":[{"a photo of Papilio demoleus":0.97},{"a photo of Papilio demoleus":0.98}]}\n',
-                    '{"scores_by_image":[{"a photo of Papilio demoleus":0.96}]}\n',
+                    json.dumps({"ready": True, **metadata}) + "\n",
+                    json.dumps(
+                        {
+                            "scores_by_image": [
+                                {"a photo of Papilio demoleus": 0.97},
+                                {"a photo of Papilio demoleus": 0.98},
+                            ],
+                            **metadata,
+                        }
+                    )
+                    + "\n",
+                    json.dumps(
+                        {
+                            "scores_by_image": [
+                                {"a photo of Papilio demoleus": 0.96}
+                            ],
+                            **metadata,
+                        }
+                    )
+                    + "\n",
                 ]
             )
 
@@ -391,10 +540,24 @@ def test_persistent_bioclip_scorer_reuses_worker_for_label_sets() -> None:
 
     class FakeStdout:
         def __init__(self) -> None:
+            metadata = _image_embedding_worker_metadata()
             self.lines = iter(
                 [
-                    '{"ready":true,"device":"cuda","gpu_name":"NVIDIA GeForce RTX 3060"}\n',
-                    '{"scores_by_image_by_label_set":{"species":[{"a photo of Papilio demoleus":0.97}],"triage":[{"a photo of an adult butterfly":0.98}]}}\n',
+                    json.dumps({"ready": True, **metadata}) + "\n",
+                    json.dumps(
+                        {
+                            "scores_by_image_by_label_set": {
+                                "species": [
+                                    {"a photo of Papilio demoleus": 0.97}
+                                ],
+                                "triage": [
+                                    {"a photo of an adult butterfly": 0.98}
+                                ],
+                            },
+                            **metadata,
+                        }
+                    )
+                    + "\n",
                 ]
             )
 
@@ -459,10 +622,18 @@ def test_persistent_bioclip_scorer_can_embed_text_labels_for_cache() -> None:
 
     class FakeStdout:
         def __init__(self) -> None:
+            metadata = _image_embedding_worker_metadata()
             self.lines = iter(
                 [
-                    '{"ready":true,"device":"cuda","gpu_name":"NVIDIA GeForce RTX 3060"}\n',
-                    '{"text_embeddings":[[1.0,0.0],[0.0,1.0]],"embedding_dim":2}\n',
+                    json.dumps({"ready": True, **metadata}) + "\n",
+                    json.dumps(
+                        {
+                            "text_embeddings": [[1.0, 0.0], [0.0, 1.0]],
+                            "embedding_dim": 2,
+                            **metadata,
+                        }
+                    )
+                    + "\n",
                 ]
             )
 
@@ -515,8 +686,25 @@ def test_persistent_bioclip_scorer_can_embed_image_paths_for_cache() -> None:
         def __init__(self) -> None:
             self.lines = iter(
                 [
-                    '{"ready":true,"device":"cuda","gpu_name":"NVIDIA GeForce RTX 3060","image_resize_mode":"longest"}\n',
-                    '{"image_embeddings":[[0.1,0.9],[0.8,0.2]],"embedding_dim":2,"image_resize_mode":"longest"}\n',
+                    json.dumps(
+                        {
+                            "ready": True,
+                            **_image_embedding_worker_metadata(),
+                        }
+                    )
+                    + "\n",
+                    json.dumps(
+                        {
+                            "image_embeddings": [[0.1, 0.9], [0.8, 0.2]],
+                            "embedding_dim": 2,
+                            "image_content_hashes": [
+                                IMAGE_CONTENT_HASH_1,
+                                IMAGE_CONTENT_HASH_2,
+                            ],
+                            **_image_embedding_worker_metadata(),
+                        }
+                    )
+                    + "\n",
                 ]
             )
 
@@ -561,6 +749,483 @@ def test_persistent_bioclip_scorer_can_embed_image_paths_for_cache() -> None:
     assert '"device": "auto"' in writes[0]
     assert '"image_resize_mode": "longest"' in writes[0]
     assert scorer.effective_image_resize_mode == "longest"
+    assert scorer.model_id == "imageomics/bioclip-2"
+    assert scorer.model_revision == REVISION
+    assert scorer.model_weights_sha256 == WEIGHTS_SHA256
+    assert scorer.last_image_content_hashes == [
+        IMAGE_CONTENT_HASH_1,
+        IMAGE_CONTENT_HASH_2,
+    ]
+    assert scorer.open_clip_version == "3.3.0"
+    assert scorer.open_clip_config_sha256 == OPEN_CLIP_CONFIG_SHA256
+    assert scorer.preprocessing_config == PREPROCESSING_CONFIG
+    assert scorer.preprocessing_version == OPENCLIP_PREPROCESSING_ATTESTATION_VERSION
+    assert scorer.preprocessing_fingerprint == preprocessing_attestation_fingerprint(
+        open_clip_config_sha256=OPEN_CLIP_CONFIG_SHA256,
+        open_clip_version="3.3.0",
+        preprocessing_config=PREPROCESSING_CONFIG,
+        preprocessing_version=OPENCLIP_PREPROCESSING_ATTESTATION_VERSION,
+    )
+
+
+def test_persistent_bioclip_scorer_probes_frozen_model_without_scoring() -> None:
+    metadata = _image_embedding_worker_metadata()
+    process = _ProtocolProcess(
+        [
+            json.dumps({"ready": True, **metadata}) + "\n",
+            json.dumps({"probed": True, **metadata}) + "\n",
+        ]
+    )
+    scorer = PersistentBioClipScorer(
+        runtime=_runtime(),
+        popen=lambda *_args, **_kwargs: process,
+        image_resize_mode="longest",
+    )
+    try:
+        scorer.ensure_model_attestation()
+    finally:
+        scorer.close()
+
+    request = json.loads(process.stdin.writes[0])
+    assert request["probe"] is True
+    assert "image_paths" not in request
+    assert scorer.model_weights_sha256 == WEIGHTS_SHA256
+    assert scorer.preprocessing_fingerprint == metadata["preprocessing_fingerprint"]
+
+
+def test_persistent_bioclip_scorer_rechecks_pinned_identity_after_restart() -> None:
+    first_metadata = _image_embedding_worker_metadata()
+    changed_metadata = _image_embedding_worker_metadata(
+        weights_sha256="sha256:" + "c" * 64
+    )
+    processes = [
+        _ProtocolProcess(
+            _json_lines(
+                {"ready": True, **first_metadata},
+                {"probed": True, **first_metadata},
+                {"error": "fixture worker failure"},
+            )
+        ),
+        _ProtocolProcess(
+            _json_lines(
+                {"ready": True, **changed_metadata},
+                {
+                    **changed_metadata,
+                    "scores_by_image": [{"butterfly": 1.0}],
+                },
+            )
+        ),
+    ]
+    started: list[_ProtocolProcess] = []
+
+    def fake_popen(_cmd, **_kwargs):  # noqa: ANN202 - fake process factory.
+        process = processes[len(started)]
+        started.append(process)
+        return process
+
+    scorer = PersistentBioClipScorer(
+        runtime=_runtime(),
+        popen=fake_popen,
+        image_resize_mode="longest",
+    )
+    scorer.ensure_model_attestation()
+    scorer.pin_reference_model_identity(
+        model_weights_sha256=WEIGHTS_SHA256,
+        open_clip_version="3.3.0",
+        open_clip_config_sha256=OPEN_CLIP_CONFIG_SHA256,
+        preprocessing_fingerprint=str(first_metadata["preprocessing_fingerprint"]),
+        image_resize_mode="longest",
+    )
+
+    with pytest.raises(RuntimeError, match="fixture worker failure"):
+        scorer.score_batch([Path("/tmp/first.jpg")], ["butterfly"])
+    with pytest.raises(RuntimeError, match="pinned reference model identity"):
+        scorer.score_batch([Path("/tmp/second.jpg")], ["butterfly"])
+
+    assert len(started) == 2
+    assert started[0].terminate_calls == 1
+    assert started[1].terminate_calls == 1
+
+
+@pytest.mark.parametrize(
+    "weights_sha256",
+    [_MISSING, None],
+    ids=["absent", "null"],
+)
+def test_persistent_image_embeddings_allow_unattested_generic_weights(
+    weights_sha256: object,
+) -> None:
+    metadata = _image_embedding_worker_metadata(weights_sha256=weights_sha256)
+    metadata.update(
+        model_id="ViT-H-14",
+        model_revision="generic-checkpoint",
+    )
+    process = _ProtocolProcess(
+        _json_lines(
+            {"ready": True, **metadata},
+            {
+                **metadata,
+                "image_embeddings": [[1.0, 0.0]],
+                "embedding_dim": 2,
+                "image_content_hashes": [IMAGE_CONTENT_HASH_1],
+            },
+        )
+    )
+    scorer = PersistentBioClipScorer(
+        runtime=_generic_runtime(),
+        popen=lambda _cmd, **_kwargs: process,
+        image_resize_mode="longest",
+    )
+
+    try:
+        assert scorer.embed_image_paths([Path("/tmp/1.jpg")]) == [[1.0, 0.0]]
+    finally:
+        scorer.close()
+
+    assert scorer.model_weights_sha256 is None
+
+
+def test_persistent_image_embeddings_replace_hashes_for_each_response() -> None:
+    metadata = _image_embedding_worker_metadata()
+    process = _ProtocolProcess(
+        _json_lines(
+            {"ready": True, **metadata},
+            {
+                **metadata,
+                "image_embeddings": [[1.0, 0.0]],
+                "embedding_dim": 2,
+                "image_content_hashes": [IMAGE_CONTENT_HASH_1],
+            },
+            {
+                **metadata,
+                "image_embeddings": [[0.0, 1.0]],
+                "embedding_dim": 2,
+                "image_content_hashes": [IMAGE_CONTENT_HASH_2],
+            },
+        )
+    )
+    scorer = PersistentBioClipScorer(
+        runtime=_runtime(),
+        popen=lambda _cmd, **_kwargs: process,
+        image_resize_mode="longest",
+    )
+
+    assert scorer.embed_image_paths([Path("/tmp/1.jpg")]) == [[1.0, 0.0]]
+    assert scorer.last_image_content_hashes == [IMAGE_CONTENT_HASH_1]
+    assert scorer.embed_image_paths([Path("/tmp/2.jpg")]) == [[0.0, 1.0]]
+    assert scorer.last_image_content_hashes == [IMAGE_CONTENT_HASH_2]
+    scorer.close()
+
+
+def test_persistent_image_embeddings_reject_incomplete_attestation() -> None:
+    metadata = _image_embedding_worker_metadata()
+    metadata.pop("preprocessing_fingerprint")
+    process = _ProtocolProcess(_json_lines({"ready": True, **metadata}))
+    scorer = PersistentBioClipScorer(
+        runtime=_runtime(),
+        popen=lambda _cmd, **_kwargs: process,
+        image_resize_mode="longest",
+    )
+
+    with pytest.raises(RuntimeError, match="complete preprocessing attestation"):
+        scorer.embed_image_paths([Path("/tmp/1.jpg")])
+
+    assert process.terminate_calls == 1
+
+
+def test_persistent_image_embeddings_reject_unpinned_openclip_version() -> None:
+    metadata = _image_embedding_worker_metadata(open_clip_version="3.4.0")
+    process = _ProtocolProcess(_json_lines({"ready": True, **metadata}))
+    scorer = PersistentBioClipScorer(
+        runtime=_runtime(),
+        popen=lambda _cmd, **_kwargs: process,
+        image_resize_mode="longest",
+    )
+
+    with pytest.raises(RuntimeError, match="OpenCLIP version mismatch"):
+        scorer.embed_image_paths([Path("/tmp/1.jpg")])
+
+    assert process.terminate_calls == 1
+
+
+def test_persistent_image_embeddings_reject_wrong_attestation_fingerprint() -> None:
+    metadata = {
+        **_image_embedding_worker_metadata(),
+        "preprocessing_fingerprint": "sha256:" + "c" * 64,
+    }
+    process = _ProtocolProcess(_json_lines({"ready": True, **metadata}))
+    scorer = PersistentBioClipScorer(
+        runtime=_runtime(),
+        popen=lambda _cmd, **_kwargs: process,
+        image_resize_mode="longest",
+    )
+
+    with pytest.raises(RuntimeError, match="preprocessing fingerprint mismatch"):
+        scorer.embed_image_paths([Path("/tmp/1.jpg")])
+
+
+def test_persistent_image_embeddings_reject_preprocessing_attestation_drift() -> None:
+    ready_metadata = _image_embedding_worker_metadata()
+    changed_config = {**PREPROCESSING_CONFIG, "interpolation": "bilinear"}
+    result_metadata = _image_embedding_worker_metadata(
+        preprocessing_config=changed_config
+    )
+    process = _ProtocolProcess(
+        _json_lines(
+            {"ready": True, **ready_metadata},
+            {
+                **result_metadata,
+                "image_embeddings": [[1.0, 0.0]],
+                "embedding_dim": 2,
+                "image_content_hashes": [IMAGE_CONTENT_HASH_1],
+            },
+        )
+    )
+    scorer = PersistentBioClipScorer(
+        runtime=_runtime(),
+        popen=lambda _cmd, **_kwargs: process,
+        image_resize_mode="longest",
+    )
+
+    with pytest.raises(RuntimeError, match="preprocessing config changed"):
+        scorer.embed_image_paths([Path("/tmp/1.jpg")])
+
+
+@pytest.mark.parametrize(
+    ("ready_override", "result_override", "message"),
+    [
+        ({"model_id": "other/model"}, {}, "model ID mismatch"),
+        ({"model_revision": "0" * 40}, {}, "model revision mismatch"),
+        ({}, {"model_revision": "0" * 40}, "model revision mismatch"),
+        ({}, {"image_embeddings": [[1.0, 0.0]]}, "returned 1 rows for 2 images"),
+        (
+            {},
+            {"image_embeddings": [[1.0, 0.0], [1.0, 0.0, 0.0]]},
+            "embedding dimension mismatch",
+        ),
+        (
+            {},
+            {"image_embeddings": [[float("nan"), 0.0], [1.0, 0.0]]},
+            "finite values",
+        ),
+        ({}, {"embedding_dim": 3}, "reported embedding dimension"),
+        ({}, {"image_content_hashes": None}, "content hashes must be a list"),
+        (
+            {},
+            {"image_content_hashes": [IMAGE_CONTENT_HASH_1]},
+            "1 image content hashes for 2 images",
+        ),
+        (
+            {},
+            {"image_content_hashes": [IMAGE_CONTENT_HASH_1, "sha256:INVALID"]},
+            "valid SHA-256 values",
+        ),
+    ],
+)
+def test_persistent_image_embedding_boundary_fails_closed(
+    ready_override: dict[str, object],
+    result_override: dict[str, object],
+    message: str,
+) -> None:
+    metadata = _image_embedding_worker_metadata()
+    ready = {"ready": True, **metadata, **ready_override}
+    result = {
+        **metadata,
+        "image_embeddings": [[1.0, 0.0], [0.0, 1.0]],
+        "embedding_dim": 2,
+        "image_content_hashes": [IMAGE_CONTENT_HASH_1, IMAGE_CONTENT_HASH_2],
+        **result_override,
+    }
+
+    class FakeStdin:
+        def write(self, _value: str) -> None:
+            return None
+
+        def flush(self) -> None:
+            return None
+
+    class FakeStdout:
+        def __init__(self) -> None:
+            self.lines = iter([json.dumps(ready) + "\n", json.dumps(result) + "\n"])
+
+        def readline(self) -> str:
+            return next(self.lines)
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdin = FakeStdin()
+            self.stdout = FakeStdout()
+            self.stderr = None
+            self.returncode = None
+
+        def poll(self):  # noqa: ANN202 - mirrors subprocess.Popen.
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.returncode = 0
+
+        def wait(self, timeout=None):  # noqa: ANN001, ANN202 - mirrors subprocess.Popen.
+            self.returncode = 0
+            return 0
+
+    scorer = PersistentBioClipScorer(
+        runtime=_runtime(),
+        popen=lambda _cmd, **_kwargs: FakeProcess(),
+        image_resize_mode="longest",
+    )
+    try:
+        with pytest.raises(RuntimeError, match=message):
+            scorer.embed_image_paths([Path("/tmp/1.jpg"), Path("/tmp/2.jpg")])
+    finally:
+        scorer.close()
+
+
+def test_persistent_image_embedding_protocol_error_discards_stale_worker() -> None:
+    processes: list[object] = []
+
+    class FakeStdin:
+        def write(self, _value: str) -> None:
+            return None
+
+        def flush(self) -> None:
+            return None
+
+    class FakeStdout:
+        def __init__(self, lines: list[dict[str, object]]) -> None:
+            self.lines = iter(json.dumps(line) + "\n" for line in lines)
+
+        def readline(self) -> str:
+            return next(self.lines)
+
+    class FakeProcess:
+        def __init__(self, lines: list[dict[str, object]]) -> None:
+            self.stdin = FakeStdin()
+            self.stdout = FakeStdout(lines)
+            self.stderr = None
+            self.returncode = None
+            self.terminate_calls = 0
+
+        def poll(self):  # noqa: ANN202 - mirrors subprocess.Popen.
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+            self.returncode = 0
+
+        def wait(self, timeout=None):  # noqa: ANN001, ANN202 - mirrors subprocess.Popen.
+            self.returncode = 0
+            return 0
+
+    metadata = _image_embedding_worker_metadata()
+    responses = [
+        [
+            {"ready": True, **metadata, "model_revision": "0" * 40},
+            {
+                **metadata,
+                "image_embeddings": [[1.0, 0.0]],
+                "embedding_dim": 2,
+                "image_content_hashes": [IMAGE_CONTENT_HASH_1],
+            },
+        ],
+        [
+            {"ready": True, **metadata},
+            {
+                **metadata,
+                "image_embeddings": [[0.0, 1.0]],
+                "embedding_dim": 2,
+                "image_content_hashes": [IMAGE_CONTENT_HASH_2],
+            },
+        ],
+    ]
+
+    def fake_popen(_cmd, **_kwargs):  # noqa: ANN202 - fake process factory.
+        process = FakeProcess(responses[len(processes)])
+        processes.append(process)
+        return process
+
+    scorer = PersistentBioClipScorer(
+        runtime=_runtime(),
+        popen=fake_popen,
+        image_resize_mode="longest",
+    )
+    with pytest.raises(RuntimeError, match="model revision mismatch"):
+        scorer.embed_image_paths([Path("/tmp/first.jpg")])
+
+    assert scorer.embed_image_paths([Path("/tmp/second.jpg")]) == [[0.0, 1.0]]
+    assert scorer.last_image_content_hashes == [IMAGE_CONTENT_HASH_2]
+    assert len(processes) == 2
+    assert processes[0].terminate_calls == 1
+    scorer.close()
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["scores", "label_sets", "text_embeddings", "image_embeddings"],
+)
+def test_persistent_protocol_failures_discard_worker_for_every_operation(
+    operation: str,
+) -> None:
+    process = _ProtocolProcess(["not-json\n"])
+    scorer = PersistentBioClipScorer(
+        runtime=_runtime(),
+        popen=lambda _cmd, **_kwargs: process,
+        image_resize_mode="longest" if operation == "image_embeddings" else None,
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        if operation == "scores":
+            scorer.score_batch([Path("/tmp/1.jpg")], ["butterfly"])
+        elif operation == "label_sets":
+            scorer.score_label_sets_batch(
+                [Path("/tmp/1.jpg")],
+                {"triage": ["butterfly"]},
+            )
+        elif operation == "text_embeddings":
+            scorer.embed_text_labels(["butterfly"])
+        else:
+            scorer.embed_image_paths([Path("/tmp/1.jpg")])
+
+    assert process.terminate_calls == 1
+    assert scorer._process is None  # noqa: SLF001 - protocol poison contract.
+    assert process.stdin.closed is True
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
+
+
+def test_persistent_protocol_cleanup_kills_stubborn_worker_and_closes_pipes() -> None:
+    class StubbornProcess(_ProtocolProcess):
+        def __init__(self) -> None:
+            super().__init__(["not-json\n"])
+            self.wait_calls = 0
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+            self.returncode = -9
+
+        def wait(self, timeout=None) -> int:  # noqa: ANN001 - mirrors subprocess.Popen.
+            self.wait_calls += 1
+            if self.kill_calls == 0:
+                raise subprocess.TimeoutExpired("bioclip-worker", timeout)
+            return -9
+
+    process = StubbornProcess()
+    scorer = PersistentBioClipScorer(
+        runtime=_runtime(),
+        popen=lambda _cmd, **_kwargs: process,
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        scorer.score_batch([Path("/tmp/1.jpg")], ["butterfly"])
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert process.wait_calls == 2
+    assert process.stdin.closed is True
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
 
 
 def test_bioclip_classifier_builds_species_and_triage_prediction_with_label_sets() -> (

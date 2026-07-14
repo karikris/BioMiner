@@ -12,6 +12,7 @@ from biominer.vision.target_full_frame import (
     RAW_FULL_IMAGE_KIND,
     TARGET_AWARE_VISUAL_MODE,
     TARGET_FULL_FRAME_EMBEDDING_VERSION,
+    TARGET_FULL_FRAME_SCORING_UNIT_VERSION,
     RawFullFrameEmbedding,
     RawFullFrameVisualInput,
     TargetFullFrameScoringUnit,
@@ -53,6 +54,17 @@ class RecordingEncoder:
             [float(image.data[0]), float(image.width), float(image.height)]
             for image in batch
         ]
+
+
+class FixedVectorEncoder(RecordingEncoder):
+    def __init__(self, vector: Sequence[float]) -> None:
+        super().__init__()
+        self.vector = tuple(vector)
+
+    def encode_images(self, images: Sequence[DecodedImage]) -> list[list[float]]:
+        batch = tuple(images)
+        self.batches.append(batch)
+        return [list(self.vector) for _image in batch]
 
 
 def test_full_frame_plan_encodes_adult_and_larval_routes_once() -> None:
@@ -101,6 +113,8 @@ def test_full_frame_plan_encodes_adult_and_larval_routes_once() -> None:
     assert len(plan.visual_inputs) == 1
     assert [unit.route for unit in plan.scoring_units] == ["adult_field", "larval"]
     adult, larval = plan.scoring_units
+    assert adult.scoring_unit_version == TARGET_FULL_FRAME_SCORING_UNIT_VERSION
+    assert adult.scoring_unit_version == "target-full-frame-scoring-unit-v3"
     assert adult.detection_ids == ("adult-1",)
     assert adult.detector_boxes_xyxy == ((0.0, 0.0, 1.0, 2.0),)
     assert adult.boxes_xyxyn == ((0.0, 0.0, 0.5, 1.0),)
@@ -122,7 +136,7 @@ def test_full_frame_plan_encodes_adult_and_larval_routes_once() -> None:
     assert len(embedded.embeddings) == 1
     embedding = embedded.embeddings[0]
     assert embedding.embedding_version == TARGET_FULL_FRAME_EMBEDDING_VERSION
-    assert embedding.embedding_version == "target-full-frame-embedding-v2"
+    assert embedding.embedding_version == "target-full-frame-embedding-v3"
     assert embedding.image_resize_mode == TARGET_FULL_FRAME_IMAGE_RESIZE_MODE
     assert (
         embedding.preprocessing_contract_fingerprint
@@ -165,6 +179,31 @@ def test_embedding_identity_binds_target_preprocessing_contract(monkeypatch) -> 
         replace(TARGET_FULL_FRAME_PREPROCESSING, version="changed-contract-v2"),
     )
     assert full_frame_embedding_id(**kwargs) != baseline
+
+
+def test_embedding_fingerprint_preserves_vector_float64_signed_zero() -> None:
+    image = _image(bytes(range(12)), width=2, height=2)
+    plan = build_target_full_frame_plan(
+        detection_rows=[_detection_row("photo-1", "det-1")],
+        image_loader=lambda _row: image,
+    )
+
+    positive = encode_target_full_frame_plan(
+        plan,
+        encoder=FixedVectorEncoder((1.0, 0.0)),
+        model_fingerprint=_MODEL_FINGERPRINT,
+        preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
+    ).embeddings[0]
+    negative = encode_target_full_frame_plan(
+        plan,
+        encoder=FixedVectorEncoder((1.0, -0.0)),
+        model_fingerprint=_MODEL_FINGERPRINT,
+        preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
+    ).embeddings[0]
+
+    assert positive.embedding_id == negative.embedding_id
+    assert positive.embedding_norm == negative.embedding_norm
+    assert positive.embedding_fingerprint != negative.embedding_fingerprint
 
 
 def test_visual_identity_ignores_detection_metadata_and_input_order() -> None:

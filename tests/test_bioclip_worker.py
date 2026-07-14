@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
+from pathlib import Path
 import sys
 import types
 
@@ -9,33 +11,167 @@ import pytest
 
 from biominer.bioclip import bioclip_worker
 from biominer.bioclip.bioclip_worker import (
+    OPENCLIP_PREPROCESSING_ATTESTATION_VERSION,
+    canonical_preprocessing_config,
     configure_hf_cache_env,
     device_from_request,
     normalize_image_resize_mode,
-    open_clip_model_args,
+    preprocessing_attestation_fingerprint,
+    resolve_open_clip_model_source,
     resolve_torch_device,
 )
+from biominer.common.semantic_hash import canonical_semantic_fingerprint
 
 
-def test_open_clip_model_args_use_hf_hub_prefix_for_model_ids() -> None:
-    assert open_clip_model_args(
-        "imageomics/bioclip-2", "BioCLIP 2.5 Huge OpenCLIP ViT-H/14 checkpoint"
-    ) == {
-        "model_name": "hf-hub:imageomics/bioclip-2",
-        "pretrained": None,
+REVISION = "191d741545e4c741cdef4b22c6eb69c945c1e592"
+
+
+def test_open_clip_model_source_resolves_exact_prefetched_hf_snapshot(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    snapshot = _snapshot(tmp_path)
+    calls: list[dict[str, object]] = []
+    fake_hub = types.ModuleType("huggingface_hub")
+
+    def snapshot_download(**kwargs):  # noqa: ANN003, ANN202 - fake Hub API.
+        calls.append(kwargs)
+        return str(snapshot)
+
+    fake_hub.snapshot_download = snapshot_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+
+    source = resolve_open_clip_model_source(
+        "imageomics/bioclip-2.5-vith14",
+        REVISION,
+    )
+
+    assert source.loader_model_name == f"local-dir:{snapshot.resolve()}"
+    assert source.model_id == "imageomics/bioclip-2.5-vith14"
+    assert source.model_revision == REVISION
+    assert source.model_weights_sha256 == _file_sha256(
+        snapshot / "open_clip_model.safetensors"
+    )
+    assert source.open_clip_config_sha256 == _file_sha256(
+        snapshot / "open_clip_config.json"
+    )
+    assert source.pretrained is None
+    assert source.require_pretrained is True
+    assert calls == [
+        {
+            "repo_id": "imageomics/bioclip-2.5-vith14",
+            "repo_type": "model",
+            "revision": REVISION,
+            "local_files_only": True,
+        }
+    ]
+
+
+def test_open_clip_model_source_checks_resolved_snapshot_commit(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    snapshot = _snapshot(tmp_path)
+    snapshot_alias = tmp_path / "snapshot-alias"
+    snapshot_alias.symlink_to(snapshot, target_is_directory=True)
+    fake_hub = types.ModuleType("huggingface_hub")
+    fake_hub.snapshot_download = lambda **_kwargs: str(snapshot_alias)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+
+    source = resolve_open_clip_model_source(
+        "imageomics/bioclip-2.5-vith14",
+        REVISION,
+    )
+
+    assert source.loader_model_name == f"local-dir:{snapshot.resolve()}"
+
+
+@pytest.mark.parametrize("revision", ["main", "v2.5", "", "a" * 39, "g" * 40])
+def test_open_clip_model_source_rejects_mutable_or_invalid_hf_revision(
+    revision: str,
+) -> None:
+    with pytest.raises(ValueError, match="immutable 40-character commit"):
+        resolve_open_clip_model_source(
+            "imageomics/bioclip-2.5-vith14",
+            revision,
+        )
+
+
+@pytest.mark.parametrize(
+    ("missing", "message"),
+    [
+        ("open_clip_config.json", "config"),
+        ("open_clip_model.safetensors", "weights"),
+    ],
+)
+def test_open_clip_model_source_rejects_incomplete_prefetched_snapshot(
+    monkeypatch,
+    tmp_path,
+    missing: str,
+    message: str,
+) -> None:
+    snapshot = _snapshot(tmp_path)
+    (snapshot / missing).unlink()
+    fake_hub = types.ModuleType("huggingface_hub")
+    fake_hub.snapshot_download = lambda **_kwargs: str(snapshot)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+
+    with pytest.raises(FileNotFoundError, match=message):
+        resolve_open_clip_model_source(
+            "imageomics/bioclip-2.5-vith14",
+            REVISION,
+        )
+
+
+def test_open_clip_model_source_preserves_explicit_openclip_checkpoint() -> None:
+    source = resolve_open_clip_model_source("ViT-H-14", "laion2b_s32b_b79k")
+
+    assert source.loader_model_name == "ViT-H-14"
+    assert source.pretrained == "laion2b_s32b_b79k"
+    assert source.model_id == "ViT-H-14"
+    assert source.model_revision == "laion2b_s32b_b79k"
+    assert source.model_weights_sha256 is None
+    assert source.open_clip_config_sha256 is None
+    assert source.require_pretrained is True
+
+
+def test_preprocessing_attestation_fingerprint_uses_canonical_binary() -> None:
+    config = {
+        "size": (224, 224),
+        "resize_mode": "longest",
+        "mean": (0.1, 0.2, 0.3),
     }
-
-
-def test_open_clip_model_args_preserve_explicit_openclip_checkpoint() -> None:
-    assert open_clip_model_args("ViT-H-14", "laion2b_s32b_b79k") == {
-        "model_name": "ViT-H-14",
-        "pretrained": "laion2b_s32b_b79k",
+    canonical = canonical_preprocessing_config(config)
+    payload = {
+        "open_clip_config_sha256": "sha256:" + "b" * 64,
+        "open_clip_version": "3.3.0",
+        "preprocessing_config": canonical,
+        "preprocessing_version": OPENCLIP_PREPROCESSING_ATTESTATION_VERSION,
     }
+    expected = canonical_semantic_fingerprint(payload)
+
+    assert canonical == {
+        "mean": [0.1, 0.2, 0.3],
+        "resize_mode": "longest",
+        "size": [224, 224],
+    }
+    assert OPENCLIP_PREPROCESSING_ATTESTATION_VERSION == (
+        "openclip-preprocessing-attestation-v2"
+    )
+    assert (
+        preprocessing_attestation_fingerprint(
+            open_clip_config_sha256="sha256:" + "b" * 64,
+            open_clip_version="3.3.0",
+            preprocessing_config=config,
+            preprocessing_version=OPENCLIP_PREPROCESSING_ATTESTATION_VERSION,
+        )
+        == expected
+    )
 
 
 def test_configure_hf_cache_env_sets_writable_cache(monkeypatch, tmp_path) -> None:
-    monkeypatch.delenv("HF_HOME", raising=False)
-    monkeypatch.delenv("HUGGINGFACE_HUB_CACHE", raising=False)
+    monkeypatch.setenv("HF_HOME", "/stale/home")
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", "/stale/hub")
     monkeypatch.delenv("PYTORCH_ENABLE_MPS_FALLBACK", raising=False)
 
     configure_hf_cache_env(tmp_path / "hf")
@@ -122,40 +258,82 @@ def test_worker_main_accepts_batch_request_without_loading_model(
 
 def test_loaded_model_only_overrides_open_clip_resize_mode_when_requested(
     monkeypatch,
+    tmp_path,
 ) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
+    tokenizer_calls: list[str] = []
+    snapshot = _snapshot(tmp_path)
     fake_open_clip = types.ModuleType("open_clip")
+    fake_hub = types.ModuleType("huggingface_hub")
 
     def create_model_and_transforms(model_name: str, **kwargs):  # noqa: ANN001, ANN202 - fake OpenCLIP API.
         calls.append((model_name, kwargs))
-        return FakeOpenClipModel(), None, object()
+        return (
+            FakeOpenClipModel(str(kwargs.get("image_resize_mode") or "shortest")),
+            None,
+            object(),
+        )
 
+    fake_open_clip.__version__ = "3.3.0"
     fake_open_clip.create_model_and_transforms = create_model_and_transforms
-    fake_open_clip.get_tokenizer = lambda _model_name: object()
+    fake_open_clip.get_model_preprocess_cfg = lambda model: model.preprocessing_config
+    fake_open_clip.get_tokenizer = lambda model_name: (
+        tokenizer_calls.append(model_name) or object()
+    )
+    fake_hub.snapshot_download = lambda **_kwargs: str(snapshot)
     monkeypatch.setitem(sys.modules, "open_clip", fake_open_clip)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
     monkeypatch.setitem(sys.modules, "torch", FakeTorch(cuda=False, mps=False))
 
     legacy = bioclip_worker._LoadedBioClipModel.load(  # noqa: SLF001 - worker integration contract.
         model_name="imageomics/bioclip-2",
-        checkpoint="checkpoint",
+        checkpoint=REVISION,
         device="cpu",
     )
     target = bioclip_worker._LoadedBioClipModel.load(  # noqa: SLF001 - target preprocessing contract.
         model_name="imageomics/bioclip-2",
-        checkpoint="checkpoint",
+        checkpoint=REVISION,
         device="cpu",
         image_resize_mode="longest",
     )
 
     assert calls == [
-        ("hf-hub:imageomics/bioclip-2", {"pretrained": None}),
         (
-            "hf-hub:imageomics/bioclip-2",
-            {"pretrained": None, "image_resize_mode": "longest"},
+            f"local-dir:{snapshot.resolve()}",
+            {"pretrained": None, "require_pretrained": True},
+        ),
+        (
+            f"local-dir:{snapshot.resolve()}",
+            {
+                "pretrained": None,
+                "require_pretrained": True,
+                "image_resize_mode": "longest",
+            },
         ),
     ]
-    assert legacy.image_resize_mode is None
+    assert tokenizer_calls == [
+        f"local-dir:{snapshot.resolve()}",
+        f"local-dir:{snapshot.resolve()}",
+    ]
+    assert legacy.image_resize_mode == "shortest"
     assert target.image_resize_mode == "longest"
+    assert target.model_id == "imageomics/bioclip-2"
+    assert target.model_revision == REVISION
+    assert target.model_weights_sha256 == _file_sha256(
+        snapshot / "open_clip_model.safetensors"
+    )
+    assert target.open_clip_version == "3.3.0"
+    assert target.open_clip_config_sha256 == _file_sha256(
+        snapshot / "open_clip_config.json"
+    )
+    assert target.preprocessing_version == (OPENCLIP_PREPROCESSING_ATTESTATION_VERSION)
+    assert target.preprocessing_config == _preprocessing_config("longest")
+    assert target.preprocessing_fingerprint == preprocessing_attestation_fingerprint(
+        open_clip_config_sha256=target.open_clip_config_sha256,
+        open_clip_version="3.3.0",
+        preprocessing_config=_preprocessing_config("longest"),
+        preprocessing_version=OPENCLIP_PREPROCESSING_ATTESTATION_VERSION,
+    )
 
 
 def test_loaded_model_rejects_invalid_resize_mode_before_importing_runtime() -> None:
@@ -195,8 +373,35 @@ class FakeMps:
 
 
 class FakeOpenClipModel:
+    def __init__(self, resize_mode: str = "shortest") -> None:
+        self.preprocessing_config = _preprocessing_config(resize_mode)
+
     def to(self, _device):  # noqa: ANN001, ANN202 - fake OpenCLIP model.
         return self
 
     def eval(self) -> None:
         return None
+
+
+def _snapshot(tmp_path: Path) -> Path:
+    snapshot = tmp_path / "hub" / "snapshots" / REVISION
+    snapshot.mkdir(parents=True)
+    (snapshot / "open_clip_config.json").write_text("{}", encoding="utf-8")
+    (snapshot / "open_clip_model.safetensors").write_bytes(b"frozen-weights")
+    return snapshot
+
+
+def _preprocessing_config(resize_mode: str) -> dict[str, object]:
+    return {
+        "fill_color": 0,
+        "interpolation": "bicubic",
+        "mean": [0.48145466, 0.4578275, 0.40821073],
+        "mode": "RGB",
+        "resize_mode": resize_mode,
+        "size": [224, 224],
+        "std": [0.26862954, 0.26130258, 0.27577711],
+    }
+
+
+def _file_sha256(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()

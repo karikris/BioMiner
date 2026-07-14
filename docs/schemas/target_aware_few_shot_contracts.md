@@ -29,6 +29,7 @@ The tables below use these logical types:
 | `date?` | nullable Arrow/Parquet date |
 | `ts` / `ts?` | UTC Arrow/Parquet timestamp at microsecond precision |
 | `list<T>` | non-null list; use an empty list for a known empty set |
+| `array<T,N>` | non-null fixed-size Arrow array with exactly `N` elements |
 | `struct<...>` | Arrow/Parquet struct with the listed typed fields |
 
 Source-qualified accepted taxon keys are strings, for example `gbif:123`, even
@@ -100,13 +101,30 @@ Three hashes have distinct meanings:
 3. `work_identity` hashes the semantic inputs required to decide whether a
    computation is already complete. Lease and retry metadata are excluded.
 
-Canonical JSON uses UTF-8, sorted object keys, compact separators, explicit
-nulls, and no NaN or infinity. Set-like arrays are sorted before hashing.
-Integers are decimal. Floating values used in semantic fingerprints are hashed
-as their declared IEEE byte representation, not locale-dependent formatted
-text. Embedding and model arrays are C-contiguous little-endian arrays with a
-declared dtype and shape; the manifest hashes their raw bytes and the complete
-NPZ file.
+Canonical structured semantic preimages use
+`biominer-canonical-semantic-v1`. The preimage begins with the fixed
+`biominer-canonical-semantic\0v1\0` byte prefix. Every value then has a
+one-byte type tag and an unsigned 64-bit big-endian payload length. Mapping
+keys are UTF-8 strings sorted by their encoded key bytes. Lists and tuples
+retain order and share the ordered-array tag. Integers use canonical ASCII decimal;
+finite Python floats use little-endian IEEE-754 Float64 bytes, including the
+sign bit of zero. NaN, infinity, naive datetimes, non-string mapping keys, and
+unsupported types are rejected. Aware datetimes are normalized to UTC with
+microsecond precision; dates retain their distinct type.
+
+Set-like arrays are sorted by the owning contract before hashing. Embedding
+and model arrays are C-contiguous little-endian arrays with a declared dtype
+and shape; the manifest hashes their raw bytes and the complete NPZ file.
+Canonical JSON remains the durable human-readable representation, not the
+semantic hash preimage.
+
+Moving Phase 6 identities from JSON-number text to this binary preimage is an
+intentional cache break. Full-frame visual inputs, attention transforms,
+evidence, unavailable variants, raw identity transforms, preprocessing and
+quality policies use version 2. Target full-frame scoring units and embeddings
+use version 3. OpenCLIP preprocessing attestations use version 2. Readers must
+not reinterpret artifacts carrying the earlier versions under the new hash
+algorithm.
 
 Self-referential fields are excluded from their own preimage. A classifier
 fingerprint, for example, covers its canonical manifest with
@@ -958,14 +976,23 @@ the output directory uncommitted and attempts to persist a sibling
 to `support_train`, `model_selection`, `calibration`, or `final_test`, or records
 an exclusion reason. There is no implicit support split. Every assignment binds
 the split version, actor, timestamp, inclusion state, and semantic assignment
-fingerprint.
+fingerprint. Those audit fields remain physical, but readiness projects split
+semantics from media ID, split version, split, inclusion, and exclusion reason;
+the actor, assignment timestamp, and transitive assignment fingerprint do not
+change the frozen bank identity.
 
 `reference_support_manifest.parquet` is the immutable resolved projection used
-by embedding and split construction. Its grain is one canonical verified media
-item and route. It records all source observation/media IDs, content and
-duplicate hashes, accepted taxonomy, resolved review decision IDs, licence and
-attribution, geography, life stage, visual domain, view, support eligibility,
-split, exclusion state, and `reference_bank_fingerprint`.
+by embedding and split construction. Schema version
+`reference-support-manifest-v2.0.0` uses an explicit semantic projection. It
+excludes source-record, licence, and object locators; downloader object
+fingerprints; queue request, decision, and reviewer IDs; and split-assignment
+fingerprints from row and artifact semantic fingerprints. These fields remain
+in every persisted row for retrieval and audit. Direct source snapshot,
+source-record content, image-content, perceptual, taxonomy, review outcome,
+licence, attribution, geography, route, split, and model-bank identities remain
+semantic. Version 1 used locator-bearing audit provenance in its fingerprint
+preimage and is not accepted as version 2. Its grain is one canonical verified
+media item and route.
 
 `reference_bank_summary.parquet` has one row per bank version, accepted species,
 cluster scope, life stage, visual domain, and split. Schema version:
@@ -975,7 +1002,7 @@ source, licence, observer, observation, and geographic diversity counts; and
 the reference-bank and support-manifest fingerprints.
 
 `reference_bank_readiness.json` has schema version
-`reference-bank-readiness-v1.0.0` and contains:
+`reference-bank-readiness-v2.0.0` and contains:
 
 - `reference_bank_version`, target key, registry version, candidate-set
   fingerprints, support-manifest fingerprint, model/preprocessing identity,
@@ -999,6 +1026,22 @@ remain bound to their regional source candidate-set IDs. Observation registry,
 taxon/name, plan, selection, current media inventory, review queue, and review
 source-leaf identities are cross-validated before prior manual decisions are
 accepted.
+
+Bank input fingerprints are computed from per-artifact allowlist projections.
+Plan/selection/retrieval/download/queue/assignment timestamps, attempts, byte
+counts, transport locators, review actors and queue-derived IDs/fingerprints
+are excluded. Deduplication semantics are recomputed from the projected
+observation, candidate, object, relationship, and versioned settings content
+rather than trusting report hashes that may bind PID, git SHA, generation time,
+or artifact URIs. Direct scientific content, source-snapshot, image, policy,
+and model hashes remain semantic.
+
+`reference_model_input_identity.json` uses schema version
+`reference-model-input-identity-v2.0.0`. It persists the checkpoint URI for
+retrieval and audit but excludes that relocatable URI from the semantic model
+input fingerprint. The immutable model revision, checkpoint SHA-256, OpenCLIP
+configuration, preprocessing contract, and input contract remain semantic.
+Version 1 identities are rejected explicitly.
 
 Compile and publish the three immutable readiness artifacts with:
 
@@ -1045,23 +1088,62 @@ prototype, classifier, calibrator, and threshold identity.
 
 ### 6.1 `reference_embeddings.parquet`
 
-Grain and primary key: one canonical reference media item, visual input, and
-model/preprocessing identity. Sort by accepted taxon, route, cluster, media ID,
-and visual input. Schema version: `reference-embeddings-v1.0.0`.
+Grain and primary key: one frozen support row and full-frame visual input,
+identified by `(support_row_fingerprint, visual_input_id)`. Sort by accepted
+taxon, route, cluster, split, media ID, visual-input kind, content hash,
+transformation version, transformation fingerprint, and visual-input ID.
+Schema version: `reference-embeddings-v2.0.0`. Version 2 replaces the planned
+version 1 physical schema before production publication; it preserves multiple
+effective review decisions, uses fixed-width vectors, and makes model and
+preprocessing attestations independently reconstructable.
 
-Required fields are `schema_version`, `reference_media_id`,
-`reference_observation_id`, `review_decision_id`, `duplicate_group_id`,
-`accepted_taxon_key`, `scientific_name`, `geo_cluster_id`, `life_stage`,
-`visual_domain`, `view`, `route`, `visual_input_kind`, `image_content_hash`,
-`transformation_version`, `model_id`, `model_revision`, `model_checkpoint_hash`,
-`preprocessing_version`, `model_fingerprint`, `embedding_dimension: u32`,
-`embedding: list<f32>`, `embedding_norm: f32`, `support_split`,
-`support_manifest_fingerprint`, `embedding_created_at`, and
-`embedding_fingerprint`.
+The exact ordered fields are:
+
+```text
+schema_version, registry_version, reference_bank_version,
+reference_media_id, reference_observation_id, source_snapshot_version,
+review_decision_ids: list<str>, duplicate_group_id, readiness_sha256,
+reference_bank_fingerprint, support_manifest_fingerprint,
+model_input_fingerprint, input_contract_version, support_row_fingerprint,
+accepted_taxon_key, scientific_name, geo_cluster_id, life_stage,
+visual_domain, view, route, source_object_uri, source_image_sha256,
+source_object_fingerprint, visual_input_id, visual_input_kind,
+raw_image_content_hash, image_content_hash, transformation_version,
+transformation_policy_fingerprint, transformation_fingerprint,
+model_input_schema_version, model_name, model_version, model_id,
+model_revision, model_checkpoint_uri, model_weights_sha256,
+model_checkpoint_hash, model_fingerprint, preprocessing_version,
+preprocessing_fingerprint, open_clip_version, open_clip_config_sha256,
+preprocessing_attestation_version, preprocessing_config_json,
+preprocessing_attestation_fingerprint, embedding_dimension: u32,
+embedding: array<f32, embedding_dimension>, embedding_norm: f64,
+support_split, embedding_created_at: ts, embedding_fingerprint
+```
 
 The vector length must equal `embedding_dimension`; all values must be finite;
-the normalization policy is part of the model fingerprint. Only eligible rows
-from the frozen support manifest are accepted.
+the vector must be unit-normalized; and the stored norm must equal the norm of
+the persisted Float32 vector. Embedding fingerprints encode `embedding_norm`
+as little-endian Float64 followed by vector values as little-endian Float32.
+They exclude embedding creation time, readiness bytes, source/model locator
+URIs, queue review-decision IDs, and the downloader's locator-bearing object
+fingerprint. The projected support-row identity, source snapshot and image
+content hashes, transformation identity, model weights/configuration, and
+preprocessing attestation remain semantic.
+
+`model_fingerprint` is distinct from `model_input_fingerprint`: it hashes the
+model-input fingerprint, embedding dimension, the declared `float32` dtype,
+and `l2-unit-normalize-before-float32-persist-v1` normalization policy under
+`reference-embedding-model-v1`. Only eligible rows from the frozen support
+manifest are accepted.
+
+Resumable local build state uses
+`reference-embeddings-checkpoint-v2.0.0`. Its work identity excludes the
+readiness object's byte checksum, relocatable source/model object URIs, and
+regenerated review/object/split audit provenance. Every immutable checkpoint
+part retains its own byte checksum and semantic fingerprint. On resume,
+validated vectors are rebound to the current readiness and support-manifest
+audit provenance before further model work or publication. Version 1
+checkpoints are rejected explicitly.
 
 ### 6.2 `reference_prototypes.parquet`
 

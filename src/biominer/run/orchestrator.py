@@ -491,7 +491,28 @@ class ProductionRunOrchestrator:
                 "reference bank readiness does not permit vision: "
                 f"status={permit.status}"
             )
-        if self.object_scorer is not None:
+        if (
+            self.object_scorer is not None
+            and self.request.classification_mode
+            != HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+        ):
+            bind_readiness = getattr(
+                self.object_scorer,
+                "bind_reference_readiness",
+                None,
+            )
+            if callable(bind_readiness):
+                bind_readiness(permit)
+            else:
+                self._validate_reference_runtime_identity(
+                    scorer=self.object_scorer,
+                    permit=permit,
+                )
+                if not self.allow_single_target_fixture:
+                    raise ValueError(
+                        "injected production BioCLIP scorer cannot attest its "
+                        "loaded reference model identity"
+                    )
             self._validate_reference_runtime_identity(
                 scorer=self.object_scorer,
                 permit=permit,
@@ -509,7 +530,24 @@ class ProductionRunOrchestrator:
             raise ValueError(
                 "reference bank readiness must be validated before vision runtime initialization"
             )
-        self._validate_reference_runtime_identity(scorer=scorer, permit=permit)
+        if (
+            self.request.classification_mode
+            != HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+        ):
+            bind_readiness = getattr(scorer, "bind_reference_readiness", None)
+            if callable(bind_readiness):
+                bind_readiness(permit)
+            else:
+                self._validate_reference_runtime_identity(
+                    scorer=scorer,
+                    permit=permit,
+                )
+                if not self.allow_single_target_fixture:
+                    raise ValueError(
+                        "production BioCLIP scorer cannot attest its loaded reference "
+                        "model identity"
+                    )
+            self._validate_reference_runtime_identity(scorer=scorer, permit=permit)
         self._vision_runtime_initialized = True
         if self.object_detector is None:
             self.object_detector = detector
@@ -593,7 +631,12 @@ class ProductionRunOrchestrator:
         mismatches = sorted(
             field_name
             for field_name, value in runtime_identity.items()
-            if value != expected_identity[field_name]
+            if (
+                _canonical_bioclip_model_id(value)
+                != _canonical_bioclip_model_id(expected_identity[field_name])
+                if field_name == "model_name"
+                else value != expected_identity[field_name]
+            )
         )
         if mismatches:
             raise ValueError(
@@ -2216,6 +2259,10 @@ def _has_hierarchical_classification_rows(frame: Any) -> bool:
         str(value or "") == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
         for value in frame.get_column("classification_mode").drop_nulls().to_list()
     )
+
+
+def _canonical_bioclip_model_id(value: object) -> str:
+    return str(value or "").strip().removeprefix("hf-hub:")
 
 
 def _review_queue_metrics(frame: Any, *, review_queue_mode: str) -> dict[str, Any]:

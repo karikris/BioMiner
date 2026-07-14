@@ -99,7 +99,8 @@ def test_raw_visual_input_is_authoritative_byte_identical_identity() -> None:
     assert raw.raw_image_content_hash == decoded_image_content_hash(image)
     assert raw.visual_content_hash == raw.raw_image_content_hash
     assert raw.transformation_applied is False
-    assert raw.transformation_version == "raw-full-image-transform-v1"
+    assert raw.visual_input_version == "target-full-frame-visual-input-v2"
+    assert raw.transformation_version == "raw-full-image-transform-v2"
 
 
 def test_content_hash_and_raw_identity_ignore_source_uri() -> None:
@@ -119,6 +120,7 @@ def test_focused_variant_preserves_canvas_and_uses_exact_integer_attenuation() -
 
     result = _generate(image, (region,))
     focused = _variants(result, FOCUSED_FULL_FRAME_KIND)[0]
+    focused_evidence = _evidence(result, FOCUSED_FULL_FRAME_KIND)[0]
     pixels = [
         focused.image.data[offset : offset + 3]
         for offset in range(0, len(focused.image.data), 3)
@@ -133,6 +135,8 @@ def test_focused_variant_preserves_canvas_and_uses_exact_integer_attenuation() -
         if index != 5
     )
     assert focused.transformation_applied is True
+    assert focused.transformation_version == "full-frame-attention-transform-v2"
+    assert focused_evidence.evidence_version == "full-frame-attention-evidence-v2"
 
 
 def test_bbox_projection_uses_floor_start_and_ceil_exclusive_end() -> None:
@@ -198,6 +202,7 @@ def test_unavailable_mask_is_explicit_without_bbox_fallback(
     assert len(result.unavailable_variants) == 1
     unavailable = result.unavailable_variants[0]
     assert unavailable.visual_input_kind == MASKED_FULL_FRAME_KIND
+    assert unavailable.unavailable_version == "full-frame-attention-unavailable-v2"
     assert unavailable.reason == reason
     assert reason in unavailable.visual_input_quality_flags
 
@@ -383,13 +388,13 @@ def test_transform_and_quality_policy_versions_have_separate_invalidation() -> N
     baseline_transform = FullFrameTransformPolicy()
     changed_transform = replace(
         baseline_transform,
-        version="full-frame-attention-transform-v2",
+        version="full-frame-attention-transform-v3",
     )
     changed_dependency = replace(baseline_transform, pillow_version="future")
     baseline_quality = AttentionQualityPolicy()
     changed_quality = replace(
         baseline_quality,
-        version="full-frame-attention-quality-v2",
+        version="full-frame-attention-quality-v3",
         small_subject_area_ratio_threshold=0.5,
     )
 
@@ -404,6 +409,8 @@ def test_transform_and_quality_policy_versions_have_separate_invalidation() -> N
     quality = _generate(image, regions, quality_policy=changed_quality)
 
     baseline_focused = _variants(baseline, FOCUSED_FULL_FRAME_KIND)[0]
+    assert baseline_transform.version == "full-frame-attention-transform-v2"
+    assert baseline_quality.version == "full-frame-attention-quality-v2"
     assert baseline_transform.fingerprint != changed_transform.fingerprint
     assert baseline_transform.fingerprint != changed_dependency.fingerprint
     assert (
@@ -485,12 +492,15 @@ def test_equivalent_duplicate_geometry_coalesces_visual_content_but_keeps_eviden
 def test_target_preprocessing_contract_is_explicit_and_fingerprinted() -> None:
     contract = TARGET_FULL_FRAME_PREPROCESSING
 
+    assert contract.version == "target-full-frame-openclip-preprocess-v2"
     assert contract.image_size_px == 224
     assert contract.patch_size_px == 14
     assert contract.interpolation == "bicubic"
     assert contract.resize_mode == "longest"
     assert contract.padding_position == "center"
     assert contract.padding_fill == 0
+    assert contract.normalization_mean == (0.48145466, 0.4578275, 0.40821073)
+    assert contract.normalization_std == (0.26862954, 0.26130258, 0.27577711)
     assert contract.resize_geometry(width=400, height=200) == (
         224,
         112,
@@ -498,19 +508,52 @@ def test_target_preprocessing_contract_is_explicit_and_fingerprinted() -> None:
     )
     assert contract.fingerprint.startswith("sha256:")
     assert (
-        replace(contract, version="target-preprocess-v2").fingerprint
+        replace(contract, version="target-preprocess-v3").fingerprint
         != contract.fingerprint
     )
+
+
+def test_preprocessing_fingerprint_preserves_float64_signed_zero() -> None:
+    positive = TargetPreprocessingContract(
+        normalization_mean=(0.0, 0.2, 0.3),
+    )
+    negative = TargetPreprocessingContract(
+        normalization_mean=(-0.0, 0.2, 0.3),
+    )
+
+    assert positive.fingerprint != negative.fingerprint
+
+
+def test_transformation_fingerprint_binds_exact_normalized_geometry() -> None:
+    image = _image(width=4, height=4)
+    first = _variants(
+        _generate(image, (_region(bbox=(0.25, 0.25, 0.75, 0.75)),)),
+        FOCUSED_FULL_FRAME_KIND,
+    )[0]
+    second = _variants(
+        _generate(image, (_region(bbox=(0.250001, 0.25, 0.75, 0.75)),)),
+        FOCUSED_FULL_FRAME_KIND,
+    )[0]
+
+    assert first.image.data == second.image.data
+    assert first.visual_content_hash == second.visual_content_hash
+    assert first.transformation_fingerprint != second.transformation_fingerprint
+    assert first.visual_input_id != second.visual_input_id
 
 
 @pytest.mark.parametrize(
     "kwargs",
     [
         {"image_size_px": 225},
+        {"patch_size_px": 7},
         {"interpolation": "nearest"},
         {"resize_mode": "shortest"},
         {"padding_position": "top-left"},
         {"padding_fill": 128},
+        {"normalization_mean": (0.0, 0.0)},
+        {"normalization_mean": (True, 0.0, 0.0)},
+        {"normalization_mean": None},
+        {"normalization_std": (1.0, 0.0, 1.0)},
     ],
 )
 def test_target_preprocessing_contract_rejects_canvas_losing_configuration(
