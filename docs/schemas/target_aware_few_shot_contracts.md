@@ -1307,6 +1307,37 @@ quality metadata, creation time, and embedding fingerprint. No spatial crop
 hash is its image identity. Raw full-image embeddings are reused across routes
 and detections when their transformation identity is identical.
 
+### 6.5 Versioned taxonomic prompt ensembles
+
+Target-aware text evidence uses prompt schema
+`taxonomic-prompt-ensemble-v1.0.0` and prompt version
+`bioclip-taxonomic-prompts-v1.0.0`. One ensemble is bound to an accepted species
+key, accepted scientific name, route, life stage, root-to-species path, taxonomy
+source/version/fingerprint, sorted evidence exclusions, and an ensemble
+fingerprint over that complete semantic record.
+
+The deterministic built-in variants are the accepted scientific name, a literal
+butterfly-species description, a route-compatible life-stage description, a
+genus/family description, and the full accepted taxonomic path. The
+`pinned_specimen` variant exists only for the specimen route. Each emitted prompt
+retains its versioned template ID, accepted key, route, stage, evidence kind and
+record ID, source, trust tier/language or reviewer state/identity, an explicit
+`geography_bearing=false` marker, and its own semantic fingerprint.
+
+Vernacular variants require a supported vernacular name class and trust tier
+T1, T2, or T3, and always pair the vernacular with the accepted scientific name.
+Generated translations, T4/T5 assertions, weak homonyms, rejected/disabled
+names, and unsupported name classes are excluded. Free-form prompt aliases
+require an accepted human review state and reviewer identity; route/stage
+mismatches and specimen aliases outside the specimen route are excluded. Raw
+Flickr query/search terms are not an input to this builder. Exclusion reason and
+source-record identity remain fingerprinted audit evidence rather than silently
+becoming a prompt.
+
+Legacy classifiers may project an ensemble to ordered `PromptVariant` labels,
+but prompt-score pooling is a separate, versioned operation. Prompt generation
+does not average or otherwise collapse text evidence.
+
 ## 7. Training, classifier, and calibration artifacts
 
 ### 7.1 `few_shot_training_features.parquet`
