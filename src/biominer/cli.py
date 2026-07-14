@@ -50,6 +50,10 @@ from biominer.evaluation.labels import (
 )
 from biominer.evaluation.review_queue import build_hierarchical_review_queue
 from biominer.evaluation.reports import write_evaluation_report, write_evaluation_report_to_storage
+from biominer.evaluation.sampling import (
+    EvaluationSamplingConfig,
+    materialize_evaluation_sampling_frame,
+)
 from biominer.evaluation.xie_style import EVALUATION_PROFILE as XIE_STYLE_EVALUATION_PROFILE
 from biominer.evaluation.xie_style import evaluate_xie_style_hierarchical
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
@@ -231,6 +235,16 @@ def build_parser() -> argparse.ArgumentParser:
     evaluation_review_queue.add_argument("--photo-summary")
     evaluation_review_queue.add_argument("--output", required=True)
     evaluation_review_queue.add_argument("--max-rows", type=int)
+    evaluation_sampling = evaluation_subparsers.add_parser("build-sampling-frame")
+    evaluation_sampling.add_argument("--candidates", required=True)
+    evaluation_sampling.add_argument("--geo-assignments", required=True)
+    evaluation_sampling.add_argument("--query-state-db", required=True)
+    evaluation_sampling.add_argument("--object-scores")
+    evaluation_sampling.add_argument("--competitor-taxa")
+    evaluation_sampling.add_argument("--target-text-term", action="append", default=[])
+    evaluation_sampling.add_argument("--random-seed", type=int, default=42)
+    evaluation_sampling.add_argument("--run-id")
+    evaluation_sampling.add_argument("--output", required=True)
     references = subparsers.add_parser("references")
     references_subparsers = references.add_subparsers(dest="references_command")
     add_reference_workflow_parsers(
@@ -1021,6 +1035,8 @@ def _run_evaluation_command(args: argparse.Namespace) -> int:
         return _run_evaluation_classify(args)
     if args.evaluation_command == "review-queue":
         return _run_evaluation_review_queue(args)
+    if args.evaluation_command == "build-sampling-frame":
+        return _run_evaluation_sampling_frame(args)
     return 2
 
 
@@ -1373,6 +1389,55 @@ def _run_evaluation_review_queue(args: argparse.Namespace) -> int:
         "review_reason_counts": _value_counts(queue, "review_reason"),
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_evaluation_sampling_frame(args: argparse.Namespace) -> int:
+    try:
+        if args.object_scores and not args.competitor_taxa:
+            raise ValueError(
+                "--competitor-taxa is required when --object-scores is provided"
+            )
+        publication = materialize_evaluation_sampling_frame(
+            candidates_path=args.candidates,
+            geo_assignments_path=args.geo_assignments,
+            query_state_db=args.query_state_db,
+            object_scores_path=args.object_scores,
+            competitor_taxa_path=args.competitor_taxa,
+            output_path=args.output,
+            config=EvaluationSamplingConfig(
+                target_text_terms=tuple(args.target_text_term),
+                random_seed=args.random_seed,
+            ),
+            run_id=args.run_id,
+        )
+    except (
+        FileNotFoundError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        pl.exceptions.PolarsError,
+    ) as exc:
+        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+        return 2
+    print(
+        json.dumps(
+            {
+                "status": "complete",
+                "frame": str(publication.frame_path),
+                "report_json": str(publication.report_json_path),
+                "report_markdown": str(publication.report_markdown_path),
+                "metrics": {
+                    "rows": publication.report["rows_out"],
+                    "scored": publication.report["scored_count"],
+                    "unscored": publication.report["unscored_count"],
+                    "no_geo": publication.report["no_geo_count"],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
