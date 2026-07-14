@@ -1695,6 +1695,39 @@ Competitor/non-match fields:
   `best_domain_negative_similarity`, `calibrated_non_target_probability`,
   `nonmatch_score`, `nonmatch_margin`, and `competitor_reason`.
 
+Explicit non-match aggregation uses version
+`regional-nonmatch-scoring-v1.0.0`. Candidate evidence contains exactly one
+target taxon and at most one row per accepted candidate key. Every raw reference
+value is named `cosine_similarity`, constrained to `[-1,1]`, and bound to one
+shared score-contract fingerprint before maxima or margins are computed.
+Calibrated values are separately constrained to `[0,1]` and require task,
+classifier, and calibrator fingerprints. Target probabilities may come from the
+matching binary/larval verifier or regional multiclass model; competitor
+probabilities require the regional multiclass task; visual-domain probabilities
+require the visual-domain task.
+
+The scorer computes `best_target_reference_score`,
+`best_known_competitor_score`, and `best_domain_negative_score` from comparable
+raw reference evidence. `competitor_margin` is target reference similarity
+minus best known-competitor reference similarity and is null unless both are
+available. The required `best_non_target_score` is the maximum of the best raw
+competitor score, best raw domain-negative score, and generic calibrated
+non-target classifier evidence. Because that formula can cross raw-similarity
+and probability scales, it is never labelled probability: the output records
+the winning score kind, a heterogeneous-scale marker, evidence kind, and
+evidence ID.
+
+`nonmatch_margin` is computed only as calibrated target probability minus the
+largest calibrated non-target probability across regional/nonregional
+competitors, domain negatives, and generic target-verifier non-target evidence.
+Raw and calibrated competitor winners retain separate taxon identities because
+they need not be the same species. Generic non-target evidence yields
+`abstain`, not a fabricated biological category. Maxima use stable taxon and
+evidence-ID tie breaks, and the scoring fingerprint covers the complete sorted
+input evidence plus every derived value. This layer exposes the closed decision
+vocabulary but does not choose target-confirmation thresholds; Task 9.4 owns
+that selective policy.
+
 Quality and structured-evidence fields:
 
 - `yoloe_route`, nullable `detector_score`, nullable `subject_area_ratio`,
