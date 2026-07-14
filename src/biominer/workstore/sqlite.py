@@ -12,7 +12,17 @@ import os
 import sqlite3
 import stat
 
-from biominer.common.status import CLAIMED, COMPLETED, FAILED, PENDING, RUN_COMPLETED, RUN_FAILED, RUN_PLANNED, RUN_RUNNING
+from biominer.common.status import (
+    CLAIMED,
+    COMPLETED,
+    FAILED,
+    PENDING,
+    RUN_COMPLETED,
+    RUN_FAILED,
+    RUN_PLANNED,
+    RUN_RUNNING,
+)
+from biominer.workstore.base import validate_claim_lease
 from biominer.workstore.keys import publication_lock_digest, scoped_work_item_key
 
 DEFAULT_STAGE = "default"
@@ -82,14 +92,18 @@ class SQLiteWorkStore:
                     _json_dumps(config),
                 ),
             )
-            row = conn.execute("SELECT * FROM biominer_runs WHERE run_id = ?", (run_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM biominer_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
         if row is None:
             raise RuntimeError(f"failed to create run row: {run_id}")
         return _row_to_run(row)
 
     def get_run(self, *, run_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM biominer_runs WHERE run_id = ?", (run_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM biominer_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
         return _row_to_run(row) if row is not None else None
 
     def list_runs(
@@ -136,7 +150,10 @@ class SQLiteWorkStore:
         with self._connect() as conn:
             for item in items:
                 payload = dict(item)
-                work_key = str(payload.pop("work_key", "") or scoped_work_item_key(job_name, stage, registry_version, payload))
+                work_key = str(
+                    payload.pop("work_key", "")
+                    or scoped_work_item_key(job_name, stage, registry_version, payload)
+                )
                 result = conn.execute(
                     """
                     INSERT OR IGNORE INTO biominer_work_items (
@@ -174,7 +191,9 @@ class SQLiteWorkStore:
 
         clauses = ["status = ?"]
         params: list[Any] = [PENDING]
-        scoped = job_name is not None or stage is not None or registry_version is not None
+        scoped = (
+            job_name is not None or stage is not None or registry_version is not None
+        )
         _add_filter_if_not_none(clauses, params, "job_name", job_name)
         _add_filter_if_not_none(clauses, params, "stage", stage)
         if scoped:
@@ -187,7 +206,7 @@ class SQLiteWorkStore:
                 f"""
                 SELECT *
                 FROM biominer_work_items
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 ORDER BY created_at, work_key
                 LIMIT ?
                 """,
@@ -219,7 +238,9 @@ class SQLiteWorkStore:
                     work_keys,
                 ).fetchall()
                 rows_by_key = {str(row["work_key"]): row for row in refreshed}
-                claimed_rows = [rows_by_key[key] for key in work_keys if key in rows_by_key]
+                claimed_rows = [
+                    rows_by_key[key] for key in work_keys if key in rows_by_key
+                ]
             conn.execute("COMMIT")
         return [_row_to_work_item(row) for row in claimed_rows]
 
@@ -247,7 +268,7 @@ class SQLiteWorkStore:
                 f"""
                 SELECT *
                 FROM biominer_work_items
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 ORDER BY created_at, work_key
                 {limit_clause}
                 """,
@@ -290,6 +311,140 @@ class SQLiteWorkStore:
                 (FAILED, _timestamp(), error, work_key),
             )
 
+    def renew_claim(
+        self,
+        work_key: str,
+        *,
+        worker_id: str,
+        attempt_count: int,
+        stale_after_seconds: int,
+    ) -> bool:
+        validate_claim_lease(
+            work_key=work_key,
+            worker_id=worker_id,
+            attempt_count=attempt_count,
+            stale_after_seconds=stale_after_seconds,
+        )
+        cutoff = (
+            datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
+        ).isoformat()
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE biominer_work_items
+                SET claimed_at = ?
+                WHERE work_key = ?
+                  AND status = ?
+                  AND claimed_by = ?
+                  AND attempt_count = ?
+                  AND claimed_at IS NOT NULL
+                  AND claimed_at >= ?
+                """,
+                (_timestamp(), work_key, CLAIMED, worker_id, attempt_count, cutoff),
+            )
+        return int(result.rowcount) == 1
+
+    def complete_claim(
+        self,
+        work_key: str,
+        *,
+        worker_id: str,
+        attempt_count: int,
+        stale_after_seconds: int,
+        output_uri: str | None,
+        checksum: str | None,
+        row_count: int | None,
+    ) -> bool:
+        validate_claim_lease(
+            work_key=work_key,
+            worker_id=worker_id,
+            attempt_count=attempt_count,
+            stale_after_seconds=stale_after_seconds,
+        )
+        cutoff = (
+            datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
+        ).isoformat()
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE biominer_work_items
+                SET status = ?,
+                    completed_at = ?,
+                    output_uri = ?,
+                    checksum = ?,
+                    row_count = ?,
+                    error = NULL,
+                    claimed_by = NULL,
+                    claimed_at = NULL
+                WHERE work_key = ?
+                  AND status = ?
+                  AND claimed_by = ?
+                  AND attempt_count = ?
+                  AND claimed_at IS NOT NULL
+                  AND claimed_at >= ?
+                """,
+                (
+                    COMPLETED,
+                    _timestamp(),
+                    output_uri,
+                    checksum,
+                    row_count,
+                    work_key,
+                    CLAIMED,
+                    worker_id,
+                    attempt_count,
+                    cutoff,
+                ),
+            )
+        return int(result.rowcount) == 1
+
+    def fail_claim(
+        self,
+        work_key: str,
+        *,
+        worker_id: str,
+        attempt_count: int,
+        stale_after_seconds: int,
+        error: str,
+    ) -> bool:
+        validate_claim_lease(
+            work_key=work_key,
+            worker_id=worker_id,
+            attempt_count=attempt_count,
+            stale_after_seconds=stale_after_seconds,
+        )
+        cutoff = (
+            datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
+        ).isoformat()
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE biominer_work_items
+                SET status = ?,
+                    completed_at = ?,
+                    error = ?,
+                    claimed_by = NULL,
+                    claimed_at = NULL
+                WHERE work_key = ?
+                  AND status = ?
+                  AND claimed_by = ?
+                  AND attempt_count = ?
+                  AND claimed_at IS NOT NULL
+                  AND claimed_at >= ?
+                """,
+                (
+                    FAILED,
+                    _timestamp(),
+                    error,
+                    work_key,
+                    CLAIMED,
+                    worker_id,
+                    attempt_count,
+                    cutoff,
+                ),
+            )
+        return int(result.rowcount) == 1
+
     def completed_keys(
         self,
         job_name: str,
@@ -308,7 +463,7 @@ class SQLiteWorkStore:
                 f"""
                 SELECT work_key
                 FROM biominer_work_items
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 """,
                 params,
             ).fetchall()
@@ -322,10 +477,14 @@ class SQLiteWorkStore:
         registry_version: str | None = None,
         stale_after_seconds: int,
     ) -> int:
-        cutoff = (datetime.now(UTC) - timedelta(seconds=stale_after_seconds)).isoformat()
+        cutoff = (
+            datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
+        ).isoformat()
         clauses = ["status = ?", "claimed_at IS NOT NULL", "claimed_at < ?"]
         params: list[Any] = [CLAIMED, cutoff]
-        scoped = job_name is not None or stage is not None or registry_version is not None
+        scoped = (
+            job_name is not None or stage is not None or registry_version is not None
+        )
         _add_filter_if_not_none(clauses, params, "job_name", job_name)
         _add_filter_if_not_none(clauses, params, "stage", stage)
         if scoped:
@@ -337,7 +496,7 @@ class SQLiteWorkStore:
                 SET status = ?,
                     claimed_by = NULL,
                     claimed_at = NULL
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 """,
                 (PENDING, *params),
             )
@@ -404,7 +563,7 @@ class SQLiteWorkStore:
                 f"""
                 SELECT *
                 FROM biominer_parquet_shards
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 ORDER BY committed_at, uri
                 """,
                 params,
@@ -428,7 +587,9 @@ class SQLiteWorkStore:
         )
         if include_compacted:
             return candidates
-        consumed = self.list_compacted_source_shard_ids(job_name=job_name, stage=stage, registry_version=registry_version)
+        consumed = self.list_compacted_source_shard_ids(
+            job_name=job_name, stage=stage, registry_version=registry_version
+        )
         return [shard for shard in candidates if str(shard["shard_id"]) not in consumed]
 
     def list_compacted_source_shard_ids(
@@ -446,7 +607,7 @@ class SQLiteWorkStore:
                 f"""
                 SELECT source_shard_id
                 FROM biominer_compaction_inputs
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 """,
                 params,
             ).fetchall()
@@ -535,7 +696,9 @@ class SQLiteWorkStore:
                 (RUN_RUNNING, _timestamp(), run_id),
             )
 
-    def mark_run_completed(self, *, run_id: str, summary: dict[str, Any] | None = None) -> None:
+    def mark_run_completed(
+        self, *, run_id: str, summary: dict[str, Any] | None = None
+    ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
@@ -638,11 +801,25 @@ class SQLiteWorkStore:
                 )
                 """
             )
-            _ensure_column(conn, "biominer_runs", "stage", "stage TEXT NOT NULL DEFAULT 'default'")
+            _ensure_column(
+                conn, "biominer_runs", "stage", "stage TEXT NOT NULL DEFAULT 'default'"
+            )
             _ensure_column(conn, "biominer_runs", "summary_json", "summary_json TEXT")
-            _ensure_column(conn, "biominer_work_items", "stage", "stage TEXT NOT NULL DEFAULT 'default'")
-            _ensure_column(conn, "biominer_parquet_shards", "worker_id", "worker_id TEXT NOT NULL DEFAULT ''")
-            _ensure_column(conn, "biominer_parquet_shards", "metadata_json", "metadata_json TEXT")
+            _ensure_column(
+                conn,
+                "biominer_work_items",
+                "stage",
+                "stage TEXT NOT NULL DEFAULT 'default'",
+            )
+            _ensure_column(
+                conn,
+                "biominer_parquet_shards",
+                "worker_id",
+                "worker_id TEXT NOT NULL DEFAULT ''",
+            )
+            _ensure_column(
+                conn, "biominer_parquet_shards", "metadata_json", "metadata_json TEXT"
+            )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_biominer_runs_scope
@@ -685,7 +862,9 @@ def _row_to_run(row: sqlite3.Row) -> dict[str, Any]:
         "started_at": str(row["started_at"]),
         "ended_at": row["ended_at"],
         "config": _json_loads_dict(row["config_json"]),
-        "summary": _json_loads_dict(row["summary_json"]) if row["summary_json"] else None,
+        "summary": _json_loads_dict(row["summary_json"])
+        if row["summary_json"]
+        else None,
     }
 
 
@@ -722,19 +901,25 @@ def _row_to_shard(row: sqlite3.Row) -> dict[str, Any]:
         "row_count": row["row_count"],
         "byte_count": row["byte_count"],
         "checksum": row["checksum"],
-        "metadata": _json_loads_dict(row["metadata_json"]) if row["metadata_json"] else {},
+        "metadata": _json_loads_dict(row["metadata_json"])
+        if row["metadata_json"]
+        else {},
         "committed_at": str(row["committed_at"]),
     }
 
 
-def _add_filter_if_not_none(clauses: list[str], params: list[Any], column: str, value: str | None) -> None:
+def _add_filter_if_not_none(
+    clauses: list[str], params: list[Any], column: str, value: str | None
+) -> None:
     if value is None:
         return
     clauses.append(f"{column} = ?")
     params.append(value)
 
 
-def _add_nullable_filter(clauses: list[str], params: list[Any], column: str, value: str | None) -> None:
+def _add_nullable_filter(
+    clauses: list[str], params: list[Any], column: str, value: str | None
+) -> None:
     if value is None:
         clauses.append(f"{column} IS NULL")
         return
@@ -743,7 +928,10 @@ def _add_nullable_filter(clauses: list[str], params: list[Any], column: str, val
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
-    columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    columns = {
+        str(row["name"])
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 

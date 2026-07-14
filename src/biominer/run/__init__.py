@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from biominer.run.manifest import RunManifest
-from biominer.run.orchestrator import ProductionRunOrchestrator, ProductionRunPlan, ProductionRunRequest, StageExecutionResult, build_run_plan
+from biominer.run.orchestrator import (
+    ProductionRunOrchestrator,
+    ProductionRunPlan,
+    ProductionRunRequest,
+    StageExecutionResult,
+    build_run_plan,
+)
 from biominer.run.paths import (
     REFERENCE_FIRST_ARTIFACT_KEYS,
     RUN_ARTIFACT_DIRECTORY_KEYS,
@@ -9,6 +15,19 @@ from biominer.run.paths import (
     RUN_ARTIFACT_RELATIVE_PATHS,
     RunArtifactUris,
     RunPaths,
+)
+from biominer.run.reference_work import (
+    REFERENCE_FIRST_WORK_KINDS,
+    REFERENCE_FIRST_WORK_SCHEMA_VERSION,
+    ReferenceFirstClaimBatch,
+    ReferenceFirstEnqueueResult,
+    ReferenceFirstWorkItem,
+    ReferenceFirstWorkKind,
+    ReferenceFirstWorkLease,
+    ReferenceFirstWorkPayloadError,
+    WorkLeaseLostError,
+    claim_reference_first_work,
+    enqueue_reference_first_work,
 )
 from biominer.run.stages import (
     MANUAL_REVIEW_STAGES,
@@ -40,11 +59,19 @@ __all__ = [
     "MANUAL_REVIEW_STAGES",
     "REFERENCE_FIRST_PRODUCTION_STAGES",
     "REFERENCE_FIRST_ARTIFACT_KEYS",
+    "REFERENCE_FIRST_WORK_KINDS",
+    "REFERENCE_FIRST_WORK_SCHEMA_VERSION",
     "RUN_ARTIFACT_DIRECTORY_KEYS",
     "RUN_ARTIFACT_LAYOUT_VERSION",
     "RUN_ARTIFACT_RELATIVE_PATHS",
     "RunArtifactUris",
     "RunPaths",
+    "ReferenceFirstClaimBatch",
+    "ReferenceFirstEnqueueResult",
+    "ReferenceFirstWorkItem",
+    "ReferenceFirstWorkKind",
+    "ReferenceFirstWorkLease",
+    "ReferenceFirstWorkPayloadError",
     "RunStage",
     "StageRecord",
     "StageStatus",
@@ -52,7 +79,10 @@ __all__ = [
     "SupportDependencyError",
     "SupportDependencyPermit",
     "TaxonScope",
+    "WorkLeaseLostError",
     "build_run_plan",
+    "claim_reference_first_work",
+    "enqueue_reference_first_work",
     "resolve_species_context_from_registry",
     "resolve_species_context_from_registry_frames",
     "resolve_taxon_scope_from_registry",

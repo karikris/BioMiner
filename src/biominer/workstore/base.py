@@ -6,8 +6,7 @@ from typing import Any, Protocol, runtime_checkable
 
 @runtime_checkable
 class WorkStore(Protocol):
-    def publication_lock(self, key: str) -> AbstractContextManager[None]:
-        ...
+    def publication_lock(self, key: str) -> AbstractContextManager[None]: ...
 
     def get_or_create_run(
         self,
@@ -17,11 +16,9 @@ class WorkStore(Protocol):
         run_id: str,
         registry_version: str | None,
         config: dict[str, Any],
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
-    def get_run(self, *, run_id: str) -> dict[str, Any] | None:
-        ...
+    def get_run(self, *, run_id: str) -> dict[str, Any] | None: ...
 
     def list_runs(
         self,
@@ -30,8 +27,7 @@ class WorkStore(Protocol):
         stage: str | None = None,
         registry_version: str | None = None,
         statuses: list[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        ...
+    ) -> list[dict[str, Any]]: ...
 
     def enqueue_work(
         self,
@@ -40,8 +36,7 @@ class WorkStore(Protocol):
         items: list[dict[str, Any]] | None = None,
         *,
         stage: str = "default",
-    ) -> int:
-        ...
+    ) -> int: ...
 
     def claim_next_batch(
         self,
@@ -51,8 +46,7 @@ class WorkStore(Protocol):
         job_name: str | None = None,
         stage: str | None = None,
         registry_version: str | None = None,
-    ) -> list[dict[str, Any]]:
-        ...
+    ) -> list[dict[str, Any]]: ...
 
     def list_work_items(
         self,
@@ -62,8 +56,7 @@ class WorkStore(Protocol):
         registry_version: str | None,
         statuses: list[str] | None = None,
         limit: int | None = None,
-    ) -> list[dict[str, Any]]:
-        ...
+    ) -> list[dict[str, Any]]: ...
 
     def mark_completed(
         self,
@@ -71,11 +64,40 @@ class WorkStore(Protocol):
         output_uri: str | None,
         checksum: str | None,
         row_count: int | None,
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    def mark_failed(self, work_key: str, error: str) -> None:
-        ...
+    def mark_failed(self, work_key: str, error: str) -> None: ...
+
+    def renew_claim(
+        self,
+        work_key: str,
+        *,
+        worker_id: str,
+        attempt_count: int,
+        stale_after_seconds: int,
+    ) -> bool: ...
+
+    def complete_claim(
+        self,
+        work_key: str,
+        *,
+        worker_id: str,
+        attempt_count: int,
+        stale_after_seconds: int,
+        output_uri: str | None,
+        checksum: str | None,
+        row_count: int | None,
+    ) -> bool: ...
+
+    def fail_claim(
+        self,
+        work_key: str,
+        *,
+        worker_id: str,
+        attempt_count: int,
+        stale_after_seconds: int,
+        error: str,
+    ) -> bool: ...
 
     def completed_keys(
         self,
@@ -83,8 +105,7 @@ class WorkStore(Protocol):
         registry_version: str | None = None,
         *,
         stage: str | None = None,
-    ) -> set[str]:
-        ...
+    ) -> set[str]: ...
 
     def requeue_stale_claims(
         self,
@@ -93,11 +114,9 @@ class WorkStore(Protocol):
         stage: str | None = None,
         registry_version: str | None = None,
         stale_after_seconds: int,
-    ) -> int:
-        ...
+    ) -> int: ...
 
-    def stale_claims_to_pending(self, stale_after_seconds: int) -> int:
-        ...
+    def stale_claims_to_pending(self, stale_after_seconds: int) -> int: ...
 
     def register_shard(
         self,
@@ -113,8 +132,7 @@ class WorkStore(Protocol):
         row_count: int | None,
         byte_count: int | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def list_committed_shards(
         self,
@@ -123,8 +141,7 @@ class WorkStore(Protocol):
         stage: str,
         registry_version: str | None,
         run_id: str | None = None,
-    ) -> list[dict[str, Any]]:
-        ...
+    ) -> list[dict[str, Any]]: ...
 
     def list_candidate_shards(
         self,
@@ -134,8 +151,7 @@ class WorkStore(Protocol):
         registry_version: str | None,
         run_id: str | None = None,
         include_compacted: bool = False,
-    ) -> list[dict[str, Any]]:
-        ...
+    ) -> list[dict[str, Any]]: ...
 
     def list_compacted_source_shard_ids(
         self,
@@ -143,8 +159,7 @@ class WorkStore(Protocol):
         job_name: str,
         stage: str,
         registry_version: str | None,
-    ) -> set[str]:
-        ...
+    ) -> set[str]: ...
 
     def register_compaction_output(
         self,
@@ -161,14 +176,37 @@ class WorkStore(Protocol):
         byte_count: int | None,
         checksum: str | None,
         metadata: dict[str, Any] | None = None,
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    def mark_run_started(self, *, run_id: str) -> None:
-        ...
+    def mark_run_started(self, *, run_id: str) -> None: ...
 
-    def mark_run_completed(self, *, run_id: str, summary: dict[str, Any] | None = None) -> None:
-        ...
+    def mark_run_completed(
+        self, *, run_id: str, summary: dict[str, Any] | None = None
+    ) -> None: ...
 
-    def mark_run_failed(self, *, run_id: str, error: str) -> None:
-        ...
+    def mark_run_failed(self, *, run_id: str, error: str) -> None: ...
+
+
+def validate_claim_lease(
+    *,
+    work_key: str,
+    worker_id: str,
+    attempt_count: int,
+    stale_after_seconds: int,
+) -> None:
+    if not work_key:
+        raise ValueError("work_key must not be empty")
+    if not worker_id:
+        raise ValueError("worker_id must not be empty")
+    if (
+        isinstance(attempt_count, bool)
+        or not isinstance(attempt_count, int)
+        or attempt_count <= 0
+    ):
+        raise ValueError("attempt_count must be a positive integer")
+    if (
+        isinstance(stale_after_seconds, bool)
+        or not isinstance(stale_after_seconds, int)
+        or stale_after_seconds <= 0
+    ):
+        raise ValueError("stale_after_seconds must be a positive integer")

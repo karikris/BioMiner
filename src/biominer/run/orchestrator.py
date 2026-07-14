@@ -50,6 +50,7 @@ from biominer.references.readiness import (
     load_reference_bank_readiness,
     reference_readiness_allows_vision,
 )
+from biominer.run.constants import PRODUCTION_JOB_NAME
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import (
     RUN_ARTIFACT_LAYOUT_VERSION,
@@ -91,7 +92,6 @@ DEFAULT_BIOCLIP_MODEL = "imageomics/bioclip-2.5-vith14"
 DEFAULT_VISION_BACKEND = "yoloe26"
 PRODUCTION_VISUAL_MODE = "detector_crop"
 PRODUCTION_BIOCLIP_COMPARISON_ROUTES = ("adult_field",)
-PRODUCTION_JOB_NAME = "biominer_production_run"
 REQUIRED_REGISTRY_ARTIFACTS = (
     "taxa.parquet",
     "names.parquet",

@@ -7,7 +7,17 @@ from typing import Any
 import hashlib
 import json
 
-from biominer.common.status import CLAIMED, COMPLETED, FAILED, PENDING, RUN_COMPLETED, RUN_FAILED, RUN_PLANNED, RUN_RUNNING
+from biominer.common.status import (
+    CLAIMED,
+    COMPLETED,
+    FAILED,
+    PENDING,
+    RUN_COMPLETED,
+    RUN_FAILED,
+    RUN_PLANNED,
+    RUN_RUNNING,
+)
+from biominer.workstore.base import validate_claim_lease
 from biominer.workstore.keys import publication_lock_digest, scoped_work_item_key
 from biominer.workstore.schema import POSTGRES_CLAIM_SQL, POSTGRES_SCHEMA_SQL
 
@@ -17,7 +27,9 @@ POSTGRES_PUBLICATION_LOCK_SQL = "SELECT pg_advisory_xact_lock(%s)"
 class PostgresWorkStore:
     def __init__(self, dsn: str, *, connect: Callable[[], Any] | None = None) -> None:
         if not dsn:
-            raise ValueError("BIOMINER_WORKSTORE_DSN is required for postgres workstore")
+            raise ValueError(
+                "BIOMINER_WORKSTORE_DSN is required for postgres workstore"
+            )
         self.dsn = dsn
         self._connect_override = connect
 
@@ -66,14 +78,18 @@ class PostgresWorkStore:
                     _json_dumps(config),
                 ),
             )
-            row = conn.execute("SELECT * FROM biominer_runs WHERE run_id = %s", (run_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM biominer_runs WHERE run_id = %s", (run_id,)
+            ).fetchone()
         if row is None:
             raise RuntimeError(f"failed to create run row: {run_id}")
         return _row_to_run(row)
 
     def get_run(self, *, run_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM biominer_runs WHERE run_id = %s", (run_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM biominer_runs WHERE run_id = %s", (run_id,)
+            ).fetchone()
         return _row_to_run(row) if row is not None else None
 
     def list_runs(
@@ -120,7 +136,10 @@ class PostgresWorkStore:
         with self._connect() as conn:
             for item in items:
                 payload = dict(item)
-                work_key = str(payload.pop("work_key", "") or scoped_work_item_key(job_name, stage, registry_version, payload))
+                work_key = str(
+                    payload.pop("work_key", "")
+                    or scoped_work_item_key(job_name, stage, registry_version, payload)
+                )
                 result = conn.execute(
                     """
                     INSERT INTO biominer_work_items (
@@ -158,20 +177,29 @@ class PostgresWorkStore:
             return []
         with self._connect() as conn:
             if job_name is not None and stage is not None:
-                rows = conn.execute(POSTGRES_CLAIM_SQL, (job_name, stage, registry_version, limit, worker_id)).fetchall()
+                rows = conn.execute(
+                    POSTGRES_CLAIM_SQL,
+                    (job_name, stage, registry_version, limit, worker_id),
+                ).fetchall()
             else:
                 clauses = ["status = %s"]
                 params: list[Any] = [PENDING]
                 _add_filter_if_not_none(clauses, params, "job_name", job_name)
                 _add_filter_if_not_none(clauses, params, "stage", stage)
-                if job_name is not None or stage is not None or registry_version is not None:
-                    _add_nullable_filter(clauses, params, "registry_version", registry_version)
+                if (
+                    job_name is not None
+                    or stage is not None
+                    or registry_version is not None
+                ):
+                    _add_nullable_filter(
+                        clauses, params, "registry_version", registry_version
+                    )
                 rows = conn.execute(
                     f"""
                     WITH picked AS (
                       SELECT work_key
                       FROM biominer_work_items
-                      WHERE {' AND '.join(clauses)}
+                      WHERE {" AND ".join(clauses)}
                       ORDER BY created_at, work_key
                       FOR UPDATE SKIP LOCKED
                       LIMIT %s
@@ -214,7 +242,7 @@ class PostgresWorkStore:
                 f"""
                 SELECT *
                 FROM biominer_work_items
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 ORDER BY created_at, work_key
                 {limit_clause}
                 """,
@@ -222,7 +250,13 @@ class PostgresWorkStore:
             ).fetchall()
         return [_row_to_work_item(row) for row in rows]
 
-    def mark_completed(self, work_key: str, output_uri: str | None, checksum: str | None, row_count: int | None) -> None:
+    def mark_completed(
+        self,
+        work_key: str,
+        output_uri: str | None,
+        checksum: str | None,
+        row_count: int | None,
+    ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
@@ -235,7 +269,15 @@ class PostgresWorkStore:
                     error = %s
                 WHERE work_key = %s
                 """,
-                (COMPLETED, _timestamp(), output_uri, checksum, row_count, None, work_key),
+                (
+                    COMPLETED,
+                    _timestamp(),
+                    output_uri,
+                    checksum,
+                    row_count,
+                    None,
+                    work_key,
+                ),
             )
 
     def mark_failed(self, work_key: str, error: str) -> None:
@@ -250,6 +292,129 @@ class PostgresWorkStore:
                 """,
                 (FAILED, _timestamp(), error, work_key),
             )
+
+    def renew_claim(
+        self,
+        work_key: str,
+        *,
+        worker_id: str,
+        attempt_count: int,
+        stale_after_seconds: int,
+    ) -> bool:
+        validate_claim_lease(
+            work_key=work_key,
+            worker_id=worker_id,
+            attempt_count=attempt_count,
+            stale_after_seconds=stale_after_seconds,
+        )
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE biominer_work_items
+                SET claimed_at = now()
+                WHERE work_key = %s
+                  AND status = %s
+                  AND claimed_by = %s
+                  AND attempt_count = %s
+                  AND claimed_at IS NOT NULL
+                  AND claimed_at >= now() - (%s * INTERVAL '1 second')
+                """,
+                (work_key, CLAIMED, worker_id, attempt_count, stale_after_seconds),
+            )
+        return int(getattr(result, "rowcount", 0)) == 1
+
+    def complete_claim(
+        self,
+        work_key: str,
+        *,
+        worker_id: str,
+        attempt_count: int,
+        stale_after_seconds: int,
+        output_uri: str | None,
+        checksum: str | None,
+        row_count: int | None,
+    ) -> bool:
+        validate_claim_lease(
+            work_key=work_key,
+            worker_id=worker_id,
+            attempt_count=attempt_count,
+            stale_after_seconds=stale_after_seconds,
+        )
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE biominer_work_items
+                SET status = %s,
+                    completed_at = now(),
+                    output_uri = %s,
+                    checksum = %s,
+                    row_count = %s,
+                    error = NULL,
+                    claimed_by = NULL,
+                    claimed_at = NULL
+                WHERE work_key = %s
+                  AND status = %s
+                  AND claimed_by = %s
+                  AND attempt_count = %s
+                  AND claimed_at IS NOT NULL
+                  AND claimed_at >= now() - (%s * INTERVAL '1 second')
+                """,
+                (
+                    COMPLETED,
+                    output_uri,
+                    checksum,
+                    row_count,
+                    work_key,
+                    CLAIMED,
+                    worker_id,
+                    attempt_count,
+                    stale_after_seconds,
+                ),
+            )
+        return int(getattr(result, "rowcount", 0)) == 1
+
+    def fail_claim(
+        self,
+        work_key: str,
+        *,
+        worker_id: str,
+        attempt_count: int,
+        stale_after_seconds: int,
+        error: str,
+    ) -> bool:
+        validate_claim_lease(
+            work_key=work_key,
+            worker_id=worker_id,
+            attempt_count=attempt_count,
+            stale_after_seconds=stale_after_seconds,
+        )
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE biominer_work_items
+                SET status = %s,
+                    completed_at = now(),
+                    error = %s,
+                    claimed_by = NULL,
+                    claimed_at = NULL
+                WHERE work_key = %s
+                  AND status = %s
+                  AND claimed_by = %s
+                  AND attempt_count = %s
+                  AND claimed_at IS NOT NULL
+                  AND claimed_at >= now() - (%s * INTERVAL '1 second')
+                """,
+                (
+                    FAILED,
+                    error,
+                    work_key,
+                    CLAIMED,
+                    worker_id,
+                    attempt_count,
+                    stale_after_seconds,
+                ),
+            )
+        return int(getattr(result, "rowcount", 0)) == 1
 
     def completed_keys(
         self,
@@ -269,7 +434,7 @@ class PostgresWorkStore:
                 f"""
                 SELECT work_key
                 FROM biominer_work_items
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 """,
                 tuple(params),
             ).fetchall()
@@ -286,7 +451,9 @@ class PostgresWorkStore:
         cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
         clauses = ["status = %s", "claimed_at IS NOT NULL", "claimed_at < %s"]
         params: list[Any] = [CLAIMED, cutoff]
-        scoped = job_name is not None or stage is not None or registry_version is not None
+        scoped = (
+            job_name is not None or stage is not None or registry_version is not None
+        )
         _add_filter_if_not_none(clauses, params, "job_name", job_name)
         _add_filter_if_not_none(clauses, params, "stage", stage)
         if scoped:
@@ -298,7 +465,7 @@ class PostgresWorkStore:
                 SET status = %s,
                     claimed_by = NULL,
                     claimed_at = NULL
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 """,
                 (PENDING, *params),
             )
@@ -366,7 +533,7 @@ class PostgresWorkStore:
                 f"""
                 SELECT *
                 FROM biominer_parquet_shards
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 ORDER BY committed_at, uri
                 """,
                 tuple(params),
@@ -390,7 +557,9 @@ class PostgresWorkStore:
         )
         if include_compacted:
             return candidates
-        consumed = self.list_compacted_source_shard_ids(job_name=job_name, stage=stage, registry_version=registry_version)
+        consumed = self.list_compacted_source_shard_ids(
+            job_name=job_name, stage=stage, registry_version=registry_version
+        )
         return [shard for shard in candidates if str(shard["shard_id"]) not in consumed]
 
     def list_compacted_source_shard_ids(
@@ -408,7 +577,7 @@ class PostgresWorkStore:
                 f"""
                 SELECT source_shard_id
                 FROM biominer_compaction_inputs
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 """,
                 tuple(params),
             ).fetchall()
@@ -497,7 +666,9 @@ class PostgresWorkStore:
                 (RUN_RUNNING, _timestamp(), run_id),
             )
 
-    def mark_run_completed(self, *, run_id: str, summary: dict[str, Any] | None = None) -> None:
+    def mark_run_completed(
+        self, *, run_id: str, summary: dict[str, Any] | None = None
+    ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
@@ -530,7 +701,9 @@ class PostgresWorkStore:
             import psycopg
             from psycopg.rows import dict_row
         except ImportError as exc:
-            raise RuntimeError("psycopg is required to use PostgresWorkStore; install the optional postgres dependency") from exc
+            raise RuntimeError(
+                "psycopg is required to use PostgresWorkStore; install the optional postgres dependency"
+            ) from exc
         return psycopg.connect(self.dsn, row_factory=dict_row)
 
     @staticmethod
@@ -538,7 +711,9 @@ class PostgresWorkStore:
         try:
             import psycopg  # noqa: F401
         except ImportError as exc:
-            raise RuntimeError("psycopg is required to use PostgresWorkStore; install the optional postgres dependency") from exc
+            raise RuntimeError(
+                "psycopg is required to use PostgresWorkStore; install the optional postgres dependency"
+            ) from exc
 
 
 def _row_to_run(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -551,7 +726,9 @@ def _row_to_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "started_at": str(_row_get(row, "started_at")),
         "ended_at": _row_get(row, "ended_at"),
         "config": _json_loads_dict(_row_get(row, "config_json")),
-        "summary": _json_loads_dict(_row_get(row, "summary_json")) if _row_get(row, "summary_json") else None,
+        "summary": _json_loads_dict(_row_get(row, "summary_json"))
+        if _row_get(row, "summary_json")
+        else None,
     }
 
 
@@ -587,7 +764,9 @@ def _row_to_shard(row: Mapping[str, Any]) -> dict[str, Any]:
         "row_count": _row_get(row, "row_count"),
         "byte_count": _row_get(row, "byte_count"),
         "checksum": _row_get(row, "checksum"),
-        "metadata": _json_loads_dict(_row_get(row, "metadata_json")) if _row_get(row, "metadata_json") else {},
+        "metadata": _json_loads_dict(_row_get(row, "metadata_json"))
+        if _row_get(row, "metadata_json")
+        else {},
         "committed_at": str(_row_get(row, "committed_at")),
     }
 
@@ -596,14 +775,18 @@ def _row_get(row: Mapping[str, Any], key: str) -> Any:
     return row[key]
 
 
-def _add_filter_if_not_none(clauses: list[str], params: list[Any], column: str, value: str | None) -> None:
+def _add_filter_if_not_none(
+    clauses: list[str], params: list[Any], column: str, value: str | None
+) -> None:
     if value is None:
         return
     clauses.append(f"{column} = %s")
     params.append(value)
 
 
-def _add_nullable_filter(clauses: list[str], params: list[Any], column: str, value: str | None) -> None:
+def _add_nullable_filter(
+    clauses: list[str], params: list[Any], column: str, value: str | None
+) -> None:
     if value is None:
         clauses.append(f"{column} IS NULL")
         return
