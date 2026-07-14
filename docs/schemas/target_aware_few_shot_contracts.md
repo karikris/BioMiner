@@ -1406,6 +1406,57 @@ coverage failures return an abstained result with stable reason codes; invalid
 artifact/query contracts fail closed. Outputs call raw values `raw_score` and
 `raw_margin`, never confidence or probability.
 
+#### Conventional classifier training runtime contract
+
+`train_frozen_embedding_classifiers` validates the complete Task 8.2 feature
+artifact, selects one task, target and route, and fits estimators only on
+eligible `support_train` rows. `model_selection` rows are used only to compare
+already refitted candidates; `calibration` and `final_test` labels are never
+passed to an estimator, fold splitter, hyperparameter scorer, or model selector.
+The run records separate consumed-partition and source-artifact fingerprints.
+
+The default comparison is versioned as
+`frozen-embedding-search-grid-v1`:
+
+- L2-regularised logistic regression over the frozen embedding, with
+  `C in {0.01, 0.1, 1, 10}`;
+- `LinearSVC` over the frozen embedding, with the same `C` grid;
+- `LinearSVC` over embedding plus structured evidence, with the same grid.
+
+The optional bounded-pilot RBF SVC uses the embedding only,
+`C in {0.1, 1, 10}`, and `gamma in {scale, 0.01, 0.1}`. It is absent unless
+explicitly enabled and fails before fitting when the configured sample cap is
+exceeded. SVC probability fitting is disabled. Logistic outputs and SVC
+decision functions remain uncalibrated model outputs; every candidate records
+`probability_calibrated=false`.
+
+Structured input starts from the Task 8.2 model-feature allowlist. Frozen unit
+embeddings pass through unchanged. Nullable continuous evidence is median
+imputed and standardised inside each cross-validation pipeline. Boolean
+indicators pass through as zero/one. Route, full-frame input kind and YOLOE
+route use fixed complete enum one-hot columns. Open-ended quality flags use 32
+fixed SHA-256 buckets under `visual-quality-flag-sha256-buckets-v1`, so their
+vocabulary cannot leak from a held-out fold. Labels and provenance columns are
+not materialised in the numeric matrix.
+
+Hyperparameter selection uses balanced accuracy as the primary metric and
+macro F1 as the secondary metric. `StratifiedGroupKFold` receives
+`leakage_group_id` through `GridSearchCV`, with a deterministic seed and
+bounded positive `n_jobs`. Before fitting, every class must have at least one
+independent group per fold. Every generated fold is audited for complete class
+coverage, disjoint train/validation groups, complete group coverage and exactly
+one validation appearance per group. A group carrying conflicting labels is
+fatal. Explicit class weights must name exactly the fitted classes.
+Held-out and cross-validation metric ties prefer embedding-only `LinearSVC`,
+then structured `LinearSVC`, then logistic regression, with pilot RBF last.
+
+Binary and larval target-verifier labels are target key versus
+`__non_target__`; regional multiclass uses reviewed accepted taxon keys; visual
+domain uses the reviewed domain label. BioCLIP remains frozen. sklearn and
+NumPy are imported lazily only when training begins, preserving registry-only
+installations. Task 8.4 returns in-memory fitted pipelines and transparent
+training metadata only; executable serialization is not supported.
+
 ### 7.2 `dataset_split_manifest.parquet`
 
 Grain: one source item/group membership and split version. Primary key:
