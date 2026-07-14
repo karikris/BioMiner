@@ -42,7 +42,9 @@ def test_phase4_m5pro_profile_and_classifier_defaults_remain_acceptance_values()
     assert DEFAULT_SPECIES_RERANK_TOP_K == 5
 
 
-def test_phase4_species_prompt_variants_rank_by_mean_not_best_single_prompt() -> None:
+def test_phase4_species_prompt_variants_rank_by_best_two_not_best_single_prompt() -> (
+    None
+):
     rows = aggregate_prompt_scores(
         scores={
             "a photo of Papilio demoleus": 0.99,
@@ -85,7 +87,7 @@ def test_phase4_species_prompt_variants_rank_by_mean_not_best_single_prompt() ->
 
     assert [row["taxon_key"] for row in rows] == ["Papilio machaon", "Papilio demoleus"]
     assert rows[0]["score"] == pytest.approx(0.50)
-    assert rows[1]["score"] == pytest.approx(0.33)
+    assert rows[1]["score"] == pytest.approx(0.495)
     assert rows[1]["best_label"] == "a photo of Papilio demoleus"
 
 

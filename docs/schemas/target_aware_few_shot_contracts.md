@@ -1338,6 +1338,35 @@ Legacy classifiers may project an ensemble to ordered `PromptVariant` labels,
 but prompt-score pooling is a separate, versioned operation. Prompt generation
 does not average or otherwise collapse text evidence.
 
+### 6.6 Prompt pooling and diagnostics
+
+Prompt pooling results use schema `prompt-ensemble-pooling-result-v1.0.0` and
+algorithm version `bioclip-prompt-pooling-v1.0.0`. Pooling consumes normalized
+image and per-prompt text embeddings from one model fingerprint. The raw
+per-prompt values are cosine similarities in `[-1,1]`; the label-set softmax
+from the legacy BioCLIP worker is not a substitute and is not called raw
+similarity.
+
+Every run names exactly one strategy: normalized mean text embedding, maximum
+prompt similarity, mean of the best two prompt similarities, or a normalized
+text embedding built from learned prompt weights. Embedding pooling and score
+pooling are distinct in the artifact. A normalized mean first normalizes every
+text vector, averages the selected vectors, renormalizes the result, and only
+then takes image cosine; it is not arithmetic mean similarity. Maximum and
+best-two strategies operate on raw per-prompt cosines. Learned nonnegative
+weights must name exactly every selected prompt variant, normalize to one, and
+carry model, ensemble, subset, model-selection split, and artifact
+fingerprints. Final-test-derived weights are invalid.
+
+Selection is controlled by a fingerprinted route, life-stage, and visual-domain
+subset policy. The default stage/domain builder includes accepted taxonomy
+prompts but does not silently add vernacular or reviewed-alias prompts; those
+families require explicit inclusion. Every result persists every ensemble
+prompt's label, kind, template, variant fingerprint, raw similarity, subset and
+contribution flags, pooling weight, and selection reason, including prompts
+outside the active subset. It also binds normalized image/text embedding-set,
+model, ensemble, subset, optional weight-artifact, and result fingerprints.
+
 ## 7. Training, classifier, and calibration artifacts
 
 ### 7.1 `few_shot_training_features.parquet`

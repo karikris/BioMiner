@@ -232,8 +232,8 @@ def test_prompt_ensemble_is_order_independent_and_route_specific() -> None:
     }
 
 
-def test_aggregate_prompt_scores_uses_mean_by_default_and_keeps_evidence() -> None:
-    assert SPECIES_PROMPT_AGGREGATION_DEFAULT == "mean"
+def test_aggregate_prompt_scores_uses_best_two_by_default_and_keeps_evidence() -> None:
+    assert SPECIES_PROMPT_AGGREGATION_DEFAULT == "mean_best_two"
 
     variants = [
         PromptVariant(
@@ -247,6 +247,11 @@ def test_aggregate_prompt_scores_uses_mean_by_default_and_keeps_evidence() -> No
             prompt_kind="common",
         ),
         PromptVariant(
+            label="a weak generic prompt",
+            taxon_key="Papilio demoleus",
+            prompt_kind="generic",
+        ),
+        PromptVariant(
             label="a photo of Papilio machaon",
             taxon_key="Papilio machaon",
             prompt_kind="scientific",
@@ -257,6 +262,7 @@ def test_aggregate_prompt_scores_uses_mean_by_default_and_keeps_evidence() -> No
         scores={
             "a photo of Papilio demoleus": 0.72,
             "a photo of lime butterfly": 0.08,
+            "a weak generic prompt": -0.40,
             "a photo of Papilio machaon": 0.55,
         },
         variants=variants,
@@ -269,6 +275,11 @@ def test_aggregate_prompt_scores_uses_mean_by_default_and_keeps_evidence() -> No
     assert result[1]["score"] == pytest.approx(0.40)
     assert result[1]["best_label"] == "a photo of Papilio demoleus"
     assert result[1]["prompt_scores"]["a photo of lime butterfly"] == 0.08
+    assert result[1]["pooling_strategy"] == "mean_best_two"
+    assert result[1]["contributing_prompt_labels"] == [
+        "a photo of Papilio demoleus",
+        "a photo of lime butterfly",
+    ]
 
 
 def test_aggregate_prompt_scores_supports_explicit_max() -> None:

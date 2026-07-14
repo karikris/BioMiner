@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from math import isfinite
 import re
 
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
@@ -27,7 +28,7 @@ REVIEWED_PROMPT_ALIAS_STATES = frozenset(
     }
 )
 SUPPORTED_PROMPT_LIFE_STAGES = frozenset({"adult", "egg", "larva", "pupa"})
-SPECIES_PROMPT_AGGREGATION_DEFAULT = "mean"
+SPECIES_PROMPT_AGGREGATION_DEFAULT = "mean_best_two"
 
 _ROUTE_DEFAULT_LIFE_STAGE = {
     "adult_field": "adult",
@@ -564,6 +565,105 @@ def build_species_prompt_variants(
     )
 
 
+def taxonomic_prompt_ensemble_payload(
+    ensemble: TaxonomicPromptEnsemble,
+) -> dict[str, object]:
+    """Validate and return the complete fingerprinted ensemble payload."""
+
+    if not isinstance(ensemble, TaxonomicPromptEnsemble):
+        raise TypeError("ensemble must be a TaxonomicPromptEnsemble")
+    AcceptedTaxonPromptContext(
+        accepted_taxon_key=ensemble.accepted_taxon_key,
+        scientific_name=ensemble.scientific_name,
+        genus=str(_path_name(ensemble.taxonomic_path, "GENUS") or ""),
+        family=str(_path_name(ensemble.taxonomic_path, "FAMILY") or ""),
+        taxonomic_path=ensemble.taxonomic_path,
+        taxonomy_source=ensemble.taxonomy_source,
+        taxonomy_version=ensemble.taxonomy_version,
+        taxonomy_fingerprint=ensemble.taxonomy_fingerprint,
+        taxonomic_status=ensemble.taxonomic_status,
+    )
+    if ensemble.schema_version != TAXONOMIC_PROMPT_ENSEMBLE_SCHEMA_VERSION:
+        raise ValueError("taxonomic prompt ensemble schema version is incompatible")
+    if ensemble.prompt_version != TAXONOMIC_PROMPT_VERSION:
+        raise ValueError("taxonomic prompt version is incompatible")
+    if ensemble.route not in REFERENCE_ROUTES:
+        raise ValueError("taxonomic prompt ensemble route is incompatible")
+    if ensemble.life_stage not in _ROUTE_ALLOWED_LIFE_STAGES[ensemble.route]:
+        raise ValueError("taxonomic prompt ensemble life stage is incompatible")
+    if not ensemble.variants:
+        raise ValueError("taxonomic prompt ensemble must contain variants")
+    labels: set[str] = set()
+    fingerprints: set[str] = set()
+    for variant in ensemble.variants:
+        if not isinstance(variant, PromptVariant):
+            raise TypeError("taxonomic prompt variants must be PromptVariant values")
+        if (
+            variant.prompt_version != ensemble.prompt_version
+            or variant.accepted_taxon_key != ensemble.accepted_taxon_key
+            or variant.taxon_key != ensemble.scientific_name
+            or variant.route != ensemble.route
+            or variant.life_stage != ensemble.life_stage
+        ):
+            raise ValueError("taxonomic prompt variant identity is inconsistent")
+        label_key = variant.label.casefold()
+        if label_key in labels:
+            raise ValueError("taxonomic prompt variant labels must be unique")
+        labels.add(label_key)
+        fingerprint = _sha256(
+            variant.variant_fingerprint,
+            field="variant_fingerprint",
+        )
+        if fingerprint in fingerprints:
+            raise ValueError("taxonomic prompt variant fingerprints must be unique")
+        fingerprints.add(fingerprint)
+        if canonical_semantic_fingerprint(_variant_semantic_payload(variant)) != (
+            fingerprint
+        ):
+            raise ValueError("taxonomic prompt variant fingerprint is inconsistent")
+    expected_exclusions = tuple(
+        sorted(
+            ensemble.exclusions,
+            key=lambda item: (item.evidence_kind, item.evidence_id, item.reason),
+        )
+    )
+    if expected_exclusions != ensemble.exclusions or not all(
+        isinstance(item, PromptEvidenceExclusion) for item in ensemble.exclusions
+    ):
+        raise ValueError("taxonomic prompt exclusions are not canonical")
+    semantics = {
+        "schema_version": ensemble.schema_version,
+        "prompt_version": ensemble.prompt_version,
+        "accepted_taxon_key": ensemble.accepted_taxon_key,
+        "scientific_name": ensemble.scientific_name,
+        "route": ensemble.route,
+        "life_stage": ensemble.life_stage,
+        "taxonomy_source": ensemble.taxonomy_source,
+        "taxonomy_version": ensemble.taxonomy_version,
+        "taxonomy_fingerprint": ensemble.taxonomy_fingerprint,
+        "taxonomic_status": ensemble.taxonomic_status,
+        "taxonomic_path": [
+            _path_node_payload(node) for node in ensemble.taxonomic_path
+        ],
+        "variants": [_variant_payload(variant) for variant in ensemble.variants],
+        "exclusions": [
+            {
+                "evidence_kind": item.evidence_kind,
+                "evidence_id": item.evidence_id,
+                "reason": item.reason,
+            }
+            for item in ensemble.exclusions
+        ],
+    }
+    fingerprint = _sha256(
+        ensemble.ensemble_fingerprint,
+        field="ensemble_fingerprint",
+    )
+    if canonical_semantic_fingerprint(semantics) != fingerprint:
+        raise ValueError("taxonomic prompt ensemble fingerprint is inconsistent")
+    return {**semantics, "ensemble_fingerprint": fingerprint}
+
+
 def aggregate_prompt_scores(
     *,
     scores: Mapping[str, float],
@@ -571,11 +671,20 @@ def aggregate_prompt_scores(
     top_k: int,
     aggregation: str = SPECIES_PROMPT_AGGREGATION_DEFAULT,
 ) -> list[dict[str, object]]:
-    if aggregation not in {"max", "mean"}:
-        raise ValueError("aggregation must be one of: max, mean")
+    if aggregation not in {"max", "mean", "mean_best_two"}:
+        raise ValueError("aggregation must be one of: max, mean, mean_best_two")
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
+        raise ValueError("top_k must be a positive integer")
+    expected_labels = [variant.label for variant in variants]
+    if len(expected_labels) != len(set(expected_labels)):
+        raise ValueError("prompt variant labels must be unique")
+    if set(scores) != set(expected_labels):
+        raise ValueError("prompt score key set does not match prompt variants")
+    if any(not isfinite(float(score)) for score in scores.values()):
+        raise ValueError("prompt scores must be finite")
     grouped: dict[str, dict[str, object]] = {}
     for variant in variants:
-        score = float(scores.get(variant.label, 0.0))
+        score = float(scores[variant.label])
         current = grouped.setdefault(
             variant.taxon_key,
             {
@@ -596,8 +705,11 @@ def aggregate_prompt_scores(
     for current in grouped.values():
         prompt_scores = current["prompt_scores"]
         assert isinstance(prompt_scores, dict)
-        values = [float(value) for value in prompt_scores.values()]
-        current["score"] = _aggregate_values(values, aggregation=aggregation)
+        contributions = _score_contributions(prompt_scores, aggregation=aggregation)
+        current["score"] = sum(score for _, score in contributions) / len(contributions)
+        current["pooling_strategy"] = aggregation
+        current["prompt_count"] = len(prompt_scores)
+        current["contributing_prompt_labels"] = [label for label, _ in contributions]
         rows.append(current)
     return sorted(
         rows,
@@ -695,6 +807,13 @@ def _validated_unique_evidence(
 
 def _variant_payload(value: PromptVariant) -> dict[str, object]:
     return {
+        **_variant_semantic_payload(value),
+        "variant_fingerprint": value.variant_fingerprint,
+    }
+
+
+def _variant_semantic_payload(value: PromptVariant) -> dict[str, object]:
+    return {
         "label": value.label,
         "taxon_key": value.taxon_key,
         "prompt_kind": value.prompt_kind,
@@ -711,7 +830,6 @@ def _variant_payload(value: PromptVariant) -> dict[str, object]:
         "review_state": value.review_state,
         "reviewed_by": value.reviewed_by,
         "geography_bearing": value.geography_bearing,
-        "variant_fingerprint": value.variant_fingerprint,
     }
 
 
@@ -731,12 +849,24 @@ def _path_key(path: Sequence[TaxonomicPathNode], rank: str) -> str | None:
     return next((node.accepted_taxon_key for node in path if node.rank == rank), None)
 
 
-def _aggregate_values(values: Sequence[float], *, aggregation: str) -> float:
-    if not values:
-        return 0.0
+def _score_contributions(
+    prompt_scores: Mapping[str, object],
+    *,
+    aggregation: str,
+) -> tuple[tuple[str, float], ...]:
+    ordered = tuple(
+        sorted(
+            ((str(label), float(score)) for label, score in prompt_scores.items()),
+            key=lambda item: (-item[1], item[0]),
+        )
+    )
+    if not ordered:
+        return (("", 0.0),)
     if aggregation == "max":
-        return max(values)
-    return sum(values) / len(values)
+        return ordered[:1]
+    if aggregation == "mean_best_two":
+        return ordered[:2]
+    return tuple(sorted(ordered, key=lambda item: item[0]))
 
 
 def _canonical_text(value: object, *, field: str) -> str:
@@ -794,4 +924,5 @@ __all__ = [
     "aggregate_prompt_scores",
     "build_species_prompt_variants",
     "build_taxonomic_prompt_ensemble",
+    "taxonomic_prompt_ensemble_payload",
 ]

@@ -1276,15 +1276,13 @@ def test_bioclip_classifier_builds_species_and_triage_prediction_with_label_sets
     assert "a photo of an adult butterfly" in DEFAULT_TRIAGE_LABELS
 
 
-def test_bioclip_classifier_ranks_species_prompt_variants_by_mean_not_best_prompt() -> (
-    None
-):
+def test_bioclip_classifier_ranks_species_prompt_variants_by_best_two_mean() -> None:
     from biominer.bioclip.prompt_templates import (
         SPECIES_PROMPT_AGGREGATION_DEFAULT,
         PromptVariant,
     )
 
-    assert SPECIES_PROMPT_AGGREGATION_DEFAULT == "mean"
+    assert SPECIES_PROMPT_AGGREGATION_DEFAULT == "mean_best_two"
 
     class FakeScorer:
         def score_label_sets_batch(self, image_paths, label_sets):  # noqa: ANN001 - test fake.
