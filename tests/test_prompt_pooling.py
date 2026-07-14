@@ -77,6 +77,8 @@ def test_normalized_mean_text_embedding_is_not_mean_prompt_similarity() -> None:
     )
 
     assert result.schema_version == PROMPT_POOLING_SCHEMA_VERSION
+    assert result.accepted_taxon_key == ensemble.accepted_taxon_key
+    assert result.scientific_name == ensemble.scientific_name
     assert result.pooled_score == pytest.approx(1 / math.sqrt(2))
     assert result.pooled_score != pytest.approx((1.0 + 0.0) / 2)
     assert result.pooled_text_embedding == pytest.approx(

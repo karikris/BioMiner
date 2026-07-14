@@ -19,7 +19,7 @@ from biominer.bioclip.prompt_templates import (
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
 
 
-PROMPT_POOLING_SCHEMA_VERSION = "prompt-ensemble-pooling-result-v1.1.0"
+PROMPT_POOLING_SCHEMA_VERSION = "prompt-ensemble-pooling-result-v1.2.0"
 PROMPT_POOLING_VERSION = "bioclip-prompt-pooling-v1.1.0"
 PROMPT_SUBSET_SCHEMA_VERSION = "prompt-subset-policy-v1.1.0"
 PROMPT_SUBSET_VERSION = "stage-domain-prompt-subsets-v1.1.0"
@@ -106,6 +106,8 @@ class PromptPoolingResult:
     score_kind: str
     pooling_space: str
     prompt_version: str
+    accepted_taxon_key: str
+    scientific_name: str
     ensemble_fingerprint: str
     subset_fingerprint: str
     subset_id: str
@@ -457,6 +459,8 @@ def pool_prompt_ensemble(
         "score_kind": PROMPT_SCORE_KIND,
         "pooling_space": pooling_space,
         "prompt_version": ensemble.prompt_version,
+        "accepted_taxon_key": ensemble.accepted_taxon_key,
+        "scientific_name": ensemble.scientific_name,
         "ensemble_fingerprint": ensemble.ensemble_fingerprint,
         "subset_fingerprint": subset.subset_fingerprint,
         "subset_id": subset.subset_id,
@@ -704,6 +708,8 @@ def _result_semantic_payload(values: Mapping[str, object]) -> dict[str, object]:
         "score_kind": values["score_kind"],
         "pooling_space": values["pooling_space"],
         "prompt_version": values["prompt_version"],
+        "accepted_taxon_key": values["accepted_taxon_key"],
+        "scientific_name": values["scientific_name"],
         "ensemble_fingerprint": values["ensemble_fingerprint"],
         "subset_fingerprint": values["subset_fingerprint"],
         "subset_id": values["subset_id"],

@@ -1341,7 +1341,7 @@ does not average or otherwise collapse text evidence.
 
 ### 6.6 Prompt pooling and diagnostics
 
-Prompt pooling results use schema `prompt-ensemble-pooling-result-v1.1.0` and
+Prompt pooling results use schema `prompt-ensemble-pooling-result-v1.2.0` and
 algorithm version `bioclip-prompt-pooling-v1.1.0`. Pooling consumes normalized
 image and per-prompt text embeddings from one model fingerprint. The raw
 per-prompt values are cosine similarities in `[-1,1]`; the label-set softmax
@@ -1369,7 +1369,10 @@ ensemble prompt's label, kind, template, variant fingerprint, raw similarity,
 geography marker, subset and contribution flags, pooling weight, and selection
 reason, including prompts outside the active subset. It also binds normalized
 image/text embedding-set, model, ensemble, subset, optional weight-artifact,
-geography-ablation, and result fingerprints.
+geography-ablation, and result fingerprints. The result also carries the
+accepted taxon key and scientific name from its ensemble, so downstream
+evaluation cannot relabel a valid pooled result as a different candidate
+species.
 
 ### 6.7 Structured geography and prompt ablations
 
@@ -1405,6 +1408,62 @@ was enabled, the ablation fingerprint, the selected geographic-prompt count,
 and per-prompt `geography_bearing` state. This keeps country-conditioned text an
 auditable validation experiment rather than a production morphology signal;
 scenery or background correlation cannot enter the default score silently.
+
+### 6.8 Prompt evaluation and validation-only selection
+
+Prompt benchmarks use report schema
+`taxonomic-prompt-evaluation-report-v1.0.0` and evaluation version
+`taxonomic-prompt-evaluation-v1.0.0`. Input grain is one evaluation item,
+dataset split, prompt configuration, and accepted candidate species. Each row
+binds the split and candidate-set fingerprints, route, life stage, visual
+domain, validated pooling result, and optional independent reference-image
+cosine plus its evidence fingerprint. A pooling result's accepted key must
+equal the candidate key.
+
+Every configuration must evaluate the same item and candidate sets within a
+split. Target identity, route/stage/domain, candidate order, and reference-image
+evidence must be identical across configurations. Duplicate candidates,
+missing targets, fewer than two species, incomplete configuration coverage, or
+changed reference evidence fail closed. Prompt configurations explicitly state
+whether common-name, taxonomic-path, or geographic-ablation prompts are
+enabled; selected prompt diagnostics must agree with those flags.
+
+Per-item metrics are defined as follows:
+
+- `target_prompt_rank` is the one-based position of the highest-scoring active
+  target prompt among every active candidate prompt. Ordering is descending raw
+  cosine, then accepted candidate key and prompt-variant fingerprint.
+- `target_species_rank` orders pooled candidate-species scores by descending
+  cosine and then accepted key. Species recall@k is the fraction of items whose
+  target species rank is at most k.
+- `target_versus_competitor_text_margin` is the target pooled score minus the
+  highest pooled score from a different accepted species. The winning
+  competitor key and score remain in the item result.
+- Prompt/reference correlation is Spearman rank correlation between pooled text
+  scores and independent reference-image scores. Ties use average ranks. Fewer
+  than two pairs or a constant rank vector yields null rather than a fabricated
+  zero. Reports retain both pooled candidate-level correlation and the mean of
+  defined per-item correlations.
+
+Configuration summaries include overall metrics plus separate life-stage,
+visual-domain, and life-stage-by-domain slices. Common-name and taxonomic-path
+effects require matched baseline/treatment configurations differing only in
+the named prompt family. Shared prompts must retain the same ensemble identity
+and raw cosine, baseline prompts cannot disappear, and every added prompt must
+belong to the named family. Paired item count and deltas for rank, recall@k,
+margin, and reference correlation are fingerprinted. The default benchmark
+requires both effect families to be measurable and one model fingerprint across
+all configurations.
+
+Prompt promotion uses selection schema `prompt-version-selection-v1.0.0` and
+policy `validation-only-prompt-selection-v1.0.0`. Selection accepts only the
+`model_selection` partition and excludes geography-bearing ablation
+configurations. It maximizes configured species recall@k, then text margin,
+then minimizes mean species rank and prompt rank, with configuration
+fingerprint as the final deterministic tie break. The selection-input
+fingerprint covers only eligible validation summaries; adding or changing
+`final_test` results cannot alter either the chosen configuration or that input
+fingerprint.
 
 ## 7. Training, classifier, and calibration artifacts
 
