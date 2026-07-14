@@ -19,6 +19,7 @@ from biominer.bioclip.reference_embeddings import (
 from biominer.bioclip.reference_prototypes import (
     DEFAULT_BALANCED_SAMPLING_SEED,
     PROTOTYPE_GLOBAL_GEO_CLUSTER_ID,
+    PROTOTYPE_KIND_AGGREGATE,
     PROTOTYPE_METHOD_NORMALIZED_MEAN,
     PROTOTYPE_METHOD_SIMPLESHOT_MEAN_CENTERED,
     PROTOTYPE_SCOPE_GLOBAL,
@@ -592,6 +593,8 @@ def _prototype_index(
 ) -> dict[tuple[str, str, str, str, str, str], dict[str, object]]:
     result: dict[tuple[str, str, str, str, str, str], dict[str, object]] = {}
     for row in prototypes.iter_rows(named=True):
+        if row["prototype_kind"] != PROTOTYPE_KIND_AGGREGATE:
+            continue
         key = (
             str(row["accepted_taxon_key"]),
             str(row["route"]),

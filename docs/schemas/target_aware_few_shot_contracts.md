@@ -1148,12 +1148,17 @@ checkpoints are rejected explicitly.
 ### 6.2 `reference_prototypes.parquet`
 
 Grain and primary key: one prototype ID. Sort by route, species, cluster scope,
-life stage, visual domain, method, and ID. Schema version:
-`reference-prototypes-v1.0.0`.
+life stage, visual domain, prototype kind, view, method, and ID. Schema version:
+`reference-prototypes-v2.0.0`; version 1 artifacts are rejected rather than
+silently interpreted without member or clustering provenance.
 
 Required fields are `schema_version`, `prototype_id`, `accepted_taxon_key`,
 `species` (the accepted scientific name), `cluster_scope_type`, `geo_cluster_id`, `life_stage`,
 `visual_domain`, `view`, `route`, `visual_input_kind`, `prototype_method`, `prototype_group_id`,
+`prototype_kind`, `metadata_group_id`, `embedding_cluster_id`,
+`clustering_method`, `clustering_configuration_fingerprint`, the explicit
+clustering threshold/minimum/maximum fields, `member_observation_ids`,
+`member_observation_fingerprints`,
 `reference_count`, `independent_observation_count`,
 `balanced_sampling_seed`, `mean_centered`, `embedding_dimension`, `embedding`,
 `embedding_norm`, `centering_fingerprint`, `model_fingerprint`, `reference_embedding_fingerprint`,
@@ -1185,16 +1190,41 @@ only. A zero-norm centered group is omitted and counted in the structured build
 log rather than materializing an invalid vector.
 
 Global rows use `cluster_scope_type = "global"`, `geo_cluster_id = "all"`, and
-`view = "all"`; regional rows retain their actual cluster. Prototypes never
-mix routes or visual-input kinds. Query centering reconstructs the same context
+aggregate `prototype_kind = "aggregate"` rows use `view = "all"`. Regional
+rows retain their actual cluster. Prototypes never mix routes or visual-input
+kinds. Query centering reconstructs the same context
 from the fingerprinted training embeddings and fails on a zero-norm result.
 All stored prototypes are finite, unit-normalized Float32 arrays. Prototype
 fingerprints encode semantic fields with the canonical binary identity
 contract, followed by little-endian Float64 norm and little-endian Float32
 vector bytes.
 
-Embedding clusters may split a verified species/route group into prototypes;
-they may never change its accepted taxon key.
+`prototype_kind = "metadata"` rows retain one concrete reviewed view and are
+built at both global and regional scopes when their independent-observation
+minimum is met. Aggregate fitting still collapses all licensed views from one
+biological observation to one effective vector. Metadata fitting instead
+collapses media to one vector per observation and reviewed view, so dorsal and
+ventral evidence can form separate prototypes without a same-view burst gaining
+extra weight.
+
+`prototype_kind = "embedding_cluster"` rows are permitted only beneath one
+persisted metadata parent with one accepted taxon key, life stage, visual
+domain, route, view, visual-input kind, and geographic scope. Version
+`deterministic_average_linkage_cosine_v1` sorts observations canonically,
+performs bounded average-linkage clustering on cosine distance, folds
+undersized clusters into the nearest valid cluster, and caps the final cluster
+count. It emits clusters only when at least two minimum-size groups remain;
+otherwise the metadata centroid is the explicit fallback. The configured
+distance threshold, group/cluster minima, cluster maximum, observation bound,
+configuration fingerprint, and exact sorted member IDs/fingerprints are
+persisted. Sibling clusters must be disjoint and together cover the complete
+metadata parent.
+
+Embedding clustering is dependency-neutral in Phase 7 and is bounded by the
+configuration rather than pulling the Phase 8 ML stack into registry-only
+installations. It runs only inside a verified species metadata group. An
+unsupervised cluster can split visual modes; it can never create, infer, or
+change an accepted species label.
 
 #### Nearest-reference evidence contract
 

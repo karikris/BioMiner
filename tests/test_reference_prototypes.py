@@ -86,6 +86,7 @@ class _EmbeddingSpec:
     life_stage: str = "adult"
     visual_domain: str = "live_field"
     route: str = "adult_field"
+    view: str = "dorsal"
 
 
 class _FakeScorer:
@@ -422,6 +423,7 @@ def test_balanced_selection_rank_does_not_depend_on_embedding_content() -> None:
         geo_cluster_id="cluster-a",
         life_stage="adult",
         visual_domain="live_field",
+        view="all",
         route="adult_field",
         visual_input_kind=RAW_FULL_IMAGE_KIND,
         reference_observation_id="stable-observation",
@@ -739,6 +741,7 @@ def _spec(
     life_stage: str = "adult",
     visual_domain: str = "live_field",
     route: str = "adult_field",
+    view: str = "dorsal",
 ) -> _EmbeddingSpec:
     normalized = _unit(vector)
     return _EmbeddingSpec(
@@ -752,6 +755,7 @@ def _spec(
         life_stage=life_stage,
         visual_domain=visual_domain,
         route=route,
+        view=view,
     )
 
 
@@ -852,7 +856,7 @@ def _support_row(
         "target_identity_verified": True,
         "life_stage": spec.life_stage,
         "visual_domain": spec.visual_domain,
-        "view": "dorsal",
+        "view": spec.view,
         "route": spec.route,
         "support_split": spec.support_split,
         "support_eligible": True,
