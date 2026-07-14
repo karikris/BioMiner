@@ -448,6 +448,27 @@ def test_empty_or_non_score_routes_do_not_load_or_encode() -> None:
     assert embedded.scoring_unit_references == ()
 
 
+def test_regression_artwork_never_enters_adult_field_target_output() -> None:
+    def fail_load(_row: dict[str, Any]) -> DecodedImage:
+        raise AssertionError("artwork must not load into target-aware scoring")
+
+    plan = build_target_full_frame_plan(
+        detection_rows=[
+            _detection_row(
+                "photo-artwork",
+                "artifact-1",
+                route=None,
+                detection_route="artwork_logo_tattoo_or_other_artifact",
+                action="exclude",
+            )
+        ],
+        image_loader=fail_load,
+    )
+
+    assert plan.visual_inputs == ()
+    assert plan.scoring_units == ()
+
+
 def test_target_full_frame_plan_rejects_source_and_route_identity_conflicts() -> None:
     image = _image(b"\x06" * 12, width=2, height=2)
     source_conflict = [

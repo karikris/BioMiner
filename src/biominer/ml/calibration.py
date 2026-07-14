@@ -1928,6 +1928,7 @@ def _validated_embedded_decision_policy(
     expected_requirements = {
         "route_compatible": True,
         "reference_coverage_sufficient": True,
+        "geographic_evidence_sufficient": True,
         "domain_negative_absent": True,
         "out_of_distribution_absent": True,
         "visual_detail_sufficient": True,
@@ -1943,6 +1944,7 @@ def _validated_embedded_decision_policy(
         "insufficient_visual_detail",
         "insufficient_reference_coverage",
         "no_geo_global_fallback",
+        "weak_geographic_evidence",
         "calibrated_non_target_dominates",
         "missing_calibrated_target_probability",
         "target_probability_below_threshold",

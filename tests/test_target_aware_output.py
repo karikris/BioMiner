@@ -349,6 +349,15 @@ def test_target_confirmation_fails_closed_on_quality_or_provenance_drift() -> No
     with pytest.raises(ValueError, match="threshold provenance"):
         target_aware_object_scores_frame([_row(threshold_provenance=_fp("1"))])
 
+    candidates = _row()["regional_candidate_evidence"]
+    assert isinstance(candidates, list)
+    target = next(item for item in candidates if item["target_candidate"])
+    target["geographic_scope"] = "nonregional"
+    target["geographic_evidence_score"] = None
+    target["occurrence_support"] = 0
+    with pytest.raises(ValueError, match="regional geographic evidence"):
+        target_aware_object_scores_frame([_row(regional_candidate_evidence=candidates)])
+
 
 def test_validator_rejects_physical_schema_and_derived_identity_tampering() -> None:
     frame = target_aware_object_scores_frame([_row()])

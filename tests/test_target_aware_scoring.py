@@ -110,7 +110,7 @@ class _RecordingScorer:
         return scores
 
 
-def test_target_aware_mode_scores_complete_union_without_hierarchy_pruning() -> None:
+def test_regression_wrong_family_text_top_one_does_not_remove_target() -> None:
     candidate_set = _regional_candidate_set()
     plan = build_target_aware_scoring_plan(
         candidate_set,

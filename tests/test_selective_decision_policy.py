@@ -72,6 +72,7 @@ def _samples() -> tuple[DecisionPolicyCalibrationSample, ...]:
             sample_weight=1.0,
             route_compatible=True,
             reference_coverage_sufficient=True,
+            geographic_evidence_sufficient=True,
             domain_negative_detected=False,
             out_of_distribution=False,
             visual_detail_sufficient=True,
@@ -94,6 +95,7 @@ def _prediction_evidence(*, score=None, **changes) -> SelectivePredictionEvidenc
         "calibration_fingerprint": CALIBRATION_FINGERPRINT,
         "route_compatible": True,
         "reference_coverage_sufficient": True,
+        "geographic_evidence_sufficient": True,
         "domain_negative_detected": False,
         "out_of_distribution": False,
         "visual_detail_sufficient": True,
@@ -223,6 +225,11 @@ def test_target_confirmation_requires_every_configured_condition() -> None:
             {"no_geo_global_fallback": True},
             "no_geo_global_fallback",
             "no_geo_global_fallback",
+        ),
+        (
+            {"geographic_evidence_sufficient": False},
+            "target_probable_review",
+            "weak_geographic_evidence",
         ),
     ),
 )

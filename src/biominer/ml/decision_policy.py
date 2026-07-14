@@ -39,6 +39,7 @@ MAX_THRESHOLD_GRID_CELLS = 4_000_000
 _REQUIREMENTS = (
     ("route_compatible", True),
     ("reference_coverage_sufficient", True),
+    ("geographic_evidence_sufficient", True),
     ("domain_negative_absent", True),
     ("out_of_distribution_absent", True),
     ("visual_detail_sufficient", True),
@@ -52,6 +53,7 @@ _ABSTENTION_RULES = (
     "insufficient_visual_detail",
     "insufficient_reference_coverage",
     "no_geo_global_fallback",
+    "weak_geographic_evidence",
     "calibrated_non_target_dominates",
     "missing_calibrated_target_probability",
     "target_probability_below_threshold",
@@ -74,6 +76,7 @@ class DecisionPolicyCalibrationSample:
     sample_weight: float = 1.0
     route_compatible: bool = True
     reference_coverage_sufficient: bool = True
+    geographic_evidence_sufficient: bool = True
     domain_negative_detected: bool = False
     out_of_distribution: bool = False
     visual_detail_sufficient: bool = True
@@ -186,6 +189,7 @@ class SelectivePredictionEvidence:
     calibration_fingerprint: str
     route_compatible: bool
     reference_coverage_sufficient: bool
+    geographic_evidence_sufficient: bool
     domain_negative_detected: bool
     out_of_distribution: bool
     visual_detail_sufficient: bool
@@ -496,6 +500,14 @@ def apply_selective_decision_policy(
             abstained=True,
             reason="competitor_margin_below_threshold",
         )
+    if not normalized.geographic_evidence_sufficient:
+        return _decision(
+            policy,
+            score,
+            outcome=TARGET_PROBABLE_REVIEW,
+            abstained=True,
+            reason="weak_geographic_evidence",
+        )
     return _decision(
         policy,
         score,
@@ -580,6 +592,7 @@ def _validate_samples(
         booleans = {
             "route_compatible": item.route_compatible,
             "reference_coverage_sufficient": item.reference_coverage_sufficient,
+            "geographic_evidence_sufficient": (item.geographic_evidence_sufficient),
             "domain_negative_detected": item.domain_negative_detected,
             "out_of_distribution": item.out_of_distribution,
             "visual_detail_sufficient": item.visual_detail_sufficient,
@@ -612,6 +625,7 @@ def _threshold_eligible(item: DecisionPolicyCalibrationSample) -> bool:
     return bool(
         item.route_compatible
         and item.reference_coverage_sufficient
+        and item.geographic_evidence_sufficient
         and not item.domain_negative_detected
         and not item.out_of_distribution
         and item.visual_detail_sufficient
@@ -678,6 +692,7 @@ def _sample_payload(item: DecisionPolicyCalibrationSample) -> dict[str, object]:
         "sample_weight": item.sample_weight,
         "route_compatible": item.route_compatible,
         "reference_coverage_sufficient": item.reference_coverage_sufficient,
+        "geographic_evidence_sufficient": item.geographic_evidence_sufficient,
         "domain_negative_detected": item.domain_negative_detected,
         "out_of_distribution": item.out_of_distribution,
         "visual_detail_sufficient": item.visual_detail_sufficient,
@@ -795,6 +810,7 @@ def _validate_prediction_evidence(
     booleans = {
         "route_compatible": evidence.route_compatible,
         "reference_coverage_sufficient": evidence.reference_coverage_sufficient,
+        "geographic_evidence_sufficient": (evidence.geographic_evidence_sufficient),
         "domain_negative_detected": evidence.domain_negative_detected,
         "out_of_distribution": evidence.out_of_distribution,
         "visual_detail_sufficient": evidence.visual_detail_sufficient,

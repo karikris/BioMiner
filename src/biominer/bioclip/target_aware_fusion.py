@@ -624,6 +624,10 @@ def fuse_target_aware_species_evidence(
             calibration_fingerprint=target_inference.calibration_fingerprint,
             route_compatible=route_compatible,
             reference_coverage_sufficient=reference_coverage_sufficient,
+            geographic_evidence_sufficient=(
+                structured[plan.target_accepted_taxon_key].geographic_scope
+                == "regional"
+            ),
             domain_negative_detected=quality.domain_negative_detected,
             out_of_distribution=quality.out_of_distribution,
             visual_detail_sufficient=quality.visual_detail_sufficient,

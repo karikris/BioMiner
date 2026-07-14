@@ -924,6 +924,11 @@ def _validate_decision(row: Mapping[str, object]) -> None:
         raise ValueError("target_confirmed requires sufficient visual detail")
     if bool(row["no_geo_global_fallback"]):
         raise ValueError("target_confirmed cannot use no-geo review fallback")
+    target = next(
+        item for item in row["regional_candidate_evidence"] if item["target_candidate"]
+    )
+    if target["geographic_scope"] != "regional":
+        raise ValueError("target_confirmed requires regional geographic evidence")
     probability = row["calibrated_target_probability"]
     if probability is None or threshold is None or float(probability) < threshold:
         raise ValueError("target_confirmed does not meet its model decision threshold")

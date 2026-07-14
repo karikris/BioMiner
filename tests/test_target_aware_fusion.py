@@ -450,6 +450,15 @@ def _frozen_classifier(
 
 
 def _classifier_inferences(*, raw_embedding: tuple[float, float] = (1.0, 0.0)):
+    return _classifier_inferences_for_candidates(raw_embedding=raw_embedding)
+
+
+def _classifier_inferences_for_candidates(
+    *,
+    raw_embedding: tuple[float, float] = (1.0, 0.0),
+    regional_class_labels: tuple[str, ...] = (TARGET, COMPETITOR, THIRD),
+    regional_intercepts: tuple[float, ...] = (0.20, 1.20, -0.50),
+):
     target_classifier_fingerprint = _sha("target-classifier")
     target_calibration_fingerprint = _sha("target-calibrator")
     target_classifier = _frozen_classifier(
@@ -474,10 +483,10 @@ def _classifier_inferences(*, raw_embedding: tuple[float, float] = (1.0, 0.0)):
     regional_classifier_fingerprint = _sha("regional-classifier")
     regional_classifier = _frozen_classifier(
         task="regional_multiclass",
-        class_labels=(TARGET, COMPETITOR, THIRD),
+        class_labels=regional_class_labels,
         classifier_fingerprint=regional_classifier_fingerprint,
-        coefficients=np.zeros((3, 2), dtype=np.float64),
-        intercepts=np.asarray([0.20, 1.20, -0.50], dtype=np.float64),
+        coefficients=np.zeros((len(regional_class_labels), 2), dtype=np.float64),
+        intercepts=np.asarray(regional_intercepts, dtype=np.float64),
     )
     regional_calibrator = FrozenProbabilityCalibrator(
         calibration_fingerprint=_sha("regional-calibrator"),
@@ -486,7 +495,7 @@ def _classifier_inferences(*, raw_embedding: tuple[float, float] = (1.0, 0.0)):
         target_task="regional_multiclass",
         route="adult_field",
         method="temperature",
-        class_labels=(TARGET, COMPETITOR, THIRD),
+        class_labels=regional_class_labels,
         positive_class_label=None,
         scalar_parameters={"inverse_temperature": 1.0},
         array_parameters={},
@@ -566,9 +575,12 @@ def _fuse(
     structured=None,
     prompts=None,
     reference_top_k=3,
+    classifier_inferences=None,
 ):
     prompt_values = prompts or _prompt_results()
-    target_inference, regional_inference = _classifier_inferences()
+    target_inference, regional_inference = (
+        classifier_inferences or _classifier_inferences()
+    )
     return fuse_target_aware_species_evidence(
         plan=plan or _plan(),
         prompt_results=prompt_values,
@@ -685,6 +697,176 @@ def test_low_text_rank_cannot_prune_target_that_wins_reference_comparison() -> N
         if not item.target_candidate
     )
     assert result.decision.classification_decision == "target_confirmed"
+
+
+def test_regression_target_genus_rank_20_still_wins_reference_comparison() -> None:
+    competitors = tuple(
+        CandidateTaxon(
+            scientific_name=f"Genus{index:02d} species",
+            accepted_taxon_key=f"gbif:rank20-{index:02d}",
+            family="Papilionidae",
+            genus=f"Genus{index:02d}",
+            candidate_reasons=("regional_same_family",),
+            source_versions=("regional-candidate-species-v1.0.0",),
+            candidate_priority=index,
+        )
+        for index in range(1, 20)
+    )
+    target = _candidate_set().species_candidates[0]
+    species = (target, *competitors)
+    fingerprint = _sha("rank-20-candidate-union")
+    candidate_set = replace(
+        _candidate_set(),
+        candidate_set_id="regional:rank-20-regression",
+        family_candidates=species,
+        genus_candidates=species,
+        species_candidates=species,
+        candidate_set_fingerprint=fingerprint,
+    )
+    plan = build_target_aware_scoring_plan(
+        candidate_set,
+        known_negative_classes=(
+            TargetAwareAuxiliaryClass(
+                class_id="visual_artifact",
+                display_name="visual artifact",
+                source_versions=("negative-manifest-v1",),
+            ),
+        ),
+        visual_domain_classes=(
+            TargetAwareAuxiliaryClass(
+                class_id="adult_field",
+                display_name="live adult butterfly in the field",
+                source_versions=("reference-domain-v1",),
+            ),
+        ),
+    )
+
+    class RankTwentyTextScorer:
+        def score(self, scoring_plan):
+            scores = {
+                item.scoring_class_id: 0.0 for item in scoring_plan.scoring_classes
+            }
+            for item in scoring_plan.genus_diagnostic_classes:
+                scores[item.scoring_class_id] = (
+                    -20.0
+                    if item.class_id == "Papilio"
+                    else float(20 - int(item.class_id.removeprefix("Genus")))
+                )
+            return scores
+
+    direct = score_target_aware_candidate_union(plan, RankTwentyTextScorer())
+    target_genus = next(
+        item for item in direct.genus_diagnostics if item.class_id == "Papilio"
+    )
+    assert target_genus.rank == 20
+
+    prompts = []
+    references = []
+    structured = []
+    labels = []
+    regional_intercepts = []
+    for index, candidate in enumerate(species):
+        key = str(candidate.accepted_taxon_key)
+        labels.append(key)
+        regional_intercepts.append(3.0 if candidate.target_candidate else -2.0)
+        prompts.append(
+            _prompt_result(
+                key,
+                candidate.scientific_name,
+                -0.8 if candidate.target_candidate else 0.5,
+            )
+        )
+        centroid = 0.90 if candidate.target_candidate else 0.40 - index * 0.005
+        references.append(
+            _reference(
+                key,
+                candidate.scientific_name,
+                centroid=centroid,
+                nearest=centroid + 0.05,
+                top_three=centroid + 0.03,
+                top_five=centroid + 0.02,
+                local=centroid + 0.01,
+                global_=centroid,
+            )
+        )
+        structured.append(
+            CandidateStructuredEvidence(
+                accepted_taxon_key=key,
+                candidate_set_fingerprint=fingerprint,
+                geo_cluster_id="cluster-au-1",
+                geographic_scope="regional",
+                geographic_evidence_score=0.8,
+                occurrence_support=5,
+                route="adult_field",
+                life_stage="adult",
+                visual_domain="field",
+                life_stage_compatible=True,
+                visual_domain_compatible=True,
+                source_versions=("regional-candidate-species-v1.0.0",),
+            )
+        )
+    inferences = _classifier_inferences_for_candidates(
+        regional_class_labels=tuple(labels),
+        regional_intercepts=tuple(regional_intercepts),
+    )
+    fusion = fuse_target_aware_species_evidence(
+        plan=plan,
+        prompt_results=tuple(prompts),
+        reference_results=tuple(references),
+        target_classifier=inferences[0],
+        regional_classifier=inferences[1],
+        structured_evidence=tuple(structured),
+        domain_negatives=_domain_negatives(),
+        decision_policy=_policy(inferences[0]),
+        quality=TargetAwareFusionQuality(
+            domain_negative_detected=False,
+            out_of_distribution=False,
+            visual_detail_sufficient=True,
+        ),
+        reference_top_k=3,
+    )
+    target_score = next(item for item in fusion.species_scores if item.target_candidate)
+
+    assert len(fusion.species_scores) == 20
+    assert target_score.reference_centroid_score == pytest.approx(0.90)
+    assert target_score.reference_centroid_score > max(
+        item.reference_centroid_score
+        for item in fusion.species_scores
+        if not item.target_candidate
+    )
+    assert fusion.decision.classification_decision == "target_confirmed"
+
+
+def test_regression_strong_regional_competitor_beats_target() -> None:
+    inferences = _classifier_inferences_for_candidates(
+        regional_intercepts=(0.0, 6.0, -5.0)
+    )
+
+    result = _fuse(classifier_inferences=inferences)
+
+    assert result.nonmatch_score.nonmatch_margin is not None
+    assert result.nonmatch_score.nonmatch_margin < 0.0
+    assert result.decision.classification_decision == "known_regional_competitor"
+    assert result.decision.winning_nonmatch_accepted_taxon_key == COMPETITOR
+    assert result.decision.abstained is False
+
+
+def test_regression_strong_target_with_weak_geography_routes_to_review() -> None:
+    structured = list(_structured_results())
+    structured[0] = replace(
+        structured[0],
+        geographic_scope="nonregional",
+        geographic_evidence_score=None,
+        occurrence_support=0,
+    )
+
+    result = _fuse(structured=tuple(structured))
+
+    assert len(result.species_scores) == 3
+    assert result.decision.classification_decision == "target_probable_review"
+    assert result.decision.abstained is True
+    assert result.decision.abstention_reason == "weak_geographic_evidence"
+    assert result.decision.review_priority == "high"
 
 
 def test_missing_candidate_evidence_fails_closed_instead_of_shortening_union() -> None:
