@@ -16,9 +16,9 @@ def write_evaluation_charts(
     *,
     family_confusion: pl.DataFrame,
     species_accuracy_by_family: pl.DataFrame,
-    calibration_bins: pl.DataFrame,
     review_error_examples: pl.DataFrame,
     output_dir: str | Path,
+    calibration_bins: pl.DataFrame | None = None,
 ) -> dict[str, str]:
     """Write optional PNG charts for local classification evaluation reports."""
     plt = _pyplot()
@@ -47,7 +47,7 @@ def write_evaluation_charts(
         paths["review_reason_counts_chart"],
     )
 
-    if not calibration_bins.is_empty():
+    if calibration_bins is not None and not calibration_bins.is_empty():
         calibration_path = output / CALIBRATION_RELIABILITY_CHART_FILE
         _write_calibration_reliability_chart(plt, calibration_bins, calibration_path)
         paths["calibration_reliability_chart"] = calibration_path

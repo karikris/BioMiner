@@ -8,13 +8,11 @@ import polars as pl
 
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
 from biominer.evaluation.charts import (
-    CALIBRATION_RELIABILITY_CHART_FILE,
     FAMILY_CONFUSION_CHART_FILE,
     REVIEW_REASON_COUNTS_CHART_FILE,
     SPECIES_ACCURACY_BY_FAMILY_CHART_FILE,
 )
 from biominer.evaluation.reports import (
-    CALIBRATION_BINS_FILE,
     EVALUATION_METRICS_FILE,
     EVALUATION_SUMMARY_FILE,
     FAMILY_CONFUSION_FILE,
@@ -34,7 +32,6 @@ def test_write_evaluation_report_writes_json_parquet_and_markdown(tmp_path) -> N
     )
 
     assert sorted(paths) == [
-        "calibration_bins",
         "family_confusion_matrix",
         "metrics",
         "review_error_examples",
@@ -46,7 +43,6 @@ def test_write_evaluation_report_writes_json_parquet_and_markdown(tmp_path) -> N
         FAMILY_CONFUSION_FILE,
         SPECIES_CONFUSION_FILE,
         EVALUATION_SUMMARY_FILE,
-        CALIBRATION_BINS_FILE,
         REVIEW_ERROR_EXAMPLES_FILE,
     ):
         assert (tmp_path / filename).exists()
@@ -54,18 +50,16 @@ def test_write_evaluation_report_writes_json_parquet_and_markdown(tmp_path) -> N
     metrics = json.loads((tmp_path / EVALUATION_METRICS_FILE).read_text(encoding="utf-8"))
     family_confusion = pl.read_parquet(tmp_path / FAMILY_CONFUSION_FILE)
     species_confusion = pl.read_parquet(tmp_path / SPECIES_CONFUSION_FILE)
-    calibration_bins = pl.read_parquet(tmp_path / CALIBRATION_BINS_FILE)
     review_errors = pl.read_parquet(tmp_path / REVIEW_ERROR_EXAMPLES_FILE)
     markdown = (tmp_path / EVALUATION_SUMMARY_FILE).read_text(encoding="utf-8")
 
-    assert metrics["schema_version"] == "evaluation_metrics_v1"
+    assert metrics["schema_version"] == "evaluation_metrics_v2"
     assert metrics["run"]["run_id"] == "run-1"
     assert metrics["metrics"]["species_top1_accuracy"] == 1.0
     assert metrics["metrics"]["species_top20_recall"] == 1.0
-    assert metrics["calibration"]["sample_count"] == 1
+    assert "calibration" not in metrics
     assert family_confusion.to_dicts()[0]["count"] == 1
     assert species_confusion.to_dicts()[0]["predicted_name"] == "Papilio demoleus"
-    assert calibration_bins.height == 10
     assert review_errors.is_empty()
     assert "Family top1 accuracy" in markdown
     assert "Species top20 recall" in markdown
@@ -84,14 +78,12 @@ def test_write_evaluation_report_can_write_optional_charts(tmp_path) -> None:
 
     assert paths["family_confusion_chart"] == str(tmp_path / FAMILY_CONFUSION_CHART_FILE)
     assert paths["species_accuracy_by_family_chart"] == str(tmp_path / SPECIES_ACCURACY_BY_FAMILY_CHART_FILE)
-    assert paths["calibration_reliability_chart"] == str(tmp_path / CALIBRATION_RELIABILITY_CHART_FILE)
     assert paths["review_reason_counts_chart"] == str(tmp_path / REVIEW_REASON_COUNTS_CHART_FILE)
     metrics = json.loads((tmp_path / EVALUATION_METRICS_FILE).read_text(encoding="utf-8"))
     assert metrics["artifacts"]["species_accuracy_by_family_chart"] == paths["species_accuracy_by_family_chart"]
     for key in (
         "family_confusion_chart",
         "species_accuracy_by_family_chart",
-        "calibration_reliability_chart",
         "review_reason_counts_chart",
     ):
         assert Path(paths[key]).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
@@ -132,7 +124,6 @@ def test_write_evaluation_report_to_storage_writes_all_artifacts() -> None:
     assert "Family top1 accuracy" in storage.text_payloads[paths["summary"]]
     assert storage.parquet_payloads[paths["family_confusion_matrix"]].height == 1
     assert storage.parquet_payloads[paths["species_confusion_matrix"]].height == 1
-    assert storage.parquet_payloads[paths["calibration_bins"]].height == 10
     assert storage.parquet_payloads[paths["review_error_examples"]].is_empty()
 
 

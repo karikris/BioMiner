@@ -408,6 +408,8 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
                 "leakage_register",
                 "output_dir",
                 "ece_bin_count",
+                "threshold_operating_points",
+                "calibration_confidence_level",
             }
         ),
         required=frozenset(
@@ -419,7 +421,11 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
                 "output_dir",
             }
         ),
-        defaults={"ece_bin_count": 10},
+        defaults={
+            "ece_bin_count": 10,
+            "threshold_operating_points": (0.50, 0.70, 0.90, 0.95, 0.99),
+            "calibration_confidence_level": 0.95,
+        },
     ),
 }
 
@@ -661,6 +667,8 @@ def add_reference_workflow_parsers(
     evaluate.add_argument("--leakage-register")
     evaluate.add_argument("--output-dir")
     evaluate.add_argument("--ece-bin-count", type=int)
+    evaluate.add_argument("--threshold-operating-points", type=_float_csv)
+    evaluate.add_argument("--calibration-confidence-level", type=float)
 
 
 def is_reference_workflow_command(value: object) -> bool:
@@ -763,6 +771,16 @@ def _csv(value: str) -> tuple[str, ...]:
     if not result:
         raise argparse.ArgumentTypeError("expected one or more comma-separated values")
     return result
+
+
+def _float_csv(value: str) -> tuple[float, ...]:
+    parts = _csv(value)
+    try:
+        return tuple(float(item) for item in parts)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "expected comma-separated numeric values"
+        ) from exc
 
 
 def _stratum(value: str) -> dict[str, object]:
@@ -868,7 +886,7 @@ def _validate_effective_options(command: str, values: dict[str, Any]) -> None:
     elif command == "calibrate-classifier":
         _calibration_config(values)
     elif command == "evaluate-target-verifier":
-        _positive_integer(values["ece_bin_count"], "ece_bin_count")
+        _target_verification_metrics_config(values)
 
 
 def _run_score_target_aware(
@@ -933,7 +951,6 @@ def _run_evaluate_target_verifier(
     _args: argparse.Namespace,
 ) -> dict[str, object]:
     from biominer.evaluation.target_metrics import (
-        TargetVerificationMetricsConfig,
         evaluate_target_verification,
         publish_target_verification_metric_report,
     )
@@ -948,9 +965,7 @@ def _run_evaluate_target_verifier(
         balanced_holdout,
         natural_holdout,
         leakage_register,
-        TargetVerificationMetricsConfig(
-            ece_bin_count=int(values["ece_bin_count"]),
-        ),
+        _target_verification_metrics_config(values),
     )
     publication = publish_target_verification_metric_report(
         report,
@@ -960,6 +975,12 @@ def _run_evaluate_target_verifier(
         "artifacts": {
             "metrics": str(publication.metrics_path),
             "margin_distribution": str(publication.margin_distribution_path),
+            "calibration_reliability": str(
+                publication.calibration_reliability_path
+            ),
+            "threshold_operating_points": str(
+                publication.threshold_operating_points_path
+            ),
             "report": str(publication.report_json_path),
             "summary": str(publication.report_markdown_path),
         },
@@ -1242,6 +1263,21 @@ def _nonnegative_float(value: object, field: str) -> float:
 
 # Config builders are also called during dry-run so JSON values receive the same
 # type and invariant checks as explicit argparse values.
+def _target_verification_metrics_config(values: Mapping[str, object]) -> object:
+    from biominer.evaluation.target_metrics import TargetVerificationMetricsConfig
+
+    raw_thresholds = values["threshold_operating_points"]
+    if isinstance(raw_thresholds, str | bytes) or not isinstance(
+        raw_thresholds, Sequence
+    ):
+        raise TypeError("threshold_operating_points must be an array")
+    return TargetVerificationMetricsConfig(
+        ece_bin_count=values["ece_bin_count"],
+        threshold_operating_points=tuple(raw_thresholds),
+        calibration_confidence_level=values["calibration_confidence_level"],
+    )
+
+
 def _flickr_cluster_config(values: Mapping[str, object]) -> object:
     from biominer.flickr_fetch.geographic_clustering import FlickrGeoClusterConfig
 

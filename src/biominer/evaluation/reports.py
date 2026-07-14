@@ -8,7 +8,6 @@ from typing import Any, Mapping
 import polars as pl
 
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-from biominer.evaluation.calibration import expected_calibration_error
 from biominer.evaluation.charts import write_evaluation_charts
 from biominer.evaluation.metrics import (
     evaluate_hierarchical_predictions,
@@ -24,19 +23,7 @@ EVALUATION_METRICS_FILE = "evaluation_metrics.json"
 FAMILY_CONFUSION_FILE = "family_confusion_matrix.parquet"
 SPECIES_CONFUSION_FILE = "species_confusion_matrix.parquet"
 EVALUATION_SUMMARY_FILE = "evaluation_summary.md"
-CALIBRATION_BINS_FILE = "calibration_bins.parquet"
 REVIEW_ERROR_EXAMPLES_FILE = "review_error_examples.parquet"
-
-CALIBRATION_BIN_SCHEMA: dict[str, pl.DataType] = {
-    "bin_index": pl.Int64,
-    "lower": pl.Float64,
-    "upper": pl.Float64,
-    "count": pl.Int64,
-    "avg_confidence": pl.Float64,
-    "accuracy": pl.Float64,
-    "gap": pl.Float64,
-    "weight": pl.Float64,
-}
 
 REVIEW_ERROR_EXAMPLE_SCHEMA: dict[str, pl.DataType] = {
     "source": pl.String,
@@ -64,7 +51,6 @@ class EvaluationReportArtifacts:
     metrics_payload: dict[str, object]
     family_confusion: pl.DataFrame
     species_confusion: pl.DataFrame
-    calibration_bins: pl.DataFrame
     review_error_examples: pl.DataFrame
     species_accuracy_by_family: pl.DataFrame
     summary_markdown: str
@@ -95,13 +81,11 @@ def write_evaluation_report(
     paths = {key: Path(path) for key, path in artifacts.paths.items()}
     write_parquet(artifacts.family_confusion, paths["family_confusion_matrix"])
     write_parquet(artifacts.species_confusion, paths["species_confusion_matrix"])
-    write_parquet(artifacts.calibration_bins, paths["calibration_bins"])
     write_parquet(artifacts.review_error_examples, paths["review_error_examples"])
     if write_charts:
         chart_paths = write_evaluation_charts(
             family_confusion=artifacts.family_confusion,
             species_accuracy_by_family=artifacts.species_accuracy_by_family,
-            calibration_bins=artifacts.calibration_bins,
             review_error_examples=artifacts.review_error_examples,
             output_dir=output,
         )
@@ -131,7 +115,6 @@ def write_evaluation_report_to_storage(
     )
     storage.write_parquet_shard(artifacts.paths["family_confusion_matrix"], artifacts.family_confusion)
     storage.write_parquet_shard(artifacts.paths["species_confusion_matrix"], artifacts.species_confusion)
-    storage.write_parquet_shard(artifacts.paths["calibration_bins"], artifacts.calibration_bins)
     storage.write_parquet_shard(artifacts.paths["review_error_examples"], artifacts.review_error_examples)
     storage.write_json(artifacts.paths["metrics"], artifacts.metrics_payload)
     storage.write_text(artifacts.paths["summary"], artifacts.summary_markdown)
@@ -148,31 +131,22 @@ def build_evaluation_report_artifacts(
     metrics = evaluate_hierarchical_predictions(object_scores=object_scores, reviewed_labels=reviewed_labels)
     family_confusion = family_confusion_matrix(object_scores=object_scores, reviewed_labels=reviewed_labels)
     species_confusion = species_confusion_matrix(object_scores=object_scores, reviewed_labels=reviewed_labels)
-    scored_for_calibration = _with_species_correct_column(object_scores, reviewed_labels)
-    calibration = expected_calibration_error(
-        predictions=scored_for_calibration,
-        labels=reviewed_labels,
-        score_column="species_top1_score",
-        correct_column="species_top1_correct",
-        bins=10,
-    )
-    review_errors = _review_error_examples(scored_for_calibration)
+    scored_predictions = _with_species_correct_column(object_scores, reviewed_labels)
+    review_errors = _review_error_examples(scored_predictions)
 
     paths: dict[str, str] = {
         "metrics": join_uri(output_dir, EVALUATION_METRICS_FILE),
         "family_confusion_matrix": join_uri(output_dir, FAMILY_CONFUSION_FILE),
         "species_confusion_matrix": join_uri(output_dir, SPECIES_CONFUSION_FILE),
         "summary": join_uri(output_dir, EVALUATION_SUMMARY_FILE),
-        "calibration_bins": join_uri(output_dir, CALIBRATION_BINS_FILE),
         "review_error_examples": join_uri(output_dir, REVIEW_ERROR_EXAMPLES_FILE),
     }
     metrics_payload = {
-        "schema_version": "evaluation_metrics_v1",
+        "schema_version": "evaluation_metrics_v2",
         "classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
         "run": _run_metadata(run_manifest or {}, object_scores),
         "metrics": metrics,
-        "calibration": {key: value for key, value in calibration.items() if key != "bins"},
-        "warnings": _warnings(metrics=metrics, calibration=calibration),
+        "warnings": _warnings(metrics=metrics),
         "artifacts": paths,
     }
 
@@ -181,9 +155,8 @@ def build_evaluation_report_artifacts(
         metrics_payload=metrics_payload,
         family_confusion=family_confusion,
         species_confusion=species_confusion,
-        calibration_bins=_calibration_bins_frame(calibration),
         review_error_examples=review_errors,
-        species_accuracy_by_family=_species_accuracy_by_family_frame(scored_for_calibration),
+        species_accuracy_by_family=_species_accuracy_by_family_frame(scored_predictions),
         summary_markdown=evaluation_summary_markdown(metrics_payload, family_confusion, species_confusion),
     )
 
@@ -194,7 +167,6 @@ def evaluation_summary_markdown(
     species_confusion: pl.DataFrame,
 ) -> str:
     metrics = _dict(metrics_payload.get("metrics"))
-    calibration = _dict(metrics_payload.get("calibration"))
     run = _dict(metrics_payload.get("run"))
     warnings = [str(item) for item in metrics_payload.get("warnings") or []]
     warning_lines = [f"- {warning}" for warning in warnings] if warnings else ["- none"]
@@ -223,13 +195,6 @@ def evaluation_summary_markdown(
         f"| Missing predictions | {_display(metrics.get('missing_prediction_count'))} |",
         f"| False positive butterfly | {_display(metrics.get('false_positive_butterfly_count'))} |",
         f"| False negative butterfly | {_display(metrics.get('false_negative_butterfly_count'))} |",
-        "",
-        "## Calibration",
-        "",
-        f"- Mode: {_display(calibration.get('calibration_mode'))}",
-        f"- ECE: {_display(calibration.get('ece'))}",
-        f"- Samples: {_display(calibration.get('sample_count'))}",
-        f"- Limitation: {_display(calibration.get('limitations'))}",
         "",
         "## Top Family Confusions",
         "",
@@ -298,10 +263,6 @@ def _review_error_examples(frame: pl.DataFrame) -> pl.DataFrame:
     return _ensure_review_error_schema(pl.DataFrame(rows))
 
 
-def _calibration_bins_frame(calibration: Mapping[str, Any]) -> pl.DataFrame:
-    return _ensure_calibration_schema(pl.DataFrame(calibration.get("bins") or []))
-
-
 def _species_accuracy_by_family_frame(frame: pl.DataFrame) -> pl.DataFrame:
     rows = []
     for row in frame.to_dicts():
@@ -347,8 +308,8 @@ def _run_metadata(run_manifest: Mapping[str, Any], object_scores: pl.DataFrame) 
     }
 
 
-def _warnings(*, metrics: Mapping[str, Any], calibration: Mapping[str, Any]) -> list[str]:
-    warnings = [str(calibration.get("limitations"))]
+def _warnings(*, metrics: Mapping[str, Any]) -> list[str]:
+    warnings: list[str] = []
     if int(metrics.get("missing_prediction_count") or 0) > 0:
         warnings.append("missing_predictions_present")
     if int(metrics.get("false_positive_butterfly_count") or 0) > 0:
@@ -377,10 +338,6 @@ def _confusion_lines(frame: pl.DataFrame, *, limit: int = 10) -> list[str]:
             f"- {row['true_name']} -> {row['predicted_name']}: {row['count']}"
         )
     return lines
-
-
-def _ensure_calibration_schema(frame: pl.DataFrame) -> pl.DataFrame:
-    return _ensure_schema(frame, CALIBRATION_BIN_SCHEMA)
 
 
 def _ensure_review_error_schema(frame: pl.DataFrame) -> pl.DataFrame:
@@ -441,7 +398,6 @@ def _text(value: object) -> str:
 
 
 __all__ = [
-    "CALIBRATION_BINS_FILE",
     "EVALUATION_METRICS_FILE",
     "EVALUATION_SUMMARY_FILE",
     "FAMILY_CONFUSION_FILE",

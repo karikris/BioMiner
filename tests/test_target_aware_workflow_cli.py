@@ -8,7 +8,9 @@ import pytest
 
 from biominer.cli import _parse_run_stages, build_parser, run
 from biominer.evaluation.target_metrics import (
+    TARGET_CALIBRATION_RELIABILITY_FILE,
     TARGET_MARGIN_DISTRIBUTION_FILE,
+    TARGET_THRESHOLD_OPERATING_POINTS_FILE,
     TARGET_VERIFICATION_METRICS_FILE,
     TARGET_VERIFICATION_REPORT_FILE,
     TARGET_VERIFICATION_REPORT_MARKDOWN_FILE,
@@ -460,13 +462,21 @@ def test_target_verifier_evaluation_publishes_frozen_holdout_metrics(
     assert stdout["sample_count"] == evaluation_frame.height
     assert stdout["status"] == "complete"
     assert stdout["artifacts"] == {
+        "calibration_reliability": str(
+            output / TARGET_CALIBRATION_RELIABILITY_FILE
+        ),
         "margin_distribution": str(output / TARGET_MARGIN_DISTRIBUTION_FILE),
         "metrics": str(output / TARGET_VERIFICATION_METRICS_FILE),
         "report": str(output / TARGET_VERIFICATION_REPORT_FILE),
         "summary": str(output / TARGET_VERIFICATION_REPORT_MARKDOWN_FILE),
+        "threshold_operating_points": str(
+            output / TARGET_THRESHOLD_OPERATING_POINTS_FILE
+        ),
     }
     assert (output / TARGET_VERIFICATION_METRICS_FILE).is_file()
     assert (output / TARGET_MARGIN_DISTRIBUTION_FILE).is_file()
+    assert (output / TARGET_CALIBRATION_RELIABILITY_FILE).is_file()
+    assert (output / TARGET_THRESHOLD_OPERATING_POINTS_FILE).is_file()
     assert (output / TARGET_VERIFICATION_REPORT_MARKDOWN_FILE).is_file()
 
 

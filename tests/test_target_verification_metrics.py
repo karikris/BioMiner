@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
 
@@ -11,8 +12,12 @@ from polars.testing import assert_frame_equal
 
 from biominer.evaluation.target_metrics import (
     STRATIFICATION_FIELDS,
+    TARGET_CALIBRATION_RELIABILITY_FILE,
+    TARGET_CALIBRATION_RELIABILITY_SCHEMA,
     TARGET_MARGIN_DISTRIBUTION_SCHEMA,
     TARGET_MARGIN_DISTRIBUTION_FILE,
+    TARGET_THRESHOLD_OPERATING_POINTS_FILE,
+    TARGET_THRESHOLD_OPERATING_POINT_SCHEMA,
     TARGET_VERIFICATION_EVALUATION_SCHEMA,
     TARGET_VERIFICATION_EVALUATION_SCHEMA_VERSION,
     TARGET_VERIFICATION_METRIC_SCHEMA,
@@ -40,6 +45,14 @@ def test_weighted_target_metrics_penalize_abstention_and_measure_selective_risk(
 
     assert report.metrics.schema == TARGET_VERIFICATION_METRIC_SCHEMA
     assert report.margin_distribution.schema == TARGET_MARGIN_DISTRIBUTION_SCHEMA
+    assert (
+        report.calibration_diagnostics.reliability.schema
+        == TARGET_CALIBRATION_RELIABILITY_SCHEMA
+    )
+    assert (
+        report.calibration_diagnostics.operating_points.schema
+        == TARGET_THRESHOLD_OPERATING_POINT_SCHEMA
+    )
     assert _metric(report.metrics, "precision") == pytest.approx(2.0 / 5.0)
     assert _metric(report.metrics, "recall") == pytest.approx(2.0 / 4.0)
     assert _metric(report.metrics, "f1") == pytest.approx(4.0 / 9.0)
@@ -181,6 +194,14 @@ def test_evaluation_and_report_are_deterministic() -> None:
 
     assert_frame_equal(first.metrics, second.metrics)
     assert_frame_equal(first.margin_distribution, second.margin_distribution)
+    assert_frame_equal(
+        first.calibration_diagnostics.reliability,
+        second.calibration_diagnostics.reliability,
+    )
+    assert_frame_equal(
+        first.calibration_diagnostics.operating_points,
+        second.calibration_diagnostics.operating_points,
+    )
     assert first.input_fingerprint == second.input_fingerprint
     assert first.report_fingerprint == second.report_fingerprint
     assert first.report_fingerprint.startswith("sha256:")
@@ -200,6 +221,14 @@ def test_metric_report_publication_is_immutable_and_audited(tmp_path: Path) -> N
 
     assert publication.metrics_path.name == TARGET_VERIFICATION_METRICS_FILE
     assert publication.margin_distribution_path.name == TARGET_MARGIN_DISTRIBUTION_FILE
+    assert (
+        publication.calibration_reliability_path.name
+        == TARGET_CALIBRATION_RELIABILITY_FILE
+    )
+    assert (
+        publication.threshold_operating_points_path.name
+        == TARGET_THRESHOLD_OPERATING_POINTS_FILE
+    )
     assert publication.report_json_path.name == TARGET_VERIFICATION_REPORT_FILE
     assert (
         publication.report_markdown_path.name
@@ -209,6 +238,11 @@ def test_metric_report_publication_is_immutable_and_audited(tmp_path: Path) -> N
     assert payload["status"] == "complete"
     assert payload["report_fingerprint"] == report.report_fingerprint
     assert payload["artifacts"]["metrics"]["sha256"].startswith("sha256:")
+    assert payload["calibration_reports"][0]["calibration_method"] == "sigmoid"
+    assert payload["calibration_reports"][0]["calibration_split_fingerprint"] == _sha(
+        "evaluation-split"
+    )
+    assert payload["calibration_reports"][0]["probability_sample_count"] > 0
     with pytest.raises(FileExistsError):
         publish_target_verification_metric_report(report, publication.output_dir)
 
@@ -457,6 +491,9 @@ def _rows_for_frozen_holdouts(
                     ),
                     "target_present": target_present,
                     "calibrated_target_probability": (0.9 if target_present else 0.1),
+                    "calibration_method": "sigmoid",
+                    "calibration_split_fingerprint": _sha("evaluation-split"),
+                    "calibrator_fingerprint": _sha("target-calibrator"),
                     "classification_decision": (
                         "target_confirmed" if target_present else "other_butterfly"
                     ),
@@ -516,6 +553,9 @@ def _row(
         "sampling_weight": sampling_weight,
         "target_present": target_present,
         "calibrated_target_probability": probability,
+        "calibration_method": "sigmoid",
+        "calibration_split_fingerprint": _sha("evaluation-split"),
+        "calibrator_fingerprint": _sha("target-calibrator"),
         "classification_decision": decision,
         "abstained": abstained,
         "target_competitor_margin": margin,
@@ -571,3 +611,7 @@ def _metric_row(
     )
     assert selected.height == 1
     return deepcopy(selected.row(0, named=True))
+
+
+def _sha(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()

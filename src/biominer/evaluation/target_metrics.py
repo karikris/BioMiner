@@ -26,20 +26,31 @@ from sklearn.metrics import (
 )
 
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
+from biominer.evaluation.calibration import (
+    DEFAULT_CALIBRATION_THRESHOLDS,
+    TARGET_CALIBRATION_RELIABILITY_SCHEMA,
+    TARGET_THRESHOLD_OPERATING_POINT_SCHEMA,
+    TargetCalibrationDiagnostics,
+    build_target_calibration_diagnostics,
+    validate_target_calibration_diagnostics,
+)
 from biominer.evaluation.leakage import validate_reference_and_holdout_leakage
 from biominer.flickr_fetch.geographic_clustering import NO_GEO_CLUSTER_ID
+from biominer.ml.calibration import CALIBRATION_METHODS
 from biominer.ml.nonmatch import ABSTAIN, CLASSIFICATION_OUTCOMES, TARGET_CONFIRMED
 from biominer.reports.flickr_fetch import current_git_sha
 from biominer.storage.parquet import write_parquet
 
 
-TARGET_VERIFICATION_EVALUATION_SCHEMA_VERSION = "target-verification-evaluation-v1.0.0"
-TARGET_VERIFICATION_METRIC_SCHEMA_VERSION = "target-verification-metric-v1.0.0"
+TARGET_VERIFICATION_EVALUATION_SCHEMA_VERSION = "target-verification-evaluation-v1.1.0"
+TARGET_VERIFICATION_METRIC_SCHEMA_VERSION = "target-verification-metric-v1.1.0"
 TARGET_MARGIN_DISTRIBUTION_SCHEMA_VERSION = "target-margin-distribution-v1.0.0"
-TARGET_VERIFICATION_REPORT_SCHEMA_VERSION = "target-verification-report-v1.0.0"
+TARGET_VERIFICATION_REPORT_SCHEMA_VERSION = "target-verification-report-v1.1.0"
 
 TARGET_VERIFICATION_METRICS_FILE = "target_verification_metrics.parquet"
 TARGET_MARGIN_DISTRIBUTION_FILE = "target_competitor_margin_distribution.parquet"
+TARGET_CALIBRATION_RELIABILITY_FILE = "target_calibration_reliability.parquet"
+TARGET_THRESHOLD_OPERATING_POINTS_FILE = "target_threshold_operating_points.parquet"
 TARGET_VERIFICATION_REPORT_FILE = "target_verification_report.json"
 TARGET_VERIFICATION_REPORT_MARKDOWN_FILE = "target_verification_report.md"
 
@@ -52,6 +63,9 @@ TARGET_VERIFICATION_EVALUATION_SCHEMA: dict[str, pl.DataType] = {
     "sampling_weight": pl.Float64,
     "target_present": pl.Boolean,
     "calibrated_target_probability": pl.Float64,
+    "calibration_method": pl.String,
+    "calibration_split_fingerprint": pl.String,
+    "calibrator_fingerprint": pl.String,
     "classification_decision": pl.String,
     "abstained": pl.Boolean,
     "target_competitor_margin": pl.Float64,
@@ -140,6 +154,9 @@ _REQUIRED_TEXT_FIELDS = (
     "evaluation_item_id",
     "evaluation_set",
     "classification_decision",
+    "calibration_method",
+    "calibration_split_fingerprint",
+    "calibrator_fingerprint",
     "geo_cluster_id",
     "country_code",
     "route",
@@ -174,6 +191,8 @@ _REQUIRED_NON_NULL_FIELDS = (
 class TargetVerificationMetricsConfig:
     precision_targets: tuple[float, ...] = (0.90, 0.95, 0.99)
     ece_bin_count: int = 10
+    threshold_operating_points: tuple[float, ...] = DEFAULT_CALIBRATION_THRESHOLDS
+    calibration_confidence_level: float = 0.95
     family_recall_ks: tuple[int, ...] = (1, 3, 5)
     genus_recall_ks: tuple[int, ...] = (1, 3, 5)
     species_recall_ks: tuple[int, ...] = (1, 5, 20)
@@ -196,9 +215,36 @@ class TargetVerificationMetricsConfig:
         if (
             isinstance(self.ece_bin_count, bool)
             or not isinstance(self.ece_bin_count, int)
-            or self.ece_bin_count <= 0
+            or self.ece_bin_count < 2
         ):
-            raise ValueError("ece_bin_count must be a positive integer")
+            raise ValueError("ece_bin_count must be an integer >= 2")
+        operating_points = tuple(sorted(set(self.threshold_operating_points)))
+        if not operating_points or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not isfinite(float(value))
+            or not 0.0 <= float(value) <= 1.0
+            for value in operating_points
+        ):
+            raise ValueError("threshold_operating_points must contain values in [0, 1]")
+        object.__setattr__(
+            self,
+            "threshold_operating_points",
+            tuple(float(value) for value in operating_points),
+        )
+        confidence = self.calibration_confidence_level
+        if (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not isfinite(float(confidence))
+            or not 0.0 < float(confidence) < 1.0
+        ):
+            raise ValueError("calibration_confidence_level must be in (0, 1)")
+        object.__setattr__(
+            self,
+            "calibration_confidence_level",
+            float(confidence),
+        )
         for field in (
             "family_recall_ks",
             "genus_recall_ks",
@@ -219,6 +265,8 @@ class TargetVerificationMetricsConfig:
                 "schema_version": TARGET_VERIFICATION_METRIC_SCHEMA_VERSION,
                 "precision_targets": list(self.precision_targets),
                 "ece_bin_count": self.ece_bin_count,
+                "threshold_operating_points": list(self.threshold_operating_points),
+                "calibration_confidence_level": self.calibration_confidence_level,
                 "family_recall_ks": list(self.family_recall_ks),
                 "genus_recall_ks": list(self.genus_recall_ks),
                 "species_recall_ks": list(self.species_recall_ks),
@@ -235,6 +283,7 @@ class TargetVerificationMetricsConfig:
 class TargetVerificationMetricReport:
     metrics: pl.DataFrame
     margin_distribution: pl.DataFrame
+    calibration_diagnostics: TargetCalibrationDiagnostics
     input_fingerprint: str
     configuration_fingerprint: str
     report_fingerprint: str
@@ -245,6 +294,8 @@ class TargetVerificationMetricPublication:
     output_dir: Path
     metrics_path: Path
     margin_distribution_path: Path
+    calibration_reliability_path: Path
+    threshold_operating_points_path: Path
     report_json_path: Path
     report_markdown_path: Path
     report: Mapping[str, object]
@@ -312,6 +363,17 @@ def validate_target_verification_evaluation_frame(frame: pl.DataFrame) -> None:
     )
     if invalid_decisions:
         raise ValueError(f"unsupported classification decisions: {invalid_decisions}")
+    invalid_methods = sorted(
+        set(frame["calibration_method"].to_list()) - CALIBRATION_METHODS
+    )
+    if invalid_methods:
+        raise ValueError(f"unsupported calibration methods: {invalid_methods}")
+    for field in ("calibration_split_fingerprint", "calibrator_fingerprint"):
+        if any(
+            _SHA256_PATTERN.fullmatch(str(value)) is None
+            for value in frame[field].to_list()
+        ):
+            raise ValueError(f"{field} must contain full lowercase sha256 fingerprints")
     for field in _REQUIRED_NON_NULL_FIELDS:
         if frame[field].null_count():
             raise ValueError(f"{field} cannot contain null values")
@@ -462,15 +524,23 @@ def compute_target_verification_metrics(
         "stratum_value",
         "population",
     )
+    calibration_diagnostics = build_target_calibration_diagnostics(
+        frame,
+        bin_count=active.ece_bin_count,
+        thresholds=active.threshold_operating_points,
+        confidence_level=active.calibration_confidence_level,
+    )
     report_fingerprint = _report_fingerprint(
         metrics,
         margins,
+        calibration_diagnostics,
         input_fingerprint=input_fingerprint,
         configuration_fingerprint=active.fingerprint,
     )
     return TargetVerificationMetricReport(
         metrics=metrics,
         margin_distribution=margins,
+        calibration_diagnostics=calibration_diagnostics,
         input_fingerprint=input_fingerprint,
         configuration_fingerprint=active.fingerprint,
         report_fingerprint=report_fingerprint,
@@ -488,6 +558,7 @@ def validate_target_verification_metric_report(
         raise ValueError("target margin distribution physical schema mismatch")
     if report.metrics.is_empty() or report.margin_distribution.is_empty():
         raise ValueError("target verification report artifacts must not be empty")
+    validate_target_calibration_diagnostics(report.calibration_diagnostics)
     metric_sort = report.metrics.sort(
         "evaluation_set",
         "scope",
@@ -530,6 +601,7 @@ def validate_target_verification_metric_report(
     expected = _report_fingerprint(
         report.metrics,
         report.margin_distribution,
+        report.calibration_diagnostics,
         input_fingerprint=report.input_fingerprint,
         configuration_fingerprint=report.configuration_fingerprint,
     )
@@ -580,11 +652,23 @@ def publish_target_verification_metric_report(
             staging / TARGET_MARGIN_DISTRIBUTION_FILE,
             overwrite=False,
         )
+        calibration_staged = write_parquet(
+            report.calibration_diagnostics.reliability,
+            staging / TARGET_CALIBRATION_RELIABILITY_FILE,
+            overwrite=False,
+        )
+        operating_points_staged = write_parquet(
+            report.calibration_diagnostics.operating_points,
+            staging / TARGET_THRESHOLD_OPERATING_POINTS_FILE,
+            overwrite=False,
+        )
         ended_at = datetime.now(UTC)
         payload = _publication_payload(
             report,
             metrics_path=metrics_staged,
             margins_path=margins_staged,
+            calibration_path=calibration_staged,
+            operating_points_path=operating_points_staged,
             final_output_dir=destination,
             run_id=effective_run_id,
             started_at=started_at,
@@ -604,12 +688,22 @@ def publish_target_verification_metric_report(
         raise
     metrics_path = destination / TARGET_VERIFICATION_METRICS_FILE
     margins_path = destination / TARGET_MARGIN_DISTRIBUTION_FILE
+    calibration_path = destination / TARGET_CALIBRATION_RELIABILITY_FILE
+    operating_points_path = destination / TARGET_THRESHOLD_OPERATING_POINTS_FILE
     loaded_metrics = pl.read_parquet(metrics_path)
     loaded_margins = pl.read_parquet(margins_path)
+    loaded_calibration = pl.read_parquet(calibration_path)
+    loaded_operating_points = pl.read_parquet(operating_points_path)
     if not report.metrics.equals(loaded_metrics):
         raise ValueError("target verification metrics Parquet round-trip mismatch")
     if not report.margin_distribution.equals(loaded_margins):
         raise ValueError("target margin distribution Parquet round-trip mismatch")
+    if not report.calibration_diagnostics.reliability.equals(loaded_calibration):
+        raise ValueError("target calibration reliability Parquet round-trip mismatch")
+    if not report.calibration_diagnostics.operating_points.equals(
+        loaded_operating_points
+    ):
+        raise ValueError("target threshold operating-point Parquet round-trip mismatch")
     _log_event(
         "target_verification_report_publish_completed",
         command="evaluation.publish_target_verification_metrics",
@@ -617,12 +711,16 @@ def publish_target_verification_metric_report(
         output_dir=str(destination),
         metric_rows=report.metrics.height,
         margin_rows=report.margin_distribution.height,
+        calibration_rows=report.calibration_diagnostics.reliability.height,
+        operating_point_rows=report.calibration_diagnostics.operating_points.height,
         report_fingerprint=report.report_fingerprint,
     )
     return TargetVerificationMetricPublication(
         output_dir=destination,
         metrics_path=metrics_path,
         margin_distribution_path=margins_path,
+        calibration_reliability_path=calibration_path,
+        threshold_operating_points_path=operating_points_path,
         report_json_path=destination / TARGET_VERIFICATION_REPORT_FILE,
         report_markdown_path=(destination / TARGET_VERIFICATION_REPORT_MARKDOWN_FILE),
         report=payload,
@@ -1184,6 +1282,7 @@ def _input_fingerprint(frame: pl.DataFrame) -> str:
 def _report_fingerprint(
     metrics: pl.DataFrame,
     margins: pl.DataFrame,
+    calibration_diagnostics: TargetCalibrationDiagnostics,
     *,
     input_fingerprint: str,
     configuration_fingerprint: str,
@@ -1195,6 +1294,15 @@ def _report_fingerprint(
             "configuration_fingerprint": configuration_fingerprint,
             "metric_rows": metrics.to_dicts(),
             "margin_rows": margins.to_dicts(),
+            "calibration_diagnostics_fingerprint": (
+                calibration_diagnostics.diagnostics_fingerprint
+            ),
+            "calibration_reliability_rows": (
+                calibration_diagnostics.reliability.to_dicts()
+            ),
+            "threshold_operating_point_rows": (
+                calibration_diagnostics.operating_points.to_dicts()
+            ),
         }
     )
 
@@ -1204,6 +1312,8 @@ def _publication_payload(
     *,
     metrics_path: Path,
     margins_path: Path,
+    calibration_path: Path,
+    operating_points_path: Path,
     final_output_dir: Path,
     run_id: str,
     started_at: datetime,
@@ -1236,6 +1346,18 @@ def _publication_payload(
         "report_fingerprint": report.report_fingerprint,
         "metric_row_count": report.metrics.height,
         "margin_row_count": report.margin_distribution.height,
+        "calibration_reliability_row_count": (
+            report.calibration_diagnostics.reliability.height
+        ),
+        "threshold_operating_point_row_count": (
+            report.calibration_diagnostics.operating_points.height
+        ),
+        "calibration_diagnostics_fingerprint": (
+            report.calibration_diagnostics.diagnostics_fingerprint
+        ),
+        "calibration_reports": _calibration_publication_summary(
+            report.calibration_diagnostics.reliability
+        ),
         "overall_metrics": summary,
         "artifacts": {
             "metrics": {
@@ -1250,8 +1372,68 @@ def _publication_payload(
                 "byte_count": margins_path.stat().st_size,
                 "sha256": _file_sha256(margins_path),
             },
+            "calibration_reliability": {
+                "path": str(final_output_dir / calibration_path.name),
+                "row_count": report.calibration_diagnostics.reliability.height,
+                "byte_count": calibration_path.stat().st_size,
+                "sha256": _file_sha256(calibration_path),
+            },
+            "threshold_operating_points": {
+                "path": str(final_output_dir / operating_points_path.name),
+                "row_count": report.calibration_diagnostics.operating_points.height,
+                "byte_count": operating_points_path.stat().st_size,
+                "sha256": _file_sha256(operating_points_path),
+            },
         },
     }
+
+
+def _calibration_publication_summary(
+    reliability: pl.DataFrame,
+) -> list[dict[str, object]]:
+    identity_fields = (
+        "evaluation_set",
+        "calibration_method",
+        "calibration_split_fingerprint",
+        "calibrator_fingerprint",
+    )
+    summaries: list[dict[str, object]] = []
+    identities = sorted(
+        {
+            tuple(str(row[field]) for field in identity_fields)
+            for row in reliability.select(identity_fields).iter_rows(named=True)
+        }
+    )
+    for identity in identities:
+        selected = reliability
+        for field, value in zip(identity_fields, identity, strict=True):
+            selected = selected.filter(pl.col(field) == value)
+        first = selected.row(0, named=True)
+        contributions = selected["ece_contribution"].drop_nulls().to_list()
+        summaries.append(
+            {
+                **dict(zip(identity_fields, identity, strict=True)),
+                "probability_kind": first["probability_kind"],
+                "calibration_sample_size": first["probability_sample_count"],
+                "evaluation_item_count": first["evaluation_item_count"],
+                "probability_sample_count": first["probability_sample_count"],
+                "missing_probability_count": first["missing_probability_count"],
+                "weighted_evaluation_item_count": first[
+                    "weighted_evaluation_item_count"
+                ],
+                "weighted_probability_sample_count": first[
+                    "weighted_probability_sample_count"
+                ],
+                "weighted_probability_coverage": first["weighted_probability_coverage"],
+                "reliability_bin_count": selected.height,
+                "expected_calibration_error": (
+                    float(sum(contributions)) if contributions else None
+                ),
+                "confidence_level": first["confidence_level"],
+                "confidence_interval_method": first["confidence_interval_method"],
+            }
+        )
+    return summaries
 
 
 def _publication_markdown(payload: Mapping[str, object]) -> str:
@@ -1265,6 +1447,14 @@ def _publication_markdown(payload: Mapping[str, object]) -> str:
         f"- Report fingerprint: `{payload['report_fingerprint']}`",
         f"- Metric rows: `{payload['metric_row_count']}`",
         f"- Margin rows: `{payload['margin_row_count']}`",
+        (
+            "- Calibration reliability rows: "
+            f"`{payload['calibration_reliability_row_count']}`"
+        ),
+        (
+            "- Threshold operating-point rows: "
+            f"`{payload['threshold_operating_point_row_count']}`"
+        ),
     ]
     for evaluation_set, metrics in sorted(overall.items()):
         assert isinstance(metrics, Mapping)
@@ -1287,6 +1477,19 @@ def _publication_markdown(payload: Mapping[str, object]) -> str:
             reason = entry.get("undefined_reason")
             display = value if value is not None else f"undefined ({reason})"
             lines.append(f"- {name}: `{display}`")
+    calibration_reports = payload.get("calibration_reports")
+    if isinstance(calibration_reports, list):
+        lines.extend(["", "## Calibration provenance", ""])
+        for entry in calibration_reports:
+            if not isinstance(entry, Mapping):
+                continue
+            lines.append(
+                "- "
+                f"{entry.get('evaluation_set')} / {entry.get('calibration_method')}: "
+                f"n={entry.get('probability_sample_count')}, "
+                f"split={entry.get('calibration_split_fingerprint')}, "
+                f"ECE={entry.get('expected_calibration_error')}"
+            )
     return "\n".join([*lines, ""])
 
 
@@ -1332,9 +1535,13 @@ def _zero_reason(denominator: float) -> str | None:
 __all__ = [
     "EVALUATION_SET_VALUES",
     "STRATIFICATION_FIELDS",
+    "TARGET_CALIBRATION_RELIABILITY_FILE",
+    "TARGET_CALIBRATION_RELIABILITY_SCHEMA",
     "TARGET_MARGIN_DISTRIBUTION_FILE",
     "TARGET_MARGIN_DISTRIBUTION_SCHEMA",
     "TARGET_MARGIN_DISTRIBUTION_SCHEMA_VERSION",
+    "TARGET_THRESHOLD_OPERATING_POINTS_FILE",
+    "TARGET_THRESHOLD_OPERATING_POINT_SCHEMA",
     "TARGET_VERIFICATION_EVALUATION_SCHEMA",
     "TARGET_VERIFICATION_EVALUATION_SCHEMA_VERSION",
     "TARGET_VERIFICATION_METRIC_SCHEMA",
