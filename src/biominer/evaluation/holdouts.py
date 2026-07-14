@@ -19,6 +19,11 @@ from uuid import uuid4
 import polars as pl
 
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
+from biominer.evaluation.leakage import (
+    EVALUATION_LEAKAGE_REGISTER_FILE,
+    EvaluationLeakageAudit,
+    validate_reference_and_holdout_leakage,
+)
 from biominer.evaluation.labels import (
     normalize_reviewed_label_frame,
     validate_reviewed_label_frame,
@@ -34,7 +39,7 @@ from biominer.storage.parquet import write_parquet
 NATURAL_STREAM_SELECTION_SCHEMA_VERSION = "natural-stream-selection-v1.0.0"
 FROZEN_EVALUATION_HOLDOUT_SCHEMA_VERSION = "frozen-evaluation-holdout-v1.0.0"
 FROZEN_EVALUATION_HOLDOUT_REPORT_SCHEMA_VERSION = (
-    "frozen-evaluation-holdout-report-v1.0.0"
+    "frozen-evaluation-holdout-report-v1.1.0"
 )
 
 NATURAL_STREAM_SELECTION_FILE = "natural_stream_selection.parquet"
@@ -289,6 +294,7 @@ class FrozenEvaluationHoldoutPublication:
     output_dir: Path
     balanced_challenge_path: Path
     natural_stream_path: Path
+    leakage_register_path: Path
     report_json_path: Path
     report_markdown_path: Path
     report: Mapping[str, Any]
@@ -829,12 +835,17 @@ def publish_frozen_evaluation_holdouts(
     natural_stream: pl.DataFrame,
     output_dir: str | Path,
     *,
+    leakage_register: pl.DataFrame,
     run_id: str | None = None,
 ) -> FrozenEvaluationHoldoutPublication:
     """Atomically publish both immutable holdouts plus compact reports."""
 
     started_at = datetime.now(UTC)
-    validate_evaluation_holdouts_disjoint(balanced_challenge, natural_stream)
+    leakage_audit = validate_reference_and_holdout_leakage(
+        leakage_register,
+        balanced_challenge,
+        natural_stream,
+    )
     effective_run_id = _required_text(
         run_id
         or "evaluation-holdouts-"
@@ -866,12 +877,19 @@ def publish_frozen_evaluation_holdouts(
             staging / NATURAL_STREAM_HOLDOUT_FILE,
             overwrite=False,
         )
+        leakage_staged = write_parquet(
+            leakage_register,
+            staging / EVALUATION_LEAKAGE_REGISTER_FILE,
+            overwrite=False,
+        )
         ended_at = datetime.now(UTC)
         report = _holdout_publication_report(
             balanced_challenge,
             natural_stream,
             challenge_path=challenge_staged,
             natural_path=natural_staged,
+            leakage_path=leakage_staged,
+            leakage_audit=leakage_audit,
             run_id=effective_run_id,
             started_at=started_at,
             ended_at=ended_at,
@@ -891,13 +909,21 @@ def publish_frozen_evaluation_holdouts(
         raise
     challenge_path = destination / BALANCED_CHALLENGE_HOLDOUT_FILE
     natural_path = destination / NATURAL_STREAM_HOLDOUT_FILE
+    leakage_path = destination / EVALUATION_LEAKAGE_REGISTER_FILE
     loaded_challenge = pl.read_parquet(challenge_path)
     loaded_natural = pl.read_parquet(natural_path)
-    validate_evaluation_holdouts_disjoint(loaded_challenge, loaded_natural)
+    loaded_leakage = pl.read_parquet(leakage_path)
+    validate_reference_and_holdout_leakage(
+        loaded_leakage,
+        loaded_challenge,
+        loaded_natural,
+    )
     if not balanced_challenge.equals(loaded_challenge):
         raise ValueError("balanced challenge Parquet round-trip mismatch")
     if not natural_stream.equals(loaded_natural):
         raise ValueError("natural-stream Parquet round-trip mismatch")
+    if not leakage_register.equals(loaded_leakage):
+        raise ValueError("evaluation leakage register Parquet round-trip mismatch")
     _log_event(
         "frozen_evaluation_holdouts_publish_completed",
         command="evaluation.publish_frozen_holdouts",
@@ -905,12 +931,14 @@ def publish_frozen_evaluation_holdouts(
         output_dir=str(destination),
         challenge_rows=balanced_challenge.height,
         natural_rows=natural_stream.height,
+        leakage_register_fingerprint=leakage_audit.register_fingerprint,
         ended_at=ended_at.isoformat(),
     )
     return FrozenEvaluationHoldoutPublication(
         output_dir=destination,
         balanced_challenge_path=challenge_path,
         natural_stream_path=natural_path,
+        leakage_register_path=leakage_path,
         report_json_path=destination / FROZEN_EVALUATION_HOLDOUT_REPORT_FILE,
         report_markdown_path=(
             destination / FROZEN_EVALUATION_HOLDOUT_REPORT_MARKDOWN_FILE
@@ -1343,6 +1371,8 @@ def _holdout_publication_report(
     *,
     challenge_path: Path,
     natural_path: Path,
+    leakage_path: Path,
+    leakage_audit: EvaluationLeakageAudit,
     run_id: str,
     started_at: datetime,
     ended_at: datetime,
@@ -1364,6 +1394,17 @@ def _holdout_publication_report(
         "balanced_counts_by_class": _counts(challenge["evaluation_class"]),
         "natural_counts_by_class": _counts(natural["evaluation_class"]),
         "natural_weight_sum": float(natural["sampling_weight"].sum()),
+        "leakage_validation": {
+            "status": "passed",
+            "register_fingerprint": leakage_audit.register_fingerprint,
+            "register_item_count": leakage_audit.register_item_count,
+            "reference_item_count": leakage_audit.reference_item_count,
+            "balanced_challenge_item_count": (
+                leakage_audit.balanced_challenge_item_count
+            ),
+            "natural_stream_item_count": leakage_audit.natural_stream_item_count,
+            "coverage_by_dimension": dict(leakage_audit.coverage_by_dimension),
+        },
         "artifacts": {
             "balanced_challenge": {
                 "path": str(final_output_dir / challenge_path.name),
@@ -1376,6 +1417,12 @@ def _holdout_publication_report(
                 "byte_count": natural_path.stat().st_size,
                 "row_count": natural.height,
                 "sha256": _file_sha256(natural_path),
+            },
+            "leakage_register": {
+                "path": str(final_output_dir / leakage_path.name),
+                "byte_count": leakage_path.stat().st_size,
+                "row_count": leakage_audit.register_item_count,
+                "sha256": _file_sha256(leakage_path),
             },
         },
     }
@@ -1391,6 +1438,9 @@ def _holdout_report_markdown(report: Mapping[str, Any]) -> str:
             f"- Balanced challenge rows: `{report['balanced_challenge_rows']}`",
             f"- Natural-stream rows: `{report['natural_stream_rows']}`",
             f"- Natural-stream weight sum: `{report['natural_weight_sum']}`",
+            f"- Leakage validation: `{report['leakage_validation']['status']}`",
+            "- Leakage register: "
+            f"`{report['leakage_validation']['register_fingerprint']}`",
             "",
         ]
     )

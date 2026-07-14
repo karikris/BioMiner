@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -7,6 +8,15 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
+from biominer.evaluation.leakage import (
+    BALANCED_CHALLENGE_ARTIFACT_KIND,
+    BALANCED_CHALLENGE_PARTITION,
+    EVALUATION_LEAKAGE_REGISTER_FILE,
+    NATURAL_STREAM_ARTIFACT_KIND,
+    NATURAL_STREAM_PARTITION,
+    EvaluationLeakageIdentity,
+    build_evaluation_leakage_register,
+)
 from biominer.evaluation.holdouts import (
     BALANCED_CHALLENGE_CATEGORIES,
     BALANCED_CHALLENGE_HOLDOUT_FILE,
@@ -233,44 +243,21 @@ def test_natural_selection_cannot_depend_on_reviewed_outcomes() -> None:
 def test_publish_frozen_holdouts_is_disjoint_immutable_and_audited(
     tmp_path: Path,
 ) -> None:
-    challenge_sampling, challenge_labels = _challenge_inputs(per_category=1)
-    natural_sampling = _natural_sampling_frame(prefix="natural")
-    sampling = pl.concat(
-        [challenge_sampling, natural_sampling], how="vertical"
-    ).with_columns(
-        pl.int_range(1, pl.len() + 1, dtype=pl.UInt32).alias("sampling_rank")
-    )
-    config = _config(challenge_per_category=1, natural_sample_size=4)
-    challenge = build_balanced_challenge_holdout(
-        sampling,
-        challenge_labels,
-        config,
-    )
-    selection = select_natural_stream_candidates(
-        sampling,
-        config,
-        additionally_excluded_sampling_unit_ids=set(
-            challenge["sampling_unit_id"].to_list()
-        ),
-    )
-    natural_labels = _labels_for_selection(sampling, selection)
-    natural = freeze_natural_stream_holdout(
-        sampling,
-        selection,
-        natural_labels,
-        config,
-    )
+    challenge, natural = _frozen_holdout_pair()
+    leakage_register = _leakage_register(challenge, natural)
 
     validate_evaluation_holdouts_disjoint(challenge, natural)
     publication = publish_frozen_evaluation_holdouts(
         challenge,
         natural,
         tmp_path / "frozen",
+        leakage_register=leakage_register,
         run_id="frozen-holdout-test",
     )
 
     assert publication.balanced_challenge_path.name == BALANCED_CHALLENGE_HOLDOUT_FILE
     assert publication.natural_stream_path.name == NATURAL_STREAM_HOLDOUT_FILE
+    assert publication.leakage_register_path.name == EVALUATION_LEAKAGE_REGISTER_FILE
     assert publication.report_json_path.name == FROZEN_EVALUATION_HOLDOUT_REPORT_FILE
     assert (
         publication.report_markdown_path.name
@@ -280,6 +267,8 @@ def test_publish_frozen_holdouts_is_disjoint_immutable_and_audited(
     assert report["balanced_challenge_rows"] == 7
     assert report["natural_stream_rows"] == 4
     assert report["natural_weight_sum"] == pytest.approx(10.0)
+    assert report["leakage_validation"]["status"] == "passed"
+    assert report["leakage_validation"]["register_item_count"] == 12
     assert report["artifacts"]["balanced_challenge"]["sha256"].startswith("sha256:")
     assert report["artifacts"]["natural_stream"]["sha256"].startswith("sha256:")
     with pytest.raises(FileExistsError):
@@ -287,6 +276,7 @@ def test_publish_frozen_holdouts_is_disjoint_immutable_and_audited(
             challenge,
             natural,
             publication.output_dir,
+            leakage_register=leakage_register,
         )
 
 
@@ -474,7 +464,7 @@ def _label_row(
         "source": "flickr",
         "flickr_photo_id": photo_id,
         "detection_id": f"detection:{photo_id}",
-        "crop_hash": f"sha256:crop:{photo_id}",
+        "crop_hash": _sha(f"crop:{photo_id}"),
         "label_level": "species",
         "is_butterfly": True,
         "accepted_taxon_key": TARGET,
@@ -561,3 +551,92 @@ def _label_row(
     elif category != "verified_target":
         raise ValueError(f"unsupported fixture category: {category}")
     return row
+
+
+def _frozen_holdout_pair() -> tuple[pl.DataFrame, pl.DataFrame]:
+    challenge_sampling, challenge_labels = _challenge_inputs(per_category=1)
+    natural_sampling = _natural_sampling_frame(prefix="natural")
+    sampling = pl.concat(
+        [challenge_sampling, natural_sampling], how="vertical"
+    ).with_columns(
+        pl.int_range(1, pl.len() + 1, dtype=pl.UInt32).alias("sampling_rank")
+    )
+    config = _config(challenge_per_category=1, natural_sample_size=4)
+    challenge = build_balanced_challenge_holdout(
+        sampling,
+        challenge_labels,
+        config,
+    )
+    selection = select_natural_stream_candidates(
+        sampling,
+        config,
+        additionally_excluded_sampling_unit_ids=set(
+            challenge["sampling_unit_id"].to_list()
+        ),
+    )
+    natural_labels = _labels_for_selection(sampling, selection)
+    natural = freeze_natural_stream_holdout(
+        sampling,
+        selection,
+        natural_labels,
+        config,
+    )
+    return challenge, natural
+
+
+def _leakage_register(
+    challenge: pl.DataFrame,
+    natural: pl.DataFrame,
+) -> pl.DataFrame:
+    identities = [
+        EvaluationLeakageIdentity(
+            item_id="reference:support:1",
+            partition="support_train",
+            source_artifact_kind="dataset_split_manifest",
+            source_artifact_fingerprint=_sha("reference-split"),
+            source="gbif",
+            source_observation_id="gbif-observation:1",
+            visual_content_sha256=_sha("reference-content:1"),
+            perceptual_duplicate_group_id="perceptual:reference:1",
+            duplicate_group_id="duplicate:reference:1",
+            photographer_id="photographer:reference:1",
+            provider_mirror_group_id="mirror:reference:1",
+            geographic_burst_group_id="burst:reference:1",
+        )
+    ]
+    for frame, partition, artifact_kind in (
+        (
+            challenge,
+            BALANCED_CHALLENGE_PARTITION,
+            BALANCED_CHALLENGE_ARTIFACT_KIND,
+        ),
+        (natural, NATURAL_STREAM_PARTITION, NATURAL_STREAM_ARTIFACT_KIND),
+    ):
+        artifact_fingerprint = str(frame["holdout_fingerprint"][0])
+        identities.extend(
+            EvaluationLeakageIdentity(
+                item_id=str(row["evaluation_item_id"]),
+                partition=partition,
+                source_artifact_kind=artifact_kind,
+                source_artifact_fingerprint=artifact_fingerprint,
+                source=str(row["source"]),
+                source_observation_id=str(row["flickr_photo_id"]),
+                visual_content_sha256=str(row["crop_hash"]),
+                perceptual_duplicate_group_id=(f"perceptual:{row['flickr_photo_id']}"),
+                duplicate_group_id=row["duplicate_group_id"],
+                observer_owner_group_id=row["observer_owner_group_id"],
+                photographer_id=f"photographer:{row['flickr_photo_id']}",
+                flickr_owner_id=f"flickr-owner:{row['flickr_photo_id']}",
+                provider_mirror_group_id=f"mirror:{row['flickr_photo_id']}",
+                geographic_burst_group_id=f"burst:{row['flickr_photo_id']}",
+            )
+            for row in frame.iter_rows(named=True)
+        )
+    return build_evaluation_leakage_register(
+        identities,
+        register_version="papilio-demoleus-leakage-v1",
+    )
+
+
+def _sha(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
