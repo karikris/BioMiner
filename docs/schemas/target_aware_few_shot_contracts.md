@@ -1455,7 +1455,11 @@ Binary and larval target-verifier labels are target key versus
 domain uses the reviewed domain label. BioCLIP remains frozen. sklearn and
 NumPy are imported lazily only when training begins, preserving registry-only
 installations. Task 8.4 returns in-memory fitted pipelines and transparent
-training metadata only; executable serialization is not supported.
+training metadata. `write_frozen_classifier` is the only supported Task 8.5
+persistence boundary: it extracts a fitted logistic-regression or `LinearSVC`
+candidate's numeric state and never serializes the pipeline or estimator
+object. RBF pilot candidates remain in-memory comparison evidence and cannot
+be persisted as linear artifacts.
 
 ### 7.2 `dataset_split_manifest.parquet`
 
@@ -1496,6 +1500,18 @@ pickles, executable code, or embedded authoritative JSON. Readers use
 `allow_pickle=False`, validate the exact key set/dtypes/shapes/checksums, and map
 numeric class indices through the JSON manifest. Pickle and joblib artifacts are
 not supported.
+
+The implementation writes little-endian Float64 coefficients, intercepts,
+imputation statistics, scaler means/scales/variances, and little-endian Int64
+class indices. Archive members are uncompressed NPY payloads with deterministic
+names and timestamps. The canonical manifest is published last into a newly
+created immutable directory. `load_frozen_classifier` rejects extra files,
+symlinks, duplicate JSON keys, non-canonical JSON, oversized archives, duplicate
+or compressed ZIP members, object arrays, unknown keys, non-finite values,
+incorrect class order, and every checksum, dtype, shape, feature-layout, or
+parent-fingerprint mismatch before returning a non-sklearn linear decision
+function. Structured inputs apply only the persisted median and standard-scaler
+statistics; embeddings and fixed indicator columns pass through unchanged.
 
 ### 7.4 `calibration_artifacts.json`, `calibration_arrays.npz`, and report
 

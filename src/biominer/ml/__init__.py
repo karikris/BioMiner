@@ -20,6 +20,8 @@ from biominer.ml.classifiers import (
     ClassifierTrainingRun,
     GroupFoldAudit,
     HyperparameterScore,
+    classifier_feature_layout,
+    materialize_classifier_feature_matrix,
     train_frozen_embedding_classifiers,
 )
 from biominer.ml.nonparametric import (
@@ -36,6 +38,18 @@ from biominer.ml.nonparametric import (
     NonparametricClassScore,
     NonparametricNeighbor,
     NonparametricPrediction,
+)
+from biominer.ml.persistence import (
+    CLASSIFIER_ARRAYS_FILE,
+    CLASSIFIER_MANIFEST_FILE,
+    CLASSIFIER_MANIFEST_SCHEMA_VERSION,
+    CLASSIFIER_QA_STATUS,
+    CLASSIFIER_VALIDATION_POLICY,
+    CLASSIFIER_VERSION,
+    ClassifierArtifactPaths,
+    FrozenLinearClassifier,
+    load_frozen_classifier,
+    write_frozen_classifier,
 )
 from biominer.ml.training_features import (
     CATEGORICAL_MODEL_FEATURE_COLUMNS,
@@ -63,8 +77,14 @@ from biominer.ml.training_features import (
 
 __all__ = [
     "CATEGORICAL_MODEL_FEATURE_COLUMNS",
+    "CLASSIFIER_ARRAYS_FILE",
+    "CLASSIFIER_MANIFEST_FILE",
+    "CLASSIFIER_MANIFEST_SCHEMA_VERSION",
+    "CLASSIFIER_QA_STATUS",
     "CLASSIFIER_SEARCH_GRID_VERSION",
     "CLASSIFIER_TRAINING_VERSION",
+    "CLASSIFIER_VALIDATION_POLICY",
+    "CLASSIFIER_VERSION",
     "DEFAULT_CLASSIFIER_MODELS",
     "DEFAULT_RBF_MAX_FIT_SAMPLES",
     "EMBEDDING_ONLY_FEATURE_SET",
@@ -86,6 +106,7 @@ __all__ = [
     "SCORE_KIND_NEIGHBOR_VOTE_FRACTION",
     "TOP_K_NEAREST_NEIGHBORS_METHOD",
     "ClassificationMetrics",
+    "ClassifierArtifactPaths",
     "ClassifierCandidateResult",
     "ClassifierFeatureLayout",
     "ClassifierTrainingConfig",
@@ -93,6 +114,7 @@ __all__ = [
     "DetectionQualityFeatures",
     "FewShotTrainingExample",
     "FrozenEmbeddingFeatures",
+    "FrozenLinearClassifier",
     "GeographicEvidenceFeatures",
     "GroupFoldAudit",
     "HyperparameterScore",
@@ -110,10 +132,14 @@ __all__ = [
     "TrainingLabel",
     "TrainingProvenance",
     "build_few_shot_training_features",
+    "classifier_feature_layout",
     "feature_schema_fingerprint",
     "few_shot_training_features_schema",
     "load_few_shot_training_features",
+    "load_frozen_classifier",
+    "materialize_classifier_feature_matrix",
     "train_frozen_embedding_classifiers",
     "validate_few_shot_training_features",
     "write_few_shot_training_features",
+    "write_frozen_classifier",
 ]

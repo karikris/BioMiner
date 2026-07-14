@@ -840,6 +840,34 @@ def _feature_layout(
     )
 
 
+def classifier_feature_layout(
+    feature_set: str,
+    embedding_dimension: int,
+) -> ClassifierFeatureLayout:
+    """Return the versioned, exact numeric layout for classifier inputs."""
+
+    return _feature_layout(feature_set, embedding_dimension)
+
+
+def materialize_classifier_feature_matrix(
+    frame: pl.DataFrame,
+    layout: ClassifierFeatureLayout,
+) -> Any:
+    """Materialize raw float64 features without importing scikit-learn."""
+
+    if not isinstance(frame, pl.DataFrame):
+        raise TypeError("frame must be a polars DataFrame")
+    if not isinstance(layout, ClassifierFeatureLayout):
+        raise TypeError("layout must be a ClassifierFeatureLayout")
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover - optional dependency guard.
+        raise RuntimeError(
+            "classifier feature materialization requires the 'ml' dependency group"
+        ) from exc
+    return _feature_matrix(frame, layout=layout, np=np)
+
+
 def _feature_matrix(
     frame: pl.DataFrame,
     *,
@@ -872,6 +900,8 @@ def _feature_matrix(
         if len(values) != len(layout.raw_feature_names):
             raise AssertionError("classifier feature matrix width mismatch")
         rows.append(values)
+    if not rows:
+        return np.empty((0, len(layout.raw_feature_names)), dtype=np.float64)
     return np.asarray(rows, dtype=np.float64)
 
 
@@ -1515,5 +1545,7 @@ __all__ = [
     "ClassifierTrainingRun",
     "GroupFoldAudit",
     "HyperparameterScore",
+    "classifier_feature_layout",
+    "materialize_classifier_feature_matrix",
     "train_frozen_embedding_classifiers",
 ]
