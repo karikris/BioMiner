@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import logging
 from threading import Event
 from time import sleep
 
 import httpx
 import polars as pl
+import pytest
 
 from biominer.bioclip.object_runner import empty_object_score_frame
 from biominer.storage.parquet import write_parquet
@@ -329,11 +331,17 @@ def test_rolling_worker_emits_throughput_queue_cleanup_and_retry_metrics() -> No
             metrics={"bioclip_batch_retries": 3},
         )
 
+    score_stage.cache_metrics = {  # type: ignore[attr-defined]
+        "bioclip_model_loads": 1,
+        "bioclip_model_cache_hits": 3,
+    }
+
     def commit_stage(batch: ScoreBatch) -> CommitResult:
         return CommitResult(
             batch_id=batch.score_input_batch.detection_batch.image_batch.batch_id,
             part_outputs={},
             cleanup_paths_deleted=4,
+            checkpointed_parquet_shards=6,
         )
 
     worker = RollingVisionWorker(
@@ -360,6 +368,9 @@ def test_rolling_worker_emits_throughput_queue_cleanup_and_retry_metrics() -> No
     assert result.metrics["detection_rows_per_image"] == 1.0
     assert result.metrics["bioclip_score_inputs_per_image"] == 1.0
     assert result.metrics["cleanup_paths_deleted"] == 4
+    assert result.metrics["checkpointed_parquet_shards"] == 6
+    assert result.metrics["bioclip_model_loads"] == 1
+    assert result.metrics["bioclip_model_cache_hits"] == 3
     assert result.metrics["detector_batch_retries"] == 2
     assert result.metrics["bioclip_batch_retries"] == 3
     assert result.metrics["adaptive_retry_count"] == 5
@@ -412,7 +423,62 @@ def test_commit_worker_deletes_cached_images_and_score_inputs_only_after_outputs
     assert Path(result.part_outputs["canonical_source_records"]).exists()
     assert Path(result.part_outputs["object_evidence_joined"]).exists()
     assert Path(result.part_outputs["photo_evidence_summary"]).exists()
+    checkpoint_path = Path(result.part_outputs["commit_checkpoint"])
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert checkpoint["schema_version"] == "rolling-vision-commit-checkpoint-v1"
+    assert checkpoint["parquet_shard_count"] == 6
+    assert all(Path(row["path"]).exists() for row in checkpoint["parquet_shards"])
+    assert result.checkpoint_path == str(checkpoint_path)
+    assert result.checkpointed_parquet_shards == 6
+    assert result.metrics["checkpointed_parquet_shards"] == 6
     assert result.cleanup_paths_deleted == 2
+
+
+def test_commit_worker_checkpoint_failure_preserves_retryable_inputs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # noqa: ANN001 - pytest fixture.
+    cached_image = tmp_path / "cached" / "photo.jpg"
+    cached_image.parent.mkdir(parents=True)
+    cached_image.write_bytes(b"cached-image")
+    score_input_dir = tmp_path / "score-inputs"
+    score_input_dir.mkdir()
+    (score_input_dir / "input.ppm").write_bytes(
+        b"P6\n1 1\n255\n\x00\x00\x00"
+    )
+    image_batch = ImageBatch(
+        batch_index=0,
+        batch_id="vision-batch-000000",
+        part_id="part-000000",
+        records=canonical_records(),
+        cached_image_paths=(cached_image,),
+    )
+    score_batch = ScoreBatch(
+        score_input_batch=ScoreInputBatch(
+            detection_batch=DetectionBatch(
+                image_batch=image_batch,
+                frame=object_detections(),
+            ),
+            frame=pl.DataFrame([{"detection_id": "det-1"}]),
+            temp_dir=score_input_dir,
+        ),
+        frame=empty_object_score_frame(),
+    )
+
+    def fail_checkpoint(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise OSError("checkpoint unavailable")
+
+    monkeypatch.setattr(
+        rolling_worker_module,
+        "_write_commit_checkpoint",
+        fail_checkpoint,
+    )
+
+    with pytest.raises(OSError, match="checkpoint unavailable"):
+        CommitWorker(output_dir=tmp_path / "rolling")(score_batch)
+
+    assert cached_image.exists()
+    assert score_input_dir.exists()
 
 
 def test_commit_worker_failure_preserves_retryable_inputs(tmp_path: Path) -> None:

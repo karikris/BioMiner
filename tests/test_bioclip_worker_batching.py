@@ -295,6 +295,18 @@ def test_persistent_worker_keys_text_only_model_by_resize_mode_and_reports_it(
         "shortest",
         "longest",
     ]
+    responses = [
+        payload for payload in payloads if "text_embeddings" in payload
+    ]
+    assert [payload["model_cache_hit"] for payload in responses] == [
+        False,
+        True,
+        False,
+    ]
+    assert responses[-1]["worker_request_count"] == 3
+    assert responses[-1]["model_load_count"] == 2
+    assert responses[-1]["model_cache_hit_count"] == 1
+    assert responses[-1]["model_refresh_count"] == 1
 
 
 def test_persistent_worker_probe_loads_once_and_returns_full_metadata(

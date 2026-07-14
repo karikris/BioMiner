@@ -445,9 +445,24 @@ def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_uses_auto_devic
     class FakeStdout:
         def __init__(self) -> None:
             metadata = _image_embedding_worker_metadata()
+            first_progress = {
+                "worker_request_count": 1,
+                "model_load_count": 1,
+                "model_cache_hit_count": 0,
+                "model_refresh_count": 0,
+                "model_cache_hit": False,
+            }
+            second_progress = {
+                "worker_request_count": 2,
+                "model_load_count": 1,
+                "model_cache_hit_count": 1,
+                "model_refresh_count": 0,
+                "model_cache_hit": True,
+            }
             self.lines = iter(
                 [
-                    json.dumps({"ready": True, **metadata}) + "\n",
+                    json.dumps({"ready": True, **metadata, **first_progress})
+                    + "\n",
                     json.dumps(
                         {
                             "scores_by_image": [
@@ -455,6 +470,7 @@ def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_uses_auto_devic
                                 {"a photo of Papilio demoleus": 0.98},
                             ],
                             **metadata,
+                            **first_progress,
                         }
                     )
                     + "\n",
@@ -464,6 +480,7 @@ def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_uses_auto_devic
                                 {"a photo of Papilio demoleus": 0.96}
                             ],
                             **metadata,
+                            **second_progress,
                         }
                     )
                     + "\n",
@@ -526,6 +543,15 @@ def test_persistent_bioclip_scorer_reuses_worker_for_batches_and_uses_auto_devic
     assert '"preprocess_workers": 4' in writes[1]
     assert '"shutdown": true' in writes[-1]
     assert processes[0].waited is True
+    assert scorer.cache_metrics == {
+        "bioclip_worker_process_starts": 1,
+        "bioclip_worker_requests": 2,
+        "bioclip_model_loads": 1,
+        "bioclip_model_cache_hits": 1,
+        "bioclip_model_refreshes": 0,
+        "bioclip_model_cache_hit_rate": 0.5,
+        "bioclip_last_request_cache_hit": True,
+    }
 
 
 def test_persistent_bioclip_scorer_reuses_worker_for_label_sets() -> None:

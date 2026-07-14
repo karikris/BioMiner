@@ -536,6 +536,15 @@ class PersistentBioClipScorer:
         self.preprocessing_fingerprint: str | None = None
         self.last_image_content_hashes: list[str] | None = None
         self._pinned_reference_model_identity: dict[str, str] | None = None
+        self.worker_process_starts = 0
+        self.worker_request_count = 0
+        self.model_load_count = 0
+        self.model_cache_hit_count = 0
+        self.model_refresh_count = 0
+        self.last_model_cache_hit: bool | None = None
+        self._completed_worker_requests = 0
+        self._lifetime_model_loads = 0
+        self._lifetime_model_cache_hits = 0
 
     @property
     def model_id(self) -> str:
@@ -544,6 +553,28 @@ class PersistentBioClipScorer:
     @property
     def model_revision(self) -> str:
         return self.runtime.model.checkpoint
+
+    @property
+    def cache_metrics(self) -> dict[str, int | float | bool | None]:
+        cache_decisions = (
+            self._lifetime_model_loads + self._lifetime_model_cache_hits
+        )
+        return {
+            "bioclip_worker_process_starts": self.worker_process_starts,
+            "bioclip_worker_requests": self._completed_worker_requests,
+            "bioclip_model_loads": self._lifetime_model_loads,
+            "bioclip_model_cache_hits": self._lifetime_model_cache_hits,
+            "bioclip_model_refreshes": max(
+                0,
+                self._lifetime_model_loads - self.worker_process_starts,
+            ),
+            "bioclip_model_cache_hit_rate": (
+                round(self._lifetime_model_cache_hits / cache_decisions, 6)
+                if cache_decisions
+                else 0.0
+            ),
+            "bioclip_last_request_cache_hit": self.last_model_cache_hit,
+        }
 
     def __enter__(self) -> "PersistentBioClipScorer":
         return self
@@ -761,12 +792,56 @@ class PersistentBioClipScorer:
                 ready_seen = True
                 continue
             if any(field in payload for field in response_fields):
+                self._record_completed_request_cache_metrics(
+                    payload,
+                    ready_seen=ready_seen,
+                )
                 return payload
             raise RuntimeError(
                 f"BioCLIP worker response did not include {response_description}"
             )
 
+    def _record_completed_request_cache_metrics(
+        self,
+        payload: Mapping[str, object],
+        *,
+        ready_seen: bool,
+    ) -> None:
+        cache_hit = payload.get("model_cache_hit")
+        if cache_hit is None:
+            cache_hit = not ready_seen
+        if not isinstance(cache_hit, bool):
+            raise RuntimeError("BioCLIP worker model_cache_hit must be a boolean")
+        self._completed_worker_requests += 1
+        if cache_hit:
+            self._lifetime_model_cache_hits += 1
+        else:
+            self._lifetime_model_loads += 1
+        self.last_model_cache_hit = cache_hit
+
     def _record_worker_metadata(self, payload: Mapping[str, object]) -> None:
+        progress_fields = (
+            ("worker_request_count", "worker_request_count"),
+            ("model_load_count", "model_load_count"),
+            ("model_cache_hit_count", "model_cache_hit_count"),
+            ("model_refresh_count", "model_refresh_count"),
+        )
+        for payload_field, attribute in progress_fields:
+            if payload_field not in payload:
+                continue
+            value = payload[payload_field]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise RuntimeError(
+                    f"BioCLIP worker {payload_field} must be a non-negative integer"
+                )
+            setattr(self, attribute, value)
+        if "model_cache_hit" in payload:
+            model_cache_hit = payload["model_cache_hit"]
+            if not isinstance(model_cache_hit, bool):
+                raise RuntimeError(
+                    "BioCLIP worker model_cache_hit must be a boolean"
+                )
+            self.last_model_cache_hit = model_cache_hit
         if "device" in payload:
             self.device = str(payload.get("device") or "")
             self.gpu_name = str(payload.get("gpu_name") or "")
@@ -1010,6 +1085,7 @@ class PersistentBioClipScorer:
                 bufsize=1,
             )
             self._process = process
+            self.worker_process_starts += 1
             self._stdin = process.stdin
             self._stdout = process.stdout
             if process.stdin is None or process.stdout is None:

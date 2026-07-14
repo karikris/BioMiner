@@ -322,6 +322,15 @@ class EphemeralCropBioClipScorer:
         self._debug_crops_written = 0
         self._segmenter = segmenter or NoneSegmenter()
 
+    @property
+    def cache_metrics(self) -> dict[str, object]:
+        metrics = getattr(self._scorer, "cache_metrics", {})
+        if callable(metrics):
+            metrics = metrics()
+        if not isinstance(metrics, Mapping):
+            raise TypeError("BioCLIP scorer cache_metrics must be a mapping")
+        return {str(key): value for key, value in metrics.items()}
+
     def bind_reference_readiness(
         self,
         permit: ReferenceBankReadinessPermit,

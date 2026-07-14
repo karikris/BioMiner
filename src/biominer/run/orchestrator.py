@@ -1302,6 +1302,10 @@ class ProductionRunOrchestrator:
                 accumulated_metrics[key] += int(batch_result.metrics.get(key, 0) or 0)
             accumulated_metrics["parquet_parts_written"] += commit_result.parts_written
             accumulated_metrics["parquet_parts_reused"] += commit_result.parts_reused
+            accumulated_metrics["checkpointed_parquet_shards"] = (
+                accumulated_metrics.get("checkpointed_parquet_shards", 0)
+                + commit_result.checkpointed_shards
+            )
             return commit_result
 
         try:
@@ -1325,6 +1329,7 @@ class ProductionRunOrchestrator:
             metrics={
                 **taxonomy_metrics,
                 **accumulated_metrics,
+                **_runtime_cache_metrics(self.object_scorer),
                 "rolling_vision_work_items_enqueued": plan_result.enqueued_work_items,
                 "duplicate_rolling_vision_work_items": plan_result.duplicate_work_items,
                 "rolling_vision_batches_planned": plan_result.batches_planned,
@@ -2362,6 +2367,15 @@ def _taxonomy_manifest_value(
     if value is None:
         value = manifest.get(aliases.get(key, ""))
     return str(value) if value is not None and str(value).strip() else None
+
+
+def _runtime_cache_metrics(resource: object) -> dict[str, object]:
+    metrics = getattr(resource, "cache_metrics", {})
+    if callable(metrics):
+        metrics = metrics()
+    if not isinstance(metrics, Mapping):
+        raise TypeError("vision runtime cache_metrics must be a mapping")
+    return {str(key): value for key, value in metrics.items()}
 
 
 def _first_non_blank_frame_value(frame: Any, column: str) -> str | None:

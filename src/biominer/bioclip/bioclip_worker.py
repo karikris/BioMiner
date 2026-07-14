@@ -166,12 +166,17 @@ def normalize_image_resize_mode(image_resize_mode: str | None) -> str | None:
 def run_persistent_worker() -> None:
     loaded: _LoadedBioClipModel | None = None
     loaded_key: tuple[str, str, str, str | None] | None = None
+    request_count = 0
+    model_load_count = 0
+    model_cache_hit_count = 0
+    model_refresh_count = 0
     try:
         for line in sys.stdin:
             try:
                 request = json.loads(line)
                 if request.get("shutdown"):
                     return
+                request_count += 1
                 configure_hf_cache_env(
                     Path(request.get("hf_cache_dir") or "data/cache/huggingface")
                 )
@@ -184,9 +189,11 @@ def run_persistent_worker() -> None:
                     device,
                     image_resize_mode,
                 )
-                if loaded is None or loaded_key != key:
+                model_cache_hit = loaded is not None and loaded_key == key
+                if not model_cache_hit:
                     if loaded is not None:
                         loaded.close()
+                        model_refresh_count += 1
                     loaded = _LoadedBioClipModel.load(
                         model_name=key[0],
                         checkpoint=key[1],
@@ -194,11 +201,23 @@ def run_persistent_worker() -> None:
                         image_resize_mode=key[3],
                     )
                     loaded_key = key
+                    model_load_count += 1
+                else:
+                    model_cache_hit_count += 1
+                progress = {
+                    "worker_request_count": request_count,
+                    "model_load_count": model_load_count,
+                    "model_cache_hit_count": model_cache_hit_count,
+                    "model_refresh_count": model_refresh_count,
+                    "model_cache_hit": model_cache_hit,
+                }
+                if not model_cache_hit:
                     print(
                         json.dumps(
                             {
                                 "ready": True,
                                 **loaded.worker_metadata,
+                                **progress,
                             },
                             sort_keys=True,
                         ),
@@ -210,6 +229,7 @@ def run_persistent_worker() -> None:
                             {
                                 "probed": True,
                                 **loaded.worker_metadata,
+                                **progress,
                             },
                             sort_keys=True,
                         ),
@@ -227,6 +247,7 @@ def run_persistent_worker() -> None:
                                 if embeddings
                                 else 0,
                                 **loaded.worker_metadata,
+                                **progress,
                             },
                             sort_keys=True,
                         ),
@@ -248,6 +269,7 @@ def run_persistent_worker() -> None:
                                 else 0,
                                 "image_content_hashes": image_content_hashes,
                                 **loaded.worker_metadata,
+                                **progress,
                             },
                             sort_keys=True,
                         ),
@@ -270,6 +292,7 @@ def run_persistent_worker() -> None:
                             {
                                 "scores_by_image_by_label_set": scores_by_image_by_label_set,
                                 **loaded.worker_metadata,
+                                **progress,
                             },
                             sort_keys=True,
                         ),
@@ -287,6 +310,7 @@ def run_persistent_worker() -> None:
                             {
                                 "scores": scores,
                                 **loaded.worker_metadata,
+                                **progress,
                             },
                             sort_keys=True,
                         ),
@@ -303,6 +327,7 @@ def run_persistent_worker() -> None:
                         {
                             "scores_by_image": scores_by_image,
                             **loaded.worker_metadata,
+                            **progress,
                         },
                         sort_keys=True,
                     ),

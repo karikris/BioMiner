@@ -316,6 +316,7 @@ def test_commit_rolling_vision_shards_writes_all_parts_before_registering_and_co
     assert [event.split(":", 1)[1] for event in workstore.events[:-1]] == list(ROLLING_VISION_ARTIFACT_ORDER)
     assert result.parts_written == len(ROLLING_VISION_ARTIFACT_ORDER)
     assert result.parts_reused == 0
+    assert result.checkpointed_shards == len(ROLLING_VISION_ARTIFACT_ORDER)
     assert set(result.output_uris) == set(ROLLING_VISION_ARTIFACT_ORDER)
     assert workstore.completed[0]["output_uri"] == result.output_uris["photo_evidence_summary"]
     assert {shard["stage"] for shard in workstore.shards} == set(ROLLING_VISION_ARTIFACT_STAGES.values())

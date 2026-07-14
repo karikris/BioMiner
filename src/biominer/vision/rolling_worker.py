@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+import hashlib
+import json
 import logging
 import os
 from pathlib import Path
@@ -105,6 +107,8 @@ class CommitResult:
     batch_id: str
     part_outputs: dict[str, str]
     cleanup_paths_deleted: int = 0
+    checkpoint_path: str | None = None
+    checkpointed_parquet_shards: int = 0
     metrics: dict[str, Any] = field(default_factory=dict)
 
 
@@ -352,11 +356,24 @@ class BioCLIPWorker:
         self.classification_mode = normalize_classification_mode(classification_mode)
         self.path_taxonomy_store = path_taxonomy_store
         self.taxonomy_text_embedding_index = taxonomy_text_embedding_index
+        self._batches_scored = 0
         if self.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
             if self.path_taxonomy_store is None or self.taxonomy_text_embedding_index is None:
                 raise ValueError(
                     "hierarchical BioCLIP worker requires path taxonomy and text embedding indexes"
                 )
+
+    @property
+    def cache_metrics(self) -> dict[str, object]:
+        metrics = getattr(self.scorer, "cache_metrics", {})
+        if callable(metrics):
+            metrics = metrics()
+        if not isinstance(metrics, dict):
+            raise TypeError("BioCLIP scorer cache_metrics must be a dictionary")
+        return {
+            "bioclip_worker_batches_scored": self._batches_scored,
+            **{str(key): value for key, value in metrics.items()},
+        }
 
     def __call__(self, batch: ScoreInputBatch) -> ScoreBatch:
         self.score_dir.mkdir(parents=True, exist_ok=True)
@@ -405,6 +422,7 @@ class BioCLIPWorker:
                 pending = _chunks(chunk, current_batch_size) + pending
         frame = _ensure_columns(pl.DataFrame(rows), OBJECT_SCORE_OUTPUT_SCHEMA) if rows else pl.DataFrame(schema=OBJECT_SCORE_OUTPUT_SCHEMA)
         output_path = write_parquet(frame, self.score_dir / f"{batch.detection_batch.image_batch.part_id}.parquet")
+        self._batches_scored += 1
         return ScoreBatch(
             score_input_batch=batch,
             frame=frame,
@@ -458,6 +476,20 @@ class CommitWorker:
             photo_summary_output_path=self.summary_dir / f"{image_batch.part_id}.parquet",
             species_context=self.species_context,
         )
+        parquet_outputs = {
+            "canonical_source_records": canonical_path,
+            "object_detections": detection_path,
+            "bioclip_score_inputs": score_input_path,
+            "object_bioclip_scores": score_path,
+            "object_evidence_joined": evidence_outputs.object_evidence_joined,
+            "photo_evidence_summary": evidence_outputs.photo_evidence_summary,
+        }
+        checkpoint_path = _write_commit_checkpoint(
+            self.output_dir / "checkpoints" / f"{image_batch.part_id}.json",
+            batch_id=image_batch.batch_id,
+            part_id=image_batch.part_id,
+            parquet_outputs=parquet_outputs,
+        )
         cleanup_deleted = 0
         if self.delete_images_after_commit:
             cleanup_deleted += _delete_paths(image_batch.cached_image_paths)
@@ -473,13 +505,17 @@ class CommitWorker:
                 "object_bioclip_scores": str(score_path),
                 "object_evidence_joined": str(evidence_outputs.object_evidence_joined),
                 "photo_evidence_summary": str(evidence_outputs.photo_evidence_summary),
+                "commit_checkpoint": str(checkpoint_path),
             },
             cleanup_paths_deleted=cleanup_deleted,
+            checkpoint_path=str(checkpoint_path),
+            checkpointed_parquet_shards=len(parquet_outputs),
             metrics={
                 **batch.score_input_batch.detection_batch.metrics,
                 **batch.score_input_batch.metrics,
                 **batch.metrics,
                 "cleanup_paths_deleted": cleanup_deleted,
+                "checkpointed_parquet_shards": len(parquet_outputs),
             },
         )
 
@@ -672,6 +708,10 @@ class RollingVisionWorker:
                     result = self._commit_stage(score_batch)  # type: ignore[arg-type]
                     metrics.add_stage_seconds("commit", perf_counter() - stage_start)
                     metrics.add_count("cleanup_paths_deleted", result.cleanup_paths_deleted)
+                    metrics.add_count(
+                        "checkpointed_parquet_shards",
+                        result.checkpointed_parquet_shards,
+                    )
                     committed.append(result)
                     stage_finished("commit", batch_id, rows=1)
             except BaseException as exc:  # noqa: BLE001
@@ -702,6 +742,7 @@ class RollingVisionWorker:
             raise first_error[0]
         ended_at = datetime.now(UTC).isoformat()
         metric_payload = metrics.to_dict(max_resident_image_batches=self.max_resident_image_batches)
+        model_cache_metrics = _model_cache_metrics(self._score_stage)
         logger.info(
             "vision_run_finished records=%d batches_seen=%d batches_committed=%d",
             records.height,
@@ -726,6 +767,7 @@ class RollingVisionWorker:
                 "bioclip_preprocess_workers": self.settings.bioclip_preprocess_workers,
                 "mps_fallback_enabled": os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK") == "1",
                 **metric_payload,
+                **model_cache_metrics,
             },
         )
 
@@ -795,6 +837,10 @@ class _RollingMetrics:
             "bioclip_inputs_per_sec": _rate(scored_inputs, self.stage_seconds.get("bioclip_scoring", 0.0)),
             "cache_resident_batch_count": max_resident_image_batches,
             "cleanup_paths_deleted": counts.get("cleanup_paths_deleted", 0),
+            "checkpointed_parquet_shards": counts.get(
+                "checkpointed_parquet_shards",
+                0,
+            ),
             "detector_batch_retries": detector_retries,
             "bioclip_batch_retries": bioclip_retries,
             "adaptive_retry_count": detector_retries + bioclip_retries,
@@ -806,6 +852,15 @@ def _rate(numerator: int | float, denominator: int | float) -> float:
     if denominator_value <= 0.0:
         return 0.0
     return round(float(numerator) / denominator_value, 6)
+
+
+def _model_cache_metrics(stage: object) -> dict[str, object]:
+    metrics = getattr(stage, "cache_metrics", {})
+    if callable(metrics):
+        metrics = metrics()
+    if not isinstance(metrics, dict):
+        raise TypeError("vision score stage cache_metrics must be a dictionary")
+    return {str(key): value for key, value in metrics.items()}
 
 
 def _validate_settings(settings: RollingVisionWorkerSettings) -> None:
@@ -887,6 +942,58 @@ def _delete_tree(path: Path) -> int:
         child.rmdir()
     path.rmdir()
     return len(files)
+
+
+def _write_commit_checkpoint(
+    path: Path,
+    *,
+    batch_id: str,
+    part_id: str,
+    parquet_outputs: dict[str, Path],
+) -> Path:
+    if not parquet_outputs:
+        raise ValueError("commit checkpoint requires at least one Parquet shard")
+    shards: list[dict[str, object]] = []
+    for artifact, output in sorted(parquet_outputs.items()):
+        if output.is_symlink() or not output.is_file():
+            raise FileNotFoundError(
+                f"cannot checkpoint missing Parquet shard {artifact}: {output}"
+            )
+        shards.append(
+            {
+                "artifact": artifact,
+                "path": str(output),
+                "size_bytes": output.stat().st_size,
+                "sha256": _file_sha256(output),
+            }
+        )
+    payload = {
+        "schema_version": "rolling-vision-commit-checkpoint-v1",
+        "batch_id": batch_id,
+        "part_id": part_id,
+        "committed_at": datetime.now(UTC).isoformat(),
+        "parquet_shard_count": len(shards),
+        "parquet_shards": shards,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
 
 
 __all__ = [

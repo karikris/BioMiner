@@ -104,6 +104,7 @@ class RollingVisionShardCommitResult:
     rows_by_artifact: dict[str, int]
     parts_written: int
     parts_reused: int
+    checkpointed_shards: int
 
 
 @dataclass(frozen=True)
@@ -704,6 +705,7 @@ def commit_rolling_vision_batch_shards(
         rows_by_artifact=rows_by_artifact,
         parts_written=sum(1 for _artifact, (_write, written) in writes.items() if written),
         parts_reused=sum(1 for _artifact, (_write, written) in writes.items() if not written),
+        checkpointed_shards=len(ROLLING_VISION_ARTIFACT_ORDER),
     )
 
 
