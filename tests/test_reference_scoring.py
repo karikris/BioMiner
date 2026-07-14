@@ -404,6 +404,107 @@ def test_route_separation_prevents_adult_queries_using_larval_support(
     )
 
 
+def test_specimen_queries_never_retrieve_live_field_support(tmp_path: Path) -> None:
+    live = tuple(
+        _spec(
+            f"live-{index}",
+            f"live-observation-{index}",
+            TARGET,
+            "Papilio demoleus",
+            "cluster-a",
+            (1, index + 1, 0),
+        )
+        for index in range(5)
+    )
+    specimens = tuple(
+        _spec(
+            f"specimen-{index}",
+            f"specimen-observation-{index}",
+            TARGET,
+            "Papilio demoleus",
+            "cluster-a",
+            (-1, index + 1, 0),
+            life_stage="unknown",
+            visual_domain="pinned_specimen",
+            route="pinned_specimen",
+        )
+        for index in range(5)
+    )
+    embeddings = _embedding_artifact(tmp_path, (*live, *specimens))
+    index = ReferenceEvidenceIndex(embeddings, build_reference_prototypes(embeddings))
+
+    live_score = index.score(
+        _query(embeddings, route="adult_field"),
+        (ReferenceCandidate(TARGET, "Papilio demoleus"),),
+    )[0]
+    specimen_score = index.score(
+        _query(embeddings, route="pinned_specimen"),
+        (ReferenceCandidate(TARGET, "Papilio demoleus"),),
+    )[0]
+
+    assert live_score.support_count == specimen_score.support_count == 5
+    assert live_score.nearest_support_similarity > 0
+    assert specimen_score.nearest_support_similarity < 0
+    assert all(
+        observation_id.startswith("live-")
+        for observation_id in live_score.selected_reference_observation_ids
+    )
+    assert all(
+        observation_id.startswith("specimen-")
+        for observation_id in specimen_score.selected_reference_observation_ids
+    )
+
+
+def test_duplicate_group_exclusion_removes_every_leaking_observation(
+    tmp_path: Path,
+) -> None:
+    embeddings = _embedding_artifact(
+        tmp_path,
+        (
+            _spec(
+                "burst-a",
+                "burst-observation-a",
+                TARGET,
+                "Papilio demoleus",
+                "cluster-a",
+                (1, 0, 0),
+                duplicate_group_id="duplicate:query-burst",
+            ),
+            _spec(
+                "burst-b",
+                "burst-observation-b",
+                TARGET,
+                "Papilio demoleus",
+                "cluster-a",
+                (0.9, 0.1, 0),
+                duplicate_group_id="duplicate:query-burst",
+            ),
+            _spec(
+                "independent",
+                "independent-observation",
+                TARGET,
+                "Papilio demoleus",
+                "cluster-a",
+                (0, 1, 0),
+            ),
+        ),
+    )
+    index = ReferenceEvidenceIndex(embeddings, build_reference_prototypes(embeddings))
+
+    score = index.score(
+        _query(
+            embeddings,
+            excluded_duplicate_group_ids=("duplicate:query-burst",),
+        ),
+        (ReferenceCandidate(TARGET, "Papilio demoleus"),),
+    )[0]
+
+    assert score.support_count == 1
+    assert score.selected_reference_observation_ids == ("independent-observation",)
+    assert score.nearest_reference_observation_id == "independent-observation"
+    assert score.nearest_support_similarity == pytest.approx(0.0)
+
+
 def test_negative_cosines_remain_similarities_and_distance_reaches_two(
     tmp_path: Path,
 ) -> None:
@@ -571,6 +672,7 @@ def _query(
     route: str = "adult_field",
     geo_cluster_id: str = "cluster-a",
     excluded_reference_observation_ids: tuple[str, ...] = (),
+    excluded_duplicate_group_ids: tuple[str, ...] = (),
 ) -> ReferenceQuery:
     normalized = _unit(vector)
     return ReferenceQuery(
@@ -581,4 +683,5 @@ def _query(
         geo_cluster_id=geo_cluster_id,
         model_fingerprint=str(embeddings["model_fingerprint"][0]),
         excluded_reference_observation_ids=excluded_reference_observation_ids,
+        excluded_duplicate_group_ids=excluded_duplicate_group_ids,
     )

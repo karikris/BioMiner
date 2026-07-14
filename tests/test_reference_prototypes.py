@@ -87,6 +87,7 @@ class _EmbeddingSpec:
     visual_domain: str = "live_field"
     route: str = "adult_field"
     view: str = "dorsal"
+    duplicate_group_id: str | None = None
 
 
 class _FakeScorer:
@@ -212,6 +213,62 @@ def test_builds_normalized_global_and_regional_species_prototypes(
     assert set(regional["geo_cluster_id"]) == {"cluster-a", "cluster-b"}
     assert set(regional["reference_count"]) == {1}
     assert set(regional["independent_observation_count"]) == {1}
+
+
+def test_prototype_artifact_is_deterministic_across_support_input_order(
+    tmp_path: Path,
+) -> None:
+    specs = (
+        _spec(
+            "target-a",
+            "target-observation-a",
+            TARGET,
+            "Papilio demoleus",
+            "cluster-a",
+            (1.0, 0.0, 0.0),
+        ),
+        _spec(
+            "target-b",
+            "target-observation-b",
+            TARGET,
+            "Papilio demoleus",
+            "cluster-b",
+            (0.8, 0.6, 0.0),
+        ),
+        _spec(
+            "competitor-a",
+            "competitor-observation-a",
+            COMPETITOR,
+            "Papilio polytes",
+            "cluster-a",
+            (0.0, 1.0, 0.0),
+        ),
+        _spec(
+            "competitor-b",
+            "competitor-observation-b",
+            COMPETITOR,
+            "Papilio polytes",
+            "cluster-b",
+            (-0.6, 0.8, 0.0),
+        ),
+    )
+    first_embeddings = _embedding_artifact(tmp_path, specs)
+    first = build_reference_prototypes(
+        first_embeddings,
+        balanced_sampling_seed=31,
+    )
+
+    second_embeddings = _embedding_artifact(tmp_path, tuple(reversed(specs)))
+    second = build_reference_prototypes(
+        second_embeddings,
+        balanced_sampling_seed=31,
+    )
+
+    assert_frame_equal(first_embeddings, second_embeddings)
+    assert_frame_equal(first, second)
+    assert reference_prototypes_artifact_fingerprint(first) == (
+        reference_prototypes_artifact_fingerprint(second)
+    )
 
 
 def test_support_train_only_and_independent_observation_weighting(
@@ -742,6 +799,7 @@ def _spec(
     visual_domain: str = "live_field",
     route: str = "adult_field",
     view: str = "dorsal",
+    duplicate_group_id: str | None = None,
 ) -> _EmbeddingSpec:
     normalized = _unit(vector)
     return _EmbeddingSpec(
@@ -756,6 +814,7 @@ def _spec(
         visual_domain=visual_domain,
         route=route,
         view=view,
+        duplicate_group_id=duplicate_group_id,
     )
 
 
@@ -765,10 +824,11 @@ def _embedding_artifact(
 ) -> pl.DataFrame:
     support_rows: list[dict[str, object]] = []
     vectors: dict[str, tuple[float, float, float]] = {}
-    for index, spec in enumerate(specs, start=1):
+    for spec in specs:
+        colour_digest = hashlib.sha256(spec.media_id.encode("utf-8")).digest()
         source_path = _image(
             tmp_path / "source" / f"{spec.media_id}.png",
-            (index % 255, (index + 1) % 255, (index + 2) % 255),
+            (colour_digest[0], colour_digest[1], colour_digest[2]),
         )
         support_rows.append(_support_row(spec, source_path=source_path))
         vectors[f"{spec.media_id}.png"] = spec.vector
@@ -843,7 +903,9 @@ def _support_row(
         "image_sha256": _file_sha256(source_path),
         "perceptual_hash": f"{int(hashlib.sha256(spec.media_id.encode()).hexdigest()[:16], 16):016x}",
         "object_fingerprint": _sha(f"object:{spec.media_id}"),
-        "duplicate_group_id": f"duplicate:{spec.media_id}",
+        "duplicate_group_id": (
+            spec.duplicate_group_id or f"duplicate:{spec.media_id}"
+        ),
         "duplicate_type": "exact",
         "creator": "Fixture Creator",
         "rights_holder": "Fixture Creator",
