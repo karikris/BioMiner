@@ -170,8 +170,10 @@ def test_make_segmenter_defaults_to_optional_noop_backend() -> None:
     assert segmenter.segment_crop(None) is None  # type: ignore[arg-type]
 
 
-def test_detector_masks_are_not_persisted_in_detection_schema() -> None:
-    assert not any("mask" in column or "segmentation" in column for column in DETECTION_OUTPUT_SCHEMA)
+def test_detector_schema_persists_only_bounded_polygon_mask_metadata() -> None:
+    assert DETECTION_OUTPUT_SCHEMA["mask_polygon_xyn"] == pl.List(pl.List(pl.Float64))
+    assert "detector_crop_mask" not in DETECTION_OUTPUT_SCHEMA
+    assert "segmentation_crop_mask" not in DETECTION_OUTPUT_SCHEMA
 
 
 def test_candidate_set_uses_species_context_and_same_genus_family_candidates(tmp_path) -> None:

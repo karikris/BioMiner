@@ -3,7 +3,9 @@
 YOLOE identifies butterfly and life-stage objects and emits
 `object-detection-v2` rows. Each detected object preserves its normalized raw
 prompt, actual class ID, ordered prompt-set fingerprint, route decision, and
-routing-policy fingerprint. Production routes are:
+routing-policy fingerprint. Segmentation-capable detectors also retain one
+nullable normalized mask polygon aligned with the detection; raw raster masks
+are not stored. Production routes are:
 
 - `adult_butterfly_field` to the `adult_field` comparison;
 - `caterpillar_field` to the separate `larval` comparison;
@@ -25,6 +27,18 @@ not production defaults.
 Production preserves metadata for ineligible detections but does not create
 their crops. Eligible crops use profile-controlled padding, resize, batching,
 and memory limits; fine wing patterns use high-quality image resizing.
+
+The opt-in target-aware visual mode is
+`whole_image_reference_ensemble`. It disables detection crop computation,
+requires no `crop_hash`, builds one scoring unit per photo and comparison
+route, and content-addresses the decoded full image independently of detector
+metadata. Adult, larval, and specimen units for the same photo reuse one raw
+image embedding while retaining their own detection IDs, detector and
+full-frame boxes, normalized mask polygons, and routing-policy identity.
+Focused full-frame inputs are represented as requests here; their deterministic
+transformations are a separate versioned stage. This mode does not write or
+reinterpret legacy `object_bioclip_scores` artifacts and is not yet the
+production default.
 
 BioCLIP 2.5 runs as a persistent worker. Build text embeddings from reviewed
 rank prompts with `biominer dev vision build-text-embedding-cache`, then pass

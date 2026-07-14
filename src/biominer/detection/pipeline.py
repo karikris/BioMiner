@@ -113,7 +113,11 @@ def run_detection_pipeline(
     )
     output_target = Path(output_path)
     batch_dir = _prepare_detection_batch_dir(output_target)
-    debug_writer = _prepare_debug_crop_writer(output_target, policy=policy)
+    debug_writer = (
+        _prepare_debug_crop_writer(output_target, policy=policy)
+        if runtime.create_crop_metadata
+        else None
+    )
     row_buffer: list[dict[str, Any]] = []
     batch_paths: list[Path] = []
     batch: list[_LoadedImage] = []
@@ -288,6 +292,8 @@ def _detect_and_enrich_batch(
             policy=policy,
         )
         crop_jobs.extend(_CropJob(row=row, image=image) for row in detection_rows)
+    if not run_policy.create_crop_metadata:
+        return [job.row for job in crop_jobs]
     return _with_crop_metadata_bounded(
         crop_jobs,
         policy=policy,
@@ -564,6 +570,7 @@ def _image_failure_row(
         "detector_prompt": None,
         "detector_class_id": None,
         "detector_prompt_set_fingerprint": getattr(detector, "prompt_set_fingerprint", None),
+        "mask_polygon_xyn": None,
         "nms_group_id": None,
         "crop_padding_ratio": 0.0,
         "crop_hash": None,

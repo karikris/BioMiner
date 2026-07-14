@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Protocol, Sequence
 
 
@@ -75,6 +76,7 @@ class DetectionCandidate:
     detector_prompt: str | None = None
     detector_class_id: int | None = None
     detector_prompt_set_fingerprint: str | None = None
+    mask_polygon_xyn: tuple[tuple[float, float], ...] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "label", normalize_detector_label(self.label))
@@ -90,6 +92,44 @@ class DetectionCandidate:
                 self.detector_prompt_set_fingerprint,
                 name="detector_prompt_set_fingerprint",
             )
+        object.__setattr__(self, "mask_polygon_xyn", normalize_mask_polygon_xyn(self.mask_polygon_xyn))
+
+
+def normalize_mask_polygon_xyn(value: object) -> tuple[tuple[float, float], ...] | None:
+    """Canonicalize one instance polygon in normalized original-image coordinates."""
+    if value is None:
+        return None
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if not isinstance(value, list | tuple):
+        raise ValueError("mask_polygon_xyn must be a sequence of [x, y] points")
+
+    points: list[tuple[float, float]] = []
+    for raw_point in value:
+        if hasattr(raw_point, "tolist"):
+            raw_point = raw_point.tolist()
+        if not isinstance(raw_point, list | tuple) or len(raw_point) != 2:
+            raise ValueError("mask_polygon_xyn points must contain exactly two coordinates")
+        coordinates: list[float] = []
+        for raw_coordinate in raw_point:
+            if isinstance(raw_coordinate, bool):
+                raise ValueError("mask_polygon_xyn coordinates must be finite numbers")
+            try:
+                coordinate = round(float(raw_coordinate), 6)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("mask_polygon_xyn coordinates must be finite numbers") from exc
+            if not math.isfinite(coordinate):
+                raise ValueError("mask_polygon_xyn coordinates must be finite numbers")
+            if not 0.0 <= coordinate <= 1.0:
+                raise ValueError("mask_polygon_xyn coordinates must be normalized to [0, 1]")
+            coordinates.append(0.0 if coordinate == 0.0 else coordinate)
+        points.append((coordinates[0], coordinates[1]))
+
+    if not points:
+        return None
+    if len(points) < 3:
+        raise ValueError("mask_polygon_xyn must contain at least three points")
+    return tuple(points)
 
 
 def normalize_detector_label(label: object) -> str:

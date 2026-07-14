@@ -1216,6 +1216,9 @@ provenance:
   `detector_prompt_set_fingerprint: str?` preserve the normalized prompt,
   actual YOLOE result class ID, and order-sensitive prompt map used to decode
   that class ID;
+- `mask_polygon_xyn: list<list<f64>>?` preserves the aligned instance-mask
+  contour in normalized image coordinates without persisting a raw bitmap
+  mask;
 - `detection_route`, `routing_action`, nullable `bioclip_route`,
   `routing_priority`, and `routing_reason` preserve the route decision;
 - `routing_policy_version` and `routing_policy_fingerprint` bind the complete

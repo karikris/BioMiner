@@ -7,7 +7,12 @@ from pathlib import Path
 import subprocess
 from typing import Sequence
 
-from biominer.detection.detector_base import DecodedImage, DetectionCandidate, normalize_detector_label
+from biominer.detection.detector_base import (
+    DecodedImage,
+    DetectionCandidate,
+    normalize_detector_label,
+    normalize_mask_polygon_xyn,
+)
 from biominer.runtime_paths import YOLOE26_DIR as VISION_RUNTIME_DIR
 
 
@@ -132,8 +137,10 @@ def detections_from_yolo26_result(result: object) -> list[DetectionCandidate]:
     boxes = getattr(result, "boxes", None)
     if boxes is None:
         return []
+    box_rows = list(boxes)
+    mask_polygons = _result_mask_polygons_xyn(result, expected_count=len(box_rows))
     rows: list[DetectionCandidate] = []
-    for box in boxes:
+    for index, box in enumerate(box_rows):
         xyxy = _first_vector(getattr(box, "xyxy", ()))
         if len(xyxy) != 4:
             continue
@@ -146,9 +153,26 @@ def detections_from_yolo26_result(result: object) -> list[DetectionCandidate]:
                 score=score,
                 bbox_xyxy=(float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3])),
                 objectness_score=score,
+                mask_polygon_xyn=mask_polygons[index],
             )
         )
     return rows
+
+
+def _result_mask_polygons_xyn(
+    result: object,
+    *,
+    expected_count: int,
+) -> list[tuple[tuple[float, float], ...] | None]:
+    masks = getattr(result, "masks", None)
+    if masks is None:
+        return [None] * expected_count
+    polygons = getattr(masks, "xyn", None)
+    if not isinstance(polygons, list | tuple):
+        raise ValueError("YOLO26 result masks.xyn must be an ordered sequence")
+    if len(polygons) != expected_count:
+        raise ValueError("YOLO26 result masks must align one-to-one with boxes")
+    return [normalize_mask_polygon_xyn(polygon) for polygon in polygons]
 
 
 def yolo26_coarse_label(label: object) -> str:
@@ -219,6 +243,9 @@ def _candidate_to_payload(candidate: DetectionCandidate) -> dict[str, object]:
         "score": candidate.score,
         "bbox_xyxy": list(candidate.bbox_xyxy),
         "objectness_score": candidate.objectness_score,
+        "mask_polygon_xyn": None
+        if candidate.mask_polygon_xyn is None
+        else [list(point) for point in candidate.mask_polygon_xyn],
     }
 
 
@@ -232,6 +259,7 @@ def _detections_from_payload(payload: dict[str, object]) -> list[list[DetectionC
                 objectness_score=None
                 if candidate.get("objectness_score") is None
                 else float(candidate.get("objectness_score")),
+                mask_polygon_xyn=normalize_mask_polygon_xyn(candidate.get("mask_polygon_xyn")),
             )
             for candidate in batch
         ]

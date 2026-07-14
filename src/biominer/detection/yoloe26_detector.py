@@ -18,6 +18,7 @@ from biominer.detection.detector_base import (
     DetectionCandidate,
     detector_label_is_taxon_like,
     normalize_detector_prompt,
+    normalize_mask_polygon_xyn,
 )
 from biominer.runtime_paths import YOLOE26_DIR
 
@@ -325,8 +326,10 @@ def detections_from_yoloe_result(result: object, *, prompt_classes: Sequence[str
     boxes = getattr(result, "boxes", None)
     if boxes is None:
         return []
+    box_rows = list(boxes)
+    mask_polygons = _result_mask_polygons_xyn(result, expected_count=len(box_rows))
     rows: list[DetectionCandidate] = []
-    for box in boxes:
+    for index, box in enumerate(box_rows):
         xyxy = _first_vector(getattr(box, "xyxy", ()))
         if len(xyxy) != 4:
             continue
@@ -344,9 +347,26 @@ def detections_from_yoloe_result(result: object, *, prompt_classes: Sequence[str
                 detector_prompt=prompt,
                 detector_class_id=cls_id,
                 detector_prompt_set_fingerprint=prompt_set_fingerprint,
+                mask_polygon_xyn=mask_polygons[index],
             )
         )
     return rows
+
+
+def _result_mask_polygons_xyn(
+    result: object,
+    *,
+    expected_count: int,
+) -> list[tuple[tuple[float, float], ...] | None]:
+    masks = getattr(result, "masks", None)
+    if masks is None:
+        return [None] * expected_count
+    polygons = getattr(masks, "xyn", None)
+    if not isinstance(polygons, list | tuple):
+        raise ValueError("YOLOE result masks.xyn must be an ordered sequence")
+    if len(polygons) != expected_count:
+        raise ValueError("YOLOE result masks must align one-to-one with boxes")
+    return [normalize_mask_polygon_xyn(polygon) for polygon in polygons]
 
 
 def _drain_stderr(stderr: IO[str], lines: deque[str]) -> None:
@@ -650,6 +670,9 @@ def _candidate_to_payload(candidate: DetectionCandidate) -> dict[str, object]:
         "detector_prompt": candidate.detector_prompt,
         "detector_class_id": candidate.detector_class_id,
         "detector_prompt_set_fingerprint": candidate.detector_prompt_set_fingerprint,
+        "mask_polygon_xyn": None
+        if candidate.mask_polygon_xyn is None
+        else [list(point) for point in candidate.mask_polygon_xyn],
     }
 
 
@@ -672,6 +695,7 @@ def _detections_from_payload(payload: dict[str, object]) -> list[list[DetectionC
                 detector_prompt_set_fingerprint=None
                 if candidate.get("detector_prompt_set_fingerprint") is None
                 else str(candidate.get("detector_prompt_set_fingerprint")),
+                mask_polygon_xyn=normalize_mask_polygon_xyn(candidate.get("mask_polygon_xyn")),
             )
             for candidate in batch
         ]

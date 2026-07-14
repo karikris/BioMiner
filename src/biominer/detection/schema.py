@@ -29,6 +29,7 @@ DETECTION_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "bbox_xyxy": pl.List(pl.Float64),
     "bbox_xyxyn": pl.List(pl.Float64),
     "bbox_xywhn": pl.List(pl.Float64),
+    "mask_polygon_xyn": pl.List(pl.List(pl.Float64)),
     "box_area_ratio": pl.Float64,
     "detector_label": pl.String,
     "detector_score": pl.Float64,
@@ -160,6 +161,9 @@ def build_detection_rows(
                 "bbox_xyxy": bbox,
                 "bbox_xyxyn": xyxyn,
                 "bbox_xywhn": xywhn,
+                "mask_polygon_xyn": None
+                if candidate.mask_polygon_xyn is None
+                else [list(point) for point in candidate.mask_polygon_xyn],
                 "box_area_ratio": _box_area_ratio(bbox, image=image),
                 "detector_label": candidate.label,
                 "detector_score": float(candidate.score),
@@ -203,6 +207,7 @@ def _base_row(
         "bbox_xyxy": [],
         "bbox_xyxyn": [],
         "bbox_xywhn": [],
+        "mask_polygon_xyn": None,
         "box_area_ratio": 0.0,
         "detector_label": None,
         "detector_score": 0.0,

@@ -32,6 +32,7 @@ class DetectionRunPolicy:
     parquet_batch_rows: int = 10000
     adaptive_batching: bool = False
     min_detector_batch_size: int = 1
+    create_crop_metadata: bool = True
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,7 @@ class VisionRuntimeSettings:
             parquet_batch_rows=self.parquet_part_rows,
             adaptive_batching=self.adaptive_batching,
             min_detector_batch_size=self.min_detector_batch_size,
+            create_crop_metadata=active.create_crop_metadata,
         )
 
 

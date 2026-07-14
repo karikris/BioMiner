@@ -59,6 +59,7 @@ def test_detection_policy_defaults_match_object_pipeline_profile() -> None:
     assert run_policy.crop_batch_size == 24
     assert run_policy.adaptive_batching is False
     assert run_policy.min_detector_batch_size == 1
+    assert run_policy.create_crop_metadata is True
 
 
 def test_vision_runtime_settings_bridge_existing_detection_policies() -> None:
@@ -85,6 +86,9 @@ def test_vision_runtime_settings_bridge_existing_detection_policies() -> None:
 
     detection = settings.to_detection_policy(DetectionPolicy(backend="fake", min_box_area_ratio=0.01))
     runtime = settings.to_detection_run_policy(DetectionRunPolicy(download_workers=2, max_inflight_images=5))
+    target_runtime = settings.to_detection_run_policy(
+        DetectionRunPolicy(create_crop_metadata=False)
+    )
 
     assert detection.backend == "fake"
     assert detection.box_score_threshold == 0.25
@@ -102,6 +106,7 @@ def test_vision_runtime_settings_bridge_existing_detection_policies() -> None:
     assert runtime.parquet_batch_rows == 2048
     assert runtime.adaptive_batching is False
     assert runtime.min_detector_batch_size == 1
+    assert target_runtime.create_crop_metadata is False
 
 
 def test_vision_runtime_settings_validate_overrides_and_adaptive_manifest_fields() -> None:
@@ -871,6 +876,45 @@ def test_detection_pipeline_writes_ephemeral_crop_metadata_for_each_detection(tm
     assert "encoded_bytes" not in result.frame.columns
     assert len({row["detection_id"] for row in rows}) == 2
     assert len({row["crop_hash"] for row in rows}) == 2
+
+
+def test_detection_pipeline_target_mode_skips_all_crop_production(tmp_path, monkeypatch) -> None:
+    def fail_if_called(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202 - sentinel replacement.
+        raise AssertionError("target-aware detection must not call crop_with_padding")
+
+    monkeypatch.setattr("biominer.detection.pipeline.crop_with_padding", fail_if_called)
+    output = tmp_path / "target_object_detections.parquet"
+    detector = FakeObjectDetector(
+        [[DetectionCandidate(label="adult_butterfly", score=0.9, bbox_xyxy=(0, 0, 3, 3))]]
+    )
+
+    result = run_detection_pipeline(
+        records=[
+            {
+                "source": "flickr",
+                "flickr_photo_id": "target-photo",
+                "image_url": "memory://target-photo",
+            }
+        ],
+        detector=detector,
+        output_path=output,
+        image_loader=lambda _record: _image(),
+        detection_policy=DetectionPolicy(
+            backend="fake",
+            min_box_area_ratio=0.0,
+            retain_debug_crops=True,
+        ),
+        run_policy=DetectionRunPolicy(create_crop_metadata=False),
+    )
+
+    row = result.frame.to_dicts()[0]
+    assert result.crops_created == 0
+    assert row["routing_action"] == "score"
+    assert row["crop_hash"] is None
+    assert row["crop_width"] is None
+    assert row["crop_height"] is None
+    assert row["crop_storage_policy"] == "not_created"
+    assert not (tmp_path / "target_object_detections_debug_crops").exists()
 
 
 def test_detection_pipeline_skips_crop_metadata_for_non_bioclip_eligible_detections(tmp_path) -> None:
