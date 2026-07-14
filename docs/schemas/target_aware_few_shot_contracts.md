@@ -421,6 +421,12 @@ reason class, soft geographic evidence, occurrence support, taxonomy, and
 accepted key. It authorizes ordering only. The set fingerprint covers the
 complete sorted union, cluster, target, policy, and all registry, occurrence,
 cluster, relationship, false-positive, and visual source versions.
+Versioned visual-neighbour rows are filtered by the target as directed graph
+edges and unioned into every geographic candidate set. Their source dependency
+is recorded as `visual-neighbours:<graph_version>:<graph_fingerprint>`.
+Supplying a graph never replaces target, geographic, taxonomic, mimic, or
+historical-false-positive reasons; a species already present simply gains the
+sorted `visually_nearest` reason and flag.
 Geographic evidence uses fixed overlap weights `exact=1.0`, `buffer=0.8`,
 `country=0.5`, `bioregion=0.35`, and `global=0.1`, multiplied by the
 occurrence-count-weighted coordinate confidence. Missing confidence in any
@@ -1265,11 +1271,31 @@ probabilities or confidence estimates.
 
 ### 6.3 `visual_neighbour_species.parquet`
 
-Grain: one directed species-neighbour edge, route, and graph version. It records
-subject and neighbour accepted keys, best prototype similarity, prototype IDs,
-rank, route, model/prototype fingerprints, graph configuration, and graph
-fingerprint. It adds candidate reasons but cannot remove geographically
-plausible species.
+Grain: one directed species-neighbour edge, route, full-frame visual-input kind,
+and graph version. Schema version: `visual-neighbour-species-v1.0.0`; algorithm
+version: `global-aggregate-cosine-knn-v1`.
+
+Each row records graph/configuration fingerprints and configured top-k/threshold;
+edge ID; subject and neighbour accepted keys/names; route and visual-input kind;
+prototype kind/method; best subject and neighbour prototype IDs; raw cosine
+similarity and one-based neighbour rank; supporting prototype-pair count and
+pair structs; embedding dimension; model, support-embedding, support-manifest,
+and complete prototype-artifact fingerprints; and edge fingerprint. One graph
+fingerprint is repeated on every row and binds the sorted edge fingerprints,
+graph version, configuration, algorithm, and exact prototype artifact.
+
+The initial graph deliberately compares exactly one `global` / `all` /
+`aggregate` prototype per accepted species within each route and visual-input
+contract. Metadata and embedding-cluster prototypes cannot give a class more
+extreme-value opportunities. Same-species and cross-route pairs are prohibited.
+Candidate neighbours are sorted by descending cosine similarity, then accepted
+taxon key and prototype ID; equal scores therefore have stable ranks. A row is
+emitted only above the configured similarity floor and within the configured
+species-level top-k. Similarities remain `[-1, 1]` evidence, never probability.
+
+The directed graph adds `visually_nearest` candidate evidence for the graph
+subject. It cannot remove geographically plausible, taxonomic, curated mimic,
+historical false-positive, or mandatory target candidates.
 
 ### 6.4 `flickr_embeddings.parquet`
 

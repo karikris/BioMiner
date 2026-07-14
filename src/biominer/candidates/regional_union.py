@@ -141,6 +141,7 @@ def build_regional_candidate_species(
     historical_false_positive_version: str | None = None,
     visually_nearest_taxon_keys: Sequence[str] = (),
     visual_neighbour_version: str | None = None,
+    visual_neighbour_species: pl.DataFrame | None = None,
     source_versions: Sequence[str] = (),
     config: RegionalCandidateConfig | None = None,
 ) -> pl.DataFrame:
@@ -179,23 +180,38 @@ def build_regional_candidate_species(
         taxonomy=taxonomy,
         field="historical_false_positive_taxon_keys",
     )
-    visual_keys = _accepted_candidate_keys(
-        visually_nearest_taxon_keys,
-        taxonomy=taxonomy,
-        field="visually_nearest_taxon_keys",
-    )
+    if visual_neighbour_species is not None and visually_nearest_taxon_keys:
+        raise ValueError(
+            "visual_neighbour_species and visually_nearest_taxon_keys are mutually exclusive"
+        )
+    if visual_neighbour_species is not None and visual_neighbour_version is not None:
+        raise ValueError(
+            "visual_neighbour_version is read from visual_neighbour_species"
+        )
+    if visual_neighbour_species is not None:
+        visual_keys, visual_version = _visual_neighbour_candidates(
+            visual_neighbour_species,
+            target_key=target_key,
+            taxonomy=taxonomy,
+        )
+    else:
+        visual_keys = _accepted_candidate_keys(
+            visually_nearest_taxon_keys,
+            taxonomy=taxonomy,
+            field="visually_nearest_taxon_keys",
+        )
+        visual_version = _required_dependency_version(
+            visual_keys,
+            visual_neighbour_version,
+            field="visual_neighbour_version",
+            prefix="visual-neighbours",
+        )
     caller_versions = _versions(source_versions, field="source_versions")
     false_positive_version = _required_dependency_version(
         false_positive_keys,
         historical_false_positive_version,
         field="historical_false_positive_version",
         prefix="false-positives",
-    )
-    visual_version = _required_dependency_version(
-        visual_keys,
-        visual_neighbour_version,
-        field="visual_neighbour_version",
-        prefix="visual-neighbours",
     )
 
     output_rows: list[dict[str, object]] = []
@@ -668,6 +684,59 @@ def _accepted_candidate_keys(
     if unknown:
         raise ValueError(f"{field} contains keys that are not accepted species: {unknown}")
     return keys
+
+
+def _visual_neighbour_candidates(
+    frame: pl.DataFrame,
+    *,
+    target_key: str,
+    taxonomy: dict[str, _Taxon],
+) -> tuple[tuple[str, ...], str]:
+    from biominer.candidates.visual_neighbours import (  # noqa: PLC0415
+        validate_visual_neighbour_species,
+    )
+
+    if not isinstance(frame, pl.DataFrame):
+        raise TypeError("visual_neighbour_species must be a Polars DataFrame")
+    validate_visual_neighbour_species(frame)
+    for row in frame.iter_rows(named=True):
+        for key_field, name_field in (
+            ("subject_accepted_taxon_key", "subject_scientific_name"),
+            ("neighbour_accepted_taxon_key", "neighbour_scientific_name"),
+        ):
+            key = str(row[key_field])
+            taxon = taxonomy.get(key)
+            if taxon is None:
+                raise ValueError(
+                    "visual-neighbour graph contains a species absent from the registry: "
+                    f"{key}"
+                )
+            if taxon.scientific_name != str(row[name_field]):
+                raise ValueError(
+                    "visual-neighbour graph scientific name disagrees with the registry: "
+                    f"{key}"
+                )
+    keys = tuple(
+        sorted(
+            {
+                str(value)
+                for value in frame.filter(
+                    pl.col("subject_accepted_taxon_key") == target_key
+                )["neighbour_accepted_taxon_key"]
+                if str(value) != target_key
+            }
+        )
+    )
+    graph_versions = frame["graph_version"].unique().to_list()
+    graph_fingerprints = frame["graph_fingerprint"].unique().to_list()
+    if len(graph_versions) != 1 or len(graph_fingerprints) != 1:
+        raise ValueError("visual-neighbour graph identity is mixed")
+    version = _required_text(graph_versions[0], field="graph_version")
+    fingerprint = _required_text(
+        graph_fingerprints[0],
+        field="graph_fingerprint",
+    )
+    return keys, f"visual-neighbours:{version}:{fingerprint}"
 
 
 def _required_dependency_version(
