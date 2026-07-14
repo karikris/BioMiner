@@ -65,6 +65,7 @@ class CandidateSet:
     geospatial_scope: str | None
     source_evidence: tuple[str, ...]
     candidate_contract_version: str = CANDIDATE_SET_CONTRACT_VERSION
+    candidate_set_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if self.candidate_contract_version != CANDIDATE_SET_CONTRACT_VERSION:
@@ -72,6 +73,16 @@ class CandidateSet:
                 "unsupported candidate contract version: "
                 f"{self.candidate_contract_version}"
             )
+        if self.candidate_set_fingerprint is not None:
+            fingerprint = str(self.candidate_set_fingerprint).strip()
+            digest = fingerprint.removeprefix("sha256:")
+            if (
+                not fingerprint.startswith("sha256:")
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError("candidate_set_fingerprint must be a canonical sha256 digest")
+            object.__setattr__(self, "candidate_set_fingerprint", fingerprint)
 
     def prompt_labels(self, rank: str) -> tuple[str, ...]:
         if rank == "family":
@@ -104,12 +115,15 @@ def build_candidate_set(
     candidate_rows = _candidate_rows(species_candidate_path) if species_candidate_path else []
     if candidate_rows:
         source_evidence.append(str(species_candidate_path))
-    candidate_rows, regional_candidate_set_id, regional_source_versions = (
-        _select_regional_candidate_rows(
-            candidate_rows,
-            context=context,
-            geospatial_scope=geospatial_scope,
-        )
+    (
+        candidate_rows,
+        regional_candidate_set_id,
+        regional_source_versions,
+        regional_candidate_set_fingerprint,
+    ) = _select_regional_candidate_rows(
+        candidate_rows,
+        context=context,
+        geospatial_scope=geospatial_scope,
     )
     if regional_candidate_set_id:
         source_evidence.append(f"regional_candidate_set:{regional_candidate_set_id}")
@@ -172,6 +186,7 @@ def build_candidate_set(
         prompt_variant_version=PROMPT_VARIANT_VERSION,
         geospatial_scope=geospatial_scope,
         source_evidence=tuple(source_evidence),
+        candidate_set_fingerprint=regional_candidate_set_fingerprint,
     )
 
 
@@ -282,9 +297,9 @@ def _select_regional_candidate_rows(
     *,
     context: SpeciesContext,
     geospatial_scope: str | None,
-) -> tuple[list[dict[str, Any]], str | None, tuple[str, ...]]:
+) -> tuple[list[dict[str, Any]], str | None, tuple[str, ...], str | None]:
     if not rows:
-        return rows, None, ()
+        return rows, None, (), None
     if not _is_regional_candidate_rows(rows):
         if any(
             "candidate_accepted_taxon_key" in row
@@ -294,7 +309,7 @@ def _select_regional_candidate_rows(
             for row in rows
         ):
             raise ValueError("regional candidate rows do not satisfy the versioned contract")
-        return rows, None, ()
+        return rows, None, (), None
     if any(row.get("schema_version") != REGIONAL_CANDIDATE_SCHEMA_VERSION for row in rows):
         raise ValueError("regional candidate rows have an unsupported schema version")
 
@@ -339,8 +354,13 @@ def _select_regional_candidate_rows(
         target_rows
     ):
         raise ValueError("regional candidate set contains duplicate species")
-    if len({_first_text(row, "candidate_set_fingerprint") for row in target_rows}) != 1:
+    fingerprints = {
+        _first_text(row, "candidate_set_fingerprint") or ""
+        for row in target_rows
+    }
+    if len(fingerprints) != 1 or "" in fingerprints:
         raise ValueError("regional candidate set contains conflicting fingerprints")
+    candidate_set_fingerprint = next(iter(fingerprints))
     source_versions = _unique(
         version
         for row in target_rows
@@ -353,7 +373,7 @@ def _select_regional_candidate_rows(
             _first_text(row, "candidate_accepted_taxon_key") or "",
         ),
     )
-    return ordered, candidate_set_id, source_versions
+    return ordered, candidate_set_id, source_versions, candidate_set_fingerprint
 
 
 def _is_regional_candidate_rows(rows: list[dict[str, Any]]) -> bool:

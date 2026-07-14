@@ -7,7 +7,10 @@ import polars as pl
 import pytest
 
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon, build_candidate_set, build_candidate_set_for_taxon_scope
-from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
+from biominer.bioclip.classification_modes import (
+    HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
+    TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
+)
 from biominer.bioclip.object_runner import (
     CachedObjectEmbeddingScorer,
     EphemeralCropBioClipScorer,
@@ -263,6 +266,7 @@ def test_candidate_set_preserves_regional_union_identity_and_provenance(
     )
 
     assert candidate_set.candidate_set_id == "regional:test-set"
+    assert candidate_set.candidate_set_fingerprint == fingerprint
     assert [candidate.accepted_taxon_key for candidate in candidate_set.species_candidates] == [
         "gbif:5131654",
         "gbif:5131655",
@@ -1767,6 +1771,28 @@ def test_object_bioclip_hierarchical_mode_requires_v3_store_and_cache(tmp_path) 
     assert not (tmp_path / "object_scores.parquet").exists()
 
 
+def test_object_bioclip_rejects_target_aware_rows_in_legacy_output(tmp_path) -> None:
+    class FailingScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def score(self, item, labels):  # noqa: ANN001, ANN202 - should not be reached.
+            raise AssertionError("target-aware mode must not write legacy object scores")
+
+    with pytest.raises(ValueError, match="separate target-aware scoring path"):
+        screen_object_detections(
+            canonical_records=_canonical_records(),
+            detections=_detections().head(1),
+            species_context=_context(),
+            candidate_set=_fixture_candidate_set(),
+            scorer=FailingScorer(),
+            output_path=tmp_path / "object_scores.parquet",
+            ablation_mode="detector_crop",
+            classification_mode=TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
+        )
+
+    assert not (tmp_path / "object_scores.parquet").exists()
 
 
 def test_object_bioclip_skips_legacy_ineligible_detector_labels(tmp_path) -> None:
