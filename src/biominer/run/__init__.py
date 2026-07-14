@@ -10,6 +10,12 @@ from biominer.run.stages import (
     StageRecord,
     StageStatus,
 )
+from biominer.run.support_dependencies import (
+    SUPPORT_DEPENDENT_STAGES,
+    SupportDependencyError,
+    SupportDependencyPermit,
+    validate_support_readiness_dependencies,
+)
 from biominer.run.taxon_scope import (
     TaxonScope,
     resolve_species_context_from_registry,
@@ -31,10 +37,14 @@ __all__ = [
     "RunStage",
     "StageRecord",
     "StageStatus",
+    "SUPPORT_DEPENDENT_STAGES",
+    "SupportDependencyError",
+    "SupportDependencyPermit",
     "TaxonScope",
     "build_run_plan",
     "resolve_species_context_from_registry",
     "resolve_species_context_from_registry_frames",
     "resolve_taxon_scope_from_registry",
     "resolve_taxon_scope_from_registry_frames",
+    "validate_support_readiness_dependencies",
 ]

@@ -140,6 +140,10 @@ class FrozenLinearClassifier:
     reference_bank_version: str
     reference_bank_fingerprint: str
     training_data_fingerprint: str
+    support_manifest_fingerprint: str
+    reference_embedding_fingerprint: str
+    reference_prototype_fingerprint: str
+    candidate_set_fingerprint: str
     probability_calibrated: bool
     coefficients: Any
     intercepts: Any
@@ -410,6 +414,14 @@ def load_frozen_classifier(
         reference_bank_version=str(training["reference_bank_version"]),
         reference_bank_fingerprint=str(training["reference_bank_fingerprint"]),
         training_data_fingerprint=str(training["training_data_fingerprint"]),
+        support_manifest_fingerprint=str(training["support_manifest_fingerprint"]),
+        reference_embedding_fingerprint=str(
+            training["reference_embedding_fingerprint"]
+        ),
+        reference_prototype_fingerprint=str(
+            training["reference_prototype_fingerprint"]
+        ),
+        candidate_set_fingerprint=str(training["candidate_set_fingerprint"]),
         probability_calibrated=False,
         coefficients=arrays[COEFFICIENTS_ARRAY],
         intercepts=arrays[INTERCEPTS_ARRAY],

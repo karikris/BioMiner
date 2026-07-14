@@ -852,6 +852,14 @@ def test_ready_build_publish_and_strict_load(tmp_path: Path) -> None:
     assert permit.support_manifest_sha256.startswith("sha256:")
     assert permit.summary_sha256.startswith("sha256:")
     assert permit.readiness_sha256.startswith("sha256:")
+    assert permit.candidate_set_fingerprints == tuple(
+        result.readiness["candidate_set_fingerprints"]
+    )
+    assert len(permit.target_adult_requirements) == 1
+    target_requirement = permit.target_adult_requirements[0]
+    assert target_requirement.accepted_taxon_key == TARGET
+    assert target_requirement.route == "adult_field"
+    assert target_requirement.observed_count == target_requirement.minimum_count == 1
     assert (
         load_reference_bank_readiness(
             tmp_path / "readiness",

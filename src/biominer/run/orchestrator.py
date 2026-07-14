@@ -59,6 +59,11 @@ from biominer.run.stages import (
     StageStatus,
     default_stage_records,
 )
+from biominer.run.support_dependencies import (
+    SUPPORT_DEPENDENT_STAGES,
+    SupportDependencyPermit,
+    validate_support_readiness_dependencies,
+)
 from biominer.run.taxon_scope import InputRank, TaxonScope, resolve_taxon_scope_from_registry, resolve_taxon_scope_from_registry_frames
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.paths import build_evidence_shard_uri, safe_path_component
@@ -121,6 +126,10 @@ class ProductionRunRequest:
     taxonomy_text_embedding_cache: str | Path | None = None
     reference_bank_readiness: str | Path | None = None
     reference_bank_readiness_sha256: str | None = None
+    regional_candidates: str | Path | None = None
+    reference_embeddings: str | Path | None = None
+    classifier_artifact: str | Path | None = None
+    calibrator_artifact: str | Path | None = None
     beam_strategy: str = GLOBAL_RANK_TOP_K_BEAM_STRATEGY
     rank_beam_width: int = DEFAULT_RANK_BEAM_WIDTH
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K
@@ -194,6 +203,26 @@ class ProductionRunPlan:
                 "reference_bank_readiness_sha256": (
                     self.request.reference_bank_readiness_sha256
                 ),
+                "regional_candidates": (
+                    str(self.request.regional_candidates)
+                    if self.request.regional_candidates
+                    else None
+                ),
+                "reference_embeddings": (
+                    str(self.request.reference_embeddings)
+                    if self.request.reference_embeddings
+                    else None
+                ),
+                "classifier_artifact": (
+                    str(self.request.classifier_artifact)
+                    if self.request.classifier_artifact
+                    else None
+                ),
+                "calibrator_artifact": (
+                    str(self.request.calibrator_artifact)
+                    if self.request.calibrator_artifact
+                    else None
+                ),
                 "beam_strategy": self.request.beam_strategy,
                 "rank_beam_width": self.request.rank_beam_width,
                 "species_first_pass_top_k": self.request.species_first_pass_top_k,
@@ -260,6 +289,29 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
                 if request.reference_bank_readiness
                 else None
             ),
+            "support_dependencies": {
+                "regional_candidates": (
+                    str(request.regional_candidates)
+                    if request.regional_candidates
+                    else None
+                ),
+                "reference_embeddings": (
+                    str(request.reference_embeddings)
+                    if request.reference_embeddings
+                    else None
+                ),
+                "classifier_artifact": (
+                    str(request.classifier_artifact)
+                    if request.classifier_artifact
+                    else None
+                ),
+                "calibrator_artifact": (
+                    str(request.calibrator_artifact)
+                    if request.calibrator_artifact
+                    else None
+                ),
+                "validation_status": "not_validated",
+            },
             "beam_strategy": request.beam_strategy,
             "rank_beam_width": request.rank_beam_width,
             "species_first_pass_top_k": request.species_first_pass_top_k,
@@ -326,6 +378,7 @@ class ProductionRunOrchestrator:
         self._vision_runtime_resources: list[Any] = []
         self._vision_runtime_resources_closed = False
         self._reference_bank_readiness_permit: ReferenceBankReadinessPermit | None = None
+        self._support_dependency_permit: SupportDependencyPermit | None = None
 
     def _resolve_species_candidate_path(
         self,
@@ -430,6 +483,12 @@ class ProductionRunOrchestrator:
         return self.taxon_scope
 
     def _run_stage(self, plan: ProductionRunPlan, stage: RunStage) -> StageExecutionResult:
+        if not self.request.dry_run and stage in SUPPORT_DEPENDENT_STAGES:
+            self._load_support_dependency_permit(plan, stage=stage)
+            plan = replace(
+                plan,
+                manifest=self._manifest_with_reference_bank_permit(plan.manifest),
+            )
         if not self.request.dry_run and stage in {RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP}:
             self._load_reference_bank_readiness_permit(plan)
             plan = replace(plan, manifest=self._manifest_with_reference_bank_permit(plan.manifest))
@@ -475,6 +534,34 @@ class ProductionRunOrchestrator:
         if stage == RunStage.APPLY_COMMENT_REVIEW:
             return self._run_apply_comment_review_stage(plan)
         return StageExecutionResult(status=StageStatus.SKIPPED, message="stage_not_implemented")
+
+    def _load_support_dependency_permit(
+        self,
+        plan: ProductionRunPlan,
+        *,
+        stage: RunStage,
+    ) -> SupportDependencyPermit:
+        if self._support_dependency_permit is not None:
+            return self._support_dependency_permit
+        permit = validate_support_readiness_dependencies(
+            stage=stage,
+            regional_candidates=self.request.regional_candidates,
+            reference_bank_readiness=self.request.reference_bank_readiness,
+            reference_bank_readiness_sha256=(
+                self.request.reference_bank_readiness_sha256
+            ),
+            reference_embeddings=self.request.reference_embeddings,
+            classifier_artifact=self.request.classifier_artifact,
+            calibrator_artifact=self.request.calibrator_artifact,
+            expected_registry_version=plan.manifest.taxon_scope.registry_version,
+            expected_target_accepted_taxon_key=(
+                plan.manifest.taxon_scope.accepted_taxon_key
+            ),
+            expected_model_name=self.request.bioclip_model,
+        )
+        self._support_dependency_permit = permit
+        self._reference_bank_readiness_permit = permit.readiness
+        return permit
 
     def _load_reference_bank_readiness_permit(
         self,
@@ -601,18 +688,41 @@ class ProductionRunOrchestrator:
             "validation_status": "validated",
             **asdict(permit),
         }
-        return replace(
-            manifest,
-            model_configs={
-                **manifest.model_configs,
-                "reference_bank_readiness": readiness_identity,
-            },
-            metrics={
-                **manifest.metrics,
-                "reference_bank_readiness_status": str(permit.status),
-                "reference_bank_readiness_sha256": permit.readiness_sha256,
-            },
-        )
+        model_configs = {
+            **manifest.model_configs,
+            "reference_bank_readiness": readiness_identity,
+        }
+        metrics = {
+            **manifest.metrics,
+            "reference_bank_readiness_status": str(permit.status),
+            "reference_bank_readiness_sha256": permit.readiness_sha256,
+        }
+        dependencies = self._support_dependency_permit
+        if dependencies is not None:
+            support_identity = {
+                **dict(manifest.model_configs.get("support_dependencies") or {}),
+                "validation_status": "validated",
+                "candidate_set_fingerprints": list(
+                    dependencies.candidate_set_fingerprints
+                ),
+                "reference_embedding_fingerprint": (
+                    dependencies.reference_embedding_fingerprint
+                ),
+                "model_fingerprint": dependencies.model_fingerprint,
+                "classifier_fingerprint": dependencies.classifier_fingerprint,
+                "calibration_fingerprint": dependencies.calibration_fingerprint,
+            }
+            model_configs["support_dependencies"] = support_identity
+            metrics.update(
+                {
+                    "reference_embedding_fingerprint": (
+                        dependencies.reference_embedding_fingerprint
+                    ),
+                    "classifier_fingerprint": dependencies.classifier_fingerprint,
+                    "calibration_fingerprint": dependencies.calibration_fingerprint,
+                }
+            )
+        return replace(manifest, model_configs=model_configs, metrics=metrics)
 
     def _close_vision_runtime_resources(self) -> None:
         if self._vision_runtime_resources_closed:

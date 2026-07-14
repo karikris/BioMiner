@@ -785,6 +785,15 @@ class ReferenceBankReadinessResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ReferenceBankRequirementStatus:
+    accepted_taxon_key: str
+    route: str
+    minimum_count: int
+    observed_count: int
+    geo_cluster_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ReferenceBankReadinessPermit:
     status: str
     registry_version: str
@@ -811,6 +820,8 @@ class ReferenceBankReadinessPermit:
     readiness_sha256: str
     support_manifest_sha256: str
     summary_sha256: str
+    candidate_set_fingerprints: tuple[str, ...] = ()
+    target_adult_requirements: tuple[ReferenceBankRequirementStatus, ...] = ()
 
     def model_input_identity(self) -> ReferenceModelInputIdentity:
         return ReferenceModelInputIdentity(
@@ -1553,6 +1564,8 @@ def load_reference_bank_readiness(
         readiness_sha256=readiness_sha,
         support_manifest_sha256=support_sha,
         summary_sha256=summary_sha,
+        candidate_set_fingerprints=tuple(payload["candidate_set_fingerprints"]),
+        target_adult_requirements=_target_adult_requirement_statuses(payload),
     )
 
 
@@ -1565,6 +1578,35 @@ def reference_readiness_allows_vision(status_or_mapping: object) -> bool:
             and permits is True
         )
     return status_or_mapping in PERMITTING_READINESS_STATUSES
+
+
+def _target_adult_requirement_statuses(
+    payload: Mapping[str, object],
+) -> tuple[ReferenceBankRequirementStatus, ...]:
+    checks = payload["checks"]
+    assert isinstance(checks, list)
+    target_check = next(
+        item
+        for item in checks
+        if isinstance(item, Mapping) and item.get("check_id") == "target_adult_minimum"
+    )
+    observed = target_check["observed"]
+    assert isinstance(observed, list)
+    return tuple(
+        ReferenceBankRequirementStatus(
+            accepted_taxon_key=str(item["accepted_taxon_key"]),
+            route=str(item["route"]),
+            minimum_count=int(item["minimum_count"]),
+            observed_count=int(item["observed_count"]),
+            geo_cluster_id=(
+                None
+                if item.get("geo_cluster_id") is None
+                else str(item["geo_cluster_id"])
+            ),
+        )
+        for item in observed
+        if isinstance(item, Mapping)
+    )
 
 
 def _validate_candidate_policy_bindings(
