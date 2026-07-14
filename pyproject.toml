@@ -17,6 +17,11 @@ dependencies = [
 geo = [
     "h3>=4.5,<5",
 ]
+ml = [
+    "numpy>=2.4,<3",
+    "scikit-learn>=1.9,<2",
+    "skops>=0.14,<0.15",
+]
 postgres = [
     "psycopg[binary]>=3.2",
 ]
