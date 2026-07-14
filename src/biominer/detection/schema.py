@@ -7,11 +7,12 @@ from typing import Any, Iterable
 
 import polars as pl
 
-from biominer.detection.detector_base import DecodedImage, DetectionCandidate
+from biominer.detection.detector_base import DecodedImage, DetectionCandidate, normalize_detector_prompt
 from biominer.detection.policy import DetectionPolicy
+from biominer.detection.routing import DetectionRouteDecision, route_detection
 
 
-DETECTION_SCHEMA_VERSION = "object-detection-v1"
+DETECTION_SCHEMA_VERSION = "object-detection-v2"
 DETECTION_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "source": pl.String,
     "flickr_photo_id": pl.String,
@@ -32,6 +33,16 @@ DETECTION_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "detector_label": pl.String,
     "detector_score": pl.Float64,
     "objectness_score": pl.Float64,
+    "detector_prompt": pl.String,
+    "detector_class_id": pl.Int64,
+    "detector_prompt_set_fingerprint": pl.String,
+    "detection_route": pl.String,
+    "routing_action": pl.String,
+    "bioclip_route": pl.String,
+    "routing_priority": pl.String,
+    "routing_reason": pl.String,
+    "routing_policy_version": pl.String,
+    "routing_policy_fingerprint": pl.String,
     "nms_group_id": pl.String,
     "crop_padding_ratio": pl.Float64,
     "crop_hash": pl.String,
@@ -55,6 +66,7 @@ def detection_id_for(
     detector_checkpoint: str,
     bbox_xyxyn: Iterable[float | None],
     detector_label: str,
+    detector_prompt: str | None = None,
 ) -> str:
     payload = json.dumps(
         {
@@ -63,6 +75,7 @@ def detection_id_for(
             "detector_checkpoint": detector_checkpoint,
             "bbox_xyxyn": [None if value is None else round(float(value), 6) for value in bbox_xyxyn],
             "detector_label": detector_label,
+            "detector_prompt": None if detector_prompt is None else normalize_detector_prompt(detector_prompt),
         },
         sort_keys=True,
     )
@@ -78,6 +91,7 @@ def build_detection_rows(
     detector_model_id: str,
     detector_model_version: str,
     detector_checkpoint: str,
+    detector_prompt_set_fingerprint: str | None = None,
     detected_at: datetime | str | None = None,
     policy: DetectionPolicy | None = None,
 ) -> list[dict[str, Any]]:
@@ -86,29 +100,36 @@ def build_detection_rows(
     if not source or not photo_id:
         raise ValueError("Detection rows require source and flickr_photo_id")
     timestamp = _timestamp(detected_at)
-    kept = _filter_detections(detections, image=image, policy=policy or DetectionPolicy(backend=detector_backend))
+    active_policy = policy or DetectionPolicy(backend=detector_backend)
+    kept = _filter_detections(detections, image=image, policy=active_policy)
     if not kept:
-        return [
-            _base_row(
-                record,
+        row = _base_row(
+            record,
+            source=source,
+            photo_id=photo_id,
+            detector_backend=detector_backend,
+            detector_model_id=detector_model_id,
+            detector_model_version=detector_model_version,
+            detector_checkpoint=detector_checkpoint,
+            detected_at=timestamp,
+            detection_id=detection_id_for(
                 source=source,
-                photo_id=photo_id,
-                detector_backend=detector_backend,
-                detector_model_id=detector_model_id,
-                detector_model_version=detector_model_version,
+                flickr_photo_id=photo_id,
                 detector_checkpoint=detector_checkpoint,
-                detected_at=timestamp,
-                detection_id=detection_id_for(
-                    source=source,
-                    flickr_photo_id=photo_id,
-                    detector_checkpoint=detector_checkpoint,
-                    bbox_xyxyn=(None, None, None, None),
-                    detector_label="no_detection",
-                ),
-                detection_status="no_detection",
-                failure_reason="no_butterfly_like_object",
-            )
-        ]
+                bbox_xyxyn=(None, None, None, None),
+                detector_label="no_relevant_organism",
+                detector_prompt=None,
+            ),
+            detection_status="no_detection",
+            failure_reason="no_relevant_organism",
+        )
+        row.update(
+            {
+                "detector_label": "no_relevant_organism",
+                "detector_prompt_set_fingerprint": detector_prompt_set_fingerprint,
+            }
+        )
+        return [_with_route_fields(row, policy=active_policy)]
     rows: list[dict[str, Any]] = []
     for candidate in kept:
         bbox = _bbox_xyxy(candidate.bbox_xyxy, image=image)
@@ -131,6 +152,7 @@ def build_detection_rows(
                         detector_checkpoint=detector_checkpoint,
                         bbox_xyxyn=xyxyn,
                         detector_label=candidate.label,
+                        detector_prompt=candidate.detector_prompt,
                     ),
                     detection_status="detected",
                     failure_reason=None,
@@ -142,9 +164,13 @@ def build_detection_rows(
                 "detector_label": candidate.label,
                 "detector_score": float(candidate.score),
                 "objectness_score": None if candidate.objectness_score is None else float(candidate.objectness_score),
+                "detector_prompt": candidate.detector_prompt,
+                "detector_class_id": candidate.detector_class_id,
+                "detector_prompt_set_fingerprint": candidate.detector_prompt_set_fingerprint
+                or detector_prompt_set_fingerprint,
             }
         )
-    return rows
+    return [_with_route_fields(row, policy=active_policy) for row in rows]
 
 
 def _base_row(
@@ -181,6 +207,16 @@ def _base_row(
         "detector_label": None,
         "detector_score": 0.0,
         "objectness_score": None,
+        "detector_prompt": None,
+        "detector_class_id": None,
+        "detector_prompt_set_fingerprint": None,
+        "detection_route": None,
+        "routing_action": None,
+        "bioclip_route": None,
+        "routing_priority": None,
+        "routing_reason": None,
+        "routing_policy_version": None,
+        "routing_policy_fingerprint": None,
         "nms_group_id": None,
         "crop_padding_ratio": 0.0,
         "crop_hash": None,
@@ -199,19 +235,66 @@ def _filter_detections(
     image: DecodedImage,
     policy: DetectionPolicy,
 ) -> list[DetectionCandidate]:
-    output: list[tuple[DetectionCandidate, list[float]]] = []
-    for detection in sorted(detections, key=lambda item: item.score, reverse=True):
+    routed: list[
+        tuple[DetectionCandidate, list[float], DetectionRouteDecision]
+    ] = []
+    for detection in detections:
         bbox = _bbox_xyxy(detection.bbox_xyxy, image=image)
         if detection.score < policy.box_score_threshold:
             continue
         if _box_area_ratio(bbox, image=image) < policy.min_box_area_ratio:
             continue
-        if any(_iou_xyxy(bbox, kept_bbox) > policy.nms_iou_threshold for _kept, kept_bbox in output):
+        routed.append(
+            (detection, bbox, _candidate_route_decision(detection, policy=policy))
+        )
+
+    action_order = {"score": 0, "review": 1, "exclude": 2}
+    routed.sort(
+        key=lambda item: (
+            action_order[item[2].routing_action],
+            -item[0].score,
+        )
+    )
+    output: list[
+        tuple[DetectionCandidate, list[float], tuple[str, str, str | None]]
+    ] = []
+    for detection, bbox, decision in routed:
+        nms_identity = (
+            decision.detection_route,
+            decision.routing_action,
+            decision.bioclip_route,
+        )
+        if any(
+            kept_identity == nms_identity
+            and _iou_xyxy(bbox, kept_bbox) > policy.nms_iou_threshold
+            for _kept, kept_bbox, kept_identity in output
+        ):
             continue
-        output.append((detection, bbox))
+        output.append((detection, bbox, nms_identity))
         if len(output) >= policy.max_boxes_per_image:
             break
-    return [detection for detection, _bbox in output]
+    return [detection for detection, _bbox, _identity in output]
+
+
+def _candidate_route_decision(
+    candidate: DetectionCandidate,
+    *,
+    policy: DetectionPolicy,
+) -> DetectionRouteDecision:
+    return route_detection(
+        {
+            "detection_status": "detected",
+            "detector_label": candidate.label,
+            "detector_prompt": candidate.detector_prompt,
+            "detector_score": float(candidate.score),
+        },
+        getattr(policy, "routing_policy", None),
+    )
+
+
+def _with_route_fields(row: dict[str, Any], *, policy: DetectionPolicy) -> dict[str, Any]:
+    decision = route_detection(row, getattr(policy, "routing_policy", None))
+    return {**row, **decision.as_row_fields()}
 
 
 def _bbox_xyxy(values: tuple[float, float, float, float], *, image: DecodedImage) -> list[float]:

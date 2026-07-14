@@ -108,6 +108,66 @@ def test_visual_qa_does_not_flag_bare_object_scores_as_noneligible_detections() 
     assert "bioclip_score_for_noneligible_detection" not in findings.select("finding_type").to_series().to_list()
 
 
+def test_visual_qa_allows_unscored_low_priority_adult_review_route() -> None:
+    row = _missing_score_row()
+    row.update(
+        {
+            "detection_route": "adult_butterfly_field",
+            "routing_action": "review",
+            "bioclip_route": "adult_field",
+            "routing_priority": "low",
+        }
+    )
+
+    findings = build_visual_qa_findings(object_evidence=pl.DataFrame([row]))
+
+    assert "butterfly_like_missing_bioclip_score" not in findings[
+        "finding_type"
+    ].to_list()
+    assert "bioclip_score_for_noneligible_detection" not in findings[
+        "finding_type"
+    ].to_list()
+
+
+def test_visual_qa_rejects_scores_from_nonadult_comparison_routes() -> None:
+    findings = build_visual_qa_findings(
+        object_evidence=pl.DataFrame(
+            [
+                _row(
+                    flickr_photo_id="larval-scored",
+                    detector_label="caterpillar",
+                    detection_route="caterpillar_field",
+                    routing_action="score",
+                    bioclip_route="larval",
+                ),
+                _row(
+                    flickr_photo_id="specimen-scored",
+                    detector_label="pinned_specimen",
+                    detection_route="pinned_specimen",
+                    routing_action="score",
+                    bioclip_route="pinned_specimen",
+                ),
+                _row(
+                    flickr_photo_id="excluded-scored",
+                    detector_label="hard_negative",
+                    detection_route="artwork_logo_tattoo_or_other_artifact",
+                    routing_action="exclude",
+                    bioclip_route=None,
+                ),
+            ]
+        )
+    )
+
+    fatal = findings.filter(
+        pl.col("finding_type") == "bioclip_score_for_noneligible_detection"
+    )
+    assert fatal["flickr_photo_id"].to_list() == [
+        "excluded-scored",
+        "larval-scored",
+        "specimen-scored",
+    ]
+
+
 def test_visual_qa_warning_counts_are_stable() -> None:
     findings = build_visual_qa_findings(
         object_evidence=pl.DataFrame(

@@ -80,7 +80,15 @@ OBJECT_SCORE_OUTPUT_SCHEMA: dict[str, pl.DataType] = {
     "visual_input_id": pl.String,
     "visual_input_kind": pl.String,
     "bioclip_gate_mode": pl.String,
+    "bioclip_gate_decision": pl.String,
     "bioclip_gate_reason": pl.String,
+    "detection_route": pl.String,
+    "routing_action": pl.String,
+    "bioclip_route": pl.String,
+    "routing_priority": pl.String,
+    "routing_reason": pl.String,
+    "routing_policy_version": pl.String,
+    "routing_policy_fingerprint": pl.String,
     "model_id": pl.String,
     "model_version": pl.String,
     "model_checkpoint": pl.String,
@@ -740,6 +748,7 @@ def _materialize_detector_crop_batch(
                 "visual_input_id": visual_input_id,
                 "visual_input_kind": "detector_crop",
                 "bioclip_gate_mode": decision.bioclip_gate_mode,
+                "bioclip_gate_decision": decision.bioclip_gate_decision,
                 "bioclip_gate_reason": decision.bioclip_gate_reason,
             }
             rows.append(row)
@@ -1454,7 +1463,21 @@ def _score_detection_from_scores(
         "visual_input_id": _visual_input_id(item, ablation_mode=ablation_mode),
         "visual_input_kind": str(item.get("visual_input_kind") or ablation_mode),
         "bioclip_gate_mode": _string_or_none(item.get("bioclip_gate_mode")),
+        "bioclip_gate_decision": _string_or_none(
+            item.get("bioclip_gate_decision")
+        ),
         "bioclip_gate_reason": _string_or_none(item.get("bioclip_gate_reason")),
+        "detection_route": _string_or_none(item.get("detection_route")),
+        "routing_action": _string_or_none(item.get("routing_action")),
+        "bioclip_route": _string_or_none(item.get("bioclip_route")),
+        "routing_priority": _string_or_none(item.get("routing_priority")),
+        "routing_reason": _string_or_none(item.get("routing_reason")),
+        "routing_policy_version": _string_or_none(
+            item.get("routing_policy_version")
+        ),
+        "routing_policy_fingerprint": _string_or_none(
+            item.get("routing_policy_fingerprint")
+        ),
         "model_id": scorer.model_id,
         "model_version": scorer.model_version,
         "model_checkpoint": scorer.model_checkpoint,
@@ -1891,9 +1914,10 @@ def _unscored_photo_summary(
     detection_rows: list[dict[str, Any]],
     species_context: SpeciesContext | None,
 ) -> dict[str, Any] | None:
-    detections = [row for row in detection_rows if detection_is_bioclip_eligible(row)]
+    detections = [row for row in detection_rows if _expects_bioclip_score(row)]
     detection_ids = _unique(row.get("detection_id") for row in detections)
     if detection_ids:
+        review_reason = _unscored_routed_bioclip_reason(detections)
         return {
             "source": str(record.get("source") or ""),
             "flickr_photo_id": str(record.get("flickr_photo_id") or ""),
@@ -1903,10 +1927,34 @@ def _unscored_photo_summary(
             "best_object_species_top1": None,
             "best_object_score": None,
             "photo_occurrence_bin": "in_review",
-            "photo_bin_reason": "detected_object_without_bioclip_score",
+            "photo_bin_reason": review_reason,
             "all_detection_ids": detection_ids,
             "all_candidate_species": [],
-            **_empty_photo_prediction_fields(photo_review_reason="detected_object_without_bioclip_score"),
+            **_empty_photo_prediction_fields(photo_review_reason=review_reason),
+        }
+
+    routing_review_reason = _routing_review_reason(detection_rows)
+    if routing_review_reason:
+        routed_ids = _unique(
+            row.get("detection_id")
+            for row in detection_rows
+            if str(row.get("detection_status") or "") == "detected"
+        )
+        return {
+            "source": str(record.get("source") or ""),
+            "flickr_photo_id": str(record.get("flickr_photo_id") or ""),
+            "best_detection_id": routed_ids[0] if routed_ids else None,
+            "detection_count": len(routed_ids),
+            "best_object_occurrence_bin": None,
+            "best_object_species_top1": None,
+            "best_object_score": None,
+            "photo_occurrence_bin": "in_review",
+            "photo_bin_reason": routing_review_reason,
+            "all_detection_ids": routed_ids,
+            "all_candidate_species": [],
+            **_empty_photo_prediction_fields(
+                photo_review_reason=routing_review_reason
+            ),
         }
 
     visual_negative_reason = _noneligible_detection_reason(detection_rows)
@@ -1940,7 +1988,12 @@ def _unscored_photo_summary(
             "best_object_occurrence_bin": None,
             "best_object_species_top1": None,
             "best_object_score": None,
-            "photo_occurrence_bin": "bin" if failure_reason == "no_butterfly_like_object" else "in_review",
+            "photo_occurrence_bin": (
+                "bin"
+                if failure_reason
+                in {"no_butterfly_like_object", "no_relevant_organism"}
+                else "in_review"
+            ),
             "photo_bin_reason": failure_reason,
             "all_detection_ids": [],
             "all_candidate_species": [],
@@ -1966,6 +2019,19 @@ def _unscored_photo_summary(
 
 
 def _noneligible_detection_reason(detection_rows: list[dict[str, Any]]) -> str | None:
+    routes = {
+        str(row.get("detection_route") or "")
+        for row in detection_rows
+        if str(row.get("detection_status") or "") == "detected"
+    }
+    if "artwork_logo_tattoo_or_other_artifact" in routes:
+        return "negative_material_visual_artifact"
+    if "possible_moth_or_other_insect" in routes:
+        return "negative_material_non_target_order"
+    if routes == {"no_relevant_organism"}:
+        return "no_relevant_organism"
+    if routes == {"ambiguous_visual_domain"}:
+        return "ambiguous_visual_domain_excluded"
     labels = {
         str(row.get("detector_label") or "")
         for row in detection_rows
@@ -1979,6 +2045,45 @@ def _noneligible_detection_reason(detection_rows: list[dict[str, Any]]) -> str |
         return "negative_material_non_target_order"
     if not any(label == "butterfly_like" for label in labels):
         return "negative_material_non_butterfly"
+    return None
+
+
+def _unscored_routed_bioclip_reason(
+    detections: list[dict[str, Any]],
+) -> str:
+    routes = {str(row.get("bioclip_route") or "") for row in detections}
+    if routes == {"larval"}:
+        return "larval_route_without_bioclip_score"
+    if routes == {"pinned_specimen"}:
+        return "pinned_specimen_route_without_bioclip_score"
+    return "detected_object_without_bioclip_score"
+
+
+def _expects_bioclip_score(row: dict[str, Any]) -> bool:
+    routing_action = row.get("routing_action")
+    if routing_action is not None:
+        return str(routing_action).strip().casefold() == "score"
+    return detection_is_bioclip_eligible(row)
+
+
+def _routing_review_reason(detection_rows: list[dict[str, Any]]) -> str | None:
+    review_routes = {
+        str(row.get("detection_route") or "")
+        for row in detection_rows
+        if str(row.get("detection_status") or "") == "detected"
+        and str(row.get("routing_action") or "") == "review"
+    }
+    if "ambiguous_visual_domain" in review_routes:
+        return "ambiguous_visual_domain_review"
+    if "adult_butterfly_field" in review_routes:
+        return "possible_adult_butterfly_review"
+    routes = {
+        str(row.get("detection_route") or "")
+        for row in detection_rows
+        if str(row.get("detection_status") or "") == "detected"
+    }
+    if "pupa_or_chrysalis" in routes:
+        return "pupal_route_requires_separate_evidence"
     return None
 
 
@@ -1999,10 +2104,7 @@ def _active_bioclip_gate_policy(
     detected_visual_input_kind: AblationMode,
 ) -> BioClipGatePolicy:
     if bioclip_gate_policy is None:
-        active_detection_policy = detection_policy or DetectionPolicy()
-        bioclip_gate_policy = BioClipGatePolicy.legacy_butterfly_like_only(
-            eligible_detector_labels=tuple(active_detection_policy.bioclip_eligible_labels)
-        )
+        bioclip_gate_policy = BioClipGatePolicy()
     return replace(bioclip_gate_policy, detected_visual_input_kind=detected_visual_input_kind)
 
 

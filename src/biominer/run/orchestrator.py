@@ -75,6 +75,7 @@ from biominer.workstore.base import WorkStore
 DEFAULT_BIOCLIP_MODEL = "imageomics/bioclip-2.5-vith14"
 DEFAULT_VISION_BACKEND = "yoloe26"
 PRODUCTION_VISUAL_MODE = "detector_crop"
+PRODUCTION_BIOCLIP_COMPARISON_ROUTES = ("adult_field",)
 PRODUCTION_JOB_NAME = "biominer_production_run"
 REQUIRED_REGISTRY_ARTIFACTS = (
     "taxa.parquet",
@@ -956,8 +957,8 @@ class ProductionRunOrchestrator:
             stale_after_seconds=int(self.request.limits.get("stale_claim_seconds") or DEFAULT_STALE_CLAIM_SECONDS),
         )
         detection_policy = self.request.vision_settings.to_detection_policy(DetectionPolicy(backend=self.object_detector.backend))
-        gate_mode = "exclude_hard_negative"
-        score_no_detection_whole_image = True
+        gate_mode = "routed_visual_domain"
+        score_no_detection_whole_image = False
         plan_result = enqueue_rolling_vision_work_from_source_shards(
             storage=self.storage,
             workstore=self.workstore,
@@ -972,10 +973,18 @@ class ProductionRunOrchestrator:
                 "model_id": self.object_detector.model_id,
                 "model_version": self.object_detector.model_version,
                 "checkpoint": self.object_detector.checkpoint,
+                "prompt_classes": list(
+                    getattr(self.object_detector, "prompt_classes", ())
+                ),
+                "prompt_set_fingerprint": str(
+                    getattr(self.object_detector, "prompt_set_fingerprint", "")
+                    or ""
+                ),
             },
             vision_settings=self.request.vision_settings,
             bioclip_gate_mode=gate_mode,
             score_no_detection_whole_image=score_no_detection_whole_image,
+            supported_comparison_routes=PRODUCTION_BIOCLIP_COMPARISON_ROUTES,
             bioclip_model={
                 "model_id": self.object_scorer.model_id,
                 "model_version": self.object_scorer.model_version,
@@ -1035,8 +1044,8 @@ class ProductionRunOrchestrator:
         }
         gate_policy = BioClipGatePolicy(
             mode=gate_mode,
-            eligible_detector_labels=detection_policy.bioclip_eligible_labels,
             score_no_detection_whole_image=score_no_detection_whole_image,
+            supported_comparison_routes=PRODUCTION_BIOCLIP_COMPARISON_ROUTES,
         )
 
         def detect(item: dict[str, Any]) -> Any:
@@ -1141,6 +1150,9 @@ class ProductionRunOrchestrator:
                 "vision_worker": "rolling",
                 "bioclip_gate_mode": gate_mode,
                 "score_no_detection_whole_image": score_no_detection_whole_image,
+                "supported_bioclip_comparison_routes": list(
+                    PRODUCTION_BIOCLIP_COMPARISON_ROUTES
+                ),
                 "parquet_part_count": completed,
                 "parquet_part_rows": accumulated_metrics["detections_written"],
                 "parquet_compression": self.request.vision_settings.parquet_compression,
@@ -2044,6 +2056,9 @@ def _score_primary_visual_mode(
         scorer=scorer,
         output_path=output_dir / "object_bioclip_scores_detector_crop.parquet",
         ablation_mode=PRODUCTION_VISUAL_MODE,
+        bioclip_gate_policy=BioClipGatePolicy(
+            supported_comparison_routes=PRODUCTION_BIOCLIP_COMPARISON_ROUTES
+        ),
         bioclip_batch_size=bioclip_batch_size,
         adaptive_batching=adaptive_batching,
         min_bioclip_batch_size=min_bioclip_batch_size,

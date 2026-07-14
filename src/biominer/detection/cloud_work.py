@@ -59,6 +59,8 @@ def enqueue_detection_work_from_source_shards(
     detector_model_id: str,
     detector_model_version: str,
     detector_checkpoint: str,
+    detector_prompt_classes: tuple[str, ...] = (),
+    detector_prompt_set_fingerprint: str = "",
     detection_policy: DetectionPolicy | None = None,
     vision_settings: Any | None = None,
     limit: int | None = None,
@@ -79,6 +81,8 @@ def enqueue_detection_work_from_source_shards(
         "model_id": detector_model_id,
         "model_version": detector_model_version,
         "checkpoint": detector_checkpoint,
+        "prompt_classes": list(detector_prompt_classes),
+        "prompt_set_fingerprint": detector_prompt_set_fingerprint,
     }
     for shard in shards:
         if remaining == 0:
@@ -150,7 +154,13 @@ def run_cloud_detection_batch(
             image = _resize_image_to_max_side(image_loader(record), policy.image_max_side_px)
         except Exception as exc:  # noqa: BLE001 - image failures become durable detection rows.
             image_failures += 1
-            rows.append(_image_failure_row(_LoadedFailure(record=record, failure_reason=str(exc)), detector=detector))
+            rows.append(
+                _image_failure_row(
+                    _LoadedFailure(record=record, failure_reason=str(exc)),
+                    detector=detector,
+                    policy=policy,
+                )
+            )
             continue
         images_loaded += 1
         loaded.append((record, image))
@@ -187,6 +197,9 @@ def run_cloud_detection_batch(
                 detector_model_id=detector.model_id,
                 detector_model_version=detector.model_version,
                 detector_checkpoint=detector.checkpoint,
+                detector_prompt_set_fingerprint=getattr(
+                    detector, "prompt_set_fingerprint", None
+                ),
                 policy=policy,
             )
             for row in detection_rows:
@@ -232,24 +245,39 @@ def detection_work_item(
     *,
     run_id: str,
     source_shard_uri: str,
-    detector: dict[str, str],
+    detector: dict[str, Any],
     detection_policy: DetectionPolicy | None = None,
     vision_settings: Any | None = None,
 ) -> dict[str, Any]:
     source = str(record.get("source") or "flickr")
     flickr_photo_id = str(record.get("flickr_photo_id") or record.get("id") or "")
     image_url = str(record.get("image_url") or "")
-    policy_key = _detection_policy_key(detection_policy or DetectionPolicy(backend=str(detector.get("backend") or "yoloe26")))
+    base_policy = DetectionPolicy(
+        backend=str(detector.get("backend") or "yoloe26")
+    )
+    active_policy = detection_policy
+    if active_policy is None and hasattr(vision_settings, "to_detection_policy"):
+        active_policy = vision_settings.to_detection_policy(base_policy)
+    policy_key = _detection_policy_key(active_policy or base_policy)
     runtime_key = _vision_runtime_key(vision_settings)
+    detector_identity = {
+        "backend": str(detector.get("backend") or ""),
+        "model_id": str(detector.get("model_id") or ""),
+        "model_version": str(detector.get("model_version") or ""),
+        "checkpoint": str(detector.get("checkpoint") or ""),
+        "prompt_classes": [
+            str(prompt) for prompt in detector.get("prompt_classes") or []
+        ],
+        "prompt_set_fingerprint": str(
+            detector.get("prompt_set_fingerprint") or ""
+        ),
+    }
     key_payload = {
         "run_id": run_id,
         "source": source,
         "flickr_photo_id": flickr_photo_id,
         "image_url": image_url,
-        "detector_backend": detector.get("backend") or "",
-        "detector_model_id": detector.get("model_id") or "",
-        "detector_model_version": detector.get("model_version") or "",
-        "detector_checkpoint": detector.get("checkpoint") or "",
+        "detector": detector_identity,
         "detection_policy": policy_key,
         "vision_runtime": runtime_key,
     }
@@ -261,7 +289,7 @@ def detection_work_item(
         "image_url": image_url,
         "source_shard_uri": source_shard_uri,
         "source_record": _jsonable_record(record),
-        "detector": dict(detector),
+        "detector": detector_identity,
         "detection_policy": policy_key,
         "vision_runtime": runtime_key,
     }
@@ -282,13 +310,29 @@ def _record_is_detectable(record: dict[str, Any]) -> bool:
 
 
 def _detection_policy_key(policy: DetectionPolicy) -> dict[str, Any]:
+    routing_policy = policy.routing_policy
     return {
         "backend": policy.backend,
         "box_score_threshold": policy.box_score_threshold,
         "nms_iou_threshold": policy.nms_iou_threshold,
         "min_box_area_ratio": policy.min_box_area_ratio,
         "max_boxes_per_image": policy.max_boxes_per_image,
-        "bioclip_eligible_labels": list(policy.bioclip_eligible_labels),
+        "routing_policy": {
+            "version": routing_policy.version,
+            "fingerprint": routing_policy.fingerprint,
+            "possible_adult_route_enabled": (
+                routing_policy.possible_adult_route_enabled
+            ),
+            "possible_adult_route_threshold": (
+                routing_policy.possible_adult_route_threshold
+            ),
+            "ambiguous_insect_review_enabled": (
+                routing_policy.ambiguous_insect_review_enabled
+            ),
+            "ambiguous_insect_review_threshold": (
+                routing_policy.ambiguous_insect_review_threshold
+            ),
+        },
         "crop_padding_ratio": policy.crop_padding_ratio,
         "image_max_side_px": policy.image_max_side_px,
         "crop_target_px": policy.crop_target_px,
@@ -304,6 +348,10 @@ def _vision_runtime_key(settings: Any | None) -> dict[str, Any]:
         "yolo_conf",
         "yolo_iou",
         "yolo_max_det",
+        "possible_adult_route_enabled",
+        "possible_adult_route_threshold",
+        "ambiguous_insect_review_enabled",
+        "ambiguous_insect_review_threshold",
         "crop_padding_ratio",
         "crop_target_px",
         "image_max_side_px",

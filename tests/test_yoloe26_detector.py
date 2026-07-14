@@ -8,13 +8,14 @@ import sys
 import pytest
 
 import biominer.detection.yoloe26_detector as yoloe26_module
-from biominer.detection.detector_base import COARSE_DETECTOR_LABELS, DecodedImage, DetectionCandidate
+from biominer.detection.detector_base import DecodedImage, DetectionCandidate
 from biominer.detection.yoloe26_detector import (
     DEFAULT_YOLOE26_PROMPTS,
     YoloE26ObjectDetector,
     YoloE26SidecarObjectDetector,
     detections_from_yoloe_result,
     default_yoloe26_prompts,
+    yoloe26_prompt_set_fingerprint,
     yoloe26_coarse_label,
 )
 
@@ -27,17 +28,28 @@ def test_yoloe26_module_imports_without_ultralytics_runtime() -> None:
 
 def test_yoloe26_default_prompts_and_coarse_labels_are_stable() -> None:
     assert default_yoloe26_prompts() == DEFAULT_YOLOE26_PROMPTS
-    assert yoloe26_coarse_label("butterfly") == "butterfly_like"
-    assert yoloe26_coarse_label("butterfly wing") == "butterfly_like"
+    assert yoloe26_coarse_label("butterfly") == "adult_butterfly"
+    assert yoloe26_coarse_label("butterfly wing") == "possible_adult_butterfly"
+    assert yoloe26_coarse_label("pinned butterfly specimen") == "pinned_specimen"
     assert yoloe26_coarse_label("moth") == "moth_like"
     assert yoloe26_coarse_label("caterpillar") == "caterpillar"
     assert yoloe26_coarse_label("chrysalis") == "pupa"
     assert yoloe26_coarse_label("pupa") == "pupa"
-    assert yoloe26_coarse_label("flower") == "hard_negative"
-    assert yoloe26_coarse_label("museum label") == "hard_negative"
-    assert yoloe26_coarse_label("custom proposal") == "insect_like"
+    assert yoloe26_coarse_label("flower") == "no_relevant_organism"
+    assert yoloe26_coarse_label("museum label") == "artifact"
     assert "flower" not in default_yoloe26_prompts(include_hard_negative_prompts=False)
     assert "butterfly" in default_yoloe26_prompts(include_hard_negative_prompts=False)
+
+    with pytest.raises(ValueError, match="unsupported YOLOE-26 object prompt"):
+        yoloe26_coarse_label("custom proposal")
+
+
+def test_yoloe26_prompt_set_fingerprint_is_normalized_and_order_sensitive() -> None:
+    fingerprint = yoloe26_prompt_set_fingerprint((" Butterfly  ", "MOTH"))
+
+    assert fingerprint == yoloe26_prompt_set_fingerprint(("butterfly", "moth"))
+    assert fingerprint.startswith("sha256:")
+    assert fingerprint != yoloe26_prompt_set_fingerprint(("moth", "butterfly"))
 
 
 def test_yoloe26_result_conversion_maps_prompts_to_detection_candidates() -> None:
@@ -51,22 +63,23 @@ def test_yoloe26_result_conversion_maps_prompts_to_detection_candidates() -> Non
 
     detections = detections_from_yoloe_result(result)
 
-    assert [item.label for item in detections] == ["butterfly_like", "hard_negative"]
+    assert [item.label for item in detections] == ["adult_butterfly", "no_relevant_organism"]
     assert detections[0].bbox_xyxy == (1.0, 2.0, 9.0, 12.0)
     assert detections[0].score == 0.87
     assert detections[0].objectness_score == 0.87
+    assert detections[0].detector_prompt == "butterfly"
+    assert detections[0].detector_class_id == 0
+    assert detections[0].detector_prompt_set_fingerprint == yoloe26_prompt_set_fingerprint(("butterfly", "flower"))
 
 
-def test_yoloe26_result_conversion_keeps_nontaxonomic_custom_prompts_coarse() -> None:
+def test_yoloe26_result_conversion_rejects_unknown_nontaxonomic_prompts() -> None:
     result = _FakeResult(
         names={0: "custom proposal"},
         boxes=[_FakeBox(xyxy=[[1.0, 2.0, 9.0, 12.0]], cls=[0], conf=[0.87])],
     )
 
-    detections = detections_from_yoloe_result(result)
-
-    assert [item.label for item in detections] == ["insect_like"]
-    assert set(item.label for item in detections).issubset(set(COARSE_DETECTOR_LABELS))
+    with pytest.raises(ValueError, match="unsupported YOLOE-26 object prompt"):
+        detections_from_yoloe_result(result)
 
 
 def test_yoloe26_result_conversion_rejects_taxonomic_custom_prompts() -> None:
@@ -76,6 +89,46 @@ def test_yoloe26_result_conversion_rejects_taxonomic_custom_prompts() -> None:
     )
 
     with pytest.raises(ValueError, match="object proposals"):
+        detections_from_yoloe_result(result)
+
+
+@pytest.mark.parametrize(
+    ("names", "message"),
+    [
+        ({}, "at least one"),
+        ({0: "butterfly", 2: "moth"}, "contiguous"),
+        ({0: "butterfly", 1: " Butterfly "}, "duplicate"),
+        ({1: "butterfly"}, "contiguous"),
+    ],
+)
+def test_yoloe26_result_conversion_rejects_invalid_actual_name_maps(names, message: str) -> None:  # noqa: ANN001
+    result = _FakeResult(names=names, boxes=[])
+
+    with pytest.raises(ValueError, match=message):
+        detections_from_yoloe_result(result)
+
+
+def test_yoloe26_result_conversion_uses_actual_name_order_not_requested_order() -> None:
+    result = _FakeResult(
+        names={0: "moth", 1: "butterfly"},
+        boxes=[_FakeBox(xyxy=[[1.0, 2.0, 9.0, 12.0]], cls=[0], conf=[0.87])],
+    )
+
+    detections = detections_from_yoloe_result(result, prompt_classes=("butterfly", "moth"))
+
+    assert detections[0].label == "moth_like"
+    assert detections[0].detector_prompt == "moth"
+    assert detections[0].detector_class_id == 0
+    assert detections[0].detector_prompt_set_fingerprint == yoloe26_prompt_set_fingerprint(("moth", "butterfly"))
+
+
+def test_yoloe26_result_conversion_rejects_class_id_outside_actual_name_map() -> None:
+    result = _FakeResult(
+        names={0: "butterfly"},
+        boxes=[_FakeBox(xyxy=[[1.0, 2.0, 9.0, 12.0]], cls=[1], conf=[0.87])],
+    )
+
+    with pytest.raises(ValueError, match="class id 1"):
         detections_from_yoloe_result(result)
 
 
@@ -112,7 +165,19 @@ def test_yoloe26_persistent_sidecar_reuses_detector_for_same_settings(monkeypatc
             self.model_version = "fake-version"
 
         def detect_batch(self, images) -> list[list[DetectionCandidate]]:  # noqa: ANN001
-            return [[DetectionCandidate(label="butterfly_like", score=0.9, bbox_xyxy=(0, 0, 1, 1))] for _image in images]
+            return [
+                [
+                    DetectionCandidate(
+                        label="adult_butterfly",
+                        score=0.9,
+                        bbox_xyxy=(0, 0, 1, 1),
+                        detector_prompt="butterfly",
+                        detector_class_id=0,
+                        detector_prompt_set_fingerprint="sha256:" + "a" * 64,
+                    )
+                ]
+                for _image in images
+            ]
 
     request = _persistent_request(imgsz=768)
     stdout = _run_persistent_worker_with_requests(monkeypatch, FakeDetector, [request, request, {"shutdown": True}])
@@ -124,7 +189,10 @@ def test_yoloe26_persistent_sidecar_reuses_detector_for_same_settings(monkeypatc
     assert responses[0]["model_id"] == "fake-model"
     assert responses[0]["model_version"] == "fake-version"
     assert responses[0]["checkpoint"] == "yoloe-26s-seg.pt"
-    assert responses[0]["detections"][0][0]["label"] == "butterfly_like"
+    assert responses[0]["detections"][0][0]["label"] == "adult_butterfly"
+    assert responses[0]["detections"][0][0]["detector_prompt"] == "butterfly"
+    assert responses[0]["detections"][0][0]["detector_class_id"] == 0
+    assert responses[0]["detections"][0][0]["detector_prompt_set_fingerprint"] == "sha256:" + "a" * 64
     assert responses[0]["metadata"]["model_id"] == "fake-model"
     assert len(responses) == 2
 
@@ -191,7 +259,10 @@ def test_yoloe26_sidecar_detector_reuses_one_process_for_multiple_batches(tmp_pa
     assert len(factory.processes) == 1
     assert factory.processes[0].args[-1] == "--persistent"
     assert factory.processes[0].kwargs["env"]["PYTORCH_ENABLE_MPS_FALLBACK"] == "1"
-    assert first[0][0].label == "butterfly_like"
+    assert first[0][0].label == "adult_butterfly"
+    assert first[0][0].detector_prompt == "butterfly"
+    assert first[0][0].detector_class_id == 0
+    assert first[0][0].detector_prompt_set_fingerprint == "sha256:" + "b" * 64
     assert second[0][0].score == 0.91
     assert detector.model_id == "fake-yoloe26"
     assert detector.model_version == "ultralytics:fake"
@@ -330,10 +401,13 @@ class _FakeStdin:
                         "detections": [
                             [
                                 {
-                                    "label": "butterfly_like",
+                                    "label": "adult_butterfly",
                                     "score": 0.91,
                                     "bbox_xyxy": [0.0, 0.0, 1.0, 1.0],
                                     "objectness_score": 0.91,
+                                    "detector_prompt": "butterfly",
+                                    "detector_class_id": 0,
+                                    "detector_prompt_set_fingerprint": "sha256:" + "b" * 64,
                                 }
                             ]
                             for _image in payload["images"]

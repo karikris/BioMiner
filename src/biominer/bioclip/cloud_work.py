@@ -200,7 +200,7 @@ def bioclip_score_work_item(
     normalized_mode = normalize_classification_mode(classification_mode)
     active_gate_decision = gate_decision or bioclip_score_input_decision(
         detection,
-        BioClipGatePolicy.legacy_butterfly_like_only(),
+        BioClipGatePolicy(),
     )
     normalized_cascade_identity = (
         validate_cascade_work_identity(cascade_identity)
@@ -239,11 +239,21 @@ def bioclip_score_work_item(
         "crop_width": _jsonable_value(detection.get("crop_width")),
         "crop_height": _jsonable_value(detection.get("crop_height")),
     }
+    detector_prompt_identity = {
+        "detector_prompt": str(detection.get("detector_prompt") or ""),
+        "detector_class_id": _jsonable_value(
+            detection.get("detector_class_id")
+        ),
+        "detector_prompt_set_fingerprint": str(
+            detection.get("detector_prompt_set_fingerprint") or ""
+        ),
+    }
     key_payload = {
         "run_id": run_id,
         "source": str(detection.get("source") or ""),
         "flickr_photo_id": str(detection.get("flickr_photo_id") or ""),
         "detection_id": str(detection.get("detection_id") or ""),
+        "detector_prompt_identity": detector_prompt_identity,
         "crop": crop_identity,
         "model_id": str(model.get("model_id") or ""),
         "model_version": str(model.get("model_version") or ""),
@@ -257,6 +267,15 @@ def bioclip_score_work_item(
         "bioclip_gate_mode": active_gate_decision.bioclip_gate_mode,
         "bioclip_gate_decision": active_gate_decision.bioclip_gate_decision,
         "bioclip_gate_reason": active_gate_decision.bioclip_gate_reason,
+        "detection_route": active_gate_decision.detection_route,
+        "routing_action": active_gate_decision.routing_action,
+        "bioclip_route": active_gate_decision.bioclip_route,
+        "routing_priority": active_gate_decision.routing_priority,
+        "routing_reason": active_gate_decision.routing_reason,
+        "routing_policy_version": active_gate_decision.routing_policy_version,
+        "routing_policy_fingerprint": (
+            active_gate_decision.routing_policy_fingerprint
+        ),
     }
     if top_k_settings is not None:
         key_payload["top_k_settings"] = top_k_settings
@@ -266,6 +285,11 @@ def bioclip_score_work_item(
         "source": key_payload["source"],
         "flickr_photo_id": key_payload["flickr_photo_id"],
         "detection_id": key_payload["detection_id"],
+        "detector_prompt": detector_prompt_identity["detector_prompt"],
+        "detector_class_id": detector_prompt_identity["detector_class_id"],
+        "detector_prompt_set_fingerprint": detector_prompt_identity[
+            "detector_prompt_set_fingerprint"
+        ],
         "crop_hash": crop_identity["crop_hash"],
         "detection_shard_uri": detection_shard_uri,
         "detection": _jsonable_record(detection),
@@ -279,6 +303,15 @@ def bioclip_score_work_item(
         "bioclip_gate_mode": active_gate_decision.bioclip_gate_mode,
         "bioclip_gate_decision": active_gate_decision.bioclip_gate_decision,
         "bioclip_gate_reason": active_gate_decision.bioclip_gate_reason,
+        "detection_route": active_gate_decision.detection_route,
+        "routing_action": active_gate_decision.routing_action,
+        "bioclip_route": active_gate_decision.bioclip_route,
+        "routing_priority": active_gate_decision.routing_priority,
+        "routing_reason": active_gate_decision.routing_reason,
+        "routing_policy_version": active_gate_decision.routing_policy_version,
+        "routing_policy_fingerprint": (
+            active_gate_decision.routing_policy_fingerprint
+        ),
     }
     if top_k_settings is not None:
         payload["top_k_settings"] = top_k_settings
@@ -625,17 +658,45 @@ def _validate_bioclip_work_key(work_key: str, payload: dict[str, Any]) -> None:
     model = payload.get("model")
     if not isinstance(detection, dict) or not isinstance(model, dict):
         raise ValueError(f"work item {work_key} has incomplete immutable identity")
+    for field_name in (
+        "detection_route",
+        "routing_action",
+        "bioclip_route",
+        "routing_priority",
+        "routing_reason",
+        "routing_policy_version",
+        "routing_policy_fingerprint",
+    ):
+        if payload.get(field_name) != detection.get(field_name):
+            raise ValueError(
+                f"work item {work_key} {field_name} does not match detection routing"
+            )
     crop_identity = {
         "crop_hash": str(payload.get("crop_hash") or detection.get("crop_hash") or ""),
         "crop_padding_ratio": _jsonable_value(detection.get("crop_padding_ratio")),
         "crop_width": _jsonable_value(detection.get("crop_width")),
         "crop_height": _jsonable_value(detection.get("crop_height")),
     }
+    detector_prompt_identity = {
+        "detector_prompt": str(detection.get("detector_prompt") or ""),
+        "detector_class_id": _jsonable_value(
+            detection.get("detector_class_id")
+        ),
+        "detector_prompt_set_fingerprint": str(
+            detection.get("detector_prompt_set_fingerprint") or ""
+        ),
+    }
+    for field_name, expected_value in detector_prompt_identity.items():
+        if payload.get(field_name) != expected_value:
+            raise ValueError(
+                f"work item {work_key} {field_name} does not match detector prompt identity"
+            )
     key_payload = {
         "run_id": str(payload.get("run_id") or ""),
         "source": str(payload.get("source") or ""),
         "flickr_photo_id": str(payload.get("flickr_photo_id") or ""),
         "detection_id": str(payload.get("detection_id") or ""),
+        "detector_prompt_identity": detector_prompt_identity,
         "crop": crop_identity,
         "model_id": str(model.get("model_id") or ""),
         "model_version": str(model.get("model_version") or ""),
@@ -653,6 +714,13 @@ def _validate_bioclip_work_key(work_key: str, payload: dict[str, Any]) -> None:
         "bioclip_gate_mode": payload.get("bioclip_gate_mode"),
         "bioclip_gate_decision": payload.get("bioclip_gate_decision"),
         "bioclip_gate_reason": payload.get("bioclip_gate_reason"),
+        "detection_route": payload.get("detection_route"),
+        "routing_action": payload.get("routing_action"),
+        "bioclip_route": payload.get("bioclip_route"),
+        "routing_priority": payload.get("routing_priority"),
+        "routing_reason": payload.get("routing_reason"),
+        "routing_policy_version": payload.get("routing_policy_version"),
+        "routing_policy_fingerprint": payload.get("routing_policy_fingerprint"),
     }
     if "top_k_settings" in payload:
         key_payload["top_k_settings"] = payload.get("top_k_settings")
@@ -734,10 +802,7 @@ def _active_bioclip_gate_policy(
 ) -> BioClipGatePolicy:
     if bioclip_gate_policy is not None:
         return bioclip_gate_policy
-    active_detection_policy = detection_policy or DetectionPolicy()
-    return BioClipGatePolicy.legacy_butterfly_like_only(
-        eligible_detector_labels=tuple(active_detection_policy.bioclip_eligible_labels)
-    )
+    return BioClipGatePolicy()
 
 
 def _stable_hash(payload: dict[str, Any]) -> str:

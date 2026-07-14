@@ -6,7 +6,6 @@ from typing import Any, Mapping
 import polars as pl
 
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-from biominer.detection.policy import DetectionPolicy, detection_is_bioclip_eligible
 from biominer.evaluation.review_queue import build_hierarchical_review_queue
 from biominer.evaluation.thresholds import VisionBucketPolicy, load_vision_bucket_policy
 
@@ -397,18 +396,37 @@ def _has_bioclip_score_for_noneligible_detection(row: Mapping[str, Any]) -> bool
         return False
     label = _text(row.get("detector_label"))
     status = _text(row.get("detection_status"))
-    if not label and not status:
+    detection_route = _text(row.get("detection_route"))
+    routing_action = _text(row.get("routing_action"))
+    bioclip_route = _text(row.get("bioclip_route"))
+    if not any((label, status, detection_route, routing_action, bioclip_route)):
         return False
     if status and status != "detected":
         return True
+    if any((detection_route, routing_action, bioclip_route)):
+        if routing_action != "score":
+            return True
+        return not (
+            detection_route == "adult_butterfly_field"
+            and bioclip_route == "adult_field"
+        )
     if not label:
         return False
-    return label not in set(DetectionPolicy().bioclip_eligible_labels)
+    return label.casefold() not in {
+        "adult_butterfly",
+        "butterfly",
+        "butterfly_like",
+    }
 
 
 def _is_butterfly_like_detection(row: Mapping[str, Any]) -> bool:
-    if detection_is_bioclip_eligible(dict(row)):
-        return True
+    detection_route = _text(row.get("detection_route"))
+    routing_action = _text(row.get("routing_action"))
+    if detection_route:
+        return detection_route == "adult_butterfly_field" and routing_action in {
+            "",
+            "score",
+        }
     label = _text(row.get("detector_label")).casefold()
     return label in {"butterfly_like", "butterfly", "adult_butterfly"}
 

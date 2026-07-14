@@ -5,11 +5,16 @@ from typing import Protocol, Sequence
 
 
 COARSE_DETECTOR_LABELS: tuple[str, ...] = (
+    "adult_butterfly",
+    "possible_adult_butterfly",
+    "pinned_specimen",
     "butterfly_like",
     "moth_like",
     "caterpillar",
     "pupa",
     "insect_like",
+    "artifact",
+    "no_relevant_organism",
     "hard_negative",
 )
 
@@ -17,9 +22,9 @@ LEGACY_DETECTOR_LABEL_MAP: dict[str, str] = {
     "butterfly": "butterfly_like",
     "adult_butterfly": "butterfly_like",
     "butterfly_wing": "butterfly_like",
-    "butterfly_specimen": "butterfly_like",
-    "butterfly specimen": "butterfly_like",
-    "pinned_butterfly_specimen": "butterfly_like",
+    "butterfly_specimen": "pinned_specimen",
+    "butterfly specimen": "pinned_specimen",
+    "pinned_butterfly_specimen": "pinned_specimen",
     "lepidoptera": "butterfly_like",
     "moth": "moth_like",
     "larva": "caterpillar",
@@ -32,14 +37,14 @@ LEGACY_DETECTOR_LABEL_MAP: dict[str, str] = {
     "leaf": "hard_negative",
     "person": "hard_negative",
     "hand": "hard_negative",
-    "drawing": "hard_negative",
-    "painting": "hard_negative",
-    "artwork": "hard_negative",
-    "logo": "hard_negative",
-    "text": "hard_negative",
-    "sign": "hard_negative",
-    "museum_label": "hard_negative",
-    "museum label": "hard_negative",
+    "drawing": "artifact",
+    "painting": "artifact",
+    "artwork": "artifact",
+    "logo": "artifact",
+    "text": "artifact",
+    "sign": "artifact",
+    "museum_label": "artifact",
+    "museum label": "artifact",
 }
 
 
@@ -67,9 +72,24 @@ class DetectionCandidate:
     score: float
     bbox_xyxy: tuple[float, float, float, float]
     objectness_score: float | None = None
+    detector_prompt: str | None = None
+    detector_class_id: int | None = None
+    detector_prompt_set_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "label", normalize_detector_label(self.label))
+        if self.detector_prompt is not None:
+            object.__setattr__(self, "detector_prompt", normalize_detector_prompt(self.detector_prompt))
+        if self.detector_class_id is not None:
+            if isinstance(self.detector_class_id, bool) or not isinstance(self.detector_class_id, int):
+                raise ValueError("detector_class_id must be a non-negative integer")
+            if self.detector_class_id < 0:
+                raise ValueError("detector_class_id must be a non-negative integer")
+        if self.detector_prompt_set_fingerprint is not None:
+            _validate_sha256_fingerprint(
+                self.detector_prompt_set_fingerprint,
+                name="detector_prompt_set_fingerprint",
+            )
 
 
 def normalize_detector_label(label: object) -> str:
@@ -82,6 +102,24 @@ def normalize_detector_label(label: object) -> str:
     if detector_label_is_taxon_like(label):
         raise ValueError(f"detector label appears taxonomic, not coarse object class: {label!r}")
     raise ValueError(f"detector label must be a BioMiner coarse object label, got {label!r}")
+
+
+def normalize_detector_prompt(prompt: object) -> str:
+    normalized = " ".join(str(prompt or "").strip().casefold().split())
+    if not normalized:
+        raise ValueError("detector prompt must be non-empty")
+    return normalized
+
+
+def _validate_sha256_fingerprint(value: str, *, name: str) -> None:
+    prefix = "sha256:"
+    digest = str(value)
+    if not digest.startswith(prefix) or len(digest) != len(prefix) + 64:
+        raise ValueError(f"{name} must be a sha256 fingerprint")
+    try:
+        int(digest[len(prefix) :], 16)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a sha256 fingerprint") from exc
 
 
 def detector_label_is_taxon_like(label: object) -> bool:

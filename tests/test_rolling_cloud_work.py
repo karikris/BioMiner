@@ -186,6 +186,50 @@ def test_rolling_vision_work_key_ignores_retry_and_attempt_metadata() -> None:
     assert retried["work_key"] == base["work_key"]
 
 
+def test_rolling_vision_settings_default_to_adult_routed_gate_and_bind_prompt_policy() -> None:
+    settings = rolling_vision_settings_key(
+        detector={
+            "backend": "yoloe26",
+            "model_id": "yoloe26",
+            "model_version": "test",
+            "checkpoint": "yoloe-26s-seg.pt",
+            "prompt_classes": ["butterfly", "moth"],
+            "prompt_set_fingerprint": "sha256:" + "a" * 64,
+        },
+        vision_settings=VisionRuntimeSettings(
+            possible_adult_route_enabled=True,
+            possible_adult_route_threshold=0.25,
+            ambiguous_insect_review_enabled=False,
+            ambiguous_insect_review_threshold=0.20,
+        ),
+        bioclip_model={
+            "model_id": "bioclip",
+            "model_version": "test",
+            "checkpoint": "model",
+        },
+        candidate_set_id="candidate-set-v1",
+    )
+
+    assert settings["bioclip_gate"] == {
+        "mode": "routed_visual_domain",
+        "score_no_detection_whole_image": False,
+        "supported_comparison_routes": ["adult_field"],
+    }
+    assert settings["detector"]["prompt_classes"] == ["butterfly", "moth"]
+    assert settings["detector"]["prompt_set_fingerprint"] == "sha256:" + "a" * 64
+    assert settings["detector"]["routing_policy"] == {
+        "version": "detection-routing-policy-v1",
+        "fingerprint": settings["detector"]["routing_policy"]["fingerprint"],
+        "possible_adult_route_enabled": True,
+        "possible_adult_route_threshold": 0.25,
+        "ambiguous_insect_review_enabled": False,
+        "ambiguous_insect_review_threshold": 0.20,
+    }
+    assert settings["detector"]["routing_policy"]["fingerprint"].startswith(
+        "sha256:"
+    )
+
+
 def test_enqueue_rolling_vision_work_batches_source_shards_deterministically(tmp_path: Path) -> None:
     storage = _FakeCloudStorage()
     workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")

@@ -31,6 +31,7 @@ from biominer.bioclip.cloud_work import (
 )
 from biominer.detection.detector_base import DecodedImage, FakeObjectDetector
 from biominer.detection.policy import VisionRuntimeSettings
+from biominer.detection.routing import DetectionRoutingPolicy
 from biominer.evidence import build_object_evidence_frames, build_review_queue, evidence_count_metrics
 from biominer.evidence.join import write_object_evidence_outputs
 from biominer.registry.classification_v3 import (
@@ -3138,6 +3139,7 @@ def _write_join_stage_inputs(paths: RunPaths) -> None:
 
 
 def _join_stage_input_frames() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    routing_policy = DetectionRoutingPolicy()
     canonical = pl.DataFrame(
         [
             {
@@ -3168,6 +3170,13 @@ def _join_stage_input_frames() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame
                 "detector_score": 0.91,
                 "objectness_score": 0.91,
                 "detection_status": "detected",
+                "detection_route": "adult_butterfly_field",
+                "routing_action": "score",
+                "bioclip_route": "adult_field",
+                "routing_priority": "standard",
+                "routing_reason": "legacy_detector_label_fallback:butterfly_like",
+                "routing_policy_version": routing_policy.version,
+                "routing_policy_fingerprint": routing_policy.fingerprint,
                 "backend": "fake",
                 "model_id": "fake-detector",
                 "model_version": "test",

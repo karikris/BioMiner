@@ -15,6 +15,7 @@ from biominer.detection.detector_base import COARSE_DETECTOR_LABELS, DecodedImag
 from biominer.detection.evaluate import evaluate_xie_style, iou_xyxy, joint_detection_species_correct
 from biominer.detection.pipeline import run_detection_pipeline
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, VisionRuntimeSettings, validate_vision_runtime_settings
+from biominer.detection.routing import DetectionRoutingPolicy
 from biominer.detection.schema import build_detection_rows, detection_id_for
 from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
 
@@ -187,10 +188,16 @@ def test_detection_and_run_sources_do_not_create_reviewed_box_training_artifacts
 
 
 def test_detection_candidate_contract_normalizes_legacy_labels_and_rejects_taxa() -> None:
-    assert set(COARSE_DETECTOR_LABELS) == {"butterfly_like", "moth_like", "caterpillar", "pupa", "insect_like", "hard_negative"}
+    assert {
+        "adult_butterfly",
+        "possible_adult_butterfly",
+        "pinned_specimen",
+        "artifact",
+        "no_relevant_organism",
+    }.issubset(COARSE_DETECTOR_LABELS)
     assert normalize_detector_label("butterfly") == "butterfly_like"
     assert normalize_detector_label("life stage") == "caterpillar"
-    assert normalize_detector_label("museum label") == "hard_negative"
+    assert normalize_detector_label("museum label") == "artifact"
     assert DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 1, 1)).label == "butterfly_like"
     with pytest.raises(ValueError, match="taxonomic"):
         DetectionCandidate(label="Papilio demoleus", score=0.9, bbox_xyxy=(0, 0, 1, 1))
@@ -211,6 +218,10 @@ def test_mac_m5pro_profile_matches_local_apple_silicon_defaults() -> None:
     assert settings.yolo_conf == 0.20
     assert settings.yolo_iou == 0.50
     assert settings.yolo_max_det == 8
+    assert settings.possible_adult_route_enabled is True
+    assert settings.possible_adult_route_threshold == 0.20
+    assert settings.ambiguous_insect_review_enabled is False
+    assert settings.ambiguous_insect_review_threshold == 0.20
     assert settings.detector_batch_size == 16
     assert settings.crop_batch_size == 24
     assert settings.adaptive_batching is False
@@ -234,6 +245,10 @@ def test_mac_m5pro_profile_matches_local_apple_silicon_defaults() -> None:
     assert config["detector_batch_size"] == settings.detector_batch_size
     assert config["crop_batch_size"] == settings.crop_batch_size
     assert config["adaptive_batching"] == settings.adaptive_batching
+    assert config["possible_adult_route_enabled"] == settings.possible_adult_route_enabled
+    assert config["possible_adult_route_threshold"] == settings.possible_adult_route_threshold
+    assert config["ambiguous_insect_review_enabled"] == settings.ambiguous_insect_review_enabled
+    assert config["ambiguous_insect_review_threshold"] == settings.ambiguous_insect_review_threshold
     assert config["yolo_sidecar_transport"] == settings.yolo_sidecar_transport
     assert config["min_detector_batch_size"] == settings.min_detector_batch_size
     assert config["max_detector_batch_size"] == settings.max_detector_batch_size
@@ -250,6 +265,10 @@ def test_mac_m5pro_profile_matches_local_apple_silicon_defaults() -> None:
     assert profile.detection_policy.box_score_threshold == 0.20
     assert profile.detection_policy.nms_iou_threshold == 0.50
     assert profile.detection_policy.max_boxes_per_image == 8
+    assert profile.detection_policy.routing_policy.possible_adult_route_enabled is True
+    assert profile.detection_policy.routing_policy.possible_adult_route_threshold == 0.20
+    assert profile.detection_policy.routing_policy.ambiguous_insect_review_enabled is False
+    assert profile.detection_policy.routing_policy.ambiguous_insect_review_threshold == 0.20
     assert profile.detection_policy.crop_padding_ratio == 0.08
     assert profile.detection_policy.crop_target_px == 336
     assert profile.detection_policy.retain_debug_crops is False
@@ -275,7 +294,15 @@ def test_detection_rows_keep_join_keys_and_stable_detection_id() -> None:
         "image_url": "https://live.staticflickr.com/photo-1.jpg",
         "photo_page_url": "https://www.flickr.com/photos/u/photo-1",
     }
-    candidate = DetectionCandidate(label="butterfly", score=0.91, bbox_xyxy=(0.5, 0.5, 3.5, 3.5), objectness_score=0.88)
+    candidate = DetectionCandidate(
+        label="adult_butterfly",
+        score=0.91,
+        bbox_xyxy=(0.5, 0.5, 3.5, 3.5),
+        objectness_score=0.88,
+        detector_prompt="butterfly",
+        detector_class_id=0,
+        detector_prompt_set_fingerprint="sha256:" + "a" * 64,
+    )
 
     rows = build_detection_rows(
         record=record,
@@ -299,12 +326,34 @@ def test_detection_rows_keep_join_keys_and_stable_detection_id() -> None:
     assert row["box_area_ratio"] == pytest.approx(0.5625)
     assert row["detection_status"] == "detected"
     assert row["failure_reason"] is None
+    assert row["detector_prompt"] == "butterfly"
+    assert row["detector_class_id"] == 0
+    assert row["detector_prompt_set_fingerprint"] == "sha256:" + "a" * 64
+    assert row["schema_version"] == "object-detection-v2"
     assert row["detection_id"] == detection_id_for(
         source="flickr",
         flickr_photo_id="photo-1",
         detector_checkpoint="checkpoint-a",
         bbox_xyxyn=row["bbox_xyxyn"],
-        detector_label="butterfly_like",
+        detector_label="adult_butterfly",
+        detector_prompt="butterfly",
+    )
+
+
+def test_detection_id_includes_normalized_detector_prompt() -> None:
+    base = {
+        "source": "flickr",
+        "flickr_photo_id": "photo-prompt",
+        "detector_checkpoint": "checkpoint-a",
+        "bbox_xyxyn": (0.0, 0.0, 1.0, 1.0),
+        "detector_label": "possible_adult_butterfly",
+    }
+
+    assert detection_id_for(**base, detector_prompt="butterfly wing") != detection_id_for(
+        **base, detector_prompt="lepidoptera"
+    )
+    assert detection_id_for(**base, detector_prompt=" Butterfly   Wing ") == detection_id_for(
+        **base, detector_prompt="butterfly wing"
     )
 
 
@@ -345,7 +394,8 @@ def test_detection_rows_write_image_level_failure_when_no_objects_are_found() ->
 
     assert len(rows) == 1
     assert rows[0]["detection_status"] == "no_detection"
-    assert rows[0]["failure_reason"] == "no_butterfly_like_object"
+    assert rows[0]["detector_label"] == "no_relevant_organism"
+    assert rows[0]["failure_reason"] == "no_relevant_organism"
     assert rows[0]["detection_id"].startswith("sha256:")
     assert rows[0]["source"] == "flickr"
     assert rows[0]["flickr_photo_id"] == "photo-2"
@@ -384,6 +434,16 @@ def test_detection_pipeline_empty_input_writes_stable_schema(tmp_path) -> None:
         "detector_label",
         "detector_score",
         "objectness_score",
+        "detector_prompt",
+        "detector_class_id",
+        "detector_prompt_set_fingerprint",
+        "detection_route",
+        "routing_action",
+        "bioclip_route",
+        "routing_priority",
+        "routing_reason",
+        "routing_policy_version",
+        "routing_policy_fingerprint",
         "nms_group_id",
         "crop_padding_ratio",
         "crop_hash",
@@ -417,7 +477,114 @@ def test_detection_pipeline_buffer_uses_schema_beyond_polars_inference_window(tm
     )
 
     assert result.frame.height == 101
-    assert result.frame["failure_reason"].tail(1).item() == "no_butterfly_like_object"
+    assert result.frame["failure_reason"].tail(1).item() == "no_relevant_organism"
+
+
+def test_detection_rows_extra_nms_suppresses_only_within_same_route() -> None:
+    rows = build_detection_rows(
+        record={"source": "flickr", "flickr_photo_id": "photo-route-nms", "image_url": "memory://route-nms"},
+        image=_image(),
+        detections=[
+            DetectionCandidate(
+                label="adult_butterfly",
+                score=0.95,
+                bbox_xyxy=(0, 0, 3, 3),
+                detector_prompt="butterfly",
+            ),
+            DetectionCandidate(
+                label="possible_adult_butterfly",
+                score=0.90,
+                bbox_xyxy=(0.1, 0.1, 3.1, 3.1),
+                detector_prompt="butterfly wing",
+            ),
+            DetectionCandidate(
+                label="caterpillar",
+                score=0.85,
+                bbox_xyxy=(0.1, 0.1, 3.1, 3.1),
+                detector_prompt="caterpillar",
+            ),
+        ],
+        detector_backend="fake",
+        detector_model_id="fake-detector",
+        detector_model_version="v1",
+        detector_checkpoint="checkpoint-a",
+        detected_at=datetime(2026, 1, 1, tzinfo=UTC),
+        policy=DetectionPolicy(backend="fake", nms_iou_threshold=0.5, min_box_area_ratio=0.0),
+    )
+
+    assert [row["detector_label"] for row in rows] == ["adult_butterfly", "caterpillar"]
+
+
+def test_detection_rows_nms_preserves_review_over_overlapping_exclusion() -> None:
+    policy = DetectionPolicy(
+        backend="fake",
+        nms_iou_threshold=0.5,
+        min_box_area_ratio=0.0,
+        routing_policy=DetectionRoutingPolicy(
+            possible_adult_route_threshold=0.70,
+            ambiguous_insect_review_threshold=0.30,
+        ),
+    )
+    candidates = [
+        DetectionCandidate(
+            label="possible_adult_butterfly",
+            score=0.60,
+            bbox_xyxy=(0, 0, 3, 3),
+            detector_prompt="butterfly wing",
+        ),
+        DetectionCandidate(
+            label="insect_like",
+            score=0.50,
+            bbox_xyxy=(0.1, 0.1, 3.1, 3.1),
+            detector_prompt="insect",
+        ),
+    ]
+
+    rows = build_detection_rows(
+        record={
+            "source": "flickr",
+            "flickr_photo_id": "photo-mixed-action-nms",
+            "image_url": "memory://mixed-action-nms",
+        },
+        image=_image(),
+        detections=candidates,
+        detector_backend="fake",
+        detector_model_id="fake-detector",
+        detector_model_version="v1",
+        detector_checkpoint="checkpoint-a",
+        detected_at=datetime(2026, 1, 1, tzinfo=UTC),
+        policy=policy,
+    )
+
+    assert [(row["detector_prompt"], row["routing_action"]) for row in rows] == [
+        ("insect", "review"),
+        ("butterfly wing", "exclude"),
+    ]
+
+    capped_rows = build_detection_rows(
+        record={
+            "source": "flickr",
+            "flickr_photo_id": "photo-mixed-action-cap",
+            "image_url": "memory://mixed-action-cap",
+        },
+        image=_image(),
+        detections=candidates,
+        detector_backend="fake",
+        detector_model_id="fake-detector",
+        detector_model_version="v1",
+        detector_checkpoint="checkpoint-a",
+        detected_at=datetime(2026, 1, 1, tzinfo=UTC),
+        policy=DetectionPolicy(
+            backend="fake",
+            nms_iou_threshold=0.5,
+            min_box_area_ratio=0.0,
+            max_boxes_per_image=1,
+            routing_policy=policy.routing_policy,
+        ),
+    )
+
+    assert capped_rows[0]["detector_prompt"] == "insect"
+    assert capped_rows[0]["routing_action"] == "review"
 
 
 def test_cropper_clamps_edge_bbox_adds_padding_and_hashes_deterministically() -> None:
@@ -727,7 +894,6 @@ def test_detection_pipeline_skips_crop_metadata_for_non_bioclip_eligible_detecti
             backend="fake",
             crop_target_px=3,
             min_box_area_ratio=0.0,
-            bioclip_eligible_labels=("butterfly_like",),
         ),
         run_policy=DetectionRunPolicy(decode_workers=1),
     )

@@ -17,6 +17,10 @@ def test_vision_stage_metrics_count_detection_bioclip_and_evidence_frames() -> N
                 "detector_label": "butterfly_like",
                 "detection_status": "detected",
                 "crop_hash": "sha256:crop-1",
+                "detection_route": "adult_butterfly_field",
+                "routing_action": "score",
+                "bioclip_route": "adult_field",
+                "routing_priority": "standard",
             },
             {
                 "source": "flickr",
@@ -25,6 +29,10 @@ def test_vision_stage_metrics_count_detection_bioclip_and_evidence_frames() -> N
                 "detector_label": "hard_negative",
                 "detection_status": "detected",
                 "crop_hash": None,
+                "detection_route": "artwork_logo_tattoo_or_other_artifact",
+                "routing_action": "exclude",
+                "bioclip_route": None,
+                "routing_priority": "none",
             },
             {
                 "source": "flickr",
@@ -33,6 +41,10 @@ def test_vision_stage_metrics_count_detection_bioclip_and_evidence_frames() -> N
                 "detector_label": "no_detection",
                 "detection_status": "no_detection",
                 "crop_hash": None,
+                "detection_route": "no_relevant_organism",
+                "routing_action": "exclude",
+                "bioclip_route": None,
+                "routing_priority": "none",
             },
         ]
     )
@@ -91,6 +103,20 @@ def test_vision_stage_metrics_count_detection_bioclip_and_evidence_frames() -> N
         "no_detection": 1,
     }
     assert metrics["detection"]["eligible_bioclip_detections"] == 1
+    assert metrics["detection"]["detections_by_route"] == {
+        "adult_butterfly_field": 1,
+        "artwork_logo_tattoo_or_other_artifact": 1,
+        "no_relevant_organism": 1,
+    }
+    assert metrics["detection"]["routing_action_counts"] == {
+        "exclude": 2,
+        "score": 1,
+    }
+    assert metrics["detection"]["bioclip_route_counts"] == {
+        "": 2,
+        "adult_field": 1,
+    }
+    assert metrics["detection"]["ambiguous_review_detections"] == 0
     assert metrics["detection"]["hard_negative_detections"] == 1
     assert metrics["detection"]["no_detection_count"] == 1
     assert metrics["bioclip"]["crops_scored"] == 1
@@ -186,7 +212,7 @@ def test_write_vision_stage_reports_writes_json_and_markdown(tmp_path) -> None:
 
     paths = write_vision_stage_reports(metrics, tmp_path)
 
-    assert json.loads(paths["metrics"].read_text(encoding="utf-8"))["schema_version"] == "vision_stage_metrics_v1"
+    assert json.loads(paths["metrics"].read_text(encoding="utf-8"))["schema_version"] == "vision_stage_metrics_v2"
     summary = paths["summary"].read_text(encoding="utf-8")
     assert "# Vision Stage Metrics" in summary
     assert "Nymphalidae: 1" in summary

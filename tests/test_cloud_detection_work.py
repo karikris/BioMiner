@@ -8,6 +8,7 @@ import pytest
 from biominer.detection.cloud_work import detection_work_item, enqueue_detection_work_from_source_shards, run_cloud_detection_batch
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate
 from biominer.detection.policy import DetectionPolicy, VisionRuntimeSettings
+from biominer.detection.routing import DetectionRoutingPolicy
 from biominer.run.stages import RunStage
 from biominer.workstore.sqlite import SQLiteWorkStore
 
@@ -136,7 +137,122 @@ def test_detection_work_item_key_changes_by_detector_policy_and_runtime_settings
     assert base["work_key"] != padding_changed["work_key"]
     assert base["work_key"] != imgsz_changed["work_key"]
     assert base["detection_policy"]["crop_padding_ratio"] == 0.12
+    assert "bioclip_eligible_labels" not in base["detection_policy"]
+    assert base["detection_policy"]["routing_policy"] == {
+        "version": "detection-routing-policy-v1",
+        "fingerprint": DetectionRoutingPolicy().fingerprint,
+        "possible_adult_route_enabled": True,
+        "possible_adult_route_threshold": 0.35,
+        "ambiguous_insect_review_enabled": True,
+        "ambiguous_insect_review_threshold": 0.35,
+    }
     assert base["vision_runtime"]["yolo_imgsz"] == 640
+
+
+def test_detection_work_key_binds_ordered_prompt_set_and_profile_routing() -> None:
+    record = {
+        "source": "flickr",
+        "flickr_photo_id": "photo-1",
+        "source_record_hash": "sha256:source-1",
+        "image_url": "https://live.staticflickr.com/photo-1.jpg",
+    }
+    base_detector = {
+        "backend": "fake",
+        "model_id": "fake-detector",
+        "model_version": "test",
+        "checkpoint": "fake-checkpoint",
+        "prompt_classes": ["butterfly", "moth"],
+        "prompt_set_fingerprint": "sha256:" + "a" * 64,
+    }
+    settings = VisionRuntimeSettings(possible_adult_route_threshold=0.55)
+    base = detection_work_item(
+        record,
+        run_id="run-1",
+        source_shard_uri="s3://biominer/source.parquet",
+        detector=base_detector,
+        vision_settings=settings,
+    )
+    reordered = detection_work_item(
+        record,
+        run_id="run-1",
+        source_shard_uri="s3://biominer/source.parquet",
+        detector={
+            **base_detector,
+            "prompt_classes": ["moth", "butterfly"],
+            "prompt_set_fingerprint": "sha256:" + "b" * 64,
+        },
+        vision_settings=settings,
+    )
+
+    assert reordered["work_key"] != base["work_key"]
+    assert base["detector"]["prompt_classes"] == ["butterfly", "moth"]
+    assert base["vision_runtime"]["possible_adult_route_threshold"] == 0.55
+    assert (
+        base["detection_policy"]["routing_policy"][
+            "possible_adult_route_threshold"
+        ]
+        == 0.55
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("version", "detection-routing-policy-v2"),
+        ("possible_adult_route_enabled", False),
+        ("possible_adult_route_threshold", 0.55),
+        ("ambiguous_insect_review_enabled", False),
+        ("ambiguous_insect_review_threshold", 0.65),
+    ],
+)
+def test_detection_work_key_changes_by_complete_routing_policy_identity(
+    field: str,
+    value: object,
+) -> None:
+    record = {
+        "source": "flickr",
+        "flickr_photo_id": "photo-1",
+        "source_record_hash": "sha256:source-1",
+        "image_url": "https://live.staticflickr.com/photo-1.jpg",
+    }
+    detector = {
+        "backend": "fake",
+        "model_id": "fake-detector",
+        "model_version": "test",
+        "checkpoint": "fake-checkpoint",
+    }
+    base = detection_work_item(
+        record,
+        run_id="run-1",
+        source_shard_uri="s3://biominer/source.parquet",
+        detector=detector,
+        detection_policy=DetectionPolicy(backend="fake"),
+    )
+    routing_values = {
+        "version": "detection-routing-policy-v1",
+        "possible_adult_route_enabled": True,
+        "possible_adult_route_threshold": 0.35,
+        "ambiguous_insect_review_enabled": True,
+        "ambiguous_insect_review_threshold": 0.35,
+        field: value,
+    }
+    changed = detection_work_item(
+        record,
+        run_id="run-1",
+        source_shard_uri="s3://biominer/source.parquet",
+        detector=detector,
+        detection_policy=DetectionPolicy(
+            backend="fake",
+            routing_policy=DetectionRoutingPolicy(**routing_values),
+        ),
+    )
+
+    assert changed["work_key"] != base["work_key"]
+    assert changed["detection_policy"]["routing_policy"][field] == value
+    assert (
+        changed["detection_policy"]["routing_policy"]["fingerprint"]
+        != base["detection_policy"]["routing_policy"]["fingerprint"]
+    )
 
 
 def test_run_cloud_detection_batch_chunks_loaded_images_by_detector_batch_size() -> None:
@@ -183,6 +299,31 @@ def test_run_cloud_detection_batch_chunks_loaded_images_by_detector_batch_size()
     assert result.records_seen == 5
     assert result.images_loaded == 5
     assert result.detections_written == 5
+
+
+def test_run_cloud_detection_batch_routes_image_failure_without_scoring() -> None:
+    class PromptedDetector:
+        backend = "fake"
+        model_id = "fake-detector"
+        model_version = "test"
+        checkpoint = "fake-checkpoint"
+        prompt_set_fingerprint = "sha256:" + "c" * 64
+
+        def detect_batch(self, images):  # noqa: ANN001, ANN202
+            raise AssertionError("image failure must not reach detection")
+
+    result = run_cloud_detection_batch(
+        work_items=_detection_work_items(1),
+        detector=PromptedDetector(),
+        image_loader=lambda _record: (_ for _ in ()).throw(ValueError("bad image")),
+    )
+
+    row = result.frame.to_dicts()[0]
+    assert row["detection_status"] == "failed_image_load"
+    assert row["detection_route"] == "ambiguous_visual_domain"
+    assert row["routing_action"] == "exclude"
+    assert row["bioclip_route"] is None
+    assert row["detector_prompt_set_fingerprint"] == "sha256:" + "c" * 64
 
 
 def test_run_cloud_detection_batch_adaptive_batching_halves_after_memory_error() -> None:

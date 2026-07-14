@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields, replace
 
+from biominer.detection.routing import DetectionRoutingPolicy, route_detection
+
 
 @dataclass(frozen=True)
 class DetectionPolicy:
@@ -10,7 +12,7 @@ class DetectionPolicy:
     nms_iou_threshold: float = 0.50
     min_box_area_ratio: float = 0.0005
     max_boxes_per_image: int = 8
-    bioclip_eligible_labels: tuple[str, ...] = ("butterfly_like",)
+    routing_policy: DetectionRoutingPolicy = field(default_factory=DetectionRoutingPolicy)
     crop_padding_ratio: float = 0.12
     image_max_side_px: int = 1280
     crop_target_px: int = 336
@@ -41,6 +43,10 @@ class VisionRuntimeSettings:
     yolo_conf: float = 0.20
     yolo_iou: float = 0.50
     yolo_max_det: int = 8
+    possible_adult_route_enabled: bool = True
+    possible_adult_route_threshold: float = 0.35
+    ambiguous_insect_review_enabled: bool = True
+    ambiguous_insect_review_threshold: float = 0.35
     detector_batch_size: int = 4
     crop_batch_size: int = 24
     bioclip_preprocess_workers: int = 1
@@ -78,7 +84,13 @@ class VisionRuntimeSettings:
             nms_iou_threshold=self.yolo_iou,
             min_box_area_ratio=active.min_box_area_ratio,
             max_boxes_per_image=self.yolo_max_det,
-            bioclip_eligible_labels=active.bioclip_eligible_labels,
+            routing_policy=DetectionRoutingPolicy(
+                version=active.routing_policy.version,
+                possible_adult_route_enabled=self.possible_adult_route_enabled,
+                possible_adult_route_threshold=self.possible_adult_route_threshold,
+                ambiguous_insect_review_enabled=self.ambiguous_insect_review_enabled,
+                ambiguous_insect_review_threshold=self.ambiguous_insect_review_threshold,
+            ),
             crop_padding_ratio=self.crop_padding_ratio,
             image_max_side_px=self.image_max_side_px,
             crop_target_px=self.crop_target_px,
@@ -122,6 +134,10 @@ MAC_M5PRO_64GB_SETTINGS = VisionRuntimeSettings(
     yolo_conf=0.20,
     yolo_iou=0.50,
     yolo_max_det=8,
+    possible_adult_route_enabled=True,
+    possible_adult_route_threshold=0.20,
+    ambiguous_insect_review_enabled=False,
+    ambiguous_insect_review_threshold=0.20,
     detector_batch_size=16,
     crop_batch_size=24,
     bioclip_preprocess_workers=4,
@@ -202,6 +218,26 @@ def validate_vision_runtime_settings(settings: VisionRuntimeSettings) -> VisionR
         raise ValueError("yolo_conf must be between 0.0 and 1.0")
     if not 0.0 <= float(settings.yolo_iou) <= 1.0:
         raise ValueError("yolo_iou must be between 0.0 and 1.0")
+    routing_policy = DetectionRoutingPolicy(
+        possible_adult_route_enabled=settings.possible_adult_route_enabled,
+        possible_adult_route_threshold=settings.possible_adult_route_threshold,
+        ambiguous_insect_review_enabled=settings.ambiguous_insect_review_enabled,
+        ambiguous_insect_review_threshold=settings.ambiguous_insect_review_threshold,
+    )
+    if (
+        routing_policy.possible_adult_route_enabled
+        and settings.yolo_conf > routing_policy.possible_adult_route_threshold
+    ):
+        raise ValueError(
+            "yolo_conf must be <= possible_adult_route_threshold when the possible-adult route is enabled"
+        )
+    if (
+        routing_policy.ambiguous_insect_review_enabled
+        and settings.yolo_conf > routing_policy.ambiguous_insect_review_threshold
+    ):
+        raise ValueError(
+            "yolo_conf must be <= ambiguous_insect_review_threshold when ambiguous-insect review is enabled"
+        )
     if settings.yolo_sidecar_transport not in {"json_b64", "image_path"}:
         raise ValueError("yolo_sidecar_transport must be one of: json_b64, image_path")
     return settings
@@ -218,8 +254,11 @@ def _non_negative_int(value: object, name: str) -> None:
 
 
 def detection_is_bioclip_eligible(row: dict[str, object], policy: DetectionPolicy | None = None) -> bool:
-    active_policy = policy or DetectionPolicy()
-    if str(row.get("detection_status") or "") != "detected":
+    if str(row.get("detection_status") or "").strip().casefold() != "detected":
         return False
-    label = str(row.get("detector_label") or "")
-    return label in set(active_policy.bioclip_eligible_labels)
+    persisted_action = row.get("routing_action")
+    if persisted_action is not None:
+        return str(persisted_action).strip().casefold() in {"score", "review"}
+    active_policy = policy or DetectionPolicy()
+    decision = route_detection(row, active_policy.routing_policy)
+    return decision.routing_action in {"score", "review"}

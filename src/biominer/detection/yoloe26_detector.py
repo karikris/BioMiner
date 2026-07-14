@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from collections import deque
 from contextlib import contextmanager
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,7 +13,12 @@ from tempfile import mkdtemp
 from threading import Thread
 from typing import IO, Callable, Iterator, Sequence
 
-from biominer.detection.detector_base import DecodedImage, DetectionCandidate, detector_label_is_taxon_like
+from biominer.detection.detector_base import (
+    DecodedImage,
+    DetectionCandidate,
+    detector_label_is_taxon_like,
+    normalize_detector_prompt,
+)
 from biominer.runtime_paths import YOLOE26_DIR
 
 
@@ -49,26 +55,26 @@ DEFAULT_YOLOE26_PROMPTS = (
     "museum label",
 )
 YOLOE26_PROMPT_LABEL_MAP = {
-    "butterfly": "butterfly_like",
-    "butterfly wing": "butterfly_like",
-    "pinned butterfly specimen": "butterfly_like",
-    "butterfly specimen": "butterfly_like",
-    "lepidoptera": "butterfly_like",
+    "butterfly": "adult_butterfly",
+    "butterfly wing": "possible_adult_butterfly",
+    "pinned butterfly specimen": "pinned_specimen",
+    "butterfly specimen": "pinned_specimen",
+    "lepidoptera": "possible_adult_butterfly",
     "moth": "moth_like",
     "caterpillar": "caterpillar",
     "chrysalis": "pupa",
     "pupa": "pupa",
     "insect": "insect_like",
-    "flower": "hard_negative",
-    "leaf": "hard_negative",
-    "person": "hard_negative",
-    "hand": "hard_negative",
-    "drawing": "hard_negative",
-    "painting": "hard_negative",
-    "logo": "hard_negative",
-    "text": "hard_negative",
-    "sign": "hard_negative",
-    "museum label": "hard_negative",
+    "flower": "no_relevant_organism",
+    "leaf": "no_relevant_organism",
+    "person": "no_relevant_organism",
+    "hand": "no_relevant_organism",
+    "drawing": "artifact",
+    "painting": "artifact",
+    "logo": "artifact",
+    "text": "artifact",
+    "sign": "artifact",
+    "museum label": "artifact",
 }
 YOLOE26_SIDECAR_TRANSPORTS = ("json_b64", "image_path")
 
@@ -76,16 +82,31 @@ YOLOE26_SIDECAR_TRANSPORTS = ("json_b64", "image_path")
 def default_yoloe26_prompts(*, include_hard_negative_prompts: bool = True) -> tuple[str, ...]:
     if include_hard_negative_prompts:
         return DEFAULT_YOLOE26_PROMPTS
-    return tuple(prompt for prompt in DEFAULT_YOLOE26_PROMPTS if yoloe26_coarse_label(prompt) != "hard_negative")
+    return tuple(
+        prompt
+        for prompt in DEFAULT_YOLOE26_PROMPTS
+        if yoloe26_coarse_label(prompt) not in {"artifact", "no_relevant_organism", "hard_negative"}
+    )
 
 
 def yoloe26_coarse_label(prompt: str) -> str:
-    mapped = YOLOE26_PROMPT_LABEL_MAP.get(_normalise_prompt(prompt))
-    if mapped:
-        return mapped
     if detector_label_is_taxon_like(prompt):
         raise ValueError(f"YOLOE-26 prompts must be object proposals, not taxon labels: {prompt!r}")
-    return "insect_like"
+    normalized = normalize_detector_prompt(prompt)
+    mapped = YOLOE26_PROMPT_LABEL_MAP.get(normalized)
+    if mapped:
+        return mapped
+    raise ValueError(f"unsupported YOLOE-26 object prompt: {prompt!r}")
+
+
+def yoloe26_prompt_set_fingerprint(prompt_classes: Sequence[str]) -> str:
+    prompts = list(_normalized_prompt_classes(prompt_classes))
+    payload = json.dumps(
+        {"prompts": prompts, "schema_version": "yoloe26-prompt-set-v1"},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class YoloE26ObjectDetector:
@@ -103,7 +124,7 @@ class YoloE26ObjectDetector:
         prompt_classes: Sequence[str] | None = None,
     ) -> None:
         _validate_checkpoint(checkpoint)
-        prompt_tuple = tuple(prompt_classes or default_yoloe26_prompts())
+        prompt_tuple = _normalized_prompt_classes(prompt_classes or default_yoloe26_prompts())
         _validate_prompt_classes(prompt_tuple)
         try:
             import ultralytics
@@ -121,6 +142,7 @@ class YoloE26ObjectDetector:
         self.iou = float(iou)
         self.max_det = int(max_det)
         self.prompt_classes = prompt_tuple
+        self.prompt_set_fingerprint = yoloe26_prompt_set_fingerprint(prompt_tuple)
         self.model_id = f"yoloe26:{Path(checkpoint).stem}"
         self.model_version = f"ultralytics:{getattr(ultralytics, '__version__', 'unknown')}"
         self._model = YOLOE(_checkpoint_reference(checkpoint))
@@ -164,7 +186,7 @@ class YoloE26SidecarObjectDetector:
         popen: PopenFactory = subprocess.Popen,
     ) -> None:
         _validate_checkpoint(checkpoint)
-        prompt_tuple = tuple(prompt_classes or default_yoloe26_prompts())
+        prompt_tuple = _normalized_prompt_classes(prompt_classes or default_yoloe26_prompts())
         _validate_prompt_classes(prompt_tuple)
         self.runtime_python = str(Path(runtime_python).expanduser())
         self.checkpoint = checkpoint
@@ -174,6 +196,7 @@ class YoloE26SidecarObjectDetector:
         self.iou = float(iou)
         self.max_det = int(max_det)
         self.prompt_classes = prompt_tuple
+        self.prompt_set_fingerprint = yoloe26_prompt_set_fingerprint(prompt_tuple)
         self.transport = _validate_sidecar_transport(transport)
         self.temp_dir = Path(temp_dir).expanduser() if temp_dir is not None else None
         self.retain_temp_images = bool(retain_temp_images)
@@ -260,6 +283,9 @@ class YoloE26SidecarObjectDetector:
             self.model_id = str(metadata.get("model_id") or self.model_id)
             self.model_version = str(metadata.get("model_version") or self.model_version)
             self.checkpoint = str(metadata.get("checkpoint") or self.checkpoint)
+            actual_prompt_fingerprint = metadata.get("prompt_set_fingerprint")
+            if actual_prompt_fingerprint is not None and str(actual_prompt_fingerprint) != self.prompt_set_fingerprint:
+                raise RuntimeError("YOLOE-26 sidecar returned a different prompt-set fingerprint")
         return response
 
     def _ensure_process(self) -> subprocess.Popen[str]:
@@ -290,7 +316,12 @@ class YoloE26SidecarObjectDetector:
 
 
 def detections_from_yoloe_result(result: object, *, prompt_classes: Sequence[str] | None = None) -> list[DetectionCandidate]:
-    names = getattr(result, "names", {}) or {}
+    ordered_prompts = _validated_result_prompts(getattr(result, "names", None))
+    if prompt_classes is not None:
+        expected_prompts = _normalized_prompt_classes(prompt_classes)
+        if sorted(expected_prompts) != sorted(ordered_prompts):
+            raise ValueError("YOLOE result.names does not match the configured prompt set")
+    prompt_set_fingerprint = yoloe26_prompt_set_fingerprint(ordered_prompts)
     boxes = getattr(result, "boxes", None)
     if boxes is None:
         return []
@@ -299,8 +330,10 @@ def detections_from_yoloe_result(result: object, *, prompt_classes: Sequence[str
         xyxy = _first_vector(getattr(box, "xyxy", ()))
         if len(xyxy) != 4:
             continue
-        cls_id = int(_first_scalar(getattr(box, "cls", -1), default=-1))
-        prompt = _prompt_for_class(cls_id, names=names, prompt_classes=prompt_classes)
+        cls_id = _result_class_id(getattr(box, "cls", -1))
+        if cls_id >= len(ordered_prompts):
+            raise ValueError(f"YOLOE result class id {cls_id} is outside result.names")
+        prompt = ordered_prompts[cls_id]
         score = float(_first_scalar(getattr(box, "conf", 0.0), default=0.0))
         rows.append(
             DetectionCandidate(
@@ -308,6 +341,9 @@ def detections_from_yoloe_result(result: object, *, prompt_classes: Sequence[str
                 score=score,
                 bbox_xyxy=(float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3])),
                 objectness_score=score,
+                detector_prompt=prompt,
+                detector_class_id=cls_id,
+                detector_prompt_set_fingerprint=prompt_set_fingerprint,
             )
         )
     return rows
@@ -418,6 +454,9 @@ def _sidecar_response(detector: YoloE26ObjectDetector, detections: list[list[Det
         "model_version": detector.model_version,
         "checkpoint": detector.checkpoint,
     }
+    prompt_set_fingerprint = getattr(detector, "prompt_set_fingerprint", None)
+    if prompt_set_fingerprint is not None:
+        metadata["prompt_set_fingerprint"] = str(prompt_set_fingerprint)
     return {
         **metadata,
         "metadata": metadata,
@@ -439,8 +478,19 @@ def _validate_checkpoint(checkpoint: str) -> None:
 
 
 def _validate_prompt_classes(prompt_classes: Sequence[str]) -> None:
-    for prompt in prompt_classes:
-        yoloe26_coarse_label(str(prompt))
+    raw_prompts = [str(prompt) for prompt in prompt_classes]
+    if not raw_prompts:
+        raise ValueError("YOLOE-26 prompt classes must not be empty")
+    for prompt in raw_prompts:
+        yoloe26_coarse_label(prompt)
+    normalized = [normalize_detector_prompt(prompt) for prompt in raw_prompts]
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("YOLOE-26 prompt classes must not contain duplicates")
+
+
+def _normalized_prompt_classes(prompt_classes: Sequence[str]) -> tuple[str, ...]:
+    _validate_prompt_classes(prompt_classes)
+    return tuple(normalize_detector_prompt(prompt) for prompt in prompt_classes)
 
 
 def _validate_sidecar_transport(value: str) -> str:
@@ -470,12 +520,43 @@ def _decoded_image_to_pil(image: DecodedImage) -> object:
     return Image.frombytes("RGB", (image.width, image.height), image.data)
 
 
-def _prompt_for_class(cls_id: int, *, names: object, prompt_classes: Sequence[str] | None = None) -> str:
-    if isinstance(names, dict) and cls_id in names:
-        return str(names[cls_id])
-    if prompt_classes is not None and 0 <= cls_id < len(prompt_classes):
-        return str(prompt_classes[cls_id])
-    return str(cls_id)
+def _validated_result_prompts(names: object) -> tuple[str, ...]:
+    if isinstance(names, list | tuple):
+        mapped_names = dict(enumerate(names))
+    elif isinstance(names, dict):
+        mapped_names: dict[int, object] = {}
+        for raw_key, value in names.items():
+            if isinstance(raw_key, bool):
+                raise ValueError("YOLOE result.names class ids must be contiguous non-negative integers")
+            try:
+                key = int(raw_key)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("YOLOE result.names class ids must be contiguous non-negative integers") from exc
+            if str(raw_key).strip() != str(key):
+                raise ValueError("YOLOE result.names class ids must be contiguous non-negative integers")
+            if key in mapped_names:
+                raise ValueError("YOLOE result.names contains duplicate class ids")
+            mapped_names[key] = value
+    else:
+        raise ValueError("YOLOE result.names must be an ordered list or class-id mapping")
+    if sorted(mapped_names) != list(range(len(mapped_names))):
+        raise ValueError("YOLOE result.names class ids must be contiguous from zero")
+    if not mapped_names:
+        raise ValueError("YOLOE result.names must contain at least one prompt")
+    raw_prompts = tuple(str(mapped_names[index]) for index in range(len(mapped_names)))
+    for prompt in raw_prompts:
+        yoloe26_coarse_label(prompt)
+    prompts = tuple(normalize_detector_prompt(prompt) for prompt in raw_prompts)
+    if len(set(prompts)) != len(prompts):
+        raise ValueError("YOLOE result.names must not contain duplicate prompts")
+    return prompts
+
+
+def _result_class_id(value: object) -> int:
+    raw = _first_scalar(value, default=-1)
+    if not float(raw).is_integer() or raw < 0:
+        raise ValueError(f"YOLOE result class id must be a non-negative integer, got {raw!r}")
+    return int(raw)
 
 
 def _first_vector(value: object) -> list[float]:
@@ -499,10 +580,6 @@ def _first_scalar(value: object, *, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
-
-
-def _normalise_prompt(prompt: str) -> str:
-    return " ".join(str(prompt or "").strip().casefold().split())
 
 
 def _image_to_payload(image: DecodedImage) -> dict[str, object]:
@@ -570,6 +647,9 @@ def _candidate_to_payload(candidate: DetectionCandidate) -> dict[str, object]:
         "score": candidate.score,
         "bbox_xyxy": list(candidate.bbox_xyxy),
         "objectness_score": candidate.objectness_score,
+        "detector_prompt": candidate.detector_prompt,
+        "detector_class_id": candidate.detector_class_id,
+        "detector_prompt_set_fingerprint": candidate.detector_prompt_set_fingerprint,
     }
 
 
@@ -583,6 +663,15 @@ def _detections_from_payload(payload: dict[str, object]) -> list[list[DetectionC
                 objectness_score=None
                 if candidate.get("objectness_score") is None
                 else float(candidate.get("objectness_score")),
+                detector_prompt=None
+                if candidate.get("detector_prompt") is None
+                else str(candidate.get("detector_prompt")),
+                detector_class_id=None
+                if candidate.get("detector_class_id") is None
+                else int(candidate.get("detector_class_id")),
+                detector_prompt_set_fingerprint=None
+                if candidate.get("detector_prompt_set_fingerprint") is None
+                else str(candidate.get("detector_prompt_set_fingerprint")),
             )
             for candidate in batch
         ]

@@ -54,6 +54,91 @@ def test_review_queue_missing_score_for_butterfly_like_detection_enters_queue() 
     assert row["classification_mode"] == ""
 
 
+def test_review_queue_preserves_low_priority_ambiguous_detection_route() -> None:
+    queue = build_hierarchical_review_queue(
+        object_evidence=pl.DataFrame(
+            [
+                {
+                    "source": "flickr",
+                    "flickr_photo_id": "ambiguous",
+                    "detection_id": "det-ambiguous",
+                    "detector_label": "insect_like",
+                    "detector_score": 0.41,
+                    "detection_status": "detected",
+                    "detection_route": "ambiguous_visual_domain",
+                    "routing_action": "review",
+                    "routing_priority": "low",
+                    "image_url": "https://example.test/ambiguous.jpg",
+                    "photo_page_url": "https://www.flickr.com/photos/example/ambiguous",
+                    "occurrence_bin": "in_review",
+                    "bin_reason": "ambiguous_visual_domain_review",
+                }
+            ]
+        )
+    )
+
+    row = queue.to_dicts()[0]
+    assert row["review_priority"] == 10
+    assert row["review_reason"] == (
+        "detection_route_review:ambiguous_visual_domain"
+    )
+
+
+def test_review_queue_never_treats_missing_larval_score_as_adult() -> None:
+    queue = build_hierarchical_review_queue(
+        object_evidence=pl.DataFrame(
+            [
+                {
+                    "source": "flickr",
+                    "flickr_photo_id": "larva",
+                    "detection_id": "det-larva",
+                    "detector_label": "caterpillar",
+                    "detector_score": 0.91,
+                    "detection_status": "detected",
+                    "detection_route": "caterpillar_field",
+                    "routing_action": "score",
+                    "bioclip_route": "larval",
+                    "image_url": "https://example.test/larva.jpg",
+                    "photo_page_url": "https://www.flickr.com/photos/example/larva",
+                    "occurrence_bin": "in_review",
+                    "bin_reason": "larval_route_without_bioclip_score",
+                }
+            ]
+        )
+    )
+
+    row = queue.to_dicts()[0]
+    assert row["review_priority"] == 100
+    assert row["review_reason"] == "missing_route_bioclip_score:larval"
+
+
+def test_review_queue_preserves_pupa_as_separate_visual_domain() -> None:
+    queue = build_hierarchical_review_queue(
+        object_evidence=pl.DataFrame(
+            [
+                {
+                    "source": "flickr",
+                    "flickr_photo_id": "pupa",
+                    "detection_id": "det-pupa",
+                    "detector_label": "pupa_or_chrysalis",
+                    "detector_score": 0.93,
+                    "detection_status": "detected",
+                    "detection_route": "pupa_or_chrysalis",
+                    "routing_action": "exclude",
+                    "image_url": "https://example.test/pupa.jpg",
+                    "photo_page_url": "https://www.flickr.com/photos/example/pupa",
+                    "occurrence_bin": "in_review",
+                    "bin_reason": "pupa_or_chrysalis_requires_separate_classifier",
+                }
+            ]
+        )
+    )
+
+    row = queue.to_dicts()[0]
+    assert row["review_priority"] == 10
+    assert row["review_reason"] == "separate_visual_domain:pupa_or_chrysalis"
+
+
 def test_review_queue_metadata_conflict_enters_queue() -> None:
     queue = build_hierarchical_review_queue(
         object_evidence=pl.DataFrame(

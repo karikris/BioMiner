@@ -408,6 +408,18 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--yolo-sidecar-transport", choices=("json_b64", "image_path"))
     production_run.add_argument("--yolo-imgsz", type=int)
     production_run.add_argument("--yolo-batch", type=int)
+    production_run.add_argument(
+        "--possible-adult-route",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    production_run.add_argument("--possible-adult-route-threshold", type=float)
+    production_run.add_argument(
+        "--ambiguous-insect-review",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    production_run.add_argument("--ambiguous-insect-review-threshold", type=float)
     production_run.add_argument("--bioclip-batch", type=int)
     production_run.add_argument("--adaptive-batching", action="store_true")
     production_run.add_argument("--bioclip-top-k", type=int)
@@ -1535,6 +1547,20 @@ def _production_vision_settings_from_args(args: argparse.Namespace) -> VisionRun
         overrides["yolo_imgsz"] = args.yolo_imgsz
     if getattr(args, "yolo_batch", None) is not None:
         overrides["detector_batch_size"] = args.yolo_batch
+    if getattr(args, "possible_adult_route", None) is not None:
+        overrides["possible_adult_route_enabled"] = args.possible_adult_route
+    if getattr(args, "possible_adult_route_threshold", None) is not None:
+        overrides["possible_adult_route_threshold"] = (
+            args.possible_adult_route_threshold
+        )
+    if getattr(args, "ambiguous_insect_review", None) is not None:
+        overrides["ambiguous_insect_review_enabled"] = (
+            args.ambiguous_insect_review
+        )
+    if getattr(args, "ambiguous_insect_review_threshold", None) is not None:
+        overrides["ambiguous_insect_review_threshold"] = (
+            args.ambiguous_insect_review_threshold
+        )
     if getattr(args, "bioclip_batch", None) is not None:
         overrides["crop_batch_size"] = args.bioclip_batch
     if getattr(args, "bioclip_top_k", None) is not None:

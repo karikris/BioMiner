@@ -30,6 +30,7 @@ from biominer.detection.cloud_work import CloudDetectionBatchResult, detection_w
 from biominer.detection.detector_base import ObjectDetector
 from biominer.detection.pipeline import ImageLoader
 from biominer.detection.policy import DetectionPolicy
+from biominer.detection.routing import DetectionRoutingPolicy
 from biominer.registry.classification_v3 import CLASSIFICATION_V3_VERSION
 from biominer.evidence.join import build_object_evidence_frames
 from biominer.species.context import SpeciesContext
@@ -132,10 +133,11 @@ def enqueue_rolling_vision_work_from_source_shards(
     source_stage: str,
     vision_stage: str = ROLLING_VISION_WORK_STAGE,
     vision_batch_rows: int = 500,
-    detector: dict[str, str] | None = None,
+    detector: dict[str, Any] | None = None,
     vision_settings: Any | None = None,
-    bioclip_gate_mode: str = "exclude_hard_negative",
-    score_no_detection_whole_image: bool = True,
+    bioclip_gate_mode: str = "routed_visual_domain",
+    score_no_detection_whole_image: bool = False,
+    supported_comparison_routes: tuple[str, ...] = ("adult_field",),
     bioclip_model: dict[str, str] | None = None,
     candidate_set_id: str = "",
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
@@ -170,6 +172,7 @@ def enqueue_rolling_vision_work_from_source_shards(
         vision_settings=vision_settings,
         bioclip_gate_mode=bioclip_gate_mode,
         score_no_detection_whole_image=score_no_detection_whole_image,
+        supported_comparison_routes=supported_comparison_routes,
         bioclip_model=bioclip_model or {},
         candidate_set_id=candidate_set_id,
         classification_mode=classification_mode,
@@ -265,10 +268,11 @@ def rolling_vision_work_item(
 
 def rolling_vision_settings_key(
     *,
-    detector: dict[str, str],
+    detector: dict[str, Any],
     vision_settings: Any | None,
-    bioclip_gate_mode: str,
-    score_no_detection_whole_image: bool,
+    bioclip_gate_mode: str = "routed_visual_domain",
+    score_no_detection_whole_image: bool = False,
+    supported_comparison_routes: tuple[str, ...] = ("adult_field",),
     bioclip_model: dict[str, str],
     candidate_set_id: str,
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE,
@@ -295,16 +299,24 @@ def rolling_vision_settings_key(
         and normalized_cascade_identity is None
     ):
         raise ValueError("classification-v3 rolling work requires cascade identity")
+    routing_policy = _routing_policy_settings(vision_settings)
     settings = {
         "detector": {
             "backend": str(detector.get("backend") or ""),
             "model_id": str(detector.get("model_id") or ""),
             "model_version": str(detector.get("model_version") or ""),
             "checkpoint": str(detector.get("checkpoint") or ""),
+            "prompt_classes": [
+                str(prompt) for prompt in detector.get("prompt_classes") or []
+            ],
+            "prompt_set_fingerprint": str(
+                detector.get("prompt_set_fingerprint") or ""
+            ),
             "yolo_imgsz": _settings_value(vision_settings, "yolo_imgsz"),
             "yolo_conf": _settings_value(vision_settings, "yolo_conf"),
             "yolo_iou": _settings_value(vision_settings, "yolo_iou"),
             "yolo_max_det": _settings_value(vision_settings, "yolo_max_det"),
+            "routing_policy": routing_policy,
         },
         "crop": {
             "crop_padding_ratio": _settings_value(vision_settings, "crop_padding_ratio"),
@@ -313,6 +325,9 @@ def rolling_vision_settings_key(
         "bioclip_gate": {
             "mode": str(bioclip_gate_mode),
             "score_no_detection_whole_image": bool(score_no_detection_whole_image),
+            "supported_comparison_routes": list(
+                dict.fromkeys(str(route) for route in supported_comparison_routes)
+            ),
         },
         "bioclip_model": {
             "model_id": str(bioclip_model.get("model_id") or ""),
@@ -363,6 +378,12 @@ def detect_cloud_rolling_vision_batch(
                     "model_id": detector.model_id,
                     "model_version": detector.model_version,
                     "checkpoint": detector.checkpoint,
+                    "prompt_classes": list(
+                        getattr(detector, "prompt_classes", ())
+                    ),
+                    "prompt_set_fingerprint": str(
+                        getattr(detector, "prompt_set_fingerprint", "") or ""
+                    ),
                 },
                 detection_policy=detection_policy,
                 vision_settings=None,
@@ -795,6 +816,40 @@ def _settings_value(settings: Any | None, field_name: str) -> Any:
     if settings is None or not hasattr(settings, field_name):
         return None
     return _jsonable_value(getattr(settings, field_name))
+
+
+def _routing_policy_settings(settings: Any | None) -> dict[str, Any]:
+    defaults = DetectionRoutingPolicy()
+
+    def configured(field_name: str) -> Any:
+        value = _settings_value(settings, field_name)
+        return getattr(defaults, field_name) if value is None else value
+
+    policy = DetectionRoutingPolicy(
+        version=defaults.version,
+        possible_adult_route_enabled=bool(
+            configured("possible_adult_route_enabled")
+        ),
+        possible_adult_route_threshold=float(
+            configured("possible_adult_route_threshold")
+        ),
+        ambiguous_insect_review_enabled=bool(
+            configured("ambiguous_insect_review_enabled")
+        ),
+        ambiguous_insect_review_threshold=float(
+            configured("ambiguous_insect_review_threshold")
+        ),
+    )
+    return {
+        "version": policy.version,
+        "fingerprint": policy.fingerprint,
+        "possible_adult_route_enabled": policy.possible_adult_route_enabled,
+        "possible_adult_route_threshold": policy.possible_adult_route_threshold,
+        "ambiguous_insect_review_enabled": policy.ambiguous_insect_review_enabled,
+        "ambiguous_insect_review_threshold": (
+            policy.ambiguous_insect_review_threshold
+        ),
+    }
 
 
 def _stable_hash(payload: dict[str, Any]) -> str:

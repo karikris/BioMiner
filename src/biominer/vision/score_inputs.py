@@ -27,6 +27,13 @@ BIOCLIP_SCORE_INPUT_SCHEMA: dict[str, pl.DataType] = {
     "bioclip_gate_mode": pl.String,
     "bioclip_gate_decision": pl.String,
     "bioclip_gate_reason": pl.String,
+    "detection_route": pl.String,
+    "routing_action": pl.String,
+    "bioclip_route": pl.String,
+    "routing_priority": pl.String,
+    "routing_reason": pl.String,
+    "routing_policy_version": pl.String,
+    "routing_policy_fingerprint": pl.String,
     "batch_id": pl.String,
     "part_id": pl.String,
 }
@@ -117,9 +124,7 @@ def materialize_bioclip_score_inputs(
                 "crop_hash": crop_hash,
                 "detector_label": str(detection.get("detector_label") or ""),
                 "detection_status": str(detection.get("detection_status") or ""),
-                "bioclip_gate_mode": decision.bioclip_gate_mode,
-                "bioclip_gate_decision": decision.bioclip_gate_decision,
-                "bioclip_gate_reason": decision.bioclip_gate_reason,
+                **decision.as_row_fields(),
                 "batch_id": str(batch_id or ""),
                 "part_id": str(part_id or ""),
             }
@@ -183,10 +188,7 @@ def _score_item_gate_fields(
 ) -> dict[str, str | None]:
     return {
         "visual_input_id": visual_input_id,
-        "visual_input_kind": decision.visual_input_kind,
-        "bioclip_gate_mode": decision.bioclip_gate_mode,
-        "bioclip_gate_decision": decision.bioclip_gate_decision,
-        "bioclip_gate_reason": decision.bioclip_gate_reason,
+        **decision.as_row_fields(),
         "crop_hash": crop_hash,
     }
 

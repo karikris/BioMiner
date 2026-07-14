@@ -26,7 +26,6 @@ from biominer.bioclip.object_runner import (
 )
 from biominer.bioclip.path_cascade_output import PATH_CASCADE_OUTPUT_SCHEMA
 from biominer.detection.detector_base import DecodedImage
-from biominer.detection.policy import DetectionPolicy
 from biominer.detection.segmentation import make_segmenter
 from biominer.detection.schema import DETECTION_OUTPUT_SCHEMA, empty_detection_frame
 from biominer.evidence.join import build_photo_summary_from_joined_evidence
@@ -823,13 +822,42 @@ def test_materialized_detector_crop_batches_default_to_24_and_clean_between_batc
     assert all(not path.exists() for path in batch_dirs)
 
 
+def test_materialized_detector_crop_batches_default_to_routed_adult_gate(
+    tmp_path,
+) -> None:
+    detection = {
+        **_detections().to_dicts()[0],
+        "detector_label": "adult_butterfly",
+        "detector_prompt": "butterfly",
+    }
+    loaded_for: list[str] = []
+    seen: list[str] = []
+
+    def image_loader(item: dict[str, object]) -> DecodedImage:
+        loaded_for.append(str(item["detection_id"]))
+        return _decoded_image()
+
+    for batch in iter_materialized_detector_crop_batches(
+        canonical_records=_canonical_records(),
+        detections=pl.DataFrame([detection]),
+        image_loader=image_loader,
+        temp_dir=tmp_path,
+        crop_target_px=3,
+    ):
+        seen.extend(str(item["detection_id"]) for item in batch.items)
+
+    assert loaded_for == ["det-1"]
+    assert seen == ["det-1"]
+
+
 def test_materialized_detector_crop_batches_skip_noneligible_without_image_load(tmp_path) -> None:
     eligible = _detections().to_dicts()[0]
     noneligible = {
-        **eligible,
-        "flickr_photo_id": "photo-without-canonical-record",
-        "detection_id": "moth-1",
-        "detector_label": "moth_like",
+        **object_detection_row(
+            "photo-without-canonical-record",
+            detection_id="moth-1",
+            label="moth_like",
+        ),
         "bbox_xyxy": [],
     }
     loaded_for: list[str] = []
@@ -844,7 +872,7 @@ def test_materialized_detector_crop_batches_skip_noneligible_without_image_load(
         detections=pl.DataFrame([noneligible, eligible]),
         image_loader=image_loader,
         temp_dir=tmp_path,
-        detection_policy=DetectionPolicy(bioclip_eligible_labels=("butterfly_like",)),
+        bioclip_gate_policy=BioClipGatePolicy.legacy_butterfly_like_only(),
         crop_target_px=3,
     ):
         seen_batches.append([str(item["detection_id"]) for item in batch.items])
@@ -1126,7 +1154,20 @@ def test_screen_object_detections_materialized_path_skips_legacy_ineligible_with
         model_version="bioclip2_5_huge",
         model_checkpoint="checkpoint-a",
     )
-    detections = _detections().with_columns(pl.lit("moth_like").alias("detector_label"))
+    detections = object_detections(
+        object_detection_row(
+            detection_id="det-1",
+            label="moth_like",
+            crop_hash="sha256:crop-1",
+        ),
+        object_detection_row(
+            detection_id="det-2",
+            label="moth_like",
+            score=0.6,
+            bbox_xyxy=[10.0, 10.0, 20.0, 20.0],
+            crop_hash="sha256:crop-2",
+        ),
+    )
 
     result = screen_object_detections(
         canonical_records=_canonical_records(),
@@ -1136,7 +1177,7 @@ def test_screen_object_detections_materialized_path_skips_legacy_ineligible_with
         scorer=crop_scorer,
         output_path=tmp_path / "object_scores.parquet",
         ablation_mode="detector_crop",
-        detection_policy=DetectionPolicy(bioclip_eligible_labels=("butterfly_like",)),
+        bioclip_gate_policy=BioClipGatePolicy.legacy_butterfly_like_only(),
     )
 
     assert result.crops_scored == 0
@@ -1318,6 +1359,9 @@ def test_object_bioclip_scores_detection_crops_with_join_keys(tmp_path) -> None:
     assert row["flickr_photo_id"] == "photo-1"
     assert row["detection_id"] == "det-1"
     assert row["crop_hash"] == "sha256:crop-1"
+    assert row["bioclip_gate_decision"] == "score"
+    assert row["detection_route"] == "adult_butterfly_field"
+    assert row["bioclip_route"] == "adult_field"
     assert row["candidate_set_id"] == candidate_set.candidate_set_id
     assert row["classification_mode"] == "target_scope_object_screening"
     assert row["candidate_selection_mode"] == TARGET_SCOPE_CANDIDATE_SELECTION_MODE
@@ -1504,7 +1548,6 @@ def test_object_bioclip_adaptive_batching_reports_min_batch_memory_failure(tmp_p
 
 
 def test_object_bioclip_production_gate_scores_only_detected_butterflies(tmp_path) -> None:
-    base_detection = _detections().to_dicts()[0]
     cases = [
         ("det-butterfly", "photo-1", "butterfly_like", "detected"),
         ("det-moth", "photo-moth", "moth_like", "detected"),
@@ -1517,15 +1560,14 @@ def test_object_bioclip_production_gate_scores_only_detected_butterflies(tmp_pat
     ]
     detections = pl.DataFrame(
         [
-            {
-                **base_detection,
-                "flickr_photo_id": photo_id,
-                "detection_id": detection_id,
-                "detector_label": label,
-                "detection_status": status,
-                "crop_hash": f"sha256:{detection_id}",
-                "failure_reason": None if status == "detected" else status,
-            }
+            object_detection_row(
+                photo_id,
+                detection_id=detection_id,
+                label=label,
+                detection_status=status,
+                crop_hash=f"sha256:{detection_id}",
+                failure_reason=None if status == "detected" else status,
+            )
             for detection_id, photo_id, label, status in cases
         ]
     )
@@ -1634,7 +1676,6 @@ def test_object_bioclip_exclude_hard_negative_gate_scores_mixed_non_hard_labels(
 
 
 def test_object_evidence_join_preserves_non_scored_detection_rows(tmp_path) -> None:
-    base_detection = _detections().to_dicts()[0]
     cases = [
         ("det-butterfly", "photo-1", "butterfly_like", "detected", "sha256:det-butterfly"),
         ("det-moth", "photo-moth", "moth_like", "detected", None),
@@ -1644,14 +1685,19 @@ def test_object_evidence_join_preserves_non_scored_detection_rows(tmp_path) -> N
     detections = pl.DataFrame(
         [
             {
-                **base_detection,
-                "flickr_photo_id": photo_id,
-                "detection_id": detection_id,
-                "detector_label": label,
-                "detection_status": status,
-                "crop_hash": crop_hash,
-                "crop_storage_policy": "ephemeral" if crop_hash else "not_created",
-                "failure_reason": None if status == "detected" else "no_butterfly_like_object",
+                **object_detection_row(
+                    photo_id,
+                    detection_id=detection_id,
+                    label=label,
+                    detection_status=status,
+                    crop_hash=crop_hash,  # type: ignore[arg-type]
+                    failure_reason=None
+                    if status == "detected"
+                    else "no_butterfly_like_object",
+                ),
+                "crop_storage_policy": "ephemeral"
+                if crop_hash
+                else "not_created",
             }
             for detection_id, photo_id, label, status, crop_hash in cases
         ]
@@ -1730,7 +1776,20 @@ def test_object_bioclip_skips_legacy_ineligible_detector_labels(tmp_path) -> Non
         def score(self, item, labels):  # noqa: ANN001, ANN202 - mirrors scorer protocol.
             raise AssertionError(f"legacy-ineligible detection was sent to BioCLIP: {item.get('detector_label')}")
 
-    detections = _detections().with_columns(pl.lit("moth_like").alias("detector_label"))
+    detections = object_detections(
+        object_detection_row(
+            detection_id="det-1",
+            label="moth_like",
+            crop_hash="sha256:crop-1",
+        ),
+        object_detection_row(
+            detection_id="det-2",
+            label="moth_like",
+            score=0.6,
+            bbox_xyxy=[10.0, 10.0, 20.0, 20.0],
+            crop_hash="sha256:crop-2",
+        ),
+    )
     result = screen_object_detections(
         canonical_records=_canonical_records(),
         detections=detections,
@@ -1739,7 +1798,7 @@ def test_object_bioclip_skips_legacy_ineligible_detector_labels(tmp_path) -> Non
         scorer=FailingScorer(),
         output_path=tmp_path / "object_scores.parquet",
         ablation_mode="detector_crop",
-        detection_policy=DetectionPolicy(bioclip_eligible_labels=("butterfly_like",)),
+        bioclip_gate_policy=BioClipGatePolicy.legacy_butterfly_like_only(),
     )
 
     assert result.crops_scored == 0
@@ -1872,8 +1931,10 @@ def test_object_bioclip_score_keeps_metadata_negative_hint_as_review_context(tmp
     assert row["is_target_positive"] is True
 
 
-def test_object_bioclip_score_bins_visual_hard_negative_object(tmp_path) -> None:
-    detection = _detections().head(1).with_columns(pl.lit("hard_negative").alias("detector_label"))
+def test_object_bioclip_score_bins_visual_artifact_object(tmp_path) -> None:
+    detection = object_detections(
+        object_detection_row(label="hard_negative", crop_hash="sha256:crop-1")
+    )
     scores_path = tmp_path / "object_scores.parquet"
 
     result = screen_object_detections(
@@ -1899,12 +1960,103 @@ def test_object_bioclip_score_bins_visual_hard_negative_object(tmp_path) -> None
     )
     summary = pl.read_parquet(outputs.photo_evidence_summary).to_dicts()[0]
     assert summary["photo_occurrence_bin"] == "bin"
-    assert summary["photo_bin_reason"] == "negative_material_hard_negative_object"
+    assert summary["photo_bin_reason"] == "negative_material_visual_artifact"
     assert summary["photo_species_top1"] is None
     assert summary["photo_species_top1_key"] is None
     assert summary["photo_species_confidence_score"] is None
     assert summary["photo_multi_object_conflict"] is False
-    assert summary["photo_review_reason"] == "negative_material_hard_negative_object"
+    assert summary["photo_review_reason"] == "negative_material_visual_artifact"
+
+
+@pytest.mark.parametrize(
+    ("label", "prompt", "expected_bin", "expected_reason"),
+    [
+        (
+            "insect_like",
+            "insect",
+            "in_review",
+            "ambiguous_visual_domain_review",
+        ),
+        (
+            "caterpillar",
+            "caterpillar",
+            "in_review",
+            "larval_route_without_bioclip_score",
+        ),
+        (
+            "pinned_specimen",
+            "pinned butterfly specimen",
+            "in_review",
+            "pinned_specimen_route_without_bioclip_score",
+        ),
+        (
+            "pupa",
+            "chrysalis",
+            "in_review",
+            "pupal_route_requires_separate_evidence",
+        ),
+        (
+            "no_relevant_organism",
+            "flower",
+            "bin",
+            "no_relevant_organism",
+        ),
+    ],
+)
+def test_object_summary_preserves_unscored_visual_domain_routes(
+    tmp_path,
+    label: str,
+    prompt: str,
+    expected_bin: str,
+    expected_reason: str,
+) -> None:
+    class FailingScorer:
+        model_id = "fake-bioclip"
+        model_version = "test"
+        model_checkpoint = "fake-checkpoint"
+
+        def score(self, item, labels):  # noqa: ANN001, ANN202
+            raise AssertionError(
+                f"unscored route reached the adult classifier: {item.get('bioclip_route')}"
+            )
+
+    detections = object_detections(
+        object_detection_row(
+            label=label,
+            detector_prompt=prompt,
+            detector_class_id=0,
+            detector_prompt_set_fingerprint="sha256:" + "d" * 64,
+        )
+    )
+    scores_path = tmp_path / "object_scores.parquet"
+    result = screen_object_detections(
+        canonical_records=_canonical_records(),
+        detections=detections,
+        species_context=_context(),
+        candidate_set=_fixture_candidate_set(),
+        scorer=FailingScorer(),
+        output_path=scores_path,
+        ablation_mode="detector_crop",
+        bioclip_gate_policy=BioClipGatePolicy(),
+    )
+
+    assert result.frame.is_empty()
+    canonical_path = tmp_path / "canonical.parquet"
+    detections_path = tmp_path / "detections.parquet"
+    _canonical_records().write_parquet(canonical_path)
+    detections.write_parquet(detections_path)
+    outputs = write_object_evidence_outputs(
+        canonical_records_path=canonical_path,
+        detections_path=detections_path,
+        scores_path=scores_path,
+        joined_output_path=tmp_path / "joined.parquet",
+        photo_summary_output_path=tmp_path / "summary.parquet",
+        species_context=_context(),
+    )
+    summary = pl.read_parquet(outputs.photo_evidence_summary).to_dicts()[0]
+    assert summary["photo_occurrence_bin"] == expected_bin
+    assert summary["photo_bin_reason"] == expected_reason
+    assert summary["photo_review_reason"] == expected_reason
 
 
 def test_object_bioclip_routes_non_top1_target_species_to_review(tmp_path) -> None:

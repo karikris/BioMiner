@@ -1205,6 +1205,54 @@ The production mode string is
 `target_aware_few_shot_classification`. It does not overload
 `target_scope_object_screening` or hierarchical cascade output.
 
+### 8.0 `object_detections.parquet` routing prerequisite
+
+The detector input to every target-aware scorer uses schema version
+`object-detection-v2`. Version 2 retains the v1 image, bounding-box, score,
+crop, model, status, and failure fields and adds immutable detector and routing
+provenance:
+
+- `detector_prompt: str?`, `detector_class_id: i32?`, and
+  `detector_prompt_set_fingerprint: str?` preserve the normalized prompt,
+  actual YOLOE result class ID, and order-sensitive prompt map used to decode
+  that class ID;
+- `detection_route`, `routing_action`, nullable `bioclip_route`,
+  `routing_priority`, and `routing_reason` preserve the route decision;
+- `routing_policy_version` and `routing_policy_fingerprint` bind the complete
+  possible-adult and ambiguous-review policy, including enable flags and
+  inclusive score thresholds.
+
+The closed route matrix is:
+
+| Detection route | Routing action | BioCLIP comparison route | Contract |
+|---|---|---|---|
+| `adult_butterfly_field` | `score` | `adult_field` | Definite adults and possible adults meeting the configured recall threshold |
+| `caterpillar_field` | `score` | `larval` | Larval evidence only; never an adult comparison |
+| `pinned_specimen` | `score` | `pinned_specimen` | Specimen evidence only; never a live-field comparison |
+| `ambiguous_visual_domain` | `review` or `exclude` | `adult_field` only for retained review | Configured low-priority recall review; review rows are not scored |
+| `pupa_or_chrysalis` | `exclude` | null | Retained as a separate visual domain pending a compatible route |
+| `possible_moth_or_other_insect` | `exclude` | null | Retained non-target insect evidence |
+| `artwork_logo_tattoo_or_other_artifact` | `exclude` | null | Retained visual-artifact evidence |
+| `no_relevant_organism` | `exclude` | null | No BioCLIP work |
+
+`no_detection` means the detector produced no retained candidate and maps to
+`no_relevant_organism`. Image decode/load failures and inference failures are
+separate statuses and map fail-closed to `ambiguous_visual_domain`; they are
+not rewritten as biological absence. Unknown raw prompts also fail closed even
+when a legacy coarse label appears positive. Route-aware NMS suppresses only
+overlapping detections in the same route so adult, larval, and specimen
+evidence cannot erase one another.
+
+The default BioCLIP gate is `routed_visual_domain`. A score requires a detected
+row, valid routing-policy identity, `routing_action = score`, an exact
+detection/comparison-route pair, and a comparison route explicitly supported
+by the active scorer. `routing_action = review` is retained but never scored.
+No-detection whole-image fallback is forbidden in this mode. The older
+`butterfly_like_only` and `exclude_hard_negative` gates are explicit diagnostic
+compatibility modes only. Detection and scoring work identities cover the
+ordered prompt-set fingerprint, routing-policy fingerprint, gate mode, and
+supported comparison routes; retry and lease metadata remain excluded.
+
 ### 8.1 `target_aware_object_scores.parquet`
 
 Grain: one source photo, routed scoring unit, and target task after versioned

@@ -14,7 +14,13 @@ import polars as pl
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage, ObjectDetector
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, detection_is_bioclip_eligible
-from biominer.detection.schema import DETECTION_OUTPUT_SCHEMA, build_detection_rows, detection_id_for
+from biominer.detection.routing import route_detection
+from biominer.detection.schema import (
+    DETECTION_OUTPUT_SCHEMA,
+    DETECTION_SCHEMA_VERSION,
+    build_detection_rows,
+    detection_id_for,
+)
 from biominer.storage.parquet import write_parquet, write_parquet_batches
 
 
@@ -121,7 +127,7 @@ def run_detection_pipeline(
             if loaded.image is None:
                 image_failures += 1
                 _buffer_detection_rows(
-                    [_image_failure_row(loaded, detector=detector)],
+                    [_image_failure_row(loaded, detector=detector, policy=policy)],
                     row_buffer=row_buffer,
                     batch_paths=batch_paths,
                     batch_dir=batch_dir,
@@ -278,6 +284,7 @@ def _detect_and_enrich_batch(
             detector_model_id=detector.model_id,
             detector_model_version=detector.model_version,
             detector_checkpoint=detector.checkpoint,
+            detector_prompt_set_fingerprint=getattr(detector, "prompt_set_fingerprint", None),
             policy=policy,
         )
         crop_jobs.extend(_CropJob(row=row, image=image) for row in detection_rows)
@@ -423,7 +430,7 @@ def _with_crop_metadata(
         height=crop.crop_height,
     ):
         storage_policy = "debug_retained"
-    return {
+    row = {
         **row,
         "crop_padding_ratio": policy.crop_padding_ratio,
         "crop_hash": crop.crop_hash,
@@ -431,6 +438,7 @@ def _with_crop_metadata(
         "crop_height": crop.crop_height,
         "crop_storage_policy": storage_policy,
     }
+    return row
 
 
 def _safe_crop_stem(crop_hash: str) -> str:
@@ -516,12 +524,17 @@ def _resize_rgb_nearest(
     return bytes(output)
 
 
-def _image_failure_row(item: _LoadedImage, *, detector: ObjectDetector) -> dict[str, Any]:
+def _image_failure_row(
+    item: _LoadedImage,
+    *,
+    detector: ObjectDetector,
+    policy: DetectionPolicy,
+) -> dict[str, Any]:
     source = str(item.record.get("source") or "flickr")
     photo_id = str(item.record.get("flickr_photo_id") or item.record.get("id") or "")
     if not source or not photo_id:
         raise ValueError("Detection rows require source and flickr_photo_id")
-    return {
+    row = {
         "source": source,
         "flickr_photo_id": photo_id,
         "source_record_hash": item.record.get("source_record_hash"),
@@ -533,6 +546,7 @@ def _image_failure_row(item: _LoadedImage, *, detector: ObjectDetector) -> dict[
             detector_checkpoint=detector.checkpoint,
             bbox_xyxyn=(None, None, None, None),
             detector_label="failed_image_load",
+            detector_prompt=None,
         ),
         "detector_backend": detector.backend,
         "prediction_source": f"object_detector:{detector.backend}",
@@ -547,6 +561,9 @@ def _image_failure_row(item: _LoadedImage, *, detector: ObjectDetector) -> dict[
         "detector_label": None,
         "detector_score": 0.0,
         "objectness_score": None,
+        "detector_prompt": None,
+        "detector_class_id": None,
+        "detector_prompt_set_fingerprint": getattr(detector, "prompt_set_fingerprint", None),
         "nms_group_id": None,
         "crop_padding_ratio": 0.0,
         "crop_hash": None,
@@ -555,5 +572,7 @@ def _image_failure_row(item: _LoadedImage, *, detector: ObjectDetector) -> dict[
         "crop_storage_policy": "not_created",
         "detection_status": "failed_image_load",
         "failure_reason": item.failure_reason or "image_load_failed",
-        "schema_version": "object-detection-v1",
+        "schema_version": DETECTION_SCHEMA_VERSION,
     }
+    decision = route_detection(row, getattr(policy, "routing_policy", None))
+    return {**row, **decision.as_row_fields()}

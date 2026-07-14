@@ -62,6 +62,7 @@ def test_enqueue_bioclip_work_from_detection_shards_only_uses_detected_butterfli
         model_checkpoint="bioclip-2.5",
         candidate_set_id="candidate-set-1",
         ablation_modes=("detector_crop",),
+        bioclip_gate_policy=BioClipGatePolicy.legacy_butterfly_like_only(),
     )
     second = enqueue_bioclip_work_from_detection_shards(
         storage=storage,
@@ -76,6 +77,7 @@ def test_enqueue_bioclip_work_from_detection_shards_only_uses_detected_butterfli
         model_checkpoint="bioclip-2.5",
         candidate_set_id="candidate-set-1",
         ablation_modes=("detector_crop",),
+        bioclip_gate_policy=BioClipGatePolicy.legacy_butterfly_like_only(),
     )
 
     assert first.detection_shards_seen == 1
@@ -180,6 +182,188 @@ def test_enqueue_bioclip_work_can_use_exclude_hard_negative_gate(tmp_path: Path)
     ]
     assert {payload["bioclip_gate_mode"] for payload in payloads} == {"exclude_hard_negative"}
     assert payloads[-1]["bioclip_gate_reason"] == "no_detection_whole_image_fallback"
+
+
+def test_enqueue_bioclip_work_default_routing_scores_only_supported_route(
+    tmp_path: Path,
+) -> None:
+    storage = _FakeCloudStorage()
+    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
+    detection_uri = "s3://biominer/runs/run_id=run-1/staging/detections.parquet"
+    storage.parquet_payloads[detection_uri] = pl.DataFrame(
+        [
+            _detection_row(
+                "photo-adult",
+                "det-adult",
+                "sha256:crop-adult",
+                "butterfly_like",
+                "detected",
+            ),
+            _detection_row(
+                "photo-review",
+                "det-review",
+                "sha256:crop-review",
+                "insect_like",
+                "detected",
+                detection_route="ambiguous_visual_domain",
+                routing_action="review",
+                routing_priority="low",
+                routing_reason="ambiguous_insect_review_above_threshold",
+            ),
+            _detection_row(
+                "photo-pupa",
+                "det-pupa",
+                "sha256:crop-pupa",
+                "pupa",
+                "detected",
+                detection_route="pupa_or_chrysalis",
+                routing_action="exclude",
+                bioclip_route=None,
+                routing_priority="none",
+                routing_reason="pupa_prompt_no_bioclip_route",
+            ),
+            _detection_row(
+                "photo-empty",
+                "det-empty",
+                "",
+                "no_detection",
+                "no_detection",
+                detection_route="no_relevant_organism",
+                routing_action="exclude",
+                bioclip_route=None,
+                routing_priority="none",
+                routing_reason="detector_reported_no_detection",
+            ),
+        ]
+    )
+    workstore.register_shard(
+        job_name="biominer_production_run",
+        registry_version="registry-v1",
+        stage=RunStage.DETECT_OBJECTS.value,
+        run_id="run-1",
+        worker_id="detector-1",
+        uri=detection_uri,
+        checksum=None,
+        row_count=4,
+    )
+
+    result = enqueue_bioclip_work_from_detection_shards(
+        storage=storage,
+        workstore=workstore,
+        job_name="biominer_production_run",
+        registry_version="registry-v1",
+        run_id="run-1",
+        detection_stage=RunStage.DETECT_OBJECTS.value,
+        score_stage=RunStage.SCORE_BIOCLIP.value,
+        model_id="imageomics/bioclip-2.5-vith14",
+        model_version="2.5",
+        model_checkpoint="bioclip-2.5",
+        candidate_set_id="candidate-set-1",
+    )
+
+    assert result.detections_seen == 4
+    assert result.eligible_detections_seen == 1
+    assert result.enqueued_work_items == 1
+    payload = workstore.list_work_items(
+        job_name="biominer_production_run",
+        stage=RunStage.SCORE_BIOCLIP.value,
+        registry_version="registry-v1",
+    )[0]["payload"]
+    assert payload["detection_route"] == "adult_butterfly_field"
+    assert payload["routing_action"] == "score"
+    assert payload["bioclip_route"] == "adult_field"
+    assert payload["routing_priority"] == "standard"
+    assert payload["routing_reason"] == "definite_adult_prompt"
+    assert payload["routing_policy_version"] == "detection-routing-policy-v1"
+    assert payload["routing_policy_fingerprint"] == "sha256:" + "c" * 64
+
+
+@pytest.mark.parametrize(
+    "routing_field",
+    (
+        "detection_route",
+        "routing_action",
+        "bioclip_route",
+        "routing_priority",
+        "routing_reason",
+        "routing_policy_version",
+        "routing_policy_fingerprint",
+    ),
+)
+def test_bioclip_work_key_changes_with_routing_identity(
+    routing_field: str,
+) -> None:
+    detection = _detection_row(
+        "photo-1",
+        "det-1",
+        "sha256:crop-1",
+        "butterfly_like",
+        "detected",
+    )
+    base_decision = cloud_work.bioclip_score_input_decision(detection)
+    base = bioclip_score_work_item(
+        detection,
+        run_id="run-1",
+        detection_shard_uri="s3://biominer/detections.parquet",
+        model={
+            "model_id": "fake-bioclip",
+            "model_version": "test",
+            "checkpoint": "fake-checkpoint",
+        },
+        candidate_set_id="candidate-set-1",
+        ablation_mode="detector_crop",
+        gate_decision=base_decision,
+    )
+    changed_detection = {
+        **detection,
+        routing_field: _changed_routing_value(routing_field),
+    }
+    changed = bioclip_score_work_item(
+        changed_detection,
+        run_id="run-1",
+        detection_shard_uri="s3://biominer/detections.parquet",
+        model={
+            "model_id": "fake-bioclip",
+            "model_version": "test",
+            "checkpoint": "fake-checkpoint",
+        },
+        candidate_set_id="candidate-set-1",
+        ablation_mode="detector_crop",
+        gate_decision=cloud_work.bioclip_score_input_decision(changed_detection),
+    )
+
+    assert changed["work_key"] != base["work_key"]
+    assert changed[routing_field] == _changed_routing_value(routing_field)
+
+
+@pytest.mark.parametrize(
+    ("field", "changed_value"),
+    (
+        ("detector_prompt", "lepidoptera"),
+        ("detector_class_id", 7),
+        ("detector_prompt_set_fingerprint", "sha256:" + "e" * 64),
+    ),
+)
+def test_bioclip_work_key_changes_with_detector_prompt_identity(
+    field: str,
+    changed_value: object,
+) -> None:
+    detection = _detection_row(
+        "photo-1",
+        "det-1",
+        "sha256:crop-1",
+        "adult_butterfly",
+        "detected",
+    )
+    identity = _v3_cascade_identity()
+    base = _v3_bioclip_payload(detection, cascade_identity=identity)
+    changed = _v3_bioclip_payload(
+        {**detection, field: changed_value},
+        cascade_identity=identity,
+    )
+
+    assert changed["work_key"] != base["work_key"]
+    assert changed[field] == changed_value
 
 
 @pytest.mark.parametrize(
@@ -703,7 +887,19 @@ def _context() -> SpeciesContext:
     )
 
 
-def _detection_row(photo_id: str, detection_id: str, crop_hash: str, label: str, status: str) -> dict[str, object]:
+def _detection_row(
+    photo_id: str,
+    detection_id: str,
+    crop_hash: str,
+    label: str,
+    status: str,
+    *,
+    detection_route: str = "adult_butterfly_field",
+    routing_action: str = "score",
+    bioclip_route: str | None = "adult_field",
+    routing_priority: str = "standard",
+    routing_reason: str = "definite_adult_prompt",
+) -> dict[str, object]:
     return {
         "source": "flickr",
         "flickr_photo_id": photo_id,
@@ -724,6 +920,9 @@ def _detection_row(photo_id: str, detection_id: str, crop_hash: str, label: str,
         "detector_label": label,
         "detector_score": 0.91,
         "objectness_score": 0.91,
+        "detector_prompt": "butterfly",
+        "detector_class_id": 0,
+        "detector_prompt_set_fingerprint": "sha256:" + "b" * 64,
         "nms_group_id": None,
         "crop_padding_ratio": 0.12,
         "crop_hash": crop_hash,
@@ -732,8 +931,27 @@ def _detection_row(photo_id: str, detection_id: str, crop_hash: str, label: str,
         "crop_storage_policy": "ephemeral",
         "detection_status": status,
         "failure_reason": None if status == "detected" else "no_butterfly_like_object",
+        "detection_route": detection_route,
+        "routing_action": routing_action,
+        "bioclip_route": bioclip_route,
+        "routing_priority": routing_priority,
+        "routing_reason": routing_reason,
+        "routing_policy_version": "detection-routing-policy-v1",
+        "routing_policy_fingerprint": "sha256:" + "c" * 64,
         "schema_version": "object-detection-v1",
     }
+
+
+def _changed_routing_value(field: str) -> str:
+    return {
+        "detection_route": "caterpillar_field",
+        "routing_action": "review",
+        "bioclip_route": "larval",
+        "routing_priority": "low",
+        "routing_reason": "changed_routing_reason",
+        "routing_policy_version": "detection-routing-policy-v2",
+        "routing_policy_fingerprint": "sha256:" + "d" * 64,
+    }[field]
 
 
 def _v3_cascade_identity(

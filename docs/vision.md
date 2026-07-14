@@ -1,6 +1,30 @@
 # Vision and classification
 
-YOLOE identifies butterfly and life-stage objects. Production preserves metadata for ineligible detections but does not create their crops. Eligible crops use profile-controlled padding, resize, batching, and memory limits; fine wing patterns use high-quality image resizing.
+YOLOE identifies butterfly and life-stage objects and emits
+`object-detection-v2` rows. Each detected object preserves its normalized raw
+prompt, actual class ID, ordered prompt-set fingerprint, route decision, and
+routing-policy fingerprint. Production routes are:
+
+- `adult_butterfly_field` to the `adult_field` comparison;
+- `caterpillar_field` to the separate `larval` comparison;
+- `pinned_specimen` to the separate `pinned_specimen` comparison;
+- `pupa_or_chrysalis`, `possible_moth_or_other_insect`,
+  `artwork_logo_tattoo_or_other_artifact`, and `no_relevant_organism` to
+  retained, unscored evidence;
+- `ambiguous_visual_domain` to low-priority review only when enabled and above
+  its configured threshold.
+
+The current production BioCLIP scorer declares only `adult_field` support.
+Larval and specimen rows retain their own comparison route and enter review
+until compatible scorers are configured; they never enter adult comparison.
+No-organism and no-detection rows never enter BioCLIP, and load/inference
+failures remain distinct from biological absence. The legacy
+`butterfly_like_only` and `exclude_hard_negative` gates are diagnostic modes,
+not production defaults.
+
+Production preserves metadata for ineligible detections but does not create
+their crops. Eligible crops use profile-controlled padding, resize, batching,
+and memory limits; fine wing patterns use high-quality image resizing.
 
 BioCLIP 2.5 runs as a persistent worker. Build text embeddings from reviewed
 rank prompts with `biominer dev vision build-text-embedding-cache`, then pass

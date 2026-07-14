@@ -35,7 +35,7 @@ def build_vision_stage_metrics(
     }
     warnings = _warning_flags(detection_metrics=detection_metrics, bioclip_metrics=bioclip_metrics)
     return {
-        "schema_version": "vision_stage_metrics_v1",
+        "schema_version": "vision_stage_metrics_v2",
         "detection": detection_metrics,
         "bioclip": bioclip_metrics,
         "evidence": evidence_metrics,
@@ -75,6 +75,10 @@ def vision_stage_summary_markdown(metrics: dict[str, Any]) -> str:
         f"| Eligible BioCLIP detections | {_display(detection.get('eligible_bioclip_detections'))} |",
         f"| Hard-negative detections | {_display(detection.get('hard_negative_detections'))} |",
         f"| No-detection records | {_display(detection.get('no_detection_count'))} |",
+        f"| Adult-field routes | {_display(_dict(detection.get('detections_by_route')).get('adult_butterfly_field', 0))} |",
+        f"| Larval routes | {_display(_dict(detection.get('detections_by_route')).get('caterpillar_field', 0))} |",
+        f"| Pinned-specimen routes | {_display(_dict(detection.get('detections_by_route')).get('pinned_specimen', 0))} |",
+        f"| Ambiguous review routes | {_display(detection.get('ambiguous_review_detections'))} |",
         "",
         "## BioCLIP",
         "",
@@ -132,12 +136,24 @@ def _detection_metrics(
     eligible = sum(1 for row in rows if detection_is_bioclip_eligible(row, detection_policy))
     unique_images = _unique_record_count(frame)
     detections_by_label = _value_counts(frame, "detector_label")
+    detections_by_route = _value_counts(frame, "detection_route")
+    routing_action_counts = _value_counts(frame, "routing_action")
+    bioclip_route_counts = _value_counts(frame, "bioclip_route")
     status_counts = _value_counts(frame, "detection_status")
     return {
         "images_seen": _runtime_int(runtime, "records_seen", "images_seen", default=unique_images),
         "images_loaded": _runtime_int(runtime, "images_loaded"),
         "image_failures": _runtime_int(runtime, "image_failures", default=status_counts.get("failed_image_load")),
         "detections_by_label": detections_by_label,
+        "detections_by_route": detections_by_route,
+        "routing_action_counts": routing_action_counts,
+        "bioclip_route_counts": bioclip_route_counts,
+        "ambiguous_review_detections": sum(
+            1
+            for row in rows
+            if str(row.get("detection_route") or "") == "ambiguous_visual_domain"
+            and str(row.get("routing_action") or "") == "review"
+        ),
         "detection_status_counts": status_counts,
         "butterfly_like_detections": _detected_label_count(rows, "butterfly_like"),
         "eligible_bioclip_detections": eligible,

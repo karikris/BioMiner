@@ -281,6 +281,10 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
     assert settings.delete_images_after_commit is True
     assert settings.adaptive_batching is False
     assert settings.yolo_sidecar_transport == "json_b64"
+    assert settings.possible_adult_route_enabled is True
+    assert settings.possible_adult_route_threshold == 0.20
+    assert settings.ambiguous_insect_review_enabled is False
+    assert settings.ambiguous_insect_review_threshold == 0.20
 
     overridden = parser.parse_args(
         [
@@ -300,6 +304,12 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
             "--adaptive-batching",
             "--yolo-sidecar-transport",
             "image_path",
+            "--no-possible-adult-route",
+            "--possible-adult-route-threshold",
+            "0.35",
+            "--ambiguous-insect-review",
+            "--ambiguous-insect-review-threshold",
+            "0.25",
             "--no-delete-images-after-commit",
         ]
     )
@@ -311,6 +321,10 @@ def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None
     assert overridden_settings.bioclip_model == "hf-hub:imageomics/bioclip-2.5-vith14"
     assert overridden_settings.adaptive_batching is True
     assert overridden_settings.yolo_sidecar_transport == "image_path"
+    assert overridden_settings.possible_adult_route_enabled is False
+    assert overridden_settings.possible_adult_route_threshold == 0.35
+    assert overridden_settings.ambiguous_insect_review_enabled is True
+    assert overridden_settings.ambiguous_insect_review_threshold == 0.25
     assert overridden_settings.delete_images_after_commit is False
     assert overridden_settings.yolo_imgsz == 768
     assert overridden_settings.crop_padding_ratio == 0.08

@@ -3,6 +3,7 @@ from __future__ import annotations
 import polars as pl
 
 from biominer.detection.detector_base import DetectionCandidate
+from biominer.detection.routing import route_detection
 
 
 def flickr_source_record(
@@ -45,10 +46,13 @@ def object_detection_row(
     crop_padding_ratio: float = 0.12,
     detection_status: str = "detected",
     failure_reason: str | None = None,
+    detector_prompt: str | None = None,
+    detector_class_id: int | None = None,
+    detector_prompt_set_fingerprint: str | None = None,
 ) -> dict[str, object]:
     bbox = bbox_xyxy or [0.0, 0.0, 10.0, 10.0]
     record = flickr_source_record(photo_id)
-    return {
+    row: dict[str, object] = {
         "source": record["source"],
         "flickr_photo_id": record["flickr_photo_id"],
         "source_record_hash": record["source_record_hash"],
@@ -59,6 +63,7 @@ def object_detection_row(
         "detector_model_id": "fake-detector",
         "detector_model_version": "v1",
         "detector_checkpoint": "checkpoint-a",
+        "prediction_source": "object_detector:fake",
         "detected_at": "2026-01-01T00:00:00+00:00",
         "bbox_xyxy": bbox,
         "bbox_xyxyn": [0.0, 0.0, 0.5, 0.5],
@@ -67,6 +72,9 @@ def object_detection_row(
         "detector_label": label,
         "detector_score": score,
         "objectness_score": score,
+        "detector_prompt": detector_prompt,
+        "detector_class_id": detector_class_id,
+        "detector_prompt_set_fingerprint": detector_prompt_set_fingerprint,
         "nms_group_id": None,
         "crop_padding_ratio": crop_padding_ratio,
         "crop_hash": crop_hash,
@@ -75,7 +83,9 @@ def object_detection_row(
         "crop_storage_policy": "ephemeral",
         "detection_status": detection_status,
         "failure_reason": failure_reason,
+        "schema_version": "object-detection-v2",
     }
+    return {**row, **route_detection(row).as_row_fields()}
 
 
 def object_detections(*rows: dict[str, object]) -> pl.DataFrame:
@@ -87,5 +97,16 @@ def detection_candidate(
     *,
     score: float = 0.91,
     bbox_xyxy: tuple[float, float, float, float] = (0.0, 0.0, 4.0, 4.0),
+    detector_prompt: str | None = None,
+    detector_class_id: int | None = None,
+    detector_prompt_set_fingerprint: str | None = None,
 ) -> DetectionCandidate:
-    return DetectionCandidate(label=label, score=score, bbox_xyxy=bbox_xyxy, objectness_score=score)
+    return DetectionCandidate(
+        label=label,
+        score=score,
+        bbox_xyxy=bbox_xyxy,
+        objectness_score=score,
+        detector_prompt=detector_prompt,
+        detector_class_id=detector_class_id,
+        detector_prompt_set_fingerprint=detector_prompt_set_fingerprint,
+    )

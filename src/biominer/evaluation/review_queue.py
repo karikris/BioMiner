@@ -103,6 +103,16 @@ def build_hierarchical_review_queue(
 
 
 def _reviewable_hierarchical_row(row: Mapping[str, Any]) -> bool:
+    if _text(row.get("routing_action")) == "review":
+        return True
+    if _text(row.get("detection_route")) == "pupa_or_chrysalis":
+        return True
+    if (
+        _text(row.get("routing_action")) == "score"
+        and _text(row.get("bioclip_route")) in {"larval", "pinned_specimen"}
+        and _missing_bioclip_score(row)
+    ):
+        return True
     mode = _text(row.get("classification_mode"))
     if mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
         return True
@@ -124,6 +134,23 @@ def _review_priority(
             reasons.append(reason)
         priority = max(priority, value)
 
+    if _text(row.get("routing_action")) == "review":
+        route = _text(row.get("detection_route")) or "unspecified"
+        add(f"detection_route_review:{route}", policy.clean_confident_review_priority)
+    if _text(row.get("detection_route")) == "pupa_or_chrysalis":
+        add(
+            "separate_visual_domain:pupa_or_chrysalis",
+            policy.clean_confident_review_priority,
+        )
+    if (
+        _text(row.get("routing_action")) == "score"
+        and _text(row.get("bioclip_route")) in {"larval", "pinned_specimen"}
+        and _missing_bioclip_score(row)
+    ):
+        add(
+            f"missing_route_bioclip_score:{_text(row.get('bioclip_route'))}",
+            policy.missing_bioclip_review_priority,
+        )
     if _missing_bioclip_score(row) and _is_butterfly_like_detection(row):
         add("missing_bioclip_score", policy.missing_bioclip_review_priority)
     if _missing_required_cascade_rank(row):
@@ -208,6 +235,9 @@ def _missing_required_cascade_rank(row: Mapping[str, Any]) -> bool:
 
 
 def _is_butterfly_like_detection(row: Mapping[str, Any]) -> bool:
+    detection_route = _text(row.get("detection_route"))
+    if detection_route:
+        return detection_route == "adult_butterfly_field"
     detector_label = _text(row.get("detector_label")).casefold()
     detection_class = _text(row.get("detection_class")).casefold()
     category = _text(row.get("image_category")).casefold()
@@ -218,7 +248,7 @@ def _is_butterfly_like_detection(row: Mapping[str, Any]) -> bool:
         return True
     if detection_class in {"butterfly", "butterfly_like", "adult_butterfly"}:
         return True
-    if category in {"adult_butterfly", "egg", "caterpillar", "larva", "pupa", "chrysalis"}:
+    if category == "adult_butterfly":
         return True
     return status in {"detected", "cropped"} and "butterfly" in detector_label
 
