@@ -1153,11 +1153,45 @@ life stage, visual domain, method, and ID. Schema version:
 
 Required fields are `schema_version`, `prototype_id`, `accepted_taxon_key`,
 `species` (the accepted scientific name), `cluster_scope_type`, `geo_cluster_id`, `life_stage`,
-`visual_domain`, `view`, `route`, `prototype_method`, `prototype_group_id`,
+`visual_domain`, `view`, `route`, `visual_input_kind`, `prototype_method`, `prototype_group_id`,
 `reference_count`, `independent_observation_count`,
 `balanced_sampling_seed`, `mean_centered`, `embedding_dimension`, `embedding`,
-`embedding_norm`, `model_fingerprint`, `reference_embedding_fingerprint`,
+`embedding_norm`, `centering_fingerprint`, `model_fingerprint`, `reference_embedding_fingerprint`,
 `support_manifest_fingerprint`, and `prototype_fingerprint`.
+
+Prototype fitting consumes `support_train` embeddings only. Calibration,
+model-selection, and final-test vectors do not enter a prototype, its centering
+mean, or `reference_embedding_fingerprint`; that fingerprint identifies the
+exact sorted `support_train` embedding subset consumed by the build. The full
+frozen support-manifest fingerprint remains attached for split and bank
+provenance.
+
+Every independent observation contributes one effective vector per route and
+visual-input kind. Multiple licensed views or media rows from the same
+observation are averaged and normalized first, so a burst or provider mirror
+cannot overweight the class centroid. `normalized_mean` then averages those
+observation vectors and L2-normalizes the persisted Float32 prototype.
+
+`simpleshot_mean_centered` uses one global centering context per route and
+visual-input kind. The context takes an equal number of independent
+observations from every species, selected deterministically with
+`balanced_sampling_seed`; subtracts that unnormalized global mean from support
+and query embeddings; normalizes the centered vectors; and then produces the
+normalized class mean. The row records the exact `centering_fingerprint`.
+Raw `normalized_mean` rows have null `balanced_sampling_seed` and
+`centering_fingerprint`, because their identity must not change with a seed
+they do not consume. A context with fewer than two species emits raw centroids
+only. A zero-norm centered group is omitted and counted in the structured build
+log rather than materializing an invalid vector.
+
+Global rows use `cluster_scope_type = "global"`, `geo_cluster_id = "all"`, and
+`view = "all"`; regional rows retain their actual cluster. Prototypes never
+mix routes or visual-input kinds. Query centering reconstructs the same context
+from the fingerprinted training embeddings and fails on a zero-norm result.
+All stored prototypes are finite, unit-normalized Float32 arrays. Prototype
+fingerprints encode semantic fields with the canonical binary identity
+contract, followed by little-endian Float64 norm and little-endian Float32
+vector bytes.
 
 Embedding clusters may split a verified species/route group into prototypes;
 they may never change its accepted taxon key.
