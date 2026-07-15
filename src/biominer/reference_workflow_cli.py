@@ -112,6 +112,58 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
             "overwrite": False,
         },
     ),
+    "materialize-flickr-workload": _CommandSpec(
+        stage=RunStage.FLICKR_GEO_CLUSTERING,
+        fields=frozenset(
+            {
+                "candidate_metadata",
+                "candidate_metadata_byte_count",
+                "candidate_metadata_sha256",
+                "input_format",
+                "target_accepted_taxon_key",
+                "output_dir",
+                "report_dir",
+                "created_at",
+                "coarse_resolution",
+                "regional_resolution",
+                "local_resolution",
+                "source_cell_field",
+                "source_resolution",
+                "adjacency_grid_distance",
+                "minimum_images_per_cell",
+                "minimum_cluster_images",
+                "maximum_assignment_distance_km",
+                "total_reference_quota",
+                "minimum_per_populated_cluster",
+                "minimum_candidate_images",
+                "overwrite",
+            }
+        ),
+        required=frozenset(
+            {
+                "candidate_metadata",
+                "target_accepted_taxon_key",
+                "output_dir",
+                "created_at",
+            }
+        ),
+        defaults={
+            "input_format": "auto",
+            "coarse_resolution": 3,
+            "regional_resolution": 5,
+            "local_resolution": 7,
+            "source_cell_field": "regional_cell_id",
+            "source_resolution": 5,
+            "adjacency_grid_distance": 1,
+            "minimum_images_per_cell": 1,
+            "minimum_cluster_images": 2,
+            "maximum_assignment_distance_km": 250.0,
+            "total_reference_quota": 50,
+            "minimum_per_populated_cluster": 2,
+            "minimum_candidate_images": 10,
+            "overwrite": False,
+        },
+    ),
     "plan": _CommandSpec(
         stage=RunStage.REFERENCE_METADATA,
         fields=frozenset(
@@ -478,6 +530,37 @@ def add_reference_workflow_parsers(
     clusters.add_argument("--maximum-assignment-distance-km", type=float)
     clusters.add_argument("--bioregion-map")
     clusters.add_argument(
+        "--overwrite",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+
+    workload = subparsers.add_parser("materialize-flickr-workload")
+    _common(workload, runtime_defaults)
+    workload.add_argument("--candidate-metadata")
+    workload.add_argument("--candidate-metadata-byte-count", type=int)
+    workload.add_argument("--candidate-metadata-sha256")
+    workload.add_argument("--input-format", choices=("auto", "ndjson", "parquet"))
+    workload.add_argument("--target-accepted-taxon-key")
+    workload.add_argument("--output-dir")
+    workload.add_argument("--report-dir")
+    workload.add_argument("--created-at")
+    workload.add_argument("--coarse-resolution", type=int)
+    workload.add_argument("--regional-resolution", type=int)
+    workload.add_argument("--local-resolution", type=int)
+    workload.add_argument(
+        "--source-cell-field",
+        choices=("coarse_cell_id", "regional_cell_id", "local_cell_id"),
+    )
+    workload.add_argument("--source-resolution", type=int)
+    workload.add_argument("--adjacency-grid-distance", type=int)
+    workload.add_argument("--minimum-images-per-cell", type=int)
+    workload.add_argument("--minimum-cluster-images", type=int)
+    workload.add_argument("--maximum-assignment-distance-km", type=float)
+    workload.add_argument("--total-reference-quota", type=int)
+    workload.add_argument("--minimum-per-populated-cluster", type=int)
+    workload.add_argument("--minimum-candidate-images", type=int)
+    workload.add_argument(
         "--overwrite",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -855,6 +938,32 @@ def _validate_effective_options(command: str, values: dict[str, Any]) -> None:
         _nonnegative_integer(values["max_retries"], "max_retries")
     elif command == "cluster-flickr-metadata":
         _flickr_cluster_config(values)
+    elif command == "materialize-flickr-workload":
+        from biominer.geography import GeographicResolutions
+
+        GeographicResolutions(
+            coarse=_integer(values["coarse_resolution"], "coarse_resolution"),
+            regional=_integer(values["regional_resolution"], "regional_resolution"),
+            local=_integer(values["local_resolution"], "local_resolution"),
+        )
+        _flickr_cluster_config(values)
+        _positive_integer(values["total_reference_quota"], "total_reference_quota")
+        _nonnegative_integer(
+            values["minimum_per_populated_cluster"],
+            "minimum_per_populated_cluster",
+        )
+        _positive_integer(values["minimum_candidate_images"], "minimum_candidate_images")
+        _boolean(values["overwrite"], "overwrite")
+        if values.get("candidate_metadata_byte_count") is not None:
+            _positive_integer(
+                values["candidate_metadata_byte_count"],
+                "candidate_metadata_byte_count",
+            )
+        if values.get("candidate_metadata_sha256") is not None:
+            _canonical_sha256(
+                values["candidate_metadata_sha256"],
+                "candidate_metadata_sha256",
+            )
     elif command == "plan":
         _reference_planner_config(values)
         _boolean(values["overwrite"], "overwrite")
@@ -1271,6 +1380,22 @@ def _canonical_sha256(value: object, field: str) -> str:
     return text
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _local_artifact_entry(path: Path) -> dict[str, object]:
+    return {
+        "path": str(path),
+        "byte_count": path.stat().st_size,
+        "sha256": _file_sha256(path),
+    }
+
+
 def _nonnegative_float(value: object, field: str) -> float:
     result = _finite_float(value, field)
     if result < 0.0:
@@ -1490,6 +1615,9 @@ _COMMAND_RUNNERS = {
     "cluster-flickr-metadata": lambda resolved, args: _run_flickr_clusters(
         resolved, args
     ),
+    "materialize-flickr-workload": lambda resolved, args: (
+        _run_materialize_flickr_workload(resolved, args)
+    ),
     "plan": lambda resolved, args: _run_reference_plan(resolved, args),
     "fetch-metadata": lambda resolved, args: _run_fetch_metadata(resolved, args),
     "download": lambda resolved, args: _run_reference_download(resolved, args),
@@ -1608,6 +1736,169 @@ def _run_flickr_clusters(
         "cluster_configuration_hash": result.cluster_configuration_hash,
         "cluster_count": result.clusters.height,
         "command": "references cluster-flickr-metadata",
+        "settings_fingerprint": resolved.settings_fingerprint,
+        "status": "complete",
+    }
+
+
+def _run_materialize_flickr_workload(
+    resolved: ResolvedReferenceWorkflowOptions,
+    _args: argparse.Namespace,
+) -> dict[str, object]:
+    from biominer.flickr_fetch.geographic_clustering import (
+        build_flickr_geo_clusters,
+        write_flickr_geo_cluster_artifacts,
+    )
+    from biominer.flickr_fetch.geography import (
+        FLICKR_GEOGRAPHY_FILE,
+        FlickrGeographyConfig,
+        build_flickr_geography_frame,
+    )
+    from biominer.flickr_fetch.workload import (
+        FLICKR_QUERY_HITS_FILE,
+        read_flickr_workload_input,
+    )
+    from biominer.geography import GeographicResolutions
+    from biominer.reports.flickr_geography import (
+        FLICKR_GEO_WORKLOAD_METRICS_FILE,
+        FLICKR_GEO_WORKLOAD_SUMMARY_FILE,
+        ReferenceQuotaConfig,
+        build_flickr_geo_workload_report,
+        write_flickr_geo_workload_report,
+    )
+    from biominer.storage.parquet import write_parquet
+
+    values = resolved.values
+    output_dir = Path(str(values["output_dir"]))
+    report_dir = Path(str(values.get("report_dir") or output_dir))
+    manifest_path = output_dir / "flickr_workload_manifest.json"
+    expected_outputs = (
+        output_dir / FLICKR_GEOGRAPHY_FILE,
+        output_dir / FLICKR_QUERY_HITS_FILE,
+        output_dir / "flickr_geo_clusters.parquet",
+        output_dir / "flickr_geo_assignments.parquet",
+        report_dir / FLICKR_GEO_WORKLOAD_METRICS_FILE,
+        report_dir / FLICKR_GEO_WORKLOAD_SUMMARY_FILE,
+        manifest_path,
+    )
+    overwrite = bool(values["overwrite"])
+    _ensure_outputs_available(expected_outputs, overwrite=overwrite)
+
+    started = datetime.now(UTC)
+    source_path = Path(str(values["candidate_metadata"]))
+    if not source_path.is_file():
+        raise FileNotFoundError(
+            f"Flickr candidate metadata does not exist: {source_path}"
+        )
+    source_byte_count = source_path.stat().st_size
+    expected_byte_count = values.get("candidate_metadata_byte_count")
+    if (
+        expected_byte_count is not None
+        and source_byte_count != int(expected_byte_count)
+    ):
+        raise ValueError(
+            "Flickr candidate metadata byte count does not match the pinned "
+            f"snapshot: expected {expected_byte_count}, got {source_byte_count}"
+        )
+    source_sha256 = _file_sha256(source_path)
+    expected_sha256 = values.get("candidate_metadata_sha256")
+    if expected_sha256 is not None and source_sha256 != expected_sha256:
+        raise ValueError(
+            "Flickr candidate metadata checksum does not match the pinned "
+            f"snapshot: expected {expected_sha256}, got {source_sha256}"
+        )
+    workload = read_flickr_workload_input(
+        source_path,
+        input_format=str(values["input_format"]),
+    )
+    geography = build_flickr_geography_frame(
+        workload.canonical_photos,
+        config=FlickrGeographyConfig(
+            resolutions=GeographicResolutions(
+                coarse=int(values["coarse_resolution"]),
+                regional=int(values["regional_resolution"]),
+                local=int(values["local_resolution"]),
+            )
+        ),
+    )
+    clustered = build_flickr_geo_clusters(
+        geography,
+        target_accepted_taxon_key=str(values["target_accepted_taxon_key"]),
+        config=_flickr_cluster_config(values),
+        created_at=values["created_at"],
+    )
+    geography_path = write_parquet(
+        geography,
+        output_dir / FLICKR_GEOGRAPHY_FILE,
+        overwrite=overwrite,
+    )
+    query_hits_path = write_parquet(
+        workload.query_hits,
+        output_dir / FLICKR_QUERY_HITS_FILE,
+        overwrite=overwrite,
+    )
+    cluster_paths = write_flickr_geo_cluster_artifacts(
+        clustered,
+        output_dir,
+        overwrite=overwrite,
+    )
+    ended = datetime.now(UTC)
+    report = build_flickr_geo_workload_report(
+        geography=geography,
+        clusters=clustered.clusters,
+        assignments=clustered.assignments,
+        query_hits=workload.query_hits,
+        quota_config=ReferenceQuotaConfig(
+            total_reference_quota=int(values["total_reference_quota"]),
+            minimum_per_populated_cluster=int(
+                values["minimum_per_populated_cluster"]
+            ),
+            minimum_candidate_images=int(values["minimum_candidate_images"]),
+        ),
+        run_id=f"flickr-workload-{resolved.settings_fingerprint[-16:]}",
+        command=("biominer", "references", "materialize-flickr-workload"),
+        started_at=started,
+        ended_at=ended,
+    )
+    report_paths = write_flickr_geo_workload_report(report, report_dir)
+    artifacts = {
+        "geography": geography_path,
+        "query_hits": query_hits_path,
+        **cluster_paths,
+        **{f"report_{key}": path for key, path in report_paths.items()},
+    }
+    manifest = {
+        "schema_version": "flickr-workload-manifest-v1.0.0",
+        "candidate_semantics": "flickr_search_candidate_not_taxonomic_label",
+        "target_accepted_taxon_key": str(values["target_accepted_taxon_key"]),
+        "settings_fingerprint": resolved.settings_fingerprint,
+        "source": {
+            "path": str(source_path),
+            "byte_count": source_byte_count,
+            "sha256": source_sha256,
+            "input_row_count": workload.input_row_count,
+        },
+        "counts": {
+            "canonical_photo_count": workload.canonical_photo_count,
+            "query_hit_count": workload.query_hit_count,
+            "geotagged_photo_count": int(geography["geotag_available"].sum()),
+            "cluster_count": clustered.clusters.height,
+            "assignment_count": clustered.assignments.height,
+        },
+        "artifacts": {
+            name: _local_artifact_entry(path) for name, path in sorted(artifacts.items())
+        },
+    }
+    _write_json_atomic(manifest_path, manifest, overwrite=overwrite)
+    return {
+        "artifacts": {
+            **{name: str(path) for name, path in artifacts.items()},
+            "manifest": str(manifest_path),
+        },
+        "canonical_photo_count": workload.canonical_photo_count,
+        "cluster_count": clustered.clusters.height,
+        "command": "references materialize-flickr-workload",
+        "query_hit_count": workload.query_hit_count,
         "settings_fingerprint": resolved.settings_fingerprint,
         "status": "complete",
     }

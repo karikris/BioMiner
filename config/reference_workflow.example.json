@@ -21,6 +21,26 @@
       "minimum_cluster_images": 2,
       "maximum_assignment_distance_km": 250.0
     },
+    "materialize-flickr-workload": {
+      "candidate_metadata": "data/flickr/flickr_query_hits.ndjson",
+      "candidate_metadata_byte_count": 123456,
+      "candidate_metadata_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "input_format": "ndjson",
+      "target_accepted_taxon_key": "gbif:accepted-key",
+      "output_dir": "data/flickr/geographic-workload",
+      "report_dir": "reports/flickr/geographic-workload",
+      "created_at": "2026-01-01T00:00:00Z",
+      "coarse_resolution": 3,
+      "regional_resolution": 5,
+      "local_resolution": 7,
+      "source_cell_field": "coarse_cell_id",
+      "source_resolution": 3,
+      "minimum_cluster_images": 10,
+      "maximum_assignment_distance_km": 250.0,
+      "total_reference_quota": 100,
+      "minimum_per_populated_cluster": 1,
+      "minimum_candidate_images": 10
+    },
     "plan": {
       "candidate_species": "data/candidates/regional_candidate_species.parquet",
       "observations": "data/reference/reference_observations.parquet",

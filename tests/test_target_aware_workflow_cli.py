@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from test_target_verification_metrics import _rows_for_frozen_holdouts
     (
         "build-geographic-spread",
         "cluster-flickr-metadata",
+        "materialize-flickr-workload",
         "plan",
         "fetch-metadata",
         "download",
@@ -91,6 +93,7 @@ def test_reference_workflow_commands_are_nested_and_species_agnostic() -> None:
     assert {
         "build-geographic-spread",
         "cluster-flickr-metadata",
+        "materialize-flickr-workload",
         "plan",
         "fetch-metadata",
         "download",
@@ -242,6 +245,139 @@ def test_cluster_flickr_metadata_command_writes_real_artifacts(
     assert payload["assignment_count"] == 2
     assert (output / "flickr_geo_clusters.parquet").is_file()
     assert (output / "flickr_geo_assignments.parquet").is_file()
+
+
+def test_materialize_flickr_workload_pins_input_and_retains_query_hits(
+    tmp_path: Path,
+    capsys,
+) -> None:  # noqa: ANN001 - pytest fixture.
+    source = tmp_path / "flickr-hits.ndjson"
+    rows = [
+        {
+            "accuracy": 16,
+            "fetched_at": "2026-07-14T00:00:00Z",
+            "flickr_photo_id": "photo-1",
+            "latitude": -27.4705,
+            "longitude": 153.026,
+            "query_field": "tags",
+            "query_hash": "query-a",
+            "query_term": "Papilio demoleus",
+            "query_term_confidence": "high",
+            "query_term_type": "scientific_name",
+            "raw_photo_json": '{"id":"photo-1","revision":1}',
+        },
+        {
+            "accuracy": 16,
+            "fetched_at": "2026-07-13T00:00:00Z",
+            "flickr_photo_id": "photo-1",
+            "latitude": -27.4705,
+            "longitude": 153.026,
+            "query_field": "text",
+            "query_hash": "query-b",
+            "query_term": "lime butterfly",
+            "query_term_confidence": "medium",
+            "query_term_type": "common_name",
+            "raw_photo_json": '{"id":"photo-1","revision":0}',
+        },
+        {
+            "accuracy": 16,
+            "fetched_at": "2026-07-14T00:00:00Z",
+            "flickr_photo_id": "photo-2",
+            "latitude": -27.471,
+            "longitude": 153.027,
+            "query_field": "tags",
+            "query_hash": "query-c",
+            "query_term": "Papilio demoleus",
+            "query_term_confidence": "high",
+            "query_term_type": "scientific_name",
+            "raw_photo_json": '{"id":"photo-2"}',
+        },
+    ]
+    source.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    output = tmp_path / "workload"
+    reports = tmp_path / "reports"
+    source_sha256 = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+
+    rc = run(
+        build_parser().parse_args(
+            [
+                "references",
+                "materialize-flickr-workload",
+                "--candidate-metadata",
+                str(source),
+                "--candidate-metadata-byte-count",
+                str(source.stat().st_size),
+                "--candidate-metadata-sha256",
+                source_sha256,
+                "--target-accepted-taxon-key",
+                "gbif:1938069",
+                "--output-dir",
+                str(output),
+                "--report-dir",
+                str(reports),
+                "--created-at",
+                "2026-07-14T00:00:00Z",
+                "--source-cell-field",
+                "coarse_cell_id",
+                "--source-resolution",
+                "3",
+                "--minimum-cluster-images",
+                "1",
+            ]
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["canonical_photo_count"] == 2
+    assert payload["query_hit_count"] == 3
+    assert payload["cluster_count"] == 1
+    assert pl.read_parquet(output / "flickr_query_hits.parquet").height == 3
+    manifest = json.loads(
+        (output / "flickr_workload_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["candidate_semantics"] == (
+        "flickr_search_candidate_not_taxonomic_label"
+    )
+    assert manifest["source"]["sha256"] == source_sha256
+    assert (output / "flickr_geography.parquet").is_file()
+    assert (output / "flickr_geo_clusters.parquet").is_file()
+    assert (output / "flickr_geo_assignments.parquet").is_file()
+    assert (reports / "flickr_geographic_workload.json").is_file()
+    assert (reports / "flickr_geographic_workload.md").is_file()
+
+
+def test_materialize_flickr_workload_rejects_changed_snapshot(
+    tmp_path: Path,
+    capsys,
+) -> None:  # noqa: ANN001 - pytest fixture.
+    source = tmp_path / "flickr-hits.ndjson"
+    source.write_text("{}\n", encoding="utf-8")
+
+    rc = run(
+        build_parser().parse_args(
+            [
+                "references",
+                "materialize-flickr-workload",
+                "--candidate-metadata",
+                str(source),
+                "--candidate-metadata-byte-count",
+                str(source.stat().st_size + 1),
+                "--target-accepted-taxon-key",
+                "gbif:1938069",
+                "--output-dir",
+                str(tmp_path / "workload"),
+                "--created-at",
+                "2026-07-14T00:00:00Z",
+            ]
+        )
+    )
+
+    assert rc == 2
+    assert "byte count does not match" in json.loads(capsys.readouterr().out)["error"]
 
 
 def test_geographic_spread_command_builds_from_pinned_parquet(
