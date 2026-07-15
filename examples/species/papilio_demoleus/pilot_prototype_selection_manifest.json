@@ -1,0 +1,90 @@
+{
+  "schema_version": "papilio-demoleus-prototype-selection-manifest-v1.0.0",
+  "phase": 14,
+  "task": "14.3.1",
+  "status": "complete_with_documented_shortfalls",
+  "prototype_only": true,
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "selection_policy": {
+    "version": "prototype-reference-freeze-v1.0.0",
+    "planner_version": "trust-first-layered-regional-v1.0.0",
+    "selection_seed": 20260715,
+    "eligible_trust_levels": [
+      "R1",
+      "R2",
+      "R3",
+      "R4"
+    ],
+    "excluded_trust_levels": [
+      "R5"
+    ],
+    "acceptable_licence_statuses": [
+      "allowed",
+      "research_only"
+    ],
+    "one_media_per_independent_observation": true,
+    "known_identification_conflicts_excluded": true,
+    "route_compatibility_required": true,
+    "taxonomic_and_visual_domain_scopes_separate": true
+  },
+  "counts": {
+    "selected_reference_count": 93,
+    "selected_independent_observation_count": 93,
+    "biological_reference_count": 82,
+    "visual_domain_reference_count": 11,
+    "reference_group_count": 16,
+    "shortfall_scope_count": 34,
+    "total_shortfall_count": 553,
+    "human_verified_count": 0,
+    "provider_supported_count": 93
+  },
+  "trust_distribution": {
+    "R1": 0,
+    "R2": 0,
+    "R3": 0,
+    "R4": 93,
+    "R5": 0
+  },
+  "geographic_layer_distribution": {
+    "A": 52,
+    "B": 6,
+    "C": 0,
+    "D": 24,
+    "E": 11
+  },
+  "source_distribution": {
+    "GBIF": 82,
+    "Wikimedia Commons": 11
+  },
+  "selected_licence_status_distribution": {
+    "allowed": 13,
+    "research_only": 80
+  },
+  "selection_artifact": {
+    "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_selections.parquet",
+    "row_count": 93,
+    "byte_count": 40469,
+    "sha256": "sha256:c5e40c927f96b955b5d7d4ba489eadf61756dc203e262926e05689817dce7898"
+  },
+  "shortfall_artifact": {
+    "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_shortfalls.parquet",
+    "row_count": 45,
+    "byte_count": 7837,
+    "sha256": "sha256:7af5e1ddfad1618b05f23a7aea51ca9686ccf159e95ac32b199a908834242ccb"
+  },
+  "verification_semantics": {
+    "provider_supported_is_human_verified": false,
+    "human_taxonomic_verification_complete": false,
+    "model_output_used_as_taxonomic_validation": false
+  },
+  "unresolved_risks": [
+    "Provider-supported labels remain metadata-qualified prototype evidence rather than independent taxonomic validation.",
+    "Byte-level and perceptual duplicate resolution remains pending until selected biological media are downloaded.",
+    "Research-only licences restrict reuse outside the documented prototype workflow.",
+    "Selection shortfalls are preserved and must not be filled with duplicate observations."
+  ],
+  "next_task": "14.3.2_download_selected_media"
+}

@@ -32,11 +32,14 @@ from biominer.references.schemas import (
 
 
 PROTOTYPE_ACQUISITION_VERSION = "prototype-acquisition-v1.0.0"
+PROTOTYPE_SELECTION_SCHEMA_VERSION = "prototype-reference-selections-v1.0.0"
+PROTOTYPE_SELECTION_POLICY_VERSION = "prototype-reference-freeze-v1.0.0"
 PROTOTYPE_SOURCE_SUMMARY_SCHEMA_VERSION = "prototype-reference-source-summary-v1.0.0"
 PROTOTYPE_SHORTFALL_SCHEMA_VERSION = "prototype-reference-shortfalls-v1.0.0"
 PROTOTYPE_ACQUISITION_REPORT_SCHEMA_VERSION = "prototype-acquisition-report-v1.0.0"
 PROTOTYPE_SOURCE_SUMMARY_FILE = "prototype_reference_source_summary.parquet"
 PROTOTYPE_SHORTFALL_FILE = "prototype_reference_shortfalls.parquet"
+PROTOTYPE_SELECTION_FILE = "prototype_reference_selections.parquet"
 PROTOTYPE_ACQUISITION_REPORT_FILE = "prototype_acquisition_report.json"
 PROTOTYPE_ACQUISITION_REPORT_MARKDOWN_FILE = "prototype_acquisition_report.md"
 
@@ -45,6 +48,7 @@ PROTOTYPE_ACQUISITION_REPORT_MARKDOWN_FILE = "prototype_acquisition_report.md"
 class PrototypeAcquisitionResult:
     plan: pl.DataFrame
     planner: PrototypeReferencePlanResult
+    selections: pl.DataFrame
     source_summary: pl.DataFrame
     shortfalls: pl.DataFrame
     report: dict[str, Any]
@@ -60,6 +64,46 @@ class _Quota:
     route: str
     life_stage: str
     visual_domain: str
+
+
+def prototype_reference_selection_schema() -> dict[str, pl.DataType]:
+    return {
+        "schema_version": pl.String,
+        "prototype_selection_id": pl.String,
+        "acquisition_plan_id": pl.String,
+        "reference_group": pl.String,
+        "candidate_scope_type": pl.String,
+        "candidate_scope_id": pl.String,
+        "candidate_name": pl.String,
+        "route": pl.String,
+        "life_stage": pl.String,
+        "visual_domain": pl.String,
+        "reference_media_id": pl.String,
+        "reference_observation_id": pl.String,
+        "source": pl.String,
+        "provider_media_id": pl.String,
+        "media_identifier": pl.String,
+        "source_record_uri": pl.String,
+        "trust_level": pl.String,
+        "verification_status": pl.String,
+        "verification_actor": pl.String,
+        "geographic_layer": pl.String,
+        "image_quality_score": pl.Float64,
+        "licence": pl.String,
+        "licence_uri": pl.String,
+        "licence_policy_status": pl.String,
+        "attribution": pl.String,
+        "attribution_complete": pl.Boolean,
+        "observer_id": pl.String,
+        "observed_date": pl.Date,
+        "locality": pl.String,
+        "selection_rank": pl.UInt32,
+        "selection_seed": pl.UInt64,
+        "selection_strategy": pl.String,
+        "selected_at": pl.Datetime("us", "UTC"),
+        "prototype_only": pl.Boolean,
+        "selection_fingerprint": pl.String,
+    }
 
 
 def prototype_reference_source_summary_schema() -> dict[str, pl.DataType]:
@@ -189,6 +233,15 @@ def compile_prototype_acquisition(
         selection_seed=selection_seed,
         created_at=created,
     )
+    selections = _build_selections(
+        planner=planner,
+        observations=combined_observations,
+        media=qualified_media,
+        visual_rows=visual_rows,
+        acquisition_plan_id=acquisition_plan_id,
+        selection_seed=selection_seed,
+        selected_at=created,
+    )
     source_summary = _build_source_summary(
         planner=planner,
         visual_rows=visual_rows,
@@ -210,6 +263,7 @@ def compile_prototype_acquisition(
         media=qualified_media,
         planner=planner,
         visual_rows=visual_rows,
+        selections=selections,
         source_summary=source_summary,
         shortfalls=shortfalls,
         created_at=created,
@@ -217,6 +271,7 @@ def compile_prototype_acquisition(
     result = PrototypeAcquisitionResult(
         plan=plan,
         planner=planner,
+        selections=selections,
         source_summary=source_summary,
         shortfalls=shortfalls,
         report=report,
@@ -230,6 +285,7 @@ def validate_prototype_acquisition_result(result: PrototypeAcquisitionResult) ->
     from biominer.references.schemas import validate_reference_acquisition_plan
 
     validate_reference_acquisition_plan(result.plan)
+    _validate_selections(result.selections, result.planner)
     _validate_frame(
         result.source_summary,
         schema=prototype_reference_source_summary_schema(),
@@ -261,6 +317,8 @@ def validate_prototype_acquisition_result(result: PrototypeAcquisitionResult) ->
         result.source_summary["selected_for_download_count"].sum()
     ):
         raise ValueError("prototype selected-for-download report count is inconsistent")
+    if summary.get("selected_for_download_count") != result.selections.height:
+        raise ValueError("prototype selection ledger count is inconsistent")
 
 
 def write_prototype_acquisition_result(
@@ -276,6 +334,7 @@ def write_prototype_acquisition_result(
         "plan": output / "reference_acquisition_plan.parquet",
         "source_summary": output / PROTOTYPE_SOURCE_SUMMARY_FILE,
         "shortfalls": output / PROTOTYPE_SHORTFALL_FILE,
+        "selections": output / PROTOTYPE_SELECTION_FILE,
         "report": output / PROTOTYPE_ACQUISITION_REPORT_FILE,
         "markdown": output / PROTOTYPE_ACQUISITION_REPORT_MARKDOWN_FILE,
     }
@@ -286,6 +345,7 @@ def write_prototype_acquisition_result(
     write_reference_acquisition_plan(result.plan, output, overwrite=overwrite)
     _write_parquet(result.source_summary, paths["source_summary"])
     _write_parquet(result.shortfalls, paths["shortfalls"])
+    _write_parquet(result.selections, paths["selections"])
     _write_json(result.report, paths["report"])
     _write_text(result.markdown, paths["markdown"])
     planner_paths = write_prototype_reference_plan_result(result.planner, output)
@@ -492,6 +552,222 @@ def _visual_domain_rows(manifest: Mapping[str, object]) -> list[dict[str, object
     return rows
 
 
+def _visual_row_eligible(row: Mapping[str, object]) -> bool:
+    return (
+        bool(row.get("prototype_eligible"))
+        and str(row.get("licence_check_status")) == "allowed"
+        and bool(str(row.get("attribution") or "").strip())
+        and bool(str(row.get("media_uri") or "").strip())
+        and isinstance(row.get("width"), int)
+        and int(row["width"]) > 0
+        and isinstance(row.get("height"), int)
+        and int(row["height"]) > 0
+        and str(row.get("agent_screening_status")) == "passed"
+        and str(row.get("verification_status"))
+        in {"human_verified", "provider_high_trust", "provider_supported"}
+    )
+
+
+def _build_selections(
+    *,
+    planner: PrototypeReferencePlanResult,
+    observations: pl.DataFrame,
+    media: pl.DataFrame,
+    visual_rows: Sequence[Mapping[str, object]],
+    acquisition_plan_id: str,
+    selection_seed: int,
+    selected_at: datetime,
+) -> pl.DataFrame:
+    observations_by_id = {
+        str(row["reference_observation_id"]): row
+        for row in observations.iter_rows(named=True)
+    }
+    media_by_id = {
+        str(row["reference_media_id"]): row
+        for row in media.iter_rows(named=True)
+    }
+    rows: list[dict[str, object]] = []
+    for evidence in planner.selected.iter_rows(named=True):
+        observation = observations_by_id[str(evidence["reference_observation_id"])]
+        media_row = media_by_id[str(evidence["reference_media_id"])]
+        observed_at = observation.get("observed_at")
+        observed_date = (
+            observed_at.date() if isinstance(observed_at, datetime) else observed_at
+        )
+        row: dict[str, object] = {
+            "schema_version": PROTOTYPE_SELECTION_SCHEMA_VERSION,
+            "prototype_selection_id": "",
+            "acquisition_plan_id": acquisition_plan_id,
+            "reference_group": evidence["reference_group"],
+            "candidate_scope_type": "accepted_taxon",
+            "candidate_scope_id": evidence["accepted_taxon_key"],
+            "candidate_name": evidence["scientific_name"],
+            "route": evidence["route"],
+            "life_stage": evidence["life_stage"],
+            "visual_domain": evidence["visual_domain"],
+            "reference_media_id": evidence["reference_media_id"],
+            "reference_observation_id": evidence["reference_observation_id"],
+            "source": evidence["source"],
+            "provider_media_id": evidence["provider_media_id"],
+            "media_identifier": media_row["media_identifier"],
+            "source_record_uri": observation["source_record_url"],
+            "trust_level": evidence["trust_level"],
+            "verification_status": evidence["verification_status"],
+            "verification_actor": evidence["verification_actor"],
+            "geographic_layer": evidence["geographic_layer"],
+            "image_quality_score": evidence["image_quality_score"],
+            "licence": media_row["licence"],
+            "licence_uri": media_row["licence_uri"],
+            "licence_policy_status": evidence["licence_policy_status"],
+            "attribution": media_row["attribution"],
+            "attribution_complete": evidence["attribution_complete"],
+            "observer_id": observation["observer_id"],
+            "observed_date": observed_date,
+            "locality": observation["locality"],
+            "selection_rank": evidence["selection_rank"],
+            "selection_seed": selection_seed,
+            "selection_strategy": PROTOTYPE_SELECTION_POLICY_VERSION,
+            "selected_at": selected_at,
+            "prototype_only": True,
+            "selection_fingerprint": "",
+        }
+        rows.append(_finalize_selection_row(row))
+    for rank, raw in enumerate(
+        sorted(
+            (
+                row
+                for row in visual_rows
+                if _visual_row_eligible(row)
+            ),
+            key=lambda row: (
+                str(row["visual_domain_category"]),
+                str(row["candidate_id"]),
+            ),
+        ),
+        start=1,
+    ):
+        candidate_id = str(raw["candidate_id"])
+        category = str(raw["visual_domain_category"])
+        digest = hashlib.sha256(candidate_id.encode()).hexdigest()
+        row = {
+            "schema_version": PROTOTYPE_SELECTION_SCHEMA_VERSION,
+            "prototype_selection_id": "",
+            "acquisition_plan_id": acquisition_plan_id,
+            "reference_group": "visual_domain_negatives",
+            "candidate_scope_type": "visual_domain",
+            "candidate_scope_id": category,
+            "candidate_name": category.replace("_", " "),
+            "route": "visual_domain_negative",
+            "life_stage": "not_applicable",
+            "visual_domain": category,
+            "reference_media_id": f"prototype-media:{digest}",
+            "reference_observation_id": f"prototype-observation:{digest}",
+            "source": raw["source"],
+            "provider_media_id": raw["provider_media_id"],
+            "media_identifier": raw["media_uri"],
+            "source_record_uri": raw["source_record_uri"],
+            "trust_level": "R4",
+            "verification_status": raw["verification_status"],
+            "verification_actor": raw["verification_actor"],
+            "geographic_layer": "E",
+            "image_quality_score": None,
+            "licence": raw["licence"],
+            "licence_uri": raw.get("licence_uri"),
+            "licence_policy_status": "allowed",
+            "attribution": raw["attribution"],
+            "attribution_complete": True,
+            "observer_id": None,
+            "observed_date": None,
+            "locality": None,
+            "selection_rank": rank,
+            "selection_seed": selection_seed,
+            "selection_strategy": PROTOTYPE_SELECTION_POLICY_VERSION,
+            "selected_at": selected_at,
+            "prototype_only": True,
+            "selection_fingerprint": "",
+        }
+        rows.append(_finalize_selection_row(row))
+    return pl.DataFrame(
+        rows,
+        schema=prototype_reference_selection_schema(),
+        strict=True,
+    ).sort(
+        [
+            "reference_group",
+            "candidate_scope_type",
+            "candidate_scope_id",
+            "selection_rank",
+            "prototype_selection_id",
+        ]
+    )
+
+
+def _finalize_selection_row(row: dict[str, object]) -> dict[str, object]:
+    row["prototype_selection_id"] = "prototype-selection:" + hashlib.sha256(
+        json.dumps(
+            {
+                "acquisition_plan_id": row["acquisition_plan_id"],
+                "candidate_scope_type": row["candidate_scope_type"],
+                "candidate_scope_id": row["candidate_scope_id"],
+                "reference_media_id": row["reference_media_id"],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    row["selection_fingerprint"] = _sha256_json(
+        {key: value for key, value in row.items() if key != "selection_fingerprint"}
+    )
+    return row
+
+
+def _validate_selections(
+    selections: pl.DataFrame,
+    planner: PrototypeReferencePlanResult,
+) -> None:
+    _validate_frame(
+        selections,
+        schema=prototype_reference_selection_schema(),
+        schema_version=PROTOTYPE_SELECTION_SCHEMA_VERSION,
+        sort_by=[
+            "reference_group",
+            "candidate_scope_type",
+            "candidate_scope_id",
+            "selection_rank",
+            "prototype_selection_id",
+        ],
+    )
+    for field in (
+        "prototype_selection_id",
+        "reference_media_id",
+        "reference_observation_id",
+    ):
+        if selections[field].n_unique() != selections.height:
+            raise ValueError(f"prototype selection {field} values must be unique")
+    biological = selections.filter(pl.col("candidate_scope_type") == "accepted_taxon")
+    visual = selections.filter(pl.col("candidate_scope_type") == "visual_domain")
+    if biological.height != planner.selected.height:
+        raise ValueError("prototype biological selections disagree with planner")
+    if set(biological["reference_media_id"]) != set(
+        planner.selected["reference_media_id"]
+    ):
+        raise ValueError("prototype biological media disagree with planner")
+    if selections.filter(~pl.col("trust_level").is_in(["R1", "R2", "R3", "R4"])).height:
+        raise ValueError("prototype selection contains ineligible trust evidence")
+    if selections.filter(
+        ~pl.col("licence_policy_status").is_in(["allowed", "research_only"])
+    ).height:
+        raise ValueError("prototype selection contains an ineligible licence")
+    if visual.filter(pl.col("candidate_scope_id").str.len_chars() == 0).height:
+        raise ValueError("prototype visual selections require an explicit domain")
+    for row in selections.iter_rows(named=True):
+        expected = _sha256_json(
+            {key: value for key, value in row.items() if key != "selection_fingerprint"}
+        )
+        if row["selection_fingerprint"] != expected:
+            raise ValueError("prototype selection fingerprint mismatch")
+
+
 def _build_source_summary(
     *,
     planner: PrototypeReferencePlanResult,
@@ -540,9 +816,7 @@ def _build_source_summary(
             }
         )
     for raw in visual_rows:
-        eligible = bool(raw.get("prototype_eligible")) and str(
-            raw.get("licence_check_status")
-        ) == "allowed" and bool(str(raw.get("attribution") or "").strip())
+        eligible = _visual_row_eligible(raw)
         category = str(raw["visual_domain_category"])
         rows.append(
             {
@@ -616,9 +890,7 @@ def _build_shortfalls(
             }
         )
     for raw in visual_rows:
-        eligible = bool(raw.get("prototype_eligible")) and str(
-            raw.get("licence_check_status")
-        ) == "allowed" and bool(str(raw.get("attribution") or "").strip())
+        eligible = _visual_row_eligible(raw)
         category = str(raw["visual_domain_category"])
         rows.append(
             {
@@ -656,22 +928,21 @@ def _build_report(
     media: pl.DataFrame,
     planner: PrototypeReferencePlanResult,
     visual_rows: Sequence[Mapping[str, object]],
+    selections: pl.DataFrame,
     source_summary: pl.DataFrame,
     shortfalls: pl.DataFrame,
     created_at: datetime,
 ) -> dict[str, Any]:
     selected = planner.selected
     visual_selected = sum(
-        bool(row.get("prototype_eligible"))
-        and str(row.get("licence_check_status")) == "allowed"
-        and bool(str(row.get("attribution") or "").strip())
+        _visual_row_eligible(row)
         for row in visual_rows
     )
     trust = Counter(str(value) for value in selected["trust_level"])
     trust["R4"] += visual_selected
     layers = Counter(str(value) for value in selected["geographic_layer"])
     sources = Counter(str(value) for value in selected["source"])
-    sources.update(str(row["source"]) for row in visual_rows if row.get("prototype_eligible"))
+    sources.update(str(row["source"]) for row in visual_rows if _visual_row_eligible(row))
     licences = Counter(
         str(value)
         for value in media.filter(
@@ -699,6 +970,7 @@ def _build_report(
         "candidate_set_id": candidate_set_id,
         "plan_configuration_fingerprint": configuration_fingerprint,
         "planner_version": PROTOTYPE_REFERENCE_PLANNER_VERSION,
+        "selection_policy_version": PROTOTYPE_SELECTION_POLICY_VERSION,
         "licence_policy_version": policy.version,
         "licence_policy_fingerprint": policy.fingerprint,
         "created_at": created_at.isoformat().replace("+00:00", "Z"),
@@ -722,12 +994,13 @@ def _build_report(
                 "reference_observation_id"
             ].n_unique()
             + len(visual_rows),
-            "selected_for_download_count": int(
-                source_summary["selected_for_download_count"].sum()
-            ),
+            "selected_for_download_count": selections.height,
+            "selected_independent_observation_count": selections[
+                "reference_observation_id"
+            ].n_unique(),
             "biological_selected_for_download_count": selected.height,
             "visual_domain_selected_for_download_count": visual_selected,
-            "reference_group_count": shortfalls["reference_group"].n_unique(),
+            "reference_group_count": selections["reference_group"].n_unique(),
             "shortfall_scope_count": shortfalls.filter(
                 pl.col("shortfall_count") > 0
             ).height,
@@ -846,11 +1119,15 @@ __all__ = [
     "PROTOTYPE_ACQUISITION_VERSION",
     "PROTOTYPE_SHORTFALL_FILE",
     "PROTOTYPE_SHORTFALL_SCHEMA_VERSION",
+    "PROTOTYPE_SELECTION_FILE",
+    "PROTOTYPE_SELECTION_POLICY_VERSION",
+    "PROTOTYPE_SELECTION_SCHEMA_VERSION",
     "PROTOTYPE_SOURCE_SUMMARY_FILE",
     "PROTOTYPE_SOURCE_SUMMARY_SCHEMA_VERSION",
     "PrototypeAcquisitionResult",
     "compile_prototype_acquisition",
     "prototype_reference_shortfall_schema",
+    "prototype_reference_selection_schema",
     "prototype_reference_source_summary_schema",
     "validate_prototype_acquisition_result",
     "write_prototype_acquisition_result",

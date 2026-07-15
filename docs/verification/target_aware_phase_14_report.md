@@ -10,13 +10,14 @@ acquisition, and a reproducible acquisition plan. The current compact handoff
 is
 `examples/species/papilio_demoleus/pilot_prototype_acquisition_manifest.json`.
 
-The Task 14.2.5 plan contains 135 biological and 11 visual-domain candidates
-selected for download. All 146 are R4 provider-supported prototype evidence;
-none is represented as human verified. The plan records 33 candidate scopes
-with explicit shortfalls, including 15 target-adult and 19 target-caterpillar
-images. Planner scores remain ordinal priorities rather than probabilities.
-No biological-negative source images were downloaded during metadata
-acquisition.
+Task 14.3.1 freezes 82 biological and 11 visual-domain references in an
+explicit 93-row prototype selection ledger. All 93 are R4 provider-supported
+prototype evidence; none is represented as human verified. Every selection
+has a distinct media and observation identifier. Enforcing independent
+observations increased the honest shortfall to 553 across 34 scopes, including
+30 target-adult and 19 target-caterpillar images. Planner scores remain ordinal
+priorities rather than probabilities. No biological-negative source images
+were downloaded during metadata acquisition.
 
 Date: 2026-07-15. Confidence is high for the geographic workload,
 GBIF-derived competitor evidence, metadata checkpoint integrity, local vision

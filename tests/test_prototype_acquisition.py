@@ -4,10 +4,12 @@ from datetime import UTC, datetime
 import hashlib
 
 from biominer.references.prototype_acquisition import (
+    PROTOTYPE_SELECTION_FILE,
     PROTOTYPE_SHORTFALL_FILE,
     PROTOTYPE_SOURCE_SUMMARY_FILE,
     compile_prototype_acquisition,
     prototype_reference_shortfall_schema,
+    prototype_reference_selection_schema,
     prototype_reference_source_summary_schema,
     write_prototype_acquisition_result,
 )
@@ -141,8 +143,17 @@ def _result():
                 "visual_domain_category": "artwork",
                 "source": "Wikimedia Commons",
                 "source_record_id": "visual-1",
+                "provider_media_id": "File:visual-1.jpg",
+                "source_record_uri": "https://example.test/visual-1",
                 "media_uri": "https://example.test/artwork.jpg",
+                "width": 1200,
+                "height": 800,
+                "licence": "CC0",
+                "licence_uri": "https://creativecommons.org/publicdomain/zero/1.0/",
                 "attribution": "Fixture Artist / CC0",
+                "verification_status": "provider_supported",
+                "verification_actor": "wikimedia_commons",
+                "agent_screening_status": "passed",
                 "licence_check_status": "allowed",
                 "prototype_eligible": True,
                 "contains_biological_butterfly": False,
@@ -164,6 +175,12 @@ def test_prototype_acquisition_reports_taxonomic_and_visual_lanes() -> None:
     assert result.plan.schema == reference_acquisition_plan_schema()
     assert result.source_summary.schema == prototype_reference_source_summary_schema()
     assert result.shortfalls.schema == prototype_reference_shortfall_schema()
+    assert result.selections.schema == prototype_reference_selection_schema()
+    assert result.selections["reference_observation_id"].n_unique() == 2
+    assert set(result.selections["candidate_scope_type"]) == {
+        "accepted_taxon",
+        "visual_domain",
+    }
     assert result.planner.selected["licence_policy_status"].item() == "research_only"
     assert result.report["summary"]["selected_for_download_count"] == 2
     assert result.report["selected_trust_distribution"]["R1"] == 0
@@ -180,4 +197,5 @@ def test_prototype_acquisition_writes_required_parquet_outputs(tmp_path) -> None
     assert paths["plan"].name == "reference_acquisition_plan.parquet"
     assert paths["source_summary"].name == PROTOTYPE_SOURCE_SUMMARY_FILE
     assert paths["shortfalls"].name == PROTOTYPE_SHORTFALL_FILE
+    assert paths["selections"].name == PROTOTYPE_SELECTION_FILE
     assert all(path.is_file() for path in paths.values())

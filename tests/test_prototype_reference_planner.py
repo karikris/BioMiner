@@ -262,6 +262,39 @@ def test_exact_duplicate_candidate_is_excluded() -> None:
     assert result.evidence.filter(pl.col("exact_duplicate")).height == 1
 
 
+def test_one_observation_fills_only_one_quota_slot() -> None:
+    observations, media, qualification = _fixtures(
+        [
+            {"trust_level": "R3", "layer": "A"},
+            {"trust_level": "R3", "layer": "B"},
+            {"trust_level": "R4", "layer": "D"},
+        ]
+    )
+    media_rows = media.to_dicts()
+    shared_observation_id = str(media_rows[0]["reference_observation_id"])
+    media_rows[1]["reference_observation_id"] = shared_observation_id
+    media_rows[1]["reference_media_id"] = make_reference_media_id(
+        str(media_rows[1]["source"]),
+        str(media_rows[1]["provider_media_id"]),
+        shared_observation_id,
+    )
+    qualification_rows = qualification.to_dicts()
+    qualification_rows[1]["reference_media_id"] = media_rows[1][
+        "reference_media_id"
+    ]
+
+    result = plan_trust_first_layered_references(
+        observations=observations,
+        media_candidates=reference_media_candidates_frame(media_rows),
+        qualification_metadata=pl.DataFrame(qualification_rows),
+        quotas=(_quota(3),),
+    )
+
+    assert result.selected.height == 2
+    assert result.selected["reference_observation_id"].n_unique() == 2
+    assert result.report["quota_results"][0]["shortfall_count"] == 1
+
+
 def test_adult_larval_and_specimen_routes_remain_separate() -> None:
     observations, media, qualification = _fixtures(
         [

@@ -563,6 +563,23 @@ when a provider's full result exceeds its interactive-search ceiling. The
 report must disclose the bound and must not imply complete provider coverage.
 Unbounded query fingerprints remain unchanged for checkpoint compatibility.
 
+#### Prototype selection freeze
+
+Task 14.3 freezes the metadata-qualified prototype choices in
+`prototype_reference_selections.parquet` with schema version
+`prototype-reference-selections-v1.0.0`. Each row carries an explicit
+`candidate_scope_type`: biological rows use `accepted_taxon`, while curated
+material and visual-domain negatives use `visual_domain`. Visual negatives
+therefore never occupy `candidate_accepted_taxon_key`.
+
+The freeze accepts R1-R4 evidence and rejects R5 unless a future attributable
+manual promotion layer records the override. Every selected row must have an
+acceptable licence, complete attribution, a compatible route, no known
+identification conflict, and a unique `reference_observation_id`. Multiple
+media from one observation cannot fill multiple support slots. Selection
+scores remain ordinal priorities rather than probabilities, and documented
+shortfalls remain preferable to duplicate-observation padding.
+
 ### 5.4 `reference_media_objects.parquet`
 
 This supporting artifact records committed source-image objects without

@@ -415,6 +415,10 @@ def validate_prototype_reference_plan_result(
             raise ValueError("prototype planner selection ranks are not contiguous")
         if group["route"].n_unique() != 1:
             raise ValueError("prototype planner mixed routes within a reference group")
+        if group["reference_observation_id"].n_unique() != group.height:
+            raise ValueError(
+                "prototype planner selected multiple media from one observation"
+            )
     summary = _mapping(result.report.get("summary"))
     if summary.get("candidate_count") != result.evidence.height:
         raise ValueError("prototype planner report candidate count is inconsistent")
@@ -801,6 +805,7 @@ def _select_layered_candidates(
 ) -> list[dict[str, object]]:
     selected: list[dict[str, object]] = []
     selected_ids: set[int] = set()
+    selected_observation_ids: set[str] = set()
     morphology: Counter[str] = Counter()
     observers: Counter[str] = Counter()
     sources: Counter[str] = Counter()
@@ -811,6 +816,8 @@ def _select_layered_candidates(
                 for row in rows
                 if bool(row["eligible"])
                 and id(row) not in selected_ids
+                and str(row["reference_observation_id"])
+                not in selected_observation_ids
                 and _layer_bucket(str(row["geographic_layer"])) == bucket
             ]
             if not available:
@@ -826,11 +833,22 @@ def _select_layered_candidates(
                 ),
             )
             _record_selection(
-                chosen, selected, selected_ids, morphology, observers, sources
+                chosen,
+                selected,
+                selected_ids,
+                selected_observation_ids,
+                morphology,
+                observers,
+                sources,
             )
     while len(selected) < requested:
         available = [
-            row for row in rows if bool(row["eligible"]) and id(row) not in selected_ids
+            row
+            for row in rows
+            if bool(row["eligible"])
+            and id(row) not in selected_ids
+            and str(row["reference_observation_id"])
+            not in selected_observation_ids
         ]
         if not available:
             break
@@ -845,7 +863,13 @@ def _select_layered_candidates(
             ),
         )
         _record_selection(
-            chosen, selected, selected_ids, morphology, observers, sources
+            chosen,
+            selected,
+            selected_ids,
+            selected_observation_ids,
+            morphology,
+            observers,
+            sources,
         )
     return selected
 
@@ -854,12 +878,14 @@ def _record_selection(
     row: dict[str, object],
     selected: list[dict[str, object]],
     selected_ids: set[int],
+    selected_observation_ids: set[str],
     morphology: Counter[str],
     observers: Counter[str],
     sources: Counter[str],
 ) -> None:
     selected.append(row)
     selected_ids.add(id(row))
+    selected_observation_ids.add(str(row["reference_observation_id"]))
     morphology.update(str(value) for value in row["morphology_tags"])
     observer = row.get("_observer_id")
     if observer:

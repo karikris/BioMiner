@@ -40,44 +40,45 @@
     "unique_media_identifier_count": 170662,
     "licence_eligible_count": 160687,
     "independent_observation_count": 109085,
-    "biological_selected_for_download_count": 135,
+    "biological_selected_for_download_count": 82,
     "visual_domain_selected_for_download_count": 11,
-    "selected_for_download_count": 146,
+    "selected_for_download_count": 93,
     "reference_group_count": 11,
-    "shortfall_scope_count": 33,
-    "total_shortfall_count": 500,
+    "shortfall_scope_count": 34,
+    "total_shortfall_count": 553,
     "human_verified_count": 0,
     "provider_high_trust_count": 0,
-    "provider_supported_selected_count": 146
+    "provider_supported_selected_count": 93,
+    "selected_independent_observation_count": 93
   },
   "selected_trust_distribution": {
     "R1": 0,
     "R2": 0,
     "R3": 0,
-    "R4": 146,
+    "R4": 93,
     "R5": 0
   },
   "selected_geographic_layer_distribution": {
-    "A": 94,
+    "A": 52,
     "B": 6,
     "C": 0,
-    "D": 35,
+    "D": 24,
     "E": 11
   },
   "selected_layer_bucket_distribution": {
-    "AB": 100,
+    "AB": 58,
     "C": 0,
-    "D": 35,
+    "D": 24,
     "E": 11
   },
   "actual_layer_bucket_proportions": {
-    "AB": 0.684931506849315,
+    "AB": 0.6236559139784946,
     "C": 0.0,
-    "D": 0.23972602739726026,
-    "E": 0.07534246575342465
+    "D": 0.25806451612903225,
+    "E": 0.11827956989247312
   },
   "selected_source_distribution": {
-    "GBIF": 135,
+    "GBIF": 82,
     "Wikimedia Commons": 11
   },
   "licence_policy_status_distribution": {
@@ -89,8 +90,8 @@
   "explicit_shortfalls": {
     "target_adult": {
       "requested": 50,
-      "selected": 35,
-      "shortfall": 15
+      "selected": 20,
+      "shortfall": 30
     },
     "target_caterpillar": {
       "requested": 20,
@@ -138,31 +139,37 @@
     "reference_acquisition_plan": {
       "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/reference_acquisition_plan.parquet",
       "row_count": 34,
-      "byte_count": 12206,
-      "sha256": "sha256:2602fe683fe8ec8eba9c43de98effde87c811840838df55fb1086a68c1d27ce9"
+      "byte_count": 12181,
+      "sha256": "sha256:6dd544e1016987d57d42a3a3147fb7a15262fcc1c4e7889dcd88f08ae8a1e155"
     },
     "prototype_reference_source_summary": {
       "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_source_summary.parquet",
       "row_count": 101,
-      "byte_count": 11362,
-      "sha256": "sha256:01c2af0dc2f6885dcf94c8e634918519b62281f24a67dc924ef522653e843946"
+      "byte_count": 11354,
+      "sha256": "sha256:31044fb873e1d4b2683da5784be847e207681db55555b8afad3f6181286ebfe0"
     },
     "prototype_reference_shortfalls": {
       "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_shortfalls.parquet",
       "row_count": 45,
-      "byte_count": 7858,
-      "sha256": "sha256:2be25647b4446ddb7c2b21828effb4a74066f6edb0e600d1efc3c74df894b525"
+      "byte_count": 7837,
+      "sha256": "sha256:7af5e1ddfad1618b05f23a7aea51ca9686ccf159e95ac32b199a908834242ccb"
     },
     "prototype_reference_planner_evidence": {
       "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_planner_evidence.parquet",
       "row_count": 58250,
-      "byte_count": 6661761,
-      "sha256": "sha256:8861f9a52d3bca74e1fca6ea4c9e8721a8ec874e6f51420c54e6ac57adc76d88"
+      "byte_count": 6663422,
+      "sha256": "sha256:e3cbf81da1bd8b9571e4a14bf3d80f8de3207dd63ebd58e0e4b21c5b1f807196"
     },
     "prototype_acquisition_report": {
       "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_acquisition_report.json",
-      "byte_count": 2908,
-      "sha256": "sha256:61a63b8c7864582109f32afb1c55398ec65c0f334978c5bc9a682d73d810d415"
+      "byte_count": 3021,
+      "sha256": "sha256:0be86735a4d06703d7a92c80d6f6c3b026097d4353ddb9a3d2f0f51fe5f90a3a"
+    },
+    "prototype_reference_selections": {
+      "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_selections.parquet",
+      "row_count": 93,
+      "byte_count": 40469,
+      "sha256": "sha256:c5e40c927f96b955b5d7d4ba489eadf61756dc203e262926e05689817dce7898"
     }
   },
   "unresolved_risks": [
@@ -171,5 +178,5 @@
     "Visual-neighbour candidates remain morphology candidates until frozen-embedding confirmation.",
     "Bounded source queries document shortfalls rather than exhaust provider inventories."
   ],
-  "next_task": "14.3.1_select_prototype_references"
+  "next_task": "14.3.2_download_selected_media"
 }
