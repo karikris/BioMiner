@@ -367,6 +367,16 @@ def test_materialize_flickr_workload_pins_input_and_retains_query_hits(
     assert manifest["candidate_semantics"] == (
         "flickr_search_candidate_not_taxonomic_label"
     )
+    assert manifest["schema_version"] == "flickr-workload-manifest-v1.1.0"
+    assert manifest["git_sha"]
+    assert manifest["elapsed_seconds"] >= 0.0
+    assert manifest["artifact_schema_versions"] == {
+        "assignments": "flickr-geo-assignments-v1.1.0",
+        "clusters": "flickr-geo-clusters-v1.1.0",
+        "geography": "flickr-geography-v1.0.0",
+        "input_projection": "flickr-workload-input-v1.0.0",
+        "workload_report": "flickr-geographic-workload-report-v1.1.0",
+    }
     assert manifest["source"]["sha256"] == source_sha256
     assert (output / "flickr_geography.parquet").is_file()
     assert (output / "flickr_geo_clusters.parquet").is_file()

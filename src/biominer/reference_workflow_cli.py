@@ -1756,26 +1756,32 @@ def _run_materialize_flickr_workload(
     _args: argparse.Namespace,
 ) -> dict[str, object]:
     from biominer.flickr_fetch.geographic_clustering import (
+        FLICKR_GEO_ASSIGNMENTS_SCHEMA_VERSION,
+        FLICKR_GEO_CLUSTERS_SCHEMA_VERSION,
         build_flickr_geo_clusters,
         write_flickr_geo_cluster_artifacts,
     )
     from biominer.flickr_fetch.geography import (
         FLICKR_GEOGRAPHY_FILE,
+        FLICKR_GEOGRAPHY_SCHEMA_VERSION,
         FlickrGeographyConfig,
         build_flickr_geography_frame,
     )
     from biominer.flickr_fetch.workload import (
         FLICKR_QUERY_HITS_FILE,
+        FLICKR_WORKLOAD_INPUT_SCHEMA_VERSION,
         read_flickr_workload_input,
     )
     from biominer.geography import GeographicResolutions
     from biominer.reports.flickr_geography import (
         FLICKR_GEO_WORKLOAD_METRICS_FILE,
+        FLICKR_GEO_WORKLOAD_REPORT_SCHEMA_VERSION,
         FLICKR_GEO_WORKLOAD_SUMMARY_FILE,
         ReferenceQuotaConfig,
         build_flickr_geo_workload_report,
         write_flickr_geo_workload_report,
     )
+    from biominer.reports.flickr_fetch import current_git_sha
     from biominer.storage.parquet import write_parquet
 
     values = resolved.values
@@ -1871,6 +1877,7 @@ def _run_materialize_flickr_workload(
         ended_at=ended,
     )
     report_paths = write_flickr_geo_workload_report(report, report_dir)
+    completed = datetime.now(UTC)
     artifacts = {
         "geography": geography_path,
         "query_hits": query_hits_path,
@@ -1878,10 +1885,21 @@ def _run_materialize_flickr_workload(
         **{f"report_{key}": path for key, path in report_paths.items()},
     }
     manifest = {
-        "schema_version": "flickr-workload-manifest-v1.0.0",
+        "schema_version": "flickr-workload-manifest-v1.1.0",
         "candidate_semantics": "flickr_search_candidate_not_taxonomic_label",
         "target_accepted_taxon_key": str(values["target_accepted_taxon_key"]),
         "settings_fingerprint": resolved.settings_fingerprint,
+        "git_sha": current_git_sha(),
+        "started_at": started.isoformat(),
+        "completed_at": completed.isoformat(),
+        "elapsed_seconds": (completed - started).total_seconds(),
+        "artifact_schema_versions": {
+            "input_projection": FLICKR_WORKLOAD_INPUT_SCHEMA_VERSION,
+            "geography": FLICKR_GEOGRAPHY_SCHEMA_VERSION,
+            "clusters": FLICKR_GEO_CLUSTERS_SCHEMA_VERSION,
+            "assignments": FLICKR_GEO_ASSIGNMENTS_SCHEMA_VERSION,
+            "workload_report": FLICKR_GEO_WORKLOAD_REPORT_SCHEMA_VERSION,
+        },
         "source": {
             "path": str(source_path),
             "byte_count": source_byte_count,
