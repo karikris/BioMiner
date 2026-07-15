@@ -435,13 +435,18 @@ stored as float32 before fingerprinting.
 
 The BioCLIP candidate adapter contract is `object-bioclip-candidates-v2`.
 It preserves the regional set ID, accepted key, target flag, ordinal, inclusion
-reasons, and source versions on every candidate. Family and genus text results
-may reorder a first-pass comparison but cannot delete its members. The target is
-force-retained when it falls below the configured first-pass width. Target-scope
-object rows persist `species-candidate-provenance-v1` for every species scored in
-the first pass, including its regional provenance, first-pass rank and score,
-comparison membership, family-priority diagnostic, and rerank score when
-compared.
+reasons, and source versions on every candidate. In target-scope diagnostic
+classification, family top one constrains the species-classification shortlist
+when family metadata exists. The target is not injected into that shortlist.
+Its raw all-candidate first-pass score and rank remain separate target-screening
+fields. Every family-constrained shortlist member is reranked, while the
+configured rerank width controls reporting rather than which shortlisted
+species receive a rerank score. Target-scope object rows persist
+`species-candidate-provenance-v2` for every species scored in the first pass,
+including its regional provenance, first-pass rank and score, constrained
+classification membership, family-match diagnostic, and rerank score when
+compared. Historical v1 rows retain their target-injected/reordered membership
+semantics and are not rewritten.
 
 ### 4.3 `competitor_relationships.parquet`
 

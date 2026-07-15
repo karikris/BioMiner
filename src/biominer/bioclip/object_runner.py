@@ -65,7 +65,7 @@ TARGET_SCOPE_CANDIDATE_SELECTION_MODE = "taxon_scope_or_species_context"
 TARGET_SCOPE_SPECIES_RERANK_STRATEGY = (
     "family_top1_filtered_first_pass_top20_complete_rerank"
 )
-SPECIES_CANDIDATE_PROVENANCE_VERSION = "species-candidate-provenance-v1"
+SPECIES_CANDIDATE_PROVENANCE_VERSION = "species-candidate-provenance-v2"
 TARGET_AWARE_LEGACY_OUTPUT_MESSAGE = (
     "target_aware_few_shot_classification requires the separate target-aware scoring path; "
     "legacy object BioCLIP outputs keep their historical schema and meaning"

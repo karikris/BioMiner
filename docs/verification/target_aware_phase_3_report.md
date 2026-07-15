@@ -90,6 +90,12 @@ The target-scope BioCLIP adapter contract is
 `object-bioclip-candidates-v2`; per-species scoring provenance is
 `species-candidate-provenance-v1`.
 
+This section records the historical Phase 3 behavior. Phase 14 supersedes new
+target-scope diagnostic rows with `species-candidate-provenance-v2`: family
+top one now filters the classification shortlist, target injection is removed,
+and the fixed target score/rank remain separate screening evidence. Historical
+v1 rows are not migrated or relabelled.
+
 The required regression constructs twenty Papilionidae genera, assigns
 *Papilio* the twentieth genus text rank, and verifies that *Papilio demoleus*
 is still included in the species reference comparison and receives a rerank

@@ -2379,6 +2379,9 @@ def test_object_bioclip_top_k_settings_control_first_pass_and_rerank_candidates(
     assert row["species_first_pass_top_k"] == 4
     assert row["species_rerank_top_k"] == 2
     assert row["species_rerank_strategy"] == "family_top1_filtered_first_pass_top4_complete_rerank"
+    assert row["species_candidate_provenance_version"] == (
+        "species-candidate-provenance-v2"
+    )
     assert row["target_species_score"] == 0.50
     assert row["target_species_rank"] == 5
 
