@@ -1,0 +1,98 @@
+{
+  "schema_version": "papilio-demoleus-pilot-reference-source-manifest-v1.0.0",
+  "phase": 14,
+  "task": "14.2",
+  "status": "metadata_complete_awaiting_human_review_and_additional_sources",
+  "candidate_semantics": "source_taxon_match_not_human_verified_image_label",
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "execution_constraints": {
+    "branch": "main",
+    "local_build_verification_max_images": 5,
+    "large_bioclip_runs": "different_computer_required",
+    "large_yoloe_runs": "different_computer_required",
+    "images_downloaded": 0,
+    "bioclip_images_processed": 0,
+    "yoloe_images_processed": 0
+  },
+  "source_plan": {
+    "path": "config/pilot/papilio_demoleus_reference_source_queries.json",
+    "sha256": "sha256:a94c81070b3a223fc84830e1f3cc0f04d52d47e00fdecc9713f84bea654d7520",
+    "query_count": 22,
+    "queried_species_count": 22,
+    "registry_identity_required": true,
+    "human_review_required_before_support_use": true
+  },
+  "materialization": {
+    "command": "biominer references fetch-metadata",
+    "implementation_git_sha": "48cedf0373c9998c591dcd78c9f76958ca1ef1f9",
+    "report_schema_version": "reference-metadata-cli-report-v2",
+    "checkpoint_count": 22,
+    "complete_checkpoint_count": 22,
+    "checkpoint_page_count": 314,
+    "request_count": 314,
+    "retry_count": 0,
+    "rate_limit_count": 0
+  },
+  "counts": {
+    "checkpoint_observation_row_count": 91180,
+    "observation_count": 91176,
+    "deduplicated_observation_count": 4,
+    "checkpoint_media_candidate_row_count": 142878,
+    "media_candidate_count": 142873,
+    "deduplicated_media_candidate_count": 5,
+    "eligible_source_media_candidate_count": 838,
+    "human_verified_source_media_count": 0,
+    "located_observation_count": 64914,
+    "fallback_observation_count": 26262
+  },
+  "shortfalls": {
+    "status": "awaiting_human_review_or_additional_sources",
+    "human_review_status": "not_available_at_metadata_stage",
+    "group_count": 8,
+    "groups_awaiting_human_review": 1,
+    "groups_with_source_candidate_shortfall": 5,
+    "unresolved_group_count": 2,
+    "source_candidate_shortfall": 247,
+    "human_verified_shortfall": 490,
+    "unresolved_groups": {
+      "other_insect_or_moth_negatives": "requires_registry_linked_taxa",
+      "domain_negatives": "requires_human_review"
+    }
+  },
+  "artifacts": {
+    "reference_observations": {
+      "path": "runs/papilio_demoleus_pilot_reference_candidates_20260715/reference_observations.parquet",
+      "byte_count": 10797270,
+      "sha256": "sha256:193d9d7451eebf75eaaf772fa761ad53cfeca9f04d84dae8c2caffe9fa64882f"
+    },
+    "reference_media_candidates": {
+      "path": "runs/papilio_demoleus_pilot_reference_candidates_20260715/reference_media_candidates.parquet",
+      "byte_count": 13083129,
+      "sha256": "sha256:d9a4cd37eb8558f822807f753b2d027d37f33bcd9c32274b21516468d1827135"
+    },
+    "metadata_report": {
+      "path": "runs/papilio_demoleus_pilot_reference_candidates_20260715/reference_metadata_report.json",
+      "byte_count": 1055,
+      "sha256": "sha256:f0a11c769b74a70169d9af2529212fa875b10469cc653fe5fd1051fd8b7ba2b1"
+    },
+    "source_shortfalls_json": {
+      "path": "runs/papilio_demoleus_pilot_reference_candidates_20260715/reference_source_shortfalls.json",
+      "byte_count": 6589,
+      "sha256": "sha256:cadd38791d66e0f1875a35ee398b3203e82969957aa81fc0d69e83f1d08c0a99"
+    },
+    "source_shortfalls_markdown": {
+      "path": "runs/papilio_demoleus_pilot_reference_candidates_20260715/reference_source_shortfalls.md",
+      "byte_count": 978,
+      "sha256": "sha256:4badc1f6691f322c076c1aca2e99ee913a4d633bf7551cc4b2c0675df90ced84"
+    }
+  },
+  "experiment_matrix": {
+    "path": "config/pilot/papilio_demoleus_phase14_experiment_matrix.json",
+    "sha256": "sha256:5911e367ba1e3d0d0db81f939b9f37fccff07cef86a172842e1d6bb7f124c283",
+    "status": "blocked_by_phase14.3"
+  },
+  "next_task": "14.3_human_review_and_immutable_reference_bank_freeze"
+}

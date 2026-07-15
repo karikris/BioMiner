@@ -5,10 +5,17 @@ from pathlib import Path
 
 
 MATRIX_PATH = Path("config/pilot/papilio_demoleus_phase14_experiment_matrix.json")
+REFERENCE_SOURCE_MANIFEST_PATH = Path(
+    "examples/species/papilio_demoleus/pilot_reference_source_manifest.json"
+)
 
 
 def _matrix() -> dict[str, object]:
     return json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+
+
+def _reference_source_manifest() -> dict[str, object]:
+    return json.loads(REFERENCE_SOURCE_MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
 def test_phase14_matrix_freezes_local_vision_limit_and_external_execution() -> None:
@@ -78,3 +85,26 @@ def test_phase14_matrix_blocks_benchmark_and_phase15_until_human_freeze() -> Non
     assert labels["gbif_taxon_match_is_human_image_label"] is False
     assert matrix["phase15_default_gate"]["authorized"] is False
     assert matrix["phase15_default_gate"]["current_default_must_remain_unchanged"] is True
+
+
+def test_phase14_reference_source_manifest_preserves_metadata_only_boundary() -> None:
+    manifest = _reference_source_manifest()
+    execution = manifest["execution_constraints"]
+    counts = manifest["counts"]
+    shortfalls = manifest["shortfalls"]
+
+    assert manifest["status"] == (
+        "metadata_complete_awaiting_human_review_and_additional_sources"
+    )
+    assert manifest["candidate_semantics"] == (
+        "source_taxon_match_not_human_verified_image_label"
+    )
+    assert execution["local_build_verification_max_images"] == 5
+    assert execution["images_downloaded"] == 0
+    assert execution["bioclip_images_processed"] == 0
+    assert execution["yoloe_images_processed"] == 0
+    assert counts["observation_count"] == 91_176
+    assert counts["media_candidate_count"] == 142_873
+    assert counts["human_verified_source_media_count"] == 0
+    assert shortfalls["unresolved_group_count"] == 2
+    assert manifest["experiment_matrix"]["status"] == "blocked_by_phase14.3"
