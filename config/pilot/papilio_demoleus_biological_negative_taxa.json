@@ -1,0 +1,158 @@
+{
+  "schema_version": "papilio-demoleus-biological-negative-taxa-v1.0.0",
+  "prototype_only": true,
+  "candidate_semantics": "metadata_source_candidate_not_verified_image_label",
+  "target_accepted_taxon_key": "gbif:1938069",
+  "target_scientific_name": "Papilio demoleus",
+  "taxonomy_resolution": {
+    "source": "GBIF species match API",
+    "endpoint": "https://api.gbif.org/v1/species/match",
+    "resolved_at": "2026-07-15T00:00:00Z",
+    "required_match_type": "EXACT",
+    "required_taxonomic_status": "ACCEPTED",
+    "minimum_match_confidence": 99
+  },
+  "current_registry": {
+    "path": "data/registry/current/taxa.parquet",
+    "schema_version": "unified-butterfly-registry-v1",
+    "source_release": "COL26.6 XR",
+    "scope": "Papilionoidea only",
+    "external_hard_negative_policy": "non-Papilionoidea taxa retain exact GBIF identity outside the butterfly registry"
+  },
+  "visual_neighbour_policy": {
+    "status": "morphology_candidates_pending_frozen_embedding_confirmation",
+    "may_claim_visually_nearest": false,
+    "evidence_source": "Smith and Vane-Wright 2008, Classification, nomenclature and identification of lime swallowtail butterflies",
+    "evidence_doi": "10.1017/S1477200008002703",
+    "evidence_scope": "five-species Papilio demoleus group based on sixty morphological characters"
+  },
+  "taxa": [
+    {
+      "accepted_taxon_key": "gbif:1938125",
+      "scientific_name": "Papilio demodocus",
+      "order": "Lepidoptera",
+      "family": "Papilionidae",
+      "candidate_category": "visual_neighbour_candidate",
+      "current_registry_key": "col:75M9V",
+      "gbif_match_type": "EXACT",
+      "gbif_taxonomic_status": "ACCEPTED",
+      "gbif_match_confidence": 99
+    },
+    {
+      "accepted_taxon_key": "gbif:1937964",
+      "scientific_name": "Papilio erithonioides",
+      "order": "Lepidoptera",
+      "family": "Papilionidae",
+      "candidate_category": "visual_neighbour_candidate",
+      "current_registry_key": "col:4CKC4",
+      "gbif_match_type": "EXACT",
+      "gbif_taxonomic_status": "ACCEPTED",
+      "gbif_match_confidence": 99
+    },
+    {
+      "accepted_taxon_key": "gbif:5124716",
+      "scientific_name": "Attacus atlas",
+      "order": "Lepidoptera",
+      "family": "Saturniidae",
+      "candidate_category": "moth_negative",
+      "current_registry_key": null,
+      "gbif_match_type": "EXACT",
+      "gbif_taxonomic_status": "ACCEPTED",
+      "gbif_match_confidence": 99
+    },
+    {
+      "accepted_taxon_key": "gbif:6116699",
+      "scientific_name": "Erebus macrops",
+      "order": "Lepidoptera",
+      "family": "Erebidae",
+      "candidate_category": "moth_negative",
+      "current_registry_key": null,
+      "gbif_match_type": "EXACT",
+      "gbif_taxonomic_status": "ACCEPTED",
+      "gbif_match_confidence": 99
+    },
+    {
+      "accepted_taxon_key": "gbif:1862449",
+      "scientific_name": "Theretra oldenlandiae",
+      "order": "Lepidoptera",
+      "family": "Sphingidae",
+      "candidate_category": "moth_negative",
+      "current_registry_key": null,
+      "gbif_match_type": "EXACT",
+      "gbif_taxonomic_status": "ACCEPTED",
+      "gbif_match_confidence": 99
+    },
+    {
+      "accepted_taxon_key": "gbif:5130521",
+      "scientific_name": "Junonia lemonias",
+      "order": "Lepidoptera",
+      "family": "Nymphalidae",
+      "candidate_category": "other_lepidoptera_negative",
+      "current_registry_key": "col:6NHN4",
+      "gbif_match_type": "EXACT",
+      "gbif_taxonomic_status": "ACCEPTED",
+      "gbif_match_confidence": 99
+    },
+    {
+      "accepted_taxon_key": "gbif:1919340",
+      "scientific_name": "Catopsilia pomona",
+      "order": "Lepidoptera",
+      "family": "Pieridae",
+      "candidate_category": "other_lepidoptera_negative",
+      "current_registry_key": "col:RVM8",
+      "gbif_match_type": "EXACT",
+      "gbif_taxonomic_status": "ACCEPTED",
+      "gbif_match_confidence": 99
+    },
+    {
+      "accepted_taxon_key": "gbif:5136713",
+      "scientific_name": "Euploea core",
+      "order": "Lepidoptera",
+      "family": "Nymphalidae",
+      "candidate_category": "other_lepidoptera_negative",
+      "current_registry_key": "col:3CVY5",
+      "gbif_match_type": "EXACT",
+      "gbif_taxonomic_status": "ACCEPTED",
+      "gbif_match_confidence": 99
+    },
+    {
+      "accepted_taxon_key": "gbif:1427855",
+      "scientific_name": "Pantala flavescens",
+      "order": "Odonata",
+      "family": "Libellulidae",
+      "candidate_category": "other_insect_negative",
+      "current_registry_key": null,
+      "gbif_match_type": "EXACT",
+      "gbif_taxonomic_status": "ACCEPTED",
+      "gbif_match_confidence": 99
+    },
+    {
+      "accepted_taxon_key": "gbif:1342178",
+      "scientific_name": "Xylocopa latipes",
+      "order": "Hymenoptera",
+      "family": "Apidae",
+      "candidate_category": "other_insect_negative",
+      "current_registry_key": null,
+      "gbif_match_type": "EXACT",
+      "gbif_taxonomic_status": "ACCEPTED",
+      "gbif_match_confidence": 99
+    },
+    {
+      "accepted_taxon_key": "gbif:1405951",
+      "scientific_name": "Hierodula patellifera",
+      "order": "Mantodea",
+      "family": "Mantidae",
+      "candidate_category": "other_insect_negative",
+      "current_registry_key": null,
+      "gbif_match_type": "EXACT",
+      "gbif_taxonomic_status": "ACCEPTED",
+      "gbif_match_confidence": 99
+    }
+  ],
+  "existing_candidate_sources": {
+    "regional_papilionidae": "runs/papilio_demoleus_pilot_regional_competitors_20260715/regional_candidate_species.parquet",
+    "same_genus_competitors": "config/pilot/papilio_demoleus_reference_source_queries.json",
+    "false_winning_genera": "config/candidates/papilio_demoleus_competitor_relationships.json",
+    "historical_false_winner_species": "gbif:1937474"
+  }
+}

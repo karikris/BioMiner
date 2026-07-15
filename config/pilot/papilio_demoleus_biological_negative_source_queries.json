@@ -1,0 +1,30 @@
+{
+  "schema_version": "papilio-demoleus-biological-negative-source-queries-v1.0.0",
+  "candidate_semantics": "metadata_source_candidate_not_verified_image_label",
+  "taxon_ledger": "config/pilot/papilio_demoleus_biological_negative_taxa.json",
+  "queries": [
+    {"source":"GBIF","accepted_taxon_key":"gbif:1938125","scientific_name":"Papilio demodocus","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1938125","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1937964","scientific_name":"Papilio erithonioides","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1937964","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:5124716","scientific_name":"Attacus atlas","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"5124716","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:6116699","scientific_name":"Erebus macrops","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"6116699","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1862449","scientific_name":"Theretra oldenlandiae","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1862449","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:5130521","scientific_name":"Junonia lemonias","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"5130521","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1919340","scientific_name":"Catopsilia pomona","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1919340","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:5136713","scientific_name":"Euploea core","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"5136713","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1427855","scientific_name":"Pantala flavescens","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1427855","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1342178","scientific_name":"Xylocopa latipes","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1342178","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1405951","scientific_name":"Hierodula patellifera","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1405951","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"}
+  ],
+  "acquisition_quotas": {
+    "visual_neighbour_candidates": {"species":["gbif:1938125","gbif:1937964"],"life_stage":"adult","minimum_per_species":20,"maximum_per_species":50,"status":"pending_frozen_embedding_confirmation"},
+    "moth_negatives": {"species":["gbif:5124716","gbif:6116699","gbif:1862449"],"life_stage":"adult","minimum_total":40,"maximum_total":100,"planned_per_species":15},
+    "other_lepidoptera_negatives": {"species":["gbif:5130521","gbif:1919340","gbif:5136713"],"life_stage":"adult","minimum_total":30,"maximum_total":75,"planned_per_species":10},
+    "other_insect_negatives": {"species":["gbif:1427855","gbif:1342178","gbif:1405951"],"life_stage":"adult","minimum_total":30,"maximum_total":75,"planned_per_species":10}
+  },
+  "existing_candidate_groups": {
+    "regional_papilionidae": "config/pilot/papilio_demoleus_reference_source_queries.json#selected_regional_competitors",
+    "same_genus_competitors": "config/pilot/papilio_demoleus_reference_source_queries.json#selected_regional_competitors+broader_papilionidae",
+    "false_winning_genera": "config/pilot/papilio_demoleus_reference_source_queries.json#reviewed_false_winner_genera",
+    "historical_false_winner_species": "config/pilot/papilio_demoleus_reference_source_queries.json#historical_false_winner_species"
+  }
+}
