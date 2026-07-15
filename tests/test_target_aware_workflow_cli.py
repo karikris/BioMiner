@@ -69,6 +69,39 @@ def test_reference_workflow_example_settings_cover_every_new_command(
     assert resolved.command == command
 
 
+def test_papilio_pilot_config_caps_local_vision_verification() -> None:
+    settings = (
+        Path(__file__).resolve().parents[1]
+        / "config"
+        / "pilot"
+        / "papilio_demoleus_geographic_workload.json"
+    )
+    payload = json.loads(settings.read_text(encoding="utf-8"))
+    constraints = payload["pilot"]["execution_constraints"]
+
+    assert constraints == {
+        "large_bioclip_runs": "different_computer_required",
+        "large_yoloe_runs": "different_computer_required",
+        "local_build_verification_max_images": 5,
+    }
+    resolved = resolve_reference_workflow_options(
+        build_parser().parse_args(
+            [
+                "references",
+                "materialize-flickr-workload",
+                "--settings-file",
+                str(settings),
+                "--dry-run",
+            ]
+        )
+    )
+    assert resolved.values["target_accepted_taxon_key"] == "gbif:1938069"
+    assert resolved.values["candidate_metadata_sha256"] == (
+        "sha256:fe42f248cab68f6c3f67351800718fb9"
+        "888b54a44f3b4a651d0f8bfa428c015d"
+    )
+
+
 def test_reference_source_query_example_uses_source_specific_page_sizes() -> None:
     path = (
         Path(__file__).resolve().parents[1]

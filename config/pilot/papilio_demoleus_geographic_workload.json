@@ -1,0 +1,58 @@
+{
+  "schema_version": "target-aware-reference-cli-settings-v1",
+  "pilot": {
+    "candidate_semantics": "flickr_search_candidate_not_taxonomic_label",
+    "source_snapshot_version": "papilio-demoleus-global-multilingual-20260609-071759",
+    "target": {
+      "accepted_taxon_key": "gbif:1938069",
+      "scientific_name": "Papilio demoleus"
+    },
+    "execution_constraints": {
+      "local_build_verification_max_images": 5,
+      "large_bioclip_runs": "different_computer_required",
+      "large_yoloe_runs": "different_computer_required"
+    },
+    "reference_acquisition_constraints": {
+      "target": {
+        "life_stage": "adult",
+        "minimum_verified_references": 50,
+        "maximum_verified_references": 100,
+        "global_diversity_required": true,
+        "flickr_query_match_can_select_species": false
+      },
+      "competitors": {
+        "minimum_verified_references_per_selected_species": 20,
+        "maximum_verified_references_per_selected_species": 50,
+        "relationship_source": "config/candidates/papilio_demoleus_competitor_relationships.json",
+        "relationship_source_sha256": "sha256:bc71f57add07935c8fb90aaf3f4efcf28b9d5dcee172f8253532409cd47ba4a5",
+        "human_review_required_before_support_use": true,
+        "flickr_query_match_can_select_species": false
+      }
+    }
+  },
+  "commands": {
+    "materialize-flickr-workload": {
+      "candidate_metadata": "data/live_runs/papilio_demoleus_global_multilingual_20260609_071759/checkpoints/flickr_metadata_all_hits.jsonl",
+      "candidate_metadata_byte_count": 266841863,
+      "candidate_metadata_sha256": "sha256:fe42f248cab68f6c3f67351800718fb9888b54a44f3b4a651d0f8bfa428c015d",
+      "input_format": "ndjson",
+      "target_accepted_taxon_key": "gbif:1938069",
+      "output_dir": "runs/papilio_demoleus_pilot_geographic_workload_20260715",
+      "report_dir": "reports/papilio_demoleus_pilot_geographic_workload_20260715",
+      "created_at": "2026-07-15T00:00:00Z",
+      "coarse_resolution": 3,
+      "regional_resolution": 5,
+      "local_resolution": 7,
+      "source_cell_field": "coarse_cell_id",
+      "source_resolution": 3,
+      "adjacency_grid_distance": 1,
+      "minimum_images_per_cell": 1,
+      "minimum_cluster_images": 10,
+      "maximum_assignment_distance_km": 250.0,
+      "total_reference_quota": 100,
+      "minimum_per_populated_cluster": 1,
+      "minimum_candidate_images": 10,
+      "overwrite": false
+    }
+  }
+}
