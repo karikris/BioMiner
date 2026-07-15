@@ -1002,6 +1002,27 @@ def test_orchestrator_dry_run_marks_unimplemented_stages_skipped(tmp_path) -> No
     assert plan.paths.manifest_path.exists()
 
 
+def test_orchestrator_fails_closed_when_requested_stage_has_no_handler(
+    tmp_path,
+) -> None:
+    scope = TaxonScope.from_species_context(_species_context())
+    request = ProductionRunRequest(
+        taxon="Danaus plexippus",
+        rank="species",
+        output_root=tmp_path / "runs",
+        stages=(RunStage.GEOGRAPHIC_SPREAD,),
+    )
+
+    plan = ProductionRunOrchestrator(request, taxon_scope=scope).run()
+
+    assert plan.manifest.status == StageStatus.FAILED.value
+    assert plan.manifest.stages[0].status is StageStatus.FAILED
+    assert plan.manifest.stages[0].message == (
+        "stage_handler_not_configured:geographic_spread"
+    )
+    assert plan.paths.manifest_path.exists()
+
+
 def test_orchestrator_compiles_registry_queries_and_enqueues_flickr_work(tmp_path) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     _write_query_definitions(registry)

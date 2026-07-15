@@ -533,7 +533,10 @@ class ProductionRunOrchestrator:
             return self._run_review_comments_stage(plan)
         if stage == RunStage.APPLY_COMMENT_REVIEW:
             return self._run_apply_comment_review_stage(plan)
-        return StageExecutionResult(status=StageStatus.SKIPPED, message="stage_not_implemented")
+        return StageExecutionResult(
+            status=StageStatus.FAILED,
+            message=f"stage_handler_not_configured:{stage.value}",
+        )
 
     def _load_support_dependency_permit(
         self,
