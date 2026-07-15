@@ -61,6 +61,10 @@
       "registry_version": "registry-version",
       "checkpoint_dir": "data/reference/checkpoints/metadata",
       "output_dir": "data/reference/metadata",
+      "geography_clusters": "data/flickr/geographic-workload/flickr_geo_clusters.parquet",
+      "geography_source_resolution": 3,
+      "geography_adjacency_grid_distance": 1,
+      "geography_maximum_assignment_distance_km": 250.0,
       "max_retries": 5,
       "inaturalist_min_request_interval_seconds": 1.0
     },

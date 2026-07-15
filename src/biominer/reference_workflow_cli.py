@@ -225,6 +225,10 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
                 "max_retries",
                 "inaturalist_min_request_interval_seconds",
                 "accepted_photo_licences",
+                "geography_clusters",
+                "geography_source_resolution",
+                "geography_adjacency_grid_distance",
+                "geography_maximum_assignment_distance_km",
                 "overwrite",
             }
         ),
@@ -234,6 +238,9 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         defaults={
             "max_retries": 5,
             "inaturalist_min_request_interval_seconds": 1.0,
+            "geography_source_resolution": 3,
+            "geography_adjacency_grid_distance": 1,
+            "geography_maximum_assignment_distance_km": 250.0,
             "overwrite": False,
         },
     ),
@@ -600,6 +607,13 @@ def add_reference_workflow_parsers(
     fetch.add_argument("--max-retries", type=int)
     fetch.add_argument("--inaturalist-min-request-interval-seconds", type=float)
     fetch.add_argument("--accepted-photo-licences", type=_csv)
+    fetch.add_argument("--geography-clusters")
+    fetch.add_argument("--geography-source-resolution", type=int)
+    fetch.add_argument("--geography-adjacency-grid-distance", type=int)
+    fetch.add_argument(
+        "--geography-maximum-assignment-distance-km",
+        type=float,
+    )
     fetch.add_argument(
         "--overwrite",
         action=argparse.BooleanOptionalAction,
@@ -984,6 +998,20 @@ def _validate_effective_options(command: str, values: dict[str, Any]) -> None:
             "inaturalist_min_request_interval_seconds",
         )
         _boolean(values["overwrite"], "overwrite")
+        _nonnegative_integer(
+            values["geography_source_resolution"],
+            "geography_source_resolution",
+        )
+        if int(values["geography_source_resolution"]) > 15:
+            raise ValueError("geography_source_resolution must be at most 15")
+        _nonnegative_integer(
+            values["geography_adjacency_grid_distance"],
+            "geography_adjacency_grid_distance",
+        )
+        _positive_float(
+            values["geography_maximum_assignment_distance_km"],
+            "geography_maximum_assignment_distance_km",
+        )
         if values.get("accepted_photo_licences") is not None:
             _string_tuple(
                 values["accepted_photo_licences"],
@@ -1992,6 +2020,11 @@ def _run_fetch_metadata(
         write_reference_media_candidates,
         write_reference_observations,
     )
+    from biominer.references.geographic_assignment import (
+        REFERENCE_GEOGRAPHIC_ASSIGNMENT_POLICY_VERSION,
+        ReferenceGeographicAssignmentConfig,
+        assign_reference_observations_to_flickr_clusters,
+    )
 
     values = resolved.values
     output_dir = Path(str(values["output_dir"]))
@@ -2058,6 +2091,34 @@ def _run_fetch_metadata(
             artifact="reference observations",
         )
     )
+    geographic_assignment: dict[str, object] | str = "not_configured"
+    if values.get("geography_clusters"):
+        from biominer.flickr_fetch.geographic_clustering import (
+            GLOBAL_FALLBACK_CLUSTER_IDS,
+        )
+
+        observations = assign_reference_observations_to_flickr_clusters(
+            observations,
+            pl.read_parquet(str(values["geography_clusters"])),
+            config=ReferenceGeographicAssignmentConfig(
+                source_resolution=int(values["geography_source_resolution"]),
+                adjacency_grid_distance=int(
+                    values["geography_adjacency_grid_distance"]
+                ),
+                maximum_assignment_distance_km=float(
+                    values["geography_maximum_assignment_distance_km"]
+                ),
+            ),
+        )
+        fallback_count = observations.filter(
+            pl.col("geo_cluster_id").is_in(GLOBAL_FALLBACK_CLUSTER_IDS)
+        ).height
+        geographic_assignment = {
+            "policy_version": REFERENCE_GEOGRAPHIC_ASSIGNMENT_POLICY_VERSION,
+            "cluster_artifact": str(values["geography_clusters"]),
+            "located_observation_count": observations.height - fallback_count,
+            "fallback_observation_count": fallback_count,
+        }
     media_candidates = reference_media_candidates_frame(
         _merge_unique_rows(
             media_frames,
@@ -2081,12 +2142,13 @@ def _run_fetch_metadata(
     _write_json_atomic(
         report_path,
         {
-            "schema_version": "reference-metadata-cli-report-v1",
+            "schema_version": "reference-metadata-cli-report-v2",
             "command": "references fetch-metadata",
             "query_count": len(queries),
             "fetched_page_count": fetched_pages,
             "observation_count": observations.height,
             "media_candidate_count": media_candidates.height,
+            "geographic_assignment": geographic_assignment,
             "settings_fingerprint": resolved.settings_fingerprint,
             "status": "complete",
         },
