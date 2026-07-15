@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 
@@ -387,6 +387,54 @@ def test_gbif_page_checkpoints_are_integrity_checked_and_resumable(
     media_path.write_bytes(b"corrupt")
     with pytest.raises(ValueError, match="checksum mismatch"):
         load_gbif_reference_checkpoint(query, tmp_path)
+
+
+def test_checkpoint_load_deduplicates_identical_records_from_shifting_pages(
+    tmp_path: Path,
+) -> None:
+    query = _query(page_size=1)
+    first = GBIFReferenceAdapter(
+        registry_version="butterflies-v2-20260712",
+        http_get=RecordedGBIF(
+            [_payload([_occurrence(401)], count=2, complete=False)]
+        ),
+        retrieved_at=lambda: NOW,
+    ).fetch_page(query)
+    second = GBIFReferenceAdapter(
+        registry_version="butterflies-v2-20260712",
+        http_get=RecordedGBIF(
+            [_payload([_occurrence(401)], offset=1, count=2, complete=True)]
+        ),
+        retrieved_at=lambda: NOW + timedelta(minutes=1),
+    ).fetch_page(query, cursor="1")
+    write_gbif_reference_checkpoint(query, first, tmp_path)
+    write_gbif_reference_checkpoint(query, second, tmp_path)
+
+    observations, media = load_gbif_reference_checkpoint_frames(query, tmp_path)
+
+    assert observations.height == 1
+    assert media.height == 1
+    assert observations["retrieved_at"].item() == NOW
+    assert media["retrieved_at"].item() == NOW
+
+
+def test_checkpoint_load_rejects_conflicting_duplicate_source_records(
+    tmp_path: Path,
+) -> None:
+    query = _query(page_size=1)
+    changed = _occurrence(401)
+    changed["decimalLatitude"] = -20.0
+    first = _adapter(
+        RecordedGBIF([_payload([_occurrence(401)], count=2, complete=False)])
+    ).fetch_page(query)
+    second = _adapter(
+        RecordedGBIF([_payload([changed], offset=1, count=2, complete=True)])
+    ).fetch_page(query, cursor="1")
+    write_gbif_reference_checkpoint(query, first, tmp_path)
+    write_gbif_reference_checkpoint(query, second, tmp_path)
+
+    with pytest.raises(ValueError, match="contain conflicting rows"):
+        load_gbif_reference_checkpoint_frames(query, tmp_path)
 
 
 def test_gbif_cache_url_is_optional_and_does_not_replace_publisher_identifier() -> None:

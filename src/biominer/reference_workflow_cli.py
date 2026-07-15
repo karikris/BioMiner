@@ -84,6 +84,47 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
             "max_retries": 5,
         },
     ),
+    "build-regional-competitor-evidence": _CommandSpec(
+        stage=RunStage.REGIONAL_CANDIDATE_GENERATION,
+        fields=frozenset(
+            {
+                "target_occurrence_evidence",
+                "taxa",
+                "target_accepted_taxon_key",
+                "candidate_genus_taxon_key",
+                "registry_version",
+                "source_snapshot_version",
+                "checkpoint_dir",
+                "output_dir",
+                "retrieved_at",
+                "minimum_target_country_occurrences",
+                "maximum_candidates",
+                "facet_limit",
+                "max_retries",
+                "overwrite",
+            }
+        ),
+        required=frozenset(
+            {
+                "target_occurrence_evidence",
+                "taxa",
+                "target_accepted_taxon_key",
+                "candidate_genus_taxon_key",
+                "registry_version",
+                "source_snapshot_version",
+                "checkpoint_dir",
+                "output_dir",
+                "retrieved_at",
+            }
+        ),
+        defaults={
+            "minimum_target_country_occurrences": 5,
+            "maximum_candidates": 30,
+            "facet_limit": 1000,
+            "max_retries": 5,
+            "overwrite": False,
+        },
+    ),
     "cluster-flickr-metadata": _CommandSpec(
         stage=RunStage.FLICKR_GEO_CLUSTERING,
         fields=frozenset(
@@ -520,6 +561,27 @@ def add_reference_workflow_parsers(
     geographic.add_argument("--local-resolution", type=int)
     geographic.add_argument("--page-size", type=int)
     geographic.add_argument("--max-retries", type=int)
+
+    competitors = subparsers.add_parser("build-regional-competitor-evidence")
+    _common(competitors, runtime_defaults)
+    competitors.add_argument("--target-occurrence-evidence")
+    competitors.add_argument("--taxa")
+    competitors.add_argument("--target-accepted-taxon-key")
+    competitors.add_argument("--candidate-genus-taxon-key")
+    competitors.add_argument("--registry-version")
+    competitors.add_argument("--source-snapshot-version")
+    competitors.add_argument("--checkpoint-dir")
+    competitors.add_argument("--output-dir")
+    competitors.add_argument("--retrieved-at")
+    competitors.add_argument("--minimum-target-country-occurrences", type=int)
+    competitors.add_argument("--maximum-candidates", type=int)
+    competitors.add_argument("--facet-limit", type=int)
+    competitors.add_argument("--max-retries", type=int)
+    competitors.add_argument(
+        "--overwrite",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
 
     clusters = subparsers.add_parser("cluster-flickr-metadata")
     _common(clusters, runtime_defaults)
@@ -960,6 +1022,17 @@ def _validate_effective_options(command: str, values: dict[str, Any]) -> None:
         )
         _positive_integer(values["page_size"], "page_size")
         _nonnegative_integer(values["max_retries"], "max_retries")
+    elif command == "build-regional-competitor-evidence":
+        _positive_integer(
+            values["minimum_target_country_occurrences"],
+            "minimum_target_country_occurrences",
+        )
+        _positive_integer(values["maximum_candidates"], "maximum_candidates")
+        facet_limit = _positive_integer(values["facet_limit"], "facet_limit")
+        if facet_limit > 1000:
+            raise ValueError("facet_limit must be at most 1000")
+        _nonnegative_integer(values["max_retries"], "max_retries")
+        _boolean(values["overwrite"], "overwrite")
     elif command == "cluster-flickr-metadata":
         _flickr_cluster_config(values)
     elif command == "materialize-flickr-workload":
@@ -1650,6 +1723,9 @@ _COMMAND_RUNNERS = {
     "build-geographic-spread": lambda resolved, args: _run_geographic_spread(
         resolved, args
     ),
+    "build-regional-competitor-evidence": lambda resolved, args: (
+        _run_regional_competitor_evidence(resolved, args)
+    ),
     "cluster-flickr-metadata": lambda resolved, args: _run_flickr_clusters(
         resolved, args
     ),
@@ -1736,6 +1812,59 @@ def _run_geographic_spread(
         "row_count": result.spread.height,
         "settings_fingerprint": resolved.settings_fingerprint,
         "status": "complete",
+    }
+
+
+def _run_regional_competitor_evidence(
+    resolved: ResolvedReferenceWorkflowOptions,
+    _args: argparse.Namespace,
+) -> dict[str, object]:
+    from biominer.references.regional_competitors import (
+        GBIFRegionalCompetitorFacetSource,
+        build_regional_competitor_evidence,
+        write_regional_competitor_artifacts,
+    )
+
+    values = resolved.values
+    source = GBIFRegionalCompetitorFacetSource(
+        candidate_genus_taxon_key=str(values["candidate_genus_taxon_key"]),
+        source_snapshot_version=str(values["source_snapshot_version"]),
+        facet_limit=int(values["facet_limit"]),
+        max_retries=int(values["max_retries"]),
+    )
+    try:
+        result = build_regional_competitor_evidence(
+            target_occurrence_evidence=pl.read_parquet(
+                str(values["target_occurrence_evidence"])
+            ),
+            taxa=pl.read_parquet(str(values["taxa"])),
+            target_accepted_taxon_key=str(values["target_accepted_taxon_key"]),
+            candidate_genus_taxon_key=str(values["candidate_genus_taxon_key"]),
+            registry_version=str(values["registry_version"]),
+            source_snapshot_version=str(values["source_snapshot_version"]),
+            source=source,
+            checkpoint_dir=Path(str(values["checkpoint_dir"])),
+            retrieved_at=str(values["retrieved_at"]),
+            minimum_target_country_occurrences=int(
+                values["minimum_target_country_occurrences"]
+            ),
+            maximum_candidates=int(values["maximum_candidates"]),
+        )
+    finally:
+        source.close()
+    artifacts = write_regional_competitor_artifacts(
+        result,
+        Path(str(values["output_dir"])),
+        overwrite=bool(values["overwrite"]),
+    )
+    return {
+        "artifacts": {key: str(path) for key, path in artifacts.items()},
+        "candidate_count": result.evidence.height,
+        "command": "references build-regional-competitor-evidence",
+        "resumed": result.resumed,
+        "settings_fingerprint": resolved.settings_fingerprint,
+        "status": "complete",
+        "target_country_count": result.manifest["target_country_count"],
     }
 
 
@@ -2006,11 +2135,13 @@ def _run_fetch_metadata(
 ) -> dict[str, object]:
     from biominer.references.gbif import (
         GBIFReferenceAdapter,
+        load_gbif_reference_checkpoint,
         load_gbif_reference_checkpoint_frames,
     )
     from biominer.references.inaturalist import (
         DEFAULT_ACCEPTED_PHOTO_LICENCES,
         INaturalistReferenceAdapter,
+        load_inaturalist_reference_checkpoint,
         load_inaturalist_reference_checkpoint_frames,
         mark_inaturalist_gbif_media_duplicates,
     )
@@ -2025,15 +2156,38 @@ def _run_fetch_metadata(
         ReferenceGeographicAssignmentConfig,
         assign_reference_observations_to_flickr_clusters,
     )
+    from biominer.references.source_shortfalls import (
+        REFERENCE_SOURCE_SHORTFALL_FILE,
+        REFERENCE_SOURCE_SHORTFALL_MARKDOWN_FILE,
+        compile_reference_source_shortfalls,
+        write_reference_source_shortfalls,
+    )
 
     values = resolved.values
     output_dir = Path(str(values["output_dir"]))
     report_path = output_dir / "reference_metadata_report.json"
+    query_plan = _read_json_value(
+        values["queries"],
+        artifact="reference source query plan",
+    )
+    has_acquisition_quotas = isinstance(query_plan, Mapping) and isinstance(
+        query_plan.get("acquisition_quotas"),
+        Mapping,
+    )
+    optional_outputs = (
+        (
+            output_dir / REFERENCE_SOURCE_SHORTFALL_FILE,
+            output_dir / REFERENCE_SOURCE_SHORTFALL_MARKDOWN_FILE,
+        )
+        if has_acquisition_quotas
+        else ()
+    )
     _ensure_outputs_available(
         (
             output_dir / "reference_observations.parquet",
             output_dir / "reference_media_candidates.parquet",
             report_path,
+            *optional_outputs,
         ),
         overwrite=bool(values["overwrite"]),
     )
@@ -2064,19 +2218,30 @@ def _run_fetch_metadata(
     observation_frames: list[pl.DataFrame] = []
     media_frames: list[pl.DataFrame] = []
     fetched_pages = 0
+    checkpoint_observation_row_count = 0
+    checkpoint_media_candidate_row_count = 0
     try:
         for source, query in queries:
             adapter = adapters[source]
             for _page in adapter.iter_pages(query, checkpoint_dir=checkpoint_dir):
                 fetched_pages += 1
             if source == "GBIF":
+                checkpoint = load_gbif_reference_checkpoint(query, checkpoint_dir)
                 observations, media = load_gbif_reference_checkpoint_frames(
                     query, checkpoint_dir
                 )
             else:
+                checkpoint = load_inaturalist_reference_checkpoint(
+                    query,
+                    checkpoint_dir,
+                )
                 observations, media = load_inaturalist_reference_checkpoint_frames(
                     query, checkpoint_dir
                 )
+            if checkpoint is None:
+                raise ValueError("completed reference query has no checkpoint state")
+            checkpoint_observation_row_count += checkpoint.observation_count
+            checkpoint_media_candidate_row_count += checkpoint.media_candidate_count
             observation_frames.append(observations)
             media_frames.append(media)
     finally:
@@ -2084,13 +2249,12 @@ def _run_fetch_metadata(
             close = getattr(adapter, "close", None)
             if callable(close):
                 close()
-    observations = reference_observations_frame(
-        _merge_unique_rows(
-            observation_frames,
-            key="reference_observation_id",
-            artifact="reference observations",
-        )
+    merged_observation_rows = _merge_unique_rows(
+        observation_frames,
+        key="reference_observation_id",
+        artifact="reference observations",
     )
+    observations = reference_observations_frame(merged_observation_rows)
     geographic_assignment: dict[str, object] | str = "not_configured"
     if values.get("geography_clusters"):
         from biominer.flickr_fetch.geographic_clustering import (
@@ -2119,16 +2283,30 @@ def _run_fetch_metadata(
             "located_observation_count": observations.height - fallback_count,
             "fallback_observation_count": fallback_count,
         }
-    media_candidates = reference_media_candidates_frame(
-        _merge_unique_rows(
-            media_frames,
-            key="reference_media_id",
-            artifact="reference media candidates",
-        )
+    merged_media_rows = _merge_unique_rows(
+        media_frames,
+        key="reference_media_id",
+        artifact="reference media candidates",
     )
+    media_candidates = reference_media_candidates_frame(merged_media_rows)
     media_candidates = mark_inaturalist_gbif_media_duplicates(
         observations, media_candidates
     )
+    shortfall_artifacts: dict[str, Path] = {}
+    source_shortfalls: dict[str, object] | str = "not_configured"
+    if has_acquisition_quotas:
+        assert isinstance(query_plan, Mapping)
+        source_shortfalls = compile_reference_source_shortfalls(
+            query_plan=query_plan,
+            observations=observations,
+            media_candidates=media_candidates,
+            query_plan_path=Path(str(values["queries"])),
+        )
+        shortfall_artifacts = write_reference_source_shortfalls(
+            source_shortfalls,
+            output_dir,
+            overwrite=bool(values["overwrite"]),
+        )
     observation_path = write_reference_observations(
         observations,
         output_dir,
@@ -2148,7 +2326,22 @@ def _run_fetch_metadata(
             "fetched_page_count": fetched_pages,
             "observation_count": observations.height,
             "media_candidate_count": media_candidates.height,
+            "checkpoint_observation_row_count": checkpoint_observation_row_count,
+            "checkpoint_media_candidate_row_count": (
+                checkpoint_media_candidate_row_count
+            ),
+            "deduplicated_observation_count": (
+                checkpoint_observation_row_count - observations.height
+            ),
+            "deduplicated_media_candidate_count": (
+                checkpoint_media_candidate_row_count - media_candidates.height
+            ),
             "geographic_assignment": geographic_assignment,
+            "source_shortfalls": (
+                source_shortfalls.get("summary")
+                if isinstance(source_shortfalls, Mapping)
+                else source_shortfalls
+            ),
             "settings_fingerprint": resolved.settings_fingerprint,
             "status": "complete",
         },
@@ -2159,10 +2352,17 @@ def _run_fetch_metadata(
             "observations": str(observation_path),
             "media_candidates": str(media_path),
             "report": str(report_path),
+            **{key: str(path) for key, path in shortfall_artifacts.items()},
         },
         "command": "references fetch-metadata",
         "media_candidate_count": media_candidates.height,
         "observation_count": observations.height,
+        "deduplicated_observation_count": (
+            checkpoint_observation_row_count - observations.height
+        ),
+        "deduplicated_media_candidate_count": (
+            checkpoint_media_candidate_row_count - media_candidates.height
+        ),
         "query_count": len(queries),
         "settings_fingerprint": resolved.settings_fingerprint,
         "status": "complete",

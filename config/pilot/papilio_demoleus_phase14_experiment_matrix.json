@@ -1,0 +1,291 @@
+{
+  "schema_version": "papilio-demoleus-phase14-experiment-matrix-v1.0.0",
+  "pilot_id": "papilio-demoleus-target-aware-pilot-20260715",
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "execution_contract": {
+    "branch": "main",
+    "local_build_verification_max_images": 5,
+    "large_bioclip_execution": "different_computer_required",
+    "large_yoloe_execution": "different_computer_required",
+    "metadata_only_work_permitted_locally": true,
+    "experiment_execution_computer": "external_gpu_computer",
+    "resume_and_checkpoint_required": true
+  },
+  "label_contract": {
+    "ground_truth": "attributable_human_review_only",
+    "flickr_query_match_is_label": false,
+    "gbif_taxon_match_is_human_image_label": false,
+    "source_candidate_is_human_image_label": false,
+    "uncertain_or_conflicting_review_is_eligible": false
+  },
+  "prerequisite_gates": [
+    {
+      "gate_id": "phase14.1_geographic_workload",
+      "status": "complete",
+      "required_artifacts": [
+        "runs/papilio_demoleus_pilot_geographic_workload_20260715/flickr_geo_clusters.parquet",
+        "runs/papilio_demoleus_pilot_geographic_workload_20260715/flickr_geo_assignments.parquet",
+        "examples/species/papilio_demoleus/pilot_geographic_workload_manifest.json"
+      ]
+    },
+    {
+      "gate_id": "phase14.2_reference_sources",
+      "status": "in_progress_metadata_only",
+      "required_artifacts": [
+        "runs/papilio_demoleus_pilot_reference_candidates_20260715/reference_observations.parquet",
+        "runs/papilio_demoleus_pilot_reference_candidates_20260715/reference_media_candidates.parquet",
+        "runs/papilio_demoleus_pilot_reference_candidates_20260715/reference_source_shortfalls.json"
+      ]
+    },
+    {
+      "gate_id": "phase14.3_human_review_and_freeze",
+      "status": "blocked_awaiting_human_review",
+      "required_artifacts": [
+        "reference_media_objects.parquet",
+        "reference_media_duplicate_relationships.parquet",
+        "reference_review_queue.parquet",
+        "reference_review_decisions.parquet",
+        "reference_bank_split_assignments.parquet",
+        "reference_support_manifest.parquet",
+        "reference_bank_summary.parquet",
+        "reference_bank_readiness.json"
+      ],
+      "required_checks": [
+        "accepted_taxonomy",
+        "resolved_human_review",
+        "licence_allowed",
+        "attribution_complete",
+        "duplicates_resolved",
+        "adult_larval_and_visual_domain_banks_separate",
+        "geographic_cluster_coverage",
+        "no_cross_split_leakage"
+      ]
+    },
+    {
+      "gate_id": "phase14.4_off_machine_benchmark",
+      "status": "blocked_by_phase14.3",
+      "required_computer": "external_gpu_computer"
+    }
+  ],
+  "split_policy": {
+    "schema_version": "dataset-split-manifest-v1.0.0",
+    "assignment_policy": "transitive_multi_identity_leakage_groups",
+    "random_seed": 20260715,
+    "partition_weights": {
+      "support_train": 55,
+      "model_selection": 15,
+      "calibration": 15,
+      "final_test": 15
+    },
+    "leakage_groups": [
+      "source_observation",
+      "source_owner",
+      "observer",
+      "photographer",
+      "flickr_owner",
+      "exact_hash",
+      "perceptual_duplicate",
+      "burst",
+      "provider_mirror"
+    ],
+    "no_geo_is_shared_group": false,
+    "final_test_may_select_model_or_threshold": false
+  },
+  "experiments": [
+    {
+      "experiment_id": "B0",
+      "name": "current_text_pruned",
+      "axis": "classification_baseline",
+      "implementation": "hierarchical_butterfly_classification",
+      "higher_rank_candidate_pruning": true,
+      "reference_images": "none",
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B1",
+      "name": "zero_shot_no_pruning",
+      "axis": "classification_baseline",
+      "implementation": "complete_regional_union_zero_shot",
+      "higher_rank_candidate_pruning": false,
+      "target_always_scored": true,
+      "reference_images": "none",
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B2",
+      "name": "simpleshot",
+      "axis": "reference_classifier",
+      "implementation": "nearest_centroid",
+      "prototype_method": "raw_mean",
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B3",
+      "name": "centered_simpleshot",
+      "axis": "reference_classifier",
+      "implementation": "mean_centered_nearest_centroid",
+      "prototype_method": "simpleshot_mean_centered",
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B4",
+      "name": "top5_references",
+      "axis": "reference_classifier",
+      "implementation": "top_k_nearest_neighbors",
+      "k": 5,
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B5",
+      "name": "multi_prototype",
+      "axis": "reference_classifier",
+      "implementation": "multi_prototype_nearest_class",
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B6",
+      "name": "logistic_regression",
+      "axis": "frozen_embedding_classifier",
+      "implementation": "logistic_regression_embedding",
+      "feature_set": "frozen_embedding_only",
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B7",
+      "name": "linear_svc",
+      "axis": "frozen_embedding_classifier",
+      "implementation": "linear_svc_embedding",
+      "feature_set": "frozen_embedding_only",
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B8",
+      "name": "linear_svc_with_features",
+      "axis": "frozen_embedding_classifier",
+      "implementation": "linear_svc_structured",
+      "feature_set": "frozen_embedding_plus_structured_evidence",
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B9",
+      "name": "calibrated_abstention",
+      "axis": "selective_prediction",
+      "implementation": "independent_calibrator_plus_selective_policy",
+      "fit_partition": "calibration",
+      "abstention_required": true,
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B10",
+      "name": "raw_full_frame",
+      "axis": "visual_input",
+      "visual_inputs": ["raw_full_frame"],
+      "spatial_crop_permitted": false,
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B11",
+      "name": "raw_plus_focused",
+      "axis": "visual_input",
+      "visual_inputs": ["raw_full_frame", "focused_full_frame"],
+      "spatial_crop_permitted": false,
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B12",
+      "name": "raw_plus_focused_plus_masked",
+      "axis": "visual_input",
+      "visual_inputs": [
+        "raw_full_frame",
+        "focused_full_frame",
+        "masked_full_frame"
+      ],
+      "spatial_crop_permitted": false,
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B13",
+      "name": "global_references",
+      "axis": "reference_scope",
+      "reference_scope": "global",
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B14",
+      "name": "cluster_conditioned_references",
+      "axis": "reference_scope",
+      "reference_scope": "geo_cluster_then_global_fallback",
+      "no_geo_policy": "global_fallback_and_abstention_audit",
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B15",
+      "name": "text_image_fusion",
+      "axis": "evidence_fusion",
+      "evidence": ["frozen_image", "taxonomy_text"],
+      "query_or_metadata_text_permitted": false,
+      "execution_computer": "external_gpu_computer"
+    },
+    {
+      "experiment_id": "B16",
+      "name": "image_only",
+      "axis": "evidence_fusion",
+      "evidence": ["frozen_image"],
+      "query_or_metadata_text_permitted": false,
+      "execution_computer": "external_gpu_computer"
+    }
+  ],
+  "evaluation_policy": {
+    "model_selection_partition": "model_selection",
+    "calibration_partition": "calibration",
+    "final_report_partition": "final_test",
+    "primary_metrics": [
+      "pr_auc",
+      "recall_at_high_precision",
+      "calibration_error",
+      "selective_coverage"
+    ],
+    "threshold_operating_points": [0.5, 0.7, 0.9, 0.95, 0.99],
+    "required_slices": [
+      "geo_cluster",
+      "no_geo",
+      "visual_domain",
+      "life_stage",
+      "source",
+      "candidate_species"
+    ],
+    "required_audits": [
+      "duplicate_leakage",
+      "owner_observer_and_burst_leakage",
+      "target_never_pruned",
+      "query_metadata_not_used_as_label_or_feature",
+      "all_regional_candidates_scored",
+      "calibrator_fit_only_on_calibration",
+      "final_test_not_used_for_selection",
+      "throughput_and_peak_memory"
+    ],
+    "selection_order": [
+      "higher_pr_auc",
+      "higher_recall_at_high_precision",
+      "lower_calibration_error",
+      "higher_selective_coverage",
+      "lower_failure_rate_by_required_slice",
+      "higher_throughput",
+      "lower_peak_memory"
+    ],
+    "raw_similarity_may_be_called_probability": false
+  },
+  "phase15_default_gate": {
+    "authorized": false,
+    "current_default_must_remain_unchanged": true,
+    "required_evidence": [
+      "phase14.3_reference_bank_ready",
+      "phase14.4_b0_b16_complete",
+      "phase14.5_selection_policy_passed",
+      "phase14.6_reviewed_report_approved"
+    ]
+  }
+}

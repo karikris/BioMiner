@@ -1,0 +1,61 @@
+{
+  "schema_version": "papilio-demoleus-pilot-reference-source-queries-v1.0.0",
+  "candidate_semantics": "source_taxon_match_not_human_verified_image_label",
+  "queries": [
+    {"source":"GBIF","accepted_taxon_key":"gbif:1938069","scientific_name":"Papilio demoleus","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1938069","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1937892","scientific_name":"Papilio memnon","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1937892","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1938088","scientific_name":"Papilio polytes","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1938088","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1938114","scientific_name":"Papilio helenus","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1938114","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1937911","scientific_name":"Papilio paris","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1937911","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:8225376","scientific_name":"Papilio machaon","geo_cluster_id":"unassigned_geo","fallback_level":2,"source_taxon_id":"8225376","country_codes":["IN","OM","TH","IL","LK","VN","BQ","ID","KH","NP","PH","QA","AU","IR","MM","DO","LA","MY","SC","SG","SY"],"page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:5141187","scientific_name":"Graphium agamemnon","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"5141187","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1939168","scientific_name":"Pachliopta aristolochiae","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1939168","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1937444","scientific_name":"Ornithoptera priamus","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1937444","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1939131","scientific_name":"Protographium leosthenes","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1939131","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1939222","scientific_name":"Losaria coon","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1939222","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1937474","scientific_name":"Ornithoptera richmondia","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1937474","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1938052","scientific_name":"Papilio protenor","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1938052","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1938122","scientific_name":"Papilio demolion","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1938122","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1937723","scientific_name":"Papilio bianor","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1937723","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1937826","scientific_name":"Papilio nephelus","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1937826","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:7748550","scientific_name":"Papilio paradoxa","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"7748550","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1937707","scientific_name":"Papilio castor","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1937707","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1937696","scientific_name":"Papilio arcturus","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1937696","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:4692124","scientific_name":"Papilio slateri","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"4692124","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1937966","scientific_name":"Papilio palinurus","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1937966","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1938174","scientific_name":"Papilio alcmenor","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1938174","page_size":300,"source_snapshot_version":"gbif-reference-search-20260715"}
+  ],
+  "acquisition_quotas": {
+    "target_adult": {"species":["gbif:1938069"],"life_stage":"adult","minimum_per_species":50,"maximum_per_species":100},
+    "selected_regional_competitors": {"species":["gbif:1937892","gbif:1938088","gbif:1938114","gbif:1937911","gbif:8225376"],"life_stage":"adult","minimum_per_species":20,"maximum_per_species":50},
+    "reviewed_false_winner_genera": {"species":["gbif:5141187","gbif:1939168","gbif:1937444","gbif:1939131","gbif:1939222"],"life_stage":"adult","minimum_per_species":20,"maximum_per_species":50},
+    "historical_false_winner_species": {"species":["gbif:1937474"],"life_stage":"adult","minimum_per_species":20,"maximum_per_species":50},
+    "broader_papilionidae": {"species":["gbif:1938052","gbif:1938122","gbif:1937723","gbif:1937826","gbif:7748550","gbif:1937707","gbif:1937696","gbif:4692124","gbif:1937966","gbif:1938174"],"life_stage":"adult","minimum_total":100,"maximum_total":300,"planned_per_species":20},
+    "target_caterpillar": {"species":["gbif:1938069"],"life_stage":"larva","separate_from_adult_bank":true,"minimum_total":20,"maximum_total":50},
+    "other_insect_or_moth_negatives": {"minimum_total":100,"maximum_total":200,"status":"unresolved_requires_registry_linked_taxa"},
+    "domain_negatives": {"classes":["illustration","pinned_specimen","garden_scene","fruit_or_flower_closeup","clutter"],"status":"unresolved_requires_human_review"}
+  },
+  "evidence_sources": {
+    "target_range_manifest": "runs/papilio_demoleus_pilot_target_geographic_spread_20260715/geographic_spread_manifest.json",
+    "same_genus_competitors": "runs/papilio_demoleus_pilot_regional_competitors_20260715/regional_competitor_manifest.json",
+    "reviewed_false_winner_relationships": "config/candidates/papilio_demoleus_competitor_relationships.json",
+    "reviewed_false_winner_relationships_sha256": "sha256:bc71f57add07935c8fb90aaf3f4efcf28b9d5dcee172f8253532409cd47ba4a5"
+  },
+  "query_scope_policy": {
+    "default": "global_then_assign_to_flickr_clusters",
+    "gbif_occurrence_search_ceiling": 100000,
+    "papilio_machaon": {
+      "scope": "target_supported_countries",
+      "reason": "global_still_image_coordinate_count_101059_exceeds_gbif_search_ceiling",
+      "verified_scoped_count": 638,
+      "verified_at": "2026-07-15T00:00:00Z"
+    }
+  },
+  "historical_false_winner_evidence": {
+    "source": "data/live_runs/papilio_demoleus_global_multilingual_20260609_071759/bioclip25_species_all_global_2000_candidates_7families_batched/summary.json",
+    "source_sha256": "sha256:c1125b518e3c32bde97a3729e34b35210de072144d71a25f8f6b9665b764bbbb",
+    "species": "Ornithoptera richmondia",
+    "unreviewed_top1_count": 275,
+    "interpretation": "historical_model_false_winner_candidate_not_truth_label"
+  }
+}

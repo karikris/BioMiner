@@ -14,6 +14,21 @@
       "regional_resolution": 5,
       "local_resolution": 7
     },
+    "build-regional-competitor-evidence": {
+      "target_occurrence_evidence": "data/reference/geographic-spread/geographic_occurrence_evidence.parquet",
+      "taxa": "data/registry/registry-version/taxa.parquet",
+      "target_accepted_taxon_key": "gbif:accepted-key",
+      "candidate_genus_taxon_key": "gbif:accepted-genus-key",
+      "registry_version": "registry-version",
+      "source_snapshot_version": "gbif-snapshot-version",
+      "checkpoint_dir": "data/reference/checkpoints/regional-competitors",
+      "output_dir": "data/reference/regional-competitors",
+      "retrieved_at": "2026-01-01T00:00:00Z",
+      "minimum_target_country_occurrences": 5,
+      "maximum_candidates": 30,
+      "facet_limit": 1000,
+      "max_retries": 5
+    },
     "cluster-flickr-metadata": {
       "geography": "data/flickr/flickr_geography.parquet",
       "target_accepted_taxon_key": "gbif:accepted-key",

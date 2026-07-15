@@ -224,10 +224,49 @@ def load_reference_page_checkpoint_frames(
                 _checkpoint_file(checkpoint.checkpoint_directory, entry, "media_file")
             ).iter_rows(named=True)
         )
+    observation_rows = _deduplicate_checkpoint_rows(
+        observation_rows,
+        key="reference_observation_id",
+        artifact="reference observations",
+    )
+    media_rows = _deduplicate_checkpoint_rows(
+        media_rows,
+        key="reference_media_id",
+        artifact="reference media candidates",
+    )
     return (
         reference_observations_frame(observation_rows),
         reference_media_candidates_frame(media_rows),
     )
+
+
+def _deduplicate_checkpoint_rows(
+    rows: list[dict[str, object]],
+    *,
+    key: str,
+    artifact: str,
+) -> list[dict[str, object]]:
+    selected: dict[str, dict[str, object]] = {}
+    for row in rows:
+        identity = str(row.get(key) or "")
+        previous = selected.get(identity)
+        if previous is None:
+            selected[identity] = row
+            continue
+        previous_semantics = {
+            field: value for field, value in previous.items() if field != "retrieved_at"
+        }
+        row_semantics = {
+            field: value for field, value in row.items() if field != "retrieved_at"
+        }
+        if previous_semantics != row_semantics:
+            raise ValueError(
+                f"reference checkpoint {artifact} contain conflicting rows for "
+                f"{key}={identity}"
+            )
+        if row["retrieved_at"] < previous["retrieved_at"]:
+            selected[identity] = row
+    return [selected[identity] for identity in sorted(selected)]
 
 
 def _checkpoint_directory(

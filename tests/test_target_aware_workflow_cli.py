@@ -33,6 +33,7 @@ from test_target_verification_metrics import _rows_for_frozen_holdouts
     "command",
     (
         "build-geographic-spread",
+        "build-regional-competitor-evidence",
         "cluster-flickr-metadata",
         "materialize-flickr-workload",
         "plan",
@@ -102,6 +103,66 @@ def test_papilio_pilot_config_caps_local_vision_verification() -> None:
     )
 
 
+def test_papilio_pilot_reference_source_plan_freezes_phase14_quotas() -> None:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "config"
+        / "pilot"
+        / "papilio_demoleus_reference_source_queries.json"
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    queries = payload["queries"]
+    query_keys = [query["accepted_taxon_key"] for query in queries]
+    quotas = payload["acquisition_quotas"]
+
+    assert payload["candidate_semantics"] == (
+        "source_taxon_match_not_human_verified_image_label"
+    )
+    assert len(query_keys) == len(set(query_keys)) == 22
+    assert set(query["source"] for query in queries) == {"GBIF"}
+    machaon = next(
+        query for query in queries if query["accepted_taxon_key"] == "gbif:8225376"
+    )
+    assert all(
+        query["fallback_level"] == 3
+        for query in queries
+        if query is not machaon
+    )
+    assert machaon["fallback_level"] == 2
+    assert len(machaon["country_codes"]) == 21
+    assert payload["query_scope_policy"]["papilio_machaon"][
+        "verified_scoped_count"
+    ] == 638
+    assert all(query["page_size"] == 300 for query in queries)
+    assert quotas["target_adult"] == {
+        "species": ["gbif:1938069"],
+        "life_stage": "adult",
+        "minimum_per_species": 50,
+        "maximum_per_species": 100,
+    }
+    assert len(quotas["selected_regional_competitors"]["species"]) == 5
+    assert len(quotas["reviewed_false_winner_genera"]["species"]) == 5
+    assert quotas["historical_false_winner_species"]["species"] == [
+        "gbif:1937474"
+    ]
+    broad = quotas["broader_papilionidae"]
+    assert len(broad["species"]) * broad["planned_per_species"] == 200
+    assert broad["minimum_total"] == 100
+    assert broad["maximum_total"] == 300
+    assert quotas["target_caterpillar"]["separate_from_adult_bank"] is True
+    assert quotas["target_caterpillar"]["life_stage"] == "larva"
+    assert quotas["other_insect_or_moth_negatives"]["status"].startswith(
+        "unresolved"
+    )
+    assert quotas["domain_negatives"]["status"].startswith("unresolved")
+    assert set(query_keys) == {
+        key
+        for name, group in quotas.items()
+        if name not in {"other_insect_or_moth_negatives", "domain_negatives"}
+        for key in group["species"]
+    }
+
+
 def test_reference_source_query_example_uses_source_specific_page_sizes() -> None:
     path = (
         Path(__file__).resolve().parents[1]
@@ -125,6 +186,7 @@ def test_reference_workflow_commands_are_nested_and_species_agnostic() -> None:
 
     assert {
         "build-geographic-spread",
+        "build-regional-competitor-evidence",
         "cluster-flickr-metadata",
         "materialize-flickr-workload",
         "plan",

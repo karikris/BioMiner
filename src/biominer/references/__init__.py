@@ -109,6 +109,17 @@ from biominer.references.planner import (
     validate_reference_plan_result,
     write_reference_plan_result,
 )
+from biominer.references.regional_competitors import (
+    GBIFRegionalCompetitorFacetSource,
+    REGIONAL_COMPETITOR_CHECKPOINT_FILE,
+    REGIONAL_COMPETITOR_EVIDENCE_FILE,
+    REGIONAL_COMPETITOR_MANIFEST_FILE,
+    RegionalCompetitorBuildResult,
+    SpeciesFacetCount,
+    build_regional_competitor_evidence,
+    regional_competitor_evidence_schema,
+    write_regional_competitor_artifacts,
+)
 from biominer.references.readiness import (
     PERMITTING_READINESS_STATUSES,
     READINESS_CHECK_STATUSES,
@@ -251,6 +262,12 @@ from biominer.references.source_base import (
     ReferenceSourceQuery,
     validate_source_adapter,
 )
+from biominer.references.source_shortfalls import (
+    REFERENCE_SOURCE_SHORTFALL_FILE,
+    REFERENCE_SOURCE_SHORTFALL_MARKDOWN_FILE,
+    compile_reference_source_shortfalls,
+    write_reference_source_shortfalls,
+)
 
 __all__ = [
     "CURATED_VISUAL_DOMAIN_NEGATIVE_SOURCE_SCHEMA_VERSION",
@@ -269,6 +286,7 @@ __all__ = [
     "GBIFReferenceAdapter",
     "GBIFReferenceBulkDownloadRequired",
     "GBIFReferenceCheckpoint",
+    "GBIFRegionalCompetitorFacetSource",
     "INATURALIST_API_BASE_URL",
     "INATURALIST_API_PAGE_SIZE",
     "INATURALIST_API_RESULT_LIMIT",
@@ -313,6 +331,11 @@ __all__ = [
     "REFERENCE_MEDIA_DEDUPLICATION_SUMMARY_FILE",
     "REFERENCE_MEDIA_DEDUPLICATOR_VERSION",
     "REFERENCE_MEDIA_DUPLICATE_RELATIONSHIPS_FILE",
+    "REGIONAL_COMPETITOR_CHECKPOINT_FILE",
+    "REGIONAL_COMPETITOR_EVIDENCE_FILE",
+    "REGIONAL_COMPETITOR_MANIFEST_FILE",
+    "RegionalCompetitorBuildResult",
+    "SpeciesFacetCount",
     "REFERENCE_MEDIA_DUPLICATE_RELATIONSHIPS_SCHEMA_VERSION",
     "REFERENCE_MEDIA_OBJECTS_FILE",
     "REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION",
@@ -352,6 +375,8 @@ __all__ = [
     "REFERENCE_VISUAL_DOMAINS",
     "REFERENCE_SOURCE_PAGE_VERSION",
     "REFERENCE_SOURCE_QUERY_VERSION",
+    "REFERENCE_SOURCE_SHORTFALL_FILE",
+    "REFERENCE_SOURCE_SHORTFALL_MARKDOWN_FILE",
     "REFERENCE_LICENCE_POLICY_VERSION",
     "TAXON_RECONCILIATION_STATUSES",
     "VERIFICATION_STATUSES",
@@ -383,9 +408,11 @@ __all__ = [
     "build_inaturalist_bulk_acquisition_options",
     "build_reference_review_queue",
     "build_reference_bank_readiness",
+    "build_regional_competitor_evidence",
     "canonicalise_creative_commons_licence",
     "canonicalise_creative_commons_licence_identity",
     "compile_curated_visual_domain_negative_manifest",
+    "compile_reference_source_shortfalls",
     "compute_reference_perceptual_hash",
     "curated_visual_domain_negative_manifest_schema",
     "deduplicate_reference_media",
@@ -441,6 +468,7 @@ __all__ = [
     "reference_readiness_allows_vision",
     "reference_support_manifest_schema",
     "reference_plan_markdown",
+    "regional_competitor_evidence_schema",
     "resolve_reference_review_statuses",
     "select_verified_reference_media",
     "validate_reference_review_history_head",
@@ -476,8 +504,10 @@ __all__ = [
     "write_reference_review_export",
     "write_reference_review_import",
     "write_reference_review_queue",
+    "write_reference_source_shortfalls",
     "write_gbif_reference_checkpoint",
     "write_inaturalist_reference_checkpoint",
     "write_reference_page_checkpoint",
     "write_reference_plan_result",
+    "write_regional_competitor_artifacts",
 ]

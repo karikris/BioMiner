@@ -7,6 +7,7 @@
       "accepted_taxon_key": "gbif:1938069",
       "scientific_name": "Papilio demoleus"
     },
+    "phase14_experiment_matrix": "config/pilot/papilio_demoleus_phase14_experiment_matrix.json",
     "execution_constraints": {
       "local_build_verification_max_images": 5,
       "large_bioclip_runs": "different_computer_required",
@@ -31,6 +32,36 @@
     }
   },
   "commands": {
+    "build-geographic-spread": {
+      "accepted_taxon_key": "gbif:1938069",
+      "scientific_name": "Papilio demoleus",
+      "registry_version": "butterflies-v2-20260712",
+      "source_snapshot_version": "gbif-occurrence-search-20260715",
+      "output_dir": "runs/papilio_demoleus_pilot_target_geographic_spread_20260715",
+      "checkpoint_dir": "runs/papilio_demoleus_pilot_target_geographic_spread_20260715/checkpoints",
+      "retrieved_at": "2026-07-15T00:00:00Z",
+      "coarse_resolution": 3,
+      "regional_resolution": 5,
+      "local_resolution": 7,
+      "page_size": 300,
+      "max_retries": 5
+    },
+    "build-regional-competitor-evidence": {
+      "target_occurrence_evidence": "runs/papilio_demoleus_pilot_target_geographic_spread_20260715/geographic_occurrence_evidence.parquet",
+      "taxa": "data/registry/butterflies-v2-20260712/taxa.parquet",
+      "target_accepted_taxon_key": "gbif:1938069",
+      "candidate_genus_taxon_key": "gbif:10175914",
+      "registry_version": "butterflies-v2-20260712",
+      "source_snapshot_version": "gbif-occurrence-facets-20260715",
+      "checkpoint_dir": "runs/papilio_demoleus_pilot_regional_competitors_20260715/checkpoints",
+      "output_dir": "runs/papilio_demoleus_pilot_regional_competitors_20260715",
+      "retrieved_at": "2026-07-15T00:00:00Z",
+      "minimum_target_country_occurrences": 5,
+      "maximum_candidates": 30,
+      "facet_limit": 1000,
+      "max_retries": 5,
+      "overwrite": false
+    },
     "materialize-flickr-workload": {
       "candidate_metadata": "data/live_runs/papilio_demoleus_global_multilingual_20260609_071759/checkpoints/flickr_metadata_all_hits.jsonl",
       "candidate_metadata_byte_count": 266841863,
@@ -52,6 +83,19 @@
       "total_reference_quota": 100,
       "minimum_per_populated_cluster": 1,
       "minimum_candidate_images": 10,
+      "overwrite": false
+    },
+    "fetch-metadata": {
+      "queries": "config/pilot/papilio_demoleus_reference_source_queries.json",
+      "registry_version": "butterflies-v2-20260712",
+      "checkpoint_dir": "runs/papilio_demoleus_pilot_reference_candidates_20260715/checkpoints",
+      "output_dir": "runs/papilio_demoleus_pilot_reference_candidates_20260715",
+      "geography_clusters": "runs/papilio_demoleus_pilot_geographic_workload_20260715/flickr_geo_clusters.parquet",
+      "geography_source_resolution": 3,
+      "geography_adjacency_grid_distance": 1,
+      "geography_maximum_assignment_distance_km": 250.0,
+      "max_retries": 5,
+      "inaturalist_min_request_interval_seconds": 1.0,
       "overwrite": false
     }
   }
