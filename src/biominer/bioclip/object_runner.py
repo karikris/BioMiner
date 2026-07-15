@@ -62,7 +62,9 @@ PRIMARY_VISUAL_CLASSIFIER = "bioclip_object"
 OBJECT_VISUAL_MODES: tuple[str, ...] = ("whole_image", "detector_crop", "detector_crop_segmentation")
 AblationMode = Literal["whole_image", "detector_crop", "detector_crop_segmentation"]
 TARGET_SCOPE_CANDIDATE_SELECTION_MODE = "taxon_scope_or_species_context"
-TARGET_SCOPE_SPECIES_RERANK_STRATEGY = "complete_first_pass_top20_target_required"
+TARGET_SCOPE_SPECIES_RERANK_STRATEGY = (
+    "family_top1_filtered_first_pass_top20_complete_rerank"
+)
 SPECIES_CANDIDATE_PROVENANCE_VERSION = "species-candidate-provenance-v1"
 TARGET_AWARE_LEGACY_OUTPUT_MESSAGE = (
     "target_aware_few_shot_classification requires the separate target-aware scoring path; "
@@ -1355,17 +1357,16 @@ def _score_detection(
         candidate_set.species_candidates,
         species_scores,
     )
-    ranked_species_top20 = _species_reference_comparison(
-        ranked_species_first_pass,
-        target_scientific_name=context.scientific_name,
-        limit=species_first_pass_top_k,
-    )
     ranked_families = _rank_labels(labels.family, family_scores) if labels.family else []
     family_top1 = ranked_families[0][0] if ranked_families else None
-    family_filtered_ranked_species_top20 = _rank_species_for_family(
+    family_filtered_ranked_species = _rank_species_for_family(
         candidates=candidate_set.species_candidates,
-        ranked_species=ranked_species_top20,
+        ranked_species=ranked_species_first_pass,
         family=family_top1,
+    )
+    family_filtered_ranked_species_top20 = _species_classification_shortlist(
+        family_filtered_ranked_species,
+        limit=species_first_pass_top_k,
     )
     rerank_candidates = _species_rerank_candidates(
         candidate_set.species_candidates,
@@ -1420,7 +1421,6 @@ def _score_detection_batch(
         initial_label_sets["genus"] = labels.genus
     initial_label_sets["species"] = labels.species
     initial_scores = _score_label_sets_for_items(scorer, items, initial_label_sets)
-    ranked_species_top20_by_index: list[list[tuple[str, float]]] = []
     ranked_species_first_pass_by_index: list[list[tuple[str, float]]] = []
     family_ranked_species_top20_by_index: list[list[tuple[str, float]]] = []
     rerank_candidates_by_index: list[tuple[CandidateTaxon, ...]] = []
@@ -1432,18 +1432,16 @@ def _score_detection_batch(
             initial_scores["species"][index],
         )
         ranked_species_first_pass_by_index.append(ranked_species_first_pass)
-        ranked_species_top20 = _species_reference_comparison(
-            ranked_species_first_pass,
-            target_scientific_name=context.scientific_name,
-            limit=species_first_pass_top_k,
-        )
-        ranked_species_top20_by_index.append(ranked_species_top20)
         ranked_families = _rank_labels(labels.family, initial_scores["family"][index]) if labels.family else []
         family_top1 = ranked_families[0][0] if ranked_families else None
-        family_ranked_species_top20 = _rank_species_for_family(
+        family_ranked_species = _rank_species_for_family(
             candidates=candidate_set.species_candidates,
-            ranked_species=ranked_species_top20,
+            ranked_species=ranked_species_first_pass,
             family=family_top1,
+        )
+        family_ranked_species_top20 = _species_classification_shortlist(
+            family_ranked_species,
+            limit=species_first_pass_top_k,
         )
         family_ranked_species_top20_by_index.append(family_ranked_species_top20)
         rerank_candidates_by_index.append(
@@ -1751,25 +1749,14 @@ def _rank_species(candidates: tuple[CandidateTaxon, ...], scores: dict[str, floa
     return sorted(ranked, key=lambda item: (-item[1], item[0].casefold()))
 
 
-def _species_reference_comparison(
+def _species_classification_shortlist(
     ranked_species: list[tuple[str, float]],
     *,
-    target_scientific_name: str,
     limit: int,
 ) -> list[tuple[str, float]]:
     if limit <= 0:
-        raise ValueError("species reference comparison limit must be positive")
-    target_key = _norm(target_scientific_name)
-    target = next(
-        (item for item in ranked_species if _norm(item[0]) == target_key),
-        None,
-    )
-    if target is None:
-        raise ValueError("target species is absent from the scored candidate set")
-    selected = list(ranked_species[:limit])
-    if all(_norm(name) != target_key for name, _score in selected):
-        selected.append(target)
-    return selected
+        raise ValueError("species classification shortlist limit must be positive")
+    return list(ranked_species[:limit])
 
 
 def _species_rerank_candidates(
@@ -1811,17 +1798,22 @@ def _rank_species_for_family(
     if not family_metadata_present:
         return ranked_species
 
-    return sorted(
-        ranked_species,
-        key=lambda item: (
-            candidate_family_by_name.get(_norm(item[0])) != family_norm,
-            ranked_species.index(item),
-        ),
-    )
+    matched = [
+        item
+        for item in ranked_species
+        if candidate_family_by_name.get(_norm(item[0])) == family_norm
+    ]
+    if not matched:
+        raise ValueError(
+            f"selected family {family!r} has no species candidates with matching family metadata"
+        )
+    return matched
 
 
 def _target_scope_species_rerank_strategy(species_first_pass_top_k: int) -> str:
-    return f"complete_first_pass_top{int(species_first_pass_top_k)}_target_required"
+    return (
+        f"family_top1_filtered_first_pass_top{int(species_first_pass_top_k)}_complete_rerank"
+    )
 
 
 def _species_candidate_provenance(

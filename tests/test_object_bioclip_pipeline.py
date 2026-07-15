@@ -2367,22 +2367,23 @@ def test_object_bioclip_top_k_settings_control_first_pass_and_rerank_candidates(
     assert "a photo of Danaus erippus" in scorer.species_calls[1]
     assert "a photo of Danaus eresimus" in scorer.species_calls[1]
     assert "a photo of Limenitis archippus" in scorer.species_calls[1]
-    assert "a photo of Danaus plexippus" in scorer.species_calls[1]
+    assert "a photo of Danaus plexippus" not in scorer.species_calls[1]
     assert row["family_top3"] == ["Nymphalidae"]
     assert row["species_top20"] == [
         "Danaus gilippus",
         "Danaus erippus",
         "Danaus eresimus",
         "Limenitis archippus",
-        "Danaus plexippus",
     ]
-    assert row["species_top5"] == ["Danaus plexippus", "Danaus gilippus"]
+    assert row["species_top5"] == ["Danaus gilippus", "Danaus erippus"]
     assert row["species_first_pass_top_k"] == 4
     assert row["species_rerank_top_k"] == 2
-    assert row["species_rerank_strategy"] == "complete_first_pass_top4_target_required"
+    assert row["species_rerank_strategy"] == "family_top1_filtered_first_pass_top4_complete_rerank"
+    assert row["target_species_score"] == 0.50
+    assert row["target_species_rank"] == 5
 
 
-def test_object_bioclip_family_rank_prioritizes_without_deleting_candidates(
+def test_object_bioclip_family_top1_constrains_species_classification(
     tmp_path,
 ) -> None:
     context = _context()
@@ -2472,21 +2473,21 @@ def test_object_bioclip_family_rank_prioritizes_without_deleting_candidates(
         "Danaus gilippus",
         "Limenitis archippus",
         "Danaus plexippus",
-        "Papilio machaon",
+        "Danaus eresimus",
     ]
     assert len(scorer.species_calls) == 2
     assert "Nymphalidae" not in scorer.species_calls[0]
     assert "Papilionidae" not in scorer.species_calls[0]
     assert len(scorer.species_calls) == 2
-    assert "a photo of Papilio machaon" in scorer.species_calls[1]
+    assert "a photo of Papilio machaon" not in scorer.species_calls[1]
     assert "a photo of Danaus gilippus" in scorer.species_calls[1]
     assert "a photo of Limenitis archippus" in scorer.species_calls[1]
-    assert "a photo of Danaus eresimus" not in scorer.species_calls[1]
+    assert "a photo of Danaus eresimus" in scorer.species_calls[1]
     assert row["species_top5"][0] == "Danaus gilippus"
-    assert row["species_top5"][1] == "Limenitis archippus"
+    assert row["species_top5"][1] == "Danaus eresimus"
     assert row["target_species_rank"] == 4
     assert row["target_species_score"] == 0.50
-    assert row["species_rerank_strategy"] == "complete_first_pass_top4_target_required"
+    assert row["species_rerank_strategy"] == "family_top1_filtered_first_pass_top4_complete_rerank"
     provenance = {
         candidate["scientific_name"]: candidate
         for candidate in row["species_candidate_provenance"]
@@ -2494,11 +2495,11 @@ def test_object_bioclip_family_rank_prioritizes_without_deleting_candidates(
     assert set(provenance) == {
         candidate.scientific_name for candidate in candidate_set.species_candidates
     }
-    assert provenance["Papilio machaon"]["included_in_reference_comparison"] is True
+    assert provenance["Papilio machaon"]["included_in_reference_comparison"] is False
     assert provenance["Papilio machaon"]["family_text_priority_match"] is False
 
 
-def test_papilio_ranked_twentieth_stays_in_species_reference_comparison(
+def test_papilio_ranked_twentieth_stays_in_species_classification_shortlist(
     tmp_path,
 ) -> None:
     context = _papilio_context()
