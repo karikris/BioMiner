@@ -542,6 +542,27 @@ Quota planning preserves cluster, source, licence, observer, observation, date,
 background, and locality diversity. A shortfall is a recorded outcome, not
 synthetic support.
 
+#### Prototype acquisition summaries
+
+Build-week prototype planning additionally emits
+`prototype_reference_source_summary.parquet` with schema version
+`prototype-reference-source-summary-v1.0.0` and
+`prototype_reference_shortfalls.parquet` with schema version
+`prototype-reference-shortfalls-v1.0.0`. The source summary retains the
+taxonomic or visual-domain scope, source, R1-R5 trust level, Layer A-E
+geographic evidence, source/media/independent-observation counts, licence and
+attribution qualification, and the count selected for download. The shortfall
+artifact retains every requested scope, available and selected counts, route,
+status, and reason. Visual-domain negatives use an explicit non-taxonomic
+scope and are never placed in `candidate_accepted_taxon_key`.
+
+Prototype source queries may set a positive `maximum_records` that is a
+multiple of `page_size`. The bound is part of the query fingerprint, stops a
+checkpoint cleanly at the configured count, and permits a time-bounded sample
+when a provider's full result exceeds its interactive-search ceiling. The
+report must disclose the bound and must not imply complete provider coverage.
+Unbounded query fingerprints remain unchanged for checkpoint compatibility.
+
 ### 5.4 `reference_media_objects.parquet`
 
 This supporting artifact records committed source-image objects without

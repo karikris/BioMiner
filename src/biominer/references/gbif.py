@@ -31,6 +31,7 @@ from biominer.references.schemas import (
 from biominer.references.source_base import (
     ReferenceMetadataPage,
     ReferenceSourceQuery,
+    apply_reference_query_record_limit,
 )
 from biominer.registry.gbif import JSONPayload
 from biominer.registry.gbif_production import GBIF_USER_AGENT, RetryingHTTPGet
@@ -143,6 +144,11 @@ class GBIFReferenceAdapter:
                 "GBIF occurrence search page_size cannot exceed "
                 f"{GBIF_OCCURRENCE_SEARCH_PAGE_LIMIT}"
             )
+        if (
+            query.maximum_records is not None
+            and query.maximum_records > GBIF_OCCURRENCE_SEARCH_MAX_RECORDS
+        ):
+            raise ValueError("GBIF maximum_records exceeds the search ceiling")
         if offset >= GBIF_OCCURRENCE_SEARCH_MAX_RECORDS:
             raise ValueError("GBIF occurrence search cursor reached the search ceiling")
         params = _search_params(query, source_taxon_key=source_taxon_key, offset=offset)
@@ -152,7 +158,10 @@ class GBIFReferenceAdapter:
         if not isinstance(payload, dict):
             raise ValueError("GBIF occurrence search response must be a JSON object")
         total = _nonnegative_int(payload.get("count"), field="count")
-        if total > GBIF_OCCURRENCE_SEARCH_MAX_RECORDS:
+        if (
+            total > GBIF_OCCURRENCE_SEARCH_MAX_RECORDS
+            and query.maximum_records is None
+        ):
             raise GBIFReferenceBulkDownloadRequired(
                 total_records=total,
                 request_payload=build_gbif_reference_download_request(query),
@@ -223,11 +232,20 @@ class GBIFReferenceAdapter:
         if checkpoint is not None and checkpoint.complete:
             return
         cursor = checkpoint.next_cursor if checkpoint is not None else None
+        observation_count = (
+            checkpoint.observation_count if checkpoint is not None else 0
+        )
         while True:
             page = self.fetch_page(query, cursor=cursor)
+            page = apply_reference_query_record_limit(
+                query,
+                page,
+                prior_observation_count=observation_count,
+            )
             if checkpoint_dir is not None:
                 write_gbif_reference_checkpoint(query, page, checkpoint_dir)
             yield page
+            observation_count += page.observations.height
             if page.complete:
                 return
             cursor = page.next_cursor

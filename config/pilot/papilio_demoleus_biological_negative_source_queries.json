@@ -1,19 +1,33 @@
 {
-  "schema_version": "papilio-demoleus-biological-negative-source-queries-v1.0.0",
+  "schema_version": "papilio-demoleus-biological-negative-source-queries-v1.1.0",
   "candidate_semantics": "metadata_source_candidate_not_verified_image_label",
   "taxon_ledger": "config/pilot/papilio_demoleus_biological_negative_taxa.json",
+  "query_scope_policy": {
+    "scope": "target_supported_countries",
+    "reason": "time_bounded_build_week_regional_negative_acquisition",
+    "candidate_prior_only": true,
+    "not_a_biological_range_assertion": true
+  },
+  "query_defaults": {
+    "geo_cluster_id": "unassigned_geo",
+    "fallback_level": 2,
+    "country_codes": ["AU", "BQ", "DO", "ID", "IL", "IN", "IR", "KH", "LA", "LK", "MM", "MY", "NP", "OM", "PH", "QA", "SC", "SG", "SY", "TH", "VN"],
+    "page_size": 300,
+    "maximum_records": 3000,
+    "source_snapshot_version": "gbif-biological-negative-regional-search-20260715"
+  },
   "queries": [
-    {"source":"GBIF","accepted_taxon_key":"gbif:1938125","scientific_name":"Papilio demodocus","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1938125","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
-    {"source":"GBIF","accepted_taxon_key":"gbif:1937964","scientific_name":"Papilio erithonioides","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1937964","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
-    {"source":"GBIF","accepted_taxon_key":"gbif:5124716","scientific_name":"Attacus atlas","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"5124716","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
-    {"source":"GBIF","accepted_taxon_key":"gbif:6116699","scientific_name":"Erebus macrops","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"6116699","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
-    {"source":"GBIF","accepted_taxon_key":"gbif:1862449","scientific_name":"Theretra oldenlandiae","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1862449","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
-    {"source":"GBIF","accepted_taxon_key":"gbif:5130521","scientific_name":"Junonia lemonias","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"5130521","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
-    {"source":"GBIF","accepted_taxon_key":"gbif:1919340","scientific_name":"Catopsilia pomona","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1919340","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
-    {"source":"GBIF","accepted_taxon_key":"gbif:5136713","scientific_name":"Euploea core","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"5136713","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
-    {"source":"GBIF","accepted_taxon_key":"gbif:1427855","scientific_name":"Pantala flavescens","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1427855","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
-    {"source":"GBIF","accepted_taxon_key":"gbif:1342178","scientific_name":"Xylocopa latipes","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1342178","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"},
-    {"source":"GBIF","accepted_taxon_key":"gbif:1405951","scientific_name":"Hierodula patellifera","geo_cluster_id":"unassigned_geo","fallback_level":3,"source_taxon_id":"1405951","page_size":300,"source_snapshot_version":"gbif-biological-negative-search-20260715"}
+    {"source":"GBIF","accepted_taxon_key":"gbif:1938125","scientific_name":"Papilio demodocus","source_taxon_id":"1938125"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1937964","scientific_name":"Papilio erithonioides","source_taxon_id":"1937964"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:5124716","scientific_name":"Attacus atlas","source_taxon_id":"5124716"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:6116699","scientific_name":"Erebus macrops","source_taxon_id":"6116699"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1862449","scientific_name":"Theretra oldenlandiae","source_taxon_id":"1862449"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:5130521","scientific_name":"Junonia lemonias","source_taxon_id":"5130521"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1919340","scientific_name":"Catopsilia pomona","source_taxon_id":"1919340"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:5136713","scientific_name":"Euploea core","source_taxon_id":"5136713"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1427855","scientific_name":"Pantala flavescens","source_taxon_id":"1427855"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1342178","scientific_name":"Xylocopa latipes","source_taxon_id":"1342178"},
+    {"source":"GBIF","accepted_taxon_key":"gbif:1405951","scientific_name":"Hierodula patellifera","source_taxon_id":"1405951"}
   ],
   "acquisition_quotas": {
     "visual_neighbour_candidates": {"species":["gbif:1938125","gbif:1937964"],"life_stage":"adult","minimum_per_species":20,"maximum_per_species":50,"status":"pending_frozen_embedding_confirmation"},

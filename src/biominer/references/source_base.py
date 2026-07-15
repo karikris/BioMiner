@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import math
@@ -34,6 +34,7 @@ class ReferenceSourceQuery:
     cluster_medoid_latitude: float | None = None
     cluster_medoid_longitude: float | None = None
     page_size: int = 100
+    maximum_records: int | None = None
     source_snapshot_version: str = ""
 
     def __post_init__(self) -> None:
@@ -61,6 +62,15 @@ class ReferenceSourceQuery:
             raise TypeError("page_size must be an integer")
         if self.page_size <= 0:
             raise ValueError("page_size must be positive")
+        if self.maximum_records is not None:
+            if isinstance(self.maximum_records, bool) or not isinstance(
+                self.maximum_records, int
+            ):
+                raise TypeError("maximum_records must be an integer or null")
+            if self.maximum_records <= 0:
+                raise ValueError("maximum_records must be positive")
+            if self.maximum_records % self.page_size != 0:
+                raise ValueError("maximum_records must be a multiple of page_size")
         cells = _normalized_values(self.spatial_cell_ids, field="spatial_cell_ids")
         countries = tuple(
             sorted(
@@ -93,25 +103,26 @@ class ReferenceSourceQuery:
 
     @property
     def query_fingerprint(self) -> str:
-        return _fingerprint(
-            {
-                "contract_version": REFERENCE_SOURCE_QUERY_VERSION,
-                "accepted_taxon_key": self.accepted_taxon_key,
-                "scientific_name": self.scientific_name,
-                "geo_cluster_id": self.geo_cluster_id,
-                "fallback_level": self.fallback_level,
-                "source_taxon_id": self.source_taxon_id,
-                "spatial_cell_ids": self.spatial_cell_ids,
-                "country_codes": self.country_codes,
-                "source_place_ids": self.source_place_ids,
-                "geometry_wkt": self.geometry_wkt,
-                "bounding_box": self.bounding_box,
-                "cluster_medoid_latitude": self.cluster_medoid_latitude,
-                "cluster_medoid_longitude": self.cluster_medoid_longitude,
-                "page_size": self.page_size,
-                "source_snapshot_version": self.source_snapshot_version,
-            }
-        )
+        payload: dict[str, object] = {
+            "contract_version": REFERENCE_SOURCE_QUERY_VERSION,
+            "accepted_taxon_key": self.accepted_taxon_key,
+            "scientific_name": self.scientific_name,
+            "geo_cluster_id": self.geo_cluster_id,
+            "fallback_level": self.fallback_level,
+            "source_taxon_id": self.source_taxon_id,
+            "spatial_cell_ids": self.spatial_cell_ids,
+            "country_codes": self.country_codes,
+            "source_place_ids": self.source_place_ids,
+            "geometry_wkt": self.geometry_wkt,
+            "bounding_box": self.bounding_box,
+            "cluster_medoid_latitude": self.cluster_medoid_latitude,
+            "cluster_medoid_longitude": self.cluster_medoid_longitude,
+            "page_size": self.page_size,
+            "source_snapshot_version": self.source_snapshot_version,
+        }
+        if self.maximum_records is not None:
+            payload["maximum_records"] = self.maximum_records
+        return _fingerprint(payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +205,23 @@ def validate_source_adapter(adapter: ReferenceSourceAdapter) -> None:
             raise ValueError(f"reference source adapter {field} must be nonblank")
 
 
+def apply_reference_query_record_limit(
+    query: ReferenceSourceQuery,
+    page: ReferenceMetadataPage,
+    *,
+    prior_observation_count: int,
+) -> ReferenceMetadataPage:
+    maximum = query.maximum_records
+    if maximum is None or page.complete:
+        return page
+    acquired = prior_observation_count + page.observations.height
+    if acquired > maximum:
+        raise ValueError("reference source page exceeded maximum_records")
+    if acquired < maximum:
+        return page
+    return replace(page, next_cursor=None, complete=True)
+
+
 def _normalized_values(values: tuple[str, ...], *, field: str) -> tuple[str, ...]:
     if not isinstance(values, tuple):
         raise TypeError(f"{field} must be a tuple")
@@ -257,5 +285,6 @@ __all__ = [
     "ReferenceMetadataPage",
     "ReferenceSourceAdapter",
     "ReferenceSourceQuery",
+    "apply_reference_query_record_limit",
     "validate_source_adapter",
 ]

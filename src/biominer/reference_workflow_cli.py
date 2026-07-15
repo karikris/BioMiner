@@ -285,6 +285,36 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
             "overwrite": False,
         },
     ),
+    "finalize-prototype-acquisition": _CommandSpec(
+        stage=RunStage.REFERENCE_METADATA,
+        fields=frozenset(
+            {
+                "observations",
+                "media_candidates",
+                "biological_negative_observations",
+                "biological_negative_media_candidates",
+                "query_plans",
+                "visual_domain_manifest",
+                "output_dir",
+                "created_at",
+                "selection_seed",
+                "overwrite",
+            }
+        ),
+        required=frozenset(
+            {
+                "observations",
+                "media_candidates",
+                "biological_negative_observations",
+                "biological_negative_media_candidates",
+                "query_plans",
+                "visual_domain_manifest",
+                "output_dir",
+                "created_at",
+            }
+        ),
+        defaults={"selection_seed": 20260715, "overwrite": False},
+    ),
     "download": _CommandSpec(
         stage=RunStage.REFERENCE_MEDIA,
         fields=frozenset(
@@ -677,6 +707,25 @@ def add_reference_workflow_parsers(
         type=float,
     )
     fetch.add_argument(
+        "--overwrite",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+
+    prototype_acquisition = subparsers.add_parser(
+        "finalize-prototype-acquisition"
+    )
+    _common(prototype_acquisition, runtime_defaults)
+    prototype_acquisition.add_argument("--observations")
+    prototype_acquisition.add_argument("--media-candidates")
+    prototype_acquisition.add_argument("--biological-negative-observations")
+    prototype_acquisition.add_argument("--biological-negative-media-candidates")
+    prototype_acquisition.add_argument("--query-plans", type=_csv)
+    prototype_acquisition.add_argument("--visual-domain-manifest")
+    prototype_acquisition.add_argument("--output-dir")
+    prototype_acquisition.add_argument("--created-at")
+    prototype_acquisition.add_argument("--selection-seed", type=int)
+    prototype_acquisition.add_argument(
         "--overwrite",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -1090,6 +1139,11 @@ def _validate_effective_options(command: str, values: dict[str, Any]) -> None:
                 values["accepted_photo_licences"],
                 field="accepted_photo_licences",
             )
+    elif command == "finalize-prototype-acquisition":
+        _string_tuple(values["query_plans"], field="query_plans")
+        _nonnegative_integer(values["selection_seed"], "selection_seed")
+        _utc_datetime(values["created_at"], "created_at")
+        _boolean(values["overwrite"], "overwrite")
     elif command == "download":
         _reference_download_config(values)
         if values.get("storage_backend") not in {None, "local", "s3"}:
@@ -1463,6 +1517,16 @@ def _nonnegative_integer(value: object, field: str) -> int:
     return result
 
 
+def _utc_datetime(value: object, field: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"{field} must be an ISO 8601 datetime") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{field} must be timezone-aware")
+    return parsed.astimezone(UTC)
+
+
 def _finite_float(value: object, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{field} must be numeric")
@@ -1734,6 +1798,9 @@ _COMMAND_RUNNERS = {
     ),
     "plan": lambda resolved, args: _run_reference_plan(resolved, args),
     "fetch-metadata": lambda resolved, args: _run_fetch_metadata(resolved, args),
+    "finalize-prototype-acquisition": lambda resolved, args: (
+        _run_finalize_prototype_acquisition(resolved, args)
+    ),
     "download": lambda resolved, args: _run_reference_download(resolved, args),
     "build-support-embeddings": lambda resolved, args: _run_support_embeddings(
         resolved, args
@@ -2369,6 +2436,57 @@ def _run_fetch_metadata(
     }
 
 
+def _run_finalize_prototype_acquisition(
+    resolved: ResolvedReferenceWorkflowOptions,
+    _args: argparse.Namespace,
+) -> dict[str, object]:
+    from biominer.references.prototype_acquisition import (
+        compile_prototype_acquisition,
+        write_prototype_acquisition_result,
+    )
+
+    values = resolved.values
+    query_plan_paths = _string_tuple(values["query_plans"], field="query_plans")
+    result = compile_prototype_acquisition(
+        observations=(
+            pl.read_parquet(str(values["observations"])),
+            pl.read_parquet(str(values["biological_negative_observations"])),
+        ),
+        media_candidates=(
+            pl.read_parquet(str(values["media_candidates"])),
+            pl.read_parquet(
+                str(values["biological_negative_media_candidates"])
+            ),
+        ),
+        query_plans=tuple(
+            _read_json_object(path, artifact="prototype acquisition query plan")
+            for path in query_plan_paths
+        ),
+        visual_domain_manifest=_read_json_object(
+            values["visual_domain_manifest"],
+            artifact="prototype visual-domain manifest",
+        ),
+        created_at=values["created_at"],
+        selection_seed=int(values["selection_seed"]),
+    )
+    paths = write_prototype_acquisition_result(
+        result,
+        str(values["output_dir"]),
+        overwrite=bool(values["overwrite"]),
+    )
+    summary = result.report["summary"]
+    assert isinstance(summary, Mapping)
+    return {
+        "artifacts": {key: str(path) for key, path in paths.items()},
+        "command": "references finalize-prototype-acquisition",
+        "acquisition_plan_id": result.report["acquisition_plan_id"],
+        "selected_for_download_count": summary["selected_for_download_count"],
+        "shortfall_scope_count": summary["shortfall_scope_count"],
+        "settings_fingerprint": resolved.settings_fingerprint,
+        "status": "complete",
+    }
+
+
 def _run_reference_download(
     resolved: ResolvedReferenceWorkflowOptions,
     args: argparse.Namespace,
@@ -2625,14 +2743,26 @@ def _reference_source_queries(path: object) -> tuple[tuple[str, object], ...]:
         "cluster_medoid_latitude",
         "cluster_medoid_longitude",
         "page_size",
+        "maximum_records",
         "source_snapshot_version",
     }
+    defaults: Mapping[str, object] = {}
+    if isinstance(payload, Mapping):
+        raw_defaults = payload.get("query_defaults", {})
+        if not isinstance(raw_defaults, Mapping):
+            raise ValueError("reference source query_defaults must be an object")
+        _reject_unknown(
+            raw_defaults,
+            allowed - {"source", "accepted_taxon_key", "scientific_name"},
+            artifact="reference source query defaults",
+        )
+        defaults = raw_defaults
     result = []
     for item in values:
         if not isinstance(item, Mapping):
             raise ValueError("reference source query entries must be objects")
         _reject_unknown(item, allowed, artifact="reference source query")
-        query_payload = dict(item)
+        query_payload = {**defaults, **item}
         source = str(query_payload.pop("source", "")).strip()
         normalized_source = {
             "gbif": "GBIF",

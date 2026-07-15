@@ -1,5 +1,23 @@
 # Target-aware few-shot Phase 14 pilot verification and handoff
 
+## Build Week prototype continuation
+
+The original human-review gate described below is retained as the scientific
+release history, but it no longer blocks the explicitly prototype-only Build
+Week path. Tasks 14.2.2 through 14.2.5 now provide the trust-first layered
+planner, biological and visual-domain negative candidates, bounded source
+acquisition, and a reproducible acquisition plan. The current compact handoff
+is
+`examples/species/papilio_demoleus/pilot_prototype_acquisition_manifest.json`.
+
+The Task 14.2.5 plan contains 135 biological and 11 visual-domain candidates
+selected for download. All 146 are R4 provider-supported prototype evidence;
+none is represented as human verified. The plan records 33 candidate scopes
+with explicit shortfalls, including 15 target-adult and 19 target-caterpillar
+images. Planner scores remain ordinal priorities rather than probabilities.
+No biological-negative source images were downloaded during metadata
+acquisition.
+
 Date: 2026-07-15. Confidence is high for the geographic workload,
 GBIF-derived competitor evidence, metadata checkpoint integrity, local vision
 execution limit, and the B0-B16 experiment contract. Confidence is unknown for

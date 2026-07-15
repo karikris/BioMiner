@@ -1,0 +1,20 @@
+{
+  "schema_version": "target-aware-reference-cli-settings-v1",
+  "commands": {
+    "finalize-prototype-acquisition": {
+      "observations": "runs/papilio_demoleus_pilot_reference_candidates_20260715/reference_observations.parquet",
+      "media_candidates": "runs/papilio_demoleus_pilot_reference_candidates_20260715/reference_media_candidates.parquet",
+      "biological_negative_observations": "runs/papilio_demoleus_pilot_biological_negative_candidates_20260715/reference_observations.parquet",
+      "biological_negative_media_candidates": "runs/papilio_demoleus_pilot_biological_negative_candidates_20260715/reference_media_candidates.parquet",
+      "query_plans": [
+        "config/pilot/papilio_demoleus_reference_source_queries.json",
+        "config/pilot/papilio_demoleus_biological_negative_source_queries.json"
+      ],
+      "visual_domain_manifest": "config/pilot/papilio_demoleus_visual_domain_negative_candidates.json",
+      "output_dir": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715",
+      "created_at": "2026-07-15T12:00:00Z",
+      "selection_seed": 20260715,
+      "overwrite": false
+    }
+  }
+}

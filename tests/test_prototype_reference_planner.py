@@ -241,6 +241,15 @@ def test_licence_ineligible_candidate_is_excluded() -> None:
     assert "licence_ineligible" in result.evidence["exclusion_reasons"].item()
 
 
+def test_research_only_licence_is_eligible_for_prototype_planning() -> None:
+    result = _plan(
+        [{"trust_level": "R3", "layer": "A", "licence_status": "research_only"}]
+    )
+
+    assert result.selected.height == 1
+    assert result.selected["licence_policy_status"].item() == "research_only"
+
+
 def test_exact_duplicate_candidate_is_excluded() -> None:
     result = _plan(
         [

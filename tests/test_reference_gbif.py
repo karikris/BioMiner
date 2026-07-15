@@ -42,6 +42,7 @@ def _query(
     geometry_wkt: str | None = GEOMETRY,
     country_codes: tuple[str, ...] = (),
     page_size: int = 2,
+    maximum_records: int | None = None,
 ) -> ReferenceSourceQuery:
     return ReferenceSourceQuery(
         accepted_taxon_key="gbif:1938069",
@@ -54,6 +55,7 @@ def _query(
         cluster_medoid_latitude=-33.86,
         cluster_medoid_longitude=151.21,
         page_size=page_size,
+        maximum_records=maximum_records,
         source_snapshot_version="gbif-occurrence-2026-07-13",
     )
 
@@ -304,6 +306,40 @@ def test_gbif_adapter_requires_bulk_download_above_search_ceiling() -> None:
         "key": "TAXON_KEY",
         "value": "1938069",
     }
+
+
+def test_gbif_adapter_stops_at_explicit_prototype_record_limit(
+    tmp_path: Path,
+) -> None:
+    query = _query(page_size=2, maximum_records=4)
+    source = RecordedGBIF(
+        [
+            _payload(
+                [_occurrence(301), _occurrence(302)],
+                count=100_001,
+                complete=False,
+            ),
+            _payload(
+                [_occurrence(303), _occurrence(304)],
+                offset=2,
+                count=100_001,
+                complete=False,
+            ),
+        ]
+    )
+
+    pages = list(_adapter(source).iter_pages(query, checkpoint_dir=tmp_path))
+
+    assert len(pages) == 2
+    assert pages[-1].complete is True
+    assert pages[-1].next_cursor is None
+    checkpoint = load_gbif_reference_checkpoint(query, tmp_path)
+    assert checkpoint is not None
+    assert checkpoint.complete is True
+    assert checkpoint.observation_count == 4
+    assert list(
+        _adapter(RecordedGBIF([])).iter_pages(query, checkpoint_dir=tmp_path)
+    ) == []
 
 
 def test_gbif_adapter_retries_rate_limits_with_identifying_user_agent() -> None:

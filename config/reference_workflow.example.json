@@ -71,6 +71,20 @@
       "minimum_per_sufficient_cluster": 2,
       "selection_seed": 42
     },
+    "finalize-prototype-acquisition": {
+      "observations": "data/reference/reference_observations.parquet",
+      "media_candidates": "data/reference/reference_media_candidates.parquet",
+      "biological_negative_observations": "data/reference/biological-negative/reference_observations.parquet",
+      "biological_negative_media_candidates": "data/reference/biological-negative/reference_media_candidates.parquet",
+      "query_plans": [
+        "config/reference_source_queries.example.json",
+        "config/biological_negative_source_queries.example.json"
+      ],
+      "visual_domain_manifest": "config/visual_domain_negative_candidates.example.json",
+      "output_dir": "data/reference/prototype-acquisition",
+      "created_at": "2026-01-01T00:00:00Z",
+      "selection_seed": 42
+    },
     "fetch-metadata": {
       "queries": "config/reference_source_queries.example.json",
       "registry_version": "registry-version",

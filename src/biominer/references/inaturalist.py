@@ -31,7 +31,11 @@ from biominer.references.schemas import (
     validate_reference_media_candidates,
     validate_reference_observations,
 )
-from biominer.references.source_base import ReferenceMetadataPage, ReferenceSourceQuery
+from biominer.references.source_base import (
+    ReferenceMetadataPage,
+    ReferenceSourceQuery,
+    apply_reference_query_record_limit,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -236,6 +240,11 @@ class INaturalistReferenceAdapter:
             raise ValueError(
                 f"iNaturalist reference queries must use page_size={INATURALIST_API_PAGE_SIZE}"
             )
+        if (
+            query.maximum_records is not None
+            and query.maximum_records > INATURALIST_API_RESULT_LIMIT
+        ):
+            raise ValueError("iNaturalist maximum_records exceeds the API result limit")
         cursor_id = _cursor_id(cursor)
         params = _search_params(
             query,
@@ -250,7 +259,10 @@ class INaturalistReferenceAdapter:
             payload.get("total_results", 0),
             field="total_results",
         )
-        if total_results > INATURALIST_API_RESULT_LIMIT:
+        if (
+            total_results > INATURALIST_API_RESULT_LIMIT
+            and query.maximum_records is None
+        ):
             raise INaturalistBulkAcquisitionRequired(
                 total_records=total_results,
                 acquisition_options=build_inaturalist_bulk_acquisition_options(query),
@@ -320,11 +332,20 @@ class INaturalistReferenceAdapter:
         if checkpoint is not None and checkpoint.complete:
             return
         cursor = checkpoint.next_cursor if checkpoint is not None else None
+        observation_count = (
+            checkpoint.observation_count if checkpoint is not None else 0
+        )
         while True:
             page = self.fetch_page(query, cursor=cursor)
+            page = apply_reference_query_record_limit(
+                query,
+                page,
+                prior_observation_count=observation_count,
+            )
             if checkpoint_dir is not None:
                 write_inaturalist_reference_checkpoint(query, page, checkpoint_dir)
             yield page
+            observation_count += page.observations.height
             if page.complete:
                 return
             cursor = page.next_cursor

@@ -1,0 +1,175 @@
+{
+  "schema_version": "papilio-demoleus-prototype-acquisition-manifest-v1.0.0",
+  "phase": 14,
+  "task": "14.2.5",
+  "status": "complete_with_documented_shortfalls",
+  "prototype_only": true,
+  "candidate_semantics": "metadata_qualified_prototype_support_not_verified_biological_identification",
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "materialization": {
+    "metadata_command": "biominer references fetch-metadata --queries config/pilot/papilio_demoleus_biological_negative_source_queries.json",
+    "plan_command": "biominer references finalize-prototype-acquisition --settings-file config/pilot/papilio_demoleus_prototype_acquisition.json",
+    "settings_fingerprint": "sha256:ff20135f677e6c53a25400f472380341edc4f6b30e74e058a208d90486f154ad",
+    "planner_version": "trust-first-layered-regional-v1.0.0",
+    "licence_policy_version": "reference-licences-v1",
+    "acquisition_plan_id": "reference-plan:9c8b2606d5418c2a0969b27e1562540b9e98285ef13196249714aa72dc0ff025",
+    "candidate_set_id": "sha256:44c26c64fe2962620062dad2dc748c25b6b21040508310120500629652359e60",
+    "plan_configuration_fingerprint": "sha256:605ef134e4f2bb3bb3637f280ef9b607d78324e4461a577cbcffa1abc02b572f"
+  },
+  "bounded_biological_negative_acquisition": {
+    "query_count": 11,
+    "maximum_records_per_query": 3000,
+    "page_size": 300,
+    "country_scope_count": 21,
+    "source_observation_count": 17898,
+    "source_media_candidate_count": 28545,
+    "deduplicated_observation_count": 0,
+    "deduplicated_media_candidate_count": 0,
+    "located_observation_count": 13933,
+    "fallback_observation_count": 3965,
+    "source_images_downloaded": 0,
+    "candidate_prior_only": true,
+    "not_a_biological_range_assertion": true
+  },
+  "counts": {
+    "source_record_count": 109085,
+    "media_record_count": 171429,
+    "unique_media_identifier_count": 170662,
+    "licence_eligible_count": 160687,
+    "independent_observation_count": 109085,
+    "biological_selected_for_download_count": 135,
+    "visual_domain_selected_for_download_count": 11,
+    "selected_for_download_count": 146,
+    "reference_group_count": 11,
+    "shortfall_scope_count": 33,
+    "total_shortfall_count": 500,
+    "human_verified_count": 0,
+    "provider_high_trust_count": 0,
+    "provider_supported_selected_count": 146
+  },
+  "selected_trust_distribution": {
+    "R1": 0,
+    "R2": 0,
+    "R3": 0,
+    "R4": 146,
+    "R5": 0
+  },
+  "selected_geographic_layer_distribution": {
+    "A": 94,
+    "B": 6,
+    "C": 0,
+    "D": 35,
+    "E": 11
+  },
+  "selected_layer_bucket_distribution": {
+    "AB": 100,
+    "C": 0,
+    "D": 35,
+    "E": 11
+  },
+  "actual_layer_bucket_proportions": {
+    "AB": 0.684931506849315,
+    "C": 0.0,
+    "D": 0.23972602739726026,
+    "E": 0.07534246575342465
+  },
+  "selected_source_distribution": {
+    "GBIF": 135,
+    "Wikimedia Commons": 11
+  },
+  "licence_policy_status_distribution": {
+    "allowed": 28854,
+    "research_only": 131822,
+    "denied": 2258,
+    "quarantined": 8484
+  },
+  "explicit_shortfalls": {
+    "target_adult": {
+      "requested": 50,
+      "selected": 35,
+      "shortfall": 15
+    },
+    "target_caterpillar": {
+      "requested": 20,
+      "selected": 1,
+      "shortfall": 19
+    },
+    "all_shortfalls_artifact": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_shortfalls.parquet"
+  },
+  "score_semantics": {
+    "planner_score": "ordinal_priority_not_probability",
+    "score_is_probability": false
+  },
+  "verification_semantics": {
+    "provider_supported_is_human_verified": false,
+    "predictions_are_experimental_screening_evidence": true,
+    "human_taxonomic_verification_complete": false
+  },
+  "input_artifacts": {
+    "reference_observations": {
+      "path": "runs/papilio_demoleus_pilot_reference_candidates_20260715/reference_observations.parquet",
+      "row_count": 91176,
+      "byte_count": 10797270,
+      "sha256": "sha256:193d9d7451eebf75eaaf772fa761ad53cfeca9f04d84dae8c2caffe9fa64882f"
+    },
+    "reference_media_candidates": {
+      "path": "runs/papilio_demoleus_pilot_reference_candidates_20260715/reference_media_candidates.parquet",
+      "row_count": 142873,
+      "byte_count": 13083129,
+      "sha256": "sha256:d9a4cd37eb8558f822807f753b2d027d37f33bcd9c32274b21516468d1827135"
+    },
+    "biological_negative_observations": {
+      "path": "runs/papilio_demoleus_pilot_biological_negative_candidates_20260715/reference_observations.parquet",
+      "row_count": 17898,
+      "byte_count": 2257537,
+      "sha256": "sha256:6a347fe252185767dc76e02b60b539ccdde95fd9eda2a7aaececd08ebf2bf30b"
+    },
+    "biological_negative_media_candidates": {
+      "path": "runs/papilio_demoleus_pilot_biological_negative_candidates_20260715/reference_media_candidates.parquet",
+      "row_count": 28545,
+      "byte_count": 2697583,
+      "sha256": "sha256:5cb76c0768c570bbee3e477ce3ac3e2f3f584418e4625dcc11360be5c3ed9d2b"
+    }
+  },
+  "output_artifacts": {
+    "reference_acquisition_plan": {
+      "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/reference_acquisition_plan.parquet",
+      "row_count": 34,
+      "byte_count": 12206,
+      "sha256": "sha256:2602fe683fe8ec8eba9c43de98effde87c811840838df55fb1086a68c1d27ce9"
+    },
+    "prototype_reference_source_summary": {
+      "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_source_summary.parquet",
+      "row_count": 101,
+      "byte_count": 11362,
+      "sha256": "sha256:01c2af0dc2f6885dcf94c8e634918519b62281f24a67dc924ef522653e843946"
+    },
+    "prototype_reference_shortfalls": {
+      "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_shortfalls.parquet",
+      "row_count": 45,
+      "byte_count": 7858,
+      "sha256": "sha256:2be25647b4446ddb7c2b21828effb4a74066f6edb0e600d1efc3c74df894b525"
+    },
+    "prototype_reference_planner_evidence": {
+      "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_planner_evidence.parquet",
+      "row_count": 58250,
+      "byte_count": 6661761,
+      "sha256": "sha256:8861f9a52d3bca74e1fca6ea4c9e8721a8ec874e6f51420c54e6ac57adc76d88"
+    },
+    "prototype_acquisition_report": {
+      "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_acquisition_report.json",
+      "byte_count": 2908,
+      "sha256": "sha256:61a63b8c7864582109f32afb1c55398ec65c0f334978c5bc9a682d73d810d415"
+    }
+  },
+  "unresolved_risks": [
+    "Provider-supported reference labels have not all received independent human taxonomic verification.",
+    "Perceptual duplicates and provider mirrors require downloaded bytes before final resolution.",
+    "Visual-neighbour candidates remain morphology candidates until frozen-embedding confirmation.",
+    "Bounded source queries document shortfalls rather than exhaust provider inventories."
+  ],
+  "next_task": "14.3.1_select_prototype_references"
+}

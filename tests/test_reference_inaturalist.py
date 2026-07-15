@@ -44,6 +44,7 @@ def _query(
     fallback_level: int = 0,
     bounding_box: tuple[float, float, float, float] | None = BOUNDING_BOX,
     source_place_ids: tuple[str, ...] = (),
+    maximum_records: int | None = None,
 ) -> ReferenceSourceQuery:
     return ReferenceSourceQuery(
         accepted_taxon_key="gbif:1938069",
@@ -56,6 +57,7 @@ def _query(
         cluster_medoid_latitude=-33.86,
         cluster_medoid_longitude=151.21,
         page_size=INATURALIST_API_PAGE_SIZE,
+        maximum_records=maximum_records,
         source_snapshot_version="inaturalist-api-2026-07-13",
     )
 
@@ -469,6 +471,30 @@ def test_inaturalist_checkpoints_resume_from_last_observation_id(
     observations, media = load_inaturalist_reference_checkpoint_frames(query, tmp_path)
     assert observations.height == 201
     assert media.height == 201
+
+
+def test_inaturalist_adapter_stops_at_explicit_prototype_record_limit(
+    tmp_path: Path,
+) -> None:
+    query = _query(maximum_records=400)
+    first_records = [_observation(value) for value in range(4001, 4201)]
+    second_records = [_observation(value) for value in range(4201, 4401)]
+    source = RecordedINaturalist(
+        [
+            _payload(first_records, total_results=10_001),
+            _payload(second_records, total_results=10_001),
+        ]
+    )
+
+    pages = list(_adapter(source).iter_pages(query, checkpoint_dir=tmp_path))
+
+    assert len(pages) == 2
+    assert pages[-1].complete is True
+    assert pages[-1].next_cursor is None
+    checkpoint = load_inaturalist_reference_checkpoint(query, tmp_path)
+    assert checkpoint is not None
+    assert checkpoint.complete is True
+    assert checkpoint.observation_count == 400
 
 
 def test_inaturalist_through_gbif_duplicate_is_excluded_without_losing_provenance() -> None:

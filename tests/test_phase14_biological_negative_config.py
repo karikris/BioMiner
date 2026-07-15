@@ -92,8 +92,17 @@ def test_negative_query_plan_exactly_covers_the_reconciled_ledger() -> None:
         (row["accepted_taxon_key"], row["scientific_name"]) for row in ledger["taxa"]
     }
     assert all(row["source"] == "GBIF" for row in queries)
-    assert all(row["fallback_level"] == 3 for row in queries)
-    assert all(row["geo_cluster_id"] == "unassigned_geo" for row in queries)
+    defaults = query_plan["query_defaults"]
+    assert defaults["fallback_level"] == 2
+    assert defaults["geo_cluster_id"] == "unassigned_geo"
+    assert len(defaults["country_codes"]) == 21
+    assert defaults["maximum_records"] == 3000
+    assert query_plan["query_scope_policy"] == {
+        "scope": "target_supported_countries",
+        "reason": "time_bounded_build_week_regional_negative_acquisition",
+        "candidate_prior_only": True,
+        "not_a_biological_range_assertion": True,
+    }
 
 
 def test_biological_negative_quota_is_at_least_one_hundred() -> None:

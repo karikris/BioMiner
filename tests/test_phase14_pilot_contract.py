@@ -8,6 +8,9 @@ MATRIX_PATH = Path("config/pilot/papilio_demoleus_phase14_experiment_matrix.json
 REFERENCE_SOURCE_MANIFEST_PATH = Path(
     "examples/species/papilio_demoleus/pilot_reference_source_manifest.json"
 )
+PROTOTYPE_ACQUISITION_MANIFEST_PATH = Path(
+    "examples/species/papilio_demoleus/pilot_prototype_acquisition_manifest.json"
+)
 
 
 def _matrix() -> dict[str, object]:
@@ -16,6 +19,12 @@ def _matrix() -> dict[str, object]:
 
 def _reference_source_manifest() -> dict[str, object]:
     return json.loads(REFERENCE_SOURCE_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def _prototype_acquisition_manifest() -> dict[str, object]:
+    return json.loads(
+        PROTOTYPE_ACQUISITION_MANIFEST_PATH.read_text(encoding="utf-8")
+    )
 
 
 def test_phase14_matrix_freezes_local_vision_limit_and_external_execution() -> None:
@@ -108,3 +117,46 @@ def test_phase14_reference_source_manifest_preserves_metadata_only_boundary() ->
     assert counts["human_verified_source_media_count"] == 0
     assert shortfalls["unresolved_group_count"] == 2
     assert manifest["experiment_matrix"]["status"] == "blocked_by_phase14.3"
+
+
+def test_phase14_prototype_acquisition_manifest_records_bounded_real_candidates() -> None:
+    manifest = _prototype_acquisition_manifest()
+    bounded = manifest["bounded_biological_negative_acquisition"]
+    counts = manifest["counts"]
+
+    assert manifest["task"] == "14.2.5"
+    assert manifest["status"] == "complete_with_documented_shortfalls"
+    assert manifest["prototype_only"] is True
+    assert bounded["maximum_records_per_query"] == 3000
+    assert bounded["query_count"] == 11
+    assert bounded["source_images_downloaded"] == 0
+    assert counts["selected_for_download_count"] == 146
+    assert counts["human_verified_count"] == 0
+    assert counts["provider_supported_selected_count"] == 146
+    assert counts["shortfall_scope_count"] == 33
+    assert manifest["score_semantics"]["score_is_probability"] is False
+    assert (
+        manifest["verification_semantics"][
+            "provider_supported_is_human_verified"
+        ]
+        is False
+    )
+
+
+def test_phase14_prototype_acquisition_manifest_tracks_required_artifacts() -> None:
+    manifest = _prototype_acquisition_manifest()
+    artifacts = manifest["output_artifacts"]
+
+    assert {
+        "reference_acquisition_plan",
+        "prototype_reference_source_summary",
+        "prototype_reference_shortfalls",
+    } <= set(artifacts)
+    assert artifacts["reference_acquisition_plan"]["row_count"] == 34
+    assert artifacts["prototype_reference_source_summary"]["row_count"] == 101
+    assert artifacts["prototype_reference_shortfalls"]["row_count"] == 45
+    assert all(
+        str(artifact["sha256"]).startswith("sha256:")
+        and len(str(artifact["sha256"])) == 71
+        for artifact in artifacts.values()
+    )

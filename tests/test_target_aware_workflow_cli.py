@@ -38,6 +38,7 @@ from test_target_verification_metrics import _rows_for_frozen_holdouts
         "materialize-flickr-workload",
         "plan",
         "fetch-metadata",
+        "finalize-prototype-acquisition",
         "download",
         "build-support-embeddings",
         "build-prototypes",
@@ -176,6 +177,41 @@ def test_reference_source_query_example_uses_source_specific_page_sizes() -> Non
         ("GBIF", 300),
         ("iNaturalist", 200),
     ]
+
+
+def test_reference_source_queries_apply_bounded_shared_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "queries.json"
+    path.write_text(
+        json.dumps(
+            {
+                "query_defaults": {
+                    "geo_cluster_id": "unassigned_geo",
+                    "fallback_level": 2,
+                    "country_codes": ["AU", "IN"],
+                    "page_size": 300,
+                    "maximum_records": 3000,
+                    "source_snapshot_version": "regional-snapshot-v1",
+                },
+                "queries": [
+                    {
+                        "source": "GBIF",
+                        "accepted_taxon_key": "gbif:1",
+                        "scientific_name": "Example species",
+                        "source_taxon_id": "1",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    ((source, query),) = _reference_source_queries(path)
+
+    assert source == "GBIF"
+    assert query.fallback_level == 2
+    assert query.country_codes == ("AU", "IN")
+    assert query.maximum_records == 3000
+    assert query.source_snapshot_version == "regional-snapshot-v1"
 
 
 def test_reference_workflow_commands_are_nested_and_species_agnostic() -> None:

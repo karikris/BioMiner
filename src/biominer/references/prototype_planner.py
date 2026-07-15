@@ -88,7 +88,7 @@ class PrototypeReferencePlannerConfig:
         ("E", 0.10),
     )
     eligible_trust_levels: tuple[str, ...] = ("R1", "R2", "R3", "R4")
-    acceptable_licence_statuses: tuple[str, ...] = ("allowed",)
+    acceptable_licence_statuses: tuple[str, ...] = ("allowed", "research_only")
     eligible_download_statuses: tuple[str, ...] = ("pending", "complete")
     minimum_image_quality_score: float = 0.0
     selection_seed: int = 20260715
