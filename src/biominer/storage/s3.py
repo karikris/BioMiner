@@ -19,6 +19,10 @@ from biominer.storage.parquet import (
     DEFAULT_PARQUET_READ_BATCH_SIZE,
     ParquetPartWrite,
 )
+from biominer.storage.content_address import (
+    sha256_file,
+    validate_content_addressed_uri,
+)
 from biominer.storage.uri import is_s3_uri, join_uri
 
 
@@ -44,6 +48,8 @@ class S3StorageBackend:
         self.base_uri = join_uri(f"s3://{bucket}", self.prefix)
         self._filesystem_instance = None
         self._filesystem_lock = threading.Lock()
+        self._content_addressed_filesystem_instance = None
+        self._content_addressed_filesystem_lock = threading.Lock()
 
     def read_parquet(self, uri: str) -> pl.DataFrame:
         return pl.read_parquet(self._open_input_file(uri))
@@ -268,6 +274,89 @@ class S3StorageBackend:
                 temporary_path.unlink(missing_ok=True)
         return str(destination)
 
+    def write_content_addressed_file(
+        self,
+        uri: str,
+        source: str | Path,
+        *,
+        expected_sha256: str,
+        content_type: str | None = None,
+    ) -> str:
+        """Write one locally verified object without remote probes or readback.
+
+        This narrow path is only for immutable transfer archives whose final key
+        contains their complete SHA-256. Ordinary objects must use ``write_file``.
+        """
+
+        normalized = validate_content_addressed_uri(uri, expected_sha256)
+        source_path = Path(source)
+        if not source_path.is_file():
+            raise FileNotFoundError(source_path)
+        if sha256_file(source_path) != normalized:
+            raise ValueError("local source SHA-256 does not match content address")
+        filesystem, path = self._content_addressed_filesystem_and_path(uri)
+        metadata = {"Content-Type": content_type} if content_type else None
+        with source_path.open("rb") as source_stream:
+            with filesystem.open_output_stream(
+                path,
+                compression=None,
+                metadata=metadata,
+            ) as output_stream:
+                copyfileobj(source_stream, output_stream)
+        return uri
+
+    def materialize_content_addressed_file(
+        self,
+        uri: str,
+        destination: str | Path,
+        *,
+        expected_sha256: str,
+        overwrite: bool = False,
+    ) -> str:
+        """Read one object stream and verify it locally before promotion."""
+
+        normalized = validate_content_addressed_uri(uri, expected_sha256)
+        output = Path(destination)
+        if not overwrite and output.exists():
+            raise FileExistsError(destination)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        filesystem, path = self._content_addressed_filesystem_and_path(uri)
+        temporary_path: Path | None = None
+        try:
+            with filesystem.open_input_stream(
+                path,
+                compression=None,
+            ) as source_stream:
+                with NamedTemporaryFile(
+                    mode="wb",
+                    dir=output.parent,
+                    prefix=f".{output.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as temporary:
+                    temporary_path = Path(temporary.name)
+                    digest = sha256()
+                    for chunk in iter(
+                        lambda: source_stream.read(1024 * 1024), b""
+                    ):
+                        temporary.write(chunk)
+                        digest.update(chunk)
+            if f"sha256:{digest.hexdigest()}" != normalized:
+                raise OSError(
+                    "materialized content-addressed file failed local SHA-256"
+                )
+            if overwrite:
+                temporary_path.replace(output)
+            else:
+                try:
+                    os.link(temporary_path, output)
+                except FileExistsError as exc:
+                    raise FileExistsError(destination) from exc
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+        return str(destination)
+
     def write_json(self, uri: str, payload: dict[str, Any]) -> str:
         filesystem, path = self._filesystem_and_path(uri)
         encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
@@ -443,6 +532,33 @@ class S3StorageBackend:
                         endpoint_override=self.endpoint_url,
                     )
                     self._filesystem_instance = fs
+        return fs, f"{bucket}/{key}" if key else bucket
+
+    def _content_addressed_filesystem_and_path(self, uri: str):
+        bucket, key = _split_s3_uri(uri)
+        if bucket != self.bucket:
+            raise ValueError(
+                f"S3 URI bucket {bucket!r} does not match configured bucket {self.bucket!r}"
+            )
+        if not self.region or self.region.casefold() == "auto":
+            raise ValueError(
+                "content-addressed handoffs require an explicit S3 region to "
+                "avoid automatic bucket-region discovery"
+            )
+        fs = self._content_addressed_filesystem_instance
+        if fs is None:
+            with self._content_addressed_filesystem_lock:
+                fs = self._content_addressed_filesystem_instance
+                if fs is None:
+                    fs = self._pyarrow_fs().S3FileSystem(
+                        access_key=self.access_key_id,
+                        secret_key=self.secret_access_key,
+                        region=self.region,
+                        endpoint_override=self.endpoint_url,
+                        background_writes=False,
+                        allow_delayed_open=True,
+                    )
+                    self._content_addressed_filesystem_instance = fs
         return fs, f"{bucket}/{key}" if key else bucket
 
     def _open_input_file(self, uri: str):

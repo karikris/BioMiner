@@ -124,6 +124,11 @@ from biominer.secrets_loader import load_runtime_secrets_env
 from biominer.species.context import SpeciesContext
 from biominer.config import ConfigError, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
 from biominer.storage.factory import create_storage_backend
+from biominer.storage.handoff import (
+    build_handoff_bundle,
+    receive_handoff_bundle,
+    upload_handoff_bundle,
+)
 from biominer.storage.parquet import write_parquet
 from biominer.storage.uri import is_cloud_uri, join_uri, normalize_local_uri
 
@@ -447,6 +452,25 @@ def build_parser() -> argparse.ArgumentParser:
     storage_subparsers = storage.add_subparsers(dest="storage_command")
     storage_doctor = storage_subparsers.add_parser("doctor")
     storage_doctor.add_argument("--config")
+    storage_handoff_build = storage_subparsers.add_parser("handoff-build")
+    storage_handoff_build.add_argument("--root", default=".")
+    storage_handoff_build.add_argument("--source", action="append", required=True)
+    storage_handoff_build.add_argument("--output-dir", required=True)
+    storage_handoff_build.add_argument("--name", required=True)
+    storage_handoff_build.add_argument("--source-git-sha", required=True)
+    storage_handoff_upload = storage_subparsers.add_parser("handoff-upload")
+    storage_handoff_upload.add_argument("--archive", required=True)
+    storage_handoff_upload.add_argument("--sha256", required=True)
+    storage_handoff_upload.add_argument("--destination-prefix", required=True)
+    storage_handoff_upload.add_argument("--receipt", required=True)
+    storage_handoff_upload.add_argument("--config")
+    storage_handoff_receive = storage_subparsers.add_parser("handoff-receive")
+    storage_handoff_receive.add_argument("--uri", required=True)
+    storage_handoff_receive.add_argument("--sha256", required=True)
+    storage_handoff_receive.add_argument("--cache-dir", required=True)
+    storage_handoff_receive.add_argument("--destination", required=True)
+    storage_handoff_receive.add_argument("--receipt", required=True)
+    storage_handoff_receive.add_argument("--config")
     workstore = subparsers.add_parser("workstore")
     workstore_subparsers = workstore.add_subparsers(dest="workstore_command")
     workstore_doctor = workstore_subparsers.add_parser("doctor")
@@ -1506,15 +1530,85 @@ def _require_s3_uri(name: str, uri: str) -> None:
 
 
 def _run_storage_command(args: argparse.Namespace) -> int:
-    if args.storage_command != "doctor":
+    handlers = {
+        "doctor": _run_storage_doctor,
+        "handoff-build": _run_storage_handoff_build,
+        "handoff-upload": _run_storage_handoff_upload,
+        "handoff-receive": _run_storage_handoff_receive,
+    }
+    handler = handlers.get(args.storage_command)
+    if handler is None:
         return 2
     try:
-        payload = _run_storage_doctor(args)
-    except Exception as exc:  # pragma: no cover - exercised by live doctor runs.
+        payload = handler(args)
+    except Exception as exc:  # pragma: no cover - exercised by live storage runs.
         print(json.dumps({"status": "error", "error": _redact_cloud_error(str(exc), args)}, indent=2, sort_keys=True))
         return 2
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0 if payload.get("status") == "ok" else 2
+
+
+def _run_storage_handoff_build(args: argparse.Namespace) -> dict[str, object]:
+    bundle = build_handoff_bundle(
+        root=args.root,
+        sources=args.source,
+        output_dir=args.output_dir,
+        name=args.name,
+        source_git_sha=args.source_git_sha,
+    )
+    return {
+        "status": "ok",
+        "command": "storage handoff-build",
+        "bundle": {
+            "archive_path": str(bundle.archive_path),
+            "sha256": bundle.sha256,
+            "archive_byte_count": bundle.byte_count,
+            "file_count": bundle.file_count,
+            "source_byte_count": bundle.source_byte_count,
+            "source_git_sha": bundle.source_git_sha,
+            "source_roots": list(bundle.source_roots),
+            "local_integrity": "archive_and_embedded_inventory_verified",
+        },
+    }
+
+
+def _run_storage_handoff_upload(args: argparse.Namespace) -> dict[str, object]:
+    config = load_biominer_config(args.config)
+    if config.storage.backend != "s3":
+        raise ValueError("storage handoff-upload requires the s3 storage backend")
+    storage = create_storage_backend(config.storage)
+    receipt = upload_handoff_bundle(
+        storage=storage,
+        archive=args.archive,
+        expected_sha256=args.sha256,
+        destination_prefix=args.destination_prefix,
+        receipt_path=args.receipt,
+    )
+    return {
+        "status": "ok",
+        "command": "storage handoff-upload",
+        "receipt": receipt,
+    }
+
+
+def _run_storage_handoff_receive(args: argparse.Namespace) -> dict[str, object]:
+    config = load_biominer_config(args.config)
+    if config.storage.backend != "s3":
+        raise ValueError("storage handoff-receive requires the s3 storage backend")
+    storage = create_storage_backend(config.storage)
+    receipt = receive_handoff_bundle(
+        storage=storage,
+        uri=args.uri,
+        expected_sha256=args.sha256,
+        cache_dir=args.cache_dir,
+        destination=args.destination,
+        receipt_path=args.receipt,
+    )
+    return {
+        "status": "ok",
+        "command": "storage handoff-receive",
+        "receipt": receipt,
+    }
 
 
 def _run_workstore_command(args: argparse.Namespace) -> int:

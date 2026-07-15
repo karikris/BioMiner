@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-from typing import Any
 from hashlib import sha256
 import json
 import os
 from pathlib import Path
 from shutil import copyfileobj
 from tempfile import NamedTemporaryFile
+from typing import Any
 
 import polars as pl
 
@@ -19,6 +19,10 @@ from biominer.storage.parquet import (
     write_parquet,
     write_parquet_batches,
     write_parquet_part,
+)
+from biominer.storage.content_address import (
+    sha256_file,
+    validate_content_addressed_uri,
 )
 from biominer.storage.uri import normalize_local_uri
 
@@ -157,6 +161,65 @@ class LocalStorageBackend:
                 ) as temporary:
                     temporary_path = Path(temporary.name)
                     copyfileobj(source_stream, temporary)
+            if overwrite:
+                temporary_path.replace(output)
+            else:
+                try:
+                    os.link(temporary_path, output)
+                except FileExistsError as exc:
+                    raise FileExistsError(destination) from exc
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+        return str(destination)
+
+    def write_content_addressed_file(
+        self,
+        uri: str | Path,
+        source: str | Path,
+        *,
+        expected_sha256: str,
+        content_type: str | None = None,
+    ) -> str:
+        _ = content_type
+        normalized = validate_content_addressed_uri(uri, expected_sha256)
+        source_path = normalize_local_uri(source)
+        if sha256_file(source_path) != normalized:
+            raise ValueError("local source SHA-256 does not match content address")
+        return self.write_file(uri, source_path, overwrite=True)
+
+    def materialize_content_addressed_file(
+        self,
+        uri: str | Path,
+        destination: str | Path,
+        *,
+        expected_sha256: str,
+        overwrite: bool = False,
+    ) -> str:
+        normalized = validate_content_addressed_uri(uri, expected_sha256)
+        source = normalize_local_uri(uri)
+        output = normalize_local_uri(destination)
+        if not source.is_file():
+            raise FileNotFoundError(uri)
+        if not overwrite and output.exists():
+            raise FileExistsError(destination)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with source.open("rb") as source_stream:
+                with NamedTemporaryFile(
+                    mode="wb",
+                    dir=output.parent,
+                    prefix=f".{output.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as temporary:
+                    temporary_path = Path(temporary.name)
+                    copyfileobj(source_stream, temporary)
+            if sha256_file(temporary_path) != normalized:
+                raise OSError(
+                    "materialized content-addressed file failed local SHA-256"
+                )
             if overwrite:
                 temporary_path.replace(output)
             else:

@@ -122,6 +122,30 @@ def test_local_storage_materializes_committed_file_without_overwrite(tmp_path) -
     assert destination.read_bytes() == b"committed-reference-bytes"
 
 
+def test_local_content_addressed_materialization_verifies_before_overwrite(
+    tmp_path,
+) -> None:
+    storage = LocalStorageBackend()
+    expected_payload = b"expected-archive"
+    digest = sha256(expected_payload).hexdigest()
+    source = tmp_path / f"handoff.sha256-{digest}.tar.gz"
+    source.write_bytes(b"corrupt-archive")
+    destination = tmp_path / "cache" / source.name
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"committed-cache")
+
+    with pytest.raises(OSError, match="failed local SHA-256"):
+        storage.materialize_content_addressed_file(
+            source,
+            destination,
+            expected_sha256=f"sha256:{digest}",
+            overwrite=True,
+        )
+
+    assert destination.read_bytes() == b"committed-cache"
+    assert not list(destination.parent.glob(f".{destination.name}.*.tmp"))
+
+
 def test_local_storage_cleans_temporary_file_after_failed_copy(
     tmp_path,
     monkeypatch,
@@ -344,6 +368,52 @@ def test_s3_storage_reuses_one_configured_filesystem_instance(monkeypatch) -> No
     assert first_path == "biominer/one"
     assert second_path == "biominer/two"
     assert FakePyArrowFs.calls == 1
+
+
+def test_s3_content_addressed_filesystem_disables_background_and_uses_delayed_open(
+    monkeypatch,
+) -> None:
+    backend = S3StorageBackend(
+        bucket="biominer",
+        endpoint_url="https://s3.example.invalid",
+        access_key_id="key-id",
+        secret_access_key="secret",
+        region="us-east-005",
+    )
+    filesystem = object()
+
+    class FakePyArrowFs:
+        calls: list[dict[str, object]] = []
+
+        @classmethod
+        def S3FileSystem(cls, **kwargs):  # noqa: ANN206
+            cls.calls.append(kwargs)
+            return filesystem
+
+    monkeypatch.setattr(backend, "_pyarrow_fs", lambda: FakePyArrowFs)
+
+    first, first_path = backend._content_addressed_filesystem_and_path(
+        "s3://biominer/handoffs/one"
+    )
+    second, second_path = backend._content_addressed_filesystem_and_path(
+        "s3://biominer/handoffs/two"
+    )
+
+    assert first is second is filesystem
+    assert first_path == "biominer/handoffs/one"
+    assert second_path == "biominer/handoffs/two"
+    assert len(FakePyArrowFs.calls) == 1
+    assert FakePyArrowFs.calls[0]["background_writes"] is False
+    assert FakePyArrowFs.calls[0]["allow_delayed_open"] is True
+
+
+def test_s3_content_addressed_filesystem_requires_explicit_region() -> None:
+    backend = S3StorageBackend(bucket="biominer", region="auto")
+
+    with pytest.raises(ValueError, match="explicit S3 region"):
+        backend._content_addressed_filesystem_and_path(
+            "s3://biominer/handoffs/archive"
+        )
 
 
 def test_s3_storage_parquet_writes_do_not_require_local_temp_files(monkeypatch) -> None:
@@ -590,6 +660,85 @@ def test_s3_storage_streams_file_with_content_type_and_refuses_overwrite(
     assert filesystem.moves == [
         (filesystem.paths[0], "biominer/biominer/reference-media/source.jpg")
     ]
+
+
+def test_s3_content_addressed_upload_uses_one_final_write_without_remote_reads(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    backend = S3StorageBackend(bucket="biominer", prefix="biominer")
+    filesystem = _WriteOnlyS3Filesystem()
+    source = tmp_path / "handoff.tar.gz"
+    source.write_bytes(b"verified-handoff")
+    digest = f"sha256:{sha256(source.read_bytes()).hexdigest()}"
+    uri = (
+        "s3://biominer/biominer/handoffs/"
+        f"handoff.sha256-{digest.removeprefix('sha256:')}.tar.gz"
+    )
+    monkeypatch.setattr(
+        backend,
+        "_content_addressed_filesystem_and_path",
+        lambda uri: (filesystem, uri.removeprefix("s3://")),
+    )
+
+    assert (
+        backend.write_content_addressed_file(
+            uri,
+            source,
+            expected_sha256=digest,
+            content_type="application/gzip",
+        )
+        == uri
+    )
+    assert filesystem.output_paths == [uri.removeprefix("s3://")]
+    assert bytes(filesystem.payload) == source.read_bytes()
+    assert filesystem.metadata == [{"Content-Type": "application/gzip"}]
+
+
+def test_s3_content_addressed_download_uses_one_stream_and_local_hash(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    payload = b"verified-handoff"
+    digest = f"sha256:{sha256(payload).hexdigest()}"
+    uri = (
+        "s3://biominer/biominer/handoffs/"
+        f"handoff.sha256-{digest.removeprefix('sha256:')}.tar.gz"
+    )
+    backend = S3StorageBackend(bucket="biominer", prefix="biominer")
+    filesystem = _ReadOnlyS3Filesystem(payload)
+    monkeypatch.setattr(
+        backend,
+        "_content_addressed_filesystem_and_path",
+        lambda uri: (filesystem, uri.removeprefix("s3://")),
+    )
+    destination = tmp_path / "handoff.tar.gz"
+
+    assert (
+        backend.materialize_content_addressed_file(
+            uri,
+            destination,
+            expected_sha256=digest,
+        )
+        == str(destination)
+    )
+    assert destination.read_bytes() == payload
+    assert filesystem.input_paths == [uri.removeprefix("s3://")]
+    assert filesystem.compressions == [None]
+
+
+def test_s3_content_addressed_transfer_requires_digest_in_final_key(tmp_path) -> None:
+    backend = S3StorageBackend(bucket="biominer", prefix="biominer")
+    source = tmp_path / "handoff.tar.gz"
+    source.write_bytes(b"verified-handoff")
+    digest = f"sha256:{sha256(source.read_bytes()).hexdigest()}"
+
+    with pytest.raises(ValueError, match="content-addressed"):
+        backend.write_content_addressed_file(
+            "s3://biominer/biominer/handoffs/handoff.tar.gz",
+            source,
+            expected_sha256=digest,
+        )
 
 
 def test_s3_storage_removes_partial_new_file_and_allows_retry(
@@ -943,6 +1092,47 @@ class _FakeS3Filesystem:
         self.existing_paths.add(destination)
 
 
+class _WriteOnlyS3Filesystem:
+    def __init__(self) -> None:
+        self.payload = bytearray()
+        self.output_paths: list[str] = []
+        self.metadata: list[dict[str, str] | None] = []
+
+    def open_output_stream(
+        self,
+        path: str,
+        compression: str | None = "detect",
+        buffer_size: int | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> "_FakeOutputStream":
+        _ = compression, buffer_size
+        self.output_paths.append(path)
+        self.metadata.append(metadata)
+        return _FakeOutputStream(self.payload)
+
+    def __getattr__(self, name: str):  # noqa: ANN204
+        raise AssertionError(f"content-addressed upload used remote operation {name}")
+
+
+class _ReadOnlyS3Filesystem:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.input_paths: list[str] = []
+        self.compressions: list[str | None] = []
+
+    def open_input_stream(
+        self,
+        path: str,
+        compression: str | None = "detect",
+    ):  # noqa: ANN201
+        self.input_paths.append(path)
+        self.compressions.append(compression)
+        return io.BytesIO(self.payload)
+
+    def __getattr__(self, name: str):  # noqa: ANN204
+        raise AssertionError(f"content-addressed download used remote operation {name}")
+
+
 class _FakeListingS3Filesystem:
     def __init__(self, paths: list[str]) -> None:
         self.paths = paths
@@ -987,10 +1177,10 @@ class _FakeFileInfo:
 
 
 class _FakeOutputStream:
-    def __init__(self) -> None:
+    def __init__(self, payload: bytearray | None = None) -> None:
         self.bytes_written = 0
         self.closed = False
-        self.payload = bytearray()
+        self.payload = payload if payload is not None else bytearray()
 
     def __enter__(self) -> "_FakeOutputStream":
         return self

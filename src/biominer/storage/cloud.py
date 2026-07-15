@@ -64,11 +64,29 @@ class CloudStorage(Protocol):
         overwrite: bool = True,
     ) -> str: ...
 
+    def write_content_addressed_file(
+        self,
+        uri: str,
+        source: str | Path,
+        *,
+        expected_sha256: str,
+        content_type: str | None = None,
+    ) -> str: ...
+
     def materialize_file(
         self,
         uri: str,
         destination: str | Path,
         *,
+        overwrite: bool = False,
+    ) -> str: ...
+
+    def materialize_content_addressed_file(
+        self,
+        uri: str,
+        destination: str | Path,
+        *,
+        expected_sha256: str,
         overwrite: bool = False,
     ) -> str: ...
 

@@ -760,6 +760,135 @@ def test_storage_and_workstore_doctor_commands_parse() -> None:
     assert workstore_args.workstore_command == "doctor"
 
 
+def test_storage_handoff_build_creates_a_locally_verified_bundle(
+    tmp_path, capsys
+) -> None:
+    root = tmp_path / "repo"
+    (root / "runs/pilot").mkdir(parents=True)
+    (root / "runs/pilot/manifest.json").write_text(
+        '{"status":"complete"}\n', encoding="utf-8"
+    )
+
+    rc = run(
+        build_parser().parse_args(
+            [
+                "storage",
+                "handoff-build",
+                "--root",
+                str(root),
+                "--source",
+                "runs/pilot",
+                "--output-dir",
+                str(tmp_path / "handoff"),
+                "--name",
+                "papilio-phase14",
+                "--source-git-sha",
+                "0561906d994d6b9e56e0b6405fdb68272759595f",
+            ]
+        )
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert output["status"] == "ok"
+    assert output["command"] == "storage handoff-build"
+    assert output["bundle"]["file_count"] == 1
+    assert output["bundle"]["sha256"].startswith("sha256:")
+    assert Path(output["bundle"]["archive_path"]).is_file()
+
+
+def test_storage_handoff_upload_and_receive_delegate_to_narrow_transfer_api(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    fake_storage = object()
+    config = _fake_cloud_config()
+    calls: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
+    monkeypatch.setattr(
+        "biominer.cli.create_storage_backend", lambda storage_config: fake_storage
+    )
+
+    def fake_upload(**kwargs):  # noqa: ANN003, ANN202
+        assert kwargs.pop("storage") is fake_storage
+        calls.append(("upload", kwargs))
+        return {"status": "remote_write_acknowledged", "uri": "s3://bucket/archive"}
+
+    def fake_receive(**kwargs):  # noqa: ANN003, ANN202
+        assert kwargs.pop("storage") is fake_storage
+        calls.append(("receive", kwargs))
+        return {"status": "received_and_locally_verified", "remote_read_streams": 1}
+
+    monkeypatch.setattr("biominer.cli.upload_handoff_bundle", fake_upload)
+    monkeypatch.setattr("biominer.cli.receive_handoff_bundle", fake_receive)
+    archive = tmp_path / ("handoff.sha256-" + "a" * 64 + ".tar.gz")
+    digest = "sha256:" + "a" * 64
+    upload_receipt = tmp_path / "upload-receipt.json"
+    receive_receipt = tmp_path / "receive-receipt.json"
+
+    upload_rc = run(
+        build_parser().parse_args(
+            [
+                "storage",
+                "handoff-upload",
+                "--archive",
+                str(archive),
+                "--sha256",
+                digest,
+                "--destination-prefix",
+                "s3://bucket/handoffs",
+                "--receipt",
+                str(upload_receipt),
+            ]
+        )
+    )
+    upload_output = json.loads(capsys.readouterr().out)
+    receive_rc = run(
+        build_parser().parse_args(
+            [
+                "storage",
+                "handoff-receive",
+                "--uri",
+                "s3://bucket/archive",
+                "--sha256",
+                digest,
+                "--cache-dir",
+                str(tmp_path / "cache"),
+                "--destination",
+                str(tmp_path / "repo"),
+                "--receipt",
+                str(receive_receipt),
+            ]
+        )
+    )
+    receive_output = json.loads(capsys.readouterr().out)
+
+    assert upload_rc == receive_rc == 0
+    assert upload_output["status"] == receive_output["status"] == "ok"
+    assert upload_output["receipt"]["status"] == "remote_write_acknowledged"
+    assert receive_output["receipt"]["status"] == "received_and_locally_verified"
+    assert calls == [
+        (
+            "upload",
+            {
+                "archive": str(archive),
+                "expected_sha256": digest,
+                "destination_prefix": "s3://bucket/handoffs",
+                "receipt_path": str(upload_receipt),
+            },
+        ),
+        (
+            "receive",
+            {
+                "uri": "s3://bucket/archive",
+                "expected_sha256": digest,
+                "cache_dir": str(tmp_path / "cache"),
+                "destination": str(tmp_path / "repo"),
+                "receipt_path": str(receive_receipt),
+            },
+        ),
+    ]
+
+
 def test_storage_doctor_exercises_storage_without_workstore(capsys, monkeypatch) -> None:
     fake_storage = _FakeCloudStorage()
     config = _fake_cloud_config()

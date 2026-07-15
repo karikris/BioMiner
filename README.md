@@ -75,4 +75,6 @@ uv run biominer bioclip screen --help
 
 Tests use fake clients and classifiers and do not require Flickr calls or model downloads.
 
-See [registry documentation](docs/registry.md), [production workflow](docs/production.md), and the [unified-registry cutover](docs/migrations/unified-registry.md).
+See [registry documentation](docs/registry.md), [production workflow](docs/production.md),
+[operation-efficient storage handoffs](docs/storage_handoffs.md), and the
+[unified-registry cutover](docs/migrations/unified-registry.md).
