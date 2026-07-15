@@ -16,14 +16,18 @@ from uuid import uuid4
 
 import polars as pl
 
-from biominer.flickr_fetch.geographic_clustering import NO_GEO_CLUSTER_ID
+from biominer.flickr_fetch.geographic_clustering import (
+    GLOBAL_FALLBACK_CLUSTER_IDS,
+    NO_GEO_CLUSTER_ID,
+    UNASSIGNED_GEO_CLUSTER_ID,
+)
 from biominer.reports.flickr_fetch import current_git_sha
 
 
-FLICKR_GEO_WORKLOAD_REPORT_SCHEMA_VERSION = "flickr-geographic-workload-report-v1.0.0"
+FLICKR_GEO_WORKLOAD_REPORT_SCHEMA_VERSION = "flickr-geographic-workload-report-v1.1.0"
 FLICKR_GEO_WORKLOAD_METRICS_FILE = "flickr_geographic_workload.json"
 FLICKR_GEO_WORKLOAD_SUMMARY_FILE = "flickr_geographic_workload.md"
-REFERENCE_QUOTA_POLICY_VERSION = "minimum-plus-sqrt-candidates-v1.0.0"
+REFERENCE_QUOTA_POLICY_VERSION = "minimum-plus-sqrt-candidates-v1.1.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,10 +124,19 @@ def build_flickr_geo_workload_report(
     )
     total_records = len(geography_rows)
     geotagged = sum(row.get("geotag_available") is True for row in geography_rows)
-    no_geo_count = assignment_counts[NO_GEO_CLUSTER_ID]
+    missing_coordinate_count = total_records - geotagged
+    no_geo_assignment_count = assignment_counts[NO_GEO_CLUSTER_ID]
+    if no_geo_assignment_count != missing_coordinate_count:
+        raise ValueError(
+            "no_geo assignments must correspond exactly to records without usable "
+            "coordinates"
+        )
+    unassigned_geo_count = assignment_counts[UNASSIGNED_GEO_CLUSTER_ID]
     outlier_count = sum(outlier_counts.values())
     located_clusters = [
-        row for row in cluster_rows if str(row["geo_cluster_id"]) != NO_GEO_CLUSTER_ID
+        row
+        for row in cluster_rows
+        if str(row["geo_cluster_id"]) not in GLOBAL_FALLBACK_CLUSTER_IDS
     ]
 
     payload: dict[str, Any] = {
@@ -165,8 +178,16 @@ def build_flickr_geo_workload_report(
             "geotagged_record_count": geotagged,
             "geotagged_percentage": _percentage(geotagged, total_records),
             "located_cluster_count": len(located_clusters),
-            "no_geo_record_count": no_geo_count,
-            "no_geo_percentage": _percentage(no_geo_count, total_records),
+            "missing_coordinate_record_count": missing_coordinate_count,
+            "missing_coordinate_percentage": _percentage(
+                missing_coordinate_count,
+                total_records,
+            ),
+            "unassigned_geotagged_record_count": unassigned_geo_count,
+            "unassigned_geotagged_percentage": _percentage(
+                unassigned_geo_count,
+                total_records,
+            ),
             "outlier_record_count": outlier_count,
             "outlier_percentage": _percentage(outlier_count, total_records),
         },
@@ -216,7 +237,8 @@ def allocate_implied_reference_quotas(
     eligible = [
         cluster_id
         for cluster_id, count in counts.items()
-        if cluster_id != NO_GEO_CLUSTER_ID and count >= config.minimum_candidate_images
+        if cluster_id not in GLOBAL_FALLBACK_CLUSTER_IDS
+        and count >= config.minimum_candidate_images
     ]
     allocation = {cluster_id: 0 for cluster_id in counts}
     if eligible:
@@ -277,7 +299,7 @@ def allocate_implied_reference_quotas(
         "total_reference_quota": config.total_reference_quota,
         "minimum_per_populated_cluster": config.minimum_per_populated_cluster,
         "minimum_candidate_images": config.minimum_candidate_images,
-        "excludes_no_geo": True,
+        "excluded_fallback_clusters": sorted(GLOBAL_FALLBACK_CLUSTER_IDS),
     }
     return {
         "configuration": configuration,
@@ -335,7 +357,16 @@ def flickr_geo_workload_markdown(payload: Mapping[str, Any]) -> str:
             f"({_display(summary.get('geotagged_percentage'))}%) |"
         ),
         f"| Located clusters | {_display(summary.get('located_cluster_count'))} |",
-        f"| No geo | {_display(summary.get('no_geo_record_count'))} ({_display(summary.get('no_geo_percentage'))}%) |",
+        (
+            "| Missing coordinates | "
+            f"{_display(summary.get('missing_coordinate_record_count'))} "
+            f"({_display(summary.get('missing_coordinate_percentage'))}%) |"
+        ),
+        (
+            "| Geotagged but unassigned | "
+            f"{_display(summary.get('unassigned_geotagged_record_count'))} "
+            f"({_display(summary.get('unassigned_geotagged_percentage'))}%) |"
+        ),
         (
             f"| Outliers | {_display(summary.get('outlier_record_count'))} "
             f"({_display(summary.get('outlier_percentage'))}%) |"

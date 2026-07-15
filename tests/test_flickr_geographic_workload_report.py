@@ -8,6 +8,7 @@ import pytest
 
 from biominer.flickr_fetch.geographic_clustering import (
     NO_GEO_CLUSTER_ID,
+    UNASSIGNED_GEO_CLUSTER_ID,
     FlickrGeoClusterConfig,
     build_flickr_geo_clusters,
 )
@@ -131,8 +132,10 @@ def test_reports_candidate_geography_clusters_queries_and_implied_quotas() -> No
         "geotagged_record_count": 4,
         "geotagged_percentage": 80.0,
         "located_cluster_count": 2,
-        "no_geo_record_count": 1,
-        "no_geo_percentage": 20.0,
+        "missing_coordinate_record_count": 1,
+        "missing_coordinate_percentage": 20.0,
+        "unassigned_geotagged_record_count": 0,
+        "unassigned_geotagged_percentage": 0.0,
         "outlier_record_count": 0,
         "outlier_percentage": 0.0,
     }
@@ -222,11 +225,53 @@ def test_query_provenance_can_be_explicitly_not_instrumented() -> None:
     assert "not_instrumented" in report.markdown
 
 
-def test_square_root_quota_allocation_is_deterministic_and_excludes_no_geo() -> None:
+def test_reports_unassigned_geotagged_records_separately_from_missing_coordinates(
+) -> None:
+    geography = build_flickr_geography_frame(
+        [
+            _record("core-1", -27.4705, 153.026),
+            _record("core-2", -27.471, 153.027),
+            _record("remote", -33.8688, 151.2093),
+        ]
+    )
+    clustered = build_flickr_geo_clusters(
+        geography,
+        target_accepted_taxon_key=TARGET_KEY,
+        config=FlickrGeoClusterConfig(
+            minimum_images_per_cell=2,
+            minimum_cluster_images=2,
+        ),
+        created_at=STARTED_AT,
+    )
+    report = build_flickr_geo_workload_report(
+        geography=geography,
+        clusters=clustered.clusters,
+        assignments=clustered.assignments,
+        query_hits=None,
+        run_id="unassigned-geotagged",
+        command=["biominer", "report"],
+        started_at=STARTED_AT,
+        ended_at=ENDED_AT,
+        git_sha="abc123",
+        pid=42,
+    )
+
+    assert report.payload["summary"]["geotagged_record_count"] == 3
+    assert report.payload["summary"]["missing_coordinate_record_count"] == 0
+    assert report.payload["summary"]["unassigned_geotagged_record_count"] == 1
+    assert "Geotagged but unassigned | 1" in report.markdown
+
+
+def test_square_root_quota_allocation_excludes_global_fallback_clusters() -> None:
     clusters = pl.DataFrame(
         {
-            "geo_cluster_id": ["large", "small", NO_GEO_CLUSTER_ID],
-            "member_image_count": [100, 25, 50],
+            "geo_cluster_id": [
+                "large",
+                "small",
+                NO_GEO_CLUSTER_ID,
+                UNASSIGNED_GEO_CLUSTER_ID,
+            ],
+            "member_image_count": [100, 25, 50, 25],
         }
     )
     quota = allocate_implied_reference_quotas(
@@ -241,6 +286,7 @@ def test_square_root_quota_allocation_is_deterministic_and_excludes_no_geo() -> 
     assert by_cluster["large"]["reference_quota_implied"] == 18
     assert by_cluster["small"]["reference_quota_implied"] == 12
     assert by_cluster[NO_GEO_CLUSTER_ID]["reference_quota_implied"] == 0
+    assert by_cluster[UNASSIGNED_GEO_CLUSTER_ID]["reference_quota_implied"] == 0
     assert quota["allocated_reference_quota"] == 30
     assert quota["configuration_fingerprint"].startswith("sha256:")
 

@@ -261,6 +261,13 @@ def test_cluster_scope_memberships_include_exact_buffer_country_and_no_geo_globa
                 "countries": [],
                 "candidate_distribution_only": True,
             },
+            {
+                "geo_cluster_id": "unassigned_geo",
+                "member_cell_ids": [],
+                "source_resolution": 5,
+                "countries": [],
+                "candidate_distribution_only": True,
+            },
         ]
     )
 
@@ -280,6 +287,11 @@ def test_cluster_scope_memberships_include_exact_buffer_country_and_no_geo_globa
     no_geo = memberships.filter(pl.col("regional_scope_id") == "no_geo").to_dicts()
     assert len(no_geo) == 1
     assert no_geo[0]["overlap_type"] == "global"
+    unassigned = memberships.filter(
+        pl.col("regional_scope_id") == "unassigned_geo"
+    ).to_dicts()
+    assert len(unassigned) == 1
+    assert unassigned[0]["overlap_type"] == "global"
 
 
 def test_rejects_unreconciled_taxa_and_contradictory_eligible_evidence() -> None:

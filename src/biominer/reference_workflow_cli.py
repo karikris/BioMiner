@@ -18,6 +18,7 @@ from biominer.run import RunStage
 
 
 REFERENCE_WORKFLOW_SETTINGS_SCHEMA_VERSION = "target-aware-reference-cli-settings-v1"
+_NON_SEMANTIC_EXECUTION_FIELDS = frozenset({"overwrite", "resume"})
 _MAX_JSON_BYTES = 16 * 1024 * 1024
 
 
@@ -815,7 +816,16 @@ def resolve_reference_workflow_options(
         stage=spec.stage,
         values=values,
         settings_fingerprint=_fingerprint(
-            {"command": command, "values": _jsonable(values)}
+            {
+                "command": command,
+                "values": _jsonable(
+                    {
+                        key: value
+                        for key, value in values.items()
+                        if key not in _NON_SEMANTIC_EXECUTION_FIELDS
+                    }
+                ),
+            }
         ),
         settings_file=str(settings_path) if settings_path is not None else None,
     )

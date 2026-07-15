@@ -11,13 +11,15 @@ from typing import Any
 
 import polars as pl
 
-from biominer.flickr_fetch.geographic_clustering import NO_GEO_CLUSTER_ID
+from biominer.flickr_fetch.geographic_clustering import (
+    GLOBAL_FALLBACK_CLUSTER_IDS,
+)
 from biominer.geography import CellGrid, default_cell_grid
 from biominer.storage.parquet import write_parquet
 
 
 REGIONAL_TAXON_OCCURRENCE_SCHEMA_VERSION = "regional-taxon-occurrence-v1.0.0"
-REGIONAL_SCOPE_MEMBERSHIP_SCHEMA_VERSION = "regional-scope-membership-v1.0.0"
+REGIONAL_SCOPE_MEMBERSHIP_SCHEMA_VERSION = "regional-scope-membership-v1.1.0"
 COORDINATE_CONFIDENCE_POLICY_VERSION = "inverse-uncertainty-100km-v1.0.0"
 REGIONAL_TAXON_OCCURRENCE_FILE = "regional_taxon_occurrence.parquet"
 DEFAULT_SPATIAL_RESOLUTION = 5
@@ -118,7 +120,7 @@ def build_flickr_cluster_scope_memberships(
     *,
     buffer_grid_distance: int = 1,
     include_country_fallback: bool = True,
-    include_global_no_geo: bool = True,
+    include_global_fallback: bool = True,
     grid: CellGrid | None = None,
 ) -> pl.DataFrame:
     if not isinstance(clusters, pl.DataFrame):
@@ -162,10 +164,10 @@ def build_flickr_cluster_scope_memberships(
             if not backend.is_valid(cell_id):
                 raise ValueError(f"Flickr geo cluster {cluster_id!r} has invalid cell {cell_id!r}")
 
-        if cluster_id == NO_GEO_CLUSTER_ID:
+        if cluster_id in GLOBAL_FALLBACK_CLUSTER_IDS:
             if member_cells:
-                raise ValueError("the no_geo cluster cannot contain spatial cells")
-            if include_global_no_geo:
+                raise ValueError("fallback clusters cannot contain spatial cells")
+            if include_global_fallback:
                 rows.append(_scope_row(cluster_id, "geo_cluster", "global"))
             continue
         if not member_cells:
@@ -536,7 +538,7 @@ def _reviewed_ranks(
         },
     )
     rows: dict[str, dict[str, Any]] = {}
-    for row in classification_paths.filter(pl.col("enabled") == True).iter_rows(named=True):
+    for row in classification_paths.filter(pl.col("enabled")).iter_rows(named=True):
         key = _required_text(row.get("accepted_taxon_key"), field="accepted_taxon_key")
         if key in rows:
             raise ValueError(f"duplicate enabled classification path for {key}")

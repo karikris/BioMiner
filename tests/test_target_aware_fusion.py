@@ -75,7 +75,7 @@ def _sha(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
 
 
-def _candidate_set() -> CandidateSet:
+def _candidate_set(*, geo_cluster_id: str = "cluster-au-1") -> CandidateSet:
     species = (
         CandidateTaxon(
             scientific_name="Papilio demoleus",
@@ -115,7 +115,7 @@ def _candidate_set() -> CandidateSet:
         genus_candidates=species,
         species_candidates=species,
         prompt_variant_version="object-bioclip-prompts-v1",
-        geospatial_scope="cluster-au-1",
+        geospatial_scope=geo_cluster_id,
         source_evidence=(
             "regional_candidate_set:regional:papilio-pilot",
             "regional_candidate_source:regional-candidate-species-v1.0.0",
@@ -124,9 +124,9 @@ def _candidate_set() -> CandidateSet:
     )
 
 
-def _plan():
+def _plan(*, geo_cluster_id: str = "cluster-au-1"):
     return build_target_aware_scoring_plan(
-        _candidate_set(),
+        _candidate_set(geo_cluster_id=geo_cluster_id),
         known_negative_classes=(
             TargetAwareAuxiliaryClass(
                 class_id="non_butterfly_insect",
@@ -625,6 +625,30 @@ def _direct_text_result(plan, *, omit: str | None = None):
             return scores
 
     return score_target_aware_candidate_union(plan, DirectTextScorer())
+
+
+def test_unassigned_geotagged_plan_uses_global_fallback_policy() -> None:
+    structured = tuple(
+        replace(
+            item,
+            geo_cluster_id="unassigned_geo",
+            geographic_scope="no_geo_global",
+        )
+        for item in _structured_results()
+    )
+
+    result = _fuse(
+        plan=_plan(geo_cluster_id="unassigned_geo"),
+        references=tuple(
+            replace(item, geo_cluster_id="unassigned_geo")
+            for item in _reference_results()
+        ),
+        structured=structured,
+    )
+
+    assert result.decision.classification_decision == "no_geo_global_fallback"
+    assert result.decision.abstained is True
+    assert result.decision.abstention_reason == "no_geo_global_fallback"
 
 
 def test_frozen_classifier_keeps_raw_decisions_separate_from_calibration() -> None:

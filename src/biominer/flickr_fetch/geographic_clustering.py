@@ -24,12 +24,16 @@ from biominer.geography import (
 from biominer.storage.parquet import write_parquet
 
 
-FLICKR_GEO_CLUSTERS_SCHEMA_VERSION = "flickr-geo-clusters-v1.0.0"
-FLICKR_GEO_ASSIGNMENTS_SCHEMA_VERSION = "flickr-geo-assignments-v1.0.0"
-FLICKR_GEO_CLUSTER_METHOD = "h3-density-components-v1.0.0"
+FLICKR_GEO_CLUSTERS_SCHEMA_VERSION = "flickr-geo-clusters-v1.1.0"
+FLICKR_GEO_ASSIGNMENTS_SCHEMA_VERSION = "flickr-geo-assignments-v1.1.0"
+FLICKR_GEO_CLUSTER_METHOD = "h3-density-components-v1.1.0"
 FLICKR_GEO_CLUSTERS_FILE = "flickr_geo_clusters.parquet"
 FLICKR_GEO_ASSIGNMENTS_FILE = "flickr_geo_assignments.parquet"
 NO_GEO_CLUSTER_ID = "no_geo"
+UNASSIGNED_GEO_CLUSTER_ID = "unassigned_geo"
+GLOBAL_FALLBACK_CLUSTER_IDS = frozenset(
+    {NO_GEO_CLUSTER_ID, UNASSIGNED_GEO_CLUSTER_ID}
+)
 
 _CELL_FIELDS = frozenset({"coarse_cell_id", "regional_cell_id", "local_cell_id"})
 
@@ -284,16 +288,18 @@ def build_flickr_geo_clusters(
         )
         for definition in definitions
     ]
-    if assigned_rows.get(NO_GEO_CLUSTER_ID):
-        cluster_rows.append(
-            _no_geo_cluster_row(
-                assigned=assigned_rows[NO_GEO_CLUSTER_ID],
-                target_key=target_key,
-                config=effective_config,
-                configuration_hash=configuration_hash,
-                created_at=built_at,
+    for fallback_cluster_id in sorted(GLOBAL_FALLBACK_CLUSTER_IDS):
+        if assigned_rows.get(fallback_cluster_id):
+            cluster_rows.append(
+                _fallback_cluster_row(
+                    cluster_id=fallback_cluster_id,
+                    assigned=assigned_rows[fallback_cluster_id],
+                    target_key=target_key,
+                    config=effective_config,
+                    configuration_hash=configuration_hash,
+                    created_at=built_at,
+                )
             )
-        )
     cluster_rows.sort(
         key=lambda row: (str(row["target_accepted_taxon_key"]), str(row["geo_cluster_id"]))
     )
@@ -632,9 +638,12 @@ def _assign_row(
     bioregion_clusters: Mapping[str, tuple[str, ...]],
 ) -> dict[str, object]:
     source_cell = _optional_text(row.get(config.source_cell_field))
-    cluster_id: str | None = None
     distance: float | None = None
-    assignment_method = "no_geo"
+    geotag_available = row.get("geotag_available") is True
+    cluster_id: str | None = (
+        UNASSIGNED_GEO_CLUSTER_ID if geotag_available else NO_GEO_CLUSTER_ID
+    )
+    assignment_method = "unassigned_geo" if geotag_available else "no_geo"
     fallback_scope: str | None = None
     outlier = False
 
@@ -647,7 +656,7 @@ def _assign_row(
         assignment_method = assignment_method_by_cell[source_cell]
     elif source_cell:
         outlier = True
-    elif row.get("geotag_available") is True:
+    elif geotag_available:
         admin_scope = _admin_scope(row)
         bioregion = dict(config.bioregion_by_admin_region).get(admin_scope or "")
         bioregion_candidates = bioregion_clusters.get(bioregion or "", ())
@@ -668,7 +677,7 @@ def _assign_row(
         "flickr_photo_id": str(row["flickr_photo_id"]),
         "source_record_hash": str(row["source_record_hash"]),
         "target_accepted_taxon_key": target_key,
-        "geo_cluster_id": cluster_id or NO_GEO_CLUSTER_ID,
+        "geo_cluster_id": cluster_id,
         "distance_to_medoid_km": distance,
         "assignment_method": assignment_method,
         "coordinate_quality": str(row["coordinate_quality"]),
@@ -720,17 +729,20 @@ def _cluster_output_row(
     }
 
 
-def _no_geo_cluster_row(
+def _fallback_cluster_row(
     *,
+    cluster_id: str,
     assigned: Sequence[tuple[Mapping[str, Any], Mapping[str, object]]],
     target_key: str,
     config: FlickrGeoClusterConfig,
     configuration_hash: str,
     created_at: datetime,
 ) -> dict[str, object]:
+    if cluster_id not in GLOBAL_FALLBACK_CLUSTER_IDS:
+        raise ValueError(f"unsupported fallback cluster ID: {cluster_id!r}")
     return {
         "schema_version": FLICKR_GEO_CLUSTERS_SCHEMA_VERSION,
-        "geo_cluster_id": NO_GEO_CLUSTER_ID,
+        "geo_cluster_id": cluster_id,
         "target_accepted_taxon_key": target_key,
         "member_image_count": len(assigned),
         "member_cell_count": 0,
@@ -975,7 +987,9 @@ __all__ = [
     "FLICKR_GEO_CLUSTERS_FILE",
     "FLICKR_GEO_CLUSTERS_SCHEMA_VERSION",
     "FLICKR_GEO_CLUSTER_METHOD",
+    "GLOBAL_FALLBACK_CLUSTER_IDS",
     "NO_GEO_CLUSTER_ID",
+    "UNASSIGNED_GEO_CLUSTER_ID",
     "FlickrGeoClusterBuildResult",
     "FlickrGeoClusterConfig",
     "build_flickr_geo_clusters",

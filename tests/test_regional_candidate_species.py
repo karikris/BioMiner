@@ -189,8 +189,8 @@ def test_builds_union_with_all_reasons_flags_and_soft_geography() -> None:
         for row in by_key.values()
     )
     assert by_key[TARGET]["source_versions"] == [
-        "candidate-config:min-local=4;registry-no-geo=true",
-        "candidate-policy:regional-candidate-union-v1.0.0",
+        "candidate-config:min-local=4;registry-global-fallback=true",
+        "candidate-policy:regional-candidate-union-v1.1.0",
         "false-positives:false-positives-v1",
         "flickr-clusters:sha256:" + "a" * 64,
         "geographic-score:overlap-weighted-coordinate-evidence-v1.0.0",
@@ -263,6 +263,34 @@ def test_no_geo_expands_to_global_same_family_without_deleting_target() -> None:
     ]
     assert by_key[LOCAL_CONGENER]["occurrence_support"] == 8
     assert by_key[GLOBAL_FAMILY]["geographic_evidence_score"] is None
+
+
+def test_unassigned_geo_uses_global_fallback_without_claiming_missing_coordinates(
+) -> None:
+    result = build_regional_candidate_species(
+        target_accepted_taxon_key=TARGET,
+        geo_clusters=_clusters("unassigned_geo"),
+        regional_occurrence=pl.DataFrame(
+            [
+                _occurrence(
+                    "unassigned_geo",
+                    LOCAL_CONGENER,
+                    "global",
+                    count=8,
+                )
+            ]
+        ),
+        taxa=_taxa(),
+        registry_version=REGISTRY_VERSION,
+    )
+    by_key = {row["candidate_accepted_taxon_key"]: row for row in result.to_dicts()}
+
+    assert "global_unassigned_geo_fallback" in by_key[LOCAL_CONGENER][
+        "candidate_reason"
+    ]
+    assert "global_no_geo_fallback" not in by_key[LOCAL_CONGENER][
+        "candidate_reason"
+    ]
 
 
 def test_target_is_only_candidate_when_no_evidence_or_competitors_exist() -> None:

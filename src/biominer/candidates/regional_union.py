@@ -14,12 +14,15 @@ import polars as pl
 from biominer.candidates.regional_occurrence import (
     REGIONAL_TAXON_OCCURRENCE_SCHEMA_VERSION,
 )
-from biominer.flickr_fetch.geographic_clustering import NO_GEO_CLUSTER_ID
+from biominer.flickr_fetch.geographic_clustering import (
+    GLOBAL_FALLBACK_CLUSTER_IDS,
+    NO_GEO_CLUSTER_ID,
+)
 from biominer.storage.parquet import write_parquet
 
 
 REGIONAL_CANDIDATE_SPECIES_SCHEMA_VERSION = "regional-candidate-species-v1.0.0"
-REGIONAL_CANDIDATE_POLICY_VERSION = "regional-candidate-union-v1.0.0"
+REGIONAL_CANDIDATE_POLICY_VERSION = "regional-candidate-union-v1.1.0"
 GEOGRAPHIC_EVIDENCE_SCORE_VERSION = "overlap-weighted-coordinate-evidence-v1.0.0"
 REGIONAL_CANDIDATE_SPECIES_FILE = "regional_candidate_species.parquet"
 
@@ -49,6 +52,7 @@ _REASON_PRIORITY = {
     "country_fallback": 80,
     "bioregion_fallback": 90,
     "global_no_geo_fallback": 100,
+    "global_unassigned_geo_fallback": 100,
     "global_registry_fallback": 110,
 }
 _RELATIONSHIP_REASON = {
@@ -64,7 +68,7 @@ _RELATIONSHIP_REASON = {
 @dataclass(frozen=True, slots=True)
 class RegionalCandidateConfig:
     minimum_local_same_family_candidates: int = 20
-    include_registry_same_family_for_no_geo: bool = True
+    include_registry_same_family_for_global_fallback: bool = True
     policy_version: str = REGIONAL_CANDIDATE_POLICY_VERSION
 
     def __post_init__(self) -> None:
@@ -73,8 +77,13 @@ class RegionalCandidateConfig:
             raise TypeError("minimum_local_same_family_candidates must be an integer")
         if minimum < 0:
             raise ValueError("minimum_local_same_family_candidates must be non-negative")
-        if not isinstance(self.include_registry_same_family_for_no_geo, bool):
-            raise TypeError("include_registry_same_family_for_no_geo must be boolean")
+        if not isinstance(
+            self.include_registry_same_family_for_global_fallback,
+            bool,
+        ):
+            raise TypeError(
+                "include_registry_same_family_for_global_fallback must be boolean"
+            )
         policy = _required_text(self.policy_version, field="policy_version")
         object.__setattr__(self, "policy_version", policy)
 
@@ -250,7 +259,8 @@ def build_regional_candidate_species(
             same_genus = taxon.genus == target.genus
             same_family = taxon.family == target.family
             if key != target_key and same_genus and (
-                evidence.overlap_type != "global" or cluster_id == NO_GEO_CLUSTER_ID
+                evidence.overlap_type != "global"
+                or cluster_id in GLOBAL_FALLBACK_CLUSTER_IDS
             ):
                 include(key, "same_genus_range_overlap")
             if key != target_key and same_family and evidence.overlap_type in {
@@ -264,16 +274,23 @@ def build_regional_candidate_species(
                 elif evidence.overlap_type == "bioregion":
                     include(key, "bioregion_fallback")
             if (
-                cluster_id == NO_GEO_CLUSTER_ID
+                cluster_id in GLOBAL_FALLBACK_CLUSTER_IDS
                 and key != target_key
                 and same_family
                 and evidence.overlap_type == "global"
             ):
-                include(key, "global_no_geo_fallback")
+                include(
+                    key,
+                    (
+                        "global_no_geo_fallback"
+                        if cluster_id == NO_GEO_CLUSTER_ID
+                        else "global_unassigned_geo_fallback"
+                    ),
+                )
 
         if (
-            cluster_id == NO_GEO_CLUSTER_ID
-            and effective_config.include_registry_same_family_for_no_geo
+            cluster_id in GLOBAL_FALLBACK_CLUSTER_IDS
+            and effective_config.include_registry_same_family_for_global_fallback
         ):
             for key, taxon in sorted(taxonomy.items()):
                 if taxon.family == target.family:
@@ -299,8 +316,8 @@ def build_regional_candidate_species(
             (
                 "candidate-config:"
                 f"min-local={effective_config.minimum_local_same_family_candidates};"
-                "registry-no-geo="
-                f"{str(effective_config.include_registry_same_family_for_no_geo).lower()}"
+                "registry-global-fallback="
+                f"{str(effective_config.include_registry_same_family_for_global_fallback).lower()}"
             ),
             f"geographic-score:{GEOGRAPHIC_EVIDENCE_SCORE_VERSION}",
             *caller_versions,
@@ -827,8 +844,8 @@ def _candidate_set_fingerprint(
         "target_accepted_taxon_key": target_key,
         "geo_cluster_id": cluster_id,
         "minimum_local_same_family_candidates": config.minimum_local_same_family_candidates,
-        "include_registry_same_family_for_no_geo": (
-            config.include_registry_same_family_for_no_geo
+        "include_registry_same_family_for_global_fallback": (
+            config.include_registry_same_family_for_global_fallback
         ),
         "source_versions": source_versions,
         "candidates": [

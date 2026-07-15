@@ -35,7 +35,9 @@ from biominer.bioclip.reference_prototypes import (
     validate_reference_prototypes,
 )
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
-from biominer.flickr_fetch.geographic_clustering import NO_GEO_CLUSTER_ID
+from biominer.flickr_fetch.geographic_clustering import (
+    GLOBAL_FALLBACK_CLUSTER_IDS,
+)
 from biominer.references.readiness import REFERENCE_ROUTES
 from biominer.vision.full_frame_attention import (
     FOCUSED_FULL_FRAME_KIND,
@@ -359,7 +361,7 @@ class ReferenceEvidenceIndex:
         local = tuple(
             observation
             for observation in retained
-            if query.geo_cluster_id != NO_GEO_CLUSTER_ID
+            if query.geo_cluster_id not in GLOBAL_FALLBACK_CLUSTER_IDS
             and observation.geo_cluster_id == query.geo_cluster_id
         )
 
@@ -442,7 +444,7 @@ class ReferenceEvidenceIndex:
             has_exclusions=has_exclusions,
         )
         local_prototype = None
-        if query.geo_cluster_id != NO_GEO_CLUSTER_ID and local:
+        if query.geo_cluster_id not in GLOBAL_FALLBACK_CLUSTER_IDS and local:
             local_prototype = self._prototype_embedding(
                 candidate=candidate,
                 query=query,

@@ -14,7 +14,9 @@ import re
 import polars as pl
 
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
-from biominer.flickr_fetch.geographic_clustering import NO_GEO_CLUSTER_ID
+from biominer.flickr_fetch.geographic_clustering import (
+    GLOBAL_FALLBACK_CLUSTER_IDS,
+)
 from biominer.references.readiness import REFERENCE_ROUTES
 from biominer.storage.parquet import write_parquet
 
@@ -573,7 +575,9 @@ def _group_tokens(item: DatasetSplitItem) -> tuple[tuple[str, ...], ...]:
         tokens.append(("burst", source, item.burst_group_id))
     if item.provider_mirror_group_id is not None:
         tokens.append(("provider_mirror", item.provider_mirror_group_id))
-    if item.geo_cluster_id not in {None, NO_GEO_CLUSTER_ID}:
+    if item.geo_cluster_id is not None and (
+        item.geo_cluster_id not in GLOBAL_FALLBACK_CLUSTER_IDS
+    ):
         assert item.geo_cluster_id is not None
         tokens.append(("geo_cluster", item.geo_cluster_id))
     return tuple(tokens)
@@ -941,7 +945,8 @@ def _validate_group_isolation(frame: pl.DataFrame) -> None:
         for values in frame.select(*selected).iter_rows():
             *namespace, raw_value, split = values
             if raw_value is None or (
-                field == "geo_cluster_id" and raw_value == NO_GEO_CLUSTER_ID
+                field == "geo_cluster_id"
+                and raw_value in GLOBAL_FALLBACK_CLUSTER_IDS
             ):
                 continue
             key = tuple(str(value).casefold() for value in namespace) + (

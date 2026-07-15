@@ -322,8 +322,10 @@ def test_query_observation_is_excluded_from_its_own_reference_pool(
     assert "no_route_support" in score.insufficient_support_reasons
 
 
-def test_no_geo_uses_global_prototype_without_fabricating_local_evidence(
+@pytest.mark.parametrize("geo_cluster_id", ("no_geo", "unassigned_geo"))
+def test_fallback_geography_uses_global_prototype_without_fabricating_local_evidence(
     tmp_path: Path,
+    geo_cluster_id: str,
 ) -> None:
     embeddings = _embedding_artifact(
         tmp_path,
@@ -342,7 +344,7 @@ def test_no_geo_uses_global_prototype_without_fabricating_local_evidence(
     index = ReferenceEvidenceIndex(embeddings, build_reference_prototypes(embeddings))
 
     score = index.score(
-        _query(embeddings, geo_cluster_id="no_geo"),
+        _query(embeddings, geo_cluster_id=geo_cluster_id),
         (ReferenceCandidate(TARGET, "Papilio demoleus"),),
     )[0]
 

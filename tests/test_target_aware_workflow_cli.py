@@ -150,6 +150,31 @@ def test_workflow_settings_are_typed_and_cli_values_win(tmp_path: Path) -> None:
     assert resolved.settings_fingerprint.startswith("sha256:")
 
 
+def test_settings_fingerprint_excludes_overwrite_execution_control(
+    tmp_path: Path,
+) -> None:
+    common = [
+        "references",
+        "cluster-flickr-metadata",
+        "--geography",
+        str(tmp_path / "geography.parquet"),
+        "--target-accepted-taxon-key",
+        "gbif:1938069",
+        "--output-dir",
+        str(tmp_path / "output"),
+        "--dry-run",
+    ]
+
+    default = resolve_reference_workflow_options(build_parser().parse_args(common))
+    overwrite = resolve_reference_workflow_options(
+        build_parser().parse_args([*common, "--overwrite"])
+    )
+
+    assert default.values["overwrite"] is False
+    assert overwrite.values["overwrite"] is True
+    assert default.settings_fingerprint == overwrite.settings_fingerprint
+
+
 def test_reference_first_workflow_selects_authoritative_stage_order() -> None:
     assert _parse_run_stages(None, workflow="reference-first") == (
         REFERENCE_FIRST_PRODUCTION_STAGES

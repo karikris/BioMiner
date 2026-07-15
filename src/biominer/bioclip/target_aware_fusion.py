@@ -21,7 +21,9 @@ from biominer.bioclip.target_aware_scoring import (
     TargetAwareScoringPlan,
 )
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
-from biominer.flickr_fetch.geographic_clustering import NO_GEO_CLUSTER_ID
+from biominer.flickr_fetch.geographic_clustering import (
+    GLOBAL_FALLBACK_CLUSTER_IDS,
+)
 from biominer.ml.calibration import FrozenProbabilityCalibrator
 from biominer.ml.classifiers import NON_TARGET_CLASS_LABEL
 from biominer.ml.decision_policy import (
@@ -631,7 +633,9 @@ def fuse_target_aware_species_evidence(
             domain_negative_detected=quality.domain_negative_detected,
             out_of_distribution=quality.out_of_distribution,
             visual_detail_sufficient=quality.visual_detail_sufficient,
-            no_geo_global_fallback=plan.geo_cluster_id == NO_GEO_CLUSTER_ID,
+            no_geo_global_fallback=(
+                plan.geo_cluster_id in GLOBAL_FALLBACK_CLUSTER_IDS
+            ),
         ),
     )
 
@@ -961,12 +965,14 @@ def _validate_prompt_reference_plan_contracts(
             raise ValueError(
                 "structured evidence visual domain does not match prompt evidence"
             )
-    no_geo = plan.geo_cluster_id == NO_GEO_CLUSTER_ID
-    if no_geo and any(
+    global_fallback = plan.geo_cluster_id in GLOBAL_FALLBACK_CLUSTER_IDS
+    if global_fallback and any(
         item.geographic_scope != "no_geo_global" for item in structured.values()
     ):
-        raise ValueError("no_geo plans require no_geo_global candidate evidence")
-    if not no_geo and any(
+        raise ValueError(
+            "global-fallback plans require no_geo_global candidate evidence"
+        )
+    if not global_fallback and any(
         item.geographic_scope == "no_geo_global" for item in structured.values()
     ):
         raise ValueError("geolocated plans cannot contain no_geo_global evidence")

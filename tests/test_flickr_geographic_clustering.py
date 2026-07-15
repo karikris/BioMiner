@@ -8,7 +8,9 @@ import pytest
 from biominer.flickr_fetch.geographic_clustering import (
     FLICKR_GEO_ASSIGNMENTS_FILE,
     FLICKR_GEO_CLUSTERS_FILE,
+    GLOBAL_FALLBACK_CLUSTER_IDS,
     NO_GEO_CLUSTER_ID,
+    UNASSIGNED_GEO_CLUSTER_ID,
     FlickrGeoClusterConfig,
     build_flickr_geo_clusters,
     flickr_geo_assignments_schema,
@@ -82,7 +84,11 @@ def test_builds_deterministic_candidate_clusters_and_explicit_no_geo() -> None:
     cluster_rows = first.clusters.to_dicts()
     assert len(cluster_rows) == 3
     assert {row["geo_cluster_id"] for row in cluster_rows} >= {NO_GEO_CLUSTER_ID}
-    located = [row for row in cluster_rows if row["geo_cluster_id"] != NO_GEO_CLUSTER_ID]
+    located = [
+        row
+        for row in cluster_rows
+        if row["geo_cluster_id"] not in GLOBAL_FALLBACK_CLUSTER_IDS
+    ]
     assert len(located) == 2
     assert all(row["candidate_distribution_only"] is True for row in cluster_rows)
     assert all(row["target_accepted_taxon_key"] == TARGET_KEY for row in cluster_rows)
@@ -148,11 +154,13 @@ def test_density_border_assignment_is_adjacency_gated_and_distance_capped() -> N
     assert assignments["border"]["assignment_method"] == "adjacency"
     assert assignments["border"]["distance_to_medoid_km"] > 0
     assert assignments["border"]["outlier"] is False
-    located_cluster = result.clusters.filter(pl.col("geo_cluster_id") != NO_GEO_CLUSTER_ID)
+    located_cluster = result.clusters.filter(
+        ~pl.col("geo_cluster_id").is_in(GLOBAL_FALLBACK_CLUSTER_IDS)
+    )
     assert located_cluster["member_cell_count"].to_list() == [2]
     assert adjacent_cell in located_cluster["member_cell_ids"].to_list()[0]
-    assert assignments["remote"]["geo_cluster_id"] == NO_GEO_CLUSTER_ID
-    assert assignments["remote"]["assignment_method"] == "no_geo"
+    assert assignments["remote"]["geo_cluster_id"] == UNASSIGNED_GEO_CLUSTER_ID
+    assert assignments["remote"]["assignment_method"] == "unassigned_geo"
     assert assignments["remote"]["outlier"] is True
 
     capped = _build(
@@ -166,7 +174,10 @@ def test_density_border_assignment_is_adjacency_gated_and_distance_capped() -> N
     capped_assignments = {
         row["flickr_photo_id"]: row for row in capped.assignments.to_dicts()
     }
-    assert capped_assignments["border"]["geo_cluster_id"] == NO_GEO_CLUSTER_ID
+    assert (
+        capped_assignments["border"]["geo_cluster_id"]
+        == UNASSIGNED_GEO_CLUSTER_ID
+    )
     assert capped_assignments["border"]["outlier"] is True
 
 
@@ -214,8 +225,8 @@ def test_country_fallback_does_not_choose_between_multiple_clusters() -> None:
     coarse = next(
         row for row in result.assignments.to_dicts() if row["flickr_photo_id"] == "coarse"
     )
-    assert coarse["geo_cluster_id"] == NO_GEO_CLUSTER_ID
-    assert coarse["assignment_method"] == "no_geo"
+    assert coarse["geo_cluster_id"] == UNASSIGNED_GEO_CLUSTER_ID
+    assert coarse["assignment_method"] == "unassigned_geo"
     assert coarse["outlier"] is False
 
 
@@ -275,7 +286,9 @@ def test_writes_typed_cluster_artifacts(tmp_path) -> None:
 )
 def test_supports_configured_cell_resolution(config: FlickrGeoClusterConfig) -> None:
     result = _build([_record("1", -27.4705, 153.026)], config=config)
-    located = result.clusters.filter(pl.col("geo_cluster_id") != NO_GEO_CLUSTER_ID)
+    located = result.clusters.filter(
+        ~pl.col("geo_cluster_id").is_in(GLOBAL_FALLBACK_CLUSTER_IDS)
+    )
     assert located["source_resolution"].to_list() == [config.source_resolution]
 
 
@@ -287,7 +300,9 @@ def test_dateline_candidates_share_compact_cluster_and_crossing_bounds() -> None
         ],
         config=FlickrGeoClusterConfig(minimum_cluster_images=2),
     )
-    located = result.clusters.filter(pl.col("geo_cluster_id") != NO_GEO_CLUSTER_ID)
+    located = result.clusters.filter(
+        ~pl.col("geo_cluster_id").is_in(GLOBAL_FALLBACK_CLUSTER_IDS)
+    )
 
     assert located.height == 1
     cluster = located.to_dicts()[0]
@@ -314,17 +329,20 @@ def test_flickr_accuracy_limits_which_coordinates_can_seed_clusters() -> None:
         config=FlickrGeoClusterConfig(minimum_cluster_images=1),
     )
 
-    assert city.assignments["geo_cluster_id"].to_list() != [NO_GEO_CLUSTER_ID]
+    assert city.assignments["geo_cluster_id"].to_list()[0] not in (
+        GLOBAL_FALLBACK_CLUSTER_IDS
+    )
     for result in (region, unknown):
         assignment = result.assignments.to_dicts()[0]
-        assert assignment["geo_cluster_id"] == NO_GEO_CLUSTER_ID
+        assert assignment["geo_cluster_id"] == UNASSIGNED_GEO_CLUSTER_ID
+        assert assignment["assignment_method"] == "unassigned_geo"
         assert assignment["outlier"] is False
-        no_geo = result.clusters.to_dicts()[0]
-        assert no_geo["member_cell_count"] == 0
-        assert no_geo["source_resolution"] is None
+        unassigned = result.clusters.to_dicts()[0]
+        assert unassigned["member_cell_count"] == 0
+        assert unassigned["source_resolution"] is None
 
 
-def test_sparse_precise_cell_is_an_explicit_no_geo_outlier() -> None:
+def test_sparse_precise_cell_is_an_explicit_unassigned_geo_outlier() -> None:
     result = _build(
         [_record("sparse", -27.4705, 153.026, country_code="AU")],
         config=FlickrGeoClusterConfig(
@@ -335,10 +353,10 @@ def test_sparse_precise_cell_is_an_explicit_no_geo_outlier() -> None:
     assignment = result.assignments.to_dicts()[0]
     cluster = result.clusters.to_dicts()[0]
 
-    assert assignment["geo_cluster_id"] == NO_GEO_CLUSTER_ID
-    assert assignment["assignment_method"] == "no_geo"
+    assert assignment["geo_cluster_id"] == UNASSIGNED_GEO_CLUSTER_ID
+    assert assignment["assignment_method"] == "unassigned_geo"
     assert assignment["outlier"] is True
-    assert cluster["geo_cluster_id"] == NO_GEO_CLUSTER_ID
+    assert cluster["geo_cluster_id"] == UNASSIGNED_GEO_CLUSTER_ID
     assert cluster["member_image_count"] == 1
 
 
