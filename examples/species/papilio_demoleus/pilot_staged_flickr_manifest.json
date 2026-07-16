@@ -1,0 +1,214 @@
+{
+  "schema_version": "papilio-demoleus-staged-flickr-manifest-v1.0.0",
+  "phase": 14,
+  "task": "14.4.3",
+  "status": "complete_with_retryable_source_failures",
+  "prototype_only": true,
+  "experimental_screening_evidence_only": true,
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "storage": {
+    "backend": "local",
+    "output_dir": "runs/papilio_demoleus_staged_flickr_local_20260716",
+    "ignored_by_git": true,
+    "s3_permitted": false,
+    "s3_accessed": false,
+    "temporary_image_cache_deleted": true
+  },
+  "inputs": {
+    "flickr_workload_rows": 13501,
+    "frozen_reference_embedding_rows": 81,
+    "reference_embeddings_sha256": "sha256:4d0bd9ef275ec3e1eb2c29d257573b6b778db8545ae2f63b85e4e2dd5881ca72",
+    "reference_prototype_rows": 26,
+    "reference_prototypes_sha256": "sha256:71db8a8b0de8feaf8cd80b484d22c041b22fb8dd1d32450c62b62c3cbf74f6a1",
+    "prototype_readiness_sha256": "sha256:154e9c98ad4ed577077702e5524e81f5b0cb406225086a339ee1d092d65ef9a9",
+    "geography_sha256": "sha256:a3c47a6f213191634f76655d859cdd8555a9b11a4e33a9041209eb23ba7c2bbf",
+    "assignments_sha256": "sha256:e12f6ef9582bf707c952c3974c91e9a8f226ca7ce8034cab8ea8c293b70b6f74",
+    "query_hits_sha256": "sha256:95448f3145d903f7f042fe41d74561475ef050f8df21b318ebacb252484e4f0b",
+    "regional_competitors_sha256": "sha256:398990b3bef47e662e0b6afa70dba407412272906d08ab59e4a8ad54ab0c5ccc"
+  },
+  "execution": {
+    "command": "uv run biominer dev vision prototype-staged-flickr --config config/pilot/papilio_demoleus_staged_flickr.json",
+    "stage_limits": [
+      100,
+      1000,
+      13501
+    ],
+    "configuration_fingerprint": "sha256:469677b3f40b3e62937f332ce594f2ad279f1758c4578951ad72c3ee317f101d",
+    "report_fingerprint": "sha256:8590fa6a066ca9b9961ce27d48ae0a942c5ce6e98ec240af15cd66cfdeaec178",
+    "elapsed_seconds": 6401.359983,
+    "elapsed_seconds_scope": "sum_of_stage_gate_elapsed_seconds",
+    "completed_resume_seconds": 0.57,
+    "sqlite_checkpoint_complete": true,
+    "githits_solution_id": "c2f3029a-b5af-4931-af25-11b39b7edfdc"
+  },
+  "model": {
+    "model_id": "imageomics/bioclip-2.5-vith14",
+    "model_revision": "191d741545e4c741cdef4b22c6eb69c945c1e592",
+    "model_weights_sha256": "sha256:ac2e37c2f89ef8e6b889176a9a3f418970ad9db15a218bd29e3321e95c46ae97",
+    "open_clip_version": "3.3.0",
+    "open_clip_config_sha256": "sha256:4c131846348300c77b5bee06690b0e94ee85ca9ce9a30a853b36084d00dcd25c",
+    "preprocessing_fingerprint": "sha256:bcc6c8300a68af2c6081881fcee9ba46829eed84fd5c4bbe0b05f494c2492ce3",
+    "device": "mps",
+    "gpu_name": "Apple MPS",
+    "persistent_worker_process_starts": 1,
+    "persistent_model_loads": 1,
+    "runtime_evidence_scope": "current_invocation_attestation",
+    "full_stream_reuse_verified_by_stage_gates": true
+  },
+  "detector": {
+    "model_id": "yoloe26:yoloe-26s-seg",
+    "checkpoint": "yoloe-26s-seg.pt",
+    "model_version": "ultralytics:8.4.87",
+    "prompt_set_fingerprint": "sha256:42250c7309749775319ab7708ff61a720ce5ede595790c3364f3bc1e23814429",
+    "persistent_worker_process_starts": 1,
+    "runtime_evidence_scope": "current_invocation_attestation",
+    "full_stream_reuse_verified_by_stage_gates": true
+  },
+  "counts": {
+    "planned": 13501,
+    "classified": 13496,
+    "retryable_operational_failures": 5,
+    "candidate_score_rows": 634312,
+    "candidate_rows_per_classified_record": 47,
+    "species_classes_per_classified_record": 34,
+    "target_rows": 13496,
+    "known_negative_classes": 2,
+    "visual_domain_classes": 11
+  },
+  "stage_results": [
+    {
+      "stage_id": "P1",
+      "cumulative_limit": 100,
+      "classified": 100,
+      "failures": 0,
+      "records_per_second": 2.01212,
+      "rss_peak_memory": 419020800
+    },
+    {
+      "stage_id": "P2",
+      "cumulative_limit": 1000,
+      "classified": 1000,
+      "failures": 0,
+      "records_per_second": 2.391706,
+      "rss_peak_memory": 445857792
+    },
+    {
+      "stage_id": "P3",
+      "cumulative_limit": 13501,
+      "classified": 13496,
+      "failures": 5,
+      "failure_rate": 0.00037034,
+      "records_per_second": 2.274524,
+      "rss_peak_memory": 1765261312
+    }
+  ],
+  "routing": {
+    "score": 3233,
+    "review": 3725,
+    "exclude": 6538,
+    "adult_field_reference_route": 6527,
+    "no_reference_route": 6969,
+    "abstained": 12296,
+    "not_abstained": 1200
+  },
+  "retryable_failures": [
+    {
+      "flickr_photo_id": "5229667156",
+      "stage": "download_or_decode",
+      "attempts": 3
+    },
+    {
+      "flickr_photo_id": "22573167168",
+      "stage": "download_or_decode",
+      "attempts": 3
+    },
+    {
+      "flickr_photo_id": "6016065489",
+      "stage": "download_or_decode",
+      "attempts": 3
+    },
+    {
+      "flickr_photo_id": "51546333924",
+      "stage": "download_or_decode",
+      "attempts": 3
+    },
+    {
+      "flickr_photo_id": "7607829480",
+      "stage": "download_or_decode",
+      "attempts": 3
+    }
+  ],
+  "artifacts": {
+    "classification": {
+      "uri": "runs/papilio_demoleus_staged_flickr_local_20260716/prototype_flickr_classification.parquet",
+      "row_count": 13496,
+      "byte_count": 3960858,
+      "sha256": "sha256:63d8a6575dbd2362a53383a42247afd57bdff52339a788a7b6571ef19c697d99"
+    },
+    "candidate_scores": {
+      "uri": "runs/papilio_demoleus_staged_flickr_local_20260716/prototype_flickr_candidate_scores.parquet",
+      "row_count": 634312,
+      "byte_count": 11694767,
+      "sha256": "sha256:6b7a18b6e6105f123c9cadb12462d2f8002555e12f817d7db4e61e0875dbd204"
+    },
+    "failures": {
+      "uri": "runs/papilio_demoleus_staged_flickr_local_20260716/prototype_flickr_failures.parquet",
+      "row_count": 5,
+      "byte_count": 4774,
+      "sha256": "sha256:bc3d394f523248698795a039c7b9502c9d792b58c19ab21ae866447e4dab5958"
+    },
+    "report": {
+      "uri": "runs/papilio_demoleus_staged_flickr_local_20260716/prototype_staged_flickr_report.json",
+      "byte_count": 8196,
+      "sha256": "sha256:28d5c43910d90e619e58ae07022a91137fa186e46c70ea3b3826584282831cf8"
+    },
+    "summary": {
+      "uri": "runs/papilio_demoleus_staged_flickr_local_20260716/prototype_staged_flickr_summary.md",
+      "byte_count": 496,
+      "sha256": "sha256:b07dcbf91a2049100c140641abe040fa79d9d671457f1c41b2445dd3b83933dd"
+    },
+    "operational_state": {
+      "uri": "runs/papilio_demoleus_staged_flickr_local_20260716/prototype_staged_flickr_state.sqlite",
+      "row_count": 13501,
+      "byte_count": 450002944,
+      "sha256": "sha256:21127545f2386c112452331461a6d76a4206484039b9a365f366f1fb84a57d74",
+      "durability_role": "local_resume_ledger_not_scientific_output"
+    }
+  },
+  "validation": {
+    "target_scored_for_every_classified_record": true,
+    "target_rows_per_record_min_max": [
+      1,
+      1
+    ],
+    "species_rows_per_record_min_max": [
+      34,
+      34
+    ],
+    "candidate_rows_per_record_min_max": [
+      47,
+      47
+    ],
+    "duplicate_classification_rows": 0,
+    "finite_scores": true,
+    "complete_candidate_union_scored": true,
+    "raw_full_image_only": true,
+    "spatial_crop_applied": false,
+    "higher_rank_pruning_applied": false,
+    "flickr_query_match_used_as_label": false,
+    "operational_failures_used_as_biological_negatives": false,
+    "route_separation_preserved": true,
+    "completed_resume_without_model_work": true
+  },
+  "semantics": {
+    "model_output_is_taxonomic_validation": false,
+    "scores_are_calibrated_probabilities": false,
+    "geography_is_visual_evidence": false,
+    "flickr_query_hit_is_validation": false,
+    "operational_failure_is_biological_negative": false
+  },
+  "next_task": "14.4.4_b0_b16_experiment_matrix"
+}

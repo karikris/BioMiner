@@ -306,6 +306,32 @@ No pinned specimen passed the prototype freeze. Every label remains
 `provider_supported`; `human_verified_count` is zero. The compact handoff is
 `examples/species/papilio_demoleus/pilot_prototype_embeddings_manifest.json`.
 
+Task 14.4.3 completed the cumulative P1/P2/P3 target-aware classification run
+against the frozen 13,501-record Flickr workload. Storage was local only; the
+runner rejects S3 configuration, never instantiated an S3 client, and deleted
+the temporary content-addressed image cache after each batch. The stages
+completed at 100, 1,000, and 13,501 planned records. P3 classified 13,496
+records and retained five Flickr download/decode failures as retryable
+operational failures after three attempts. Those failures were skipped so the
+remaining workload could progress and were never converted into biological
+negatives.
+
+Every classified record scored the fixed union of 34 species, two known
+negative classes, and 11 visual-domain classes. The target appeared exactly
+once per record, raw full images were retained, and neither hierarchy pruning
+nor spatial cropping was applied. The durable local outputs contain 13,496
+classification rows and 634,312 candidate-score rows. Polars and DuckDB QA
+confirmed zero duplicate classifications, 34 species rows and 47 total
+candidate rows per classified record, finite scores, route separation, and no
+use of Flickr query hits as labels. All scores remain uncalibrated experimental
+screening evidence rather than probabilities or taxonomic validation.
+
+The full run used one persistent BioCLIP worker and one persistent YOLOE worker.
+P3 sustained 2.274524 records per second with 1,765,261,312 bytes peak RSS. A
+completed invocation returned from the SQLite checkpoint in 0.57 seconds with
+no model work. The compact handoff is
+`examples/species/papilio_demoleus/pilot_staged_flickr_manifest.json`.
+
 - B0 current text-pruned and B1 zero-shot without pruning;
 - B2 SimpleShot, B3 centered SimpleShot, B4 top-five references, and B5
   multi-prototype;
@@ -332,13 +358,16 @@ Raw similarity or SVC margin is never labelled a probability.
 | Phase 14 prototype-freeze focused suite | 61 passed |
 | Five-image runtime focused suite | 88 passed |
 | Prototype embedding and compact-contract focused suite | 26 passed |
+| Staged Flickr and species-generic boundary focused suite | 10 passed |
 | GBIF checkpoint, metadata, workflow, and shortfall suite | 52 passed |
-| Final full repository suite | 2,296 passed in 79.98 seconds |
+| Final full repository suite | 2,300 passed in 75.06 seconds |
 | Changed-file Ruff | passed |
 | `git diff --check` | passed |
 | Completed smoke BioCLIP images | 5 |
 | Completed smoke YOLOE images | 5 |
 | Completed frozen support embeddings | 81 |
+| Completed staged Flickr classifications | 13,496 |
+| Retryable staged Flickr source failures | 5 |
 
 ## Phase 15 decision
 

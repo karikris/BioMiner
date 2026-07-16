@@ -18,6 +18,15 @@
       "s3_permitted": false,
       "scope": "task_14.4.2_frozen_support_embeddings_only"
     },
+    "local_staged_flickr_exception": {
+      "authorized": true,
+      "authorized_by": "build_week_execution_computer_and_local_storage_instructions",
+      "stage_limits": [100, 1000, 13501],
+      "storage_backend": "local",
+      "s3_permitted": false,
+      "temporary_images_deleted_after_classification": true,
+      "scope": "task_14.4.3_staged_target_aware_classification_only"
+    },
     "metadata_only_work_permitted_locally": true,
     "experiment_execution_computer": "external_gpu_computer",
     "resume_and_checkpoint_required": true

@@ -11,6 +11,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 from typing import Any
@@ -605,6 +606,8 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     prototype_smoke.add_argument("--config", required=True)
     prototype_embeddings = subparsers.add_parser("prototype-build-embeddings")
     prototype_embeddings.add_argument("--config", required=True)
+    prototype_staged = subparsers.add_parser("prototype-staged-flickr")
+    prototype_staged.add_argument("--config", required=True)
     benchmark = subparsers.add_parser("benchmark-plumbing")
     benchmark.add_argument("--records", type=int, default=1000)
     benchmark.add_argument("--butterfly-rate", type=float, default=0.25)
@@ -686,6 +689,8 @@ def run(args: argparse.Namespace) -> int:
             return _run_prototype_vision_smoke(args)
         if args.vision_command == "prototype-build-embeddings":
             return _run_prototype_support_embeddings(args)
+        if args.vision_command == "prototype-staged-flickr":
+            return _run_prototype_staged_flickr(args)
         if args.vision_command == "benchmark-plumbing":
             return _run_vision_benchmark_plumbing(args)
         if args.vision_command == "benchmark-rolling-matrix":
@@ -2250,6 +2255,49 @@ def _run_prototype_support_embeddings(args: argparse.Namespace) -> int:
                     if result.visual_neighbours_path is not None
                     else None
                 ),
+                "failures": (
+                    str(result.failures_path)
+                    if result.failures_path is not None
+                    else None
+                ),
+                "report": str(result.report_path),
+                "report_fingerprint": result.report["report_fingerprint"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _run_prototype_staged_flickr(args: argparse.Namespace) -> int:
+    from biominer.benchmarks.prototype_staged_flickr import (
+        PrototypeStagedFlickrConfig,
+        run_prototype_staged_flickr,
+    )
+
+    try:
+        result = run_prototype_staged_flickr(
+            PrototypeStagedFlickrConfig.read_json(args.config)
+        )
+    except (
+        OSError,
+        TypeError,
+        ValueError,
+        RuntimeError,
+        sqlite3.Error,
+        pl.exceptions.PolarsError,
+    ) as exc:
+        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+        return 2
+    print(
+        json.dumps(
+            {
+                "status": result.report["status"],
+                "counts": result.report["counts"],
+                "stages": result.report["stages"],
+                "results": str(result.results_path),
+                "candidates": str(result.candidates_path),
                 "failures": (
                     str(result.failures_path)
                     if result.failures_path is not None
