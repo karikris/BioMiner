@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import biominer.run.orchestrator as orchestrator_module
 from biominer.bioclip.classification_modes import (
     BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
     TARGET_SCOPE_OBJECT_SCREENING,
@@ -14,10 +15,15 @@ from biominer.bioclip.prototype_mode import (
     BUILD_WEEK_PROTOTYPE_CONFIG_VERSION,
     BuildWeekPrototypeConfig,
 )
+from biominer.bioclip.prototype_support import (
+    MetadataQualifiedPrototypePermit,
+    PrototypeReadinessPermit,
+)
 from biominer.run import (
     ProductionRunOrchestrator,
     ProductionRunRequest,
     RunStage,
+    StageExecutionResult,
     TaxonScope,
 )
 from biominer.species.context import SpeciesContext
@@ -286,3 +292,79 @@ def test_build_week_prototype_plan_rejects_another_target(
             request,
             taxon_scope=TaxonScope.from_species_context(wrong_context),
         ).plan()
+
+
+def test_build_week_prototype_execution_uses_metadata_qualified_support(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path, config = _write_config(tmp_path)
+    readiness = PrototypeReadinessPermit(
+        status="prototype_ready_with_shortfalls",
+        readiness_sha256=config.reference_bank_readiness_sha256,
+        deployment_status="prototype",
+        bank_status="prototype_only",
+        classification_authorised=True,
+        human_verification_complete=False,
+        target_accepted_taxon_key=TARGET_KEY,
+        target_scientific_name=TARGET_NAME,
+        support_manifest_fingerprint="sha256:" + "b" * 64,
+        prototype_support_count=81,
+        human_verified_count=0,
+        score_semantics=(
+            "experimental_screening_evidence_uncalibrated_not_probability"
+        ),
+    )
+    permit = MetadataQualifiedPrototypePermit(
+        readiness=readiness,
+        candidate_set_fingerprints=(config.candidate_score_evidence_sha256,),
+        reference_embedding_fingerprint=config.reference_embeddings_sha256,
+        model_fingerprint="sha256:" + "c" * 64,
+        classifier_fingerprint=config.classifier_fingerprint,
+        calibration_fingerprint=None,
+        support_qualification="metadata_qualified_prototype_only",
+    )
+    monkeypatch.setattr(
+        orchestrator_module,
+        "validate_metadata_qualified_prototype_support",
+        lambda _config: permit,
+    )
+    called = False
+
+    def handler(_plan: object) -> StageExecutionResult:
+        nonlocal called
+        called = True
+        return StageExecutionResult()
+
+    request = ProductionRunRequest(
+        taxon=TARGET_NAME,
+        rank="species",
+        output_root=tmp_path / "runs",
+        storage_backend="local",
+        workstore_backend="sqlite",
+        classification_mode=BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
+        classification_config_path=config_path,
+        build_week_prototype_config=config,
+        stages=(RunStage.TARGET_AWARE_SCORING,),
+        dry_run=False,
+    )
+
+    result = ProductionRunOrchestrator(
+        request,
+        taxon_scope=_target_scope(),
+        stage_handlers={RunStage.TARGET_AWARE_SCORING: handler},
+    ).run()
+
+    assert called is True
+    assert request.classifier_artifact is None
+    assert request.calibrator_artifact is None
+    assert result.manifest.status == "complete"
+    assert result.manifest.metrics["calibration_fingerprint"] is None
+    assert (
+        result.manifest.metrics["support_qualification"]
+        == "metadata_qualified_prototype_only"
+    )
+    assert (
+        result.manifest.metrics["reference_bank_readiness_status"]
+        == "prototype_ready_with_shortfalls"
+    )

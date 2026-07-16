@@ -1,0 +1,63 @@
+{
+  "schema_version": "papilio-demoleus-metadata-qualified-prototype-support-manifest-v1.0.0",
+  "phase": 15,
+  "task": "15.2",
+  "status": "complete_prototype_only",
+  "classification_mode": "build_week_target_aware_prototype",
+  "support_qualification": "metadata_qualified_prototype_only",
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "storage": {
+    "backend": "local",
+    "s3_permitted": false,
+    "s3_used": false
+  },
+  "permitted_prototype_shortfalls": {
+    "human_verified_count": 0,
+    "human_verification_complete": false,
+    "calibrator_fingerprint": null,
+    "probabilities_emitted": false,
+    "full_scientific_readiness_required": false,
+    "all_quotas_required": false,
+    "all_flickr_evaluation_labels_human_reviewed_required": false
+  },
+  "mandatory_safeguards": {
+    "licensing": "validated",
+    "attribution": "validated",
+    "image_validity": "validated",
+    "target_reconciliation": "validated",
+    "duplicate_removal": "validated",
+    "route_separation": "validated",
+    "model_fingerprints": "validated",
+    "readiness_artifact": "sha256_pinned",
+    "prototype_status": "explicit",
+    "score_semantics": "experimental_screening_evidence_uncalibrated_not_probability",
+    "target_always_scored": true,
+    "hierarchy_pruning_permitted": false,
+    "spatial_crop_permitted": false,
+    "visual_input": "raw_full_image"
+  },
+  "validated_local_evidence": {
+    "prototype_support_count": 81,
+    "reference_embedding_count": 81,
+    "candidate_score_rows": 634312,
+    "flickr_records_with_target_scored_once": 13496,
+    "classifier_fingerprint": "sha256:92638010837bd31b1cdbfae366fa1245015153b34f58dc8e8fea0a6378ad4acd",
+    "calibration_fingerprint": null
+  },
+  "githits": {
+    "fresh_query_status": "unavailable_mcp_not_exposed",
+    "reused_solution_id": "ad0cbd0a-7015-48ec-8a8e-c94ae8031813",
+    "result_fabricated": false
+  },
+  "verification": {
+    "full_suite_tests_passed": 2328,
+    "real_local_support_preflight": "passed",
+    "real_local_orchestrator_stage_preflight": "passed"
+  },
+  "scientific_release_authorized": false,
+  "production_default_change_authorized": false,
+  "next_task": "15.3_build_prototype_facing_outputs"
+}

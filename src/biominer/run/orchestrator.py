@@ -27,6 +27,11 @@ from biominer.bioclip.classification_modes import (
 from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER, object_score_audit_metrics
 from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
 from biominer.bioclip.prototype_mode import BuildWeekPrototypeConfig
+from biominer.bioclip.prototype_support import (
+    MetadataQualifiedPrototypePermit,
+    PrototypeReadinessPermit,
+    validate_metadata_qualified_prototype_support,
+)
 from biominer.bioclip.taxonomy_embedding_cache import TaxonomyTextEmbeddingIndex
 from biominer.detection.policy import DetectionPolicy, VisionRuntimeSettings
 from biominer.evidence.cloud_work import (
@@ -522,8 +527,12 @@ class ProductionRunOrchestrator:
         self._vision_runtime_initialized = False
         self._vision_runtime_resources: list[Any] = []
         self._vision_runtime_resources_closed = False
-        self._reference_bank_readiness_permit: ReferenceBankReadinessPermit | None = None
-        self._support_dependency_permit: SupportDependencyPermit | None = None
+        self._reference_bank_readiness_permit: (
+            ReferenceBankReadinessPermit | PrototypeReadinessPermit | None
+        ) = None
+        self._support_dependency_permit: (
+            SupportDependencyPermit | MetadataQualifiedPrototypePermit | None
+        ) = None
 
     def _resolve_species_candidate_path(
         self,
@@ -688,25 +697,33 @@ class ProductionRunOrchestrator:
         plan: ProductionRunPlan,
         *,
         stage: RunStage,
-    ) -> SupportDependencyPermit:
+    ) -> SupportDependencyPermit | MetadataQualifiedPrototypePermit:
         if self._support_dependency_permit is not None:
             return self._support_dependency_permit
-        permit = validate_support_readiness_dependencies(
-            stage=stage,
-            regional_candidates=self.request.regional_candidates,
-            reference_bank_readiness=self.request.reference_bank_readiness,
-            reference_bank_readiness_sha256=(
-                self.request.reference_bank_readiness_sha256
-            ),
-            reference_embeddings=self.request.reference_embeddings,
-            classifier_artifact=self.request.classifier_artifact,
-            calibrator_artifact=self.request.calibrator_artifact,
-            expected_registry_version=plan.manifest.taxon_scope.registry_version,
-            expected_target_accepted_taxon_key=(
-                plan.manifest.taxon_scope.accepted_taxon_key
-            ),
-            expected_model_name=self.request.bioclip_model,
-        )
+        if is_build_week_prototype_classification(
+            self.request.classification_mode
+        ):
+            config = self.request.build_week_prototype_config
+            if config is None:
+                raise ValueError("Build Week prototype configuration is missing")
+            permit = validate_metadata_qualified_prototype_support(config)
+        else:
+            permit = validate_support_readiness_dependencies(
+                stage=stage,
+                regional_candidates=self.request.regional_candidates,
+                reference_bank_readiness=self.request.reference_bank_readiness,
+                reference_bank_readiness_sha256=(
+                    self.request.reference_bank_readiness_sha256
+                ),
+                reference_embeddings=self.request.reference_embeddings,
+                classifier_artifact=self.request.classifier_artifact,
+                calibrator_artifact=self.request.calibrator_artifact,
+                expected_registry_version=plan.manifest.taxon_scope.registry_version,
+                expected_target_accepted_taxon_key=(
+                    plan.manifest.taxon_scope.accepted_taxon_key
+                ),
+                expected_model_name=self.request.bioclip_model,
+            )
         self._support_dependency_permit = permit
         self._reference_bank_readiness_permit = permit.readiness
         return permit
@@ -859,6 +876,11 @@ class ProductionRunOrchestrator:
                 "model_fingerprint": dependencies.model_fingerprint,
                 "classifier_fingerprint": dependencies.classifier_fingerprint,
                 "calibration_fingerprint": dependencies.calibration_fingerprint,
+                "support_qualification": getattr(
+                    dependencies,
+                    "support_qualification",
+                    "scientifically_ready",
+                ),
             }
             model_configs["support_dependencies"] = support_identity
             metrics.update(
@@ -868,6 +890,11 @@ class ProductionRunOrchestrator:
                     ),
                     "classifier_fingerprint": dependencies.classifier_fingerprint,
                     "calibration_fingerprint": dependencies.calibration_fingerprint,
+                    "support_qualification": getattr(
+                        dependencies,
+                        "support_qualification",
+                        "scientifically_ready",
+                    ),
                 }
             )
         return replace(manifest, model_configs=model_configs, metrics=metrics)
