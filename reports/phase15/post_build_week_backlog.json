@@ -1,0 +1,94 @@
+{
+  "schema_version": "biominer-post-build-week-backlog-v1.0.0",
+  "generated_at": "2026-07-16T09:44:16Z",
+  "status": "deferred_does_not_block_prototype",
+  "estimation_basis": "Engineering and review estimates, not measured durations. Re-estimate after the first 10 expert reviews.",
+  "items": [
+    {
+      "id": "BW-01",
+      "priority": "P0",
+      "work": "Complete first-pass expert taxonomic review.",
+      "exact_count": {"reference_records_pending": 81, "human_verified_now": 0},
+      "effort_estimate": "12-18 expert hours plus 2-3 engineering hours"
+    },
+    {
+      "id": "BW-02",
+      "priority": "P0",
+      "work": "Run independent second review and resolve conflicts.",
+      "exact_count": {"records_eligible_for_second_review": 81, "conflicts_known_now": 0},
+      "effort_estimate": "8-14 expert hours plus 3-5 adjudication hours"
+    },
+    {
+      "id": "BW-03",
+      "priority": "P0",
+      "work": "Freeze a fully verified reference bank and rerun leakage-safe splits.",
+      "exact_count": {"current_bank_records": 81, "leakage_components": 22, "records_missing_owner_evidence": 2},
+      "effort_estimate": "1-2 engineering days after review completion"
+    },
+    {
+      "id": "BW-04",
+      "priority": "P0",
+      "work": "Resolve outstanding operational source failures.",
+      "exact_count": {"reference_source_failures": 10, "flickr_download_decode_failures": 5},
+      "effort_estimate": "4-8 engineering hours, excluding provider outages"
+    },
+    {
+      "id": "BW-05",
+      "priority": "P1",
+      "work": "Close reference-acquisition shortfalls and route gaps.",
+      "exact_count": {
+        "pre_freeze_shortfall_rows": 553,
+        "target_adult_shortfall": 30,
+        "target_caterpillar_shortfall": 19,
+        "regional_competitor_shortfall": 68,
+        "reviewed_false_winner_shortfall": 89,
+        "historical_false_winner_shortfall": 20,
+        "broader_papilionidae_shortfall": 189,
+        "moth_negative_shortfall": 44,
+        "other_insect_negative_shortfall": 24,
+        "other_lepidoptera_negative_shortfall": 30,
+        "visual_neighbour_shortfall": 40,
+        "larval_support_train_prototypes": 0,
+        "pinned_specimen_references": 0,
+        "frozen_visual_domain_negatives": 0
+      },
+      "effort_estimate": "5-10 acquisition/review days, provider-rate dependent"
+    },
+    {
+      "id": "BW-06",
+      "priority": "P1",
+      "work": "Perform full licence and public-display review.",
+      "exact_count": {"research_only_references": 79, "currently_allowed_references": 2},
+      "effort_estimate": "6-10 legal/data-steward hours"
+    },
+    {
+      "id": "BW-07",
+      "priority": "P1",
+      "work": "Fit independent calibration and lock selective-risk thresholds.",
+      "exact_count": {"current_calibration_records": 13, "human_verified_calibration_records": 0, "current_calibrators": 0},
+      "effort_estimate": "2-4 engineering days after reviewed labels exist"
+    },
+    {
+      "id": "BW-08",
+      "priority": "P1",
+      "work": "Run final scientific holdout and taxonomic performance validation.",
+      "exact_count": {"current_final_test_records": 12, "legitimately_reviewed_final_test_records": 0, "configured_families": 7},
+      "effort_estimate": "3-5 engineering days plus expert review time"
+    },
+    {
+      "id": "BW-09",
+      "priority": "P2",
+      "work": "Implement missing evaluation and runtime instrumentation.",
+      "exact_count": {"missing_visual_input_ablations": 2, "missing_mps_memory_metrics": 3, "yoloe_routes_requiring_validation": 8},
+      "effort_estimate": "4-7 engineering days"
+    },
+    {
+      "id": "BW-10",
+      "priority": "P2",
+      "work": "Plan production-default migration and long-term drift monitoring.",
+      "exact_count": {"prototype_modes_to_migrate": 1, "production_default_changes_authorized": 0, "drift_baselines": 0},
+      "effort_estimate": "5-8 engineering days for migration; 2-3 days for initial monitoring"
+    }
+  ],
+  "non_blocking_statement": "These items are required for scientific or production release but do not block the accepted Build Week prototype."
+}

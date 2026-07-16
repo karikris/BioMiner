@@ -1,0 +1,146 @@
+{
+  "schema_version": "biominer-phase15-prototype-release-acceptance-v1.0.0",
+  "phase": 15,
+  "task": "15.4",
+  "generated_at": "2026-07-16T09:44:16Z",
+  "audited_source_git_sha": "1aea7e68ecc91981764cf836ac26a73065c4f505",
+  "status": "accepted_prototype_only_with_limitations",
+  "authorization": {
+    "build_week_prototype": true,
+    "scientific_release": false,
+    "production_default_change": false,
+    "public_reference_image_display": false,
+    "storage_backend_for_verified_run": "local",
+    "s3_permitted_for_verified_run": false,
+    "s3_used": false
+  },
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "frozen_identity": {
+    "classification_mode": "build_week_target_aware_prototype",
+    "prototype_policy_version": "build-week-target-aware-prototype-policy-v1.0.0",
+    "reference_bank_version": "papilio-demoleus-prototype-bank-20260716",
+    "reference_bank_sha256": "sha256:a5a26fc7e60c79dbcca9b9f8fc1ba2b3558e6307bd7c5b70711fe1ad022fde10",
+    "reference_planner_version": "trust-first-layered-regional-v1.0.0",
+    "candidate_planner_version": "regional-candidate-union-v1.1.0",
+    "model_id": "hf-hub:imageomics/bioclip-2.5-vit-huge-patch14-378",
+    "model_revision": "191d741545e4c741cdef4b22c6eb69c945c1e592",
+    "model_weights_sha256": "sha256:ac2e37c2f89ef8e6b889176a9a3f418970ad9db15a218bd29e3321e95c46ae97",
+    "yoloe_checkpoint": "yoloe-26s-seg.pt",
+    "embedding_fingerprint": "sha256:6aaf3f37f339f542d50f6d24a18181f0cafd15bf1aeec2c21635bf4a1f8396b0",
+    "classifier_fingerprint": "sha256:92638010837bd31b1cdbfae366fa1245015153b34f58dc8e8fea0a6378ad4acd",
+    "calibrator_status": "not_fitted_insufficient_independently_reviewed_labels",
+    "calibrator_fingerprint": null,
+    "margin_policy_version": "prototype-raw-margin-abstention-v1.0.0",
+    "selected_margin_threshold": 0.1
+  },
+  "reference_bank": {
+    "records": 81,
+    "human_verified": 0,
+    "provider_supported": 81,
+    "trust_counts": {"R1": 0, "R2": 0, "R3": 0, "R4": 81, "R5": 0},
+    "geographic_layer_counts": {"A": 51, "B": 6, "C": 0, "D": 24, "E": 0},
+    "source_counts": {"GBIF": 81, "Wikimedia Commons": 0},
+    "licence_policy_counts": {"allowed": 2, "research_only": 79, "denied": 0, "quarantined": 0},
+    "route_counts": {"adult_field": 80, "larval": 1, "pinned_specimen": 0},
+    "split_counts": {"support_train": 26, "model_selection": 30, "calibration": 13, "final_test": 12}
+  },
+  "architecture": [
+    {"id": "target_always_scored", "passed": true, "evidence": "13,496/13,496 classified records contain exactly one target row."},
+    {"id": "regional_competitors_always_scored", "passed": true, "evidence": "All 34 species and all 47 union candidates were scored per classified record."},
+    {"id": "no_family_or_genus_pruning", "passed": true, "evidence": "higher_rank_pruning_applied=false and the target is never pruned."},
+    {"id": "real_support_image_evidence", "passed": true, "evidence": "81 hash-pinned, decoded, normalized BioCLIP support embeddings exist."},
+    {"id": "bioclip_frozen", "passed": true, "evidence": "Model revision, weights, OpenCLIP config and preprocessing fingerprints are pinned."},
+    {"id": "yoloe_gate_router_only", "passed": true, "evidence": "YOLOE role is gate_and_router_only; BioCLIP uses raw full images."},
+    {"id": "no_target_aware_spatial_crop", "passed": true, "evidence": "spatial_crop_applied=false; visual_input=raw_full_image."},
+    {"id": "routes_separate", "passed": true, "evidence": "Adult, larval and pinned-specimen contracts are separate and incompatible routes abstain.", "limitation": "No pinned support and no larval support_train prototype exist."},
+    {"id": "competitor_margin_explicit", "passed": true, "evidence": "Candidate, classification and dashboard artifacts persist target-versus-competitor margins."},
+    {"id": "abstention_explicit", "passed": true, "evidence": "12,296 staged rows retain abstention state and reason.", "limitation": "The staged preselection runner used raw margin 0.02; the selected integration policy uses 0.10."},
+    {"id": "raw_scores_not_probabilities", "passed": true, "evidence": "All manifests state scores_are_probabilities=false."},
+    {"id": "prototype_status_explicit", "passed": true, "evidence": "Mode, policy, reports and dashboard persist prototype-only status."}
+  ],
+  "data": [
+    {"id": "source_provenance_retained", "passed": true},
+    {"id": "licences_retained", "passed": true, "evidence": "81/81 support rows have licence evidence."},
+    {"id": "attribution_retained", "passed": true, "evidence": "81/81 support rows have attribution evidence."},
+    {"id": "exact_duplicates_removed", "passed": true, "evidence": "81 unique source hashes and zero unresolved exact duplicates."},
+    {"id": "provider_mirrors_resolved", "passed": true, "evidence": "Known provider mirrors and leakage components are kept atomic.", "limitation": "Two records lack owner evidence, so complete identity leakage protection is not claimed."},
+    {"id": "trust_level_persisted", "passed": true},
+    {"id": "geographic_layer_persisted", "passed": true},
+    {"id": "provider_support_not_human_verified", "passed": true, "evidence": "human_verified=0; provider_supported=81."},
+    {"id": "flickr_query_hit_not_label", "passed": true}
+  ],
+  "operations": [
+    {"id": "readiness_blocks_invalid_runs", "passed": true, "evidence": "Readiness and support SHA pins are mandatory and fail closed."},
+    {"id": "bioclip_loaded_once_reused", "passed": true, "evidence": "One persistent process/model load; cache hits recorded."},
+    {"id": "embeddings_content_addressed", "passed": true, "evidence": "Image, preprocessing, model and artifact SHA-256 identities are persisted."},
+    {"id": "checkpoint_resume", "passed": true, "evidence": "Completed 13,501-record run resumed without stage or model work."},
+    {"id": "durable_cloud_systems_preserved", "passed": true, "evidence": "Production defaults remain S3/PostgreSQL where configured; prototype evidence is local-only."},
+    {"id": "no_source_image_committed", "passed": true},
+    {"id": "no_secret_committed", "passed": true},
+    {"id": "no_model_cache_committed", "passed": true}
+  ],
+  "evaluation": [
+    {"id": "b0_compared", "passed": true, "evidence": "B0 target scoreability 0.10 versus selected B13 1.00."},
+    {"id": "accuracy_only_on_reviewed_labels", "passed": true, "evidence": "Accuracy is null because independently reviewed labels=0."},
+    {"id": "unlabelled_results_are_distributions", "passed": true},
+    {"id": "planner_comparison_reported", "passed": true, "evidence": "Regional rejected, global selected, layered rejected for target scoreability."},
+    {"id": "failure_rates_reported", "passed": true, "evidence": "5/13,501 retryable Flickr failures; rate 0.00037034."},
+    {"id": "throughput_and_memory_reported", "passed": true, "evidence": "2.274524 records/s; RSS peak 1,765,261,312 bytes.", "limitation": "MPS allocated/driver/recommended memory metrics remain not instrumented."},
+    {"id": "limitations_prominent", "passed": true}
+  ],
+  "completion_criteria": {
+    "required": 17,
+    "passed": 17,
+    "items": [
+      "Frozen metadata-qualified support bank exists.",
+      "Bank is explicitly prototype-only.",
+      "Prototype classification is not blocked by absent human review.",
+      "Frozen BioCLIP support embeddings exist.",
+      "Target-versus-competitor scoring works.",
+      "Target is not hierarchy-pruned.",
+      "Regional and global references are represented.",
+      "Trust-first planning is explicit.",
+      "YOLOE route contracts are separate.",
+      "Full-frame inference works.",
+      "Staged Flickr runs completed.",
+      "B0 and prototype approaches were compared.",
+      "Dashboard-ready evidence was produced.",
+      "Verification limitations are explicit.",
+      "No verification or accuracy claim was fabricated.",
+      "Every plan task has its own commit.",
+      "Main is pushed after each completed task."
+    ]
+  },
+  "artifacts": {
+    "support_manifest": {"path": "runs/papilio_demoleus_prototype_bank_local_20260716/prototype_support_manifest.parquet", "sha256": "sha256:a5a26fc7e60c79dbcca9b9f8fc1ba2b3558e6307bd7c5b70711fe1ad022fde10"},
+    "reference_embeddings": {"path": "runs/papilio_demoleus_prototype_embeddings_local_20260716/prototype_reference_embeddings.parquet", "sha256": "sha256:4d0bd9ef275ec3e1eb2c29d257573b6b778db8545ae2f63b85e4e2dd5881ca72"},
+    "classification": {"path": "runs/papilio_demoleus_staged_flickr_local_20260716/prototype_flickr_classification.parquet", "sha256": "sha256:63d8a6575dbd2362a53383a42247afd57bdff52339a788a7b6571ef19c697d99"},
+    "candidate_scores": {"path": "runs/papilio_demoleus_staged_flickr_local_20260716/prototype_flickr_candidate_scores.parquet", "sha256": "sha256:6b7a18b6e6105f123c9cadb12462d2f8002555e12f817d7db4e61e0875dbd204"},
+    "dashboard": {"path": "runs/papilio_demoleus_prototype_evidence_local_20260716/prototype_evidence_dashboard.parquet", "sha256": "sha256:54dd9b27bd08f9a5102690d7984e31e3ac5507d94fc70ef4d7dfc236662a7122"}
+  },
+  "limitations": [
+    "No reference label is independently human taxonomically verified.",
+    "Provider-supported consistency is not classification accuracy.",
+    "The selected policy is uncalibrated and emits no probabilities.",
+    "The staged 0.02 abstention rule is diagnostic and differs from the selected 0.10 integration policy.",
+    "79 of 81 references are research-only and are exposed only by safe identifiers.",
+    "No pinned-specimen reference, larval support_train prototype or frozen visual-domain negative exists.",
+    "Two support rows lack owner evidence.",
+    "Five Flickr and ten reference-source failures remain retryable.",
+    "B11 and B12 reused raw full-frame evidence because focused/masked inputs were unavailable.",
+    "YOLOE routing accuracy has not been independently validated.",
+    "MPS memory allocation metrics are not instrumented.",
+    "Inference distributions are not accuracy, prevalence or taxonomic validation."
+  ],
+  "githits": {
+    "used": true,
+    "result_status": "service_unavailable_after_bounded_retries",
+    "attempts": 3,
+    "failure_modes": ["repeated_grounding_loop", "bounded_timeout", "backend_502"],
+    "external_result_fabricated": false,
+    "fallback_pattern_source": "Task 15.3 accepted GitHits solution d25028c7-2fe6-4289-8489-1609da9bc7aa"
+  }
+}

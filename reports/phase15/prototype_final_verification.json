@@ -1,0 +1,127 @@
+{
+  "schema_version": "biominer-phase15-prototype-final-verification-v1.0.0",
+  "phase": 15,
+  "task": "15.4",
+  "generated_at": "2026-07-16T09:44:16Z",
+  "audited_source_git_sha": "1aea7e68ecc91981764cf836ac26a73065c4f505",
+  "status": "passed_prototype_only",
+  "storage": {
+    "backend": "local",
+    "s3_permitted": false,
+    "s3_used": false
+  },
+  "commands": [
+    {
+      "command": "uv run pytest -q tests/test_prototype_evidence_report.py tests/test_prototype_support_embeddings.py tests/test_prototype_staged_flickr.py tests/test_prototype_policy_selection.py tests/test_prototype_benchmark_matrix.py tests/test_prototype_vision_smoke.py tests/test_target_aware_workflow_cli.py tests/test_run_support_dependencies.py",
+      "result": "passed",
+      "detail": "69 passed in 4.85s"
+    },
+    {
+      "command": "uv run pytest -q",
+      "result": "passed",
+      "detail": "2332 passed in 81.33s"
+    },
+    {
+      "command": "uvx ruff@0.12.7 check .",
+      "result": "passed",
+      "detail": "Three pre-existing unused imports were removed before the final pass."
+    },
+    {
+      "command": "uvx ruff@0.12.7 format --check src/biominer/reports/prototype_evidence.py tests/test_prototype_evidence_report.py",
+      "result": "passed",
+      "detail": "2 files already formatted; scope is the Phase 15 Python additions because the legacy CLI is not globally Ruff-formatted."
+    },
+    {
+      "command": "uvx ty check src/biominer/reports/prototype_evidence.py",
+      "result": "passed",
+      "detail": "All checks passed."
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "command": "uv export --frozen --all-extras --no-hashes --format requirements-txt --output-file /tmp/biominer-phase15-requirements.txt && uvx pip-audit -r /tmp/biominer-phase15-requirements.txt --progress-spinner off",
+      "result": "passed",
+      "detail": "No known vulnerabilities after updating the lock from Pillow 12.2.0 to 12.3.0. Local package biominer is not on PyPI and was skipped."
+    },
+    {
+      "command": "uvx detect-secrets scan $(git ls-files)",
+      "result": "passed_after_review",
+      "detail": "65 heuristic findings were reviewed as hashes, model revisions, environment-variable names, example placeholders, test fixtures or release-report terminology; no committed credential was found."
+    },
+    {
+      "command": "custom tracked-file high-confidence token and private-key scan",
+      "result": "passed",
+      "detail": "0 high-confidence findings."
+    },
+    {
+      "command": "uv run biominer dev vision prototype-smoke-five --config /tmp/biominer-phase15-five-image-smoke.json",
+      "result": "passed",
+      "detail": "5 images; MPS BioCLIP and YOLOE; report fingerprint sha256:f2088f252396496b3841f19267810a958409eff3a3b31915ff17046c6b8e3618; output confined to /tmp."
+    },
+    {
+      "command": "uv run biominer dev vision prototype-staged-flickr --config config/pilot/papilio_demoleus_staged_flickr.json",
+      "result": "passed",
+      "detail": "Completed checkpoint validated; P1/P2/P3 resumed_without_stage_work=true and no model inference was repeated."
+    },
+    {
+      "command": "uv run biominer --help; uv run biominer bioclip screen --help; uv run biominer bioclip prototype-evidence --help; uv run biominer dev vision prototype-smoke-five --help; uv run biominer dev vision prototype-staged-flickr --help",
+      "result": "passed",
+      "detail": "All five CLI smoke commands exited 0."
+    },
+    {
+      "command": "tracked artifact extension/path audit",
+      "result": "passed",
+      "detail": "0 source images, 0 model files, 0 databases and 0 cache paths are tracked."
+    },
+    {
+      "command": "JSON validation for reports/phase15/*.json",
+      "result": "passed"
+    }
+  ],
+  "real_smoke": {
+    "images": 5,
+    "status": "passed",
+    "device": "mps",
+    "bioclip_model_loads": 1,
+    "yoloe_worker_process_starts": 1,
+    "temporary_output": "/tmp/biominer-phase15-five-image-smoke",
+    "committed_source_images": 0
+  },
+  "staged_runs": [
+    {"stage": "P1", "planned": 100, "classified": 100, "failures": 0, "records_per_second": 2.01212, "rss_peak_memory_bytes": 419020800},
+    {"stage": "P2", "planned": 1000, "classified": 1000, "failures": 0, "records_per_second": 2.391706, "rss_peak_memory_bytes": 445857792},
+    {"stage": "P3", "planned": 13501, "classified": 13496, "failures": 5, "failure_rate": 0.00037034, "records_per_second": 2.274524, "rss_peak_memory_bytes": 1765261312}
+  ],
+  "resume_and_cache": {
+    "sqlite_checkpoint_complete": true,
+    "completed_resume_without_stage_work": true,
+    "support_embedding_resume_recomputed": 0,
+    "support_embedding_resume_reused": 81,
+    "bioclip_persistent_model_loads": 1,
+    "bioclip_model_cache_hits": 6,
+    "temporary_image_cache_deleted": true
+  },
+  "security_and_repository_hygiene": {
+    "dependency_vulnerabilities": 0,
+    "high_confidence_secret_findings": 0,
+    "tracked_source_images": 0,
+    "tracked_models": 0,
+    "tracked_databases": 0,
+    "tracked_cache_paths": 0,
+    "unrelated_untracked_files_left_untouched": [".DS_Store"]
+  },
+  "githits": {
+    "used": true,
+    "attempts": 3,
+    "result": "service_unavailable",
+    "result_fabricated": false
+  },
+  "release_decision": {
+    "prototype": "accepted_with_limitations",
+    "scientific_release": "not_authorized",
+    "production_default": "unchanged",
+    "public_reference_images": "not_authorized"
+  }
+}

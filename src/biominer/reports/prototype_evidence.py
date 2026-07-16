@@ -8,7 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 
@@ -713,7 +713,11 @@ def _artifact_record(path: Path, rows: int) -> dict[str, Any]:
 
 
 def _reference_lines(values: object) -> list[str]:
-    items = values if isinstance(values, list) else []
+    items: list[dict[str, object]] = []
+    if isinstance(values, list):
+        items = [
+            cast(dict[str, object], item) for item in values if isinstance(item, dict)
+        ]
     if not items:
         return ["- none"]
     return [

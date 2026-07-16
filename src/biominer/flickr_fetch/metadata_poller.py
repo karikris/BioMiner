@@ -30,7 +30,7 @@ from biominer.flickr_fetch.query_planner import (
     split_priority,
 )
 from biominer.registry.normalize import normalize_name_key
-from biominer.registry.unified import stable_identity, tier_number
+from biominer.registry.unified import stable_identity
 from biominer.storage.parquet import write_parquet
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.config import StorageConfig, load_storage_config_from_env

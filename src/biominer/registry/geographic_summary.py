@@ -8,8 +8,6 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any
-
 import polars as pl
 
 from biominer.geography import CellGrid, default_cell_grid
