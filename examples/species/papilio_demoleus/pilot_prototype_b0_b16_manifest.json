@@ -1,0 +1,126 @@
+{
+  "schema_version": "papilio-demoleus-prototype-b0-b16-manifest-v1.0.0",
+  "phase": 14,
+  "task": "14.4.4",
+  "status": "complete_with_unavailable_visual_ablation_inputs",
+  "prototype_only": true,
+  "experimental_screening_evidence_only": true,
+  "storage": {
+    "backend": "local",
+    "output_dir": "runs/papilio_demoleus_prototype_b0_b16_local_20260716",
+    "ignored_by_git": true,
+    "s3_used": false
+  },
+  "execution": {
+    "command": "uv run biominer dev vision prototype-benchmark-matrix --config config/pilot/papilio_demoleus_prototype_b0_b16.json",
+    "report_fingerprint": "sha256:9181091eaec4a8b7b9d6fd83ea7889bd5bd15e19886b7941599a93d48e4b6812",
+    "records_scored": 81,
+    "records_skipped": 0,
+    "experiment_rows_per_record": 19,
+    "experiment_ids": [
+      "B0",
+      "B1",
+      "B2",
+      "B3",
+      "B4",
+      "B5",
+      "B6",
+      "B7",
+      "B8",
+      "B9",
+      "B10",
+      "B11",
+      "B12",
+      "B13",
+      "B14-regional",
+      "B14-global",
+      "B14-layered",
+      "B15",
+      "B16"
+    ],
+    "selected_binary_model_for_b9": "linear_svc",
+    "device": "mps",
+    "text_embedding_worker_process_starts": 1,
+    "resume_used_local_text_embedding_cache": true
+  },
+  "inputs": {
+    "reference_embeddings": {
+      "uri": "runs/papilio_demoleus_prototype_embeddings_local_20260716/prototype_reference_embeddings.parquet",
+      "row_count": 81,
+      "sha256": "sha256:4d0bd9ef275ec3e1eb2c29d257573b6b778db8545ae2f63b85e4e2dd5881ca72"
+    },
+    "support_manifest": {
+      "uri": "runs/papilio_demoleus_prototype_bank_local_20260716/prototype_support_manifest.parquet",
+      "row_count": 81,
+      "sha256": "sha256:a5a26fc7e60c79dbcca9b9f8fc1ba2b3558e6307bd7c5b70711fe1ad022fde10"
+    },
+    "staged_candidate_scores": {
+      "uri": "runs/papilio_demoleus_staged_flickr_local_20260716/prototype_flickr_candidate_scores.parquet",
+      "row_count": 634312,
+      "sha256": "sha256:6b7a18b6e6105f123c9cadb12462d2f8002555e12f817d7db4e61e0875dbd204"
+    }
+  },
+  "artifacts": {
+    "predictions": {
+      "uri": "runs/papilio_demoleus_prototype_b0_b16_local_20260716/prototype_b0_b16_predictions.parquet",
+      "row_count": 1539,
+      "byte_count": 37168,
+      "sha256": "sha256:56112b33c5fd9c5a5d0abee3062cbd22ace03e8339ad60abe2057cb62020eb05"
+    },
+    "candidate_scores": {
+      "uri": "runs/papilio_demoleus_prototype_b0_b16_local_20260716/prototype_b0_b16_candidate_scores.parquet",
+      "row_count": 12874,
+      "byte_count": 70223,
+      "sha256": "sha256:77fd5ec9d1f84ffda4a89f39ce14e635759aa375f5ac2fccd9309e678bf48eb9"
+    },
+    "experiment_summary": {
+      "uri": "runs/papilio_demoleus_prototype_b0_b16_local_20260716/prototype_b0_b16_experiment_summary.parquet",
+      "row_count": 19,
+      "byte_count": 9434,
+      "sha256": "sha256:69a0843f03dca6ab58e4f7748f6044450006799b097fae8683d1e4e27255cd70"
+    },
+    "text_embeddings": {
+      "uri": "runs/papilio_demoleus_prototype_b0_b16_local_20260716/prototype_b0_b16_text_embeddings.parquet",
+      "row_count": 36,
+      "byte_count": 140973,
+      "sha256": "sha256:664d6bb9e78fe913f94951b7e23201f6621a4bbc58f7cccfac78cb4171ad81d9"
+    },
+    "report": {
+      "uri": "runs/papilio_demoleus_prototype_b0_b16_local_20260716/prototype_b0_b16_report.json",
+      "byte_count": 3603,
+      "sha256": "sha256:d6dab6aa9145bbee0f1bdd45543cb7832dc7cb5667234858c5e2c0a7f831f0d0"
+    },
+    "summary": {
+      "uri": "runs/papilio_demoleus_prototype_b0_b16_local_20260716/prototype_b0_b16_summary.md",
+      "byte_count": 1296,
+      "sha256": "sha256:c40ee971e777886effdc22861a3ec3849bad521eb2ab429a49222cfe8910cdc4"
+    }
+  },
+  "partitions": {
+    "support_train": 26,
+    "model_selection": 30,
+    "calibration": 13,
+    "final_test": 12
+  },
+  "semantics": {
+    "human_verified_records": 0,
+    "classification_accuracy_reported": false,
+    "provider_supported_metrics_are_accuracy": false,
+    "provider_supported_metrics": "retrieval_and_internal_consistency_only",
+    "raw_scores_are_probabilities": false,
+    "model_output_is_taxonomic_validation": false,
+    "operational_skips_are_biological_negatives": false
+  },
+  "visual_ablation": {
+    "B10": "executed_raw_full_frame",
+    "B11": "partial_raw_only_focused_embedding_not_materialized",
+    "B12": "partial_raw_only_focused_and_masked_embeddings_not_materialized",
+    "spatial_crops_used": false
+  },
+  "documented_shortfalls": [
+    "No independently human-reviewed taxonomic labels exist, so classification accuracy and probability calibration are not reported.",
+    "B11 and B12 retain raw full-frame evidence but focused and masked full-frame embeddings were not materialized in this local executable subset.",
+    "The only larval record is in calibration and has no larval support_train prototype."
+  ],
+  "next_task": "14.5_selection_policy"
+}

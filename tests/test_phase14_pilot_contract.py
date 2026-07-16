@@ -33,6 +33,9 @@ PROTOTYPE_VISION_SMOKE_MANIFEST_PATH = Path(
 PROTOTYPE_EMBEDDINGS_MANIFEST_PATH = Path(
     "examples/species/papilio_demoleus/pilot_prototype_embeddings_manifest.json"
 )
+PROTOTYPE_B0_B16_MANIFEST_PATH = Path(
+    "examples/species/papilio_demoleus/pilot_prototype_b0_b16_manifest.json"
+)
 
 
 def _matrix() -> dict[str, object]:
@@ -75,6 +78,10 @@ def _prototype_vision_smoke_manifest() -> dict[str, object]:
 
 def _prototype_embeddings_manifest() -> dict[str, object]:
     return json.loads(PROTOTYPE_EMBEDDINGS_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def _prototype_b0_b16_manifest() -> dict[str, object]:
+    return json.loads(PROTOTYPE_B0_B16_MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
 def test_phase14_matrix_freezes_local_vision_limit_and_external_execution() -> None:
@@ -460,3 +467,19 @@ def test_phase14_full_prototype_embedding_artifacts_are_hashed_and_untracked() -
     ):
         assert int(artifact["row_count"]) > 0
         assert len(str(artifact["semantic_fingerprint"])) == 71
+
+
+def test_phase14_local_b0_b16_handoff_is_local_evidence_only() -> None:
+    manifest = _prototype_b0_b16_manifest()
+
+    assert manifest["task"] == "14.4.4"
+    assert manifest["status"] == "complete_with_unavailable_visual_ablation_inputs"
+    assert manifest["storage"]["backend"] == "local"
+    assert manifest["storage"]["s3_used"] is False
+    assert manifest["execution"]["records_scored"] == 81
+    assert manifest["execution"]["records_skipped"] == 0
+    assert manifest["artifacts"]["predictions"]["row_count"] == 1539
+    assert manifest["artifacts"]["experiment_summary"]["row_count"] == 19
+    assert manifest["semantics"]["classification_accuracy_reported"] is False
+    assert manifest["semantics"]["provider_supported_metrics_are_accuracy"] is False
+    assert manifest["visual_ablation"]["spatial_crops_used"] is False

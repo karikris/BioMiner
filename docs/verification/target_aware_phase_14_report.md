@@ -332,6 +332,26 @@ completed invocation returned from the SQLite checkpoint in 0.57 seconds with
 no model work. The compact handoff is
 `examples/species/papilio_demoleus/pilot_staged_flickr_manifest.json`.
 
+Task 14.4.4 ran the local B0-B16 executable matrix over all 81 frozen prototype
+records. The command rejects non-local paths and S3 authorization. It emitted
+1,539 prediction rows across B0-B16 plus the three required B14 policies,
+12,874 candidate-score rows, and a 19-row experiment summary. Candidate
+taxonomy text was embedded once with BioCLIP on Apple MPS and then reused from
+the local Parquet cache.
+
+No record needed to be skipped, but the command supports an explicit
+`skip_records` quarantine list so one operationally bad record cannot block the
+remaining set. Such skips are written with `biological_negative=false`.
+Provider-supported retrieval, target rank, raw margins, model agreement, and
+abstention are reported. Classification accuracy and probability calibration
+are not reported because all 81 human-verification flags are false.
+
+B10 ran against the existing raw full-frame embeddings. B11 and B12 are
+retained as an explicit local executable subset: they reuse raw full-frame
+evidence and mark focused and masked embeddings unavailable rather than
+inventing values. The compact handoff is
+`examples/species/papilio_demoleus/pilot_prototype_b0_b16_manifest.json`.
+
 - B0 current text-pruned and B1 zero-shot without pruning;
 - B2 SimpleShot, B3 centered SimpleShot, B4 top-five references, and B5
   multi-prototype;
@@ -360,7 +380,7 @@ Raw similarity or SVC margin is never labelled a probability.
 | Prototype embedding and compact-contract focused suite | 26 passed |
 | Staged Flickr and species-generic boundary focused suite | 10 passed |
 | GBIF checkpoint, metadata, workflow, and shortfall suite | 52 passed |
-| Final full repository suite | 2,300 passed in 75.06 seconds |
+| Final full repository suite | 2,303 passed in 81.22 seconds |
 | Changed-file Ruff | passed |
 | `git diff --check` | passed |
 | Completed smoke BioCLIP images | 5 |
@@ -368,6 +388,8 @@ Raw similarity or SVC margin is never labelled a probability.
 | Completed frozen support embeddings | 81 |
 | Completed staged Flickr classifications | 13,496 |
 | Retryable staged Flickr source failures | 5 |
+| Local B0-B16 prototype prediction rows | 1,539 |
+| Local B0-B16 prototype records skipped | 0 |
 
 ## Phase 15 decision
 
