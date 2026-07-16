@@ -1,0 +1,27 @@
+{
+  "schema_version": "prototype-evidence-report-config-v1.0.0",
+  "target_accepted_taxon_key": "gbif:1938069",
+  "target_scientific_name": "Papilio demoleus",
+  "classifications": "runs/papilio_demoleus_staged_flickr_local_20260716/prototype_flickr_classification.parquet",
+  "classifications_sha256": "sha256:63d8a6575dbd2362a53383a42247afd57bdff52339a788a7b6571ef19c697d99",
+  "candidate_scores": "runs/papilio_demoleus_staged_flickr_local_20260716/prototype_flickr_candidate_scores.parquet",
+  "candidate_scores_sha256": "sha256:6b7a18b6e6105f123c9cadb12462d2f8002555e12f817d7db4e61e0875dbd204",
+  "support_manifest": "runs/papilio_demoleus_prototype_bank_local_20260716/prototype_support_manifest.parquet",
+  "support_manifest_sha256": "sha256:a5a26fc7e60c79dbcca9b9f8fc1ba2b3558e6307bd7c5b70711fe1ad022fde10",
+  "output_dir": "runs/papilio_demoleus_prototype_evidence_local_20260716",
+  "storage_backend": "local",
+  "s3_permitted": false,
+  "target_reference_limit": 3,
+  "competitor_reference_limit": 3,
+  "regional_competitor_preview_limit": 5,
+  "report_example_limit": 5,
+  "verification_limitations": [
+    "Prototype screening evidence is not taxonomic validation.",
+    "No reference label is independently human taxonomically verified.",
+    "Provider-supported retrieval consistency is not classification accuracy.",
+    "Scores and margins are uncalibrated and are not probabilities.",
+    "Seventy-nine of 81 frozen references are research-only and must not be displayed as image copies.",
+    "Larval support is sparse and pinned-specimen support is absent.",
+    "Regional reference conditioning remains diagnostic where sparse clusters cannot preserve target scoreability."
+  ]
+}

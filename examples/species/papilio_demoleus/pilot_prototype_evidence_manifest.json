@@ -1,0 +1,63 @@
+{
+  "schema_version": "papilio-demoleus-prototype-evidence-manifest-v1.0.0",
+  "phase": 15,
+  "task": "15.3",
+  "status": "complete_prototype_only",
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "storage": {
+    "backend": "local",
+    "s3_permitted": false,
+    "s3_used": false
+  },
+  "dashboard": {
+    "path": "runs/papilio_demoleus_prototype_evidence_local_20260716/prototype_evidence_dashboard.parquet",
+    "rows": 13496,
+    "byte_count": 5883740,
+    "sha256": "sha256:54dd9b27bd08f9a5102690d7984e31e3ac5507d94fc70ef4d7dfc236662a7122"
+  },
+  "regional_competitors": {
+    "path": "runs/papilio_demoleus_prototype_evidence_local_20260716/prototype_evidence_regional_competitors.parquet",
+    "rows": 445368,
+    "byte_count": 8026557,
+    "sha256": "sha256:00b472a6fcf40fb6192fcb672f835765b7fe2ff28a5ac808d71a726d6101609d"
+  },
+  "nearest_references": {
+    "path": "runs/papilio_demoleus_prototype_evidence_local_20260716/prototype_evidence_nearest_references.parquet",
+    "rows": 39604,
+    "byte_count": 628010,
+    "sha256": "sha256:0e867c8b17c105700a8ea2aab7b8f63fa8c353367dce67b8250599e174ec8304"
+  },
+  "reports": {
+    "json": {
+      "path": "runs/papilio_demoleus_prototype_evidence_local_20260716/prototype_evidence_report.json",
+      "sha256": "sha256:9379735efbe398d8261b5e8dc27b119b5f4d5ed23be2b68c9eb0d41de6a45595"
+    },
+    "markdown": {
+      "path": "runs/papilio_demoleus_prototype_evidence_local_20260716/prototype_evidence_report.md",
+      "sha256": "sha256:7adf008db5303f431d837900cb86118825c6bcf3d35e056226f5974b197af09c"
+    }
+  },
+  "coverage": {
+    "target_scored_records": 13496,
+    "abstained_records": 12296,
+    "why_this_image_was_ranked_panel": true,
+    "licence_metadata_retained": true,
+    "attribution_retained": true,
+    "verification_limitations_persisted": true
+  },
+  "publication_safety": {
+    "credentials_exposed": false,
+    "source_image_bytes_exposed": false,
+    "source_object_uris_exposed": false,
+    "reference_image_urls_exposed": false,
+    "research_only_images_copied": false
+  },
+  "githits": {
+    "solution_id": "d25028c7-2fe6-4289-8489-1609da9bc7aa",
+    "feedback": "accepted"
+  },
+  "next_task": "15.4_prototype_release_verification"
+}

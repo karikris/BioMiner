@@ -317,6 +317,8 @@ def build_parser() -> argparse.ArgumentParser:
     bioclip_screen.add_argument("--taxonomy-text-embedding-cache")
     bioclip_screen.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
     bioclip_screen.add_argument("--dry-run", action="store_true")
+    bioclip_evidence = bioclip_subparsers.add_parser("prototype-evidence")
+    bioclip_evidence.add_argument("--config", required=True)
     registry = subparsers.add_parser("registry")
     registry_subparsers = registry.add_subparsers(dest="registry_command")
     registry_build = registry_subparsers.add_parser("build")
@@ -721,6 +723,34 @@ def run(args: argparse.Namespace) -> int:
             return _run_detect_eval(args)
         return 2
     if args.command == "bioclip":
+        if args.bioclip_command == "prototype-evidence":
+            from biominer.reports.prototype_evidence import (
+                PrototypeEvidenceConfig,
+                build_prototype_evidence_outputs,
+            )
+
+            try:
+                result = build_prototype_evidence_outputs(
+                    PrototypeEvidenceConfig.read_json(args.config)
+                )
+            except (FileNotFoundError, TypeError, ValueError) as exc:
+                print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+                return 2
+            print(
+                json.dumps(
+                    {
+                        "dashboard": str(result.dashboard_path),
+                        "regional_competitors": str(result.competitors_path),
+                        "nearest_references": str(result.references_path),
+                        "report": str(result.report_path),
+                        "summary": str(result.summary_path),
+                        "status": result.report["status"],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
         if args.bioclip_command != "screen":
             return 2
         registry = Path(args.registry_dir)
