@@ -257,12 +257,13 @@ No unresolved, uncertain, conflicting, attribution-incomplete, or
 duplicate-ambiguous row may enter scientific support. Research-only licensing
 is permitted only in the local prototype bank and remains explicitly labelled.
 
-## Tasks 14.4-14.6: off-machine benchmark, selection, and report
+## Tasks 14.4-14.6: prototype benchmark, selection, and report
 
-Status: Task 14.4.1's five-image local BioCLIP/YOLOE smoke is authorized by the
-prototype-only readiness artifact. Larger experiments and scientific model
-selection remain blocked or off-machine. The machine-readable matrix contains
-exactly B0-B16:
+Status: Task 14.4.1's five-image local BioCLIP/YOLOE smoke and the explicitly
+user-authorised 81-record local support-embedding run are authorized by the
+prototype-only readiness artifact. Other larger experiments and scientific
+model selection remain off-machine unless separately authorized. The
+machine-readable matrix contains exactly B0-B16:
 
 Task 14.4.1 passed on MPS with the exact BioCLIP 2.5 Huge revision
 `191d741545e4c741cdef4b22c6eb69c945c1e592` and YOLOE checkpoint
@@ -278,6 +279,32 @@ That is a recorded accuracy warning for subsequent experiments, not a reason
 to reinterpret the source labels and not a runtime-smoke failure. The compact
 handoff is
 `examples/species/papilio_demoleus/pilot_prototype_vision_smoke_manifest.json`.
+
+Task 14.4.2 now has an executable prototype-only frozen-embedding command and
+local configuration. It validates the frozen support/readiness byte hashes and
+semantic fingerprint without converting `provider_supported` evidence into a
+human-review state. A failed batch is isolated to individual records; an
+unreadable record or an explicit operator skip is retained in a retryable
+failure Parquet while successful records continue. Completed embeddings are a
+validated resume checkpoint, and prototype fitting consumes only
+`support_train` after collapsing media by independent observation. Adult,
+larval, and specimen routes remain separate, and visual-neighbour edges are
+route-local.
+
+The command first passed a bounded five-image MPS validation, then completed
+the user-authorised full 81-record run using local storage only. It produced
+81 finite, unit-normalized 1,024-dimensional embeddings, 26 global/regional
+support-train prototypes, and 50 directed within-route visual-neighbour edges,
+with zero failures or operator skips. BioCLIP loaded once in one persistent
+worker and served seven requests with six model-cache hits. A second full
+invocation reused all 81 embeddings without model recomputation.
+
+The embedding artifact retains 80 adult-field and one larval row separately.
+The larval row belongs to calibration rather than `support_train`, so emitting
+no larval prototype is an explicit split consequence rather than route mixing.
+No pinned specimen passed the prototype freeze. Every label remains
+`provider_supported`; `human_verified_count` is zero. The compact handoff is
+`examples/species/papilio_demoleus/pilot_prototype_embeddings_manifest.json`.
 
 - B0 current text-pruned and B1 zero-shot without pruning;
 - B2 SimpleShot, B3 centered SimpleShot, B4 top-five references, and B5
@@ -304,12 +331,14 @@ Raw similarity or SVC margin is never labelled a probability.
 | Family-first object pipeline, evaluation QA, and orchestration | 177 passed |
 | Phase 14 prototype-freeze focused suite | 61 passed |
 | Five-image runtime focused suite | 88 passed |
+| Prototype embedding and compact-contract focused suite | 26 passed |
 | GBIF checkpoint, metadata, workflow, and shortfall suite | 52 passed |
-| Final full repository suite | 2,289 passed in 91.67 seconds |
+| Final full repository suite | 2,296 passed in 79.98 seconds |
 | Changed-file Ruff | passed |
 | `git diff --check` | passed |
 | Completed smoke BioCLIP images | 5 |
 | Completed smoke YOLOE images | 5 |
+| Completed frozen support embeddings | 81 |
 
 ## Phase 15 decision
 

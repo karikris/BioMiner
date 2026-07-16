@@ -30,6 +30,9 @@ PROTOTYPE_SUPPORT_BANK_MANIFEST_PATH = Path(
 PROTOTYPE_VISION_SMOKE_MANIFEST_PATH = Path(
     "examples/species/papilio_demoleus/pilot_prototype_vision_smoke_manifest.json"
 )
+PROTOTYPE_EMBEDDINGS_MANIFEST_PATH = Path(
+    "examples/species/papilio_demoleus/pilot_prototype_embeddings_manifest.json"
+)
 
 
 def _matrix() -> dict[str, object]:
@@ -41,9 +44,7 @@ def _reference_source_manifest() -> dict[str, object]:
 
 
 def _prototype_acquisition_manifest() -> dict[str, object]:
-    return json.loads(
-        PROTOTYPE_ACQUISITION_MANIFEST_PATH.read_text(encoding="utf-8")
-    )
+    return json.loads(PROTOTYPE_ACQUISITION_MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
 def _prototype_selection_manifest() -> dict[str, object]:
@@ -72,6 +73,10 @@ def _prototype_vision_smoke_manifest() -> dict[str, object]:
     return json.loads(PROTOTYPE_VISION_SMOKE_MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
+def _prototype_embeddings_manifest() -> dict[str, object]:
+    return json.loads(PROTOTYPE_EMBEDDINGS_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
 def test_phase14_matrix_freezes_local_vision_limit_and_external_execution() -> None:
     matrix = _matrix()
     execution = matrix["execution_contract"]
@@ -80,6 +85,15 @@ def test_phase14_matrix_freezes_local_vision_limit_and_external_execution() -> N
     assert execution["local_build_verification_max_images"] == 5
     assert execution["large_bioclip_execution"] == "different_computer_required"
     assert execution["large_yoloe_execution"] == "different_computer_required"
+    support_exception = execution["local_full_support_embedding_exception"]
+    assert support_exception == {
+        "authorized": True,
+        "authorized_by": "explicit_user_instruction",
+        "maximum_frozen_support_records": 81,
+        "storage_backend": "local",
+        "s3_permitted": False,
+        "scope": "task_14.4.2_frozen_support_embeddings_only",
+    }
     assert {
         experiment["execution_computer"] for experiment in matrix["experiments"]
     } == {"external_gpu_computer"}
@@ -88,8 +102,7 @@ def test_phase14_matrix_freezes_local_vision_limit_and_external_execution() -> N
 def test_phase14_matrix_contains_exact_b0_through_b16_ablation_contract() -> None:
     matrix = _matrix()
     experiments = {
-        experiment["experiment_id"]: experiment
-        for experiment in matrix["experiments"]
+        experiment["experiment_id"]: experiment for experiment in matrix["experiments"]
     }
 
     assert list(experiments) == [f"B{index}" for index in range(17)]
@@ -107,18 +120,14 @@ def test_phase14_matrix_contains_exact_b0_through_b16_ablation_contract() -> Non
         "masked_full_frame",
     ]
     assert experiments["B13"]["reference_scope"] == "global"
-    assert experiments["B14"]["reference_scope"] == (
-        "geo_cluster_then_global_fallback"
-    )
+    assert experiments["B14"]["reference_scope"] == ("geo_cluster_then_global_fallback")
     assert experiments["B15"]["evidence"] == ["frozen_image", "taxonomy_text"]
     assert experiments["B16"]["evidence"] == ["frozen_image"]
 
 
 def test_phase14_matrix_blocks_benchmark_and_phase15_until_human_freeze() -> None:
     matrix = _matrix()
-    gates = {
-        gate["gate_id"]: gate for gate in matrix["prerequisite_gates"]
-    }
+    gates = {gate["gate_id"]: gate for gate in matrix["prerequisite_gates"]}
     splits = matrix["split_policy"]
     labels = matrix["label_contract"]
 
@@ -138,7 +147,9 @@ def test_phase14_matrix_blocks_benchmark_and_phase15_until_human_freeze() -> Non
     assert labels["flickr_query_match_is_label"] is False
     assert labels["gbif_taxon_match_is_human_image_label"] is False
     assert matrix["phase15_default_gate"]["authorized"] is False
-    assert matrix["phase15_default_gate"]["current_default_must_remain_unchanged"] is True
+    assert (
+        matrix["phase15_default_gate"]["current_default_must_remain_unchanged"] is True
+    )
 
 
 def test_phase14_reference_source_manifest_preserves_metadata_only_boundary() -> None:
@@ -164,7 +175,9 @@ def test_phase14_reference_source_manifest_preserves_metadata_only_boundary() ->
     assert manifest["experiment_matrix"]["status"] == "blocked_by_phase14.3"
 
 
-def test_phase14_prototype_acquisition_manifest_records_bounded_real_candidates() -> None:
+def test_phase14_prototype_acquisition_manifest_records_bounded_real_candidates() -> (
+    None
+):
     manifest = _prototype_acquisition_manifest()
     bounded = manifest["bounded_biological_negative_acquisition"]
     counts = manifest["counts"]
@@ -182,9 +195,7 @@ def test_phase14_prototype_acquisition_manifest_records_bounded_real_candidates(
     assert counts["shortfall_scope_count"] == 34
     assert manifest["score_semantics"]["score_is_probability"] is False
     assert (
-        manifest["verification_semantics"][
-            "provider_supported_is_human_verified"
-        ]
+        manifest["verification_semantics"]["provider_supported_is_human_verified"]
         is False
     )
 
@@ -212,7 +223,9 @@ def test_phase14_prototype_acquisition_manifest_tracks_required_artifacts() -> N
     )
 
 
-def test_phase14_prototype_selection_manifest_enforces_independent_observations() -> None:
+def test_phase14_prototype_selection_manifest_enforces_independent_observations() -> (
+    None
+):
     manifest = _prototype_selection_manifest()
     counts = manifest["counts"]
     policy = manifest["selection_policy"]
@@ -400,3 +413,50 @@ def test_phase14_five_image_smoke_records_exact_mps_runtime_evidence() -> None:
     assert manifest["yoloe"]["batch_sizes"] == [3, 2]
     assert manifest["semantics"]["smoke_pass_means_accuracy_validated"] is False
     assert manifest["next_task"] == "14.4.2_build_frozen_support_embeddings"
+
+
+def test_phase14_full_prototype_embeddings_are_local_complete_and_resumable() -> None:
+    manifest = _prototype_embeddings_manifest()
+    counts = manifest["counts"]
+    validation = manifest["validation"]
+
+    assert manifest["task"] == "14.4.2"
+    assert manifest["status"] == "complete"
+    assert manifest["storage"]["backend"] == "local"
+    assert manifest["storage"]["s3_used"] is False
+    assert counts["frozen_support"] == counts["embedded"] == 81
+    assert counts["retryable_failures"] == counts["operator_skips"] == 0
+    assert counts["human_verified"] == 0
+    assert counts["provider_supported"] == 81
+    assert manifest["route_counts"] == {
+        "adult_field": 80,
+        "larval": 1,
+        "pinned_specimen": 0,
+    }
+    assert validation["complete_support_coverage"] is True
+    assert validation["finite_embeddings"] is True
+    assert validation["unit_normalized_embeddings"] is True
+    assert validation["adult_larval_specimen_embeddings_mixed"] is False
+    assert validation["prototypes_consume_only_support_train"] is True
+    assert validation["visual_neighbours_cross_routes"] is False
+    assert validation["resume_without_model_recomputation"] is True
+    assert manifest["semantics"]["provider_supported_is_human_verified"] is False
+    assert manifest["next_task"] == "14.4.3_staged_flickr_prototype"
+
+
+def test_phase14_full_prototype_embedding_artifacts_are_hashed_and_untracked() -> None:
+    manifest = _prototype_embeddings_manifest()
+
+    assert manifest["storage"]["ignored_by_git"] is True
+    for artifact in manifest["artifacts"].values():
+        assert str(artifact["uri"]).startswith("runs/")
+        assert str(artifact["sha256"]).startswith("sha256:")
+        assert len(str(artifact["sha256"])) == 71
+        assert int(artifact["byte_count"]) > 0
+    for artifact in (
+        manifest["artifacts"]["prototype_reference_embeddings"],
+        manifest["artifacts"]["prototype_reference_prototypes"],
+        manifest["artifacts"]["prototype_visual_neighbour_species"],
+    ):
+        assert int(artifact["row_count"]) > 0
+        assert len(str(artifact["semantic_fingerprint"])) == 71

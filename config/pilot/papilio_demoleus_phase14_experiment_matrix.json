@@ -10,6 +10,14 @@
     "local_build_verification_max_images": 5,
     "large_bioclip_execution": "different_computer_required",
     "large_yoloe_execution": "different_computer_required",
+    "local_full_support_embedding_exception": {
+      "authorized": true,
+      "authorized_by": "explicit_user_instruction",
+      "maximum_frozen_support_records": 81,
+      "storage_backend": "local",
+      "s3_permitted": false,
+      "scope": "task_14.4.2_frozen_support_embeddings_only"
+    },
     "metadata_only_work_permitted_locally": true,
     "experiment_execution_computer": "external_gpu_computer",
     "resume_and_checkpoint_required": true

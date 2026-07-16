@@ -1,0 +1,130 @@
+{
+  "schema_version": "papilio-demoleus-prototype-embeddings-manifest-v1.0.0",
+  "phase": 14,
+  "task": "14.4.2",
+  "status": "complete",
+  "prototype_only": true,
+  "experimental_screening_evidence_only": true,
+  "storage": {
+    "backend": "local",
+    "output_dir": "runs/papilio_demoleus_prototype_embeddings_local_20260716",
+    "ignored_by_git": true,
+    "s3_used": false
+  },
+  "inputs": {
+    "support_manifest": {
+      "uri": "runs/papilio_demoleus_prototype_bank_local_20260716/prototype_support_manifest.parquet",
+      "row_count": 81,
+      "sha256": "sha256:a5a26fc7e60c79dbcca9b9f8fc1ba2b3558e6307bd7c5b70711fe1ad022fde10",
+      "semantic_fingerprint": "sha256:17b72ac01c106aa114ca615ff6bf5b2f8c823b4bf4d65c1b65691e862a287946"
+    },
+    "prototype_readiness": {
+      "uri": "runs/papilio_demoleus_prototype_bank_local_20260716/reference_bank_prototype_readiness.json",
+      "status": "prototype_ready_with_shortfalls",
+      "sha256": "sha256:154e9c98ad4ed577077702e5524e81f5b0cb406225086a339ee1d092d65ef9a9"
+    }
+  },
+  "execution": {
+    "command": "uv run biominer dev vision prototype-build-embeddings --config config/pilot/papilio_demoleus_prototype_embeddings.json",
+    "initial_execution_report_fingerprint": "sha256:25b3c14fd0ec25cfaa9648aec7e4cfaef2487dcc3a0077f691c9437b529abb6b",
+    "resume_execution_report_fingerprint": "sha256:060dd1198f71ab042a36a0f66a425b773ab73025e1a9e93409959d181024f215",
+    "resume_recomputed_embeddings": 0,
+    "resume_reused_embeddings": 81,
+    "batch_size": 16,
+    "preprocess_workers": 4,
+    "device": "mps"
+  },
+  "model": {
+    "model_id": "imageomics/bioclip-2.5-vith14",
+    "model_revision": "191d741545e4c741cdef4b22c6eb69c945c1e592",
+    "model_weights_sha256": "sha256:ac2e37c2f89ef8e6b889176a9a3f418970ad9db15a218bd29e3321e95c46ae97",
+    "open_clip_version": "3.3.0",
+    "open_clip_config_sha256": "sha256:4c131846348300c77b5bee06690b0e94ee85ca9ce9a30a853b36084d00dcd25c",
+    "preprocessing_version": "target-full-frame-openclip-preprocess-v2",
+    "preprocessing_fingerprint": "sha256:bcc6c8300a68af2c6081881fcee9ba46829eed84fd5c4bbe0b05f494c2492ce3",
+    "effective_image_resize_mode": "longest",
+    "embedding_dimension": 1024,
+    "gpu_name": "Apple MPS",
+    "persistent_worker_process_starts": 1,
+    "persistent_model_loads": 1,
+    "worker_requests": 7,
+    "model_cache_hits": 6
+  },
+  "counts": {
+    "frozen_support": 81,
+    "embedded": 81,
+    "retryable_failures": 0,
+    "operator_skips": 0,
+    "prototypes": 26,
+    "visual_neighbour_edges": 50,
+    "human_verified": 0,
+    "provider_supported": 81,
+    "support_train_taxa": 10
+  },
+  "route_counts": {
+    "adult_field": 80,
+    "larval": 1,
+    "pinned_specimen": 0
+  },
+  "split_counts": {
+    "support_train": 26,
+    "model_selection": 30,
+    "calibration": 13,
+    "final_test": 12
+  },
+  "artifacts": {
+    "prototype_reference_embeddings": {
+      "uri": "runs/papilio_demoleus_prototype_embeddings_local_20260716/prototype_reference_embeddings.parquet",
+      "row_count": 81,
+      "byte_count": 351058,
+      "sha256": "sha256:4d0bd9ef275ec3e1eb2c29d257573b6b778db8545ae2f63b85e4e2dd5881ca72",
+      "semantic_fingerprint": "sha256:6aaf3f37f339f542d50f6d24a18181f0cafd15bf1aeec2c21635bf4a1f8396b0"
+    },
+    "prototype_reference_prototypes": {
+      "uri": "runs/papilio_demoleus_prototype_embeddings_local_20260716/prototype_reference_prototypes.parquet",
+      "row_count": 26,
+      "byte_count": 94138,
+      "sha256": "sha256:71db8a8b0de8feaf8cd80b484d22c041b22fb8dd1d32450c62b62c3cbf74f6a1",
+      "semantic_fingerprint": "sha256:6cd167342a30cd5ca73b4ce1f460d401af476a0091f7924c4c1af4fca29ca8ac"
+    },
+    "prototype_visual_neighbour_species": {
+      "uri": "runs/papilio_demoleus_prototype_embeddings_local_20260716/prototype_visual_neighbour_species.parquet",
+      "row_count": 50,
+      "byte_count": 13477,
+      "sha256": "sha256:47b17b244c21045cdaffb28f8aebf48ed0bbd07ecf67d958eeb903db01f5f7f8",
+      "semantic_fingerprint": "sha256:2755b79551a9b8089a9006b0c345d315cea842873f2b6960976fc2a9e59d1cd9"
+    },
+    "report": {
+      "uri": "runs/papilio_demoleus_prototype_embeddings_local_20260716/prototype_reference_embedding_report.json",
+      "byte_count": 3812,
+      "sha256": "sha256:aca4fb2e0c6dfd710cf20067ee26d5afacccb5debf7f410071a8be46b2429dca"
+    },
+    "summary": {
+      "uri": "runs/papilio_demoleus_prototype_embeddings_local_20260716/prototype_reference_embedding_summary.md",
+      "byte_count": 293,
+      "sha256": "sha256:92459dc15a7940ddaa9f93f338998799bbece6e428fcf67f74d280c75122ec4e"
+    }
+  },
+  "validation": {
+    "complete_support_coverage": true,
+    "finite_embeddings": true,
+    "unit_normalized_embeddings": true,
+    "maximum_embedding_norm_error": 2.9512374211115855e-08,
+    "adult_larval_specimen_embeddings_mixed": false,
+    "prototypes_consume_only_support_train": true,
+    "visual_neighbours_cross_routes": false,
+    "resume_without_model_recomputation": true
+  },
+  "documented_shortfalls": [
+    "The only larval support record is assigned to calibration, so no larval support_train prototype is emitted.",
+    "No pinned-specimen record passed the prototype freeze, so no pinned-specimen embedding or prototype exists.",
+    "All 81 labels are provider-supported evidence and none is independently human taxonomically verified."
+  ],
+  "semantics": {
+    "provider_supported_is_human_verified": false,
+    "model_output_is_taxonomic_validation": false,
+    "raw_similarity_is_probability": false,
+    "operational_failures_are_biological_negatives": false
+  },
+  "next_task": "14.4.3_staged_flickr_prototype"
+}

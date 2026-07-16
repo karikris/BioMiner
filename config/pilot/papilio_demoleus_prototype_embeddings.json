@@ -1,0 +1,21 @@
+{
+  "schema_version": "prototype-support-embedding-job-v1.0.0",
+  "support_manifest": "runs/papilio_demoleus_prototype_bank_local_20260716/prototype_support_manifest.parquet",
+  "support_manifest_sha256": "sha256:a5a26fc7e60c79dbcca9b9f8fc1ba2b3558e6307bd7c5b70711fe1ad022fde10",
+  "readiness": "runs/papilio_demoleus_prototype_bank_local_20260716/reference_bank_prototype_readiness.json",
+  "readiness_sha256": "sha256:154e9c98ad4ed577077702e5524e81f5b0cb406225086a339ee1d092d65ef9a9",
+  "output_dir": "runs/papilio_demoleus_prototype_embeddings_local_20260716",
+  "runtime_python": "../BioCLIP25/venv/bin/python",
+  "hf_cache_dir": "../BioCLIP25/cache/huggingface",
+  "model_name": "imageomics/bioclip-2.5-vith14",
+  "model_revision": "191d741545e4c741cdef4b22c6eb69c945c1e592",
+  "open_clip_version": "3.3.0",
+  "device": "mps",
+  "batch_size": 16,
+  "preprocess_workers": 4,
+  "graph_top_k": 5,
+  "graph_minimum_similarity": -1.0,
+  "resume": true,
+  "overwrite": false,
+  "skip_records": []
+}

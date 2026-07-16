@@ -603,6 +603,8 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     yoloe26_smoke.add_argument("--output-dir", default="reports/yoloe26_smoke")
     prototype_smoke = subparsers.add_parser("prototype-smoke-five")
     prototype_smoke.add_argument("--config", required=True)
+    prototype_embeddings = subparsers.add_parser("prototype-build-embeddings")
+    prototype_embeddings.add_argument("--config", required=True)
     benchmark = subparsers.add_parser("benchmark-plumbing")
     benchmark.add_argument("--records", type=int, default=1000)
     benchmark.add_argument("--butterfly-rate", type=float, default=0.25)
@@ -682,6 +684,8 @@ def run(args: argparse.Namespace) -> int:
             return _run_yoloe26_smoke(args)
         if args.vision_command == "prototype-smoke-five":
             return _run_prototype_vision_smoke(args)
+        if args.vision_command == "prototype-build-embeddings":
+            return _run_prototype_support_embeddings(args)
         if args.vision_command == "benchmark-plumbing":
             return _run_vision_benchmark_plumbing(args)
         if args.vision_command == "benchmark-rolling-matrix":
@@ -2213,6 +2217,45 @@ def _run_prototype_vision_smoke(args: argparse.Namespace) -> int:
                 "image_count": result.report["image_count"],
                 "report": str(result.report_path),
                 "summary": str(result.summary_path),
+                "report_fingerprint": result.report["report_fingerprint"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _run_prototype_support_embeddings(args: argparse.Namespace) -> int:
+    from biominer.benchmarks.prototype_support_embeddings import (
+        PrototypeSupportEmbeddingConfig,
+        run_prototype_support_embedding_job,
+    )
+
+    try:
+        result = run_prototype_support_embedding_job(
+            PrototypeSupportEmbeddingConfig.read_json(args.config)
+        )
+    except (OSError, TypeError, ValueError, RuntimeError, pl.exceptions.PolarsError) as exc:
+        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+        return 2
+    print(
+        json.dumps(
+            {
+                "status": result.report["status"],
+                "embeddings": str(result.embeddings_path),
+                "prototypes": str(result.prototypes_path),
+                "visual_neighbours": (
+                    str(result.visual_neighbours_path)
+                    if result.visual_neighbours_path is not None
+                    else None
+                ),
+                "failures": (
+                    str(result.failures_path)
+                    if result.failures_path is not None
+                    else None
+                ),
+                "report": str(result.report_path),
                 "report_fingerprint": result.report["report_fingerprint"],
             },
             indent=2,
