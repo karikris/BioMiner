@@ -745,6 +745,28 @@ report shape and emit structured INFO start/completion/failure events. Their
 Markdown includes command, run ID, PID, git SHA, timestamps, elapsed time,
 input/output fingerprints, and artifact URIs.
 
+For the Build Week prototype, `references resolve-prototype-duplicates`
+adapts the frozen prototype selection ledger to this same deduplicator. It
+reconstructs the exact selected observation inventory, including explicitly
+unresolved synthetic observation provenance for curated visual-domain
+negatives, and rejects any mismatch between selections, media candidates,
+observations, and downloaded objects.
+
+The additional `prototype_reference_identity_groups.parquet` artifact has one
+row per selected media item and schema version
+`prototype-identity-groups-v1.0.0`. It preserves the generic duplicate group,
+type, canonical media ID, resolution status, and support disposition alongside
+separate exact-hash, perceptual-duplicate, observation, burst, owner,
+photographer, and provider-mirror group IDs. Person and owner group IDs are
+source-scoped hashes; raw provider identity strings are not copied into the
+ledger. Missing owner or photographer evidence is represented by null group
+IDs and explicit availability flags, never by one shared unknown group.
+Resolved noncanonical copies receive `noncanonical_duplicate`; perceptual-only
+evidence remains `unresolved_duplicate`, and metadata conflicts remain
+`duplicate_conflict`. Only `eligible` canonical rows can proceed to the
+prototype support-bank freeze. Owner and photographer groups are leakage
+constraints rather than claims that their images are visual duplicates.
+
 ### 5.5 Review state
 
 `reference_review_queue.parquet` is a deterministic materialized queue; it is

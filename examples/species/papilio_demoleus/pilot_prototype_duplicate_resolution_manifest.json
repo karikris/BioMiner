@@ -1,0 +1,124 @@
+{
+  "schema_version": "papilio-demoleus-prototype-duplicate-resolution-manifest-v1.0.0",
+  "phase": 14,
+  "task": "14.3.3",
+  "status": "complete_with_retryable_operational_failures",
+  "prototype_only": true,
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "execution": {
+    "command": "biominer references resolve-prototype-duplicates --settings-file config/pilot/papilio_demoleus_prototype_duplicates.json",
+    "settings_file": "config/pilot/papilio_demoleus_prototype_duplicates.json",
+    "settings_fingerprint": "sha256:1085e15a427ee8c91f3c41b9a22bfc1359f4422ca3fb1bbee1786599d6824756",
+    "run_id": "papilio-demoleus-prototype-duplicates-available-20260716",
+    "storage_backend": "local",
+    "local_storage_ignored_by_git": true,
+    "s3_deferred": true,
+    "generated_at": "2026-07-16T02:00:00+00:00",
+    "deduplication_policy_version": "prototype-duplicate-resolution-policy-v1",
+    "perceptual_hash_version": "dhash128-v1",
+    "same_observation_distance_threshold": 8,
+    "cross_observation_distance_threshold": 4,
+    "max_aspect_ratio_delta": 0.05,
+    "minimum_informative_bits": 8
+  },
+  "counts": {
+    "selected": 93,
+    "valid_media": 83,
+    "eligible_canonical_media": 83,
+    "retryable_operational_failures": 10,
+    "duplicate_relationships": 0,
+    "exact_relationships": 0,
+    "perceptual_candidate_relationships": 0,
+    "observation_duplicate_groups": 0,
+    "burst_groups": 0,
+    "provider_mirror_relationships": 0,
+    "gbif_inaturalist_mirror_relationships": 0,
+    "noncanonical_duplicates": 0,
+    "unresolved_duplicates": 0,
+    "duplicate_conflicts": 0,
+    "repeated_owner_groups": 12,
+    "repeated_owner_members": 72,
+    "repeated_photographer_groups": 13,
+    "repeated_photographer_members": 72,
+    "missing_owner_evidence": 2,
+    "missing_photographer_evidence": 0
+  },
+  "duplicate_type_distribution": {
+    "unique": 83,
+    "not_evaluated": 10
+  },
+  "operational_failure_distribution": {
+    "item_deadline_exceeded": 9,
+    "retry_exhausted_http_429": 1
+  },
+  "operational_failure_source_distribution": {
+    "Wikimedia Commons": 10
+  },
+  "retryable_reference_media_ids": [
+    "reference-media:0b09c8b1e62c4d414de606a70bc309a903fca8d7e9200512b89cfefdcbaedb6a",
+    "reference-media:3d1bfbc11ebf75a55d3ca5fe19211bdded9e969c9bcdf4782877b6272dda5287",
+    "reference-media:451be84ebe44c4ea3a3231580017b2969f8d2f76f9088cdf6086741cba3c48ca",
+    "reference-media:5bae09335b3ead9bce0971f8919ecf78e4b5d565db16d85ba38ef57ebf2db0e9",
+    "reference-media:80fcae4c67be081b0e8a9a287fe338f7df3e89e78d89f40e4a5f4e03a26c0636",
+    "reference-media:857d8b0718a74b5cf23ec6523ebf5941216c4901587bdca9c1d16a15e5639eac",
+    "reference-media:a54d7b190b079fa0275a756c238abc235682652cef241ccaf9a4100d285f0f5f",
+    "reference-media:be9d7d0b5195c0c2836f300067985c5162a219e720b2978a9d7a6556095b715e",
+    "reference-media:da154d1745094484b93d8f9ab0a341b676d6cad3c581ef2fa07668246a7f0cf5",
+    "reference-media:df551c5045546aea155f0c6421cd8e97690e59a77834de20c43f46560ec64ef4"
+  ],
+  "artifacts": {
+    "local_download_inventory": {
+      "uri": "runs/papilio_demoleus_prototype_media_local_20260716/reference_media_objects.parquet",
+      "row_count": 93,
+      "byte_count": 26045,
+      "sha256": "sha256:9ec171fdc0d1f010e19a7b43e03cb1cdf7270945a36215e02bd49971198940d4"
+    },
+    "annotated_media_objects": {
+      "uri": "runs/papilio_demoleus_prototype_media_local_20260716/duplicate-resolution/run_id=papilio-demoleus-prototype-duplicates-available-20260716-f61223e99674/reference_media_objects.parquet",
+      "row_count": 93,
+      "byte_count": 31858,
+      "sha256": "sha256:0d553890c8440aa72ae16586638d0c4df2871cf13f1354eaa0ae42fb0cc33019"
+    },
+    "duplicate_relationships": {
+      "uri": "runs/papilio_demoleus_prototype_media_local_20260716/duplicate-resolution/run_id=papilio-demoleus-prototype-duplicates-available-20260716-f61223e99674/reference_media_duplicate_relationships.parquet",
+      "row_count": 0,
+      "byte_count": 2616,
+      "sha256": "sha256:411092427c00b87315d147b28263948534af9332bc20580df1efabc943d25e81"
+    },
+    "identity_groups": {
+      "uri": "runs/papilio_demoleus_prototype_media_local_20260716/duplicate-resolution/run_id=papilio-demoleus-prototype-duplicates-available-20260716-f61223e99674/prototype_reference_identity_groups.parquet",
+      "row_count": 93,
+      "byte_count": 35061,
+      "sha256": "sha256:fe896ebf47d4510229adbcfc751c015d1fa87dfb470842d3311a1851a0755180"
+    },
+    "resolution_summary": {
+      "uri": "runs/papilio_demoleus_prototype_media_local_20260716/reports/run_id=papilio-demoleus-prototype-duplicates-available-20260716-f61223e99674/prototype_duplicate_resolution_summary.md",
+      "byte_count": 420,
+      "sha256": "sha256:0ee1fca1005a70d075dfc42b420d004607660d0a7f009f83ae901cde89c059e9"
+    },
+    "resolution_report": {
+      "uri": "runs/papilio_demoleus_prototype_media_local_20260716/reports/run_id=papilio-demoleus-prototype-duplicates-available-20260716-f61223e99674/prototype_duplicate_resolution_report.json",
+      "byte_count": 3782,
+      "sha256": "sha256:d3de25aa1bb435516f378335ef60ea6b6b826aa642f9cbc75ff55a055f413972"
+    }
+  },
+  "semantics": {
+    "operational_failures_are_biological_negatives": false,
+    "owner_groups_are_visual_duplicates": false,
+    "photographer_groups_are_visual_duplicates": false,
+    "provider_supported_is_human_verified": false,
+    "model_output_used_as_taxonomic_validation": false,
+    "eligible_rows_may_advance_to_automated_qa": true,
+    "retryable_rows_may_advance_to_automated_qa": false
+  },
+  "unresolved_risks": [
+    "Ten Wikimedia Commons originals remain retryable after provider throttling and were not evaluated for duplicate relationships.",
+    "S3 rematerialization and reconciliation are deferred until the account cap is restored.",
+    "Owner and photographer group identities are provider metadata for leakage control, not biological validation.",
+    "Human taxonomic verification remains incomplete."
+  ],
+  "next_task": "14.3.4_automated_prototype_qa"
+}

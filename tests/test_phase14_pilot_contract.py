@@ -17,6 +17,10 @@ PROTOTYPE_SELECTION_MANIFEST_PATH = Path(
 PROTOTYPE_DOWNLOAD_MANIFEST_PATH = Path(
     "examples/species/papilio_demoleus/pilot_prototype_download_manifest.json"
 )
+PROTOTYPE_DUPLICATE_RESOLUTION_MANIFEST_PATH = Path(
+    "examples/species/papilio_demoleus/"
+    "pilot_prototype_duplicate_resolution_manifest.json"
+)
 
 
 def _matrix() -> dict[str, object]:
@@ -39,6 +43,12 @@ def _prototype_selection_manifest() -> dict[str, object]:
 
 def _prototype_download_manifest() -> dict[str, object]:
     return json.loads(PROTOTYPE_DOWNLOAD_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def _prototype_duplicate_resolution_manifest() -> dict[str, object]:
+    return json.loads(
+        PROTOTYPE_DUPLICATE_RESOLUTION_MANIFEST_PATH.read_text(encoding="utf-8")
+    )
 
 
 def test_phase14_matrix_freezes_local_vision_limit_and_external_execution() -> None:
@@ -235,4 +245,38 @@ def test_phase14_prototype_download_manifest_retains_prototype_semantics() -> No
         and str(value["sha256"]).startswith("sha256:")
         and len(str(value["sha256"])) == 71
         for value in artifacts.values()
+    )
+
+
+def test_phase14_duplicate_resolution_separates_retryable_failures() -> None:
+    manifest = _prototype_duplicate_resolution_manifest()
+    counts = manifest["counts"]
+    semantics = manifest["semantics"]
+
+    assert manifest["task"] == "14.3.3"
+    assert manifest["status"] == "complete_with_retryable_operational_failures"
+    assert manifest["execution"]["storage_backend"] == "local"
+    assert manifest["execution"]["s3_deferred"] is True
+    assert counts["selected"] == 93
+    assert counts["valid_media"] == counts["eligible_canonical_media"] == 83
+    assert counts["retryable_operational_failures"] == 10
+    assert counts["duplicate_relationships"] == 0
+    assert counts["noncanonical_duplicates"] == 0
+    assert len(manifest["retryable_reference_media_ids"]) == 10
+    assert semantics["operational_failures_are_biological_negatives"] is False
+    assert semantics["eligible_rows_may_advance_to_automated_qa"] is True
+    assert semantics["retryable_rows_may_advance_to_automated_qa"] is False
+    assert manifest["next_task"] == "14.3.4_automated_prototype_qa"
+
+
+def test_phase14_duplicate_resolution_artifacts_are_hashed_and_untracked() -> None:
+    manifest = _prototype_duplicate_resolution_manifest()
+
+    assert manifest["execution"]["local_storage_ignored_by_git"] is True
+    assert all(
+        str(value["uri"]).startswith("runs/")
+        and str(value["sha256"]).startswith("sha256:")
+        and len(str(value["sha256"])) == 71
+        and int(value["byte_count"]) > 0
+        for value in manifest["artifacts"].values()
     )

@@ -348,6 +348,53 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
             "max_download_seconds": 300.0,
         },
     ),
+    "resolve-prototype-duplicates": _CommandSpec(
+        stage=RunStage.REFERENCE_MEDIA,
+        fields=frozenset(
+            {
+                "selections",
+                "media_candidates",
+                "biological_observations",
+                "visual_domain_manifest",
+                "media_objects",
+                "output_prefix",
+                "run_id",
+                "storage_backend",
+                "storage_bucket",
+                "storage_prefix",
+                "generated_at",
+                "same_observation_distance_threshold",
+                "cross_observation_distance_threshold",
+                "max_aspect_ratio_delta",
+                "minimum_informative_bits",
+                "max_perceptual_hash_neighbors",
+                "max_perceptual_search_nodes",
+                "policy_version",
+                "source_priority",
+            }
+        ),
+        required=frozenset(
+            {
+                "selections",
+                "media_candidates",
+                "biological_observations",
+                "visual_domain_manifest",
+                "media_objects",
+                "output_prefix",
+                "generated_at",
+            }
+        ),
+        defaults={
+            "same_observation_distance_threshold": 8,
+            "cross_observation_distance_threshold": 4,
+            "max_aspect_ratio_delta": 0.05,
+            "minimum_informative_bits": 8,
+            "max_perceptual_hash_neighbors": 64,
+            "max_perceptual_search_nodes": 4096,
+            "policy_version": "prototype-duplicate-resolution-policy-v1",
+            "source_priority": ["iNaturalist", "GBIF", "Wikimedia Commons"],
+        },
+    ),
     "build-support-embeddings": _CommandSpec(
         stage=RunStage.REFERENCE_EMBEDDINGS,
         fields=frozenset(
@@ -747,6 +794,28 @@ def add_reference_workflow_parsers(
     download.add_argument("--max-attempts", type=int)
     download.add_argument("--timeout-seconds", type=float)
     download.add_argument("--max-download-seconds", type=float)
+
+    duplicates = subparsers.add_parser("resolve-prototype-duplicates")
+    _common(duplicates, runtime_defaults)
+    duplicates.add_argument("--selections")
+    duplicates.add_argument("--media-candidates")
+    duplicates.add_argument("--biological-observations", type=_csv)
+    duplicates.add_argument("--visual-domain-manifest")
+    duplicates.add_argument("--media-objects")
+    duplicates.add_argument("--output-prefix")
+    duplicates.add_argument("--run-id")
+    duplicates.add_argument("--storage-backend", choices=("local", "s3"))
+    duplicates.add_argument("--storage-bucket")
+    duplicates.add_argument("--storage-prefix")
+    duplicates.add_argument("--generated-at")
+    duplicates.add_argument("--same-observation-distance-threshold", type=int)
+    duplicates.add_argument("--cross-observation-distance-threshold", type=int)
+    duplicates.add_argument("--max-aspect-ratio-delta", type=float)
+    duplicates.add_argument("--minimum-informative-bits", type=int)
+    duplicates.add_argument("--max-perceptual-hash-neighbors", type=int)
+    duplicates.add_argument("--max-perceptual-search-nodes", type=int)
+    duplicates.add_argument("--policy-version")
+    duplicates.add_argument("--source-priority", type=_csv)
 
     embeddings = subparsers.add_parser("build-support-embeddings")
     _common(embeddings, runtime_defaults)
@@ -1148,6 +1217,15 @@ def _validate_effective_options(command: str, values: dict[str, Any]) -> None:
         _boolean(values["overwrite"], "overwrite")
     elif command == "download":
         _reference_download_config(values)
+        if values.get("storage_backend") not in {None, "local", "s3"}:
+            raise ValueError("storage_backend must be local or s3")
+    elif command == "resolve-prototype-duplicates":
+        _prototype_duplicate_config(values)
+        _string_tuple(
+            values["biological_observations"],
+            field="biological_observations",
+        )
+        _utc_datetime(values["generated_at"], "generated_at")
         if values.get("storage_backend") not in {None, "local", "s3"}:
             raise ValueError("storage_backend must be local or s3")
     elif command == "build-support-embeddings":
@@ -1804,6 +1882,9 @@ _COMMAND_RUNNERS = {
         _run_finalize_prototype_acquisition(resolved, args)
     ),
     "download": lambda resolved, args: _run_reference_download(resolved, args),
+    "resolve-prototype-duplicates": lambda resolved, args: (
+        _run_resolve_prototype_duplicates(resolved, args)
+    ),
     "build-support-embeddings": lambda resolved, args: _run_support_embeddings(
         resolved, args
     ),
@@ -2546,6 +2627,102 @@ def _reference_download_output_prefix(
         return value
     base_uri = str(getattr(storage, "base_uri", "") or "").strip().rstrip("/")
     return join_uri(base_uri, value) if base_uri else value
+
+
+def _prototype_duplicate_config(values: Mapping[str, object]):
+    from biominer.references.deduplication import ReferenceMediaDeduplicationConfig
+
+    return ReferenceMediaDeduplicationConfig(
+        same_observation_distance_threshold=_nonnegative_integer(
+            values["same_observation_distance_threshold"],
+            "same_observation_distance_threshold",
+        ),
+        cross_observation_distance_threshold=_nonnegative_integer(
+            values["cross_observation_distance_threshold"],
+            "cross_observation_distance_threshold",
+        ),
+        max_aspect_ratio_delta=_nonnegative_float(
+            values["max_aspect_ratio_delta"],
+            "max_aspect_ratio_delta",
+        ),
+        minimum_informative_bits=_nonnegative_integer(
+            values["minimum_informative_bits"],
+            "minimum_informative_bits",
+        ),
+        max_perceptual_hash_neighbors=_positive_integer(
+            values["max_perceptual_hash_neighbors"],
+            "max_perceptual_hash_neighbors",
+        ),
+        max_perceptual_search_nodes=_positive_integer(
+            values["max_perceptual_search_nodes"],
+            "max_perceptual_search_nodes",
+        ),
+        policy_version=str(values["policy_version"]),
+        source_priority=_string_tuple(
+            values["source_priority"], field="source_priority"
+        ),
+    )
+
+
+def _run_resolve_prototype_duplicates(
+    resolved: ResolvedReferenceWorkflowOptions,
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    from biominer.config import create_storage_backend, load_biominer_config
+    from biominer.references.prototype_duplicates import (
+        publish_prototype_duplicate_resolution_result,
+        resolve_prototype_duplicates,
+    )
+
+    values = resolved.values
+    config = load_biominer_config(getattr(args, "config", None))
+    storage_config = config.storage
+    if values.get("storage_backend") is not None:
+        storage_config = replace(storage_config, backend=str(values["storage_backend"]))
+    if values.get("storage_bucket") is not None:
+        storage_config = replace(storage_config, bucket=str(values["storage_bucket"]))
+    if values.get("storage_prefix") is not None:
+        storage_config = replace(storage_config, prefix=str(values["storage_prefix"]))
+    storage = create_storage_backend(storage_config)
+    output_prefix = _reference_download_output_prefix(
+        values["output_prefix"],
+        storage=storage,
+    )
+    result = resolve_prototype_duplicates(
+        selections=pl.read_parquet(str(values["selections"])),
+        media_objects=storage.read_parquet(str(values["media_objects"])),
+        media_candidates=pl.read_parquet(str(values["media_candidates"])),
+        biological_observations=tuple(
+            pl.read_parquet(path)
+            for path in _string_tuple(
+                values["biological_observations"],
+                field="biological_observations",
+            )
+        ),
+        visual_domain_manifest=_read_json_object(
+            values["visual_domain_manifest"],
+            artifact="prototype visual-domain manifest",
+        ),
+        config=_prototype_duplicate_config(values),
+        generated_at=values["generated_at"],
+    )
+    uris = publish_prototype_duplicate_resolution_result(
+        result,
+        storage=storage,
+        output_prefix=output_prefix,
+        run_id=(str(values["run_id"]) if values.get("run_id") else None),
+        settings_fingerprint=resolved.settings_fingerprint,
+    )
+    counts = result.report["counts"]
+    assert isinstance(counts, Mapping)
+    return {
+        "artifacts": uris,
+        "command": "references resolve-prototype-duplicates",
+        "eligible_count": counts["eligible"],
+        "relationship_count": counts["relationships"],
+        "settings_fingerprint": resolved.settings_fingerprint,
+        "status": "complete",
+    }
 
 
 def _run_support_embeddings(

@@ -32,6 +32,18 @@ These downloads remain prototype support evidence, not verified biological
 labels. Task 14.3.3 must still resolve exact, near, observation, burst, owner,
 and cross-provider duplicate families before any immutable bank freeze.
 
+Task 14.3.3 then ran against ignored local storage after the S3 account reached
+its download/transaction cap. Eighty-three locally valid objects resolved as
+83 unique canonical media with no exact, perceptual-candidate,
+same-observation, burst, provider-mirror, or GBIF/iNaturalist mirror
+relationships. The identity ledger separately preserves 12 repeated owner
+groups and 13 repeated photographer groups for later leakage-safe splitting;
+those groups are not represented as visual duplicates. Ten Wikimedia Commons
+downloads remain retryable operational failures (nine item deadlines and one
+HTTP 429 exhaustion), were not evaluated for duplicate relationships, and are
+not biological negatives. The compact handoff is
+`examples/species/papilio_demoleus/pilot_prototype_duplicate_resolution_manifest.json`.
+
 Date: 2026-07-15. Confidence is high for the geographic workload,
 GBIF-derived competitor evidence, metadata checkpoint integrity, local vision
 execution limit, and the B0-B16 experiment contract. Confidence is unknown for
@@ -39,11 +51,12 @@ the classifier policy because no human-reviewed reference bank or off-machine
 vision benchmark exists yet.
 
 Phase 14 is not complete. The prototype-only path has progressed through Task
-14.3.2, while the scientific release path still requires attributable human
-review and an immutable verified reference-bank freeze. Task 14.3.3 duplicate
-resolution is next. Tasks 14.4-14.6 remain blocked from scientific release;
-Phase 15 is not authorized, and the production classification default remains
-unchanged.
+14.3.3 for 83 available objects, while the scientific release path still
+requires attributable human review and an immutable verified reference-bank
+freeze. Task 14.3.3 duplicate resolution retains ten retryable operational
+failures; Task 14.3.4 automated prototype QA is next. Tasks 14.4-14.6 remain
+blocked from scientific release; Phase 15 is not authorized, and the
+production classification default remains unchanged.
 
 ## Execution constraints
 

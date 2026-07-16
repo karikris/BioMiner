@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import hashlib
 
+import polars as pl
+
 from biominer.references.prototype_acquisition import (
     PROTOTYPE_DOWNLOAD_CANDIDATES_FILE,
     PROTOTYPE_SELECTION_FILE,
@@ -15,14 +17,19 @@ from biominer.references.prototype_acquisition import (
     prototype_reference_source_summary_schema,
     write_prototype_acquisition_result,
 )
+from biominer.references.prototype_duplicates import (
+    resolve_prototype_duplicates,
+)
 from biominer.references.schemas import (
     REFERENCE_MEDIA_CANDIDATES_SCHEMA_VERSION,
+    REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION,
     REFERENCE_OBSERVATIONS_SCHEMA_VERSION,
     make_reference_media_id,
     make_reference_observation_id,
     reference_acquisition_plan_schema,
     reference_media_candidate_schema,
     reference_media_candidates_frame,
+    reference_media_objects_frame,
     reference_observations_frame,
 )
 
@@ -119,9 +126,8 @@ def _frames():
     return observations, media
 
 
-def _result():
-    observations, media = _frames()
-    query_plan = {
+def _query_plan():
+    return {
         "target_accepted_taxon_key": TARGET,
         "queries": [
             {
@@ -137,7 +143,10 @@ def _result():
             }
         },
     }
-    visual_manifest = {
+
+
+def _visual_manifest():
+    return {
         "target_accepted_taxon_key": TARGET,
         "manifest_version": "visual-fixture-v1",
         "source_snapshot_version": "visual-fixture-v1",
@@ -164,13 +173,57 @@ def _result():
             }
         ],
     }
+
+
+def _result():
+    observations, media = _frames()
     return compile_prototype_acquisition(
         observations=(observations,),
         media_candidates=(media,),
-        query_plans=(query_plan,),
-        visual_domain_manifest=visual_manifest,
+        query_plans=(_query_plan(),),
+        visual_domain_manifest=_visual_manifest(),
         created_at=NOW,
     )
+
+
+def _downloaded_objects(result, *, exact: bool = False):
+    rows = []
+    for index, candidate in enumerate(result.download_candidates.iter_rows(named=True)):
+        digest = _sha("exact" if exact else f"object-{index}")
+        rows.append(
+            {
+                "schema_version": REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION,
+                "reference_media_id": candidate["reference_media_id"],
+                "source_object_uri": f"s3://fixture/{digest.removeprefix('sha256:')}.jpg",
+                "content_type": "image/jpeg",
+                "source_byte_count": 10_000 + index,
+                "decoded_width": 1000,
+                "decoded_height": 800,
+                "sha256": digest,
+                "perceptual_hash": (
+                    "dhash128-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    if exact
+                    else (
+                        "dhash128-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        if index == 0
+                        else "dhash128-v1:55555555555555555555555555555555"
+                    )
+                ),
+                "duplicate_group_id": None,
+                "duplicate_type": None,
+                "canonical_reference_media_id": None,
+                "provider_mirror_ids": [],
+                "downloaded_at": NOW,
+                "download_attempt_count": 1,
+                "licence_policy_status": candidate["licence_policy_status"],
+                "decode_status": "valid",
+                "quarantine_reason": None,
+                "object_fingerprint": _sha(
+                    f"object:{candidate['reference_media_id']}:{digest}"
+                ),
+            }
+        )
+    return reference_media_objects_frame(rows)
 
 
 def test_prototype_acquisition_reports_taxonomic_and_visual_lanes() -> None:
@@ -228,3 +281,88 @@ def test_prototype_selections_are_direct_downloader_inputs() -> None:
     assert {
         item.candidate["reference_media_id"] for item in selected
     } == set(result.selections["reference_media_id"])
+
+
+def test_prototype_duplicate_resolution_builds_auditable_identity_groups() -> None:
+    observations, _media = _frames()
+    acquisition = _result()
+
+    resolved = resolve_prototype_duplicates(
+        selections=acquisition.selections,
+        media_objects=_downloaded_objects(acquisition),
+        media_candidates=acquisition.download_candidates,
+        biological_observations=(observations,),
+        visual_domain_manifest=_visual_manifest(),
+        generated_at=NOW,
+    )
+
+    assert resolved.observations.height == 2
+    assert resolved.identity_groups.height == 2
+    assert resolved.report["counts"]["eligible"] == 2
+    assert resolved.report["counts"]["relationships"] == 0
+    assert resolved.report["counts"]["missing_owner_evidence"] == 1
+    assert resolved.report["counts"]["missing_photographer_evidence"] == 1
+    assert set(resolved.identity_groups["support_disposition"]) == {"eligible"}
+
+
+def test_prototype_duplicate_resolution_flags_exact_copy_with_metadata_conflict() -> None:
+    observations, _media = _frames()
+    acquisition = _result()
+
+    resolved = resolve_prototype_duplicates(
+        selections=acquisition.selections,
+        media_objects=_downloaded_objects(acquisition, exact=True),
+        media_candidates=acquisition.download_candidates,
+        biological_observations=(observations,),
+        visual_domain_manifest=_visual_manifest(),
+        generated_at=NOW,
+    )
+
+    relationship = resolved.deduplication.relationships.row(0, named=True)
+    assert relationship["relationship_type"] == "exact"
+    assert relationship["resolution_status"] == "conflict"
+    assert "metadata_conflict" in relationship["evidence_types"]
+    assert resolved.report["counts"]["eligible"] == 0
+    assert resolved.report["counts"]["duplicate_conflicts"] == 2
+    assert set(resolved.identity_groups["support_disposition"]) == {
+        "duplicate_conflict"
+    }
+
+
+def test_prototype_duplicate_resolution_keeps_download_failures_retryable() -> None:
+    observations, _media = _frames()
+    acquisition = _result()
+    rows = _downloaded_objects(acquisition).to_dicts()
+    failed = rows[-1]
+    for field in (
+        "source_object_uri",
+        "content_type",
+        "source_byte_count",
+        "decoded_width",
+        "decoded_height",
+        "sha256",
+        "perceptual_hash",
+        "downloaded_at",
+    ):
+        failed[field] = None
+    failed["decode_status"] = "download_failed"
+    failed["quarantine_reason"] = "retry_exhausted_http_429"
+    failed["object_fingerprint"] = _sha("retryable-download-failure")
+
+    resolved = resolve_prototype_duplicates(
+        selections=acquisition.selections,
+        media_objects=reference_media_objects_frame(rows),
+        media_candidates=acquisition.download_candidates,
+        biological_observations=(observations,),
+        visual_domain_manifest=_visual_manifest(),
+        generated_at=NOW,
+    )
+
+    assert resolved.report["counts"]["eligible"] == 1
+    assert resolved.report["counts"]["operational_failures"] == 1
+    failure = resolved.identity_groups.filter(
+        pl.col("support_disposition") == "operational_failure"
+    ).row(0, named=True)
+    assert failure["duplicate_group_id"] is None
+    assert failure["canonical_reference_media_id"] is None
+    assert failure["exact_hash_group_id"] is None

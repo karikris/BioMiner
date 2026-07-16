@@ -22,6 +22,7 @@ from biominer.evaluation.target_metrics import (
 from biominer.flickr_fetch.geography import build_flickr_geography_frame
 from biominer.run import REFERENCE_FIRST_PRODUCTION_STAGES
 from biominer.reference_workflow_cli import (
+    _prototype_duplicate_config,
     _reference_download_config,
     _reference_download_output_prefix,
     _reference_licence_policy,
@@ -161,6 +162,36 @@ def test_reference_download_resolves_relative_prefix_against_s3_storage() -> Non
         "s3://explicit-bucket/reference-media",
         storage=_Storage(),
     ) == "s3://explicit-bucket/reference-media"
+
+
+def test_papilio_prototype_duplicate_config_freezes_auditable_thresholds() -> None:
+    settings = (
+        Path(__file__).resolve().parents[1]
+        / "config"
+        / "pilot"
+        / "papilio_demoleus_prototype_duplicates.json"
+    )
+    resolved = resolve_reference_workflow_options(
+        build_parser().parse_args(
+            [
+                "references",
+                "resolve-prototype-duplicates",
+                "--settings-file",
+                str(settings),
+                "--dry-run",
+            ]
+        )
+    )
+
+    config = _prototype_duplicate_config(resolved.values)
+
+    assert resolved.values["storage_backend"] == "local"
+    assert "storage_bucket" not in resolved.values
+    assert len(resolved.values["biological_observations"]) == 2
+    assert config.same_observation_distance_threshold == 8
+    assert config.cross_observation_distance_threshold == 4
+    assert config.minimum_informative_bits == 8
+    assert config.policy_version == "prototype-duplicate-resolution-policy-v1"
 
 
 def test_papilio_pilot_reference_source_plan_freezes_phase14_quotas() -> None:
