@@ -264,6 +264,21 @@ prototype-only readiness artifact. Larger experiments and scientific model
 selection remain blocked or off-machine. The machine-readable matrix contains
 exactly B0-B16:
 
+Task 14.4.1 passed on MPS with the exact BioCLIP 2.5 Huge revision
+`191d741545e4c741cdef4b22c6eb69c945c1e592` and YOLOE checkpoint
+`yoloe-26s-seg.pt`. BioCLIP returned a finite 5 x 1024 embedding matrix with
+frozen preprocessing/model hashes, one persistent model load, and one cache
+hit. YOLOE reused one persistent process across batches of three and two and
+returned eight detections. Both Python 3.12 runtimes reported PyTorch 2.12.1,
+MPS availability, MPS resolution, and enabled CPU fallback policy.
+
+The detector's winning prompt routed four images to pupa/chrysalis exclusion
+and one to ambiguous exclusion, including provider-supported adult records.
+That is a recorded accuracy warning for subsequent experiments, not a reason
+to reinterpret the source labels and not a runtime-smoke failure. The compact
+handoff is
+`examples/species/papilio_demoleus/pilot_prototype_vision_smoke_manifest.json`.
+
 - B0 current text-pruned and B1 zero-shot without pruning;
 - B2 SimpleShot, B3 centered SimpleShot, B4 top-five references, and B5
   multi-prototype;
@@ -288,12 +303,13 @@ Raw similarity or SVC margin is never labelled a probability.
 |-|-|
 | Family-first object pipeline, evaluation QA, and orchestration | 177 passed |
 | Phase 14 prototype-freeze focused suite | 61 passed |
+| Five-image runtime focused suite | 88 passed |
 | GBIF checkpoint, metadata, workflow, and shortfall suite | 52 passed |
-| Final full non-vision repository suite | 2,285 passed in 87.49 seconds |
+| Final full repository suite | 2,289 passed in 91.67 seconds |
 | Changed-file Ruff | passed |
 | `git diff --check` | passed |
-| Local BioCLIP images | 0 |
-| Local YOLOE images | 0 |
+| Completed smoke BioCLIP images | 5 |
+| Completed smoke YOLOE images | 5 |
 
 ## Phase 15 decision
 

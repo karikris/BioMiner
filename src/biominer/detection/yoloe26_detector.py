@@ -209,6 +209,8 @@ class YoloE26SidecarObjectDetector:
         self._stdout: IO[str] | None = None
         self._stderr_lines: deque[str] = deque(maxlen=50)
         self._stderr_thread: Thread | None = None
+        self.worker_process_starts = 0
+        self.worker_request_count = 0
 
     def __enter__(self) -> "YoloE26SidecarObjectDetector":
         return self
@@ -270,6 +272,7 @@ class YoloE26SidecarObjectDetector:
         try:
             self._stdin.write(json.dumps(payload, sort_keys=True) + "\n")
             self._stdin.flush()
+            self.worker_request_count += 1
         except BrokenPipeError as exc:
             raise RuntimeError(_sidecar_exit_message("YOLOE-26 persistent sidecar pipe closed", process, self._stderr_tail())) from exc
         line = self._stdout.readline()
@@ -305,6 +308,7 @@ class YoloE26SidecarObjectDetector:
                 process.terminate()
                 raise RuntimeError("YOLOE-26 persistent sidecar did not expose stdin/stdout pipes")
             self._process = process
+            self.worker_process_starts += 1
             self._stdin = process.stdin
             self._stdout = process.stdout
             if process.stderr is not None:

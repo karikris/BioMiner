@@ -27,6 +27,9 @@ PROTOTYPE_QA_MANIFEST_PATH = Path(
 PROTOTYPE_SUPPORT_BANK_MANIFEST_PATH = Path(
     "examples/species/papilio_demoleus/pilot_prototype_support_bank_manifest.json"
 )
+PROTOTYPE_VISION_SMOKE_MANIFEST_PATH = Path(
+    "examples/species/papilio_demoleus/pilot_prototype_vision_smoke_manifest.json"
+)
 
 
 def _matrix() -> dict[str, object]:
@@ -63,6 +66,10 @@ def _prototype_duplicate_resolution_manifest() -> dict[str, object]:
     return json.loads(
         PROTOTYPE_DUPLICATE_RESOLUTION_MANIFEST_PATH.read_text(encoding="utf-8")
     )
+
+
+def _prototype_vision_smoke_manifest() -> dict[str, object]:
+    return json.loads(PROTOTYPE_VISION_SMOKE_MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
 def test_phase14_matrix_freezes_local_vision_limit_and_external_execution() -> None:
@@ -373,3 +380,23 @@ def test_phase14_prototype_support_artifacts_are_hashed_and_untracked() -> None:
         and int(value["byte_count"]) > 0
         for value in manifest["artifacts"].values()
     )
+
+
+def test_phase14_five_image_smoke_records_exact_mps_runtime_evidence() -> None:
+    manifest = _prototype_vision_smoke_manifest()
+
+    assert manifest["task"] == "14.4.1"
+    assert manifest["status"] == "passed"
+    assert manifest["execution"]["completed_image_count"] == 5
+    assert manifest["execution"]["maximum_images_per_invocation"] == 5
+    assert manifest["execution"]["raw_images_committed"] is False
+    assert manifest["runtime_preflight"]["bioclip"]["device_resolved"] == "mps"
+    assert manifest["runtime_preflight"]["yoloe"]["device_resolved"] == "mps"
+    assert manifest["bioclip"]["embedding_shape"] == [5, 1024]
+    assert manifest["bioclip"]["finite_values"] is True
+    assert manifest["bioclip"]["model_loads"] == 1
+    assert manifest["bioclip"]["model_cache_hits"] == 1
+    assert manifest["yoloe"]["worker_process_starts"] == 1
+    assert manifest["yoloe"]["batch_sizes"] == [3, 2]
+    assert manifest["semantics"]["smoke_pass_means_accuracy_validated"] is False
+    assert manifest["next_task"] == "14.4.2_build_frozen_support_embeddings"

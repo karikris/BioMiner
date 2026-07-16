@@ -601,6 +601,8 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     yoloe26_smoke.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
     yoloe26_smoke.add_argument("--image")
     yoloe26_smoke.add_argument("--output-dir", default="reports/yoloe26_smoke")
+    prototype_smoke = subparsers.add_parser("prototype-smoke-five")
+    prototype_smoke.add_argument("--config", required=True)
     benchmark = subparsers.add_parser("benchmark-plumbing")
     benchmark.add_argument("--records", type=int, default=1000)
     benchmark.add_argument("--butterfly-rate", type=float, default=0.25)
@@ -678,6 +680,8 @@ def run(args: argparse.Namespace) -> int:
             return _run_yoloe26_prefetch(args)
         if args.vision_command == "yoloe26-smoke":
             return _run_yoloe26_smoke(args)
+        if args.vision_command == "prototype-smoke-five":
+            return _run_prototype_vision_smoke(args)
         if args.vision_command == "benchmark-plumbing":
             return _run_vision_benchmark_plumbing(args)
         if args.vision_command == "benchmark-rolling-matrix":
@@ -2189,6 +2193,35 @@ def _run_yoloe26_smoke(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_prototype_vision_smoke(args: argparse.Namespace) -> int:
+    from biominer.benchmarks.prototype_vision_smoke import (
+        PrototypeVisionSmokeConfig,
+        run_prototype_vision_smoke,
+    )
+
+    try:
+        result = run_prototype_vision_smoke(
+            PrototypeVisionSmokeConfig.read_json(args.config)
+        )
+    except (OSError, TypeError, ValueError, RuntimeError, pl.exceptions.PolarsError) as exc:
+        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+        return 2
+    print(
+        json.dumps(
+            {
+                "status": result.report["status"],
+                "image_count": result.report["image_count"],
+                "report": str(result.report_path),
+                "summary": str(result.summary_path),
+                "report_fingerprint": result.report["report_fingerprint"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def _run_vision_benchmark_plumbing(args: argparse.Namespace) -> int:
     try:
         result = run_vision_plumbing_benchmark(
@@ -2594,6 +2627,11 @@ def _bioclip_runtime(
 
 def _bioclip_worker_env(hf_cache_dir: str | Path) -> dict[str, str]:
     env = os.environ.copy()
+    source_path = str(Path(__file__).resolve().parents[1])
+    current = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        source_path if not current else f"{source_path}{os.pathsep}{current}"
+    )
     cache_path = Path(hf_cache_dir).resolve()
     hub_path = cache_path / "hub"
     hub_path.mkdir(parents=True, exist_ok=True)

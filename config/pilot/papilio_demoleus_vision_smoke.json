@@ -1,0 +1,29 @@
+{
+  "schema_version": "prototype-vision-smoke-v1.0.0",
+  "support_manifest": "runs/papilio_demoleus_prototype_bank_local_20260716/prototype_support_manifest.parquet",
+  "support_manifest_sha256": "sha256:a5a26fc7e60c79dbcca9b9f8fc1ba2b3558e6307bd7c5b70711fe1ad022fde10",
+  "readiness": "runs/papilio_demoleus_prototype_bank_local_20260716/reference_bank_prototype_readiness.json",
+  "readiness_sha256": "sha256:154e9c98ad4ed577077702e5524e81f5b0cb406225086a339ee1d092d65ef9a9",
+  "reference_media_ids": [
+    "reference-media:127d0570496b47e4bdea5f083861e74365dffe2aa8a76356a2eb3b6909bd5a9b",
+    "reference-media:01daa868b23bdc30b3fa216531bbe712515a86f4e44e0ba7dd3b433f2eccff65",
+    "reference-media:48ca04608545eef229ef77dded4ad00bff980244191f1c4d93e67bc6f1bdb9d8",
+    "reference-media:7bf9dc58cda1dca817580f02c6b96d188e7f7031139c5432d991930eed943fd1",
+    "reference-media:2bb8bfbdda8d97c9627f36454d5d024f0e83e53264fc01acda3e8018f5781f08"
+  ],
+  "output_dir": "reports/phase14/papilio_demoleus_prototype_vision_smoke_20260716",
+  "bioclip_runtime_python": "../BioCLIP25/venv/bin/python",
+  "bioclip_hf_cache_dir": "../BioCLIP25/cache/huggingface",
+  "yoloe_runtime_python": "../YOLO26/venv/bin/python",
+  "model_name": "imageomics/bioclip-2.5-vith14",
+  "model_revision": "191d741545e4c741cdef4b22c6eb69c945c1e592",
+  "open_clip_version": "3.3.0",
+  "yoloe_checkpoint": "yoloe-26s-seg.pt",
+  "device": "mps",
+  "yoloe_batch_size": 3,
+  "bioclip_batch_size": 5,
+  "yoloe_imgsz": 768,
+  "yoloe_conf": 0.2,
+  "yoloe_iou": 0.5,
+  "yoloe_max_det": 8
+}

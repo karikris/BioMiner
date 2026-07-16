@@ -1,0 +1,114 @@
+{
+  "schema_version": "papilio-demoleus-prototype-vision-smoke-manifest-v1.0.0",
+  "phase": 14,
+  "task": "14.4.1",
+  "status": "passed",
+  "prototype_only": true,
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "execution": {
+    "command": "biominer dev vision prototype-smoke-five --config config/pilot/papilio_demoleus_vision_smoke.json",
+    "config": "config/pilot/papilio_demoleus_vision_smoke.json",
+    "storage_backend": "local",
+    "s3_deferred": true,
+    "completed_image_count": 5,
+    "maximum_images_per_invocation": 5,
+    "image_bearing_attempts": [
+      {
+        "status": "stopped_before_yoloe",
+        "bioclip_images": 5,
+        "yoloe_images": 0,
+        "reason": "decoded RGB content hashes were initially compared with source-file byte hashes"
+      },
+      {
+        "status": "passed",
+        "bioclip_images": 5,
+        "yoloe_images": 5
+      }
+    ],
+    "raw_images_committed": false,
+    "generated_report_ignored_by_git": true
+  },
+  "runtime_preflight": {
+    "bioclip": {
+      "runtime_python": "/Users/merm0001/Repos/BioCLIP25/venv/bin/python",
+      "torch_version": "2.12.1",
+      "open_clip_version": "3.3.0",
+      "mps_available": true,
+      "device_resolved": "mps",
+      "model_load": true,
+      "tokenizer_load": true,
+      "pytorch_mps_fallback_enabled": true
+    },
+    "yoloe": {
+      "runtime_python": "/Users/merm0001/Repos/YOLO26/venv/bin/python",
+      "torch_version": "2.12.1",
+      "ultralytics_version": "8.4.87",
+      "mps_available": true,
+      "device_resolved": "mps",
+      "checkpoint_load": true,
+      "set_classes": true,
+      "pytorch_mps_fallback_enabled": true
+    }
+  },
+  "bioclip": {
+    "model_id": "imageomics/bioclip-2.5-vith14",
+    "model_revision": "191d741545e4c741cdef4b22c6eb69c945c1e592",
+    "model_weights_sha256": "sha256:ac2e37c2f89ef8e6b889176a9a3f418970ad9db15a218bd29e3321e95c46ae97",
+    "open_clip_config_sha256": "sha256:4c131846348300c77b5bee06690b0e94ee85ca9ce9a30a853b36084d00dcd25c",
+    "preprocessing_fingerprint": "sha256:bcc6c8300a68af2c6081881fcee9ba46829eed84fd5c4bbe0b05f494c2492ce3",
+    "preprocessing_version": "openclip-preprocessing-attestation-v2",
+    "image_resize_mode": "longest",
+    "embedding_shape": [
+      5,
+      1024
+    ],
+    "finite_values": true,
+    "content_hashes_match": true,
+    "device_actual": "mps",
+    "worker_process_starts": 1,
+    "worker_requests": 2,
+    "model_loads": 1,
+    "model_cache_hits": 1,
+    "batch_size": 5
+  },
+  "yoloe": {
+    "model_id": "yoloe26:yoloe-26s-seg",
+    "checkpoint": "yoloe-26s-seg.pt",
+    "model_version": "ultralytics:8.4.87",
+    "prompt_set_fingerprint": "sha256:42250c7309749775319ab7708ff61a720ce5ede595790c3364f3bc1e23814429",
+    "worker_process_starts": 1,
+    "worker_requests": 2,
+    "batch_sizes": [
+      3,
+      2
+    ],
+    "detection_count": 8
+  },
+  "route_output": {
+    "pupa_or_chrysalis_exclude": 4,
+    "ambiguous_visual_domain_exclude": 1,
+    "finding": "The top YOLOE prompt route was implausible for several provider-supported adult records; smoke success validates runtime plumbing, not detector accuracy."
+  },
+  "artifacts": {
+    "report": {
+      "uri": "reports/phase14/papilio_demoleus_prototype_vision_smoke_20260716/prototype_vision_smoke_report.json",
+      "byte_count": 8506,
+      "sha256": "sha256:be610c98b91c67708b054b60cb38f3386bc6af32cca9427a603143c38562404f"
+    },
+    "summary": {
+      "uri": "reports/phase14/papilio_demoleus_prototype_vision_smoke_20260716/prototype_vision_smoke_summary.md",
+      "byte_count": 291,
+      "sha256": "sha256:a92d9f29dfc08f914489eb865c9aaf8c804a8e89f14c7afedd67cf6a11fc7b0e"
+    }
+  },
+  "semantics": {
+    "model_output_is_taxonomic_validation": false,
+    "raw_scores_are_probabilities": false,
+    "smoke_pass_means_accuracy_validated": false,
+    "prototype_screening_only": true
+  },
+  "next_task": "14.4.2_build_frozen_support_embeddings"
+}

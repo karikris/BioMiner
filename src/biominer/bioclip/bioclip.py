@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import json
 from math import isfinite
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -1081,6 +1082,7 @@ class PersistentBioClipScorer:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=_persistent_worker_env(self.hf_cache_dir),
                 text=True,
                 bufsize=1,
             )
@@ -1171,6 +1173,20 @@ def _coerce_label_set_scores(
         ]
         for label_set_name, scores_by_image in payload.items()
     }
+
+
+def _persistent_worker_env(hf_cache_dir: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    source_path = str(Path(__file__).resolve().parents[2])
+    current = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        source_path if not current else f"{source_path}{os.pathsep}{current}"
+    )
+    cache_path = hf_cache_dir.expanduser().resolve()
+    env["HF_HOME"] = str(cache_path)
+    env["HUGGINGFACE_HUB_CACHE"] = str(cache_path / "hub")
+    env.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    return env
 
 
 def _validated_image_embeddings(
