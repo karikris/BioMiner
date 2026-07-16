@@ -1437,8 +1437,20 @@ def _selected_media(
     selections: pl.DataFrame,
     media_candidates: pl.DataFrame,
 ) -> list[_SelectedMedia]:
-    validate_reference_acquisition_selections(selections)
-    validate_reference_media_candidates(media_candidates)
+    from biominer.references.prototype_acquisition import (
+        prototype_reference_selection_schema,
+    )
+
+    prototype_selections = selections.schema == prototype_reference_selection_schema()
+    if prototype_selections:
+        from biominer.references.prototype_download import (
+            validate_prototype_download_inputs,
+        )
+
+        validate_prototype_download_inputs(selections, media_candidates)
+    else:
+        validate_reference_acquisition_selections(selections)
+        validate_reference_media_candidates(media_candidates)
     candidates = {
         str(row["reference_media_id"]): row
         for row in media_candidates.iter_rows(named=True)
@@ -1451,12 +1463,18 @@ def _selected_media(
             raise ValueError(
                 f"selected reference media is absent from candidates: {media_id}"
             )
-        for field_name in (
+        identity_fields = [
             "reference_observation_id",
             "source",
-            "source_snapshot_version",
             "licence",
-        ):
+        ]
+        if prototype_selections:
+            identity_fields.extend(
+                ("provider_media_id", "media_identifier", "attribution")
+            )
+        else:
+            identity_fields.append("source_snapshot_version")
+        for field_name in identity_fields:
             if selection[field_name] != candidate[field_name]:
                 raise ValueError(
                     f"selected reference media has stale {field_name}: {media_id}"
@@ -2049,16 +2067,17 @@ def _decode_image_isolated(
     try:
         process.start()
         sender.close()
-        process.join(max(0.0, timeout_seconds - (time.monotonic() - started)))
-        if process.is_alive():
-            process.terminate()
-            process.join(timeout=1.0)
-            if (
-                process.is_alive()
-            ):  # pragma: no cover - terminate is normally sufficient.
-                process.kill()
-                process.join(timeout=1.0)
-            raise _PermanentResponse("item_deadline_exceeded")
+        if _darwin_decode_memory_watchdog_required():
+            _join_decode_worker_with_watchdog(
+                process,
+                deadline=started + timeout_seconds,
+                max_memory_bytes=max_memory_bytes,
+            )
+        else:
+            process.join(max(0.0, timeout_seconds - (time.monotonic() - started)))
+            if process.is_alive():
+                _terminate_decode_worker(process)
+                raise _PermanentResponse("item_deadline_exceeded")
         if not receiver.poll():
             raise _PayloadFailure(
                 f"image_decode_worker_failed:exit_{process.exitcode}",
@@ -2128,6 +2147,8 @@ def _decode_image_worker(
 def _apply_decode_memory_limit(max_memory_bytes: int) -> None:
     if os.name != "posix":
         return
+    if _darwin_decode_memory_watchdog_required():
+        return
     try:
         import resource
 
@@ -2143,6 +2164,70 @@ def _apply_decode_memory_limit(max_memory_bytes: int) -> None:
         resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
     except (ImportError, OSError, ValueError) as exc:
         raise RuntimeError("unable to enforce image decode memory limit") from exc
+
+
+def _darwin_decode_memory_watchdog_required() -> bool:
+    return os.name == "posix" and os.uname().sysname == "Darwin"
+
+
+def _join_decode_worker_with_watchdog(
+    process: multiprocessing.Process,
+    *,
+    deadline: float,
+    max_memory_bytes: int,
+) -> None:
+    if process.pid is None:  # pragma: no cover - guarded by process.start().
+        raise RuntimeError("image decode worker has no process identifier")
+    while process.is_alive():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _terminate_decode_worker(process)
+            raise _PermanentResponse("item_deadline_exceeded")
+        rss_bytes = _process_rss_bytes(
+            process.pid,
+            timeout_seconds=min(1.0, remaining),
+        )
+        if rss_bytes is None:
+            process.join(timeout=0)
+            if not process.is_alive():
+                break
+            _terminate_decode_worker(process)
+            raise _PayloadFailure(
+                "image_decode_memory_monitor_unavailable",
+                decode_status="decode_failed",
+            )
+        if rss_bytes > max_memory_bytes:
+            _terminate_decode_worker(process)
+            raise _PayloadFailure(
+                "image_decode_memory_limit_exceeded",
+                decode_status="decode_failed",
+            )
+        process.join(timeout=min(0.02, remaining))
+    process.join(timeout=0)
+
+
+def _process_rss_bytes(pid: int, *, timeout_seconds: float) -> int | None:
+    try:
+        output = subprocess.check_output(
+            ["ps", "-o", "rss=", "-p", str(pid)],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout_seconds,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        return int(output) * 1024
+    except ValueError:
+        return None
+
+
+def _terminate_decode_worker(process: multiprocessing.Process) -> None:
+    process.terminate()
+    process.join(timeout=1.0)
+    if process.is_alive():  # pragma: no cover - terminate is normally sufficient.
+        process.kill()
+        process.join(timeout=1.0)
 
 
 def _decode_image(path: Path, *, max_pixels: int) -> tuple[int, int, str, str]:

@@ -24,6 +24,8 @@ from biominer.references.prototype_planner import (
 from biominer.references.schemas import (
     REFERENCE_ACQUISITION_PLAN_SCHEMA_VERSION,
     make_acquisition_plan_id,
+    make_reference_media_id,
+    make_reference_observation_id,
     reference_acquisition_plan_frame,
     validate_reference_media_candidates,
     validate_reference_observations,
@@ -40,6 +42,7 @@ PROTOTYPE_ACQUISITION_REPORT_SCHEMA_VERSION = "prototype-acquisition-report-v1.0
 PROTOTYPE_SOURCE_SUMMARY_FILE = "prototype_reference_source_summary.parquet"
 PROTOTYPE_SHORTFALL_FILE = "prototype_reference_shortfalls.parquet"
 PROTOTYPE_SELECTION_FILE = "prototype_reference_selections.parquet"
+PROTOTYPE_DOWNLOAD_CANDIDATES_FILE = "prototype_reference_download_candidates.parquet"
 PROTOTYPE_ACQUISITION_REPORT_FILE = "prototype_acquisition_report.json"
 PROTOTYPE_ACQUISITION_REPORT_MARKDOWN_FILE = "prototype_acquisition_report.md"
 
@@ -49,6 +52,7 @@ class PrototypeAcquisitionResult:
     plan: pl.DataFrame
     planner: PrototypeReferencePlanResult
     selections: pl.DataFrame
+    download_candidates: pl.DataFrame
     source_summary: pl.DataFrame
     shortfalls: pl.DataFrame
     report: dict[str, Any]
@@ -104,6 +108,13 @@ def prototype_reference_selection_schema() -> dict[str, pl.DataType]:
         "prototype_only": pl.Boolean,
         "selection_fingerprint": pl.String,
     }
+
+
+def prototype_reference_licence_policy() -> ReferenceLicencePolicy:
+    return ReferenceLicencePolicy(
+        version="prototype-reference-licences-v1",
+        broadly_reusable=("cc0", "cc-by", "cc-by-sa", "public-domain"),
+    )
 
 
 def prototype_reference_source_summary_schema() -> dict[str, pl.DataType]:
@@ -172,7 +183,7 @@ def compile_prototype_acquisition(
         unique_id="reference_media_id",
         artifact="reference media candidates",
     )
-    policy = licence_policy or ReferenceLicencePolicy()
+    policy = licence_policy or prototype_reference_licence_policy()
     qualified_media = _apply_licence_policy(combined_media, policy)
     quotas = _compile_quotas(query_plans)
     target_key = _single_target(query_plans, visual_domain_manifest)
@@ -242,6 +253,16 @@ def compile_prototype_acquisition(
         selection_seed=selection_seed,
         selected_at=created,
     )
+    from biominer.references.prototype_download import (
+        compile_prototype_download_candidates,
+    )
+
+    download_candidates = compile_prototype_download_candidates(
+        selections=selections,
+        biological_media_candidates=(qualified_media,),
+        visual_domain_manifest=visual_domain_manifest,
+        licence_policy=policy,
+    )
     source_summary = _build_source_summary(
         planner=planner,
         visual_rows=visual_rows,
@@ -272,6 +293,7 @@ def compile_prototype_acquisition(
         plan=plan,
         planner=planner,
         selections=selections,
+        download_candidates=download_candidates,
         source_summary=source_summary,
         shortfalls=shortfalls,
         report=report,
@@ -286,6 +308,11 @@ def validate_prototype_acquisition_result(result: PrototypeAcquisitionResult) ->
 
     validate_reference_acquisition_plan(result.plan)
     _validate_selections(result.selections, result.planner)
+    from biominer.references.prototype_download import (
+        validate_prototype_download_inputs,
+    )
+
+    validate_prototype_download_inputs(result.selections, result.download_candidates)
     _validate_frame(
         result.source_summary,
         schema=prototype_reference_source_summary_schema(),
@@ -335,6 +362,7 @@ def write_prototype_acquisition_result(
         "source_summary": output / PROTOTYPE_SOURCE_SUMMARY_FILE,
         "shortfalls": output / PROTOTYPE_SHORTFALL_FILE,
         "selections": output / PROTOTYPE_SELECTION_FILE,
+        "download_candidates": output / PROTOTYPE_DOWNLOAD_CANDIDATES_FILE,
         "report": output / PROTOTYPE_ACQUISITION_REPORT_FILE,
         "markdown": output / PROTOTYPE_ACQUISITION_REPORT_MARKDOWN_FILE,
     }
@@ -346,6 +374,7 @@ def write_prototype_acquisition_result(
     _write_parquet(result.source_summary, paths["source_summary"])
     _write_parquet(result.shortfalls, paths["shortfalls"])
     _write_parquet(result.selections, paths["selections"])
+    _write_parquet(result.download_candidates, paths["download_candidates"])
     _write_json(result.report, paths["report"])
     _write_text(result.markdown, paths["markdown"])
     planner_paths = write_prototype_reference_plan_result(result.planner, output)
@@ -568,6 +597,22 @@ def _visual_row_eligible(row: Mapping[str, object]) -> bool:
     )
 
 
+def make_prototype_visual_reference_ids(
+    row: Mapping[str, object],
+) -> tuple[str, str]:
+    source = str(row.get("source") or "").strip()
+    source_record_id = str(row.get("source_record_id") or "").strip()
+    provider_media_id = str(row.get("provider_media_id") or "").strip()
+    if not source or not source_record_id or not provider_media_id:
+        raise ValueError("visual-domain candidate lacks provider identity")
+    observation_id = make_reference_observation_id(source, source_record_id)
+    return observation_id, make_reference_media_id(
+        source,
+        provider_media_id,
+        observation_id,
+    )
+
+
 def _build_selections(
     *,
     planner: PrototypeReferencePlanResult,
@@ -646,9 +691,8 @@ def _build_selections(
         ),
         start=1,
     ):
-        candidate_id = str(raw["candidate_id"])
         category = str(raw["visual_domain_category"])
-        digest = hashlib.sha256(candidate_id.encode()).hexdigest()
+        observation_id, media_id = make_prototype_visual_reference_ids(raw)
         row = {
             "schema_version": PROTOTYPE_SELECTION_SCHEMA_VERSION,
             "prototype_selection_id": "",
@@ -660,8 +704,8 @@ def _build_selections(
             "route": "visual_domain_negative",
             "life_stage": "not_applicable",
             "visual_domain": category,
-            "reference_media_id": f"prototype-media:{digest}",
-            "reference_observation_id": f"prototype-observation:{digest}",
+            "reference_media_id": media_id,
+            "reference_observation_id": observation_id,
             "source": raw["source"],
             "provider_media_id": raw["provider_media_id"],
             "media_identifier": raw["media_uri"],
@@ -725,6 +769,17 @@ def _validate_selections(
     selections: pl.DataFrame,
     planner: PrototypeReferencePlanResult,
 ) -> None:
+    validate_prototype_reference_selections(selections)
+    biological = selections.filter(pl.col("candidate_scope_type") == "accepted_taxon")
+    if biological.height != planner.selected.height:
+        raise ValueError("prototype biological selections disagree with planner")
+    if set(biological["reference_media_id"]) != set(
+        planner.selected["reference_media_id"]
+    ):
+        raise ValueError("prototype biological media disagree with planner")
+
+
+def validate_prototype_reference_selections(selections: pl.DataFrame) -> None:
     _validate_frame(
         selections,
         schema=prototype_reference_selection_schema(),
@@ -744,14 +799,16 @@ def _validate_selections(
     ):
         if selections[field].n_unique() != selections.height:
             raise ValueError(f"prototype selection {field} values must be unique")
-    biological = selections.filter(pl.col("candidate_scope_type") == "accepted_taxon")
+    if set(selections["candidate_scope_type"].to_list()) - {
+        "accepted_taxon",
+        "visual_domain",
+    }:
+        raise ValueError("prototype selection contains an unsupported scope type")
+    if selections.filter(~pl.col("prototype_only")).height:
+        raise ValueError("prototype selection row is not marked prototype-only")
+    if selections.filter(~pl.col("attribution_complete")).height:
+        raise ValueError("prototype selection contains incomplete attribution")
     visual = selections.filter(pl.col("candidate_scope_type") == "visual_domain")
-    if biological.height != planner.selected.height:
-        raise ValueError("prototype biological selections disagree with planner")
-    if set(biological["reference_media_id"]) != set(
-        planner.selected["reference_media_id"]
-    ):
-        raise ValueError("prototype biological media disagree with planner")
     if selections.filter(~pl.col("trust_level").is_in(["R1", "R2", "R3", "R4"])).height:
         raise ValueError("prototype selection contains ineligible trust evidence")
     if selections.filter(
@@ -761,6 +818,15 @@ def _validate_selections(
     if visual.filter(pl.col("candidate_scope_id").str.len_chars() == 0).height:
         raise ValueError("prototype visual selections require an explicit domain")
     for row in selections.iter_rows(named=True):
+        for field in (
+            "media_identifier",
+            "source_record_uri",
+            "licence",
+            "attribution",
+            "selection_strategy",
+        ):
+            if not str(row[field] or "").strip():
+                raise ValueError(f"prototype selection {field} must be nonblank")
         expected = _sha256_json(
             {key: value for key, value in row.items() if key != "selection_fingerprint"}
         )
@@ -1117,6 +1183,7 @@ __all__ = [
     "PROTOTYPE_ACQUISITION_REPORT_FILE",
     "PROTOTYPE_ACQUISITION_REPORT_MARKDOWN_FILE",
     "PROTOTYPE_ACQUISITION_VERSION",
+    "PROTOTYPE_DOWNLOAD_CANDIDATES_FILE",
     "PROTOTYPE_SHORTFALL_FILE",
     "PROTOTYPE_SHORTFALL_SCHEMA_VERSION",
     "PROTOTYPE_SELECTION_FILE",
@@ -1126,9 +1193,12 @@ __all__ = [
     "PROTOTYPE_SOURCE_SUMMARY_SCHEMA_VERSION",
     "PrototypeAcquisitionResult",
     "compile_prototype_acquisition",
+    "make_prototype_visual_reference_ids",
+    "prototype_reference_licence_policy",
     "prototype_reference_shortfall_schema",
     "prototype_reference_selection_schema",
     "prototype_reference_source_summary_schema",
     "validate_prototype_acquisition_result",
+    "validate_prototype_reference_selections",
     "write_prototype_acquisition_result",
 ]

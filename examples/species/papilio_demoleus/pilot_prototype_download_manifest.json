@@ -1,0 +1,139 @@
+{
+  "schema_version": "papilio-demoleus-prototype-download-manifest-v1.0.0",
+  "phase": 14,
+  "task": "14.3.2",
+  "status": "complete",
+  "prototype_only": true,
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "materialization": {
+    "command": "biominer references download --settings-file config/pilot/papilio_demoleus_prototype_download.json",
+    "settings_file": "config/pilot/papilio_demoleus_prototype_download.json",
+    "settings_fingerprint": "sha256:54099013f91fe2846d7ac3773183bec9312f19380ec3b5169095823c4a5c145a",
+    "run_id": "papilio-demoleus-prototype-media-20260715",
+    "git_sha": "d0760f527dcd4ef5137108770e9524736549d065",
+    "started_at": "2026-07-16T00:27:30.094219+00:00",
+    "ended_at": "2026-07-16T00:52:03.656144+00:00",
+    "elapsed_seconds": 1473.561925,
+    "storage_backend": "s3",
+    "output_prefix": "s3://biominer/biominer/reference-media/papilio-demoleus/prototype-20260715",
+    "workers": 4,
+    "max_inflight": 8,
+    "max_concurrent_decodes": 1,
+    "perceptual_hash_version": "dhash128-v1"
+  },
+  "input_identity": {
+    "acquisition_plan_id": "reference-plan:00f93b07decab29239b29579937ce7d2e91fffb04744e19347b2a047b365b05b",
+    "selection_rows": 93,
+    "selection_fingerprint": "sha256:0c6899d13a31fa38a701a15e5012ea0df98fcea0c5c759d9d8586e5b36bc71be",
+    "selected_candidates_fingerprint": "sha256:2d4ef1de42ff4688ae3048ef34010eb2b894a5804288910c429f950a525bb809",
+    "selected_candidate_sources_fingerprint": "sha256:fe9ef0505e7c6a96703573f032e5f16f51fdf3eee12af608a20004339c05b060",
+    "licence_policy_version": "prototype-reference-licences-v1",
+    "licence_policy_fingerprint": "sha256:b16c0712a4f262a43df74bfc9876e69a18ae3e6e20862c891c7d5929a87f2bb1"
+  },
+  "counts": {
+    "selected": 93,
+    "committed": 93,
+    "inventory_rows": 93,
+    "valid_decodes": 93,
+    "quarantined": 0,
+    "errors": 0,
+    "http_requests": 96,
+    "retries": 3,
+    "rate_limit_events": 3,
+    "source_object_count": 93,
+    "checkpoint_count": 93,
+    "staging_object_count_after_cleanup": 0,
+    "local_temporary_image_count_after_run": 0
+  },
+  "source_distribution": {
+    "GBIF": 82,
+    "Wikimedia Commons": 11
+  },
+  "licence_policy_status_distribution": {
+    "allowed": 13,
+    "research_only": 80
+  },
+  "content_type_distribution": {
+    "image/jpeg": 92,
+    "image/png": 1
+  },
+  "validation": {
+    "selection_identity_exact": true,
+    "content_type_validated": true,
+    "image_decoding_validated": true,
+    "all_dimensions_positive": true,
+    "decoded_width_min": 108,
+    "decoded_width_max": 9504,
+    "decoded_height_min": 172,
+    "decoded_height_max": 6336,
+    "source_byte_count_total": 61081834,
+    "source_byte_count_min": 12948,
+    "source_byte_count_max": 13358356,
+    "all_sha256_valid": true,
+    "all_perceptual_hashes_valid": true,
+    "unique_sha256_count": 93,
+    "unique_perceptual_hash_count": 93,
+    "all_provider_urls_policy_allowed": true,
+    "all_licences_eligible": true,
+    "all_attributions_complete": true,
+    "all_s3_object_sizes_revalidated": true,
+    "all_s3_object_sha256_revalidated": true,
+    "local_temporary_images_deleted": true
+  },
+  "performance": {
+    "objects_per_second": 0.06311237988861582,
+    "retry_wait_seconds": 30.0,
+    "peak_memory_bytes": "not_instrumented",
+    "gpu_memory_bytes": "not_instrumented"
+  },
+  "artifacts": {
+    "reference_media_objects": {
+      "uri": "s3://biominer/biominer/reference-media/papilio-demoleus/prototype-20260715/reference_media_objects.parquet",
+      "row_count": 93,
+      "byte_count": 26930,
+      "sha256": "sha256:6e21a2a9090c17101bfa09aa9b3f1eadb705a413000cbdd2e7a6c1f966690337"
+    },
+    "download_report": {
+      "uri": "s3://biominer/biominer/reference-media/papilio-demoleus/prototype-20260715/reports/run_id=papilio-demoleus-prototype-media-20260715-f3e452fe2144/reference_media_download_report.json",
+      "byte_count": 5871,
+      "sha256": "sha256:14d2d2f602226bf5f064f599dcad7a7ef8ca88eae5f9095f589d3b65faefba7b"
+    },
+    "download_summary": {
+      "uri": "s3://biominer/biominer/reference-media/papilio-demoleus/prototype-20260715/reports/run_id=papilio-demoleus-prototype-media-20260715-f3e452fe2144/reference_media_download_summary.md",
+      "byte_count": 330,
+      "sha256": "sha256:81944f7be77778d1feb3464f84194d47ccbd5137322d44869ace664861684dc3"
+    }
+  },
+  "resume_verification": {
+    "command": "biominer references download --settings-file config/pilot/papilio_demoleus_prototype_download.json --run-id papilio-demoleus-prototype-media-20260715-resume-check",
+    "settings_fingerprint": "sha256:be7fbb5ed6361d5f1f2f44d7c986786c4cabab58091bef94f6c28ace7edb4854",
+    "selected": 93,
+    "resumed": 93,
+    "committed": 93,
+    "http_requests": 0,
+    "retries": 0,
+    "errors": 0,
+    "inventory_sha256_unchanged": true,
+    "report_uri": "s3://biominer/biominer/reference-media/papilio-demoleus/prototype-20260715/reports/run_id=papilio-demoleus-prototype-media-20260715-resume-check-2193a8412276/reference_media_download_report.json",
+    "report_byte_count": 5902,
+    "report_sha256": "sha256:b02a018f4fadacb11c79f639f2a88ce45e6f6ec672eb53e185e065a32072a002",
+    "summary_uri": "s3://biominer/biominer/reference-media/papilio-demoleus/prototype-20260715/reports/run_id=papilio-demoleus-prototype-media-20260715-resume-check-2193a8412276/reference_media_download_summary.md",
+    "summary_byte_count": 343,
+    "summary_sha256": "sha256:d13615c580ad4850b9586a6bfdf4a3fdc4d60f6148f6cbd187ba54d8b8c67e2b"
+  },
+  "verification_semantics": {
+    "provider_supported_is_human_verified": false,
+    "human_taxonomic_verification_complete": false,
+    "model_output_used_as_taxonomic_validation": false,
+    "predictions_are_experimental_screening_evidence": true
+  },
+  "unresolved_risks": [
+    "Provider-supported labels remain metadata-qualified prototype evidence rather than independent taxonomic validation.",
+    "Observation, burst, owner, photographer and provider-mirror relationships require Task 14.3.3 duplicate resolution even though byte and perceptual hashes are unique.",
+    "Research-only licences restrict reuse outside the documented prototype workflow."
+  ],
+  "next_task": "14.3.3_resolve_duplicates"
+}

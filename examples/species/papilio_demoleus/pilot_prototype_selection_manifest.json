@@ -66,14 +66,14 @@
   "selection_artifact": {
     "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_selections.parquet",
     "row_count": 93,
-    "byte_count": 40469,
-    "sha256": "sha256:c5e40c927f96b955b5d7d4ba489eadf61756dc203e262926e05689817dce7898"
+    "byte_count": 40423,
+    "sha256": "sha256:30b7f50a4bf074ab10e4fbfa89b453b22ebcc84c948140c92d6d2fb3723c2243"
   },
   "shortfall_artifact": {
     "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_shortfalls.parquet",
     "row_count": 45,
-    "byte_count": 7837,
-    "sha256": "sha256:7af5e1ddfad1618b05f23a7aea51ca9686ccf159e95ac32b199a908834242ccb"
+    "byte_count": 7836,
+    "sha256": "sha256:ac2ddccf0e410a332793c21150bf1859d1e459dc85c3d1062386e2ba795c3b5a"
   },
   "verification_semantics": {
     "provider_supported_is_human_verified": false,

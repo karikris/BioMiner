@@ -14,6 +14,9 @@ PROTOTYPE_ACQUISITION_MANIFEST_PATH = Path(
 PROTOTYPE_SELECTION_MANIFEST_PATH = Path(
     "examples/species/papilio_demoleus/pilot_prototype_selection_manifest.json"
 )
+PROTOTYPE_DOWNLOAD_MANIFEST_PATH = Path(
+    "examples/species/papilio_demoleus/pilot_prototype_download_manifest.json"
+)
 
 
 def _matrix() -> dict[str, object]:
@@ -32,6 +35,10 @@ def _prototype_acquisition_manifest() -> dict[str, object]:
 
 def _prototype_selection_manifest() -> dict[str, object]:
     return json.loads(PROTOTYPE_SELECTION_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def _prototype_download_manifest() -> dict[str, object]:
+    return json.loads(PROTOTYPE_DOWNLOAD_MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
 def test_phase14_matrix_freezes_local_vision_limit_and_external_execution() -> None:
@@ -160,11 +167,13 @@ def test_phase14_prototype_acquisition_manifest_tracks_required_artifacts() -> N
         "prototype_reference_source_summary",
         "prototype_reference_shortfalls",
         "prototype_reference_selections",
+        "prototype_reference_download_candidates",
     } <= set(artifacts)
     assert artifacts["reference_acquisition_plan"]["row_count"] == 34
     assert artifacts["prototype_reference_source_summary"]["row_count"] == 101
     assert artifacts["prototype_reference_shortfalls"]["row_count"] == 45
     assert artifacts["prototype_reference_selections"]["row_count"] == 93
+    assert artifacts["prototype_reference_download_candidates"]["row_count"] == 93
     assert all(
         str(artifact["sha256"]).startswith("sha256:")
         and len(str(artifact["sha256"])) == 71
@@ -184,3 +193,46 @@ def test_phase14_prototype_selection_manifest_enforces_independent_observations(
     assert policy["excluded_trust_levels"] == ["R5"]
     assert manifest["trust_distribution"]["R5"] == 0
     assert manifest["next_task"] == "14.3.2_download_selected_media"
+
+
+def test_phase14_prototype_download_manifest_proves_durable_validation() -> None:
+    manifest = _prototype_download_manifest()
+    counts = manifest["counts"]
+    validation = manifest["validation"]
+    resume = manifest["resume_verification"]
+
+    assert manifest["task"] == "14.3.2"
+    assert manifest["status"] == "complete"
+    assert manifest["prototype_only"] is True
+    assert counts["selected"] == counts["committed"] == 93
+    assert counts["valid_decodes"] == 93
+    assert counts["quarantined"] == counts["errors"] == 0
+    assert counts["staging_object_count_after_cleanup"] == 0
+    assert counts["local_temporary_image_count_after_run"] == 0
+    assert validation["selection_identity_exact"] is True
+    assert validation["all_s3_object_sizes_revalidated"] is True
+    assert validation["all_s3_object_sha256_revalidated"] is True
+    assert validation["local_temporary_images_deleted"] is True
+    assert validation["unique_sha256_count"] == 93
+    assert validation["unique_perceptual_hash_count"] == 93
+    assert resume["resumed"] == 93
+    assert resume["http_requests"] == 0
+    assert resume["inventory_sha256_unchanged"] is True
+    assert manifest["next_task"] == "14.3.3_resolve_duplicates"
+
+
+def test_phase14_prototype_download_manifest_retains_prototype_semantics() -> None:
+    manifest = _prototype_download_manifest()
+    semantics = manifest["verification_semantics"]
+    artifacts = manifest["artifacts"]
+
+    assert semantics["provider_supported_is_human_verified"] is False
+    assert semantics["human_taxonomic_verification_complete"] is False
+    assert semantics["model_output_used_as_taxonomic_validation"] is False
+    assert artifacts["reference_media_objects"]["row_count"] == 93
+    assert all(
+        str(value["uri"]).startswith("s3://")
+        and str(value["sha256"]).startswith("sha256:")
+        and len(str(value["sha256"])) == 71
+        for value in artifacts.values()
+    )

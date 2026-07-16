@@ -324,6 +324,7 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
                 "output_prefix",
                 "run_id",
                 "storage_backend",
+                "storage_bucket",
                 "storage_prefix",
                 "workers",
                 "max_inflight",
@@ -738,6 +739,7 @@ def add_reference_workflow_parsers(
     download.add_argument("--output-prefix")
     download.add_argument("--run-id")
     download.add_argument("--storage-backend", choices=("local", "s3"))
+    download.add_argument("--storage-bucket")
     download.add_argument("--storage-prefix")
     download.add_argument("--workers", type=int)
     download.add_argument("--max-inflight", type=int)
@@ -2499,14 +2501,20 @@ def _run_reference_download(
     storage_config = config.storage
     if values.get("storage_backend") is not None:
         storage_config = replace(storage_config, backend=str(values["storage_backend"]))
+    if values.get("storage_bucket") is not None:
+        storage_config = replace(storage_config, bucket=str(values["storage_bucket"]))
     if values.get("storage_prefix") is not None:
         storage_config = replace(storage_config, prefix=str(values["storage_prefix"]))
     storage = create_storage_backend(storage_config)
+    output_prefix = _reference_download_output_prefix(
+        values["output_prefix"],
+        storage=storage,
+    )
     result = download_reference_media(
         pl.read_parquet(str(values["acquisition_selections"])),
         pl.read_parquet(str(values["media_candidates"])),
         storage=storage,
-        output_prefix=str(values["output_prefix"]),
+        output_prefix=output_prefix,
         config=_reference_download_config(values),
         licence_policy=_reference_licence_policy(values),
         run_id=(str(values["run_id"]) if values.get("run_id") else None),
@@ -2522,6 +2530,22 @@ def _run_reference_download(
         "settings_fingerprint": resolved.settings_fingerprint,
         "status": "complete",
     }
+
+
+def _reference_download_output_prefix(
+    requested: object,
+    *,
+    storage: object,
+) -> str:
+    from biominer.storage.uri import join_uri
+
+    value = str(requested or "").strip().rstrip("/")
+    if not value:
+        raise ValueError("reference download output_prefix must be nonblank")
+    if value.startswith("s3://"):
+        return value
+    base_uri = str(getattr(storage, "base_uri", "") or "").strip().rstrip("/")
+    return join_uri(base_uri, value) if base_uri else value
 
 
 def _run_support_embeddings(

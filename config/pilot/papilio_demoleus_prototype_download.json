@@ -1,0 +1,78 @@
+{
+  "schema_version": "target-aware-reference-cli-settings-v1",
+  "commands": {
+    "download": {
+      "acquisition_selections": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_selections.parquet",
+      "media_candidates": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_download_candidates.parquet",
+      "output_prefix": "reference-media/papilio-demoleus/prototype-20260715",
+      "storage_backend": "s3",
+      "storage_bucket": "biominer",
+      "run_id": "papilio-demoleus-prototype-media-20260715",
+      "workers": 4,
+      "max_inflight": 8,
+      "max_concurrent_decodes": 1,
+      "max_attempts": 5,
+      "timeout_seconds": 30.0,
+      "max_download_seconds": 300.0,
+      "download_config": {
+        "max_redirects": 3,
+        "max_source_bytes": 33554432,
+        "max_decoded_pixels": 80000000,
+        "max_decode_memory_bytes": 2147483648,
+        "backoff_base_seconds": 0.5,
+        "backoff_cap_seconds": 60.0,
+        "max_retry_after_seconds": 3600.0,
+        "provider_policies": [
+          {
+            "source": "GBIF",
+            "allowed_hosts": [
+              "observation.org"
+            ],
+            "policy_version": "papilio-demoleus-prototype-gbif-media-v1",
+            "allowed_schemes": [
+              "https"
+            ],
+            "max_concurrent_per_origin": 2,
+            "min_request_interval_seconds": 0.25,
+            "resolve_public_addresses": true,
+            "url_strategy": "direct"
+          },
+          {
+            "source": "Wikimedia Commons",
+            "allowed_hosts": [
+              "upload.wikimedia.org"
+            ],
+            "policy_version": "papilio-demoleus-prototype-wikimedia-media-v1",
+            "allowed_schemes": [
+              "https"
+            ],
+            "max_concurrent_per_origin": 2,
+            "min_request_interval_seconds": 0.25,
+            "resolve_public_addresses": true,
+            "url_strategy": "direct"
+          }
+        ]
+      },
+      "licence_policy": {
+        "version": "prototype-reference-licences-v1",
+        "broadly_reusable": [
+          "cc0",
+          "cc-by",
+          "cc-by-sa",
+          "public-domain"
+        ],
+        "research_only": [
+          "cc-by-nc",
+          "cc-by-nc-sa"
+        ],
+        "attribution_required": [
+          "cc-by",
+          "cc-by-sa",
+          "cc-by-nc",
+          "cc-by-nc-sa",
+          "public-domain"
+        ]
+      }
+    }
+  }
+}

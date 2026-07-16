@@ -93,8 +93,10 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
         return None
     if not parts:
         return None
-    if parts[0] == "export":
+    if parts[0].casefold() == "export":
         parts = parts[1:]
+    if len(parts) == 3 and parts[1] == "=":
+        parts = [f"{parts[0]}={parts[2]}"]
     if len(parts) != 1 or "=" not in parts[0]:
         return None
     name, value = parts[0].split("=", 1)

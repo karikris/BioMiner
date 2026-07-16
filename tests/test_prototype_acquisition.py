@@ -4,12 +4,14 @@ from datetime import UTC, datetime
 import hashlib
 
 from biominer.references.prototype_acquisition import (
+    PROTOTYPE_DOWNLOAD_CANDIDATES_FILE,
     PROTOTYPE_SELECTION_FILE,
     PROTOTYPE_SHORTFALL_FILE,
     PROTOTYPE_SOURCE_SUMMARY_FILE,
     compile_prototype_acquisition,
     prototype_reference_shortfall_schema,
     prototype_reference_selection_schema,
+    prototype_reference_licence_policy,
     prototype_reference_source_summary_schema,
     write_prototype_acquisition_result,
 )
@@ -19,6 +21,7 @@ from biominer.references.schemas import (
     make_reference_media_id,
     make_reference_observation_id,
     reference_acquisition_plan_schema,
+    reference_media_candidate_schema,
     reference_media_candidates_frame,
     reference_observations_frame,
 )
@@ -137,6 +140,7 @@ def _result():
     visual_manifest = {
         "target_accepted_taxon_key": TARGET,
         "manifest_version": "visual-fixture-v1",
+        "source_snapshot_version": "visual-fixture-v1",
         "candidates": [
             {
                 "candidate_id": "visual-1",
@@ -176,6 +180,7 @@ def test_prototype_acquisition_reports_taxonomic_and_visual_lanes() -> None:
     assert result.source_summary.schema == prototype_reference_source_summary_schema()
     assert result.shortfalls.schema == prototype_reference_shortfall_schema()
     assert result.selections.schema == prototype_reference_selection_schema()
+    assert result.download_candidates.schema == reference_media_candidate_schema()
     assert result.selections["reference_observation_id"].n_unique() == 2
     assert set(result.selections["candidate_scope_type"]) == {
         "accepted_taxon",
@@ -198,4 +203,28 @@ def test_prototype_acquisition_writes_required_parquet_outputs(tmp_path) -> None
     assert paths["source_summary"].name == PROTOTYPE_SOURCE_SUMMARY_FILE
     assert paths["shortfalls"].name == PROTOTYPE_SHORTFALL_FILE
     assert paths["selections"].name == PROTOTYPE_SELECTION_FILE
+    assert paths["download_candidates"].name == PROTOTYPE_DOWNLOAD_CANDIDATES_FILE
     assert all(path.is_file() for path in paths.values())
+
+
+def test_prototype_policy_keeps_public_domain_distinct_from_cc0() -> None:
+    decision = prototype_reference_licence_policy().evaluate(
+        media_licence="Public domain",
+        licence_uri=None,
+        attribution="Attributed public-domain work",
+    )
+
+    assert decision.status == "allowed"
+    assert decision.canonical_licence == "public-domain"
+
+
+def test_prototype_selections_are_direct_downloader_inputs() -> None:
+    from biominer.references.downloader import _selected_media
+
+    result = _result()
+    selected = _selected_media(result.selections, result.download_candidates)
+
+    assert len(selected) == result.selections.height
+    assert {
+        item.candidate["reference_media_id"] for item in selected
+    } == set(result.selections["reference_media_id"])

@@ -17,6 +17,7 @@ def test_load_runtime_secrets_env_loads_flickr_key_and_secret(tmp_path, monkeypa
                 "# local development secrets",
                 "FLICKR_API_KEY=flickr-api-key-value",
                 "export FLICKR_SECRET_KEY='flickr secret value'",
+                "Export BIOMINER_S3_REGION = ap-southeast-2",
                 'MCP_TOKEN="abc#def" # comment outside the value',
                 "GITHUB_TOKEN=from-file",
                 "BAD-NAME=invalid",
@@ -27,12 +28,18 @@ def test_load_runtime_secrets_env_loads_flickr_key_and_secret(tmp_path, monkeypa
     monkeypatch.delenv("FLICKR_API_KEY", raising=False)
     monkeypatch.delenv("FLICKR_SECRET_KEY", raising=False)
     monkeypatch.delenv("MCP_TOKEN", raising=False)
+    monkeypatch.delenv("BIOMINER_S3_REGION", raising=False)
     monkeypatch.setenv("GITHUB_TOKEN", "already-exported")
 
     result = load_runtime_secrets_env(secrets)
 
     assert result.exists is True
-    assert set(result.loaded_names) == {"FLICKR_API_KEY", "FLICKR_SECRET_KEY", "MCP_TOKEN"}
+    assert set(result.loaded_names) == {
+        "BIOMINER_S3_REGION",
+        "FLICKR_API_KEY",
+        "FLICKR_SECRET_KEY",
+        "MCP_TOKEN",
+    }
     assert result.skipped_existing_names == ("GITHUB_TOKEN",)
     assert result.skipped_invalid_lines == 1
     assert result.error is None
@@ -40,6 +47,7 @@ def test_load_runtime_secrets_env_loads_flickr_key_and_secret(tmp_path, monkeypa
     assert "flickr-api-key-value" == os.environ["FLICKR_API_KEY"]
     assert "flickr secret value" == os.environ["FLICKR_SECRET_KEY"]
     assert "abc#def" == os.environ["MCP_TOKEN"]
+    assert "ap-southeast-2" == os.environ["BIOMINER_S3_REGION"]
     assert "already-exported" == os.environ["GITHUB_TOKEN"]
 
 

@@ -580,6 +580,17 @@ media from one observation cannot fill multiple support slots. Selection
 scores remain ordinal priorities rather than probabilities, and documented
 shortfalls remain preferable to duplicate-observation padding.
 
+The same deterministic materialization emits
+`prototype_reference_download_candidates.parquet` in the standard
+`reference-media-candidates-v1.0.0` physical schema. It contains exactly one
+row for every frozen prototype selection and no unselected media. Curated
+visual-domain rows receive the same provider-derived observation and media ID
+scheme as biological rows; their non-taxonomic scope remains in the prototype
+selection ledger. The download boundary rejects stale media identity, URL,
+licence, or attribution evidence before network access. The explicit prototype
+licence policy keeps public-domain declarations distinct from CC0 while
+allowing both when attribution evidence is complete.
+
 ### 5.4 `reference_media_objects.parquet`
 
 This supporting artifact records committed source-image objects without
@@ -629,12 +640,14 @@ streaming, and image validation. Production image decoding runs in a disposable
 spawned process that is terminated when the remaining item budget expires;
 per-operation `timeout_seconds` remains the stricter idle/connect bound where
 applicable. A separate decode semaphore bounds concurrent decoder processes,
-and each POSIX child receives a configured address-space limit. Perceptual hash
+Linux children receive a configured address-space limit; on macOS, where that
+limit cannot be lowered reliably, the parent polls the disposable child's RSS
+and terminates it when the same configured ceiling is exceeded. Perceptual hash
 alpha compositing and grayscale conversion operate on the 9x9 representation.
 Palette and bilevel inputs use one temporary full-resolution RGB(A) or grayscale
 buffer so Pillow can apply LANCZOS rather than its forced nearest-neighbour
-resampler; pixel limits, the decode semaphore, and the child address-space limit
-bound that buffer.
+resampler; pixel limits, the decode semaphore, and the platform-specific child
+memory ceiling bound that buffer.
 
 A source payload is eligible for commit only when its declared MIME type,
 signature, and decoder format agree; it is a decodable single-frame raster

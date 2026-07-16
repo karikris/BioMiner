@@ -14,10 +14,10 @@
     "plan_command": "biominer references finalize-prototype-acquisition --settings-file config/pilot/papilio_demoleus_prototype_acquisition.json",
     "settings_fingerprint": "sha256:ff20135f677e6c53a25400f472380341edc4f6b30e74e058a208d90486f154ad",
     "planner_version": "trust-first-layered-regional-v1.0.0",
-    "licence_policy_version": "reference-licences-v1",
-    "acquisition_plan_id": "reference-plan:9c8b2606d5418c2a0969b27e1562540b9e98285ef13196249714aa72dc0ff025",
+    "licence_policy_version": "prototype-reference-licences-v1",
+    "acquisition_plan_id": "reference-plan:00f93b07decab29239b29579937ce7d2e91fffb04744e19347b2a047b365b05b",
     "candidate_set_id": "sha256:44c26c64fe2962620062dad2dc748c25b6b21040508310120500629652359e60",
-    "plan_configuration_fingerprint": "sha256:605ef134e4f2bb3bb3637f280ef9b607d78324e4461a577cbcffa1abc02b572f"
+    "plan_configuration_fingerprint": "sha256:e1dfc3388bbb4a12139d969c2a78f3f297d4526b061ea9bb9bd2eba619d3191d"
   },
   "bounded_biological_negative_acquisition": {
     "query_count": 11,
@@ -139,20 +139,20 @@
     "reference_acquisition_plan": {
       "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/reference_acquisition_plan.parquet",
       "row_count": 34,
-      "byte_count": 12181,
-      "sha256": "sha256:6dd544e1016987d57d42a3a3147fb7a15262fcc1c4e7889dcd88f08ae8a1e155"
+      "byte_count": 12271,
+      "sha256": "sha256:f02c02cb650857e7999305bc9b172f7f4f0a7a9f8fde962dc6f6db22fe1ab566"
     },
     "prototype_reference_source_summary": {
       "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_source_summary.parquet",
       "row_count": 101,
-      "byte_count": 11354,
-      "sha256": "sha256:31044fb873e1d4b2683da5784be847e207681db55555b8afad3f6181286ebfe0"
+      "byte_count": 11353,
+      "sha256": "sha256:50031602e90fede9816dc03b6782c604d89dca004cf23bd43559f053e595fc35"
     },
     "prototype_reference_shortfalls": {
       "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_shortfalls.parquet",
       "row_count": 45,
-      "byte_count": 7837,
-      "sha256": "sha256:7af5e1ddfad1618b05f23a7aea51ca9686ccf159e95ac32b199a908834242ccb"
+      "byte_count": 7836,
+      "sha256": "sha256:ac2ddccf0e410a332793c21150bf1859d1e459dc85c3d1062386e2ba795c3b5a"
     },
     "prototype_reference_planner_evidence": {
       "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_planner_evidence.parquet",
@@ -162,14 +162,20 @@
     },
     "prototype_acquisition_report": {
       "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_acquisition_report.json",
-      "byte_count": 3021,
-      "sha256": "sha256:0be86735a4d06703d7a92c80d6f6c3b026097d4353ddb9a3d2f0f51fe5f90a3a"
+      "byte_count": 3031,
+      "sha256": "sha256:9a04089cb25fdc28d6036c01b8955dc4789d09a1a5e965d8367125fd6b0b5923"
     },
     "prototype_reference_selections": {
       "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_selections.parquet",
       "row_count": 93,
-      "byte_count": 40469,
-      "sha256": "sha256:c5e40c927f96b955b5d7d4ba489eadf61756dc203e262926e05689817dce7898"
+      "byte_count": 40423,
+      "sha256": "sha256:30b7f50a4bf074ab10e4fbfa89b453b22ebcc84c948140c92d6d2fb3723c2243"
+    },
+    "prototype_reference_download_candidates": {
+      "path": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_download_candidates.parquet",
+      "row_count": 93,
+      "byte_count": 27129,
+      "sha256": "sha256:27aa5489e51ce97cc5caf26451a41abc640aee95aaddaa8b9b98ed975614569e"
     }
   },
   "unresolved_risks": [

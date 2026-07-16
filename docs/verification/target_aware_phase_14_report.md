@@ -19,27 +19,41 @@ observations increased the honest shortfall to 553 across 34 scopes, including
 priorities rather than probabilities. No biological-negative source images
 were downloaded during metadata acquisition.
 
+Task 14.3.2 downloaded those 93 selected prototype media objects into the
+configured S3 reference-media prefix and froze a 93-row Parquet inventory.
+Every object passed bounded MIME, decode, dimension, byte-count, and SHA-256
+verification; the inventory contains 92 JPEGs and one PNG totalling 61,081,834
+bytes. Thirteen objects are policy-allowed and 80 remain research-only. A
+separate resume run committed the same 93 inventory rows with zero HTTP
+requests, zero retries, and 93 resumed objects. The compact, non-secret handoff
+is
+`examples/species/papilio_demoleus/pilot_prototype_download_manifest.json`.
+These downloads remain prototype support evidence, not verified biological
+labels. Task 14.3.3 must still resolve exact, near, observation, burst, owner,
+and cross-provider duplicate families before any immutable bank freeze.
+
 Date: 2026-07-15. Confidence is high for the geographic workload,
 GBIF-derived competitor evidence, metadata checkpoint integrity, local vision
 execution limit, and the B0-B16 experiment contract. Confidence is unknown for
 the classifier policy because no human-reviewed reference bank or off-machine
 vision benchmark exists yet.
 
-Phase 14 is not complete. Task 14.1 and the positive/competitor metadata portion
-of 14.2 are implemented. Task 14.2 still lacks registry-linked moth and
-other-insect negatives, has five source-candidate quota shortfalls, and leaves
-domain-negative selection to human review. Task 14.3 is blocked on attributable
-human review and immutable reference-bank freeze. Tasks 14.4-14.6 are
-consequently blocked. Phase 15 is not authorized, and the production
-classification default remains unchanged.
+Phase 14 is not complete. The prototype-only path has progressed through Task
+14.3.2, while the scientific release path still requires attributable human
+review and an immutable verified reference-bank freeze. Task 14.3.3 duplicate
+resolution is next. Tasks 14.4-14.6 remain blocked from scientific release;
+Phase 15 is not authorized, and the production classification default remains
+unchanged.
 
 ## Execution constraints
 
 - All implementation commits are on `main`.
 - Local BioCLIP or YOLOE build verification is capped at five images.
 - Larger BioCLIP and YOLOE runs must execute on a different computer.
-- This phase performed metadata-only GBIF requests locally. It downloaded no
-  images and invoked neither BioCLIP nor YOLOE.
+- The original Phase 14 preparation performed metadata-only GBIF requests
+  locally. Task 14.3.2 later downloaded the explicitly selected prototype
+  media to configured object storage; it invoked neither BioCLIP nor YOLOE and
+  retained no local image cache.
 - The off-machine contract is
   `config/pilot/papilio_demoleus_phase14_experiment_matrix.json`.
 
@@ -50,6 +64,11 @@ classification default remains unchanged.
 | `d949c18` | real family-top1 species filtering, complete rerank of the family-constrained shortlist, removal of target injection from classification, and separately retained target-screening score/rank |
 | `48cedf0` | regional competitor evidence, resumable metadata acquisition, source shortfalls, checkpoint duplicate reconciliation, scoped high-volume query handling, and the B0-B16 off-machine contract |
 | `94efde4` | versioned family-first candidate provenance so old and new candidate semantics cannot be silently mixed |
+| `82b6115` | trust-first layered regional prototype planning and evidence-level separation |
+| `a4a006d` | registry-linked biological-negative source candidates |
+| `a129311` | curated visual-domain prototype negatives |
+| `aeb0e92` | completed prototype support-candidate acquisition |
+| `d0760f5` | deterministic 93-row prototype reference selection ledger |
 
 ## Task 14.1: geographic Flickr workload
 

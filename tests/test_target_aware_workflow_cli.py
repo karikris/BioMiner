@@ -22,6 +22,9 @@ from biominer.evaluation.target_metrics import (
 from biominer.flickr_fetch.geography import build_flickr_geography_frame
 from biominer.run import REFERENCE_FIRST_PRODUCTION_STAGES
 from biominer.reference_workflow_cli import (
+    _reference_download_config,
+    _reference_download_output_prefix,
+    _reference_licence_policy,
     _reference_source_queries,
     resolve_reference_workflow_options,
 )
@@ -102,6 +105,62 @@ def test_papilio_pilot_config_caps_local_vision_verification() -> None:
         "sha256:fe42f248cab68f6c3f67351800718fb9"
         "888b54a44f3b4a651d0f8bfa428c015d"
     )
+
+
+def test_papilio_prototype_download_config_is_s3_portable_and_fail_closed() -> None:
+    settings = (
+        Path(__file__).resolve().parents[1]
+        / "config"
+        / "pilot"
+        / "papilio_demoleus_prototype_download.json"
+    )
+    resolved = resolve_reference_workflow_options(
+        build_parser().parse_args(
+            [
+                "references",
+                "download",
+                "--settings-file",
+                str(settings),
+                "--dry-run",
+            ]
+        )
+    )
+
+    config = _reference_download_config(resolved.values)
+    policy = _reference_licence_policy(resolved.values)
+
+    assert resolved.values["storage_backend"] == "s3"
+    assert resolved.values["storage_bucket"] == "biominer"
+    assert resolved.values["output_prefix"] == (
+        "reference-media/papilio-demoleus/prototype-20260715"
+    )
+    assert {
+        item.source: item.allowed_hosts for item in config.provider_policies
+    } == {
+        "GBIF": ("observation.org",),
+        "Wikimedia Commons": ("upload.wikimedia.org",),
+    }
+    assert config.max_concurrent_decodes == 1
+    assert policy.version == "prototype-reference-licences-v1"
+    assert "public-domain" in policy.broadly_reusable
+    assert "public-domain" in policy.attribution_required
+
+
+def test_reference_download_resolves_relative_prefix_against_s3_storage() -> None:
+    class _Storage:
+        base_uri = "s3://prototype-bucket/biominer"
+
+    assert _reference_download_output_prefix(
+        "reference-media/papilio-demoleus/prototype-20260715/",
+        storage=_Storage(),
+    ) == (
+        "s3://prototype-bucket/biominer/reference-media/"
+        "papilio-demoleus/prototype-20260715"
+    )
+    assert _reference_download_output_prefix(
+        "s3://explicit-bucket/reference-media",
+        storage=_Storage(),
+    ) == "s3://explicit-bucket/reference-media"
 
 
 def test_papilio_pilot_reference_source_plan_freezes_phase14_quotas() -> None:
