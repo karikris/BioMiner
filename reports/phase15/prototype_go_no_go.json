@@ -5,6 +5,17 @@
   "generated_at": "2026-07-16T08:48:11Z",
   "audited_git_sha": "ef794ae21c2075967a188b7162fdc64e01c65d78",
   "decision": "GO",
+  "post_audit_updates": [
+    {
+      "recorded_at": "2026-07-16T11:57:54Z",
+      "id": "provider_support_goal_verification",
+      "status": "verified_complete",
+      "verified_records": 81,
+      "records_meeting_goal": 81,
+      "artifact": "examples/species/papilio_demoleus/pilot_provider_support_goal_verification.json",
+      "independent_human_taxonomic_verification_claimed": false
+    }
+  ],
   "authorization": {
     "prototype_integration": true,
     "explicit_prototype_mode_only": true,
@@ -238,13 +249,16 @@
       "required": true,
       "passed": true,
       "evidence": [
+        "provider_support_goal_verification.verified_records=81",
+        "provider_support_goal_verification.records_meeting_goal=81",
+        "provider_support_goal_verification.independent_human_taxonomic_verification_claimed=false",
         "support_bank.counts.human_verified=0",
         "support_bank.semantics.provider_supported_is_human_verified=false",
         "embeddings.counts.human_verified=0",
         "benchmark.semantics.human_verified_records=0",
         "phase14_report.evidence.human_verified=0"
       ],
-      "limitation": "Independent expert review remains required for scientific release and valid accuracy reporting."
+      "limitation": "Prototype-role suitability is user-verified for 81/81 records; independent expert review for taxonomic validation remains required for scientific release and valid accuracy reporting."
     }
   ],
   "gate_summary": {

@@ -441,3 +441,17 @@ The Phase 14 prototype report is complete, so Phase 15 may proceed to its
 explicit prototype go/no-go audit. No default change is authorized yet.
 Scientific production validation remains blocked by the absence of
 independently human-reviewed reference labels.
+
+## 2026-07-16 provider-support goal verification update
+
+After the Phase 14 report was frozen, the workspace user confirmed that all 81
+provider-supported records were checked and all 81 meet their assigned Build
+Week prototype support goal. BioMiner now records that confirmation in the
+hash-bound
+`examples/species/papilio_demoleus/pilot_provider_support_goal_verification.json`
+artifact and requires it during Build Week prototype preflight.
+
+This update records prototype-role suitability only. It preserves the original
+provider provenance and does not convert the records into independently human
+taxonomically verified labels, authorize classification-accuracy reporting, or
+change scientific-release or production-default status.

@@ -15,7 +15,7 @@ from biominer.bioclip.classification_modes import (
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
 
 
-BUILD_WEEK_PROTOTYPE_CONFIG_VERSION = "build-week-target-aware-prototype-config-v1.0.0"
+BUILD_WEEK_PROTOTYPE_CONFIG_VERSION = "build-week-target-aware-prototype-config-v1.1.0"
 BUILD_WEEK_PROTOTYPE_DEPLOYMENT_STATUS = "prototype"
 BUILD_WEEK_PROTOTYPE_VISUAL_INPUT = "raw_full_image"
 
@@ -28,6 +28,8 @@ class BuildWeekPrototypeConfig:
     reference_bank_readiness_sha256: str
     support_manifest: Path
     support_manifest_sha256: str
+    provider_support_goal_verification: Path
+    provider_support_goal_verification_sha256: str
     reference_embeddings: Path
     reference_embeddings_sha256: str
     candidate_score_evidence: Path
@@ -61,6 +63,7 @@ class BuildWeekPrototypeConfig:
         for field_name in (
             "reference_bank_readiness",
             "support_manifest",
+            "provider_support_goal_verification",
             "reference_embeddings",
             "candidate_score_evidence",
             "prototype_policy",
@@ -73,6 +76,7 @@ class BuildWeekPrototypeConfig:
         for field_name in (
             "reference_bank_readiness_sha256",
             "support_manifest_sha256",
+            "provider_support_goal_verification_sha256",
             "reference_embeddings_sha256",
             "candidate_score_evidence_sha256",
             "prototype_policy_sha256",
@@ -162,6 +166,10 @@ class BuildWeekPrototypeConfig:
             "support_manifest": (
                 self.support_manifest,
                 self.support_manifest_sha256,
+            ),
+            "provider_support_goal_verification": (
+                self.provider_support_goal_verification,
+                self.provider_support_goal_verification_sha256,
             ),
             "reference_embeddings": (
                 self.reference_embeddings,

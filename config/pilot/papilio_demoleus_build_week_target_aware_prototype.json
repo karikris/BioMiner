@@ -1,5 +1,5 @@
 {
-  "schema_version": "build-week-target-aware-prototype-config-v1.0.0",
+  "schema_version": "build-week-target-aware-prototype-config-v1.1.0",
   "classification_mode": "build_week_target_aware_prototype",
   "deployment_status": "prototype",
   "workflow": "reference-first",
@@ -11,6 +11,8 @@
   "reference_bank_readiness_sha256": "sha256:154e9c98ad4ed577077702e5524e81f5b0cb406225086a339ee1d092d65ef9a9",
   "support_manifest": "runs/papilio_demoleus_prototype_bank_local_20260716/prototype_support_manifest.parquet",
   "support_manifest_sha256": "sha256:a5a26fc7e60c79dbcca9b9f8fc1ba2b3558e6307bd7c5b70711fe1ad022fde10",
+  "provider_support_goal_verification": "examples/species/papilio_demoleus/pilot_provider_support_goal_verification.json",
+  "provider_support_goal_verification_sha256": "sha256:fc96f8ecce5353629d601235aa43221df3e844ebdfa85e1efa49fe10dd52059c",
   "reference_embeddings": "runs/papilio_demoleus_prototype_embeddings_local_20260716/prototype_reference_embeddings.parquet",
   "reference_embeddings_sha256": "sha256:4d0bd9ef275ec3e1eb2c29d257573b6b778db8545ae2f63b85e4e2dd5881ca72",
   "candidate_score_evidence": "runs/papilio_demoleus_staged_flickr_local_20260716/prototype_flickr_candidate_scores.parquet",
@@ -35,6 +37,7 @@
   "b0_baseline_available": true,
   "limitations": [
     "No reference label is independently human taxonomically verified.",
+    "All 81 provider-supported records have user-confirmed suitability for their assigned Build Week prototype support roles.",
     "Provider-supported retrieval consistency is not classification accuracy.",
     "The policy is uncalibrated and emits no probabilities.",
     "Seventy-nine of 81 frozen references are research-only.",

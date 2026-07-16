@@ -5,9 +5,14 @@ scientific release, public reference-image display, or production-default
 migration. Estimates are planning estimates and should be recalibrated after the
 first ten expert reviews.
 
+Completed context: the workspace user has checked all 81 provider-supported
+records and confirmed that all 81 meet their assigned Build Week prototype
+support goal. The remaining review items below concern independent taxonomic,
+second-review, calibration, scientific-release, or rights decisions.
+
 | ID | Priority | Exact remaining scope | Estimate |
 |---|---|---|---|
-| BW-01 | P0 | First-pass expert review: 81 records; 0 currently human verified | 12-18 expert hours + 2-3 engineering hours |
+| BW-01 | P0 | First-pass independent expert taxonomic review: 81 records; prototype-role suitability already user-verified 81/81; independently taxonomically verified 0 | 12-18 expert hours + 2-3 engineering hours |
 | BW-02 | P0 | Independent second review: 81 eligible records; 0 conflicts known before review | 8-14 expert hours + 3-5 adjudication hours |
 | BW-03 | P0 | Re-freeze 81 records across 22 leakage components; resolve 2 missing owner identities | 1-2 engineering days |
 | BW-04 | P0 | Retry 10 reference-source and 5 Flickr download/decode failures | 4-8 engineering hours, excluding outages |

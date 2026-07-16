@@ -763,6 +763,11 @@ class ProductionRunOrchestrator:
                     "scientifically_ready",
                 ),
             }
+            goal_verification = getattr(dependencies, "goal_verification", None)
+            if goal_verification is not None:
+                support_identity["provider_support_goal_verification"] = asdict(
+                    goal_verification
+                )
             model_configs["support_dependencies"] = support_identity
             metrics.update(
                 {
@@ -776,6 +781,20 @@ class ProductionRunOrchestrator:
                     ),
                 }
             )
+            if goal_verification is not None:
+                metrics.update(
+                    {
+                        "provider_support_goal_verification_status": (
+                            goal_verification.status
+                        ),
+                        "provider_support_goal_verified_records": (
+                            goal_verification.verified_record_count
+                        ),
+                        "provider_support_goal_records_meeting_goal": (
+                            goal_verification.records_meeting_goal_count
+                        ),
+                    }
+                )
         return replace(manifest, model_configs=model_configs, metrics=metrics)
 
     def _close_vision_runtime_resources(self) -> None:

@@ -19,9 +19,18 @@
   },
   "configuration": {
     "path": "config/pilot/papilio_demoleus_build_week_target_aware_prototype.json",
-    "byte_count": 2840,
-    "sha256": "sha256:c5138f93b4f3866b8fd5c137b007e0ae12ffb04e78101373a6d68ec8f69ab56f",
-    "semantic_fingerprint": "sha256:54f81cf31e0ba31499a63c6238e9894427ed192156ded57084526d800548f3e5"
+    "byte_count": 3213,
+    "sha256": "sha256:0e73cff209d3ac84f017ade560ca3db864d6f988a94ceedddb27d232b32fd546",
+    "semantic_fingerprint": "sha256:1dff78788149b4f3eb6c5d129c757b2e4c73b90315d0b2a066a2a5d991caef4d"
+  },
+  "provider_support_goal_verification": {
+    "status": "verified_complete",
+    "artifact": "examples/species/papilio_demoleus/pilot_provider_support_goal_verification.json",
+    "sha256": "sha256:fc96f8ecce5353629d601235aa43221df3e844ebdfa85e1efa49fe10dd52059c",
+    "provider_supported_records": 81,
+    "verified_records": 81,
+    "records_meeting_goal": 81,
+    "independent_human_taxonomic_verification_claimed": false
   },
   "mode_contract": {
     "target_always_scored": true,
@@ -54,6 +63,7 @@
   "limitations": [
     "Prototype execution policy is not relaxed until Task 15.2.",
     "No reference label is independently human taxonomically verified.",
+    "User confirmation covers prototype-role suitability, not independent taxonomic validation.",
     "The selected prototype policy is uncalibrated and emits no probabilities.",
     "Research-only reference media must not be displayed publicly."
   ],

@@ -8,6 +8,19 @@ scientific release, a production-default migration, or a public reference-image
 product. This verification used local storage only; S3 was neither permitted nor
 accessed.
 
+## Post-acceptance verification update
+
+On 2026-07-16, the workspace user confirmed that all 81 frozen
+provider-supported records were individually checked and all 81 meet their
+assigned Build Week prototype support goal. The confirmation is bound to the
+frozen support-bank file hash, semantic fingerprint, and bank version in
+`examples/species/papilio_demoleus/pilot_provider_support_goal_verification.json`.
+
+This closes prototype-role suitability review for the frozen set. It does not
+claim independent human taxonomic verification, classification accuracy,
+scientific-release readiness, or authorization to change the production
+default.
+
 ## Frozen identity
 
 | Item | Value |
@@ -28,7 +41,7 @@ accessed.
 | Area | Result | Key evidence |
 |---|---|---|
 | Architecture | PASS | Target and complete candidate union always scored; no hierarchy pruning or spatial crop; raw full-frame BioCLIP; YOLOE router only |
-| Data | PASS | Provenance, licence, attribution, trust, geography and route retained; exact duplicates removed; human verified remains `0` |
+| Data | PASS | Provenance, licence, attribution, trust, geography and route retained; exact duplicates removed; prototype-role suitability user-verified `81/81`; independent taxonomic verification remains `0` |
 | Operations | PASS | Fail-closed readiness, persistent model reuse, content hashes, SQLite resume, no committed images/secrets/models |
 | Evaluation | PASS | B0–B16 comparison, explicit margins/abstention, unlabelled distributions, failures, throughput and RSS memory |
 | Completion criteria | 17/17 | Every task has a separate commit and `main` was pushed |
@@ -39,6 +52,10 @@ The frozen bank has 81 provider-supported records and zero independently human
 verified records. Trust is R4 for all 81. Geographic layers are A 51, B 6,
 C 0, D 24, E 0. Licences are 2 allowed and 79 research-only. Routes are
 80 adult, 1 larval and 0 pinned specimen.
+
+All 81 records are now user-confirmed as suitable for their assigned prototype
+support roles. This confirmation is retained separately from provider
+provenance and from the stricter independent taxonomic-review ledger.
 
 Provider support is not represented as human verification. Flickr query matches
 are not labels. Model output is screening evidence, not taxonomic validation.

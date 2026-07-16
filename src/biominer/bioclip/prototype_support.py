@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 import json
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,13 @@ from biominer.references.prototype_freeze import (
 
 PROTOTYPE_SCORE_SEMANTICS = (
     "experimental_screening_evidence_uncalibrated_not_probability"
+)
+PROVIDER_SUPPORT_GOAL_VERIFICATION_SCHEMA_VERSION = (
+    "provider-support-goal-verification-v1.0.0"
+)
+PROVIDER_SUPPORT_GOAL = (
+    "Every frozen provider-supported record is suitable for its assigned "
+    "Build Week prototype support role."
 )
 _ALLOWED_READINESS = {"prototype_ready", "prototype_ready_with_shortfalls"}
 _ALLOWED_VERIFICATION = {
@@ -57,8 +65,25 @@ class PrototypeReadinessPermit:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderSupportGoalVerification:
+    status: str
+    artifact_sha256: str
+    asserted_by: str
+    verification_completed_on: str
+    reference_bank_version: str
+    support_manifest_fingerprint: str
+    provider_supported_record_count: int
+    verified_record_count: int
+    records_meeting_goal_count: int
+    all_provider_supported_records_verified: bool
+    all_verified_records_meet_goal: bool
+    independent_human_taxonomic_verification_claimed: bool
+
+
+@dataclass(frozen=True, slots=True)
 class MetadataQualifiedPrototypePermit:
     readiness: PrototypeReadinessPermit
+    goal_verification: ProviderSupportGoalVerification
     candidate_set_fingerprints: tuple[str, ...]
     reference_embedding_fingerprint: str
     model_fingerprint: str
@@ -81,6 +106,11 @@ def validate_metadata_qualified_prototype_support(
         config=config,
         support=support,
     )
+    goal_verification = _validate_provider_support_goal_verification(
+        _read_json(config.provider_support_goal_verification),
+        config=config,
+        support=support,
+    )
     embeddings = pl.read_parquet(config.reference_embeddings)
     validate_prototype_reference_embeddings(embeddings)
     _validate_embedding_bindings(embeddings, config=config, support=support)
@@ -98,12 +128,13 @@ def validate_metadata_qualified_prototype_support(
     )
     return MetadataQualifiedPrototypePermit(
         readiness=readiness,
+        goal_verification=goal_verification,
         candidate_set_fingerprints=(config.candidate_score_evidence_sha256,),
         reference_embedding_fingerprint=config.reference_embeddings_sha256,
         model_fingerprint=model_fingerprint,
         classifier_fingerprint=config.classifier_fingerprint,
         calibration_fingerprint=None,
-        support_qualification="metadata_qualified_prototype_only",
+        support_qualification="user_goal_verified_metadata_qualified_prototype_only",
     )
 
 
@@ -211,6 +242,115 @@ def _validate_readiness(
         prototype_support_count=int(counts.get("prototype_support_count") or 0),
         human_verified_count=int(counts.get("human_verified_count") or 0),
         score_semantics=PROTOTYPE_SCORE_SEMANTICS,
+    )
+
+
+def _validate_provider_support_goal_verification(
+    payload: dict[str, Any],
+    *,
+    config: BuildWeekPrototypeConfig,
+    support: pl.DataFrame,
+) -> ProviderSupportGoalVerification:
+    if (
+        payload.get("schema_version")
+        != PROVIDER_SUPPORT_GOAL_VERIFICATION_SCHEMA_VERSION
+    ):
+        raise ValueError("unsupported provider-support goal verification schema")
+    if payload.get("status") != "verified_complete":
+        raise ValueError("provider-support goal verification is incomplete")
+    if payload.get("assertion_source") != "direct_user_confirmation":
+        raise ValueError("provider-support goal verification source is invalid")
+    asserted_by = str(payload.get("asserted_by") or "").strip()
+    if not asserted_by:
+        raise ValueError("provider-support goal verification requires an actor")
+    completed_on = str(payload.get("verification_completed_on") or "")
+    try:
+        date.fromisoformat(completed_on)
+    except ValueError as exc:
+        raise ValueError(
+            "provider-support goal verification date must be ISO 8601"
+        ) from exc
+    recorded_at = str(payload.get("recorded_at") or "")
+    try:
+        parsed_recorded_at = datetime.fromisoformat(
+            recorded_at.replace("Z", "+00:00")
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "provider-support goal verification recorded_at must be ISO 8601"
+        ) from exc
+    if parsed_recorded_at.tzinfo is None:
+        raise ValueError(
+            "provider-support goal verification recorded_at must include a timezone"
+        )
+    reference_bank_versions = support["reference_bank_version"].unique().to_list()
+    if len(reference_bank_versions) != 1:
+        raise ValueError("prototype support contains multiple bank versions")
+    reference_bank_version = str(reference_bank_versions[0])
+    if payload.get("reference_bank_version") != reference_bank_version:
+        raise ValueError("provider-support goal verification bank version is stale")
+    if payload.get("support_manifest_sha256") != config.support_manifest_sha256:
+        raise ValueError("provider-support goal verification file binding is stale")
+    support_fingerprint = canonical_semantic_fingerprint(support.to_dicts())
+    if payload.get("support_manifest_fingerprint") != support_fingerprint:
+        raise ValueError(
+            "provider-support goal verification semantic binding is stale"
+        )
+    if payload.get("goal") != PROVIDER_SUPPORT_GOAL:
+        raise ValueError("provider-support goal verification goal is invalid")
+    provider_supported_count = support.filter(
+        pl.col("verification_status") == "provider_supported"
+    ).height
+    counts = {
+        "provider_supported_record_count": provider_supported_count,
+        "verified_record_count": support.height,
+        "records_meeting_goal_count": support.height,
+    }
+    for field, expected in counts.items():
+        if payload.get(field) != expected:
+            raise ValueError(
+                f"provider-support goal verification {field} does not cover "
+                "the frozen support bank"
+            )
+    if provider_supported_count != support.height:
+        raise ValueError(
+            "provider-support goal verification requires an entirely "
+            "provider-supported bank"
+        )
+    for field in (
+        "all_provider_supported_records_verified",
+        "all_verified_records_meet_goal",
+    ):
+        if payload.get(field) is not True:
+            raise ValueError(f"provider-support goal verification {field} must be true")
+    semantics = dict(payload.get("semantics") or {})
+    required_semantics = {
+        "verification_is_user_goal_suitability_confirmation": True,
+        "provider_provenance_is_preserved": True,
+        "independent_human_taxonomic_verification_claimed": False,
+        "classification_accuracy_authorized": False,
+        "scientific_release_authorized": False,
+        "production_default_change_authorized": False,
+    }
+    for field, expected in required_semantics.items():
+        if semantics.get(field) is not expected:
+            raise ValueError(
+                f"provider-support goal verification semantics.{field} "
+                f"must be {expected}"
+            )
+    return ProviderSupportGoalVerification(
+        status="verified_complete",
+        artifact_sha256=config.provider_support_goal_verification_sha256,
+        asserted_by=asserted_by,
+        verification_completed_on=completed_on,
+        reference_bank_version=reference_bank_version,
+        support_manifest_fingerprint=support_fingerprint,
+        provider_supported_record_count=provider_supported_count,
+        verified_record_count=support.height,
+        records_meeting_goal_count=support.height,
+        all_provider_supported_records_verified=True,
+        all_verified_records_meet_goal=True,
+        independent_human_taxonomic_verification_claimed=False,
     )
 
 
@@ -345,7 +485,10 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 __all__ = [
     "MetadataQualifiedPrototypePermit",
+    "PROVIDER_SUPPORT_GOAL",
+    "PROVIDER_SUPPORT_GOAL_VERIFICATION_SCHEMA_VERSION",
     "PROTOTYPE_SCORE_SEMANTICS",
+    "ProviderSupportGoalVerification",
     "PrototypeReadinessPermit",
     "validate_metadata_qualified_prototype_support",
 ]

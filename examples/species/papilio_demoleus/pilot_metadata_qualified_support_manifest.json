@@ -4,7 +4,7 @@
   "task": "15.2",
   "status": "complete_prototype_only",
   "classification_mode": "build_week_target_aware_prototype",
-  "support_qualification": "metadata_qualified_prototype_only",
+  "support_qualification": "user_goal_verified_metadata_qualified_prototype_only",
   "target": {
     "accepted_taxon_key": "gbif:1938069",
     "scientific_name": "Papilio demoleus"
@@ -46,6 +46,16 @@
     "flickr_records_with_target_scored_once": 13496,
     "classifier_fingerprint": "sha256:92638010837bd31b1cdbfae366fa1245015153b34f58dc8e8fea0a6378ad4acd",
     "calibration_fingerprint": null
+  },
+  "user_goal_verification": {
+    "status": "verified_complete",
+    "artifact": "examples/species/papilio_demoleus/pilot_provider_support_goal_verification.json",
+    "sha256": "sha256:fc96f8ecce5353629d601235aa43221df3e844ebdfa85e1efa49fe10dd52059c",
+    "provider_supported_records": 81,
+    "verified_records": 81,
+    "records_meeting_goal": 81,
+    "goal": "Every frozen provider-supported record is suitable for its assigned Build Week prototype support role.",
+    "independent_human_taxonomic_verification_claimed": false
   },
   "githits": {
     "fresh_query_status": "unavailable_mcp_not_exposed",

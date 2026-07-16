@@ -10,6 +10,8 @@ import pytest
 import biominer.bioclip.prototype_support as support_module
 from biominer.bioclip.prototype_mode import BuildWeekPrototypeConfig
 from biominer.bioclip.prototype_support import (
+    PROVIDER_SUPPORT_GOAL,
+    PROVIDER_SUPPORT_GOAL_VERIFICATION_SCHEMA_VERSION,
     PROTOTYPE_SCORE_SEMANTICS,
     validate_metadata_qualified_prototype_support,
 )
@@ -41,9 +43,18 @@ def test_metadata_qualified_prototype_support_allows_zero_human_labels(
     assert permit.readiness.human_verified_count == 0
     assert permit.readiness.human_verification_complete is False
     assert permit.readiness.classification_authorised is True
+    assert permit.goal_verification.verified_record_count == 1
+    assert permit.goal_verification.records_meeting_goal_count == 1
+    assert (
+        permit.goal_verification.independent_human_taxonomic_verification_claimed
+        is False
+    )
     assert permit.calibration_fingerprint is None
     assert permit.classifier_fingerprint == config.classifier_fingerprint
-    assert permit.support_qualification == "metadata_qualified_prototype_only"
+    assert (
+        permit.support_qualification
+        == "user_goal_verified_metadata_qualified_prototype_only"
+    )
     assert permit.readiness.score_semantics == PROTOTYPE_SCORE_SEMANTICS
 
 
@@ -62,10 +73,48 @@ def test_metadata_qualified_prototype_support_keeps_licensing_mandatory(
         validate_metadata_qualified_prototype_support(config)
 
 
+def test_metadata_qualified_prototype_support_rejects_incomplete_goal_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _fixture(tmp_path, verified_record_count=0)
+    monkeypatch.setattr(
+        support_module,
+        "validate_prototype_reference_embeddings",
+        lambda _frame: None,
+    )
+
+    with pytest.raises(ValueError, match="verified_record_count"):
+        validate_metadata_qualified_prototype_support(config)
+
+
+def test_metadata_qualified_prototype_support_rejects_taxonomic_overclaim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _fixture(
+        tmp_path,
+        independent_human_taxonomic_verification_claimed=True,
+    )
+    monkeypatch.setattr(
+        support_module,
+        "validate_prototype_reference_embeddings",
+        lambda _frame: None,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="independent_human_taxonomic_verification_claimed",
+    ):
+        validate_metadata_qualified_prototype_support(config)
+
+
 def _fixture(
     tmp_path: Path,
     *,
     licence_policy_status: str = "research_only",
+    verified_record_count: int = 1,
+    independent_human_taxonomic_verification_claimed: bool = False,
 ) -> BuildWeekPrototypeConfig:
     support_path = tmp_path / "support.parquet"
     support = _support_frame(licence_policy_status=licence_policy_status)
@@ -87,6 +136,41 @@ def _fixture(
                 "counts": {
                     "prototype_support_count": 1,
                     "human_verified_count": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    goal_verification_path = tmp_path / "goal-verification.json"
+    goal_verification_path.write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    PROVIDER_SUPPORT_GOAL_VERIFICATION_SCHEMA_VERSION
+                ),
+                "status": "verified_complete",
+                "assertion_source": "direct_user_confirmation",
+                "asserted_by": "fixture-reviewer",
+                "verification_completed_on": "2026-07-16",
+                "recorded_at": "2026-07-16T11:57:54Z",
+                "reference_bank_version": "prototype-bank-v1",
+                "support_manifest_sha256": _sha(support_path),
+                "support_manifest_fingerprint": support_fingerprint,
+                "goal": PROVIDER_SUPPORT_GOAL,
+                "provider_supported_record_count": 1,
+                "verified_record_count": verified_record_count,
+                "records_meeting_goal_count": 1,
+                "all_provider_supported_records_verified": True,
+                "all_verified_records_meet_goal": True,
+                "semantics": {
+                    "verification_is_user_goal_suitability_confirmation": True,
+                    "provider_provenance_is_preserved": True,
+                    "independent_human_taxonomic_verification_claimed": (
+                        independent_human_taxonomic_verification_claimed
+                    ),
+                    "classification_accuracy_authorized": False,
+                    "scientific_release_authorized": False,
+                    "production_default_change_authorized": False,
                 },
             }
         ),
@@ -158,6 +242,8 @@ def _fixture(
         reference_bank_readiness_sha256=_sha(readiness_path),
         support_manifest=support_path,
         support_manifest_sha256=_sha(support_path),
+        provider_support_goal_verification=goal_verification_path,
+        provider_support_goal_verification_sha256=_sha(goal_verification_path),
         reference_embeddings=embeddings_path,
         reference_embeddings_sha256=_sha(embeddings_path),
         candidate_score_evidence=candidates_path,

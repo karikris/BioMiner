@@ -1,0 +1,25 @@
+{
+  "schema_version": "provider-support-goal-verification-v1.0.0",
+  "status": "verified_complete",
+  "assertion_source": "direct_user_confirmation",
+  "asserted_by": "workspace-user:merm0001",
+  "verification_completed_on": "2026-07-16",
+  "recorded_at": "2026-07-16T11:57:54Z",
+  "reference_bank_version": "papilio-demoleus-prototype-bank-20260716",
+  "support_manifest_sha256": "sha256:a5a26fc7e60c79dbcca9b9f8fc1ba2b3558e6307bd7c5b70711fe1ad022fde10",
+  "support_manifest_fingerprint": "sha256:17b72ac01c106aa114ca615ff6bf5b2f8c823b4bf4d65c1b65691e862a287946",
+  "goal": "Every frozen provider-supported record is suitable for its assigned Build Week prototype support role.",
+  "provider_supported_record_count": 81,
+  "verified_record_count": 81,
+  "records_meeting_goal_count": 81,
+  "all_provider_supported_records_verified": true,
+  "all_verified_records_meet_goal": true,
+  "semantics": {
+    "verification_is_user_goal_suitability_confirmation": true,
+    "provider_provenance_is_preserved": true,
+    "independent_human_taxonomic_verification_claimed": false,
+    "classification_accuracy_authorized": false,
+    "scientific_release_authorized": false,
+    "production_default_change_authorized": false
+  }
+}

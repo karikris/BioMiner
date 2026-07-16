@@ -5,6 +5,20 @@
   "generated_at": "2026-07-16T09:44:16Z",
   "audited_source_git_sha": "1aea7e68ecc91981764cf836ac26a73065c4f505",
   "status": "accepted_prototype_only_with_limitations",
+  "post_acceptance_updates": [
+    {
+      "recorded_at": "2026-07-16T11:57:54Z",
+      "id": "provider_support_goal_verification",
+      "status": "verified_complete",
+      "artifact": "examples/species/papilio_demoleus/pilot_provider_support_goal_verification.json",
+      "sha256": "sha256:fc96f8ecce5353629d601235aa43221df3e844ebdfa85e1efa49fe10dd52059c",
+      "provider_supported_records": 81,
+      "verified_records": 81,
+      "records_meeting_goal": 81,
+      "scope": "Build Week prototype support-role suitability",
+      "independent_human_taxonomic_verification_claimed": false
+    }
+  ],
   "authorization": {
     "build_week_prototype": true,
     "scientific_release": false,
@@ -40,6 +54,8 @@
     "records": 81,
     "human_verified": 0,
     "provider_supported": 81,
+    "user_goal_verified": 81,
+    "user_goal_suitable": 81,
     "trust_counts": {"R1": 0, "R2": 0, "R3": 0, "R4": 81, "R5": 0},
     "geographic_layer_counts": {"A": 51, "B": 6, "C": 0, "D": 24, "E": 0},
     "source_counts": {"GBIF": 81, "Wikimedia Commons": 0},
@@ -70,6 +86,7 @@
     {"id": "trust_level_persisted", "passed": true},
     {"id": "geographic_layer_persisted", "passed": true},
     {"id": "provider_support_not_human_verified", "passed": true, "evidence": "human_verified=0; provider_supported=81."},
+    {"id": "provider_support_goal_suitability_verified", "passed": true, "evidence": "81/81 frozen provider-supported records were user-confirmed as meeting their assigned Build Week prototype support goal; this is not independent taxonomic verification."},
     {"id": "flickr_query_hit_not_label", "passed": true}
   ],
   "operations": [

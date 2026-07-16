@@ -3,11 +3,18 @@
   "generated_at": "2026-07-16T09:44:16Z",
   "status": "deferred_does_not_block_prototype",
   "estimation_basis": "Engineering and review estimates, not measured durations. Re-estimate after the first 10 expert reviews.",
+  "completed_context": {
+    "provider_support_goal_suitability_review": "complete",
+    "provider_supported_records_reviewed": 81,
+    "records_meeting_assigned_prototype_goal": 81,
+    "independent_human_taxonomic_verification_completed": 0,
+    "evidence": "examples/species/papilio_demoleus/pilot_provider_support_goal_verification.json"
+  },
   "items": [
     {
       "id": "BW-01",
       "priority": "P0",
-      "work": "Complete first-pass expert taxonomic review.",
+      "work": "Complete first-pass independent expert taxonomic review; user goal-suitability review is already complete.",
       "exact_count": {"reference_records_pending": 81, "human_verified_now": 0},
       "effort_estimate": "12-18 expert hours plus 2-3 engineering hours"
     },

@@ -17,6 +17,7 @@ from biominer.bioclip.prototype_mode import (
 )
 from biominer.bioclip.prototype_support import (
     MetadataQualifiedPrototypePermit,
+    ProviderSupportGoalVerification,
     PrototypeReadinessPermit,
 )
 from biominer.run import (
@@ -47,6 +48,7 @@ def _write_config(
     for name in (
         "reference_bank_readiness",
         "support_manifest",
+        "provider_support_goal_verification",
         "reference_embeddings",
         "candidate_score_evidence",
         "prototype_policy",
@@ -142,7 +144,32 @@ def test_tracked_papilio_build_week_config_is_local_and_prototype_only() -> None
         "prototype_reference_embeddings.parquet"
     )
     assert config.support_manifest.name == "prototype_support_manifest.parquet"
+    assert config.provider_support_goal_verification.name == (
+        "pilot_provider_support_goal_verification.json"
+    )
     assert all("://" not in str(path) for path, _sha in config.artifact_pins().values())
+
+
+def test_tracked_provider_support_goal_verification_covers_frozen_bank() -> None:
+    path = (
+        PROJECT_ROOT
+        / "examples/species/papilio_demoleus/"
+        "pilot_provider_support_goal_verification.json"
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["status"] == "verified_complete"
+    assert payload["provider_supported_record_count"] == 81
+    assert payload["verified_record_count"] == 81
+    assert payload["records_meeting_goal_count"] == 81
+    assert payload["all_provider_supported_records_verified"] is True
+    assert payload["all_verified_records_meet_goal"] is True
+    assert (
+        payload["semantics"][
+            "independent_human_taxonomic_verification_claimed"
+        ]
+        is False
+    )
 
 
 def test_build_week_prototype_config_rejects_cloud_paths(
@@ -317,12 +344,28 @@ def test_build_week_prototype_execution_uses_metadata_qualified_support(
     )
     permit = MetadataQualifiedPrototypePermit(
         readiness=readiness,
+        goal_verification=ProviderSupportGoalVerification(
+            status="verified_complete",
+            artifact_sha256=config.provider_support_goal_verification_sha256,
+            asserted_by="workspace-user:merm0001",
+            verification_completed_on="2026-07-16",
+            reference_bank_version="papilio-demoleus-prototype-bank-20260716",
+            support_manifest_fingerprint="sha256:" + "b" * 64,
+            provider_supported_record_count=81,
+            verified_record_count=81,
+            records_meeting_goal_count=81,
+            all_provider_supported_records_verified=True,
+            all_verified_records_meet_goal=True,
+            independent_human_taxonomic_verification_claimed=False,
+        ),
         candidate_set_fingerprints=(config.candidate_score_evidence_sha256,),
         reference_embedding_fingerprint=config.reference_embeddings_sha256,
         model_fingerprint="sha256:" + "c" * 64,
         classifier_fingerprint=config.classifier_fingerprint,
         calibration_fingerprint=None,
-        support_qualification="metadata_qualified_prototype_only",
+        support_qualification=(
+            "user_goal_verified_metadata_qualified_prototype_only"
+        ),
     )
     monkeypatch.setattr(
         orchestrator_module,
@@ -362,8 +405,10 @@ def test_build_week_prototype_execution_uses_metadata_qualified_support(
     assert result.manifest.metrics["calibration_fingerprint"] is None
     assert (
         result.manifest.metrics["support_qualification"]
-        == "metadata_qualified_prototype_only"
+        == "user_goal_verified_metadata_qualified_prototype_only"
     )
+    assert result.manifest.metrics["provider_support_goal_verified_records"] == 81
+    assert result.manifest.metrics["provider_support_goal_records_meeting_goal"] == 81
     assert (
         result.manifest.metrics["reference_bank_readiness_status"]
         == "prototype_ready_with_shortfalls"
