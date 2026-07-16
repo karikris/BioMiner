@@ -1,0 +1,154 @@
+{
+  "schema_version": "papilio-demoleus-prototype-policy-manifest-v1.0.0",
+  "phase": 14,
+  "task": "14.5",
+  "status": "selected",
+  "policy_status": "prototype_uncalibrated",
+  "prototype_only": true,
+  "experimental_screening_evidence_only": true,
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "storage": {
+    "backend": "local",
+    "output_dir": "runs/papilio_demoleus_prototype_policy_local_20260716",
+    "ignored_by_git": true,
+    "s3_permitted": false,
+    "s3_used": false
+  },
+  "execution": {
+    "command": "uv run biominer dev vision prototype-select-policy --config config/pilot/papilio_demoleus_prototype_policy_selection.json",
+    "githits_solution_id": "348946ee-80cf-43d4-85c7-df03df773aeb",
+    "policy_fingerprint": "sha256:4e2d0f3582302d721da56643476ff67c6d9ae3290ffc4bbc297ef0f947448076",
+    "report_fingerprint": "sha256:76f3b9e70a03bb0b55d73e3c7e4bc0c0ba1f32b0fce82875a3c0a756e70bfcfc"
+  },
+  "selected_policy": {
+    "experiment_id": "B13",
+    "experiment_name": "global_references",
+    "classifier_contract": "global-normalized-reference-centroid-v1.0.0",
+    "reference_scope": "global",
+    "target_always_scored": true,
+    "complete_candidate_union_required_for_integration": true,
+    "higher_rank_pruning_permitted": false,
+    "spatial_crop_permitted": false,
+    "visual_input": "raw_full_image"
+  },
+  "selection_evidence": {
+    "partition": "model_selection",
+    "record_count": 30,
+    "target_scoreability_rate": 1.0,
+    "target_top1_retrieval_rate": 1.0,
+    "competitor_defeat_target_rate": 1.0,
+    "provider_label_top1_consistency_rate": 0.7,
+    "provider_metric_semantics": "retrieval_and_internal_consistency_not_classification_accuracy",
+    "coverage_at_raw_margin_policy": 0.8,
+    "accepted_count": 24,
+    "abstained_count": 6,
+    "selection_evidence_fingerprint": "sha256:c4ccbfe6e5df82d2073c05f5d757f9f90675fea8b5483abfb30adc6201136746"
+  },
+  "b0_comparison": {
+    "target_scoreability_rate_b0": 0.1,
+    "target_scoreability_rate_selected": 1.0,
+    "target_scoreability_improvement": 0.9,
+    "target_top1_retrieval_rate_b0": 1.0,
+    "target_top1_retrieval_rate_selected": 1.0,
+    "low_margin_rate_b0": 0.9,
+    "low_margin_rate_selected": 0.2
+  },
+  "calibration": {
+    "status": "not_fitted_insufficient_independently_reviewed_labels",
+    "calibrator_fingerprint": null,
+    "human_verified_calibration_records": 0,
+    "probabilities_emitted": false,
+    "threshold_fitted_on_calibration": false,
+    "calibration_margin_coverage_audit": {
+      "records": 13,
+      "would_accept": 9,
+      "would_abstain": 4
+    }
+  },
+  "margin_policy": {
+    "version": "prototype-raw-margin-abstention-v1.0.0",
+    "threshold": 0.1,
+    "score_kind": "raw_top1_minus_top2_similarity_margin",
+    "threshold_source": "predeclared_conservative_build_week_threshold_not_label_fitted",
+    "scores_are_probabilities": false
+  },
+  "partition_contract": {
+    "model_selection_used_for_model_choice": true,
+    "calibration_used_for_label_based_fitting": false,
+    "calibration_used_for_coverage_audit_only": true,
+    "final_test_used_for_selection": false,
+    "final_test_evaluation_status": "not_evaluated_no_independently_reviewed_labels"
+  },
+  "frozen_identity": {
+    "prototype_policy_version": "build-week-target-aware-prototype-policy-v1.0.0",
+    "reference_bank_version": "papilio-demoleus-prototype-bank-20260716",
+    "reference_planner_version": "trust-first-layered-regional-v1.0.0",
+    "candidate_planner_version": "regional-candidate-union-v1.1.0",
+    "model_revision": "191d741545e4c741cdef4b22c6eb69c945c1e592",
+    "preprocessing_version": "target-full-frame-openclip-preprocess-v2",
+    "visual_input_version": "target-full-frame-visual-input-v2",
+    "classifier_fingerprint": "sha256:92638010837bd31b1cdbfae366fa1245015153b34f58dc8e8fea0a6378ad4acd",
+    "calibrator_fingerprint": null,
+    "margin_policy_version": "prototype-raw-margin-abstention-v1.0.0"
+  },
+  "planner_comparison": {
+    "regional_only": "rejected_target_not_scoreable_for_every_model_selection_record",
+    "global_only": "selected",
+    "trust_first_layered": "rejected_target_missing_in_one_conditioned_cluster"
+  },
+  "operational_evidence": {
+    "staged_classified_records": 13496,
+    "retryable_failures": 5,
+    "failure_rate": 0.00037034,
+    "records_per_second": 2.274524,
+    "rss_peak_memory": 1765261312,
+    "catastrophic_operational_failure": false
+  },
+  "artifacts": {
+    "policy": {
+      "uri": "runs/papilio_demoleus_prototype_policy_local_20260716/prototype_policy.json",
+      "byte_count": 6793,
+      "sha256": "sha256:a69e0e35c771a3f8f98e9243913295f77d37016890fce046858a4c550cb9bdf4"
+    },
+    "selection_candidates": {
+      "uri": "runs/papilio_demoleus_prototype_policy_local_20260716/prototype_policy_selection_candidates.parquet",
+      "row_count": 19,
+      "byte_count": 9939,
+      "sha256": "sha256:70f30248312ee067edbcf0f931445065f72832d0713a7ab6686e1dc06f0a739c"
+    },
+    "model_selection_decisions": {
+      "uri": "runs/papilio_demoleus_prototype_policy_local_20260716/prototype_policy_model_selection_decisions.parquet",
+      "row_count": 30,
+      "byte_count": 12546,
+      "sha256": "sha256:49f9e84eb0a28ed5f1e5c98c0f094cce5e39047cc1498e77d631cd97f06959fc"
+    },
+    "calibration_margin_audit": {
+      "uri": "runs/papilio_demoleus_prototype_policy_local_20260716/prototype_policy_calibration_margin_audit.parquet",
+      "row_count": 13,
+      "byte_count": 6487,
+      "sha256": "sha256:79a302643d21a871543ec1aeb7f3310fa8c565c9398b9df73c12957df65a53e4"
+    },
+    "report": {
+      "uri": "runs/papilio_demoleus_prototype_policy_local_20260716/prototype_policy_selection_report.json",
+      "byte_count": 5343,
+      "sha256": "sha256:c2edd092a9770aea5518aaedd2cd90e3566476d35e3dd70e1ac7046e3ff8bbf6"
+    },
+    "summary": {
+      "uri": "runs/papilio_demoleus_prototype_policy_local_20260716/prototype_policy_selection_summary.md",
+      "byte_count": 2568,
+      "sha256": "sha256:e69638d624acea3fa066e77408a2913c6565746b43e91b18802d893ff2fdfe1a"
+    }
+  },
+  "limitations": [
+    "No reference label is independently human taxonomically verified.",
+    "Provider-supported consistency metrics are not classification accuracy.",
+    "The policy is uncalibrated and emits no probabilities.",
+    "Regional reference conditioning is not selected until sparse clusters preserve target scoreability.",
+    "Larval reference scoring remains unavailable because no larval support_train record exists.",
+    "Focused and masked full-frame inputs were unavailable in the executable benchmark subset."
+  ],
+  "next_task": "14.6_build_week_prototype_report"
+}

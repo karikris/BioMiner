@@ -8,7 +8,7 @@ Week path. Tasks 14.2.2 through 14.2.5 now provide the trust-first layered
 planner, biological and visual-domain negative candidates, bounded source
 acquisition, and a reproducible acquisition plan. The current compact handoff
 is
-`examples/species/papilio_demoleus/pilot_prototype_acquisition_manifest.json`.
+`examples/species/papilio_demoleus/pilot_prototype_policy_manifest.json`.
 
 Task 14.3.1 freezes 82 biological and 11 visual-domain references in an
 explicit 93-row prototype selection ledger. All 93 are R4 provider-supported
@@ -55,25 +55,28 @@ is not authorized on this computer. No unmeasured evidence was guessed and no
 row was represented as human taxonomically verified. The compact handoff is
 `examples/species/papilio_demoleus/pilot_prototype_qa_manifest.json`.
 
-Date: 2026-07-15. Confidence is high for the geographic workload,
+Date: 2026-07-16. Confidence is high for the geographic workload,
 GBIF-derived competitor evidence, metadata checkpoint integrity, local vision
-execution limit, and the B0-B16 experiment contract. Confidence is unknown for
-the classifier policy because no human-reviewed reference bank or off-machine
-vision benchmark exists yet.
+execution, B0-B16 experiment evidence, and deterministic prototype-policy
+selection. Scientific classification accuracy and probability calibration
+remain unknown because the reference bank has no independently reviewed
+labels.
 
 Phase 14 is not complete. The prototype-only path has progressed through Task
-14.3.4 for 83 available objects, while the scientific release path still
-requires attributable human review and an immutable verified reference-bank
-freeze. Automated QA retains ten retryable operational failures and routes 81
-available images for visual review; Task 14.3.5 prototype freeze is next. Tasks 14.4-14.6 remain
-blocked from scientific release; Phase 15 is not authorized, and the
-production classification default remains unchanged.
+14.5 and selected an uncalibrated Build Week policy, while the scientific
+release path still requires attributable human review and an immutable
+verified reference-bank freeze. Ten source-media failures remain retryable
+and are not biological negatives. Task 14.6, the final Build Week prototype
+report, is next. Phase 15 is not yet authorized, and the production
+classification default remains unchanged.
 
 ## Execution constraints
 
 - All implementation commits are on `main`.
 - Local BioCLIP or YOLOE build verification is capped at five images.
-- Larger BioCLIP and YOLOE runs must execute on a different computer.
+- Explicit prototype exceptions completed the frozen 81-record support
+  embedding and B0-B16 benchmark locally; they do not authorize scientific
+  validation or a production-default change.
 - The original Phase 14 preparation performed metadata-only GBIF requests
   locally. Task 14.3.2 later downloaded the explicitly selected prototype
   media to configured object storage; it invoked neither BioCLIP nor YOLOE and
@@ -370,6 +373,28 @@ coverage, cluster and `no_geo` slices, visual domain, life stage, source,
 candidate species, leakage audits, failure rates, throughput, and peak memory.
 Raw similarity or SVC margin is never labelled a probability.
 
+Task 14.5 selected B13's global-reference classifier using only the 30-record
+model-selection partition. Against B0, target scoreability increased from
+0.10 to 1.00 while target top-1 retrieval on the three provider-target rows
+remained 1.00, and the rate of missing or sub-0.10 raw margins fell from 0.90
+to 0.20. All 27 non-target model-selection records ranked a competitor above
+the target. Regional-only and trust-first layered policies were rejected
+because sparse conditioned clusters could remove the target from scoring.
+
+No independently reviewed calibration labels exist, so the frozen policy
+status is `prototype_uncalibrated`. It emits no probabilities and uses a
+predeclared raw top-1-minus-top-2 margin of 0.10 for conservative abstention.
+That rule accepts 24 of 30 model-selection records. On the 13 calibration
+records it would accept 9 and abstain on 4, but those rows were used only for
+coverage auditing: zero rows were used for label-based threshold fitting and
+no calibrator was fitted. Final-test rows were not read or used for selection.
+
+The freeze pins the prototype policy, reference-bank, reference-planner,
+candidate-planner, BioCLIP model revision, preprocessing, full-frame visual
+input, classifier fingerprint, null calibrator, and margin-policy versions.
+The compact local-only handoff is
+`examples/species/papilio_demoleus/pilot_prototype_policy_manifest.json`.
+
 ## Validation
 
 | Gate | Result |
@@ -378,9 +403,10 @@ Raw similarity or SVC margin is never labelled a probability.
 | Phase 14 prototype-freeze focused suite | 61 passed |
 | Five-image runtime focused suite | 88 passed |
 | Prototype embedding and compact-contract focused suite | 26 passed |
+| Prototype policy selection and compact-contract suite | 23 passed |
 | Staged Flickr and species-generic boundary focused suite | 10 passed |
 | GBIF checkpoint, metadata, workflow, and shortfall suite | 52 passed |
-| Final full repository suite | 2,303 passed in 81.22 seconds |
+| Final full repository suite | 2,307 passed in 71.80 seconds |
 | Changed-file Ruff | passed |
 | `git diff --check` | passed |
 | Completed smoke BioCLIP images | 5 |
@@ -390,10 +416,13 @@ Raw similarity or SVC margin is never labelled a probability.
 | Retryable staged Flickr source failures | 5 |
 | Local B0-B16 prototype prediction rows | 1,539 |
 | Local B0-B16 prototype records skipped | 0 |
+| Selected prototype policy | B13 global references |
+| Model-selection coverage at raw margin 0.10 | 24/30 |
+| Calibration rows used for label fitting | 0 |
 
 ## Phase 15 decision
 
-No default change is supported. Phase 15 requires a ready immutable reference
-bank, complete B0-B16 off-machine results, a passed selection policy, and an
-approved final Phase 14 report. None of those four gates may be inferred from
-metadata availability or deterministic unit tests.
+No default change is supported yet. The prototype selection gate passes, but
+Task 14.6's Build Week report is still required before the Phase 15 prototype
+entry audit. Scientific production validation remains blocked by the absence
+of independently human-reviewed reference labels.

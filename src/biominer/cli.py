@@ -610,6 +610,8 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     prototype_staged.add_argument("--config", required=True)
     prototype_benchmark = subparsers.add_parser("prototype-benchmark-matrix")
     prototype_benchmark.add_argument("--config", required=True)
+    prototype_policy = subparsers.add_parser("prototype-select-policy")
+    prototype_policy.add_argument("--config", required=True)
     benchmark = subparsers.add_parser("benchmark-plumbing")
     benchmark.add_argument("--records", type=int, default=1000)
     benchmark.add_argument("--butterfly-rate", type=float, default=0.25)
@@ -695,6 +697,8 @@ def run(args: argparse.Namespace) -> int:
             return _run_prototype_staged_flickr(args)
         if args.vision_command == "prototype-benchmark-matrix":
             return _run_prototype_benchmark_matrix(args)
+        if args.vision_command == "prototype-select-policy":
+            return _run_prototype_policy_selection(args)
         if args.vision_command == "benchmark-plumbing":
             return _run_vision_benchmark_plumbing(args)
         if args.vision_command == "benchmark-rolling-matrix":
@@ -2297,6 +2301,44 @@ def _run_prototype_benchmark_matrix(args: argparse.Namespace) -> int:
                 "experiment_summary": str(result.experiment_summary_path),
                 "report": str(result.report_path),
                 "report_fingerprint": result.report["report_fingerprint"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _run_prototype_policy_selection(args: argparse.Namespace) -> int:
+    from biominer.benchmarks.prototype_policy_selection import (
+        PrototypePolicySelectionConfig,
+        select_prototype_policy,
+    )
+
+    try:
+        result = select_prototype_policy(
+            PrototypePolicySelectionConfig.read_json(args.config)
+        )
+    except (
+        OSError,
+        TypeError,
+        ValueError,
+        RuntimeError,
+        pl.exceptions.PolarsError,
+    ) as exc:
+        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+        return 2
+    print(
+        json.dumps(
+            {
+                "status": result.report["status"],
+                "policy_status": result.policy["policy_status"],
+                "selected_experiment_id": result.policy["selected_policy"][
+                    "experiment_id"
+                ],
+                "policy": str(result.policy_path),
+                "report": str(result.report_path),
+                "policy_fingerprint": result.policy["policy_fingerprint"],
             },
             indent=2,
             sort_keys=True,

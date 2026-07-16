@@ -36,6 +36,9 @@ PROTOTYPE_EMBEDDINGS_MANIFEST_PATH = Path(
 PROTOTYPE_B0_B16_MANIFEST_PATH = Path(
     "examples/species/papilio_demoleus/pilot_prototype_b0_b16_manifest.json"
 )
+PROTOTYPE_POLICY_MANIFEST_PATH = Path(
+    "examples/species/papilio_demoleus/pilot_prototype_policy_manifest.json"
+)
 
 
 def _matrix() -> dict[str, object]:
@@ -82,6 +85,10 @@ def _prototype_embeddings_manifest() -> dict[str, object]:
 
 def _prototype_b0_b16_manifest() -> dict[str, object]:
     return json.loads(PROTOTYPE_B0_B16_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def _prototype_policy_manifest() -> dict[str, object]:
+    return json.loads(PROTOTYPE_POLICY_MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
 def test_phase14_matrix_freezes_local_vision_limit_and_external_execution() -> None:
@@ -483,3 +490,34 @@ def test_phase14_local_b0_b16_handoff_is_local_evidence_only() -> None:
     assert manifest["semantics"]["classification_accuracy_reported"] is False
     assert manifest["semantics"]["provider_supported_metrics_are_accuracy"] is False
     assert manifest["visual_ablation"]["spatial_crops_used"] is False
+
+
+def test_phase14_prototype_policy_is_local_uncalibrated_and_frozen() -> None:
+    manifest = _prototype_policy_manifest()
+    selected = manifest["selected_policy"]
+    selection = manifest["selection_evidence"]
+    calibration = manifest["calibration"]
+    partitions = manifest["partition_contract"]
+    frozen = manifest["frozen_identity"]
+
+    assert manifest["task"] == "14.5"
+    assert manifest["status"] == "selected"
+    assert manifest["policy_status"] == "prototype_uncalibrated"
+    assert manifest["storage"]["backend"] == "local"
+    assert manifest["storage"]["s3_permitted"] is False
+    assert manifest["storage"]["s3_used"] is False
+    assert selected["experiment_id"] == "B13"
+    assert selected["reference_scope"] == "global"
+    assert selected["target_always_scored"] is True
+    assert selection["record_count"] == 30
+    assert selection["coverage_at_raw_margin_policy"] == 0.8
+    assert manifest["b0_comparison"]["target_scoreability_improvement"] == 0.9
+    assert calibration["human_verified_calibration_records"] == 0
+    assert calibration["calibrator_fingerprint"] is None
+    assert calibration["probabilities_emitted"] is False
+    assert partitions["final_test_used_for_selection"] is False
+    assert frozen["visual_input_version"] == "target-full-frame-visual-input-v2"
+    assert frozen["calibrator_fingerprint"] is None
+    assert str(frozen["classifier_fingerprint"]).startswith("sha256:")
+    assert len(str(frozen["classifier_fingerprint"])) == 71
+    assert manifest["next_task"] == "14.6_build_week_prototype_report"
