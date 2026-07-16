@@ -1,0 +1,279 @@
+{
+  "schema_version": "biominer-phase15-prototype-go-no-go-v1.0.0",
+  "phase": 15,
+  "task": "prototype_entry_audit",
+  "generated_at": "2026-07-16T08:48:11Z",
+  "audited_git_sha": "ef794ae21c2075967a188b7162fdc64e01c65d78",
+  "decision": "GO",
+  "authorization": {
+    "prototype_integration": true,
+    "explicit_prototype_mode_only": true,
+    "production_default_change": false,
+    "scientific_release": false,
+    "public_reference_image_display": false,
+    "reason": "All 14 prototype entry gates pass; scientific and public-release limitations remain."
+  },
+  "controls": {
+    "fail_closed": true,
+    "all_required_gates_must_pass": true,
+    "missing_or_contradictory_evidence_decision": "NO_GO",
+    "prototype_only": true,
+    "local_storage_only_for_current_evidence": true,
+    "s3_used": false
+  },
+  "input_provenance": {
+    "duplicate_resolution": {
+      "uri": "examples/species/papilio_demoleus/pilot_prototype_duplicate_resolution_manifest.json",
+      "sha256": "sha256:95ea99bc075798d13ee2a9ea42435c67e1a23d26369a1b75c31e885c82ce6920"
+    },
+    "support_bank": {
+      "uri": "examples/species/papilio_demoleus/pilot_prototype_support_bank_manifest.json",
+      "sha256": "sha256:da558c04ac9b9c93941ee627532e3da657398415b707ad94757c903e0e51f76c"
+    },
+    "embeddings": {
+      "uri": "examples/species/papilio_demoleus/pilot_prototype_embeddings_manifest.json",
+      "sha256": "sha256:381cc9a1266c30e744c12b320de4d4f3b11119c4c80b9136c25f6a0b9d9ecb0b"
+    },
+    "staged_flickr": {
+      "uri": "examples/species/papilio_demoleus/pilot_staged_flickr_manifest.json",
+      "sha256": "sha256:4f4aeeadb559e962eb11802301c3b2d691be674094c7449aab0ab061a4b362e3"
+    },
+    "benchmark": {
+      "uri": "examples/species/papilio_demoleus/pilot_prototype_b0_b16_manifest.json",
+      "sha256": "sha256:dfe21afbc8998ae5fc8eb4aa0157afc4f17ede336635f62af7cb888f141d3bf0"
+    },
+    "policy": {
+      "uri": "examples/species/papilio_demoleus/pilot_prototype_policy_manifest.json",
+      "sha256": "sha256:d60f7b685366df619063df09d114f77d056ca2324f988e5707ae383cb3024f71"
+    },
+    "phase14_report": {
+      "uri": "examples/species/papilio_demoleus/pilot_build_week_prototype_report_manifest.json",
+      "sha256": "sha256:f3c17355c2121311a12e6c1adf3043f621baa80b2cc51d017cf1686d6856c48c"
+    }
+  },
+  "gates": [
+    {
+      "gate_id": "01_support_bank_frozen",
+      "requirement": "Prototype support bank is frozen.",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "support_bank.status=prototype_ready_with_shortfalls",
+        "support_bank.execution.reference_bank_version=papilio-demoleus-prototype-bank-20260716",
+        "support_bank.counts.prototype_support=81",
+        "support_bank.artifacts.support.sha256=sha256:a5a26fc7e60c79dbcca9b9f8fc1ba2b3558e6307bd7c5b70711fe1ad022fde10"
+      ],
+      "limitation": "The bank is frozen for prototype screening, not scientific release."
+    },
+    {
+      "gate_id": "02_bank_marked_prototype_only",
+      "requirement": "Reference bank is marked prototype_only.",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "support_bank.bank_status=prototype_only",
+        "support_bank.semantics.prototype_only=true",
+        "support_bank.classification_authorised=true"
+      ],
+      "limitation": null
+    },
+    {
+      "gate_id": "03_licence_and_attribution_complete",
+      "requirement": "Licences and attribution are complete.",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "phase14_report.reference_bank.prototype_support=81",
+        "phase14_report.reference_bank.licence_policy_distribution.allowed=2",
+        "phase14_report.reference_bank.licence_policy_distribution.research_only=79",
+        "local_support_audit.attribution_complete=81/81",
+        "local_support_audit.nonempty_licence=81/81",
+        "local_support_audit.nonempty_licence_uri=81/81"
+      ],
+      "limitation": "Seventy-nine references are research-only and cannot be treated as public-display authorization."
+    },
+    {
+      "gate_id": "04_exact_duplicates_resolved",
+      "requirement": "Exact duplicates are resolved.",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "duplicate_resolution.counts.unresolved_duplicates=0",
+        "duplicate_resolution.counts.duplicate_conflicts=0",
+        "duplicate_resolution.counts.noncanonical_duplicates=0",
+        "local_support_audit.unique_source_sha256=81/81",
+        "local_support_audit.unique_reference_media_id=81/81",
+        "local_support_audit.unique_reference_observation_id=81/81"
+      ],
+      "limitation": "Two records lack owner evidence, so complete identity-based leakage protection is not claimed."
+    },
+    {
+      "gate_id": "05_routes_separate",
+      "requirement": "Adult, larval and specimen routes are separate.",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "embeddings.validation.adult_larval_specimen_embeddings_mixed=false",
+        "embeddings.validation.visual_neighbours_cross_routes=false",
+        "embeddings.route_counts.adult_field=80",
+        "embeddings.route_counts.larval=1",
+        "phase14_report.route_separation.frozen_pinned_specimen=0",
+        "staged_flickr.validation.route_separation_preserved=true"
+      ],
+      "limitation": "No pinned-specimen reference and no larval support_train prototype exist; incompatible routes abstain."
+    },
+    {
+      "gate_id": "06_frozen_embeddings_exist",
+      "requirement": "Frozen support embeddings exist.",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "embeddings.status=complete",
+        "embeddings.counts.embedded=81",
+        "embeddings.validation.complete_support_coverage=true",
+        "embeddings.validation.finite_embeddings=true",
+        "embeddings.validation.unit_normalized_embeddings=true",
+        "embeddings.artifacts.prototype_reference_embeddings.sha256=sha256:4d0bd9ef275ec3e1eb2c29d257573b6b778db8545ae2f63b85e4e2dd5881ca72"
+      ],
+      "limitation": null
+    },
+    {
+      "gate_id": "07_target_and_competitor_scoring",
+      "requirement": "Target and competitor scoring works.",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "staged_flickr.counts.classified=13496",
+        "staged_flickr.counts.target_rows=13496",
+        "staged_flickr.validation.target_rows_per_record_min_max=[1,1]",
+        "staged_flickr.validation.species_rows_per_record_min_max=[34,34]",
+        "staged_flickr.validation.complete_candidate_union_scored=true",
+        "policy.selection_evidence.competitor_defeat_target_rate=1.0"
+      ],
+      "limitation": "These are unlabelled screening and retrieval results, not classification accuracy."
+    },
+    {
+      "gate_id": "08_target_never_hierarchy_pruned",
+      "requirement": "Target is never hierarchy-pruned.",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "staged_flickr.validation.higher_rank_pruning_applied=false",
+        "staged_flickr.validation.target_scored_for_every_classified_record=true",
+        "policy.selected_policy.target_always_scored=true",
+        "policy.selected_policy.higher_rank_pruning_permitted=false"
+      ],
+      "limitation": null
+    },
+    {
+      "gate_id": "09_benchmark_executed",
+      "requirement": "B0-B16 or a documented executable subset has run.",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "benchmark.execution.records_scored=81",
+        "benchmark.execution.records_skipped=0",
+        "benchmark.execution.experiment_rows_per_record=19",
+        "benchmark.execution.experiment_ids=B0-B13,B14-regional,B14-global,B14-layered,B15,B16"
+      ],
+      "limitation": "Focused and masked visual inputs were unavailable; B11 and B12 record raw-full-frame reuse."
+    },
+    {
+      "gate_id": "10_staged_flickr_executed",
+      "requirement": "Staged Flickr classification has run.",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "staged_flickr.status=complete_with_retryable_source_failures",
+        "staged_flickr.counts.planned=13501",
+        "staged_flickr.counts.classified=13496",
+        "staged_flickr.counts.retryable_operational_failures=5",
+        "staged_flickr.execution.sqlite_checkpoint_complete=true",
+        "staged_flickr.validation.completed_resume_without_model_work=true"
+      ],
+      "limitation": "Five download/decode failures remain retryable and are not biological negatives."
+    },
+    {
+      "gate_id": "11_fingerprints_exist",
+      "requirement": "Model and data fingerprints exist.",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "policy.frozen_identity.classifier_fingerprint=sha256:92638010837bd31b1cdbfae366fa1245015153b34f58dc8e8fea0a6378ad4acd",
+        "policy.frozen_identity.model_revision=191d741545e4c741cdef4b22c6eb69c945c1e592",
+        "policy.execution.policy_fingerprint=sha256:4e2d0f3582302d721da56643476ff67c6d9ae3290ffc4bbc297ef0f947448076",
+        "support_bank.execution.settings_fingerprint=sha256:4a8d09ae34df3362bde7465681f0c7a3cac10278da35562e4600687641114660",
+        "staged_flickr.execution.configuration_fingerprint=sha256:469677b3f40b3e62937f332ce594f2ad279f1758c4578951ad72c3ee317f101d"
+      ],
+      "limitation": null
+    },
+    {
+      "gate_id": "12_limitations_explicit",
+      "requirement": "Limitations are explicit.",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "policy.limitations.count=6",
+        "phase14_report.known_limitations.count=12",
+        "phase14_report.post_hackathon_human_review_plan.count=10"
+      ],
+      "limitation": null
+    },
+    {
+      "gate_id": "13_no_probability_misrepresentation",
+      "requirement": "No score is falsely labelled probability.",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "benchmark.semantics.raw_scores_are_probabilities=false",
+        "staged_flickr.semantics.scores_are_calibrated_probabilities=false",
+        "policy.margin_policy.scores_are_probabilities=false",
+        "phase14_report.evidence.scores_are_probabilities=false"
+      ],
+      "limitation": "The selected policy is prototype_uncalibrated and emits no probabilities."
+    },
+    {
+      "gate_id": "14_no_false_human_verification",
+      "requirement": "No human verification is falsely claimed.",
+      "required": true,
+      "passed": true,
+      "evidence": [
+        "support_bank.counts.human_verified=0",
+        "support_bank.semantics.provider_supported_is_human_verified=false",
+        "embeddings.counts.human_verified=0",
+        "benchmark.semantics.human_verified_records=0",
+        "phase14_report.evidence.human_verified=0"
+      ],
+      "limitation": "Independent expert review remains required for scientific release and valid accuracy reporting."
+    }
+  ],
+  "gate_summary": {
+    "required": 14,
+    "passed": 14,
+    "failed": 0,
+    "pass_rate": 1.0
+  },
+  "prototype_limitations": [
+    "No reference label is independently human taxonomically verified.",
+    "The selected policy is uncalibrated and emits no probabilities.",
+    "Seventy-nine of 81 frozen references are research-only.",
+    "No pinned-specimen reference or larval support_train prototype exists.",
+    "No visual-domain negative passed the final support freeze.",
+    "Two support records lack owner evidence.",
+    "Five Flickr failures and ten reference-source failures remain retryable.",
+    "Focused and masked visual-input evidence was unavailable.",
+    "YOLOE routing accuracy is not independently validated.",
+    "Prototype inference distributions are not accuracy or prevalence estimates."
+  ],
+  "verification": {
+    "phase14_and_phase15_contract_tests": 26,
+    "full_repository_tests": 2313,
+    "full_repository_test_seconds": 71.49,
+    "ruff": "passed",
+    "json_validation": "passed",
+    "git_diff_check": "passed",
+    "cli_help": "passed"
+  },
+  "next_task": "15.1_add_explicit_prototype_classification_default",
+  "githits_solution_id": "7c704d8e-07c2-4391-92b2-d59503de8671"
+}
