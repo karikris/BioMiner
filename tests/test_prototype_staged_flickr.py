@@ -103,6 +103,16 @@ class FakeScorer:
             "bioclip_last_request_cache_hit": True,
         }
 
+    @property
+    def memory_metrics(self) -> dict[str, int]:
+        return {
+            "mps_current_allocated_memory": 1024,
+            "mps_driver_allocated_memory": 2048,
+            "mps_recommended_max_memory": 4096,
+            "mps_peak_current_allocated_memory": 1536,
+            "mps_peak_driver_allocated_memory": 2560,
+        }
+
     def pin_reference_model_identity(self, **kwargs: str) -> None:
         assert kwargs["image_resize_mode"] == "longest"
 
@@ -283,6 +293,7 @@ def test_staged_flickr_runner_scores_complete_union_and_resumes(tmp_path: Path) 
         "s3_permitted": False,
         "s3_accessed": False,
     }
+    assert result.report["memory"]["mps_recommended_max_memory"] == 4096
     rows = pl.read_parquet(result.results_path)
     assert rows.height == 4
     assert rows["target_scored"].all()

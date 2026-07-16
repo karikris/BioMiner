@@ -15,6 +15,7 @@ from biominer.bioclip.bioclip_worker import (
     canonical_preprocessing_config,
     configure_hf_cache_env,
     device_from_request,
+    mps_memory_snapshot,
     normalize_image_resize_mode,
     preprocessing_attestation_fingerprint,
     resolve_open_clip_model_source,
@@ -24,6 +25,30 @@ from biominer.common.semantic_hash import canonical_semantic_fingerprint
 
 
 REVISION = "191d741545e4c741cdef4b22c6eb69c945c1e592"
+
+
+def test_mps_memory_snapshot_reports_allocator_driver_and_recommended_limit() -> None:
+    fake_torch = types.SimpleNamespace(
+        mps=types.SimpleNamespace(
+            current_allocated_memory=lambda: 1024,
+            driver_allocated_memory=lambda: 2048,
+            recommended_max_memory=lambda: 4096,
+        )
+    )
+
+    assert mps_memory_snapshot(fake_torch, "mps") == {
+        "mps_current_allocated_memory": 1024,
+        "mps_driver_allocated_memory": 2048,
+        "mps_recommended_max_memory": 4096,
+    }
+
+
+def test_mps_memory_snapshot_marks_non_mps_devices_not_applicable() -> None:
+    assert mps_memory_snapshot(types.SimpleNamespace(), "cpu") == {
+        "mps_current_allocated_memory": "not_applicable",
+        "mps_driver_allocated_memory": "not_applicable",
+        "mps_recommended_max_memory": "not_applicable",
+    }
 
 
 def test_open_clip_model_source_resolves_exact_prefetched_hf_snapshot(

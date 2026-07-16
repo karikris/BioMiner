@@ -120,6 +120,13 @@ def test_prototype_smoke_validates_hashes_embeddings_routes_and_worker_reuse(
                 "bioclip_model_cache_hit_rate": 0.5,
                 "bioclip_last_request_cache_hit": True,
             }
+            self.memory_metrics = {
+                "mps_current_allocated_memory": 1024,
+                "mps_driver_allocated_memory": 2048,
+                "mps_recommended_max_memory": 4096,
+                "mps_peak_current_allocated_memory": 1536,
+                "mps_peak_driver_allocated_memory": 2560,
+            }
 
         def ensure_model_attestation(self) -> None:
             return None
@@ -161,6 +168,7 @@ def test_prototype_smoke_validates_hashes_embeddings_routes_and_worker_reuse(
     assert result.report["status"] == "passed"
     assert result.report["bioclip"]["embedding_shape"] == [5, 2]
     assert result.report["bioclip"]["content_hashes_match"] is True
+    assert result.report["bioclip"]["memory"]["mps_recommended_max_memory"] == 4096
     assert result.report["yoloe"]["persistent_worker_process_starts"] == 1
     assert result.report["yoloe"]["persistent_worker_requests"] == 2
     assert result.report["batch_settings"]["yoloe_actual_batches"] == [3, 2]

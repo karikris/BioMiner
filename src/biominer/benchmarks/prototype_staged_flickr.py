@@ -259,6 +259,9 @@ class ImageEmbeddingScorer(Protocol):
     @property
     def cache_metrics(self) -> Mapping[str, object]: ...
 
+    @property
+    def memory_metrics(self) -> Mapping[str, object]: ...
+
     def ensure_model_attestation(self) -> None: ...
 
     def pin_reference_model_identity(self, **kwargs: str) -> None: ...
@@ -896,15 +899,7 @@ def run_prototype_staged_flickr(
     memory = (
         dict(previous_memory)
         if reuse_previous_runtime and isinstance(previous_memory, Mapping)
-        else {
-            "rss_peak_memory": max(
-                int(stage.get("rss_peak_memory") or 0) for stage in stages
-            ),
-            "child_rss_peak_memory": "not_instrumented",
-            "mps_current_allocated_memory": "not_instrumented",
-            "mps_driver_allocated_memory": "not_instrumented",
-            "mps_recommended_max_memory": "not_instrumented",
-        }
+        else _memory_report(scorer, stages)
     )
     model_report = (
         dict(previous_report["model"])
@@ -1771,6 +1766,16 @@ def _validate_stage(
         or int(cache.get("bioclip_model_cache_hits") or 0) < 1
     ):
         raise RuntimeError("stage did not demonstrate persistent BioCLIP model reuse")
+    memory = dict(scorer.memory_metrics)
+    if scorer.device == "mps" and any(
+        not isinstance(memory.get(field), int)
+        for field in (
+            "mps_current_allocated_memory",
+            "mps_driver_allocated_memory",
+            "mps_recommended_max_memory",
+        )
+    ):
+        raise RuntimeError("stage did not instrument required MPS memory counters")
     if detector.worker_process_starts != 1 or detector.worker_request_count < 1:
         raise RuntimeError("stage did not demonstrate persistent YOLOE worker reuse")
     elapsed = max(float(elapsed_seconds), 1e-9)
@@ -1802,6 +1807,19 @@ def _validate_stage(
             "memory_instrumented": True,
             "failure_rate_within_limit": True,
         },
+    }
+
+
+def _memory_report(
+    scorer: ImageEmbeddingScorer,
+    stages: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    return {
+        "rss_peak_memory": max(
+            int(stage.get("rss_peak_memory") or 0) for stage in stages
+        ),
+        "child_rss_peak_memory": "not_instrumented",
+        **dict(scorer.memory_metrics),
     }
 
 
@@ -2025,6 +2043,7 @@ def _model_report(
         "device_actual": scorer.device,
         "gpu_name": scorer.gpu_name,
         "persistent_loading": dict(scorer.cache_metrics),
+        "memory": dict(scorer.memory_metrics),
         "runtime_evidence_scope": "current_invocation_attestation",
         "full_stream_reuse_verified_by_stage_gates": True,
         "elapsed_seconds": round(elapsed_seconds, 6),

@@ -1178,6 +1178,11 @@ def _model_report(
                 if executed
                 else previous_model.get("cache_metrics")
             ),
+            "memory_metrics": (
+                getattr(scorer, "memory_metrics", None)
+                if executed
+                else previous_model.get("memory_metrics")
+            ),
             "model_execution_performed_this_run": executed,
             "resumed_runtime_attestation": bool(previous_model) and not executed,
         }

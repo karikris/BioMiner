@@ -36,6 +36,13 @@ SubprocessRunner = Callable[..., subprocess.CompletedProcess[str]]
 PopenFactory = Callable[..., subprocess.Popen[str]]
 LabelSets = Mapping[str, Sequence[str]]
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_MPS_MEMORY_FIELDS = (
+    "mps_current_allocated_memory",
+    "mps_driver_allocated_memory",
+    "mps_recommended_max_memory",
+    "mps_peak_current_allocated_memory",
+    "mps_peak_driver_allocated_memory",
+)
 _PREPROCESSING_ATTESTATION_FIELDS = frozenset(
     {
         "open_clip_version",
@@ -546,6 +553,8 @@ class PersistentBioClipScorer:
         self._completed_worker_requests = 0
         self._lifetime_model_loads = 0
         self._lifetime_model_cache_hits = 0
+        for field in _MPS_MEMORY_FIELDS:
+            setattr(self, field, None)
 
     @property
     def model_id(self) -> str:
@@ -557,9 +566,7 @@ class PersistentBioClipScorer:
 
     @property
     def cache_metrics(self) -> dict[str, int | float | bool | None]:
-        cache_decisions = (
-            self._lifetime_model_loads + self._lifetime_model_cache_hits
-        )
+        cache_decisions = self._lifetime_model_loads + self._lifetime_model_cache_hits
         return {
             "bioclip_worker_process_starts": self.worker_process_starts,
             "bioclip_worker_requests": self._completed_worker_requests,
@@ -575,6 +582,17 @@ class PersistentBioClipScorer:
                 else 0.0
             ),
             "bioclip_last_request_cache_hit": self.last_model_cache_hit,
+        }
+
+    @property
+    def memory_metrics(self) -> dict[str, int | str]:
+        return {
+            field: (
+                value
+                if isinstance(value := getattr(self, field), int | str)
+                else "not_instrumented"
+            )
+            for field in _MPS_MEMORY_FIELDS
         }
 
     def __enter__(self) -> "PersistentBioClipScorer":
@@ -836,12 +854,27 @@ class PersistentBioClipScorer:
                     f"BioCLIP worker {payload_field} must be a non-negative integer"
                 )
             setattr(self, attribute, value)
+        for field in _MPS_MEMORY_FIELDS:
+            if field not in payload:
+                continue
+            value = payload[field]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int | str)
+                or isinstance(value, int)
+                and value < 0
+                or isinstance(value, str)
+                and value not in {"not_applicable", "not_instrumented"}
+            ):
+                raise RuntimeError(
+                    f"BioCLIP worker {field} must be a non-negative integer "
+                    "or an instrumentation status"
+                )
+            setattr(self, field, value)
         if "model_cache_hit" in payload:
             model_cache_hit = payload["model_cache_hit"]
             if not isinstance(model_cache_hit, bool):
-                raise RuntimeError(
-                    "BioCLIP worker model_cache_hit must be a boolean"
-                )
+                raise RuntimeError("BioCLIP worker model_cache_hit must be a boolean")
             self.last_model_cache_hit = model_cache_hit
         if "device" in payload:
             self.device = str(payload.get("device") or "")

@@ -298,6 +298,7 @@ def _bioclip_evidence(scorer, embeddings, image_evidence, config):  # noqa: ANN0
         "content_hashes_match": True,
         "embedding_batch_size": config.bioclip_batch_size,
         "persistent_loading": metrics,
+        "memory": dict(scorer.memory_metrics),
     }
 
 

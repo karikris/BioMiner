@@ -58,6 +58,16 @@ class FakeScorer:
             "bioclip_worker_requests": len(self.calls),
         }
 
+    @property
+    def memory_metrics(self) -> dict[str, int]:
+        return {
+            "mps_current_allocated_memory": 1024,
+            "mps_driver_allocated_memory": 2048,
+            "mps_recommended_max_memory": 4096,
+            "mps_peak_current_allocated_memory": 1536,
+            "mps_peak_driver_allocated_memory": 2560,
+        }
+
     def ensure_model_attestation(self) -> None:
         self.attestation_calls += 1
 
@@ -88,6 +98,9 @@ def test_builds_frozen_embeddings_prototypes_and_route_local_neighbours(
     result = run_prototype_support_embedding_job(config, scorer=scorer)
 
     assert result.report["status"] == "complete"
+    assert (
+        result.report["model"]["memory_metrics"]["mps_recommended_max_memory"] == 4096
+    )
     assert result.embeddings_path.name == PROTOTYPE_REFERENCE_EMBEDDINGS_FILE
     assert result.prototypes_path.name == PROTOTYPE_REFERENCE_PROTOTYPES_FILE
     assert result.visual_neighbours_path is not None

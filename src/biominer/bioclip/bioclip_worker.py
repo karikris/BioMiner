@@ -27,6 +27,11 @@ OPENCLIP_PREPROCESSING_ATTESTATION_VERSION = "openclip-preprocessing-attestation
 DECODED_IMAGE_CONTENT_HASH_VERSION = "decoded-image-content-v1"
 _HF_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_MPS_MEMORY_FIELDS = (
+    "mps_current_allocated_memory",
+    "mps_driver_allocated_memory",
+    "mps_recommended_max_memory",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -454,6 +459,8 @@ class _LoadedBioClipModel:
         self._text_features_by_labels: OrderedDict[tuple[str, ...], object] = (
             OrderedDict()
         )
+        self._mps_peak_current_allocated_memory = 0
+        self._mps_peak_driver_allocated_memory = 0
 
     @classmethod
     def load(
@@ -533,10 +540,39 @@ class _LoadedBioClipModel:
             "preprocessing_version": self.preprocessing_version,
             "preprocessing_config": self.preprocessing_config,
             "preprocessing_fingerprint": self.preprocessing_fingerprint,
+            **self._memory_metadata(),
         }
         if self.model_weights_sha256 is not None:
             metadata["model_weights_sha256"] = self.model_weights_sha256
         return metadata
+
+    def _memory_metadata(self) -> dict[str, object]:
+        snapshot = mps_memory_snapshot(self.torch, self.device)
+        current = snapshot["mps_current_allocated_memory"]
+        driver = snapshot["mps_driver_allocated_memory"]
+        if isinstance(current, int):
+            self._mps_peak_current_allocated_memory = max(
+                self._mps_peak_current_allocated_memory,
+                current,
+            )
+        if isinstance(driver, int):
+            self._mps_peak_driver_allocated_memory = max(
+                self._mps_peak_driver_allocated_memory,
+                driver,
+            )
+        return {
+            **snapshot,
+            "mps_peak_current_allocated_memory": (
+                self._mps_peak_current_allocated_memory
+                if isinstance(current, int)
+                else current
+            ),
+            "mps_peak_driver_allocated_memory": (
+                self._mps_peak_driver_allocated_memory
+                if isinstance(driver, int)
+                else driver
+            ),
+        }
 
     def score_images(
         self,
@@ -938,6 +974,33 @@ def _close_image(image: object) -> None:
     close = getattr(image, "close", None)
     if callable(close):
         close()
+
+
+def mps_memory_snapshot(torch, device: str) -> dict[str, int | str]:  # noqa: ANN001 - torch module.
+    if not str(device).startswith("mps"):
+        return {field: "not_applicable" for field in _MPS_MEMORY_FIELDS}
+    mps = getattr(torch, "mps", None)
+    snapshot: dict[str, int | str] = {}
+    methods = {
+        "mps_current_allocated_memory": "current_allocated_memory",
+        "mps_driver_allocated_memory": "driver_allocated_memory",
+        "mps_recommended_max_memory": "recommended_max_memory",
+    }
+    for field, method_name in methods.items():
+        method = getattr(mps, method_name, None)
+        if not callable(method):
+            snapshot[field] = "not_instrumented"
+            continue
+        try:
+            value = method()
+        except Exception:  # noqa: BLE001 - optional runtime counter.
+            snapshot[field] = "not_instrumented"
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            snapshot[field] = "not_instrumented"
+            continue
+        snapshot[field] = value
+    return snapshot
 
 
 def _canonical_json_mapping(
