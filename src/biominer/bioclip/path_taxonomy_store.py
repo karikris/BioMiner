@@ -30,7 +30,10 @@ from biominer.registry.classification_v3 import (
     classification_v3_fingerprint,
     hierarchy_fingerprint,
 )
-from biominer.registry.unified import PATH_RANKS as BIOCLIP_SUPPORTED_RANKS, stable_identity
+from biominer.registry.unified import (
+    PATH_RANKS as BIOCLIP_SUPPORTED_RANKS,
+    stable_identity,
+)
 
 
 _CHECKSUM_ARTIFACTS = (
@@ -105,12 +108,7 @@ class PathTaxonomyStore:
         store = cls(
             **normalized,
             manifest=MappingProxyType(manifest_payload),
-            _enabled_hierarchy_hashes=frozenset(
-                str(value)
-                for value in normalized["leaf_paths"]
-                .filter(pl.col("enabled"))["hierarchy_hash"]
-                .to_list()
-            ),
+            _enabled_hierarchy_hashes=frozenset(str(value) for value in normalized["leaf_paths"].filter(pl.col("enabled"))["hierarchy_hash"].to_list()),
         )
         store._validate_loaded_frames()
         return store
@@ -181,11 +179,7 @@ class PathTaxonomyStore:
         node_ids = _rank_node_ids(paths, normalized_rank)
         if node_ids.is_empty():
             return pl.DataFrame(schema=NODE_SCHEMA)
-        return (
-            self.nodes.filter((pl.col("rank") == normalized_rank) & pl.col("enabled"))
-            .join(node_ids, on="node_id", how="semi")
-            .sort(["scientific_name", "node_id"])
-        )
+        return self.nodes.filter((pl.col("rank") == normalized_rank) & pl.col("enabled")).join(node_ids, on="node_id", how="semi").sort(["scientific_name", "node_id"])
 
     def filter_paths_by_rank_nodes(
         self,
@@ -198,11 +192,7 @@ class PathTaxonomyStore:
         normalized_rank = _rank(rank)
         paths = self._active_paths(active_paths)
         selected_ids = _node_ids(selected_node_ids)
-        selected_paths = (
-            paths.filter(pl.col(f"{normalized_rank.casefold()}_node_id").is_in(selected_ids))
-            if selected_ids
-            else pl.DataFrame(schema=LEAF_PATH_SCHEMA)
-        )
+        selected_paths = paths.filter(pl.col(f"{normalized_rank.casefold()}_node_id").is_in(selected_ids)) if selected_ids else pl.DataFrame(schema=LEAF_PATH_SCHEMA)
         if not carry_reviewed_skip_paths:
             return _deduplicate_paths(selected_paths)
         skip_paths = self.reviewed_skip_paths(paths, normalized_rank)
@@ -213,22 +203,14 @@ class PathTaxonomyStore:
     def paths_with_asserted_rank(self, active_paths: pl.DataFrame, rank: str) -> pl.DataFrame:
         normalized_rank = _rank(rank)
         paths = self._active_paths(active_paths)
-        return _deduplicate_paths(
-            paths.filter(pl.col(f"{normalized_rank.casefold()}_node_id") != "")
-        )
+        return _deduplicate_paths(paths.filter(pl.col(f"{normalized_rank.casefold()}_node_id") != ""))
 
     def reviewed_skip_paths(self, active_paths: pl.DataFrame, rank: str) -> pl.DataFrame:
         normalized_rank = _rank(rank)
         paths = self._active_paths(active_paths)
         if normalized_rank not in OPTIONAL_CLASSIFICATION_RANKS:
             return pl.DataFrame(schema=LEAF_PATH_SCHEMA)
-        return _deduplicate_paths(
-            paths.filter(
-                (pl.col(f"{normalized_rank.casefold()}_node_id") == "")
-                & pl.col("skipped_ranks").list.contains(normalized_rank)
-                & (pl.col("path_completeness") == "reviewed_optional_skip")
-            )
-        )
+        return _deduplicate_paths(paths.filter((pl.col(f"{normalized_rank.casefold()}_node_id") == "") & pl.col("skipped_ranks").list.contains(normalized_rank) & (pl.col("path_completeness") == "reviewed_optional_skip")))
 
     def species_nodes_in_paths(self, active_paths: pl.DataFrame) -> pl.DataFrame:
         return self.candidate_nodes_in_paths(active_paths, "SPECIES")
@@ -237,9 +219,7 @@ class PathTaxonomyStore:
         ids = _node_ids(species_node_ids)
         if not ids:
             return pl.DataFrame(schema=LEAF_PATH_SCHEMA)
-        return _deduplicate_paths(
-            self.enabled_paths().filter(pl.col("species_node_id").is_in(ids))
-        )
+        return _deduplicate_paths(self.enabled_paths().filter(pl.col("species_node_id").is_in(ids)))
 
     def path_for_species_node(self, species_node_id: str) -> dict[str, object]:
         normalized_id = str(species_node_id or "").strip()
@@ -259,10 +239,7 @@ class PathTaxonomyStore:
     ) -> pl.DataFrame:
         stage = str(prompt_stage or "").strip().casefold()
         if stage not in CLASSIFICATION_PROMPT_STAGES:
-            raise ValueError(
-                f"classification-v3 prompt stage is unavailable: {prompt_stage}; "
-                f"expected one of {', '.join(CLASSIFICATION_PROMPT_STAGES)}"
-            )
+            raise ValueError(f"classification-v3 prompt stage is unavailable: {prompt_stage}; expected one of {', '.join(CLASSIFICATION_PROMPT_STAGES)}")
         ids = _node_ids(node_ids)
         if not ids:
             return pl.DataFrame(schema=PROMPT_LABEL_SCHEMA)
@@ -278,21 +255,13 @@ class PathTaxonomyStore:
             required = "enabled SPECIES"
         if not valid:
             raise ValueError(f"{stage} prompts require only {required} node IDs")
-        return _sort_prompts(
-            self.prompt_labels.filter(
-                pl.col("enabled")
-                & (pl.col("prompt_stage") == stage)
-                & pl.col("node_id").is_in(ids)
-            )
-        )
+        return _sort_prompts(self.prompt_labels.filter(pl.col("enabled") & (pl.col("prompt_stage") == stage) & pl.col("node_id").is_in(ids)))
 
     def mappings_for_species_nodes(self, node_ids: Sequence[str]) -> pl.DataFrame:
         ids = _node_ids(node_ids)
         if not ids:
             return pl.DataFrame(schema=GBIF_MAPPING_SCHEMA)
-        return self.gbif_mappings.filter(
-            pl.col("enabled") & pl.col("species_node_id").is_in(ids)
-        ).sort(["accepted_scientific_name", "gbif_species_key", "species_node_id"])
+        return self.gbif_mappings.filter(pl.col("enabled") & pl.col("species_node_id").is_in(ids)).sort(["accepted_scientific_name", "gbif_species_key", "species_node_id"])
 
     def _classification_frames(self) -> ClassificationV3Frames:
         return ClassificationV3Frames(
@@ -306,18 +275,9 @@ class PathTaxonomyStore:
 
     def _active_paths(self, active_paths: pl.DataFrame) -> pl.DataFrame:
         paths = _normalize_active_paths(active_paths)
-        foreign_hashes = sorted(
-            {
-                str(value)
-                for value in paths["hierarchy_hash"].to_list()
-                if str(value) not in self._enabled_hierarchy_hashes
-            }
-        )
+        foreign_hashes = sorted({str(value) for value in paths["hierarchy_hash"].to_list() if str(value) not in self._enabled_hierarchy_hashes})
         if foreign_hashes:
-            raise ValueError(
-                "active classification paths do not belong to this taxonomy store: "
-                + ", ".join(foreign_hashes)
-            )
+            raise ValueError("active classification paths do not belong to this taxonomy store: " + ", ".join(foreign_hashes))
         return paths
 
     def _validate_loaded_frames(self) -> None:
@@ -363,9 +323,7 @@ class UnifiedPathTaxonomyStore:
     def __init__(self, species_paths: pl.DataFrame) -> None:
         self.leaf_paths = species_paths
         self.rank_order = BIOCLIP_SUPPORTED_RANKS
-        self._enabled_hashes = frozenset(
-            str(value) for value in species_paths.filter(pl.col("enabled"))["path_fingerprint"].to_list()
-        )
+        self._enabled_hashes = frozenset(str(value) for value in species_paths.filter(pl.col("enabled"))["path_fingerprint"].to_list())
         nodes: dict[str, dict[str, object]] = {}
         prompts: list[dict[str, object]] = []
         mappings: list[dict[str, object]] = []
@@ -403,9 +361,13 @@ class UnifiedPathTaxonomyStore:
                 }
             )
         for node in nodes.values():
-            stages = (RANK_SCREEN_PROMPT_STAGE,) if node["rank"] != "SPECIES" else (
-                SPECIES_FIRST_PASS_PROMPT_STAGE,
-                SPECIES_RERANK_PROMPT_STAGE,
+            stages = (
+                (RANK_SCREEN_PROMPT_STAGE,)
+                if node["rank"] != "SPECIES"
+                else (
+                    SPECIES_FIRST_PASS_PROMPT_STAGE,
+                    SPECIES_RERANK_PROMPT_STAGE,
+                )
             )
             for stage in stages:
                 if stage == SPECIES_FIRST_PASS_PROMPT_STAGE:
@@ -512,218 +474,10 @@ class UnifiedPathTaxonomyStore:
         return dict(frame.row(0, named=True))
 
     def prompt_rows_for_nodes(self, node_ids: Sequence[str], prompt_stage: str) -> pl.DataFrame:
-        return self.prompt_labels.filter(
-            (pl.col("prompt_stage") == str(prompt_stage).casefold()) & pl.col("node_id").is_in(_node_ids(node_ids))
-        ).sort(["scientific_name", "node_id", "sort_order"])
+        return self.prompt_labels.filter((pl.col("prompt_stage") == str(prompt_stage).casefold()) & pl.col("node_id").is_in(_node_ids(node_ids))).sort(["scientific_name", "node_id", "sort_order"])
 
     def mappings_for_species_nodes(self, node_ids: Sequence[str]) -> pl.DataFrame:
         return self.gbif_mappings.filter(pl.col("species_node_id").is_in(_node_ids(node_ids)))
-
-
-def _store_from_unified_paths(paths: pl.DataFrame) -> PathTaxonomyStore:
-    required = {
-        "accepted_taxon_key",
-        "accepted_scientific_name",
-        "path_fingerprint",
-        "enabled",
-        *(f"{rank.casefold()}_node_id" for rank in CLASSIFICATION_RANKS),
-        *(rank.casefold() for rank in CLASSIFICATION_RANKS),
-    }
-    missing = sorted(required - set(paths.columns))
-    if missing:
-        raise ValueError("species_paths.parquet is missing columns: " + ", ".join(missing))
-
-    source_release = str(paths["source_release"][0]) if paths.height and "source_release" in paths.columns else ""
-    sources = pl.DataFrame(
-        [
-            {
-                "classification_version": CLASSIFICATION_V3_VERSION,
-                "source_id": "unified-registry",
-                "authority": "Catalogue of Life XR",
-                "release": source_release,
-                "citation": "Catalogue of Life XR 315557; DOI 10.48580/dgy8b",
-                "retrieved_at": "",
-                "evidence_url": "https://www.catalogueoflife.org/",
-                "evidence": "Unified registry species path",
-            }
-        ],
-        schema=SOURCE_SCHEMA,
-    )
-    node_rows: dict[str, dict[str, object]] = {}
-    edge_rows: dict[tuple[str, str], dict[str, object]] = {}
-    mapping_rows: list[dict[str, object]] = []
-    leaf_rows: list[dict[str, object]] = []
-    prompt_rows: list[dict[str, object]] = []
-    proxy_semantics: dict[str, tuple[str, str, str]] = {}
-    for source_path in paths.iter_rows(named=True):
-        row = dict(source_path)
-        rank_node_ids: list[str] = []
-        for rank in CLASSIFICATION_RANKS:
-            prefix = rank.casefold()
-            node_id = str(row.get(f"{prefix}_node_id") or "")
-            name = str(row.get(prefix) or "")
-            semantic_rank = str(row.get(f"{prefix}_semantic_rank") or rank)
-            candidate_kind = str(row.get(f"{prefix}_candidate_kind") or "observed_taxon")
-            if not node_id:
-                continue
-            rank_node_ids.append(node_id)
-            node_rows.setdefault(
-                node_id,
-                {
-                    "classification_version": CLASSIFICATION_V3_VERSION,
-                    "node_id": node_id,
-                    "rank": rank,
-                    "scientific_name": name,
-                    "source_id": "unified-registry",
-                    "source_release": source_release,
-                    "citation": "Catalogue of Life XR 315557; DOI 10.48580/dgy8b",
-                    "retrieved_at": "",
-                    "evidence": "routing proxy" if candidate_kind == "carry_forward_proxy" else "observed registry taxon",
-                    "reviewed": True,
-                    "review_status": "source_accepted",
-                    "reviewed_by": "Catalogue of Life XR",
-                    "reviewed_at": "",
-                    "enabled": bool(row.get("enabled", True)),
-                    "disabled_reason": str(row.get("disabled_reason") or ""),
-                },
-            )
-            proxy_semantics[node_id] = (candidate_kind, semantic_rank, name)
-        for parent_rank, child_rank in zip(CLASSIFICATION_RANKS[:-1], CLASSIFICATION_RANKS[1:], strict=True):
-            parent_id = str(row.get(f"{parent_rank.casefold()}_node_id") or "")
-            child_id = str(row.get(f"{child_rank.casefold()}_node_id") or "")
-            if not parent_id or not child_id:
-                continue
-            edge_rows.setdefault(
-                (parent_id, child_id),
-                {
-                    "classification_version": CLASSIFICATION_V3_VERSION,
-                    "parent_node_id": parent_id,
-                    "child_node_id": child_id,
-                    "parent_rank": parent_rank,
-                    "child_rank": child_rank,
-                    "edge_type": "asserted_parent",
-                    "skipped_ranks": [],
-                    "skip_reason": "",
-                    "source_id": "unified-registry",
-                    "source_release": source_release,
-                    "citation": "Catalogue of Life XR 315557; DOI 10.48580/dgy8b",
-                    "retrieved_at": "",
-                    "evidence": "species_paths routing edge",
-                    "reviewed": True,
-                    "review_status": "source_accepted",
-                    "reviewed_by": "Catalogue of Life XR",
-                    "reviewed_at": "",
-                    "enabled": bool(row.get("enabled", True)),
-                    "disabled_reason": str(row.get("disabled_reason") or ""),
-                },
-            )
-        species_node_id = str(row.get("species_node_id") or "")
-        accepted_key = str(row.get("accepted_taxon_key") or "")
-        accepted_name = str(row.get("accepted_scientific_name") or row.get("species") or "")
-        mapping_rows.append(
-            {
-                "classification_version": CLASSIFICATION_V3_VERSION,
-                "accepted_taxon_key": accepted_key,
-                "gbif_species_key": accepted_key.removeprefix("gbif:"),
-                "accepted_scientific_name": accepted_name,
-                "species_node_id": species_node_id,
-                "taxonomic_status": "ACCEPTED",
-                "source_id": "unified-registry",
-                "source_release": source_release,
-                "citation": "Catalogue of Life XR 315557; DOI 10.48580/dgy8b",
-                "retrieved_at": "",
-                "evidence": "unified registry identity",
-                "reviewed": True,
-                "review_status": "source_accepted",
-                "reviewed_by": "Catalogue of Life XR",
-                "reviewed_at": "",
-                "enabled": bool(row.get("enabled", True)),
-                "disabled_reason": str(row.get("disabled_reason") or ""),
-            }
-        )
-        leaf: dict[str, object] = {
-            "classification_version": CLASSIFICATION_V3_VERSION,
-            "accepted_taxon_key": accepted_key,
-            "gbif_species_key": accepted_key.removeprefix("gbif:"),
-            "rank_path": list(CLASSIFICATION_RANKS),
-            "rank_path_node_ids": rank_node_ids,
-            "skipped_ranks": [],
-            "path_completeness": "complete_with_routing_proxies" if any(
-                str(row.get(f"{rank.casefold()}_candidate_kind") or "") == "carry_forward_proxy"
-                for rank in CLASSIFICATION_RANKS
-            ) else "complete",
-            "hierarchy_hash": str(row.get("path_fingerprint") or ""),
-            "source_release": source_release,
-            "enabled": bool(row.get("enabled", True)),
-            "disabled_reason": str(row.get("disabled_reason") or ""),
-        }
-        for rank in CLASSIFICATION_RANKS:
-            prefix = rank.casefold()
-            leaf[f"{prefix}_node_id"] = str(row.get(f"{prefix}_node_id") or "")
-            leaf[prefix] = str(row.get(prefix) or "")
-        leaf_rows.append(leaf)
-
-    nodes = pl.DataFrame(list(node_rows.values()), schema=NODE_SCHEMA).sort(["rank", "scientific_name", "node_id"])
-    edges = pl.DataFrame(list(edge_rows.values()), schema=EDGE_SCHEMA).sort(["parent_rank", "parent_node_id", "child_node_id"])
-    mappings = pl.DataFrame(mapping_rows, schema=GBIF_MAPPING_SCHEMA).sort(["accepted_scientific_name", "gbif_species_key"])
-    leaf_paths = pl.DataFrame(leaf_rows, schema=LEAF_PATH_SCHEMA).sort(["family", "genus", "species", "accepted_taxon_key"])
-    for node in nodes.iter_rows(named=True):
-        node_id = str(node["node_id"])
-        rank = str(node["rank"])
-        name = str(node["scientific_name"])
-        candidate_kind, semantic_rank, _ = proxy_semantics[node_id]
-        stages = (RANK_SCREEN_PROMPT_STAGE,) if rank != "SPECIES" else (
-            SPECIES_FIRST_PASS_PROMPT_STAGE,
-            SPECIES_RERANK_PROMPT_STAGE,
-        )
-        for stage in stages:
-            semantic_label = f"a butterfly in the {semantic_rank.casefold()} {name}"
-            if candidate_kind == "carry_forward_proxy":
-                semantic_label += "; routing proxy for a missing hierarchy rank"
-            prompt_rows.append(
-                {
-                    "classification_version": CLASSIFICATION_V3_VERSION,
-                    "prompt_version": CLASSIFICATION_V3_PROMPT_VERSION,
-                    "prompt_stage": stage,
-                    "node_id": node_id,
-                    "rank": rank,
-                    "scientific_name": name,
-                    "label": semantic_label,
-                    "prompt_template": "semantic_rank_routing_proxy" if candidate_kind == "carry_forward_proxy" else "observed_taxon",
-                    "sort_order": 1,
-                    "enabled": bool(node["enabled"]),
-                }
-            )
-    prompts = pl.DataFrame(prompt_rows, schema=PROMPT_LABEL_SCHEMA).sort(["prompt_stage", "rank", "scientific_name", "node_id"])
-    qa = pl.DataFrame(schema=QA_FINDING_SCHEMA)
-    frames = ClassificationV3Frames(
-        sources=sources,
-        nodes=nodes,
-        edges=edges,
-        gbif_mappings=mappings,
-        leaf_paths=leaf_paths,
-        prompt_labels=prompts,
-    )
-    manifest = {
-        "classification_version": CLASSIFICATION_V3_VERSION,
-        "prompt_version": CLASSIFICATION_V3_PROMPT_VERSION,
-        "qa_status": "passed",
-        "fatal_finding_count": 0,
-        "warning_finding_count": 0,
-        "hierarchy_fingerprint": hierarchy_fingerprint(frames),
-        "classification_fingerprint": classification_v3_fingerprint(frames),
-        "taxonomy_input": "species_paths.parquet",
-    }
-    return PathTaxonomyStore.from_frames(
-        sources=sources,
-        nodes=nodes,
-        edges=edges,
-        gbif_mappings=mappings,
-        leaf_paths=leaf_paths,
-        prompt_labels=prompts,
-        qa_findings=qa,
-        manifest=manifest,
-    )
 
 
 def _read_manifest(path: Path) -> dict[str, object]:
@@ -785,23 +539,12 @@ def _rank(value: str) -> str:
 
 
 def _node_ids(values: Sequence[str]) -> tuple[str, ...]:
-    return tuple(
-        dict.fromkeys(
-            str(value).strip()
-            for value in values
-            if value is not None and str(value).strip()
-        )
-    )
+    return tuple(dict.fromkeys(str(value).strip() for value in values if value is not None and str(value).strip()))
 
 
 def _rank_node_ids(paths: pl.DataFrame, rank: str) -> pl.DataFrame:
     column = f"{rank.casefold()}_node_id"
-    return (
-        paths.select(pl.col(column).alias("node_id"))
-        .filter(pl.col("node_id") != "")
-        .unique()
-        .sort("node_id")
-    )
+    return paths.select(pl.col(column).alias("node_id")).filter(pl.col("node_id") != "").unique().sort("node_id")
 
 
 def _normalize_active_paths(paths: pl.DataFrame) -> pl.DataFrame:
@@ -824,11 +567,7 @@ def _sort_paths(paths: pl.DataFrame) -> pl.DataFrame:
 def _deduplicate_paths(paths: pl.DataFrame) -> pl.DataFrame:
     if paths.is_empty():
         return pl.DataFrame(schema=LEAF_PATH_SCHEMA)
-    return (
-        _sort_paths(paths)
-        .unique(subset=["hierarchy_hash"], keep="first", maintain_order=True)
-        .sort(list(_PATH_SORT_COLUMNS))
-    )
+    return _sort_paths(paths).unique(subset=["hierarchy_hash"], keep="first", maintain_order=True).sort(list(_PATH_SORT_COLUMNS))
 
 
 def _sort_prompts(prompts: pl.DataFrame) -> pl.DataFrame:

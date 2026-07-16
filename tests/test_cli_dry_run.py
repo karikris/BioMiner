@@ -9,7 +9,12 @@ from typing import Any
 import polars as pl
 import pytest
 
-from biominer.config import BioMinerConfig, RuntimeConfig, StorageConfig, WorkStoreConfig
+from biominer.config import (
+    BioMinerConfig,
+    RuntimeConfig,
+    StorageConfig,
+    WorkStoreConfig,
+)
 from biominer.cli import (
     _create_production_vision_runtime,
     _production_vision_settings_from_args,
@@ -22,7 +27,6 @@ from biominer.bioclip.classification_modes import (
     TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
     TARGET_SCOPE_OBJECT_SCREENING,
 )
-from biominer.detection.detector_base import DecodedImage
 from biominer.detection.policy import VisionRuntimeSettings
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES
 from biominer.registry.translation_harvester import (
@@ -38,7 +42,17 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     parser = build_parser()
     commands = parser._subparsers._group_actions[0].choices  # noqa: SLF001 - parser surface regression test.
     poll_once = parser.parse_args(
-        ["dev", "flickr", "poll-once", "--max-api-calls", "3500", "--run-id", "run-1", "--worker-id", "worker-001"]
+        [
+            "dev",
+            "flickr",
+            "poll-once",
+            "--max-api-calls",
+            "3500",
+            "--run-id",
+            "run-1",
+            "--worker-id",
+            "worker-001",
+        ]
     )
 
     assert "run" in commands
@@ -171,10 +185,7 @@ def test_production_vision_runtime_honours_profile_model_without_target_resize(
 
     assert created["runtime_kwargs"]["model_name"] == settings.bioclip_model
     assert created["persistent"]["image_resize_mode"] is None
-    assert (
-        created["crop_scorer"]["model_id"]
-        == "imageomics/bioclip-2.5-vith14"
-    )
+    assert created["crop_scorer"]["model_id"] == "imageomics/bioclip-2.5-vith14"
 
 
 def test_build_text_embedding_cache_command_builds_v3_cache_and_closes_worker(tmp_path, monkeypatch, capsys) -> None:
@@ -212,9 +223,7 @@ def test_build_text_embedding_cache_command_builds_v3_cache_and_closes_worker(tm
         batch_size,
     ):  # noqa: ANN001, ANN201 - dependency-boundary fake.
         assert callable(embed_labels)
-        builder_calls.append(
-            (taxonomy_store, model_id, model_checkpoint, batch_size)
-        )
+        builder_calls.append((taxonomy_store, model_id, model_checkpoint, batch_size))
         return frame
 
     monkeypatch.setattr("biominer.bioclip.bioclip.PersistentBioClipScorer", FakePersistent)
@@ -232,7 +241,7 @@ def test_build_text_embedding_cache_command_builds_v3_cache_and_closes_worker(tm
             "dev",
             "vision",
             "build-text-embedding-cache",
-            "--taxonomy-candidate-table",
+            "--registry-dir",
             str(tmp_path / "taxonomy"),
             "--output",
             str(output),
@@ -248,9 +257,7 @@ def test_build_text_embedding_cache_command_builds_v3_cache_and_closes_worker(tm
     assert payload["classification_fingerprint"] == "sha256:classification"
     assert payload["hierarchy_fingerprint"] == "sha256:hierarchy"
     assert "taxonomy_fingerprint" not in payload
-    assert builder_calls == [
-        (store, "imageomics/bioclip", "revision-1", 256)
-    ]
+    assert builder_calls == [(store, "imageomics/bioclip", "revision-1", 256)]
     assert closed == [True]
 
 
@@ -268,7 +275,13 @@ def test_registry_public_cli_exposes_only_build_and_audit() -> None:
         "audit",
         "publish",
     }
-    for internal in {"fetch-taxonomy", "compile-fixture", "compile-enriched", "enrich-sources", "seed-flickr-queries"}:
+    for internal in {
+        "fetch-taxonomy",
+        "compile-fixture",
+        "compile-enriched",
+        "enrich-sources",
+        "seed-flickr-queries",
+    }:
         assert internal not in registry_choices
         assert internal in dev_registry_choices
 
@@ -425,13 +438,10 @@ def test_run_cli_parses_classification_mode_with_fixed_cascade_contract() -> Non
             "s3://biominer/biominer/runs/papilio_demoleus",
             "--classification-mode",
             "hierarchical",
-            "--taxonomy-candidate-table",
-            "s3://biominer/biominer/registry/current",
         ]
     )
 
     assert args.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-    assert args.taxonomy_candidate_table.endswith("registry/current")
     assert not hasattr(args, "family_top_k")
     assert not hasattr(args, "beam_strategy")
     assert not hasattr(args, "rank_beam_width")
@@ -496,42 +506,10 @@ def test_run_cli_accepts_explicit_build_week_prototype_config() -> None:
     )
 
     assert args.classification_mode == BUILD_WEEK_TARGET_AWARE_PROTOTYPE
-    assert args.classification_config.endswith(
-        "papilio_demoleus_build_week_target_aware_prototype.json"
-    )
+    assert args.classification_config.endswith("papilio_demoleus_build_week_target_aware_prototype.json")
     assert args.storage_backend == "local"
     assert args.workstore_backend == "sqlite"
     assert args.workflow == "reference-first"
-
-
-@pytest.mark.parametrize(
-    "removed_option",
-    (
-        "--family-top-k",
-        "--beam-strategy",
-        "--rank-beam-width",
-        "--species-first-pass-top-k",
-        "--species-rerank-top-k",
-        "--species-report-top-k",
-    ),
-)
-def test_run_cli_rejects_removed_production_width_overrides(removed_option: str) -> None:
-    parser = build_parser()
-
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            [
-                "run",
-                "--taxon",
-                "Papilio demoleus",
-                "--registry-dir",
-                "s3://biominer/biominer/registry/current",
-                "--output-prefix",
-                "s3://biominer/biominer/runs/papilio_demoleus",
-                removed_option,
-                "4",
-            ]
-        )
 
 
 def test_registry_build_parses_regional_and_static_source_options() -> None:
@@ -584,7 +562,10 @@ def test_registry_build_cli_forwards_regional_and_static_source_options(monkeypa
 
     def fake_build_registry(**kwargs: Any) -> dict[str, Any]:
         recorded.update(kwargs)
-        return {"registry_version": kwargs["registry_version"], "manifest": {"qa_status": "passed"}}
+        return {
+            "registry_version": kwargs["registry_version"],
+            "manifest": {"qa_status": "passed"},
+        }
 
     monkeypatch.setattr("biominer.cli.build_registry", fake_build_registry)
     parser = build_parser()
@@ -753,35 +734,6 @@ def test_run_cli_exposes_comment_and_registry_build_controls() -> None:
     assert args.comments_max_api_calls == 17
 
 
-def test_species_cli_removed_from_public_surface() -> None:
-    parser = build_parser()
-    commands = parser._subparsers._group_actions[0].choices  # noqa: SLF001
-
-    assert "species" not in commands
-    assert "run" in commands
-    for removed in {
-        "resolve",
-        "refresh-registry",
-        "compile-flickr-queries",
-        "fetch-flickr",
-        "review-comments",
-        "detect",
-        "bioclip-funnel",
-        "bioclip-objects",
-        "ablate-objects",
-        "join-object-evidence",
-    }:
-        with pytest.raises(SystemExit):
-            parser.parse_args(["species", removed])
-
-
-def test_cloud_cli_removed_from_public_surface() -> None:
-    parser = build_parser()
-
-    with pytest.raises(SystemExit):
-        parser.parse_args(["cloud", "doctor"])
-
-
 def test_storage_and_workstore_doctor_commands_parse() -> None:
     parser = build_parser()
     storage_args = parser.parse_args(["storage", "doctor"])
@@ -793,14 +745,10 @@ def test_storage_and_workstore_doctor_commands_parse() -> None:
     assert workstore_args.workstore_command == "doctor"
 
 
-def test_storage_handoff_build_creates_a_locally_verified_bundle(
-    tmp_path, capsys
-) -> None:
+def test_storage_handoff_build_creates_a_locally_verified_bundle(tmp_path, capsys) -> None:
     root = tmp_path / "repo"
     (root / "runs/pilot").mkdir(parents=True)
-    (root / "runs/pilot/manifest.json").write_text(
-        '{"status":"complete"}\n', encoding="utf-8"
-    )
+    (root / "runs/pilot/manifest.json").write_text('{"status":"complete"}\n', encoding="utf-8")
 
     rc = run(
         build_parser().parse_args(
@@ -830,16 +778,12 @@ def test_storage_handoff_build_creates_a_locally_verified_bundle(
     assert Path(output["bundle"]["archive_path"]).is_file()
 
 
-def test_storage_handoff_upload_and_receive_delegate_to_narrow_transfer_api(
-    tmp_path, capsys, monkeypatch
-) -> None:
+def test_storage_handoff_upload_and_receive_delegate_to_narrow_transfer_api(tmp_path, capsys, monkeypatch) -> None:
     fake_storage = object()
     config = _fake_cloud_config()
     calls: list[tuple[str, dict[str, Any]]] = []
     monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
-    monkeypatch.setattr(
-        "biominer.cli.create_storage_backend", lambda storage_config: fake_storage
-    )
+    monkeypatch.setattr("biominer.cli.create_storage_backend", lambda storage_config: fake_storage)
 
     def fake_upload(**kwargs):  # noqa: ANN003, ANN202
         assert kwargs.pop("storage") is fake_storage
@@ -1112,7 +1056,17 @@ def test_detect_crop_preview_writes_html_artifact_without_image_archive(tmp_path
         ]
     ).write_parquet(detections)
     parser = build_parser()
-    args = parser.parse_args(["dev", "vision", "crop-preview", "--detections", str(detections), "--output", str(output)])
+    args = parser.parse_args(
+        [
+            "dev",
+            "vision",
+            "crop-preview",
+            "--detections",
+            str(detections),
+            "--output",
+            str(output),
+        ]
+    )
 
     assert run(args) == 0
 
@@ -1128,37 +1082,6 @@ def test_detect_crop_preview_writes_html_artifact_without_image_archive(tmp_path
     assert "left: 10.0000%" in html
     assert "width: 50.0000%" in html
     assert not (tmp_path / "crop_preview_files").exists()
-
-
-def _fake_runtime_pythons(tmp_path: Path) -> tuple[Path, Path]:
-    yolo_python = tmp_path / "yolo" / "bin" / "python"
-    bioclip_python = tmp_path / "bioclip" / "bin" / "python"
-    yolo_python.parent.mkdir(parents=True)
-    bioclip_python.parent.mkdir(parents=True)
-    yolo_python.write_text("# fake yolo python", encoding="utf-8")
-    bioclip_python.write_text("# fake bioclip python", encoding="utf-8")
-    return yolo_python, bioclip_python
-
-
-def _write_screen_context(tmp_path: Path) -> Path:
-    context_path = tmp_path / "species_context.json"
-    context_path.write_text(
-        json.dumps(
-            {
-                "scientific_name": "Danaus plexippus",
-                "accepted_taxon_key": "gbif:5131654",
-                "canonical_name": "Danaus plexippus",
-                "family": "Nymphalidae",
-                "genus": "Danaus",
-                "family_key": "gbif:7017",
-                "genus_key": "gbif:1927164",
-                "species_key": "gbif:5131654",
-                "registry_version": "registry-v1",
-            }
-        ),
-        encoding="utf-8",
-    )
-    return context_path
 
 
 def _parquet_column_compressions(source: Path) -> set[str]:
@@ -1180,7 +1103,15 @@ def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch
     calls: list[dict[str, object]] = []
 
     def fake_run(cmd, *, capture_output, check, env, text):  # noqa: ANN001 - mirrors subprocess.run.
-        calls.append({"cmd": cmd, "capture_output": capture_output, "check": check, "env": env, "text": text})
+        calls.append(
+            {
+                "cmd": cmd,
+                "capture_output": capture_output,
+                "check": check,
+                "env": env,
+                "text": text,
+            }
+        )
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=0,
@@ -1234,7 +1165,16 @@ def test_yoloe26_runtime_check_uses_sidecar_python_and_mps_fallback(tmp_path, ca
     calls: list[dict[str, object]] = []
 
     def fake_run(cmd, *, capture_output, check, cwd, env, text):  # noqa: ANN001 - mirrors subprocess.run.
-        calls.append({"cmd": cmd, "capture_output": capture_output, "check": check, "cwd": cwd, "env": env, "text": text})
+        calls.append(
+            {
+                "cmd": cmd,
+                "capture_output": capture_output,
+                "check": check,
+                "cwd": cwd,
+                "env": env,
+                "text": text,
+            }
+        )
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=0,
@@ -1279,7 +1219,15 @@ def test_bioclip_prefetch_model_uses_snapshot_download_sidecar(tmp_path, capsys,
     calls: list[dict[str, object]] = []
 
     def fake_run(cmd, *, capture_output, check, env, text):  # noqa: ANN001 - mirrors subprocess.run.
-        calls.append({"cmd": cmd, "capture_output": capture_output, "check": check, "env": env, "text": text})
+        calls.append(
+            {
+                "cmd": cmd,
+                "capture_output": capture_output,
+                "check": check,
+                "env": env,
+                "text": text,
+            }
+        )
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=0,
@@ -1308,14 +1256,6 @@ def test_bioclip_prefetch_model_uses_snapshot_download_sidecar(tmp_path, capsys,
     assert calls[0]["cmd"][0] == str(runtime_python)
     assert calls[0]["cmd"][-3] == "imageomics/bioclip-2.5-vith14"
     assert calls[0]["env"]["HUGGINGFACE_HUB_CACHE"] == str((tmp_path / "hf" / "hub").resolve())
-
-
-def test_whole_image_register_bioclip_commands_are_removed_from_public_cli() -> None:
-    parser = build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["bioclip", "screen"])
-    with pytest.raises(SystemExit):
-        parser.parse_args(["species", "bioclip-funnel"])
 
 
 def test_evidence_join_cli_writes_join_tables(tmp_path, capsys, monkeypatch) -> None:
@@ -1430,7 +1370,16 @@ def test_yoloe26_smoke_resolves_paths_before_sidecar_run(tmp_path, capsys, monke
     calls: list[dict[str, object]] = []
 
     def fake_run(cmd, *, capture_output, check, cwd, env, text):  # noqa: ANN001 - mirrors subprocess.run.
-        calls.append({"cmd": cmd, "capture_output": capture_output, "check": check, "cwd": cwd, "env": env, "text": text})
+        calls.append(
+            {
+                "cmd": cmd,
+                "capture_output": capture_output,
+                "check": check,
+                "cwd": cwd,
+                "env": env,
+                "text": text,
+            }
+        )
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=0,
@@ -1464,13 +1413,6 @@ def test_yoloe26_smoke_resolves_paths_before_sidecar_run(tmp_path, capsys, monke
     assert command[5] == str((tmp_path / "smoke-output").resolve())
     assert command[6] == str(image_path.resolve())
     assert calls[0]["cwd"] == str(tmp_path / "YOLO26" / "models")
-
-
-def _fake_cli_image(record: dict[str, object]):
-
-    width = max(1, int(record.get("image_width") or 1))
-    height = max(1, int(record.get("image_height") or 1))
-    return DecodedImage(width=width, height=height, mode="RGB", data=b"\x00\x00\x00" * width * height)
 
 
 def test_production_run_cli_resolves_registry_and_writes_dry_run_manifest(tmp_path, capsys) -> None:
@@ -1515,9 +1457,7 @@ def test_production_run_cli_resolves_registry_and_writes_dry_run_manifest(tmp_pa
         ]
     ).write_parquet(registry / "names.parquet")
     pl.DataFrame([]).write_parquet(registry / "name_evidence.parquet")
-    pl.DataFrame([{"source": "gbif", "source_version": "fixture", "retrieved_at": "2026-01-01"}]).write_parquet(
-        registry / "source_snapshots.parquet"
-    )
+    pl.DataFrame([{"source": "gbif", "source_version": "fixture", "retrieved_at": "2026-01-01"}]).write_parquet(registry / "source_snapshots.parquet")
     pl.DataFrame([]).write_parquet(registry / "flickr_query_definitions.parquet")
     (registry / "manifest.json").write_text(json.dumps({"registry_version": "registry-v1"}), encoding="utf-8")
     output = tmp_path / "species_run"
@@ -1587,9 +1527,7 @@ def test_production_run_cli_requires_readiness_only_for_non_dry_vision(
     )
 
     assert run(args) == 2
-    assert "--reference-bank-readiness is required" in json.loads(
-        capsys.readouterr().out
-    )["error"]
+    assert "--reference-bank-readiness is required" in json.loads(capsys.readouterr().out)["error"]
 
 
 def test_production_run_cli_requires_trusted_readiness_digest_for_vision(
@@ -1622,9 +1560,7 @@ def test_production_run_cli_requires_trusted_readiness_digest_for_vision(
     )
 
     assert run(args) == 2
-    assert "--reference-bank-readiness-sha256 is required" in json.loads(
-        capsys.readouterr().out
-    )["error"]
+    assert "--reference-bank-readiness-sha256 is required" in json.loads(capsys.readouterr().out)["error"]
 
 
 def test_production_run_requires_cloud_config_by_default(tmp_path, capsys, monkeypatch) -> None:
@@ -1853,7 +1789,7 @@ def test_registry_compile_fixture_cli_writes_registry_outputs(tmp_path, capsys) 
                         "genus": "Papilio",
                         "species_key": "gbif:100",
                         "species": "Papilio demoleus",
-                    }
+                    },
                 ],
                 "names": [
                     {
@@ -1883,7 +1819,7 @@ def test_registry_compile_fixture_cli_writes_registry_outputs(tmp_path, capsys) 
                         "precision_tier": "high",
                         "confidence": "high",
                         "enabled": True,
-                    }
+                    },
                 ],
             }
         ),
@@ -1922,7 +1858,12 @@ def test_registry_fetch_taxonomy_cli_writes_gbif_source_snapshot(tmp_path, capsy
             "source": "GBIF",
             "source_version": "gbif-species-api",
             "retrieved_at": retrieved_at,
-            "taxa": [{"accepted_taxon_key": "gbif:1", "scientific_name": scope.root_scientific_name}],
+            "taxa": [
+                {
+                    "accepted_taxon_key": "gbif:1",
+                    "scientific_name": scope.root_scientific_name,
+                }
+            ],
             "names": [],
             "source_assertions": [],
         }
@@ -2040,7 +1981,13 @@ def test_registry_build_cli_reuses_source_json_and_writes_report(tmp_path, capsy
 def test_registry_build_cli_skip_classification_omits_artifacts(tmp_path, capsys) -> None:
     scope = tmp_path / "scope.json"
     scope.write_text(
-        json.dumps({"scope_id": "test-scope", "root": {"scientific_name": "Papilionoidea", "rank": "SUPERFAMILY"}, "included_families": []}),
+        json.dumps(
+            {
+                "scope_id": "test-scope",
+                "root": {"scientific_name": "Papilionoidea", "rank": "SUPERFAMILY"},
+                "included_families": [],
+            }
+        ),
         encoding="utf-8",
     )
     source = tmp_path / "registry_source.json"
@@ -2050,7 +1997,13 @@ def test_registry_build_cli_skip_classification_omits_artifacts(tmp_path, capsys
                 "source": "GBIF",
                 "source_version": "gbif-species-api",
                 "retrieved_at": "2026-06-20T00:00:00+00:00",
-                "taxa": [{"accepted_taxon_key": "gbif:1", "scientific_name": "Papilionoidea", "rank": "SUPERFAMILY"}],
+                "taxa": [
+                    {
+                        "accepted_taxon_key": "gbif:1",
+                        "scientific_name": "Papilionoidea",
+                        "rank": "SUPERFAMILY",
+                    }
+                ],
                 "names": [],
                 "source_assertions": [],
             }
@@ -2060,24 +2013,27 @@ def test_registry_build_cli_skip_classification_omits_artifacts(tmp_path, capsys
     output = tmp_path / "registry"
     parser = build_parser()
 
-    assert run(
-        parser.parse_args(
-            [
-                "registry",
-                "build",
-                "--source-json",
-                str(source),
-                "--reuse-source-json",
-                "--output-dir",
-                str(output),
-                "--registry-version",
-                "test-registry",
-                "--scope-json",
-                str(scope),
-                "--skip-classification",
-            ]
+    assert (
+        run(
+            parser.parse_args(
+                [
+                    "registry",
+                    "build",
+                    "--source-json",
+                    str(source),
+                    "--reuse-source-json",
+                    "--output-dir",
+                    str(output),
+                    "--registry-version",
+                    "test-registry",
+                    "--scope-json",
+                    str(scope),
+                    "--skip-classification",
+                ]
+            )
         )
-    ) == 0
+        == 0
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["manifest"]["classification_skipped"] is True
@@ -2147,9 +2103,24 @@ def test_registry_audit_cli_summarizes_registry_parquet_with_duckdb(tmp_path, ca
     ).write_parquet(registry / "taxa.parquet")
     pl.DataFrame(
         [
-            {"name_class": "accepted_scientific", "source": "GBIF", "language": "la", "enabled": True},
-            {"name_class": "vernacular", "source": "GBIF", "language": "eng", "enabled": True},
-            {"name_class": "vernacular_alias", "source": "fixture", "language": "en", "enabled": False},
+            {
+                "name_class": "accepted_scientific",
+                "source": "GBIF",
+                "language": "la",
+                "enabled": True,
+            },
+            {
+                "name_class": "vernacular",
+                "source": "GBIF",
+                "language": "eng",
+                "enabled": True,
+            },
+            {
+                "name_class": "vernacular_alias",
+                "source": "fixture",
+                "language": "en",
+                "enabled": False,
+            },
         ]
     ).write_parquet(registry / "names.parquet")
     pl.DataFrame(
@@ -2160,103 +2131,62 @@ def test_registry_audit_cli_summarizes_registry_parquet_with_duckdb(tmp_path, ca
     ).write_parquet(registry / "flickr_query_definitions.parquet")
     pl.DataFrame(
         [
-            {"severity": "warning", "code": "disabled_names_excluded_from_queries", "subject": "1"},
+            {
+                "severity": "warning",
+                "code": "disabled_names_excluded_from_queries",
+                "subject": "1",
+            },
         ]
     ).write_parquet(registry / "qa_findings.parquet")
 
     parser = build_parser()
     report_dir = tmp_path / "reports"
-    args = parser.parse_args(["registry", "audit", "--registry-dir", str(registry), "--report-dir", str(report_dir)])
+    args = parser.parse_args(
+        [
+            "registry",
+            "audit",
+            "--registry-dir",
+            str(registry),
+            "--report-dir",
+            str(report_dir),
+        ]
+    )
 
     assert run(args) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["registry_dir"] == str(registry)
     assert payload["taxa_by_rank"] == {"FAMILY": 1, "SPECIES": 1, "SUPERFAMILY": 1}
-    assert payload["enabled_names_by_class"] == {"accepted_scientific": 1, "vernacular": 1}
+    assert payload["enabled_names_by_class"] == {
+        "accepted_scientific": 1,
+        "vernacular": 1,
+    }
     assert payload["flickr_queries_by_field"] == {"tags": 1, "text": 1}
     assert payload["qa_by_severity"] == {"warning": 1}
     assert payload["language_target_coverage_report"].startswith(str(report_dir))
     assert payload["curated_vernacular_gap_report"].startswith(str(report_dir))
 
 
-def test_cli_help_does_not_describe_old_gold_silver_bronze_logic(capsys) -> None:
-    parser = build_parser()
-
-    parser.print_help()
-    help_text = capsys.readouterr().out
-
-    assert "human_verified_bioclip_positive" not in help_text
-    assert "human verification" not in help_text.casefold()
-    assert "bioclip_positive_without_human_verification" not in help_text
-
-
-@pytest.mark.parametrize(
-    "command",
-    (
-        ["apply-rules", "--evidence", "evidence.parquet", "--output", "classified.parquet"],
-        ["filter", "--input", "evidence.parquet", "--output", "flagged.parquet"],
-        ["fetch-comments", "--photo-id", "1"],
-        ["build-comment-review-queue", "--input", "classified.parquet"],
-        ["review-comments-once"],
-        ["apply-comment-review-decisions", "--input", "classified.parquet", "--output", "reviewed.parquet"],
-        ["poll-once"],
-        ["compact-parquet", "--input-root", "predictions", "--output", "compacted.parquet"],
-        ["gc-cache", "--cache-root", "data/cache", "--delete"],
-        ["qa-rate-limit"],
-        ["qa-summary"],
-        ["export-bucket-views"],
-        ["report-name-evidence"],
-    ),
-)
-def test_removed_top_level_commands_no_longer_parse(command: list[str]) -> None:
-    parser = build_parser()
-
-    with pytest.raises(SystemExit):
-        parser.parse_args(command)
-
-
 def test_comments_enrichment_cli(tmp_path, capsys) -> None:
     parser = build_parser()
-    args = parser.parse_args(["dev", "comments", "fetch", "--photo-id", "1", "--state-db", str(tmp_path / "comments.sqlite"), "--dry-run"])
+    args = parser.parse_args(
+        [
+            "dev",
+            "comments",
+            "fetch",
+            "--photo-id",
+            "1",
+            "--state-db",
+            str(tmp_path / "comments.sqlite"),
+            "--dry-run",
+        ]
+    )
     assert run(args) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["implemented"] is True
     assert payload["comment_fetch_scope"] == "selected_candidate_records_only"
     assert payload["photo_ids_requested"] == ["1"]
     assert payload["queued_comment_candidates_added"] == 1
-
-
-def _write_candidate_expansion_error_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
-    runtime_python = tmp_path / "runtime" / "bin" / "python"
-    runtime_python.parent.mkdir(parents=True)
-    runtime_python.write_text("# fake python", encoding="utf-8")
-    context_path = tmp_path / "species_context.json"
-    context_path.write_text(
-        json.dumps(
-            {
-                "scientific_name": "Danaus plexippus",
-                "accepted_taxon_key": "gbif:1",
-                "canonical_name": "Danaus plexippus",
-                "family": "Nymphalidae",
-                "genus": "Danaus",
-                "family_key": "gbif:f",
-                "genus_key": "gbif:g",
-                "species_key": "gbif:1",
-                "registry_version": "registry-v1",
-            }
-        ),
-        encoding="utf-8",
-    )
-    input_path = tmp_path / "filtered.parquet"
-    detections_path = tmp_path / "detections.parquet"
-    pl.DataFrame([{"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "https://example.test/1.jpg"}]).write_parquet(input_path)
-    pl.DataFrame([{"source": "flickr", "flickr_photo_id": "photo-1", "detection_id": "det-1", "detection_status": "detected"}]).write_parquet(
-        detections_path
-    )
-    return runtime_python, context_path, input_path, detections_path
-
-
 
 
 def _fake_cloud_config() -> BioMinerConfig:
@@ -2363,14 +2293,7 @@ class _FakeCloudWorkStore:
         )
 
     def completed_keys(self, job_name, registry_version=None, *, stage=None) -> set[str]:  # noqa: ANN001
-        return {
-            key
-            for key, item in self.items.items()
-            if item["job_name"] == job_name
-            and item["registry_version"] == registry_version
-            and item["stage"] == stage
-            and item["status"] == "completed"
-        }
+        return {key for key, item in self.items.items() if item["job_name"] == job_name and item["registry_version"] == registry_version and item["stage"] == stage and item["status"] == "completed"}
 
     def register_shard(self, **kwargs) -> None:  # noqa: ANN003
         self.shards.append(kwargs)

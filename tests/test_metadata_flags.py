@@ -2,17 +2,8 @@ from __future__ import annotations
 
 import polars as pl
 
-import biominer.filter as filter_api
-import biominer.filter.metadata_flags as metadata_flags
 from biominer.filter.category_model import infer_category_from_record
 from biominer.filter.metadata_flags import flag_metadata_records
-
-
-def test_metadata_keyword_path_helpers_are_removed_from_public_api() -> None:
-    assert not hasattr(metadata_flags, "load_metadata_keyword_groups")
-    assert not hasattr(metadata_flags, "flag_metadata_parquet")
-    assert not hasattr(filter_api, "load_metadata_keyword_groups")
-    assert not hasattr(filter_api, "flag_metadata_parquet")
 
 
 def _groups() -> dict[str, tuple[str, ...]]:

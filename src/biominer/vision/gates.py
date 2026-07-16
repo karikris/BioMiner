@@ -55,17 +55,6 @@ class BioClipGatePolicy:
             score_no_detection_whole_image=False,
         )
 
-    @classmethod
-    def legacy_exclude_hard_negative(
-        cls,
-        *,
-        score_no_detection_whole_image: bool = True,
-    ) -> BioClipGatePolicy:
-        return cls(
-            mode=BioClipGateMode.EXCLUDE_HARD_NEGATIVE,
-            score_no_detection_whole_image=score_no_detection_whole_image,
-        )
-
     @property
     def normalized_mode(self) -> BioClipGateMode:
         try:

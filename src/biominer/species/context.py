@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
 from typing import Any
@@ -60,9 +60,6 @@ class SpeciesContext:
     search_terms: tuple[SpeciesSearchTerm, ...] = ()
     regions: tuple[RegionHint, ...] = ()
     source_versions: dict[str, str] = field(default_factory=dict)
-
-    def with_search_terms(self, search_terms: tuple[SpeciesSearchTerm, ...]) -> SpeciesContext:
-        return replace(self, search_terms=(*self.search_terms, *search_terms))
 
     def target_terms(self) -> tuple[str, ...]:
         terms = [self.scientific_name, self.canonical_name, *self.synonyms]

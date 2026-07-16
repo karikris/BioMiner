@@ -44,8 +44,6 @@ SUPPORTED_CLASSIFICATION_MODES: tuple[ClassificationMode, ...] = (
 )
 
 CLASSIFICATION_MODE_ALIASES: dict[str, ClassificationMode] = {
-    "target_screening": TARGET_SCOPE_OBJECT_SCREENING,
-    "target_scope_screening": TARGET_SCOPE_OBJECT_SCREENING,
     "target_scope_object_screening": TARGET_SCOPE_OBJECT_SCREENING,
     "hierarchical": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     "hierarchical_butterfly": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,

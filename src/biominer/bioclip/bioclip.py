@@ -29,9 +29,6 @@ from biominer.bioclip.prompt_templates import (
 )
 
 BioClipScorer = Callable[[Path, Sequence[str]], Mapping[str, float]]
-BioClipBatchScorer = Callable[
-    [Sequence[Path], Sequence[str]], Sequence[Mapping[str, float]]
-]
 SubprocessRunner = Callable[..., subprocess.CompletedProcess[str]]
 PopenFactory = Callable[..., subprocess.Popen[str]]
 LabelSets = Mapping[str, Sequence[str]]
@@ -138,41 +135,6 @@ class BioClipClassifier:
             topk=topk,
         )
 
-    def classify_images(
-        self,
-        images: Sequence[dict[str, object]],
-        *,
-        labels: Sequence[str] = DEFAULT_BIOCLIP_LABELS,
-        top_k: int = 10,
-    ) -> list[dict[str, Any]]:
-        if not self.runtime.available:
-            raise RuntimeError(
-                f"BioCLIP runtime is not available: {self.runtime.unavailable_reason}"
-            )
-        image_paths = [Path(str(image["image_path"])) for image in images]
-        scores_by_image = self._score_batch(image_paths, labels)
-        records: list[dict[str, Any]] = []
-        for image, scores in zip(images, scores_by_image, strict=True):
-            topk = sorted(
-                ((label, float(scores.get(label, 0.0))) for label in labels),
-                key=lambda item: item[1],
-                reverse=True,
-            )[:top_k]
-            records.append(
-                build_vision_prediction_record(
-                    flickr_photo_id=str(image["flickr_photo_id"]),
-                    runtime=self.runtime,
-                    image_hash=str(image["image_hash"]),
-                    image_url_used=str(image["image_url_used"]),
-                    resolved_scientific_name=str(
-                        image.get("resolved_scientific_name") or ""
-                    ),
-                    text_evidence_present=bool(image.get("text_evidence_present")),
-                    topk=topk,
-                )
-            )
-        return records
-
     def classify_images_with_label_sets(
         self,
         images: Sequence[dict[str, object]],
@@ -235,16 +197,6 @@ class BioClipClassifier:
             return self._scorer(image_path, labels)
         return _score_with_open_clip(image_path, labels, self.runtime)
 
-    def _score_batch(
-        self, image_paths: Sequence[Path], labels: Sequence[str]
-    ) -> Sequence[Mapping[str, float]]:
-        if self._scorer is not None and hasattr(self._scorer, "score_batch"):
-            return self._scorer.score_batch(image_paths, labels)  # type: ignore[attr-defined]
-        if self._scorer is None:
-            with PersistentBioClipScorer(runtime=self.runtime) as scorer:
-                return scorer.score_batch(image_paths, labels)
-        return [self._score(image_path, labels) for image_path in image_paths]
-
     def _score_label_sets_batch(
         self,
         image_paths: Sequence[Path],
@@ -270,7 +222,6 @@ class ExternalBioClipScorer:
         hf_cache_dir: str | Path = "data/cache/huggingface",
         runner: SubprocessRunner = subprocess.run,
         device: str = "auto",
-        require_cuda: bool | None = None,
         image_resize_mode: str | None = None,
         preprocess_workers: int = 1,
     ) -> None:
@@ -282,7 +233,7 @@ class ExternalBioClipScorer:
         )
         self.hf_cache_dir = Path(hf_cache_dir)
         self.runner = runner
-        self.device = _coerce_worker_device(device=device, require_cuda=require_cuda)
+        self.device = _normalize_worker_device(device)
         self.image_resize_mode = normalize_image_resize_mode(image_resize_mode)
         self.preprocess_workers = _positive_preprocess_workers(preprocess_workers)
 
@@ -513,7 +464,6 @@ class PersistentBioClipScorer:
         hf_cache_dir: str | Path = "data/cache/huggingface",
         popen: PopenFactory = subprocess.Popen,
         device: str = "auto",
-        require_cuda: bool | None = None,
         image_resize_mode: str | None = None,
         preprocess_workers: int = 1,
     ) -> None:
@@ -525,9 +475,7 @@ class PersistentBioClipScorer:
         )
         self.hf_cache_dir = Path(hf_cache_dir)
         self.popen = popen
-        self.requested_device = _coerce_worker_device(
-            device=device, require_cuda=require_cuda
-        )
+        self.requested_device = _normalize_worker_device(device)
         self.image_resize_mode = normalize_image_resize_mode(image_resize_mode)
         self.preprocess_workers = _positive_preprocess_workers(preprocess_workers)
         self._process: subprocess.Popen[str] | None = None
@@ -1324,9 +1272,7 @@ def _validated_worker_image_resize_mode(
     return effective
 
 
-def _coerce_worker_device(*, device: str, require_cuda: bool | None) -> str:
-    if require_cuda is True and device == "auto":
-        return "cuda"
+def _normalize_worker_device(device: str) -> str:
     normalized = device.casefold().strip()
     if normalized not in {"auto", "cuda", "mps", "cpu"}:
         raise ValueError(f"Unsupported BioCLIP device {device!r}")

@@ -178,14 +178,6 @@ class WorkStore(Protocol):
         metadata: dict[str, Any] | None = None,
     ) -> None: ...
 
-    def mark_run_started(self, *, run_id: str) -> None: ...
-
-    def mark_run_completed(
-        self, *, run_id: str, summary: dict[str, Any] | None = None
-    ) -> None: ...
-
-    def mark_run_failed(self, *, run_id: str, error: str) -> None: ...
-
 
 def validate_claim_lease(
     *,
@@ -198,15 +190,7 @@ def validate_claim_lease(
         raise ValueError("work_key must not be empty")
     if not worker_id:
         raise ValueError("worker_id must not be empty")
-    if (
-        isinstance(attempt_count, bool)
-        or not isinstance(attempt_count, int)
-        or attempt_count <= 0
-    ):
+    if isinstance(attempt_count, bool) or not isinstance(attempt_count, int) or attempt_count <= 0:
         raise ValueError("attempt_count must be a positive integer")
-    if (
-        isinstance(stale_after_seconds, bool)
-        or not isinstance(stale_after_seconds, int)
-        or stale_after_seconds <= 0
-    ):
+    if isinstance(stale_after_seconds, bool) or not isinstance(stale_after_seconds, int) or stale_after_seconds <= 0:
         raise ValueError("stale_after_seconds must be a positive integer")

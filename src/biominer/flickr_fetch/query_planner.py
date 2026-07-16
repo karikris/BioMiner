@@ -23,7 +23,6 @@ COUNT_PROBE_PAGE_SIZE = 1
 FLICKR_SEARCH_RESULT_WINDOW = 4000
 STABLE_RESULT_THRESHOLD = FLICKR_SEARCH_RESULT_WINDOW
 MAX_ACCESSIBLE_RESULTS_PER_QUERY = FLICKR_SEARCH_RESULT_WINDOW
-SPLIT_TOTAL_THRESHOLD = STABLE_RESULT_THRESHOLD
 SPLIT_REASON_PRIORITY = {
     None: 0,
     "taken_date": 1,
@@ -33,18 +32,19 @@ SPLIT_REASON_PRIORITY = {
 }
 LANE_PRIORITY = {"count_probe": 0, "normal_page": 1, "bbox_page": 1}
 DEFAULT_EXTRAS = "description,license,date_upload,date_taken,geo,tags,machine_tags,owner_name,o_dims,url_l,url_m,last_update,media,views"
-DEFAULT_UPLOAD_DATE_RANGES: tuple[tuple[str, str], ...] = (
-    ("2004-01-01", "2009-12-31"),
-    ("2010-01-01", "2014-12-31"),
-    ("2015-01-01", "2019-12-31"),
-    ("2020-01-01", "2026-12-31"),
-)
 DEFAULT_FIXED_SLICE_START_DATE = "2004-02-10"
 DEFAULT_FIXED_SLICE_END_DATE = date.today().isoformat()
 DEFAULT_COARSE_SLICE_END_DATE: str | None = None
 DEFAULT_COARSE_SLICE_DAYS: int | None = None
 DEFAULT_FIXED_SLICE_DAYS = 5
-GENERATED_QUERY_SOURCES = {"libretranslate", "machine_translation", "mymemory", "t5", "translation"}
+GENERATED_QUERY_SOURCES = {
+    "libretranslate",
+    "machine_translation",
+    "mymemory",
+    "t5",
+    "translation",
+}
+
 
 @dataclass(frozen=True)
 class FlickrQuery:
@@ -118,9 +118,7 @@ def load_registry_flickr_queries_from_frame(
         frame = frame.with_columns(pl.col("source_term").str.to_lowercase().alias("normalized_match_key"))
     enabled_filter = pl.col("enabled") if "enabled" in frame.columns else pl.lit(True)
     query_eligible_filter = pl.col("query_eligible") if "query_eligible" in frame.columns else _legacy_query_eligible_filter(frame)
-    rows = frame.filter(enabled_filter & query_eligible_filter).sort(
-        ["search_priority", "normalized_match_key", "query_definition_id"]
-    ).to_dicts()
+    rows = frame.filter(enabled_filter & query_eligible_filter).sort(["search_priority", "normalized_match_key", "query_definition_id"]).to_dicts()
     queries: list[FlickrQuery] = []
     seen_logical_queries: set[tuple[str, str]] = set()
     for row in rows:
@@ -133,17 +131,13 @@ def load_registry_flickr_queries_from_frame(
             continue
         seen_logical_queries.add(logical_key)
         bbox = str(row.get("bbox") or "") or None
-        logical_query_id = str(row.get("logical_query_id") or "") or stable_identity(
-            "flickr-logical-query", normalized_term, field
-        )
+        logical_query_id = str(row.get("logical_query_id") or "") or stable_identity("flickr-logical-query", normalized_term, field)
         queries.append(
             FlickrQuery(
                 term=str(row.get("source_term") or row.get("normalized_query_term") or ""),
                 normalized_term=normalized_term,
                 logical_query_id=logical_query_id,
-                canonical_keyword_id=str(row.get("canonical_keyword_id") or "") or stable_identity(
-                    "canonical-keyword", normalized_term
-                ),
+                canonical_keyword_id=str(row.get("canonical_keyword_id") or "") or stable_identity("canonical-keyword", normalized_term),
                 keyword_id=str(row.get("keyword_id") or row.get("name_id") or "") or None,
                 original_trust_tier=str(row.get("original_trust_tier") or row.get("trust_tier") or "") or None,
                 effective_trust_tier=str(row.get("effective_trust_tier") or row.get("trust_tier") or "") or None,
@@ -187,10 +181,7 @@ def plan_pages_from_count(probe: FlickrQuery, *, total: int) -> tuple[FlickrQuer
     accessible_total = min(total, MAX_ACCESSIBLE_RESULTS_PER_QUERY)
     per_page = page_size_for_query(probe)
     lane: QueryLane = "bbox_page" if probe.bbox else "normal_page"
-    return tuple(
-        _page_query(probe, page=page, per_page=per_page, lane=lane)
-        for page in range(1, ceil(accessible_total / per_page) + 1)
-    )
+    return tuple(_page_query(probe, page=page, per_page=per_page, lane=lane) for page in range(1, ceil(accessible_total / per_page) + 1))
 
 
 def fixed_upload_date_slices(
@@ -272,10 +263,6 @@ def result_pages_for_total(total: int, *, per_page: int = NORMAL_PAGE_SIZE) -> i
     return ceil(total / per_page)
 
 
-def query_fits_result_window(total: int) -> bool:
-    return total <= STABLE_RESULT_THRESHOLD
-
-
 def page_size_for_query(query: FlickrQuery) -> int:
     if query.has_geo or query.bbox:
         return GEO_PAGE_SIZE
@@ -304,14 +291,6 @@ def plan_queries_from_count(
         parent_total=total,
     )
     return plan_pages_from_count(unsliced_probe, total=total)
-
-
-def sort_queries_for_resume(queries: Iterable[FlickrQuery]) -> tuple[FlickrQuery, ...]:
-    return _sort_queries(queries)
-
-
-def query_sort_key(query: FlickrQuery) -> tuple[object, ...]:
-    return _query_sort_key(query)
 
 
 def split_priority(query: FlickrQuery) -> int:
@@ -365,41 +344,6 @@ def _query_sort_key(query: FlickrQuery) -> tuple[object, ...]:
     )
 
 
-def _split_with_bboxes(probe: FlickrQuery, *, total: int, bboxes: tuple[str, ...]) -> tuple[FlickrQuery, ...]:
-    return tuple(_split_probe(probe, bbox=bbox, bbox_index=index, reason="bbox", total=total) for index, bbox in enumerate(bboxes))
-
-
-def _split_with_narrower_terms(probe: FlickrQuery, *, total: int, narrower_terms: tuple[str, ...]) -> tuple[FlickrQuery, ...]:
-    return tuple(_split_probe(probe, term=term, reason="narrower_term", total=total) for term in narrower_terms)
-
-
-def _split_with_taken_ranges(probe: FlickrQuery, *, total: int, taken: tuple[tuple[str, str], ...]) -> tuple[FlickrQuery, ...]:
-    return tuple(_split_probe(probe, min_taken_date=start, max_taken_date=end, reason="taken_date", total=total) for start, end in taken)
-
-
-def _split_with_upload_ranges(probe: FlickrQuery, *, total: int, upload: tuple[tuple[str, str], ...]) -> tuple[FlickrQuery, ...]:
-    return tuple(_split_probe(probe, min_upload_date=start, max_upload_date=end, reason="upload_date", total=total) for start, end in upload)
-
-
-def split_high_volume_query(
-    probe: FlickrQuery,
-    *,
-    total: int,
-    taken_date_ranges: Iterable[tuple[str, str]] = (),
-    upload_date_ranges: Iterable[tuple[str, str]] = (),
-    bboxes: Iterable[str] = (),
-    narrower_terms: Iterable[str] = (),
-) -> tuple[FlickrQuery, ...]:
-    return plan_queries_from_count(
-        probe,
-        total=total,
-        taken_date_ranges=taken_date_ranges,
-        upload_date_ranges=upload_date_ranges,
-        bboxes=bboxes,
-        narrower_terms=narrower_terms,
-    )
-
-
 def flickr_search_params(query: FlickrQuery) -> dict[str, str | int]:
     params: dict[str, str | int] = {
         query.search_field: query.term,
@@ -411,14 +355,22 @@ def flickr_search_params(query: FlickrQuery) -> dict[str, str | int]:
         "per_page": query.per_page,
         "page": query.page,
     }
-    for key in ("bbox", "min_taken_date", "max_taken_date", "min_upload_date", "max_upload_date"):
+    for key in (
+        "bbox",
+        "min_taken_date",
+        "max_taken_date",
+        "min_upload_date",
+        "max_upload_date",
+    ):
         value = getattr(query, key)
         if value:
             params[key] = value
     return params
 
 
-def deduplicate_photo_records(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+def deduplicate_photo_records(
+    records: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
     for record in records:
@@ -474,90 +426,6 @@ def _page_query(probe: FlickrQuery, *, page: int, per_page: int, lane: QueryLane
     )
 
 
-def _split_probe(
-    probe: FlickrQuery,
-    *,
-    reason: str,
-    total: int,
-    term: str | None = None,
-    bbox: str | None = None,
-    min_taken_date: str | None = None,
-    max_taken_date: str | None = None,
-    min_upload_date: str | None = None,
-    max_upload_date: str | None = None,
-    bbox_index: int | None = None,
-) -> FlickrQuery:
-    return FlickrQuery(
-        term=term or probe.term,
-        normalized_term=normalize_name_key(term or probe.normalized_term or probe.term),
-        logical_query_id=(
-            stable_identity("flickr-logical-query", normalize_name_key(term), probe.search_field)
-            if term
-            else probe.logical_query_id
-        ),
-        canonical_keyword_id=(
-            stable_identity("canonical-keyword", normalize_name_key(term)) if term else probe.canonical_keyword_id
-        ),
-        keyword_id=probe.keyword_id,
-        original_trust_tier=probe.original_trust_tier,
-        effective_trust_tier=probe.effective_trust_tier,
-        language=probe.language,
-        api_language_code=probe.api_language_code,
-        bcp47=probe.bcp47,
-        search_field=probe.search_field,
-        lane="count_probe",
-        per_page=COUNT_PROBE_PAGE_SIZE,
-        has_geo=probe.has_geo,
-        bbox=bbox or probe.bbox,
-        min_taken_date=min_taken_date or probe.min_taken_date,
-        max_taken_date=max_taken_date or probe.max_taken_date,
-        min_upload_date=min_upload_date or probe.min_upload_date,
-        max_upload_date=max_upload_date or probe.max_upload_date,
-        split_reason=reason,
-        parent_total=total,
-        region=probe.region,
-        term_type=probe.term_type,
-        term_confidence=probe.term_confidence,
-        trust_tier=probe.trust_tier,
-        notes=probe.notes,
-        parent_query_hash=probe.parent_query_hash or _query_hash(probe),
-        split_depth=probe.split_depth + 1,
-        bbox_index=bbox_index if bbox_index is not None else probe.bbox_index,
-        slice_index=probe.slice_index,
-        registry_version=probe.registry_version,
-        query_definition_id=probe.query_definition_id,
-        accepted_taxon_key=probe.accepted_taxon_key,
-        accepted_scientific_name=probe.accepted_scientific_name,
-        family_key=probe.family_key,
-        genus_key=probe.genus_key,
-        species_key=probe.species_key,
-        query_priority=probe.query_priority,
-    )
-
-
-def _copy_registry_provenance(query: FlickrQuery, source: FlickrQuery) -> FlickrQuery:
-    return replace(
-        query,
-        normalized_term=source.normalized_term,
-        logical_query_id=source.logical_query_id,
-        canonical_keyword_id=source.canonical_keyword_id,
-        keyword_id=source.keyword_id,
-        original_trust_tier=source.original_trust_tier,
-        effective_trust_tier=source.effective_trust_tier,
-        registry_version=source.registry_version,
-        query_definition_id=source.query_definition_id,
-        accepted_taxon_key=source.accepted_taxon_key,
-        accepted_scientific_name=source.accepted_scientific_name,
-        api_language_code=source.api_language_code,
-        bcp47=source.bcp47,
-        trust_tier=source.trust_tier,
-        family_key=source.family_key,
-        genus_key=source.genus_key,
-        species_key=source.species_key,
-        query_priority=source.query_priority,
-    )
-
-
 def _query_hash(query: FlickrQuery) -> str:
     import hashlib
 
@@ -583,5 +451,5 @@ def _int_or_default(value: object, default: int) -> int:
         if value in (None, ""):
             return default
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default

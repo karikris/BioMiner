@@ -112,7 +112,7 @@ def test_phase4_docs_and_cli_expose_supported_developer_benchmarks() -> None:
             "benchmark-live-m5pro",
             "--input",
             "runs/local_debug/papilio_demoleus/canonical_source_records.parquet",
-            "--taxonomy-candidate-table",
+            "--registry-dir",
             "data/registry/current",
             "--taxonomy-text-embedding-cache",
             "data/registry/current/taxonomy_text_embeddings.parquet",

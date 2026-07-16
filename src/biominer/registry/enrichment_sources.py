@@ -1335,7 +1335,6 @@ def _wikidata_name_values(binding: dict[str, Any]) -> list[tuple[str, str, str]]
         values.append((name, language, source_property))
     return values
 
-
 def _binding_value(binding: dict[str, Any], key: str) -> str:
     value = binding.get(key)
     if isinstance(value, dict):
@@ -1879,13 +1878,4 @@ def _vernacular_entries(row: dict[str, Any]) -> list[dict[str, str]]:
                 continue
             seen.add(dedupe_key)
             values.append({"name": name, "language": language, "source_field": key})
-    return values
-
-
-def _vernacular_values(row: dict[str, Any]) -> list[str]:
-    values: list[str] = []
-    for item in _vernacular_entries(row):
-        value = item["name"]
-        if value:
-            values.append(value)
     return values

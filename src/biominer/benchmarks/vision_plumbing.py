@@ -29,7 +29,11 @@ from biominer.bioclip.taxonomy_embedding_cache import (
 )
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate
 from biominer.detection.pipeline import run_detection_pipeline
-from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, detection_is_bioclip_eligible
+from biominer.detection.policy import (
+    DetectionPolicy,
+    DetectionRunPolicy,
+    detection_is_bioclip_eligible,
+)
 from biominer.evidence.join import write_object_evidence_outputs
 from biominer.registry.classification_v3 import (
     CLASSIFICATION_V3_VERSION,
@@ -135,10 +139,7 @@ class BenchmarkBioClipScorer:
         self.label_set_names_by_batch.append(sorted(str(name) for name in label_sets))
         self.scored_detection_ids.extend(str(item.get("detection_id") or "") for item in items)
         self.label_evaluations += len(items) * sum(len(labels) for labels in label_sets.values())
-        return {
-            str(name): [_fake_label_scores(tuple(str(label) for label in labels)) for _item in items]
-            for name, labels in label_sets.items()
-        }
+        return {str(name): [_fake_label_scores(tuple(str(label) for label in labels)) for _item in items] for name, labels in label_sets.items()}
 
 
 def run_vision_plumbing_benchmark(
@@ -147,7 +148,7 @@ def run_vision_plumbing_benchmark(
     butterfly_rate: float,
     detections_per_butterfly: int,
     classification_mode: ClassificationMode = HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-    taxonomy_candidate_table: str | Path | None = None,
+    registry_dir: str | Path | None = None,
     output_dir: str | Path,
     rank_beam_width: int = DEFAULT_RANK_BEAM_WIDTH,
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K,
@@ -159,7 +160,7 @@ def run_vision_plumbing_benchmark(
     mode = normalize_classification_mode(classification_mode)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    taxonomy_path = Path(taxonomy_candidate_table) if taxonomy_candidate_table is not None else output / "taxonomy_store"
+    taxonomy_path = Path(registry_dir) if registry_dir is not None else output / "taxonomy_store"
     taxonomy_fixture_created = False
     taxonomy_store_reads = 0
 
@@ -200,7 +201,11 @@ def run_vision_plumbing_benchmark(
                 model_checkpoint=scorer.model_checkpoint,
             )
         species_context = benchmark_species_context()
-        candidate_set = build_candidate_set(species_context, records=canonical.to_dicts(), allow_single_target_fixture=True)
+        candidate_set = build_candidate_set(
+            species_context,
+            records=canonical.to_dicts(),
+            allow_single_target_fixture=True,
+        )
         stage_seconds["load_taxonomy"] = _elapsed(stage_start)
 
         stage_start = perf_counter()
@@ -237,16 +242,8 @@ def run_vision_plumbing_benchmark(
             rank_beam_width=rank_beam_width,
             species_first_pass_top_k=species_first_pass_top_k,
             species_rerank_top_k=species_rerank_top_k,
-            path_taxonomy_store=(
-                taxonomy_store
-                if mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-                else None
-            ),
-            taxonomy_text_embedding_index=(
-                taxonomy_embedding_index
-                if mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-                else None
-            ),
+            path_taxonomy_store=(taxonomy_store if mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION else None),
+            taxonomy_text_embedding_index=(taxonomy_embedding_index if mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION else None),
             detection_policy=detection_policy,
             parquet_batch_rows=5000,
             bioclip_batch_size=24,
@@ -436,10 +433,42 @@ def write_benchmark_taxonomy_store(root: str | Path) -> dict[str, Path]:
 def benchmark_taxa_frame() -> pl.DataFrame:
     now = datetime.now(UTC).isoformat()
     rows = [
-        _taxon_row("gbif:9401", BENCHMARK_PRIMARY_SPECIES, "gbif:9417", "Papilionidae", "gbif:9400", "Benchmarkus", now),
-        _taxon_row("gbif:9402", BENCHMARK_SECONDARY_SPECIES, "gbif:9417", "Papilionidae", "gbif:9400", "Benchmarkus", now),
-        _taxon_row("gbif:7001", BENCHMARK_OUTGROUP_SPECIES, "gbif:7017", "Nymphalidae", "gbif:7000", "Metricsus", now),
-        _taxon_row("gbif:7002", BENCHMARK_SECOND_OUTGROUP_SPECIES, "gbif:7017", "Nymphalidae", "gbif:7000", "Metricsus", now),
+        _taxon_row(
+            "gbif:9401",
+            BENCHMARK_PRIMARY_SPECIES,
+            "gbif:9417",
+            "Papilionidae",
+            "gbif:9400",
+            "Benchmarkus",
+            now,
+        ),
+        _taxon_row(
+            "gbif:9402",
+            BENCHMARK_SECONDARY_SPECIES,
+            "gbif:9417",
+            "Papilionidae",
+            "gbif:9400",
+            "Benchmarkus",
+            now,
+        ),
+        _taxon_row(
+            "gbif:7001",
+            BENCHMARK_OUTGROUP_SPECIES,
+            "gbif:7017",
+            "Nymphalidae",
+            "gbif:7000",
+            "Metricsus",
+            now,
+        ),
+        _taxon_row(
+            "gbif:7002",
+            BENCHMARK_SECOND_OUTGROUP_SPECIES,
+            "gbif:7017",
+            "Nymphalidae",
+            "gbif:7000",
+            "Metricsus",
+            now,
+        ),
     ]
     return pl.DataFrame(rows)
 
@@ -459,21 +488,32 @@ def _benchmark_classification_source() -> dict[str, Any]:
             "Papilioninae",
             "Papilionini",
             "Benchmarkus",
-            (("gbif:9401", BENCHMARK_PRIMARY_SPECIES), ("gbif:9402", BENCHMARK_SECONDARY_SPECIES)),
+            (
+                ("gbif:9401", BENCHMARK_PRIMARY_SPECIES),
+                ("gbif:9402", BENCHMARK_SECONDARY_SPECIES),
+            ),
         ),
         (
             "Nymphalidae",
             "Nymphalinae",
             "Nymphalini",
             "Metricsus",
-            (("gbif:7001", BENCHMARK_OUTGROUP_SPECIES), ("gbif:7002", BENCHMARK_SECOND_OUTGROUP_SPECIES)),
+            (
+                ("gbif:7001", BENCHMARK_OUTGROUP_SPECIES),
+                ("gbif:7002", BENCHMARK_SECOND_OUTGROUP_SPECIES),
+            ),
         ),
     )
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     mappings: list[dict[str, Any]] = []
     for family, subfamily, tribe, genus, species_rows in lineages:
-        ranked_names = (("FAMILY", family), ("SUBFAMILY", subfamily), ("TRIBE", tribe), ("GENUS", genus))
+        ranked_names = (
+            ("FAMILY", family),
+            ("SUBFAMILY", subfamily),
+            ("TRIBE", tribe),
+            ("GENUS", genus),
+        )
         parent_id: str | None = None
         for rank, name in ranked_names:
             node_id = f"{rank.casefold()}:{name.casefold()}"
@@ -500,10 +540,7 @@ def _benchmark_classification_source() -> dict[str, Any]:
                         {
                             "edge_type": REVIEWED_RANK_SKIP_EDGE,
                             "skipped_ranks": ["SUBTRIBE"],
-                            "skip_reason": (
-                                "reviewed synthetic benchmark fixture has no supported "
-                                "subtribe assertion"
-                            ),
+                            "skip_reason": ("reviewed synthetic benchmark fixture has no supported subtribe assertion"),
                         }
                     )
                 edges.append(edge)
@@ -684,7 +721,7 @@ def _benchmark_metrics(
         "butterfly_rate": butterfly_rate,
         "detections_per_butterfly": detections_per_butterfly,
         "classification_mode": classification_mode,
-        "taxonomy_candidate_table": str(taxonomy_path),
+        "registry_dir": str(taxonomy_path),
         "taxonomy_fixture_created": taxonomy_fixture_created,
         "taxonomy_store_reads": int(taxonomy_store_reads),
         "temporary_directories_left": temporary_directories_left,
@@ -852,10 +889,7 @@ def _fake_label_scores(labels: Sequence[str]) -> dict[str, float]:
 
 def _benchmark_text_embeddings(labels: list[str]) -> list[list[float]]:
     scores = _fake_label_scores(labels)
-    return [
-        [scores[label], sqrt(1.0 - scores[label] * scores[label])]
-        for label in labels
-    ]
+    return [[scores[label], sqrt(1.0 - scores[label] * scores[label])] for label in labels]
 
 
 def _temporary_directories_left(output: Path) -> list[str]:

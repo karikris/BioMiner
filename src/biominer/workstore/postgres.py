@@ -12,10 +12,7 @@ from biominer.common.status import (
     COMPLETED,
     FAILED,
     PENDING,
-    RUN_COMPLETED,
-    RUN_FAILED,
     RUN_PLANNED,
-    RUN_RUNNING,
 )
 from biominer.workstore.base import validate_claim_lease
 from biominer.workstore.keys import publication_lock_digest, scoped_work_item_key
@@ -27,9 +24,7 @@ POSTGRES_PUBLICATION_LOCK_SQL = "SELECT pg_advisory_xact_lock(%s)"
 class PostgresWorkStore:
     def __init__(self, dsn: str, *, connect: Callable[[], Any] | None = None) -> None:
         if not dsn:
-            raise ValueError(
-                "BIOMINER_WORKSTORE_DSN is required for postgres workstore"
-            )
+            raise ValueError("BIOMINER_WORKSTORE_DSN is required for postgres workstore")
         self.dsn = dsn
         self._connect_override = connect
 
@@ -78,18 +73,14 @@ class PostgresWorkStore:
                     _json_dumps(config),
                 ),
             )
-            row = conn.execute(
-                "SELECT * FROM biominer_runs WHERE run_id = %s", (run_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM biominer_runs WHERE run_id = %s", (run_id,)).fetchone()
         if row is None:
             raise RuntimeError(f"failed to create run row: {run_id}")
         return _row_to_run(row)
 
     def get_run(self, *, run_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM biominer_runs WHERE run_id = %s", (run_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM biominer_runs WHERE run_id = %s", (run_id,)).fetchone()
         return _row_to_run(row) if row is not None else None
 
     def list_runs(
@@ -136,10 +127,7 @@ class PostgresWorkStore:
         with self._connect() as conn:
             for item in items:
                 payload = dict(item)
-                work_key = str(
-                    payload.pop("work_key", "")
-                    or scoped_work_item_key(job_name, stage, registry_version, payload)
-                )
+                work_key = str(payload.pop("work_key", "") or scoped_work_item_key(job_name, stage, registry_version, payload))
                 result = conn.execute(
                     """
                     INSERT INTO biominer_work_items (
@@ -186,14 +174,8 @@ class PostgresWorkStore:
                 params: list[Any] = [PENDING]
                 _add_filter_if_not_none(clauses, params, "job_name", job_name)
                 _add_filter_if_not_none(clauses, params, "stage", stage)
-                if (
-                    job_name is not None
-                    or stage is not None
-                    or registry_version is not None
-                ):
-                    _add_nullable_filter(
-                        clauses, params, "registry_version", registry_version
-                    )
+                if job_name is not None or stage is not None or registry_version is not None:
+                    _add_nullable_filter(clauses, params, "registry_version", registry_version)
                 rows = conn.execute(
                     f"""
                     WITH picked AS (
@@ -451,9 +433,7 @@ class PostgresWorkStore:
         cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
         clauses = ["status = %s", "claimed_at IS NOT NULL", "claimed_at < %s"]
         params: list[Any] = [CLAIMED, cutoff]
-        scoped = (
-            job_name is not None or stage is not None or registry_version is not None
-        )
+        scoped = job_name is not None or stage is not None or registry_version is not None
         _add_filter_if_not_none(clauses, params, "job_name", job_name)
         _add_filter_if_not_none(clauses, params, "stage", stage)
         if scoped:
@@ -557,9 +537,7 @@ class PostgresWorkStore:
         )
         if include_compacted:
             return candidates
-        consumed = self.list_compacted_source_shard_ids(
-            job_name=job_name, stage=stage, registry_version=registry_version
-        )
+        consumed = self.list_compacted_source_shard_ids(job_name=job_name, stage=stage, registry_version=registry_version)
         return [shard for shard in candidates if str(shard["shard_id"]) not in consumed]
 
     def list_compacted_source_shard_ids(
@@ -654,46 +632,6 @@ class PostgresWorkStore:
                     ),
                 )
 
-    def mark_run_started(self, *, run_id: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE biominer_runs
-                SET status = %s,
-                    started_at = %s
-                WHERE run_id = %s
-                """,
-                (RUN_RUNNING, _timestamp(), run_id),
-            )
-
-    def mark_run_completed(
-        self, *, run_id: str, summary: dict[str, Any] | None = None
-    ) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE biominer_runs
-                SET status = %s,
-                    ended_at = %s,
-                    summary_json = %s::jsonb
-                WHERE run_id = %s
-                """,
-                (RUN_COMPLETED, _timestamp(), _json_dumps(summary or {}), run_id),
-            )
-
-    def mark_run_failed(self, *, run_id: str, error: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE biominer_runs
-                SET status = %s,
-                    ended_at = %s,
-                    summary_json = %s::jsonb
-                WHERE run_id = %s
-                """,
-                (RUN_FAILED, _timestamp(), _json_dumps({"error": error}), run_id),
-            )
-
     def _connect(self):
         if self._connect_override is not None:
             return self._connect_override()
@@ -701,19 +639,8 @@ class PostgresWorkStore:
             import psycopg
             from psycopg.rows import dict_row
         except ImportError as exc:
-            raise RuntimeError(
-                "psycopg is required to use PostgresWorkStore; install the optional postgres dependency"
-            ) from exc
+            raise RuntimeError("psycopg is required to use PostgresWorkStore; install the optional postgres dependency") from exc
         return psycopg.connect(self.dsn, row_factory=dict_row)
-
-    @staticmethod
-    def _require_psycopg() -> None:
-        try:
-            import psycopg  # noqa: F401
-        except ImportError as exc:
-            raise RuntimeError(
-                "psycopg is required to use PostgresWorkStore; install the optional postgres dependency"
-            ) from exc
 
 
 def _row_to_run(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -726,9 +653,7 @@ def _row_to_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "started_at": str(_row_get(row, "started_at")),
         "ended_at": _row_get(row, "ended_at"),
         "config": _json_loads_dict(_row_get(row, "config_json")),
-        "summary": _json_loads_dict(_row_get(row, "summary_json"))
-        if _row_get(row, "summary_json")
-        else None,
+        "summary": _json_loads_dict(_row_get(row, "summary_json")) if _row_get(row, "summary_json") else None,
     }
 
 
@@ -764,9 +689,7 @@ def _row_to_shard(row: Mapping[str, Any]) -> dict[str, Any]:
         "row_count": _row_get(row, "row_count"),
         "byte_count": _row_get(row, "byte_count"),
         "checksum": _row_get(row, "checksum"),
-        "metadata": _json_loads_dict(_row_get(row, "metadata_json"))
-        if _row_get(row, "metadata_json")
-        else {},
+        "metadata": _json_loads_dict(_row_get(row, "metadata_json")) if _row_get(row, "metadata_json") else {},
         "committed_at": str(_row_get(row, "committed_at")),
     }
 
@@ -775,18 +698,14 @@ def _row_get(row: Mapping[str, Any], key: str) -> Any:
     return row[key]
 
 
-def _add_filter_if_not_none(
-    clauses: list[str], params: list[Any], column: str, value: str | None
-) -> None:
+def _add_filter_if_not_none(clauses: list[str], params: list[Any], column: str, value: str | None) -> None:
     if value is None:
         return
     clauses.append(f"{column} = %s")
     params.append(value)
 
 
-def _add_nullable_filter(
-    clauses: list[str], params: list[Any], column: str, value: str | None
-) -> None:
+def _add_nullable_filter(clauses: list[str], params: list[Any], column: str, value: str | None) -> None:
     if value is None:
         clauses.append(f"{column} IS NULL")
         return

@@ -123,13 +123,6 @@ class TaxonomyTextEmbeddingIndex:
     def label_count(self) -> int:
         return len(self._offset_by_label)
 
-    def prompt_stage_for_label(self, label: str) -> str:
-        normalized = str(label or "")
-        try:
-            return self._stage_by_label[normalized]
-        except KeyError as exc:
-            raise ValueError(f"taxonomy text embedding cache missing label: {normalized}") from exc
-
     def raw_similarities(
         self,
         image_embedding: Sequence[float],

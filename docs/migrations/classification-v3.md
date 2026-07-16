@@ -32,7 +32,7 @@ uv run biominer registry build-classification \
 ```
 
 `--registry-dir` is the base-registry input. `--output-dir` is the new overlay
-root supplied to production as `--taxonomy-candidate-table`.
+root supplied to production as `--registry-dir`.
 
 A full fresh base-registry build is also valid:
 
@@ -56,7 +56,7 @@ and checkpoint that production will use:
 
 ```bash
 uv run biominer dev vision build-text-embedding-cache \
-  --taxonomy-candidate-table data/registry/classification-v3 \
+  --registry-dir data/registry/classification-v3 \
   --output data/cache/classification-v3/classification_text_embeddings.parquet \
   --device auto \
   --batch-size 256
@@ -101,7 +101,7 @@ uv run biominer --config config/biominer.local.example.toml run \
   --taxon Papilionidae \
   --rank family \
   --registry-dir data/registry/butterflies-v2 \
-  --taxonomy-candidate-table data/registry/classification-v3 \
+  --registry-dir data/registry/classification-v3 \
   --taxonomy-text-embedding-cache data/cache/classification-v3/classification_text_embeddings.parquet \
   --output-prefix data/runs/classification-v3 \
   --storage-backend local \

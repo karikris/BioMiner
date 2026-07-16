@@ -36,7 +36,10 @@ from biominer.storage.cloud import CloudStorage
 from biominer.storage.config import StorageConfig, load_storage_config_from_env
 from biominer.storage.factory import create_storage_backend
 from biominer.storage.local import LocalStorageBackend
-from biominer.storage.paths import build_evidence_shard_uri, build_raw_flickr_response_uri
+from biominer.storage.paths import (
+    build_evidence_shard_uri,
+    build_raw_flickr_response_uri,
+)
 from biominer.storage.uri import is_cloud_uri, normalize_local_uri
 from biominer.workstore.base import WorkStore
 
@@ -131,9 +134,7 @@ class MetadataPollState:
                 normalized = str(row.get("normalized_match_key") or row.get("normalized_query_term") or "")
                 if not normalized:
                     continue
-                canonical_id = str(row.get("canonical_keyword_id") or "") or stable_identity(
-                    "canonical-keyword", normalized
-                )
+                canonical_id = str(row.get("canonical_keyword_id") or "") or stable_identity("canonical-keyword", normalized)
                 keyword_id = str(row.get("keyword_id") or row.get("name_id") or "") or stable_identity(
                     "keyword-association",
                     row.get("accepted_taxon_key"),
@@ -151,7 +152,15 @@ class MetadataPollState:
                         canonical_term, effective_trust_tier, first_seen_at, last_seen_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (canonical_id, normalized, keyword_id, str(row.get("display_name") or row.get("source_term") or normalized), effective_tier, now, now),
+                    (
+                        canonical_id,
+                        normalized,
+                        keyword_id,
+                        str(row.get("display_name") or row.get("source_term") or normalized),
+                        effective_tier,
+                        now,
+                        now,
+                    ),
                 )
                 canonical_inserted += int(result.rowcount)
                 conn.execute(
@@ -207,9 +216,7 @@ class MetadataPollState:
                 if not normalized or field not in {"tags", "text"}:
                     continue
                 canonical_id = str(row.get("canonical_keyword_id") or "") or stable_identity("canonical-keyword", normalized)
-                logical_id = str(row.get("logical_query_id") or row.get("query_definition_id") or "") or stable_identity(
-                    "flickr-logical-query", normalized, field
-                )
+                logical_id = str(row.get("logical_query_id") or row.get("query_definition_id") or "") or stable_identity("flickr-logical-query", normalized, field)
                 tier = str(row.get("effective_trust_tier") or row.get("trust_tier") or "T4")
                 result = conn.execute(
                     """
@@ -246,23 +253,13 @@ class MetadataPollState:
             result = _insert_work_item(conn, query)
         return int(result.rowcount)
 
-    def enqueue_incremental_work_item(self, query: FlickrQuery) -> int:
-        logical_id = query.logical_query_id or stable_identity(
-            "flickr-logical-query", normalize_name_key(query.normalized_term or query.term), query.search_field
-        )
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT last_completed_upload_date FROM flickr_logical_queries WHERE logical_query_id = ?",
-                (logical_id,),
-            ).fetchone()
-        last_completed = str(row[0] or "") if row else ""
-        if last_completed and (not query.min_upload_date or query.min_upload_date <= last_completed):
-            raise ValueError(
-                f"incremental upload interval must start after {last_completed} for logical query {logical_id}"
-            )
-        return self.enqueue_work_item(query)
-
-    def ensure_reported_pages(self, query: FlickrQuery, *, response_pages: int, response_perpage: int | None = None) -> PageEnsureResult:
+    def ensure_reported_pages(
+        self,
+        query: FlickrQuery,
+        *,
+        response_pages: int,
+        response_perpage: int | None = None,
+    ) -> PageEnsureResult:
         if query.lane == "count_probe" or response_pages <= 0:
             return PageEnsureResult(
                 reported_pages=response_pages,
@@ -368,7 +365,12 @@ class MetadataPollState:
             warnings=tuple(warnings),
         )
 
-    def requeue_stale_claims(self, *, stale_after_seconds: int = DEFAULT_STALE_CLAIM_SECONDS, now: datetime | None = None) -> int:
+    def requeue_stale_claims(
+        self,
+        *,
+        stale_after_seconds: int = DEFAULT_STALE_CLAIM_SECONDS,
+        now: datetime | None = None,
+    ) -> int:
         cutoff = datetime.fromtimestamp((now or datetime.now(UTC)).timestamp() - stale_after_seconds, UTC).isoformat()
         with self._connect() as conn:
             result = conn.execute(
@@ -457,7 +459,13 @@ class MetadataPollState:
                     INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at, started_at)
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    (endpoint, row["work_item_id"], "reserved", unix_timestamp, unix_timestamp),
+                    (
+                        endpoint,
+                        row["work_item_id"],
+                        "reserved",
+                        unix_timestamp,
+                        unix_timestamp,
+                    ),
                 )
                 claimed.append((str(row["work_item_id"]), _query_from_json(str(row["query_json"]))))
             conn.execute("COMMIT")
@@ -486,37 +494,19 @@ class MetadataPollState:
                 INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at, started_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (endpoint, work_item_id, "reserved", _unix_timestamp(now), _unix_timestamp(now)),
+                (
+                    endpoint,
+                    work_item_id,
+                    "reserved",
+                    _unix_timestamp(now),
+                    _unix_timestamp(now),
+                ),
             )
             conn.execute("COMMIT")
-
-    def api_budget_summary(self, *, max_api_calls: int = SOFT_API_CALLS_PER_HOUR, now: datetime | None = None) -> dict[str, object]:
-        soft_remaining, hard_remaining = self.remaining_api_budget(max_api_calls=max_api_calls, now=now)
-        return {
-            "state_db": str(self.path),
-            "api_calls_in_window": self.api_calls_in_window(now=now),
-            "remaining_soft_budget": soft_remaining,
-            "remaining_hard_budget": hard_remaining,
-            "soft_api_calls_per_hour": SOFT_API_CALLS_PER_HOUR,
-            "hard_api_calls_per_hour": HARD_API_CALLS_PER_HOUR,
-            "photo_records_in_window": "not_instrumented",
-            "hard_photo_records_per_hour": "not_instrumented",
-            "window_seconds": 3600,
-        }
 
     def _api_calls_in_window(self, conn: sqlite3.Connection, now: float) -> int:
         cutoff = now - 3600
         return int(conn.execute("SELECT count(*) FROM api_call_ledger WHERE created_at >= ?", (cutoff,)).fetchone()[0])
-
-    def log_api_call(self, *, work_item_id: str, endpoint: str, status: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO api_call_ledger(endpoint, work_item_id, status, created_at, started_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (endpoint, work_item_id, status, _unix_timestamp(), _unix_timestamp()),
-            )
 
     def update_api_call_status(
         self,
@@ -614,43 +604,6 @@ class MetadataPollState:
                 """,
                 (_timestamp(), error, work_item_id),
             )
-
-    def reclaim_deferred(self) -> int:
-        """Explicitly reclaim exhausted work before a resumed polling run."""
-        with self._connect() as conn:
-            physical = conn.execute(
-                "UPDATE flickr_physical_requests SET status = ? WHERE status = 'deferred'",
-                (PENDING,),
-            )
-            conn.execute(
-                """
-                UPDATE flickr_work_items SET status = ?, error = NULL, completed_at = NULL
-                WHERE work_item_id IN (SELECT physical_request_id FROM flickr_physical_requests WHERE status = ?)
-                  AND status = ?
-                """,
-                (PENDING, PENDING, FAILED),
-            )
-        return int(physical.rowcount)
-
-    def work_items_snapshot(self) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT work_item_id, status, query_json, error, records_returned
-                FROM flickr_work_items
-                ORDER BY created_at, work_item_id
-                """
-            ).fetchall()
-        return [
-            {
-                "work_item_id": str(row["work_item_id"]),
-                "status": str(row["status"]),
-                "query": _query_from_json(str(row["query_json"])),
-                "error": row["error"],
-                "records_returned": row["records_returned"],
-            }
-            for row in rows
-        ]
 
     def insert_source_records(self, records: list[dict[str, Any]], *, source_query: FlickrQuery) -> tuple[int, int, int, int, int]:
         inserted = 0
@@ -753,7 +706,15 @@ class MetadataPollState:
                                 source_record_hash, status, created_at
                             ) VALUES (?, ?, ?, ?, ?, ?, ?)
                             """,
-                            ("flickr", photo_id, image_url, image_url_kind, source_record_hash, PENDING, _timestamp()),
+                            (
+                                "flickr",
+                                photo_id,
+                                image_url,
+                                image_url_kind,
+                                source_record_hash,
+                                PENDING,
+                                _timestamp(),
+                            ),
                         )
                         queued += int(queue_result.rowcount)
         return inserted, skipped, queued, query_terms_added, duplicate_query_terms
@@ -772,24 +733,6 @@ class MetadataPollState:
                 """
             ).fetchall()
         return pl.DataFrame([dict(row) for row in rows]) if rows else pl.DataFrame()
-
-    def discovery_metrics(self) -> dict[str, int]:
-        with self._connect() as conn:
-            scalar = lambda sql: int(conn.execute(sql).fetchone()[0])  # noqa: E731
-            return {
-                "canonical_keywords": scalar("SELECT count(*) FROM canonical_keywords"),
-                "keyword_associations": scalar("SELECT count(*) FROM keyword_associations"),
-                "logical_flickr_requests": scalar("SELECT count(*) FROM flickr_logical_queries"),
-                "physical_flickr_requests": scalar("SELECT count(*) FROM flickr_physical_requests"),
-                "completed_physical_requests": scalar("SELECT count(*) FROM flickr_physical_requests WHERE status = 'completed'"),
-                "api_requests_avoided_by_deduplication": scalar(
-                    "SELECT COALESCE(sum(duplicate_query_hit_count), 0) FROM source_records"
-                ),
-                "known_photos_skipped_from_image_processing": scalar(
-                    "SELECT COALESCE(sum(duplicate_query_hit_count), 0) FROM source_records"
-                ),
-                "photo_keyword_evidence_links": scalar("SELECT count(*) FROM photo_keyword_evidence"),
-            }
 
     def source_records_with_query_provenance(self) -> pl.DataFrame:
         with self._connect() as conn:
@@ -1239,7 +1182,11 @@ def poll_once(
     effective_run_id = run_id or _default_run_id()
     effective_worker_id = worker_id or os.environ.get("BIOMINER_WORKER_ID") or "local"
     output_storage = storage or _storage_backend_from_name(storage_backend)
-    raw_base_prefix = _raw_base_prefix(raw_root=raw_root, storage_prefix=storage_prefix, storage_backend=storage_backend)
+    raw_base_prefix = _raw_base_prefix(
+        raw_root=raw_root,
+        storage_prefix=storage_prefix,
+        storage_backend=storage_backend,
+    )
     evidence_base_prefix = _evidence_base_prefix(evidence_output=evidence_output, storage_prefix=storage_prefix)
     stale_requeued = state.requeue_stale_claims(stale_after_seconds=stale_claim_seconds)
     _progress(progress_callback, {"event": "stale_claims_requeued", "count": stale_requeued})
@@ -1283,7 +1230,14 @@ def poll_once(
                 max_api_calls=max_api_calls,
                 endpoint=SEARCH_METHOD,
             )
-            _progress(progress_callback, {"event": "work_claimed", "claimed": len(claimed), "claim_limit": claim_limit})
+            _progress(
+                progress_callback,
+                {
+                    "event": "work_claimed",
+                    "claimed": len(claimed),
+                    "claim_limit": claim_limit,
+                },
+            )
             if not claimed:
                 break
             work_items_claimed += len(claimed)
@@ -1335,7 +1289,13 @@ def poll_once(
                             )
                         else:
                             records = _payload_photo_records(payload)
-                            inserted, skipped, queued_count, query_hits, duplicate_hits = state.insert_source_records(records, source_query=query)
+                            (
+                                inserted,
+                                skipped,
+                                queued_count,
+                                query_hits,
+                                duplicate_hits,
+                            ) = state.insert_source_records(records, source_query=query)
                             photo_ids = _photo_ids_from_records(records)
                             if photo_ids:
                                 for existing_photo_ids in delta_photo_ids_by_work_item.values():
@@ -1448,7 +1408,12 @@ def poll_once(
             if not photo_ids:
                 continue
             canonical_frame = state.canonical_source_records_frame(photo_ids=photo_ids)
-            evidence_shard_uri, evidence_shard_rows, evidence_shard_checksum, evidence_shard_bytes = _write_evidence_shard(
+            (
+                evidence_shard_uri,
+                evidence_shard_rows,
+                evidence_shard_checksum,
+                evidence_shard_bytes,
+            ) = _write_evidence_shard(
                 storage=output_storage,
                 evidence_base_prefix=str(evidence_base_prefix),
                 stage=evidence_stage,
@@ -1488,7 +1453,13 @@ def poll_once(
         remaining_hard_budget=hard_after,
         stale_claims_requeued=stale_requeued,
     )
-    _progress(progress_callback, {"event": "poll_completed", **{**result.__dict__, "state_db": str(result.state_db)}})
+    _progress(
+        progress_callback,
+        {
+            "event": "poll_completed",
+            **{**result.__dict__, "state_db": str(result.state_db)},
+        },
+    )
     return result
 
 
@@ -1667,11 +1638,9 @@ def _metadata_text_fields(record: dict[str, Any]) -> tuple[tuple[str, str], ...]
             return " ".join(text(item) for item in value)
         return str(value or "")
 
-    return tuple(
-        (field, text(record.get(field)))
-        for field in ("title", "tags", "machine_tags", "description", "comments")
-        if text(record.get(field))
-    )
+    return tuple((field, text(record.get(field))) for field in ("title", "tags", "machine_tags", "description", "comments") if text(record.get(field)))
+
+
 def _json_dump_list(values: list[str]) -> str:
     return json.dumps(values, ensure_ascii=False, separators=(",", ":"))
 
@@ -2027,7 +1996,15 @@ def _insert_work_item(conn: sqlite3.Connection, query: FlickrQuery) -> sqlite3.C
             canonical_term, effective_trust_tier, first_seen_at, last_seen_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (canonical_id, normalized, query.keyword_id or canonical_id, query.term, effective_tier, now, now),
+        (
+            canonical_id,
+            normalized,
+            query.keyword_id or canonical_id,
+            query.term,
+            effective_tier,
+            now,
+            now,
+        ),
     )
     conn.execute(
         """

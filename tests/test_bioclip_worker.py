@@ -209,10 +209,10 @@ def test_configure_hf_cache_env_sets_writable_cache(monkeypatch, tmp_path) -> No
     assert __import__("os").environ["PYTORCH_ENABLE_MPS_FALLBACK"] == "1"
 
 
-def test_device_from_request_defaults_to_auto_and_preserves_legacy_cuda() -> None:
+def test_device_from_request_defaults_to_auto_and_respects_explicit_device() -> None:
     assert device_from_request({}) == "auto"
-    assert device_from_request({"require_cuda": True}) == "cuda"
-    assert device_from_request({"require_cuda": True, "device": "mps"}) == "mps"
+    assert device_from_request({"device": "cuda"}) == "cuda"
+    assert device_from_request({"device": "mps"}) == "mps"
 
 
 def test_image_resize_mode_validation_normalizes_supported_values() -> None:

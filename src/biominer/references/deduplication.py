@@ -2146,11 +2146,6 @@ def _duplicate_relationship_id(
     return f"reference-duplicate-relationship:{digest[:32]}"
 
 
-def _normalised_optional_text(value: object) -> str | None:
-    text = str(value or "").strip().casefold()
-    return text or None
-
-
 def _utc_datetime(value: str | datetime, *, field: str) -> datetime:
     if isinstance(value, str):
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))

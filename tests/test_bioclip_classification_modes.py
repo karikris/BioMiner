@@ -40,10 +40,6 @@ def test_classification_mode_normalizes_aliases_and_separators() -> None:
         == TARGET_SCOPE_OBJECT_SCREENING
     )
     assert (
-        normalize_classification_mode("target_screening")
-        == TARGET_SCOPE_OBJECT_SCREENING
-    )
-    assert (
         normalize_classification_mode("hierarchical")
         == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
     )
@@ -114,18 +110,6 @@ def test_build_week_prototype_contract_is_fail_closed_and_full_frame() -> None:
         HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
         "B0",
     )
-
-
-def test_legacy_target_aliases_keep_their_historical_identity() -> None:
-    assert (
-        normalize_classification_mode("target_screening")
-        == TARGET_SCOPE_OBJECT_SCREENING
-    )
-    assert (
-        normalize_classification_mode("target_scope_screening")
-        == TARGET_SCOPE_OBJECT_SCREENING
-    )
-    assert not is_target_aware_classification("target_scope_object_screening")
 
 
 def test_default_visual_classification_widths_include_global_cascade_contract() -> None:

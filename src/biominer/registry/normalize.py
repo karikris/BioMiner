@@ -123,11 +123,6 @@ def parse_language_tag(value: object) -> LanguageTag:
     return LanguageTag(language=language, api_language_code=api_language_code, script=script, region=region, bcp47=bcp47)
 
 
-def language_script_region(value: object) -> tuple[str, str, str]:
-    tag = parse_language_tag(value)
-    return tag.language, tag.script, tag.region
-
-
 def _canonicalize_bcp47(value: str) -> str:
     parts = [part for part in value.replace("_", "-").split("-") if part]
     if not parts:

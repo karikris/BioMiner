@@ -12,7 +12,6 @@ def test_runtime_base_path_uses_environment_override(tmp_path, monkeypatch) -> N
 
 def test_runtime_base_path_defaults_to_parent_of_biominer_repo(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("BIOMINER_BASE_PATH", raising=False)
-    monkeypatch.delenv("BIOMINER_RUNTIME_BASE_PATH", raising=False)
     repo = tmp_path / "BioMiner"
     module_path = repo / "src" / "biominer" / "cli.py"
     module_path.parent.mkdir(parents=True)
@@ -20,4 +19,3 @@ def test_runtime_base_path_defaults_to_parent_of_biominer_repo(tmp_path, monkeyp
     module_path.write_text("# test source marker\n", encoding="utf-8")
 
     assert resolve_runtime_base_path(source_file=module_path) == tmp_path.resolve()
-

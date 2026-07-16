@@ -730,13 +730,6 @@ def _species_conflict(*, flickr_candidate: str | None, bioclip_candidate: str | 
     return True
 
 
-def _is_bioclip_lepidoptera_positive(record: dict[str, Any]) -> bool:
-    if _truthy(record.get("is_target_positive")):
-        return True
-    candidate = bioclip_species_candidate(record)
-    return bool(candidate and candidate not in {"non_target_insect"})
-
-
 def _bioclip_score(record: dict[str, Any]) -> float:
     value = _optional_float(record.get("species_top1_score", record.get("bioclip_top1_score", record.get("top1_score"))))
     return -1.0 if value is None else value

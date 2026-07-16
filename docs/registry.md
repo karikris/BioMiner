@@ -12,7 +12,7 @@ KINGDOM → PHYLUM → CLASS → ORDER → FAMILY → GENUS → SPECIES
 
 When an intermediate source rank is absent, the nearest observed parent is carried forward as a routing proxy. Proxy rows retain `target_rank`, their true semantic rank, `candidate_kind=carry_forward_proxy`, and `proxy_source_node_id`. Prompt text uses the semantic rank and never asserts that the parent belongs to the missing rank. A proxy score is routing evidence, not taxonomy.
 
-The classifier reads `species_paths.parquet` directly from `--registry-dir`. New commands do not expose a separate taxonomy-candidate-table input. A hidden compatibility alias remains temporarily for old local scripts.
+The classifier reads `species_paths.parquet` directly from `--registry-dir`.
 
 ## Canonical Flickr keywords
 

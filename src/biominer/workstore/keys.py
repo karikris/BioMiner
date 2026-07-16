@@ -30,9 +30,5 @@ def scoped_work_item_key(job_name: str, stage: str, registry_version: str | None
     return f"{job_name}:{digest}"
 
 
-def flickr_poll_once_work_key(query_payload: dict[str, Any]) -> str:
-    return stable_work_key(query_payload, prefix="flickr_poll_once")
-
-
 def uri_shard_id(uri: str) -> str:
     return hashlib.sha256(uri.encode("utf-8")).hexdigest()

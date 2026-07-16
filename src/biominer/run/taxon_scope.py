@@ -56,10 +56,6 @@ class TaxonScope:
         return len(self.species_contexts)
 
     @property
-    def is_multi_species(self) -> bool:
-        return self.species_count > 1
-
-    @property
     def species_names(self) -> tuple[str, ...]:
         return tuple(context.scientific_name for context in self.species_contexts)
 

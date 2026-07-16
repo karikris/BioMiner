@@ -26,29 +26,6 @@ from biominer.flickr_fetch.query_planner import (
 )
 
 
-def test_query_planner_does_not_export_legacy_species_json_or_region_helpers() -> None:
-    removed_exports = (
-        "load_species_terms_from_json",
-        "build_species_count_probes_from_json",
-        "known_region_for_coordinate",
-        "outside_known_regions",
-        "coordinate_in_bbox",
-        "PAPILIO_DEMOLEUS_ANCHOR_TERMS",
-        "PAPILIO_DEMOLEUS_REGION_BBOXES",
-        "load_papilio_demoleus_terms_from_json",
-        "build_papilio_demoleus_count_probes_from_json",
-        "papilio_demoleus_known_region_for_coordinate",
-        "outside_known_papilio_demoleus_regions",
-        "MULTILINGUAL_SEED_TERMS",
-        "multilingual_seed_terms",
-        "MultilingualSearchTerm",
-        "QueryPlan",
-        "build_count_probes",
-        "build_worldwide_discovery_plan",
-    )
-    assert [name for name in removed_exports if hasattr(query_planner, name)] == []
-
-
 def test_query_planner_source_has_no_papilio_specific_production_hardcoding() -> None:
     source = Path(query_planner.__file__).read_text(encoding="utf-8")
     forbidden = (
@@ -61,20 +38,6 @@ def test_query_planner_source_has_no_papilio_specific_production_hardcoding() ->
         "outside_known_papilio_demoleus_regions",
         "known_region_for_coordinate",
         "outside_known_regions",
-    )
-
-    assert [value for value in forbidden if value in source] == []
-
-
-def test_query_planner_source_has_no_legacy_broad_seed_planner() -> None:
-    source = Path(query_planner.__file__).read_text(encoding="utf-8")
-    forbidden = (
-        "MULTILINGUAL_SEED_TERMS",
-        "multilingual_seed_terms",
-        "MultilingualSearchTerm",
-        "build_worldwide_discovery_plan",
-        "build_count_probes",
-        "QueryPlan",
     )
 
     assert [value for value in forbidden if value in source] == []

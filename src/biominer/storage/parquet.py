@@ -9,15 +9,8 @@ from uuid import uuid4
 import polars as pl
 
 
-CANONICAL_BUCKETED_RECORDS = "bucketed_records.parquet"
 DEFAULT_PARQUET_COMPRESSION = "zstd"
 DEFAULT_PARQUET_READ_BATCH_SIZE = 1_000
-BUCKET_VIEW_FILES = {
-    "gold": "gold_records.parquet",
-    "silver": "silver_records.parquet",
-    "bronze": "bronze_records.parquet",
-    "bin": "bin_records.parquet",
-}
 
 
 @dataclass(frozen=True)
@@ -141,18 +134,6 @@ def iter_parquet_batches(
             yield pl.from_arrow(batch)
     finally:
         parquet_file.close()
-
-
-def write_bucket_views(frame: pl.DataFrame, output_dir: str | Path) -> dict[str, str]:
-    base = Path(output_dir)
-    base.mkdir(parents=True, exist_ok=True)
-    outputs: dict[str, str] = {}
-    for bucket, filename in BUCKET_VIEW_FILES.items():
-        path = base / filename
-        view = frame.filter(pl.col("occurrence_bin") == bucket) if "occurrence_bin" in frame.columns else pl.DataFrame()
-        write_parquet(view, path)
-        outputs[bucket] = str(path)
-    return outputs
 
 
 def _write_frame(frame: pl.DataFrame, path: Path, *, compression: str | None) -> None:

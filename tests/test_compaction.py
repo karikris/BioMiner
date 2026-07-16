@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import polars as pl
-import pytest
 
-from biominer.cli import build_parser
 from biominer.storage.compaction import (
     MB,
     CompactionCandidate,
@@ -289,13 +287,6 @@ def test_report_written(tmp_path) -> None:
     assert report["rows_written"] == 2
     assert report["output_shards_written"] == 1
     assert report["dry_run"] is False
-
-
-def test_compact_parquet_cli_removed_from_public_surface() -> None:
-    parser = build_parser()
-
-    with pytest.raises(SystemExit):
-        parser.parse_args(["compact-parquet", "--input-prefix", "in", "--output-prefix", "out"])
 
 
 def _write_source_shards(

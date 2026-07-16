@@ -19,7 +19,9 @@ from biominer.bioclip.cascade_contract import (
 )
 from biominer.bioclip.object_runner import PRIMARY_VISUAL_CLASSIFIER
 from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
-from biominer.bioclip.taxonomy_embedding_cache import build_taxonomy_text_embedding_cache
+from biominer.bioclip.taxonomy_embedding_cache import (
+    build_taxonomy_text_embedding_cache,
+)
 from biominer.bioclip.classification_modes import (
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     TARGET_SCOPE_OBJECT_SCREENING,
@@ -32,7 +34,11 @@ from biominer.bioclip.cloud_work import (
 from biominer.detection.detector_base import DecodedImage, FakeObjectDetector
 from biominer.detection.policy import VisionRuntimeSettings
 from biominer.detection.routing import DetectionRoutingPolicy
-from biominer.evidence import build_object_evidence_frames, build_review_queue, evidence_count_metrics
+from biominer.evidence import (
+    build_object_evidence_frames,
+    build_review_queue,
+    evidence_count_metrics,
+)
 from biominer.evidence.join import write_object_evidence_outputs
 from biominer.registry.classification_v3 import (
     CLASSIFICATION_V3_PROMPT_VERSION as PROMPT_VARIANT_VERSION,
@@ -120,9 +126,7 @@ def valid_reference_bank_readiness(
         return replace(
             _ReadinessPermitFixture(),
             registry_version=str(expected["expected_registry_version"]),
-            target_accepted_taxon_key=str(
-                expected["expected_target_accepted_taxon_key"]
-            ),
+            target_accepted_taxon_key=str(expected["expected_target_accepted_taxon_key"]),
             model_name=str(expected["expected_model_name"]),
         )
 
@@ -169,7 +173,9 @@ def test_taxon_scope_validates_rank_and_species_contexts() -> None:
         )
 
 
-def test_resolve_taxon_scope_from_registry_expands_species_genus_and_family(tmp_path) -> None:
+def test_resolve_taxon_scope_from_registry_expands_species_genus_and_family(
+    tmp_path,
+) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
 
     species_scope = resolve_taxon_scope_from_registry(registry_dir=registry, input_name="Papilio demoleus", input_rank="species")
@@ -184,12 +190,18 @@ def test_resolve_taxon_scope_from_registry_expands_species_genus_and_family(tmp_
     assert genus_scope.accepted_taxon_key == "gbif:90"
     assert genus_scope.species_names == ("Papilio demoleus", "Papilio machaon")
     assert family_scope.accepted_rank == "family"
-    assert family_scope.species_names == ("Papilio demoleus", "Papilio machaon", "Shared name")
+    assert family_scope.species_names == (
+        "Papilio demoleus",
+        "Papilio machaon",
+        "Shared name",
+    )
     assert auto_scope.accepted_rank == "genus"
     assert auto_scope.species_count == 2
 
 
-def test_resolve_taxon_scope_from_registry_frames_matches_path_resolver(tmp_path) -> None:
+def test_resolve_taxon_scope_from_registry_frames_matches_path_resolver(
+    tmp_path,
+) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
 
     path_scope = resolve_taxon_scope_from_registry(registry_dir=registry, input_name="Papilio", input_rank="genus")
@@ -205,7 +217,9 @@ def test_resolve_taxon_scope_from_registry_frames_matches_path_resolver(tmp_path
     assert frame_scope == path_scope
 
 
-def test_resolve_taxon_scope_reports_ambiguous_or_empty_registry_matches(tmp_path) -> None:
+def test_resolve_taxon_scope_reports_ambiguous_or_empty_registry_matches(
+    tmp_path,
+) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
 
     with pytest.raises(ValueError, match="ambiguous taxon match"):
@@ -241,10 +255,25 @@ def test_run_paths_and_dry_run_manifest(tmp_path) -> None:
     assert manifest.model_configs["species_rerank_top_k"] == 5
     assert manifest.model_configs["species_report_top_k"] == 3
     assert "family_top_k" not in manifest.model_configs
-    assert manifest.query_counts == {"compiled_definitions": 0, "enqueued_work_items": 0}
-    assert manifest.detection_counts == {"images_seen": 0, "detections": 0, "crops_created": 0}
-    assert manifest.bioclip_counts == {"objects_scored": 0, "whole_images_scored": 0, "segmentation_crops_scored": 0}
-    assert manifest.evidence_counts == {"object_evidence_rows": 0, "photo_summary_rows": 0, "review_queue_rows": 0}
+    assert manifest.query_counts == {
+        "compiled_definitions": 0,
+        "enqueued_work_items": 0,
+    }
+    assert manifest.detection_counts == {
+        "images_seen": 0,
+        "detections": 0,
+        "crops_created": 0,
+    }
+    assert manifest.bioclip_counts == {
+        "objects_scored": 0,
+        "whole_images_scored": 0,
+        "segmentation_crops_scored": 0,
+    }
+    assert manifest.evidence_counts == {
+        "object_evidence_rows": 0,
+        "photo_summary_rows": 0,
+        "review_queue_rows": 0,
+    }
     assert manifest.outputs["manifest"].endswith("/run_manifest.json")
     assert manifest.outputs["review_queue"].endswith("/reports/review_queue.parquet")
     assert manifest.outputs["visual_qa_findings"].endswith("/reports/visual_qa_findings.parquet")
@@ -287,10 +316,12 @@ def test_production_run_plan_defaults_to_detector_crop_only(tmp_path) -> None:
     assert plan.manifest.model_configs["vision_settings"]["crop_padding_ratio"] == 0.08
     assert plan.to_dict()["request"]["vision_settings"]["yolo_imgsz"] == 768
     assert plan.to_dict()["request"]["classification_mode"] == TARGET_SCOPE_OBJECT_SCREENING
-    assert plan.to_dict()["request"]["taxonomy_candidate_table"] is None
+    assert plan.to_dict()["request"]["registry_taxonomy"] is None
 
 
-def test_production_run_plan_records_hierarchical_classification_config_for_dry_run(tmp_path) -> None:
+def test_production_run_plan_records_hierarchical_classification_config_for_dry_run(
+    tmp_path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
         taxon="Papilionoidea",
@@ -298,13 +329,13 @@ def test_production_run_plan_records_hierarchical_classification_config_for_dry_
         output_root=tmp_path,
         dry_run=True,
         classification_mode="hierarchical",
-        taxonomy_candidate_table="s3://biominer/registry/current",
+        registry_dir="s3://biominer/registry/current",
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
 
     assert request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
     assert plan.to_dict()["request"]["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-    assert plan.to_dict()["request"]["taxonomy_candidate_table"] == "s3://biominer/registry/current"
+    assert plan.to_dict()["request"]["registry_taxonomy"] == "s3://biominer/registry/current"
     assert plan.manifest.model_configs["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
     request_config = plan.to_dict()["request"]
     assert request_config["beam_strategy"] == GLOBAL_RANK_TOP_K_BEAM_STRATEGY
@@ -321,7 +352,9 @@ def test_production_run_plan_records_hierarchical_classification_config_for_dry_
     assert "family_top_k" not in plan.manifest.model_configs
 
 
-def test_production_run_hierarchical_dry_run_skips_score_stage_with_plan_metadata(tmp_path) -> None:
+def test_production_run_hierarchical_dry_run_skips_score_stage_with_plan_metadata(
+    tmp_path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
         taxon="Danaus plexippus",
@@ -707,7 +740,7 @@ def test_production_run_hierarchical_score_stage_requires_taxonomy_table(
         storage_backend="local",
         workstore_backend="sqlite",
         classification_mode="hierarchical",
-        taxonomy_candidate_table=tmp_path / "missing-registry",
+        registry_dir=str(tmp_path / "missing-registry"),
         reference_bank_readiness=valid_reference_bank_readiness,
         reference_bank_readiness_sha256=_READINESS_SHA256,
         stages=(RunStage.SCORE_BIOCLIP,),
@@ -717,10 +750,10 @@ def test_production_run_hierarchical_score_stage_requires_taxonomy_table(
 
     assert plan.manifest.status == "failed"
     assert plan.manifest.stages[0].status is StageStatus.FAILED
-    assert plan.manifest.stages[0].message.startswith("missing_taxonomy_candidate_table:")
+    assert plan.manifest.stages[0].message.startswith("missing_registry_taxonomy:")
     assert plan.manifest.stages[0].metrics["classification_mode"] == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-    assert plan.manifest.stages[0].metrics["taxonomy_candidate_table"].endswith("missing-registry")
-    assert plan.manifest.stages[0].metrics["taxonomy_candidate_table_status"] == "missing"
+    assert plan.manifest.stages[0].metrics["registry_taxonomy"].endswith("missing-registry")
+    assert plan.manifest.stages[0].metrics["registry_taxonomy_status"] == "missing"
 
 
 def test_hierarchical_production_rejects_classification_v2_manifest_version(
@@ -759,7 +792,7 @@ def test_hierarchical_production_rejects_classification_v2_manifest_version(
             taxon="Papilio demoleus",
             output_root=tmp_path / "runs",
             classification_mode="hierarchical",
-            taxonomy_candidate_table=registry,
+            registry_dir=str(registry),
             stages=(RunStage.SCORE_BIOCLIP,),
         ),
         taxon_scope=TaxonScope.from_species_context(_species_context()),
@@ -769,10 +802,8 @@ def test_hierarchical_production_rejects_classification_v2_manifest_version(
 
     assert store is None
     assert status.status is StageStatus.FAILED
-    assert status.message == (
-        "invalid_taxonomy_candidate_table: classification-v3 manifest version mismatch"
-    )
-    assert status.metrics["taxonomy_candidate_table_status"] == "invalid"
+    assert status.message == ("invalid_registry_taxonomy: classification-v3 manifest version mismatch")
+    assert status.metrics["registry_taxonomy_status"] == "invalid"
 
 
 def test_production_run_hierarchical_score_stage_validates_table_then_requires_score_inputs(
@@ -788,7 +819,7 @@ def test_production_run_hierarchical_score_stage_validates_table_then_requires_s
         storage_backend="local",
         workstore_backend="sqlite",
         classification_mode="hierarchical",
-        taxonomy_candidate_table=str(registry),
+        registry_dir=str(registry),
         reference_bank_readiness=valid_reference_bank_readiness,
         reference_bank_readiness_sha256=_READINESS_SHA256,
         stages=(RunStage.SCORE_BIOCLIP,),
@@ -799,8 +830,8 @@ def test_production_run_hierarchical_score_stage_validates_table_then_requires_s
     assert plan.manifest.status == "failed"
     assert plan.manifest.stages[0].status is StageStatus.FAILED
     assert plan.manifest.stages[0].message.startswith("missing_score_inputs:")
-    assert plan.manifest.stages[0].metrics["taxonomy_candidate_table"] == str(registry)
-    assert plan.manifest.stages[0].metrics["taxonomy_candidate_table_status"] == "valid"
+    assert plan.manifest.stages[0].metrics["registry_taxonomy"] == str(registry)
+    assert plan.manifest.stages[0].metrics["registry_taxonomy_status"] == "valid"
     assert plan.manifest.stages[0].metrics["classification_family_count"] == 2
     assert plan.manifest.stages[0].metrics["classification_species_count"] == 4
     assert plan.manifest.stages[0].metrics["classification_prompt_variant_version"] == PROMPT_VARIANT_VERSION
@@ -818,7 +849,7 @@ def test_hierarchical_production_requires_current_v3_embedding_cache(tmp_path) -
             taxon="Danaus plexippus",
             output_root=tmp_path / "runs-missing",
             classification_mode="hierarchical",
-            taxonomy_candidate_table=registry,
+            registry_dir=str(registry),
             stages=(RunStage.SCORE_BIOCLIP,),
         ),
         taxon_scope=scope,
@@ -837,15 +868,13 @@ def test_hierarchical_production_requires_current_v3_embedding_cache(tmp_path) -
         tmp_path / "taxonomy-text-embeddings.parquet",
     )
     stale_cache = tmp_path / "stale-taxonomy-text-embeddings.parquet"
-    pl.read_parquet(valid_cache).with_columns(
-        pl.lit("stale-prompt-version").alias("prompt_version")
-    ).write_parquet(stale_cache)
+    pl.read_parquet(valid_cache).with_columns(pl.lit("stale-prompt-version").alias("prompt_version")).write_parquet(stale_cache)
     stale = ProductionRunOrchestrator(
         ProductionRunRequest(
             taxon="Danaus plexippus",
             output_root=tmp_path / "runs-stale",
             classification_mode="hierarchical",
-            taxonomy_candidate_table=registry,
+            registry_dir=str(registry),
             taxonomy_text_embedding_cache=stale_cache,
             stages=(RunStage.SCORE_BIOCLIP,),
         ),
@@ -862,7 +891,7 @@ def test_hierarchical_production_requires_current_v3_embedding_cache(tmp_path) -
             taxon="Danaus plexippus",
             output_root=tmp_path / "runs-current",
             classification_mode="hierarchical",
-            taxonomy_candidate_table=registry,
+            registry_dir=str(registry),
             taxonomy_text_embedding_cache=valid_cache,
             stages=(RunStage.SCORE_BIOCLIP,),
         ),
@@ -873,9 +902,7 @@ def test_hierarchical_production_requires_current_v3_embedding_cache(tmp_path) -
     assert current_index is not None
     assert current_status.status is StageStatus.COMPLETE
     assert current_status.metrics["taxonomy_text_embedding_cache_status"] == "validated"
-    assert current_status.metrics["taxonomy_text_embedding_cache_fingerprint"] == (
-        current_index.cache_fingerprint
-    )
+    assert current_status.metrics["taxonomy_text_embedding_cache_fingerprint"] == (current_index.cache_fingerprint)
 
 
 @pytest.mark.parametrize(
@@ -948,7 +975,9 @@ def test_run_manifest_stage_status_and_count_roundtrip() -> None:
     assert roundtrip.stages[0].outputs["query_definitions"].startswith("s3://")
 
 
-def test_orchestrator_resolves_scope_and_runs_stage_subset_with_fake_handlers(tmp_path) -> None:
+def test_orchestrator_resolves_scope_and_runs_stage_subset_with_fake_handlers(
+    tmp_path,
+) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     _write_query_definitions(registry)
     calls: list[int] = []
@@ -965,7 +994,11 @@ def test_orchestrator_resolves_scope_and_runs_stage_subset_with_fake_handlers(tm
         rank="genus",
         registry_dir=str(registry),
         output_root=tmp_path / "runs",
-        stages=(RunStage.RESOLVE_TAXON_SCOPE, RunStage.COMPILE_QUERIES, RunStage.BUILD_REGISTRY),
+        stages=(
+            RunStage.RESOLVE_TAXON_SCOPE,
+            RunStage.COMPILE_QUERIES,
+            RunStage.BUILD_REGISTRY,
+        ),
     )
     plan = ProductionRunOrchestrator(
         request,
@@ -997,7 +1030,10 @@ def test_orchestrator_dry_run_marks_unimplemented_stages_skipped(tmp_path) -> No
 
     plan = ProductionRunOrchestrator(request, taxon_scope=scope).run()
 
-    assert [stage.status for stage in plan.manifest.stages] == [StageStatus.COMPLETE, StageStatus.SKIPPED]
+    assert [stage.status for stage in plan.manifest.stages] == [
+        StageStatus.COMPLETE,
+        StageStatus.SKIPPED,
+    ]
     assert plan.manifest.stages[1].message == "dry_run"
     assert plan.paths.manifest_path.exists()
 
@@ -1017,13 +1053,13 @@ def test_orchestrator_fails_closed_when_requested_stage_has_no_handler(
 
     assert plan.manifest.status == StageStatus.FAILED.value
     assert plan.manifest.stages[0].status is StageStatus.FAILED
-    assert plan.manifest.stages[0].message == (
-        "stage_handler_not_configured:geographic_spread"
-    )
+    assert plan.manifest.stages[0].message == ("stage_handler_not_configured:geographic_spread")
     assert plan.paths.manifest_path.exists()
 
 
-def test_orchestrator_compiles_registry_queries_and_enqueues_flickr_work(tmp_path) -> None:
+def test_orchestrator_compiles_registry_queries_and_enqueues_flickr_work(
+    tmp_path,
+) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     _write_query_definitions(registry)
     workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
@@ -1034,14 +1070,22 @@ def test_orchestrator_compiles_registry_queries_and_enqueues_flickr_work(tmp_pat
         output_root=tmp_path / "runs",
         storage_backend="local",
         workstore_backend="sqlite",
-        stages=(RunStage.RESOLVE_TAXON_SCOPE, RunStage.COMPILE_QUERIES, RunStage.ENQUEUE_FLICKR_WORK),
+        stages=(
+            RunStage.RESOLVE_TAXON_SCOPE,
+            RunStage.COMPILE_QUERIES,
+            RunStage.ENQUEUE_FLICKR_WORK,
+        ),
         limits={"records": 2},
     )
 
     plan = ProductionRunOrchestrator(request, workstore=workstore).run()
 
     assert plan.manifest.status == "complete"
-    assert plan.manifest.query_counts == {"compiled_definitions": 2, "flickr_work_items": 2, "enqueued_work_items": 2}
+    assert plan.manifest.query_counts == {
+        "compiled_definitions": 2,
+        "flickr_work_items": 2,
+        "enqueued_work_items": 2,
+    }
     assert plan.manifest.stages[1].outputs["local_query_definitions"].endswith("/registry/flickr_query_definitions.parquet")
     work_items = workstore.list_work_items(
         job_name="biominer_production_run",
@@ -1067,7 +1111,11 @@ def test_orchestrator_enqueues_t5_registry_queries_for_flickr_api(tmp_path, monk
             slice_days=1,
         )
 
-    monkeypatch.setattr(run_orchestrator_module, "load_registry_flickr_queries_from_frame", one_day_query_window)
+    monkeypatch.setattr(
+        run_orchestrator_module,
+        "load_registry_flickr_queries_from_frame",
+        one_day_query_window,
+    )
     request = ProductionRunRequest(
         taxon="Papilio demoleus",
         rank="species",
@@ -1085,18 +1133,36 @@ def test_orchestrator_enqueues_t5_registry_queries_for_flickr_api(tmp_path, monk
         stage=RunStage.POLL_FLICKR.value,
         registry_version="rank-registry-v1",
     )
-    queued_queries = sorted((item["payload"]["query"] for item in work_items), key=lambda query: query["search_field"])
+    queued_queries = sorted(
+        (item["payload"]["query"] for item in work_items),
+        key=lambda query: query["search_field"],
+    )
 
     assert plan.manifest.status == "complete"
-    assert plan.manifest.query_counts == {"compiled_definitions": 2, "flickr_work_items": 2, "enqueued_work_items": 2}
-    assert [query["term"] for query in queued_queries] == ["Translated Lime", "Translated Lime"]
+    assert plan.manifest.query_counts == {
+        "compiled_definitions": 2,
+        "flickr_work_items": 2,
+        "enqueued_work_items": 2,
+    }
+    assert [query["term"] for query in queued_queries] == [
+        "Translated Lime",
+        "Translated Lime",
+    ]
     assert [query["search_field"] for query in queued_queries] == ["tags", "text"]
-    assert [query["term_type"] for query in queued_queries] == ["generated_translation", "generated_translation"]
+    assert [query["term_type"] for query in queued_queries] == [
+        "generated_translation",
+        "generated_translation",
+    ]
     assert [query["trust_tier"] for query in queued_queries] == ["T5", "T5"]
-    assert [query["query_definition_id"] for query in queued_queries] == ["q-t5-tags", "q-t5-text"]
+    assert [query["query_definition_id"] for query in queued_queries] == [
+        "q-t5-tags",
+        "q-t5-text",
+    ]
 
 
-def test_orchestrator_compile_queries_filters_registry_definitions_to_species_scope(tmp_path) -> None:
+def test_orchestrator_compile_queries_filters_registry_definitions_to_species_scope(
+    tmp_path,
+) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     _write_query_definitions_with_out_of_scope_taxa(registry)
     request = ProductionRunRequest(
@@ -1115,11 +1181,16 @@ def test_orchestrator_compile_queries_filters_registry_definitions_to_species_sc
     assert plan.manifest.status == "complete"
     assert plan.manifest.stages[0].metrics["registry_query_definition_source_rows"] == 4
     assert plan.manifest.stages[0].metrics["registry_query_definition_rows"] == 2
-    assert compiled.select("query_definition_id").to_series().to_list() == ["q-demoleus-tags", "q-demoleus-text"]
+    assert compiled.select("query_definition_id").to_series().to_list() == [
+        "q-demoleus-tags",
+        "q-demoleus-text",
+    ]
     assert compiled.select("accepted_taxon_key").to_series().unique().to_list() == ["gbif:100"]
 
 
-def test_orchestrator_genus_run_enqueues_only_expanded_species_query_definitions(tmp_path) -> None:
+def test_orchestrator_genus_run_enqueues_only_expanded_species_query_definitions(
+    tmp_path,
+) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     _write_query_definitions_with_out_of_scope_taxa(registry)
     workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
@@ -1142,16 +1213,29 @@ def test_orchestrator_genus_run_enqueues_only_expanded_species_query_definitions
     )
 
     assert plan.manifest.status == "complete"
-    assert plan.manifest.taxon_scope.species_names == ("Papilio demoleus", "Papilio machaon")
-    assert plan.manifest.query_counts == {"compiled_definitions": 3, "flickr_work_items": 3, "enqueued_work_items": 3}
+    assert plan.manifest.taxon_scope.species_names == (
+        "Papilio demoleus",
+        "Papilio machaon",
+    )
+    assert plan.manifest.query_counts == {
+        "compiled_definitions": 3,
+        "flickr_work_items": 3,
+        "enqueued_work_items": 3,
+    }
     compiled = pl.read_parquet(plan.paths.query_definitions_path)
-    assert sorted(compiled.select("accepted_taxon_key").to_series().to_list()) == ["gbif:100", "gbif:100", "gbif:101"]
+    assert sorted(compiled.select("accepted_taxon_key").to_series().to_list()) == [
+        "gbif:100",
+        "gbif:100",
+        "gbif:101",
+    ]
     queued_keys = {item["payload"]["query"]["accepted_taxon_key"] for item in work_items}
     assert queued_keys <= {"gbif:100", "gbif:101"}
     assert "gbif:200" not in queued_keys
 
 
-def test_orchestrator_limit_species_bounds_resolved_scope_and_compiled_queries(tmp_path) -> None:
+def test_orchestrator_limit_species_bounds_resolved_scope_and_compiled_queries(
+    tmp_path,
+) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     _write_query_definitions_with_out_of_scope_taxa(registry)
     request = ProductionRunRequest(
@@ -1173,7 +1257,10 @@ def test_orchestrator_limit_species_bounds_resolved_scope_and_compiled_queries(t
     assert plan.manifest.metrics["expanded_species_count"] == 1
     assert plan.manifest.query_counts["compiled_definitions"] == 2
     assert plan.manifest.query_counts["flickr_work_items"] == 2
-    assert compiled.select("query_definition_id").to_series().to_list() == ["q-demoleus-tags", "q-demoleus-text"]
+    assert compiled.select("query_definition_id").to_series().to_list() == [
+        "q-demoleus-tags",
+        "q-demoleus-text",
+    ]
     assert compiled.select("accepted_taxon_key").to_series().unique().to_list() == ["gbif:100"]
 
 
@@ -1188,7 +1275,11 @@ def test_orchestrator_reads_registry_inputs_from_cloud_storage(tmp_path) -> None
         rank="genus",
         registry_dir=registry_uri,
         output_root="s3://biominer/runs",
-        stages=(RunStage.RESOLVE_TAXON_SCOPE, RunStage.BUILD_REGISTRY, RunStage.COMPILE_QUERIES),
+        stages=(
+            RunStage.RESOLVE_TAXON_SCOPE,
+            RunStage.BUILD_REGISTRY,
+            RunStage.COMPILE_QUERIES,
+        ),
         limits={"records": 1},
     )
 
@@ -1196,7 +1287,10 @@ def test_orchestrator_reads_registry_inputs_from_cloud_storage(tmp_path) -> None
 
     assert plan.manifest.status == "complete"
     assert plan.manifest.taxon_scope.accepted_rank == "genus"
-    assert plan.manifest.taxon_scope.species_names == ("Papilio demoleus", "Papilio machaon")
+    assert plan.manifest.taxon_scope.species_names == (
+        "Papilio demoleus",
+        "Papilio machaon",
+    )
     assert plan.manifest.stages[1].outputs["taxa"] == f"{registry_uri}/taxa.parquet"
     assert plan.manifest.stages[1].metrics["registry_version"] == "rank-registry-v1"
     assert plan.manifest.stages[2].outputs["source_query_definitions"] == f"{registry_uri}/flickr_query_definitions.parquet"
@@ -1227,7 +1321,11 @@ def test_orchestrator_writes_compiled_queries_to_cloud_storage(tmp_path) -> None
 
     expected_uri = "s3://biominer/runs/run_id=species_papilio_demoleus/registry/flickr_query_definitions.parquet"
     assert plan.manifest.status == "complete"
-    assert plan.manifest.query_counts == {"compiled_definitions": 2, "flickr_work_items": 1, "enqueued_work_items": 0}
+    assert plan.manifest.query_counts == {
+        "compiled_definitions": 2,
+        "flickr_work_items": 1,
+        "enqueued_work_items": 0,
+    }
     assert plan.manifest.stages[0].outputs["query_definitions"] == expected_uri
     assert list(storage.parquet_payloads) == [expected_uri]
     assert storage.parquet_payloads[expected_uri].select("query_definition_id").to_series().to_list() == ["q-tags", "q-text"]
@@ -1276,7 +1374,9 @@ def test_orchestrator_build_registry_stage_validates_local_registry(tmp_path) ->
     assert result.manifest.metrics["taxa_rows"] == 10
 
 
-def test_orchestrator_build_registry_stage_fails_when_registry_artifacts_are_missing(tmp_path) -> None:
+def test_orchestrator_build_registry_stage_fails_when_registry_artifacts_are_missing(
+    tmp_path,
+) -> None:
     registry = tmp_path / "registry"
     registry.mkdir()
     scope = TaxonScope.from_species_context(_species_context())
@@ -1299,7 +1399,9 @@ def test_orchestrator_build_registry_stage_fails_when_registry_artifacts_are_mis
     assert "taxa.parquet" in result.manifest.stages[0].message
 
 
-def test_orchestrator_build_registry_stage_can_build_missing_registry_when_enabled(tmp_path) -> None:
+def test_orchestrator_build_registry_stage_can_build_missing_registry_when_enabled(
+    tmp_path,
+) -> None:
     registry = tmp_path / "built-registry"
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
@@ -1328,7 +1430,9 @@ def test_orchestrator_build_registry_stage_can_build_missing_registry_when_enabl
     assert result.manifest.stages[0].metrics["query_definition_rows"] == 2
 
 
-def test_orchestrator_build_registry_stage_requires_registry_query_definitions(tmp_path) -> None:
+def test_orchestrator_build_registry_stage_requires_registry_query_definitions(
+    tmp_path,
+) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     request = ProductionRunRequest(
         taxon="Papilio demoleus",
@@ -1349,7 +1453,9 @@ def test_orchestrator_build_registry_stage_requires_registry_query_definitions(t
     assert "flickr_query_definitions.parquet" in result.manifest.stages[0].message
 
 
-def test_orchestrator_compile_queries_fails_cleanly_when_registry_query_definitions_missing(tmp_path) -> None:
+def test_orchestrator_compile_queries_fails_cleanly_when_registry_query_definitions_missing(
+    tmp_path,
+) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     request = ProductionRunRequest(
         taxon="Papilio demoleus",
@@ -1370,7 +1476,9 @@ def test_orchestrator_compile_queries_fails_cleanly_when_registry_query_definiti
     assert "flickr_query_definitions.parquet" in result.manifest.stages[0].message
 
 
-def test_orchestrator_enqueue_is_idempotent_for_same_run_and_registry_queries(tmp_path) -> None:
+def test_orchestrator_enqueue_is_idempotent_for_same_run_and_registry_queries(
+    tmp_path,
+) -> None:
     registry = _write_rank_registry(tmp_path / "registry")
     _write_query_definitions(registry)
     workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
@@ -1455,7 +1563,11 @@ def test_orchestrator_polls_t5_registry_queries_through_flickr_api(tmp_path, mon
             }
         }
 
-    monkeypatch.setattr(run_orchestrator_module, "load_registry_flickr_queries_from_frame", one_day_query_window)
+    monkeypatch.setattr(
+        run_orchestrator_module,
+        "load_registry_flickr_queries_from_frame",
+        one_day_query_window,
+    )
     request = ProductionRunRequest(
         taxon="Papilio demoleus",
         rank="species",
@@ -1476,8 +1588,14 @@ def test_orchestrator_polls_t5_registry_queries_through_flickr_api(tmp_path, mon
         ("text", "Translated Lime"),
     ]
     assert [query.trust_tier for query in queries] == ["T5", "T5"]
-    assert [query.term_type for query in queries] == ["generated_translation", "generated_translation"]
-    assert [query.query_definition_id for query in queries] == ["q-t5-tags", "q-t5-text"]
+    assert [query.term_type for query in queries] == [
+        "generated_translation",
+        "generated_translation",
+    ]
+    assert [query.query_definition_id for query in queries] == [
+        "q-t5-tags",
+        "q-t5-text",
+    ]
     frame = pl.read_parquet(result.paths.source_records_path)
     assert frame.height == 1
     row = frame.to_dicts()[0]
@@ -1529,7 +1647,12 @@ def test_orchestrator_poll_stage_claims_workstore_and_writes_cloud_source_record
         limits={"records": 1, "api_calls": 5},
     )
 
-    result = ProductionRunOrchestrator(request, storage=storage, workstore=workstore, metadata_fetcher=_fake_flickr_fetch).run()
+    result = ProductionRunOrchestrator(
+        request,
+        storage=storage,
+        workstore=workstore,
+        metadata_fetcher=_fake_flickr_fetch,
+    ).run()
 
     assert result.manifest.status == "complete"
     assert result.manifest.query_counts["enqueued_work_items"] == 1
@@ -1570,7 +1693,12 @@ def test_orchestrator_cloud_poll_reenqueues_reported_followup_pages(tmp_path, mo
         limits={"records": 1, "api_calls": 5},
     )
 
-    result = ProductionRunOrchestrator(request, storage=storage, workstore=workstore, metadata_fetcher=_fake_flickr_fetch_two_pages).run()
+    result = ProductionRunOrchestrator(
+        request,
+        storage=storage,
+        workstore=workstore,
+        metadata_fetcher=_fake_flickr_fetch_two_pages,
+    ).run()
 
     assert result.manifest.status == "complete"
     poll_stage = result.manifest.stages[1]
@@ -1701,11 +1829,16 @@ def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(
         storage_backend="local",
         workstore_backend="sqlite",
         classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_candidate_table=str(registry),
+        registry_dir=str(registry),
         taxonomy_text_embedding_cache=str(embedding_cache),
         reference_bank_readiness=valid_reference_bank_readiness,
         reference_bank_readiness_sha256=_READINESS_SHA256,
-        stages=(RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP, RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE),
+        stages=(
+            RunStage.DETECT_OBJECTS,
+            RunStage.SCORE_BIOCLIP,
+            RunStage.JOIN_EVIDENCE,
+            RunStage.SUMMARIZE,
+        ),
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope).plan()
     _write_hierarchical_source_records(plan.paths)
@@ -1740,7 +1873,7 @@ def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(
     assert result.manifest.metrics["selected_family_counts"] == {"Papilionidae": 1}
     score_stage = result.manifest.stages[1]
     assert score_stage.metrics["classification_mode_counts"] == {HIERARCHICAL_BUTTERFLY_CLASSIFICATION: 1}
-    assert score_stage.metrics["taxonomy_candidate_table_status"] == "valid"
+    assert score_stage.metrics["registry_taxonomy_status"] == "valid"
 
     detections = pl.read_parquet(result.paths.object_detections_path)
     detections_by_photo = {row["flickr_photo_id"]: row for row in detections.to_dicts()}
@@ -1758,7 +1891,12 @@ def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(
     assert score["family_top3"][:2] == ["Papilionidae", "Nymphalidae"]
     assert score["selected_family_node_id"] == "family:papilionidae"
     assert score["candidate_counts_by_rank"]["SPECIES"] == 4
-    assert set(score["species_top20_accepted_taxon_keys"]) == {"gbif:100", "gbif:101", "gbif:200", "gbif:301"}
+    assert set(score["species_top20_accepted_taxon_keys"]) == {
+        "gbif:100",
+        "gbif:101",
+        "gbif:200",
+        "gbif:301",
+    }
     assert score["species_top20"][0] == "Papilio machaon"
     assert score["species_top5"][0] == "Papilio demoleus"
     assert score["species_top20_first_pass_scores"]
@@ -1816,7 +1954,11 @@ def test_orchestrator_joins_evidence_and_writes_summary_metrics(tmp_path) -> Non
     vision_stage_metrics = json.loads(result.paths.vision_stage_metrics_path.read_text(encoding="utf-8"))
     assert vision_stage_metrics["detection"]["eligible_bioclip_detections"] == 1
     assert vision_stage_metrics["bioclip"]["crops_scored"] == 1
-    assert result.manifest.evidence_counts == {"object_evidence_rows": 1, "photo_summary_rows": 1, "review_queue_rows": 0}
+    assert result.manifest.evidence_counts == {
+        "object_evidence_rows": 1,
+        "photo_summary_rows": 1,
+        "review_queue_rows": 0,
+    }
     assert result.manifest.metrics["object_occurrence_bin_counts"] == {"gold": 1}
     assert result.manifest.metrics["photo_occurrence_bin_counts"] == {"gold": 1}
     assert result.manifest.metrics["review_queue_bin_counts"] == {}
@@ -1889,7 +2031,11 @@ def test_orchestrator_joins_evidence_from_cloud_shard_inventory(tmp_path) -> Non
     result = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage, workstore=workstore).run()
 
     assert result.manifest.status == "complete"
-    assert result.manifest.evidence_counts == {"object_evidence_rows": 1, "photo_summary_rows": 0, "review_queue_rows": 0}
+    assert result.manifest.evidence_counts == {
+        "object_evidence_rows": 1,
+        "photo_summary_rows": 0,
+        "review_queue_rows": 0,
+    }
     object_evidence_uri = result.manifest.stages[0].outputs["object_evidence"]
     assert object_evidence_uri.startswith(plan.artifact_uris.staging_uri + "/evidence/stage=join_evidence/")
     assert plan.artifact_uris.object_evidence_uri not in storage.parquet_payloads
@@ -1921,7 +2067,9 @@ def test_orchestrator_cloud_join_requires_storage_backend() -> None:
     assert result.manifest.stages[0].message == "storage_backend_required_for_join_evidence"
 
 
-def test_orchestrator_join_evidence_fails_when_local_inputs_are_missing(tmp_path) -> None:
+def test_orchestrator_join_evidence_fails_when_local_inputs_are_missing(
+    tmp_path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
         taxon="Danaus plexippus",
@@ -1941,7 +2089,9 @@ def test_orchestrator_join_evidence_fails_when_local_inputs_are_missing(tmp_path
     assert "canonical_source_records.parquet" in result.manifest.stages[0].message
 
 
-def test_orchestrator_summarize_writes_review_queue_for_ambiguous_photos(tmp_path) -> None:
+def test_orchestrator_summarize_writes_review_queue_for_ambiguous_photos(
+    tmp_path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
         taxon="Danaus plexippus",
@@ -1990,15 +2140,23 @@ def test_orchestrator_summarize_writes_review_queue_for_ambiguous_photos(tmp_pat
 
     assert result.manifest.status == "complete"
     assert result.manifest.evidence_counts["review_queue_rows"] == 2
-    assert result.manifest.metrics["review_queue_bin_counts"] == {"bronze": 1, "in_review": 1}
+    assert result.manifest.metrics["review_queue_bin_counts"] == {
+        "bronze": 1,
+        "in_review": 1,
+    }
     assert result.manifest.metrics["review_queue_mode"] == "target_scope"
     assert result.manifest.metrics["high_priority_review_rows"] == 0
     assert result.manifest.stages[0].outputs["review_queue"] == str(result.paths.review_queue_path)
     assert result.manifest.stages[0].outputs["visual_qa_findings"] == str(result.paths.visual_qa_findings_path)
-    assert queue.select("flickr_photo_id").to_series().to_list() == ["review-1", "bronze-1"]
+    assert queue.select("flickr_photo_id").to_series().to_list() == [
+        "review-1",
+        "bronze-1",
+    ]
 
 
-def test_orchestrator_summarize_writes_hierarchical_review_queue_without_photo_summary(tmp_path) -> None:
+def test_orchestrator_summarize_writes_hierarchical_review_queue_without_photo_summary(
+    tmp_path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
         taxon="Papilionoidea",
@@ -2036,7 +2194,9 @@ def test_orchestrator_summarize_writes_hierarchical_review_queue_without_photo_s
     assert queue.select("review_reason").to_series().to_list() == ["metadata_species_conflict;low_species_margin"]
 
 
-def test_orchestrator_summarizes_photo_evidence_from_cloud_join_shards(tmp_path) -> None:
+def test_orchestrator_summarizes_photo_evidence_from_cloud_join_shards(
+    tmp_path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     storage = _FakeRunStorage()
     workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
@@ -2053,10 +2213,7 @@ def test_orchestrator_summarizes_photo_evidence_from_cloud_join_shards(tmp_path)
         object_detections=detections,
         object_scores=scores,
     )
-    joined_uri = (
-        plan.artifact_uris.staging_uri
-        + "/evidence/stage=join_evidence/run_id=species_danaus_plexippus/worker=joiner/batch=001.parquet"
-    )
+    joined_uri = plan.artifact_uris.staging_uri + "/evidence/stage=join_evidence/run_id=species_danaus_plexippus/worker=joiner/batch=001.parquet"
     storage.parquet_payloads[joined_uri] = joined
     workstore.register_shard(
         job_name="biominer_production_run",
@@ -2072,7 +2229,11 @@ def test_orchestrator_summarizes_photo_evidence_from_cloud_join_shards(tmp_path)
     result = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage, workstore=workstore).run()
 
     assert result.manifest.status == "complete"
-    assert result.manifest.evidence_counts == {"object_evidence_rows": 1, "photo_summary_rows": 1, "review_queue_rows": 0}
+    assert result.manifest.evidence_counts == {
+        "object_evidence_rows": 1,
+        "photo_summary_rows": 1,
+        "review_queue_rows": 0,
+    }
     photo_summary_uri = result.manifest.stages[0].outputs["photo_summary"]
     visual_qa_uri = result.manifest.stages[0].outputs["visual_qa_findings"]
     assert result.manifest.stages[0].outputs["metrics"] == plan.artifact_uris.metrics_uri
@@ -2153,7 +2314,11 @@ def test_orchestrator_builds_review_queue_from_cloud_summary_shards(tmp_path) ->
     result = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage, workstore=workstore).run()
 
     assert result.manifest.status == "complete"
-    assert result.manifest.evidence_counts == {"object_evidence_rows": 0, "photo_summary_rows": 2, "review_queue_rows": 1}
+    assert result.manifest.evidence_counts == {
+        "object_evidence_rows": 0,
+        "photo_summary_rows": 2,
+        "review_queue_rows": 1,
+    }
     review_queue_uri = result.manifest.stages[0].outputs["review_queue"]
     visual_qa_uri = result.manifest.stages[0].outputs["visual_qa_findings"]
     assert review_queue_uri.startswith(plan.artifact_uris.staging_uri + "/evidence/stage=review_queue/")
@@ -2174,7 +2339,9 @@ def test_orchestrator_builds_review_queue_from_cloud_summary_shards(tmp_path) ->
     assert [shard["uri"] for shard in queue_shards] == [review_queue_uri]
 
 
-def test_orchestrator_builds_hierarchical_review_queue_from_cloud_join_shards(tmp_path) -> None:
+def test_orchestrator_builds_hierarchical_review_queue_from_cloud_join_shards(
+    tmp_path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     storage = _FakeRunStorage()
     workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
@@ -2186,10 +2353,7 @@ def test_orchestrator_builds_hierarchical_review_queue_from_cloud_join_shards(tm
         stages=(RunStage.SUMMARIZE,),
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
-    joined_uri = (
-        plan.artifact_uris.staging_uri
-        + "/evidence/stage=join_evidence/run_id=species_danaus_plexippus/worker=joiner/batch=001.parquet"
-    )
+    joined_uri = plan.artifact_uris.staging_uri + "/evidence/stage=join_evidence/run_id=species_danaus_plexippus/worker=joiner/batch=001.parquet"
     storage.parquet_payloads[joined_uri] = pl.DataFrame([_hierarchical_object_evidence_row()])
     workstore.register_shard(
         job_name="biominer_production_run",
@@ -2227,7 +2391,9 @@ def test_orchestrator_builds_hierarchical_review_queue_from_cloud_join_shards(tm
     assert queue.select("flickr_photo_id").to_series().to_list() == ["hier-photo-1"]
 
 
-def test_orchestrator_local_comment_review_stages_process_and_apply_promotions(tmp_path) -> None:
+def test_orchestrator_local_comment_review_stages_process_and_apply_promotions(
+    tmp_path,
+) -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(
         taxon="Danaus plexippus",
@@ -2235,12 +2401,21 @@ def test_orchestrator_local_comment_review_stages_process_and_apply_promotions(t
         output_root=tmp_path / "runs",
         storage_backend="local",
         workstore_backend="sqlite",
-        stages=(RunStage.QUEUE_COMMENT_REVIEW, RunStage.REVIEW_COMMENTS, RunStage.APPLY_COMMENT_REVIEW),
+        stages=(
+            RunStage.QUEUE_COMMENT_REVIEW,
+            RunStage.REVIEW_COMMENTS,
+            RunStage.APPLY_COMMENT_REVIEW,
+        ),
     )
     orchestrator = ProductionRunOrchestrator(
         request,
         taxon_scope=scope,
-        comment_fetcher=lambda photo_id: [{"author": "u1", "_content": "Confirmed Danaus plexippus at -27.4698, 153.0251"}],
+        comment_fetcher=lambda photo_id: [
+            {
+                "author": "u1",
+                "_content": "Confirmed Danaus plexippus at -27.4698, 153.0251",
+            }
+        ],
     )
     plan = orchestrator.plan()
     plan.paths.ensure_directories()
@@ -2349,9 +2524,7 @@ def test_orchestrator_runs_local_detection_and_object_scoring_with_injected_fake
     assert result.manifest.metrics["visual_modes_scored"] == ["detector_crop"]
     assert result.manifest.metrics["classification_mode_counts"] == {TARGET_SCOPE_OBJECT_SCREENING: 1}
     assert result.manifest.metrics["candidate_selection_mode_counts"] == {"taxon_scope_or_species_context": 1}
-    assert result.manifest.metrics["species_rerank_strategy_counts"] == {
-        "family_top1_filtered_first_pass_top20_complete_rerank": 1
-    }
+    assert result.manifest.metrics["species_rerank_strategy_counts"] == {"family_top1_filtered_first_pass_top20_complete_rerank": 1}
     assert result.manifest.metrics["species_top1_counts"] == {"Danaus plexippus": 1}
     scores = pl.read_parquet(result.paths.object_scores_path).sort("ablation_mode")
     assert scores.height == 1
@@ -2376,7 +2549,12 @@ def test_orchestrator_cloud_rolling_vision_commits_shards_and_reuses_downstream(
         vision_settings=VisionRuntimeSettings(parquet_part_rows=500, detector_batch_size=1, crop_batch_size=1),
         reference_bank_readiness=valid_reference_bank_readiness,
         reference_bank_readiness_sha256=_READINESS_SHA256,
-        stages=(RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP, RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE),
+        stages=(
+            RunStage.DETECT_OBJECTS,
+            RunStage.SCORE_BIOCLIP,
+            RunStage.JOIN_EVIDENCE,
+            RunStage.SUMMARIZE,
+        ),
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
     canonical, _, _ = _join_stage_input_frames()
@@ -2420,9 +2598,7 @@ def test_orchestrator_cloud_rolling_vision_commits_shards_and_reuses_downstream(
     assert result.manifest.stages[0].metrics["score_inputs"] == 1
     assert result.manifest.stages[1].metrics["rolling_vision_shards_reused"] is True
     assert result.manifest.stages[2].metrics["rolling_vision_shards_reused"] is True
-    assert result.manifest.stages[3].outputs["photo_summary"].startswith(
-        plan.artifact_uris.staging_uri + "/evidence/stage=photo_evidence_summary/"
-    )
+    assert result.manifest.stages[3].outputs["photo_summary"].startswith(plan.artifact_uris.staging_uri + "/evidence/stage=photo_evidence_summary/")
     expected_stage_counts = {
         "image_batch_manifest": 1,
         RunStage.DETECT_OBJECTS.value: 1,
@@ -2707,7 +2883,12 @@ def test_production_cloud_run_does_not_write_durable_local_artifacts(
         output_root="s3://biominer/runs",
         reference_bank_readiness=valid_reference_bank_readiness,
         reference_bank_readiness_sha256=_READINESS_SHA256,
-        stages=(RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP, RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE),
+        stages=(
+            RunStage.DETECT_OBJECTS,
+            RunStage.SCORE_BIOCLIP,
+            RunStage.JOIN_EVIDENCE,
+            RunStage.SUMMARIZE,
+        ),
     )
     plan = ProductionRunOrchestrator(request, taxon_scope=scope, storage=storage).plan()
     canonical, _, _ = _join_stage_input_frames()
@@ -2821,7 +3002,13 @@ def test_run_paths_are_stable(tmp_path) -> None:
 
 
 def test_evidence_package_imports_and_metrics(tmp_path) -> None:
-    joined = pl.DataFrame([{"occurrence_bin": "gold"}, {"occurrence_bin": "in_review"}, {"occurrence_bin": "gold"}])
+    joined = pl.DataFrame(
+        [
+            {"occurrence_bin": "gold"},
+            {"occurrence_bin": "in_review"},
+            {"occurrence_bin": "gold"},
+        ]
+    )
     summary = pl.DataFrame([{"photo_occurrence_bin": "gold"}])
 
     assert evidence_count_metrics(joined, summary) == {
@@ -2882,9 +3069,15 @@ def test_review_queue_keeps_bronze_and_review_photo_summaries() -> None:
 
     queue = build_review_queue(summary)
 
-    assert queue.select("flickr_photo_id").to_series().to_list() == ["review-1", "bronze-1"]
+    assert queue.select("flickr_photo_id").to_series().to_list() == [
+        "review-1",
+        "bronze-1",
+    ]
     assert queue.select("review_priority").to_series().to_list() == [10, 20]
-    assert queue.select("review_reason").to_series().to_list() == ["ambiguous_species_margin", "weak_species_score"]
+    assert queue.select("review_reason").to_series().to_list() == [
+        "ambiguous_species_margin",
+        "weak_species_score",
+    ]
 
 
 def test_trust_policy_default_tiers_and_enablement() -> None:
@@ -2908,7 +3101,15 @@ def test_trust_policy_disabled_reasons() -> None:
     assert disabled_reason_for_candidate(TrustTier.T3, "high", "none") == "wikidata_name_requires_confident_taxon_link"
     assert disabled_reason_for_candidate(TrustTier.T4, "medium", "ambiguous") == "name_collision_requires_review"
     assert disabled_reason_for_candidate(TrustTier.T5, "high", "none") == ""
-    assert decide_name_trust(source="Wikidata", name_class="vernacular", confidence="high", collision_status="none").enabled is False
+    assert (
+        decide_name_trust(
+            source="Wikidata",
+            name_class="vernacular",
+            confidence="high",
+            collision_status="none",
+        ).enabled
+        is False
+    )
 
 
 def _species_context() -> SpeciesContext:
@@ -2929,16 +3130,108 @@ def _species_context() -> SpeciesContext:
 def _write_rank_registry(registry: Path) -> Path:
     registry.mkdir(parents=True, exist_ok=True)
     taxa_rows = [
-        _taxon_row("gbif:10", "Papilionidae", "FAMILY", family_key="gbif:10", family="Papilionidae"),
-        _taxon_row("gbif:90", "Papilio", "GENUS", parent_key="gbif:10", family_key="gbif:10", family="Papilionidae", genus_key="gbif:90", genus="Papilio"),
-        _taxon_row("gbif:91", "Emptygenus", "GENUS", parent_key="gbif:10", family_key="gbif:10", family="Papilionidae", genus_key="gbif:91", genus="Emptygenus"),
-        _taxon_row("gbif:100", "Papilio demoleus", "SPECIES", parent_key="gbif:90", family_key="gbif:10", family="Papilionidae", genus_key="gbif:90", genus="Papilio", species_key="gbif:100", species="Papilio demoleus"),
-        _taxon_row("gbif:101", "Papilio machaon", "SPECIES", parent_key="gbif:90", family_key="gbif:10", family="Papilionidae", genus_key="gbif:90", genus="Papilio", species_key="gbif:101", species="Papilio machaon"),
-        _taxon_row("gbif:20", "Nymphalidae", "FAMILY", family_key="gbif:20", family="Nymphalidae"),
-        _taxon_row("gbif:190", "Danaus", "GENUS", parent_key="gbif:20", family_key="gbif:20", family="Nymphalidae", genus_key="gbif:190", genus="Danaus"),
-        _taxon_row("gbif:200", "Danaus plexippus", "SPECIES", parent_key="gbif:190", family_key="gbif:20", family="Nymphalidae", genus_key="gbif:190", genus="Danaus", species_key="gbif:200", species="Danaus plexippus"),
-        _taxon_row("gbif:300", "Shared name", "GENUS", parent_key="gbif:10", family_key="gbif:10", family="Papilionidae", genus_key="gbif:300", genus="Shared name"),
-        _taxon_row("gbif:301", "Shared name", "SPECIES", parent_key="gbif:300", family_key="gbif:10", family="Papilionidae", genus_key="gbif:300", genus="Shared name", species_key="gbif:301", species="Shared name"),
+        _taxon_row(
+            "gbif:10",
+            "Papilionidae",
+            "FAMILY",
+            family_key="gbif:10",
+            family="Papilionidae",
+        ),
+        _taxon_row(
+            "gbif:90",
+            "Papilio",
+            "GENUS",
+            parent_key="gbif:10",
+            family_key="gbif:10",
+            family="Papilionidae",
+            genus_key="gbif:90",
+            genus="Papilio",
+        ),
+        _taxon_row(
+            "gbif:91",
+            "Emptygenus",
+            "GENUS",
+            parent_key="gbif:10",
+            family_key="gbif:10",
+            family="Papilionidae",
+            genus_key="gbif:91",
+            genus="Emptygenus",
+        ),
+        _taxon_row(
+            "gbif:100",
+            "Papilio demoleus",
+            "SPECIES",
+            parent_key="gbif:90",
+            family_key="gbif:10",
+            family="Papilionidae",
+            genus_key="gbif:90",
+            genus="Papilio",
+            species_key="gbif:100",
+            species="Papilio demoleus",
+        ),
+        _taxon_row(
+            "gbif:101",
+            "Papilio machaon",
+            "SPECIES",
+            parent_key="gbif:90",
+            family_key="gbif:10",
+            family="Papilionidae",
+            genus_key="gbif:90",
+            genus="Papilio",
+            species_key="gbif:101",
+            species="Papilio machaon",
+        ),
+        _taxon_row(
+            "gbif:20",
+            "Nymphalidae",
+            "FAMILY",
+            family_key="gbif:20",
+            family="Nymphalidae",
+        ),
+        _taxon_row(
+            "gbif:190",
+            "Danaus",
+            "GENUS",
+            parent_key="gbif:20",
+            family_key="gbif:20",
+            family="Nymphalidae",
+            genus_key="gbif:190",
+            genus="Danaus",
+        ),
+        _taxon_row(
+            "gbif:200",
+            "Danaus plexippus",
+            "SPECIES",
+            parent_key="gbif:190",
+            family_key="gbif:20",
+            family="Nymphalidae",
+            genus_key="gbif:190",
+            genus="Danaus",
+            species_key="gbif:200",
+            species="Danaus plexippus",
+        ),
+        _taxon_row(
+            "gbif:300",
+            "Shared name",
+            "GENUS",
+            parent_key="gbif:10",
+            family_key="gbif:10",
+            family="Papilionidae",
+            genus_key="gbif:300",
+            genus="Shared name",
+        ),
+        _taxon_row(
+            "gbif:301",
+            "Shared name",
+            "SPECIES",
+            parent_key="gbif:300",
+            family_key="gbif:10",
+            family="Papilionidae",
+            genus_key="gbif:300",
+            genus="Shared name",
+            species_key="gbif:301",
+            species="Shared name",
+        ),
     ]
     pl.DataFrame(taxa_rows).write_parquet(registry / "taxa.parquet")
     pl.DataFrame(
@@ -2950,7 +3243,15 @@ def _write_rank_registry(registry: Path) -> Path:
             _name_row("gbif:301", "Shared name", "accepted_scientific", "la", "T1"),
         ]
     ).write_parquet(registry / "names.parquet")
-    pl.DataFrame([{"source": "GBIF", "source_version": "fixture", "retrieved_at": "2026-01-01T00:00:00Z"}]).write_parquet(registry / "source_snapshots.parquet")
+    pl.DataFrame(
+        [
+            {
+                "source": "GBIF",
+                "source_version": "fixture",
+                "retrieved_at": "2026-01-01T00:00:00Z",
+            }
+        ]
+    ).write_parquet(registry / "source_snapshots.parquet")
     (registry / "manifest.json").write_text(json.dumps({"registry_version": "rank-registry-v1"}), encoding="utf-8")
     classification_source = registry / "classification_source.json"
     classification_source.write_text(json.dumps(_rank_classification_source(), sort_keys=True), encoding="utf-8")
@@ -2963,16 +3264,8 @@ def _write_rank_registry(registry: Path) -> Path:
 
 def _write_rank_embedding_cache(registry: Path, output: Path) -> Path:
     store = PathTaxonomyStore.read(registry)
-    node_names = {
-        str(row["node_id"]): str(row["scientific_name"])
-        for row in store.nodes.iter_rows(named=True)
-    }
-    prompt_identity = {
-        str(row["label"]): (str(row["prompt_stage"]), node_names[str(row["node_id"])])
-        for row in store.prompt_labels.filter(store.prompt_labels["enabled"]).iter_rows(
-            named=True
-        )
-    }
+    node_names = {str(row["node_id"]): str(row["scientific_name"]) for row in store.nodes.iter_rows(named=True)}
+    prompt_identity = {str(row["label"]): (str(row["prompt_stage"]), node_names[str(row["node_id"])]) for row in store.prompt_labels.filter(store.prompt_labels["enabled"]).iter_rows(named=True)}
 
     def embed_labels(labels: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
@@ -3028,16 +3321,39 @@ def _rank_classification_source() -> dict[str, object]:
     }
     source_id = "test-six-rank-source"
     paths = (
-        ("Papilionidae", "Papilioninae", "Papilionini", "Papilio", (("gbif:100", "Papilio demoleus"), ("gbif:101", "Papilio machaon"))),
-        ("Papilionidae", "Papilioninae", "Papilionini", "Shared name", (("gbif:301", "Shared name"),)),
-        ("Nymphalidae", "Danainae", "Danaini", "Danaus", (("gbif:200", "Danaus plexippus"),)),
+        (
+            "Papilionidae",
+            "Papilioninae",
+            "Papilionini",
+            "Papilio",
+            (("gbif:100", "Papilio demoleus"), ("gbif:101", "Papilio machaon")),
+        ),
+        (
+            "Papilionidae",
+            "Papilioninae",
+            "Papilionini",
+            "Shared name",
+            (("gbif:301", "Shared name"),),
+        ),
+        (
+            "Nymphalidae",
+            "Danainae",
+            "Danaini",
+            "Danaus",
+            (("gbif:200", "Danaus plexippus"),),
+        ),
     )
     nodes_by_id: dict[str, dict[str, object]] = {}
     edges_by_pair: dict[tuple[str, str], dict[str, object]] = {}
     mappings: list[dict[str, object]] = []
     for family, subfamily, tribe, genus, species_rows in paths:
         parent_id: str | None = None
-        for rank, name in (("FAMILY", family), ("SUBFAMILY", subfamily), ("TRIBE", tribe), ("GENUS", genus)):
+        for rank, name in (
+            ("FAMILY", family),
+            ("SUBFAMILY", subfamily),
+            ("TRIBE", tribe),
+            ("GENUS", genus),
+        ):
             node_id = f"{rank.casefold()}:{name.casefold().replace(' ', '-')}"
             nodes_by_id[node_id] = {
                 "node_id": node_id,
@@ -3378,7 +3694,13 @@ def _hierarchical_object_evidence_row() -> dict[str, object]:
 
 
 def _tiny_rgb_image() -> DecodedImage:
-    return DecodedImage(width=4, height=4, mode="RGB", data=bytes([255, 255, 255] * 16), source_uri="memory://photo-1")
+    return DecodedImage(
+        width=4,
+        height=4,
+        mode="RGB",
+        data=bytes([255, 255, 255] * 16),
+        source_uri="memory://photo-1",
+    )
 
 
 def _fake_flickr_fetch(_query: object) -> dict[str, object]:
@@ -3435,16 +3757,6 @@ class _ConstantObjectScorer:
         return {label: float(self.scores.get(label, 0.0)) for label in labels}
 
 
-class _RaisingObjectDetector:
-    backend = "fake"
-    model_id = "fake-detector"
-    model_version = "test"
-    checkpoint = "fake-checkpoint"
-
-    def detect_batch(self, _images):  # noqa: ANN001, ANN202 - mirrors object detector protocol.
-        raise AssertionError("detector should not run")
-
-
 class _RaisingObjectScorer:
     model_id = "fake-bioclip"
     model_version = "test"
@@ -3486,15 +3798,22 @@ class _HierarchicalRerankObjectScorer:
             species_call = self._species_calls_by_crop_hash.get(crop_hash, 0)
             self._species_calls_by_crop_hash[crop_hash] = species_call + 1
             scores = (
-                {"Papilio machaon": 0.82, "Papilio demoleus": 0.41, "Shared name": 0.20, "Danaus plexippus": 0.05}
+                {
+                    "Papilio machaon": 0.82,
+                    "Papilio demoleus": 0.41,
+                    "Shared name": 0.20,
+                    "Danaus plexippus": 0.05,
+                }
                 if species_call == 0
-                else {"Papilio demoleus": 0.95, "Papilio machaon": 0.35, "Shared name": 0.10, "Danaus plexippus": 0.05}
+                else {
+                    "Papilio demoleus": 0.95,
+                    "Papilio machaon": 0.35,
+                    "Shared name": 0.10,
+                    "Danaus plexippus": 0.05,
+                }
             )
             return {label: _score_label_by_token(label, scores) for label in label_tuple}
-        return {
-            label: _score_label_by_token(label, {"Papilionidae": 0.94, "Nymphalidae": 0.60})
-            for label in label_tuple
-        }
+        return {label: _score_label_by_token(label, {"Papilionidae": 0.94, "Nymphalidae": 0.60}) for label in label_tuple}
 
 
 def _score_label_by_token(label: str, scores: dict[str, float]) -> float:
@@ -3502,10 +3821,6 @@ def _score_label_by_token(label: str, scores: dict[str, float]) -> float:
         if token in label:
             return float(score)
     return 0.0
-
-
-def _contains_any(text: str, tokens: tuple[str, ...]) -> bool:
-    return any(token in text for token in tokens)
 
 
 class _FakeRunStorage:
@@ -3581,11 +3896,7 @@ def _install_forbidden_local_write_guard(monkeypatch, *, root: Path) -> None:  #
 def _durable_local_artifacts(root: Path) -> set[str]:
     if not root.exists():
         return set()
-    return {
-        str(path.relative_to(root))
-        for path in root.rglob("*")
-        if _is_forbidden_local_artifact(path, root=root)
-    }
+    return {str(path.relative_to(root)) for path in root.rglob("*") if _is_forbidden_local_artifact(path, root=root)}
 
 
 def _is_forbidden_local_artifact(path: str | Path, *, root: Path) -> bool:
@@ -3690,7 +4001,13 @@ def _taxon_row(
     }
 
 
-def _name_row(accepted_taxon_key: str, display_name: str, name_class: str, language: str, trust_tier: str) -> dict[str, object]:
+def _name_row(
+    accepted_taxon_key: str,
+    display_name: str,
+    name_class: str,
+    language: str,
+    trust_tier: str,
+) -> dict[str, object]:
     return {
         "name_id": f"name:{accepted_taxon_key}:{display_name}",
         "registry_version": "rank-registry-v1",

@@ -19,7 +19,7 @@ def test_dev_vision_benchmark_live_m5pro_parses_m5pro_defaults() -> None:
             "benchmark-live-m5pro",
             "--input",
             "runs/local_debug/papilio_demoleus/canonical_source_records.parquet",
-            "--taxonomy-candidate-table",
+            "--registry-dir",
             "data/registry/current",
             "--taxonomy-text-embedding-cache",
             "data/registry/current/taxonomy_text_embeddings.parquet",
@@ -39,9 +39,7 @@ def test_dev_vision_benchmark_live_m5pro_parses_m5pro_defaults() -> None:
     assert args.crop_target_px == 336
     assert args.crop_padding_ratio == 0.08
     assert args.limit == 100
-    assert args.taxonomy_text_embedding_cache == (
-        "data/registry/current/taxonomy_text_embeddings.parquet"
-    )
+    assert args.taxonomy_text_embedding_cache == ("data/registry/current/taxonomy_text_embeddings.parquet")
 
 
 def test_dev_vision_benchmark_live_m5pro_reports_missing_runtime_paths(tmp_path, capsys) -> None:
@@ -54,7 +52,7 @@ def test_dev_vision_benchmark_live_m5pro_reports_missing_runtime_paths(tmp_path,
             "benchmark-live-m5pro",
             "--input",
             str(input_path),
-            "--taxonomy-candidate-table",
+            "--registry-dir",
             str(tmp_path / "taxonomy_store"),
             "--taxonomy-text-embedding-cache",
             str(tmp_path / "taxonomy_text_embeddings.parquet"),
@@ -87,7 +85,7 @@ def test_dev_vision_benchmark_live_m5pro_reports_missing_taxonomy_table(tmp_path
             "benchmark-live-m5pro",
             "--input",
             str(input_path),
-            "--taxonomy-candidate-table",
+            "--registry-dir",
             str(tmp_path / "missing_taxonomy_store"),
             "--taxonomy-text-embedding-cache",
             str(tmp_path / "taxonomy_text_embeddings.parquet"),
@@ -103,7 +101,7 @@ def test_dev_vision_benchmark_live_m5pro_reports_missing_taxonomy_table(tmp_path
     assert run(args) == 2
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["error"] == "missing_taxonomy_candidate_table"
+    assert payload["error"] == "missing_registry_taxonomy"
     assert payload["benchmark_kind"] == "vision_live_m5pro"
 
 
@@ -122,7 +120,7 @@ def test_dev_vision_benchmark_live_m5pro_requires_v3_embedding_cache(tmp_path, c
             "benchmark-live-m5pro",
             "--input",
             str(input_path),
-            "--taxonomy-candidate-table",
+            "--registry-dir",
             str(taxonomy_store),
             "--taxonomy-text-embedding-cache",
             str(missing_cache),

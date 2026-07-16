@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 from types import SimpleNamespace
 
 import polars as pl
@@ -36,11 +35,6 @@ def _row(**overrides: object) -> dict[str, object]:
     }
     row.update(overrides)
     return row
-
-
-def test_legacy_filter_rules_and_bucket_report_wrappers_are_removed() -> None:
-    assert importlib.util.find_spec("biominer.filter.rules") is None
-    assert importlib.util.find_spec("biominer.reports.buckets") is None
 
 
 def test_gold_score_gte_070_target_positive() -> None:

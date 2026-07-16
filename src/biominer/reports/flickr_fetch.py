@@ -138,10 +138,6 @@ def build_step1_fetch_report(
     }
 
 
-def write_step1_fetch_report(path: str | Path, report: dict[str, Any]) -> None:
-    _write_json(path, report)
-
-
 def _query_provenance_summary(frame: pl.DataFrame | None) -> dict[str, Any]:
     if frame is None or frame.is_empty():
         return {

@@ -483,7 +483,6 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--taxon", required=True)
     production_run.add_argument("--rank", default="auto", choices=("auto", "family", "genus", "species"))
     production_run.add_argument("--registry-dir", required=True)
-    production_run.add_argument("--taxonomy-candidate-table", help=argparse.SUPPRESS)
     production_run.add_argument("--output-prefix", required=True)
     production_run.add_argument("--storage-backend", default="s3", choices=("s3", "local"))
     production_run.add_argument("--workstore-backend", default="postgres", choices=("postgres", "sqlite"))
@@ -590,9 +589,7 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     bioclip_prefetch.add_argument("--revision", default=BIOCLIP_25_HUGE_REVISION)
     bioclip_prefetch.add_argument("--max-workers", type=int, default=8)
     text_embedding_cache = subparsers.add_parser("build-text-embedding-cache")
-    text_embedding_registry = text_embedding_cache.add_mutually_exclusive_group(required=True)
-    text_embedding_registry.add_argument("--registry-dir")
-    text_embedding_registry.add_argument("--taxonomy-candidate-table", dest="registry_dir", help=argparse.SUPPRESS)
+    text_embedding_cache.add_argument("--registry-dir", required=True)
     text_embedding_cache.add_argument("--output", required=True)
     text_embedding_cache.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
     text_embedding_cache.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
@@ -633,7 +630,6 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
         default=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     )
     benchmark.add_argument("--registry-dir")
-    benchmark.add_argument("--taxonomy-candidate-table", dest="registry_dir", help=argparse.SUPPRESS)
     benchmark.add_argument("--rank-beam-width", type=int, default=DEFAULT_RANK_BEAM_WIDTH)
     benchmark.add_argument("--species-first-pass-top-k", type=int, default=DEFAULT_SPECIES_FIRST_PASS_TOP_K)
     benchmark.add_argument("--species-rerank-top-k", type=int, default=DEFAULT_SPECIES_RERANK_TOP_K)
@@ -645,9 +641,7 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     cascade_benchmark.add_argument("--output-dir", required=True)
     live_benchmark = subparsers.add_parser("benchmark-live-m5pro")
     live_benchmark.add_argument("--input", required=True)
-    live_registry = live_benchmark.add_mutually_exclusive_group(required=True)
-    live_registry.add_argument("--registry-dir")
-    live_registry.add_argument("--taxonomy-candidate-table", dest="registry_dir", help=argparse.SUPPRESS)
+    live_benchmark.add_argument("--registry-dir", required=True)
     live_benchmark.add_argument("--taxonomy-text-embedding-cache", required=True)
     live_benchmark.add_argument("--vision-runtime-python", default=YOLOE26_RUNTIME_PYTHON)
     live_benchmark.add_argument("--bioclip-runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
@@ -1948,7 +1942,6 @@ def _run_production_command(args: argparse.Namespace) -> int:
             classification_mode=args.classification_mode,
             classification_config_path=args.classification_config,
             build_week_prototype_config=prototype_config,
-            taxonomy_candidate_table=args.taxonomy_candidate_table,
             taxonomy_text_embedding_cache=args.taxonomy_text_embedding_cache,
             reference_bank_readiness=args.reference_bank_readiness,
             reference_bank_readiness_sha256=(
@@ -2460,7 +2453,7 @@ def _run_vision_benchmark_plumbing(args: argparse.Namespace) -> int:
             butterfly_rate=args.butterfly_rate,
             detections_per_butterfly=args.detections_per_butterfly,
             classification_mode=args.classification_mode,
-            taxonomy_candidate_table=args.registry_dir,
+            registry_dir=args.registry_dir,
             output_dir=args.output_dir,
             rank_beam_width=args.rank_beam_width,
             species_first_pass_top_k=args.species_first_pass_top_k,
@@ -2540,7 +2533,7 @@ def _run_path_cascade_benchmark(args: argparse.Namespace) -> int:
 def _run_vision_benchmark_live_m5pro(args: argparse.Namespace) -> int:
     request = LiveM5ProBenchmarkRequest(
         input_path=Path(args.input).expanduser(),
-        taxonomy_candidate_table=Path(args.registry_dir).expanduser(),
+        registry_dir=Path(args.registry_dir).expanduser(),
         taxonomy_text_embedding_cache=Path(args.taxonomy_text_embedding_cache).expanduser(),
         vision_runtime_python=Path(args.vision_runtime_python).expanduser(),
         bioclip_runtime_python=Path(args.bioclip_runtime_python).expanduser(),

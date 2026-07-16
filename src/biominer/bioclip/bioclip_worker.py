@@ -128,8 +128,6 @@ def configure_hf_cache_env(cache_dir: str | Path) -> Path:
 def device_from_request(request: dict[str, object]) -> str:
     if "device" in request and request["device"] not in (None, ""):
         return normalize_device(str(request["device"]))
-    if request.get("require_cuda") is True:
-        return "cuda"
     return DEFAULT_DEVICE
 
 
@@ -352,7 +350,6 @@ def score_image(
     model_name: str,
     checkpoint: str,
     device: str = DEFAULT_DEVICE,
-    require_cuda: bool | None = None,
     image_resize_mode: str | None = None,
     preprocess_workers: int = 1,
 ) -> dict[str, float]:
@@ -361,7 +358,7 @@ def score_image(
         labels=labels,
         model_name=model_name,
         checkpoint=checkpoint,
-        device=_coerce_device(device=device, require_cuda=require_cuda),
+        device=normalize_device(device),
         image_resize_mode=image_resize_mode,
         preprocess_workers=preprocess_workers,
     )[0]
@@ -374,14 +371,13 @@ def score_images(
     model_name: str,
     checkpoint: str,
     device: str = DEFAULT_DEVICE,
-    require_cuda: bool | None = None,
     image_resize_mode: str | None = None,
     preprocess_workers: int = 1,
 ) -> list[dict[str, float]]:
     model = _LoadedBioClipModel.load(
         model_name=model_name,
         checkpoint=checkpoint,
-        device=_coerce_device(device=device, require_cuda=require_cuda),
+        device=normalize_device(device),
         image_resize_mode=image_resize_mode,
     )
     return model.score_images(
@@ -396,25 +392,18 @@ def score_image_label_sets(
     model_name: str,
     checkpoint: str,
     device: str = DEFAULT_DEVICE,
-    require_cuda: bool | None = None,
     image_resize_mode: str | None = None,
     preprocess_workers: int = 1,
 ) -> dict[str, list[dict[str, float]]]:
     model = _LoadedBioClipModel.load(
         model_name=model_name,
         checkpoint=checkpoint,
-        device=_coerce_device(device=device, require_cuda=require_cuda),
+        device=normalize_device(device),
         image_resize_mode=image_resize_mode,
     )
     return model.score_image_label_sets(
         image_paths, label_sets, preprocess_workers=preprocess_workers
     )
-
-
-def _coerce_device(*, device: str, require_cuda: bool | None) -> str:
-    if require_cuda is True and device == DEFAULT_DEVICE:
-        return "cuda"
-    return normalize_device(device)
 
 
 class _LoadedBioClipModel:

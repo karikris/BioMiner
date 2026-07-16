@@ -418,29 +418,6 @@ def _name_collision_ledger_frame(names: pl.DataFrame, *, registry_version: str) 
     return pl.DataFrame(rows, schema=_name_collision_ledger_schema())
 
 
-def _apply_name_collision_policy(names: pl.DataFrame, collision_ledger: pl.DataFrame) -> pl.DataFrame:
-    if names.is_empty() or collision_ledger.is_empty():
-        return names
-    blocking_keys = {
-        (str(row["normalized_match_key"]), str(row["language"]))
-        for row in collision_ledger.filter(pl.col("collision_status") == "query_blocking").to_dicts()
-    }
-    if not blocking_keys:
-        return names
-    rows: list[dict[str, Any]] = []
-    for row in names.to_dicts():
-        key = (str(row.get("normalized_match_key") or ""), str(row.get("language") or ""))
-        if key in blocking_keys and _name_collision_blocks_query(row):
-            row = {
-                **row,
-                "query_eligible": False,
-                "query_disabled_reason": "normalized_name_language_collision",
-                "species_specificity_score": min(float(row.get("species_specificity_score") or 0.0), 0.45),
-            }
-        rows.append(row)
-    return pl.DataFrame(rows, schema=names.schema)
-
-
 def _name_collision_blocks_query(row: dict[str, Any]) -> bool:
     if not bool(row.get("enabled")) or not bool(row.get("query_eligible")):
         return False
@@ -702,24 +679,6 @@ def _source_hash(payload: dict[str, Any], source_ref: str | Path) -> str:
     if path.exists():
         return _file_hash(path)
     return _payload_hash(payload)
-
-
-def _search_priority(name: dict[str, Any], field: str) -> int:
-    field_offset = 0 if field == "tags" else 1
-    name_class = str(name.get("name_class") or "")
-    language = str(name.get("language") or "").casefold()
-    trust_tier = str(name.get("trust_tier") or "").casefold()
-    if name_class in {"accepted_scientific", "canonical_scientific"}:
-        return 10 + field_offset
-    if name_class in {"vernacular", "vernacular_alias"} and language in {"en", "eng"} and trust_tier in {"t1", "t2", "t3"}:
-        return 20 + field_offset
-    if name_class == "scientific_synonym":
-        return 30 + field_offset
-    if name_class in {"vernacular", "vernacular_alias"}:
-        return 40 + field_offset
-    if name_class == "generated_translation" or trust_tier == "t5":
-        return 80 + field_offset
-    return 100 + field_offset
 
 
 def _stable_id(*parts: object) -> str:

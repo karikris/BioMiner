@@ -3,10 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import json
 import hashlib
-from pathlib import Path
 from typing import Any
-
-import polars as pl
 
 from biominer.filter.category_model import (
     DEFAULT_LIFE_STAGE,
@@ -19,7 +16,13 @@ from biominer.bioclip.policy import DEFAULT_BUCKET_POLICY
 
 
 TRIAGE_BINS = {"gold", "silver", "bronze", "bin", "in_review"}
-CLASSIFICATION_STATUSES = {"success", "skipped_existing", "failed_download", "failed_bioclip", "invalid_record"}
+CLASSIFICATION_STATUSES = {
+    "success",
+    "skipped_existing",
+    "failed_download",
+    "failed_bioclip",
+    "invalid_record",
+}
 GOLD_SPECIES_CONFIDENCE_THRESHOLD = DEFAULT_BUCKET_POLICY.gold_species_threshold
 SILVER_SPECIES_CONFIDENCE_THRESHOLD = DEFAULT_BUCKET_POLICY.silver_species_threshold
 BIN_CATEGORIES = {
@@ -72,11 +75,28 @@ VISUAL_ADULT_BUTTERFLY_LABELS = {
 
 
 def classify_bioclip_triage(*, record: dict[str, Any], prediction: dict[str, object]) -> dict[str, object]:
-    species_top1_label = str(prediction.get("species_top1_label", prediction.get("bioclip_top1_label", prediction.get("top1_label", ""))) or "")
-    species_top1_score = _optional_float(prediction.get("species_top1_score", prediction.get("bioclip_top1_score", prediction.get("top1_score"))))
+    species_top1_label = str(
+        prediction.get(
+            "species_top1_label",
+            prediction.get("bioclip_top1_label", prediction.get("top1_label", "")),
+        )
+        or ""
+    )
+    species_top1_score = _optional_float(
+        prediction.get(
+            "species_top1_score",
+            prediction.get("bioclip_top1_score", prediction.get("top1_score")),
+        )
+    )
     species_margin = _optional_float(prediction.get("species_top1_top2_margin"))
     species_top1_name = str(prediction.get("species_top1_scientific_name") or _species_name_from_label(species_top1_label) or "")
-    triage_top1_label = str(prediction.get("triage_top1_label", prediction.get("bioclip_top1_label", prediction.get("top1_label", ""))) or "")
+    triage_top1_label = str(
+        prediction.get(
+            "triage_top1_label",
+            prediction.get("bioclip_top1_label", prediction.get("top1_label", "")),
+        )
+        or ""
+    )
     triage_group_top = str(prediction.get("triage_group_top") or "")
     triage_group_scores = prediction.get("triage_group_scores") if isinstance(prediction.get("triage_group_scores"), dict) else {}
     hard_negative_score = _optional_float(triage_group_scores.get("hard_negative")) if isinstance(triage_group_scores, dict) else None
@@ -85,23 +105,60 @@ def classify_bioclip_triage(*, record: dict[str, Any], prediction: dict[str, obj
     text_species_match = _text_species_match(record, species_top1_name)
     is_species_supported = bool(text_species_match and species_top1_score is not None and species_top1_score >= SILVER_SPECIES_CONFIDENCE_THRESHOLD)
     if triage_group_top == "hard_negative" and hard_negative_score is not None and hard_negative_score >= DEFAULT_BUCKET_POLICY.hard_negative_threshold:
-        return _bucket_result(category_defaults(), bucket="bin", reason="hard_negative_group", text_species_match=text_species_match, is_target_positive=False, is_negative_material=True)
-    if (
-        species_top1_score is not None
-        and species_top1_score >= GOLD_SPECIES_CONFIDENCE_THRESHOLD
-        and species_margin is not None
-        and species_margin < DEFAULT_BUCKET_POLICY.ambiguous_margin_threshold
-    ):
-        return _bucket_result(category_defaults(), bucket="in_review", reason="ambiguous_species_margin", text_species_match=text_species_match, is_target_positive=False, is_negative_material=False)
+        return _bucket_result(
+            category_defaults(),
+            bucket="bin",
+            reason="hard_negative_group",
+            text_species_match=text_species_match,
+            is_target_positive=False,
+            is_negative_material=True,
+        )
+    if species_top1_score is not None and species_top1_score >= GOLD_SPECIES_CONFIDENCE_THRESHOLD and species_margin is not None and species_margin < DEFAULT_BUCKET_POLICY.ambiguous_margin_threshold:
+        return _bucket_result(
+            category_defaults(),
+            bucket="in_review",
+            reason="ambiguous_species_margin",
+            text_species_match=text_species_match,
+            is_target_positive=False,
+            is_negative_material=False,
+        )
     if category["image_category"] in BIN_CATEGORIES:
         reason = str(category["negative_filter_reason"] or negative_reason or category["image_category"])
-        return _bucket_result(category, bucket="bin", reason=reason, text_species_match=text_species_match, is_target_positive=False, is_negative_material=True)
+        return _bucket_result(
+            category,
+            bucket="bin",
+            reason=reason,
+            text_species_match=text_species_match,
+            is_target_positive=False,
+            is_negative_material=True,
+        )
     if species_top1_score is None:
-        return _bucket_result(category, bucket="in_review", reason="missing_bioclip", text_species_match=text_species_match, is_target_positive=False, is_negative_material=False)
+        return _bucket_result(
+            category,
+            bucket="in_review",
+            reason="missing_bioclip",
+            text_species_match=text_species_match,
+            is_target_positive=False,
+            is_negative_material=False,
+        )
     if category["image_category"] == "life_stage_non_adult":
-        return _bucket_result(category, bucket="bronze", reason=str(category["life_stage"]), text_species_match=text_species_match, is_target_positive=is_species_supported, is_negative_material=False)
+        return _bucket_result(
+            category,
+            bucket="bronze",
+            reason=str(category["life_stage"]),
+            text_species_match=text_species_match,
+            is_target_positive=is_species_supported,
+            is_negative_material=False,
+        )
     if _taxonomy_inconsistent(prediction):
-        return _bucket_result(category, bucket="in_review", reason="taxonomy_inconsistent", text_species_match=text_species_match, is_target_positive=False, is_negative_material=False)
+        return _bucket_result(
+            category,
+            bucket="in_review",
+            reason="taxonomy_inconsistent",
+            text_species_match=text_species_match,
+            is_target_positive=False,
+            is_negative_material=False,
+        )
     if category["image_category"] == "unknown" and is_species_supported:
         return _bucket_result(
             category,
@@ -113,16 +170,58 @@ def classify_bioclip_triage(*, record: dict[str, Any], prediction: dict[str, obj
         )
     if category["image_category"] == "adult_butterfly" and text_species_match:
         if not _has_image_url(record):
-            return _bucket_result(category, bucket="in_review", reason="missing_image_url", text_species_match=text_species_match, is_target_positive=is_species_supported, is_negative_material=False)
+            return _bucket_result(
+                category,
+                bucket="in_review",
+                reason="missing_image_url",
+                text_species_match=text_species_match,
+                is_target_positive=is_species_supported,
+                is_negative_material=False,
+            )
         if species_top1_score > GOLD_SPECIES_CONFIDENCE_THRESHOLD:
             if not _has_geo(record):
-                return _bucket_result(category, bucket="silver", reason="missing_geo", text_species_match=True, is_target_positive=True, is_negative_material=False)
+                return _bucket_result(
+                    category,
+                    bucket="silver",
+                    reason="missing_geo",
+                    text_species_match=True,
+                    is_target_positive=True,
+                    is_negative_material=False,
+                )
             if not _has_event_date(record):
-                return _bucket_result(category, bucket="silver", reason="missing_event_date", text_species_match=True, is_target_positive=True, is_negative_material=False)
-            return _bucket_result(category, bucket="gold", reason="adult_butterfly_species_match_score_gt_070", text_species_match=True, is_target_positive=True, is_negative_material=False)
+                return _bucket_result(
+                    category,
+                    bucket="silver",
+                    reason="missing_event_date",
+                    text_species_match=True,
+                    is_target_positive=True,
+                    is_negative_material=False,
+                )
+            return _bucket_result(
+                category,
+                bucket="gold",
+                reason="adult_butterfly_species_match_score_gt_070",
+                text_species_match=True,
+                is_target_positive=True,
+                is_negative_material=False,
+            )
         if species_top1_score >= SILVER_SPECIES_CONFIDENCE_THRESHOLD:
-            return _bucket_result(category, bucket="silver", reason="species_match_score_035_to_070", text_species_match=True, is_target_positive=True, is_negative_material=False)
-    return _bucket_result(category, bucket="bronze", reason="below_50", text_species_match=text_species_match, is_target_positive=False, is_negative_material=False)
+            return _bucket_result(
+                category,
+                bucket="silver",
+                reason="species_match_score_035_to_070",
+                text_species_match=True,
+                is_target_positive=True,
+                is_negative_material=False,
+            )
+    return _bucket_result(
+        category,
+        bucket="bronze",
+        reason="below_50",
+        text_species_match=text_species_match,
+        is_target_positive=False,
+        is_negative_material=False,
+    )
 
 
 def _bucket_result(
@@ -182,24 +281,6 @@ def _base_row(
         "model_version": model_version,
         "model_checkpoint": model_checkpoint,
         "classified_at": classified_at,
-    }
-
-
-def _prediction_fields(prediction: dict[str, object]) -> dict[str, object]:
-    topk = prediction.get("bioclip_topk_json", prediction.get("topk_json", []))
-    return {
-        "bioclip_top1_label": prediction.get("bioclip_top1_label", prediction.get("top1_label")),
-        "bioclip_top1_score": _optional_float(prediction.get("bioclip_top1_score", prediction.get("top1_score"))),
-        "bioclip_topk_json": topk if isinstance(topk, list) else [],
-        "species_top1_label": prediction.get("species_top1_label"),
-        "species_top1_scientific_name": prediction.get("species_top1_scientific_name"),
-        "species_top1_genus": prediction.get("species_top1_genus"),
-        "species_top1_family": prediction.get("species_top1_family"),
-        "species_top1_score": _optional_float(prediction.get("species_top1_score")),
-        "species_topk_json": prediction.get("species_topk_json", []),
-        "triage_top1_label": prediction.get("triage_top1_label"),
-        "triage_top1_score": _optional_float(prediction.get("triage_top1_score")),
-        "triage_topk_json": prediction.get("triage_topk_json", []),
     }
 
 
@@ -338,30 +419,6 @@ def _text_species_match(record: dict[str, Any], species_name: str) -> bool:
     )
 
 
-def _successful_keys(frame: pl.DataFrame) -> set[tuple[object, ...]]:
-    if frame.is_empty() or "classification_status" not in frame.columns:
-        return set()
-    return {
-        _dedupe_key(row)
-        for row in frame.filter(pl.col("classification_status") == "success").to_dicts()
-    }
-
-
-def _dedupe_key(row: dict[str, object]) -> tuple[object, ...]:
-    return (
-        row.get("source"),
-        row.get("flickr_photo_id"),
-        row.get("image_url"),
-        row.get("model_id"),
-        row.get("model_version"),
-        row.get("model_checkpoint"),
-    )
-
-
-def _read_existing(path: Path) -> pl.DataFrame:
-    return pl.read_parquet(path) if path.exists() else _empty_triage_frame()
-
-
 def _source_record_hash(record: dict[str, Any]) -> str:
     payload = json.dumps(record, sort_keys=True, default=str)
     return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
@@ -410,9 +467,5 @@ def _species_name_from_label(label: str) -> str | None:
     normalized = label.strip()
     prefix = "a photo of "
     if normalized.casefold().startswith(prefix):
-        return normalized[len(prefix):].strip()
+        return normalized[len(prefix) :].strip()
     return None
-
-
-def _empty_triage_frame() -> pl.DataFrame:
-    return pl.DataFrame()

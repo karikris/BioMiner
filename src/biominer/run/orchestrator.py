@@ -24,7 +24,11 @@ from biominer.bioclip.classification_modes import (
     is_build_week_prototype_classification,
     normalize_classification_mode,
 )
-from biominer.bioclip.object_runner import OBJECT_VISUAL_MODES, PRIMARY_VISUAL_CLASSIFIER, object_score_audit_metrics
+from biominer.bioclip.object_runner import (
+    OBJECT_VISUAL_MODES,
+    PRIMARY_VISUAL_CLASSIFIER,
+    object_score_audit_metrics,
+)
 from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
 from biominer.bioclip.prototype_mode import BuildWeekPrototypeConfig
 from biominer.bioclip.prototype_support import (
@@ -48,11 +52,25 @@ from biominer.evaluation.qa import build_visual_qa_findings
 from biominer.evaluation.review_queue import build_hierarchical_review_queue
 from biominer.flickr_comments.comment_review import CommentReviewState
 from biominer.flickr_comments.comments_enrichment import fetch_flickr_comments
-from biominer.flickr_fetch.cloud_poller import CloudMetadataPoller, flickr_query_work_item
+from biominer.flickr_fetch.cloud_poller import (
+    CloudMetadataPoller,
+    flickr_query_work_item,
+)
 from biominer.storage.parquet import write_parquet
-from biominer.flickr_fetch.metadata_poller import DEFAULT_STALE_CLAIM_SECONDS, SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
-from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries_from_frame
-from biominer.reports.vision import build_vision_stage_metrics, write_vision_stage_reports
+from biominer.flickr_fetch.metadata_poller import (
+    DEFAULT_STALE_CLAIM_SECONDS,
+    SOFT_API_CALLS_PER_HOUR,
+    MetadataPollState,
+    poll_once,
+)
+from biominer.flickr_fetch.query_planner import (
+    FlickrQuery,
+    load_registry_flickr_queries_from_frame,
+)
+from biominer.reports.vision import (
+    build_vision_stage_metrics,
+    write_vision_stage_reports,
+)
 from biominer.references.readiness import (
     ReferenceBankReadinessPermit,
     load_reference_bank_readiness,
@@ -77,7 +95,12 @@ from biominer.run.support_dependencies import (
     SupportDependencyPermit,
     validate_support_readiness_dependencies,
 )
-from biominer.run.taxon_scope import InputRank, TaxonScope, resolve_taxon_scope_from_registry, resolve_taxon_scope_from_registry_frames
+from biominer.run.taxon_scope import (
+    InputRank,
+    TaxonScope,
+    resolve_taxon_scope_from_registry,
+    resolve_taxon_scope_from_registry_frames,
+)
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.paths import build_evidence_shard_uri, safe_path_component
 from biominer.storage.uri import is_cloud_uri, join_uri
@@ -130,16 +153,9 @@ def _set_or_validate_prototype_artifact(
     if current is None:
         object.__setattr__(request, field_name, expected)
         return
-    values_match = (
-        Path(current) == Path(expected)
-        if field_name in {"reference_bank_readiness", "reference_embeddings"}
-        else current == expected
-    )
+    values_match = Path(current) == Path(expected) if field_name in {"reference_bank_readiness", "reference_embeddings"} else current == expected
     if not values_match:
-        raise ValueError(
-            f"{field_name} conflicts with the frozen Build Week prototype "
-            "configuration"
-        )
+        raise ValueError(f"{field_name} conflicts with the frozen Build Week prototype configuration")
 
 
 @dataclass(frozen=True)
@@ -158,7 +174,6 @@ class ProductionRunRequest:
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE
     classification_config_path: str | Path | None = None
     build_week_prototype_config: BuildWeekPrototypeConfig | None = None
-    taxonomy_candidate_table: str | Path | None = None  # Deprecated; registry_dir is canonical.
     taxonomy_text_embedding_cache: str | Path | None = None
     reference_bank_readiness: str | Path | None = None
     reference_bank_readiness_sha256: str | None = None
@@ -183,25 +198,14 @@ class ProductionRunRequest:
         prototype_config = self.build_week_prototype_config
         if is_build_week_prototype_classification(classification_mode):
             if prototype_config is None:
-                raise ValueError(
-                    "build_week_target_aware_prototype requires an explicit "
-                    "Build Week prototype configuration"
-                )
+                raise ValueError("build_week_target_aware_prototype requires an explicit Build Week prototype configuration")
             if self.classification_config_path is None:
-                raise ValueError(
-                    "build_week_target_aware_prototype requires "
-                    "classification_config_path for provenance"
-                )
+                raise ValueError("build_week_target_aware_prototype requires classification_config_path for provenance")
             if is_cloud_uri(str(self.classification_config_path)):
                 raise ValueError("Build Week prototype configuration must be local")
-            configured_prototype = BuildWeekPrototypeConfig.read_json(
-                self.classification_config_path
-            )
+            configured_prototype = BuildWeekPrototypeConfig.read_json(self.classification_config_path)
             if configured_prototype.fingerprint != prototype_config.fingerprint:
-                raise ValueError(
-                    "classification_config_path conflicts with the supplied "
-                    "Build Week prototype configuration"
-                )
+                raise ValueError("classification_config_path conflicts with the supplied Build Week prototype configuration")
             configured_prototype.verify_artifacts()
             prototype_config = configured_prototype
             object.__setattr__(
@@ -210,26 +214,18 @@ class ProductionRunRequest:
                 configured_prototype,
             )
             if self.storage_backend != "local" or self.workstore_backend != "sqlite":
-                raise ValueError(
-                    "Build Week prototype mode currently requires local storage "
-                    "and a SQLite workstore"
-                )
+                raise ValueError("Build Week prototype mode currently requires local storage and a SQLite workstore")
             if is_cloud_uri(str(self.output_root)):
                 raise ValueError("Build Week prototype output_root must be local")
             if RunStage.TARGET_AWARE_SCORING not in self.stages:
-                raise ValueError(
-                    "Build Week prototype mode requires target_aware_scoring"
-                )
+                raise ValueError("Build Week prototype mode requires target_aware_scoring")
             legacy_stages = {
                 RunStage.DETECT_OBJECTS,
                 RunStage.SCORE_BIOCLIP,
             }.intersection(self.stages)
             if legacy_stages:
                 names = ", ".join(sorted(stage.value for stage in legacy_stages))
-                raise ValueError(
-                    "Build Week prototype mode cannot use legacy vision stages: "
-                    f"{names}"
-                )
+                raise ValueError(f"Build Week prototype mode cannot use legacy vision stages: {names}")
             _set_or_validate_prototype_artifact(
                 self,
                 field_name="reference_bank_readiness",
@@ -246,10 +242,7 @@ class ProductionRunRequest:
                 expected=prototype_config.reference_embeddings,
             )
         elif prototype_config is not None or self.classification_config_path is not None:
-            raise ValueError(
-                "Build Week prototype configuration is only valid with "
-                "build_week_target_aware_prototype"
-            )
+            raise ValueError("Build Week prototype configuration is only valid with build_week_target_aware_prototype")
         settings = validate_production_cascade_settings(
             beam_strategy=self.beam_strategy,
             rank_beam_width=self.rank_beam_width,
@@ -299,42 +292,15 @@ class ProductionRunPlan:
                 "vision_profile": self.request.vision_profile,
                 "vision_settings": asdict(self.request.vision_settings),
                 "classification_mode": self.request.classification_mode,
-                "classification_config_path": (
-                    str(self.request.classification_config_path)
-                    if self.request.classification_config_path
-                    else None
-                ),
+                "classification_config_path": (str(self.request.classification_config_path) if self.request.classification_config_path else None),
                 "registry_taxonomy": self.request.registry_dir,
-                "taxonomy_candidate_table": str(self.request.taxonomy_candidate_table) if self.request.taxonomy_candidate_table else None,
-                "taxonomy_text_embedding_cache": str(self.request.taxonomy_text_embedding_cache)
-                if self.request.taxonomy_text_embedding_cache
-                else None,
-                "reference_bank_readiness": str(self.request.reference_bank_readiness)
-                if self.request.reference_bank_readiness
-                else None,
-                "reference_bank_readiness_sha256": (
-                    self.request.reference_bank_readiness_sha256
-                ),
-                "regional_candidates": (
-                    str(self.request.regional_candidates)
-                    if self.request.regional_candidates
-                    else None
-                ),
-                "reference_embeddings": (
-                    str(self.request.reference_embeddings)
-                    if self.request.reference_embeddings
-                    else None
-                ),
-                "classifier_artifact": (
-                    str(self.request.classifier_artifact)
-                    if self.request.classifier_artifact
-                    else None
-                ),
-                "calibrator_artifact": (
-                    str(self.request.calibrator_artifact)
-                    if self.request.calibrator_artifact
-                    else None
-                ),
+                "taxonomy_text_embedding_cache": str(self.request.taxonomy_text_embedding_cache) if self.request.taxonomy_text_embedding_cache else None,
+                "reference_bank_readiness": str(self.request.reference_bank_readiness) if self.request.reference_bank_readiness else None,
+                "reference_bank_readiness_sha256": (self.request.reference_bank_readiness_sha256),
+                "regional_candidates": (str(self.request.regional_candidates) if self.request.regional_candidates else None),
+                "reference_embeddings": (str(self.request.reference_embeddings) if self.request.reference_embeddings else None),
+                "classifier_artifact": (str(self.request.classifier_artifact) if self.request.classifier_artifact else None),
+                "calibrator_artifact": (str(self.request.calibrator_artifact) if self.request.calibrator_artifact else None),
                 "beam_strategy": self.request.beam_strategy,
                 "rank_beam_width": self.request.rank_beam_width,
                 "species_first_pass_top_k": self.request.species_first_pass_top_k,
@@ -365,16 +331,8 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
     if prototype_config is not None:
         if taxon_scope.accepted_rank != "species":
             raise ValueError("Build Week prototype target scope must resolve to species")
-        if (
-            taxon_scope.accepted_taxon_key
-            != prototype_config.target_accepted_taxon_key
-            or taxon_scope.accepted_scientific_name
-            != prototype_config.target_scientific_name
-        ):
-            raise ValueError(
-                "Build Week prototype target does not match the resolved registry "
-                "taxon identity"
-            )
+        if taxon_scope.accepted_taxon_key != prototype_config.target_accepted_taxon_key or taxon_scope.accepted_scientific_name != prototype_config.target_scientific_name:
+            raise ValueError("Build Week prototype target does not match the resolved registry taxon identity")
     run_id = request.resolved_run_id()
     paths = RunPaths.from_root(request.output_root, run_id=run_id)
     artifact_uris = RunArtifactUris.from_prefix(request.output_root, run_id=run_id)
@@ -393,9 +351,7 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
             "vision_profile": request.vision_profile,
             "vision_settings": asdict(request.vision_settings),
             "classification_mode": request.classification_mode,
-            "classification_contract": asdict(
-                classification_mode_contract(request.classification_mode)
-            ),
+            "classification_contract": asdict(classification_mode_contract(request.classification_mode)),
             "classification_config": (
                 {
                     "path": str(request.classification_config_path),
@@ -406,26 +362,11 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
                 if prototype_config is not None
                 else None
             ),
-            "deployment_status": (
-                prototype_config.deployment_status
-                if prototype_config is not None
-                else classification_mode_contract(
-                    request.classification_mode
-                ).deployment_status
-            ),
-            "output_status": classification_mode_contract(
-                request.classification_mode
-            ).output_status,
-            "limitations": (
-                list(prototype_config.limitations)
-                if prototype_config is not None
-                else []
-            ),
+            "deployment_status": (prototype_config.deployment_status if prototype_config is not None else classification_mode_contract(request.classification_mode).deployment_status),
+            "output_status": classification_mode_contract(request.classification_mode).output_status,
+            "limitations": (list(prototype_config.limitations) if prototype_config is not None else []),
             "registry_taxonomy": request.registry_dir,
-            "taxonomy_candidate_table": str(request.taxonomy_candidate_table) if request.taxonomy_candidate_table else None,
-            "taxonomy_text_embedding_cache": str(request.taxonomy_text_embedding_cache)
-            if request.taxonomy_text_embedding_cache
-            else None,
+            "taxonomy_text_embedding_cache": str(request.taxonomy_text_embedding_cache) if request.taxonomy_text_embedding_cache else None,
             "reference_bank_readiness": (
                 {
                     "artifact_path": str(request.reference_bank_readiness),
@@ -436,26 +377,10 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
                 else None
             ),
             "support_dependencies": {
-                "regional_candidates": (
-                    str(request.regional_candidates)
-                    if request.regional_candidates
-                    else None
-                ),
-                "reference_embeddings": (
-                    str(request.reference_embeddings)
-                    if request.reference_embeddings
-                    else None
-                ),
-                "classifier_artifact": (
-                    str(request.classifier_artifact)
-                    if request.classifier_artifact
-                    else None
-                ),
-                "calibrator_artifact": (
-                    str(request.calibrator_artifact)
-                    if request.calibrator_artifact
-                    else None
-                ),
+                "regional_candidates": (str(request.regional_candidates) if request.regional_candidates else None),
+                "reference_embeddings": (str(request.reference_embeddings) if request.reference_embeddings else None),
+                "classifier_artifact": (str(request.classifier_artifact) if request.classifier_artifact else None),
+                "calibrator_artifact": (str(request.calibrator_artifact) if request.calibrator_artifact else None),
                 "validation_status": "not_validated",
             },
             "beam_strategy": request.beam_strategy,
@@ -469,8 +394,16 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
         },
         query_counts={"compiled_definitions": 0, "enqueued_work_items": 0},
         detection_counts={"images_seen": 0, "detections": 0, "crops_created": 0},
-        bioclip_counts={"objects_scored": 0, "whole_images_scored": 0, "segmentation_crops_scored": 0},
-        evidence_counts={"object_evidence_rows": 0, "photo_summary_rows": 0, "review_queue_rows": 0},
+        bioclip_counts={
+            "objects_scored": 0,
+            "whole_images_scored": 0,
+            "segmentation_crops_scored": 0,
+        },
+        evidence_counts={
+            "object_evidence_rows": 0,
+            "photo_summary_rows": 0,
+            "review_queue_rows": 0,
+        },
         metrics={
             "expanded_species_count": taxon_scope.species_count,
             **artifact_uris.audit_metrics(),
@@ -518,7 +451,7 @@ class ProductionRunOrchestrator:
         self.registry_builder = registry_builder
         self.flickr_api_key = flickr_api_key
         self.species_candidate_path = self._resolve_species_candidate_path(
-            registry_taxonomy_override=species_candidate_path or self.request.taxonomy_candidate_table,
+            registry_taxonomy_override=species_candidate_path,
             resolved_registry_dir=self.request.registry_dir,
         )
         self.allow_single_target_fixture = allow_single_target_fixture
@@ -527,12 +460,8 @@ class ProductionRunOrchestrator:
         self._vision_runtime_initialized = False
         self._vision_runtime_resources: list[Any] = []
         self._vision_runtime_resources_closed = False
-        self._reference_bank_readiness_permit: (
-            ReferenceBankReadinessPermit | PrototypeReadinessPermit | None
-        ) = None
-        self._support_dependency_permit: (
-            SupportDependencyPermit | MetadataQualifiedPrototypePermit | None
-        ) = None
+        self._reference_bank_readiness_permit: ReferenceBankReadinessPermit | PrototypeReadinessPermit | None = None
+        self._support_dependency_permit: SupportDependencyPermit | MetadataQualifiedPrototypePermit | None = None
 
     def _resolve_species_candidate_path(
         self,
@@ -578,11 +507,7 @@ class ProductionRunOrchestrator:
                 manifest = manifest.with_stage_status(
                     stage,
                     result.status,
-                    ended_at=(
-                        None
-                        if result.status is StageStatus.AWAITING_MANUAL_REVIEW
-                        else utc_now_iso()
-                    ),
+                    ended_at=(None if result.status is StageStatus.AWAITING_MANUAL_REVIEW else utc_now_iso()),
                     message=result.message,
                     metrics=result.metrics,
                     outputs=result.outputs,
@@ -594,10 +519,7 @@ class ProductionRunOrchestrator:
             if any(stage.status is StageStatus.FAILED for stage in plan.manifest.stages):
                 final_status = StageStatus.FAILED.value
                 ended_at = utc_now_iso()
-            elif any(
-                stage.status is StageStatus.AWAITING_MANUAL_REVIEW
-                for stage in plan.manifest.stages
-            ):
+            elif any(stage.status is StageStatus.AWAITING_MANUAL_REVIEW for stage in plan.manifest.stages):
                 final_status = StageStatus.AWAITING_MANUAL_REVIEW.value
                 ended_at = None
             else:
@@ -643,7 +565,10 @@ class ProductionRunOrchestrator:
                 plan,
                 manifest=self._manifest_with_reference_bank_permit(plan.manifest),
             )
-        if not self.request.dry_run and stage in {RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP}:
+        if not self.request.dry_run and stage in {
+            RunStage.DETECT_OBJECTS,
+            RunStage.SCORE_BIOCLIP,
+        }:
             self._load_reference_bank_readiness_permit(plan)
             plan = replace(plan, manifest=self._manifest_with_reference_bank_permit(plan.manifest))
         handler = self.stage_handlers.get(stage)
@@ -700,9 +625,7 @@ class ProductionRunOrchestrator:
     ) -> SupportDependencyPermit | MetadataQualifiedPrototypePermit:
         if self._support_dependency_permit is not None:
             return self._support_dependency_permit
-        if is_build_week_prototype_classification(
-            self.request.classification_mode
-        ):
+        if is_build_week_prototype_classification(self.request.classification_mode):
             config = self.request.build_week_prototype_config
             if config is None:
                 raise ValueError("Build Week prototype configuration is missing")
@@ -712,16 +635,12 @@ class ProductionRunOrchestrator:
                 stage=stage,
                 regional_candidates=self.request.regional_candidates,
                 reference_bank_readiness=self.request.reference_bank_readiness,
-                reference_bank_readiness_sha256=(
-                    self.request.reference_bank_readiness_sha256
-                ),
+                reference_bank_readiness_sha256=(self.request.reference_bank_readiness_sha256),
                 reference_embeddings=self.request.reference_embeddings,
                 classifier_artifact=self.request.classifier_artifact,
                 calibrator_artifact=self.request.calibrator_artifact,
                 expected_registry_version=plan.manifest.taxon_scope.registry_version,
-                expected_target_accepted_taxon_key=(
-                    plan.manifest.taxon_scope.accepted_taxon_key
-                ),
+                expected_target_accepted_taxon_key=(plan.manifest.taxon_scope.accepted_taxon_key),
                 expected_model_name=self.request.bioclip_model,
             )
         self._support_dependency_permit = permit
@@ -736,53 +655,30 @@ class ProductionRunOrchestrator:
             return self._reference_bank_readiness_permit
         readiness_path = self.request.reference_bank_readiness
         if readiness_path is None:
-            raise ValueError(
-                "reference_bank_readiness is required before detect_objects or score_bioclip"
-            )
+            raise ValueError("reference_bank_readiness is required before detect_objects or score_bioclip")
         readiness_sha256 = self.request.reference_bank_readiness_sha256
         if readiness_sha256 is None:
-            raise ValueError(
-                "reference_bank_readiness_sha256 is required before detect_objects or score_bioclip"
-            )
-        runtime_model_name = str(
-            getattr(self.object_scorer, "model_id", "") or self.request.bioclip_model
-        )
-        runtime_preprocessing_version = str(
-            getattr(self.object_scorer, "preprocessing_version", "") or ""
-        )
-        runtime_model_input_fingerprint = str(
-            getattr(self.object_scorer, "model_input_fingerprint", "") or ""
-        )
+            raise ValueError("reference_bank_readiness_sha256 is required before detect_objects or score_bioclip")
+        runtime_model_name = str(getattr(self.object_scorer, "model_id", "") or self.request.bioclip_model)
+        runtime_preprocessing_version = str(getattr(self.object_scorer, "preprocessing_version", "") or "")
+        runtime_model_input_fingerprint = str(getattr(self.object_scorer, "model_input_fingerprint", "") or "")
         identity_expectations = {
             "expected_registry_version": plan.manifest.taxon_scope.registry_version,
-            "expected_target_accepted_taxon_key": (
-                plan.manifest.taxon_scope.accepted_taxon_key
-            ),
+            "expected_target_accepted_taxon_key": (plan.manifest.taxon_scope.accepted_taxon_key),
             "expected_model_name": runtime_model_name,
             "expected_readiness_sha256": readiness_sha256,
         }
         if runtime_preprocessing_version:
-            identity_expectations["expected_preprocessing_version"] = (
-                runtime_preprocessing_version
-            )
+            identity_expectations["expected_preprocessing_version"] = runtime_preprocessing_version
         if runtime_model_input_fingerprint:
-            identity_expectations["expected_model_input_fingerprint"] = (
-                runtime_model_input_fingerprint
-            )
+            identity_expectations["expected_model_input_fingerprint"] = runtime_model_input_fingerprint
         permit = load_reference_bank_readiness(
             readiness_path,
             **identity_expectations,
         )
         if not reference_readiness_allows_vision(permit.status):
-            raise ValueError(
-                "reference bank readiness does not permit vision: "
-                f"status={permit.status}"
-            )
-        if (
-            self.object_scorer is not None
-            and self.request.classification_mode
-            != HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-        ):
+            raise ValueError(f"reference bank readiness does not permit vision: status={permit.status}")
+        if self.object_scorer is not None and self.request.classification_mode != HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
             bind_readiness = getattr(
                 self.object_scorer,
                 "bind_reference_readiness",
@@ -796,10 +692,7 @@ class ProductionRunOrchestrator:
                     permit=permit,
                 )
                 if not self.allow_single_target_fixture:
-                    raise ValueError(
-                        "injected production BioCLIP scorer cannot attest its "
-                        "loaded reference model identity"
-                    )
+                    raise ValueError("injected production BioCLIP scorer cannot attest its loaded reference model identity")
             self._validate_reference_runtime_identity(
                 scorer=self.object_scorer,
                 permit=permit,
@@ -814,13 +707,8 @@ class ProductionRunOrchestrator:
         self._vision_runtime_resources.extend(resources)
         permit = self._reference_bank_readiness_permit
         if permit is None:
-            raise ValueError(
-                "reference bank readiness must be validated before vision runtime initialization"
-            )
-        if (
-            self.request.classification_mode
-            != HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-        ):
+            raise ValueError("reference bank readiness must be validated before vision runtime initialization")
+        if self.request.classification_mode != HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
             bind_readiness = getattr(scorer, "bind_reference_readiness", None)
             if callable(bind_readiness):
                 bind_readiness(permit)
@@ -830,10 +718,7 @@ class ProductionRunOrchestrator:
                     permit=permit,
                 )
                 if not self.allow_single_target_fixture:
-                    raise ValueError(
-                        "production BioCLIP scorer cannot attest its loaded reference "
-                        "model identity"
-                    )
+                    raise ValueError("production BioCLIP scorer cannot attest its loaded reference model identity")
             self._validate_reference_runtime_identity(scorer=scorer, permit=permit)
         self._vision_runtime_initialized = True
         if self.object_detector is None:
@@ -867,12 +752,8 @@ class ProductionRunOrchestrator:
             support_identity = {
                 **dict(manifest.model_configs.get("support_dependencies") or {}),
                 "validation_status": "validated",
-                "candidate_set_fingerprints": list(
-                    dependencies.candidate_set_fingerprints
-                ),
-                "reference_embedding_fingerprint": (
-                    dependencies.reference_embedding_fingerprint
-                ),
+                "candidate_set_fingerprints": list(dependencies.candidate_set_fingerprints),
+                "reference_embedding_fingerprint": (dependencies.reference_embedding_fingerprint),
                 "model_fingerprint": dependencies.model_fingerprint,
                 "classifier_fingerprint": dependencies.classifier_fingerprint,
                 "calibration_fingerprint": dependencies.calibration_fingerprint,
@@ -885,9 +766,7 @@ class ProductionRunOrchestrator:
             model_configs["support_dependencies"] = support_identity
             metrics.update(
                 {
-                    "reference_embedding_fingerprint": (
-                        dependencies.reference_embedding_fingerprint
-                    ),
+                    "reference_embedding_fingerprint": (dependencies.reference_embedding_fingerprint),
                     "classifier_fingerprint": dependencies.classifier_fingerprint,
                     "calibration_fingerprint": dependencies.calibration_fingerprint,
                     "support_qualification": getattr(
@@ -915,63 +794,39 @@ class ProductionRunOrchestrator:
         permit: ReferenceBankReadinessPermit,
     ) -> None:
         runtime_identity = {
-            "model_name": str(
-                getattr(scorer, "model_id", "")
-                or getattr(scorer, "model_name", "")
-                or ""
-            ),
+            "model_name": str(getattr(scorer, "model_id", "") or getattr(scorer, "model_name", "") or ""),
             "model_version": str(getattr(scorer, "model_version", "") or ""),
-            "checkpoint_sha256": str(
-                getattr(scorer, "checkpoint_sha256", "") or ""
-            ),
-            "preprocessing_version": str(
-                getattr(scorer, "preprocessing_version", "") or ""
-            ),
-            "input_contract_version": str(
-                getattr(scorer, "input_contract_version", "") or ""
-            ),
-            "model_input_fingerprint": str(
-                getattr(scorer, "model_input_fingerprint", "") or ""
-            ),
+            "checkpoint_sha256": str(getattr(scorer, "checkpoint_sha256", "") or ""),
+            "preprocessing_version": str(getattr(scorer, "preprocessing_version", "") or ""),
+            "input_contract_version": str(getattr(scorer, "input_contract_version", "") or ""),
+            "model_input_fingerprint": str(getattr(scorer, "model_input_fingerprint", "") or ""),
         }
-        expected_identity = {
-            field_name: str(getattr(permit, field_name))
-            for field_name in runtime_identity
-        }
-        missing = sorted(
-            field_name
-            for field_name, value in runtime_identity.items()
-            if not value
-        )
+        expected_identity = {field_name: str(getattr(permit, field_name)) for field_name in runtime_identity}
+        missing = sorted(field_name for field_name, value in runtime_identity.items() if not value)
         if missing:
-            raise ValueError(
-                "vision runtime does not declare the full reference model input identity: "
-                + ", ".join(missing)
-            )
+            raise ValueError("vision runtime does not declare the full reference model input identity: " + ", ".join(missing))
         mismatches = sorted(
             field_name
             for field_name, value in runtime_identity.items()
-            if (
-                _canonical_bioclip_model_id(value)
-                != _canonical_bioclip_model_id(expected_identity[field_name])
-                if field_name == "model_name"
-                else value != expected_identity[field_name]
-            )
+            if (_canonical_bioclip_model_id(value) != _canonical_bioclip_model_id(expected_identity[field_name]) if field_name == "model_name" else value != expected_identity[field_name])
         )
         if mismatches:
-            raise ValueError(
-                "vision runtime reference model input identity mismatch: "
-                + ", ".join(mismatches)
-            )
+            raise ValueError("vision runtime reference model input identity mismatch: " + ", ".join(mismatches))
 
     def _run_build_registry_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if self._registry_is_cloud():
             if self.storage is None:
-                return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_build_registry")
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="storage_backend_required_for_build_registry",
+                )
             required = tuple(self._registry_artifact_uri(filename) for filename in REQUIRED_REGISTRY_ARTIFACTS)
             missing = _missing_uris(self.storage, *required)
             if missing:
-                return StageExecutionResult(status=StageStatus.FAILED, message="missing_registry_inputs: " + ", ".join(missing))
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="missing_registry_inputs: " + ", ".join(missing),
+                )
             taxa = self.storage.read_parquet(self._registry_artifact_uri("taxa.parquet"))
             names = self.storage.read_parquet(self._registry_artifact_uri("names.parquet"))
             query_definitions_uri = self._registry_artifact_uri("flickr_query_definitions.parquet")
@@ -1001,14 +856,23 @@ class ProductionRunOrchestrator:
         built_registry = False
         if missing:
             if not self.request.build_registry_if_missing:
-                return StageExecutionResult(status=StageStatus.FAILED, message="missing_registry_inputs: " + ", ".join(missing))
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="missing_registry_inputs: " + ", ".join(missing),
+                )
             if self.registry_builder is None:
-                return StageExecutionResult(status=StageStatus.FAILED, message="registry_builder_required_for_build_registry_if_missing")
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="registry_builder_required_for_build_registry_if_missing",
+                )
             self.registry_builder(registry)
             built_registry = True
             missing = _missing_paths(*required)
             if missing:
-                return StageExecutionResult(status=StageStatus.FAILED, message="missing_registry_inputs_after_build: " + ", ".join(missing))
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="missing_registry_inputs_after_build: " + ", ".join(missing),
+                )
         query_definitions = registry / "flickr_query_definitions.parquet"
         metrics = {
             "registry_reused": not built_registry,
@@ -1043,7 +907,10 @@ class ProductionRunOrchestrator:
                 )
             queries = self._load_flickr_work_queries(scoped_frame)
         except (FileNotFoundError, ValueError) as exc:
-            return StageExecutionResult(status=StageStatus.FAILED, message=f"missing_registry_query_definitions: {exc}")
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message=f"missing_registry_query_definitions: {exc}",
+            )
         outputs = {
             "source_query_definitions": source_ref,
             "query_definitions": plan.artifact_uris.query_definitions_uri,
@@ -1054,7 +921,10 @@ class ProductionRunOrchestrator:
             outputs["local_query_definitions"] = str(plan.paths.query_definitions_path)
         else:
             if self.storage is None:
-                return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_compile_queries")
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="storage_backend_required_for_compile_queries",
+                )
 
             uri = self.storage.write_parquet_shard(plan.artifact_uris.query_definitions_uri, scoped_frame)
             outputs["query_definitions"] = uri
@@ -1069,7 +939,10 @@ class ProductionRunOrchestrator:
 
     def _run_enqueue_flickr_work_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if self.workstore is None:
-            return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_enqueue_flickr_work")
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="workstore_required_for_enqueue_flickr_work",
+            )
         queries = self._load_flickr_work_queries()
         registry_version = plan.manifest.taxon_scope.registry_version
         self.workstore.get_or_create_run(
@@ -1105,7 +978,10 @@ class ProductionRunOrchestrator:
         initial_work_items_enqueued = state.enqueue_initial_work_items(queries)
         api_key = self.flickr_api_key or os.environ.get("FLICKR_API_KEY")
         if state.work_item_count() > 0 and self.metadata_fetcher is None and not api_key:
-            return StageExecutionResult(status=StageStatus.FAILED, message="flickr_fetcher_or_api_key_required_for_poll_flickr")
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="flickr_fetcher_or_api_key_required_for_poll_flickr",
+            )
         result = poll_once(
             state_db=state.path,
             raw_root=plan.paths.run_root / "raw",
@@ -1145,7 +1021,10 @@ class ProductionRunOrchestrator:
 
     def _run_cloud_poll_flickr_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if self.storage is None:
-            return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_poll_flickr")
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="storage_backend_required_for_poll_flickr",
+            )
         if self.workstore is None:
             return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_poll_flickr")
         registry_version = plan.manifest.taxon_scope.registry_version
@@ -1175,7 +1054,10 @@ class ProductionRunOrchestrator:
             )
         api_key = self.flickr_api_key or os.environ.get("FLICKR_API_KEY")
         if self.metadata_fetcher is None and not api_key:
-            return StageExecutionResult(status=StageStatus.FAILED, message="flickr_fetcher_or_api_key_required_for_poll_flickr")
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="flickr_fetcher_or_api_key_required_for_poll_flickr",
+            )
         claim_limit = _cloud_poll_claim_limit(self.request.limits)
         poller = CloudMetadataPoller(
             storage=self.storage,
@@ -1229,9 +1111,15 @@ class ProductionRunOrchestrator:
             return self._run_cloud_rolling_vision_stage(plan)
         missing = _missing_paths(plan.paths.source_records_path)
         if missing:
-            return StageExecutionResult(status=StageStatus.FAILED, message="missing_detection_inputs: " + ", ".join(missing))
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="missing_detection_inputs: " + ", ".join(missing),
+            )
         if self.object_detector is None or self.image_loader is None:
-            return StageExecutionResult(status=StageStatus.FAILED, message="detector_runtime_required_for_detect_objects")
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="detector_runtime_required_for_detect_objects",
+            )
         import polars as pl
         from biominer.detection.pipeline import run_detection_pipeline
 
@@ -1264,13 +1152,25 @@ class ProductionRunOrchestrator:
 
     def _run_cloud_rolling_vision_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if self.storage is None:
-            return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_detect_objects")
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="storage_backend_required_for_detect_objects",
+            )
         if self.workstore is None:
-            return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_detect_objects")
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="workstore_required_for_detect_objects",
+            )
         if not _cloud_source_records_available(self.storage, self.workstore, plan):
-            return StageExecutionResult(status=StageStatus.FAILED, message="missing_detection_inputs: source_records")
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="missing_detection_inputs: source_records",
+            )
         if self.object_detector is None or self.image_loader is None or self.object_scorer is None:
-            return StageExecutionResult(status=StageStatus.FAILED, message="rolling_vision_runtime_required_for_detect_objects")
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="rolling_vision_runtime_required_for_detect_objects",
+            )
 
         path_taxonomy_store: PathTaxonomyStore | None = None
         taxonomy_text_embedding_index: TaxonomyTextEmbeddingIndex | None = None
@@ -1282,9 +1182,7 @@ class ProductionRunOrchestrator:
                 return taxonomy_status
             taxonomy_metrics = dict(taxonomy_status.metrics)
             assert path_taxonomy_store is not None
-            taxonomy_text_embedding_index, cache_status = (
-                self._load_required_taxonomy_embedding_index(path_taxonomy_store)
-            )
+            taxonomy_text_embedding_index, cache_status = self._load_required_taxonomy_embedding_index(path_taxonomy_store)
             taxonomy_metrics.update(cache_status.metrics)
             if cache_status.status is StageStatus.FAILED:
                 return StageExecutionResult(
@@ -1307,9 +1205,7 @@ class ProductionRunOrchestrator:
         candidate_set = build_candidate_set_for_taxon_scope(
             plan.manifest.taxon_scope,
             target_context=target_context,
-            species_candidate_path=None
-            if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-            else self.species_candidate_path,
+            species_candidate_path=None if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION else self.species_candidate_path,
             allow_single_target_fixture=self.allow_single_target_fixture,
         )
         registry_version = plan.manifest.taxon_scope.registry_version
@@ -1336,13 +1232,8 @@ class ProductionRunOrchestrator:
                 "model_id": self.object_detector.model_id,
                 "model_version": self.object_detector.model_version,
                 "checkpoint": self.object_detector.checkpoint,
-                "prompt_classes": list(
-                    getattr(self.object_detector, "prompt_classes", ())
-                ),
-                "prompt_set_fingerprint": str(
-                    getattr(self.object_detector, "prompt_set_fingerprint", "")
-                    or ""
-                ),
+                "prompt_classes": list(getattr(self.object_detector, "prompt_classes", ())),
+                "prompt_set_fingerprint": str(getattr(self.object_detector, "prompt_set_fingerprint", "") or ""),
             },
             vision_settings=self.request.vision_settings,
             bioclip_gate_mode=gate_mode,
@@ -1452,24 +1343,24 @@ class ProductionRunOrchestrator:
             batch_id = rolling_vision_batch_id(item)
             part_id = rolling_vision_part_id(item)
             commit_result = commit_rolling_vision_batch_shards(
-                    storage=self.storage,
-                    workstore=self.workstore,
-                    job_name=PRODUCTION_JOB_NAME,
-                    registry_version=registry_version,
-                    run_id=plan.manifest.run_id,
-                    worker_id=self.request.worker_id,
-                    base_prefix=plan.artifact_uris.staging_uri,
-                    work_key=str(item["work_key"]),
-                    batch_id=batch_id,
-                    part_id=part_id,
-                    frames=batch_result.frames,
-                    compression=self.request.vision_settings.parquet_compression,
-                    metadata={
-                        "vision_worker": "rolling",
-                        "claimed_work_items": 1,
-                        "source_record_count": batch_result.metrics.get("records_seen"),
-                    },
-                )
+                storage=self.storage,
+                workstore=self.workstore,
+                job_name=PRODUCTION_JOB_NAME,
+                registry_version=registry_version,
+                run_id=plan.manifest.run_id,
+                worker_id=self.request.worker_id,
+                base_prefix=plan.artifact_uris.staging_uri,
+                work_key=str(item["work_key"]),
+                batch_id=batch_id,
+                part_id=part_id,
+                frames=batch_result.frames,
+                compression=self.request.vision_settings.parquet_compression,
+                metadata={
+                    "vision_worker": "rolling",
+                    "claimed_work_items": 1,
+                    "source_record_count": batch_result.metrics.get("records_seen"),
+                },
+            )
             if self.request.vision_settings.delete_images_after_commit:
                 batch_result.cleanup_after_commit()
             committed_outputs.append(commit_result.output_uris)
@@ -1477,18 +1368,13 @@ class ProductionRunOrchestrator:
                 accumulated_metrics[key] += int(batch_result.metrics.get(key, 0) or 0)
             accumulated_metrics["parquet_parts_written"] += commit_result.parts_written
             accumulated_metrics["parquet_parts_reused"] += commit_result.parts_reused
-            accumulated_metrics["checkpointed_parquet_shards"] = (
-                accumulated_metrics.get("checkpointed_parquet_shards", 0)
-                + commit_result.checkpointed_shards
-            )
+            accumulated_metrics["checkpointed_parquet_shards"] = accumulated_metrics.get("checkpointed_parquet_shards", 0) + commit_result.checkpointed_shards
             return commit_result
 
         try:
             pipeline_result = run_bounded_cloud_rolling_pipeline(claimed, detect=detect, score=score, commit=commit)
         except RollingVisionPipelineError as exc:
-            completed_keys = {
-                str(item.get("work_key") or "") for item in claimed[: len(committed_outputs)]
-            }
+            completed_keys = {str(item.get("work_key") or "") for item in claimed[: len(committed_outputs)]}
             for item in claimed:
                 work_key = str(item.get("work_key") or "")
                 if work_key not in completed_keys:
@@ -1496,10 +1382,7 @@ class ProductionRunOrchestrator:
             return StageExecutionResult(status=StageStatus.FAILED, message=f"rolling_vision_failed: {exc}")
         completed = pipeline_result.batches_committed
 
-        outputs_by_artifact = {
-            artifact: ",".join(output[artifact] for output in committed_outputs if output.get(artifact))
-            for artifact in ROLLING_VISION_ARTIFACT_ORDER
-        }
+        outputs_by_artifact = {artifact: ",".join(output[artifact] for output in committed_outputs if output.get(artifact)) for artifact in ROLLING_VISION_ARTIFACT_ORDER}
         return StageExecutionResult(
             metrics={
                 **taxonomy_metrics,
@@ -1518,9 +1401,7 @@ class ProductionRunOrchestrator:
                 "vision_worker": "rolling",
                 "bioclip_gate_mode": gate_mode,
                 "score_no_detection_whole_image": score_no_detection_whole_image,
-                "supported_bioclip_comparison_routes": list(
-                    PRODUCTION_BIOCLIP_COMPARISON_ROUTES
-                ),
+                "supported_bioclip_comparison_routes": list(PRODUCTION_BIOCLIP_COMPARISON_ROUTES),
                 "parquet_part_count": completed,
                 "parquet_part_rows": accumulated_metrics["detections_written"],
                 "parquet_compression": self.request.vision_settings.parquet_compression,
@@ -1543,12 +1424,21 @@ class ProductionRunOrchestrator:
     def _run_score_bioclip_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if is_cloud_uri(self.request.output_root):
             if self.storage is None:
-                return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_score_bioclip")
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="storage_backend_required_for_score_bioclip",
+                )
             if self.workstore is None:
-                return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_score_bioclip")
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="workstore_required_for_score_bioclip",
+                )
             score_uris = _cloud_stage_shard_uris(self.workstore, plan, RunStage.SCORE_BIOCLIP.value)
             if not score_uris:
-                return StageExecutionResult(status=StageStatus.FAILED, message="missing_score_inputs: object_bioclip_scores")
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="missing_score_inputs: object_bioclip_scores",
+                )
             frame = _read_cloud_stage_frame(self.storage, self.workstore, plan, RunStage.SCORE_BIOCLIP.value)
             row_count = frame.height
             return StageExecutionResult(
@@ -1601,9 +1491,7 @@ class ProductionRunOrchestrator:
                 metrics=taxonomy_metrics,
             )
         if path_taxonomy_store is not None:
-            taxonomy_text_embedding_index, cache_status = (
-                self._load_required_taxonomy_embedding_index(path_taxonomy_store)
-            )
+            taxonomy_text_embedding_index, cache_status = self._load_required_taxonomy_embedding_index(path_taxonomy_store)
             taxonomy_metrics.update(cache_status.metrics)
             if cache_status.status is StageStatus.FAILED:
                 return StageExecutionResult(
@@ -1621,9 +1509,7 @@ class ProductionRunOrchestrator:
         candidate_set = build_candidate_set_for_taxon_scope(
             plan.manifest.taxon_scope,
             target_context=target_context,
-            species_candidate_path=None
-            if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-            else self.species_candidate_path,
+            species_candidate_path=None if self.request.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION else self.species_candidate_path,
             records=canonical.to_dicts(),
             allow_single_target_fixture=self.allow_single_target_fixture,
         )
@@ -1654,10 +1540,6 @@ class ProductionRunOrchestrator:
             outputs={"object_scores": str(plan.paths.object_scores_path)},
         )
 
-    def _validate_hierarchical_taxonomy_table(self) -> StageExecutionResult:
-        _store, result = self._load_valid_hierarchical_taxonomy_store()
-        return result
-
     def _load_valid_hierarchical_taxonomy_store(
         self,
     ) -> tuple[PathTaxonomyStore | None, StageExecutionResult]:
@@ -1667,8 +1549,8 @@ class ProductionRunOrchestrator:
                 None,
                 StageExecutionResult(
                     status=StageStatus.FAILED,
-                    message="missing_taxonomy_candidate_table",
-                    metrics={**base_metrics, "registry_taxonomy_status": "missing", "taxonomy_candidate_table_status": "missing"},
+                    message="missing_registry_taxonomy",
+                    metrics={**base_metrics, "registry_taxonomy_status": "missing"},
                 ),
             )
         try:
@@ -1678,8 +1560,8 @@ class ProductionRunOrchestrator:
                 None,
                 StageExecutionResult(
                     status=StageStatus.FAILED,
-                    message=f"missing_taxonomy_candidate_table: {exc}",
-                    metrics={**base_metrics, "registry_taxonomy_status": "missing", "taxonomy_candidate_table_status": "missing"},
+                    message=f"missing_registry_taxonomy: {exc}",
+                    metrics={**base_metrics, "registry_taxonomy_status": "missing"},
                 ),
             )
         except ValueError as exc:
@@ -1687,8 +1569,8 @@ class ProductionRunOrchestrator:
                 None,
                 StageExecutionResult(
                     status=StageStatus.FAILED,
-                    message=f"invalid_taxonomy_candidate_table: {exc}",
-                    metrics={**base_metrics, "registry_taxonomy_status": "invalid", "taxonomy_candidate_table_status": "invalid"},
+                    message=f"invalid_registry_taxonomy: {exc}",
+                    metrics={**base_metrics, "registry_taxonomy_status": "invalid"},
                 ),
             )
         findings = store.validation_findings()
@@ -1698,7 +1580,7 @@ class ProductionRunOrchestrator:
                 None,
                 StageExecutionResult(
                     status=StageStatus.FAILED,
-                    message="invalid_taxonomy_candidate_table: " + ", ".join(str(finding.get("code")) for finding in fatal),
+                    message="invalid_registry_taxonomy: " + ", ".join(str(finding.get("code")) for finding in fatal),
                     metrics={
                         **base_metrics,
                         **_butterfly_taxonomy_store_metrics(store, registry_taxonomy_status="invalid"),
@@ -1739,10 +1621,7 @@ class ProductionRunOrchestrator:
                 None,
                 StageExecutionResult(
                     status=StageStatus.FAILED,
-                    message=(
-                        "missing_taxonomy_text_embedding_cache: hierarchical production "
-                        "requires an embedding cache built from registry species_paths.parquet"
-                    ),
+                    message=("missing_taxonomy_text_embedding_cache: hierarchical production requires an embedding cache built from registry species_paths.parquet"),
                     metrics={
                         "taxonomy_text_embedding_cache_rows": 0,
                         "taxonomy_text_embedding_cache_status": "missing",
@@ -1820,7 +1699,11 @@ class ProductionRunOrchestrator:
     def _registry_query_definitions_source(self) -> tuple[Any, str, Path | None]:
         if self._registry_is_cloud():
             uri = self._registry_artifact_uri("flickr_query_definitions.parquet")
-            return self._read_registry_parquet("flickr_query_definitions.parquet"), uri, None
+            return (
+                self._read_registry_parquet("flickr_query_definitions.parquet"),
+                uri,
+                None,
+            )
         path = self._registry_query_definitions_path()
         import polars as pl
 
@@ -1910,9 +1793,15 @@ class ProductionRunOrchestrator:
     def _run_join_evidence_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if is_cloud_uri(self.request.output_root):
             if self.storage is None:
-                return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_join_evidence")
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="storage_backend_required_for_join_evidence",
+                )
             if self.workstore is None:
-                return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_join_evidence")
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="workstore_required_for_join_evidence",
+                )
             joined_uris = _cloud_stage_shard_uris(self.workstore, plan, RunStage.JOIN_EVIDENCE.value)
             if joined_uris:
                 joined = _read_cloud_stage_frame(self.storage, self.workstore, plan, RunStage.JOIN_EVIDENCE.value)
@@ -1935,7 +1824,10 @@ class ProductionRunOrchestrator:
             if not _cloud_stage_shard_uris(self.workstore, plan, RunStage.SCORE_BIOCLIP.value):
                 missing.append("object_scores")
             if missing:
-                return StageExecutionResult(status=StageStatus.FAILED, message="missing_join_inputs: " + ", ".join(missing))
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="missing_join_inputs: " + ", ".join(missing),
+                )
             result = join_object_evidence_from_cloud_shards(
                 storage=self.storage,
                 workstore=self.workstore,
@@ -1988,9 +1880,16 @@ class ProductionRunOrchestrator:
                     "object_evidence": object_evidence_uri,
                 },
             )
-        missing = _missing_paths(plan.paths.source_records_path, plan.paths.object_detections_path, plan.paths.object_scores_path)
+        missing = _missing_paths(
+            plan.paths.source_records_path,
+            plan.paths.object_detections_path,
+            plan.paths.object_scores_path,
+        )
         if missing:
-            return StageExecutionResult(status=StageStatus.FAILED, message="missing_join_inputs: " + ", ".join(missing))
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="missing_join_inputs: " + ", ".join(missing),
+            )
         import polars as pl
 
         plan.paths.ensure_directories()
@@ -2015,9 +1914,15 @@ class ProductionRunOrchestrator:
     def _run_summarize_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         if is_cloud_uri(self.request.output_root):
             if self.storage is None:
-                return StageExecutionResult(status=StageStatus.FAILED, message="storage_backend_required_for_summarize")
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="storage_backend_required_for_summarize",
+                )
             if self.workstore is None:
-                return StageExecutionResult(status=StageStatus.FAILED, message="workstore_required_for_summarize")
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="workstore_required_for_summarize",
+                )
             outputs: dict[str, str] = {}
             summary_result = None
             existing_photo_summary_uris = _cloud_stage_shard_uris(self.workstore, plan, "photo_summary")
@@ -2060,7 +1965,10 @@ class ProductionRunOrchestrator:
             if existing_photo_summary_uris and "photo_summary" not in outputs:
                 outputs["photo_summary"] = ",".join(existing_photo_summary_uris)
             if not _cloud_stage_shard_uris(self.workstore, plan, "photo_summary"):
-                return StageExecutionResult(status=StageStatus.FAILED, message="missing_summary_inputs: object_evidence, photo_summary")
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="missing_summary_inputs: object_evidence, photo_summary",
+                )
             summary_shards = self.workstore.list_committed_shards(
                 job_name=PRODUCTION_JOB_NAME,
                 stage="photo_summary",
@@ -2068,11 +1976,7 @@ class ProductionRunOrchestrator:
                 run_id=plan.manifest.run_id,
             )
             joined = _read_cloud_stage_frame(self.storage, self.workstore, plan, RunStage.JOIN_EVIDENCE.value)
-            photo_summary = (
-                summary_result.frame
-                if summary_result is not None
-                else _read_cloud_stage_frame(self.storage, self.workstore, plan, "photo_summary")
-            )
+            photo_summary = summary_result.frame if summary_result is not None else _read_cloud_stage_frame(self.storage, self.workstore, plan, "photo_summary")
             review_queue, review_queue_mode = _build_production_review_queue(joined=joined, photo_summary=photo_summary)
             visual_qa_findings = build_visual_qa_findings(object_evidence=joined, photo_summary=photo_summary)
             queue_result = CloudReviewQueueResult(
@@ -2150,7 +2054,10 @@ class ProductionRunOrchestrator:
             return StageExecutionResult(metrics=metrics, outputs=outputs)
         missing = _missing_paths(plan.paths.object_evidence_path)
         if missing:
-            return StageExecutionResult(status=StageStatus.FAILED, message="missing_summary_inputs: " + ", ".join(missing))
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="missing_summary_inputs: " + ", ".join(missing),
+            )
         import json
         import polars as pl
 
@@ -2188,10 +2095,16 @@ class ProductionRunOrchestrator:
     def _run_queue_comment_review_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         target_context = plan.manifest.taxon_scope.species_contexts[0]
         if is_cloud_uri(self.request.output_root):
-            return StageExecutionResult(status=StageStatus.FAILED, message="cloud_comment_review_state_not_implemented")
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="cloud_comment_review_state_not_implemented",
+            )
         missing = _missing_paths(plan.paths.object_evidence_path)
         if missing:
-            return StageExecutionResult(status=StageStatus.FAILED, message="missing_comment_review_inputs: " + ", ".join(missing))
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="missing_comment_review_inputs: " + ", ".join(missing),
+            )
         import polars as pl
 
         plan.paths.ensure_directories()
@@ -2207,14 +2120,23 @@ class ProductionRunOrchestrator:
     def _run_review_comments_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         target_context = plan.manifest.taxon_scope.species_contexts[0]
         if is_cloud_uri(self.request.output_root):
-            return StageExecutionResult(status=StageStatus.FAILED, message="cloud_comment_review_state_not_implemented")
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="cloud_comment_review_state_not_implemented",
+            )
         if not plan.paths.comment_review_state_path.exists():
-            return StageExecutionResult(status=StageStatus.FAILED, message=f"missing_comment_review_state: {plan.paths.comment_review_state_path}")
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message=f"missing_comment_review_state: {plan.paths.comment_review_state_path}",
+            )
         fetcher = self.comment_fetcher
         api_key = self.flickr_api_key or os.environ.get("FLICKR_API_KEY")
         if fetcher is None:
             if not api_key:
-                return StageExecutionResult(status=StageStatus.FAILED, message="flickr_fetcher_or_api_key_required_for_review_comments")
+                return StageExecutionResult(
+                    status=StageStatus.FAILED,
+                    message="flickr_fetcher_or_api_key_required_for_review_comments",
+                )
             fetcher = fetch_flickr_comments(api_key=api_key)
         state = CommentReviewState(plan.paths.comment_review_state_path, species_context=target_context)
         result = state.process_pending(
@@ -2230,10 +2152,16 @@ class ProductionRunOrchestrator:
     def _run_apply_comment_review_stage(self, plan: ProductionRunPlan) -> StageExecutionResult:
         target_context = plan.manifest.taxon_scope.species_contexts[0]
         if is_cloud_uri(self.request.output_root):
-            return StageExecutionResult(status=StageStatus.FAILED, message="cloud_comment_review_state_not_implemented")
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="cloud_comment_review_state_not_implemented",
+            )
         missing = _missing_paths(plan.paths.object_evidence_path, plan.paths.comment_review_state_path)
         if missing:
-            return StageExecutionResult(status=StageStatus.FAILED, message="missing_comment_review_apply_inputs: " + ", ".join(missing))
+            return StageExecutionResult(
+                status=StageStatus.FAILED,
+                message="missing_comment_review_apply_inputs: " + ", ".join(missing),
+            )
         import polars as pl
 
         frame = pl.read_parquet(plan.paths.object_evidence_path)
@@ -2306,7 +2234,7 @@ def _optional_int(value: Any) -> int | None:
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -2334,16 +2262,8 @@ def _query_definitions_for_taxon_scope(frame: Any, taxon_scope: TaxonScope) -> A
     if frame.is_empty():
         return frame
     scope_keys = sorted(
-        {
-            str(context.accepted_taxon_key or "")
-            for context in taxon_scope.species_contexts
-            if str(context.accepted_taxon_key or "")
-        }
-        | {
-            str(context.species_key or "")
-            for context in taxon_scope.species_contexts
-            if str(context.species_key or "")
-        }
+        {str(context.accepted_taxon_key or "") for context in taxon_scope.species_contexts if str(context.accepted_taxon_key or "")}
+        | {str(context.species_key or "") for context in taxon_scope.species_contexts if str(context.species_key or "")}
     )
     if not scope_keys:
         return frame.head(0)
@@ -2370,7 +2290,7 @@ def _limit_taxon_scope(taxon_scope: TaxonScope, limits: Mapping[str, int]) -> Ta
 def _registry_manifest_version(registry: Path) -> str:
     try:
         return str(json.loads((registry / "manifest.json").read_text(encoding="utf-8")).get("registry_version") or "")
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError, json.JSONDecodeError:
         return ""
 
 
@@ -2424,9 +2344,7 @@ def _score_primary_visual_mode(
         scorer=scorer,
         output_path=output_dir / "object_bioclip_scores_detector_crop.parquet",
         ablation_mode=PRODUCTION_VISUAL_MODE,
-        bioclip_gate_policy=BioClipGatePolicy(
-            supported_comparison_routes=PRODUCTION_BIOCLIP_COMPARISON_ROUTES
-        ),
+        bioclip_gate_policy=BioClipGatePolicy(supported_comparison_routes=PRODUCTION_BIOCLIP_COMPARISON_ROUTES),
         bioclip_batch_size=bioclip_batch_size,
         adaptive_batching=adaptive_batching,
         min_bioclip_batch_size=min_bioclip_batch_size,
@@ -2479,15 +2397,10 @@ def _visual_classification_config_metrics(
     *,
     species_candidate_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    candidate_table = (
-        str(species_candidate_path)
-        if species_candidate_path is not None
-        else request.registry_dir
-    )
+    candidate_table = str(species_candidate_path) if species_candidate_path is not None else request.registry_dir
     return {
         "classification_mode": request.classification_mode,
         "registry_taxonomy": candidate_table,
-        "taxonomy_candidate_table": candidate_table,
         "beam_strategy": request.beam_strategy,
         "rank_beam_width": request.rank_beam_width,
         "species_first_pass_top_k": request.species_first_pass_top_k,
@@ -2506,7 +2419,6 @@ def _butterfly_taxonomy_store_metrics(
     species_count = store.leaf_paths.filter(store.leaf_paths["enabled"]).height
     return {
         "registry_taxonomy_status": registry_taxonomy_status,
-        "taxonomy_candidate_table_status": registry_taxonomy_status,
         "classification_table_version": manifest.get("classification_version"),
         "classification_prompt_variant_version": manifest.get("prompt_version"),
         "classification_registry_version": manifest.get("registry_version"),
@@ -2516,12 +2428,8 @@ def _butterfly_taxonomy_store_metrics(
         "classification_species_count": species_count,
         "taxonomy_family_candidate_count": family_count,
         "taxonomy_species_candidate_count": species_count,
-        "classification_family_label_count": store.prompt_labels.filter(
-            store.prompt_labels["enabled"] & (store.prompt_labels["rank"] == "FAMILY")
-        ).height,
-        "classification_species_label_count": store.prompt_labels.filter(
-            store.prompt_labels["enabled"] & (store.prompt_labels["rank"] == "SPECIES")
-        ).height,
+        "classification_family_label_count": store.prompt_labels.filter(store.prompt_labels["enabled"] & (store.prompt_labels["rank"] == "FAMILY")).height,
+        "classification_species_label_count": store.prompt_labels.filter(store.prompt_labels["enabled"] & (store.prompt_labels["rank"] == "SPECIES")).height,
         "classification_taxonomy_fingerprint": store.classification_fingerprint,
         "classification_hierarchy_fingerprint": store.hierarchy_fingerprint,
     }
@@ -2551,11 +2459,6 @@ def _runtime_cache_metrics(resource: object) -> dict[str, object]:
     if not isinstance(metrics, Mapping):
         raise TypeError("vision runtime cache_metrics must be a mapping")
     return {str(key): value for key, value in metrics.items()}
-
-
-def _first_non_blank_frame_value(frame: Any, column: str) -> str | None:
-    values = _non_blank_frame_values(frame, column)
-    return values[0] if values else None
 
 
 def _min_non_blank_frame_value(frame: Any, column: str) -> str | None:
@@ -2589,10 +2492,7 @@ def _build_production_review_queue(*, joined: Any, photo_summary: Any) -> tuple[
 def _has_hierarchical_classification_rows(frame: Any) -> bool:
     if frame.is_empty() or "classification_mode" not in frame.columns:
         return False
-    return any(
-        str(value or "") == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-        for value in frame.get_column("classification_mode").drop_nulls().to_list()
-    )
+    return any(str(value or "") == HIERARCHICAL_BUTTERFLY_CLASSIFICATION for value in frame.get_column("classification_mode").drop_nulls().to_list())
 
 
 def _canonical_bioclip_model_id(value: object) -> str:
@@ -2683,10 +2583,30 @@ def _merge_stage_counts(manifest: RunManifest, *, stage: RunStage, result: Stage
             detection_counts={
                 **manifest.detection_counts,
                 "images_seen": int(result.metrics.get("records_seen", manifest.detection_counts.get("images_seen", 0))),
-                "images_loaded": int(result.metrics.get("images_loaded", manifest.detection_counts.get("images_loaded", 0))),
-                "image_failures": int(result.metrics.get("image_failures", manifest.detection_counts.get("image_failures", 0))),
-                "detections": int(result.metrics.get("detections_written", manifest.detection_counts.get("detections", 0))),
-                "crops_created": int(result.metrics.get("crops_created", manifest.detection_counts.get("crops_created", 0))),
+                "images_loaded": int(
+                    result.metrics.get(
+                        "images_loaded",
+                        manifest.detection_counts.get("images_loaded", 0),
+                    )
+                ),
+                "image_failures": int(
+                    result.metrics.get(
+                        "image_failures",
+                        manifest.detection_counts.get("image_failures", 0),
+                    )
+                ),
+                "detections": int(
+                    result.metrics.get(
+                        "detections_written",
+                        manifest.detection_counts.get("detections", 0),
+                    )
+                ),
+                "crops_created": int(
+                    result.metrics.get(
+                        "crops_created",
+                        manifest.detection_counts.get("crops_created", 0),
+                    )
+                ),
             },
             metrics={**manifest.metrics, **result.metrics},
         )
@@ -2694,23 +2614,65 @@ def _merge_stage_counts(manifest: RunManifest, *, stage: RunStage, result: Stage
         counts = {
             **manifest.bioclip_counts,
             "objects_scored": int(result.metrics.get("objects_scored", manifest.bioclip_counts.get("objects_scored", 0))),
-            "detector_crops_scored": int(result.metrics.get("detector_crops_scored", manifest.bioclip_counts.get("detector_crops_scored", 0))),
-            "whole_images_scored": int(result.metrics.get("whole_images_scored", manifest.bioclip_counts.get("whole_images_scored", 0))),
-            "segmentation_crops_scored": int(result.metrics.get("segmentation_crops_scored", manifest.bioclip_counts.get("segmentation_crops_scored", 0))),
+            "detector_crops_scored": int(
+                result.metrics.get(
+                    "detector_crops_scored",
+                    manifest.bioclip_counts.get("detector_crops_scored", 0),
+                )
+            ),
+            "whole_images_scored": int(
+                result.metrics.get(
+                    "whole_images_scored",
+                    manifest.bioclip_counts.get("whole_images_scored", 0),
+                )
+            ),
+            "segmentation_crops_scored": int(
+                result.metrics.get(
+                    "segmentation_crops_scored",
+                    manifest.bioclip_counts.get("segmentation_crops_scored", 0),
+                )
+            ),
         }
-        return replace(manifest, bioclip_counts=counts, metrics={**manifest.metrics, **result.metrics})
+        return replace(
+            manifest,
+            bioclip_counts=counts,
+            metrics={**manifest.metrics, **result.metrics},
+        )
     if stage in {RunStage.JOIN_EVIDENCE, RunStage.SUMMARIZE} and result.status == StageStatus.COMPLETE:
         return replace(
             manifest,
             evidence_counts={
                 **manifest.evidence_counts,
-                "object_evidence_rows": int(result.metrics.get("object_evidence_rows", manifest.evidence_counts.get("object_evidence_rows", 0))),
-                "photo_summary_rows": int(result.metrics.get("photo_summary_rows", manifest.evidence_counts.get("photo_summary_rows", 0))),
-                "review_queue_rows": int(result.metrics.get("review_queue_rows", manifest.evidence_counts.get("review_queue_rows", 0))),
+                "object_evidence_rows": int(
+                    result.metrics.get(
+                        "object_evidence_rows",
+                        manifest.evidence_counts.get("object_evidence_rows", 0),
+                    )
+                ),
+                "photo_summary_rows": int(
+                    result.metrics.get(
+                        "photo_summary_rows",
+                        manifest.evidence_counts.get("photo_summary_rows", 0),
+                    )
+                ),
+                "review_queue_rows": int(
+                    result.metrics.get(
+                        "review_queue_rows",
+                        manifest.evidence_counts.get("review_queue_rows", 0),
+                    )
+                ),
             },
             metrics={**manifest.metrics, **result.metrics},
         )
-    if stage in {RunStage.QUEUE_COMMENT_REVIEW, RunStage.REVIEW_COMMENTS, RunStage.APPLY_COMMENT_REVIEW} and result.status == StageStatus.COMPLETE:
+    if (
+        stage
+        in {
+            RunStage.QUEUE_COMMENT_REVIEW,
+            RunStage.REVIEW_COMMENTS,
+            RunStage.APPLY_COMMENT_REVIEW,
+        }
+        and result.status == StageStatus.COMPLETE
+    ):
         return replace(manifest, metrics={**manifest.metrics, **result.metrics})
     return manifest
 

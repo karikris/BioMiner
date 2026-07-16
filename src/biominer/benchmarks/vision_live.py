@@ -16,7 +16,10 @@ from biominer.bioclip.classification_modes import (
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
 )
 from biominer.bioclip.model_registry import BioClipRuntime
-from biominer.bioclip.object_runner import EphemeralCropBioClipScorer, screen_object_detections
+from biominer.bioclip.object_runner import (
+    EphemeralCropBioClipScorer,
+    screen_object_detections,
+)
 from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
 from biominer.bioclip.taxonomy_embedding_cache import TaxonomyTextEmbeddingIndex
 from biominer.detection.image_io import load_decoded_image_from_record
@@ -35,7 +38,7 @@ LIVE_M5PRO_BENCHMARK_KIND = "vision_live_m5pro"
 @dataclass(frozen=True)
 class LiveM5ProBenchmarkRequest:
     input_path: Path
-    taxonomy_candidate_table: Path
+    registry_dir: Path
     taxonomy_text_embedding_cache: Path
     vision_runtime_python: Path
     bioclip_runtime_python: Path
@@ -67,7 +70,9 @@ class LiveM5ProBenchmarkResult:
     summary_path: Path
 
 
-def validate_live_m5pro_benchmark_request(request: LiveM5ProBenchmarkRequest) -> dict[str, Any] | None:
+def validate_live_m5pro_benchmark_request(
+    request: LiveM5ProBenchmarkRequest,
+) -> dict[str, Any] | None:
     missing = []
     for field, path in (
         ("input_path", request.input_path),
@@ -82,7 +87,7 @@ def validate_live_m5pro_benchmark_request(request: LiveM5ProBenchmarkRequest) ->
             "benchmark_kind": LIVE_M5PRO_BENCHMARK_KIND,
             "missing": missing,
         }
-    taxonomy_error = validate_live_taxonomy_store(request.taxonomy_candidate_table)
+    taxonomy_error = validate_live_taxonomy_store(request.registry_dir)
     if taxonomy_error is not None:
         return taxonomy_error
     if not request.taxonomy_text_embedding_cache.exists():
@@ -94,9 +99,15 @@ def validate_live_m5pro_benchmark_request(request: LiveM5ProBenchmarkRequest) ->
     if request.limit <= 0:
         return {"error": "invalid_limit", "message": "--limit must be positive"}
     if request.yolo_batch <= 0 or request.bioclip_batch <= 0:
-        return {"error": "invalid_batch_size", "message": "--yolo-batch and --bioclip-batch must be positive"}
+        return {
+            "error": "invalid_batch_size",
+            "message": "--yolo-batch and --bioclip-batch must be positive",
+        }
     if request.yolo_sidecar_transport not in {"json_b64", "image_path"}:
-        return {"error": "invalid_yolo_sidecar_transport", "message": "--yolo-sidecar-transport must be json_b64 or image_path"}
+        return {
+            "error": "invalid_yolo_sidecar_transport",
+            "message": "--yolo-sidecar-transport must be json_b64 or image_path",
+        }
     return None
 
 
@@ -105,17 +116,17 @@ def validate_live_taxonomy_store(path: Path) -> dict[str, Any] | None:
         PathTaxonomyStore.read(path)
     except FileNotFoundError as exc:
         return {
-            "error": "missing_taxonomy_candidate_table",
+            "error": "missing_registry_taxonomy",
             "benchmark_kind": LIVE_M5PRO_BENCHMARK_KIND,
             "message": str(exc),
-            "taxonomy_candidate_table": str(path),
+            "registry_dir": str(path),
         }
     except ValueError as exc:
         return {
-            "error": "invalid_taxonomy_candidate_table",
+            "error": "invalid_registry_taxonomy",
             "benchmark_kind": LIVE_M5PRO_BENCHMARK_KIND,
             "message": str(exc),
-            "taxonomy_candidate_table": str(path),
+            "registry_dir": str(path),
         }
     return None
 
@@ -137,7 +148,7 @@ def run_live_m5pro_benchmark(
     if records.is_empty():
         raise ValueError("input benchmark records are empty after applying --limit")
     canonical_records_path = write_parquet(records, request.output_dir / "canonical_source_records.parquet")
-    taxonomy_store = PathTaxonomyStore.read(request.taxonomy_candidate_table)
+    taxonomy_store = PathTaxonomyStore.read(request.registry_dir)
     taxonomy_embedding_index = TaxonomyTextEmbeddingIndex.from_frame(
         pl.read_parquet(request.taxonomy_text_embedding_cache),
         taxonomy_store=taxonomy_store,
@@ -268,13 +279,18 @@ def run_live_m5pro_benchmark(
     )
     metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
     summary_path.write_text(_live_summary_markdown(metrics), encoding="utf-8")
-    return LiveM5ProBenchmarkResult(metrics=metrics, output_dir=request.output_dir, metrics_path=metrics_path, summary_path=summary_path)
-
-
-def species_context_from_taxonomy_store(taxonomy_store: PathTaxonomyStore) -> SpeciesContext:
-    paths = taxonomy_store.leaf_paths.filter(pl.col("enabled")).sort(
-        ["family", "subfamily", "tribe", "genus", "species", "accepted_taxon_key"]
+    return LiveM5ProBenchmarkResult(
+        metrics=metrics,
+        output_dir=request.output_dir,
+        metrics_path=metrics_path,
+        summary_path=summary_path,
     )
+
+
+def species_context_from_taxonomy_store(
+    taxonomy_store: PathTaxonomyStore,
+) -> SpeciesContext:
+    paths = taxonomy_store.leaf_paths.filter(pl.col("enabled")).sort(["family", "subfamily", "tribe", "genus", "species", "accepted_taxon_key"])
     if paths.is_empty():
         raise ValueError("taxonomy candidate table has no enabled species")
     row = paths.to_dicts()[0]
@@ -309,15 +325,15 @@ def _live_metrics(
     outputs: Mapping[str, Path | None],
 ) -> dict[str, Any]:
     detections = detection_result.frame
-    butterfly_like = detections.filter(
-        (pl.col("detection_status") == "detected") & (pl.col("detector_label") == "butterfly_like")
-    ).height if not detections.is_empty() and {"detection_status", "detector_label"}.issubset(set(detections.columns)) else 0
+    butterfly_like = (
+        detections.filter((pl.col("detection_status") == "detected") & (pl.col("detector_label") == "butterfly_like")).height if not detections.is_empty() and {"detection_status", "detector_label"}.issubset(set(detections.columns)) else 0
+    )
     return {
         "benchmark_kind": LIVE_M5PRO_BENCHMARK_KIND,
         "status": "ok",
         "classification_mode": HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
         "input": str(request.input_path),
-        "taxonomy_candidate_table": str(request.taxonomy_candidate_table),
+        "registry_dir": str(request.registry_dir),
         "taxonomy_text_embedding_cache": str(request.taxonomy_text_embedding_cache),
         "taxonomy_contract": {
             "classification_version": taxonomy_store.classification_version,

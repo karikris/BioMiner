@@ -23,7 +23,7 @@ def test_vision_plumbing_benchmark_runs_model_free_pipeline(tmp_path) -> None:
         butterfly_rate=0.25,
         detections_per_butterfly=2,
         classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-        taxonomy_candidate_table=taxonomy,
+        registry_dir=taxonomy,
         output_dir=output,
     )
 
@@ -49,11 +49,7 @@ def test_vision_plumbing_benchmark_runs_model_free_pipeline(tmp_path) -> None:
     assert (output / "object_bioclip_scores.parquet").exists()
     assert (output / "object_evidence_joined.parquet").exists()
     assert (output / "photo_evidence_summary.parquet").exists()
-    assert set(
-        pl.read_parquet(output / "object_bioclip_scores.parquet")
-        .get_column("classification_version")
-        .to_list()
-    ) == {CLASSIFICATION_V3_VERSION}
+    assert set(pl.read_parquet(output / "object_bioclip_scores.parquet").get_column("classification_version").to_list()) == {CLASSIFICATION_V3_VERSION}
 
 
 def test_dev_vision_benchmark_plumbing_cli_writes_metrics(tmp_path, capsys) -> None:
@@ -73,7 +69,7 @@ def test_dev_vision_benchmark_plumbing_cli_writes_metrics(tmp_path, capsys) -> N
             "1",
             "--classification-mode",
             "hierarchical_butterfly_classification",
-            "--taxonomy-candidate-table",
+            "--registry-dir",
             str(taxonomy),
             "--output-dir",
             str(output),
@@ -95,7 +91,9 @@ def test_dev_vision_benchmark_plumbing_cli_writes_metrics(tmp_path, capsys) -> N
     assert summary_path.exists()
 
 
-def test_vision_plumbing_benchmark_guards_structural_performance_invariants(tmp_path) -> None:
+def test_vision_plumbing_benchmark_guards_structural_performance_invariants(
+    tmp_path,
+) -> None:
     output = tmp_path / "benchmark"
     result = run_vision_plumbing_benchmark(
         records=240,
@@ -110,11 +108,7 @@ def test_vision_plumbing_benchmark_guards_structural_performance_invariants(tmp_
     scores = pl.read_parquet(output / "object_bioclip_scores.parquet")
     joined = pl.read_parquet(output / "object_evidence_joined.parquet")
     summary = pl.read_parquet(output / "photo_evidence_summary.parquet")
-    eligible_ids = set(
-        detections.filter((pl.col("detection_status") == "detected") & (pl.col("detector_label") == "butterfly_like"))
-        .get_column("detection_id")
-        .to_list()
-    )
+    eligible_ids = set(detections.filter((pl.col("detection_status") == "detected") & (pl.col("detector_label") == "butterfly_like")).get_column("detection_id").to_list())
     hard_negative_ids = set(detections.filter(pl.col("detector_label") == "hard_negative").get_column("detection_id").to_list())
     scored_ids = set(scores.get_column("detection_id").to_list())
     scorer = metrics["scorer"]
@@ -146,9 +140,7 @@ def test_vision_plumbing_benchmark_guards_structural_performance_invariants(tmp_
     assert len(set(scorer["scored_detection_ids"])) == metrics["crops_scored"]
     assert set(scorer["scored_detection_ids"]) == eligible_ids
     assert scorer["label_set_names_by_batch"] == []
-    embedding_cache_fingerprints = set(
-        scores.get_column("embedding_cache_fingerprint").to_list()
-    )
+    embedding_cache_fingerprints = set(scores.get_column("embedding_cache_fingerprint").to_list())
     assert len(embedding_cache_fingerprints) == 1
     assert all(embedding_cache_fingerprints)
 

@@ -562,10 +562,6 @@ class EphemeralCropBioClipScorer:
             raise SegmentationUnavailable("detector_masks_missing")
         return segmented, crop.crop_width, crop.crop_height, _bytes_hash(segmented)
 
-    def _write_temp_ppm(self, data: bytes, *, width: int, height: int, crop_hash: str) -> Path:
-        path, _retained = self._write_temp_ppm_for_score(data, width=width, height=height, crop_hash=crop_hash)
-        return path
-
     def _write_temp_ppm_for_score(self, data: bytes, *, width: int, height: int, crop_hash: str) -> tuple[Path, bool]:
         self._temp_dir.mkdir(parents=True, exist_ok=True)
         safe_hash = crop_hash.replace(":", "_").replace("/", "_")
@@ -2542,10 +2538,6 @@ def _geo_prior_bbox(row: dict[str, Any]) -> str | None:
 def _coordinate_in_bbox(*, latitude: float, longitude: float, bbox: str) -> bool:
     min_lon, min_lat, max_lon, max_lat = (float(value) for value in bbox.split(","))
     return min_lat <= latitude <= max_lat and min_lon <= longitude <= max_lon
-
-
-def _top_unique(values: Iterable[str], limit: int) -> list[str]:
-    return _unique(value for value in values if value)[:limit]
 
 
 def _unique(values: Iterable[Any]) -> list[str]:
