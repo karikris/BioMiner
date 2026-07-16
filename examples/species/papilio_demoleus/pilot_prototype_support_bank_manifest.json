@@ -1,0 +1,98 @@
+{
+  "schema_version": "papilio-demoleus-prototype-support-bank-manifest-v1.0.0",
+  "phase": 14,
+  "task": "14.3.5",
+  "status": "prototype_ready_with_shortfalls",
+  "bank_status": "prototype_only",
+  "classification_authorised": true,
+  "human_verification_complete": false,
+  "human_verification_required_for_scientific_release": true,
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "execution": {
+    "command": "biominer references freeze-prototype-support --settings-file config/pilot/papilio_demoleus_prototype_freeze.json",
+    "settings_file": "config/pilot/papilio_demoleus_prototype_freeze.json",
+    "settings_fingerprint": "sha256:4a8d09ae34df3362bde7465681f0c7a3cac10278da35562e4600687641114660",
+    "storage_backend": "local",
+    "local_storage_ignored_by_git": true,
+    "s3_deferred": true,
+    "generated_at": "2026-07-16T04:00:00+00:00",
+    "reference_bank_version": "papilio-demoleus-prototype-bank-20260716",
+    "split_version": "papilio-demoleus-prototype-split-v1",
+    "split_weights": {
+      "support_train": 55,
+      "model_selection": 15,
+      "calibration": 15,
+      "final_test": 15
+    }
+  },
+  "counts": {
+    "selected": 93,
+    "prototype_support": 81,
+    "excluded": 12,
+    "retryable_operational_failures": 10,
+    "leakage_components": 22,
+    "support_train": 26,
+    "model_selection": 30,
+    "calibration": 13,
+    "final_test": 12,
+    "target_adult_support_train": 11,
+    "regional_competitor_species_support_train": 3,
+    "false_winner_species_support_train": 1,
+    "biological_hard_negatives": 7,
+    "human_verified": 0,
+    "provider_supported": 81,
+    "selected_missing_owner_evidence": 2,
+    "selected_missing_photographer_evidence": 0
+  },
+  "artifacts": {
+    "support": {
+      "uri": "runs/papilio_demoleus_prototype_bank_local_20260716/prototype_support_manifest.parquet",
+      "row_count": 81,
+      "byte_count": 54870,
+      "sha256": "sha256:a5a26fc7e60c79dbcca9b9f8fc1ba2b3558e6307bd7c5b70711fe1ad022fde10"
+    },
+    "excluded": {
+      "uri": "runs/papilio_demoleus_prototype_bank_local_20260716/prototype_excluded_manifest.parquet",
+      "row_count": 12,
+      "byte_count": 10146,
+      "sha256": "sha256:1e7a3d0bf30e27e4ea26b4a722fe45976cf435312e2bc5eb2d30174e5bbd7b0c"
+    },
+    "duplicate_groups": {
+      "uri": "runs/papilio_demoleus_prototype_bank_local_20260716/prototype_duplicate_groups.parquet",
+      "row_count": 93,
+      "byte_count": 27307,
+      "sha256": "sha256:561b61eaaf3ab5bc3b8673ee61c8037c496220b6b7cf3d7f82d2276d6203d535"
+    },
+    "split": {
+      "uri": "runs/papilio_demoleus_prototype_bank_local_20260716/prototype_dataset_split_manifest.parquet",
+      "row_count": 81,
+      "byte_count": 33499,
+      "sha256": "sha256:61b5ad552f35f1ed14a90be1a51e115311092506144084de3a8780b24f78cb47"
+    },
+    "readiness": {
+      "uri": "runs/papilio_demoleus_prototype_bank_local_20260716/reference_bank_prototype_readiness.json",
+      "byte_count": 6916,
+      "sha256": "sha256:154e9c98ad4ed577077702e5524e81f5b0cb406225086a339ee1d092d65ef9a9"
+    }
+  },
+  "documented_shortfalls": [
+    "Full-bank detector evidence is not instrumented locally.",
+    "Ten Wikimedia media records remain retryable operational failures.",
+    "The single larval record is not in support_train after leakage-safe assignment.",
+    "No visual-domain negative or pinned-specimen support passed the prototype freeze.",
+    "Atomic transitive leakage components prevent an exact 55/15/15/15 row ratio.",
+    "No support row is independently human taxonomically verified."
+  ],
+  "semantics": {
+    "prototype_only": true,
+    "provider_supported_is_human_verified": false,
+    "classification_is_experimental_screening_only": true,
+    "operational_failures_are_biological_negatives": false,
+    "missing_identity_metadata_means_complete_leakage_protection": false,
+    "all_known_identity_relationships_are_kept_atomic": true
+  },
+  "next_task": "14.4.1_five_image_bioclip_yoloe_smoke"
+}

@@ -1,0 +1,45 @@
+{
+  "schema_version": "target-aware-reference-cli-settings-v1",
+  "commands": {
+    "freeze-prototype-support": {
+      "selections": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_selections.parquet",
+      "media_candidates": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_download_candidates.parquet",
+      "media_objects": "runs/papilio_demoleus_prototype_media_local_20260716/duplicate-resolution/run_id=papilio-demoleus-prototype-duplicates-available-20260716-f61223e99674/reference_media_objects.parquet",
+      "identity_groups": "runs/papilio_demoleus_prototype_media_local_20260716/duplicate-resolution/run_id=papilio-demoleus-prototype-duplicates-available-20260716-f61223e99674/prototype_reference_identity_groups.parquet",
+      "qualifications": "runs/papilio_demoleus_prototype_media_local_20260716/qualification/run_id=papilio-demoleus-prototype-qa-available-20260716/prototype_support_qa.parquet",
+      "biological_observations": [
+        "runs/papilio_demoleus_pilot_reference_candidates_20260715/reference_observations.parquet",
+        "runs/papilio_demoleus_pilot_biological_negative_candidates_20260715/reference_observations.parquet"
+      ],
+      "regional_competitor_keys": [
+        "gbif:1937892",
+        "gbif:1938088",
+        "gbif:1938114",
+        "gbif:1937911",
+        "gbif:8225376"
+      ],
+      "false_winner_keys": [
+        "gbif:5141187",
+        "gbif:1939168",
+        "gbif:1937444",
+        "gbif:1939131",
+        "gbif:1939222",
+        "gbif:1937474"
+      ],
+      "output_prefix": "runs/papilio_demoleus_prototype_bank_local_20260716",
+      "storage_backend": "local",
+      "reference_bank_version": "papilio-demoleus-prototype-bank-20260716",
+      "split_version": "papilio-demoleus-prototype-split-v1",
+      "target_accepted_taxon_key": "gbif:1938069",
+      "target_scientific_name": "Papilio demoleus",
+      "random_seed": 20260715,
+      "support_weight": 55,
+      "model_selection_weight": 15,
+      "calibration_weight": 15,
+      "final_test_weight": 15,
+      "minimum_target_adult_support_train": 5,
+      "minimum_regional_competitor_species_support_train": 1,
+      "generated_at": "2026-07-16T04:00:00Z"
+    }
+  }
+}

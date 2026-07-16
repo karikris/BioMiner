@@ -21,6 +21,10 @@ from biominer.references.prototype_acquisition import (
 from biominer.references.prototype_duplicates import (
     resolve_prototype_duplicates,
 )
+from biominer.references.prototype_freeze import (
+    PrototypeFreezeConfig,
+    freeze_prototype_support_bank,
+)
 from biominer.references.prototype_qa import (
     PrototypeQAConfig,
     qualify_prototype_support_bank,
@@ -457,3 +461,123 @@ def test_prototype_qa_skips_retryable_download_failure_without_opening_it(tmp_pa
     assert failure["operational_failure_retryable"] is True
     assert failure["qa_reason"] == "retry_exhausted_http_429"
     assert failure["image_quality_check"] == "not_evaluated"
+
+
+def test_prototype_freeze_skips_retryable_record_and_progresses(tmp_path) -> None:
+    base_observations, base_media = _frames()
+    observation_rows = []
+    media_rows = []
+    for index in range(4):
+        observation = dict(base_observations.row(0, named=True))
+        source_observation_id = f"fixture-observation-{index}"
+        observation_id = make_reference_observation_id("GBIF", source_observation_id)
+        observation.update(
+            {
+                "reference_observation_id": observation_id,
+                "source_observation_id": source_observation_id,
+                "observer_id": f"observer-{index}",
+                "source_record_hash": _sha(source_observation_id),
+            }
+        )
+        observation_rows.append(observation)
+        media = dict(base_media.row(0, named=True))
+        provider_media_id = f"fixture-media-{index}"
+        media.update(
+            {
+                "reference_media_id": make_reference_media_id(
+                    "GBIF", provider_media_id, observation_id
+                ),
+                "reference_observation_id": observation_id,
+                "provider_media_id": provider_media_id,
+                "media_identifier": f"https://example.test/media-{index}.jpg",
+                "creator": f"Fixture Creator {index}",
+                "rights_holder": f"Fixture Rights Holder {index}",
+                "attribution": f"Fixture Creator {index} / CC BY-NC 4.0",
+            }
+        )
+        media_rows.append(media)
+    observations = reference_observations_frame(observation_rows)
+    media = reference_media_candidates_frame(media_rows)
+    query_plan = _query_plan()
+    query_plan["acquisition_quotas"]["target_adult"]["minimum_per_species"] = 4
+    acquisition = compile_prototype_acquisition(
+        observations=(observations,),
+        media_candidates=(media,),
+        query_plans=(query_plan,),
+        visual_domain_manifest=_visual_manifest(),
+        created_at=NOW,
+    )
+    rows = _downloaded_objects(acquisition).to_dicts()
+    visual_media_id = acquisition.selections.filter(
+        pl.col("candidate_scope_type") == "visual_domain"
+    )["reference_media_id"].item()
+    valid_hashes = iter(("a" * 32, "5" * 32, "c" * 32, "3" * 32))
+    for row in rows:
+        if row["reference_media_id"] == visual_media_id:
+            continue
+        row["perceptual_hash"] = f"dhash128-v1:{next(valid_hashes)}"
+        valid_path = tmp_path / str(row["sha256"]).removeprefix("sha256:")
+        Image.effect_noise((800, 600), 64).save(valid_path, format="PNG")
+        row["source_object_uri"] = str(valid_path)
+    failed = next(row for row in rows if row["reference_media_id"] == visual_media_id)
+    for field in (
+        "source_object_uri",
+        "content_type",
+        "source_byte_count",
+        "decoded_width",
+        "decoded_height",
+        "sha256",
+        "perceptual_hash",
+        "downloaded_at",
+    ):
+        failed[field] = None
+    failed["decode_status"] = "download_failed"
+    failed["quarantine_reason"] = "retry_exhausted_http_429"
+    failed["object_fingerprint"] = _sha("retryable-freeze-failure")
+    resolved = resolve_prototype_duplicates(
+        selections=acquisition.selections,
+        media_objects=reference_media_objects_frame(rows),
+        media_candidates=acquisition.download_candidates,
+        biological_observations=(observations,),
+        visual_domain_manifest=_visual_manifest(),
+        generated_at=NOW,
+    )
+    qualified = qualify_prototype_support_bank(
+        selections=acquisition.selections,
+        media_objects=resolved.deduplication.media_objects,
+        identity_groups=resolved.identity_groups,
+        biological_observations=(observations,),
+        visual_domain_manifest=_visual_manifest(),
+        generated_at=NOW,
+    )
+
+    frozen = freeze_prototype_support_bank(
+        selections=acquisition.selections,
+        media_candidates=acquisition.download_candidates,
+        media_objects=resolved.deduplication.media_objects,
+        identity_groups=resolved.identity_groups,
+        qualifications=qualified.qualifications,
+        biological_observations=(observations,),
+        regional_competitor_keys=(),
+        false_winner_keys=(),
+        config=PrototypeFreezeConfig(
+            reference_bank_version="prototype-fixture-v1",
+            split_version="prototype-fixture-split-v1",
+            target_accepted_taxon_key=TARGET,
+            target_scientific_name="Papilio demoleus",
+            minimum_target_adult_support_train=0,
+            minimum_regional_competitor_species_support_train=0,
+            generated_at=NOW,
+        ),
+    )
+
+    assert frozen.support.height == 4
+    assert frozen.excluded.height == 1
+    excluded = frozen.excluded.row(0, named=True)
+    assert excluded["retryable_operational_failure"] is True
+    assert "retry_exhausted_http_429" in excluded["exclusion_reason"]
+    assert frozen.readiness["counts"]["retryable_operational_failure_count"] == 1
+    assert (
+        frozen.readiness["semantics"]["operational_failures_are_biological_negatives"]
+        is False
+    )

@@ -445,6 +445,64 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
             "review_clipped_fraction": 0.60,
         },
     ),
+    "freeze-prototype-support": _CommandSpec(
+        stage=RunStage.REFERENCE_READINESS,
+        fields=frozenset(
+            {
+                "selections",
+                "media_candidates",
+                "media_objects",
+                "identity_groups",
+                "qualifications",
+                "biological_observations",
+                "regional_competitor_keys",
+                "false_winner_keys",
+                "output_prefix",
+                "storage_backend",
+                "storage_bucket",
+                "storage_prefix",
+                "reference_bank_version",
+                "split_version",
+                "target_accepted_taxon_key",
+                "target_scientific_name",
+                "random_seed",
+                "support_weight",
+                "model_selection_weight",
+                "calibration_weight",
+                "final_test_weight",
+                "minimum_target_adult_support_train",
+                "minimum_regional_competitor_species_support_train",
+                "generated_at",
+            }
+        ),
+        required=frozenset(
+            {
+                "selections",
+                "media_candidates",
+                "media_objects",
+                "identity_groups",
+                "qualifications",
+                "biological_observations",
+                "output_prefix",
+                "reference_bank_version",
+                "split_version",
+                "target_accepted_taxon_key",
+                "target_scientific_name",
+                "generated_at",
+            }
+        ),
+        defaults={
+            "regional_competitor_keys": [],
+            "false_winner_keys": [],
+            "random_seed": 20260715,
+            "support_weight": 55,
+            "model_selection_weight": 15,
+            "calibration_weight": 15,
+            "final_test_weight": 15,
+            "minimum_target_adult_support_train": 5,
+            "minimum_regional_competitor_species_support_train": 1,
+        },
+    ),
     "build-support-embeddings": _CommandSpec(
         stage=RunStage.REFERENCE_EMBEDDINGS,
         fields=frozenset(
@@ -891,6 +949,33 @@ def add_reference_workflow_parsers(
     qualify.add_argument("--exclude-clipped-fraction", type=float)
     qualify.add_argument("--review-clipped-fraction", type=float)
 
+    freeze = subparsers.add_parser("freeze-prototype-support")
+    _common(freeze, runtime_defaults)
+    freeze.add_argument("--selections")
+    freeze.add_argument("--media-candidates")
+    freeze.add_argument("--media-objects")
+    freeze.add_argument("--identity-groups")
+    freeze.add_argument("--qualifications")
+    freeze.add_argument("--biological-observations", type=_csv)
+    freeze.add_argument("--regional-competitor-keys", type=_csv)
+    freeze.add_argument("--false-winner-keys", type=_csv)
+    freeze.add_argument("--output-prefix")
+    freeze.add_argument("--storage-backend", choices=("local", "s3"))
+    freeze.add_argument("--storage-bucket")
+    freeze.add_argument("--storage-prefix")
+    freeze.add_argument("--reference-bank-version")
+    freeze.add_argument("--split-version")
+    freeze.add_argument("--target-accepted-taxon-key")
+    freeze.add_argument("--target-scientific-name")
+    freeze.add_argument("--random-seed", type=int)
+    freeze.add_argument("--support-weight", type=int)
+    freeze.add_argument("--model-selection-weight", type=int)
+    freeze.add_argument("--calibration-weight", type=int)
+    freeze.add_argument("--final-test-weight", type=int)
+    freeze.add_argument("--minimum-target-adult-support-train", type=int)
+    freeze.add_argument("--minimum-regional-competitor-species-support-train", type=int)
+    freeze.add_argument("--generated-at")
+
     embeddings = subparsers.add_parser("build-support-embeddings")
     _common(embeddings, runtime_defaults)
     embeddings.add_argument("--readiness-dir")
@@ -1306,6 +1391,17 @@ def _validate_effective_options(command: str, values: dict[str, Any]) -> None:
         _prototype_qa_config(values)
         _string_tuple(values["biological_observations"], field="biological_observations")
         _utc_datetime(values["generated_at"], "generated_at")
+        if values.get("storage_backend") not in {None, "local", "s3"}:
+            raise ValueError("storage_backend must be local or s3")
+    elif command == "freeze-prototype-support":
+        _prototype_freeze_config(values)
+        _string_tuple(
+            values["biological_observations"], field="biological_observations"
+        )
+        _string_tuple(
+            values["regional_competitor_keys"], field="regional_competitor_keys"
+        )
+        _string_tuple(values["false_winner_keys"], field="false_winner_keys")
         if values.get("storage_backend") not in {None, "local", "s3"}:
             raise ValueError("storage_backend must be local or s3")
     elif command == "build-support-embeddings":
@@ -1967,6 +2063,9 @@ _COMMAND_RUNNERS = {
     ),
     "qualify-prototype-support": lambda resolved, args: (
         _run_qualify_prototype_support(resolved, args)
+    ),
+    "freeze-prototype-support": lambda resolved, args: _run_freeze_prototype_support(
+        resolved, args
     ),
     "build-support-embeddings": lambda resolved, args: _run_support_embeddings(
         resolved, args
@@ -2777,6 +2876,37 @@ def _prototype_qa_config(values: Mapping[str, object]):
     )
 
 
+def _prototype_freeze_config(values: Mapping[str, object]):
+    from biominer.references.prototype_freeze import PrototypeFreezeConfig
+
+    return PrototypeFreezeConfig(
+        reference_bank_version=str(values["reference_bank_version"]),
+        split_version=str(values["split_version"]),
+        target_accepted_taxon_key=str(values["target_accepted_taxon_key"]),
+        target_scientific_name=str(values["target_scientific_name"]),
+        random_seed=_nonnegative_integer(values["random_seed"], "random_seed"),
+        support_weight=_positive_integer(values["support_weight"], "support_weight"),
+        model_selection_weight=_positive_integer(
+            values["model_selection_weight"], "model_selection_weight"
+        ),
+        calibration_weight=_positive_integer(
+            values["calibration_weight"], "calibration_weight"
+        ),
+        final_test_weight=_positive_integer(
+            values["final_test_weight"], "final_test_weight"
+        ),
+        minimum_target_adult_support_train=_nonnegative_integer(
+            values["minimum_target_adult_support_train"],
+            "minimum_target_adult_support_train",
+        ),
+        minimum_regional_competitor_species_support_train=_nonnegative_integer(
+            values["minimum_regional_competitor_species_support_train"],
+            "minimum_regional_competitor_species_support_train",
+        ),
+        generated_at=_utc_datetime(values["generated_at"], "generated_at"),
+    )
+
+
 def _run_resolve_prototype_duplicates(
     resolved: ResolvedReferenceWorkflowOptions,
     args: argparse.Namespace,
@@ -2899,6 +3029,67 @@ def _run_qualify_prototype_support(
         "qualified_count": counts.get("provisionally_qualified", 0),
         "review_count": counts.get("needs_review", 0),
         "operational_failure_count": counts.get("operational_failure", 0),
+        "settings_fingerprint": resolved.settings_fingerprint,
+        "status": "complete",
+    }
+
+
+def _run_freeze_prototype_support(
+    resolved: ResolvedReferenceWorkflowOptions,
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    from biominer.config import create_storage_backend, load_biominer_config
+    from biominer.references.prototype_freeze import (
+        freeze_prototype_support_bank,
+        publish_prototype_freeze_result,
+    )
+
+    values = resolved.values
+    config = load_biominer_config(getattr(args, "config", None))
+    storage_config = config.storage
+    if values.get("storage_backend") is not None:
+        storage_config = replace(storage_config, backend=str(values["storage_backend"]))
+    if values.get("storage_bucket") is not None:
+        storage_config = replace(storage_config, bucket=str(values["storage_bucket"]))
+    if values.get("storage_prefix") is not None:
+        storage_config = replace(storage_config, prefix=str(values["storage_prefix"]))
+    storage = create_storage_backend(storage_config)
+    output_prefix = _reference_download_output_prefix(
+        values["output_prefix"], storage=storage
+    )
+    result = freeze_prototype_support_bank(
+        selections=pl.read_parquet(str(values["selections"])),
+        media_candidates=pl.read_parquet(str(values["media_candidates"])),
+        media_objects=storage.read_parquet(str(values["media_objects"])),
+        identity_groups=storage.read_parquet(str(values["identity_groups"])),
+        qualifications=storage.read_parquet(str(values["qualifications"])),
+        biological_observations=tuple(
+            pl.read_parquet(path)
+            for path in _string_tuple(
+                values["biological_observations"], field="biological_observations"
+            )
+        ),
+        regional_competitor_keys=_string_tuple(
+            values["regional_competitor_keys"], field="regional_competitor_keys"
+        ),
+        false_winner_keys=_string_tuple(
+            values["false_winner_keys"], field="false_winner_keys"
+        ),
+        config=_prototype_freeze_config(values),
+    )
+    uris = publish_prototype_freeze_result(
+        result,
+        storage=storage,
+        output_prefix=output_prefix,
+        settings_fingerprint=resolved.settings_fingerprint,
+    )
+    return {
+        "artifacts": uris,
+        "command": "references freeze-prototype-support",
+        "prototype_readiness_status": result.readiness["prototype_readiness_status"],
+        "classification_authorised": result.readiness["classification_authorised"],
+        "support_count": result.support.height,
+        "excluded_count": result.excluded.height,
         "settings_fingerprint": resolved.settings_fingerprint,
         "status": "complete",
     }

@@ -222,6 +222,37 @@ def test_papilio_prototype_qa_config_is_local_and_reproducible() -> None:
     )
 
 
+def test_papilio_prototype_freeze_is_local_and_uses_canonical_taxon_keys() -> None:
+    settings = (
+        Path(__file__).resolve().parents[1]
+        / "config"
+        / "pilot"
+        / "papilio_demoleus_prototype_freeze.json"
+    )
+    resolved = resolve_reference_workflow_options(
+        build_parser().parse_args(
+            [
+                "references",
+                "freeze-prototype-support",
+                "--settings-file",
+                str(settings),
+                "--dry-run",
+            ]
+        )
+    )
+
+    assert resolved.values["storage_backend"] == "local"
+    assert "storage_bucket" not in resolved.values
+    assert resolved.values["target_accepted_taxon_key"] == "gbif:1938069"
+    assert resolved.values["support_weight"] == 55
+    assert resolved.values["model_selection_weight"] == 15
+    assert resolved.values["calibration_weight"] == 15
+    assert resolved.values["final_test_weight"] == 15
+    assert resolved.settings_fingerprint == (
+        "sha256:4a8d09ae34df3362bde7465681f0c7a3cac10278da35562e4600687641114660"
+    )
+
+
 def test_papilio_pilot_reference_source_plan_freezes_phase14_quotas() -> None:
     path = (
         Path(__file__).resolve().parents[1]

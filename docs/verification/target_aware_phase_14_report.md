@@ -213,9 +213,32 @@ unique media across groups. The tracked compact handoff is
 
 ## Task 14.3: human review and immutable freeze
 
-Status: blocked awaiting human work. GBIF taxon reconciliation and provider
-verification statuses do not verify an image for BioMiner. At metadata-fetch
-time the human-verified count is therefore exactly zero.
+Scientific-release status remains blocked awaiting human work. GBIF taxon
+reconciliation and provider verification statuses do not verify an image for
+BioMiner. The human-verified count is exactly zero.
+
+The separate, explicitly non-scientific prototype path completed Tasks
+14.3.1-14.3.5 using ignored local storage while S3 is capped. Of 93 selected
+records, 81 provider-supported GBIF images entered the prototype bank, 2 were
+excluded by QA, and 10 Wikimedia download failures remain retryable. The bank
+is `prototype_ready_with_shortfalls`; it authorizes experimental screening but
+not scientific release.
+
+The deterministic transitive split produced 22 atomic leakage components and
+26/30/13/12 rows in support/model-selection/calibration/final-test. All known
+observation, owner, photographer, duplicate, exact-hash, perceptual-hash,
+burst, and provider-mirror relationships stay within one split. Two selected
+records lack owner evidence, so this is not a claim of complete leakage
+protection. Exact 55/15/15/15 row proportions are impossible without splitting
+an identity component.
+
+Prototype readiness checks pass with 11 target adults, 3 regional competitor
+species, 1 false-winner species, and 7 biological hard negatives in
+support_train or the full support bank as applicable. The bank still lacks a
+qualified visual-domain negative, a pinned specimen, a larval support-train
+record, full-bank detector evidence, and independent human verification. The
+tracked compact handoff is
+`examples/species/papilio_demoleus/pilot_prototype_support_bank_manifest.json`.
 
 The next operator must:
 
@@ -230,13 +253,16 @@ The next operator must:
 7. publish readiness artifacts and pin their trusted SHA-256 outside the
    rewritable output directory.
 
-No unresolved, uncertain, conflicting, research-only, attribution-incomplete,
-or duplicate-ambiguous row may enter support.
+No unresolved, uncertain, conflicting, attribution-incomplete, or
+duplicate-ambiguous row may enter scientific support. Research-only licensing
+is permitted only in the local prototype bank and remains explicitly labelled.
 
 ## Tasks 14.4-14.6: off-machine benchmark, selection, and report
 
-Status: blocked by Task 14.3. The machine-readable matrix contains exactly
-B0-B16:
+Status: Task 14.4.1's five-image local BioCLIP/YOLOE smoke is authorized by the
+prototype-only readiness artifact. Larger experiments and scientific model
+selection remain blocked or off-machine. The machine-readable matrix contains
+exactly B0-B16:
 
 - B0 current text-pruned and B1 zero-shot without pruning;
 - B2 SimpleShot, B3 centered SimpleShot, B4 top-five references, and B5
@@ -261,9 +287,9 @@ Raw similarity or SVC margin is never labelled a probability.
 | Gate | Result |
 |-|-|
 | Family-first object pipeline, evaluation QA, and orchestration | 177 passed |
-| Phase 14 reference and matrix focused suite | 42 passed |
+| Phase 14 prototype-freeze focused suite | 61 passed |
 | GBIF checkpoint, metadata, workflow, and shortfall suite | 52 passed |
-| Final full non-vision repository suite | 2,213 passed in 78.77 seconds |
+| Final full non-vision repository suite | 2,285 passed in 87.49 seconds |
 | Changed-file Ruff | passed |
 | `git diff --check` | passed |
 | Local BioCLIP images | 0 |

@@ -24,6 +24,9 @@ PROTOTYPE_DUPLICATE_RESOLUTION_MANIFEST_PATH = Path(
 PROTOTYPE_QA_MANIFEST_PATH = Path(
     "examples/species/papilio_demoleus/pilot_prototype_qa_manifest.json"
 )
+PROTOTYPE_SUPPORT_BANK_MANIFEST_PATH = Path(
+    "examples/species/papilio_demoleus/pilot_prototype_support_bank_manifest.json"
+)
 
 
 def _matrix() -> dict[str, object]:
@@ -50,6 +53,10 @@ def _prototype_download_manifest() -> dict[str, object]:
 
 def _prototype_qa_manifest() -> dict[str, object]:
     return json.loads(PROTOTYPE_QA_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def _prototype_support_bank_manifest() -> dict[str, object]:
+    return json.loads(PROTOTYPE_SUPPORT_BANK_MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
 def _prototype_duplicate_resolution_manifest() -> dict[str, object]:
@@ -312,6 +319,51 @@ def test_phase14_prototype_qa_routes_unmeasured_and_failed_rows_honestly() -> No
 
 def test_phase14_prototype_qa_artifacts_are_hashed_and_untracked() -> None:
     manifest = _prototype_qa_manifest()
+
+    assert manifest["execution"]["local_storage_ignored_by_git"] is True
+    assert all(
+        str(value["uri"]).startswith("runs/")
+        and str(value["sha256"]).startswith("sha256:")
+        and len(str(value["sha256"])) == 71
+        and int(value["byte_count"]) > 0
+        for value in manifest["artifacts"].values()
+    )
+
+
+def test_phase14_prototype_support_freeze_authorises_only_prototype_work() -> None:
+    manifest = _prototype_support_bank_manifest()
+    counts = manifest["counts"]
+
+    assert manifest["task"] == "14.3.5"
+    assert manifest["status"] == "prototype_ready_with_shortfalls"
+    assert manifest["bank_status"] == "prototype_only"
+    assert manifest["classification_authorised"] is True
+    assert manifest["human_verification_complete"] is False
+    assert manifest["human_verification_required_for_scientific_release"] is True
+    assert manifest["execution"]["storage_backend"] == "local"
+    assert manifest["execution"]["s3_deferred"] is True
+    assert counts["selected"] == 93
+    assert counts["prototype_support"] == 81
+    assert counts["excluded"] == 12
+    assert counts["retryable_operational_failures"] == 10
+    assert (
+        sum(
+            counts[name]
+            for name in (
+                "support_train",
+                "model_selection",
+                "calibration",
+                "final_test",
+            )
+        )
+        == counts["prototype_support"]
+    )
+    assert manifest["semantics"]["provider_supported_is_human_verified"] is False
+    assert manifest["next_task"] == "14.4.1_five_image_bioclip_yoloe_smoke"
+
+
+def test_phase14_prototype_support_artifacts_are_hashed_and_untracked() -> None:
+    manifest = _prototype_support_bank_manifest()
 
     assert manifest["execution"]["local_storage_ignored_by_git"] is True
     assert all(
