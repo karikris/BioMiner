@@ -8,7 +8,7 @@ Week path. Tasks 14.2.2 through 14.2.5 now provide the trust-first layered
 planner, biological and visual-domain negative candidates, bounded source
 acquisition, and a reproducible acquisition plan. The current compact handoff
 is
-`examples/species/papilio_demoleus/pilot_prototype_policy_manifest.json`.
+`examples/species/papilio_demoleus/pilot_build_week_prototype_report_manifest.json`.
 
 Task 14.3.1 freezes 82 biological and 11 visual-domain references in an
 explicit 93-row prototype selection ledger. All 93 are R4 provider-supported
@@ -62,13 +62,12 @@ selection. Scientific classification accuracy and probability calibration
 remain unknown because the reference bank has no independently reviewed
 labels.
 
-Phase 14 is not complete. The prototype-only path has progressed through Task
-14.5 and selected an uncalibrated Build Week policy, while the scientific
-release path still requires attributable human review and an immutable
-verified reference-bank freeze. Ten source-media failures remain retryable
-and are not biological negatives. Task 14.6, the final Build Week prototype
-report, is next. Phase 15 is not yet authorized, and the production
-classification default remains unchanged.
+Phase 14 is complete for the explicitly prototype-only Build Week path. The
+scientific release path still requires attributable human review and an
+immutable verified reference-bank freeze. Ten source-media failures remain
+retryable and are not biological negatives. Phase 15 may now proceed to its
+prototype go/no-go audit, but the production classification default remains
+unchanged.
 
 ## Execution constraints
 
@@ -395,6 +394,21 @@ input, classifier fingerprint, null calibrator, and margin-policy versions.
 The compact local-only handoff is
 `examples/species/papilio_demoleus/pilot_prototype_policy_manifest.json`.
 
+Task 14.6 publishes the paired machine-readable and human-readable Build Week
+report under `reports/phase14/`. It reconciles the final 81-record support
+composition, R1-R5 trust distribution, Layer A-E distribution, sources,
+licences, exact shortfalls, all 19 B0-B16/B14 experiment rows, policy
+selection, staged inference, YOLOE routes, abstentions, throughput, memory,
+retryable failures, dashboard-ready metadata examples, limitations, and the
+post-hackathon review plan.
+
+The report states explicitly that all 81 frozen labels are provider-supported
+and zero are independently human verified. Classification accuracy and
+calibration error are `null`; raw scores are not probabilities. The report
+also separates the staged runner's earlier 0.02 abstention behavior from the
+frozen Task 14.5 margin-0.10 policy. Its compact handoff is
+`examples/species/papilio_demoleus/pilot_build_week_prototype_report_manifest.json`.
+
 ## Validation
 
 | Gate | Result |
@@ -403,10 +417,10 @@ The compact local-only handoff is
 | Phase 14 prototype-freeze focused suite | 61 passed |
 | Five-image runtime focused suite | 88 passed |
 | Prototype embedding and compact-contract focused suite | 26 passed |
-| Prototype policy selection and compact-contract suite | 23 passed |
+| Prototype policy selection and compact-contract suite | 25 passed |
 | Staged Flickr and species-generic boundary focused suite | 10 passed |
 | GBIF checkpoint, metadata, workflow, and shortfall suite | 52 passed |
-| Final full repository suite | 2,307 passed in 71.80 seconds |
+| Final full repository suite | 2,309 passed in 78.74 seconds |
 | Changed-file Ruff | passed |
 | `git diff --check` | passed |
 | Completed smoke BioCLIP images | 5 |
@@ -419,10 +433,11 @@ The compact local-only handoff is
 | Selected prototype policy | B13 global references |
 | Model-selection coverage at raw margin 0.10 | 24/30 |
 | Calibration rows used for label fitting | 0 |
+| Build Week JSON and Markdown report | complete, prototype only |
 
 ## Phase 15 decision
 
-No default change is supported yet. The prototype selection gate passes, but
-Task 14.6's Build Week report is still required before the Phase 15 prototype
-entry audit. Scientific production validation remains blocked by the absence
-of independently human-reviewed reference labels.
+The Phase 14 prototype report is complete, so Phase 15 may proceed to its
+explicit prototype go/no-go audit. No default change is authorized yet.
+Scientific production validation remains blocked by the absence of
+independently human-reviewed reference labels.

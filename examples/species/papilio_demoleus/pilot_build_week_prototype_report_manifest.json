@@ -1,0 +1,87 @@
+{
+  "schema_version": "papilio-demoleus-build-week-prototype-report-manifest-v1.0.0",
+  "phase": 14,
+  "task": "14.6",
+  "status": "complete_prototype_only",
+  "prototype_only": true,
+  "scientific_release_authorized": false,
+  "production_default_change_authorized": false,
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "required_statement": "This prototype demonstrates the architecture and few-shot retrieval workflow. Provider-supported reference labels have not all received independent human taxonomic verification.",
+  "storage": {
+    "backend": "local",
+    "s3_permitted": false,
+    "s3_used": false,
+    "raw_images_committed": false
+  },
+  "evidence": {
+    "prototype_support": 81,
+    "provider_supported": 81,
+    "human_verified": 0,
+    "classification_accuracy_reported": false,
+    "classification_accuracy": null,
+    "calibration_status": "not_fitted_insufficient_independently_reviewed_labels",
+    "scores_are_probabilities": false
+  },
+  "selected_policy": {
+    "experiment_id": "B13",
+    "reference_scope": "global",
+    "policy_status": "prototype_uncalibrated",
+    "target_always_scored": true,
+    "raw_margin_threshold": 0.1,
+    "model_selection_coverage": 0.8,
+    "classifier_fingerprint": "sha256:92638010837bd31b1cdbfae366fa1245015153b34f58dc8e8fea0a6378ad4acd"
+  },
+  "benchmark": {
+    "frozen_records": 81,
+    "records_skipped": 0,
+    "prediction_rows": 1539,
+    "candidate_score_rows": 12874,
+    "experiment_summary_rows": 19,
+    "classification_accuracy_reported": false
+  },
+  "staged_flickr": {
+    "planned": 13501,
+    "classified": 13496,
+    "retryable_failures": 5,
+    "target_scored": 13496,
+    "target_scored_rate": 1.0,
+    "records_per_second": 2.274524,
+    "rss_peak_memory_bytes": 1765261312,
+    "s3_used": false
+  },
+  "route_separation": {
+    "frozen_adult_field": 80,
+    "frozen_larval": 1,
+    "frozen_pinned_specimen": 0,
+    "staged_adult_reference_route_used": 6527,
+    "staged_larval_reference_route_used": 0,
+    "staged_pinned_specimen_reference_route_used": 0
+  },
+  "artifacts": {
+    "json_report": {
+      "uri": "reports/phase14/papilio_demoleus_build_week_prototype_report.json",
+      "byte_count": 23486,
+      "sha256": "sha256:88bce2ca8838fff5a74dc616ccbb6fe951dcc61d64f23d57deba604248785469"
+    },
+    "markdown_report": {
+      "uri": "reports/phase14/papilio_demoleus_build_week_prototype_report.md",
+      "byte_count": 10939,
+      "sha256": "sha256:4f634944dd74b33a4944414bc22a5b167cee1add0e7b714d49ec224310e5a717"
+    }
+  },
+  "githits": {
+    "solution_id": "9ec7b692-eae4-423d-8d6f-1cd91819a8ce",
+    "patterns": "paired JSON and Markdown, immutable provenance, measured metrics, explicit failures and limitations"
+  },
+  "phase15_prototype_entry": {
+    "status": "ready_for_go_no_go_audit",
+    "prototype_integration_may_be_evaluated": true,
+    "production_default_change_authorized": false,
+    "scientific_release_authorized": false
+  },
+  "next_task": "15_prototype_go_no_go_audit"
+}

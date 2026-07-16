@@ -1,0 +1,497 @@
+{
+  "schema_version": "papilio-demoleus-build-week-prototype-report-v1.0.0",
+  "phase": 14,
+  "task": "14.6",
+  "status": "complete_prototype_only",
+  "generated_at": "2026-07-16T08:36:40Z",
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "required_statement": "This prototype demonstrates the architecture and few-shot retrieval workflow. Provider-supported reference labels have not all received independent human taxonomic verification.",
+  "scope": {
+    "prototype_only": true,
+    "scientific_production_validation": false,
+    "production_default_change_authorized": false,
+    "storage_backend": "local",
+    "s3_permitted": false,
+    "s3_used": false,
+    "raw_images_committed": false
+  },
+  "evidence_semantics": {
+    "model_output_is_taxonomic_validation": false,
+    "provider_supported_is_human_verified": false,
+    "flickr_query_match_is_label": false,
+    "geography_is_validation": false,
+    "raw_scores_are_probabilities": false,
+    "classification_accuracy_reported": false,
+    "classification_accuracy": null,
+    "classification_accuracy_status": "unavailable_no_independently_human_reviewed_taxonomic_labels",
+    "calibration_error": null,
+    "calibration_status": "not_fitted_insufficient_independently_reviewed_labels"
+  },
+  "input_provenance": {
+    "prototype_acquisition_manifest": {
+      "uri": "examples/species/papilio_demoleus/pilot_prototype_acquisition_manifest.json",
+      "sha256": "sha256:25657c73fe0c3b41340b416510daf623d664c3362f271070fe9843de45829f1e"
+    },
+    "prototype_support_bank_manifest": {
+      "uri": "examples/species/papilio_demoleus/pilot_prototype_support_bank_manifest.json",
+      "sha256": "sha256:da558c04ac9b9c93941ee627532e3da657398415b707ad94757c903e0e51f76c"
+    },
+    "prototype_embeddings_manifest": {
+      "uri": "examples/species/papilio_demoleus/pilot_prototype_embeddings_manifest.json",
+      "sha256": "sha256:381cc9a1266c30e744c12b320de4d4f3b11119c4c80b9136c25f6a0b9d9ecb0b"
+    },
+    "prototype_vision_smoke_manifest": {
+      "uri": "examples/species/papilio_demoleus/pilot_prototype_vision_smoke_manifest.json",
+      "sha256": "sha256:3a807046570a06de1f7588a71c394a3efa828c2fbef467968a16b4e301b4af65"
+    },
+    "staged_flickr_manifest": {
+      "uri": "examples/species/papilio_demoleus/pilot_staged_flickr_manifest.json",
+      "sha256": "sha256:4f4aeeadb559e962eb11802301c3b2d691be674094c7449aab0ab061a4b362e3"
+    },
+    "prototype_b0_b16_manifest": {
+      "uri": "examples/species/papilio_demoleus/pilot_prototype_b0_b16_manifest.json",
+      "sha256": "sha256:dfe21afbc8998ae5fc8eb4aa0157afc4f17ede336635f62af7cb888f141d3bf0"
+    },
+    "prototype_policy_manifest": {
+      "uri": "examples/species/papilio_demoleus/pilot_prototype_policy_manifest.json",
+      "sha256": "sha256:d60f7b685366df619063df09d114f77d056ca2324f988e5707ae383cb3024f71"
+    }
+  },
+  "reference_bank": {
+    "selected_media": 93,
+    "prototype_support": 81,
+    "excluded": 12,
+    "retryable_source_failures": 10,
+    "provider_supported": 81,
+    "human_verified": 0,
+    "independent_observations": 81,
+    "reference_bank_version": "papilio-demoleus-prototype-bank-20260716",
+    "composition": {
+      "target_adult": 20,
+      "target_caterpillar": 1,
+      "selected_regional_competitors": 31,
+      "reviewed_false_winner_species": 11,
+      "broader_papilionidae": 11,
+      "biological_hard_negatives": 7,
+      "visual_domain_negatives": 0
+    },
+    "trust_distribution": {
+      "R1": 0,
+      "R2": 0,
+      "R3": 0,
+      "R4": 81,
+      "R5": 0
+    },
+    "geographic_layer_distribution": {
+      "A": 51,
+      "B": 6,
+      "C": 0,
+      "D": 24,
+      "E": 0
+    },
+    "source_distribution": {
+      "GBIF": 81,
+      "Wikimedia Commons": 0
+    },
+    "licence_policy_distribution": {
+      "allowed": 2,
+      "research_only": 79,
+      "denied": 0,
+      "quarantined": 0
+    },
+    "route_distribution": {
+      "adult_field": 80,
+      "larval": 1,
+      "pinned_specimen": 0
+    },
+    "split_distribution": {
+      "support_train": 26,
+      "model_selection": 30,
+      "calibration": 13,
+      "final_test": 12
+    }
+  },
+  "support_shortfalls": {
+    "scope_count": 34,
+    "total_shortfall": 553,
+    "exact_scope_artifact": {
+      "uri": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_shortfalls.parquet",
+      "sha256": "sha256:ac2ddccf0e410a332793c21150bf1859d1e459dc85c3d1062386e2ba795c3b5a"
+    },
+    "by_reference_group": [
+      {
+        "reference_group": "target_adult",
+        "requested": 50,
+        "selected": 20,
+        "shortfall": 30
+      },
+      {
+        "reference_group": "target_caterpillar",
+        "requested": 20,
+        "selected": 1,
+        "shortfall": 19
+      },
+      {
+        "reference_group": "selected_regional_competitors",
+        "requested": 100,
+        "selected": 32,
+        "shortfall": 68
+      },
+      {
+        "reference_group": "reviewed_false_winner_genera",
+        "requested": 100,
+        "selected": 11,
+        "shortfall": 89
+      },
+      {
+        "reference_group": "historical_false_winner_species",
+        "requested": 20,
+        "selected": 0,
+        "shortfall": 20
+      },
+      {
+        "reference_group": "broader_papilionidae",
+        "requested": 200,
+        "selected": 11,
+        "shortfall": 189
+      },
+      {
+        "reference_group": "moth_negatives",
+        "requested": 45,
+        "selected": 1,
+        "shortfall": 44
+      },
+      {
+        "reference_group": "other_insect_negatives",
+        "requested": 30,
+        "selected": 6,
+        "shortfall": 24
+      },
+      {
+        "reference_group": "other_lepidoptera_negatives",
+        "requested": 30,
+        "selected": 0,
+        "shortfall": 30
+      },
+      {
+        "reference_group": "visual_domain_negatives",
+        "requested": 11,
+        "selected": 11,
+        "shortfall": 0
+      },
+      {
+        "reference_group": "visual_neighbour_candidates",
+        "requested": 40,
+        "selected": 0,
+        "shortfall": 40
+      }
+    ],
+    "post_freeze_shortfalls": [
+      "Ten Wikimedia media records remain retryable operational failures.",
+      "The single larval record is assigned to calibration, so there is no larval support_train prototype.",
+      "No visual-domain negative or pinned-specimen record passed the prototype freeze.",
+      "Full-bank detector evidence is not instrumented locally.",
+      "Two selected records lack owner evidence, so leakage protection is not claimed complete.",
+      "No support row is independently human taxonomically verified."
+    ]
+  },
+  "vision_runtime": {
+    "bioclip": {
+      "model_id": "hf-hub:imageomics/bioclip-2.5-vit-huge-patch14-378",
+      "model_revision": "191d741545e4c741cdef4b22c6eb69c945c1e592",
+      "device": "mps",
+      "embedding_dimension": 1024,
+      "frozen_support_embeddings": 81,
+      "persistent_model_loading": true
+    },
+    "yoloe": {
+      "model_id": "yoloe26:yoloe-26s-seg",
+      "checkpoint": "yoloe-26s-seg.pt",
+      "device": "mps",
+      "role": "gate_and_router_only",
+      "persistent_worker_process_starts": 1
+    }
+  },
+  "benchmark": {
+    "records_scored": 81,
+    "records_skipped": 0,
+    "prediction_rows": 1539,
+    "candidate_score_rows": 12874,
+    "experiment_summary_artifact": {
+      "uri": "runs/papilio_demoleus_prototype_b0_b16_local_20260716/prototype_b0_b16_experiment_summary.parquet",
+      "sha256": "sha256:69a0843f03dca6ab58e4f7748f6044450006799b097fae8683d1e4e27255cd70"
+    },
+    "metric_semantics": "provider_supported_retrieval_and_internal_consistency_not_classification_accuracy",
+    "experiments": [
+      {"experiment_id": "B0", "experiment_name": "current_text_pruned", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.0, "mean_raw_margin": 0.048773, "abstention_rate": 0.0, "fully_available_rate": 1.0},
+      {"experiment_id": "B1", "experiment_name": "zero_shot_no_pruning", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 3.6, "mean_raw_margin": 0.048773, "abstention_rate": 0.0, "fully_available_rate": 1.0},
+      {"experiment_id": "B2", "experiment_name": "simpleshot", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.0, "mean_raw_margin": 0.157182, "abstention_rate": 0.018182, "fully_available_rate": 0.981818},
+      {"experiment_id": "B3", "experiment_name": "centered_simpleshot", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.0, "mean_raw_margin": 0.394124, "abstention_rate": 0.018182, "fully_available_rate": 0.981818},
+      {"experiment_id": "B4", "experiment_name": "top5_references", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.0, "mean_raw_margin": 0.160001, "abstention_rate": 0.018182, "fully_available_rate": 0.981818},
+      {"experiment_id": "B5", "experiment_name": "multi_prototype", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.0, "mean_raw_margin": 0.150996, "abstention_rate": 0.018182, "fully_available_rate": 0.981818},
+      {"experiment_id": "B6", "experiment_name": "logistic_regression", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.1, "mean_raw_margin": 12.895471, "abstention_rate": 0.0, "fully_available_rate": 1.0},
+      {"experiment_id": "B7", "experiment_name": "linear_svc", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.1, "mean_raw_margin": 2.118011, "abstention_rate": 0.0, "fully_available_rate": 1.0},
+      {"experiment_id": "B8", "experiment_name": "linear_svc_with_features", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.1, "mean_raw_margin": 2.112395, "abstention_rate": 0.0, "fully_available_rate": 1.0},
+      {"experiment_id": "B9", "experiment_name": "calibrated_abstention", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.1, "mean_raw_margin": 2.118011, "abstention_rate": 0.0, "fully_available_rate": 1.0},
+      {"experiment_id": "B10", "experiment_name": "raw_full_frame", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.0, "mean_raw_margin": 0.157182, "abstention_rate": 0.018182, "fully_available_rate": 0.981818},
+      {"experiment_id": "B11", "experiment_name": "raw_plus_focused", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.0, "mean_raw_margin": 0.157182, "abstention_rate": 0.018182, "fully_available_rate": 0.0},
+      {"experiment_id": "B12", "experiment_name": "raw_plus_focused_plus_masked", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.0, "mean_raw_margin": 0.157182, "abstention_rate": 0.018182, "fully_available_rate": 0.0},
+      {"experiment_id": "B13", "experiment_name": "global_references", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.0, "mean_raw_margin": 0.157182, "abstention_rate": 0.018182, "fully_available_rate": 0.981818},
+      {"experiment_id": "B14-regional", "experiment_name": "cluster_conditioned_regional_only", "evaluated_records": 55, "target_top1_retrieval_rate": 0.2, "mean_target_rank": 1.0, "mean_raw_margin": 0.102569, "abstention_rate": 0.418182, "fully_available_rate": 0.581818},
+      {"experiment_id": "B14-global", "experiment_name": "cluster_conditioned_global_only", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.0, "mean_raw_margin": 0.157182, "abstention_rate": 0.018182, "fully_available_rate": 0.981818},
+      {"experiment_id": "B14-layered", "experiment_name": "cluster_conditioned_trust_first_layered", "evaluated_records": 55, "target_top1_retrieval_rate": 0.8, "mean_target_rank": 1.0, "mean_raw_margin": 0.121533, "abstention_rate": 0.018182, "fully_available_rate": 0.0},
+      {"experiment_id": "B15", "experiment_name": "text_image_fusion", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.0, "mean_raw_margin": 0.133462, "abstention_rate": 0.018182, "fully_available_rate": 0.981818},
+      {"experiment_id": "B16", "experiment_name": "image_only", "evaluated_records": 55, "target_top1_retrieval_rate": 0.9, "mean_target_rank": 1.0, "mean_raw_margin": 0.157182, "abstention_rate": 0.018182, "fully_available_rate": 0.981818}
+    ],
+    "model_selection_comparison": {
+      "B0": {
+        "target_scoreability_rate": 0.1,
+        "target_top1_retrieval_rate_on_target_rows": 1.0,
+        "mean_raw_margin": 0.041302,
+        "low_or_missing_margin_rate_at_0_10": 0.9
+      },
+      "B13": {
+        "target_scoreability_rate": 1.0,
+        "target_top1_retrieval_rate_on_target_rows": 1.0,
+        "mean_raw_margin": 0.163995,
+        "low_or_missing_margin_rate_at_0_10": 0.2
+      },
+      "B14_regional": {
+        "target_scoreability_rate": 0.3,
+        "mean_raw_margin": 0.103492,
+        "low_or_missing_margin_rate_at_0_10": 0.566667
+      },
+      "B14_global": {
+        "target_scoreability_rate": 1.0,
+        "mean_raw_margin": 0.163995,
+        "low_or_missing_margin_rate_at_0_10": 0.2
+      },
+      "B14_layered": {
+        "target_scoreability_rate": 0.333333,
+        "mean_raw_margin": 0.10511,
+        "low_or_missing_margin_rate_at_0_10": 0.533333
+      }
+    }
+  },
+  "selected_policy": {
+    "experiment_id": "B13",
+    "reference_scope": "global",
+    "policy_status": "prototype_uncalibrated",
+    "target_always_scored": true,
+    "classifier_fingerprint": "sha256:92638010837bd31b1cdbfae366fa1245015153b34f58dc8e8fea0a6378ad4acd",
+    "raw_margin_policy": {
+      "version": "prototype-raw-margin-abstention-v1.0.0",
+      "threshold": 0.1,
+      "threshold_fitted_from_labels": false,
+      "scores_are_probabilities": false
+    },
+    "model_selection": {
+      "records": 30,
+      "accepted": 24,
+      "abstained": 6,
+      "coverage": 0.8
+    },
+    "calibration_coverage_audit": {
+      "records": 13,
+      "would_accept": 9,
+      "would_abstain": 4,
+      "human_verified_records": 0,
+      "calibrator_fitted": false
+    },
+    "final_test_used_for_selection": false
+  },
+  "staged_flickr_inference": {
+    "classification_artifact": {
+      "uri": "runs/papilio_demoleus_staged_flickr_local_20260716/prototype_flickr_classification.parquet",
+      "sha256": "sha256:63d8a6575dbd2362a53383a42247afd57bdff52339a788a7b6571ef19c697d99"
+    },
+    "planned": 13501,
+    "classified": 13496,
+    "retryable_failures": 5,
+    "candidate_score_rows": 634312,
+    "species_candidates_per_classified_record": 34,
+    "all_candidates_per_classified_record": 47,
+    "target_scored": 13496,
+    "target_scored_rate": 1.0,
+    "target_positive_text_margin": {
+      "count": 1502,
+      "denominator": 13496,
+      "rate": 0.111292
+    },
+    "target_positive_reference_margin": {
+      "count": 4345,
+      "denominator": 6527,
+      "rate_among_adult_reference_routes": 0.665696
+    },
+    "yoloe_detection_routes": {
+      "adult_butterfly_field": 2802,
+      "caterpillar_field": 400,
+      "pinned_specimen": 31,
+      "pupa_or_chrysalis": 4505,
+      "ambiguous_visual_domain": 4068,
+      "no_relevant_organism": 1583,
+      "possible_moth_or_other_insect": 61,
+      "artwork_logo_tattoo_or_other_artifact": 46
+    },
+    "routing_actions": {
+      "score": 3233,
+      "review": 3725,
+      "exclude": 6538
+    },
+    "bioclip_routes": {
+      "adult_field": 6527,
+      "larval": 400,
+      "pinned_specimen": 31,
+      "not_routed": 6538
+    },
+    "reference_routes_used": {
+      "adult_field": 6527,
+      "larval": 0,
+      "pinned_specimen": 0,
+      "none": 6969
+    },
+    "staged_preselection_abstention": {
+      "policy_note": "These counts come from the staged preselection runner and are distinct from the frozen Task 14.5 raw-margin-0.10 policy.",
+      "abstained": 12296,
+      "not_abstained": 1200,
+      "abstention_rate": 0.911085,
+      "reason_counts": {
+        "route_pupa_or_chrysalis": 4505,
+        "route_ambiguous_visual_domain": 4068,
+        "uncalibrated_margin_below_0_02": 1602,
+        "route_no_relevant_organism": 1583,
+        "compatible_route_has_no_target_support": 431,
+        "route_possible_moth_or_other_insect": 61,
+        "route_artwork_logo_tattoo_or_other_artifact": 46
+      }
+    },
+    "performance": {
+      "records_per_second": 2.274524,
+      "seconds_per_record": 0.439652,
+      "rss_peak_memory_bytes": 1765261312,
+      "mps_current_allocated_memory": "not_instrumented",
+      "mps_driver_allocated_memory": "not_instrumented",
+      "mps_recommended_max_memory": "not_instrumented"
+    },
+    "failures": [
+      {"flickr_photo_id": "5229667156", "stage": "download_or_decode", "attempts": 3, "retryable": true, "biological_negative": false},
+      {"flickr_photo_id": "22573167168", "stage": "download_or_decode", "attempts": 3, "retryable": true, "biological_negative": false},
+      {"flickr_photo_id": "6016065489", "stage": "download_or_decode", "attempts": 3, "retryable": true, "biological_negative": false},
+      {"flickr_photo_id": "51546333924", "stage": "download_or_decode", "attempts": 3, "retryable": true, "biological_negative": false},
+      {"flickr_photo_id": "7607829480", "stage": "download_or_decode", "attempts": 3, "retryable": true, "biological_negative": false}
+    ]
+  },
+  "dashboard_ready_examples": [
+    {
+      "example_kind": "accepted_high_margin",
+      "flickr_photo_id": "16236763015",
+      "geo_cluster_id": "geo:9ea14c2c74dc33c6a28368b2",
+      "detection_route": "adult_butterfly_field",
+      "routing_action": "score",
+      "visual_input": "raw_full_image",
+      "reference_route_used": "adult_field",
+      "nearest_target_reference_media_id": "reference-media:f5e5d982ff25220342599f2a66800cc01ce471ad862daaa534bd221573145bff",
+      "nearest_target_reference_similarity": 0.951439,
+      "best_competitor_reference_name": "Graphium agamemnon",
+      "best_competitor_reference_similarity": 0.676246,
+      "target_competitor_reference_margin": 0.275193,
+      "uncalibrated_margin": 0.251825,
+      "abstention_reason": null
+    },
+    {
+      "example_kind": "abstained_low_margin",
+      "flickr_photo_id": "8645536423",
+      "geo_cluster_id": "geo:64bd71c6d57b2d773f06c256",
+      "detection_route": "adult_butterfly_field",
+      "routing_action": "score",
+      "visual_input": "raw_full_image",
+      "reference_route_used": "adult_field",
+      "nearest_target_reference_media_id": "reference-media:a447f08bbb84054dc52028543c84b0abcb0baaed0cda095477831e9ec2ab8fc4",
+      "nearest_target_reference_similarity": 0.493902,
+      "best_competitor_reference_name": "Papilio castor",
+      "best_competitor_reference_similarity": 0.908903,
+      "target_competitor_reference_margin": -0.415001,
+      "uncalibrated_margin": -0.400985,
+      "abstention_reason": "uncalibrated_margin_below_0.02"
+    },
+    {
+      "example_kind": "review_route",
+      "flickr_photo_id": "54692237151",
+      "geo_cluster_id": "geo:ec801dae3df455b883d1fc0d",
+      "detection_route": "ambiguous_visual_domain",
+      "routing_action": "review",
+      "visual_input": "raw_full_image",
+      "reference_route_used": "adult_field",
+      "nearest_target_reference_media_id": "reference-media:eca8dce9cf95cb02ea5f2a4680e42b8d4bf15d2098d04048de0de7a404ec3ba1",
+      "nearest_target_reference_similarity": 0.529157,
+      "best_competitor_reference_name": "Papilio helenus",
+      "best_competitor_reference_similarity": 0.941604,
+      "target_competitor_reference_margin": -0.412447,
+      "uncalibrated_margin": -0.376096,
+      "abstention_reason": "route:ambiguous_visual_domain"
+    },
+    {
+      "example_kind": "excluded_route",
+      "flickr_photo_id": "4428315903",
+      "geo_cluster_id": "geo:bc1c4d0c13c1ab177b858b35",
+      "detection_route": "ambiguous_visual_domain",
+      "routing_action": "exclude",
+      "visual_input": "raw_full_image",
+      "reference_route_used": null,
+      "nearest_target_reference_media_id": null,
+      "nearest_target_reference_similarity": null,
+      "best_competitor_reference_name": null,
+      "best_competitor_reference_similarity": null,
+      "target_competitor_reference_margin": null,
+      "uncalibrated_margin": -0.333495,
+      "abstention_reason": "route:ambiguous_visual_domain"
+    }
+  ],
+  "known_limitations": [
+    "No reference label is independently human taxonomically verified.",
+    "Provider-supported retrieval consistency is not classification accuracy.",
+    "The selected policy is uncalibrated and emits no probabilities.",
+    "Seventy-nine of 81 frozen references are research-only under the current licence policy.",
+    "Regional and layered reference conditioning can remove the target in sparse clusters.",
+    "The larval route has no support_train prototype and the pinned-specimen route has no frozen reference.",
+    "No visual-domain negative passed the final support freeze.",
+    "Focused and masked visual-input ablations were unavailable; B11 and B12 reused raw full-frame evidence and recorded that limitation.",
+    "Five Flickr download/decode failures and ten reference-source failures remain retryable.",
+    "The YOLOE router produced a strong pupa/ambiguous-route warning during smoke and staged inference; routing accuracy is not validated.",
+    "Two support records lack owner evidence, so leakage protection is not claimed complete.",
+    "The staged Flickr inference distribution must not be interpreted as a population prevalence estimate."
+  ],
+  "post_hackathon_human_review_plan": [
+    "Prioritize the 20 target-adult and one target-caterpillar references for attributable expert review.",
+    "Review competitor, false-winner, broader-family, moth, and other-insect references with licence and attribution evidence visible.",
+    "Resolve the ten retryable Wikimedia source failures without converting them into biological negatives.",
+    "Acquire and review larval support_train, pinned-specimen, visual-domain-negative, historical-false-winner, other-Lepidoptera, and visual-neighbour evidence.",
+    "Record accepted, rejected, uncertain, and conflicting decisions with reviewer identity and timestamp.",
+    "Rebuild leakage components and all four splits after review; do not move related observations, owners, photographers, bursts, or mirrors across splits.",
+    "Fit a calibrator and select thresholds only on reviewed calibration labels.",
+    "Evaluate the locked policy once on reviewed final-test labels and report accuracy, precision-recall, calibration, and selective-risk metrics.",
+    "Audit licence policy before any public dashboard exposes reference thumbnails or copies.",
+    "Retain model output as screening evidence and keep the GBIF accepted spine authoritative."
+  ],
+  "verification": {
+    "phase14_report_contract_tests": 22,
+    "prototype_policy_and_phase14_contract_tests": 25,
+    "full_repository_tests": 2309,
+    "full_repository_test_seconds": 78.74,
+    "ruff": "passed",
+    "json_validation": "passed",
+    "git_diff_check": "passed",
+    "cli_help": "passed"
+  },
+  "phase15_prototype_entry": {
+    "status": "ready_for_go_no_go_audit",
+    "phase14_prototype_report_complete": true,
+    "prototype_integration_may_be_evaluated": true,
+    "production_default_change_authorized": false,
+    "scientific_release_authorized": false,
+    "next_task": "15_prototype_integration_go_no_go"
+  }
+}

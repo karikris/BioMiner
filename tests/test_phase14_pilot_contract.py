@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -38,6 +39,9 @@ PROTOTYPE_B0_B16_MANIFEST_PATH = Path(
 )
 PROTOTYPE_POLICY_MANIFEST_PATH = Path(
     "examples/species/papilio_demoleus/pilot_prototype_policy_manifest.json"
+)
+BUILD_WEEK_REPORT_MANIFEST_PATH = Path(
+    "examples/species/papilio_demoleus/pilot_build_week_prototype_report_manifest.json"
 )
 
 
@@ -89,6 +93,10 @@ def _prototype_b0_b16_manifest() -> dict[str, object]:
 
 def _prototype_policy_manifest() -> dict[str, object]:
     return json.loads(PROTOTYPE_POLICY_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def _build_week_report_manifest() -> dict[str, object]:
+    return json.loads(BUILD_WEEK_REPORT_MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
 def test_phase14_matrix_freezes_local_vision_limit_and_external_execution() -> None:
@@ -521,3 +529,81 @@ def test_phase14_prototype_policy_is_local_uncalibrated_and_frozen() -> None:
     assert str(frozen["classifier_fingerprint"]).startswith("sha256:")
     assert len(str(frozen["classifier_fingerprint"])) == 71
     assert manifest["next_task"] == "14.6_build_week_prototype_report"
+
+
+def test_phase14_build_week_report_is_complete_but_prototype_only() -> None:
+    manifest = _build_week_report_manifest()
+    evidence = manifest["evidence"]
+    policy = manifest["selected_policy"]
+    staged = manifest["staged_flickr"]
+    entry = manifest["phase15_prototype_entry"]
+
+    assert manifest["task"] == "14.6"
+    assert manifest["status"] == "complete_prototype_only"
+    assert manifest["prototype_only"] is True
+    assert manifest["scientific_release_authorized"] is False
+    assert manifest["production_default_change_authorized"] is False
+    assert manifest["storage"]["backend"] == "local"
+    assert manifest["storage"]["s3_used"] is False
+    assert evidence["prototype_support"] == evidence["provider_supported"] == 81
+    assert evidence["human_verified"] == 0
+    assert evidence["classification_accuracy_reported"] is False
+    assert evidence["classification_accuracy"] is None
+    assert evidence["scores_are_probabilities"] is False
+    assert policy["experiment_id"] == "B13"
+    assert policy["policy_status"] == "prototype_uncalibrated"
+    assert policy["target_always_scored"] is True
+    assert policy["raw_margin_threshold"] == 0.1
+    assert staged["classified"] == staged["target_scored"] == 13_496
+    assert staged["retryable_failures"] == 5
+    assert entry["status"] == "ready_for_go_no_go_audit"
+    assert entry["production_default_change_authorized"] is False
+    assert manifest["next_task"] == "15_prototype_go_no_go_audit"
+
+
+def test_phase14_build_week_report_artifacts_are_tracked_and_hashed() -> None:
+    manifest = _build_week_report_manifest()
+
+    for artifact in manifest["artifacts"].values():
+        path = Path(artifact["uri"])
+        assert path.is_file()
+        assert str(artifact["sha256"]).startswith("sha256:")
+        assert len(str(artifact["sha256"])) == 71
+        assert int(artifact["byte_count"]) == path.stat().st_size
+        assert artifact["sha256"] == (
+            "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+
+    report = json.loads(
+        Path(manifest["artifacts"]["json_report"]["uri"]).read_text(encoding="utf-8")
+    )
+    assert report["required_statement"].startswith(
+        "This prototype demonstrates the architecture"
+    )
+    assert report["reference_bank"]["trust_distribution"] == {
+        "R1": 0,
+        "R2": 0,
+        "R3": 0,
+        "R4": 81,
+        "R5": 0,
+    }
+    assert report["reference_bank"]["geographic_layer_distribution"] == {
+        "A": 51,
+        "B": 6,
+        "C": 0,
+        "D": 24,
+        "E": 0,
+    }
+    assert {item["experiment_id"] for item in report["benchmark"]["experiments"]} == (
+        {f"B{index}" for index in range(14)}
+        | {"B14-regional", "B14-global", "B14-layered", "B15", "B16"}
+    )
+    assert report["evidence_semantics"]["classification_accuracy"] is None
+    assert report["staged_flickr_inference"]["reference_routes_used"] == {
+        "adult_field": 6527,
+        "larval": 0,
+        "pinned_specimen": 0,
+        "none": 6969,
+    }
+    assert len(report["dashboard_ready_examples"]) == 4
+    assert len(report["post_hackathon_human_review_plan"]) >= 8
