@@ -23,7 +23,6 @@ from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
 PROTOTYPE_VISION_SMOKE_VERSION = "prototype-vision-smoke-v1.0.0"
 PROTOTYPE_VISION_SMOKE_REPORT = "prototype_vision_smoke_report.json"
 PROTOTYPE_VISION_SMOKE_SUMMARY = "prototype_vision_smoke_summary.md"
-EXPECTED_IMAGE_COUNT = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,16 +63,16 @@ class PrototypeVisionSmokeConfig:
             "readiness_sha256",
         ):
             _require_sha256(getattr(self, field), field=field)
-        if len(self.reference_media_ids) != EXPECTED_IMAGE_COUNT:
-            raise ValueError("prototype vision smoke requires exactly five media IDs")
-        if len(set(self.reference_media_ids)) != EXPECTED_IMAGE_COUNT:
+        if not self.reference_media_ids:
+            raise ValueError("prototype vision smoke requires at least one media ID")
+        if len(set(self.reference_media_ids)) != len(self.reference_media_ids):
             raise ValueError("prototype vision smoke media IDs must be unique")
         if self.device not in {"mps", "cpu"}:
             raise ValueError("prototype vision smoke device must be mps or cpu")
-        if not 0 < self.yoloe_batch_size <= EXPECTED_IMAGE_COUNT:
-            raise ValueError("yoloe_batch_size must be between one and five")
-        if self.bioclip_batch_size != EXPECTED_IMAGE_COUNT:
-            raise ValueError("bioclip_batch_size must be exactly five")
+        if self.yoloe_batch_size <= 0:
+            raise ValueError("yoloe_batch_size must be positive")
+        if self.bioclip_batch_size <= 0:
+            raise ValueError("bioclip_batch_size must be positive")
 
     @classmethod
     def read_json(cls, path: str | Path) -> PrototypeVisionSmokeConfig:
@@ -107,6 +106,7 @@ def run_prototype_vision_smoke(
     ):
         raise ValueError("prototype readiness does not authorise classification")
     rows = _selected_support_rows(config)
+    image_count = len(rows)
     decoded, image_evidence = _decode_images(rows)
 
     bioclip_started = perf_counter()
@@ -120,10 +120,23 @@ def run_prototype_vision_smoke(
     )
     try:
         scorer.ensure_model_attestation()
-        embeddings = scorer.embed_image_paths(
-            [Path(str(row["source_object_uri"])) for row in rows]
+        embeddings: list[list[float]] = []
+        bioclip_batch_sizes: list[int] = []
+        bioclip_content_hashes: list[str] = []
+        image_paths = [Path(str(row["source_object_uri"])) for row in rows]
+        for start in range(0, len(image_paths), config.bioclip_batch_size):
+            batch = image_paths[start : start + config.bioclip_batch_size]
+            bioclip_batch_sizes.append(len(batch))
+            embeddings.extend(scorer.embed_image_paths(batch))
+            bioclip_content_hashes.extend(scorer.last_image_content_hashes or ())
+        bioclip = _bioclip_evidence(
+            scorer,
+            embeddings,
+            image_evidence,
+            bioclip_content_hashes,
+            bioclip_batch_sizes,
+            config,
         )
-        bioclip = _bioclip_evidence(scorer, embeddings, image_evidence, config)
     finally:
         scorer.close()
     bioclip_seconds = perf_counter() - bioclip_started
@@ -173,7 +186,7 @@ def run_prototype_vision_smoke(
     report: dict[str, Any] = {
         "schema_version": PROTOTYPE_VISION_SMOKE_VERSION,
         "status": "passed",
-        "image_count": EXPECTED_IMAGE_COUNT,
+        "image_count": image_count,
         "support_manifest_sha256": config.support_manifest_sha256,
         "readiness_sha256": config.readiness_sha256,
         "bank_status": readiness["bank_status"],
@@ -186,6 +199,7 @@ def run_prototype_vision_smoke(
         },
         "batch_settings": {
             "bioclip": config.bioclip_batch_size,
+            "bioclip_actual_batches": bioclip_batch_sizes,
             "yoloe": config.yoloe_batch_size,
             "yoloe_actual_batches": batch_sizes,
         },
@@ -263,14 +277,22 @@ def _decode_images(
     return decoded, evidence
 
 
-def _bioclip_evidence(scorer, embeddings, image_evidence, config):  # noqa: ANN001
+def _bioclip_evidence(  # noqa: ANN001
+    scorer,
+    embeddings,
+    image_evidence,
+    content_hashes,
+    batch_sizes,
+    config,
+):
     dimensions = {len(row) for row in embeddings}
-    if len(embeddings) != EXPECTED_IMAGE_COUNT or len(dimensions) != 1:
+    image_count = len(image_evidence)
+    if len(embeddings) != image_count or len(dimensions) != 1:
         raise RuntimeError("BioCLIP returned an invalid embedding shape")
     if not all(isfinite(value) for row in embeddings for value in row):
         raise RuntimeError("BioCLIP embeddings contain non-finite values")
     expected_hashes = [str(row["decoded_content_sha256"]) for row in image_evidence]
-    if scorer.last_image_content_hashes != expected_hashes:
+    if content_hashes != expected_hashes:
         raise RuntimeError("BioCLIP content hashes differ from support image hashes")
     metrics = scorer.cache_metrics
     if (
@@ -293,17 +315,18 @@ def _bioclip_evidence(scorer, embeddings, image_evidence, config):  # noqa: ANN0
         "image_resize_mode": scorer.effective_image_resize_mode,
         "device_actual": scorer.device,
         "gpu_name": scorer.gpu_name,
-        "embedding_shape": [EXPECTED_IMAGE_COUNT, next(iter(dimensions))],
+        "embedding_shape": [image_count, next(iter(dimensions))],
         "finite_values": True,
         "content_hashes_match": True,
         "embedding_batch_size": config.bioclip_batch_size,
+        "batch_sizes": batch_sizes,
         "persistent_loading": metrics,
         "memory": dict(scorer.memory_metrics),
     }
 
 
 def _yoloe_evidence(detector, detections, batch_sizes, config):  # noqa: ANN001
-    if len(detections) != EXPECTED_IMAGE_COUNT:
+    if len(detections) != sum(batch_sizes):
         raise RuntimeError("YOLOE returned the wrong number of image results")
     if detector.worker_process_starts != 1 or detector.worker_request_count != len(
         batch_sizes
@@ -399,7 +422,7 @@ def _summary(report: Mapping[str, object]) -> str:
     yoloe = report["yoloe"]
     assert isinstance(bioclip, Mapping) and isinstance(yoloe, Mapping)
     return (
-        "# Prototype five-image vision smoke\n\n"
+        "# Prototype vision smoke\n\n"
         f"- Status: {report['status']}\n"
         f"- Device: {report['device_requested']}\n"
         f"- BioCLIP: {bioclip['model_id']} at {bioclip['model_revision']}\n"
@@ -411,7 +434,6 @@ def _summary(report: Mapping[str, object]) -> str:
 
 
 __all__ = [
-    "EXPECTED_IMAGE_COUNT",
     "PROTOTYPE_VISION_SMOKE_REPORT",
     "PROTOTYPE_VISION_SMOKE_SUMMARY",
     "PROTOTYPE_VISION_SMOKE_VERSION",

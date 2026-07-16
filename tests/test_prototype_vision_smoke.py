@@ -9,7 +9,6 @@ import polars as pl
 
 import biominer.benchmarks.prototype_vision_smoke as smoke_module
 from biominer.benchmarks.prototype_vision_smoke import (
-    EXPECTED_IMAGE_COUNT,
     PrototypeVisionSmokeConfig,
     run_prototype_vision_smoke,
 )
@@ -17,12 +16,12 @@ from biominer.bioclip.bioclip_worker import decoded_rgb_image_content_hash
 from biominer.bioclip.bioclip import _persistent_worker_env
 
 
-def test_papilio_prototype_smoke_config_is_exactly_five_local_mps_images() -> None:
+def test_papilio_prototype_smoke_config_preserves_the_historical_five_image_run() -> None:
     config = PrototypeVisionSmokeConfig.read_json(
         "config/pilot/papilio_demoleus_vision_smoke.json"
     )
 
-    assert len(config.reference_media_ids) == EXPECTED_IMAGE_COUNT == 5
+    assert len(config.reference_media_ids) == 5
     assert len(set(config.reference_media_ids)) == 5
     assert config.device == "mps"
     assert config.bioclip_batch_size == 5
@@ -51,7 +50,7 @@ def test_prototype_smoke_validates_hashes_embeddings_routes_and_worker_reuse(
 ) -> None:
     rows = []
     media_ids = []
-    for index in range(5):
+    for index in range(7):
         path = tmp_path / f"image-{index}.png"
         Image.new("RGB", (32 + index, 24 + index), (index * 20, 80, 160)).save(path)
         media_id = f"reference-media:{index:064x}"
@@ -166,12 +165,15 @@ def test_prototype_smoke_validates_hashes_embeddings_routes_and_worker_reuse(
     result = run_prototype_vision_smoke(config)
 
     assert result.report["status"] == "passed"
-    assert result.report["bioclip"]["embedding_shape"] == [5, 2]
+    assert result.report["image_count"] == 7
+    assert result.report["bioclip"]["embedding_shape"] == [7, 2]
     assert result.report["bioclip"]["content_hashes_match"] is True
+    assert result.report["bioclip"]["batch_sizes"] == [5, 2]
+    assert result.report["batch_settings"]["bioclip_actual_batches"] == [5, 2]
     assert result.report["bioclip"]["memory"]["mps_recommended_max_memory"] == 4096
     assert result.report["yoloe"]["persistent_worker_process_starts"] == 1
-    assert result.report["yoloe"]["persistent_worker_requests"] == 2
-    assert result.report["batch_settings"]["yoloe_actual_batches"] == [3, 2]
+    assert result.report["yoloe"]["persistent_worker_requests"] == 3
+    assert result.report["batch_settings"]["yoloe_actual_batches"] == [3, 3, 1]
     assert {row["route"]["detection_route"] for row in result.report["per_image"]} == {
         "no_relevant_organism"
     }

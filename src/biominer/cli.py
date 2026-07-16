@@ -609,7 +609,11 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     yoloe26_smoke.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
     yoloe26_smoke.add_argument("--image")
     yoloe26_smoke.add_argument("--output-dir", default="reports/yoloe26_smoke")
-    prototype_smoke = subparsers.add_parser("prototype-smoke-five")
+    prototype_smoke = subparsers.add_parser(
+        "prototype-smoke",
+        aliases=("prototype-smoke-five",),
+        help="run local YOLOE and BioCLIP smoke evidence over any non-empty image set",
+    )
     prototype_smoke.add_argument("--config", required=True)
     prototype_embeddings = subparsers.add_parser("prototype-build-embeddings")
     prototype_embeddings.add_argument("--config", required=True)
@@ -693,7 +697,7 @@ def run(args: argparse.Namespace) -> int:
             return _run_yoloe26_prefetch(args)
         if args.vision_command == "yoloe26-smoke":
             return _run_yoloe26_smoke(args)
-        if args.vision_command == "prototype-smoke-five":
+        if args.vision_command in {"prototype-smoke", "prototype-smoke-five"}:
             return _run_prototype_vision_smoke(args)
         if args.vision_command == "prototype-build-embeddings":
             return _run_prototype_support_embeddings(args)
