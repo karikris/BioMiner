@@ -194,6 +194,34 @@ def test_papilio_prototype_duplicate_config_freezes_auditable_thresholds() -> No
     assert config.policy_version == "prototype-duplicate-resolution-policy-v1"
 
 
+def test_papilio_prototype_qa_config_is_local_and_reproducible() -> None:
+    settings = (
+        Path(__file__).resolve().parents[1]
+        / "config"
+        / "pilot"
+        / "papilio_demoleus_prototype_qa.json"
+    )
+    resolved = resolve_reference_workflow_options(
+        build_parser().parse_args(
+            [
+                "references",
+                "qualify-prototype-support",
+                "--settings-file",
+                str(settings),
+                "--dry-run",
+            ]
+        )
+    )
+
+    assert resolved.values["storage_backend"] == "local"
+    assert "storage_bucket" not in resolved.values
+    assert resolved.values["analysis_size"] == 256
+    assert resolved.values["policy_version"] == "prototype-support-qa-policy-v1"
+    assert resolved.settings_fingerprint == (
+        "sha256:239f6f463c4ed0a63152a9ee4876b4ec35b8be673c3587ff9909b89ae7a4abe7"
+    )
+
+
 def test_papilio_pilot_reference_source_plan_freezes_phase14_quotas() -> None:
     path = (
         Path(__file__).resolve().parents[1]

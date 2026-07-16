@@ -1,0 +1,94 @@
+{
+  "schema_version": "papilio-demoleus-prototype-qa-manifest-v1.0.0",
+  "phase": 14,
+  "task": "14.3.4",
+  "status": "complete_with_review_routes_and_retryable_operational_failures",
+  "prototype_only": true,
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "execution": {
+    "command": "biominer references qualify-prototype-support --settings-file config/pilot/papilio_demoleus_prototype_qa.json",
+    "settings_file": "config/pilot/papilio_demoleus_prototype_qa.json",
+    "settings_fingerprint": "sha256:239f6f463c4ed0a63152a9ee4876b4ec35b8be673c3587ff9909b89ae7a4abe7",
+    "run_id": "papilio-demoleus-prototype-qa-available-20260716",
+    "storage_backend": "local",
+    "local_storage_ignored_by_git": true,
+    "s3_deferred": true,
+    "generated_at": "2026-07-16T03:00:00+00:00",
+    "qa_policy_version": "prototype-support-qa-policy-v1",
+    "qa_policy_fingerprint": "sha256:3ec4d0c39e8e3b1bca0e8db7e01313875319d0f6a0707c0e9291cfa15ac81207",
+    "detector_evidence": "not_instrumented_for_full_local_run",
+    "local_yoloe_limit_respected": true
+  },
+  "counts": {
+    "selected": 93,
+    "locally_available": 83,
+    "needs_review": 81,
+    "excluded": 2,
+    "retryable_operational_failures": 10,
+    "provisionally_qualified": 0,
+    "image_quality_pass": 76,
+    "image_quality_review": 6,
+    "image_quality_exclude": 1,
+    "metadata_disagreement_pass": 83,
+    "licence_complete": 83,
+    "attribution_complete": 83,
+    "subject_presence_review": 82,
+    "subject_presence_exclude": 1,
+    "subject_size_review": 83
+  },
+  "provisional_routes": {
+    "visual_domain": {
+      "live_field": 82,
+      "fruit_closeups": 1,
+      "not_evaluated": 10
+    },
+    "life_stage": {
+      "adult": 81,
+      "larva": 1,
+      "not_applicable": 1,
+      "not_evaluated": 10
+    }
+  },
+  "quality_findings": {
+    "low_resolution_review": 6,
+    "very_low_resolution_exclude": 1,
+    "curated_subject_absence_exclude": 1
+  },
+  "artifacts": {
+    "qualifications": {
+      "uri": "runs/papilio_demoleus_prototype_media_local_20260716/qualification/run_id=papilio-demoleus-prototype-qa-available-20260716/prototype_support_qa.parquet",
+      "row_count": 93,
+      "byte_count": 38735,
+      "sha256": "sha256:f9bb3545d2110e7014ade1992c4d8b36601b2d84d1bbf96ffcebacf0d63679df"
+    },
+    "report": {
+      "uri": "runs/papilio_demoleus_prototype_media_local_20260716/reports/run_id=papilio-demoleus-prototype-qa-available-20260716/prototype_support_qa_report.json",
+      "byte_count": 2283,
+      "sha256": "sha256:f394c5df686527034362b17a14fedf43d26ea2a81297b5b66e035a94af0e6ca9"
+    },
+    "summary": {
+      "uri": "runs/papilio_demoleus_prototype_media_local_20260716/reports/run_id=papilio-demoleus-prototype-qa-available-20260716/prototype_support_qa_summary.md",
+      "byte_count": 217,
+      "sha256": "sha256:4695ffe506d0e39964079c88a5bb9a7d57ca3145a33387a5bf42d02c45242d36"
+    }
+  },
+  "semantics": {
+    "automated_qa_is_human_taxonomic_verification": false,
+    "model_output_is_taxonomic_validation": false,
+    "operational_failures_are_biological_negatives": false,
+    "unmeasured_visual_evidence_is_guessed": false,
+    "review_rows_are_frozen_support": false,
+    "excluded_rows_are_retryable_operational_failures": false
+  },
+  "unresolved_risks": [
+    "Eighty-one available images still require visual review because full-bank detector evidence was not run on this computer.",
+    "Ten Wikimedia Commons originals remain retryable operational failures and were not evaluated.",
+    "Subject size remains unmeasured for all available images until bounded YOLOE evidence is produced on the authorized computer.",
+    "S3 rematerialization remains deferred until the account cap is restored.",
+    "No row is human taxonomically verified."
+  ],
+  "next_task": "14.3.5_freeze_prototype_support_bank"
+}

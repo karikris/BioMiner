@@ -1,0 +1,28 @@
+{
+  "schema_version": "target-aware-reference-cli-settings-v1",
+  "commands": {
+    "qualify-prototype-support": {
+      "selections": "runs/papilio_demoleus_pilot_prototype_acquisition_20260715/prototype_reference_selections.parquet",
+      "biological_observations": [
+        "runs/papilio_demoleus_pilot_reference_candidates_20260715/reference_observations.parquet",
+        "runs/papilio_demoleus_pilot_biological_negative_candidates_20260715/reference_observations.parquet"
+      ],
+      "visual_domain_manifest": "config/pilot/papilio_demoleus_visual_domain_negative_candidates.json",
+      "media_objects": "runs/papilio_demoleus_prototype_media_local_20260716/duplicate-resolution/run_id=papilio-demoleus-prototype-duplicates-available-20260716-f61223e99674/reference_media_objects.parquet",
+      "identity_groups": "runs/papilio_demoleus_prototype_media_local_20260716/duplicate-resolution/run_id=papilio-demoleus-prototype-duplicates-available-20260716-f61223e99674/prototype_reference_identity_groups.parquet",
+      "output_prefix": "runs/papilio_demoleus_prototype_media_local_20260716",
+      "run_id": "papilio-demoleus-prototype-qa-available-20260716",
+      "storage_backend": "local",
+      "generated_at": "2026-07-16T03:00:00Z",
+      "policy_version": "prototype-support-qa-policy-v1",
+      "analysis_size": 256,
+      "exclude_min_dimension": 128,
+      "review_min_dimension": 512,
+      "exclude_entropy_bits": 1.5,
+      "review_entropy_bits": 3.0,
+      "review_gradient_mean": 0.008,
+      "exclude_clipped_fraction": 0.98,
+      "review_clipped_fraction": 0.6
+    }
+  }
+}

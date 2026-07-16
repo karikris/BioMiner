@@ -21,6 +21,9 @@ PROTOTYPE_DUPLICATE_RESOLUTION_MANIFEST_PATH = Path(
     "examples/species/papilio_demoleus/"
     "pilot_prototype_duplicate_resolution_manifest.json"
 )
+PROTOTYPE_QA_MANIFEST_PATH = Path(
+    "examples/species/papilio_demoleus/pilot_prototype_qa_manifest.json"
+)
 
 
 def _matrix() -> dict[str, object]:
@@ -43,6 +46,10 @@ def _prototype_selection_manifest() -> dict[str, object]:
 
 def _prototype_download_manifest() -> dict[str, object]:
     return json.loads(PROTOTYPE_DOWNLOAD_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def _prototype_qa_manifest() -> dict[str, object]:
+    return json.loads(PROTOTYPE_QA_MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
 def _prototype_duplicate_resolution_manifest() -> dict[str, object]:
@@ -271,6 +278,40 @@ def test_phase14_duplicate_resolution_separates_retryable_failures() -> None:
 
 def test_phase14_duplicate_resolution_artifacts_are_hashed_and_untracked() -> None:
     manifest = _prototype_duplicate_resolution_manifest()
+
+    assert manifest["execution"]["local_storage_ignored_by_git"] is True
+    assert all(
+        str(value["uri"]).startswith("runs/")
+        and str(value["sha256"]).startswith("sha256:")
+        and len(str(value["sha256"])) == 71
+        and int(value["byte_count"]) > 0
+        for value in manifest["artifacts"].values()
+    )
+
+
+def test_phase14_prototype_qa_routes_unmeasured_and_failed_rows_honestly() -> None:
+    manifest = _prototype_qa_manifest()
+    counts = manifest["counts"]
+    semantics = manifest["semantics"]
+
+    assert manifest["task"] == "14.3.4"
+    assert manifest["execution"]["storage_backend"] == "local"
+    assert manifest["execution"]["s3_deferred"] is True
+    assert counts["selected"] == 93
+    assert counts["locally_available"] == 83
+    assert counts["needs_review"] == 81
+    assert counts["excluded"] == 2
+    assert counts["retryable_operational_failures"] == 10
+    assert counts["licence_complete"] == 83
+    assert counts["attribution_complete"] == 83
+    assert semantics["automated_qa_is_human_taxonomic_verification"] is False
+    assert semantics["operational_failures_are_biological_negatives"] is False
+    assert semantics["unmeasured_visual_evidence_is_guessed"] is False
+    assert manifest["next_task"] == "14.3.5_freeze_prototype_support_bank"
+
+
+def test_phase14_prototype_qa_artifacts_are_hashed_and_untracked() -> None:
+    manifest = _prototype_qa_manifest()
 
     assert manifest["execution"]["local_storage_ignored_by_git"] is True
     assert all(

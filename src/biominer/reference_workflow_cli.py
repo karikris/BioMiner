@@ -395,6 +395,56 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
             "source_priority": ["iNaturalist", "GBIF", "Wikimedia Commons"],
         },
     ),
+    "qualify-prototype-support": _CommandSpec(
+        stage=RunStage.REFERENCE_MEDIA,
+        fields=frozenset(
+            {
+                "selections",
+                "biological_observations",
+                "visual_domain_manifest",
+                "media_objects",
+                "identity_groups",
+                "detector_evidence",
+                "output_prefix",
+                "run_id",
+                "storage_backend",
+                "storage_bucket",
+                "storage_prefix",
+                "generated_at",
+                "policy_version",
+                "analysis_size",
+                "exclude_min_dimension",
+                "review_min_dimension",
+                "exclude_entropy_bits",
+                "review_entropy_bits",
+                "review_gradient_mean",
+                "exclude_clipped_fraction",
+                "review_clipped_fraction",
+            }
+        ),
+        required=frozenset(
+            {
+                "selections",
+                "biological_observations",
+                "visual_domain_manifest",
+                "media_objects",
+                "identity_groups",
+                "output_prefix",
+                "generated_at",
+            }
+        ),
+        defaults={
+            "policy_version": "prototype-support-qa-policy-v1",
+            "analysis_size": 256,
+            "exclude_min_dimension": 128,
+            "review_min_dimension": 512,
+            "exclude_entropy_bits": 1.5,
+            "review_entropy_bits": 3.0,
+            "review_gradient_mean": 0.008,
+            "exclude_clipped_fraction": 0.98,
+            "review_clipped_fraction": 0.60,
+        },
+    ),
     "build-support-embeddings": _CommandSpec(
         stage=RunStage.REFERENCE_EMBEDDINGS,
         fields=frozenset(
@@ -817,6 +867,30 @@ def add_reference_workflow_parsers(
     duplicates.add_argument("--policy-version")
     duplicates.add_argument("--source-priority", type=_csv)
 
+    qualify = subparsers.add_parser("qualify-prototype-support")
+    _common(qualify, runtime_defaults)
+    qualify.add_argument("--selections")
+    qualify.add_argument("--biological-observations", type=_csv)
+    qualify.add_argument("--visual-domain-manifest")
+    qualify.add_argument("--media-objects")
+    qualify.add_argument("--identity-groups")
+    qualify.add_argument("--detector-evidence")
+    qualify.add_argument("--output-prefix")
+    qualify.add_argument("--run-id")
+    qualify.add_argument("--storage-backend", choices=("local", "s3"))
+    qualify.add_argument("--storage-bucket")
+    qualify.add_argument("--storage-prefix")
+    qualify.add_argument("--generated-at")
+    qualify.add_argument("--policy-version")
+    qualify.add_argument("--analysis-size", type=int)
+    qualify.add_argument("--exclude-min-dimension", type=int)
+    qualify.add_argument("--review-min-dimension", type=int)
+    qualify.add_argument("--exclude-entropy-bits", type=float)
+    qualify.add_argument("--review-entropy-bits", type=float)
+    qualify.add_argument("--review-gradient-mean", type=float)
+    qualify.add_argument("--exclude-clipped-fraction", type=float)
+    qualify.add_argument("--review-clipped-fraction", type=float)
+
     embeddings = subparsers.add_parser("build-support-embeddings")
     _common(embeddings, runtime_defaults)
     embeddings.add_argument("--readiness-dir")
@@ -1225,6 +1299,12 @@ def _validate_effective_options(command: str, values: dict[str, Any]) -> None:
             values["biological_observations"],
             field="biological_observations",
         )
+        _utc_datetime(values["generated_at"], "generated_at")
+        if values.get("storage_backend") not in {None, "local", "s3"}:
+            raise ValueError("storage_backend must be local or s3")
+    elif command == "qualify-prototype-support":
+        _prototype_qa_config(values)
+        _string_tuple(values["biological_observations"], field="biological_observations")
         _utc_datetime(values["generated_at"], "generated_at")
         if values.get("storage_backend") not in {None, "local", "s3"}:
             raise ValueError("storage_backend must be local or s3")
@@ -1884,6 +1964,9 @@ _COMMAND_RUNNERS = {
     "download": lambda resolved, args: _run_reference_download(resolved, args),
     "resolve-prototype-duplicates": lambda resolved, args: (
         _run_resolve_prototype_duplicates(resolved, args)
+    ),
+    "qualify-prototype-support": lambda resolved, args: (
+        _run_qualify_prototype_support(resolved, args)
     ),
     "build-support-embeddings": lambda resolved, args: _run_support_embeddings(
         resolved, args
@@ -2664,6 +2747,36 @@ def _prototype_duplicate_config(values: Mapping[str, object]):
     )
 
 
+def _prototype_qa_config(values: Mapping[str, object]):
+    from biominer.references.prototype_qa import PrototypeQAConfig
+
+    return PrototypeQAConfig(
+        policy_version=str(values["policy_version"]),
+        analysis_size=_positive_integer(values["analysis_size"], "analysis_size"),
+        exclude_min_dimension=_positive_integer(
+            values["exclude_min_dimension"], "exclude_min_dimension"
+        ),
+        review_min_dimension=_positive_integer(
+            values["review_min_dimension"], "review_min_dimension"
+        ),
+        exclude_entropy_bits=_nonnegative_float(
+            values["exclude_entropy_bits"], "exclude_entropy_bits"
+        ),
+        review_entropy_bits=_nonnegative_float(
+            values["review_entropy_bits"], "review_entropy_bits"
+        ),
+        review_gradient_mean=_nonnegative_float(
+            values["review_gradient_mean"], "review_gradient_mean"
+        ),
+        exclude_clipped_fraction=_nonnegative_float(
+            values["exclude_clipped_fraction"], "exclude_clipped_fraction"
+        ),
+        review_clipped_fraction=_nonnegative_float(
+            values["review_clipped_fraction"], "review_clipped_fraction"
+        ),
+    )
+
+
 def _run_resolve_prototype_duplicates(
     resolved: ResolvedReferenceWorkflowOptions,
     args: argparse.Namespace,
@@ -2720,6 +2833,72 @@ def _run_resolve_prototype_duplicates(
         "command": "references resolve-prototype-duplicates",
         "eligible_count": counts["eligible"],
         "relationship_count": counts["relationships"],
+        "settings_fingerprint": resolved.settings_fingerprint,
+        "status": "complete",
+    }
+
+
+def _run_qualify_prototype_support(
+    resolved: ResolvedReferenceWorkflowOptions,
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    from biominer.config import create_storage_backend, load_biominer_config
+    from biominer.references.prototype_qa import (
+        publish_prototype_qa_result,
+        qualify_prototype_support_bank,
+    )
+
+    values = resolved.values
+    config = load_biominer_config(getattr(args, "config", None))
+    storage_config = config.storage
+    if values.get("storage_backend") is not None:
+        storage_config = replace(storage_config, backend=str(values["storage_backend"]))
+    if values.get("storage_bucket") is not None:
+        storage_config = replace(storage_config, bucket=str(values["storage_bucket"]))
+    if values.get("storage_prefix") is not None:
+        storage_config = replace(storage_config, prefix=str(values["storage_prefix"]))
+    storage = create_storage_backend(storage_config)
+    output_prefix = _reference_download_output_prefix(
+        values["output_prefix"], storage=storage
+    )
+    detector_evidence = (
+        storage.read_parquet(str(values["detector_evidence"]))
+        if values.get("detector_evidence")
+        else None
+    )
+    result = qualify_prototype_support_bank(
+        selections=pl.read_parquet(str(values["selections"])),
+        media_objects=storage.read_parquet(str(values["media_objects"])),
+        identity_groups=storage.read_parquet(str(values["identity_groups"])),
+        biological_observations=tuple(
+            pl.read_parquet(path)
+            for path in _string_tuple(
+                values["biological_observations"], field="biological_observations"
+            )
+        ),
+        visual_domain_manifest=_read_json_object(
+            values["visual_domain_manifest"],
+            artifact="prototype visual-domain manifest",
+        ),
+        config=_prototype_qa_config(values),
+        detector_evidence=detector_evidence,
+        generated_at=values["generated_at"],
+    )
+    uris = publish_prototype_qa_result(
+        result,
+        storage=storage,
+        output_prefix=output_prefix,
+        run_id=(str(values["run_id"]) if values.get("run_id") else None),
+        settings_fingerprint=resolved.settings_fingerprint,
+    )
+    counts = result.report["counts"]
+    assert isinstance(counts, Mapping)
+    return {
+        "artifacts": uris,
+        "command": "references qualify-prototype-support",
+        "qualified_count": counts.get("provisionally_qualified", 0),
+        "review_count": counts.get("needs_review", 0),
+        "operational_failure_count": counts.get("operational_failure", 0),
         "settings_fingerprint": resolved.settings_fingerprint,
         "status": "complete",
     }

@@ -44,6 +44,17 @@ HTTP 429 exhaustion), were not evaluated for duplicate relationships, and are
 not biological negatives. The compact handoff is
 `examples/species/papilio_demoleus/pilot_prototype_duplicate_resolution_manifest.json`.
 
+Task 14.3.4 applied deterministic automated QA to the same 93-row ledger using
+ignored local storage. Eighty-three available images received intrinsic image
+quality, metadata-disagreement, licence, attribution, life-stage, and visual-domain
+checks; ten unavailable Wikimedia rows remained retryable operational failures.
+One very-low-resolution biological candidate and one curated fruit-closeup with
+no butterfly visual were excluded. The remaining 81 available images were routed
+to review because full-bank subject-presence and subject-size detector evidence
+is not authorized on this computer. No unmeasured evidence was guessed and no
+row was represented as human taxonomically verified. The compact handoff is
+`examples/species/papilio_demoleus/pilot_prototype_qa_manifest.json`.
+
 Date: 2026-07-15. Confidence is high for the geographic workload,
 GBIF-derived competitor evidence, metadata checkpoint integrity, local vision
 execution limit, and the B0-B16 experiment contract. Confidence is unknown for
@@ -51,10 +62,10 @@ the classifier policy because no human-reviewed reference bank or off-machine
 vision benchmark exists yet.
 
 Phase 14 is not complete. The prototype-only path has progressed through Task
-14.3.3 for 83 available objects, while the scientific release path still
+14.3.4 for 83 available objects, while the scientific release path still
 requires attributable human review and an immutable verified reference-bank
-freeze. Task 14.3.3 duplicate resolution retains ten retryable operational
-failures; Task 14.3.4 automated prototype QA is next. Tasks 14.4-14.6 remain
+freeze. Automated QA retains ten retryable operational failures and routes 81
+available images for visual review; Task 14.3.5 prototype freeze is next. Tasks 14.4-14.6 remain
 blocked from scientific release; Phase 15 is not authorized, and the
 production classification default remains unchanged.
 

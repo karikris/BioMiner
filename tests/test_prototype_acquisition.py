@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import hashlib
 
+from PIL import Image
 import polars as pl
 
 from biominer.references.prototype_acquisition import (
@@ -19,6 +20,10 @@ from biominer.references.prototype_acquisition import (
 )
 from biominer.references.prototype_duplicates import (
     resolve_prototype_duplicates,
+)
+from biominer.references.prototype_qa import (
+    PrototypeQAConfig,
+    qualify_prototype_support_bank,
 )
 from biominer.references.schemas import (
     REFERENCE_MEDIA_CANDIDATES_SCHEMA_VERSION,
@@ -366,3 +371,89 @@ def test_prototype_duplicate_resolution_keeps_download_failures_retryable() -> N
     assert failure["duplicate_group_id"] is None
     assert failure["canonical_reference_media_id"] is None
     assert failure["exact_hash_group_id"] is None
+
+
+def test_prototype_qa_routes_uninstrumented_visual_checks_to_review(tmp_path) -> None:
+    observations, _media = _frames()
+    acquisition = _result()
+    rows = _downloaded_objects(acquisition).to_dicts()
+    for index, row in enumerate(rows):
+        path = tmp_path / str(row["sha256"]).removeprefix("sha256:")
+        Image.linear_gradient("L").resize((1024, 600)).save(path, format="PNG")
+        row["source_object_uri"] = str(path)
+    media_objects = reference_media_objects_frame(rows)
+    resolved = resolve_prototype_duplicates(
+        selections=acquisition.selections,
+        media_objects=media_objects,
+        media_candidates=acquisition.download_candidates,
+        biological_observations=(observations,),
+        visual_domain_manifest=_visual_manifest(),
+        generated_at=NOW,
+    )
+
+    qualified = qualify_prototype_support_bank(
+        selections=acquisition.selections,
+        media_objects=resolved.deduplication.media_objects,
+        identity_groups=resolved.identity_groups,
+        biological_observations=(observations,),
+        visual_domain_manifest=_visual_manifest(),
+        config=PrototypeQAConfig(review_gradient_mean=0.0),
+        generated_at=NOW,
+    )
+
+    assert qualified.qualifications.height == 2
+    assert set(qualified.qualifications["qa_disposition"]) == {"needs_review"}
+    assert set(qualified.qualifications["detector_evidence_status"]) == {
+        "not_instrumented"
+    }
+    assert not qualified.qualifications["human_taxonomic_verification"].any()
+    assert qualified.report["semantics"]["unmeasured_visual_evidence_is_guessed"] is False
+
+
+def test_prototype_qa_skips_retryable_download_failure_without_opening_it(tmp_path) -> None:
+    observations, _media = _frames()
+    acquisition = _result()
+    rows = _downloaded_objects(acquisition).to_dicts()
+    valid_path = tmp_path / str(rows[0]["sha256"]).removeprefix("sha256:")
+    Image.effect_noise((800, 600), 64).save(valid_path, format="PNG")
+    rows[0]["source_object_uri"] = str(valid_path)
+    failed = rows[1]
+    for field in (
+        "source_object_uri",
+        "content_type",
+        "source_byte_count",
+        "decoded_width",
+        "decoded_height",
+        "sha256",
+        "perceptual_hash",
+        "downloaded_at",
+    ):
+        failed[field] = None
+    failed["decode_status"] = "download_failed"
+    failed["quarantine_reason"] = "retry_exhausted_http_429"
+    failed["object_fingerprint"] = _sha("retryable-download-failure")
+    media_objects = reference_media_objects_frame(rows)
+    resolved = resolve_prototype_duplicates(
+        selections=acquisition.selections,
+        media_objects=media_objects,
+        media_candidates=acquisition.download_candidates,
+        biological_observations=(observations,),
+        visual_domain_manifest=_visual_manifest(),
+        generated_at=NOW,
+    )
+
+    qualified = qualify_prototype_support_bank(
+        selections=acquisition.selections,
+        media_objects=resolved.deduplication.media_objects,
+        identity_groups=resolved.identity_groups,
+        biological_observations=(observations,),
+        visual_domain_manifest=_visual_manifest(),
+        generated_at=NOW,
+    )
+
+    failure = qualified.qualifications.filter(
+        pl.col("qa_disposition") == "operational_failure"
+    ).row(0, named=True)
+    assert failure["operational_failure_retryable"] is True
+    assert failure["qa_reason"] == "retry_exhausted_http_429"
+    assert failure["image_quality_check"] == "not_evaluated"
