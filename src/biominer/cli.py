@@ -25,6 +25,7 @@ from biominer.bioclip.classification_modes import (
     DEFAULT_SPECIES_RERANK_TOP_K,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     SUPPORTED_CLASSIFICATION_MODES,
+    is_build_week_prototype_classification,
     normalize_classification_mode,
 )
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
@@ -510,6 +511,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=_classification_mode_arg,
         choices=SUPPORTED_CLASSIFICATION_MODES,
         default=DEFAULT_CLASSIFICATION_MODE,
+    )
+    production_run.add_argument(
+        "--classification-config",
+        help=(
+            "explicit local configuration for an opt-in classification mode; "
+            "required by build_week_target_aware_prototype"
+        ),
     )
     production_run.add_argument("--taxonomy-text-embedding-cache")
     production_run.add_argument("--regional-candidates")
@@ -1829,6 +1837,29 @@ def _run_production_command(args: argparse.Namespace) -> int:
     config = None
     try:
         stages = _parse_run_stages(args.stages, workflow=args.workflow)
+        prototype_config = None
+        if args.classification_config:
+            from biominer.bioclip.prototype_mode import BuildWeekPrototypeConfig
+
+            prototype_config = BuildWeekPrototypeConfig.read_json(
+                args.classification_config
+            )
+        if is_build_week_prototype_classification(args.classification_mode):
+            if args.workflow != "reference-first":
+                raise ValueError(
+                    "build_week_target_aware_prototype requires "
+                    "--workflow reference-first"
+                )
+            if prototype_config is None:
+                raise ValueError(
+                    "build_week_target_aware_prototype requires "
+                    "--classification-config"
+                )
+        elif prototype_config is not None:
+            raise ValueError(
+                "--classification-config is only valid with "
+                "build_week_target_aware_prototype"
+            )
         if (
             not args.dry_run
             and any(stage in {RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP} for stage in stages)
@@ -1885,6 +1916,8 @@ def _run_production_command(args: argparse.Namespace) -> int:
             vision_profile=args.vision_profile,
             vision_settings=vision_settings,
             classification_mode=args.classification_mode,
+            classification_config_path=args.classification_config,
+            build_week_prototype_config=prototype_config,
             taxonomy_candidate_table=args.taxonomy_candidate_table,
             taxonomy_text_embedding_cache=args.taxonomy_text_embedding_cache,
             reference_bank_readiness=args.reference_bank_readiness,

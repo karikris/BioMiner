@@ -22,9 +22,9 @@ from biominer.bioclip.classification_modes import (
     DEFAULT_SPECIES_FIRST_PASS_TOP_K,
     DEFAULT_SPECIES_RERANK_TOP_K,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-    TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
     TARGET_FAMILY_REPORT_TOP_K,
     ClassificationMode,
+    is_target_aware_classification,
     normalize_classification_mode,
 )
 from biominer.bioclip.path_cascade_classifier import classify_path_cascade_batch
@@ -67,7 +67,7 @@ TARGET_SCOPE_SPECIES_RERANK_STRATEGY = (
 )
 SPECIES_CANDIDATE_PROVENANCE_VERSION = "species-candidate-provenance-v2"
 TARGET_AWARE_LEGACY_OUTPUT_MESSAGE = (
-    "target_aware_few_shot_classification requires the separate target-aware scoring path; "
+    "target-aware classification modes require the separate target-aware scoring path; "
     "legacy object BioCLIP outputs keep their historical schema and meaning"
 )
 SPECIES_CANDIDATE_PROVENANCE_SCHEMA = pl.Struct(
@@ -914,7 +914,7 @@ def screen_object_detections(
     if min_bioclip_batch_size <= 0:
         raise ValueError("min_bioclip_batch_size must be positive")
     classification_mode = normalize_classification_mode(classification_mode)
-    if classification_mode == TARGET_AWARE_FEW_SHOT_CLASSIFICATION:
+    if is_target_aware_classification(classification_mode):
         raise ValueError(TARGET_AWARE_LEGACY_OUTPUT_MESSAGE)
     if (path_taxonomy_store is None) != (taxonomy_text_embedding_index is None):
         raise ValueError(
@@ -1679,7 +1679,7 @@ def _object_scoring_labels(candidate_set: CandidateSet) -> _ObjectScoringLabels:
 def _raise_if_target_scope_helper_mode_invalid(
     classification_mode: ClassificationMode,
 ) -> None:
-    if classification_mode == TARGET_AWARE_FEW_SHOT_CLASSIFICATION:
+    if is_target_aware_classification(classification_mode):
         raise ValueError(TARGET_AWARE_LEGACY_OUTPUT_MESSAGE)
     if classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
         raise ValueError(

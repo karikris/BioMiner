@@ -6,6 +6,9 @@ from dataclasses import replace
 import pytest
 
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
+from biominer.bioclip.classification_modes import (
+    BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
+)
 from biominer.bioclip.target_aware_scoring import (
     TARGET_AWARE_CANDIDATE_POLICY_VERSION,
     TargetAwareAuxiliaryClass,
@@ -147,6 +150,23 @@ def test_regression_wrong_family_text_top_one_does_not_remove_target() -> None:
     }
     assert result.hierarchy_pruning_applied is False
     assert result.hierarchy_rankings_diagnostic_only is True
+
+
+def test_build_week_prototype_preserves_complete_set_scoring_identity() -> None:
+    plan = build_target_aware_scoring_plan(
+        _regional_candidate_set(candidate_count=3),
+        known_negative_classes=_known_negatives(),
+        visual_domain_classes=_visual_domains(),
+        classification_mode=BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
+    )
+
+    result = score_target_aware_candidate_union(plan, _RecordingScorer())
+
+    assert plan.classification_mode == BUILD_WEEK_TARGET_AWARE_PROTOTYPE
+    assert result.classification_mode == BUILD_WEEK_TARGET_AWARE_PROTOTYPE
+    assert len(result.species_scores) == 3
+    assert any(item.target_candidate for item in result.species_scores)
+    assert result.hierarchy_pruning_applied is False
 
 
 def test_target_aware_scoring_rejects_any_missing_candidate_score() -> None:

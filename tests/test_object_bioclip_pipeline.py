@@ -8,6 +8,7 @@ import pytest
 
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon, build_candidate_set, build_candidate_set_for_taxon_scope
 from biominer.bioclip.classification_modes import (
+    BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
 )
@@ -1771,7 +1772,17 @@ def test_object_bioclip_hierarchical_mode_requires_v3_store_and_cache(tmp_path) 
     assert not (tmp_path / "object_scores.parquet").exists()
 
 
-def test_object_bioclip_rejects_target_aware_rows_in_legacy_output(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "classification_mode",
+    (
+        TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
+        BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
+    ),
+)
+def test_object_bioclip_rejects_target_aware_rows_in_legacy_output(
+    tmp_path,
+    classification_mode,
+) -> None:
     class FailingScorer:
         model_id = "fake-bioclip"
         model_version = "test"
@@ -1789,7 +1800,7 @@ def test_object_bioclip_rejects_target_aware_rows_in_legacy_output(tmp_path) -> 
             scorer=FailingScorer(),
             output_path=tmp_path / "object_scores.parquet",
             ablation_mode="detector_crop",
-            classification_mode=TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
+            classification_mode=classification_mode,
         )
 
     assert not (tmp_path / "object_scores.parquet").exists()

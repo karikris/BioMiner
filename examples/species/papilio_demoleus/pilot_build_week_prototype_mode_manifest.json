@@ -1,0 +1,61 @@
+{
+  "schema_version": "papilio-demoleus-build-week-prototype-mode-manifest-v1.0.0",
+  "phase": 15,
+  "task": "15.1",
+  "status": "complete_prototype_mode",
+  "classification_mode": "build_week_target_aware_prototype",
+  "deployment_status": "prototype",
+  "production_default": "target_scope_object_screening",
+  "production_default_changed": false,
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "storage": {
+    "backend": "local",
+    "workstore": "sqlite",
+    "s3_permitted": false,
+    "s3_used": false
+  },
+  "configuration": {
+    "path": "config/pilot/papilio_demoleus_build_week_target_aware_prototype.json",
+    "byte_count": 2840,
+    "sha256": "sha256:c5138f93b4f3866b8fd5c137b007e0ae12ffb04e78101373a6d68ec8f69ab56f",
+    "semantic_fingerprint": "sha256:54f81cf31e0ba31499a63c6238e9894427ed192156ded57084526d800548f3e5"
+  },
+  "mode_contract": {
+    "target_always_scored": true,
+    "complete_regional_candidate_union_scored": true,
+    "hierarchy_pruning_permitted": false,
+    "spatial_crop_permitted": false,
+    "visual_input": "raw_full_image",
+    "prototype_readiness_required": true,
+    "prototype_support_bank_required": true,
+    "silent_fallback_permitted": false,
+    "output_status": "prototype"
+  },
+  "diagnostic_baselines": {
+    "legacy_open_classifier_available": true,
+    "hierarchical_classifier_available": true,
+    "b0_baseline_available": true
+  },
+  "demonstration_command": "uv run biominer run --taxon 'Papilio demoleus' --rank species --registry-dir runs/papilio_demoleus_20260706_040558/registry --output-prefix runs/papilio_demoleus_build_week_prototype --storage-backend local --workstore-backend sqlite --workflow reference-first --classification-mode build-week-target-aware-prototype --classification-config config/pilot/papilio_demoleus_build_week_target_aware_prototype.json --dry-run",
+  "verification": {
+    "frozen_artifact_sha256_pins_verified": true,
+    "local_dry_run_status": "complete",
+    "focused_tests_passed": 174,
+    "full_suite_tests_passed": 2325,
+    "compileall_passed": true
+  },
+  "githits": {
+    "solution_id": "ad0cbd0a-7015-48ec-8a8e-c94ae8031813",
+    "patterns": "explicit opt-in, required manifest, preserved default, fail-closed validation, persisted prototype status, no silent fallback"
+  },
+  "limitations": [
+    "Prototype execution policy is not relaxed until Task 15.2.",
+    "No reference label is independently human taxonomically verified.",
+    "The selected prototype policy is uncalibrated and emits no probabilities.",
+    "Research-only reference media must not be displayed publicly."
+  ],
+  "next_task": "15.2_remove_blockers_from_prototype_execution"
+}
