@@ -3986,7 +3986,12 @@ def _rename_directory_no_replace(source: Path, destination: Path) -> None:
     if renameat2 is None:
         if destination.exists():
             raise FileExistsError(destination)
-        source.rename(destination)
+        try:
+            source.rename(destination)
+        except OSError as exc:
+            if exc.errno in {errno.EEXIST, errno.ENOTEMPTY}:
+                raise FileExistsError(destination) from exc
+            raise
         return
     renameat2.argtypes = [
         ctypes.c_int,
