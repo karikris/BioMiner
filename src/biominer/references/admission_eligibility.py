@@ -115,6 +115,7 @@ class GBIFEligibilityEvidence:
     observer_image_ordinal_before_reuse: int
     observer_reuse_justified: bool
     near_identical_view: bool
+    distinct_additional_view_justified: bool
     yoloe_routing_completed: bool
     yoloe_route: str | None
     requested_bank_route: str
@@ -210,6 +211,7 @@ class GBIFEligibilityEvidence:
             "observer_identity_available",
             "observer_reuse_justified",
             "near_identical_view",
+            "distinct_additional_view_justified",
             "yoloe_routing_completed",
             "ambiguous_domain_targeted_review",
             "full_frame_input_generation_succeeded",
@@ -529,11 +531,17 @@ def _independence_gate(
         return _review("17_observation_independence", "observer_identity_missing")
     if evidence.near_identical_view:
         return _excluded("17_observation_independence", "near_identical_view_reuse")
-    if (
-        evidence.selected_images_from_observation
-        > policy.maximum_images_per_observation
-    ):
-        return _excluded("17_observation_independence", "observation_quota_exceeded")
+    observation_count = evidence.selected_images_from_observation
+    if observation_count > policy.maximum_images_per_observation:
+        if not evidence.distinct_additional_view_justified:
+            return _excluded(
+                "17_observation_independence", "observation_quota_exceeded"
+            )
+        if observation_count > policy.maximum_images_per_observation + 1:
+            return _excluded(
+                "17_observation_independence",
+                "observation_distinct_view_limit_exceeded",
+            )
     if (
         evidence.observer_image_ordinal_before_reuse
         > policy.maximum_images_per_observer_before_reuse

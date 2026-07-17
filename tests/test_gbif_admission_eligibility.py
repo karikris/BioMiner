@@ -45,6 +45,7 @@ def _eligible_evidence(**changes: object) -> GBIFEligibilityEvidence:
         "observer_image_ordinal_before_reuse": 1,
         "observer_reuse_justified": False,
         "near_identical_view": False,
+        "distinct_additional_view_justified": False,
         "yoloe_routing_completed": True,
         "yoloe_route": "adult_field",
         "requested_bank_route": "adult_field",
@@ -254,6 +255,24 @@ def test_observer_reuse_is_allowed_only_after_explicit_justification() -> None:
 
     assert excluded.decision is EligibilityDecision.EXCLUDED
     assert "observer_reused_too_early" in excluded.reason_codes
+    assert admitted.decision is EligibilityDecision.ADMITTED
+
+
+def test_second_observation_image_requires_distinct_view_justification() -> None:
+    policy = default_reference_admission_policy()
+    excluded = evaluate_gbif_provisional_eligibility(
+        _eligible_evidence(selected_images_from_observation=2), policy
+    )
+    admitted = evaluate_gbif_provisional_eligibility(
+        _eligible_evidence(
+            selected_images_from_observation=2,
+            distinct_additional_view_justified=True,
+        ),
+        policy,
+    )
+
+    assert excluded.decision is EligibilityDecision.EXCLUDED
+    assert "observation_quota_exceeded" in excluded.reason_codes
     assert admitted.decision is EligibilityDecision.ADMITTED
 
 
