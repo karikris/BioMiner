@@ -574,6 +574,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="require species-level statistical reference audit before approval",
     )
+    production_run.add_argument(
+        "--strict-reference-readiness-claim",
+        action="store_true",
+        help=(
+            "declare that all admitted references satisfy the strict human-"
+            "verified readiness contract"
+        ),
+    )
+    production_run.add_argument(
+        "--reference-split-use",
+        action="append",
+        choices=("screening", "training", "calibration", "final_test"),
+        default=[],
+        help="declare each downstream split that may consume admitted references",
+    )
     production_run.add_argument("--crop-padding-ratio", type=float)
     production_run.add_argument("--parquet-compression")
     production_run.add_argument("--delete-images-after-commit", action=argparse.BooleanOptionalAction, default=None)
@@ -2004,6 +2019,10 @@ def _run_production_command(args: argparse.Namespace) -> int:
                 args.flickr_release_requires_human_review
             ),
             statistical_reference_audit=args.statistical_reference_audit,
+            strict_reference_readiness_claim=(
+                args.strict_reference_readiness_claim
+            ),
+            reference_split_uses=tuple(args.reference_split_use),
             worker_id="local" if allow_local and args.dry_run else config.runtime.worker_id or ("local" if allow_local else ""),
             stages=stages,
             dry_run=args.dry_run,

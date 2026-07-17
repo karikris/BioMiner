@@ -75,7 +75,11 @@ from biominer.references.readiness import (
     ReferenceBankReadinessPermit,
     load_reference_bank_readiness,
 )
-from biominer.run.adaptive_config import AdaptiveReferenceSettings
+from biominer.run.adaptive_config import (
+    AdaptiveReferenceSettings,
+    AdaptiveReferenceValidationContext,
+    validate_adaptive_reference_settings,
+)
 from biominer.run.constants import PRODUCTION_JOB_NAME
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import (
@@ -187,6 +191,8 @@ class ProductionRunRequest:
     initial_scoring_mode: str = "provisional_reference_ranking"
     flickr_release_requires_human_review: bool = True
     statistical_reference_audit: bool = True
+    strict_reference_readiness_claim: bool = False
+    reference_split_uses: tuple[str, ...] = ()
     support_scoring_mode: str = "calibrated"
     beam_strategy: str = GLOBAL_RANK_TOP_K_BEAM_STRATEGY
     rank_beam_width: int = DEFAULT_RANK_BEAM_WIDTH
@@ -200,14 +206,23 @@ class ProductionRunRequest:
     build_registry_if_missing: bool = False
 
     def __post_init__(self) -> None:
-        adaptive_settings = AdaptiveReferenceSettings(
-            reference_admission_mode=self.reference_admission_mode,
-            reference_source=self.reference_source,
-            initial_scoring_mode=self.initial_scoring_mode,
-            flickr_release_requires_human_review=(
-                self.flickr_release_requires_human_review
+        validation_context = AdaptiveReferenceValidationContext(
+            strict_readiness_claim=self.strict_reference_readiness_claim,
+            reference_split_uses=self.reference_split_uses,
+            final_flickr_export_requested=(RunStage.FINAL_QUALITY_GATE in self.stages),
+            calibrator_available=self.calibrator_artifact is not None,
+        )
+        adaptive_settings = validate_adaptive_reference_settings(
+            AdaptiveReferenceSettings(
+                reference_admission_mode=self.reference_admission_mode,
+                reference_source=self.reference_source,
+                initial_scoring_mode=self.initial_scoring_mode,
+                flickr_release_requires_human_review=(
+                    self.flickr_release_requires_human_review
+                ),
+                statistical_reference_audit=self.statistical_reference_audit,
             ),
-            statistical_reference_audit=self.statistical_reference_audit,
+            context=validation_context,
         )
         for field_name in (
             "reference_admission_mode",
@@ -217,6 +232,11 @@ class ProductionRunRequest:
             "statistical_reference_audit",
         ):
             object.__setattr__(self, field_name, getattr(adaptive_settings, field_name))
+        object.__setattr__(
+            self,
+            "reference_split_uses",
+            validation_context.reference_split_uses,
+        )
         classification_mode = normalize_classification_mode(self.classification_mode)
         object.__setattr__(self, "classification_mode", classification_mode)
         scoring_mode = str(self.support_scoring_mode).strip().casefold()
@@ -336,6 +356,8 @@ class ProductionRunPlan:
                 "initial_scoring_mode": self.request.initial_scoring_mode,
                 "flickr_release_requires_human_review": self.request.flickr_release_requires_human_review,
                 "statistical_reference_audit": self.request.statistical_reference_audit,
+                "strict_reference_readiness_claim": self.request.strict_reference_readiness_claim,
+                "reference_split_uses": list(self.request.reference_split_uses),
                 "support_scoring_mode": self.request.support_scoring_mode,
                 "beam_strategy": self.request.beam_strategy,
                 "rank_beam_width": self.request.rank_beam_width,
@@ -428,6 +450,10 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
                     request.flickr_release_requires_human_review
                 ),
                 "statistical_reference_audit": request.statistical_reference_audit,
+                "strict_reference_readiness_claim": (
+                    request.strict_reference_readiness_claim
+                ),
+                "reference_split_uses": list(request.reference_split_uses),
             },
             "beam_strategy": request.beam_strategy,
             "rank_beam_width": request.rank_beam_width,

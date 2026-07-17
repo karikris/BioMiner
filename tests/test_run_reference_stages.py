@@ -43,7 +43,13 @@ def test_reference_first_production_stages_are_explicit_and_ordered() -> None:
         "evidence",
         "evaluation",
     )
-    assert MANUAL_REVIEW_STAGES == frozenset({RunStage.REFERENCE_REVIEW})
+    assert MANUAL_REVIEW_STAGES == frozenset(
+        {
+            RunStage.REFERENCE_REVIEW,
+            RunStage.FLICKR_HUMAN_VERIFICATION,
+            RunStage.TARGETED_REFERENCE_REVIEW,
+        }
+    )
 
 
 def test_manual_review_completion_requires_an_audited_approval() -> None:
