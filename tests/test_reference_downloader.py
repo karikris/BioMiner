@@ -24,11 +24,8 @@ from biominer.references.downloader import (
     _PinnedAddressHTTPTransport,
     _PinnedAddressNetworkBackend,
     _decode_image_isolated,
-    _legacy_checkpoint_binding,
-    _legacy_committed_object_fingerprint,
     ProviderMediaDownloadPolicy,
     ReferenceMediaDownloadConfig,
-    ReferenceMediaDownloadResult,
     download_reference_media,
 )
 from biominer.references.licensing import (
@@ -38,13 +35,11 @@ from biominer.references.licensing import (
 from biominer.references.schemas import (
     REFERENCE_ACQUISITION_SELECTIONS_SCHEMA_VERSION,
     REFERENCE_MEDIA_CANDIDATES_SCHEMA_VERSION,
-    REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION,
     make_reference_media_id,
     make_reference_observation_id,
     make_reference_selection_id,
     reference_acquisition_selections_frame,
     reference_media_candidates_frame,
-    reference_media_object_schema,
     reference_media_objects_frame,
 )
 from biominer.storage.local import LocalStorageBackend
@@ -519,63 +514,6 @@ def test_checkpoint_resume_preserves_derived_deduplication_annotations() -> None
     assert row["duplicate_group_id"] == annotated_row["duplicate_group_id"]
     assert row["duplicate_type"] == "unique"
     assert row["canonical_reference_media_id"] == media_id
-
-
-def test_v1_checkpoint_is_backfilled_from_durable_object_without_provider_request() -> (
-    None
-):
-    payload = _image_bytes("PNG", size=(7, 5))
-    candidates, selections = _frames()
-    request_count = 0
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        nonlocal request_count
-        request_count += 1
-        return httpx.Response(
-            200,
-            headers={"Content-Type": "image/png"},
-            content=payload,
-        )
-
-    storage = _MemoryStorage()
-    config = _config()
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        first = download_reference_media(
-            selections,
-            candidates,
-            storage=storage,
-            output_prefix="s3://references/bank-v1",
-            config=config,
-            http_client=client,
-            now=lambda: _NOW,
-        )
-        checkpoint_uri, expected_perceptual_hash = _downgrade_reference_bank_to_v1(
-            storage,
-            first,
-            config=config,
-        )
-        storage.parquet[first.media_objects_uri] = first.media_objects
-        resumed = download_reference_media(
-            selections,
-            candidates,
-            storage=storage,
-            output_prefix="s3://references/bank-v1",
-            config=config,
-            http_client=client,
-            now=lambda: _NOW,
-        )
-
-    row = resumed.media_objects.row(0, named=True)
-    assert request_count == 1
-    assert resumed.report["counts"]["resumed"] == 1
-    assert row["schema_version"] == REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION
-    assert row["perceptual_hash"] == expected_perceptual_hash
-    assert storage.json[checkpoint_uri]["schema_version"] == (
-        "reference-media-checkpoint-v2"
-    )
-    assert storage.json[checkpoint_uri]["object"]["perceptual_hash"] == (
-        expected_perceptual_hash
-    )
 
 
 def test_committed_checkpoint_resume_does_not_require_live_dns() -> None:
@@ -2037,6 +1975,7 @@ def test_same_size_object_corruption_makes_resume_fail_closed() -> None:
         ("object_fingerprint", "object fingerprint is invalid"),
         ("object_identity", "object identity is incompatible"),
         ("final_url", "final URL is invalid"),
+        ("legacy_schema", "checkpoint schema is incompatible"),
     ],
 )
 def test_checkpoint_tampering_makes_resume_fail_closed(
@@ -2072,6 +2011,8 @@ def test_checkpoint_tampering_makes_resume_fail_closed(
             checkpoint["object"]["object_fingerprint"] = "sha256:" + "f" * 64
         elif tamper == "object_identity":
             checkpoint["object"]["reference_media_id"] = "reference-media:other"
+        elif tamper == "legacy_schema":
+            checkpoint["schema_version"] = "reference-media-checkpoint-v1"
         else:
             checkpoint["download_evidence"]["final_url"] = (
                 "https://unreviewed.example.test/image.png"
@@ -2641,67 +2582,6 @@ def _config(**overrides: object) -> ReferenceMediaDownloadConfig:
     }
     values.update(overrides)
     return ReferenceMediaDownloadConfig(**values)
-
-
-def _downgrade_reference_bank_to_v1(
-    storage: _MemoryStorage,
-    result: ReferenceMediaDownloadResult,
-    *,
-    config: ReferenceMediaDownloadConfig,
-) -> tuple[str, str]:
-    media_objects = result.media_objects
-    media_objects_uri = result.media_objects_uri
-    checkpoint_uri = next(uri for uri in storage.json if "/checkpoints/" in uri)
-    checkpoint = deepcopy(storage.json[checkpoint_uri])
-    legacy_binding = _legacy_checkpoint_binding(
-        checkpoint["binding"],
-        config=config,
-    )
-    final_url = checkpoint["download_evidence"]["final_url"]
-    checkpoint_row = dict(checkpoint["object"])
-    original_perceptual_hash = str(checkpoint_row["perceptual_hash"])
-    checkpoint_row.update(
-        {
-            "schema_version": "reference-media-objects-v1.0.0",
-            "perceptual_hash": None,
-            "duplicate_group_id": None,
-            "duplicate_type": None,
-            "canonical_reference_media_id": None,
-            "provider_mirror_ids": [],
-        }
-    )
-    checkpoint_row["object_fingerprint"] = _legacy_committed_object_fingerprint(
-        legacy_binding,
-        checkpoint_row,
-        final_url=final_url,
-    )
-    checkpoint.update(
-        {
-            "schema_version": "reference-media-checkpoint-v1",
-            "binding": legacy_binding,
-            "object": checkpoint_row,
-        }
-    )
-    storage.json[checkpoint_uri] = checkpoint
-
-    inventory_row = media_objects.row(0, named=True)
-    inventory_row.update(
-        {
-            "schema_version": "reference-media-objects-v1.0.0",
-            "perceptual_hash": None,
-            "duplicate_group_id": None,
-            "duplicate_type": None,
-            "canonical_reference_media_id": None,
-            "provider_mirror_ids": [],
-            "object_fingerprint": checkpoint_row["object_fingerprint"],
-        }
-    )
-    storage.parquet[media_objects_uri] = pl.DataFrame(
-        [inventory_row],
-        schema=reference_media_object_schema(),
-        orient="row",
-    )
-    return checkpoint_uri, original_perceptual_hash
 
 
 def _frames(

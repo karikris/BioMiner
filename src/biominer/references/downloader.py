@@ -43,7 +43,6 @@ from biominer.references.schemas import (
     REFERENCE_MEDIA_OBJECTS_FILE,
     REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION,
     REFERENCE_MEDIA_RASTER_CONTENT_TYPES,
-    reference_media_object_schema,
     reference_media_objects_frame,
     validate_reference_acquisition_selections,
     validate_reference_media_candidates,
@@ -56,10 +55,6 @@ from biominer.storage.uri import join_uri
 
 REFERENCE_MEDIA_DOWNLOADER_VERSION = "reference-media-downloader-v2"
 REFERENCE_MEDIA_CHECKPOINT_VERSION = "reference-media-checkpoint-v2"
-_LEGACY_REFERENCE_MEDIA_DOWNLOADER_VERSION = "reference-media-downloader-v1"
-_LEGACY_REFERENCE_MEDIA_CHECKPOINT_VERSION = "reference-media-checkpoint-v1"
-_LEGACY_REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION = "reference-media-objects-v1.0.0"
-_REFERENCE_MEDIA_HASH_BACKFILL_VERSION = "reference-media-hash-backfill-v1"
 REFERENCE_MEDIA_DOWNLOAD_REPORT_VERSION = "reference-media-download-report-v1"
 REFERENCE_MEDIA_DOWNLOAD_REPORT_FILE = "reference_media_download_report.json"
 REFERENCE_MEDIA_DOWNLOAD_SUMMARY_FILE = "reference_media_download_summary.md"
@@ -1202,8 +1197,6 @@ def _download_reference_media_impl(
                     ),
                     provider_policy=provider_policy,
                     expected_provider_media_id=str(item.candidate["provider_media_id"]),
-                    config=config,
-                    now=now,
                 )
             )
             resumed_count += 1
@@ -2336,8 +2329,6 @@ def _commit_prepared(
                 ),
                 provider_policy=prepared.pending.provider_policy,
                 expected_provider_media_id=str(item.candidate["provider_media_id"]),
-                config=config,
-                now=now,
             )
         committed_at = _aware_utc(now())
         checkpoint = {
@@ -2505,8 +2496,6 @@ def _load_committed_checkpoint(
     expected_evidence: Mapping[str, object],
     provider_policy: ProviderMediaDownloadPolicy,
     expected_provider_media_id: str,
-    config: ReferenceMediaDownloadConfig,
-    now: Callable[[], datetime],
 ) -> dict[str, object]:
     payload = storage.read_json(checkpoint_uri)
     if set(payload) != {
@@ -2518,18 +2507,9 @@ def _load_committed_checkpoint(
     }:
         raise ValueError("reference media checkpoint shape is incompatible")
     schema_version = payload.get("schema_version")
-    if schema_version not in {
-        REFERENCE_MEDIA_CHECKPOINT_VERSION,
-        _LEGACY_REFERENCE_MEDIA_CHECKPOINT_VERSION,
-    }:
+    if schema_version != REFERENCE_MEDIA_CHECKPOINT_VERSION:
         raise ValueError("reference media checkpoint schema is incompatible")
-    legacy = schema_version == _LEGACY_REFERENCE_MEDIA_CHECKPOINT_VERSION
-    checkpoint_binding = (
-        _legacy_checkpoint_binding(expected_binding, config=config)
-        if legacy
-        else dict(expected_binding)
-    )
-    if payload.get("binding") != checkpoint_binding:
+    if payload.get("binding") != dict(expected_binding):
         raise ValueError("reference media checkpoint binding is incompatible")
     raw_object = payload.get("object")
     if not isinstance(raw_object, dict):
@@ -2539,16 +2519,7 @@ def _load_committed_checkpoint(
     if not isinstance(downloaded_at, str):
         raise ValueError("reference media checkpoint downloaded_at is invalid")
     row["downloaded_at"] = _aware_utc(datetime.fromisoformat(downloaded_at))
-    if legacy:
-        _validate_legacy_media_object_row(row)
-        validation_row = dict(row)
-        validation_row["schema_version"] = REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION
-        validation_row["perceptual_hash"] = (
-            f"{REFERENCE_PERCEPTUAL_HASH_VERSION}:" + "0" * 32
-        )
-        frame = reference_media_objects_frame([validation_row])
-    else:
-        frame = reference_media_objects_frame([row])
+    frame = reference_media_objects_frame([row])
     committed = frame.to_dicts()[0]
     if committed["reference_media_id"] != expected_binding["reference_media_id"]:
         raise ValueError("reference media checkpoint object identity is incompatible")
@@ -2575,18 +2546,10 @@ def _load_committed_checkpoint(
         )
     except ValueError as exc:
         raise ValueError("reference media checkpoint final URL is invalid") from exc
-    expected_fingerprint = (
-        _legacy_committed_object_fingerprint(
-            checkpoint_binding,
-            row,
-            final_url=final_url,
-        )
-        if legacy
-        else _committed_object_fingerprint(
-            expected_binding,
-            committed,
-            final_url=final_url,
-        )
+    expected_fingerprint = _committed_object_fingerprint(
+        expected_binding,
+        committed,
+        final_url=final_url,
     )
     if row["object_fingerprint"] != expected_fingerprint:
         raise ValueError("reference media checkpoint object fingerprint is invalid")
@@ -2621,171 +2584,7 @@ def _load_committed_checkpoint(
         raise ValueError("reference media checkpoint object size is incompatible")
     if storage.file_sha256(object_uri) != str(committed["sha256"]):
         raise ValueError("reference media checkpoint object checksum is incompatible")
-    if legacy:
-        return _upgrade_legacy_committed_checkpoint(
-            storage,
-            checkpoint_uri=checkpoint_uri,
-            payload=payload,
-            legacy_row=row,
-            expected_binding=expected_binding,
-            final_url=final_url,
-            config=config,
-            now=now,
-        )
     return committed
-
-
-def _legacy_checkpoint_binding(
-    expected_binding: Mapping[str, object],
-    *,
-    config: ReferenceMediaDownloadConfig,
-) -> dict[str, object]:
-    binding = dict(expected_binding)
-    binding["downloader_version"] = _LEGACY_REFERENCE_MEDIA_DOWNLOADER_VERSION
-    binding["configuration_fingerprint"] = _fingerprint(
-        {
-            "downloader_version": _LEGACY_REFERENCE_MEDIA_DOWNLOADER_VERSION,
-            "max_source_bytes": config.max_source_bytes,
-            "max_decoded_pixels": config.max_decoded_pixels,
-            "allowed_content_types": config.allowed_content_types,
-        }
-    )
-    return binding
-
-
-def _validate_legacy_media_object_row(row: Mapping[str, object]) -> None:
-    if set(row) != set(reference_media_object_schema()):
-        raise ValueError("legacy reference media object shape is incompatible")
-    if row.get("schema_version") != _LEGACY_REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION:
-        raise ValueError("legacy reference media object schema is incompatible")
-    if (
-        any(
-            row.get(field_name) is not None
-            for field_name in (
-                "perceptual_hash",
-                "duplicate_group_id",
-                "duplicate_type",
-                "canonical_reference_media_id",
-            )
-        )
-        or row.get("provider_mirror_ids") != []
-    ):
-        raise ValueError("legacy reference media object has unexpected derived state")
-
-
-def _backfill_legacy_media_object(
-    storage: CloudStorage,
-    row: Mapping[str, object],
-    *,
-    config: ReferenceMediaDownloadConfig,
-) -> dict[str, object]:
-    _validate_legacy_media_object_row(row)
-    upgraded = dict(row)
-    upgraded["schema_version"] = REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION
-    if upgraded["decode_status"] != "valid":
-        return reference_media_objects_frame([upgraded]).to_dicts()[0]
-
-    object_uri = str(upgraded["source_object_uri"])
-    expected_size = int(upgraded["source_byte_count"])
-    expected_sha256 = str(upgraded["sha256"])
-    if not 0 < expected_size <= config.max_source_bytes:
-        raise ValueError(
-            "legacy reference media object exceeds the current source byte limit"
-        )
-    if upgraded["content_type"] not in config.allowed_content_types:
-        raise ValueError(
-            "legacy reference media object content type is not currently allowed"
-        )
-    if not storage.exists(object_uri):
-        raise ValueError("legacy reference media object is missing")
-    if storage.file_size(object_uri) != expected_size:
-        raise ValueError("legacy reference media object size is incompatible")
-    if storage.file_sha256(object_uri) != expected_sha256:
-        raise ValueError("legacy reference media object checksum is incompatible")
-
-    if config.temporary_directory is not None:
-        config.temporary_directory.mkdir(parents=True, exist_ok=True)
-    temporary_path: Path | None = None
-    try:
-        with NamedTemporaryFile(
-            mode="wb",
-            prefix="biominer-reference-backfill-",
-            suffix=".part",
-            dir=config.temporary_directory,
-            delete=False,
-        ) as temporary:
-            temporary_path = Path(temporary.name)
-        storage.materialize_file(object_uri, temporary_path, overwrite=True)
-        if temporary_path.stat().st_size != expected_size:
-            raise ValueError("materialized legacy object size is incompatible")
-        if _path_sha256(temporary_path) != expected_sha256:
-            raise ValueError("materialized legacy object checksum is incompatible")
-        width, height, content_type, perceptual_hash = _decode_image_isolated(
-            temporary_path,
-            max_pixels=config.max_decoded_pixels,
-            max_memory_bytes=config.max_decode_memory_bytes,
-            timeout_seconds=config.max_download_seconds,
-        )
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-    if (width, height) != (
-        int(upgraded["decoded_width"]),
-        int(upgraded["decoded_height"]),
-    ):
-        raise ValueError("legacy reference media decoded dimensions changed")
-    if content_type != upgraded["content_type"]:
-        raise ValueError("legacy reference media decoded content type changed")
-    upgraded["perceptual_hash"] = perceptual_hash
-    return reference_media_objects_frame([upgraded]).to_dicts()[0]
-
-
-def _upgrade_legacy_committed_checkpoint(
-    storage: CloudStorage,
-    *,
-    checkpoint_uri: str,
-    payload: Mapping[str, object],
-    legacy_row: Mapping[str, object],
-    expected_binding: Mapping[str, object],
-    final_url: str,
-    config: ReferenceMediaDownloadConfig,
-    now: Callable[[], datetime],
-) -> dict[str, object]:
-    upgraded = _backfill_legacy_media_object(
-        storage,
-        legacy_row,
-        config=config,
-    )
-    upgraded["object_fingerprint"] = _committed_object_fingerprint(
-        expected_binding,
-        upgraded,
-        final_url=final_url,
-    )
-    validated = reference_media_objects_frame([upgraded]).to_dicts()[0]
-    original_commit = payload.get("commit")
-    if not isinstance(original_commit, Mapping):
-        raise ValueError("legacy reference media checkpoint commit is invalid")
-    migrated_at = max(_aware_utc(now()), validated["downloaded_at"])
-    migrated_payload = {
-        "schema_version": REFERENCE_MEDIA_CHECKPOINT_VERSION,
-        "binding": dict(expected_binding),
-        "object": _jsonable(validated),
-        "download_evidence": dict(payload["download_evidence"]),
-        "commit": {
-            "run_id": str(original_commit["run_id"]),
-            "committed_at": migrated_at.isoformat(),
-            "object_write_precedes_checkpoint": True,
-        },
-    }
-    storage.write_json(checkpoint_uri, migrated_payload)
-    _log_event(
-        "reference_media_checkpoint_migrated",
-        checkpoint_uri=checkpoint_uri,
-        reference_media_id=validated["reference_media_id"],
-        from_schema=_LEGACY_REFERENCE_MEDIA_CHECKPOINT_VERSION,
-        to_schema=REFERENCE_MEDIA_CHECKPOINT_VERSION,
-    )
-    return validated
 
 
 def _expected_checkpoint_evidence(
@@ -2828,39 +2627,6 @@ def _committed_object_fingerprint(
             "final_url": final_url,
         }
     )
-
-
-def _legacy_committed_object_fingerprint(
-    binding: Mapping[str, object],
-    row: Mapping[str, object],
-    *,
-    final_url: object,
-) -> str:
-    return _fingerprint(
-        {
-            "reference_media_id": binding["reference_media_id"],
-            "candidate_fingerprint": binding["candidate_fingerprint"],
-            "configuration_fingerprint": binding["configuration_fingerprint"],
-            "licence_policy_fingerprint": binding["licence_policy_fingerprint"],
-            "provider_policy_fingerprint": binding["provider_policy_fingerprint"],
-            "source_object_uri": row["source_object_uri"],
-            "content_type": row["content_type"],
-            "source_byte_count": row["source_byte_count"],
-            "decoded_width": row["decoded_width"],
-            "decoded_height": row["decoded_height"],
-            "sha256": row["sha256"],
-            "licence_policy_status": row["licence_policy_status"],
-            "final_url": final_url,
-        }
-    )
-
-
-def _path_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
 
 
 def _checksum_preflight_reason(candidate: Mapping[str, object]) -> str | None:
