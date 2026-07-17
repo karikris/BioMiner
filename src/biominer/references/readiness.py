@@ -37,6 +37,10 @@ from biominer.references.review import (
     resolve_reference_review_statuses,
     validate_reference_review_queue_source_bindings,
 )
+from biominer.references.support_admission import (
+    SupportAdmissionEvidence,
+    evaluate_support_admission,
+)
 from biominer.references.schemas import (
     REFERENCE_ROUTES,
     validate_reference_acquisition_plan,
@@ -2365,12 +2369,6 @@ def _build_support_rows(
             blockers.add("media_object_not_decodable")
         if not _complete_attribution(candidate, observation):
             blockers.add("source_attribution_incomplete")
-        support_eligible = (
-            not blockers
-            and outcome["review_status"] == "completed"
-            and outcome["resolved_verification_status"] == "verified"
-            and bool(outcome["target_identity_verified"])
-        )
         human_verified_identity = (
             outcome["review_status"] == "completed"
             and outcome["resolved_verification_status"] == "verified"
@@ -2380,6 +2378,31 @@ def _build_support_rows(
             _present(observation["source_taxon_id"])
             and _present(observation["supplied_scientific_name"])
         )
+        admission = evaluate_support_admission(
+            SupportAdmissionEvidence(
+                source=str(candidate["source"]),
+                review_status=str(outcome["review_status"]),
+                verification_status=str(
+                    outcome["resolved_verification_status"]
+                ),
+                target_identity_verified=bool(
+                    outcome["target_identity_verified"]
+                ),
+                human_rejected=False,
+                human_rejection_reasons=(),
+                provider_assertion_passed=provider_asserted_identity,
+                automated_admission_gates_passed=False,
+                route_compatible=route in admission_policy.allowed_unreviewed_routes,
+                canonical_media=canonical_id == media_id,
+                deduplication_completed=True,
+                provisional_support_declared=False,
+                policy_permits_human_verified_support=True,
+                policy_permits_provisional_support=False,
+                exclusion_reasons=tuple(blockers),
+            ),
+            admission_policy,
+        )
+        support_eligible = admission.eligible
         base: dict[str, object] = {
             "schema_version": REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION,
             "reference_bank_version": reference_bank_version,
@@ -2390,7 +2413,11 @@ def _build_support_rows(
             "reference_admission_mode": admission_policy.mode,
             "reference_admission_policy_version": admission_policy.policy_version,
             "reference_admission_policy_fingerprint": admission_policy.fingerprint,
-            "identity_evidence_basis": "human_verified",
+            "identity_evidence_basis": (
+                "human_verified"
+                if human_verified_identity
+                else admission.evidence_path
+            ),
             "provider_asserted_identity": provider_asserted_identity,
             "provider_asserted_taxon_key": observation["source_taxon_id"],
             "provider_asserted_scientific_name": observation[
@@ -2400,12 +2427,12 @@ def _build_support_rows(
             "provider_quality_status": observation["identification_quality"],
             "human_review_status": outcome["review_status"],
             "human_verified_identity": human_verified_identity,
-            "provisional_support": False,
-            "statistical_audit_required": False,
-            "admission_status": "admitted" if support_eligible else "excluded",
-            "admission_reasons": sorted(blockers)
-            if blockers
-            else ["strict_human_review_verified"],
+            "provisional_support": admission.provisional,
+            "statistical_audit_required": (
+                admission.provisional and admission_policy.require_statistical_audit
+            ),
+            "admission_status": admission.admission_status,
+            "admission_reasons": list(admission.reasons),
             "reference_quality_flags": [],
             "route_evidence_basis": "human_verified_review",
             "geographic_prototype_eligible": bool(
