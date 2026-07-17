@@ -9,6 +9,7 @@ from biominer.references.admission import (
     REFERENCE_ADMISSION_POLICY_SCHEMA_VERSION,
     ReferenceAdmissionPolicy,
     default_reference_admission_policy,
+    strict_reference_admission_policy,
 )
 
 
@@ -123,6 +124,15 @@ def test_strict_policy_cannot_silently_admit_unreviewed_routes() -> None:
     assert strict.fingerprint != policy.fingerprint
     with pytest.raises(ValueError, match="strict admission"):
         replace(strict, allowed_unreviewed_routes=("adult_field",))
+
+
+def test_strict_compatibility_policy_is_explicit_and_not_the_default() -> None:
+    strict = strict_reference_admission_policy()
+
+    assert strict.mode == "human_verified_strict"
+    assert strict.allowed_unreviewed_routes == ()
+    assert strict.require_statistical_audit is False
+    assert strict.fingerprint != default_reference_admission_policy().fingerprint
 
 
 def test_research_only_permission_and_status_must_agree() -> None:

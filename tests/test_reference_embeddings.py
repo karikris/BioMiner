@@ -2527,6 +2527,9 @@ def _support_row(
     support_split: str | None,
     eligible: bool,
 ) -> dict[str, object]:
+    from biominer.references.admission import strict_reference_admission_policy
+
+    admission_policy = strict_reference_admission_policy()
     assigned_at = NOW - timedelta(days=1)
     assignment = (
         make_reference_split_assignment_fingerprint(
@@ -2548,6 +2551,26 @@ def _support_row(
         "reference_media_id": media_id,
         "canonical_reference_media_id": media_id,
         "reference_observation_id": f"observation:{media_id}",
+        "reference_admission_mode": admission_policy.mode,
+        "reference_admission_policy_version": admission_policy.policy_version,
+        "reference_admission_policy_fingerprint": admission_policy.fingerprint,
+        "identity_evidence_basis": "human_verified" if eligible else "none",
+        "provider_asserted_identity": True,
+        "provider_asserted_taxon_key": "1938069",
+        "provider_asserted_scientific_name": "Papilio demoleus",
+        "provider_dataset_key": "dataset:fixture",
+        "provider_quality_status": "research_grade",
+        "human_review_status": "completed" if eligible else "rejected",
+        "human_verified_identity": eligible,
+        "provisional_support": False,
+        "statistical_audit_required": False,
+        "admission_status": "admitted" if eligible else "excluded",
+        "admission_reasons": [
+            "strict_human_review_verified" if eligible else "manual_exclusion"
+        ],
+        "reference_quality_flags": [],
+        "route_evidence_basis": "human_verified_review" if eligible else "none",
+        "geographic_prototype_eligible": eligible,
         "review_request_id": f"review:{media_id}",
         "review_decision_ids": [f"decision:{media_id}"],
         "reviewer_ids": ["reviewer:fixture"],

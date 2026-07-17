@@ -24,6 +24,11 @@ from biominer.common.semantic_hash import (
     canonical_semantic_bytes,
     canonical_semantic_fingerprint,
 )
+from biominer.references.admission import (
+    REFERENCE_ADMISSION_MODES,
+    ReferenceAdmissionPolicy,
+    strict_reference_admission_policy,
+)
 from biominer.references.deduplication import (
     validate_reference_media_deduplication_artifacts,
 )
@@ -50,7 +55,7 @@ from biominer.storage.parquet import write_parquet
 REFERENCE_BANK_SPLIT_ASSIGNMENTS_SCHEMA_VERSION = (
     "reference-bank-split-assignments-v1.0.0"
 )
-REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION = "reference-support-manifest-v2.0.0"
+REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION = "reference-support-manifest-v3.0.0"
 REFERENCE_BANK_SUMMARY_SCHEMA_VERSION = "reference-bank-summary-v1.0.0"
 REFERENCE_BANK_READINESS_SCHEMA_VERSION = "reference-bank-readiness-v2.0.0"
 REFERENCE_BANK_READINESS_POLICY_SCHEMA_VERSION = (
@@ -80,6 +85,18 @@ PERMITTING_READINESS_STATUSES = frozenset(
 READINESS_CHECK_STATUSES = frozenset({"passed", "failed", "pending", "warning"})
 REFERENCE_SUPPORT_SPLITS = frozenset(
     {"support_train", "model_selection", "calibration", "final_test"}
+)
+REFERENCE_IDENTITY_EVIDENCE_BASES = frozenset(
+    {"human_verified", "gbif_provider_asserted", "none"}
+)
+REFERENCE_ADMISSION_STATUSES = frozenset(
+    {"admitted", "excluded", "review_required"}
+)
+REFERENCE_ROUTE_EVIDENCE_BASES = frozenset(
+    {"human_verified_review", "yoloe", "none"}
+)
+REFERENCE_HUMAN_REVIEW_STATUSES = frozenset(
+    {"not_requested", "pending", "in_review", "completed", "rejected", "conflict"}
 )
 _REQUIRED_CHECK_IDS = (
     "artifact_integrity",
@@ -354,6 +371,24 @@ _SUPPORT_ROW_SEMANTIC_FIELDS = (
     "reference_media_id",
     "canonical_reference_media_id",
     "reference_observation_id",
+    "reference_admission_mode",
+    "reference_admission_policy_version",
+    "reference_admission_policy_fingerprint",
+    "identity_evidence_basis",
+    "provider_asserted_identity",
+    "provider_asserted_taxon_key",
+    "provider_asserted_scientific_name",
+    "provider_dataset_key",
+    "provider_quality_status",
+    "human_review_status",
+    "human_verified_identity",
+    "provisional_support",
+    "statistical_audit_required",
+    "admission_status",
+    "admission_reasons",
+    "reference_quality_flags",
+    "route_evidence_basis",
+    "geographic_prototype_eligible",
     "source",
     "source_observation_id",
     "provider_media_id",
@@ -863,6 +898,24 @@ def reference_support_manifest_schema() -> dict[str, pl.DataType]:
         "reference_media_id": pl.String,
         "canonical_reference_media_id": pl.String,
         "reference_observation_id": pl.String,
+        "reference_admission_mode": pl.String,
+        "reference_admission_policy_version": pl.String,
+        "reference_admission_policy_fingerprint": pl.String,
+        "identity_evidence_basis": pl.String,
+        "provider_asserted_identity": pl.Boolean,
+        "provider_asserted_taxon_key": pl.String,
+        "provider_asserted_scientific_name": pl.String,
+        "provider_dataset_key": pl.String,
+        "provider_quality_status": pl.String,
+        "human_review_status": pl.String,
+        "human_verified_identity": pl.Boolean,
+        "provisional_support": pl.Boolean,
+        "statistical_audit_required": pl.Boolean,
+        "admission_status": pl.String,
+        "admission_reasons": pl.List(pl.String),
+        "reference_quality_flags": pl.List(pl.String),
+        "route_evidence_basis": pl.String,
+        "geographic_prototype_eligible": pl.Boolean,
         "review_request_id": pl.String,
         "review_decision_ids": pl.List(pl.String),
         "reviewer_ids": pl.List(pl.String),
@@ -1021,6 +1074,81 @@ def validate_reference_support_manifest(frame: pl.DataFrame) -> None:
         route = str(row["route"])
         if route not in REFERENCE_ROUTES:
             raise ValueError("support manifest contains an unsupported route")
+        admission_mode = str(row["reference_admission_mode"])
+        if admission_mode not in REFERENCE_ADMISSION_MODES:
+            raise ValueError("support manifest contains an unsupported admission mode")
+        _required_text(
+            row["reference_admission_policy_version"],
+            field="reference_admission_policy_version",
+        )
+        _fingerprint(
+            row["reference_admission_policy_fingerprint"],
+            field="reference_admission_policy_fingerprint",
+        )
+        identity_basis = str(row["identity_evidence_basis"])
+        if identity_basis not in REFERENCE_IDENTITY_EVIDENCE_BASES:
+            raise ValueError("support manifest contains an unsupported identity basis")
+        admission_status = str(row["admission_status"])
+        if admission_status not in REFERENCE_ADMISSION_STATUSES:
+            raise ValueError("support manifest contains an unsupported admission status")
+        route_evidence = str(row["route_evidence_basis"])
+        if route_evidence not in REFERENCE_ROUTE_EVIDENCE_BASES:
+            raise ValueError("support manifest contains an unsupported route evidence basis")
+        human_review_status = str(row["human_review_status"])
+        if human_review_status not in REFERENCE_HUMAN_REVIEW_STATUSES:
+            raise ValueError("support manifest contains an unsupported human review status")
+        admission_reasons = list(row["admission_reasons"])
+        if not admission_reasons or admission_reasons != sorted(set(admission_reasons)):
+            raise ValueError("support manifest row must record canonical admission reasons")
+        quality_flags = list(row["reference_quality_flags"])
+        if quality_flags != sorted(set(quality_flags)):
+            raise ValueError("support manifest reference quality flags are not canonical")
+        provider_asserted = bool(row["provider_asserted_identity"])
+        human_verified = bool(row["human_verified_identity"])
+        provisional = bool(row["provisional_support"])
+        if provider_asserted and (
+            not _present(row["provider_asserted_taxon_key"])
+            or not _present(row["provider_asserted_scientific_name"])
+        ):
+            raise ValueError("provider assertion lacks taxon identity evidence")
+        if human_verified != bool(row["target_identity_verified"]):
+            raise ValueError("human-verified identity fields disagree")
+        if identity_basis == "human_verified":
+            if (
+                not human_verified
+                or human_review_status != "completed"
+                or row["verification_status"] != "verified"
+                or provisional
+                or route_evidence != "human_verified_review"
+            ):
+                raise ValueError("human-verified identity basis is inconsistent")
+        elif identity_basis == "gbif_provider_asserted":
+            if (
+                str(row["source"]).casefold() != "gbif"
+                or not provider_asserted
+                or human_verified
+                or bool(row["target_identity_verified"])
+                or row["verification_status"] == "verified"
+                or not provisional
+                or not bool(row["statistical_audit_required"])
+                or admission_mode != "adaptive_gbif_fast_start"
+                or route_evidence != "yoloe"
+                or human_review_status == "completed"
+            ):
+                raise ValueError(
+                    "GBIF provider assertion is inconsistent with provisional support"
+                )
+        elif human_verified or provisional:
+            raise ValueError("identity basis none cannot claim identity support")
+        if provisional and identity_basis != "gbif_provider_asserted":
+            raise ValueError("provisional support must use GBIF provider assertion")
+        if bool(row["geographic_prototype_eligible"]) and (
+            not bool(row["support_eligible"])
+            or not _present(row["geo_cluster_id"])
+            or row["latitude"] is None
+            or row["longitude"] is None
+        ):
+            raise ValueError("geographic prototype eligibility lacks usable geography")
         if row["support_split"] is not None and (
             row["support_split"] not in REFERENCE_SUPPORT_SPLITS
         ):
@@ -1047,12 +1175,17 @@ def validate_reference_support_manifest(frame: pl.DataFrame) -> None:
             )
             if any(not _present(row[field_name]) for field_name in required_text_fields):
                 raise ValueError("eligible support row has incomplete attribution or source data")
-            if row["verification_status"] != "verified":
-                raise ValueError("eligible support row is not verified")
-            if row["review_status"] != "completed":
-                raise ValueError("eligible support row has incomplete review")
-            if not row["target_identity_verified"]:
-                raise ValueError("eligible support row lacks verified identity")
+            if admission_status != "admitted":
+                raise ValueError("eligible support row is not admitted")
+            if identity_basis == "none":
+                raise ValueError("eligible support row lacks an identity evidence basis")
+            if identity_basis == "human_verified":
+                if row["review_status"] != "completed":
+                    raise ValueError("eligible strict support row has incomplete review")
+                if row["verification_status"] != "verified":
+                    raise ValueError("eligible strict support row is not verified")
+                if not row["target_identity_verified"]:
+                    raise ValueError("eligible strict support row lacks verified identity")
             if row["exclusion_reasons"]:
                 raise ValueError("eligible support row has exclusion reasons")
         _fingerprint(row["image_sha256"], field="image_sha256")
@@ -1130,6 +1263,7 @@ def build_reference_bank_readiness(
         raise TypeError("policy must be a ReferenceBankReadinessPolicy")
     if not isinstance(model_identity, ReferenceModelInputIdentity):
         raise TypeError("model_identity must be a ReferenceModelInputIdentity")
+    admission_policy = strict_reference_admission_policy()
     registry = _required_text(registry_version, field="registry_version")
     bank_version = _required_text(
         reference_bank_version,
@@ -1272,6 +1406,7 @@ def build_reference_bank_readiness(
         review=review,
         indexes=indexes,
         policy=policy,
+        admission_policy=admission_policy,
         registry_version=registry,
         reference_bank_version=bank_version,
         bank_fingerprint=bank_fingerprint,
@@ -1926,6 +2061,7 @@ def _build_support_rows(
     review: Any,
     indexes: Mapping[str, Mapping[str, Mapping[str, object]]],
     policy: ReferenceBankReadinessPolicy,
+    admission_policy: ReferenceAdmissionPolicy,
     registry_version: str,
     reference_bank_version: str,
     bank_fingerprint: str,
@@ -1996,6 +2132,15 @@ def _build_support_rows(
             and outcome["resolved_verification_status"] == "verified"
             and bool(outcome["target_identity_verified"])
         )
+        human_verified_identity = (
+            outcome["review_status"] == "completed"
+            and outcome["resolved_verification_status"] == "verified"
+            and bool(outcome["target_identity_verified"])
+        )
+        provider_asserted_identity = bool(
+            _present(observation["source_taxon_id"])
+            and _present(observation["supplied_scientific_name"])
+        )
         base: dict[str, object] = {
             "schema_version": REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION,
             "reference_bank_version": reference_bank_version,
@@ -2003,6 +2148,30 @@ def _build_support_rows(
             "reference_media_id": media_id,
             "canonical_reference_media_id": canonical_id,
             "reference_observation_id": observation_id,
+            "reference_admission_mode": admission_policy.mode,
+            "reference_admission_policy_version": admission_policy.policy_version,
+            "reference_admission_policy_fingerprint": admission_policy.fingerprint,
+            "identity_evidence_basis": "human_verified",
+            "provider_asserted_identity": provider_asserted_identity,
+            "provider_asserted_taxon_key": observation["source_taxon_id"],
+            "provider_asserted_scientific_name": observation[
+                "supplied_scientific_name"
+            ],
+            "provider_dataset_key": observation["source_dataset_key"],
+            "provider_quality_status": observation["identification_quality"],
+            "human_review_status": outcome["review_status"],
+            "human_verified_identity": human_verified_identity,
+            "provisional_support": False,
+            "statistical_audit_required": False,
+            "admission_status": "admitted" if support_eligible else "excluded",
+            "admission_reasons": sorted(blockers)
+            if blockers
+            else ["strict_human_review_verified"],
+            "reference_quality_flags": [],
+            "route_evidence_basis": "human_verified_review",
+            "geographic_prototype_eligible": bool(
+                support_eligible and _present(observation["geo_cluster_id"])
+            ),
             "review_request_id": request_id,
             "review_decision_ids": sorted(
                 str(value) for value in resolved["effective_decision_ids"]

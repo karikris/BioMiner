@@ -1067,16 +1067,21 @@ change the frozen bank identity.
 
 `reference_support_manifest.parquet` is the immutable resolved projection used
 by embedding and split construction. Schema version
-`reference-support-manifest-v2.0.0` uses an explicit semantic projection. It
+`reference-support-manifest-v3.0.0` uses an explicit semantic projection. It
 excludes source-record, licence, and object locators; downloader object
 fingerprints; queue request, decision, and reviewer IDs; and split-assignment
 fingerprints from row and artifact semantic fingerprints. These fields remain
 in every persisted row for retrieval and audit. Direct source snapshot,
 source-record content, image-content, perceptual, taxonomy, review outcome,
-licence, attribution, geography, route, split, and model-bank identities remain
-semantic. Version 1 used locator-bearing audit provenance in its fingerprint
-preimage and is not accepted as version 2. Its grain is one canonical verified
-media item and route.
+licence, attribution, geography, route, split, admission policy, identity basis,
+provisional status, audit requirement, and model-bank identities remain semantic.
+Version 3 distinguishes `human_verified`, `gbif_provider_asserted`, and `none`
+identity evidence. A GBIF provider assertion may be provisional support but can
+never set human-verified identity. Admission status/reasons, reference-quality
+flags, route evidence, provider metadata, and geographic-prototype eligibility
+are explicit columns. Older schemas remain distinguishable and require explicit
+compatibility handling; they are never silently interpreted as adaptive
+fast-start. The grain is one canonical admitted media item and route.
 
 `reference_bank_summary.parquet` has one row per bank version, accepted species,
 cluster scope, life stage, visual domain, and split. Schema version:

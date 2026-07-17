@@ -330,6 +330,33 @@ def default_reference_admission_policy() -> ReferenceAdmissionPolicy:
     )
 
 
+def strict_reference_admission_policy() -> ReferenceAdmissionPolicy:
+    """Return the explicit compatibility identity for the strict workflow."""
+
+    return ReferenceAdmissionPolicy(
+        schema_version=REFERENCE_ADMISSION_POLICY_SCHEMA_VERSION,
+        policy_version="human-verified-strict-compat-v1",
+        mode="human_verified_strict",
+        allowed_provider_sources=("gbif", "inaturalist"),
+        allowed_unreviewed_routes=(),
+        accepted_taxon_reconciliation_statuses=(
+            "accepted_key_exact",
+            "accepted_name_synonym",
+        ),
+        accepted_licence_policy_statuses=("allowed",),
+        minimum_decoded_width=1,
+        minimum_decoded_height=1,
+        minimum_subject_area_ratio=0,
+        require_yoloe_route=False,
+        require_canonical_media=True,
+        maximum_images_per_observation=1,
+        maximum_images_per_observer_before_reuse=1,
+        permit_research_only_licence=False,
+        require_statistical_audit=False,
+        audit_policy_version="not-required-strict-v1",
+    )
+
+
 def _normalized_values(
     values: Sequence[str],
     *,
@@ -390,4 +417,5 @@ __all__ = [
     "REFERENCE_ADMISSION_POLICY_SCHEMA_VERSION",
     "ReferenceAdmissionPolicy",
     "default_reference_admission_policy",
+    "strict_reference_admission_policy",
 ]

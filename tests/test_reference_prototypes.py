@@ -874,6 +874,9 @@ def _support_row(
     *,
     source_path: Path,
 ) -> dict[str, object]:
+    from biominer.references.admission import strict_reference_admission_policy
+
+    admission_policy = strict_reference_admission_policy()
     assigned_at = NOW - timedelta(days=1)
     row: dict[str, object] = {
         "schema_version": REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION,
@@ -882,6 +885,24 @@ def _support_row(
         "reference_media_id": spec.media_id,
         "canonical_reference_media_id": spec.media_id,
         "reference_observation_id": spec.observation_id,
+        "reference_admission_mode": admission_policy.mode,
+        "reference_admission_policy_version": admission_policy.policy_version,
+        "reference_admission_policy_fingerprint": admission_policy.fingerprint,
+        "identity_evidence_basis": "human_verified",
+        "provider_asserted_identity": True,
+        "provider_asserted_taxon_key": spec.taxon_key,
+        "provider_asserted_scientific_name": spec.scientific_name,
+        "provider_dataset_key": "dataset:fixture",
+        "provider_quality_status": "research_grade",
+        "human_review_status": "completed",
+        "human_verified_identity": True,
+        "provisional_support": False,
+        "statistical_audit_required": False,
+        "admission_status": "admitted",
+        "admission_reasons": ["strict_human_review_verified"],
+        "reference_quality_flags": [],
+        "route_evidence_basis": "human_verified_review",
+        "geographic_prototype_eligible": spec.geo_cluster_id is not None,
         "review_request_id": f"review:{spec.media_id}",
         "review_decision_ids": [f"decision:{spec.media_id}"],
         "reviewer_ids": ["reviewer:fixture"],

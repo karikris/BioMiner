@@ -15,6 +15,7 @@ from biominer.candidates.regional_union import (
     REGIONAL_CANDIDATE_SPECIES_SCHEMA_VERSION,
     regional_candidate_species_schema,
 )
+from biominer.references.admission import default_reference_admission_policy
 from biominer.references.deduplication import deduplicate_reference_media
 from biominer.references.readiness import (
     REFERENCE_BANK_READINESS_FILE,
@@ -804,6 +805,25 @@ def test_ready_build_publish_and_strict_load(tmp_path: Path) -> None:
     assert result.support_manifest.height == 2
     assert result.support_manifest["support_eligible"].to_list() == [True, True]
     assert set(result.support_manifest["route"]) == {"adult_field"}
+    assert set(result.support_manifest["reference_admission_mode"]) == {
+        "human_verified_strict"
+    }
+    assert set(result.support_manifest["identity_evidence_basis"]) == {
+        "human_verified"
+    }
+    assert result.support_manifest["provider_asserted_identity"].to_list() == [
+        True,
+        True,
+    ]
+    assert result.support_manifest["human_verified_identity"].to_list() == [
+        True,
+        True,
+    ]
+    assert result.support_manifest["provisional_support"].to_list() == [False, False]
+    assert result.support_manifest["statistical_audit_required"].to_list() == [
+        False,
+        False,
+    ]
     assert [item["check_id"] for item in result.readiness["checks"]] == [
         "artifact_integrity",
         "target_adult_minimum",
@@ -867,6 +887,76 @@ def test_ready_build_publish_and_strict_load(tmp_path: Path) -> None:
         ).model_name
         == "bioclip-2.5-huge"
     )
+
+
+def test_support_manifest_accepts_provider_assertion_only_as_provisional() -> None:
+    strict = _build(_make_fixture()).support_manifest
+    row = dict(strict.row(0, named=True))
+    policy = default_reference_admission_policy()
+    row.update(
+        {
+            "reference_admission_mode": policy.mode,
+            "reference_admission_policy_version": policy.policy_version,
+            "reference_admission_policy_fingerprint": policy.fingerprint,
+            "identity_evidence_basis": "gbif_provider_asserted",
+            "human_review_status": "not_requested",
+            "human_verified_identity": False,
+            "provisional_support": True,
+            "statistical_audit_required": True,
+            "admission_status": "admitted",
+            "admission_reasons": ["automated_gbif_quality_gates_passed"],
+            "reference_quality_flags": [],
+            "route_evidence_basis": "yoloe",
+            "review_status": "pending",
+            "verification_status": "unreviewed",
+            "target_identity_verified": False,
+            "review_decision_ids": [],
+            "reviewer_ids": [],
+        }
+    )
+    row["support_row_fingerprint"] = readiness_module._support_row_fingerprint(  # noqa: SLF001 - fixture mirrors the persisted contract.
+        row
+    )
+    provisional = pl.DataFrame(
+        [row],
+        schema=reference_support_manifest_schema(),
+        orient="row",
+        strict=True,
+    )
+
+    validate_reference_support_manifest(provisional)
+    assert provisional["identity_evidence_basis"].item() == "gbif_provider_asserted"
+    assert provisional["human_verified_identity"].item() is False
+    assert provisional["provisional_support"].item() is True
+
+
+def test_provider_assertion_cannot_be_encoded_as_human_verified() -> None:
+    strict = _build(_make_fixture()).support_manifest
+    row = dict(strict.row(0, named=True))
+    policy = default_reference_admission_policy()
+    row.update(
+        {
+            "reference_admission_mode": policy.mode,
+            "reference_admission_policy_version": policy.policy_version,
+            "reference_admission_policy_fingerprint": policy.fingerprint,
+            "identity_evidence_basis": "gbif_provider_asserted",
+            "provisional_support": True,
+            "statistical_audit_required": True,
+            "route_evidence_basis": "yoloe",
+        }
+    )
+    row["support_row_fingerprint"] = readiness_module._support_row_fingerprint(  # noqa: SLF001 - adversarial fixture preserves the row identity.
+        row
+    )
+    invalid = pl.DataFrame(
+        [row],
+        schema=reference_support_manifest_schema(),
+        orient="row",
+        strict=True,
+    )
+
+    with pytest.raises(ValueError, match="provider assertion is inconsistent"):
+        validate_reference_support_manifest(invalid)
 
 
 def test_model_and_support_semantic_fingerprints_ignore_object_relocation() -> None:
