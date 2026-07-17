@@ -19,6 +19,8 @@ AUDIT_DIMENSIONS: tuple[str, ...] = (
     "source_dataset",
     "admission_basis",
     "verification_basis",
+    "sampling_campaign",
+    "sampling_stratum",
 )
 
 REFERENCE_BANK_QUALITY_AUDIT_FILE = "reference_bank_quality_audit.parquet"
@@ -31,8 +33,11 @@ REFERENCE_BANK_QUALITY_AUDIT_SCHEMA = {
     **{dimension: pl.String for dimension in AUDIT_DIMENSIONS},
     "human_target_supported": pl.Boolean,
     "predicted_target": pl.Boolean,
+    "prediction_abstained": pl.Boolean,
+    "predicted_competitor_species": pl.String,
     "provisional_margin": pl.Float64,
     "calibrated_probability": pl.Float64,
+    "calibrator_validated": pl.Boolean,
     "inclusion_probability": pl.Float64,
     "sampling_weight": pl.Float64,
 }
@@ -40,8 +45,29 @@ REFERENCE_BANK_QUALITY_AUDIT_SCHEMA = {
 REFERENCE_BANK_QUALITY_SUMMARY_SCHEMA = {
     **{dimension: pl.String for dimension in AUDIT_DIMENSIONS},
     "reviewed_record_count": pl.UInt64,
+    "weighted_record_count": pl.Float64,
     "metric_status": pl.String,
     "quality_approval_state": pl.String,
+    "weights_applied": pl.Boolean,
+    "confidence_interval_method": pl.String,
+    "precision": pl.Float64,
+    "precision_ci_lower": pl.Float64,
+    "precision_ci_upper": pl.Float64,
+    "recall": pl.Float64,
+    "recall_ci_lower": pl.Float64,
+    "recall_ci_upper": pl.Float64,
+    "false_positive_rate": pl.Float64,
+    "false_negative_rate": pl.Float64,
+    "pr_auc": pl.Float64,
+    "coverage": pl.Float64,
+    "abstention_rate": pl.Float64,
+    "competitor_confusion_rate": pl.Float64,
+    "probability_available": pl.Boolean,
+    "brier_score": pl.Float64,
+    "expected_calibration_error": pl.Float64,
+    "margin_q05": pl.Float64,
+    "margin_median": pl.Float64,
+    "margin_q95": pl.Float64,
 }
 
 
