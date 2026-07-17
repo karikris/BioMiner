@@ -27,6 +27,7 @@ from biominer.flickr_fetch.query_planner import (
     query_hash,
     query_max_date,
     query_min_date,
+    split_upload_interval,
     split_priority,
 )
 from biominer.registry.normalize import normalize_name_key
@@ -1176,6 +1177,7 @@ def poll_once(
     storage: CloudStorage | None = None,
     work_store: WorkStore | None = None,
     claim_once: bool = False,
+    min_call_interval_seconds: float = 0.0,
 ) -> PollOnceResult:
     state = MetadataPollState(state_db)
     effective_run_id = run_id or _default_run_id()
@@ -1217,6 +1219,7 @@ def poll_once(
     delta_photo_ids_by_work_item: dict[str, set[str]] = {}
     shard_registry_versions_by_work_item: dict[str, str | None] = {}
     fetcher = fetch_metadata or _http_fetcher(api_key=api_key)
+    last_dispatch_at = 0.0
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         while True:
@@ -1240,6 +1243,11 @@ def poll_once(
             if not claimed:
                 break
             work_items_claimed += len(claimed)
+            if min_call_interval_seconds > 0:
+                delay = min_call_interval_seconds - (time.monotonic() - last_dispatch_at)
+                if delay > 0:
+                    time.sleep(delay)
+                last_dispatch_at = time.monotonic()
             pending: dict[Future[tuple[dict[str, Any], int]], tuple[str, FlickrQuery]] = {
                 pool.submit(
                     _fetch_with_retries,
@@ -1309,11 +1317,35 @@ def poll_once(
                             query_hits_inserted += query_hits
                             duplicate_query_hits += duplicate_hits
                             queued += queued_count
-                            page_ensure = state.ensure_reported_pages(
-                                query,
-                                response_pages=response_pages,
-                                response_perpage=response_perpage,
-                            )
+                            overflow = total >= FLICKR_SEARCH_RESULT_WINDOW or response_pages > _accessible_page_window(response_perpage or query.per_page)
+                            split_queries = split_upload_interval(query) if overflow and query.page == 1 else None
+                            if overflow and split_queries:
+                                for split_query in split_queries:
+                                    state.enqueue_work_item(split_query)
+                                page_ensure = PageEnsureResult(
+                                    reported_pages=response_pages,
+                                    target_pages=0,
+                                    accessible_pages=_accessible_page_window(response_perpage or query.per_page),
+                                    new_pages_enqueued=2,
+                                    total_known_work_items=0,
+                                    highest_known_page=1,
+                                    missing_pages=(),
+                                    warnings=({
+                                        "event": "pagination_overflow_split_upload_interval",
+                                        "level": "warning",
+                                        "response_total": total,
+                                        "response_pages": response_pages,
+                                        "split_depth": query.split_depth + 1,
+                                        "min_date": query_min_date(query),
+                                        "max_date": query_max_date(query),
+                                    },),
+                                )
+                            else:
+                                page_ensure = state.ensure_reported_pages(
+                                    query,
+                                    response_pages=response_pages,
+                                    response_perpage=response_perpage,
+                                )
                             _progress(
                                 progress_callback,
                                 {
@@ -2055,7 +2087,7 @@ def _insert_work_item(conn: sqlite3.Connection, query: FlickrQuery) -> sqlite3.C
             query.min_upload_date or "",
         ),
     ).fetchone()
-    if overlap is not None:
+    if overlap is not None and not query.parent_query_hash:
         raise ValueError(f"overlapping upload-date interval for logical query {logical_id}")
     conn.execute(
         """
@@ -2166,6 +2198,8 @@ def _pagination_identity(query: FlickrQuery) -> dict[str, Any]:
         "lane": query.lane,
         "has_geo": query.has_geo,
         "bbox": query.bbox,
+        "place_id": query.place_id,
+        "woe_id": query.woe_id,
         "min_taken_date": query.min_taken_date,
         "max_taken_date": query.max_taken_date,
         "min_upload_date": query.min_upload_date,
