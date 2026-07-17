@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from biominer.config import StorageConfig, WorkStoreConfig, create_storage_backend, load_storage_config_from_env, load_workstore_config_from_env
-from biominer.workstore.factory import create_work_store
+from biominer.config import StorageConfig, WorkStoreConfig, create_storage_backend, create_workstore, load_storage_config_from_env, load_workstore_config_from_env
 from biominer.workstore.sqlite import SQLiteWorkStore
 
 
@@ -77,7 +76,7 @@ def test_workstore_config_allows_explicit_sqlite_override(monkeypatch, tmp_path)
     monkeypatch.setenv("BIOMINER_WORKSTORE_SQLITE_PATH", str(tmp_path / "state.sqlite"))
 
     config = load_workstore_config_from_env()
-    store = create_work_store(config)
+    store = create_workstore(config)
 
     assert config == WorkStoreConfig(backend="sqlite", sqlite_path=str(tmp_path / "state.sqlite"), dsn_env=None)
     assert isinstance(store, SQLiteWorkStore)
@@ -85,4 +84,4 @@ def test_workstore_config_allows_explicit_sqlite_override(monkeypatch, tmp_path)
 
 def test_postgres_factory_requires_dsn() -> None:
     with pytest.raises(ValueError, match="BIOMINER_WORKSTORE_DSN"):
-        create_work_store(WorkStoreConfig(backend="postgres", dsn=None))
+        create_workstore(WorkStoreConfig(backend="postgres", dsn=None))
