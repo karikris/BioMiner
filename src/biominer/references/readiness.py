@@ -1422,6 +1422,41 @@ def reference_support_manifest_fingerprint(frame: pl.DataFrame) -> str:
     return _support_manifest_fingerprint(frame)
 
 
+def reference_support_manifest_frame(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    reference_bank_version: str,
+    reference_bank_fingerprint: str,
+) -> pl.DataFrame:
+    """Bind support rows to a bank identity and recompute semantic row hashes."""
+
+    bank_version = _required_text(
+        reference_bank_version,
+        field="reference_bank_version",
+    )
+    bank_fingerprint = _fingerprint(
+        reference_bank_fingerprint,
+        field="reference_bank_fingerprint",
+    )
+    assert bank_fingerprint is not None
+    normalized: list[dict[str, object]] = []
+    for source in rows:
+        row = dict(source)
+        row["reference_bank_version"] = bank_version
+        row["reference_bank_fingerprint"] = bank_fingerprint
+        row["support_row_fingerprint"] = ""
+        row["support_row_fingerprint"] = _support_row_fingerprint(row)
+        normalized.append(row)
+    frame = pl.DataFrame(
+        normalized,
+        schema=reference_support_manifest_schema(),
+        orient="row",
+        strict=True,
+    ).sort(list(_SUPPORT_SORT))
+    validate_reference_support_manifest(frame)
+    return frame
+
+
 def reference_support_split_leakage(
     frame: pl.DataFrame,
 ) -> tuple[dict[str, object], ...]:

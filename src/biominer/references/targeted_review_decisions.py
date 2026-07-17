@@ -210,6 +210,8 @@ def review_statistically_flagged_support(
     targeted_decisions: pl.DataFrame,
     *,
     existing_decisions: pl.DataFrame | None = None,
+    existing_targeted_decisions: pl.DataFrame | None = None,
+    existing_decision_bindings: pl.DataFrame | None = None,
     resolved_at: datetime | None = None,
 ) -> TargetedReferenceReviewResult:
     """Bind targeted decisions to the append-only reference review ledger."""
@@ -249,10 +251,18 @@ def review_statistically_flagged_support(
         targeted_decisions,
         appended.workflow.decisions,
     )
+    accumulated_targeted = _merge_targeted_decisions(
+        existing_targeted_decisions,
+        targeted_decisions,
+    )
+    accumulated_bindings = _merge_decision_bindings(
+        existing_decision_bindings,
+        bindings,
+    )
     result = TargetedReferenceReviewResult(
         targeted_queue=targeted_queue,
-        targeted_decisions=targeted_decisions,
-        decision_bindings=bindings,
+        targeted_decisions=accumulated_targeted,
+        decision_bindings=accumulated_bindings,
         workflow=appended.workflow,
         imported_decision_count=appended.imported_decision_count,
         idempotent_replay_count=appended.idempotent_replay_count,
@@ -299,6 +309,16 @@ def write_targeted_reference_review_result(
         ),
     }
     return artifacts
+
+
+def validate_targeted_reference_review_result(
+    result: TargetedReferenceReviewResult,
+) -> None:
+    _validate_targeted_result(
+        result,
+        existing_decisions=reference_review_decisions_frame([]),
+        require_existing_subset=False,
+    )
 
 
 def _base_decision_import(targeted: pl.DataFrame) -> pl.DataFrame:
@@ -439,6 +459,85 @@ def _decision_bindings(
     ).sort("reference_media_id", "targeted_decision_fingerprint")
 
 
+def _merge_targeted_decisions(
+    existing: pl.DataFrame | None,
+    current: pl.DataFrame,
+) -> pl.DataFrame:
+    prior = (
+        existing
+        if existing is not None
+        else targeted_reference_review_decisions_frame([])
+    )
+    validate_targeted_reference_review_decisions(prior)
+    by_fingerprint = {
+        str(row["targeted_decision_fingerprint"]): row
+        for row in prior.iter_rows(named=True)
+    }
+    for row in current.iter_rows(named=True):
+        fingerprint = str(row["targeted_decision_fingerprint"])
+        previous = by_fingerprint.setdefault(fingerprint, row)
+        if previous != row:
+            raise ValueError("targeted decision fingerprint collision")
+    return pl.DataFrame(
+        list(by_fingerprint.values()),
+        schema=targeted_reference_review_decision_schema(),
+        orient="row",
+        strict=True,
+    ).sort(
+        "reference_media_id",
+        "review_round",
+        "verified_by",
+        "reviewed_at",
+        "targeted_decision_fingerprint",
+    )
+
+
+def _merge_decision_bindings(
+    existing: pl.DataFrame | None,
+    current: pl.DataFrame,
+) -> pl.DataFrame:
+    prior = (
+        existing
+        if existing is not None
+        else pl.DataFrame(schema=targeted_reference_review_decision_binding_schema())
+    )
+    _validate_decision_bindings(prior)
+    by_fingerprint = {
+        str(row["targeted_decision_fingerprint"]): row
+        for row in prior.iter_rows(named=True)
+    }
+    for row in current.iter_rows(named=True):
+        fingerprint = str(row["targeted_decision_fingerprint"])
+        previous = by_fingerprint.setdefault(fingerprint, row)
+        if previous != row:
+            raise ValueError("targeted decision binding collision")
+    merged = pl.DataFrame(
+        list(by_fingerprint.values()),
+        schema=targeted_reference_review_decision_binding_schema(),
+        orient="row",
+        strict=True,
+    ).sort("reference_media_id", "targeted_decision_fingerprint")
+    _validate_decision_bindings(merged)
+    return merged
+
+
+def _validate_decision_bindings(frame: pl.DataFrame) -> None:
+    if frame.schema != targeted_reference_review_decision_binding_schema():
+        raise ValueError("targeted decision binding schema mismatch")
+    if frame["targeted_decision_fingerprint"].n_unique() != frame.height:
+        raise ValueError("targeted decision bindings repeat a source decision")
+    for row in frame.iter_rows(named=True):
+        if (
+            row["schema_version"]
+            != TARGETED_REFERENCE_REVIEW_DECISION_BINDING_SCHEMA_VERSION
+        ):
+            raise ValueError("unsupported targeted decision binding version")
+        payload = dict(row)
+        fingerprint = payload.pop("binding_fingerprint")
+        if fingerprint != canonical_semantic_fingerprint(payload):
+            raise ValueError("targeted decision binding fingerprint mismatch")
+
+
 def _validate_targeted_result(
     result: TargetedReferenceReviewResult,
     *,
@@ -447,11 +546,8 @@ def _validate_targeted_result(
 ) -> None:
     validate_targeted_reference_review_queue(result.targeted_queue)
     validate_targeted_reference_review_decisions(result.targeted_decisions)
-    if (
-        result.decision_bindings.schema
-        != targeted_reference_review_decision_binding_schema()
-        or result.decision_bindings.height != result.targeted_decisions.height
-    ):
+    _validate_decision_bindings(result.decision_bindings)
+    if result.decision_bindings.height != result.targeted_decisions.height:
         raise ValueError("targeted decision bindings are incomplete")
     ledger_by_id = {
         str(row["review_decision_id"]): row
@@ -468,10 +564,6 @@ def _validate_targeted_result(
             or str(row["review_decision_id"]) not in ledger_by_id
         ):
             raise ValueError("targeted decision binding is inconsistent")
-        payload = dict(row)
-        fingerprint = payload.pop("binding_fingerprint")
-        if fingerprint != canonical_semantic_fingerprint(payload):
-            raise ValueError("targeted decision binding fingerprint mismatch")
     if require_existing_subset:
         current = {
             str(row["review_decision_id"]): row
@@ -527,5 +619,6 @@ __all__ = [
     "targeted_reference_review_decision_schema",
     "targeted_reference_review_decisions_frame",
     "validate_targeted_reference_review_decisions",
+    "validate_targeted_reference_review_result",
     "write_targeted_reference_review_result",
 ]

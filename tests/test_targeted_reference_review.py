@@ -523,6 +523,8 @@ def _targeted_decision(
     notes: str | None = None,
     exclusion_reason: str | None = None,
     alternative_species: str | None = None,
+    verified_by: str = "reviewer-1",
+    reviewed_after_days: int = 1,
 ) -> pl.DataFrame:
     return targeted_reference_review_decisions_frame(
         [
@@ -532,8 +534,8 @@ def _targeted_decision(
                 "targeting_fingerprint": targeted_row["targeting_fingerprint"],
                 "review_action": action,
                 "review_round": 1,
-                "verified_by": "reviewer-1",
-                "reviewed_at": NOW + timedelta(days=1),
+                "verified_by": verified_by,
+                "reviewed_at": NOW + timedelta(days=reviewed_after_days),
                 "life_stage": "larva",
                 "visual_domain": "pinned_specimen",
                 "view": "ventral",
@@ -690,3 +692,42 @@ def test_stale_targeting_fingerprint_is_rejected() -> None:
             _queue_provenance(inputs[0]),
             decision,
         )
+
+
+def test_second_round_accumulates_targeted_source_and_binding_provenance() -> None:
+    inputs = _inputs()
+    targeted = build_targeted_reference_review_queue(*inputs)
+    provenance = _queue_provenance(inputs[0])
+    first_decision = _targeted_decision(
+        targeted.row(0, named=True),
+        action="uncertain",
+        notes="A second reviewer is required.",
+    )
+    first = review_statistically_flagged_support(
+        targeted,
+        provenance,
+        first_decision,
+    )
+    second_decision = _targeted_decision(
+        targeted.row(0, named=True),
+        action="verify",
+        notes="Independent reviewer verified the target.",
+        verified_by="reviewer-2",
+        reviewed_after_days=2,
+    )
+
+    second = review_statistically_flagged_support(
+        targeted,
+        provenance,
+        second_decision,
+        existing_decisions=first.workflow.decisions,
+        existing_targeted_decisions=first.targeted_decisions,
+        existing_decision_bindings=first.decision_bindings,
+    )
+
+    assert second.targeted_decisions.height == 2
+    assert second.decision_bindings.height == 2
+    assert set(first.targeted_decisions["targeted_decision_fingerprint"]).issubset(
+        set(second.targeted_decisions["targeted_decision_fingerprint"])
+    )
+    assert second.workflow.verified.height == 1
