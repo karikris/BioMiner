@@ -91,6 +91,7 @@ from biominer.run.stages import (
 )
 from biominer.run.support_dependencies import (
     SUPPORT_DEPENDENT_STAGES,
+    SUPPORT_SCORING_MODES,
     SupportDependencyPermit,
     validate_support_readiness_dependencies,
 )
@@ -180,6 +181,7 @@ class ProductionRunRequest:
     reference_embeddings: str | Path | None = None
     classifier_artifact: str | Path | None = None
     calibrator_artifact: str | Path | None = None
+    support_scoring_mode: str = "calibrated"
     beam_strategy: str = GLOBAL_RANK_TOP_K_BEAM_STRATEGY
     rank_beam_width: int = DEFAULT_RANK_BEAM_WIDTH
     species_first_pass_top_k: int = DEFAULT_SPECIES_FIRST_PASS_TOP_K
@@ -194,6 +196,12 @@ class ProductionRunRequest:
     def __post_init__(self) -> None:
         classification_mode = normalize_classification_mode(self.classification_mode)
         object.__setattr__(self, "classification_mode", classification_mode)
+        scoring_mode = str(self.support_scoring_mode).strip().casefold()
+        if scoring_mode not in SUPPORT_SCORING_MODES:
+            raise ValueError(
+                f"unsupported support_scoring_mode: {self.support_scoring_mode!r}"
+            )
+        object.__setattr__(self, "support_scoring_mode", scoring_mode)
         prototype_config = self.build_week_prototype_config
         if is_build_week_prototype_classification(classification_mode):
             if prototype_config is None:
@@ -300,6 +308,7 @@ class ProductionRunPlan:
                 "reference_embeddings": (str(self.request.reference_embeddings) if self.request.reference_embeddings else None),
                 "classifier_artifact": (str(self.request.classifier_artifact) if self.request.classifier_artifact else None),
                 "calibrator_artifact": (str(self.request.calibrator_artifact) if self.request.calibrator_artifact else None),
+                "support_scoring_mode": self.request.support_scoring_mode,
                 "beam_strategy": self.request.beam_strategy,
                 "rank_beam_width": self.request.rank_beam_width,
                 "species_first_pass_top_k": self.request.species_first_pass_top_k,
@@ -380,6 +389,7 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
                 "reference_embeddings": (str(request.reference_embeddings) if request.reference_embeddings else None),
                 "classifier_artifact": (str(request.classifier_artifact) if request.classifier_artifact else None),
                 "calibrator_artifact": (str(request.calibrator_artifact) if request.calibrator_artifact else None),
+                "support_scoring_mode": request.support_scoring_mode,
                 "validation_status": "not_validated",
             },
             "beam_strategy": request.beam_strategy,
@@ -641,6 +651,7 @@ class ProductionRunOrchestrator:
                 expected_registry_version=plan.manifest.taxon_scope.registry_version,
                 expected_target_accepted_taxon_key=(plan.manifest.taxon_scope.accepted_taxon_key),
                 expected_model_name=self.request.bioclip_model,
+                scoring_mode=self.request.support_scoring_mode,
             )
         self._support_dependency_permit = permit
         self._reference_bank_readiness_permit = permit.readiness
@@ -756,6 +767,16 @@ class ProductionRunOrchestrator:
                 "model_fingerprint": dependencies.model_fingerprint,
                 "classifier_fingerprint": dependencies.classifier_fingerprint,
                 "calibration_fingerprint": dependencies.calibration_fingerprint,
+                "scoring_mode": getattr(
+                    dependencies,
+                    "scoring_mode",
+                    "prototype_nonparametric",
+                ),
+                "score_semantics": getattr(
+                    dependencies,
+                    "score_semantics",
+                    "uncalibrated_similarity_and_margin_not_probability",
+                ),
                 "support_qualification": getattr(
                     dependencies,
                     "support_qualification",

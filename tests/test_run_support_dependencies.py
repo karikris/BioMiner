@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,6 +50,11 @@ class _ReadinessPermitFixture:
     preprocessing_attestation_fingerprint: str
     input_contract_version: str
     readiness_sha256: str
+    reference_admission_mode: str
+    provisional_support_count: int
+    human_verified_support_count: int
+    permits_provisional_scoring: bool
+    permits_calibrated_scoring: bool
 
 
 def test_support_dependency_validation_accepts_one_consistent_chain(
@@ -122,6 +127,79 @@ def test_support_dependency_validation_accepts_one_consistent_chain(
     assert result.model_fingerprint == _sha("foundation-model")
     assert result.classifier_fingerprint == _sha("classifier")
     assert result.calibration_fingerprint == _sha("calibration")
+    assert result.scoring_mode == "calibrated"
+    assert result.score_semantics == "independently_calibrated_probability"
+
+
+def test_provisional_nonparametric_mode_does_not_require_trained_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    permit = replace(
+        _readiness_permit(),
+        status="ready_provisional",
+        reference_admission_mode="adaptive_gbif_fast_start",
+        provisional_support_count=5,
+        human_verified_support_count=0,
+        permits_calibrated_scoring=False,
+    )
+    candidates = pl.DataFrame(
+        {
+            "accepted_taxon_key": [permit.target_accepted_taxon_key],
+            "candidate_set_fingerprint": [_sha("candidate-set")],
+        }
+    )
+    monkeypatch.setattr(dependency_module.pl, "read_parquet", lambda _path: candidates)
+    monkeypatch.setattr(
+        dependency_module,
+        "validate_regional_candidate_species",
+        lambda _frame: None,
+    )
+    monkeypatch.setattr(
+        dependency_module,
+        "load_reference_bank_readiness",
+        lambda _path, **_expected: permit,
+    )
+    monkeypatch.setattr(
+        dependency_module,
+        "load_reference_embeddings",
+        lambda _path, **_expected: _embedding_frame(permit),
+    )
+    monkeypatch.setattr(
+        dependency_module,
+        "reference_embeddings_artifact_fingerprint",
+        lambda _frame: _sha("reference-embeddings"),
+    )
+    monkeypatch.setattr(
+        dependency_module,
+        "load_frozen_classifier",
+        lambda *_args, **_kwargs: pytest.fail("classifier must not be loaded"),
+    )
+    monkeypatch.setattr(
+        dependency_module,
+        "load_probability_calibrator",
+        lambda *_args, **_kwargs: pytest.fail("calibrator must not be loaded"),
+    )
+
+    result = validate_support_readiness_dependencies(
+        stage=RunStage.TARGET_AWARE_SCORING,
+        regional_candidates=tmp_path / "regional_candidate_species.parquet",
+        reference_bank_readiness=tmp_path / "readiness",
+        reference_bank_readiness_sha256=permit.readiness_sha256,
+        reference_embeddings=tmp_path / "reference_embeddings.parquet",
+        classifier_artifact=None,
+        calibrator_artifact=None,
+        expected_registry_version=permit.registry_version,
+        expected_target_accepted_taxon_key=permit.target_accepted_taxon_key,
+        expected_model_name=permit.model_name,
+        scoring_mode="provisional_nonparametric",
+    )
+
+    assert result.classifier_fingerprint is None
+    assert result.calibration_fingerprint is None
+    assert result.score_semantics == (
+        "uncalibrated_similarity_and_margin_not_probability"
+    )
 
 
 def test_support_dependency_validation_reports_all_missing_configuration() -> None:
@@ -173,7 +251,7 @@ def test_support_dependency_validation_requires_readiness_digest_pin(
     ("mutation", "expected_message"),
     (
         ("blocked_readiness", "reference readiness is blocked or invalid"),
-        ("target_shortfall", "verified target support is below its configured minimum"),
+        ("target_shortfall", "human-verified target support is below its configured minimum"),
         ("candidate_mismatch", "regional candidate fingerprints do not match reference readiness"),
         ("stale_embeddings", "reference embeddings are stale"),
         ("missing_classifier", "classifier artifact is missing or incompatible"),
@@ -414,6 +492,11 @@ def _readiness_permit(
         preprocessing_attestation_fingerprint=_sha("preprocessing-attestation"),
         input_contract_version="input-contract-v1",
         readiness_sha256=_sha("readiness"),
+        reference_admission_mode="human_verified_strict",
+        provisional_support_count=0,
+        human_verified_support_count=5,
+        permits_provisional_scoring=True,
+        permits_calibrated_scoring=True,
     )
 
 
