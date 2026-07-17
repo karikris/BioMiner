@@ -1,0 +1,65 @@
+{
+  "acceptance": {
+    "duplicate_tests": {"evidence": ["tests/test_reference_deduplication.py", "tests/test_provisional_selection.py"], "status": "passed"},
+    "fixture_backed_gbif_tests": {"evidence": ["tests/test_gbif_admission_eligibility.py", "tests/test_reference_admission_compiler.py"], "status": "passed"},
+    "push_every_task": {"origin_main_at_audit_start": "b9d790baeba3b3597bf1973d83a5650883f5ec57", "status": "passed"},
+    "route_tests": {"evidence": ["tests/test_reference_yoloe_routing.py", "tests/test_full_frame_yoloe_routing.py"], "status": "passed"},
+    "selection_tests": {"evidence": ["tests/test_provisional_selection.py"], "status": "passed"}
+  },
+  "artifact_contracts": [
+    {"name": "reference_admission_decisions.parquet", "phase_2_evidence": "implemented_and_fixture_tested", "production_population": "not_run_in_phase_2"},
+    {"name": "reference_provisional_support.parquet", "phase_2_evidence": "implemented_and_fixture_tested", "production_population": "not_run_in_phase_2"},
+    {"name": "reference_admission_summary.parquet", "phase_2_evidence": "implemented_and_fixture_tested", "production_population": "not_run_in_phase_2"},
+    {"name": "reference_admission_report.json", "phase_2_evidence": "implemented_and_fixture_tested", "production_population": "not_run_in_phase_2"},
+    {"name": "reference_admission_summary.md", "phase_2_evidence": "implemented_and_fixture_tested", "production_population": "not_run_in_phase_2"}
+  ],
+  "evidence_semantics": {
+    "automated_qa": "Every compiled support row carries all 24 ordered gate outcomes and evidence fingerprints.",
+    "human_verified": false,
+    "provider_assertion": "GBIF provider identity is preserved as provider-asserted and unreviewed.",
+    "species_identity_from_yoloe": false,
+    "yoloe_scope": "Quality, visual-domain, subject-area and life-stage routing only."
+  },
+  "full_regression": {"command": "uv run pytest -q", "duration_seconds": 85.62, "failed": 0, "passed": 2348, "status": "passed"},
+  "limitations": [
+    "No live GBIF production support bank was populated during Phase 2; artifact contracts were exercised with deterministic fixtures.",
+    "Adaptive provisional support is not connected to readiness, embedding, prototype or production scoring until later phases.",
+    "Provisional provider assertions are not human verification, calibration evidence or scientific-release permission.",
+    "No time-saved, review-work-saved or scoring-quality improvement is claimed from Phase 2 tests."
+  ],
+  "phase": 2,
+  "phase_name": "Automated GBIF quality admission",
+  "schema_version": "gbif-fast-start-phase-completion-v1.0.0",
+  "task_focused_regression": {
+    "command": "uv run pytest -q tests/test_reference_admission_compiler.py tests/test_provisional_selection.py tests/test_reference_yoloe_routing.py tests/test_gbif_admission_eligibility.py tests/test_reference_admission_policy.py tests/test_reference_deduplication.py tests/test_full_frame_yoloe_routing.py",
+    "failed": 0,
+    "passed": 120,
+    "status": "passed"
+  },
+  "tasks": [
+    {
+      "commit": "2bc8f146a4745230786a30ef0f23773c36f4c5c0",
+      "commit_subject": "feat(references): evaluate GBIF provisional eligibility",
+      "task_id": "2.1",
+      "verification": ["24 canonical gates always emitted", "admitted, excluded and review_required precedence", "provider assertion cannot become human verification", "global references may lack geography but cannot become geographic prototypes"]
+    },
+    {
+      "commit": "3dbdb0ce118478e8a1eac16b1b50b0e76e39d5b4",
+      "commit_subject": "feat(references): route provisional references with YOLOE",
+      "task_id": "2.2",
+      "verification": ["one detector pass per successfully loaded reference", "adult, larval and specimen routes persisted separately", "artifact and no-organism fixtures excluded", "shared Flickr full-frame policy fingerprints persisted", "YOLOE species identity remains explicitly not assessed"]
+    },
+    {
+      "commit": "782c84c38725d025272acf5383569ed5f8108de1",
+      "commit_subject": "feat(references): select independent provisional support",
+      "task_id": "2.3",
+      "verification": ["one image per observation by default", "unused observers selected before reuse", "one canonical image per duplicate group", "one bounded second view requires provider or embedding evidence", "round-robin fixed species quotas and explicit shortfalls", "selected and skipped reasons persisted for every candidate"]
+    },
+    {
+      "commit": "b9d790baeba3b3597bf1973d83a5650883f5ec57",
+      "commit_subject": "feat(references): compile provisional GBIF support bank",
+      "task_id": "2.4",
+      "verification": ["exact cross-artifact coverage and fingerprint validation", "24-gate decisions recomputed rather than trusted from selection input", "stale policy or evidence dependencies rejected", "five required artifacts fixture-tested", "support rows contain source, provider, automated QA, route, duplicate, policy and provisional evidence"]
+    }
+  ]
+}

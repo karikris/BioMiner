@@ -16,6 +16,9 @@ class RunStage(StrEnum):
     REGIONAL_CANDIDATE_GENERATION = "regional_candidate_generation"
     REFERENCE_METADATA = "reference_metadata"
     REFERENCE_MEDIA = "reference_media"
+    REFERENCE_DEDUPLICATION = "reference_deduplication"
+    REFERENCE_QUALITY_ROUTING = "reference_quality_routing"
+    REFERENCE_ADMISSION = "reference_admission"
     REFERENCE_REVIEW = "reference_review"
     REFERENCE_EMBEDDINGS = "reference_embeddings"
     REFERENCE_PROTOTYPES = "reference_prototypes"
@@ -25,6 +28,13 @@ class RunStage(StrEnum):
     FLICKR_DETECTION = "flickr_detection"
     FLICKR_EMBEDDING = "flickr_embedding"
     TARGET_AWARE_SCORING = "target_aware_scoring"
+    PROVISIONAL_FLICKR_SCORING = "provisional_flickr_scoring"
+    FLICKR_HUMAN_VERIFICATION = "flickr_human_verification"
+    STATISTICAL_REFERENCE_AUDIT = "statistical_reference_audit"
+    TARGETED_REFERENCE_REVIEW = "targeted_reference_review"
+    AFFECTED_REFERENCE_REBUILD = "affected_reference_rebuild"
+    AFFECTED_RECORD_RESCORE = "affected_record_rescore"
+    FINAL_QUALITY_GATE = "final_quality_gate"
     EVIDENCE = "evidence"
     EVALUATION = "evaluation"
     DETECT_OBJECTS = "detect_objects"
@@ -86,7 +96,39 @@ REFERENCE_FIRST_PRODUCTION_STAGES: tuple[RunStage, ...] = (
 )
 
 
-MANUAL_REVIEW_STAGES: frozenset[RunStage] = frozenset({RunStage.REFERENCE_REVIEW})
+ADAPTIVE_REFERENCE_PRODUCTION_STAGES: tuple[RunStage, ...] = (
+    RunStage.RESOLVE_TAXON_SCOPE,
+    RunStage.BUILD_REGISTRY,
+    RunStage.GEOGRAPHIC_SPREAD,
+    RunStage.COMPILE_QUERIES,
+    RunStage.ENQUEUE_FLICKR_WORK,
+    RunStage.POLL_FLICKR,
+    RunStage.FLICKR_GEO_CLUSTERING,
+    RunStage.REGIONAL_CANDIDATE_GENERATION,
+    RunStage.REFERENCE_METADATA,
+    RunStage.REFERENCE_MEDIA,
+    RunStage.REFERENCE_DEDUPLICATION,
+    RunStage.REFERENCE_QUALITY_ROUTING,
+    RunStage.REFERENCE_ADMISSION,
+    RunStage.REFERENCE_EMBEDDINGS,
+    RunStage.REFERENCE_PROTOTYPES,
+    RunStage.PROVISIONAL_FLICKR_SCORING,
+    RunStage.FLICKR_HUMAN_VERIFICATION,
+    RunStage.STATISTICAL_REFERENCE_AUDIT,
+    RunStage.TARGETED_REFERENCE_REVIEW,
+    RunStage.AFFECTED_REFERENCE_REBUILD,
+    RunStage.AFFECTED_RECORD_RESCORE,
+    RunStage.FINAL_QUALITY_GATE,
+)
+
+
+MANUAL_REVIEW_STAGES: frozenset[RunStage] = frozenset(
+    {
+        RunStage.REFERENCE_REVIEW,
+        RunStage.FLICKR_HUMAN_VERIFICATION,
+        RunStage.TARGETED_REFERENCE_REVIEW,
+    }
+)
 
 
 @dataclass(frozen=True)

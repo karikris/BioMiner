@@ -21,6 +21,22 @@ from biominer.bioclip.reference_embeddings import (
     reference_embeddings_artifact_fingerprint,
 )
 import biominer.bioclip.reference_prototypes as reference_prototypes_module
+from biominer.bioclip.provisional_prototypes import (
+    ROBUST_PROTOTYPE_METHODS,
+    RobustPrototypePolicy,
+    build_robust_provisional_prototypes,
+    provisional_prototypes_schema,
+)
+from biominer.bioclip.reference_quality_diagnostics import (
+    REFERENCE_QUALITY_DIAGNOSTICS_FILE,
+    build_reference_quality_diagnostics,
+    write_reference_quality_diagnostics,
+)
+from biominer.bioclip.provisional_ranking import (
+    PROVISIONAL_REFERENCE_RANKING_FILE,
+    provisional_reference_ranking,
+    write_provisional_reference_ranking,
+)
 from biominer.bioclip.reference_prototypes import (
     PROTOTYPE_METHOD_NORMALIZED_MEAN,
     PROTOTYPE_METHOD_SIMPLESHOT_MEAN_CENTERED,
@@ -72,6 +88,208 @@ PREPROCESSING_CONFIG = {
     "size": [224, 224],
     "std": [0.26862954, 0.26130258, 0.27577711],
 }
+
+
+def test_builds_deterministic_robust_and_clustered_prototypes(
+    tmp_path: Path,
+) -> None:
+    specs: list[_EmbeddingSpec] = []
+    for index in range(6):
+        specs.append(
+            _spec(
+                f"target-{index}",
+                f"target-observation-{index}",
+                TARGET,
+                "Papilio demoleus",
+                "cluster-a",
+                (1.0, 0.02 * index, 0.0)
+                if index < 3
+                else (0.0, 1.0, 0.02 * index),
+            )
+        )
+        specs.append(
+            _spec(
+                f"competitor-{index}",
+                f"competitor-observation-{index}",
+                COMPETITOR,
+                "Papilio polytes",
+                "cluster-a",
+                (0.0, 0.02 * index, 1.0)
+                if index < 3
+                else (0.02 * index, 0.0, 1.0),
+            )
+        )
+    embeddings = _embedding_artifact(tmp_path, tuple(specs))
+    policy = RobustPrototypePolicy(
+        maximum_observations_per_species_route=6,
+        prototype_count=2,
+        minimum_cluster_size=2,
+        seed=19,
+    )
+
+    first = build_robust_provisional_prototypes(embeddings, policy=policy)
+    second = build_robust_provisional_prototypes(
+        embeddings.clone(),
+        policy=policy,
+    )
+
+    assert first.schema == provisional_prototypes_schema(3)
+    assert_frame_equal(first, second, check_exact=True)
+    assert set(first["prototype_method"]) == set(ROBUST_PROTOTYPE_METHODS)
+    assert set(first["prototype_count"]) == {2}
+    assert set(first["prototype_index"]) == {0, 1}
+    assert set(first["balanced_sampling_seed"]) == {19}
+    assert first["provisional_reference_count"].sum() == 0
+    assert (
+        first["human_verified_reference_count"]
+        == first["reference_count"]
+    ).all()
+    assert first["outlier_count"].sum() == 0
+    assert all(0 <= value <= 2 for value in first["dispersion"])
+    assert first["prototype_fingerprint"].n_unique() == first.height
+
+
+def test_robust_prototypes_count_mixed_provisional_and_human_support(
+    tmp_path: Path,
+) -> None:
+    embeddings = _embedding_artifact(
+        tmp_path,
+        tuple(
+            _spec(
+                f"target-{index}",
+                f"observation-{index}",
+                TARGET,
+                "Papilio demoleus",
+                "cluster-a",
+                (1.0, 0.05 * index, 0.01),
+            )
+            for index in range(4)
+        ),
+    )
+    rows: list[dict[str, object]] = []
+    for index, source in enumerate(embeddings.iter_rows(named=True)):
+        row = dict(source)
+        provisional = index % 2 == 0
+        row.update(
+            {
+                "reference_admission_mode": "adaptive_gbif_fast_start",
+                "admission_policy_fingerprint": _sha("adaptive-policy"),
+                "support_manifest_fingerprint": _sha("adaptive-support"),
+                "identity_evidence_basis": (
+                    "gbif_provider_asserted" if provisional else "human_verified"
+                ),
+                "provisional_support": provisional,
+                "human_review_status": (
+                    "not_requested" if provisional else "completed"
+                ),
+                "review_decision_ids": (
+                    [] if provisional else row["review_decision_ids"]
+                ),
+            }
+        )
+        row["embedding_fingerprint"] = (
+            reference_embeddings_module._embedding_row_fingerprint(row)  # noqa: SLF001 - fixture rebinds exact persisted provenance.
+        )
+        rows.append(row)
+    mixed = pl.DataFrame(
+        rows,
+        schema=embeddings.schema,
+        orient="row",
+        strict=True,
+    )
+
+    result = build_robust_provisional_prototypes(mixed)
+    normalized = result.filter(pl.col("prototype_method") == "normalized_mean")
+
+    assert normalized["reference_count"].sum() == 4
+    assert normalized["provisional_reference_count"].sum() == 2
+    assert normalized["human_verified_reference_count"].sum() == 2
+    assert set(result["reference_admission_mode"]) == {
+        "adaptive_gbif_fast_start"
+    }
+
+
+def test_provisional_reference_diagnostics_are_descriptive_not_taxonomic(
+    tmp_path: Path,
+) -> None:
+    specs = (
+        _spec("target-a", "target-a", TARGET, "Papilio demoleus", "cluster-a", (1.0, 0.02, 0.0)),
+        _spec("target-b", "target-b", TARGET, "Papilio demoleus", "cluster-a", (1.0, 0.05, 0.0)),
+        _spec("target-outlier", "target-outlier", TARGET, "Papilio demoleus", "cluster-a", (0.0, 1.0, 0.0)),
+        _spec("competitor-a", "competitor-a", COMPETITOR, "Papilio polytes", "cluster-a", (0.0, 1.0, 0.02)),
+        _spec("competitor-b", "competitor-b", COMPETITOR, "Papilio polytes", "cluster-a", (0.0, 1.0, 0.05)),
+        _spec("competitor-c", "competitor-c", COMPETITOR, "Papilio polytes", "cluster-a", (0.02, 1.0, 0.0)),
+    )
+    strict = _embedding_artifact(tmp_path, specs)
+    rows: list[dict[str, object]] = []
+    for source in strict.iter_rows(named=True):
+        row = {
+            **source,
+            "reference_admission_mode": "adaptive_gbif_fast_start",
+            "admission_policy_fingerprint": _sha("adaptive-policy"),
+            "support_manifest_fingerprint": _sha("adaptive-support"),
+            "identity_evidence_basis": "gbif_provider_asserted",
+            "provisional_support": True,
+            "human_review_status": "not_requested",
+            "review_decision_ids": [],
+        }
+        row["embedding_fingerprint"] = (
+            reference_embeddings_module._embedding_row_fingerprint(row)  # noqa: SLF001 - fixture rebinds exact persisted provenance.
+        )
+        rows.append(row)
+    provisional = pl.DataFrame(
+        rows,
+        schema=strict.schema,
+        orient="row",
+        strict=True,
+    )
+
+    diagnostics = build_reference_quality_diagnostics(provisional)
+    path = write_reference_quality_diagnostics(diagnostics, tmp_path / "quality")
+
+    assert diagnostics.height == 6
+    assert diagnostics["nearest_same_species_similarity"].null_count() == 0
+    assert diagnostics["nearest_competing_species_similarity"].null_count() == 0
+    assert set(diagnostics["taxon_misidentification_conclusion"]) == {
+        "not_assessed"
+    }
+    outlier_score = diagnostics.filter(
+        pl.col("reference_media_id") == "target-outlier"
+    )["embedding_outlier_score"].item()
+    regular_score = diagnostics.filter(
+        pl.col("reference_media_id") == "target-a"
+    )["embedding_outlier_score"].item()
+    assert outlier_score > regular_score
+    assert path.name == REFERENCE_QUALITY_DIAGNOSTICS_FILE
+    assert path.exists()
+
+    prototypes = build_robust_provisional_prototypes(provisional)
+    ranking = provisional_reference_ranking(
+        query_id="flickr:test-photo",
+        query_embedding=(1.0, 0.0, 0.0),
+        query_route="adult_field",
+        query_visual_domain="live_field",
+        query_geo_cluster_id="cluster-a",
+        reference_embeddings=provisional,
+        prototypes=prototypes,
+        top_k=2,
+    )
+    ranking_path = write_provisional_reference_ranking(
+        ranking,
+        tmp_path / "ranking",
+    )
+
+    lead = ranking.row(0, named=True)
+    assert lead["accepted_taxon_key"] == TARGET
+    assert lead["raw_competitor_margin"] > 0
+    assert lead["top_reference_media_ids"]
+    assert lead["probability_available"] is False
+    assert lead["calibrated_target_probability"] is None
+    assert lead["required_human_review_state"] == (
+        "mandatory_before_final_inclusion"
+    )
+    assert "not_probability" in lead["score_semantics"]
+    assert ranking_path.name == PROVISIONAL_REFERENCE_RANKING_FILE
 
 
 @dataclass(frozen=True, slots=True)
@@ -874,6 +1092,9 @@ def _support_row(
     *,
     source_path: Path,
 ) -> dict[str, object]:
+    from biominer.references.admission import strict_reference_admission_policy
+
+    admission_policy = strict_reference_admission_policy()
     assigned_at = NOW - timedelta(days=1)
     row: dict[str, object] = {
         "schema_version": REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION,
@@ -882,6 +1103,24 @@ def _support_row(
         "reference_media_id": spec.media_id,
         "canonical_reference_media_id": spec.media_id,
         "reference_observation_id": spec.observation_id,
+        "reference_admission_mode": admission_policy.mode,
+        "reference_admission_policy_version": admission_policy.policy_version,
+        "reference_admission_policy_fingerprint": admission_policy.fingerprint,
+        "identity_evidence_basis": "human_verified",
+        "provider_asserted_identity": True,
+        "provider_asserted_taxon_key": spec.taxon_key,
+        "provider_asserted_scientific_name": spec.scientific_name,
+        "provider_dataset_key": "dataset:fixture",
+        "provider_quality_status": "research_grade",
+        "human_review_status": "completed",
+        "human_verified_identity": True,
+        "provisional_support": False,
+        "statistical_audit_required": False,
+        "admission_status": "admitted",
+        "admission_reasons": ["strict_human_review_verified"],
+        "reference_quality_flags": [],
+        "route_evidence_basis": "human_verified_review",
+        "geographic_prototype_eligible": spec.geo_cluster_id is not None,
         "review_request_id": f"review:{spec.media_id}",
         "review_decision_ids": [f"decision:{spec.media_id}"],
         "reviewer_ids": ["reviewer:fixture"],
@@ -989,6 +1228,19 @@ def _permit(manifest: pl.DataFrame) -> ReferenceBankReadinessPermit:
         readiness_sha256=_sha("readiness"),
         support_manifest_sha256=_sha("support-manifest-file"),
         summary_sha256=_sha("summary-file"),
+        permits_reference_embedding=True,
+        permits_provisional_scoring=True,
+        permits_calibrated_scoring=True,
+        permits_scientific_release=True,
+        reference_admission_mode="human_verified_strict",
+        admission_policy_fingerprint=str(
+            manifest["reference_admission_policy_fingerprint"].item(0)
+        ),
+        provisional_support_count=0,
+        human_verified_support_count=manifest.filter(
+            pl.col("support_eligible") & pl.col("human_verified_identity")
+        ).height,
+        statistical_audit_required=False,
     )
 
 

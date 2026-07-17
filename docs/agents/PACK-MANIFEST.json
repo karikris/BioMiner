@@ -1,0 +1,64 @@
+{
+  "active_goal_note": "Adaptive GBIF fast-start implementation and release verification complete through Phase 13; live scientific and human-review work remains.",
+  "files": [
+    {
+      "bytes": 5969,
+      "lines": 130,
+      "path": "AGENTS.md",
+      "sha256": "b70aed870199cdc8835e15d18af79cfcc8cb7fcdcbb4ba07c685c471866d56e8"
+    },
+    {
+      "bytes": 7801,
+      "lines": 225,
+      "path": "docs/agents/CURRENT_STATE.md",
+      "sha256": "0f145ab559f3829813d3677130e9b26e52e797cf9defb0e40b52a499d36ecfc3"
+    },
+    {
+      "bytes": 5599,
+      "lines": 245,
+      "path": "docs/agents/DATA_STORAGE_AND_PERFORMANCE.md",
+      "sha256": "c280b5c553fb533b69203b3712311f973d7b57cadd5915c5b0cd8cbd83f3c8d6"
+    },
+    {
+      "bytes": 4891,
+      "lines": 211,
+      "path": "docs/agents/GIT_AND_PROVENANCE.md",
+      "sha256": "943854cc0f3e16640722de1b19df9fff323c28d659d757bcfbce667b7f2e7157"
+    },
+    {
+      "bytes": 1405,
+      "lines": 28,
+      "path": "docs/agents/README.md",
+      "sha256": "801581e5c454b19f3da51887d0a1ac88e24eae5d15a852329c457ba3b18b3f9f"
+    },
+    {
+      "bytes": 8089,
+      "lines": 304,
+      "path": "docs/agents/SCIENCE_AND_PIPELINE.md",
+      "sha256": "a16656ac38900706476ef0ff6db62c28f4c291880b375987123914d588a74af6"
+    },
+    {
+      "bytes": 1808,
+      "lines": 81,
+      "path": "docs/agents/TASK_TEMPLATE.md",
+      "sha256": "fdee1716105402997b0437e6802ade8c8c12383b963ff9f0348c67af9988c4e7"
+    },
+    {
+      "bytes": 5756,
+      "lines": 210,
+      "path": "docs/agents/TESTING_AND_RELEASE.md",
+      "sha256": "d58f36f71894eed3ab63fb26985d1c54d00d9f74ad443f2afdde996148d73b5d"
+    },
+    {
+      "bytes": 5395,
+      "lines": 172,
+      "path": "docs/agents/TOOLS_AND_SKILLS.md",
+      "sha256": "9b3200df46b4b94292e83005f04939b10a33babbea924050981787307a7f6870"
+    }
+  ],
+  "generated_from_uploaded_file": "AGENTS(14).md",
+  "observed_main_commit": "477eaface3d1f5efa51255550f0ef8d6a7740f35",
+  "observed_repository": "karikris/BioMiner",
+  "pack": "BioMiner token-efficient agent instructions",
+  "schema_version": "biominer-agent-pack-v1.0.0"
+}

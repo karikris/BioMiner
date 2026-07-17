@@ -30,6 +30,9 @@ SUPPORT_DEPENDENT_STAGES: frozenset[RunStage] = frozenset(
         RunStage.TARGET_AWARE_SCORING,
     }
 )
+SUPPORT_SCORING_MODES = frozenset(
+    {"provisional_nonparametric", "calibrated"}
+)
 
 
 class SupportDependencyError(ValueError):
@@ -53,8 +56,10 @@ class SupportDependencyPermit:
     candidate_set_fingerprints: tuple[str, ...]
     reference_embedding_fingerprint: str
     model_fingerprint: str
-    classifier_fingerprint: str
-    calibration_fingerprint: str
+    classifier_fingerprint: str | None
+    calibration_fingerprint: str | None
+    scoring_mode: str
+    score_semantics: str
 
 
 def validate_support_readiness_dependencies(
@@ -69,11 +74,17 @@ def validate_support_readiness_dependencies(
     expected_registry_version: str,
     expected_target_accepted_taxon_key: str,
     expected_model_name: str,
+    scoring_mode: str = "calibrated",
 ) -> SupportDependencyPermit:
     """Validate the complete immutable support chain before Flickr vision."""
 
     if stage not in SUPPORT_DEPENDENT_STAGES:
         raise ValueError(f"stage does not require support preflight: {stage.value}")
+    if scoring_mode not in SUPPORT_SCORING_MODES:
+        raise ValueError(
+            f"unsupported support scoring mode: {scoring_mode!r}"
+        )
+    calibrated = scoring_mode == "calibrated"
     issues = _missing_configuration_issues(
         regional_candidates=regional_candidates,
         reference_bank_readiness=reference_bank_readiness,
@@ -81,6 +92,7 @@ def validate_support_readiness_dependencies(
         reference_embeddings=reference_embeddings,
         classifier_artifact=classifier_artifact,
         calibrator_artifact=calibrator_artifact,
+        calibrated=calibrated,
     )
     if issues:
         raise SupportDependencyError(stage, tuple(issues))
@@ -88,8 +100,6 @@ def validate_support_readiness_dependencies(
     assert regional_candidates is not None
     assert reference_bank_readiness is not None
     assert reference_embeddings is not None
-    assert classifier_artifact is not None
-    assert calibrator_artifact is not None
 
     readiness = _load_readiness(
         reference_bank_readiness,
@@ -99,6 +109,11 @@ def validate_support_readiness_dependencies(
         expected_readiness_sha256=reference_bank_readiness_sha256,
         issues=issues,
     )
+    _validate_scoring_permit(
+        readiness,
+        scoring_mode=scoring_mode,
+        issues=issues,
+    )
     candidates = _load_regional_candidates(regional_candidates, issues=issues)
     candidate_fingerprints = _validate_candidate_bindings(
         candidates,
@@ -106,7 +121,11 @@ def validate_support_readiness_dependencies(
         expected_target_accepted_taxon_key=expected_target_accepted_taxon_key,
         issues=issues,
     )
-    _validate_target_support(readiness, issues=issues)
+    _validate_target_support(
+        readiness,
+        scoring_mode=scoring_mode,
+        issues=issues,
+    )
 
     embeddings = _load_embeddings(
         reference_embeddings,
@@ -120,39 +139,42 @@ def validate_support_readiness_dependencies(
             issues=issues,
         )
     )
-    classifier = _load_classifier(
-        classifier_artifact,
-        model_fingerprint=model_fingerprint,
-        preprocessing_fingerprint=preprocessing_fingerprint,
-        readiness=readiness,
-        issues=issues,
-    )
-    classifier_fingerprint = _validate_classifier_bindings(
-        classifier,
-        readiness=readiness,
-        reference_embedding_fingerprint=embedding_fingerprint,
-        model_fingerprint=model_fingerprint,
-        preprocessing_fingerprint=preprocessing_fingerprint,
-        issues=issues,
-    )
-    calibration = _load_calibrator(
-        calibrator_artifact,
-        classifier_fingerprint=classifier_fingerprint,
-        issues=issues,
-    )
-    calibration_fingerprint = _validate_calibrator_binding(
-        calibration,
-        classifier_fingerprint=classifier_fingerprint,
-        issues=issues,
-    )
+    classifier_fingerprint: str | None = None
+    calibration_fingerprint: str | None = None
+    if calibrated:
+        assert classifier_artifact is not None
+        assert calibrator_artifact is not None
+        classifier = _load_classifier(
+            classifier_artifact,
+            model_fingerprint=model_fingerprint,
+            preprocessing_fingerprint=preprocessing_fingerprint,
+            readiness=readiness,
+            issues=issues,
+        )
+        classifier_fingerprint = _validate_classifier_bindings(
+            classifier,
+            readiness=readiness,
+            reference_embedding_fingerprint=embedding_fingerprint,
+            model_fingerprint=model_fingerprint,
+            preprocessing_fingerprint=preprocessing_fingerprint,
+            issues=issues,
+        )
+        calibration = _load_calibrator(
+            calibrator_artifact,
+            classifier_fingerprint=classifier_fingerprint,
+            issues=issues,
+        )
+        calibration_fingerprint = _validate_calibrator_binding(
+            calibration,
+            classifier_fingerprint=classifier_fingerprint,
+            issues=issues,
+        )
 
     if issues:
         raise SupportDependencyError(stage, tuple(issues))
     assert readiness is not None
     assert embedding_fingerprint is not None
     assert model_fingerprint is not None
-    assert classifier_fingerprint is not None
-    assert calibration_fingerprint is not None
     return SupportDependencyPermit(
         readiness=readiness,
         candidate_set_fingerprints=candidate_fingerprints,
@@ -160,6 +182,12 @@ def validate_support_readiness_dependencies(
         model_fingerprint=model_fingerprint,
         classifier_fingerprint=classifier_fingerprint,
         calibration_fingerprint=calibration_fingerprint,
+        scoring_mode=scoring_mode,
+        score_semantics=(
+            "independently_calibrated_probability"
+            if calibrated
+            else "uncalibrated_similarity_and_margin_not_probability"
+        ),
     )
 
 
@@ -171,6 +199,7 @@ def _missing_configuration_issues(
     reference_embeddings: object,
     classifier_artifact: object,
     calibrator_artifact: object,
+    calibrated: bool,
 ) -> list[str]:
     issues: list[str] = []
     if regional_candidates is None:
@@ -193,12 +222,12 @@ def _missing_configuration_issues(
             "reference embeddings are not configured; run reference_embeddings "
             "against the current readiness permit"
         )
-    if classifier_artifact is None:
+    if calibrated and classifier_artifact is None:
         issues.append(
             "classifier artifact is not configured; run classifier_training and "
             "pass the immutable classifier directory"
         )
-    if calibrator_artifact is None:
+    if calibrated and calibrator_artifact is None:
         issues.append(
             "calibrator artifact is not configured; run classifier_calibration and "
             "pass the immutable calibrator directory"
@@ -290,6 +319,7 @@ def _validate_candidate_bindings(
 def _validate_target_support(
     readiness: ReferenceBankReadinessPermit | None,
     *,
+    scoring_mode: str,
     issues: list[str],
 ) -> None:
     if readiness is None:
@@ -297,20 +327,49 @@ def _validate_target_support(
     requirements = tuple(readiness.target_adult_requirements)
     if not requirements:
         issues.append(
-            "reference readiness does not expose verified target support minima; "
+            "reference readiness does not expose admitted target support minima; "
             "republish reference_readiness with the current schema"
         )
         return
+    strict = readiness.reference_admission_mode == "human_verified_strict"
+    support_label = "human-verified" if strict else "admitted provisional"
     for requirement in requirements:
         if requirement.observed_count >= requirement.minimum_count:
             continue
         cluster = requirement.geo_cluster_id or "all_clusters"
         issues.append(
-            "verified target support is below its configured minimum: "
+            f"{support_label} target support is below its configured minimum: "
             f"route={requirement.route}, cluster={cluster}, "
             f"observed={requirement.observed_count}, "
-            f"required={requirement.minimum_count}; review and add verified target "
-            "references before Flickr vision"
+            f"required={requirement.minimum_count}, "
+            f"provisional={readiness.provisional_support_count}, "
+            f"human_verified={readiness.human_verified_support_count}, "
+            f"scoring_mode={scoring_mode}; add admitted target references before "
+            "Flickr vision"
+        )
+
+
+def _validate_scoring_permit(
+    readiness: ReferenceBankReadinessPermit | None,
+    *,
+    scoring_mode: str,
+    issues: list[str],
+) -> None:
+    if readiness is None:
+        return
+    if scoring_mode == "provisional_nonparametric":
+        if not readiness.permits_provisional_scoring:
+            issues.append(
+                "reference readiness does not permit provisional nonparametric "
+                f"scoring: status={readiness.status}"
+            )
+        return
+    if not readiness.permits_calibrated_scoring:
+        issues.append(
+            "reference readiness does not permit calibrated scoring: "
+            f"status={readiness.status}, provisional="
+            f"{readiness.provisional_support_count}, human_verified="
+            f"{readiness.human_verified_support_count}"
         )
 
 
@@ -520,6 +579,7 @@ def _single_frame_value(frame: pl.DataFrame, field: str) -> str:
 
 __all__ = [
     "SUPPORT_DEPENDENT_STAGES",
+    "SUPPORT_SCORING_MODES",
     "SupportDependencyError",
     "SupportDependencyPermit",
     "validate_support_readiness_dependencies",

@@ -15,8 +15,10 @@ from biominer.candidates.regional_union import (
     REGIONAL_CANDIDATE_SPECIES_SCHEMA_VERSION,
     regional_candidate_species_schema,
 )
+from biominer.references.admission import default_reference_admission_policy
 from biominer.references.deduplication import deduplicate_reference_media
 from biominer.references.readiness import (
+    LEGACY_REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION,
     REFERENCE_BANK_READINESS_FILE,
     REFERENCE_BANK_SPLIT_ASSIGNMENTS_SCHEMA_VERSION,
     REFERENCE_BANK_SUMMARY_FILE,
@@ -26,8 +28,10 @@ from biominer.references.readiness import (
     ReferenceBankRequirement,
     ReferenceModelInputIdentity,
     build_reference_bank_readiness,
+    legacy_reference_support_manifest_v2_schema,
     load_reference_bank_readiness,
     make_reference_split_assignment_fingerprint,
+    migrate_strict_reference_support_manifest_v2,
     publish_reference_bank_readiness,
     reference_bank_split_assignments_frame,
     reference_bank_split_assignments_schema,
@@ -35,6 +39,7 @@ from biominer.references.readiness import (
     reference_readiness_allows_vision,
     reference_support_manifest_fingerprint,
     reference_support_manifest_schema,
+    validate_reference_bank_readiness,
     validate_reference_bank_split_assignments,
     validate_reference_bank_summary,
     validate_reference_support_manifest,
@@ -800,10 +805,48 @@ def test_ready_build_publish_and_strict_load(tmp_path: Path) -> None:
 
     assert result.readiness["status"] == "ready"
     assert result.readiness["permits_vision"] is True
+    assert result.readiness["permits_reference_embedding"] is True
+    assert result.readiness["permits_prototype_creation"] is True
+    assert result.readiness["permits_provisional_scoring"] is True
+    assert result.readiness["permits_calibrated_scoring"] is True
+    assert result.readiness["permits_scientific_release"] is True
+    assert result.readiness["requires_downstream_flickr_review"] is True
+    assert result.readiness["reference_admission_mode"] == "human_verified_strict"
+    assert result.readiness["provisional_support_count"] == 0
+    assert result.readiness["human_verified_support_count"] == 2
+    assert result.readiness["statistical_audit_required"] is False
     assert reference_readiness_allows_vision(result.readiness)
     assert result.support_manifest.height == 2
     assert result.support_manifest["support_eligible"].to_list() == [True, True]
     assert set(result.support_manifest["route"]) == {"adult_field"}
+    assert set(result.support_manifest["reference_admission_mode"]) == {
+        "human_verified_strict"
+    }
+    assert set(result.support_manifest["identity_evidence_basis"]) == {
+        "human_verified"
+    }
+    assert result.support_manifest["provider_asserted_identity"].to_list() == [
+        True,
+        True,
+    ]
+    assert result.support_manifest["human_verified_identity"].to_list() == [
+        True,
+        True,
+    ]
+    assert result.support_manifest["provisional_support"].to_list() == [False, False]
+    assert result.support_manifest["statistical_audit_required"].to_list() == [
+        False,
+        False,
+    ]
+    assert result.summary["provider_asserted_count"].to_list() == [1, 1, 1]
+    assert result.summary["provider_asserted_eligible_count"].to_list() == [1, 1, 1]
+    assert result.summary["human_verified_count"].to_list() == [1, 1, 1]
+    assert result.summary["human_verified_eligible_count"].to_list() == [1, 1, 1]
+    assert result.summary["provisional_support_count"].to_list() == [0, 0, 0]
+    assert result.summary["strict_support_count"].to_list() == [1, 1, 1]
+    assert result.summary["flagged_for_review_count"].to_list() == [0, 0, 0]
+    assert result.summary["excluded_by_automated_qa_count"].to_list() == [0, 0, 0]
+    assert result.summary["excluded_by_human_review_count"].to_list() == [0, 0, 0]
     assert [item["check_id"] for item in result.readiness["checks"]] == [
         "artifact_integrity",
         "target_adult_minimum",
@@ -811,7 +854,14 @@ def test_ready_build_publish_and_strict_load(tmp_path: Path) -> None:
         "geographic_cluster_coverage",
         "larval_route_separation",
         "pinned_specimen_separation",
-        "verified_support_only",
+        "support_admission_policy_satisfied",
+        "provider_assertion_integrity",
+        "automated_reference_qa_passed",
+        "reference_routes_separated",
+        "provisional_support_declared",
+        "statistical_audit_plan_available",
+        "human_rejections_respected",
+        "strict_support_only",
         "duplicate_groups_resolved",
         "licences_accepted",
         "source_attribution_complete",
@@ -852,6 +902,16 @@ def test_ready_build_publish_and_strict_load(tmp_path: Path) -> None:
     assert permit.support_manifest_sha256.startswith("sha256:")
     assert permit.summary_sha256.startswith("sha256:")
     assert permit.readiness_sha256.startswith("sha256:")
+    assert permit.permits_reference_embedding is True
+    assert permit.permits_prototype_creation is True
+    assert permit.permits_provisional_scoring is True
+    assert permit.permits_calibrated_scoring is True
+    assert permit.permits_scientific_release is True
+    assert permit.requires_downstream_flickr_review is True
+    assert permit.reference_admission_mode == "human_verified_strict"
+    assert permit.provisional_support_count == 0
+    assert permit.human_verified_support_count == 2
+    assert permit.statistical_audit_required is False
     assert permit.candidate_set_fingerprints == tuple(
         result.readiness["candidate_set_fingerprints"]
     )
@@ -867,6 +927,209 @@ def test_ready_build_publish_and_strict_load(tmp_path: Path) -> None:
         ).model_name
         == "bioclip-2.5-huge"
     )
+
+
+def test_support_manifest_accepts_provider_assertion_only_as_provisional() -> None:
+    strict = _build(_make_fixture()).support_manifest
+    row = dict(strict.row(0, named=True))
+    policy = default_reference_admission_policy()
+    row.update(
+        {
+            "reference_admission_mode": policy.mode,
+            "reference_admission_policy_version": policy.policy_version,
+            "reference_admission_policy_fingerprint": policy.fingerprint,
+            "identity_evidence_basis": "gbif_provider_asserted",
+            "human_review_status": "not_requested",
+            "human_verified_identity": False,
+            "provisional_support": True,
+            "statistical_audit_required": True,
+            "admission_status": "admitted",
+            "admission_reasons": ["automated_gbif_quality_gates_passed"],
+            "reference_quality_flags": [],
+            "route_evidence_basis": "yoloe",
+            "review_status": "pending",
+            "verification_status": "unreviewed",
+            "target_identity_verified": False,
+            "review_decision_ids": [],
+            "reviewer_ids": [],
+        }
+    )
+    row["support_row_fingerprint"] = readiness_module._support_row_fingerprint(  # noqa: SLF001 - fixture mirrors the persisted contract.
+        row
+    )
+    provisional = pl.DataFrame(
+        [row],
+        schema=reference_support_manifest_schema(),
+        orient="row",
+        strict=True,
+    )
+
+    validate_reference_support_manifest(provisional)
+    assert provisional["identity_evidence_basis"].item() == "gbif_provider_asserted"
+    assert provisional["human_verified_identity"].item() is False
+    assert provisional["provisional_support"].item() is True
+
+
+def test_provider_assertion_cannot_be_encoded_as_human_verified() -> None:
+    strict = _build(_make_fixture()).support_manifest
+    row = dict(strict.row(0, named=True))
+    policy = default_reference_admission_policy()
+    row.update(
+        {
+            "reference_admission_mode": policy.mode,
+            "reference_admission_policy_version": policy.policy_version,
+            "reference_admission_policy_fingerprint": policy.fingerprint,
+            "identity_evidence_basis": "gbif_provider_asserted",
+            "provisional_support": True,
+            "statistical_audit_required": True,
+            "route_evidence_basis": "yoloe",
+        }
+    )
+    row["support_row_fingerprint"] = readiness_module._support_row_fingerprint(  # noqa: SLF001 - adversarial fixture preserves the row identity.
+        row
+    )
+    invalid = pl.DataFrame(
+        [row],
+        schema=reference_support_manifest_schema(),
+        orient="row",
+        strict=True,
+    )
+
+    with pytest.raises(ValueError, match="provider assertion is inconsistent"):
+        validate_reference_support_manifest(invalid)
+
+
+def test_ready_provisional_has_narrow_fail_closed_capabilities() -> None:
+    payload = json.loads(json.dumps(_build(_make_fixture()).readiness))
+    policy = default_reference_admission_policy()
+    payload.update(
+        {
+            "status": "ready_provisional",
+            "permits_vision": True,
+            "permits_reference_embedding": True,
+            "permits_provisional_scoring": True,
+            "permits_calibrated_scoring": False,
+            "permits_scientific_release": False,
+            "reference_admission_mode": policy.mode,
+            "admission_policy_fingerprint": policy.fingerprint,
+            "provisional_support_count": 2,
+            "human_verified_support_count": 0,
+            "statistical_audit_required": True,
+        }
+    )
+    payload["counts"]["provisional_support_count"] = 2
+    payload["counts"]["human_verified_support_count"] = 0
+    payload["checks"] = [
+        check
+        for check in payload["checks"]
+        if check["check_id"] != "strict_support_only"
+    ]
+    payload["bank_fingerprint"] = readiness_module.canonical_semantic_fingerprint(
+        {
+            "schema_version": payload["schema_version"],
+            "reference_bank_version": payload["reference_bank_version"],
+            "registry_version": payload["registry_version"],
+            "target_accepted_taxon_key": payload["target_accepted_taxon_key"],
+            "policy_fingerprint": payload["policy_fingerprint"],
+            "reference_admission_mode": payload["reference_admission_mode"],
+            "admission_policy_fingerprint": payload[
+                "admission_policy_fingerprint"
+            ],
+            "model_input_fingerprint": payload["model_input_fingerprint"],
+            "candidate_set_ids": payload["candidate_set_ids"],
+            "candidate_set_fingerprints": payload["candidate_set_fingerprints"],
+            "inputs": payload["inputs"],
+        }
+    )
+    for check in payload["checks"]:
+        check["evidence"]["reference_bank_fingerprint"] = payload[
+            "bank_fingerprint"
+        ]
+
+    readiness_module._validate_readiness_payload(payload, published=False)  # noqa: SLF001 - validates the persisted provisional contract directly.
+    assert reference_readiness_allows_vision(payload)
+    assert payload["permits_prototype_creation"] is True
+    assert payload["requires_downstream_flickr_review"] is True
+    assert payload["statistical_audit_required"] is True
+    assert payload["permits_scientific_release"] is False
+
+    payload["permits_calibrated_scoring"] = True
+    with pytest.raises(ValueError, match="capabilities"):
+        readiness_module._validate_readiness_payload(payload, published=False)  # noqa: SLF001 - adversarial persisted-contract validation.
+
+
+def test_legacy_v2_support_requires_explicit_strict_migration() -> None:
+    current = _build(_make_fixture()).support_manifest
+    legacy_rows = []
+    for current_row in current.iter_rows(named=True):
+        row = {
+            field: value
+            for field, value in current_row.items()
+            if field in legacy_reference_support_manifest_v2_schema()
+        }
+        row["schema_version"] = LEGACY_REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION
+        row["support_row_fingerprint"] = (
+            readiness_module._legacy_support_row_fingerprint_v2(row)  # noqa: SLF001 - fixture recreates the exact persisted v2 identity.
+        )
+        legacy_rows.append(row)
+    legacy = pl.DataFrame(
+        legacy_rows,
+        schema=legacy_reference_support_manifest_v2_schema(),
+        orient="row",
+        strict=True,
+    ).sort(readiness_module._SUPPORT_SORT)  # noqa: SLF001 - persisted contract sort.
+
+    with pytest.raises(ValueError, match="physical schema"):
+        validate_reference_support_manifest(legacy)
+
+    migration = migrate_strict_reference_support_manifest_v2(legacy)
+
+    validate_reference_support_manifest(migration.manifest)
+    assert set(migration.manifest["reference_admission_mode"]) == {
+        "human_verified_strict"
+    }
+    assert migration.manifest["human_verified_identity"].all()
+    assert not migration.manifest["provisional_support"].any()
+    assert not migration.manifest["provider_asserted_identity"].any()
+    assert migration.report["source_schema_version"] == (
+        LEGACY_REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION
+    )
+    assert migration.report["migration_mode"] == "explicit_human_verified_strict"
+    assert migration.report["provider_assertion_backfilled"] is False
+    assert migration.report["requires_downstream_rebuild"] == [
+        "readiness",
+        "reference_embeddings",
+        "reference_prototypes",
+        "models",
+        "scores",
+    ]
+
+
+def test_admission_mode_change_invalidates_support_and_readiness_identity() -> None:
+    result = _build(_make_fixture())
+    strict_fingerprint = reference_support_manifest_fingerprint(
+        result.support_manifest
+    )
+    adaptive = default_reference_admission_policy()
+    changed_rows = []
+    for source_row in result.support_manifest.iter_rows(named=True):
+        row = dict(source_row)
+        row["reference_admission_mode"] = adaptive.mode
+        row["reference_admission_policy_version"] = adaptive.policy_version
+        row["reference_admission_policy_fingerprint"] = adaptive.fingerprint
+        row["support_row_fingerprint"] = readiness_module._support_row_fingerprint(row)  # noqa: SLF001 - recomputes a deliberate policy-identity change.
+        changed_rows.append(row)
+    changed = pl.DataFrame(
+        changed_rows,
+        schema=reference_support_manifest_schema(),
+        orient="row",
+        strict=True,
+    ).sort(readiness_module._SUPPORT_SORT)  # noqa: SLF001 - persisted contract sort.
+
+    validate_reference_support_manifest(changed)
+    assert reference_support_manifest_fingerprint(changed) != strict_fingerprint
+    with pytest.raises(ValueError, match="support manifest fingerprint mismatch"):
+        validate_reference_bank_readiness(replace(result, support_manifest=changed))
 
 
 def test_model_and_support_semantic_fingerprints_ignore_object_relocation() -> None:
@@ -1165,7 +1428,7 @@ def test_blocked_licence_takes_precedence_over_target_shortfall() -> None:
     verified_check = next(
         item
         for item in result.readiness["checks"]
-        if item["check_id"] == "verified_support_only"
+        if item["check_id"] == "strict_support_only"
     )
     assert verified_check["status"] == "passed"
 
@@ -1186,7 +1449,7 @@ def test_pending_included_media_awaits_manual_review() -> None:
     check = next(
         item
         for item in result.readiness["checks"]
-        if item["check_id"] == "verified_support_only"
+        if item["check_id"] == "strict_support_only"
     )
     assert check["status"] == "pending"
 
@@ -1687,6 +1950,22 @@ def test_publication_is_create_only_under_concurrency(tmp_path: Path) -> None:
     assert len(failed_audits) == 1
     failed = json.loads(failed_audits[0].read_text(encoding="utf-8"))
     assert failed["status"] == "failed"
+    assert failed["artifact"] == "not_committed"
+
+
+def test_existing_publication_rejection_is_audited(tmp_path: Path) -> None:
+    result = _build(_make_fixture())
+    destination = tmp_path / "ready"
+    publish_reference_bank_readiness(result, destination, run_id="winner")
+
+    with pytest.raises(FileExistsError):
+        publish_reference_bank_readiness(result, destination, run_id="loser")
+
+    failed_audits = list(tmp_path.glob(".ready.*.failed.json"))
+    assert len(failed_audits) == 1
+    failed = json.loads(failed_audits[0].read_text(encoding="utf-8"))
+    assert failed["run_id"] == "loser"
+    assert failed["error_type"] == "FileExistsError"
     assert failed["artifact"] == "not_committed"
 
 

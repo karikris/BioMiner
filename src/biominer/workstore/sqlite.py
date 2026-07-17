@@ -21,6 +21,7 @@ from biominer.common.status import (
 )
 from biominer.workstore.base import validate_claim_lease
 from biominer.workstore.keys import publication_lock_digest, scoped_work_item_key
+from biominer.storage.sqlite_connection import connect_closing
 
 DEFAULT_STAGE = "default"
 
@@ -650,7 +651,7 @@ class SQLiteWorkStore:
             conn.execute("COMMIT")
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
+        conn = connect_closing(self.path)
         conn.row_factory = sqlite3.Row
         return conn
 

@@ -1,0 +1,26 @@
+{
+  "schema_version": "adaptive-workflow-performance-baseline-v1.0.0",
+  "recorded_at": "2026-07-17T17:11:00Z",
+  "source_commit": "2e80754",
+  "environment": {
+    "operating_system": "Linux x86_64 (WSL2)",
+    "python_version": "3.14.5",
+    "polars_version": "1.41.2",
+    "sample_count": 7,
+    "aggregation": "median"
+  },
+  "baseline": {
+    "time_to_first_provisional_scoring_ms": 502.480375,
+    "reference_review_count_before_first_scoring": 0,
+    "embedding_reuse_count": 2,
+    "embedding_reuse_ratio": 0.6666666666666666,
+    "selective_rerun_ratio": 0.875,
+    "peak_traced_memory_mib": 0.44849109649658203
+  },
+  "tolerance": {
+    "time_relative_increase": 2.0,
+    "time_absolute_ms": 100.0,
+    "peak_memory_relative_increase": 2.0,
+    "peak_memory_absolute_mib": 0.25
+  }
+}

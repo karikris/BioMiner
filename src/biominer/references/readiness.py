@@ -24,6 +24,15 @@ from biominer.common.semantic_hash import (
     canonical_semantic_bytes,
     canonical_semantic_fingerprint,
 )
+from biominer.references.admission import (
+    DEFAULT_REFERENCE_ADMISSION_MODE,
+    REFERENCE_ADMISSION_MODES,
+    ReferenceAdmissionPolicy,
+    strict_reference_admission_policy,
+)
+from biominer.references.admission_compiler import (
+    validate_reference_provisional_support,
+)
 from biominer.references.deduplication import (
     validate_reference_media_deduplication_artifacts,
 )
@@ -31,6 +40,10 @@ from biominer.references.planner import make_reference_candidate_union_id
 from biominer.references.review import (
     resolve_reference_review_statuses,
     validate_reference_review_queue_source_bindings,
+)
+from biominer.references.support_admission import (
+    SupportAdmissionEvidence,
+    evaluate_support_admission,
 )
 from biominer.references.schemas import (
     REFERENCE_ROUTES,
@@ -50,11 +63,17 @@ from biominer.storage.parquet import write_parquet
 REFERENCE_BANK_SPLIT_ASSIGNMENTS_SCHEMA_VERSION = (
     "reference-bank-split-assignments-v1.0.0"
 )
-REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION = "reference-support-manifest-v2.0.0"
-REFERENCE_BANK_SUMMARY_SCHEMA_VERSION = "reference-bank-summary-v1.0.0"
-REFERENCE_BANK_READINESS_SCHEMA_VERSION = "reference-bank-readiness-v2.0.0"
+REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION = "reference-support-manifest-v3.0.0"
+REFERENCE_BANK_SUMMARY_SCHEMA_VERSION = "reference-bank-summary-v2.0.0"
+REFERENCE_BANK_READINESS_SCHEMA_VERSION = "reference-bank-readiness-v3.0.0"
 REFERENCE_BANK_READINESS_POLICY_SCHEMA_VERSION = (
     "reference-bank-readiness-policy-v1.0.0"
+)
+LEGACY_REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION = (
+    "reference-support-manifest-v2.0.0"
+)
+REFERENCE_SUPPORT_MANIFEST_MIGRATION_SCHEMA_VERSION = (
+    "reference-support-manifest-migration-v1.0.0"
 )
 REFERENCE_MODEL_INPUT_IDENTITY_SCHEMA_VERSION = (
     "reference-model-input-identity-v2.0.0"
@@ -67,6 +86,7 @@ REFERENCE_BANK_READINESS_FILE = "reference_bank_readiness.json"
 READINESS_STATUSES = frozenset(
     {
         "ready",
+        "ready_provisional",
         "ready_with_documented_shortfalls",
         "awaiting_manual_review",
         "blocked_licence",
@@ -74,27 +94,59 @@ READINESS_STATUSES = frozenset(
         "invalid",
     }
 )
-PERMITTING_READINESS_STATUSES = frozenset(
+STRICT_PERMITTING_READINESS_STATUSES = frozenset(
     {"ready", "ready_with_documented_shortfalls"}
+)
+PERMITTING_READINESS_STATUSES = frozenset(
+    {*STRICT_PERMITTING_READINESS_STATUSES, "ready_provisional"}
 )
 READINESS_CHECK_STATUSES = frozenset({"passed", "failed", "pending", "warning"})
 REFERENCE_SUPPORT_SPLITS = frozenset(
     {"support_train", "model_selection", "calibration", "final_test"}
 )
-_REQUIRED_CHECK_IDS = (
+REFERENCE_IDENTITY_EVIDENCE_BASES = frozenset(
+    {"human_verified", "gbif_provider_asserted", "none"}
+)
+REFERENCE_ADMISSION_STATUSES = frozenset(
+    {"admitted", "excluded", "review_required"}
+)
+REFERENCE_ROUTE_EVIDENCE_BASES = frozenset(
+    {"human_verified_review", "yoloe", "none"}
+)
+REFERENCE_HUMAN_REVIEW_STATUSES = frozenset(
+    {"not_requested", "pending", "in_review", "completed", "rejected", "conflict"}
+)
+_COMMON_REQUIRED_CHECK_IDS = (
     "artifact_integrity",
     "target_adult_minimum",
     "competitor_minima",
     "geographic_cluster_coverage",
     "larval_route_separation",
     "pinned_specimen_separation",
-    "verified_support_only",
+    "support_admission_policy_satisfied",
+    "provider_assertion_integrity",
+    "automated_reference_qa_passed",
+    "reference_routes_separated",
+    "provisional_support_declared",
+    "statistical_audit_plan_available",
+    "human_rejections_respected",
     "duplicate_groups_resolved",
     "licences_accepted",
     "source_attribution_complete",
     "split_group_separation",
     "model_building_inputs_available",
 )
+
+
+def _required_check_ids(admission_mode: str) -> tuple[str, ...]:
+    if admission_mode == "human_verified_strict":
+        index = _COMMON_REQUIRED_CHECK_IDS.index("human_rejections_respected") + 1
+        return (
+            *_COMMON_REQUIRED_CHECK_IDS[:index],
+            "strict_support_only",
+            *_COMMON_REQUIRED_CHECK_IDS[index:],
+        )
+    return _COMMON_REQUIRED_CHECK_IDS
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _SUMMARY_SORT = (
     "reference_bank_version",
@@ -354,6 +406,24 @@ _SUPPORT_ROW_SEMANTIC_FIELDS = (
     "reference_media_id",
     "canonical_reference_media_id",
     "reference_observation_id",
+    "reference_admission_mode",
+    "reference_admission_policy_version",
+    "reference_admission_policy_fingerprint",
+    "identity_evidence_basis",
+    "provider_asserted_identity",
+    "provider_asserted_taxon_key",
+    "provider_asserted_scientific_name",
+    "provider_dataset_key",
+    "provider_quality_status",
+    "human_review_status",
+    "human_verified_identity",
+    "provisional_support",
+    "statistical_audit_required",
+    "admission_status",
+    "admission_reasons",
+    "reference_quality_flags",
+    "route_evidence_basis",
+    "geographic_prototype_eligible",
     "source",
     "source_observation_id",
     "provider_media_id",
@@ -387,6 +457,33 @@ _SUPPORT_ROW_SEMANTIC_FIELDS = (
     "support_eligible",
     "exclusion_reasons",
     "reference_bank_fingerprint",
+)
+_REFERENCE_SUPPORT_V3_EVIDENCE_FIELDS = frozenset(
+    {
+        "reference_admission_mode",
+        "reference_admission_policy_version",
+        "reference_admission_policy_fingerprint",
+        "identity_evidence_basis",
+        "provider_asserted_identity",
+        "provider_asserted_taxon_key",
+        "provider_asserted_scientific_name",
+        "provider_dataset_key",
+        "provider_quality_status",
+        "human_review_status",
+        "human_verified_identity",
+        "provisional_support",
+        "statistical_audit_required",
+        "admission_status",
+        "admission_reasons",
+        "reference_quality_flags",
+        "route_evidence_basis",
+        "geographic_prototype_eligible",
+    }
+)
+_LEGACY_SUPPORT_ROW_SEMANTIC_FIELDS = tuple(
+    field
+    for field in _SUPPORT_ROW_SEMANTIC_FIELDS
+    if field not in _REFERENCE_SUPPORT_V3_EVIDENCE_FIELDS
 )
 
 
@@ -782,6 +879,12 @@ class ReferenceBankReadinessResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ReferenceSupportManifestMigration:
+    manifest: pl.DataFrame
+    report: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
 class ReferenceBankRequirementStatus:
     accepted_taxon_key: str
     route: str
@@ -817,6 +920,17 @@ class ReferenceBankReadinessPermit:
     readiness_sha256: str
     support_manifest_sha256: str
     summary_sha256: str
+    permits_reference_embedding: bool
+    permits_provisional_scoring: bool
+    permits_calibrated_scoring: bool
+    permits_scientific_release: bool
+    reference_admission_mode: str
+    admission_policy_fingerprint: str
+    provisional_support_count: int
+    human_verified_support_count: int
+    statistical_audit_required: bool
+    permits_prototype_creation: bool = False
+    requires_downstream_flickr_review: bool = True
     candidate_set_fingerprints: tuple[str, ...] = ()
     target_adult_requirements: tuple[ReferenceBankRequirementStatus, ...] = ()
 
@@ -863,6 +977,24 @@ def reference_support_manifest_schema() -> dict[str, pl.DataType]:
         "reference_media_id": pl.String,
         "canonical_reference_media_id": pl.String,
         "reference_observation_id": pl.String,
+        "reference_admission_mode": pl.String,
+        "reference_admission_policy_version": pl.String,
+        "reference_admission_policy_fingerprint": pl.String,
+        "identity_evidence_basis": pl.String,
+        "provider_asserted_identity": pl.Boolean,
+        "provider_asserted_taxon_key": pl.String,
+        "provider_asserted_scientific_name": pl.String,
+        "provider_dataset_key": pl.String,
+        "provider_quality_status": pl.String,
+        "human_review_status": pl.String,
+        "human_verified_identity": pl.Boolean,
+        "provisional_support": pl.Boolean,
+        "statistical_audit_required": pl.Boolean,
+        "admission_status": pl.String,
+        "admission_reasons": pl.List(pl.String),
+        "reference_quality_flags": pl.List(pl.String),
+        "route_evidence_basis": pl.String,
+        "geographic_prototype_eligible": pl.Boolean,
         "review_request_id": pl.String,
         "review_decision_ids": pl.List(pl.String),
         "reviewer_ids": pl.List(pl.String),
@@ -908,6 +1040,129 @@ def reference_support_manifest_schema() -> dict[str, pl.DataType]:
     }
 
 
+def legacy_reference_support_manifest_v2_schema() -> dict[str, pl.DataType]:
+    """Return the exact pre-admission strict support schema."""
+
+    return {
+        field: dtype
+        for field, dtype in reference_support_manifest_schema().items()
+        if field not in _REFERENCE_SUPPORT_V3_EVIDENCE_FIELDS
+    }
+
+
+def migrate_strict_reference_support_manifest_v2(
+    frame: pl.DataFrame,
+) -> ReferenceSupportManifestMigration:
+    """Explicitly migrate a validated v2 strict manifest without weakening trust."""
+
+    _validate_legacy_reference_support_manifest_v2(frame)
+    policy = strict_reference_admission_policy()
+    source_fingerprint = _semantic_frame_fingerprint(
+        frame,
+        fields=_LEGACY_SUPPORT_ROW_SEMANTIC_FIELDS,
+    )
+    rows: list[dict[str, object]] = []
+    for legacy in frame.iter_rows(named=True):
+        row = dict(legacy)
+        eligible = bool(row["support_eligible"])
+        row.update(
+            {
+                "schema_version": REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION,
+                "reference_admission_mode": policy.mode,
+                "reference_admission_policy_version": policy.policy_version,
+                "reference_admission_policy_fingerprint": policy.fingerprint,
+                "identity_evidence_basis": "human_verified",
+                "provider_asserted_identity": False,
+                "provider_asserted_taxon_key": None,
+                "provider_asserted_scientific_name": None,
+                "provider_dataset_key": row["source_dataset_key"],
+                "provider_quality_status": None,
+                "human_review_status": "completed",
+                "human_verified_identity": True,
+                "provisional_support": False,
+                "statistical_audit_required": False,
+                "admission_status": "admitted" if eligible else "excluded",
+                "admission_reasons": ["legacy_strict_human_review_verified"]
+                if eligible
+                else sorted(
+                    set(row["exclusion_reasons"])
+                    or {"legacy_strict_support_excluded"}
+                ),
+                "reference_quality_flags": [],
+                "route_evidence_basis": "human_verified_review",
+                "geographic_prototype_eligible": bool(
+                    eligible
+                    and _present(row["geo_cluster_id"])
+                    and row["latitude"] is not None
+                    and row["longitude"] is not None
+                ),
+            }
+        )
+        row["support_row_fingerprint"] = _support_row_fingerprint(row)
+        rows.append(row)
+    migrated = _strict_frame(
+        rows,
+        schema=reference_support_manifest_schema(),
+        sort_by=_SUPPORT_SORT,
+    )
+    validate_reference_support_manifest(migrated)
+    report: dict[str, Any] = {
+        "schema_version": REFERENCE_SUPPORT_MANIFEST_MIGRATION_SCHEMA_VERSION,
+        "source_schema_version": LEGACY_REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION,
+        "target_schema_version": REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION,
+        "migration_mode": "explicit_human_verified_strict",
+        "reference_admission_mode": policy.mode,
+        "admission_policy_fingerprint": policy.fingerprint,
+        "source_manifest_fingerprint": source_fingerprint,
+        "target_manifest_fingerprint": _support_manifest_fingerprint(migrated),
+        "row_count": migrated.height,
+        "provider_assertion_backfilled": False,
+        "requires_downstream_rebuild": [
+            "readiness",
+            "reference_embeddings",
+            "reference_prototypes",
+            "models",
+            "scores",
+        ],
+    }
+    report["migration_fingerprint"] = canonical_semantic_fingerprint(report)
+    return ReferenceSupportManifestMigration(manifest=migrated, report=report)
+
+
+def _validate_legacy_reference_support_manifest_v2(frame: pl.DataFrame) -> None:
+    _validate_exact_frame(
+        frame,
+        schema=legacy_reference_support_manifest_v2_schema(),
+        artifact="legacy reference support manifest v2",
+        sort_by=_SUPPORT_SORT,
+    )
+    if frame["reference_media_id"].n_unique() != frame.height:
+        raise ValueError("legacy support manifest contains duplicate canonical media")
+    if not frame.is_empty() and frame["reference_bank_fingerprint"].n_unique() != 1:
+        raise ValueError("legacy support manifest spans multiple bank fingerprints")
+    for row in frame.iter_rows(named=True):
+        if row["schema_version"] != LEGACY_REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION:
+            raise ValueError("unsupported legacy support manifest schema version")
+        if row["canonical_reference_media_id"] != row["reference_media_id"]:
+            raise ValueError("legacy support manifest row is not canonical media")
+        if (
+            row["review_status"] != "completed"
+            or row["verification_status"] != "verified"
+            or not row["target_identity_verified"]
+        ):
+            raise ValueError("legacy support manifest is not human-verified strict")
+        expected_route = _reference_route(
+            life_stage=str(row["life_stage"]),
+            visual_domain=str(row["visual_domain"]),
+        )
+        if expected_route != row["route"] or row["route"] not in REFERENCE_ROUTES:
+            raise ValueError("legacy support manifest route is invalid")
+        _fingerprint(row["image_sha256"], field="image_sha256")
+        _fingerprint(row["object_fingerprint"], field="object_fingerprint")
+        if row["support_row_fingerprint"] != _legacy_support_row_fingerprint_v2(row):
+            raise ValueError("legacy support manifest row fingerprint is invalid")
+
+
 def reference_bank_summary_schema() -> dict[str, pl.DataType]:
     return {
         "schema_version": pl.String,
@@ -930,6 +1185,15 @@ def reference_bank_summary_schema() -> dict[str, pl.DataType]:
         "eligible_count": pl.UInt64,
         "excluded_count": pl.UInt64,
         "pending_review_count": pl.UInt64,
+        "provider_asserted_count": pl.UInt64,
+        "provider_asserted_eligible_count": pl.UInt64,
+        "human_verified_count": pl.UInt64,
+        "human_verified_eligible_count": pl.UInt64,
+        "provisional_support_count": pl.UInt64,
+        "strict_support_count": pl.UInt64,
+        "flagged_for_review_count": pl.UInt64,
+        "excluded_by_automated_qa_count": pl.UInt64,
+        "excluded_by_human_review_count": pl.UInt64,
         "shortfall_count": pl.UInt64,
         "documented_shortfall_count": pl.UInt64,
         "source_count": pl.UInt64,
@@ -1013,6 +1277,11 @@ def validate_reference_support_manifest(frame: pl.DataFrame) -> None:
         raise ValueError("support manifest contains duplicate canonical media")
     if not frame.is_empty() and frame["reference_bank_fingerprint"].n_unique() != 1:
         raise ValueError("support manifest spans multiple bank fingerprints")
+    if not frame.is_empty() and (
+        frame["reference_admission_mode"].n_unique() != 1
+        or frame["reference_admission_policy_fingerprint"].n_unique() != 1
+    ):
+        raise ValueError("support manifest spans multiple admission policies")
     for row in frame.iter_rows(named=True):
         if row["schema_version"] != REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION:
             raise ValueError("unsupported reference support manifest schema version")
@@ -1021,6 +1290,81 @@ def validate_reference_support_manifest(frame: pl.DataFrame) -> None:
         route = str(row["route"])
         if route not in REFERENCE_ROUTES:
             raise ValueError("support manifest contains an unsupported route")
+        admission_mode = str(row["reference_admission_mode"])
+        if admission_mode not in REFERENCE_ADMISSION_MODES:
+            raise ValueError("support manifest contains an unsupported admission mode")
+        _required_text(
+            row["reference_admission_policy_version"],
+            field="reference_admission_policy_version",
+        )
+        _fingerprint(
+            row["reference_admission_policy_fingerprint"],
+            field="reference_admission_policy_fingerprint",
+        )
+        identity_basis = str(row["identity_evidence_basis"])
+        if identity_basis not in REFERENCE_IDENTITY_EVIDENCE_BASES:
+            raise ValueError("support manifest contains an unsupported identity basis")
+        admission_status = str(row["admission_status"])
+        if admission_status not in REFERENCE_ADMISSION_STATUSES:
+            raise ValueError("support manifest contains an unsupported admission status")
+        route_evidence = str(row["route_evidence_basis"])
+        if route_evidence not in REFERENCE_ROUTE_EVIDENCE_BASES:
+            raise ValueError("support manifest contains an unsupported route evidence basis")
+        human_review_status = str(row["human_review_status"])
+        if human_review_status not in REFERENCE_HUMAN_REVIEW_STATUSES:
+            raise ValueError("support manifest contains an unsupported human review status")
+        admission_reasons = list(row["admission_reasons"])
+        if not admission_reasons or admission_reasons != sorted(set(admission_reasons)):
+            raise ValueError("support manifest row must record canonical admission reasons")
+        quality_flags = list(row["reference_quality_flags"])
+        if quality_flags != sorted(set(quality_flags)):
+            raise ValueError("support manifest reference quality flags are not canonical")
+        provider_asserted = bool(row["provider_asserted_identity"])
+        human_verified = bool(row["human_verified_identity"])
+        provisional = bool(row["provisional_support"])
+        if provider_asserted and (
+            not _present(row["provider_asserted_taxon_key"])
+            or not _present(row["provider_asserted_scientific_name"])
+        ):
+            raise ValueError("provider assertion lacks taxon identity evidence")
+        if human_verified != bool(row["target_identity_verified"]):
+            raise ValueError("human-verified identity fields disagree")
+        if identity_basis == "human_verified":
+            if (
+                not human_verified
+                or human_review_status != "completed"
+                or row["verification_status"] != "verified"
+                or provisional
+                or route_evidence != "human_verified_review"
+            ):
+                raise ValueError("human-verified identity basis is inconsistent")
+        elif identity_basis == "gbif_provider_asserted":
+            if (
+                str(row["source"]).casefold() != "gbif"
+                or not provider_asserted
+                or human_verified
+                or bool(row["target_identity_verified"])
+                or row["verification_status"] == "verified"
+                or not provisional
+                or not bool(row["statistical_audit_required"])
+                or admission_mode != "adaptive_gbif_fast_start"
+                or route_evidence != "yoloe"
+                or human_review_status == "completed"
+            ):
+                raise ValueError(
+                    "GBIF provider assertion is inconsistent with provisional support"
+                )
+        elif human_verified or provisional:
+            raise ValueError("identity basis none cannot claim identity support")
+        if provisional and identity_basis != "gbif_provider_asserted":
+            raise ValueError("provisional support must use GBIF provider assertion")
+        if bool(row["geographic_prototype_eligible"]) and (
+            not bool(row["support_eligible"])
+            or not _present(row["geo_cluster_id"])
+            or row["latitude"] is None
+            or row["longitude"] is None
+        ):
+            raise ValueError("geographic prototype eligibility lacks usable geography")
         if row["support_split"] is not None and (
             row["support_split"] not in REFERENCE_SUPPORT_SPLITS
         ):
@@ -1047,12 +1391,17 @@ def validate_reference_support_manifest(frame: pl.DataFrame) -> None:
             )
             if any(not _present(row[field_name]) for field_name in required_text_fields):
                 raise ValueError("eligible support row has incomplete attribution or source data")
-            if row["verification_status"] != "verified":
-                raise ValueError("eligible support row is not verified")
-            if row["review_status"] != "completed":
-                raise ValueError("eligible support row has incomplete review")
-            if not row["target_identity_verified"]:
-                raise ValueError("eligible support row lacks verified identity")
+            if admission_status != "admitted":
+                raise ValueError("eligible support row is not admitted")
+            if identity_basis == "none":
+                raise ValueError("eligible support row lacks an identity evidence basis")
+            if identity_basis == "human_verified":
+                if row["review_status"] != "completed":
+                    raise ValueError("eligible strict support row has incomplete review")
+                if row["verification_status"] != "verified":
+                    raise ValueError("eligible strict support row is not verified")
+                if not row["target_identity_verified"]:
+                    raise ValueError("eligible strict support row lacks verified identity")
             if row["exclusion_reasons"]:
                 raise ValueError("eligible support row has exclusion reasons")
         _fingerprint(row["image_sha256"], field="image_sha256")
@@ -1070,6 +1419,41 @@ def validate_reference_support_manifest(frame: pl.DataFrame) -> None:
 def reference_support_manifest_fingerprint(frame: pl.DataFrame) -> str:
     validate_reference_support_manifest(frame)
     return _support_manifest_fingerprint(frame)
+
+
+def reference_support_manifest_frame(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    reference_bank_version: str,
+    reference_bank_fingerprint: str,
+) -> pl.DataFrame:
+    """Bind support rows to a bank identity and recompute semantic row hashes."""
+
+    bank_version = _required_text(
+        reference_bank_version,
+        field="reference_bank_version",
+    )
+    bank_fingerprint = _fingerprint(
+        reference_bank_fingerprint,
+        field="reference_bank_fingerprint",
+    )
+    assert bank_fingerprint is not None
+    normalized: list[dict[str, object]] = []
+    for source in rows:
+        row = dict(source)
+        row["reference_bank_version"] = bank_version
+        row["reference_bank_fingerprint"] = bank_fingerprint
+        row["support_row_fingerprint"] = ""
+        row["support_row_fingerprint"] = _support_row_fingerprint(row)
+        normalized.append(row)
+    frame = pl.DataFrame(
+        normalized,
+        schema=reference_support_manifest_schema(),
+        orient="row",
+        strict=True,
+    ).sort(list(_SUPPORT_SORT))
+    validate_reference_support_manifest(frame)
+    return frame
 
 
 def reference_support_split_leakage(
@@ -1100,6 +1484,22 @@ def validate_reference_bank_summary(frame: pl.DataFrame) -> None:
             int(row["required_count"]) - int(row["eligible_count"]),
         ):
             raise ValueError("reference bank summary shortfall count is inconsistent")
+        if int(row["provider_asserted_eligible_count"]) > int(
+            row["provider_asserted_count"]
+        ):
+            raise ValueError("provider-asserted summary counts are inconsistent")
+        if int(row["human_verified_eligible_count"]) > int(
+            row["human_verified_count"]
+        ):
+            raise ValueError("human-verified summary counts are inconsistent")
+        if int(row["strict_support_count"]) != int(
+            row["human_verified_eligible_count"]
+        ):
+            raise ValueError("strict support summary count is inconsistent")
+        if int(row["provisional_support_count"]) + int(
+            row["strict_support_count"]
+        ) != int(row["eligible_count"]):
+            raise ValueError("provisional and strict support counts are inconsistent")
         if row["summary_row_fingerprint"] != _summary_row_fingerprint(row):
             raise ValueError("reference bank summary row fingerprint is invalid")
 
@@ -1122,6 +1522,8 @@ def build_reference_bank_readiness(
     registry_version: str,
     reference_bank_version: str,
     model_identity: ReferenceModelInputIdentity,
+    admission_policy: ReferenceAdmissionPolicy | None = None,
+    provisional_support: pl.DataFrame | None = None,
     created_at: datetime | None = None,
 ) -> ReferenceBankReadinessResult:
     """Compile a frozen support bank and its fail-closed readiness decision."""
@@ -1130,6 +1532,19 @@ def build_reference_bank_readiness(
         raise TypeError("policy must be a ReferenceBankReadinessPolicy")
     if not isinstance(model_identity, ReferenceModelInputIdentity):
         raise TypeError("model_identity must be a ReferenceModelInputIdentity")
+    admission_policy = admission_policy or strict_reference_admission_policy()
+    if not isinstance(admission_policy, ReferenceAdmissionPolicy):
+        raise TypeError("admission_policy must be a ReferenceAdmissionPolicy")
+    if admission_policy.mode == DEFAULT_REFERENCE_ADMISSION_MODE:
+        if provisional_support is None:
+            raise ValueError(
+                "adaptive admission requires explicit provisional support evidence"
+            )
+        validate_reference_provisional_support(provisional_support)
+    elif provisional_support is not None and not provisional_support.is_empty():
+        raise ValueError(
+            "provisional support evidence is permitted only in adaptive mode"
+        )
     registry = _required_text(registry_version, field="registry_version")
     bank_version = _required_text(
         reference_bank_version,
@@ -1251,6 +1666,10 @@ def build_reference_bank_readiness(
             fields=_READINESS_INPUT_SEMANTIC_FIELDS["split_assignments"],
         ),
     }
+    if provisional_support is not None:
+        input_fingerprints["provisional_support"] = _frame_fingerprint(
+            provisional_support
+        )
     split_fingerprint = input_fingerprints["split_assignments"]
     bank_fingerprint = canonical_semantic_fingerprint(
         {
@@ -1259,6 +1678,8 @@ def build_reference_bank_readiness(
             "registry_version": registry,
             "target_accepted_taxon_key": policy.target_accepted_taxon_key,
             "policy_fingerprint": policy.fingerprint,
+            "reference_admission_mode": admission_policy.mode,
+            "admission_policy_fingerprint": admission_policy.fingerprint,
             "model_input_fingerprint": model_identity.fingerprint,
             "candidate_set_ids": candidate_context["candidate_set_ids"],
             "candidate_set_fingerprints": candidate_context[
@@ -1272,10 +1693,28 @@ def build_reference_bank_readiness(
         review=review,
         indexes=indexes,
         policy=policy,
+        admission_policy=admission_policy,
         registry_version=registry,
         reference_bank_version=bank_version,
         bank_fingerprint=bank_fingerprint,
     )
+    if admission_policy.mode == DEFAULT_REFERENCE_ADMISSION_MODE:
+        assert provisional_support is not None
+        provisional_rows, provisional_issues = _build_provisional_support_rows(
+            provisional_support=provisional_support,
+            review=review,
+            indexes=indexes,
+            policy=policy,
+            admission_policy=admission_policy,
+            registry_version=registry,
+            reference_bank_version=bank_version,
+            bank_fingerprint=bank_fingerprint,
+            human_support_media_ids={
+                str(row["reference_media_id"]) for row in support_rows
+            },
+        )
+        support_rows.extend(provisional_rows)
+        structural_issues.extend(provisional_issues)
     support_manifest = _strict_frame(
         support_rows,
         schema=reference_support_manifest_schema(),
@@ -1305,6 +1744,7 @@ def build_reference_bank_readiness(
     checks, counts, documented_shortfalls = _readiness_checks(
         candidate_context=candidate_context,
         policy=policy,
+        admission_policy=admission_policy,
         acquisition_plan=acquisition_plan,
         acquisition_selections=acquisition_selections,
         review=review,
@@ -1324,10 +1764,17 @@ def build_reference_bank_readiness(
         counts=counts,
         documented_shortfalls=documented_shortfalls,
     )
+    capabilities = _readiness_capabilities(status)
     readiness: dict[str, Any] = {
         "schema_version": REFERENCE_BANK_READINESS_SCHEMA_VERSION,
         "status": status,
-        "permits_vision": status in PERMITTING_READINESS_STATUSES,
+        "permits_vision": capabilities["permits_reference_embedding"],
+        **capabilities,
+        "reference_admission_mode": admission_policy.mode,
+        "admission_policy_fingerprint": admission_policy.fingerprint,
+        "provisional_support_count": counts["provisional_support_count"],
+        "human_verified_support_count": counts["human_verified_support_count"],
+        "statistical_audit_required": admission_policy.require_statistical_audit,
         "registry_version": registry,
         "reference_bank_version": bank_version,
         "policy_version": policy.policy_version,
@@ -1393,6 +1840,22 @@ def validate_reference_bank_readiness(result: ReferenceBankReadinessResult) -> N
         result.summary["reference_bank_fingerprint"]
     ) != {payload["bank_fingerprint"]}:
         raise ValueError("summary bank fingerprint mismatch")
+    eligible_all = result.support_manifest.filter(pl.col("support_eligible"))
+    if not result.support_manifest.is_empty() and (
+        set(result.support_manifest["reference_admission_mode"])
+        != {payload["reference_admission_mode"]}
+        or set(result.support_manifest["reference_admission_policy_fingerprint"])
+        != {payload["admission_policy_fingerprint"]}
+    ):
+        raise ValueError("readiness admission identity conflicts with support manifest")
+    if eligible_all.filter(pl.col("provisional_support")).height != payload[
+        "provisional_support_count"
+    ]:
+        raise ValueError("readiness provisional support count mismatch")
+    if eligible_all.filter(pl.col("human_verified_identity")).height != payload[
+        "human_verified_support_count"
+    ]:
+        raise ValueError("readiness human-verified support count mismatch")
 
 
 def publish_reference_bank_readiness(
@@ -1405,12 +1868,12 @@ def publish_reference_bank_readiness(
     directory = Path(output_dir)
     if directory.suffix:
         raise ValueError("reference bank readiness output must be a directory")
-    if directory.exists():
-        raise FileExistsError(directory)
     directory.parent.mkdir(parents=True, exist_ok=True)
     staging = directory.parent / f".{directory.name}.{uuid4().hex}.tmp"
     started_at = datetime.now(UTC)
     try:
+        if directory.exists():
+            raise FileExistsError(directory)
         staging.mkdir(parents=False, exist_ok=False)
         support_path = write_parquet(
             result.support_manifest,
@@ -1561,6 +2024,19 @@ def load_reference_bank_readiness(
         readiness_sha256=readiness_sha,
         support_manifest_sha256=support_sha,
         summary_sha256=summary_sha,
+        permits_reference_embedding=bool(payload["permits_reference_embedding"]),
+        permits_provisional_scoring=bool(payload["permits_provisional_scoring"]),
+        permits_calibrated_scoring=bool(payload["permits_calibrated_scoring"]),
+        permits_scientific_release=bool(payload["permits_scientific_release"]),
+        reference_admission_mode=str(payload["reference_admission_mode"]),
+        admission_policy_fingerprint=str(payload["admission_policy_fingerprint"]),
+        provisional_support_count=int(payload["provisional_support_count"]),
+        human_verified_support_count=int(payload["human_verified_support_count"]),
+        statistical_audit_required=bool(payload["statistical_audit_required"]),
+        permits_prototype_creation=bool(payload["permits_prototype_creation"]),
+        requires_downstream_flickr_review=bool(
+            payload["requires_downstream_flickr_review"]
+        ),
         candidate_set_fingerprints=tuple(payload["candidate_set_fingerprints"]),
         target_adult_requirements=_target_adult_requirement_statuses(payload),
     )
@@ -1569,7 +2045,7 @@ def load_reference_bank_readiness(
 def reference_readiness_allows_vision(status_or_mapping: object) -> bool:
     if isinstance(status_or_mapping, Mapping):
         status = status_or_mapping.get("status")
-        permits = status_or_mapping.get("permits_vision")
+        permits = status_or_mapping.get("permits_reference_embedding")
         return (
             status in PERMITTING_READINESS_STATUSES
             and permits is True
@@ -1926,6 +2402,7 @@ def _build_support_rows(
     review: Any,
     indexes: Mapping[str, Mapping[str, Mapping[str, object]]],
     policy: ReferenceBankReadinessPolicy,
+    admission_policy: ReferenceAdmissionPolicy,
     registry_version: str,
     reference_bank_version: str,
     bank_fingerprint: str,
@@ -1990,12 +2467,40 @@ def _build_support_rows(
             blockers.add("media_object_not_decodable")
         if not _complete_attribution(candidate, observation):
             blockers.add("source_attribution_incomplete")
-        support_eligible = (
-            not blockers
-            and outcome["review_status"] == "completed"
+        human_verified_identity = (
+            outcome["review_status"] == "completed"
             and outcome["resolved_verification_status"] == "verified"
             and bool(outcome["target_identity_verified"])
         )
+        provider_asserted_identity = bool(
+            _present(observation["source_taxon_id"])
+            and _present(observation["supplied_scientific_name"])
+        )
+        admission = evaluate_support_admission(
+            SupportAdmissionEvidence(
+                source=str(candidate["source"]),
+                review_status=str(outcome["review_status"]),
+                verification_status=str(
+                    outcome["resolved_verification_status"]
+                ),
+                target_identity_verified=bool(
+                    outcome["target_identity_verified"]
+                ),
+                human_rejected=False,
+                human_rejection_reasons=(),
+                provider_assertion_passed=provider_asserted_identity,
+                automated_admission_gates_passed=False,
+                route_compatible=route in admission_policy.allowed_unreviewed_routes,
+                canonical_media=canonical_id == media_id,
+                deduplication_completed=True,
+                provisional_support_declared=False,
+                policy_permits_human_verified_support=True,
+                policy_permits_provisional_support=False,
+                exclusion_reasons=tuple(blockers),
+            ),
+            admission_policy,
+        )
+        support_eligible = admission.eligible
         base: dict[str, object] = {
             "schema_version": REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION,
             "reference_bank_version": reference_bank_version,
@@ -2003,6 +2508,34 @@ def _build_support_rows(
             "reference_media_id": media_id,
             "canonical_reference_media_id": canonical_id,
             "reference_observation_id": observation_id,
+            "reference_admission_mode": admission_policy.mode,
+            "reference_admission_policy_version": admission_policy.policy_version,
+            "reference_admission_policy_fingerprint": admission_policy.fingerprint,
+            "identity_evidence_basis": (
+                "human_verified"
+                if human_verified_identity
+                else admission.evidence_path
+            ),
+            "provider_asserted_identity": provider_asserted_identity,
+            "provider_asserted_taxon_key": observation["source_taxon_id"],
+            "provider_asserted_scientific_name": observation[
+                "supplied_scientific_name"
+            ],
+            "provider_dataset_key": observation["source_dataset_key"],
+            "provider_quality_status": observation["identification_quality"],
+            "human_review_status": outcome["review_status"],
+            "human_verified_identity": human_verified_identity,
+            "provisional_support": admission.provisional,
+            "statistical_audit_required": (
+                admission.provisional and admission_policy.require_statistical_audit
+            ),
+            "admission_status": admission.admission_status,
+            "admission_reasons": list(admission.reasons),
+            "reference_quality_flags": [],
+            "route_evidence_basis": "human_verified_review",
+            "geographic_prototype_eligible": bool(
+                support_eligible and _present(observation["geo_cluster_id"])
+            ),
             "review_request_id": request_id,
             "review_decision_ids": sorted(
                 str(value) for value in resolved["effective_decision_ids"]
@@ -2057,6 +2590,269 @@ def _build_support_rows(
         base["support_row_fingerprint"] = _support_row_fingerprint(base)
         rows.append(base)
     return rows, sorted(set(issues))
+
+
+def _build_provisional_support_rows(
+    *,
+    provisional_support: pl.DataFrame,
+    review: Any,
+    indexes: Mapping[str, Mapping[str, Mapping[str, object]]],
+    policy: ReferenceBankReadinessPolicy,
+    admission_policy: ReferenceAdmissionPolicy,
+    registry_version: str,
+    reference_bank_version: str,
+    bank_fingerprint: str,
+    human_support_media_ids: set[str],
+) -> tuple[list[dict[str, object]], list[str]]:
+    """Project compiler support into readiness while honoring later review."""
+
+    outcomes = {
+        str(row["reference_media_id"]): row
+        for row in review.outcomes.iter_rows(named=True)
+    }
+    rows: list[dict[str, object]] = []
+    issues: list[str] = []
+    for source_row in provisional_support.iter_rows(named=True):
+        media_id = str(source_row["reference_media_id"])
+        if media_id in human_support_media_ids:
+            continue
+        candidate = indexes["media_candidates"].get(media_id)
+        object_row = indexes["media_objects"].get(media_id)
+        assignment = indexes["split_assignments"].get(media_id)
+        if candidate is None or object_row is None:
+            issues.append(f"provisional support lacks inventory object: {media_id}")
+            continue
+        observation_id = str(candidate["reference_observation_id"])
+        observation = indexes["observations"].get(observation_id)
+        if observation is None:
+            issues.append(f"provisional support lacks observation: {media_id}")
+            continue
+        _validate_provisional_inventory_binding(
+            source_row=source_row,
+            candidate=candidate,
+            object_row=object_row,
+            observation=observation,
+            admission_policy=admission_policy,
+        )
+        outcome = outcomes.get(media_id)
+        human_verified = bool(
+            outcome
+            and outcome["review_status"] == "completed"
+            and outcome["resolved_verification_status"] == "verified"
+            and outcome["target_identity_verified"]
+        )
+        if human_verified:
+            issues.append(
+                f"human-verified provisional media lacks strict support row: {media_id}"
+            )
+            continue
+        human_rejected = bool(
+            outcome
+            and outcome["review_status"] == "completed"
+            and outcome["resolved_verification_status"] != "verified"
+        )
+        rejection_reasons = (
+            tuple(str(value) for value in outcome["blocker_reasons"])
+            if human_rejected and outcome and outcome["blocker_reasons"]
+            else (("human_identity_rejected",) if human_rejected else ())
+        )
+        included = bool(assignment and assignment["included"])
+        automated_passed = bool(
+            source_row["admission_decision"] == "admitted"
+            and source_row["automated_gate_ids"]
+            and set(source_row["automated_gate_dispositions"]) == {"passed"}
+        )
+        route = str(source_row["route"])
+        blockers: set[str] = set()
+        if not included:
+            blockers.add("not_included_in_split")
+        admission = evaluate_support_admission(
+            SupportAdmissionEvidence(
+                source=str(source_row["source"]),
+                review_status=(
+                    str(outcome["review_status"])
+                    if outcome is not None
+                    else "not_requested"
+                ),
+                verification_status=(
+                    str(outcome["resolved_verification_status"] or "unreviewed")
+                    if outcome is not None
+                    else "unreviewed"
+                ),
+                target_identity_verified=False,
+                human_rejected=human_rejected,
+                human_rejection_reasons=rejection_reasons,
+                provider_assertion_passed=(
+                    source_row["provider_assertion_status"]
+                    == "provider_asserted_unreviewed"
+                    and source_row["provider_assertion_identity_basis"]
+                    == "gbif_provider_asserted"
+                ),
+                automated_admission_gates_passed=automated_passed,
+                route_compatible=route
+                in admission_policy.allowed_unreviewed_routes,
+                canonical_media=(
+                    source_row["canonical_reference_media_id"] == media_id
+                ),
+                deduplication_completed=(
+                    source_row["duplicate_group_id"] is not None
+                    and source_row["duplicate_resolution_status"] == "resolved"
+                ),
+                provisional_support_declared=bool(
+                    source_row["provisional_support"]
+                ),
+                policy_permits_human_verified_support=True,
+                policy_permits_provisional_support=(
+                    admission_policy.mode == DEFAULT_REFERENCE_ADMISSION_MODE
+                ),
+                exclusion_reasons=tuple(blockers),
+            ),
+            admission_policy,
+        )
+        review_status = _support_human_review_status(outcome)
+        provider_asserted = bool(
+            _present(observation["source_taxon_id"])
+            and _present(observation["supplied_scientific_name"])
+        )
+        eligible = admission.eligible
+        base: dict[str, object] = {
+            "schema_version": REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION,
+            "reference_bank_version": reference_bank_version,
+            "registry_version": registry_version,
+            "reference_media_id": media_id,
+            "canonical_reference_media_id": media_id,
+            "reference_observation_id": observation_id,
+            "reference_admission_mode": admission_policy.mode,
+            "reference_admission_policy_version": admission_policy.policy_version,
+            "reference_admission_policy_fingerprint": admission_policy.fingerprint,
+            "identity_evidence_basis": admission.evidence_path,
+            "provider_asserted_identity": provider_asserted,
+            "provider_asserted_taxon_key": observation["source_taxon_id"],
+            "provider_asserted_scientific_name": observation[
+                "supplied_scientific_name"
+            ],
+            "provider_dataset_key": observation["source_dataset_key"],
+            "provider_quality_status": observation["identification_quality"],
+            "human_review_status": review_status,
+            "human_verified_identity": False,
+            "provisional_support": admission.provisional,
+            "statistical_audit_required": admission.provisional,
+            "admission_status": admission.admission_status,
+            "admission_reasons": list(admission.reasons),
+            "reference_quality_flags": [],
+            "route_evidence_basis": "yoloe",
+            "geographic_prototype_eligible": bool(
+                eligible and _present(observation["geo_cluster_id"])
+            ),
+            "review_request_id": (
+                outcome["review_request_id"] if outcome is not None else None
+            ),
+            "review_decision_ids": (
+                list(outcome["effective_decision_ids"])
+                if outcome is not None
+                else []
+            ),
+            "reviewer_ids": (
+                list(outcome["effective_reviewer_ids"])
+                if outcome is not None
+                else []
+            ),
+            "source": candidate["source"],
+            "source_observation_id": observation["source_observation_id"],
+            "provider_media_id": candidate["provider_media_id"],
+            "source_record_url": observation["source_record_url"],
+            "source_snapshot_version": observation["source_snapshot_version"],
+            "source_dataset_key": observation["source_dataset_key"],
+            "accepted_taxon_key": observation["accepted_taxon_key"],
+            "scientific_name": observation["reconciled_scientific_name"],
+            "target_candidate": observation["accepted_taxon_key"]
+            == policy.target_accepted_taxon_key,
+            "geo_cluster_id": observation["geo_cluster_id"],
+            "observer_id": observation["observer_id"],
+            "observed_at": observation["observed_at"],
+            "latitude": observation["latitude"],
+            "longitude": observation["longitude"],
+            "source_object_uri": object_row["source_object_uri"],
+            "image_sha256": object_row["sha256"],
+            "perceptual_hash": object_row["perceptual_hash"],
+            "object_fingerprint": object_row["object_fingerprint"],
+            "duplicate_group_id": object_row["duplicate_group_id"],
+            "duplicate_type": object_row["duplicate_type"],
+            "creator": candidate["creator"],
+            "rights_holder": candidate["rights_holder"],
+            "licence": candidate["licence"],
+            "licence_uri": candidate["licence_uri"],
+            "licence_policy_status": candidate["licence_policy_status"],
+            "attribution": candidate["attribution"],
+            "review_status": review_status,
+            "verification_status": (
+                str(outcome["resolved_verification_status"] or "unreviewed")
+                if outcome is not None
+                else "unreviewed"
+            ),
+            "target_identity_verified": False,
+            "life_stage": source_row["provisional_life_stage"],
+            "visual_domain": source_row["provisional_visual_domain"],
+            "view": "unknown",
+            "route": route,
+            "support_split": assignment["support_split"] if included else None,
+            "support_eligible": eligible,
+            "exclusion_reasons": [] if eligible else list(admission.reasons),
+            "split_assignment_fingerprint": (
+                assignment["assignment_fingerprint"]
+                if assignment is not None
+                else None
+            ),
+            "reference_bank_fingerprint": bank_fingerprint,
+        }
+        base["support_row_fingerprint"] = _support_row_fingerprint(base)
+        rows.append(base)
+    return rows, sorted(set(issues))
+
+
+def _validate_provisional_inventory_binding(
+    *,
+    source_row: Mapping[str, object],
+    candidate: Mapping[str, object],
+    object_row: Mapping[str, object],
+    observation: Mapping[str, object],
+    admission_policy: ReferenceAdmissionPolicy,
+) -> None:
+    expected = {
+        "reference_observation_id": candidate["reference_observation_id"],
+        "source": candidate["source"],
+        "provider_media_id": candidate["provider_media_id"],
+        "accepted_taxon_key": observation["accepted_taxon_key"],
+        "scientific_name": observation["reconciled_scientific_name"],
+        "canonical_reference_media_id": object_row[
+            "canonical_reference_media_id"
+        ],
+        "image_sha256": object_row["sha256"],
+        "reference_admission_mode": admission_policy.mode,
+        "reference_admission_policy_version": admission_policy.policy_version,
+        "reference_admission_policy_fingerprint": admission_policy.fingerprint,
+    }
+    mismatches = sorted(
+        field for field, value in expected.items() if source_row[field] != value
+    )
+    if mismatches:
+        raise ValueError(
+            "provisional support conflicts with readiness inputs: "
+            + ", ".join(mismatches)
+        )
+
+
+def _support_human_review_status(
+    outcome: Mapping[str, object] | None,
+) -> str:
+    if outcome is None:
+        return "not_requested"
+    status = str(outcome["review_status"])
+    if status == "second_review_required":
+        return "pending"
+    if status in REFERENCE_HUMAN_REVIEW_STATUSES:
+        return status
+    return "pending"
 
 
 def _build_reference_bank_summary(
@@ -2216,6 +3012,27 @@ def _build_reference_bank_summary(
             and str(row["support_split"] or "unassigned") == support_split
         ]
         eligible_rows = [row for row in support_rows if row["support_eligible"]]
+        provider_asserted_rows = [
+            row for row in support_rows if row["provider_asserted_identity"]
+        ]
+        human_verified_rows = [
+            row for row in support_rows if row["human_verified_identity"]
+        ]
+        provisional_rows = [
+            row for row in eligible_rows if row["provisional_support"]
+        ]
+        flagged_rows = [
+            row
+            for row in support_rows
+            if row["admission_status"] == "review_required"
+            or row["human_review_status"] in {"pending", "in_review", "conflict"}
+        ]
+        automated_exclusions = [
+            row
+            for row in support_rows
+            if row["admission_status"] == "excluded"
+            and row["human_review_status"] != "completed"
+        ]
         shortfall = max(0, required_count - len(eligible_rows))
         approval = approvals.get((taxon_key, cluster_id if cluster_id != "all" else None, route))
         documented_count = 0
@@ -2247,6 +3064,21 @@ def _build_reference_bank_summary(
             "eligible_count": len(eligible_rows),
             "excluded_count": len(excluded_rows),
             "pending_review_count": len(pending_request_ids),
+            "provider_asserted_count": len(provider_asserted_rows),
+            "provider_asserted_eligible_count": sum(
+                bool(row["support_eligible"]) for row in provider_asserted_rows
+            ),
+            "human_verified_count": len(human_verified_rows),
+            "human_verified_eligible_count": sum(
+                bool(row["support_eligible"]) for row in human_verified_rows
+            ),
+            "provisional_support_count": len(provisional_rows),
+            "strict_support_count": sum(
+                bool(row["support_eligible"]) for row in human_verified_rows
+            ),
+            "flagged_for_review_count": len(flagged_rows),
+            "excluded_by_automated_qa_count": len(automated_exclusions),
+            "excluded_by_human_review_count": len(excluded_rows),
             "shortfall_count": shortfall,
             "documented_shortfall_count": documented_count,
             "source_count": len({str(row["source"]) for row in support_rows}),
@@ -2276,6 +3108,7 @@ def _readiness_checks(
     *,
     candidate_context: Mapping[str, object],
     policy: ReferenceBankReadinessPolicy,
+    admission_policy: ReferenceAdmissionPolicy,
     acquisition_plan: pl.DataFrame,
     acquisition_selections: pl.DataFrame,
     review: Any,
@@ -2290,9 +3123,14 @@ def _readiness_checks(
     summary_fingerprint: str,
     split_fingerprint: str,
 ) -> tuple[list[dict[str, object]], dict[str, int], list[dict[str, object]]]:
-    eligible = [
+    eligible_all = [
         row
         for row in support_manifest.iter_rows(named=True)
+        if row["support_eligible"]
+    ]
+    eligible = [
+        row
+        for row in eligible_all
         if row["support_eligible"] and row["support_split"] == "support_train"
     ]
     requirement_results: list[dict[str, object]] = []
@@ -2374,8 +3212,54 @@ def _readiness_checks(
             review_by_media.get(str(row["reference_media_id"]))
         )
     )
-    pending_unverified_media = sorted(
-        set(unverified_media) & pending_review_media
+    provisional_rows = [
+        row for row in eligible_all if bool(row["provisional_support"])
+    ]
+    admission_failures = sorted(
+        str(row["reference_media_id"])
+        for row in support_manifest.iter_rows(named=True)
+        if bool(row["support_eligible"])
+        != (row["admission_status"] == "admitted")
+        or (
+            row["support_eligible"]
+            and row["identity_evidence_basis"]
+            not in {"human_verified", "gbif_provider_asserted"}
+        )
+    )
+    provider_integrity_failures = sorted(
+        str(row["reference_media_id"])
+        for row in provisional_rows
+        if row["source"] != "gbif"
+        or not row["provider_asserted_identity"]
+        or not _present(row["provider_asserted_taxon_key"])
+        or not _present(row["provider_asserted_scientific_name"])
+    )
+    automated_qa_failures = sorted(
+        str(row["reference_media_id"])
+        for row in provisional_rows
+        if "automated_gbif_quality_gates_passed"
+        not in row["admission_reasons"]
+        or row["route_evidence_basis"] != "yoloe"
+    )
+    undeclared_provisional = sorted(
+        str(row["reference_media_id"])
+        for row in eligible_all
+        if row["identity_evidence_basis"] == "gbif_provider_asserted"
+        and not row["provisional_support"]
+    )
+    rejected_media_ids = {
+        str(row["reference_media_id"])
+        for row in review.outcomes.iter_rows(named=True)
+        if row["review_status"] == "completed"
+        and (
+            row["resolved_verification_status"] != "verified"
+            or not row["target_identity_verified"]
+        )
+    }
+    ignored_human_rejections = sorted(
+        str(row["reference_media_id"])
+        for row in eligible_all
+        if str(row["reference_media_id"]) in rejected_media_ids
     )
     licence_blockers: list[str] = []
     attribution_blockers: list[str] = []
@@ -2485,13 +3369,98 @@ def _readiness_checks(
             evidence={**evidence, "conflicting_groups": pinned_route_conflicts},
         ),
         _check(
-            "verified_support_only",
-            passed=not unverified_media,
-            observed=len(unverified_media),
+            "support_admission_policy_satisfied",
+            passed=not admission_failures,
+            observed=len(admission_failures),
             required=0,
-            evidence={**evidence, "media_ids": unverified_media},
-            pending=bool(unverified_media)
-            and len(pending_unverified_media) == len(unverified_media),
+            evidence={**evidence, "media_ids": admission_failures},
+        ),
+        _check(
+            "provider_assertion_integrity",
+            passed=not provider_integrity_failures,
+            observed=len(provider_integrity_failures),
+            required=0,
+            evidence={**evidence, "media_ids": provider_integrity_failures},
+        ),
+        _check(
+            "automated_reference_qa_passed",
+            passed=not automated_qa_failures,
+            observed=len(automated_qa_failures),
+            required=0,
+            evidence={**evidence, "media_ids": automated_qa_failures},
+        ),
+        _check(
+            "reference_routes_separated",
+            passed=not larval_route_conflicts and not pinned_route_conflicts,
+            observed=len(
+                set(larval_route_conflicts) | set(pinned_route_conflicts)
+            ),
+            required=0,
+            evidence={
+                **evidence,
+                "conflicting_groups": sorted(
+                    set(larval_route_conflicts) | set(pinned_route_conflicts)
+                ),
+            },
+        ),
+        _check(
+            "provisional_support_declared",
+            passed=not undeclared_provisional,
+            observed=len(undeclared_provisional),
+            required=0,
+            evidence={**evidence, "media_ids": undeclared_provisional},
+        ),
+        _check(
+            "statistical_audit_plan_available",
+            passed=(
+                admission_policy.mode != DEFAULT_REFERENCE_ADMISSION_MODE
+                or (
+                    admission_policy.require_statistical_audit
+                    and bool(admission_policy.audit_policy_version)
+                    and all(
+                        bool(row["statistical_audit_required"])
+                        for row in provisional_rows
+                    )
+                )
+            ),
+            observed=sum(
+                bool(row["statistical_audit_required"])
+                for row in provisional_rows
+            ),
+            required=len(provisional_rows),
+            evidence={
+                **evidence,
+                "audit_policy_version": admission_policy.audit_policy_version,
+            },
+        ),
+        _check(
+            "human_rejections_respected",
+            passed=not ignored_human_rejections,
+            observed=len(ignored_human_rejections),
+            required=0,
+            evidence={**evidence, "media_ids": ignored_human_rejections},
+        ),
+        *(
+            [
+                _check(
+                    "strict_support_only",
+                    passed=not provisional_rows and not unverified_media,
+                    observed=len(provisional_rows) + len(unverified_media),
+                    required=0,
+                    evidence={
+                        **evidence,
+                        "provisional_media_ids": sorted(
+                            str(row["reference_media_id"])
+                            for row in provisional_rows
+                        ),
+                        "unverified_media_ids": unverified_media,
+                    },
+                    pending=bool(unverified_media)
+                    and set(unverified_media) <= pending_review_media,
+                )
+            ]
+            if admission_policy.mode == "human_verified_strict"
+            else []
         ),
         _check(
             "duplicate_groups_resolved",
@@ -2545,6 +3514,12 @@ def _readiness_checks(
     counts = {
         "support_manifest_rows": support_manifest.height,
         "eligible_support_rows": len(eligible),
+        "provisional_support_count": sum(
+            bool(row["provisional_support"]) for row in eligible_all
+        ),
+        "human_verified_support_count": sum(
+            bool(row["human_verified_identity"]) for row in eligible_all
+        ),
         "target_minimum_shortfall_count": len(target_shortfalls),
         "competitor_minimum_shortfall_count": len(competitor_shortfalls),
         "geographic_coverage_shortfall_count": len(geographic_shortfalls),
@@ -2592,7 +3567,13 @@ def _readiness_status(
         "artifact_integrity",
         "larval_route_separation",
         "pinned_specimen_separation",
-        "verified_support_only",
+        "support_admission_policy_satisfied",
+        "provider_assertion_integrity",
+        "automated_reference_qa_passed",
+        "reference_routes_separated",
+        "provisional_support_declared",
+        "statistical_audit_plan_available",
+        "human_rejections_respected",
         "source_attribution_complete",
         "split_group_separation",
     )
@@ -2602,16 +3583,16 @@ def _readiness_status(
         return "blocked_licence"
     target_failed = by_id["target_adult_minimum"]["status"] == "failed"
     if target_failed:
-        if (
+        if "strict_support_only" in by_id and (
             counts["pending_target_review_count"]
             or counts["unresolved_duplicate_count"]
         ):
             return "awaiting_manual_review"
         return "blocked_missing_target_support"
-    if (
+    if "strict_support_only" in by_id and (
         counts["pending_review_count"]
         or counts["unresolved_duplicate_count"]
-        or by_id["verified_support_only"]["status"] == "pending"
+        or by_id["strict_support_only"]["status"] == "pending"
     ):
         return "awaiting_manual_review"
     if (
@@ -2621,11 +3602,44 @@ def _readiness_status(
         return "invalid"
     if by_id["model_building_inputs_available"]["status"] == "failed":
         return "invalid"
+    if counts["provisional_support_count"] and all(
+        item["status"] in {"passed", "warning"} for item in checks
+    ):
+        return "ready_provisional"
     if documented_shortfalls:
         return "ready_with_documented_shortfalls"
     if any(item["status"] != "passed" for item in checks):
         return "invalid"
     return "ready"
+
+
+def _readiness_capabilities(status: str) -> dict[str, bool]:
+    if status == "ready_provisional":
+        return {
+            "permits_reference_embedding": True,
+            "permits_prototype_creation": True,
+            "permits_provisional_scoring": True,
+            "permits_calibrated_scoring": False,
+            "permits_scientific_release": False,
+            "requires_downstream_flickr_review": True,
+        }
+    if status in STRICT_PERMITTING_READINESS_STATUSES:
+        return {
+            "permits_reference_embedding": True,
+            "permits_prototype_creation": True,
+            "permits_provisional_scoring": True,
+            "permits_calibrated_scoring": True,
+            "permits_scientific_release": True,
+            "requires_downstream_flickr_review": True,
+        }
+    return {
+        "permits_reference_embedding": False,
+        "permits_prototype_creation": False,
+        "permits_provisional_scoring": False,
+        "permits_calibrated_scoring": False,
+        "permits_scientific_release": False,
+        "requires_downstream_flickr_review": True,
+    }
 
 
 def _validate_documented_shortfalls(
@@ -2901,6 +3915,17 @@ def _validate_readiness_payload(
         "schema_version",
         "status",
         "permits_vision",
+        "permits_reference_embedding",
+        "permits_prototype_creation",
+        "permits_provisional_scoring",
+        "permits_calibrated_scoring",
+        "permits_scientific_release",
+        "requires_downstream_flickr_review",
+        "reference_admission_mode",
+        "admission_policy_fingerprint",
+        "provisional_support_count",
+        "human_verified_support_count",
+        "statistical_audit_required",
         "registry_version",
         "reference_bank_version",
         "policy_version",
@@ -2935,9 +3960,43 @@ def _validate_readiness_payload(
     status = payload["status"]
     if status not in READINESS_STATUSES:
         raise ValueError("reference bank readiness status is invalid")
-    expected_permit = status in PERMITTING_READINESS_STATUSES
-    if payload["permits_vision"] is not expected_permit:
+    expected_capabilities = _readiness_capabilities(str(status))
+    if any(
+        payload[field] is not expected
+        for field, expected in expected_capabilities.items()
+    ):
+        raise ValueError(
+            "reference bank readiness permit flag or capabilities are inconsistent"
+        )
+    if payload["permits_vision"] is not payload["permits_reference_embedding"]:
         raise ValueError("reference bank readiness permit flag is inconsistent")
+    admission_mode = str(payload["reference_admission_mode"])
+    if admission_mode not in REFERENCE_ADMISSION_MODES:
+        raise ValueError("reference bank readiness admission mode is invalid")
+    _fingerprint(
+        payload["admission_policy_fingerprint"],
+        field="admission_policy_fingerprint",
+    )
+    provisional_support_count = _nonnegative_int(
+        payload["provisional_support_count"],
+        field="provisional_support_count",
+    )
+    human_verified_support_count = _nonnegative_int(
+        payload["human_verified_support_count"],
+        field="human_verified_support_count",
+    )
+    if not isinstance(payload["statistical_audit_required"], bool):
+        raise ValueError("statistical_audit_required must be Boolean")
+    if status == "ready_provisional" and (
+        admission_mode != "adaptive_gbif_fast_start"
+        or provisional_support_count == 0
+        or payload["statistical_audit_required"] is not True
+    ):
+        raise ValueError("provisional readiness lacks adaptive support or audit policy")
+    if payload["permits_scientific_release"] and (
+        provisional_support_count != 0 or human_verified_support_count == 0
+    ):
+        raise ValueError("scientific release cannot rely on provisional support")
     for field_name in (
         "registry_version",
         "reference_bank_version",
@@ -2994,7 +4053,7 @@ def _validate_readiness_payload(
     checks = payload["checks"]
     if not isinstance(checks, list) or [
         item.get("check_id") if isinstance(item, Mapping) else None for item in checks
-    ] != list(_REQUIRED_CHECK_IDS):
+    ] != list(_required_check_ids(admission_mode)):
         raise ValueError("readiness checks are missing, duplicated, or out of order")
     for check in checks:
         assert isinstance(check, Mapping)
@@ -3003,6 +4062,8 @@ def _validate_readiness_payload(
     required_count_fields = {
         "support_manifest_rows",
         "eligible_support_rows",
+        "provisional_support_count",
+        "human_verified_support_count",
         "target_minimum_shortfall_count",
         "competitor_minimum_shortfall_count",
         "geographic_coverage_shortfall_count",
@@ -3023,6 +4084,11 @@ def _validate_readiness_payload(
         raise ValueError("readiness counts shape is invalid")
     for field_name, value in counts.items():
         _nonnegative_int(value, field=str(field_name))
+    if (
+        counts["provisional_support_count"] != provisional_support_count
+        or counts["human_verified_support_count"] != human_verified_support_count
+    ):
+        raise ValueError("readiness support evidence counts are inconsistent")
     documented = payload["documented_shortfalls"]
     if not isinstance(documented, list):
         raise ValueError("documented_shortfalls must be a list")
@@ -3079,6 +4145,10 @@ def _validate_readiness_payload(
             "registry_version": payload["registry_version"],
             "target_accepted_taxon_key": payload["target_accepted_taxon_key"],
             "policy_fingerprint": payload["policy_fingerprint"],
+            "reference_admission_mode": payload["reference_admission_mode"],
+            "admission_policy_fingerprint": payload[
+                "admission_policy_fingerprint"
+            ],
             "model_input_fingerprint": payload["model_input_fingerprint"],
             "candidate_set_ids": payload["candidate_set_ids"],
             "candidate_set_fingerprints": payload["candidate_set_fingerprints"],
@@ -3177,6 +4247,18 @@ def _validate_status_consistency(
     if status == "ready":
         if documented or any(value != "passed" for value in check_statuses.values()):
             raise ValueError("ready status contains a nonpassing readiness check")
+    elif status == "ready_provisional":
+        nonpassing = {
+            check_id: value
+            for check_id, value in check_statuses.items()
+            if value != "passed"
+        }
+        if any(value in {"failed", "pending"} for value in nonpassing.values()) or set(
+            nonpassing
+        ) - {"competitor_minima", "geographic_cluster_coverage"}:
+            raise ValueError("provisional readiness contains an unsafe check")
+        if int(counts["provisional_support_count"]) == 0:
+            raise ValueError("provisional readiness has no provisional support")
     elif status == "ready_with_documented_shortfalls":
         if not documented:
             raise ValueError("documented-shortfall readiness has no approvals")
@@ -3198,12 +4280,14 @@ def _validate_status_consistency(
         or int(counts["unresolved_duplicate_count"]) != 0
     ):
         raise ValueError("blocked target status is inconsistent")
-    elif status == "awaiting_manual_review" and not (
-        int(counts["pending_review_count"])
-        or int(counts["unresolved_duplicate_count"])
-        or check_statuses["verified_support_only"] == "pending"
-    ):
-        raise ValueError("manual-review status has no pending work")
+    elif status == "awaiting_manual_review":
+        strict_status = check_statuses.get("strict_support_only")
+        if not (
+            int(counts["pending_review_count"])
+            or int(counts["unresolved_duplicate_count"])
+            or strict_status == "pending"
+        ):
+            raise ValueError("manual-review status has no pending work")
     elif status == "invalid" and not any(
         value == "failed" for value in check_statuses.values()
     ):
@@ -3246,6 +4330,10 @@ def _validate_cross_artifact_readiness(
             "reference_bank_fingerprint": bank_fingerprint,
             "registry_version": registry_version,
             "reference_bank_version": reference_bank_version,
+            "reference_admission_mode": payload["reference_admission_mode"],
+            "reference_admission_policy_fingerprint": payload[
+                "admission_policy_fingerprint"
+            ],
         }
         for field_name, expected in expected_support.items():
             if set(support[field_name]) != {expected}:
@@ -3263,6 +4351,7 @@ def _validate_cross_artifact_readiness(
                 raise ValueError(f"reference bank summary {field_name} mismatch")
     counts = payload["counts"]
     assert isinstance(counts, Mapping)
+    eligible_all = support.filter(pl.col("support_eligible"))
     eligible = support.filter(
         pl.col("support_eligible") & (pl.col("support_split") == "support_train")
     )
@@ -3270,6 +4359,20 @@ def _validate_cross_artifact_readiness(
         raise ValueError("readiness support manifest row count mismatch")
     if counts["eligible_support_rows"] != eligible.height:
         raise ValueError("readiness eligible support row count mismatch")
+    provisional_count = eligible_all.filter(pl.col("provisional_support")).height
+    human_verified_count = eligible_all.filter(
+        pl.col("human_verified_identity")
+    ).height
+    if (
+        counts["provisional_support_count"] != provisional_count
+        or payload["provisional_support_count"] != provisional_count
+    ):
+        raise ValueError("readiness provisional support count mismatch")
+    if (
+        counts["human_verified_support_count"] != human_verified_count
+        or payload["human_verified_support_count"] != human_verified_count
+    ):
+        raise ValueError("readiness human-verified support count mismatch")
     checks = payload["checks"]
     assert isinstance(checks, list)
     check_by_id = {str(item["check_id"]): item for item in checks}
@@ -3453,11 +4556,24 @@ def _assignment_fingerprint(
 def _support_row_fingerprint(row: Mapping[str, object]) -> str:
     return canonical_semantic_fingerprint(
         {
-            "projection_version": "reference-support-row-semantic-v2",
+            "projection_version": "reference-support-row-semantic-v3",
             "row": _semantic_mapping_projection(
                 row,
                 fields=_SUPPORT_ROW_SEMANTIC_FIELDS,
                 artifact="reference support row",
+            ),
+        }
+    )
+
+
+def _legacy_support_row_fingerprint_v2(row: Mapping[str, object]) -> str:
+    return canonical_semantic_fingerprint(
+        {
+            "projection_version": "reference-support-row-semantic-v2",
+            "row": _semantic_mapping_projection(
+                row,
+                fields=_LEGACY_SUPPORT_ROW_SEMANTIC_FIELDS,
+                artifact="legacy reference support row v2",
             ),
         }
     )

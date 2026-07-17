@@ -1,0 +1,87 @@
+{
+  "schema_version": "adaptive-pilot-plan-v1.0.0",
+  "pilot_id": "papilio-demoleus-adaptive-gbif-fast-start-20260717",
+  "target": {
+    "accepted_taxon_key": "gbif:1938069",
+    "scientific_name": "Papilio demoleus"
+  },
+  "reference_workflow": {
+    "source": "gbif",
+    "admission_mode": "adaptive_gbif_fast_start",
+    "admission_policy_version": "adaptive-gbif-fast-start-v1",
+    "admission_policy_fingerprint": "sha256:cc9ff21db9679b3a21785f3b1c9a822cdda6436cdd244783c489ffb87802d23b",
+    "automated_gates": [
+      "accepted_taxon_reconciliation",
+      "accepted_media_licence",
+      "decoded_image_dimensions",
+      "canonical_duplicate_resolution",
+      "observation_and_observer_independence",
+      "yoloe_route_compatibility",
+      "minimum_subject_area"
+    ],
+    "support_maturity": "provider_asserted_provisional_support",
+    "human_review_required_before_first_scoring": false,
+    "statistical_audit_required": true
+  },
+  "flickr_evaluation": {
+    "source": "flickr",
+    "representative_audit_sample": {
+      "label_maturity": "human_reviewed_flickr_labels",
+      "sampling_frame": "representative",
+      "minimum_reviewed_records": 50,
+      "targeted_followup_is_separate": true
+    },
+    "final_release_requires_human_review": true
+  },
+  "holdout_isolation": {
+    "support_partition": "support_train",
+    "final_test_partition": "final_test",
+    "support_source": "gbif",
+    "final_test_source": "flickr",
+    "leakage_identities": [
+      "source_media_id",
+      "content_sha256",
+      "duplicate_group_id"
+    ],
+    "cross_source_duplicate_resolution_required": true,
+    "final_test_may_enter_support": false
+  },
+  "quality_objectives": {
+    "precision_lower_bound_minimum": 0.8,
+    "false_positive_rate_maximum": 0.2,
+    "target_recall_minimum": 0.75,
+    "competitor_confusion_rate_maximum": 0.2
+  },
+  "reference_escalation": {
+    "policy_version": "adaptive-reference-escalation-v1",
+    "policy_fingerprint": "sha256:b193cad79ee74a6655ab33b205ec09cb6792dfddec532e3346fc99516337a23c",
+    "thresholds": {
+      "minimum_precision_lower_bound": 0.8,
+      "maximum_false_positive_rate": 0.2,
+      "minimum_target_recall": 0.75,
+      "maximum_competitor_confusion_rate": 0.2,
+      "maximum_prototype_dispersion": 0.35,
+      "maximum_high_influence_outlier_rate": 0.2,
+      "maximum_route_imbalance_ratio": 0.5,
+      "minimum_reference_count": 5
+    },
+    "identity_conclusion": "not_assessed",
+    "review_scope": "flagged_species_only"
+  },
+  "execution": {
+    "initial_sequence": [
+      "admit_gbif_provisional_support",
+      "embed_reference_images",
+      "build_provisional_prototypes",
+      "score_flickr_provisionally"
+    ],
+    "post_scoring_sequence": [
+      "human_review_representative_flickr_sample",
+      "run_species_level_statistical_audit",
+      "review_flagged_references_only",
+      "revise_affected_reference_bank",
+      "selectively_rescore_affected_flickr_records"
+    ]
+  },
+  "plan_fingerprint": "sha256:33eae5f6c5ec758b131995bd76a8970e4883d6c563a9d331f90d01534e6e3d11"
+}

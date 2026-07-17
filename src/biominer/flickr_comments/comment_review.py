@@ -18,6 +18,7 @@ from biominer.filter.extractor import SCIENTIFIC_NAME_PATTERN
 from biominer.flickr_comments.comments_enrichment import fetch_flickr_comments, mine_comment_terms
 from biominer.flickr_fetch.metadata_poller import PENDING
 from biominer.species.context import SpeciesContext
+from biominer.storage.sqlite_connection import connect_closing
 
 
 FetchComments = Callable[[str], list[dict[str, Any]]]
@@ -441,7 +442,7 @@ class CommentReviewState:
             )
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        conn = connect_closing(self.path, timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         return conn

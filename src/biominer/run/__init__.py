@@ -30,6 +30,7 @@ from biominer.run.reference_work import (
     enqueue_reference_first_work,
 )
 from biominer.run.stages import (
+    ADAPTIVE_REFERENCE_PRODUCTION_STAGES,
     MANUAL_REVIEW_STAGES,
     REFERENCE_FIRST_PRODUCTION_STAGES,
     RunStage,
@@ -51,6 +52,7 @@ from biominer.run.taxon_scope import (
 )
 
 __all__ = [
+    "ADAPTIVE_REFERENCE_PRODUCTION_STAGES",
     "ProductionRunOrchestrator",
     "ProductionRunPlan",
     "ProductionRunRequest",

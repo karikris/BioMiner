@@ -123,6 +123,13 @@ class ReferenceReviewWorkflowResult:
     markdown: str
 
 
+@dataclass(frozen=True)
+class ReferenceReviewAppendResult:
+    workflow: ReferenceReviewWorkflowResult
+    imported_decision_count: int
+    idempotent_replay_count: int
+
+
 def reference_review_decision_import_schema() -> dict[str, pl.DataType]:
     return {
         "import_schema_version": pl.String,
@@ -703,20 +710,16 @@ def import_reference_review_decisions(
             prior_report_sha256=prior_report_sha256,
         )
 
-        imported_rows = [
-            _normalize_raw_decision(row) for row in raw_decisions.iter_rows(named=True)
-        ]
-        merged, imported_count, replay_count = _merge_decision_rows(
-            existing,
-            imported_rows,
-        )
-        _validate_decision_source_hashes(merged)
-        result = resolve_reference_review_statuses(
-            queue,
-            merged,
+        appended = append_reference_review_decisions(
+            raw_decisions,
+            queue=queue,
             queue_provenance=queue_provenance,
+            existing_decisions=existing,
             resolved_at=resolved_at,
         )
+        result = appended.workflow
+        imported_count = appended.imported_decision_count
+        replay_count = appended.idempotent_replay_count
         run_ended_at = datetime.now(UTC)
         existing_ids = set(existing["review_decision_id"])
         new_decision_ids = sorted(
@@ -784,6 +787,63 @@ def import_reference_review_decisions(
         counts=result.report["counts"],
     )
     return result
+
+
+def append_reference_review_decisions(
+    raw_decisions: pl.DataFrame,
+    *,
+    queue: pl.DataFrame,
+    queue_provenance: pl.DataFrame,
+    existing_decisions: pl.DataFrame,
+    resolved_at: datetime | None = None,
+) -> ReferenceReviewAppendResult:
+    """Append source-bound decisions without replacing prior ledger rows."""
+
+    _validate_import_frame(raw_decisions)
+    validate_reference_review_queue(queue)
+    _validate_queue_integrity(queue, queue_provenance)
+    validate_reference_review_decisions(existing_decisions)
+    _validate_decision_source_hashes(existing_decisions)
+    imported_rows = [
+        _normalize_raw_decision(row) for row in raw_decisions.iter_rows(named=True)
+    ]
+    merged, imported_count, replay_count = _merge_decision_rows(
+        existing_decisions,
+        imported_rows,
+    )
+    _validate_decision_source_hashes(merged)
+    workflow = resolve_reference_review_statuses(
+        queue,
+        merged,
+        queue_provenance=queue_provenance,
+        resolved_at=resolved_at,
+    )
+    return ReferenceReviewAppendResult(
+        workflow=workflow,
+        imported_decision_count=imported_count,
+        idempotent_replay_count=replay_count,
+    )
+
+
+def project_reference_review_queue_provenance(
+    provenance: pl.DataFrame,
+    queue: pl.DataFrame,
+) -> pl.DataFrame:
+    """Project a source-bound queue subset and refresh operational row hashes."""
+
+    validate_reference_review_queue(queue)
+    _validate_exact_schema(
+        provenance,
+        reference_review_queue_provenance_schema(),
+        "reference review queue provenance",
+    )
+    request_ids = set(queue["review_request_id"])
+    selected = provenance.filter(pl.col("review_request_id").is_in(request_ids))
+    if selected.height != queue.height:
+        raise ValueError("review queue provenance does not cover the selected queue")
+    projected = _project_queue_provenance(selected, queue)
+    _validate_queue_integrity(queue, projected)
+    return projected
 
 
 def resolve_reference_review_statuses(
@@ -3617,12 +3677,15 @@ __all__ = [
     "REFERENCE_REVIEW_QUEUE_PROVENANCE_SCHEMA_VERSION",
     "REFERENCE_REVIEW_RESOLVED_MEDIA_SCHEMA_VERSION",
     "REFERENCE_REVIEW_VERIFIED_FILE",
+    "ReferenceReviewAppendResult",
     "ReferenceReviewQueueResult",
     "ReferenceReviewWorkflowResult",
     "advance_reference_review_history_head",
+    "append_reference_review_decisions",
     "build_reference_review_queue",
     "import_reference_review_decisions",
     "initialize_reference_review_history_head",
+    "project_reference_review_queue_provenance",
     "reference_review_conflict_schema",
     "reference_review_decision_import_schema",
     "reference_review_decision_template",

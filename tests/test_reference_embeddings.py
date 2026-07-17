@@ -229,6 +229,18 @@ def test_build_persists_all_eligible_splits_and_reuses_one_scorer(
         scorer.preprocessing_fingerprint
     ]
     assert frame["embedding_dimension"].unique().to_list() == [3]
+    assert frame["reference_admission_mode"].unique().to_list() == [
+        "human_verified_strict"
+    ]
+    assert frame["admission_policy_fingerprint"].unique().to_list() == [
+        _permit(manifest).admission_policy_fingerprint
+    ]
+    assert frame["identity_evidence_basis"].unique().to_list() == [
+        "human_verified"
+    ]
+    assert frame["provisional_support"].to_list() == [False] * frame.height
+    assert frame["human_review_status"].unique().to_list() == ["completed"]
+    assert frame["reference_quality_flags"].to_list() == [[]] * frame.height
     assert all(isclose(value, 1.0, abs_tol=1e-6) for value in frame["embedding_norm"])
     assert frame["embedding_fingerprint"].n_unique() == frame.height
     assert [len(call) for call in scorer.calls] == [2, 2]
@@ -358,6 +370,102 @@ def test_build_reuses_durable_content_cache_across_support_manifest_versions(
     )
     assert media_a["embedding"] == first.row(0, named=True)["embedding"]
     assert media_a["embedding_created_at"] == NOW + timedelta(days=1)
+
+
+def test_reference_revision_filters_excluded_cache_rows_and_embeds_only_new(
+    tmp_path: Path,
+) -> None:
+    first_manifest = _support_manifest(
+        tmp_path,
+        (("media-a", "support_train"), ("media-b", "model_selection")),
+    )
+    first_rows = first_manifest.to_dicts()
+    media_b = next(
+        row for row in first_rows if row["reference_media_id"] == "media-b"
+    )
+    media_b_path = Path(unquote(urlsplit(str(media_b["source_object_uri"])).path))
+    _image(media_b_path, (240, 17, 91))
+    media_b["image_sha256"] = _file_sha256(media_b_path)
+    media_b["object_fingerprint"] = _sha("object:media-b:unique")
+    media_b["support_row_fingerprint"] = (
+        readiness_module._support_row_fingerprint(media_b)  # noqa: SLF001
+    )
+    first_manifest = pl.DataFrame(
+        first_rows,
+        schema=reference_support_manifest_schema(),
+        orient="row",
+        strict=True,
+    ).sort(
+        "accepted_taxon_key",
+        "geo_cluster_id",
+        "route",
+        "support_split",
+        "reference_media_id",
+    )
+    first = build_reference_embeddings(
+        first_manifest,
+        _visual_inputs(tmp_path, first_manifest),
+        scorer=FakeScorer(
+            {
+                "media-a.png": [1.0, 0.0, 0.0],
+                "media-b.png": [0.0, 1.0, 0.0],
+            }
+        ),
+        embedding_created_at=NOW,
+    )
+    revised_manifest = _support_manifest(
+        tmp_path,
+        (("media-a", "support_train"), ("media-c", "model_selection")),
+        ineligible_ids=("media-b",),
+    )
+    scorer = FakeScorer({"media-c.png": [0.0, 0.0, 1.0]})
+
+    revised = build_reference_embeddings(
+        revised_manifest,
+        _visual_inputs(
+            tmp_path,
+            revised_manifest.filter(pl.col("support_eligible")),
+        ),
+        scorer=scorer,
+        embedding_cache=first,
+        embedding_created_at=NOW + timedelta(days=1),
+    )
+
+    assert sorted(revised["reference_media_id"].to_list()) == [
+        "media-a",
+        "media-c",
+    ]
+    assert [path.name for call in scorer.calls for path in call] == ["media-c.png"]
+    assert revised.filter(pl.col("reference_media_id") == "media-a")[
+        "embedding"
+    ].to_list() == first.filter(pl.col("reference_media_id") == "media-a")[
+        "embedding"
+    ].to_list()
+
+
+def test_review_provenance_does_not_change_vector_cache_identity(
+    tmp_path: Path,
+) -> None:
+    manifest = _support_manifest(tmp_path, (("media-a", "support_train"),))
+    frame = build_reference_embeddings(
+        manifest,
+        _visual_inputs(tmp_path, manifest),
+        scorer=FakeScorer({"media-a.png": [1.0, 0.0, 0.0]}),
+        embedding_created_at=NOW,
+    )
+    original = frame.row(0, named=True)
+    changed = {
+        **original,
+        "human_review_status": "pending",
+        "reference_quality_flags": ["review_status_changed"],
+    }
+
+    assert reference_embeddings_module._embedding_cache_key_from_row(  # noqa: SLF001 - verifies the normative cache boundary.
+        original
+    ) == reference_embeddings_module._embedding_cache_key_from_row(changed)  # noqa: SLF001
+    assert reference_embeddings_module._embedding_row_fingerprint(  # noqa: SLF001 - provenance must still alter artifact identity.
+        original
+    ) != reference_embeddings_module._embedding_row_fingerprint(changed)  # noqa: SLF001
 
 
 def test_durable_embedding_cache_and_artifact_identity_survive_object_relocation(
@@ -2527,6 +2635,9 @@ def _support_row(
     support_split: str | None,
     eligible: bool,
 ) -> dict[str, object]:
+    from biominer.references.admission import strict_reference_admission_policy
+
+    admission_policy = strict_reference_admission_policy()
     assigned_at = NOW - timedelta(days=1)
     assignment = (
         make_reference_split_assignment_fingerprint(
@@ -2548,6 +2659,26 @@ def _support_row(
         "reference_media_id": media_id,
         "canonical_reference_media_id": media_id,
         "reference_observation_id": f"observation:{media_id}",
+        "reference_admission_mode": admission_policy.mode,
+        "reference_admission_policy_version": admission_policy.policy_version,
+        "reference_admission_policy_fingerprint": admission_policy.fingerprint,
+        "identity_evidence_basis": "human_verified" if eligible else "none",
+        "provider_asserted_identity": True,
+        "provider_asserted_taxon_key": "1938069",
+        "provider_asserted_scientific_name": "Papilio demoleus",
+        "provider_dataset_key": "dataset:fixture",
+        "provider_quality_status": "research_grade",
+        "human_review_status": "completed" if eligible else "rejected",
+        "human_verified_identity": eligible,
+        "provisional_support": False,
+        "statistical_audit_required": False,
+        "admission_status": "admitted" if eligible else "excluded",
+        "admission_reasons": [
+            "strict_human_review_verified" if eligible else "manual_exclusion"
+        ],
+        "reference_quality_flags": [],
+        "route_evidence_basis": "human_verified_review" if eligible else "none",
+        "geographic_prototype_eligible": eligible,
         "review_request_id": f"review:{media_id}",
         "review_decision_ids": [f"decision:{media_id}"],
         "reviewer_ids": ["reviewer:fixture"],
@@ -2703,6 +2834,19 @@ def _permit(manifest: pl.DataFrame) -> ReferenceBankReadinessPermit:
         readiness_sha256=_sha("readiness"),
         support_manifest_sha256=_sha("support-manifest-file"),
         summary_sha256=_sha("summary-file"),
+        permits_reference_embedding=True,
+        permits_provisional_scoring=True,
+        permits_calibrated_scoring=True,
+        permits_scientific_release=True,
+        reference_admission_mode="human_verified_strict",
+        admission_policy_fingerprint=str(
+            canonical["reference_admission_policy_fingerprint"].item(0)
+        ),
+        provisional_support_count=0,
+        human_verified_support_count=canonical.filter(
+            pl.col("support_eligible") & pl.col("human_verified_identity")
+        ).height,
+        statistical_audit_required=False,
     )
 
 

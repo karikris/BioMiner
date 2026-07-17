@@ -153,6 +153,80 @@ def test_full_frame_plan_encodes_adult_and_larval_routes_once() -> None:
     )
 
 
+def test_full_frame_plan_reuses_unchanged_embeddings_and_encodes_only_misses() -> None:
+    first_image = _image(b"\x03" * 12, width=2, height=2)
+    second_image = _image(b"\x07" * 12, width=2, height=2)
+    first_plan = build_target_full_frame_plan(
+        detection_rows=[_detection_row("photo-1", "det-1")],
+        image_loader=lambda _row: first_image,
+    )
+    first_encoder = RecordingEncoder()
+    first_embedding = encode_target_full_frame_plan(
+        first_plan,
+        encoder=first_encoder,
+        model_fingerprint=_MODEL_FINGERPRINT,
+        preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
+    ).embeddings[0]
+    combined = build_target_full_frame_plan(
+        detection_rows=[
+            _detection_row("photo-1", "det-1"),
+            _detection_row("photo-2", "det-2"),
+        ],
+        image_loader=lambda row: (
+            first_image
+            if row["flickr_photo_id"] == "photo-1"
+            else second_image
+        ),
+    )
+    incremental_encoder = RecordingEncoder()
+
+    embedded = encode_target_full_frame_plan(
+        combined,
+        encoder=incremental_encoder,
+        model_fingerprint=_MODEL_FINGERPRINT,
+        preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
+        embedding_cache=(first_embedding,),
+    )
+
+    assert incremental_encoder.batches == [(second_image,)]
+    assert len(embedded.embeddings) == 2
+    assert first_embedding in embedded.embeddings
+    fully_cached_encoder = RecordingEncoder()
+    fully_cached = encode_target_full_frame_plan(
+        combined,
+        encoder=fully_cached_encoder,
+        model_fingerprint=_MODEL_FINGERPRINT,
+        preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
+        embedding_cache=embedded.embeddings,
+    )
+    assert fully_cached_encoder.batches == []
+    assert fully_cached.embeddings == embedded.embeddings
+
+
+def test_full_frame_embedding_cache_fails_closed_on_tampered_vector() -> None:
+    image = _image(b"\x05" * 12, width=2, height=2)
+    plan = build_target_full_frame_plan(
+        detection_rows=[_detection_row("photo-1", "det-1")],
+        image_loader=lambda _row: image,
+    )
+    cached = encode_target_full_frame_plan(
+        plan,
+        encoder=RecordingEncoder(),
+        model_fingerprint=_MODEL_FINGERPRINT,
+        preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
+    ).embeddings[0]
+    tampered = replace(cached, embedding=(99.0, *cached.embedding[1:]))
+
+    with pytest.raises(ValueError, match="fingerprint mismatch|norm mismatch"):
+        encode_target_full_frame_plan(
+            plan,
+            encoder=RecordingEncoder(),
+            model_fingerprint=_MODEL_FINGERPRINT,
+            preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
+            embedding_cache=(tampered,),
+        )
+
+
 def test_embedding_identity_binds_target_preprocessing_contract(monkeypatch) -> None:
     kwargs = {
         "visual_input_id": "sha256:" + "a" * 64,

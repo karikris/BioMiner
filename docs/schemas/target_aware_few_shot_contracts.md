@@ -1067,38 +1067,66 @@ change the frozen bank identity.
 
 `reference_support_manifest.parquet` is the immutable resolved projection used
 by embedding and split construction. Schema version
-`reference-support-manifest-v2.0.0` uses an explicit semantic projection. It
+`reference-support-manifest-v3.0.0` uses an explicit semantic projection. It
 excludes source-record, licence, and object locators; downloader object
 fingerprints; queue request, decision, and reviewer IDs; and split-assignment
 fingerprints from row and artifact semantic fingerprints. These fields remain
 in every persisted row for retrieval and audit. Direct source snapshot,
 source-record content, image-content, perceptual, taxonomy, review outcome,
-licence, attribution, geography, route, split, and model-bank identities remain
-semantic. Version 1 used locator-bearing audit provenance in its fingerprint
-preimage and is not accepted as version 2. Its grain is one canonical verified
-media item and route.
+licence, attribution, geography, route, split, admission policy, identity basis,
+provisional status, audit requirement, and model-bank identities remain semantic.
+Version 3 distinguishes `human_verified`, `gbif_provider_asserted`, and `none`
+identity evidence. A GBIF provider assertion may be provisional support but can
+never set human-verified identity. Admission status/reasons, reference-quality
+flags, route evidence, provider metadata, and geographic-prototype eligibility
+are explicit columns. Older schemas remain distinguishable and require explicit
+compatibility handling; they are never silently interpreted as adaptive
+fast-start. The grain is one canonical admitted media item and route.
+
+Legacy `reference-support-manifest-v2.0.0` artifacts are accepted only by the
+explicit `migrate_strict_reference_support_manifest_v2()` transformation. The
+migration first verifies the v2 row fingerprints and completed human-review
+semantics, assigns `human_verified_strict`, never backfills a provider assertion
+that v2 did not preserve, and emits a fingerprinted migration report. It does
+not make an old readiness permit reusable: readiness, reference embeddings,
+prototypes, models, and scores must be rebuilt under the new admission identity.
+Changing admission mode or policy changes the support-row, support-manifest,
+readiness-bank, embedding, prototype, model, and score identity chain.
 
 `reference_bank_summary.parquet` has one row per bank version, accepted species,
 cluster scope, life stage, visual domain, and split. Schema version:
-`reference-bank-summary-v1.0.0`. It records required, candidate, downloaded,
+`reference-bank-summary-v2.0.0`. It records required, candidate, downloaded,
 deduplicated, reviewed, verified, eligible, excluded, and shortfall counts;
-source, licence, observer, observation, and geographic diversity counts; and
-the reference-bank and support-manifest fingerprints.
+provider-asserted, human-verified, provisional, strict, review-flagged, automated
+QA exclusion, and human-review exclusion counts; source, licence, observer,
+observation, and geographic diversity counts; and the reference-bank and
+support-manifest fingerprints.
 
 `reference_bank_readiness.json` has schema version
-`reference-bank-readiness-v2.0.0` and contains:
+`reference-bank-readiness-v3.0.0` and contains:
 
 - `reference_bank_version`, target key, registry version, candidate-set
   fingerprints, support-manifest fingerprint, model/preprocessing identity,
   split fingerprint, creation time, and git SHA;
-- `status`: `ready`, `ready_with_documented_shortfalls`,
+- `status`: `ready`, `ready_provisional`, `ready_with_documented_shortfalls`,
   `awaiting_manual_review`, `blocked_licence`,
   `blocked_missing_target_support`, or `invalid`;
 - every readiness check as an object with `check_id`, `status`, observed value,
   required value, affected species/clusters/routes, and artifact evidence;
 - unresolved duplicate, licence, review, route-separation, attribution,
   leakage, target-minimum, competitor-minimum, and geographic-coverage counts;
+- independent permits for reference embedding, provisional scoring, calibrated
+  scoring, and scientific release, with `permits_vision` retained as the exact
+  alias of the reference-embedding permit;
+- admission mode and policy fingerprint, provisional and human-verified support
+  counts, and the statistical-audit requirement;
 - a sorted `documented_shortfalls` list and all dependent artifact checksums.
+
+`ready_provisional` grants reference embedding and provisional scoring only. It
+cannot grant calibrated scoring or scientific release, and it cannot represent
+an absent mode, zero provisional support, or a missing statistical-audit policy.
+No readiness permit bypasses the separate mandatory human-review gate for final
+Flickr occurrence output.
 
 The JSON contains no fabricated pass. `ready_with_documented_shortfalls` is
 allowed only by an explicit versioned policy, and missing target adult support

@@ -1,0 +1,92 @@
+{
+  "acceptance": {
+    "cache_tests": {
+      "evidence": [
+        "tests/test_incremental_feature_reuse.py::test_content_addressed_plan_reuses_only_exact_feature_identities",
+        "tests/test_incremental_feature_reuse.py::test_plan_rejects_tampered_cache_decisions",
+        "tests/test_incremental_feature_reuse.py::test_cache_rejects_duplicate_content_identity",
+        "tests/test_incremental_feature_reuse.py::test_only_required_references_can_be_newly_admitted"
+      ],
+      "status": "passed"
+    },
+    "incremental_invalidation_tests": {
+      "evidence": [
+        "tests/test_reference_revision_impact.py::test_impact_propagates_and_persists_unaffected_reuse",
+        "tests/test_reference_model_rebuild.py::test_rebuild_plan_selects_only_affected_model_inputs",
+        "tests/test_flickr_selective_rescore.py::test_selective_rescore_covers_each_impact_trigger_and_reuses_unrelated"
+      ],
+      "status": "passed"
+    },
+    "paired_evaluation": {
+      "evidence": [
+        "tests/test_reference_remediation_comparison.py::test_paired_report_quantifies_selection_outcomes_metrics_and_effort",
+        "tests/test_reference_remediation_comparison.py::test_reused_score_must_retain_exact_evaluation_row",
+        "tests/test_reference_remediation_comparison.py::test_pairing_rejects_static_label_drift_and_tampered_result"
+      ],
+      "status": "passed"
+    },
+    "push_every_task": {
+      "origin_main_at_audit_start": "0fd1bce06788e1adfef7b1d11bdcae2e7284ca7e",
+      "status": "passed"
+    }
+  },
+  "artifacts": [
+    "reference_revision_impact.parquet",
+    "incremental_feature_reuse_plan.parquet",
+    "reference_model_rebuild_plan.parquet",
+    "flickr_rescore_plan.parquet",
+    "reference_remediation_comparison.json",
+    "reference_remediation_comparison.md",
+    "reference_remediation_paired_items.parquet",
+    "reference_remediation_metric_changes.parquet",
+    "reference_remediation_paired_intervals.parquet",
+    "reference_remediation_paired_components.parquet",
+    "reference_remediation_compute_work.parquet",
+    "reference_remediation_review_effort.parquet"
+  ],
+  "full_regression": {
+    "command": "uv run pytest -q",
+    "duration_seconds": 94.12,
+    "failed": 0,
+    "passed": 2475,
+    "status": "passed"
+  },
+  "limitations": [
+    "Phase 9 verifies impact analysis, cache reuse, selective rebuild, selective rescore and paired-report contracts with fixtures; no live production remediation run was performed.",
+    "Cache reuse requires exact content, producer and preprocessing identities and fails closed when evidence is incomplete.",
+    "The rescore safety band and dependency evidence select work; they do not establish that an individual prior decision was wrong.",
+    "Paired point-estimate deltas do not alone establish improvement, and uncertainty is reported only for the paired accuracy change.",
+    "Compute avoidance and review effort are unavailable unless supplied with an explicit measured or estimated evidence basis; fixture quantities are not production claims.",
+    "No production accuracy gain, corrected-error total, reviewer throughput, cost reduction or time-saving benefit is claimed."
+  ],
+  "phase": 9,
+  "phase_name": "Selective rebuild and rerun",
+  "schema_version": "gbif-fast-start-phase-completion-v1.0.0",
+  "tasks": [
+    {
+      "commit": "622e97f80c181e098d78970bf56f534f36ec2ef2",
+      "outcome": "Propagates changed references, species, routes and regions through a validated acyclic dependency graph while persisting unaffected artifacts as reusable.",
+      "task_id": "9.1"
+    },
+    {
+      "commit": "b9a798a3e8e38eacf5e11ceaccccd242a7e6c780",
+      "outcome": "Reuses exact content-addressed Flickr and reference embeddings, filters excluded references without recomputation and embeds only cache misses.",
+      "task_id": "9.2"
+    },
+    {
+      "commit": "0208c0fbc2e9e92374ac0cadc49643113d5d0c8b",
+      "outcome": "Selects only affected prototypes, candidate indexes and classifier work, rebuilding calibrators only when fingerprinted training evidence changes.",
+      "task_id": "9.3"
+    },
+    {
+      "commit": "efd8d1ce3b5d3a81932e16fbdee246caa715dbf9",
+      "outcome": "Selectively rescores target, competitor, candidate-union, removed-reference, margin-band and incomplete-evidence cases while reusing unrelated scores.",
+      "task_id": "9.4"
+    },
+    {
+      "commit": "0fd1bce06788e1adfef7b1d11bdcae2e7284ca7e",
+      "outcome": "Pairs human-labelled before and after records, reports corrected and new errors, metric deltas, unit-preserving work evidence and identity-component bootstrap uncertainty.",
+      "task_id": "9.5"
+    }
+  ]
+}

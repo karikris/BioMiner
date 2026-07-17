@@ -22,7 +22,6 @@ from biominer.registry.classification_v3 import (
 )
 from biominer.run.stages import RunStage
 from biominer.species.context import CommonName, SpeciesContext
-from biominer.vision.gates import BioClipGatePolicy
 from biominer.workstore.sqlite import SQLiteWorkStore
 
 

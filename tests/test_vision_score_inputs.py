@@ -5,7 +5,6 @@ from pathlib import Path
 import polars as pl
 
 from biominer.detection.detector_base import DecodedImage
-from biominer.vision.gates import BioClipGatePolicy
 from biominer.vision.score_inputs import BIOCLIP_SCORE_INPUT_SCHEMA, materialize_bioclip_score_inputs
 from factories import canonical_records, flickr_source_record, object_detection_row
 

@@ -13,6 +13,7 @@ from typing import Any
 import polars as pl
 
 from biominer.flickr_fetch.metadata_poller import PollOnceResult
+from biominer.storage.sqlite_connection import connect_closing
 
 
 def write_step1_manifest(
@@ -192,7 +193,7 @@ def _state_work_summary(path: Path) -> dict[str, Any]:
     if not path.exists():
         return fallback
     try:
-        with sqlite3.connect(path) as conn:
+        with connect_closing(path) as conn:
             conn.row_factory = sqlite3.Row
             tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
             if "flickr_work_items" not in tables:
@@ -232,7 +233,7 @@ def _api_call_timing_summary(path: Path) -> dict[str, float | None | str]:
     if not path.exists():
         return fallback
     try:
-        with sqlite3.connect(path) as conn:
+        with connect_closing(path) as conn:
             conn.row_factory = sqlite3.Row
             tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
             if "api_call_ledger" not in tables or not _has_api_columns(conn, "duration_sec"):
