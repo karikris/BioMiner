@@ -1,0 +1,32 @@
+{
+  "schema_version": "adaptive-pilot-remediation-v1.0.0",
+  "audit_report_path": "reports/gbif_fast_start/papilio_demoleus_statistical_audit.json",
+  "live_remediation": {
+    "status": "blocked_pending_human_flickr_review",
+    "pending_human_review_count": 50,
+    "species_legitimately_flagged": 0,
+    "missing_human_input": "Complete source-bound decisions for the representative Flickr audit queue."
+  },
+  "fixture_demonstration": {
+    "status": "passed",
+    "evidence_test": "tests/test_adaptive_reference_lifecycle.py::test_adaptive_reference_lifecycle_targets_only_affected_evidence",
+    "counts": {
+      "flagged_species": 1,
+      "unaffected_species": 1,
+      "targeted_reference_rows": 2,
+      "verified_reference_rows": 1,
+      "excluded_reference_rows": 1,
+      "embedding_rows_reused": 2,
+      "flickr_rows_selectively_rescored": 1,
+      "flickr_rows_reused": 1
+    },
+    "quality_comparison_status": "unavailable_no_human_labels"
+  },
+  "semantics": {
+    "fixture_remediation_is_live_remediation": false,
+    "statistical_flag_proves_reference_identity": false,
+    "unaffected_species_requires_review": false,
+    "quality_improvement_claimed": false
+  },
+  "report_fingerprint": "sha256:fd62d421aa7651eaa0381a472251315b26d4678c86b5b2817e1d089c1b1efecf"
+}
