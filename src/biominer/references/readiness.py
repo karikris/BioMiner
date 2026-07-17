@@ -930,6 +930,8 @@ class ReferenceBankReadinessPermit:
     provisional_support_count: int
     human_verified_support_count: int
     statistical_audit_required: bool
+    permits_prototype_creation: bool = False
+    requires_downstream_flickr_review: bool = True
     candidate_set_fingerprints: tuple[str, ...] = ()
     target_adult_requirements: tuple[ReferenceBankRequirementStatus, ...] = ()
 
@@ -1997,6 +1999,10 @@ def load_reference_bank_readiness(
         provisional_support_count=int(payload["provisional_support_count"]),
         human_verified_support_count=int(payload["human_verified_support_count"]),
         statistical_audit_required=bool(payload["statistical_audit_required"]),
+        permits_prototype_creation=bool(payload["permits_prototype_creation"]),
+        requires_downstream_flickr_review=bool(
+            payload["requires_downstream_flickr_review"]
+        ),
         candidate_set_fingerprints=tuple(payload["candidate_set_fingerprints"]),
         target_adult_requirements=_target_adult_requirement_statuses(payload),
     )
@@ -3577,22 +3583,28 @@ def _readiness_capabilities(status: str) -> dict[str, bool]:
     if status == "ready_provisional":
         return {
             "permits_reference_embedding": True,
+            "permits_prototype_creation": True,
             "permits_provisional_scoring": True,
             "permits_calibrated_scoring": False,
             "permits_scientific_release": False,
+            "requires_downstream_flickr_review": True,
         }
     if status in STRICT_PERMITTING_READINESS_STATUSES:
         return {
             "permits_reference_embedding": True,
+            "permits_prototype_creation": True,
             "permits_provisional_scoring": True,
             "permits_calibrated_scoring": True,
             "permits_scientific_release": True,
+            "requires_downstream_flickr_review": True,
         }
     return {
         "permits_reference_embedding": False,
+        "permits_prototype_creation": False,
         "permits_provisional_scoring": False,
         "permits_calibrated_scoring": False,
         "permits_scientific_release": False,
+        "requires_downstream_flickr_review": True,
     }
 
 
@@ -3870,9 +3882,11 @@ def _validate_readiness_payload(
         "status",
         "permits_vision",
         "permits_reference_embedding",
+        "permits_prototype_creation",
         "permits_provisional_scoring",
         "permits_calibrated_scoring",
         "permits_scientific_release",
+        "requires_downstream_flickr_review",
         "reference_admission_mode",
         "admission_policy_fingerprint",
         "provisional_support_count",

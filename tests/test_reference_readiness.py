@@ -806,9 +806,11 @@ def test_ready_build_publish_and_strict_load(tmp_path: Path) -> None:
     assert result.readiness["status"] == "ready"
     assert result.readiness["permits_vision"] is True
     assert result.readiness["permits_reference_embedding"] is True
+    assert result.readiness["permits_prototype_creation"] is True
     assert result.readiness["permits_provisional_scoring"] is True
     assert result.readiness["permits_calibrated_scoring"] is True
     assert result.readiness["permits_scientific_release"] is True
+    assert result.readiness["requires_downstream_flickr_review"] is True
     assert result.readiness["reference_admission_mode"] == "human_verified_strict"
     assert result.readiness["provisional_support_count"] == 0
     assert result.readiness["human_verified_support_count"] == 2
@@ -901,9 +903,11 @@ def test_ready_build_publish_and_strict_load(tmp_path: Path) -> None:
     assert permit.summary_sha256.startswith("sha256:")
     assert permit.readiness_sha256.startswith("sha256:")
     assert permit.permits_reference_embedding is True
+    assert permit.permits_prototype_creation is True
     assert permit.permits_provisional_scoring is True
     assert permit.permits_calibrated_scoring is True
     assert permit.permits_scientific_release is True
+    assert permit.requires_downstream_flickr_review is True
     assert permit.reference_admission_mode == "human_verified_strict"
     assert permit.provisional_support_count == 0
     assert permit.human_verified_support_count == 2
@@ -1044,6 +1048,10 @@ def test_ready_provisional_has_narrow_fail_closed_capabilities() -> None:
 
     readiness_module._validate_readiness_payload(payload, published=False)  # noqa: SLF001 - validates the persisted provisional contract directly.
     assert reference_readiness_allows_vision(payload)
+    assert payload["permits_prototype_creation"] is True
+    assert payload["requires_downstream_flickr_review"] is True
+    assert payload["statistical_audit_required"] is True
+    assert payload["permits_scientific_release"] is False
 
     payload["permits_calibrated_scoring"] = True
     with pytest.raises(ValueError, match="capabilities"):
