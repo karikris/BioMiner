@@ -100,6 +100,14 @@ class _ReadinessPermitFixture:
     support_manifest_sha256: str = "sha256:" + "9" * 64
     summary_sha256: str = "sha256:" + "a" * 64
 
+    @property
+    def permits_reference_embedding(self) -> bool:
+        return self.status in {
+            "ready",
+            "ready_provisional",
+            "ready_with_documented_shortfalls",
+        }
+
     def bind_reference_readiness(self, _permit: object) -> None:
         return None
 
