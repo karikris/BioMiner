@@ -12,7 +12,7 @@ import polars as pl
 
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.detection.detector_base import DecodedImage, ObjectDetector
-from biominer.detection.pipeline import DetectionPipelineResult, run_detection_pipeline
+from biominer.detection.pipeline import run_detection_pipeline
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 from biominer.storage.parquet import write_parquet
 from biominer.vision.full_frame_attention import (

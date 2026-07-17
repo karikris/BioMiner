@@ -14,7 +14,6 @@ import polars as pl
 
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.evaluation.reference_escalation import (
-    REFERENCE_ESCALATION_SCHEMA,
     validate_reference_escalations,
 )
 from biominer.evaluation.target_metrics import (

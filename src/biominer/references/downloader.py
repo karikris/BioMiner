@@ -1369,7 +1369,6 @@ def _merge_media_object_inventory(
     if schema_versions != {REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION}:
         raise ValueError("reference media inventory schema is incompatible")
     validate_reference_media_objects(existing)
-    current_ids = set(current["reference_media_id"].to_list())
     rows_by_id = {
         str(row["reference_media_id"]): row for row in existing.iter_rows(named=True)
     }

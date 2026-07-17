@@ -20,7 +20,6 @@ from biominer.references.schemas import (
     REFERENCE_REVIEW_QUEUE_SCHEMA_VERSION,
     make_reference_media_id,
     make_reference_review_request_id,
-    reference_review_decisions_frame,
     reference_review_queue_frame,
     reference_review_queue_schema,
 )

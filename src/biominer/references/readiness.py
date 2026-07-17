@@ -31,7 +31,6 @@ from biominer.references.admission import (
     strict_reference_admission_policy,
 )
 from biominer.references.admission_compiler import (
-    REFERENCE_PROVISIONAL_SUPPORT_SCHEMA,
     validate_reference_provisional_support,
 )
 from biominer.references.deduplication import (
