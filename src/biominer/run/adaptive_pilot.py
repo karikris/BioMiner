@@ -15,8 +15,6 @@ from biominer.references.admission import default_reference_admission_policy
 
 
 ADAPTIVE_PILOT_PLAN_SCHEMA_VERSION = "adaptive-pilot-plan-v1.0.0"
-PAPILIO_DEMOLEUS_TAXON_KEY = "gbif:1938069"
-PAPILIO_DEMOLEUS_SCIENTIFIC_NAME = "Papilio demoleus"
 REQUIRED_AUTOMATED_GATES = (
     "accepted_taxon_reconciliation",
     "accepted_media_licence",
@@ -45,11 +43,12 @@ def validate_adaptive_pilot_plan(plan: Mapping[str, object]) -> None:
     if plan.get("schema_version") != ADAPTIVE_PILOT_PLAN_SCHEMA_VERSION:
         raise ValueError("unsupported adaptive pilot plan schema version")
     target = _mapping(plan, "target")
-    if target != {
-        "accepted_taxon_key": PAPILIO_DEMOLEUS_TAXON_KEY,
-        "scientific_name": PAPILIO_DEMOLEUS_SCIENTIFIC_NAME,
-    }:
-        raise ValueError("adaptive pilot target must be Papilio demoleus")
+    if set(target) != {"accepted_taxon_key", "scientific_name"}:
+        raise ValueError("adaptive pilot target fields are incomplete")
+    for field in ("accepted_taxon_key", "scientific_name"):
+        value = target[field]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"adaptive pilot target {field} must be nonblank")
 
     workflow = _mapping(plan, "reference_workflow")
     admission = default_reference_admission_policy()
