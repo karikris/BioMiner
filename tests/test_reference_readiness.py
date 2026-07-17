@@ -1953,6 +1953,22 @@ def test_publication_is_create_only_under_concurrency(tmp_path: Path) -> None:
     assert failed["artifact"] == "not_committed"
 
 
+def test_existing_publication_rejection_is_audited(tmp_path: Path) -> None:
+    result = _build(_make_fixture())
+    destination = tmp_path / "ready"
+    publish_reference_bank_readiness(result, destination, run_id="winner")
+
+    with pytest.raises(FileExistsError):
+        publish_reference_bank_readiness(result, destination, run_id="loser")
+
+    failed_audits = list(tmp_path.glob(".ready.*.failed.json"))
+    assert len(failed_audits) == 1
+    failed = json.loads(failed_audits[0].read_text(encoding="utf-8"))
+    assert failed["run_id"] == "loser"
+    assert failed["error_type"] == "FileExistsError"
+    assert failed["artifact"] == "not_committed"
+
+
 def test_failed_publication_leaves_audit_and_no_partial_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

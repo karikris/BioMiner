@@ -1869,12 +1869,12 @@ def publish_reference_bank_readiness(
     directory = Path(output_dir)
     if directory.suffix:
         raise ValueError("reference bank readiness output must be a directory")
-    if directory.exists():
-        raise FileExistsError(directory)
     directory.parent.mkdir(parents=True, exist_ok=True)
     staging = directory.parent / f".{directory.name}.{uuid4().hex}.tmp"
     started_at = datetime.now(UTC)
     try:
+        if directory.exists():
+            raise FileExistsError(directory)
         staging.mkdir(parents=False, exist_ok=False)
         support_path = write_parquet(
             result.support_manifest,
