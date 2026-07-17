@@ -124,8 +124,7 @@ from biominer.run import (
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES
 from biominer.secrets_loader import load_runtime_secrets_env
 from biominer.species.context import SpeciesContext
-from biominer.config import ConfigError, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
-from biominer.storage.factory import create_storage_backend
+from biominer.config import ConfigError, create_storage_backend, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
 from biominer.storage.handoff import (
     build_handoff_bundle,
     receive_handoff_bundle,

@@ -33,8 +33,7 @@ from biominer.registry.normalize import normalize_name_key
 from biominer.registry.unified import stable_identity
 from biominer.storage.parquet import write_parquet
 from biominer.storage.cloud import CloudStorage
-from biominer.storage.config import StorageConfig, load_storage_config_from_env
-from biominer.storage.factory import create_storage_backend
+from biominer.config import StorageConfig, create_storage_backend, load_storage_config_from_env
 from biominer.storage.local import LocalStorageBackend
 from biominer.storage.paths import (
     build_evidence_shard_uri,

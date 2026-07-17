@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from biominer.storage.config import StorageConfig, WorkStoreConfig, load_storage_config_from_env, load_workstore_config_from_env
-from biominer.storage.factory import create_storage_backend
+from biominer.config import StorageConfig, WorkStoreConfig, create_storage_backend, load_storage_config_from_env, load_workstore_config_from_env
 from biominer.workstore.factory import create_work_store
 from biominer.workstore.sqlite import SQLiteWorkStore
 
