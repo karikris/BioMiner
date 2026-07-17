@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from math import isfinite
 
 
 DECISIVE_REVIEW_DECISIONS = frozenset({"include", "exclude"})
@@ -79,6 +80,75 @@ class FlickrReleaseDecision:
     review_source_image_sha256: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class UnreviewedFlickrCandidateEvidence:
+    """Model evidence retained solely for candidate triage before review."""
+
+    source_record_id: str
+    route: str
+    embedding_artifact_sha256: str
+    candidate_ranking: tuple[str, ...]
+    provisional_margin: float
+    review_priority: float
+
+    def __post_init__(self) -> None:
+        record_id = str(self.source_record_id).strip()
+        route = str(self.route).strip()
+        if not record_id or not route:
+            raise ValueError("source_record_id and route must be nonblank")
+        _validate_sha256(
+            self.embedding_artifact_sha256,
+            field="embedding_artifact_sha256",
+        )
+        ranking = tuple(str(value).strip() for value in self.candidate_ranking)
+        if not ranking or any(not value for value in ranking):
+            raise ValueError("candidate_ranking must contain nonblank candidates")
+        if len(set(ranking)) != len(ranking):
+            raise ValueError("candidate_ranking must not contain duplicates")
+        if not isfinite(self.provisional_margin):
+            raise ValueError("provisional_margin must be finite")
+        if not isfinite(self.review_priority) or not 0 <= self.review_priority <= 1:
+            raise ValueError("review_priority must be within [0, 1]")
+        object.__setattr__(self, "source_record_id", record_id)
+        object.__setattr__(self, "route", route)
+        object.__setattr__(self, "candidate_ranking", ranking)
+
+
+@dataclass(frozen=True, slots=True)
+class UnreviewedFlickrCandidateDecision:
+    source_record_id: str
+    scoring_state: str
+    route: str
+    embedding_artifact_sha256: str
+    candidate_ranking: tuple[str, ...]
+    provisional_margin: float
+    review_priority: float
+    human_review_state: str
+    release_state: FlickrReleaseState
+    eligible_for_final_occurrence_dataset: bool
+    release_reasons: tuple[FlickrReleaseReason, ...]
+
+
+def score_unreviewed_flickr_candidate(
+    evidence: UnreviewedFlickrCandidateEvidence,
+) -> UnreviewedFlickrCandidateDecision:
+    """Preserve model-assisted triage while excluding the unreviewed candidate."""
+
+    return UnreviewedFlickrCandidateDecision(
+        source_record_id=evidence.source_record_id,
+        scoring_state="provisional_candidate_scored",
+        route=evidence.route,
+        embedding_artifact_sha256=evidence.embedding_artifact_sha256,
+        candidate_ranking=evidence.candidate_ranking,
+        provisional_margin=evidence.provisional_margin,
+        review_priority=evidence.review_priority,
+        human_review_state="unreviewed",
+        release_state=FlickrReleaseState.EXCLUDED,
+        eligible_for_final_occurrence_dataset=False,
+        release_reasons=(FlickrReleaseReason.HUMAN_REVIEW_MISSING,),
+    )
+
+
 def decide_flickr_release(evidence: FlickrReleaseEvidence) -> FlickrReleaseDecision:
     """Apply every mandatory release prerequisite without score-based shortcuts."""
 
@@ -137,5 +207,8 @@ __all__ = [
     "FlickrReleaseEvidence",
     "FlickrReleaseReason",
     "FlickrReleaseState",
+    "UnreviewedFlickrCandidateDecision",
+    "UnreviewedFlickrCandidateEvidence",
     "decide_flickr_release",
+    "score_unreviewed_flickr_candidate",
 ]

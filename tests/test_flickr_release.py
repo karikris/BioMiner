@@ -8,7 +8,9 @@ from biominer.evaluation.flickr_release import (
     FlickrReleaseEvidence,
     FlickrReleaseReason,
     FlickrReleaseState,
+    UnreviewedFlickrCandidateEvidence,
     decide_flickr_release,
+    score_unreviewed_flickr_candidate,
 )
 
 
@@ -84,3 +86,53 @@ def test_required_second_review_and_adjudication_can_complete() -> None:
 def test_review_must_bind_to_a_valid_source_image_digest() -> None:
     with pytest.raises(ValueError, match="sha256"):
         replace(_eligible_evidence(), review_source_image_sha256="stale")
+
+
+def test_unreviewed_candidate_preserves_scoring_but_stays_excluded() -> None:
+    evidence = UnreviewedFlickrCandidateEvidence(
+        source_record_id="flickr:unreviewed",
+        route="adult_butterfly",
+        embedding_artifact_sha256="sha256:" + "c" * 64,
+        candidate_ranking=("Papilio demoleus", "Papilio polytes"),
+        provisional_margin=0.17,
+        review_priority=0.82,
+    )
+
+    decision = score_unreviewed_flickr_candidate(evidence)
+
+    assert decision.scoring_state == "provisional_candidate_scored"
+    assert decision.route == "adult_butterfly"
+    assert decision.embedding_artifact_sha256.endswith("c" * 64)
+    assert decision.candidate_ranking == evidence.candidate_ranking
+    assert decision.provisional_margin == 0.17
+    assert decision.review_priority == 0.82
+    assert decision.human_review_state == "unreviewed"
+    assert decision.release_state is FlickrReleaseState.EXCLUDED
+    assert decision.eligible_for_final_occurrence_dataset is False
+    assert decision.release_reasons == (FlickrReleaseReason.HUMAN_REVIEW_MISSING,)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("candidate_ranking", ()),
+        ("provisional_margin", float("nan")),
+        ("review_priority", 1.01),
+    ],
+)
+def test_unreviewed_candidate_scoring_evidence_is_validated(
+    field: str,
+    value: object,
+) -> None:
+    values = {
+        "source_record_id": "flickr:unreviewed",
+        "route": "adult_butterfly",
+        "embedding_artifact_sha256": "sha256:" + "c" * 64,
+        "candidate_ranking": ("Papilio demoleus",),
+        "provisional_margin": 0.17,
+        "review_priority": 0.82,
+    }
+    values[field] = value
+
+    with pytest.raises(ValueError):
+        UnreviewedFlickrCandidateEvidence(**values)  # type: ignore[arg-type]
