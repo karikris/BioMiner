@@ -61,6 +61,12 @@ REFERENCE_BANK_READINESS_SCHEMA_VERSION = "reference-bank-readiness-v3.0.0"
 REFERENCE_BANK_READINESS_POLICY_SCHEMA_VERSION = (
     "reference-bank-readiness-policy-v1.0.0"
 )
+LEGACY_REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION = (
+    "reference-support-manifest-v2.0.0"
+)
+REFERENCE_SUPPORT_MANIFEST_MIGRATION_SCHEMA_VERSION = (
+    "reference-support-manifest-migration-v1.0.0"
+)
 REFERENCE_MODEL_INPUT_IDENTITY_SCHEMA_VERSION = (
     "reference-model-input-identity-v2.0.0"
 )
@@ -426,6 +432,33 @@ _SUPPORT_ROW_SEMANTIC_FIELDS = (
     "support_eligible",
     "exclusion_reasons",
     "reference_bank_fingerprint",
+)
+_REFERENCE_SUPPORT_V3_EVIDENCE_FIELDS = frozenset(
+    {
+        "reference_admission_mode",
+        "reference_admission_policy_version",
+        "reference_admission_policy_fingerprint",
+        "identity_evidence_basis",
+        "provider_asserted_identity",
+        "provider_asserted_taxon_key",
+        "provider_asserted_scientific_name",
+        "provider_dataset_key",
+        "provider_quality_status",
+        "human_review_status",
+        "human_verified_identity",
+        "provisional_support",
+        "statistical_audit_required",
+        "admission_status",
+        "admission_reasons",
+        "reference_quality_flags",
+        "route_evidence_basis",
+        "geographic_prototype_eligible",
+    }
+)
+_LEGACY_SUPPORT_ROW_SEMANTIC_FIELDS = tuple(
+    field
+    for field in _SUPPORT_ROW_SEMANTIC_FIELDS
+    if field not in _REFERENCE_SUPPORT_V3_EVIDENCE_FIELDS
 )
 
 
@@ -821,6 +854,12 @@ class ReferenceBankReadinessResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ReferenceSupportManifestMigration:
+    manifest: pl.DataFrame
+    report: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
 class ReferenceBankRequirementStatus:
     accepted_taxon_key: str
     route: str
@@ -972,6 +1011,129 @@ def reference_support_manifest_schema() -> dict[str, pl.DataType]:
         "support_row_fingerprint": pl.String,
         "reference_bank_fingerprint": pl.String,
     }
+
+
+def legacy_reference_support_manifest_v2_schema() -> dict[str, pl.DataType]:
+    """Return the exact pre-admission strict support schema."""
+
+    return {
+        field: dtype
+        for field, dtype in reference_support_manifest_schema().items()
+        if field not in _REFERENCE_SUPPORT_V3_EVIDENCE_FIELDS
+    }
+
+
+def migrate_strict_reference_support_manifest_v2(
+    frame: pl.DataFrame,
+) -> ReferenceSupportManifestMigration:
+    """Explicitly migrate a validated v2 strict manifest without weakening trust."""
+
+    _validate_legacy_reference_support_manifest_v2(frame)
+    policy = strict_reference_admission_policy()
+    source_fingerprint = _semantic_frame_fingerprint(
+        frame,
+        fields=_LEGACY_SUPPORT_ROW_SEMANTIC_FIELDS,
+    )
+    rows: list[dict[str, object]] = []
+    for legacy in frame.iter_rows(named=True):
+        row = dict(legacy)
+        eligible = bool(row["support_eligible"])
+        row.update(
+            {
+                "schema_version": REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION,
+                "reference_admission_mode": policy.mode,
+                "reference_admission_policy_version": policy.policy_version,
+                "reference_admission_policy_fingerprint": policy.fingerprint,
+                "identity_evidence_basis": "human_verified",
+                "provider_asserted_identity": False,
+                "provider_asserted_taxon_key": None,
+                "provider_asserted_scientific_name": None,
+                "provider_dataset_key": row["source_dataset_key"],
+                "provider_quality_status": None,
+                "human_review_status": "completed",
+                "human_verified_identity": True,
+                "provisional_support": False,
+                "statistical_audit_required": False,
+                "admission_status": "admitted" if eligible else "excluded",
+                "admission_reasons": ["legacy_strict_human_review_verified"]
+                if eligible
+                else sorted(
+                    set(row["exclusion_reasons"])
+                    or {"legacy_strict_support_excluded"}
+                ),
+                "reference_quality_flags": [],
+                "route_evidence_basis": "human_verified_review",
+                "geographic_prototype_eligible": bool(
+                    eligible
+                    and _present(row["geo_cluster_id"])
+                    and row["latitude"] is not None
+                    and row["longitude"] is not None
+                ),
+            }
+        )
+        row["support_row_fingerprint"] = _support_row_fingerprint(row)
+        rows.append(row)
+    migrated = _strict_frame(
+        rows,
+        schema=reference_support_manifest_schema(),
+        sort_by=_SUPPORT_SORT,
+    )
+    validate_reference_support_manifest(migrated)
+    report: dict[str, Any] = {
+        "schema_version": REFERENCE_SUPPORT_MANIFEST_MIGRATION_SCHEMA_VERSION,
+        "source_schema_version": LEGACY_REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION,
+        "target_schema_version": REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION,
+        "migration_mode": "explicit_human_verified_strict",
+        "reference_admission_mode": policy.mode,
+        "admission_policy_fingerprint": policy.fingerprint,
+        "source_manifest_fingerprint": source_fingerprint,
+        "target_manifest_fingerprint": _support_manifest_fingerprint(migrated),
+        "row_count": migrated.height,
+        "provider_assertion_backfilled": False,
+        "requires_downstream_rebuild": [
+            "readiness",
+            "reference_embeddings",
+            "reference_prototypes",
+            "models",
+            "scores",
+        ],
+    }
+    report["migration_fingerprint"] = canonical_semantic_fingerprint(report)
+    return ReferenceSupportManifestMigration(manifest=migrated, report=report)
+
+
+def _validate_legacy_reference_support_manifest_v2(frame: pl.DataFrame) -> None:
+    _validate_exact_frame(
+        frame,
+        schema=legacy_reference_support_manifest_v2_schema(),
+        artifact="legacy reference support manifest v2",
+        sort_by=_SUPPORT_SORT,
+    )
+    if frame["reference_media_id"].n_unique() != frame.height:
+        raise ValueError("legacy support manifest contains duplicate canonical media")
+    if not frame.is_empty() and frame["reference_bank_fingerprint"].n_unique() != 1:
+        raise ValueError("legacy support manifest spans multiple bank fingerprints")
+    for row in frame.iter_rows(named=True):
+        if row["schema_version"] != LEGACY_REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION:
+            raise ValueError("unsupported legacy support manifest schema version")
+        if row["canonical_reference_media_id"] != row["reference_media_id"]:
+            raise ValueError("legacy support manifest row is not canonical media")
+        if (
+            row["review_status"] != "completed"
+            or row["verification_status"] != "verified"
+            or not row["target_identity_verified"]
+        ):
+            raise ValueError("legacy support manifest is not human-verified strict")
+        expected_route = _reference_route(
+            life_stage=str(row["life_stage"]),
+            visual_domain=str(row["visual_domain"]),
+        )
+        if expected_route != row["route"] or row["route"] not in REFERENCE_ROUTES:
+            raise ValueError("legacy support manifest route is invalid")
+        _fingerprint(row["image_sha256"], field="image_sha256")
+        _fingerprint(row["object_fingerprint"], field="object_fingerprint")
+        if row["support_row_fingerprint"] != _legacy_support_row_fingerprint_v2(row):
+            raise ValueError("legacy support manifest row fingerprint is invalid")
 
 
 def reference_bank_summary_schema() -> dict[str, pl.DataType]:
@@ -3859,6 +4021,19 @@ def _support_row_fingerprint(row: Mapping[str, object]) -> str:
                 row,
                 fields=_SUPPORT_ROW_SEMANTIC_FIELDS,
                 artifact="reference support row",
+            ),
+        }
+    )
+
+
+def _legacy_support_row_fingerprint_v2(row: Mapping[str, object]) -> str:
+    return canonical_semantic_fingerprint(
+        {
+            "projection_version": "reference-support-row-semantic-v2",
+            "row": _semantic_mapping_projection(
+                row,
+                fields=_LEGACY_SUPPORT_ROW_SEMANTIC_FIELDS,
+                artifact="legacy reference support row v2",
             ),
         }
     )

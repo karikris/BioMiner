@@ -1083,6 +1083,16 @@ are explicit columns. Older schemas remain distinguishable and require explicit
 compatibility handling; they are never silently interpreted as adaptive
 fast-start. The grain is one canonical admitted media item and route.
 
+Legacy `reference-support-manifest-v2.0.0` artifacts are accepted only by the
+explicit `migrate_strict_reference_support_manifest_v2()` transformation. The
+migration first verifies the v2 row fingerprints and completed human-review
+semantics, assigns `human_verified_strict`, never backfills a provider assertion
+that v2 did not preserve, and emits a fingerprinted migration report. It does
+not make an old readiness permit reusable: readiness, reference embeddings,
+prototypes, models, and scores must be rebuilt under the new admission identity.
+Changing admission mode or policy changes the support-row, support-manifest,
+readiness-bank, embedding, prototype, model, and score identity chain.
+
 `reference_bank_summary.parquet` has one row per bank version, accepted species,
 cluster scope, life stage, visual domain, and split. Schema version:
 `reference-bank-summary-v2.0.0`. It records required, candidate, downloaded,
