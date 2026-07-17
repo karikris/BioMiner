@@ -75,6 +75,7 @@ from biominer.references.readiness import (
     ReferenceBankReadinessPermit,
     load_reference_bank_readiness,
 )
+from biominer.run.adaptive_config import AdaptiveReferenceSettings
 from biominer.run.constants import PRODUCTION_JOB_NAME
 from biominer.run.manifest import RunManifest, utc_now_iso
 from biominer.run.paths import (
@@ -83,7 +84,7 @@ from biominer.run.paths import (
     RunPaths,
 )
 from biominer.run.stages import (
-    DEFAULT_PRODUCTION_STAGES,
+    ADAPTIVE_REFERENCE_PRODUCTION_STAGES,
     MANUAL_REVIEW_STAGES,
     RunStage,
     StageStatus,
@@ -181,6 +182,11 @@ class ProductionRunRequest:
     reference_embeddings: str | Path | None = None
     classifier_artifact: str | Path | None = None
     calibrator_artifact: str | Path | None = None
+    reference_admission_mode: str = "adaptive_gbif_fast_start"
+    reference_source: str = "gbif"
+    initial_scoring_mode: str = "provisional_reference_ranking"
+    flickr_release_requires_human_review: bool = True
+    statistical_reference_audit: bool = True
     support_scoring_mode: str = "calibrated"
     beam_strategy: str = GLOBAL_RANK_TOP_K_BEAM_STRATEGY
     rank_beam_width: int = DEFAULT_RANK_BEAM_WIDTH
@@ -188,12 +194,29 @@ class ProductionRunRequest:
     species_rerank_top_k: int = DEFAULT_SPECIES_RERANK_TOP_K
     species_report_top_k: int = DEFAULT_SPECIES_REPORT_TOP_K
     worker_id: str = "local"
-    stages: tuple[RunStage, ...] = DEFAULT_PRODUCTION_STAGES
+    stages: tuple[RunStage, ...] = ADAPTIVE_REFERENCE_PRODUCTION_STAGES
     dry_run: bool = False
     limits: dict[str, int] = field(default_factory=dict)
     build_registry_if_missing: bool = False
 
     def __post_init__(self) -> None:
+        adaptive_settings = AdaptiveReferenceSettings(
+            reference_admission_mode=self.reference_admission_mode,
+            reference_source=self.reference_source,
+            initial_scoring_mode=self.initial_scoring_mode,
+            flickr_release_requires_human_review=(
+                self.flickr_release_requires_human_review
+            ),
+            statistical_reference_audit=self.statistical_reference_audit,
+        )
+        for field_name in (
+            "reference_admission_mode",
+            "reference_source",
+            "initial_scoring_mode",
+            "flickr_release_requires_human_review",
+            "statistical_reference_audit",
+        ):
+            object.__setattr__(self, field_name, getattr(adaptive_settings, field_name))
         classification_mode = normalize_classification_mode(self.classification_mode)
         object.__setattr__(self, "classification_mode", classification_mode)
         scoring_mode = str(self.support_scoring_mode).strip().casefold()
@@ -308,6 +331,11 @@ class ProductionRunPlan:
                 "reference_embeddings": (str(self.request.reference_embeddings) if self.request.reference_embeddings else None),
                 "classifier_artifact": (str(self.request.classifier_artifact) if self.request.classifier_artifact else None),
                 "calibrator_artifact": (str(self.request.calibrator_artifact) if self.request.calibrator_artifact else None),
+                "reference_admission_mode": self.request.reference_admission_mode,
+                "reference_source": self.request.reference_source,
+                "initial_scoring_mode": self.request.initial_scoring_mode,
+                "flickr_release_requires_human_review": self.request.flickr_release_requires_human_review,
+                "statistical_reference_audit": self.request.statistical_reference_audit,
                 "support_scoring_mode": self.request.support_scoring_mode,
                 "beam_strategy": self.request.beam_strategy,
                 "rank_beam_width": self.request.rank_beam_width,
@@ -391,6 +419,15 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
                 "calibrator_artifact": (str(request.calibrator_artifact) if request.calibrator_artifact else None),
                 "support_scoring_mode": request.support_scoring_mode,
                 "validation_status": "not_validated",
+            },
+            "adaptive_reference_workflow": {
+                "reference_admission_mode": request.reference_admission_mode,
+                "reference_source": request.reference_source,
+                "initial_scoring_mode": request.initial_scoring_mode,
+                "flickr_release_requires_human_review": (
+                    request.flickr_release_requires_human_review
+                ),
+                "statistical_reference_audit": request.statistical_reference_audit,
             },
             "beam_strategy": request.beam_strategy,
             "rank_beam_width": request.rank_beam_width,

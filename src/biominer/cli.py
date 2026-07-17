@@ -116,10 +116,17 @@ from biominer.reference_workflow_cli import (
 )
 from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR, YOLOE26_DIR
 from biominer.run import (
+    ADAPTIVE_REFERENCE_PRODUCTION_STAGES,
     REFERENCE_FIRST_PRODUCTION_STAGES,
     ProductionRunOrchestrator,
     ProductionRunRequest,
     RunStage,
+)
+from biominer.run.adaptive_config import (
+    DEFAULT_INITIAL_SCORING_MODE,
+    DEFAULT_REFERENCE_ADMISSION_MODE,
+    DEFAULT_REFERENCE_SOURCE,
+    REFERENCE_ADMISSION_MODES,
 )
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES
 from biominer.secrets_loader import load_runtime_secrets_env
@@ -532,14 +539,50 @@ def build_parser() -> argparse.ArgumentParser:
         "--reference-bank-readiness-sha256",
         help="trusted sha256: digest pin for reference_bank_readiness.json",
     )
+    production_run.add_argument(
+        "--reference-admission-mode",
+        choices=REFERENCE_ADMISSION_MODES,
+        default=DEFAULT_REFERENCE_ADMISSION_MODE,
+        help=(
+            "reference admission policy: adaptive GBIF fast-start is the "
+            "production default; strict blocks on review; flagged-only "
+            "escalates statistically flagged species"
+        ),
+    )
+    production_run.add_argument(
+        "--reference-source",
+        default=DEFAULT_REFERENCE_SOURCE,
+        help="reference observation source (production default: gbif)",
+    )
+    production_run.add_argument(
+        "--initial-scoring-mode",
+        default=DEFAULT_INITIAL_SCORING_MODE,
+        help=(
+            "first-pass scoring contract; provisional_reference_ranking "
+            "never claims calibrated probability"
+        ),
+    )
+    production_run.add_argument(
+        "--flickr-release-requires-human-review",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="require decisive human verification before final Flickr release",
+    )
+    production_run.add_argument(
+        "--statistical-reference-audit",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="require species-level statistical reference audit before approval",
+    )
     production_run.add_argument("--crop-padding-ratio", type=float)
     production_run.add_argument("--parquet-compression")
     production_run.add_argument("--delete-images-after-commit", action=argparse.BooleanOptionalAction, default=None)
     production_run.add_argument("--stages")
     production_run.add_argument(
         "--workflow",
-        choices=("legacy", "reference-first"),
-        default="legacy",
+        choices=("adaptive", "legacy", "reference-first"),
+        default="adaptive",
+        help="production stage contract (default: adaptive GBIF fast-start)",
     )
     production_run.add_argument("--dry-run", action="store_true")
     production_run.add_argument("--build-registry-if-missing", action="store_true")
@@ -1954,6 +1997,13 @@ def _run_production_command(args: argparse.Namespace) -> int:
             reference_embeddings=args.reference_embeddings,
             classifier_artifact=args.classifier_artifact,
             calibrator_artifact=args.calibrator_artifact,
+            reference_admission_mode=args.reference_admission_mode,
+            reference_source=args.reference_source,
+            initial_scoring_mode=args.initial_scoring_mode,
+            flickr_release_requires_human_review=(
+                args.flickr_release_requires_human_review
+            ),
+            statistical_reference_audit=args.statistical_reference_audit,
             worker_id="local" if allow_local and args.dry_run else config.runtime.worker_id or ("local" if allow_local else ""),
             stages=stages,
             dry_run=args.dry_run,
@@ -2051,15 +2101,16 @@ def _create_production_vision_runtime(
 def _parse_run_stages(
     value: str | None,
     *,
-    workflow: str = "legacy",
+    workflow: str = "adaptive",
 ) -> tuple[RunStage, ...]:
-    if workflow not in {"legacy", "reference-first"}:
-        raise ValueError("workflow must be legacy or reference-first")
-    workflow_stages = (
-        REFERENCE_FIRST_PRODUCTION_STAGES
-        if workflow == "reference-first"
-        else DEFAULT_PRODUCTION_STAGES
-    )
+    workflows = {
+        "adaptive": ADAPTIVE_REFERENCE_PRODUCTION_STAGES,
+        "legacy": DEFAULT_PRODUCTION_STAGES,
+        "reference-first": REFERENCE_FIRST_PRODUCTION_STAGES,
+    }
+    if workflow not in workflows:
+        raise ValueError("workflow must be adaptive, legacy, or reference-first")
+    workflow_stages = workflows[workflow]
     if not value:
         return workflow_stages
     stages: list[RunStage] = []

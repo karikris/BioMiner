@@ -288,12 +288,12 @@ def test_run_paths_and_dry_run_manifest(tmp_path) -> None:
     assert [stage.stage for stage in manifest.stages][:3] == [
         RunStage.RESOLVE_TAXON_SCOPE,
         RunStage.BUILD_REGISTRY,
-        RunStage.COMPILE_QUERIES,
+        RunStage.GEOGRAPHIC_SPREAD,
     ]
     assert [stage.stage for stage in manifest.stages][-3:] == [
-        RunStage.QUEUE_COMMENT_REVIEW,
-        RunStage.REVIEW_COMMENTS,
-        RunStage.APPLY_COMMENT_REVIEW,
+        RunStage.AFFECTED_REFERENCE_REBUILD,
+        RunStage.AFFECTED_RECORD_RESCORE,
+        RunStage.FINAL_QUALITY_GATE,
     ]
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["species_count"] == 1
 
