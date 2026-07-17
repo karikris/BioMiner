@@ -19,6 +19,7 @@ REFERENCE_ERROR_DIAGNOSTIC_SCHEMA = {
     "reference_outlier_count": pl.UInt64,
     "high_influence_reference_count": pl.UInt64,
     "route_mismatch_reference_count": pl.UInt64,
+    "route_imbalance_ratio": pl.Float64,
     "provider_dataset_count": pl.UInt64,
     "largest_provider_dataset_fraction": pl.Float64,
     "geographic_support_cluster_count": pl.UInt64,
@@ -118,6 +119,10 @@ def relate_errors_to_reference_quality(
             & (pl.col("scientific_name") == competitor)
             & (pl.col("route") == route)
         )
+        all_species_support = support_manifest.filter(
+            pl.col("support_eligible") & (pl.col("scientific_name") == species)
+        )
+        route_counts = all_species_support.group_by("route").len()["len"].to_list()
         target_count = target_support.height
         competitor_count = competitor_support.height
         dataset_counts = target_support.group_by("provider_dataset_key").len()
@@ -145,6 +150,11 @@ def relate_errors_to_reference_quality(
             "route_mismatch_reference_count": diagnostics.filter(
                 pl.col("route_domain_mismatch")
             ).height,
+            "route_imbalance_ratio": (
+                (max(route_counts) - min(route_counts)) / max(route_counts)
+                if len(route_counts) > 1 and max(route_counts) > 0
+                else 0.0
+            ),
             "provider_dataset_count": dataset_counts.height,
             "largest_provider_dataset_fraction": (
                 float(dataset_counts["len"].max()) / target_count
