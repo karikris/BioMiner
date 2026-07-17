@@ -1,0 +1,31 @@
+{
+  "acceptance": {
+    "cli_tests": {"evidence": ["tests/test_adaptive_cli_defaults.py", "tests/test_cli_dry_run.py", "tests/test_target_aware_workflow_cli.py"], "status": "passed"},
+    "dry_run_stage_graph": {"evidence": ["tests/test_adaptive_run_stages.py", "tests/test_production_run_skeleton.py"], "status": "passed"},
+    "strict_adaptive_plan_comparison": {"evidence": ["tests/test_adaptive_cli_defaults.py", "tests/test_adaptive_config_validation.py", "tests/test_run_reference_stages.py"], "status": "passed"},
+    "push_every_task": {"origin_main_at_audit_start": "410e19a0903532123000d9ef7fd6c4290e04b444", "status": "passed"}
+  },
+  "contracts": {
+    "default_initial_scoring_mode": "provisional_reference_ranking",
+    "default_reference_admission_mode": "adaptive_gbif_fast_start",
+    "default_reference_source": "gbif",
+    "flickr_release_requires_human_review": true,
+    "statistical_reference_audit": true
+  },
+  "full_regression": {"command": "uv run pytest -q", "duration_seconds": 85.13, "failed": 0, "passed": 2378, "status": "passed"},
+  "limitations": [
+    "Phase 5 verifies orchestration, CLI and configuration contracts with local tests; no live GBIF acquisition or Flickr scoring/release run was performed.",
+    "A configured dependency graph does not prove that a future production operator completed manual review or species-level audit correctly.",
+    "Provisional reference ranking remains explicitly uncalibrated and cannot support a probability claim without a valid calibrator.",
+    "No measured accuracy, latency, cost, review-work or operational-savings improvement is claimed."
+  ],
+  "phase": 5,
+  "phase_name": "Adaptive orchestration and production defaults",
+  "schema_version": "gbif-fast-start-phase-completion-v1.0.0",
+  "tasks": [
+    {"commit": "fda9390e8729ff7d633a9ea71f169c532329cf07", "task_id": "5.1", "outcome": "Explicit adaptive stages preserve pending state for mandatory human work and revision-scoped reruns."},
+    {"commit": "98f2e9dcddf0fe5dbb08d3d6dff4f2df0ca9df59", "task_id": "5.2", "outcome": "Automated admission gates first scoring while Flickr review and statistical audit gate final approval."},
+    {"commit": "725e77539da279332d4c8fd256a99eee44de545e", "task_id": "5.3", "outcome": "CLI and direct production requests default to adaptive GBIF admission and provisional ranking with safety gates enabled."},
+    {"commit": "410e19a0903532123000d9ef7fd6c4290e04b444", "task_id": "5.4", "outcome": "One typed fail-closed validator rejects unsafe readiness, split, release, calibration, audit and source combinations."}
+  ]
+}
