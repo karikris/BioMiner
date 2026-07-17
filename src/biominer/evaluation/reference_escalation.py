@@ -215,12 +215,38 @@ def flag_species_for_reference_review(
         payload.pop("decision_fingerprint")
         base["decision_fingerprint"] = canonical_semantic_fingerprint(payload)
         decisions.append(base)
-    return pl.DataFrame(
+    result = pl.DataFrame(
         decisions,
         schema=REFERENCE_ESCALATION_SCHEMA,
         orient="row",
         strict=True,
     ).sort(keys)
+    validate_reference_escalations(result)
+    return result
+
+
+def validate_reference_escalations(frame: pl.DataFrame) -> None:
+    if frame.schema != REFERENCE_ESCALATION_SCHEMA:
+        raise ValueError("reference escalation schema mismatch")
+    keys = ["target_species", "competitor_species", "region", "route"]
+    if frame.select(keys).unique().height != frame.height:
+        raise ValueError("reference escalation groups must be unique")
+    for row in frame.iter_rows(named=True):
+        rules = row["triggered_rules"]
+        reasons = [str(rule["reason"]) for rule in rules]
+        if row["statistical_identity_conclusion"] != "not_assessed":
+            raise ValueError("reference escalation must not claim identity error")
+        if (
+            row["flag_reasons"] != reasons
+            or bool(row["flagged_for_reference_review"]) != bool(rules)
+            or row["review_scope"]
+            != ("species_reference_group" if rules else "none")
+        ):
+            raise ValueError("reference escalation decision semantics are invalid")
+        payload = dict(row)
+        fingerprint = payload.pop("decision_fingerprint")
+        if fingerprint != canonical_semantic_fingerprint(payload):
+            raise ValueError("reference escalation decision fingerprint mismatch")
 
 
 def _append_if_below(
@@ -273,4 +299,5 @@ __all__ = [
     "REFERENCE_ESCALATION_SCHEMA",
     "ReferenceEscalationPolicy",
     "flag_species_for_reference_review",
+    "validate_reference_escalations",
 ]

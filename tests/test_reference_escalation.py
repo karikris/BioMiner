@@ -6,6 +6,7 @@ import pytest
 from biominer.evaluation.reference_escalation import (
     ReferenceEscalationPolicy,
     flag_species_for_reference_review,
+    validate_reference_escalations,
 )
 
 
@@ -119,3 +120,13 @@ def test_policy_is_versioned_fingerprinted_and_validated() -> None:
     assert first.fingerprint != second.fingerprint
     with pytest.raises(ValueError, match="minimum_target_recall"):
         ReferenceEscalationPolicy(minimum_target_recall=1.1)
+
+
+def test_escalation_validator_rejects_tampered_decision() -> None:
+    decision = flag_species_for_reference_review(
+        _performance(precision_ci_lower=0.4),
+        _reference_evidence(),
+    ).with_columns(pl.lit("geo:tampered").alias("region"))
+
+    with pytest.raises(ValueError, match="fingerprint mismatch"):
+        validate_reference_escalations(decision)
