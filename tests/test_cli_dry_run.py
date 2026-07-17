@@ -1718,6 +1718,7 @@ def test_production_run_enqueue_stage_uses_configured_workstore(tmp_path, capsys
                 "name_class": "accepted_scientific",
                 "confidence": "high",
                 "enabled": True,
+                "query_eligible": True,
             }
         ]
     ).write_parquet(registry / "flickr_query_definitions.parquet")
@@ -2064,6 +2065,7 @@ def test_registry_seed_flickr_queries_cli_loads_query_definitions_into_state(tmp
                 "name_class": "accepted_scientific",
                 "confidence": "high",
                 "enabled": True,
+                "query_eligible": True,
             }
         ]
     ).write_parquet(query_definitions)
