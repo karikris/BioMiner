@@ -21,6 +21,12 @@ from biominer.bioclip.reference_embeddings import (
     reference_embeddings_artifact_fingerprint,
 )
 import biominer.bioclip.reference_prototypes as reference_prototypes_module
+from biominer.bioclip.provisional_prototypes import (
+    ROBUST_PROTOTYPE_METHODS,
+    RobustPrototypePolicy,
+    build_robust_provisional_prototypes,
+    provisional_prototypes_schema,
+)
 from biominer.bioclip.reference_prototypes import (
     PROTOTYPE_METHOD_NORMALIZED_MEAN,
     PROTOTYPE_METHOD_SIMPLESHOT_MEAN_CENTERED,
@@ -72,6 +78,125 @@ PREPROCESSING_CONFIG = {
     "size": [224, 224],
     "std": [0.26862954, 0.26130258, 0.27577711],
 }
+
+
+def test_builds_deterministic_robust_and_clustered_prototypes(
+    tmp_path: Path,
+) -> None:
+    specs: list[_EmbeddingSpec] = []
+    for index in range(6):
+        specs.append(
+            _spec(
+                f"target-{index}",
+                f"target-observation-{index}",
+                TARGET,
+                "Papilio demoleus",
+                "cluster-a",
+                (1.0, 0.02 * index, 0.0)
+                if index < 3
+                else (0.0, 1.0, 0.02 * index),
+            )
+        )
+        specs.append(
+            _spec(
+                f"competitor-{index}",
+                f"competitor-observation-{index}",
+                COMPETITOR,
+                "Papilio polytes",
+                "cluster-a",
+                (0.0, 0.02 * index, 1.0)
+                if index < 3
+                else (0.02 * index, 0.0, 1.0),
+            )
+        )
+    embeddings = _embedding_artifact(tmp_path, tuple(specs))
+    policy = RobustPrototypePolicy(
+        maximum_observations_per_species_route=6,
+        prototype_count=2,
+        minimum_cluster_size=2,
+        seed=19,
+    )
+
+    first = build_robust_provisional_prototypes(embeddings, policy=policy)
+    second = build_robust_provisional_prototypes(
+        embeddings.clone(),
+        policy=policy,
+    )
+
+    assert first.schema == provisional_prototypes_schema(3)
+    assert_frame_equal(first, second, check_exact=True)
+    assert set(first["prototype_method"]) == set(ROBUST_PROTOTYPE_METHODS)
+    assert set(first["prototype_count"]) == {2}
+    assert set(first["prototype_index"]) == {0, 1}
+    assert set(first["balanced_sampling_seed"]) == {19}
+    assert first["provisional_reference_count"].sum() == 0
+    assert (
+        first["human_verified_reference_count"]
+        == first["reference_count"]
+    ).all()
+    assert first["outlier_count"].sum() == 0
+    assert all(0 <= value <= 2 for value in first["dispersion"])
+    assert first["prototype_fingerprint"].n_unique() == first.height
+
+
+def test_robust_prototypes_count_mixed_provisional_and_human_support(
+    tmp_path: Path,
+) -> None:
+    embeddings = _embedding_artifact(
+        tmp_path,
+        tuple(
+            _spec(
+                f"target-{index}",
+                f"observation-{index}",
+                TARGET,
+                "Papilio demoleus",
+                "cluster-a",
+                (1.0, 0.05 * index, 0.01),
+            )
+            for index in range(4)
+        ),
+    )
+    rows: list[dict[str, object]] = []
+    for index, source in enumerate(embeddings.iter_rows(named=True)):
+        row = dict(source)
+        provisional = index % 2 == 0
+        row.update(
+            {
+                "reference_admission_mode": "adaptive_gbif_fast_start",
+                "admission_policy_fingerprint": _sha("adaptive-policy"),
+                "support_manifest_fingerprint": _sha("adaptive-support"),
+                "identity_evidence_basis": (
+                    "gbif_provider_asserted" if provisional else "human_verified"
+                ),
+                "provisional_support": provisional,
+                "human_review_status": (
+                    "not_requested" if provisional else "completed"
+                ),
+                "review_decision_ids": (
+                    [] if provisional else row["review_decision_ids"]
+                ),
+            }
+        )
+        row["embedding_fingerprint"] = (
+            reference_embeddings_module._embedding_row_fingerprint(row)  # noqa: SLF001 - fixture rebinds exact persisted provenance.
+        )
+        rows.append(row)
+    mixed = pl.DataFrame(
+        rows,
+        schema=embeddings.schema,
+        orient="row",
+        strict=True,
+    )
+
+    result = build_robust_provisional_prototypes(mixed)
+    normalized = result.filter(pl.col("prototype_method") == "normalized_mean")
+
+    assert normalized["reference_count"].sum() == 4
+    assert normalized["provisional_reference_count"].sum() == 2
+    assert normalized["human_verified_reference_count"].sum() == 2
+    assert set(result["reference_admission_mode"]) == {
+        "adaptive_gbif_fast_start"
+    }
 
 
 @dataclass(frozen=True, slots=True)
