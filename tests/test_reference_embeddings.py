@@ -229,6 +229,18 @@ def test_build_persists_all_eligible_splits_and_reuses_one_scorer(
         scorer.preprocessing_fingerprint
     ]
     assert frame["embedding_dimension"].unique().to_list() == [3]
+    assert frame["reference_admission_mode"].unique().to_list() == [
+        "human_verified_strict"
+    ]
+    assert frame["admission_policy_fingerprint"].unique().to_list() == [
+        _permit(manifest).admission_policy_fingerprint
+    ]
+    assert frame["identity_evidence_basis"].unique().to_list() == [
+        "human_verified"
+    ]
+    assert frame["provisional_support"].to_list() == [False] * frame.height
+    assert frame["human_review_status"].unique().to_list() == ["completed"]
+    assert frame["reference_quality_flags"].to_list() == [[]] * frame.height
     assert all(isclose(value, 1.0, abs_tol=1e-6) for value in frame["embedding_norm"])
     assert frame["embedding_fingerprint"].n_unique() == frame.height
     assert [len(call) for call in scorer.calls] == [2, 2]
@@ -358,6 +370,31 @@ def test_build_reuses_durable_content_cache_across_support_manifest_versions(
     )
     assert media_a["embedding"] == first.row(0, named=True)["embedding"]
     assert media_a["embedding_created_at"] == NOW + timedelta(days=1)
+
+
+def test_review_provenance_does_not_change_vector_cache_identity(
+    tmp_path: Path,
+) -> None:
+    manifest = _support_manifest(tmp_path, (("media-a", "support_train"),))
+    frame = build_reference_embeddings(
+        manifest,
+        _visual_inputs(tmp_path, manifest),
+        scorer=FakeScorer({"media-a.png": [1.0, 0.0, 0.0]}),
+        embedding_created_at=NOW,
+    )
+    original = frame.row(0, named=True)
+    changed = {
+        **original,
+        "human_review_status": "pending",
+        "reference_quality_flags": ["review_status_changed"],
+    }
+
+    assert reference_embeddings_module._embedding_cache_key_from_row(  # noqa: SLF001 - verifies the normative cache boundary.
+        original
+    ) == reference_embeddings_module._embedding_cache_key_from_row(changed)  # noqa: SLF001
+    assert reference_embeddings_module._embedding_row_fingerprint(  # noqa: SLF001 - provenance must still alter artifact identity.
+        original
+    ) != reference_embeddings_module._embedding_row_fingerprint(changed)  # noqa: SLF001
 
 
 def test_durable_embedding_cache_and_artifact_identity_survive_object_relocation(

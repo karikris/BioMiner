@@ -60,7 +60,7 @@ from biominer.vision.full_frame_attention import (
 from biominer.workstore.base import WorkStore
 
 
-REFERENCE_EMBEDDINGS_SCHEMA_VERSION = "reference-embeddings-v2.0.0"
+REFERENCE_EMBEDDINGS_SCHEMA_VERSION = "reference-embeddings-v3.0.0"
 REFERENCE_EMBEDDINGS_REPORT_SCHEMA_VERSION = "reference-embeddings-report-v1.0.0"
 REFERENCE_EMBEDDINGS_SUMMARY_SCHEMA_VERSION = "reference-embeddings-summary-v1.0.0"
 REFERENCE_EMBEDDINGS_FILE = "reference_embeddings.parquet"
@@ -122,6 +122,12 @@ _EMBEDDING_SUPPORT_PROJECTION = (
     "reference_bank_fingerprint",
     "support_manifest_fingerprint",
     "support_row_fingerprint",
+    "reference_admission_mode",
+    "admission_policy_fingerprint",
+    "identity_evidence_basis",
+    "provisional_support",
+    "human_review_status",
+    "reference_quality_flags",
     "accepted_taxon_key",
     "scientific_name",
     "geo_cluster_id",
@@ -295,6 +301,12 @@ def reference_embeddings_schema(
         "reference_observation_id": pl.String,
         "source_snapshot_version": pl.String,
         "review_decision_ids": pl.List(pl.String),
+        "reference_admission_mode": pl.String,
+        "admission_policy_fingerprint": pl.String,
+        "identity_evidence_basis": pl.String,
+        "provisional_support": pl.Boolean,
+        "human_review_status": pl.String,
+        "reference_quality_flags": pl.List(pl.String),
         "duplicate_group_id": pl.String,
         "readiness_sha256": pl.String,
         "reference_bank_fingerprint": pl.String,
@@ -846,6 +858,20 @@ def validate_reference_embeddings(
         "support_manifest_fingerprint",
     ):
         _sha256(_require_single_value(frame, field, None), field=field)
+    admission_mode = _require_single_value(
+        frame,
+        "reference_admission_mode",
+        None,
+    )
+    admission_policy_fingerprint = _require_single_value(
+        frame,
+        "admission_policy_fingerprint",
+        None,
+    )
+    _sha256(
+        admission_policy_fingerprint,
+        field="admission_policy_fingerprint",
+    )
     model_input_fingerprint = _require_single_value(
         frame,
         "model_input_fingerprint",
@@ -944,12 +970,38 @@ def validate_reference_embeddings(
         ):
             _required_text(row[field], field=field)
         decision_ids = row["review_decision_ids"]
-        if not isinstance(decision_ids, list) or not decision_ids:
-            raise ValueError("review_decision_ids must be a non-empty string list")
+        if not isinstance(decision_ids, list):
+            raise ValueError("review_decision_ids must be a string list")
         for decision_id in decision_ids:
             _required_text(decision_id, field="review_decision_ids")
         if decision_ids != sorted(set(decision_ids)):
             raise ValueError("review_decision_ids must be sorted and unique")
+        quality_flags = row["reference_quality_flags"]
+        if not isinstance(quality_flags, list) or quality_flags != sorted(
+            set(quality_flags)
+        ):
+            raise ValueError("reference quality flags must be canonical")
+        identity_basis = str(row["identity_evidence_basis"])
+        provisional = bool(row["provisional_support"])
+        human_review_status = str(row["human_review_status"])
+        if provisional:
+            if (
+                identity_basis != "gbif_provider_asserted"
+                or admission_mode != "adaptive_gbif_fast_start"
+                or human_review_status == "completed"
+                or decision_ids
+            ):
+                raise ValueError(
+                    "provisional reference embedding evidence is inconsistent"
+                )
+        elif (
+            identity_basis != "human_verified"
+            or human_review_status != "completed"
+            or not decision_ids
+        ):
+            raise ValueError(
+                "human-verified reference embedding evidence is inconsistent"
+            )
         _validate_absolute_uri(row["source_object_uri"], field="source_object_uri")
         for field in (
             "readiness_sha256",
@@ -2795,6 +2847,16 @@ def _validated_support_manifest(
     bank_fingerprints = set(canonical["reference_bank_fingerprint"].to_list())
     if bank_fingerprints != {readiness_permit.bank_fingerprint}:
         raise ValueError("reference readiness bank fingerprint mismatch")
+    admission_modes = set(canonical["reference_admission_mode"].to_list())
+    if admission_modes != {readiness_permit.reference_admission_mode}:
+        raise ValueError("reference readiness admission mode mismatch")
+    admission_fingerprints = set(
+        canonical["reference_admission_policy_fingerprint"].to_list()
+    )
+    if admission_fingerprints != {
+        readiness_permit.admission_policy_fingerprint
+    }:
+        raise ValueError("reference readiness admission policy mismatch")
     leakage = reference_support_split_leakage(canonical)
     if leakage:
         first = leakage[0]
@@ -3474,6 +3536,14 @@ def _embedding_row(
         "reference_observation_id": support["reference_observation_id"],
         "source_snapshot_version": support["source_snapshot_version"],
         "review_decision_ids": support["review_decision_ids"],
+        "reference_admission_mode": support["reference_admission_mode"],
+        "admission_policy_fingerprint": support[
+            "reference_admission_policy_fingerprint"
+        ],
+        "identity_evidence_basis": support["identity_evidence_basis"],
+        "provisional_support": support["provisional_support"],
+        "human_review_status": support["human_review_status"],
+        "reference_quality_flags": support["reference_quality_flags"],
         "duplicate_group_id": support["duplicate_group_id"],
         "readiness_sha256": readiness_permit.readiness_sha256,
         "reference_bank_fingerprint": readiness_permit.bank_fingerprint,
@@ -3616,6 +3686,12 @@ def _embedding_row_fingerprint_preimage(row: Mapping[str, object]) -> bytes:
         "reference_media_id": row["reference_media_id"],
         "reference_observation_id": row["reference_observation_id"],
         "source_snapshot_version": row["source_snapshot_version"],
+        "reference_admission_mode": row["reference_admission_mode"],
+        "admission_policy_fingerprint": row["admission_policy_fingerprint"],
+        "identity_evidence_basis": row["identity_evidence_basis"],
+        "provisional_support": row["provisional_support"],
+        "human_review_status": row["human_review_status"],
+        "reference_quality_flags": row["reference_quality_flags"],
         "duplicate_group_id": row["duplicate_group_id"],
         "reference_bank_fingerprint": row["reference_bank_fingerprint"],
         "support_manifest_fingerprint": row["support_manifest_fingerprint"],
