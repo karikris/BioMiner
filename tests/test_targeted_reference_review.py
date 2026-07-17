@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+import hashlib
+import json
 
 import polars as pl
 import pytest
@@ -18,7 +20,13 @@ from biominer.references.schemas import (
     REFERENCE_REVIEW_QUEUE_SCHEMA_VERSION,
     make_reference_media_id,
     make_reference_review_request_id,
+    reference_review_decisions_frame,
     reference_review_queue_frame,
+    reference_review_queue_schema,
+)
+from biominer.references.review import (
+    REFERENCE_REVIEW_QUEUE_PROVENANCE_SCHEMA_VERSION,
+    reference_review_queue_provenance_schema,
 )
 from biominer.references.targeted_review import (
     TARGETED_REFERENCE_REVIEW_QUEUE_FILE,
@@ -27,6 +35,11 @@ from biominer.references.targeted_review import (
     reference_error_involvement_frame,
     validate_targeted_reference_review_queue,
     write_targeted_reference_review_queue,
+)
+from biominer.references.targeted_review_decisions import (
+    review_statistically_flagged_support,
+    targeted_reference_review_decisions_frame,
+    write_targeted_reference_review_result,
 )
 
 
@@ -46,16 +59,8 @@ def _media_id(seed: str) -> tuple[str, str]:
 
 def _queue_row(seed: str, species: str) -> dict[str, object]:
     media_id, observation_id = _media_id(seed)
-    input_fingerprint = SHA_B if seed == "b" else SHA_C
-    request_id = make_reference_review_request_id(
-        reference_media_id=media_id,
-        media_object_fingerprint=SHA_A,
-        reference_bank_version="reference-bank-v1",
-        input_fingerprint=input_fingerprint,
-    )
-    return {
+    row: dict[str, object] = {
         "schema_version": REFERENCE_REVIEW_QUEUE_SCHEMA_VERSION,
-        "review_request_id": request_id,
         "reference_media_id": media_id,
         "reference_observation_id": observation_id,
         "canonical_reference_media_id": media_id,
@@ -82,8 +87,124 @@ def _queue_row(seed: str, species: str) -> dict[str, object]:
         "review_status": "pending",
         "created_at": NOW,
         "reference_bank_version": "reference-bank-v1",
-        "input_fingerprint": input_fingerprint,
     }
+    semantics = _review_payload_hash(
+        {
+            "domain": "biominer.reference-review.queue-semantics.v1",
+            "queue": {
+                field: row[field]
+                for field in reference_review_queue_schema()
+                if field
+                not in {
+                    "created_at",
+                    "durable_preview_uri",
+                    "review_priority",
+                    "review_reason",
+                    "review_request_id",
+                    "review_status",
+                    "input_fingerprint",
+                }
+            },
+        }
+    )
+    source_binding = _review_payload_hash(
+        {
+            "domain": "biominer.reference-review.source-set.v1",
+            "source_leaf_fingerprints": [SHA_A],
+        }
+    )
+    input_fingerprint = _review_payload_hash(
+        {
+            "domain": "biominer.reference-review.request-input.v1",
+            "queue_semantics_fingerprint": semantics,
+            "source_binding_fingerprint": source_binding,
+        }
+    )
+    row["input_fingerprint"] = input_fingerprint
+    row["review_request_id"] = make_reference_review_request_id(
+        reference_media_id=media_id,
+        media_object_fingerprint=SHA_A,
+        reference_bank_version="reference-bank-v1",
+        input_fingerprint=input_fingerprint,
+    )
+    return row
+
+
+def _review_payload_hash(value: object) -> str:
+    def jsonable(item: object) -> object:
+        if isinstance(item, datetime):
+            return item.isoformat()
+        if isinstance(item, dict):
+            return {str(key): jsonable(child) for key, child in sorted(item.items())}
+        if isinstance(item, (list, tuple)):
+            return [jsonable(child) for child in item]
+        return item
+
+    encoded = json.dumps(
+        jsonable(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _queue_provenance(queue: pl.DataFrame) -> pl.DataFrame:
+    excluded = {
+        "created_at",
+        "durable_preview_uri",
+        "review_priority",
+        "review_reason",
+        "review_request_id",
+        "review_status",
+        "input_fingerprint",
+    }
+    rows = []
+    for row in queue.iter_rows(named=True):
+        semantics = _review_payload_hash(
+            {
+                "domain": "biominer.reference-review.queue-semantics.v1",
+                "queue": {
+                    field: row[field]
+                    for field in reference_review_queue_schema()
+                    if field not in excluded
+                },
+            }
+        )
+        source_binding = _review_payload_hash(
+            {
+                "domain": "biominer.reference-review.source-set.v1",
+                "source_leaf_fingerprints": [SHA_A],
+            }
+        )
+        rows.append(
+            {
+                "schema_version": (
+                    REFERENCE_REVIEW_QUEUE_PROVENANCE_SCHEMA_VERSION
+                ),
+                "review_request_id": row["review_request_id"],
+                "reference_media_id": row["reference_media_id"],
+                "source_binding_fingerprint": source_binding,
+                "source_leaf_fingerprints": [SHA_A],
+                "queue_semantics_fingerprint": semantics,
+                "queue_row_fingerprint": _review_payload_hash(
+                    {
+                        "domain": "biominer.reference-review.queue-row.v1",
+                        "queue": {
+                            field: row[field]
+                            for field in reference_review_queue_schema()
+                        },
+                    }
+                ),
+                "input_fingerprint": row["input_fingerprint"],
+            }
+        )
+    return pl.DataFrame(
+        rows,
+        schema=reference_review_queue_provenance_schema(),
+        orient="row",
+        strict=True,
+    ).sort("reference_media_id", "review_request_id")
 
 
 def _diagnostic(
@@ -393,3 +514,179 @@ def test_targeted_queue_validator_rejects_tampering() -> None:
 
     with pytest.raises(ValueError, match="fingerprint mismatch"):
         validate_targeted_reference_review_queue(result)
+
+
+def _targeted_decision(
+    targeted_row: dict[str, object],
+    *,
+    action: str,
+    notes: str | None = None,
+    exclusion_reason: str | None = None,
+    alternative_species: str | None = None,
+) -> pl.DataFrame:
+    return targeted_reference_review_decisions_frame(
+        [
+            {
+                "review_request_id": targeted_row["review_request_id"],
+                "reference_media_id": targeted_row["reference_media_id"],
+                "targeting_fingerprint": targeted_row["targeting_fingerprint"],
+                "review_action": action,
+                "review_round": 1,
+                "verified_by": "reviewer-1",
+                "reviewed_at": NOW + timedelta(days=1),
+                "life_stage": "larva",
+                "visual_domain": "pinned_specimen",
+                "view": "ventral",
+                "review_confidence": "high",
+                "review_notes": notes,
+                "exclusion_reason": exclusion_reason,
+                "alternative_species": alternative_species,
+                "conflicts_with_decision_id": None,
+            }
+        ]
+    )
+
+
+def test_targeted_verification_reuses_review_resolver_and_corrections(
+    tmp_path,
+) -> None:
+    inputs = _inputs()
+    targeted = build_targeted_reference_review_queue(*inputs)
+    source_queue = inputs[0]
+    decision = _targeted_decision(
+        targeted.row(0, named=True),
+        action="verify",
+        notes="Identity verified; metadata fields corrected.",
+    )
+
+    result = review_statistically_flagged_support(
+        targeted,
+        _queue_provenance(source_queue),
+        decision,
+        resolved_at=NOW + timedelta(days=2),
+    )
+
+    assert result.imported_decision_count == 1
+    assert result.idempotent_replay_count == 0
+    assert result.workflow.verified.height == 1
+    verified = result.workflow.verified.row(0, named=True)
+    assert verified["resolved_life_stage"] == "larva"
+    assert verified["resolved_visual_domain"] == "pinned_specimen"
+    assert verified["resolved_view"] == "ventral"
+    assert result.decision_bindings.height == 1
+    artifacts = write_targeted_reference_review_result(result, tmp_path)
+    assert all(path.exists() for path in artifacts.values())
+
+
+def test_exclusion_preserves_alternative_species_in_strict_binding() -> None:
+    inputs = _inputs()
+    targeted = build_targeted_reference_review_queue(*inputs)
+    decision = _targeted_decision(
+        targeted.row(0, named=True),
+        action="exclude",
+        notes="Wing pattern supports a different taxon.",
+        exclusion_reason="alternative_species",
+        alternative_species="Papilio polytes",
+    )
+
+    result = review_statistically_flagged_support(
+        targeted,
+        _queue_provenance(inputs[0]),
+        decision,
+    )
+
+    assert result.workflow.excluded.height == 1
+    assert result.decision_bindings["alternative_species"].item() == (
+        "Papilio polytes"
+    )
+    assert "Alternative species noted: Papilio polytes." in result.workflow.decisions[
+        "review_notes"
+    ].item()
+
+
+@pytest.mark.parametrize(
+    ("action", "notes"),
+    [
+        ("uncertain", "Visible evidence is insufficient."),
+        ("request_second_review", None),
+    ],
+)
+def test_non_decisive_actions_request_a_second_review(
+    action: str,
+    notes: str | None,
+) -> None:
+    inputs = _inputs()
+    targeted = build_targeted_reference_review_queue(*inputs)
+    decision = _targeted_decision(
+        targeted.row(0, named=True),
+        action=action,
+        notes=notes,
+    )
+
+    result = review_statistically_flagged_support(
+        targeted,
+        _queue_provenance(inputs[0]),
+        decision,
+    )
+
+    outcome = result.workflow.outcomes.filter(
+        pl.col("review_request_id") == decision["review_request_id"].item()
+    ).row(0, named=True)
+    assert outcome["review_status"] == "second_review_required"
+    assert outcome["second_review_required"] is True
+
+
+def test_targeted_review_is_append_only_and_idempotent() -> None:
+    inputs = _inputs()
+    targeted = build_targeted_reference_review_queue(*inputs)
+    provenance = _queue_provenance(inputs[0])
+    decision = _targeted_decision(
+        targeted.row(0, named=True),
+        action="verify",
+        notes="Verified.",
+    )
+    first = review_statistically_flagged_support(
+        targeted,
+        provenance,
+        decision,
+    )
+
+    replay = review_statistically_flagged_support(
+        targeted,
+        provenance,
+        decision,
+        existing_decisions=first.workflow.decisions,
+    )
+
+    assert replay.imported_decision_count == 0
+    assert replay.idempotent_replay_count == 1
+    assert replay.workflow.decisions.equals(first.workflow.decisions)
+
+    replacement = _targeted_decision(
+        targeted.row(0, named=True),
+        action="exclude",
+        notes="Changed decision.",
+        exclusion_reason="identity_not_supported",
+    )
+    with pytest.raises(ValueError, match="one decision per request round"):
+        review_statistically_flagged_support(
+            targeted,
+            provenance,
+            replacement,
+            existing_decisions=first.workflow.decisions,
+        )
+
+
+def test_stale_targeting_fingerprint_is_rejected() -> None:
+    inputs = _inputs()
+    targeted = build_targeted_reference_review_queue(*inputs)
+    row = targeted.row(0, named=True)
+    row["targeting_fingerprint"] = SHA_A
+    decision = _targeted_decision(row, action="verify", notes="Verified.")
+
+    with pytest.raises(ValueError, match="stale targeting fingerprint"):
+        review_statistically_flagged_support(
+            targeted,
+            _queue_provenance(inputs[0]),
+            decision,
+        )
