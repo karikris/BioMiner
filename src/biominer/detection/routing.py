@@ -161,9 +161,9 @@ def route_detection(
         return _excluded(active, "ambiguous_visual_domain", "invalid_detector_score")
 
     raw_prompt = row.get("detector_prompt")
-    if "detector_prompt" in row and raw_prompt is not None:
-        return _route_prompt(_normalise_prompt(raw_prompt), score=score, policy=active)
-    return _route_legacy_label(_normalise_token(row.get("detector_label")), score=score, policy=active)
+    if raw_prompt is None:
+        return _excluded(active, "ambiguous_visual_domain", "missing_detector_prompt")
+    return _route_prompt(_normalise_prompt(raw_prompt), score=score, policy=active)
 
 
 def _route_prompt(
@@ -191,34 +191,6 @@ def _route_prompt(
     if prompt in _NO_ORGANISM_PROMPTS:
         return _excluded(policy, "no_relevant_organism", "no_relevant_organism_prompt")
     return _excluded(policy, "ambiguous_visual_domain", "unknown_detector_prompt")
-
-
-def _route_legacy_label(
-    label: str,
-    *,
-    score: float | None,
-    policy: DetectionRoutingPolicy,
-) -> DetectionRouteDecision:
-    reason = f"legacy_detector_label_fallback:{label or 'missing'}"
-    if label in {"adult_butterfly", "butterfly_like"}:
-        return _score(policy, "adult_butterfly_field", "adult_field", reason)
-    if label == "possible_adult_butterfly":
-        return _possible_adult_decision(score=score, policy=policy, reason_prefix=reason)
-    if label == "caterpillar":
-        return _score(policy, "caterpillar_field", "larval", reason)
-    if label == "pupa":
-        return _excluded(policy, "pupa_or_chrysalis", reason)
-    if label == "pinned_specimen":
-        return _score(policy, "pinned_specimen", "pinned_specimen", reason)
-    if label == "moth_like":
-        return _excluded(policy, "possible_moth_or_other_insect", reason)
-    if label == "insect_like":
-        return _ambiguous_insect_decision(score=score, policy=policy, reason_prefix=reason)
-    if label in {"artifact", "hard_negative"}:
-        return _excluded(policy, "artwork_logo_tattoo_or_other_artifact", reason)
-    if label in {"no_organism", "no_relevant_organism"}:
-        return _excluded(policy, "no_relevant_organism", reason)
-    return _excluded(policy, "ambiguous_visual_domain", "unknown_detector_label_fallback")
 
 
 def _possible_adult_decision(

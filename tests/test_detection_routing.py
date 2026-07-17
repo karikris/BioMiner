@@ -267,19 +267,28 @@ def test_invalid_detector_score_fails_closed() -> None:
     assert invalid_definite.routing_reason == "invalid_detector_score"
 
 
-def test_definite_routes_do_not_require_a_score_when_reading_legacy_rows() -> None:
+def test_definite_routes_do_not_require_a_score() -> None:
     prompted = route_detection(_row("butterfly", score=None))
-    legacy = route_detection(
-        {
-            "detection_status": "detected",
-            "detector_label": "butterfly_like",
-        }
-    )
 
     assert prompted.routing_action == "score"
     assert prompted.bioclip_route == "adult_field"
-    assert legacy.routing_action == "score"
-    assert legacy.bioclip_route == "adult_field"
+
+
+def test_detected_rows_without_detector_prompt_are_excluded() -> None:
+    decision = route_detection(
+        {
+            "detection_status": "detected",
+            "detector_label": "butterfly_like",
+            "detector_score": 0.9,
+        }
+    )
+
+    assert (decision.detection_route, decision.routing_action, decision.bioclip_route) == (
+        "ambiguous_visual_domain",
+        "exclude",
+        None,
+    )
+    assert decision.routing_reason == "missing_detector_prompt"
 
 
 def test_no_detection_is_not_conflated_with_detector_failure() -> None:
@@ -292,39 +301,6 @@ def test_no_detection_is_not_conflated_with_detector_failure() -> None:
     assert failed.detection_route == "ambiguous_visual_domain"
     assert failed.routing_reason == "detection_status_not_routable"
     assert failed.routing_action == "exclude"
-
-
-@pytest.mark.parametrize(
-    ("label", "route", "action", "bioclip_route"),
-    [
-        ("adult_butterfly", "adult_butterfly_field", "score", "adult_field"),
-        ("possible_adult_butterfly", "adult_butterfly_field", "score", "adult_field"),
-        ("pinned_specimen", "pinned_specimen", "score", "pinned_specimen"),
-        ("artifact", "artwork_logo_tattoo_or_other_artifact", "exclude", None),
-        ("no_organism", "no_relevant_organism", "exclude", None),
-        ("no_relevant_organism", "no_relevant_organism", "exclude", None),
-        ("butterfly_like", "adult_butterfly_field", "score", "adult_field"),
-        ("caterpillar", "caterpillar_field", "score", "larval"),
-        ("pupa", "pupa_or_chrysalis", "exclude", None),
-        ("moth_like", "possible_moth_or_other_insect", "exclude", None),
-        ("insect_like", "ambiguous_visual_domain", "review", "adult_field"),
-        ("hard_negative", "artwork_logo_tattoo_or_other_artifact", "exclude", None),
-    ],
-)
-def test_legacy_coarse_labels_are_used_only_when_raw_prompt_is_absent(
-    label: str,
-    route: str,
-    action: str,
-    bioclip_route: str | None,
-) -> None:
-    decision = route_detection(_row(include_prompt=False, label=label))
-
-    assert (decision.detection_route, decision.routing_action, decision.bioclip_route) == (
-        route,
-        action,
-        bioclip_route,
-    )
-    assert decision.routing_reason.startswith("legacy_detector_label_fallback:")
 
 
 def test_route_decision_exports_exact_persisted_fields_and_review_property() -> None:
