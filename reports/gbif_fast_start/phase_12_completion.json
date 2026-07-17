@@ -1,0 +1,39 @@
+{
+  "schema_version": "gbif-fast-start-phase-completion-v1.0.0",
+  "phase": 12,
+  "phase_name": "Papilio demoleus pilot",
+  "generated_at": "2026-07-17T18:08:12Z",
+  "tasks": [
+    {"task_id": "12.1", "commit": "3fe2b88a6d30ac922c0e02331f1b39e7f71d7225", "outcome": "Fingerprint-bound adaptive plan with automated gates, representative audit, targeted escalation and cross-source holdout isolation."},
+    {"task_id": "12.2", "commit": "9e2e2c2ecf6f1fcf737a04bf38b76f3d9d52c351", "outcome": "Fixture-backed production path reaches provisional scoring with measured resources and an exact unexecuted-live-step ledger."},
+    {"task_id": "12.3", "commit": "5b3d384339b1325cb04c34b6c5f5cd339b4cd86f", "outcome": "Reports insufficient sample and emits a weighted, outcome-blind 50-record review queue from 18,041 real candidates."},
+    {"task_id": "12.4", "commit": "32a043684f863bed5d2eeab615b63b27872d2774", "outcome": "Keeps live remediation blocked while fixtures validate targeted review, exclusion, cache reuse and selective rescoring."},
+    {"task_id": "12.5", "commit": "67d2137c06c24f8e87ce3d081dc0dd215d49db45", "outcome": "Cross-validates every pilot metric with unit, evidence status, strict comparison and limitations."}
+  ],
+  "pilot_evidence": {
+    "execution_scope": "fixture_backed_integration",
+    "time_to_first_score_ms": 502.480375,
+    "reference_reviews_before_first_score": 0,
+    "human_reviewed_flickr_labels": 0,
+    "audit_status": "insufficient_sample",
+    "pending_representative_reviews": 50,
+    "live_species_flags": 0,
+    "quality_metrics_available": false,
+    "historical_prototype_counts_are_current": false
+  },
+  "targeted_suite": {"status": "passed", "passed": 61, "failed": 0, "duration_seconds": 9.17},
+  "full_regression": {"command": "uv run pytest -q", "status": "passed", "passed": 2526, "failed": 0, "duration_seconds": 99.55},
+  "full_regression_history": [
+    {"commit": "67d2137c06c24f8e87ce3d081dc0dd215d49db45", "status": "failed", "passed": 2525, "failed": 1, "duration_seconds": 100.97, "failure": "production pilot validator hardcoded the pilot species"},
+    {"commit": "d53f57ea518a8fac13ce6f4216f784a8f38078ca", "status": "passed", "passed": 2526, "failed": 0, "duration_seconds": 99.55}
+  ],
+  "repair": {"commit": "d53f57ea518a8fac13ce6f4216f784a8f38078ca", "outcome": "Shared target validation is generic; Papilio specificity remains in configuration and tests."},
+  "push_every_task": {"status": "passed", "origin_main_at_audit_start": "d53f57ea518a8fac13ce6f4216f784a8f38078ca"},
+  "limitations": [
+    "Current adaptive scoring and remediation evidence is fixture-backed rather than a live corpus rerun.",
+    "Earlier prototype-only local artifacts are absent and their manifest counts are historical context only.",
+    "No human-reviewed Flickr labels are available, so quality metrics remain null.",
+    "Fifty representative Flickr records require source-bound human review.",
+    "No live species flag, reference remediation, quality improvement, speedup or review saving is claimed."
+  ]
+}
