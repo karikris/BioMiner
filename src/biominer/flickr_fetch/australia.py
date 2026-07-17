@@ -81,7 +81,7 @@ def build_australia_presence(
         conn.execute(
             """UPDATE gbif_australia_presence
                SET status = 'retry_wait', next_attempt_at = ?, last_error_class = COALESCE(last_error_class, 'legacy_retryable')
-               WHERE status = 'failed'""",
+               WHERE status = 'failed' AND last_error_class IS NULL""",
             (datetime.now(UTC).isoformat(),),
         )
     with sqlite3.connect(state) as conn:
