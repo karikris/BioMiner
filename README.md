@@ -2,6 +2,21 @@
 
 BioMiner builds a CoL XR-grounded butterfly identity registry, discovers Flickr metadata without duplicating requests, removes non-butterfly material, and screens eligible images with BioCLIP 2.5. Model output remains screening evidence, never taxonomic validation.
 
+## Adaptive GBIF reference fast-start
+
+The production reference default is `adaptive_gbif_fast_start`. Qualifying GBIF
+provider assertions may enter a provisional support bank after deterministic
+taxon, rights, decode, duplicate, independence and YOLOE route checks. Reference
+human review does not block the first provisional BioCLIP comparison. A
+species-level audit using human-reviewed Flickr labels later targets reference
+review and selective reruns only where evidence warrants it.
+
+Provider-asserted support is not human verification, raw similarity and margin
+values are not probabilities, and every final Flickr occurrence still requires
+source-bound human review. `human_verified_strict` remains available for
+publication-critical work. See the [fast-start workflow](docs/adaptive_gbif_fast_start.md)
+and [migration guide](docs/migrations/adaptive-gbif-reference-default.md).
+
 ## Registry and discovery
 
 The primary identity source is CoL XR dataset `315557`, release `COL26.6 XR`, DOI `10.48580/dgy8b`. Each accepted species has one BioCLIP-supported path:

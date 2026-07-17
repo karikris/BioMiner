@@ -7,14 +7,27 @@
 ```text
 resolve scope
   → build/validate registry
+  → acquire, route and admit GBIF reference support
+  → issue provisional or strict reference readiness
+  → reuse/build reference embeddings and prototypes
   → compile queries
   → enqueue and poll Flickr metadata
   → detect and crop eligible butterflies
-  → seven-rank BioCLIP screening
+  → provisional reference ranking and/or seven-rank BioCLIP screening
   → join evidence
-  → summarize and queue review
+  → human-review Flickr release candidates
+  → statistically audit reference-bank performance
+  → review flagged references and selectively rerun affected evidence
+  → final release gate
   → optional comment review
 ```
+
+The default reference mode is `adaptive_gbif_fast_start`: automated reference
+admission blocks first scoring, but reference human review does not. Flickr
+human verification always blocks final occurrence release. Strict projects set
+`--reference-admission-mode human_verified_strict`. The complete admission,
+readiness, evidence-maturity and selective-rerun contract is documented in
+[Adaptive GBIF fast-start](adaptive_gbif_fast_start.md).
 
 The rolling worker uses bounded queues between staging, detection, crop materialization, image embedding, scoring, and commit. Workers return plain results; the main process merges, sorts, deduplicates, writes Parquet, registers immutable shards, and removes temporary images only after durable commit.
 
@@ -50,7 +63,12 @@ uv run biominer --config config/biominer.cloud.example.toml run \
   --registry-dir s3://biominer/registry/butterflies-v2 \
   --taxonomy-text-embedding-cache s3://biominer/cache/taxonomy/current/classification_text_embeddings.parquet \
   --output-prefix s3://biominer/runs/current \
-  --classification-mode hierarchical_butterfly_classification
+  --classification-mode hierarchical_butterfly_classification \
+  --reference-admission-mode adaptive_gbif_fast_start \
+  --reference-source gbif \
+  --initial-scoring-mode provisional_reference_ranking \
+  --flickr-release-requires-human-review \
+  --statistical-reference-audit
 ```
 
 Use `storage doctor`, `workstore doctor`, and `run --dry-run` before a live run.
@@ -72,3 +90,8 @@ registry migration notes before switching persisted artifacts or output roots.
 Every stage reports command, run ID, PID, git SHA, inputs, outputs, timestamps, elapsed time, rows, bytes, retries, errors, and artifact paths. Unsupported metrics are `null` or `not_instrumented`. Long jobs write structured progress and checkpoints; repeated polling by operators is not part of the execution model.
 
 Images, raw API dumps, models, caches, generated registry builds, large Parquet files, and secrets are runtime state and must not be committed.
+
+Filesystem/SQLite local runs and S3/PostgreSQL cloud runs use the same semantic
+artifact contracts. Mode and policy fingerprints, object checksums, immutable
+readiness pins and checkpoint identities determine reuse; moving an artifact
+between backends does not weaken validation or human-review gates.
