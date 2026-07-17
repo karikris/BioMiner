@@ -852,7 +852,14 @@ def test_ready_build_publish_and_strict_load(tmp_path: Path) -> None:
         "geographic_cluster_coverage",
         "larval_route_separation",
         "pinned_specimen_separation",
-        "verified_support_only",
+        "support_admission_policy_satisfied",
+        "provider_assertion_integrity",
+        "automated_reference_qa_passed",
+        "reference_routes_separated",
+        "provisional_support_declared",
+        "statistical_audit_plan_available",
+        "human_rejections_respected",
+        "strict_support_only",
         "duplicate_groups_resolved",
         "licences_accepted",
         "source_attribution_complete",
@@ -1008,6 +1015,11 @@ def test_ready_provisional_has_narrow_fail_closed_capabilities() -> None:
     )
     payload["counts"]["provisional_support_count"] = 2
     payload["counts"]["human_verified_support_count"] = 0
+    payload["checks"] = [
+        check
+        for check in payload["checks"]
+        if check["check_id"] != "strict_support_only"
+    ]
     payload["bank_fingerprint"] = readiness_module.canonical_semantic_fingerprint(
         {
             "schema_version": payload["schema_version"],
@@ -1408,7 +1420,7 @@ def test_blocked_licence_takes_precedence_over_target_shortfall() -> None:
     verified_check = next(
         item
         for item in result.readiness["checks"]
-        if item["check_id"] == "verified_support_only"
+        if item["check_id"] == "strict_support_only"
     )
     assert verified_check["status"] == "passed"
 
@@ -1429,7 +1441,7 @@ def test_pending_included_media_awaits_manual_review() -> None:
     check = next(
         item
         for item in result.readiness["checks"]
-        if item["check_id"] == "verified_support_only"
+        if item["check_id"] == "strict_support_only"
     )
     assert check["status"] == "pending"
 

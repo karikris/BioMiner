@@ -178,6 +178,48 @@ class ReferenceAdmissionCompilationResult:
     compiler_fingerprint: str
 
 
+def validate_reference_provisional_support(frame: pl.DataFrame) -> None:
+    """Validate the exact, provenance-bound provisional support projection."""
+
+    if not isinstance(frame, pl.DataFrame):
+        raise TypeError("provisional support must be a Polars DataFrame")
+    if frame.schema != REFERENCE_PROVISIONAL_SUPPORT_SCHEMA:
+        raise ValueError("provisional support schema mismatch")
+    if frame["reference_media_id"].n_unique() != frame.height:
+        raise ValueError("provisional support contains duplicate media IDs")
+    for row in frame.iter_rows(named=True):
+        if (
+            row["schema_version"] != REFERENCE_ADMISSION_COMPILER_SCHEMA_VERSION
+            or row["source"] != "gbif"
+            or row["provider_assertion_status"]
+            != "provider_asserted_unreviewed"
+            or row["provider_assertion_identity_basis"]
+            != "gbif_provider_asserted"
+            or row["human_verified"]
+            or not row["provisional_support"]
+            or row["provisional_status"]
+            != "provisional_admitted_selected"
+            or row["admission_decision"] != "admitted"
+            or row["selection_decision"] != "selected"
+            or row["reference_admission_mode"]
+            != DEFAULT_REFERENCE_ADMISSION_MODE
+        ):
+            raise ValueError("provisional support row semantics are inconsistent")
+        if (
+            not row["automated_gate_ids"]
+            or len(row["automated_gate_ids"])
+            != len(row["automated_gate_dispositions"])
+            or len(row["automated_gate_ids"])
+            != len(row["automated_gate_reason_codes"])
+            or set(row["automated_gate_dispositions"]) != {"passed"}
+        ):
+            raise ValueError("provisional support automated gates are incomplete")
+        payload = dict(row)
+        fingerprint = payload.pop("support_row_fingerprint")
+        if fingerprint != canonical_semantic_fingerprint(payload):
+            raise ValueError("provisional support row fingerprint mismatch")
+
+
 def compile_provisional_gbif_support_bank(
     *,
     observations: pl.DataFrame,
@@ -935,4 +977,5 @@ __all__ = [
     "REFERENCE_PROVISIONAL_SUPPORT_SCHEMA",
     "ReferenceAdmissionCompilationResult",
     "compile_provisional_gbif_support_bank",
+    "validate_reference_provisional_support",
 ]

@@ -19,6 +19,7 @@ from biominer.references.admission_compiler import (
     REFERENCE_ADMISSION_DECISION_SCHEMA,
     REFERENCE_PROVISIONAL_SUPPORT_SCHEMA,
     compile_provisional_gbif_support_bank,
+    validate_reference_provisional_support,
 )
 from biominer.references.deduplication import _duplicate_group_id
 from biominer.references.provisional_selection import (
@@ -151,6 +152,13 @@ def test_support_rows_carry_source_provider_qa_route_duplicate_and_policy_eviden
     assert row["eligibility_result_fingerprint"].startswith("sha256:")
     assert row["selection_decision_fingerprint"].startswith("sha256:")
     assert row["support_row_fingerprint"].startswith("sha256:")
+    validate_reference_provisional_support(result.provisional_support)
+
+    tampered = result.provisional_support.with_columns(
+        pl.lit("failed").alias("admission_decision")
+    )
+    with pytest.raises(ValueError, match="semantics are inconsistent"):
+        validate_reference_provisional_support(tampered)
 
 
 def test_compiler_rejects_stale_selection_after_admission_policy_change(
