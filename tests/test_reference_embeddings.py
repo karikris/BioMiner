@@ -372,6 +372,77 @@ def test_build_reuses_durable_content_cache_across_support_manifest_versions(
     assert media_a["embedding_created_at"] == NOW + timedelta(days=1)
 
 
+def test_reference_revision_filters_excluded_cache_rows_and_embeds_only_new(
+    tmp_path: Path,
+) -> None:
+    first_manifest = _support_manifest(
+        tmp_path,
+        (("media-a", "support_train"), ("media-b", "model_selection")),
+    )
+    first_rows = first_manifest.to_dicts()
+    media_b = next(
+        row for row in first_rows if row["reference_media_id"] == "media-b"
+    )
+    media_b_path = Path(unquote(urlsplit(str(media_b["source_object_uri"])).path))
+    _image(media_b_path, (240, 17, 91))
+    media_b["image_sha256"] = _file_sha256(media_b_path)
+    media_b["object_fingerprint"] = _sha("object:media-b:unique")
+    media_b["support_row_fingerprint"] = (
+        readiness_module._support_row_fingerprint(media_b)  # noqa: SLF001
+    )
+    first_manifest = pl.DataFrame(
+        first_rows,
+        schema=reference_support_manifest_schema(),
+        orient="row",
+        strict=True,
+    ).sort(
+        "accepted_taxon_key",
+        "geo_cluster_id",
+        "route",
+        "support_split",
+        "reference_media_id",
+    )
+    first = build_reference_embeddings(
+        first_manifest,
+        _visual_inputs(tmp_path, first_manifest),
+        scorer=FakeScorer(
+            {
+                "media-a.png": [1.0, 0.0, 0.0],
+                "media-b.png": [0.0, 1.0, 0.0],
+            }
+        ),
+        embedding_created_at=NOW,
+    )
+    revised_manifest = _support_manifest(
+        tmp_path,
+        (("media-a", "support_train"), ("media-c", "model_selection")),
+        ineligible_ids=("media-b",),
+    )
+    scorer = FakeScorer({"media-c.png": [0.0, 0.0, 1.0]})
+
+    revised = build_reference_embeddings(
+        revised_manifest,
+        _visual_inputs(
+            tmp_path,
+            revised_manifest.filter(pl.col("support_eligible")),
+        ),
+        scorer=scorer,
+        embedding_cache=first,
+        embedding_created_at=NOW + timedelta(days=1),
+    )
+
+    assert sorted(revised["reference_media_id"].to_list()) == [
+        "media-a",
+        "media-c",
+    ]
+    assert [path.name for call in scorer.calls for path in call] == ["media-c.png"]
+    assert revised.filter(pl.col("reference_media_id") == "media-a")[
+        "embedding"
+    ].to_list() == first.filter(pl.col("reference_media_id") == "media-a")[
+        "embedding"
+    ].to_list()
+
+
 def test_review_provenance_does_not_change_vector_cache_identity(
     tmp_path: Path,
 ) -> None:

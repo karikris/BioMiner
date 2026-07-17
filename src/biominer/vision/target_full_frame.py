@@ -376,8 +376,9 @@ def encode_target_full_frame_plan(
     encoder: FullFrameImageEncoder,
     model_fingerprint: str,
     preprocessing_fingerprint: str,
+    embedding_cache: Iterable[RawFullFrameEmbedding] | None = None,
 ) -> EmbeddedTargetFullFramePlan:
-    """Encode each unique raw input once and fan references out to route units."""
+    """Encode missing raw inputs once and fan references out to route units."""
 
     _validate_target_full_frame_plan(plan)
     _require_sha256(model_fingerprint, "model_fingerprint")
@@ -409,22 +410,50 @@ def encode_target_full_frame_plan(
             )
         return EmbeddedTargetFullFramePlan(embeddings=(), scoring_unit_references=())
 
-    raw_vectors = tuple(
-        encoder.encode_images(
-            tuple(visual_input.image for visual_input in plan.visual_inputs)
+    cached_by_id = _full_frame_embedding_cache(embedding_cache)
+    embedding_by_visual_input: dict[str, RawFullFrameEmbedding] = {}
+    visual_inputs_to_encode: list[RawFullFrameVisualInput] = []
+    for visual_input in plan.visual_inputs:
+        expected_embedding_id = full_frame_embedding_id(
+            visual_input_id=visual_input.visual_input_id,
+            model_fingerprint=model_fingerprint,
+            preprocessing_fingerprint=preprocessing_fingerprint,
         )
+        cached = cached_by_id.get(expected_embedding_id)
+        if cached is None:
+            visual_inputs_to_encode.append(visual_input)
+            continue
+        _validate_cached_full_frame_embedding(
+            cached,
+            visual_input=visual_input,
+            model_fingerprint=model_fingerprint,
+            preprocessing_fingerprint=preprocessing_fingerprint,
+        )
+        embedding_by_visual_input[visual_input.visual_input_id] = cached
+
+    raw_vectors = (
+        tuple(
+            encoder.encode_images(
+                tuple(item.image for item in visual_inputs_to_encode)
+            )
+        )
+        if visual_inputs_to_encode
+        else ()
     )
-    if len(raw_vectors) != len(plan.visual_inputs):
+    if len(raw_vectors) != len(visual_inputs_to_encode):
         raise ValueError(
             "full-frame encoder returned "
-            f"{len(raw_vectors)} vectors for {len(plan.visual_inputs)} images"
+            f"{len(raw_vectors)} vectors for "
+            f"{len(visual_inputs_to_encode)} images"
         )
 
-    embeddings: list[RawFullFrameEmbedding] = []
-    expected_dimension: int | None = None
-    embedding_id_by_visual_input: dict[str, str] = {}
+    expected_dimension = (
+        next(iter(embedding_by_visual_input.values())).embedding_dimension
+        if embedding_by_visual_input
+        else None
+    )
     for visual_input, raw_vector in zip(
-        plan.visual_inputs,
+        visual_inputs_to_encode,
         raw_vectors,
         strict=True,
     ):
@@ -441,7 +470,6 @@ def encode_target_full_frame_plan(
             model_fingerprint=model_fingerprint,
             preprocessing_fingerprint=preprocessing_fingerprint,
         )
-        embedding_id_by_visual_input[visual_input.visual_input_id] = embedding_id
         embedding_norm = math.hypot(*vector)
         if not math.isfinite(embedding_norm):
             raise ValueError("full-frame encoder returned a non-finite embedding norm")
@@ -454,7 +482,7 @@ def encode_target_full_frame_plan(
                 "embedding_version": TARGET_FULL_FRAME_EMBEDDING_VERSION,
             }
         )
-        embeddings.append(
+        embedding_by_visual_input[visual_input.visual_input_id] = (
             RawFullFrameEmbedding(
                 embedding_id=embedding_id,
                 embedding_version=TARGET_FULL_FRAME_EMBEDDING_VERSION,
@@ -474,6 +502,18 @@ def encode_target_full_frame_plan(
                 embedding_norm=embedding_norm,
             )
         )
+
+    embeddings = tuple(
+        embedding_by_visual_input[item.visual_input_id]
+        for item in plan.visual_inputs
+    )
+    dimensions = {embedding.embedding_dimension for embedding in embeddings}
+    if len(dimensions) != 1:
+        raise ValueError("full-frame embedding cache has mixed dimensions")
+    embedding_id_by_visual_input = {
+        visual_input_id: embedding.embedding_id
+        for visual_input_id, embedding in embedding_by_visual_input.items()
+    }
 
     references: list[ScoringUnitEmbeddingReference] = []
     for unit in plan.scoring_units:
@@ -495,9 +535,88 @@ def encode_target_full_frame_plan(
             )
         )
     return EmbeddedTargetFullFramePlan(
-        embeddings=tuple(embeddings),
+        embeddings=embeddings,
         scoring_unit_references=tuple(references),
     )
+
+
+def _full_frame_embedding_cache(
+    cache: Iterable[RawFullFrameEmbedding] | None,
+) -> dict[str, RawFullFrameEmbedding]:
+    by_id: dict[str, RawFullFrameEmbedding] = {}
+    for embedding in cache or ():
+        if not isinstance(embedding, RawFullFrameEmbedding):
+            raise TypeError(
+                "full-frame embedding cache entries must be "
+                "RawFullFrameEmbedding values"
+            )
+        previous = by_id.setdefault(embedding.embedding_id, embedding)
+        if previous != embedding:
+            raise ValueError(
+                "full-frame embedding cache contains conflicting entries for "
+                f"{embedding.embedding_id}"
+            )
+    return by_id
+
+
+def _validate_cached_full_frame_embedding(
+    embedding: RawFullFrameEmbedding,
+    *,
+    visual_input: RawFullFrameVisualInput,
+    model_fingerprint: str,
+    preprocessing_fingerprint: str,
+) -> None:
+    expected_id = full_frame_embedding_id(
+        visual_input_id=visual_input.visual_input_id,
+        model_fingerprint=model_fingerprint,
+        preprocessing_fingerprint=preprocessing_fingerprint,
+    )
+    if embedding.embedding_id != expected_id:
+        raise ValueError("cached full-frame embedding ID mismatch")
+    expected_identity = (
+        TARGET_FULL_FRAME_EMBEDDING_VERSION,
+        visual_input.visual_input_id,
+        RAW_FULL_IMAGE_KIND,
+        visual_input.raw_image_content_hash,
+        visual_input.transformation_fingerprint,
+        model_fingerprint,
+        TARGET_FULL_FRAME_IMAGE_RESIZE_MODE,
+        TARGET_FULL_FRAME_PREPROCESSING.fingerprint,
+        preprocessing_fingerprint,
+    )
+    actual_identity = (
+        embedding.embedding_version,
+        embedding.visual_input_id,
+        embedding.visual_input_kind,
+        embedding.raw_image_content_hash,
+        embedding.transformation_fingerprint,
+        embedding.model_fingerprint,
+        embedding.image_resize_mode,
+        embedding.preprocessing_contract_fingerprint,
+        embedding.preprocessing_fingerprint,
+    )
+    if actual_identity != expected_identity:
+        raise ValueError("cached full-frame embedding identity mismatch")
+    vector = _validated_embedding(embedding.embedding)
+    if embedding.embedding_dimension != len(vector):
+        raise ValueError("cached full-frame embedding dimension mismatch")
+    expected_norm = math.hypot(*vector)
+    if not math.isfinite(embedding.embedding_norm) or not math.isclose(
+        embedding.embedding_norm,
+        expected_norm,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("cached full-frame embedding norm mismatch")
+    expected_fingerprint = _identity(
+        {
+            "embedding": vector,
+            "embedding_id": expected_id,
+            "embedding_version": TARGET_FULL_FRAME_EMBEDDING_VERSION,
+        }
+    )
+    if embedding.embedding_fingerprint != expected_fingerprint:
+        raise ValueError("cached full-frame embedding fingerprint mismatch")
 
 
 def _validate_target_full_frame_plan(plan: TargetFullFramePlan) -> None:
