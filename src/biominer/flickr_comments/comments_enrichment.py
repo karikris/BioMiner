@@ -15,6 +15,7 @@ from biominer.filter.extractor import SCIENTIFIC_NAME_PATTERN
 from biominer.flickr_fetch.endpoints import FLICKR_REST_BASE_URL
 from biominer.flickr_fetch.query_planner import COUNT_PROBE_PAGE_SIZE, FlickrQuery
 from biominer.flickr_fetch.metadata_poller import MetadataPollState
+from biominer.storage.sqlite_connection import connect_closing
 
 
 COMMENTS_METHOD = "flickr.photos.comments.getList"
@@ -296,7 +297,7 @@ class CommentsEnrichmentState:
             )
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        conn = connect_closing(self.path, timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         return conn

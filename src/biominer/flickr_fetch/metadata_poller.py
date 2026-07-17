@@ -33,6 +33,7 @@ from biominer.registry.normalize import normalize_name_key
 from biominer.registry.unified import stable_identity
 from biominer.storage.parquet import write_parquet
 from biominer.storage.cloud import CloudStorage
+from biominer.storage.sqlite_connection import connect_closing
 from biominer.config import StorageConfig, create_storage_backend, load_storage_config_from_env
 from biominer.storage.local import LocalStorageBackend
 from biominer.storage.paths import (
@@ -1148,7 +1149,7 @@ class MetadataPollState:
                 conn.execute(f"ALTER TABLE source_records ADD COLUMN {name} {sql_type}")
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        conn = connect_closing(self.path, timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
