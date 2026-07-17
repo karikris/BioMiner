@@ -848,8 +848,8 @@ def test_detection_pipeline_writes_ephemeral_crop_metadata_for_each_detection(tm
     detector = FakeObjectDetector(
         [
             [
-                DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 3, 3)),
-                DetectionCandidate(label="butterfly", score=0.8, bbox_xyxy=(1, 1, 4, 4)),
+                DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 3, 3), detector_prompt="butterfly"),
+                DetectionCandidate(label="butterfly", score=0.8, bbox_xyxy=(1, 1, 4, 4), detector_prompt="butterfly"),
             ]
         ]
     )
@@ -885,7 +885,7 @@ def test_detection_pipeline_target_mode_skips_all_crop_production(tmp_path, monk
     monkeypatch.setattr("biominer.detection.pipeline.crop_with_padding", fail_if_called)
     output = tmp_path / "target_object_detections.parquet"
     detector = FakeObjectDetector(
-        [[DetectionCandidate(label="adult_butterfly", score=0.9, bbox_xyxy=(0, 0, 3, 3))]]
+        [[DetectionCandidate(label="adult_butterfly", score=0.9, bbox_xyxy=(0, 0, 3, 3), detector_prompt="butterfly")]]
     )
 
     result = run_detection_pipeline(
@@ -922,9 +922,9 @@ def test_detection_pipeline_skips_crop_metadata_for_non_bioclip_eligible_detecti
     detector = FakeObjectDetector(
         [
             [
-                DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 2, 2)),
-                DetectionCandidate(label="moth_like", score=0.8, bbox_xyxy=(2, 0, 4, 2)),
-                DetectionCandidate(label="hard_negative", score=0.7, bbox_xyxy=(0, 2, 2, 4)),
+                DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 2, 2), detector_prompt="butterfly"),
+                DetectionCandidate(label="moth_like", score=0.8, bbox_xyxy=(2, 0, 4, 2), detector_prompt="moth"),
+                DetectionCandidate(label="hard_negative", score=0.7, bbox_xyxy=(0, 2, 2, 4), detector_prompt="drawing"),
             ]
         ]
     )
