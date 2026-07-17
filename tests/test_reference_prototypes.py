@@ -27,6 +27,11 @@ from biominer.bioclip.provisional_prototypes import (
     build_robust_provisional_prototypes,
     provisional_prototypes_schema,
 )
+from biominer.bioclip.reference_quality_diagnostics import (
+    REFERENCE_QUALITY_DIAGNOSTICS_FILE,
+    build_reference_quality_diagnostics,
+    write_reference_quality_diagnostics,
+)
 from biominer.bioclip.reference_prototypes import (
     PROTOTYPE_METHOD_NORMALIZED_MEAN,
     PROTOTYPE_METHOD_SIMPLESHOT_MEAN_CENTERED,
@@ -197,6 +202,61 @@ def test_robust_prototypes_count_mixed_provisional_and_human_support(
     assert set(result["reference_admission_mode"]) == {
         "adaptive_gbif_fast_start"
     }
+
+
+def test_provisional_reference_diagnostics_are_descriptive_not_taxonomic(
+    tmp_path: Path,
+) -> None:
+    specs = (
+        _spec("target-a", "target-a", TARGET, "Papilio demoleus", "cluster-a", (1.0, 0.02, 0.0)),
+        _spec("target-b", "target-b", TARGET, "Papilio demoleus", "cluster-a", (1.0, 0.05, 0.0)),
+        _spec("target-outlier", "target-outlier", TARGET, "Papilio demoleus", "cluster-a", (0.0, 1.0, 0.0)),
+        _spec("competitor-a", "competitor-a", COMPETITOR, "Papilio polytes", "cluster-a", (0.0, 1.0, 0.02)),
+        _spec("competitor-b", "competitor-b", COMPETITOR, "Papilio polytes", "cluster-a", (0.0, 1.0, 0.05)),
+        _spec("competitor-c", "competitor-c", COMPETITOR, "Papilio polytes", "cluster-a", (0.02, 1.0, 0.0)),
+    )
+    strict = _embedding_artifact(tmp_path, specs)
+    rows: list[dict[str, object]] = []
+    for source in strict.iter_rows(named=True):
+        row = {
+            **source,
+            "reference_admission_mode": "adaptive_gbif_fast_start",
+            "admission_policy_fingerprint": _sha("adaptive-policy"),
+            "support_manifest_fingerprint": _sha("adaptive-support"),
+            "identity_evidence_basis": "gbif_provider_asserted",
+            "provisional_support": True,
+            "human_review_status": "not_requested",
+            "review_decision_ids": [],
+        }
+        row["embedding_fingerprint"] = (
+            reference_embeddings_module._embedding_row_fingerprint(row)  # noqa: SLF001 - fixture rebinds exact persisted provenance.
+        )
+        rows.append(row)
+    provisional = pl.DataFrame(
+        rows,
+        schema=strict.schema,
+        orient="row",
+        strict=True,
+    )
+
+    diagnostics = build_reference_quality_diagnostics(provisional)
+    path = write_reference_quality_diagnostics(diagnostics, tmp_path / "quality")
+
+    assert diagnostics.height == 6
+    assert diagnostics["nearest_same_species_similarity"].null_count() == 0
+    assert diagnostics["nearest_competing_species_similarity"].null_count() == 0
+    assert set(diagnostics["taxon_misidentification_conclusion"]) == {
+        "not_assessed"
+    }
+    outlier_score = diagnostics.filter(
+        pl.col("reference_media_id") == "target-outlier"
+    )["embedding_outlier_score"].item()
+    regular_score = diagnostics.filter(
+        pl.col("reference_media_id") == "target-a"
+    )["embedding_outlier_score"].item()
+    assert outlier_score > regular_score
+    assert path.name == REFERENCE_QUALITY_DIAGNOSTICS_FILE
+    assert path.exists()
 
 
 @dataclass(frozen=True, slots=True)
