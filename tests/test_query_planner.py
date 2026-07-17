@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import polars as pl
+import pytest
 import biominer.flickr_fetch.query_planner as query_planner
 
 from biominer.flickr_fetch.query_planner import (
@@ -66,6 +67,7 @@ def test_registry_query_definitions_load_as_single_unsliced_page_one_work(tmp_pa
                 "name_class": "accepted_scientific",
                 "confidence": "high",
                 "enabled": True,
+                "query_eligible": True,
             },
             {
                 "query_definition_id": "q-tags",
@@ -86,6 +88,7 @@ def test_registry_query_definitions_load_as_single_unsliced_page_one_work(tmp_pa
                 "name_class": "accepted_scientific",
                 "confidence": "high",
                 "enabled": True,
+                "query_eligible": True,
             },
         ]
     )
@@ -205,7 +208,7 @@ def test_explicitly_query_eligible_t5_definitions_become_flickr_api_search_param
     assert "max_upload_date" not in flickr_search_params(by_field["tags"])
 
 
-def test_registry_query_loader_skips_generated_definitions_without_query_eligible_field(tmp_path) -> None:
+def test_registry_query_loader_requires_query_eligible_field(tmp_path) -> None:
     registry_queries = tmp_path / "flickr_query_definitions.parquet"
     frame = pl.DataFrame(
         [
@@ -251,10 +254,8 @@ def test_registry_query_loader_skips_generated_definitions_without_query_eligibl
     )
     frame.write_parquet(registry_queries)
 
-    queries = load_registry_flickr_queries(registry_queries)
-
-    assert [query.query_definition_id for query in queries] == ["q-scientific"]
-    assert [query.term for query in queries] == ["Papilio demoleus"]
+    with pytest.raises(ValueError, match="require the query_eligible field"):
+        load_registry_flickr_queries(registry_queries)
 
 
 def test_registry_query_loader_skips_query_ineligible_definitions(tmp_path) -> None:

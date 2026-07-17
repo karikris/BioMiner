@@ -37,15 +37,6 @@ DEFAULT_FIXED_SLICE_END_DATE = date.today().isoformat()
 DEFAULT_COARSE_SLICE_END_DATE: str | None = None
 DEFAULT_COARSE_SLICE_DAYS: int | None = None
 DEFAULT_FIXED_SLICE_DAYS = 5
-GENERATED_QUERY_SOURCES = {
-    "libretranslate",
-    "machine_translation",
-    "mymemory",
-    "t5",
-    "translation",
-}
-
-
 @dataclass(frozen=True)
 class FlickrQuery:
     term: str
@@ -116,8 +107,10 @@ def load_registry_flickr_queries_from_frame(
         return ()
     if "normalized_match_key" not in frame.columns:
         frame = frame.with_columns(pl.col("source_term").str.to_lowercase().alias("normalized_match_key"))
+    if "query_eligible" not in frame.columns:
+        raise ValueError("flickr query definitions require the query_eligible field")
     enabled_filter = pl.col("enabled") if "enabled" in frame.columns else pl.lit(True)
-    query_eligible_filter = pl.col("query_eligible") if "query_eligible" in frame.columns else _legacy_query_eligible_filter(frame)
+    query_eligible_filter = pl.col("query_eligible")
     rows = frame.filter(enabled_filter & query_eligible_filter).sort(["search_priority", "normalized_match_key", "query_definition_id"]).to_dicts()
     queries: list[FlickrQuery] = []
     seen_logical_queries: set[tuple[str, str]] = set()
@@ -165,14 +158,6 @@ def load_registry_flickr_queries_from_frame(
             )
         )
     return _sort_queries(queries)
-
-
-def _legacy_query_eligible_filter(frame: pl.DataFrame) -> pl.Expr:
-    name_class = pl.col("name_class").str.to_lowercase() if "name_class" in frame.columns else pl.lit("")
-    trust_tier = pl.col("trust_tier").str.to_uppercase() if "trust_tier" in frame.columns else pl.lit("")
-    source = pl.col("source").str.to_lowercase() if "source" in frame.columns else pl.lit("")
-    generated = (name_class == "generated_translation") | (trust_tier == "T5") | source.is_in(GENERATED_QUERY_SOURCES)
-    return ~generated
 
 
 def plan_pages_from_count(probe: FlickrQuery, *, total: int) -> tuple[FlickrQuery, ...]:
