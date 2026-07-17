@@ -22,19 +22,33 @@ from biominer.registry.classification_v3 import (
 )
 from biominer.run.stages import RunStage
 from biominer.species.context import CommonName, SpeciesContext
-from biominer.vision.gates import BioClipGateMode, BioClipGatePolicy
+from biominer.vision.gates import BioClipGatePolicy
 from biominer.workstore.sqlite import SQLiteWorkStore
 
 
-def test_enqueue_bioclip_work_from_detection_shards_only_uses_detected_butterflies(tmp_path: Path) -> None:
+def test_enqueue_bioclip_work_from_detection_shards_only_uses_scoreable_routed_detections(tmp_path: Path) -> None:
     storage = _FakeCloudStorage()
     workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
     detection_uri = "s3://biominer/runs/run_id=run-1/staging/evidence/stage=detect_objects/run_id=run-1/worker=w1/batch=001.parquet"
     storage.parquet_payloads[detection_uri] = pl.DataFrame(
         [
             _detection_row("photo-1", "det-1", "sha256:crop-1", "butterfly_like", "detected"),
-            _detection_row("photo-2", "det-2", "sha256:crop-2", "hard_negative", "detected"),
-            _detection_row("photo-3", "det-3", "sha256:crop-3", "moth_like", "detected"),
+            _detection_row(
+                "photo-2", "det-2", "sha256:crop-2", "hard_negative", "detected",
+                detection_route="artwork_logo_tattoo_or_other_artifact",
+                routing_action="exclude",
+                bioclip_route=None,
+                routing_priority="none",
+                routing_reason="artifact_prompt",
+            ),
+            _detection_row(
+                "photo-3", "det-3", "sha256:crop-3", "moth_like", "detected",
+                detection_route="possible_moth_or_other_insect",
+                routing_action="exclude",
+                bioclip_route=None,
+                routing_priority="none",
+                routing_reason="other_insect_prompt",
+            ),
             _detection_row("photo-4", "det-4", "", "butterfly_like", "no_detection"),
         ]
     )
@@ -62,7 +76,6 @@ def test_enqueue_bioclip_work_from_detection_shards_only_uses_detected_butterfli
         model_checkpoint="bioclip-2.5",
         candidate_set_id="candidate-set-1",
         ablation_modes=("detector_crop",),
-        bioclip_gate_policy=BioClipGatePolicy.legacy_butterfly_like_only(),
     )
     second = enqueue_bioclip_work_from_detection_shards(
         storage=storage,
@@ -77,7 +90,6 @@ def test_enqueue_bioclip_work_from_detection_shards_only_uses_detected_butterfli
         model_checkpoint="bioclip-2.5",
         candidate_set_id="candidate-set-1",
         ablation_modes=("detector_crop",),
-        bioclip_gate_policy=BioClipGatePolicy.legacy_butterfly_like_only(),
     )
 
     assert first.detection_shards_seen == 1
@@ -107,81 +119,6 @@ def test_enqueue_bioclip_work_from_detection_shards_only_uses_detected_butterfli
     assert payload["model"]["checkpoint"] == "bioclip-2.5"
     assert payload["detection"]["flickr_photo_id"] == "photo-1"
     assert payload["detection"]["detector_label"] == "butterfly_like"
-
-
-def test_enqueue_bioclip_work_can_use_exclude_hard_negative_gate(tmp_path: Path) -> None:
-    storage = _FakeCloudStorage()
-    workstore = SQLiteWorkStore(tmp_path / "workstore.sqlite")
-    detection_uri = "s3://biominer/runs/run_id=run-1/staging/evidence/stage=detect_objects/run_id=run-1/worker=w1/batch=001.parquet"
-    storage.parquet_payloads[detection_uri] = pl.DataFrame(
-        [
-            _detection_row("photo-butterfly", "det-butterfly", "sha256:crop-butterfly", "butterfly_like", "detected"),
-            _detection_row("photo-moth", "det-moth", "sha256:crop-moth", "moth_like", "detected"),
-            _detection_row("photo-caterpillar", "det-caterpillar", "sha256:crop-caterpillar", "caterpillar", "detected"),
-            _detection_row("photo-pupa", "det-pupa", "sha256:crop-pupa", "pupa", "detected"),
-            _detection_row("photo-insect", "det-insect", "sha256:crop-insect", "insect_like", "detected"),
-            _detection_row("photo-hard-negative", "det-hard-negative", "sha256:crop-hard-negative", "hard_negative", "detected"),
-            _detection_row("photo-empty", "det-empty", "", "no_detection", "no_detection"),
-            _detection_row("photo-failed", "det-failed", "", "failed_image_load", "failed_image_load"),
-        ]
-    )
-    workstore.register_shard(
-        job_name="biominer_production_run",
-        registry_version="registry-v1",
-        stage=RunStage.DETECT_OBJECTS.value,
-        run_id="run-1",
-        worker_id="detector-1",
-        uri=detection_uri,
-        checksum=None,
-        row_count=8,
-    )
-
-    result = enqueue_bioclip_work_from_detection_shards(
-        storage=storage,
-        workstore=workstore,
-        job_name="biominer_production_run",
-        registry_version="registry-v1",
-        run_id="run-1",
-        detection_stage=RunStage.DETECT_OBJECTS.value,
-        score_stage=RunStage.SCORE_BIOCLIP.value,
-        model_id="imageomics/bioclip-2.5-vith14",
-        model_version="2.5",
-        model_checkpoint="bioclip-2.5",
-        candidate_set_id="candidate-set-1",
-        ablation_modes=("detector_crop",),
-        bioclip_gate_policy=BioClipGatePolicy(
-            mode=BioClipGateMode.EXCLUDE_HARD_NEGATIVE,
-            score_no_detection_whole_image=True,
-        ),
-    )
-
-    assert result.detections_seen == 8
-    assert result.eligible_detections_seen == 6
-    assert result.enqueued_work_items == 6
-    items = workstore.list_work_items(
-        job_name="biominer_production_run",
-        stage=RunStage.SCORE_BIOCLIP.value,
-        registry_version="registry-v1",
-    )
-    payloads = [item["payload"] for item in items]
-    assert [payload["detection_id"] for payload in payloads] == [
-        "det-butterfly",
-        "det-moth",
-        "det-caterpillar",
-        "det-pupa",
-        "det-insect",
-        "det-empty",
-    ]
-    assert [payload["ablation_mode"] for payload in payloads] == [
-        "detector_crop",
-        "detector_crop",
-        "detector_crop",
-        "detector_crop",
-        "detector_crop",
-        "whole_image",
-    ]
-    assert {payload["bioclip_gate_mode"] for payload in payloads} == {"exclude_hard_negative"}
-    assert payloads[-1]["bioclip_gate_reason"] == "no_detection_whole_image_fallback"
 
 
 def test_enqueue_bioclip_work_default_routing_scores_only_supported_route(

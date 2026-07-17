@@ -37,7 +37,7 @@ from biominer.species.context import SpeciesContext
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.parquet import DEFAULT_PARQUET_COMPRESSION, ParquetPartWrite
 from biominer.storage.shard_paths import build_parquet_part_uri
-from biominer.vision.gates import BioClipGatePolicy
+from biominer.vision.gates import BIOCLIP_GATE_MODE, BioClipGatePolicy
 from biominer.vision.score_inputs import MaterializedBioClipScoreInputs, materialize_bioclip_score_inputs
 from biominer.workstore.base import WorkStore
 
@@ -136,8 +136,6 @@ def enqueue_rolling_vision_work_from_source_shards(
     vision_batch_rows: int = 500,
     detector: dict[str, Any] | None = None,
     vision_settings: Any | None = None,
-    bioclip_gate_mode: str = "routed_visual_domain",
-    score_no_detection_whole_image: bool = False,
     supported_comparison_routes: tuple[str, ...] = ("adult_field",),
     bioclip_model: dict[str, str] | None = None,
     candidate_set_id: str = "",
@@ -171,8 +169,6 @@ def enqueue_rolling_vision_work_from_source_shards(
     settings_key = rolling_vision_settings_key(
         detector=detector or {},
         vision_settings=vision_settings,
-        bioclip_gate_mode=bioclip_gate_mode,
-        score_no_detection_whole_image=score_no_detection_whole_image,
         supported_comparison_routes=supported_comparison_routes,
         bioclip_model=bioclip_model or {},
         candidate_set_id=candidate_set_id,
@@ -271,8 +267,6 @@ def rolling_vision_settings_key(
     *,
     detector: dict[str, Any],
     vision_settings: Any | None,
-    bioclip_gate_mode: str = "routed_visual_domain",
-    score_no_detection_whole_image: bool = False,
     supported_comparison_routes: tuple[str, ...] = ("adult_field",),
     bioclip_model: dict[str, str],
     candidate_set_id: str,
@@ -324,8 +318,7 @@ def rolling_vision_settings_key(
             "crop_target_px": _settings_value(vision_settings, "crop_target_px"),
         },
         "bioclip_gate": {
-            "mode": str(bioclip_gate_mode),
-            "score_no_detection_whole_image": bool(score_no_detection_whole_image),
+            "mode": BIOCLIP_GATE_MODE,
             "supported_comparison_routes": list(
                 dict.fromkeys(str(route) for route in supported_comparison_routes)
             ),

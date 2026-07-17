@@ -73,8 +73,6 @@ def test_rolling_vision_work_key_changes_by_every_v3_cascade_identity_field(
         vision_settings=VisionRuntimeSettings(
             yolo_imgsz=768, yolo_conf=0.20, yolo_iou=0.50, yolo_max_det=8
         ),
-        bioclip_gate_mode="exclude_hard_negative",
-        score_no_detection_whole_image=True,
         bioclip_model=bioclip_model,
         candidate_set_id="candidate-set-v1",
         classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
@@ -86,8 +84,6 @@ def test_rolling_vision_work_key_changes_by_every_v3_cascade_identity_field(
         vision_settings=VisionRuntimeSettings(
             yolo_imgsz=768, yolo_conf=0.20, yolo_iou=0.50, yolo_max_det=8
         ),
-        bioclip_gate_mode="exclude_hard_negative",
-        score_no_detection_whole_image=True,
         bioclip_model=bioclip_model,
         candidate_set_id="candidate-set-v1",
         classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
@@ -114,10 +110,7 @@ def test_rolling_vision_work_key_changes_by_every_v3_cascade_identity_field(
     assert base["work_key"] != changed["work_key"]
     assert base["settings_key"]["detector"]["yolo_imgsz"] == 768
     assert base["settings_key"]["crop"]["crop_target_px"] == 336
-    assert base["settings_key"]["bioclip_gate"]["mode"] == "exclude_hard_negative"
-    assert (
-        base["settings_key"]["bioclip_gate"]["score_no_detection_whole_image"] is True
-    )
+    assert base["settings_key"]["bioclip_gate"]["mode"] == "routed_visual_domain"
     assert (
         base["settings_key"]["bioclip_model"]["checkpoint"]
         == "hf-hub:imageomics/bioclip-2.5-vith14"
@@ -148,8 +141,6 @@ def test_rolling_vision_work_key_ignores_retry_and_attempt_metadata() -> None:
             "checkpoint": "ckpt",
         },
         vision_settings=VisionRuntimeSettings(yolo_imgsz=768),
-        bioclip_gate_mode="exclude_hard_negative",
-        score_no_detection_whole_image=True,
         bioclip_model={
             "model_id": "bioclip",
             "model_version": "test",
@@ -212,7 +203,6 @@ def test_rolling_vision_settings_default_to_adult_routed_gate_and_bind_prompt_po
 
     assert settings["bioclip_gate"] == {
         "mode": "routed_visual_domain",
-        "score_no_detection_whole_image": False,
         "supported_comparison_routes": ["adult_field"],
     }
     assert settings["detector"]["prompt_classes"] == ["butterfly", "moth"]

@@ -115,7 +115,7 @@ from biominer.vision.cloud_work import (
     run_bounded_cloud_rolling_pipeline,
     score_cloud_rolling_detection_batch,
 )
-from biominer.vision.gates import BioClipGatePolicy
+from biominer.vision.gates import BIOCLIP_GATE_MODE, BioClipGatePolicy
 from biominer.workstore.base import WorkStore
 
 
@@ -1235,8 +1235,6 @@ class ProductionRunOrchestrator:
             stale_after_seconds=int(self.request.limits.get("stale_claim_seconds") or DEFAULT_STALE_CLAIM_SECONDS),
         )
         detection_policy = self.request.vision_settings.to_detection_policy(DetectionPolicy(backend=self.object_detector.backend))
-        gate_mode = "routed_visual_domain"
-        score_no_detection_whole_image = False
         plan_result = enqueue_rolling_vision_work_from_source_shards(
             storage=self.storage,
             workstore=self.workstore,
@@ -1255,8 +1253,6 @@ class ProductionRunOrchestrator:
                 "prompt_set_fingerprint": str(getattr(self.object_detector, "prompt_set_fingerprint", "") or ""),
             },
             vision_settings=self.request.vision_settings,
-            bioclip_gate_mode=gate_mode,
-            score_no_detection_whole_image=score_no_detection_whole_image,
             supported_comparison_routes=PRODUCTION_BIOCLIP_COMPARISON_ROUTES,
             bioclip_model={
                 "model_id": self.object_scorer.model_id,
@@ -1316,8 +1312,6 @@ class ProductionRunOrchestrator:
             "bioclip_batch_retries": 0,
         }
         gate_policy = BioClipGatePolicy(
-            mode=gate_mode,
-            score_no_detection_whole_image=score_no_detection_whole_image,
             supported_comparison_routes=PRODUCTION_BIOCLIP_COMPARISON_ROUTES,
         )
 
@@ -1418,8 +1412,7 @@ class ProductionRunOrchestrator:
                 "workstore_work_items_completed": completed,
                 "workstore_stale_claims_requeued": stale_requeued,
                 "vision_worker": "rolling",
-                "bioclip_gate_mode": gate_mode,
-                "score_no_detection_whole_image": score_no_detection_whole_image,
+                "bioclip_gate_mode": BIOCLIP_GATE_MODE,
                 "supported_bioclip_comparison_routes": list(PRODUCTION_BIOCLIP_COMPARISON_ROUTES),
                 "parquet_part_count": completed,
                 "parquet_part_rows": accumulated_metrics["detections_written"],

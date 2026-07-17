@@ -46,9 +46,9 @@ def object_detection_row(
     crop_padding_ratio: float = 0.12,
     detection_status: str = "detected",
     failure_reason: str | None = None,
-    detector_prompt: str | None = None,
-    detector_class_id: int | None = None,
-    detector_prompt_set_fingerprint: str | None = None,
+    detector_prompt: str | None = "butterfly",
+    detector_class_id: int | None = 0,
+    detector_prompt_set_fingerprint: str | None = "sha256:" + "a" * 64,
 ) -> dict[str, object]:
     bbox = bbox_xyxy or [0.0, 0.0, 10.0, 10.0]
     record = flickr_source_record(photo_id)
@@ -97,9 +97,9 @@ def detection_candidate(
     *,
     score: float = 0.91,
     bbox_xyxy: tuple[float, float, float, float] = (0.0, 0.0, 4.0, 4.0),
-    detector_prompt: str | None = None,
-    detector_class_id: int | None = None,
-    detector_prompt_set_fingerprint: str | None = None,
+    detector_prompt: str | None = "butterfly",
+    detector_class_id: int | None = 0,
+    detector_prompt_set_fingerprint: str | None = "sha256:" + "a" * 64,
 ) -> DetectionCandidate:
     return DetectionCandidate(
         label=label,

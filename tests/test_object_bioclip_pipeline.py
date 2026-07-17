@@ -35,7 +35,7 @@ from biominer.detection.schema import DETECTION_OUTPUT_SCHEMA, empty_detection_f
 from biominer.evidence.join import build_photo_summary_from_joined_evidence
 from biominer.run.taxon_scope import TaxonScope
 from biominer.species.context import CommonName, RegionHint, SpeciesContext
-from biominer.vision.gates import BioClipGateMode, BioClipGatePolicy
+from biominer.vision.gates import BioClipGatePolicy
 from factories import canonical_records, object_detection_row, object_detections
 
 
@@ -857,13 +857,14 @@ def test_materialized_detector_crop_batches_default_to_routed_adult_gate(
     assert seen == ["det-1"]
 
 
-def test_materialized_detector_crop_batches_skip_noneligible_without_image_load(tmp_path) -> None:
+def test_materialized_detector_crop_batches_skip_excluded_routes_without_image_load(tmp_path) -> None:
     eligible = _detections().to_dicts()[0]
     noneligible = {
         **object_detection_row(
             "photo-without-canonical-record",
             detection_id="moth-1",
             label="moth_like",
+            detector_prompt="moth",
         ),
         "bbox_xyxy": [],
     }
@@ -879,7 +880,6 @@ def test_materialized_detector_crop_batches_skip_noneligible_without_image_load(
         detections=pl.DataFrame([noneligible, eligible]),
         image_loader=image_loader,
         temp_dir=tmp_path,
-        bioclip_gate_policy=BioClipGatePolicy.legacy_butterfly_like_only(),
         crop_target_px=3,
     ):
         seen_batches.append([str(item["detection_id"]) for item in batch.items])
@@ -1141,7 +1141,7 @@ def test_screen_object_detections_retains_materialized_detector_crops_when_debug
     assert list(crop_root.rglob("*.ppm"))
 
 
-def test_screen_object_detections_materialized_path_skips_legacy_ineligible_without_image_load(tmp_path) -> None:
+def test_screen_object_detections_materialized_path_skips_excluded_routes_without_image_load(tmp_path) -> None:
     image_loads: list[str] = []
 
     class FailingScorer:
@@ -1166,6 +1166,7 @@ def test_screen_object_detections_materialized_path_skips_legacy_ineligible_with
             detection_id="det-1",
             label="moth_like",
             crop_hash="sha256:crop-1",
+            detector_prompt="moth",
         ),
         object_detection_row(
             detection_id="det-2",
@@ -1173,6 +1174,7 @@ def test_screen_object_detections_materialized_path_skips_legacy_ineligible_with
             score=0.6,
             bbox_xyxy=[10.0, 10.0, 20.0, 20.0],
             crop_hash="sha256:crop-2",
+            detector_prompt="moth",
         ),
     )
 
@@ -1184,7 +1186,6 @@ def test_screen_object_detections_materialized_path_skips_legacy_ineligible_with
         scorer=crop_scorer,
         output_path=tmp_path / "object_scores.parquet",
         ablation_mode="detector_crop",
-        bioclip_gate_policy=BioClipGatePolicy.legacy_butterfly_like_only(),
     )
 
     assert result.crops_scored == 0
@@ -1556,14 +1557,14 @@ def test_object_bioclip_adaptive_batching_reports_min_batch_memory_failure(tmp_p
 
 def test_object_bioclip_production_gate_scores_only_detected_butterflies(tmp_path) -> None:
     cases = [
-        ("det-butterfly", "photo-1", "butterfly_like", "detected"),
-        ("det-moth", "photo-moth", "moth_like", "detected"),
-        ("det-caterpillar", "photo-caterpillar", "caterpillar", "detected"),
-        ("det-pupa", "photo-pupa", "pupa", "detected"),
-        ("det-insect", "photo-insect", "insect_like", "detected"),
-        ("det-hard-negative", "photo-hard-negative", "hard_negative", "detected"),
-        ("det-no-detection", "photo-no-detection", "butterfly_like", "no_detection"),
-        ("det-failed-image", "photo-failed-image", "butterfly_like", "failed_image_load"),
+        ("det-butterfly", "photo-1", "butterfly_like", "detected", "butterfly"),
+        ("det-moth", "photo-moth", "moth_like", "detected", "moth"),
+        ("det-caterpillar", "photo-caterpillar", "caterpillar", "detected", "caterpillar"),
+        ("det-pupa", "photo-pupa", "pupa", "detected", "chrysalis"),
+        ("det-insect", "photo-insect", "insect_like", "detected", "insect"),
+        ("det-hard-negative", "photo-hard-negative", "hard_negative", "detected", "drawing"),
+        ("det-no-detection", "photo-no-detection", "butterfly_like", "no_detection", "butterfly"),
+        ("det-failed-image", "photo-failed-image", "butterfly_like", "failed_image_load", "butterfly"),
     ]
     detections = pl.DataFrame(
         [
@@ -1574,8 +1575,9 @@ def test_object_bioclip_production_gate_scores_only_detected_butterflies(tmp_pat
                 detection_status=status,
                 crop_hash=f"sha256:{detection_id}",
                 failure_reason=None if status == "detected" else status,
+                detector_prompt=prompt,
             )
-            for detection_id, photo_id, label, status in cases
+            for detection_id, photo_id, label, status, prompt in cases
         ]
     )
 
@@ -1617,71 +1619,6 @@ def test_object_bioclip_production_gate_scores_only_detected_butterflies(tmp_pat
     assert scorer.calls == [("det-butterfly",), ("det-butterfly",)]
 
 
-def test_object_bioclip_exclude_hard_negative_gate_scores_mixed_non_hard_labels(tmp_path) -> None:
-    base_detection = _detections().to_dicts()[0]
-    cases = [
-        ("det-butterfly", "butterfly_like"),
-        ("det-moth", "moth_like"),
-        ("det-caterpillar", "caterpillar"),
-        ("det-pupa", "pupa"),
-        ("det-insect", "insect_like"),
-        ("det-hard-negative", "hard_negative"),
-    ]
-    detections = pl.DataFrame(
-        [
-            {
-                **base_detection,
-                "detection_id": detection_id,
-                "detector_label": label,
-                "detection_status": "detected",
-                "crop_hash": f"sha256:{detection_id}",
-            }
-            for detection_id, label in cases
-        ]
-    )
-
-    class GateRecordingScorer:
-        model_id = "fake-bioclip"
-        model_version = "test"
-        model_checkpoint = "fake-checkpoint"
-
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, ...]] = []
-
-        def score(self, item, labels):  # noqa: ANN001, ANN202 - proves the batch path is used.
-            raise AssertionError(f"unexpected single-item BioCLIP score for {item.get('detection_id')}")
-
-        def score_label_sets_batch(self, items, label_sets):  # noqa: ANN001, ANN202 - mirrors object batch scorer API.
-            self.calls.append(tuple(str(item["detection_id"]) for item in items))
-            return {
-                name: [
-                    {label: (0.84 if label == "a photo of Danaus plexippus" else 0.1) for label in labels}
-                    for _item in items
-                ]
-                for name, labels in label_sets.items()
-            }
-
-    scorer = GateRecordingScorer()
-    result = screen_object_detections(
-        canonical_records=_canonical_records(),
-        detections=detections,
-        species_context=_context(),
-        candidate_set=_fixture_candidate_set(),
-        scorer=scorer,
-        output_path=tmp_path / "object_scores.parquet",
-        ablation_mode="detector_crop",
-        bioclip_gate_policy=BioClipGatePolicy(
-            mode=BioClipGateMode.EXCLUDE_HARD_NEGATIVE,
-            score_no_detection_whole_image=False,
-        ),
-    )
-
-    expected_scored = ["det-butterfly", "det-moth", "det-caterpillar", "det-pupa", "det-insect"]
-    assert result.crops_scored == len(expected_scored)
-    assert result.frame["detection_id"].to_list() == expected_scored
-    assert scorer.calls == [tuple(expected_scored), tuple(expected_scored)]
-
-
 def test_object_evidence_join_preserves_non_scored_detection_rows(tmp_path) -> None:
     cases = [
         ("det-butterfly", "photo-1", "butterfly_like", "detected", "sha256:det-butterfly"),
@@ -1698,6 +1635,13 @@ def test_object_evidence_join_preserves_non_scored_detection_rows(tmp_path) -> N
                     label=label,
                     detection_status=status,
                     crop_hash=crop_hash,  # type: ignore[arg-type]
+                    detector_prompt=(
+                        "moth"
+                        if label == "moth_like"
+                        else "drawing"
+                        if label == "hard_negative"
+                        else "butterfly"
+                    ),
                     failure_reason=None
                     if status == "detected"
                     else "no_butterfly_like_object",
@@ -1806,7 +1750,7 @@ def test_object_bioclip_rejects_target_aware_rows_in_legacy_output(
     assert not (tmp_path / "object_scores.parquet").exists()
 
 
-def test_object_bioclip_skips_legacy_ineligible_detector_labels(tmp_path) -> None:
+def test_object_bioclip_skips_excluded_detector_routes(tmp_path) -> None:
     class FailingScorer:
         model_id = "fake-bioclip"
         model_version = "test"
@@ -1820,6 +1764,7 @@ def test_object_bioclip_skips_legacy_ineligible_detector_labels(tmp_path) -> Non
             detection_id="det-1",
             label="moth_like",
             crop_hash="sha256:crop-1",
+            detector_prompt="moth",
         ),
         object_detection_row(
             detection_id="det-2",
@@ -1827,6 +1772,7 @@ def test_object_bioclip_skips_legacy_ineligible_detector_labels(tmp_path) -> Non
             score=0.6,
             bbox_xyxy=[10.0, 10.0, 20.0, 20.0],
             crop_hash="sha256:crop-2",
+            detector_prompt="moth",
         ),
     )
     result = screen_object_detections(
@@ -1837,7 +1783,6 @@ def test_object_bioclip_skips_legacy_ineligible_detector_labels(tmp_path) -> Non
         scorer=FailingScorer(),
         output_path=tmp_path / "object_scores.parquet",
         ablation_mode="detector_crop",
-        bioclip_gate_policy=BioClipGatePolicy.legacy_butterfly_like_only(),
     )
 
     assert result.crops_scored == 0
@@ -1972,7 +1917,11 @@ def test_object_bioclip_score_keeps_metadata_negative_hint_as_review_context(tmp
 
 def test_object_bioclip_score_bins_visual_artifact_object(tmp_path) -> None:
     detection = object_detections(
-        object_detection_row(label="hard_negative", crop_hash="sha256:crop-1")
+        object_detection_row(
+            label="hard_negative",
+            crop_hash="sha256:crop-1",
+            detector_prompt="drawing",
+        )
     )
     scores_path = tmp_path / "object_scores.parquet"
 

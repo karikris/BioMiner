@@ -1,5 +1,5 @@
 from biominer.vision.gates import (
-    BioClipGateMode,
+    BIOCLIP_GATE_MODE,
     BioClipGatePolicy,
     ScoreInputDecision,
     bioclip_score_input_decision,
@@ -76,7 +76,7 @@ __all__ = [
     "TARGET_FULL_FRAME_PREPROCESSING",
     "AttentionQualityPolicy",
     "AttentionRegion",
-    "BioClipGateMode",
+    "BIOCLIP_GATE_MODE",
     "BioClipGatePolicy",
     "EmbeddedTargetFullFramePlan",
     "FullFrameAttentionResult",

@@ -336,7 +336,6 @@ def run_rolling_worker_benchmark_matrix(
                 image_prefetch_batches=2,
                 accelerator_concurrency=int(variant["accelerator_concurrency"]),
                 bioclip_preprocess_workers=int(variant["bioclip_preprocess_workers"]),
-                bioclip_gate_mode=str(variant["bioclip_gate_mode"]),
             ),
             image_stage=_benchmark_image_stage,
             detection_stage=_benchmark_detection_stage,
@@ -377,7 +376,6 @@ def run_rolling_worker_benchmark_matrix(
             "yolo_sidecar_transport": ["json_b64", "image_path"],
             "accelerator_concurrency": [1, 2],
             "bioclip_preprocess_workers": [1, 2, 4],
-            "bioclip_gate_mode": ["butterfly_like_only", "exclude_hard_negative"],
             "vision_batch_rows": [250, 500, 1000],
         },
         "variants": rows,
@@ -400,14 +398,12 @@ def rolling_worker_benchmark_variants() -> list[dict[str, Any]]:
             "yolo_sidecar_transport": transport,
             "accelerator_concurrency": accelerator_concurrency,
             "bioclip_preprocess_workers": preprocess_workers,
-            "bioclip_gate_mode": gate_mode,
             "vision_batch_rows": batch_rows,
         }
-        for transport, accelerator_concurrency, preprocess_workers, gate_mode, batch_rows in product(
+        for transport, accelerator_concurrency, preprocess_workers, batch_rows in product(
             ("json_b64", "image_path"),
             (1, 2),
             (1, 2, 4),
-            ("butterfly_like_only", "exclude_hard_negative"),
             (250, 500, 1000),
         )
     ]
@@ -812,7 +808,6 @@ def _rolling_matrix_summary_markdown(metrics: Mapping[str, Any]) -> str:
                     f"transport={row.get('yolo_sidecar_transport')}",
                     f"accel={row.get('accelerator_concurrency')}",
                     f"preprocess={row.get('bioclip_preprocess_workers')}",
-                    f"gate={row.get('bioclip_gate_mode')}",
                     f"batch={row.get('vision_batch_rows')}",
                     f"elapsed={row.get('elapsed_seconds')}",
                 ]

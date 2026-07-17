@@ -58,8 +58,6 @@ class RollingVisionWorkerSettings:
     score_to_commit_batches: int = 2
     accelerator_concurrency: int = 1
     bioclip_preprocess_workers: int = 1
-    bioclip_gate_mode: str = "routed_visual_domain"
-    score_no_detection_whole_image: bool = False
     heartbeat_interval_seconds: float = 30.0
 
 

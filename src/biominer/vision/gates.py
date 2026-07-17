@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 import re
 from typing import Any, Literal
 
@@ -18,21 +17,13 @@ COMPARISON_ROUTE_BY_DETECTION_ROUTE = {
     "pinned_specimen": "pinned_specimen",
 }
 _ROUTING_POLICY_FINGERPRINT = re.compile(r"sha256:[0-9a-f]{64}\Z")
-
-
-class BioClipGateMode(StrEnum):
-    ROUTED_VISUAL_DOMAIN = "routed_visual_domain"
-    BUTTERFLY_LIKE_ONLY = "butterfly_like_only"
-    EXCLUDE_HARD_NEGATIVE = "exclude_hard_negative"
+BIOCLIP_GATE_MODE = "routed_visual_domain"
 
 
 @dataclass(frozen=True)
 class BioClipGatePolicy:
-    mode: BioClipGateMode | str = BioClipGateMode.ROUTED_VISUAL_DOMAIN
     supported_comparison_routes: tuple[str, ...] = ("adult_field",)
-    eligible_detector_labels: tuple[str, ...] = ("butterfly_like",)
     detected_visual_input_kind: VisualInputKind = "detector_crop"
-    score_no_detection_whole_image: bool = False
 
     def __post_init__(self) -> None:
         routes = tuple(
@@ -46,22 +37,6 @@ class BioClipGatePolicy:
                 "unsupported BioCLIP comparison route(s): " + ", ".join(invalid)
             )
         object.__setattr__(self, "supported_comparison_routes", routes)
-
-    @classmethod
-    def legacy_butterfly_like_only(cls, *, eligible_detector_labels: tuple[str, ...] = ("butterfly_like",)) -> BioClipGatePolicy:
-        return cls(
-            mode=BioClipGateMode.BUTTERFLY_LIKE_ONLY,
-            eligible_detector_labels=eligible_detector_labels,
-            score_no_detection_whole_image=False,
-        )
-
-    @property
-    def normalized_mode(self) -> BioClipGateMode:
-        try:
-            return self.mode if isinstance(self.mode, BioClipGateMode) else BioClipGateMode(str(self.mode))
-        except ValueError as exc:
-            valid = ", ".join(mode.value for mode in BioClipGateMode)
-            raise ValueError(f"unsupported BioCLIP gate mode {self.mode!r}; expected one of: {valid}") from exc
 
 
 @dataclass(frozen=True)
@@ -97,45 +72,11 @@ class ScoreInputDecision:
 
 def bioclip_score_input_decision(row: dict[str, Any], policy: BioClipGatePolicy | None = None) -> ScoreInputDecision:
     active = policy or BioClipGatePolicy()
-    mode = active.normalized_mode
     status = str(row.get("detection_status") or "").strip()
-    label = str(row.get("detector_label") or "").strip()
     routing = _routing_fields(row)
-
-    if mode == BioClipGateMode.ROUTED_VISUAL_DOMAIN:
-        return _routed_decision(
-            status=status,
-            policy=active,
-            routing=routing,
-        )
-
-    if status in {"failed_image_load", "image_load_failed"}:
-        return _exclude(mode, "image_load_failed", routing=routing)
-    if status == "no_detection":
-        if active.score_no_detection_whole_image:
-            return _score(
-                mode,
-                "whole_image",
-                "no_detection_whole_image_fallback",
-                routing=routing,
-            )
-        return _exclude(mode, "no_detection_fallback_disabled", routing=routing)
-    if status != "detected":
-        return _exclude(
-            mode,
-            f"detection_status_not_scoreable:{status or 'missing'}",
-            routing=routing,
-        )
-    if not label:
-        return _exclude(mode, "missing_detector_label", routing=routing)
-    if label == "hard_negative":
-        return _exclude(mode, "hard_negative_detector_label", routing=routing)
-    if mode == BioClipGateMode.BUTTERFLY_LIKE_ONLY and label not in set(active.eligible_detector_labels):
-        return _exclude(mode, "detector_label_not_eligible", routing=routing)
-    return _score(
-        mode,
-        active.detected_visual_input_kind,
-        "detected_non_hard_negative",
+    return _routed_decision(
+        status=status,
+        policy=active,
         routing=routing,
     )
 
@@ -147,16 +88,14 @@ def _routed_decision(
     routing: dict[str, str | None],
 ) -> ScoreInputDecision:
     if status in {"failed_image_load", "image_load_failed"}:
-        return _exclude(policy.normalized_mode, "image_load_failed", routing=routing)
+        return _exclude("image_load_failed", routing=routing)
     if status == "no_detection":
         return _exclude(
-            policy.normalized_mode,
             "routed_no_detection_not_scoreable",
             routing=routing,
         )
     if status != "detected":
         return _exclude(
-            policy.normalized_mode,
             f"detection_status_not_scoreable:{status or 'missing'}",
             routing=routing,
         )
@@ -165,7 +104,6 @@ def _routed_decision(
     comparison_route = routing["bioclip_route"]
     if not action:
         return _exclude(
-            policy.normalized_mode,
             "missing_routing_action",
             routing=routing,
         )
@@ -173,26 +111,22 @@ def _routed_decision(
         identity_error = _routing_identity_error(routing)
         if identity_error is not None:
             return _exclude(
-                policy.normalized_mode,
                 identity_error,
                 routing=routing,
             )
         if not routing["detection_route"]:
             return _exclude(
-                policy.normalized_mode,
                 "missing_detection_route",
                 routing=routing,
             )
         if not comparison_route:
             return _exclude(
-                policy.normalized_mode,
                 "missing_bioclip_route",
                 routing=routing,
             )
     if action == "review":
         if routing["routing_priority"] != "low":
             return _exclude(
-                policy.normalized_mode,
                 "review_routing_priority_not_low",
                 routing=routing,
             )
@@ -202,37 +136,31 @@ def _routed_decision(
             "ambiguous_visual_domain",
         }:
             return _exclude(
-                policy.normalized_mode,
                 f"review_detection_route_not_supported:{detection_route}",
                 routing=routing,
             )
         if comparison_route != "adult_field":
             return _exclude(
-                policy.normalized_mode,
                 "review_detection_comparison_route_mismatch:"
                 f"{detection_route}:{comparison_route}",
                 routing=routing,
             )
         return _review(
-            policy.normalized_mode,
             "routed_for_review",
             routing=routing,
         )
     if action == "exclude":
         return _exclude(
-            policy.normalized_mode,
             "routing_action_exclude",
             routing=routing,
         )
     if action != "score":
         return _exclude(
-            policy.normalized_mode,
             f"unsupported_routing_action:{action}",
             routing=routing,
         )
     if comparison_route not in policy.supported_comparison_routes:
         return _exclude(
-            policy.normalized_mode,
             f"unsupported_comparison_route:{comparison_route}",
             routing=routing,
         )
@@ -242,19 +170,16 @@ def _routed_decision(
     )
     if expected_comparison_route is None:
         return _exclude(
-            policy.normalized_mode,
             f"unsupported_detection_route:{detection_route}",
             routing=routing,
         )
     if comparison_route != expected_comparison_route:
         return _exclude(
-            policy.normalized_mode,
             "detection_comparison_route_mismatch:"
             f"{detection_route}:{comparison_route}",
             routing=routing,
         )
     return _score(
-        policy.normalized_mode,
         policy.detected_visual_input_kind,
         "routed_supported_comparison",
         routing=routing,
@@ -262,7 +187,6 @@ def _routed_decision(
 
 
 def _score(
-    mode: BioClipGateMode,
     visual_input_kind: VisualInputKind,
     reason: str,
     *,
@@ -271,7 +195,7 @@ def _score(
     return ScoreInputDecision(
         should_score=True,
         visual_input_kind=visual_input_kind,
-        bioclip_gate_mode=mode.value,
+        bioclip_gate_mode=BIOCLIP_GATE_MODE,
         bioclip_gate_decision="score",
         bioclip_gate_reason=reason,
         **routing,
@@ -279,7 +203,6 @@ def _score(
 
 
 def _review(
-    mode: BioClipGateMode,
     reason: str,
     *,
     routing: dict[str, str | None],
@@ -287,7 +210,7 @@ def _review(
     return ScoreInputDecision(
         should_score=False,
         visual_input_kind=None,
-        bioclip_gate_mode=mode.value,
+        bioclip_gate_mode=BIOCLIP_GATE_MODE,
         bioclip_gate_decision="review",
         bioclip_gate_reason=reason,
         **routing,
@@ -295,7 +218,6 @@ def _review(
 
 
 def _exclude(
-    mode: BioClipGateMode,
     reason: str,
     *,
     routing: dict[str, str | None],
@@ -303,7 +225,7 @@ def _exclude(
     return ScoreInputDecision(
         should_score=False,
         visual_input_kind=None,
-        bioclip_gate_mode=mode.value,
+        bioclip_gate_mode=BIOCLIP_GATE_MODE,
         bioclip_gate_decision="exclude",
         bioclip_gate_reason=reason,
         **routing,
@@ -344,7 +266,7 @@ def _optional_string(value: object) -> str | None:
 
 
 __all__ = [
-    "BioClipGateMode",
+    "BIOCLIP_GATE_MODE",
     "BioClipGatePolicy",
     "COMPARISON_ROUTE_BY_DETECTION_ROUTE",
     "ScoreInputDecision",
