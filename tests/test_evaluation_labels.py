@@ -8,8 +8,6 @@ import pytest
 from biominer.evaluation.labels import (
     REVIEWED_LABEL_SCHEMA,
     REVIEWED_LABEL_SCHEMA_VERSION,
-    REVIEWED_LABEL_V1_SCHEMA,
-    REVIEWED_LABEL_V1_SCHEMA_VERSION,
     empty_reviewed_label_frame,
     normalize_reviewed_label_frame,
     read_reviewed_labels,
@@ -26,7 +24,6 @@ def test_empty_reviewed_label_frame_has_correct_schema() -> None:
     assert frame.is_empty()
     assert dict(frame.schema) == REVIEWED_LABEL_SCHEMA
     assert REVIEWED_LABEL_SCHEMA_VERSION == "reviewed-labels-v2"
-    assert REVIEWED_LABEL_V1_SCHEMA_VERSION == "reviewed-labels-v1"
 
 
 def test_valid_reviewed_label_fixture_passes() -> None:
@@ -41,38 +38,17 @@ def test_valid_reviewed_label_fixture_passes() -> None:
     assert validate_reviewed_label_frame(frame) == []
 
 
-def test_v1_reader_resolves_target_presence_only_with_explicit_target_key() -> None:
-    frame = read_reviewed_labels(
-        FIXTURE_DIR / "reviewed_labels_valid.jsonl",
-        target_accepted_taxon_key="gbif:100",
-    )
-
-    assert frame["target_present"].to_list() == [True, False]
-    assert frame["unsuitable_for_species_identification"].to_list() == [
-        False,
-        None,
-    ]
-    assert frame["ambiguity_reason"].to_list() == [
-        "legacy_v1_missing_target_aware_fields",
-        "legacy_v1_missing_target_aware_fields",
-    ]
-
-
-def test_declared_v1_and_sampling_columns_survive_migration() -> None:
+def test_current_schema_and_sampling_columns_round_trip() -> None:
     source = pl.DataFrame(
         [
             {
-                **_valid_v1_species_row(),
-                "schema_version": REVIEWED_LABEL_V1_SCHEMA_VERSION,
+                **_valid_species_row(),
                 "sampling_weight": 2.5,
             }
         ]
     )
 
-    frame = normalize_reviewed_label_frame(
-        source,
-        target_accepted_taxon_key="gbif:100",
-    )
+    frame = normalize_reviewed_label_frame(source)
 
     assert frame["schema_version"].item() == REVIEWED_LABEL_SCHEMA_VERSION
     assert frame["target_present"].item() is True
@@ -80,26 +56,30 @@ def test_declared_v1_and_sampling_columns_survive_migration() -> None:
     assert frame.columns[-1] == "sampling_weight"
 
 
-def test_v1_negative_with_all_null_taxonomy_columns_migrates() -> None:
-    row = _valid_v1_species_row()
-    row.update(
-        {
-            "label_level": "negative",
-            "is_butterfly": False,
-            "accepted_taxon_key": None,
-            "scientific_name": None,
-            "family_key": None,
-            "family": None,
-            "genus_key": None,
-            "genus": None,
-        }
-    )
+def test_v1_frame_is_rejected() -> None:
+    legacy = _valid_species_row()
+    for field in (
+        "schema_version",
+        "target_present",
+        "label_certainty",
+        "life_stage",
+        "visual_domain",
+        "view",
+        "route",
+        "geo_cluster_id",
+        "source_query_tier",
+        "source_query_term",
+        "duplicate_group_id",
+        "observer_owner_group_id",
+        "dataset_split",
+        "second_review_status",
+        "ambiguity_reason",
+        "unsuitable_for_species_identification",
+    ):
+        legacy.pop(field)
 
-    frame = normalize_reviewed_label_frame(pl.DataFrame([row]))
-
-    assert frame["target_present"].item() is False
-    assert frame["accepted_taxon_key"].dtype == pl.Null
-    assert validate_reviewed_label_frame(frame) == []
+    with pytest.raises(ValueError, match="current v2 schema"):
+        normalize_reviewed_label_frame(pl.DataFrame([legacy]))
 
 
 def test_native_v2_frame_round_trips_without_migration() -> None:
@@ -112,17 +92,11 @@ def test_native_v2_frame_round_trips_without_migration() -> None:
 
 
 def test_partial_v2_frame_is_not_silently_downgraded_to_v1() -> None:
-    partial = pl.DataFrame(
-        [
-            {
-                **_valid_v1_species_row(),
-                "schema_version": REVIEWED_LABEL_SCHEMA_VERSION,
-                "target_present": True,
-            }
-        ]
-    )
+    row = _valid_species_row()
+    row.pop("label_certainty")
+    partial = pl.DataFrame([row])
 
-    with pytest.raises(ValueError, match="incomplete reviewed-label v2"):
+    with pytest.raises(ValueError, match="current v2 schema"):
         normalize_reviewed_label_frame(partial)
 
 
@@ -229,8 +203,3 @@ def _valid_species_row() -> dict[str, object]:
         "ambiguity_reason": "",
         "unsuitable_for_species_identification": False,
     }
-
-
-def _valid_v1_species_row() -> dict[str, object]:
-    row = _valid_species_row()
-    return {key: row[key] for key in REVIEWED_LABEL_V1_SCHEMA}

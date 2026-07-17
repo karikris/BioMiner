@@ -955,10 +955,7 @@ def _eligible_reviewed_candidates(
     usage_assignments: pl.DataFrame | None,
 ) -> tuple[pl.DataFrame, str, str]:
     validate_evaluation_sampling_frame(sampling_frame)
-    normalized = normalize_reviewed_label_frame(
-        reviewed_labels,
-        target_accepted_taxon_key=config.target_accepted_taxon_key,
-    )
+    normalized = normalize_reviewed_label_frame(reviewed_labels)
     findings = validate_reviewed_label_frame(normalized)
     fatals = [finding for finding in findings if finding.get("severity") == "fatal"]
     if fatals:

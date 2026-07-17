@@ -8,7 +8,7 @@ from pathlib import Path
 import polars as pl
 
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-from biominer.evaluation.labels import migrate_v1_reviewed_label_frame
+from biominer.evaluation.labels import REVIEWED_LABEL_SCHEMA_VERSION
 from biominer.storage.parquet import write_parquet
 
 
@@ -205,75 +205,112 @@ def _object_scores() -> pl.DataFrame:
 
 
 def _reviewed_labels() -> pl.DataFrame:
-    return migrate_v1_reviewed_label_frame(
-        pl.DataFrame(
-            [
-            _label_row(
-                "photo-top1",
-                "det-top1",
-                "sha256:crop-top1",
-                "gbif:9001:sp01",
-                "Papilio synthetic01",
-                "gbif:9001",
-                "Papilionidae",
-                "gbif:9100",
-                "Papilio",
+    return pl.DataFrame(
+        [
+            _current_reviewed_label(
+                _label_row(
+                    "photo-top1",
+                    "det-top1",
+                    "sha256:crop-top1",
+                    "gbif:9001:sp01",
+                    "Papilio synthetic01",
+                    "gbif:9001",
+                    "Papilionidae",
+                    "gbif:9100",
+                    "Papilio",
+                )
             ),
-            _label_row(
-                "photo-top5",
-                "det-top5",
-                "sha256:crop-top5",
-                "gbif:9001:sp02",
-                "Papilio synthetic02",
-                "gbif:9001",
-                "Papilionidae",
-                "gbif:9100",
-                "Papilio",
+            _current_reviewed_label(
+                _label_row(
+                    "photo-top5",
+                    "det-top5",
+                    "sha256:crop-top5",
+                    "gbif:9001:sp02",
+                    "Papilio synthetic02",
+                    "gbif:9001",
+                    "Papilionidae",
+                    "gbif:9100",
+                    "Papilio",
+                )
             ),
-            _label_row(
-                "photo-top20",
-                "det-top20",
-                "sha256:crop-top20",
-                "gbif:9002:sp01",
-                "Danaus synthetic01",
-                "gbif:9002",
-                "Nymphalidae",
-                "gbif:9200",
-                "Danaus",
+            _current_reviewed_label(
+                _label_row(
+                    "photo-top20",
+                    "det-top20",
+                    "sha256:crop-top20",
+                    "gbif:9002:sp01",
+                    "Danaus synthetic01",
+                    "gbif:9002",
+                    "Nymphalidae",
+                    "gbif:9200",
+                    "Danaus",
+                )
             ),
-            _label_row(
-                "photo-wrong",
-                "det-wrong",
-                "sha256:crop-wrong",
-                "gbif:9002:sp02",
-                "Danaus synthetic02",
-                "gbif:9002",
-                "Nymphalidae",
-                "gbif:9200",
-                "Danaus",
+            _current_reviewed_label(
+                _label_row(
+                    "photo-wrong",
+                    "det-wrong",
+                    "sha256:crop-wrong",
+                    "gbif:9002:sp02",
+                    "Danaus synthetic02",
+                    "gbif:9002",
+                    "Nymphalidae",
+                    "gbif:9200",
+                    "Danaus",
+                )
             ),
-            {
-                "source": "flickr",
-                "flickr_photo_id": "photo-negative",
-                "detection_id": "det-negative",
-                "crop_hash": "",
-                "label_level": "negative",
-                "is_butterfly": False,
-                "accepted_taxon_key": "",
-                "scientific_name": "",
-                "family_key": "",
-                "family": "",
-                "genus_key": "",
-                "genus": "",
-                "label_source": "synthetic_fixture",
-                "reviewer_id": "fixture",
-                "reviewed_at": "2026-07-10T00:00:00Z",
-                "review_confidence": "high",
-                "review_notes": "synthetic non-butterfly detector row",
-            },
-            ]
-        )
+            _current_reviewed_label(
+                {
+                    "source": "flickr",
+                    "flickr_photo_id": "photo-negative",
+                    "detection_id": "det-negative",
+                    "crop_hash": "",
+                    "label_level": "negative",
+                    "is_butterfly": False,
+                    "accepted_taxon_key": "",
+                    "scientific_name": "",
+                    "family_key": "",
+                    "family": "",
+                    "genus_key": "",
+                    "genus": "",
+                    "label_source": "synthetic_fixture",
+                    "reviewer_id": "fixture",
+                    "reviewed_at": "2026-07-10T00:00:00Z",
+                    "review_confidence": "high",
+                    "review_notes": "synthetic non-butterfly detector row",
+                }
+            ),
+        ]
     )
+
+
+def _current_reviewed_label(row: dict[str, object]) -> dict[str, object]:
+    is_butterfly = row["is_butterfly"] is True
+    is_species = row["label_level"] == "species"
+    taxonomy_complete = bool(row["accepted_taxon_key"]) and bool(
+        row["scientific_name"]
+    )
+    return {
+        "schema_version": REVIEWED_LABEL_SCHEMA_VERSION,
+        **row,
+        "target_present": False if not is_butterfly else None,
+        "label_certainty": row["review_confidence"],
+        "life_stage": "unknown",
+        "visual_domain": "ambiguous",
+        "view": "unknown",
+        "route": None,
+        "geo_cluster_id": None,
+        "source_query_tier": None,
+        "source_query_term": None,
+        "duplicate_group_id": None,
+        "observer_owner_group_id": None,
+        "dataset_split": "unassigned",
+        "second_review_status": "unknown",
+        "ambiguity_reason": "synthetic fixture",
+        "unsuitable_for_species_identification": (
+            False if is_butterfly and is_species and taxonomy_complete else None
+        ),
+    }
 
 
 def _detection_row(
