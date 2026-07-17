@@ -1,0 +1,78 @@
+{
+  "acceptance": {
+    "artifact_provenance": {
+      "evidence": [
+        "tests/test_adaptive_reference_admission_report.py::test_funnel_rejects_tampered_count_and_fingerprint",
+        "tests/test_adaptive_workflow_efficiency_report.py::test_efficiency_validator_rejects_tampering_and_missing_metric",
+        "tests/test_evidence_maturity_report.py::test_maturity_legend_and_embedded_payload_are_tamper_evident",
+        "tests/test_adaptive_workflow_blocker_report.py::test_blocker_validator_rejects_count_and_resume_semantic_tampering"
+      ],
+      "status": "passed"
+    },
+    "push_every_task": {
+      "origin_main_at_audit_start": "83f25328c6b44b33d9c97ece1658fb622b2c73ea",
+      "status": "passed"
+    },
+    "report_tests": {
+      "evidence": [
+        "tests/test_adaptive_reference_admission_report.py::test_report_covers_every_admission_stage_with_derived_counts",
+        "tests/test_adaptive_workflow_efficiency_report.py::test_efficiency_report_covers_required_metrics_without_mixing_units",
+        "tests/test_evidence_maturity_report.py::test_legend_distinguishes_all_required_evidence_maturities",
+        "tests/test_adaptive_workflow_blocker_report.py::test_blocker_report_covers_resume_and_human_input_states"
+      ],
+      "status": "passed"
+    }
+  },
+  "artifacts": [
+    "adaptive_reference_admission_funnel.parquet",
+    "adaptive_reference_admission_report.json",
+    "adaptive_reference_admission_report.md",
+    "adaptive_workflow_efficiency_metrics.parquet",
+    "adaptive_workflow_efficiency_report.json",
+    "adaptive_workflow_efficiency_report.md",
+    "embedded evidence-maturity-v1.0.0 legend",
+    "adaptive_workflow_blockers.parquet",
+    "adaptive_workflow_blocker_report.json",
+    "adaptive_workflow_blocker_report.md"
+  ],
+  "full_regression": {
+    "command": "uv run pytest -q",
+    "duration_seconds": 95.24,
+    "failed": 0,
+    "passed": 2490,
+    "status": "passed"
+  },
+  "limitations": [
+    "Phase 10 verifies report schemas, derivations, provenance and interpretation boundaries with fixtures; it does not create live workflow measurements.",
+    "Unavailable and not-instrumented values remain null and are never interpreted as zero.",
+    "Avoided work and reviews are counterfactual and require an explicit derivation or estimate; they cannot be labelled directly measured.",
+    "Provider assertions, human reference review, Flickr labels, raw scores, calibrated probabilities and release status retain distinct maturity semantics.",
+    "Blocker categories may overlap and are reported as memberships, not unique blocked-record totals.",
+    "No production speedup, memory reduction, review saving, quality gain or blocker clearance is claimed."
+  ],
+  "phase": 10,
+  "phase_name": "Observability and reporting",
+  "schema_version": "gbif-fast-start-phase-completion-v1.0.0",
+  "tasks": [
+    {
+      "commit": "77c19cf478e6ff7efeb31029a7b9d729aa4c0a37",
+      "outcome": "Reports all ten adaptive admission stages from exact source-bound media memberships, with explicit unavailable states and branching-stage semantics.",
+      "task_id": "10.1"
+    },
+    {
+      "commit": "66de5f5e6202be533bb704b39a131d5c72bd718d",
+      "outcome": "Reports nine efficiency dimensions with measured, derived, estimated, fixture or unavailable evidence while preserving every work unit.",
+      "task_id": "10.2"
+    },
+    {
+      "commit": "3b51b86715aec6750fd185421998ee660eb59a10",
+      "outcome": "Embeds an immutable six-label maturity legend that prevents provider support, raw scores or probabilities from inheriting human-review or release claims.",
+      "task_id": "10.3"
+    },
+    {
+      "commit": "83f25328c6b44b33d9c97ece1658fb622b2c73ea",
+      "outcome": "Reports seven blocker kinds with fixed selective-resume actions, source provenance, release impact and explicit human-input requirements.",
+      "task_id": "10.4"
+    }
+  ]
+}
