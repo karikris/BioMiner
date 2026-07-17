@@ -7,7 +7,7 @@ from typing import Any
 import polars as pl
 
 from biominer.bioclip.classification_modes import HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-from biominer.evaluation.fixtures import (
+from support.evaluation_fixtures import (
     SYNTHETIC_EVALUATION_FIXTURE_VERSION,
     build_synthetic_evaluation_fixture,
 )

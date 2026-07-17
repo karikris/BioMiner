@@ -3,7 +3,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from biominer.evaluation.fixtures import (
+from support.evaluation_fixtures import (
     SYNTHETIC_EVALUATION_FIXTURE_VERSION,
     build_synthetic_evaluation_fixture,
     write_synthetic_evaluation_fixture,

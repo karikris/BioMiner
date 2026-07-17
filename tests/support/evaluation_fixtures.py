@@ -1,3 +1,5 @@
+"""Synthetic fixtures used exclusively by evaluation tests."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
