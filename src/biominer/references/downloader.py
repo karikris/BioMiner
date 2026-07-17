@@ -1321,7 +1321,6 @@ def _download_reference_media_impl(
         storage,
         media_objects_uri,
         current=run_frame,
-        config=config,
     )
     storage.write_parquet_shard(media_objects_uri, frame, overwrite=True)
     ended_at = _aware_utc(now())
@@ -1367,7 +1366,6 @@ def _merge_media_object_inventory(
     media_objects_uri: str,
     *,
     current: pl.DataFrame,
-    config: ReferenceMediaDownloadConfig,
 ) -> pl.DataFrame:
     if not storage.exists(media_objects_uri):
         return current
@@ -1375,38 +1373,10 @@ def _merge_media_object_inventory(
     if "schema_version" not in existing.columns:
         raise ValueError("reference media inventory schema version is missing")
     schema_versions = set(existing["schema_version"].drop_nulls().to_list())
+    if schema_versions != {REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION}:
+        raise ValueError("reference media inventory schema is incompatible")
+    validate_reference_media_objects(existing)
     current_ids = set(current["reference_media_id"].to_list())
-    if schema_versions == {_LEGACY_REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION}:
-        legacy_total = existing.height
-        migrated_rows: list[dict[str, object]] = []
-        for legacy_row in existing.iter_rows(named=True):
-            if legacy_row["reference_media_id"] in current_ids:
-                continue
-            migrated = _backfill_legacy_media_object(
-                storage,
-                legacy_row,
-                config=config,
-            )
-            if migrated["decode_status"] == "valid":
-                migrated["object_fingerprint"] = _fingerprint(
-                    {
-                        "backfill_version": _REFERENCE_MEDIA_HASH_BACKFILL_VERSION,
-                        "legacy_object_fingerprint": legacy_row["object_fingerprint"],
-                        "perceptual_hash": migrated["perceptual_hash"],
-                    }
-                )
-            migrated_rows.append(migrated)
-        existing = reference_media_objects_frame(migrated_rows)
-        _log_event(
-            "reference_media_inventory_migrated",
-            media_objects_uri=media_objects_uri,
-            migrated_count=len(migrated_rows),
-            replaced_by_checkpoint_count=legacy_total - len(migrated_rows),
-            from_schema=_LEGACY_REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION,
-            to_schema=REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION,
-        )
-    else:
-        validate_reference_media_objects(existing)
     rows_by_id = {
         str(row["reference_media_id"]): row for row in existing.iter_rows(named=True)
     }

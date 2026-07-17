@@ -23,7 +23,6 @@ from biominer.references.downloader import (
     _PermanentResponse,
     _PinnedAddressHTTPTransport,
     _PinnedAddressNetworkBackend,
-    _backfill_legacy_media_object,
     _decode_image_isolated,
     _legacy_checkpoint_binding,
     _legacy_committed_object_fingerprint,
@@ -555,6 +554,7 @@ def test_v1_checkpoint_is_backfilled_from_durable_object_without_provider_reques
             first,
             config=config,
         )
+        storage.parquet[first.media_objects_uri] = first.media_objects
         resumed = download_reference_media(
             selections,
             candidates,
@@ -576,119 +576,6 @@ def test_v1_checkpoint_is_backfilled_from_durable_object_without_provider_reques
     assert storage.json[checkpoint_uri]["object"]["perceptual_hash"] == (
         expected_perceptual_hash
     )
-
-
-def test_v1_unselected_inventory_rows_are_backfilled_during_incremental_merge() -> None:
-    first_candidates, first_selections = _frames(
-        provider_media_id="101",
-        observation_id="observation-101",
-        acquisition_plan_id="plan-101",
-    )
-    second_candidates, second_selections = _frames(
-        provider_media_id="202",
-        observation_id="observation-202",
-        url="https://media.example.test/photos/202/original.png",
-        acquisition_plan_id="plan-202",
-    )
-    storage = _MemoryStorage()
-    config = _config()
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        color = (10, 20, 30) if "/101/" in request.url.path else (30, 20, 10)
-        return httpx.Response(
-            200,
-            headers={"Content-Type": "image/png"},
-            content=_image_bytes("PNG", size=(7, 5), color=color),
-        )
-
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        first = download_reference_media(
-            first_selections,
-            first_candidates,
-            storage=storage,
-            output_prefix="s3://references/bank-v1",
-            config=config,
-            http_client=client,
-            now=lambda: _NOW,
-        )
-        _checkpoint_uri, expected_perceptual_hash = _downgrade_reference_bank_to_v1(
-            storage,
-            first,
-            config=config,
-        )
-        merged = download_reference_media(
-            second_selections,
-            second_candidates,
-            storage=storage,
-            output_prefix="s3://references/bank-v1",
-            config=config,
-            http_client=client,
-            now=lambda: _NOW,
-        )
-
-    rows = {
-        str(row["reference_media_id"]): row
-        for row in merged.media_objects.iter_rows(named=True)
-    }
-    first_id = str(first_candidates["reference_media_id"].item())
-    assert merged.media_objects.height == 2
-    assert rows[first_id]["schema_version"] == REFERENCE_MEDIA_OBJECTS_SCHEMA_VERSION
-    assert rows[first_id]["perceptual_hash"] == expected_perceptual_hash
-
-
-@pytest.mark.parametrize(
-    ("row_updates", "config_updates", "error"),
-    [
-        (
-            {"source_byte_count": 33},
-            {"max_source_bytes": 32},
-            "current source byte limit",
-        ),
-        (
-            {"content_type": "image/gif"},
-            {"allowed_content_types": ("image/png",)},
-            "content type is not currently allowed",
-        ),
-    ],
-)
-def test_v1_inventory_backfill_rejects_current_policy_before_storage_access(
-    row_updates: dict[str, object],
-    config_updates: dict[str, object],
-    error: str,
-) -> None:
-    payload = _image_bytes("PNG", size=(7, 5))
-    candidates, selections = _frames()
-    storage = _MemoryStorage()
-    config = _config()
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            headers={"Content-Type": "image/png"},
-            content=payload,
-        )
-
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        result = download_reference_media(
-            selections,
-            candidates,
-            storage=storage,
-            output_prefix="s3://references/bank-v1",
-            config=config,
-            http_client=client,
-            now=lambda: _NOW,
-        )
-    _downgrade_reference_bank_to_v1(storage, result, config=config)
-    legacy_row = storage.parquet[result.media_objects_uri].row(0, named=True)
-    legacy_row.update(row_updates)
-    legacy_row["source_object_uri"] = "s3://references/must-not-be-read"
-
-    with pytest.raises(ValueError, match=error):
-        _backfill_legacy_media_object(
-            storage,
-            legacy_row,
-            config=_config(**config_updates),
-        )
 
 
 def test_committed_checkpoint_resume_does_not_require_live_dns() -> None:
