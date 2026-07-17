@@ -1,0 +1,32 @@
+{
+  "acceptance": {
+    "export_tests": {"evidence": ["tests/test_flickr_export.py"], "status": "passed"},
+    "no_accidental_release_regression": {"evidence": ["tests/test_flickr_export.py::test_one_bad_record_prevents_accidental_partial_release"], "status": "passed"},
+    "review_gate_tests": {"evidence": ["tests/test_flickr_release.py", "tests/test_flickr_campaigns.py"], "status": "passed"},
+    "push_every_task": {"origin_main_at_audit_start": "096380a", "status": "passed"}
+  },
+  "artifacts": [
+    "representative_quality_audit.parquet",
+    "high_confidence_candidate_review.parquet",
+    "failure_discovery.parquet",
+    "conflict_adjudication.parquet",
+    "verified_flickr_occurrences.parquet"
+  ],
+  "full_regression": {"command": "uv run pytest -q", "duration_seconds": 87.23, "failed": 0, "passed": 2414, "status": "passed"},
+  "limitations": [
+    "Phase 6 verifies release-policy, campaign and export contracts with fixtures; no live Flickr reviewers or occurrence publication were exercised.",
+    "A passing software gate does not establish that human labels, coordinates, dates or taxonomic judgments are scientifically correct.",
+    "Campaign inclusion probabilities are preserved but this phase does not estimate population metrics from the queues.",
+    "No measured accuracy, reviewer throughput, cost or operational-savings improvement is claimed."
+  ],
+  "phase": 6,
+  "phase_name": "Mandatory Flickr human-verification gate",
+  "regression_fix": {"commit": "096380ad86324102dee67e3f73cc71ce21798036", "outcome": "SQLite state-store contexts now commit or roll back before deterministic close; this removed a reproducible Python 3.14 full-suite ResourceWarning."},
+  "schema_version": "gbif-fast-start-phase-completion-v1.0.0",
+  "tasks": [
+    {"commit": "5f38036c1ba4016e8b15ae9e4543ec244c676069", "task_id": "6.1", "outcome": "Final eligibility requires decisive source-hash-bound review plus duplicate, identity, domain, life-stage, spatiotemporal, adjudication and release-policy evidence."},
+    {"commit": "d40a600a461da1f15cd0cf63f72387650d63657c", "task_id": "6.2", "outcome": "Unreviewed candidates retain route, embedding, ranking, margin and priority evidence but remain explicitly excluded."},
+    {"commit": "c2ff7cc722f8ebd8700db2bac86366c219198856", "task_id": "6.3", "outcome": "Four Polars/Parquet campaigns preserve inclusion probability, strata, grouping fields, score bands and competitors."},
+    {"commit": "2643bf3c1caffe2f68ba837d99064a0c99192c7c", "task_id": "6.4", "outcome": "The complete batch is rejected before write when any record is unverified, conflicted, stale, unsupported or ineligible."}
+  ]
+}
