@@ -234,6 +234,7 @@ def _label(
     family: str = "Papilionidae",
 ) -> dict[str, object]:
     return {
+        "schema_version": "reviewed-labels-v2",
         "source": source,
         "flickr_photo_id": flickr_photo_id,
         "detection_id": detection_id,
@@ -251,4 +252,19 @@ def _label(
         "reviewed_at": "2026-07-10T00:00:00Z",
         "review_confidence": "high",
         "review_notes": "synthetic",
+        "target_present": False if not is_butterfly else None,
+        "label_certainty": "high",
+        "life_stage": "unknown",
+        "visual_domain": "ambiguous",
+        "view": "unknown",
+        "route": None,
+        "geo_cluster_id": None,
+        "source_query_tier": None,
+        "source_query_term": None,
+        "duplicate_group_id": None,
+        "observer_owner_group_id": None,
+        "dataset_split": "unassigned",
+        "second_review_status": "unknown",
+        "ambiguity_reason": "synthetic fixture",
+        "unsuitable_for_species_identification": False if is_butterfly else None,
     }

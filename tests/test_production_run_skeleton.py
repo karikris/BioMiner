@@ -1846,10 +1846,28 @@ def test_orchestrator_runs_fake_hierarchical_vision_pipeline_end_to_end(
         [
             [
                 detection_candidate(score=0.93, bbox_xyxy=(0.0, 0.0, 2.0, 2.0)),
-                detection_candidate("moth_like", score=0.72, bbox_xyxy=(2.0, 2.0, 4.0, 4.0)),
+                detection_candidate(
+                    "moth_like",
+                    score=0.72,
+                    bbox_xyxy=(2.0, 2.0, 4.0, 4.0),
+                    detector_prompt="moth",
+                ),
             ],
-            [detection_candidate("moth_like", score=0.88, bbox_xyxy=(0.0, 0.0, 3.0, 3.0))],
-            [detection_candidate("hard_negative", bbox_xyxy=(0.0, 0.0, 3.0, 3.0))],
+            [
+                detection_candidate(
+                    "moth_like",
+                    score=0.88,
+                    bbox_xyxy=(0.0, 0.0, 3.0, 3.0),
+                    detector_prompt="moth",
+                )
+            ],
+            [
+                detection_candidate(
+                    "hard_negative",
+                    bbox_xyxy=(0.0, 0.0, 3.0, 3.0),
+                    detector_prompt="museum label",
+                )
+            ],
             [],
         ]
     )
@@ -3944,7 +3962,7 @@ def _query_definition_row(
     name_class: str | None = None,
     confidence: str = "high",
     trust_tier: str = "T1",
-    query_eligible: bool | None = None,
+    query_eligible: bool = True,
 ) -> dict[str, object]:
     row: dict[str, object] = {
         "query_definition_id": query_definition_id,
@@ -3967,9 +3985,8 @@ def _query_definition_row(
         "confidence": confidence,
         "trust_tier": trust_tier,
         "enabled": True,
+        "query_eligible": query_eligible,
     }
-    if query_eligible is not None:
-        row["query_eligible"] = query_eligible
     return row
 
 

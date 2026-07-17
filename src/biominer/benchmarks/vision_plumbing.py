@@ -647,6 +647,7 @@ def benchmark_detections(
                         score=0.91,
                         bbox_xyxy=_butterfly_bbox(detection_index),
                         objectness_score=0.95,
+                        detector_prompt="butterfly",
                     )
                     for detection_index in range(detections_per_butterfly)
                 ]
@@ -659,6 +660,7 @@ def benchmark_detections(
                         score=0.80,
                         bbox_xyxy=(12.0, 12.0, 48.0, 48.0),
                         objectness_score=0.85,
+                        detector_prompt="museum label",
                     )
                 ]
             )
