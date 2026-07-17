@@ -74,7 +74,6 @@ from biominer.reports.vision import (
 from biominer.references.readiness import (
     ReferenceBankReadinessPermit,
     load_reference_bank_readiness,
-    reference_readiness_allows_vision,
 )
 from biominer.run.constants import PRODUCTION_JOB_NAME
 from biominer.run.manifest import RunManifest, utc_now_iso
@@ -676,7 +675,7 @@ class ProductionRunOrchestrator:
             readiness_path,
             **identity_expectations,
         )
-        if not reference_readiness_allows_vision(permit.status):
+        if not permit.permits_reference_embedding:
             raise ValueError(f"reference bank readiness does not permit vision: status={permit.status}")
         if self.object_scorer is not None and self.request.classification_mode != HIERARCHICAL_BUTTERFLY_CLASSIFICATION:
             bind_readiness = getattr(

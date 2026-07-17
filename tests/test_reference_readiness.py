@@ -801,6 +801,14 @@ def test_ready_build_publish_and_strict_load(tmp_path: Path) -> None:
 
     assert result.readiness["status"] == "ready"
     assert result.readiness["permits_vision"] is True
+    assert result.readiness["permits_reference_embedding"] is True
+    assert result.readiness["permits_provisional_scoring"] is True
+    assert result.readiness["permits_calibrated_scoring"] is True
+    assert result.readiness["permits_scientific_release"] is True
+    assert result.readiness["reference_admission_mode"] == "human_verified_strict"
+    assert result.readiness["provisional_support_count"] == 0
+    assert result.readiness["human_verified_support_count"] == 2
+    assert result.readiness["statistical_audit_required"] is False
     assert reference_readiness_allows_vision(result.readiness)
     assert result.support_manifest.height == 2
     assert result.support_manifest["support_eligible"].to_list() == [True, True]
@@ -824,6 +832,15 @@ def test_ready_build_publish_and_strict_load(tmp_path: Path) -> None:
         False,
         False,
     ]
+    assert result.summary["provider_asserted_count"].to_list() == [1, 1, 1]
+    assert result.summary["provider_asserted_eligible_count"].to_list() == [1, 1, 1]
+    assert result.summary["human_verified_count"].to_list() == [1, 1, 1]
+    assert result.summary["human_verified_eligible_count"].to_list() == [1, 1, 1]
+    assert result.summary["provisional_support_count"].to_list() == [0, 0, 0]
+    assert result.summary["strict_support_count"].to_list() == [1, 1, 1]
+    assert result.summary["flagged_for_review_count"].to_list() == [0, 0, 0]
+    assert result.summary["excluded_by_automated_qa_count"].to_list() == [0, 0, 0]
+    assert result.summary["excluded_by_human_review_count"].to_list() == [0, 0, 0]
     assert [item["check_id"] for item in result.readiness["checks"]] == [
         "artifact_integrity",
         "target_adult_minimum",
@@ -872,6 +889,14 @@ def test_ready_build_publish_and_strict_load(tmp_path: Path) -> None:
     assert permit.support_manifest_sha256.startswith("sha256:")
     assert permit.summary_sha256.startswith("sha256:")
     assert permit.readiness_sha256.startswith("sha256:")
+    assert permit.permits_reference_embedding is True
+    assert permit.permits_provisional_scoring is True
+    assert permit.permits_calibrated_scoring is True
+    assert permit.permits_scientific_release is True
+    assert permit.reference_admission_mode == "human_verified_strict"
+    assert permit.provisional_support_count == 0
+    assert permit.human_verified_support_count == 2
+    assert permit.statistical_audit_required is False
     assert permit.candidate_set_fingerprints == tuple(
         result.readiness["candidate_set_fingerprints"]
     )
@@ -957,6 +982,56 @@ def test_provider_assertion_cannot_be_encoded_as_human_verified() -> None:
 
     with pytest.raises(ValueError, match="provider assertion is inconsistent"):
         validate_reference_support_manifest(invalid)
+
+
+def test_ready_provisional_has_narrow_fail_closed_capabilities() -> None:
+    payload = json.loads(json.dumps(_build(_make_fixture()).readiness))
+    policy = default_reference_admission_policy()
+    payload.update(
+        {
+            "status": "ready_provisional",
+            "permits_vision": True,
+            "permits_reference_embedding": True,
+            "permits_provisional_scoring": True,
+            "permits_calibrated_scoring": False,
+            "permits_scientific_release": False,
+            "reference_admission_mode": policy.mode,
+            "admission_policy_fingerprint": policy.fingerprint,
+            "provisional_support_count": 2,
+            "human_verified_support_count": 0,
+            "statistical_audit_required": True,
+        }
+    )
+    payload["counts"]["provisional_support_count"] = 2
+    payload["counts"]["human_verified_support_count"] = 0
+    payload["bank_fingerprint"] = readiness_module.canonical_semantic_fingerprint(
+        {
+            "schema_version": payload["schema_version"],
+            "reference_bank_version": payload["reference_bank_version"],
+            "registry_version": payload["registry_version"],
+            "target_accepted_taxon_key": payload["target_accepted_taxon_key"],
+            "policy_fingerprint": payload["policy_fingerprint"],
+            "reference_admission_mode": payload["reference_admission_mode"],
+            "admission_policy_fingerprint": payload[
+                "admission_policy_fingerprint"
+            ],
+            "model_input_fingerprint": payload["model_input_fingerprint"],
+            "candidate_set_ids": payload["candidate_set_ids"],
+            "candidate_set_fingerprints": payload["candidate_set_fingerprints"],
+            "inputs": payload["inputs"],
+        }
+    )
+    for check in payload["checks"]:
+        check["evidence"]["reference_bank_fingerprint"] = payload[
+            "bank_fingerprint"
+        ]
+
+    readiness_module._validate_readiness_payload(payload, published=False)  # noqa: SLF001 - validates the persisted provisional contract directly.
+    assert reference_readiness_allows_vision(payload)
+
+    payload["permits_calibrated_scoring"] = True
+    with pytest.raises(ValueError, match="capabilities"):
+        readiness_module._validate_readiness_payload(payload, published=False)  # noqa: SLF001 - adversarial persisted-contract validation.
 
 
 def test_model_and_support_semantic_fingerprints_ignore_object_relocation() -> None:

@@ -1085,25 +1085,38 @@ fast-start. The grain is one canonical admitted media item and route.
 
 `reference_bank_summary.parquet` has one row per bank version, accepted species,
 cluster scope, life stage, visual domain, and split. Schema version:
-`reference-bank-summary-v1.0.0`. It records required, candidate, downloaded,
+`reference-bank-summary-v2.0.0`. It records required, candidate, downloaded,
 deduplicated, reviewed, verified, eligible, excluded, and shortfall counts;
-source, licence, observer, observation, and geographic diversity counts; and
-the reference-bank and support-manifest fingerprints.
+provider-asserted, human-verified, provisional, strict, review-flagged, automated
+QA exclusion, and human-review exclusion counts; source, licence, observer,
+observation, and geographic diversity counts; and the reference-bank and
+support-manifest fingerprints.
 
 `reference_bank_readiness.json` has schema version
-`reference-bank-readiness-v2.0.0` and contains:
+`reference-bank-readiness-v3.0.0` and contains:
 
 - `reference_bank_version`, target key, registry version, candidate-set
   fingerprints, support-manifest fingerprint, model/preprocessing identity,
   split fingerprint, creation time, and git SHA;
-- `status`: `ready`, `ready_with_documented_shortfalls`,
+- `status`: `ready`, `ready_provisional`, `ready_with_documented_shortfalls`,
   `awaiting_manual_review`, `blocked_licence`,
   `blocked_missing_target_support`, or `invalid`;
 - every readiness check as an object with `check_id`, `status`, observed value,
   required value, affected species/clusters/routes, and artifact evidence;
 - unresolved duplicate, licence, review, route-separation, attribution,
   leakage, target-minimum, competitor-minimum, and geographic-coverage counts;
+- independent permits for reference embedding, provisional scoring, calibrated
+  scoring, and scientific release, with `permits_vision` retained as the exact
+  alias of the reference-embedding permit;
+- admission mode and policy fingerprint, provisional and human-verified support
+  counts, and the statistical-audit requirement;
 - a sorted `documented_shortfalls` list and all dependent artifact checksums.
+
+`ready_provisional` grants reference embedding and provisional scoring only. It
+cannot grant calibrated scoring or scientific release, and it cannot represent
+an absent mode, zero provisional support, or a missing statistical-audit policy.
+No readiness permit bypasses the separate mandatory human-review gate for final
+Flickr occurrence output.
 
 The JSON contains no fabricated pass. `ready_with_documented_shortfalls` is
 allowed only by an explicit versioned policy, and missing target adult support

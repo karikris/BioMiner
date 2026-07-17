@@ -2748,7 +2748,10 @@ def _validated_support_manifest(
         raise TypeError("support_manifest must be a Polars DataFrame")
     if not isinstance(readiness_permit, ReferenceBankReadinessPermit):
         raise TypeError("readiness_permit must be a ReferenceBankReadinessPermit")
-    if readiness_permit.status not in PERMITTING_READINESS_STATUSES:
+    if (
+        readiness_permit.status not in PERMITTING_READINESS_STATUSES
+        or not readiness_permit.permits_reference_embedding
+    ):
         raise ValueError(
             "reference readiness permit does not authorize support embeddings"
         )

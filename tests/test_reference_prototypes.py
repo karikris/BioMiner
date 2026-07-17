@@ -1010,6 +1010,19 @@ def _permit(manifest: pl.DataFrame) -> ReferenceBankReadinessPermit:
         readiness_sha256=_sha("readiness"),
         support_manifest_sha256=_sha("support-manifest-file"),
         summary_sha256=_sha("summary-file"),
+        permits_reference_embedding=True,
+        permits_provisional_scoring=True,
+        permits_calibrated_scoring=True,
+        permits_scientific_release=True,
+        reference_admission_mode="human_verified_strict",
+        admission_policy_fingerprint=str(
+            manifest["reference_admission_policy_fingerprint"].item(0)
+        ),
+        provisional_support_count=0,
+        human_verified_support_count=manifest.filter(
+            pl.col("support_eligible") & pl.col("human_verified_identity")
+        ).height,
+        statistical_audit_required=False,
     )
 
 
