@@ -14,11 +14,6 @@ from biominer.detection.schema import (
     build_detection_rows,
     empty_detection_frame,
 )
-from biominer.detection.yolo26_detector import (
-    _candidate_to_payload as yolo26_candidate_to_payload,
-    _detections_from_payload as yolo26_detections_from_payload,
-    detections_from_yolo26_result,
-)
 from biominer.detection.yoloe26_detector import (
     _candidate_to_payload as yoloe26_candidate_to_payload,
     _detections_from_payload as yoloe26_detections_from_payload,
@@ -131,7 +126,7 @@ def test_yoloe26_result_conversion_preserves_box_mask_instance_alignment() -> No
     assert detections[1].mask_polygon_xyn == ((0.2, 0.1), (0.8, 0.1), (0.5, 0.9))
 
 
-def test_yolo26_result_conversion_rejects_misaligned_box_and_mask_counts() -> None:
+def test_yoloe26_result_conversion_rejects_misaligned_box_and_mask_counts() -> None:
     result = SimpleNamespace(
         names={0: "butterfly"},
         boxes=[SimpleNamespace(xyxy=[[1.0, 2.0, 9.0, 8.0]], cls=[0], conf=[0.91])],
@@ -139,21 +134,14 @@ def test_yolo26_result_conversion_rejects_misaligned_box_and_mask_counts() -> No
     )
 
     with pytest.raises(ValueError, match="align one-to-one"):
-        detections_from_yolo26_result(result)
+        detections_from_yoloe_result(result)
 
 
-@pytest.mark.parametrize(
-    ("to_payload", "from_payload"),
-    (
-        (yolo26_candidate_to_payload, yolo26_detections_from_payload),
-        (yoloe26_candidate_to_payload, yoloe26_detections_from_payload),
-    ),
-)
-def test_detector_sidecar_round_trip_preserves_mask_polygon_order(
-    to_payload, from_payload
-) -> None:  # noqa: ANN001
+def test_yoloe26_sidecar_round_trip_preserves_mask_polygon_order() -> None:
     candidate = _candidate(mask_polygon_xyn=((0.4, 0.1), (0.8, 0.7), (0.2, 0.9)))
 
-    restored = from_payload({"detections": [[to_payload(candidate)]]})[0][0]
+    restored = yoloe26_detections_from_payload(
+        {"detections": [[yoloe26_candidate_to_payload(candidate)]]}
+    )[0][0]
 
     assert restored.mask_polygon_xyn == ((0.4, 0.1), (0.8, 0.7), (0.2, 0.9))
