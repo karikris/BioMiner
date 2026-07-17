@@ -13,6 +13,10 @@ import re
 import polars as pl
 
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
+from biominer.reports.evidence_maturity import (
+    evidence_maturity_payload,
+    validate_evidence_maturity_payload,
+)
 from biominer.storage.parquet import write_parquet
 
 
@@ -215,6 +219,7 @@ def build_adaptive_workflow_efficiency_report(
                 for row in metric_rows
             ),
         },
+        "evidence_maturity": evidence_maturity_payload(),
         "provenance": {
             "metrics_fingerprint": _frame_fingerprint(metrics),
             "aggregation_policy": "never_sum_different_unit_names",
@@ -264,6 +269,7 @@ def validate_adaptive_workflow_efficiency_report(
     }
     if report.get("evidence_summary") != expected_summary:
         raise ValueError("adaptive workflow efficiency evidence summary mismatch")
+    validate_evidence_maturity_payload(report.get("evidence_maturity"))
     provenance = report.get("provenance")
     if not isinstance(provenance, Mapping) or provenance.get(
         "metrics_fingerprint"

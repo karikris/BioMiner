@@ -12,6 +12,10 @@ import re
 import polars as pl
 
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
+from biominer.reports.evidence_maturity import (
+    evidence_maturity_payload,
+    validate_evidence_maturity_payload,
+)
 from biominer.storage.parquet import write_parquet
 
 
@@ -205,6 +209,7 @@ def build_adaptive_reference_admission_report(
                 if row["measurement_status"] == "unavailable"
             ],
         },
+        "evidence_maturity": evidence_maturity_payload(),
         "provenance": {
             "funnel_fingerprint": _frame_fingerprint(funnel),
             "count_derivation": "unique_sorted_reference_media_id_membership",
@@ -252,6 +257,7 @@ def validate_adaptive_reference_admission_report(
     }
     if report.get("measurement_summary") != expected_measurements:
         raise ValueError("adaptive admission measurement summary mismatch")
+    validate_evidence_maturity_payload(report.get("evidence_maturity"))
     provenance = report.get("provenance")
     if not isinstance(provenance, Mapping) or provenance.get(
         "funnel_fingerprint"

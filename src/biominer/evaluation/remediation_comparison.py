@@ -30,6 +30,10 @@ from biominer.evaluation.uncertainty import (
     validate_grouped_bootstrap_result,
 )
 from biominer.ml.nonmatch import TARGET_CONFIRMED
+from biominer.reports.evidence_maturity import (
+    evidence_maturity_payload,
+    validate_evidence_maturity_payload,
+)
 from biominer.run.flickr_selective_rescore import validate_flickr_rescore_plan
 from biominer.storage.parquet import write_parquet
 
@@ -403,6 +407,7 @@ def validate_reference_remediation_comparison(
     report = result.report
     if report.get("schema_version") != REMEDIATION_COMPARISON_SCHEMA_VERSION:
         raise ValueError("reference remediation comparison schema mismatch")
+    validate_evidence_maturity_payload(report.get("evidence_maturity"))
     payload = dict(report)
     fingerprint = payload.pop("report_fingerprint", None)
     if fingerprint != canonical_semantic_fingerprint(payload):
@@ -648,6 +653,7 @@ def _report_payload(
         "schema_version": REMEDIATION_COMPARISON_SCHEMA_VERSION,
         "generated_at": generated_at.isoformat(),
         "status": "complete",
+        "evidence_maturity": evidence_maturity_payload(),
         "totals": totals,
         "paired_accuracy_change": intervals,
         "overall_metric_changes": [

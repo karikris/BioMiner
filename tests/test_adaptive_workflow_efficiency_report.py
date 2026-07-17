@@ -86,6 +86,7 @@ def test_efficiency_report_covers_required_metrics_without_mixing_units(
     assert result.report["provenance"][  # type: ignore[index]
         "aggregation_policy"
     ] == "never_sum_different_unit_names"
+    assert len(result.report["evidence_maturity"]["labels"]) == 6  # type: ignore[index]
 
     paths = write_adaptive_workflow_efficiency_report(result, tmp_path)
     assert pl.read_parquet(paths["metrics"]).equals(metrics)

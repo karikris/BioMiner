@@ -174,6 +174,7 @@ def test_paired_report_quantifies_selection_outcomes_metrics_and_effort(
         "review_minutes"
     ] is None
     assert result.report["remaining_flagged_species"] == ["Papilio demoleus"]
+    assert len(result.report["evidence_maturity"]["labels"]) == 6
     assert "Point-estimate deltas" in " ".join(result.report["limitations"])
 
     paths = write_reference_remediation_comparison(result, tmp_path)

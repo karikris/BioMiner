@@ -20,6 +20,10 @@ from biominer.references.targeted_review_decisions import (
     TargetedReferenceReviewResult,
     validate_targeted_reference_review_result,
 )
+from biominer.reports.evidence_maturity import (
+    evidence_maturity_payload,
+    validate_evidence_maturity_payload,
+)
 
 
 REFERENCE_REMEDIATION_REPORT_FILE = "reference_remediation_report.json"
@@ -174,6 +178,7 @@ def build_reference_remediation_report(
         "schema_version": REFERENCE_REMEDIATION_REPORT_SCHEMA_VERSION,
         "generated_at": timestamp.isoformat(),
         "status": "complete",
+        "evidence_maturity": evidence_maturity_payload(),
         "before": {
             "reference_bank_version": revision.old_reference_bank_version,
             "reference_bank_fingerprint": (
@@ -251,6 +256,7 @@ def validate_reference_remediation_report(
         or report.get("status") != "complete"
     ):
         raise ValueError("reference remediation report identity is invalid")
+    validate_evidence_maturity_payload(report.get("evidence_maturity"))
     payload = dict(report)
     fingerprint = payload.pop("report_fingerprint", None)
     if fingerprint != canonical_semantic_fingerprint(payload):

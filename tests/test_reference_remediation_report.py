@@ -81,6 +81,7 @@ def test_report_contains_measured_remediation_and_qualified_impacts(tmp_path) ->
     prototypes = result.report["prototype_changes"]
     assert prototypes["observed_change_count"] is None
     assert prototypes["observation_status"] == "not_measured_rebuild_required"
+    assert len(result.report["evidence_maturity"]["labels"]) == 6
     paths = write_reference_remediation_report(result, tmp_path)
     assert json.loads(paths["json"].read_text())["counts"] == counts
     assert "No observed before/after prototype change is claimed" in paths[

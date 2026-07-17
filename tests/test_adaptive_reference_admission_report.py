@@ -66,6 +66,7 @@ def test_report_covers_every_admission_stage_with_derived_counts(tmp_path) -> No
         "measured_stage_count": 10,
         "unavailable_stages": [],
     }
+    assert len(result.report["evidence_maturity"]["labels"]) == 6  # type: ignore[index]
     assert "Provider-asserted provisional" in " ".join(
         result.report["limitations"]
     )
