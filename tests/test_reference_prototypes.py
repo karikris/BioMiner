@@ -32,6 +32,11 @@ from biominer.bioclip.reference_quality_diagnostics import (
     build_reference_quality_diagnostics,
     write_reference_quality_diagnostics,
 )
+from biominer.bioclip.provisional_ranking import (
+    PROVISIONAL_REFERENCE_RANKING_FILE,
+    provisional_reference_ranking,
+    write_provisional_reference_ranking,
+)
 from biominer.bioclip.reference_prototypes import (
     PROTOTYPE_METHOD_NORMALIZED_MEAN,
     PROTOTYPE_METHOD_SIMPLESHOT_MEAN_CENTERED,
@@ -257,6 +262,34 @@ def test_provisional_reference_diagnostics_are_descriptive_not_taxonomic(
     assert outlier_score > regular_score
     assert path.name == REFERENCE_QUALITY_DIAGNOSTICS_FILE
     assert path.exists()
+
+    prototypes = build_robust_provisional_prototypes(provisional)
+    ranking = provisional_reference_ranking(
+        query_id="flickr:test-photo",
+        query_embedding=(1.0, 0.0, 0.0),
+        query_route="adult_field",
+        query_visual_domain="live_field",
+        query_geo_cluster_id="cluster-a",
+        reference_embeddings=provisional,
+        prototypes=prototypes,
+        top_k=2,
+    )
+    ranking_path = write_provisional_reference_ranking(
+        ranking,
+        tmp_path / "ranking",
+    )
+
+    lead = ranking.row(0, named=True)
+    assert lead["accepted_taxon_key"] == TARGET
+    assert lead["raw_competitor_margin"] > 0
+    assert lead["top_reference_media_ids"]
+    assert lead["probability_available"] is False
+    assert lead["calibrated_target_probability"] is None
+    assert lead["required_human_review_state"] == (
+        "mandatory_before_final_inclusion"
+    )
+    assert "not_probability" in lead["score_semantics"]
+    assert ranking_path.name == PROVISIONAL_REFERENCE_RANKING_FILE
 
 
 @dataclass(frozen=True, slots=True)
