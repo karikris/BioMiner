@@ -26,9 +26,7 @@ BUTTERFLYLENS_POOL_HANDOFF_SCHEMA_VERSION = (
 )
 BUTTERFLYLENS_POOL_HANDOFF_FILE = "butterflylens_dynamic_pool_handoff.json"
 BUTTERFLYLENS_REPOSITORY = "karikris/ButterflyLens"
-BUTTERFLYLENS_PREVIOUS_AUDITED_COMMIT = (
-    "fcee1a76886e37cb2f0d9badbe91b70a18a0e7c3"
-)
+BUTTERFLYLENS_PREVIOUS_AUDITED_COMMIT = "fcee1a76886e37cb2f0d9badbe91b70a18a0e7c3"
 BUTTERFLYLENS_PINNED_COMMIT = "1cea643623f2f20a2bea72afc754c7b194db3278"
 BUTTERFLYLENS_REQUIRED_ARTIFACT_ROLES = (
     "project",
@@ -48,9 +46,7 @@ BUTTERFLYLENS_TARGET_CONTRACTS = {
     "evidence_fingerprint": "butterflylens-evidence-fingerprint:v1.1.0",
     "classification_maturity": "butterflylens-classification-maturity:v1.0.0",
     "geographic_impact_cell": "butterflylens-geographic-impact-cell:v1.0.0",
-    "geographic_impact_snapshot": (
-        "butterflylens-geographic-impact-snapshot:v1.0.0"
-    ),
+    "geographic_impact_snapshot": ("butterflylens-geographic-impact-snapshot:v1.0.0"),
     "verification_campaign": "butterflylens-verification-campaign:v1.0.0",
     "verification_assignment": "butterflylens-verification-assignment:v1.0.0",
     "verification_event": "butterflylens-verification-event:v1.0.0",
@@ -179,9 +175,7 @@ def build_butterflylens_pool_handoff(
         "consumer_compatibility": _consumer_compatibility(),
         "project_id": _required_text(project_id, field="project_id"),
         "run_id": _required_text(run_id, field="run_id"),
-        "registry_version": _required_text(
-            registry_version, field="registry_version"
-        ),
+        "registry_version": _required_text(registry_version, field="registry_version"),
         "source_snapshot_fingerprints": snapshots,
         "model_fingerprint": validate_fingerprint(
             model_fingerprint, field="model_fingerprint"
@@ -299,9 +293,7 @@ def _validate_evidence_roles(artifacts: Sequence[Mapping[str, object]]) -> None:
         "provisional_raw_score"
     ):
         raise ValueError("ButterflyLens model evidence must remain raw score evidence")
-    if by_role["release_state"]["evidence_maturity_label"] == (
-        "final_release_status"
-    ):
+    if by_role["release_state"]["evidence_maturity_label"] == ("final_release_status"):
         raise ValueError("BioMiner cannot hand off final ButterflyLens release status")
 
 

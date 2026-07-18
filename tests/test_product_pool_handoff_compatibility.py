@@ -26,9 +26,7 @@ from biominer.integration.taxalens_pool_handoff import (
 
 
 ROOT = Path(__file__).parents[1]
-COMPATIBILITY_FIXTURE = (
-    ROOT / "tests/fixtures/product_pool_handoff_compatibility.json"
-)
+COMPATIBILITY_FIXTURE = ROOT / "tests/fixtures/product_pool_handoff_compatibility.json"
 PIN_FIXTURE = ROOT / "tests/fixtures/downstream_pooling_contract_pins.json"
 
 
@@ -75,14 +73,16 @@ def test_representative_fixture_has_frozen_production_identities() -> None:
         "biominer-product-pool-handoff-compatibility-v1.0.0"
     )
     assert taxalens["handoff_id"] == fixture["taxalens"]["expected_handoff_id"]
-    assert taxalens["manifest_fingerprint"] == (
-        fixture["taxalens"]["expected_manifest_fingerprint"]
+    assert (
+        taxalens["manifest_fingerprint"]
+        == (fixture["taxalens"]["expected_manifest_fingerprint"])
     )
-    assert butterflylens["handoff_id"] == (
-        fixture["butterflylens"]["expected_handoff_id"]
+    assert (
+        butterflylens["handoff_id"] == (fixture["butterflylens"]["expected_handoff_id"])
     )
-    assert butterflylens["manifest_fingerprint"] == (
-        fixture["butterflylens"]["expected_manifest_fingerprint"]
+    assert (
+        butterflylens["manifest_fingerprint"]
+        == (fixture["butterflylens"]["expected_manifest_fingerprint"])
     )
     validate_taxalens_pool_handoff(taxalens)
     validate_butterflylens_pool_handoff(butterflylens)
@@ -97,12 +97,8 @@ def test_shared_pin_fixture_matches_production_consumers_and_targets() -> None:
     assert pins["butterflylens"]["previous_audited_commit"] == (
         BUTTERFLYLENS_PREVIOUS_AUDITED_COMMIT
     )
-    assert pins["butterflylens"]["audited_commit"] == (
-        BUTTERFLYLENS_PINNED_COMMIT
-    )
-    assert fixture["butterflylens"]["consumer_commit"] == (
-        BUTTERFLYLENS_PINNED_COMMIT
-    )
+    assert pins["butterflylens"]["audited_commit"] == (BUTTERFLYLENS_PINNED_COMMIT)
+    assert fixture["butterflylens"]["consumer_commit"] == (BUTTERFLYLENS_PINNED_COMMIT)
     assert fixture["butterflylens"]["previous_consumer_commit"] == (
         BUTTERFLYLENS_PREVIOUS_AUDITED_COMMIT
     )
@@ -113,9 +109,7 @@ def test_shared_pin_fixture_matches_production_consumers_and_targets() -> None:
         "quality_snapshot",
         "reviewed_labels",
     ):
-        assert pins["taxalens"]["contracts"][name] == (
-            TAXALENS_TARGET_CONTRACTS[name]
-        )
+        assert pins["taxalens"]["contracts"][name] == (TAXALENS_TARGET_CONTRACTS[name])
     for name in (
         "project",
         "run",
@@ -127,8 +121,9 @@ def test_shared_pin_fixture_matches_production_consumers_and_targets() -> None:
         "verification_event",
         "verification_consensus",
     ):
-        assert pins["butterflylens"]["contracts"][name] == (
-            BUTTERFLYLENS_TARGET_CONTRACTS[name]
+        assert (
+            pins["butterflylens"]["contracts"][name]
+            == (BUTTERFLYLENS_TARGET_CONTRACTS[name])
         )
 
 
@@ -154,13 +149,14 @@ def test_both_manifests_are_complete_and_fail_closed() -> None:
     assert taxalens["evidence_maturity"]["quality_estimate"]["status"] == (
         "unavailable"
     )
-    assert taxalens["evidence_maturity"]["quality_estimate"][
-        "zero_review_is_zero_quality"
-    ] is False
+    assert (
+        taxalens["evidence_maturity"]["quality_estimate"]["zero_review_is_zero_quality"]
+        is False
+    )
     assert butterflylens["release_state"]["release_ready"] is False
-    assert butterflylens["authority_boundary"][
-        "biominer_database_writes_allowed"
-    ] is False
+    assert (
+        butterflylens["authority_boundary"]["biominer_database_writes_allowed"] is False
+    )
     assert butterflylens["authority_boundary"]["reviewer_identity_in_handoff"] is (
         False
     )
@@ -170,23 +166,20 @@ def test_field_parity_covers_product_specific_scientific_boundaries() -> None:
     taxalens, butterflylens = _build_manifests()
 
     taxalens_projections = taxalens["field_projections"]
-    assert "inclusion_probability" in taxalens_projections["review_sampling"][
-        "fields"
-    ]
-    assert "baseline_union_count" in taxalens_projections["geographic_impact"][
-        "fields"
-    ]
+    assert "inclusion_probability" in taxalens_projections["review_sampling"]["fields"]
+    assert "baseline_union_count" in taxalens_projections["geographic_impact"]["fields"]
     assert taxalens_projections["quality"]["zero_review_is_zero_quality"] is False
     butterflylens_projections = butterflylens["field_projections"]
-    assert butterflylens_projections["model_evidence"][
-        "raw_score_is_probability"
-    ] is False
-    assert "reviewer_id" in butterflylens_projections["review_inputs"][
-        "excluded_fields"
-    ]
-    assert butterflylens_projections["geographic_impact"][
-        "candidate_only_is_occurrence"
-    ] is False
+    assert (
+        butterflylens_projections["model_evidence"]["raw_score_is_probability"] is False
+    )
+    assert (
+        "reviewer_id" in butterflylens_projections["review_inputs"]["excluded_fields"]
+    )
+    assert (
+        butterflylens_projections["geographic_impact"]["candidate_only_is_occurrence"]
+        is False
+    )
 
 
 @pytest.mark.parametrize(

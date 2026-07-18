@@ -83,9 +83,7 @@ def _manifest(
         source_snapshot_fingerprints=[SOURCE_FINGERPRINT],
         model_fingerprint=MODEL_FINGERPRINT,
         preprocessing_fingerprint=PREPROCESSING_FINGERPRINT,
-        artifacts=artifacts or _artifacts(
-            quality_available=quality_estimate_available
-        ),
+        artifacts=artifacts or _artifacts(quality_available=quality_estimate_available),
         completed_review_count=completed_review_count,
         quality_estimate_available=quality_estimate_available,
         quality_unavailable_reason=quality_unavailable_reason,

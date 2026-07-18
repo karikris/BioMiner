@@ -35,9 +35,7 @@ from biominer.integration.product_handoff import (
 )
 
 
-TAXALENS_POOL_HANDOFF_SCHEMA_VERSION = (
-    "biominer-taxalens-dynamic-pool-handoff-v1.0.0"
-)
+TAXALENS_POOL_HANDOFF_SCHEMA_VERSION = "biominer-taxalens-dynamic-pool-handoff-v1.0.0"
 TAXALENS_POOL_HANDOFF_FILE = "taxalens_dynamic_pool_handoff.json"
 TAXALENS_REPOSITORY = "karikris/taxalens"
 TAXALENS_PINNED_COMMIT = "c5e87ead4fdb26d5c5624bbb8d8d67e46d8eddbc"
@@ -185,9 +183,7 @@ def build_taxalens_pool_handoff(
             "commit": TAXALENS_PINNED_COMMIT,
         },
         "run_id": _required_text(run_id, field="run_id"),
-        "registry_version": _required_text(
-            registry_version, field="registry_version"
-        ),
+        "registry_version": _required_text(registry_version, field="registry_version"),
         "source_snapshot_fingerprints": snapshots,
         "model_fingerprint": validate_fingerprint(
             model_fingerprint, field="model_fingerprint"
@@ -275,9 +271,7 @@ def validate_taxalens_pool_handoff(manifest: Mapping[str, object]) -> None:
         artifacts_value, (str, bytes)
     ):
         raise ValueError("TaxaLens artifacts must be an array")
-    artifacts = [
-        _mapping(value, field="artifacts[]") for value in artifacts_value
-    ]
+    artifacts = [_mapping(value, field="artifacts[]") for value in artifacts_value]
     artifacts = validate_normalized_product_artifacts(
         artifacts,
         required_roles=TAXALENS_REQUIRED_ARTIFACT_ROLES,
