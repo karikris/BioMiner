@@ -1,0 +1,159 @@
+{
+  "schema_version": "geo-dynamic-pooling-technical-release-verification-v1.0.0",
+  "generated_at": "2026-07-18T15:54:47Z",
+  "repository": "karikris/BioMiner",
+  "branch": "main",
+  "tested_workflow_sha": "19fd744b1104c09dde75367bafb6b531ef4239a4",
+  "verification_scope": "committed workflow through Task 16.1 plus the Task 16.2 and 16.2.1 no-GitHits provenance records",
+  "verdict": "technical_workflow_verified_with_explicit_live_and_secret_heuristic_limitations",
+  "environment": {
+    "python": "3.14.5",
+    "uv": "0.11.19",
+    "lockfile_sha256": "49e0c67867b37b25cc5de0522889c76c0943b3efd9c2de757e87484be9432a7d",
+    "resolved_packages": 44
+  },
+  "test_gates": [
+    {
+      "name": "full_regression",
+      "command": ".venv/bin/pytest -q",
+      "status": "passed",
+      "passed": 3233,
+      "duration_seconds": 169.62
+    },
+    {
+      "name": "strict_mode",
+      "command": ".venv/bin/pytest -q tests/test_support_admission.py tests/test_reference_readiness.py tests/test_reference_prototypes.py tests/test_bioclip_classification_modes.py",
+      "status": "passed",
+      "passed": 77,
+      "duration_seconds": 17.04
+    },
+    {
+      "name": "adaptive_mode",
+      "command": ".venv/bin/pytest -q tests/test_adaptive_*.py",
+      "status": "passed",
+      "passed": 68,
+      "duration_seconds": 7.56
+    },
+    {
+      "name": "dynamic_pooling",
+      "command": ".venv/bin/pytest -q tests/test_dynamic_pool_*.py tests/test_geo_dynamic_pooling_*.py tests/test_geography_conditioned_dynamic_pooling_adr.py tests/test_statistical_support_human_verification_adr.py",
+      "status": "passed",
+      "passed": 428,
+      "duration_seconds": 60.94
+    },
+    {
+      "name": "cli",
+      "command": ".venv/bin/pytest -q tests/test_adaptive_cli_defaults.py tests/test_cli_dry_run.py tests/test_dynamic_pool_cli.py tests/test_dynamic_pool_config.py tests/test_evaluation_cli.py tests/test_reference_negative_manifest_cli.py tests/test_reference_readiness_cli.py tests/test_reference_review_cli.py tests/test_target_aware_workflow_cli.py tests/test_vision_live_benchmark_cli.py",
+      "status": "passed",
+      "passed": 146,
+      "duration_seconds": 8.73
+    },
+    {
+      "name": "configured_schema_and_parity",
+      "command": ".venv/bin/pytest -q tests/test_butterflylens_database_contract_fixture.py tests/test_product_pool_handoff_compatibility.py tests/test_downstream_pooling_handoff_audit.py tests/test_taxalens_pool_handoff.py tests/test_butterflylens_pool_handoff.py tests/test_storage_handoff.py",
+      "status": "passed",
+      "passed": 44,
+      "duration_seconds": 0.84
+    },
+    {
+      "name": "downstream_handoffs",
+      "command": ".venv/bin/pytest -q tests/test_taxalens_pool_publish.py tests/test_product_pool_handoff_compatibility.py tests/test_downstream_pooling_handoff_audit.py tests/test_taxalens_pool_handoff.py tests/test_taxalens_pool_export.py tests/test_taxalens_quality_export.py tests/test_storage_handoff.py tests/test_butterflylens_model_export.py tests/test_butterflylens_geographic_export.py tests/test_butterflylens_review_export.py tests/test_butterflylens_pool_publish.py tests/test_butterflylens_database_contract_fixture.py tests/test_butterflylens_pool_handoff.py",
+      "status": "passed",
+      "passed": 85,
+      "duration_seconds": 5.87
+    }
+  ],
+  "configured_parity": {
+    "taxalens_consumer_commit": "e845dd98493979f37b04dbb6538e0d7b8758ca11",
+    "butterflylens_consumer_commit": "1cea643623f2f20a2bea72afc754c7b194db3278",
+    "butterflylens_json_schemas": 24,
+    "butterflylens_valid_cases": 20,
+    "butterflylens_invalid_cases": 20,
+    "butterflylens_version_checks": 20,
+    "butterflylens_vocabulary_checks": 15,
+    "live_database_executed": false,
+    "consumer_worktree_modified": false,
+    "status": "passed_exact_committed_fixtures"
+  },
+  "static_and_supply_chain_gates": {
+    "ruff_lint": {
+      "command": "git ls-files -z '*.py' | xargs -0 uvx ruff check",
+      "scope": "all tracked Python files",
+      "status": "passed"
+    },
+    "dependency_audit": {
+      "command": "uv export --locked --format requirements-txt --all-extras --no-hashes | uvx pip-audit -r /dev/stdin",
+      "status": "passed",
+      "known_vulnerabilities": 0,
+      "local_package_skipped": "biominer 0.1.0 is not published on PyPI"
+    },
+    "secret_scan": {
+      "command": "git ls-files -z | xargs -0 uvx detect-secrets scan",
+      "scope": "tracked files only",
+      "status": "passed_no_high_confidence_pattern_with_heuristic_findings_retained",
+      "files_with_heuristic_findings": 106,
+      "heuristic_findings": 453,
+      "finding_types": {
+        "hex_high_entropy": 424,
+        "secret_keyword": 21,
+        "basic_auth_credentials": 6,
+        "base64_high_entropy": 2
+      },
+      "classification": {
+        "hex_high_entropy": "semantic/content hashes, Git SHAs and artifact fingerprints concentrated in reports, tests and manifests",
+        "secret_keyword": "configuration field names, placeholders, security tests and release-report descriptions",
+        "basic_auth_credentials": "deliberately fake URL credentials in tests",
+        "base64_high_entropy": "deliberately fake secret-loader test values"
+      },
+      "private_key_or_common_live_token_prefix_matches": 0,
+      "limitations": "heuristic classification and prefix scanning cannot prove the absence of every possible secret format"
+    }
+  },
+  "tracked_artifact_inspection": {
+    "tracked_file_count": 867,
+    "largest_tracked_file": "provenance/githits.jsonl",
+    "largest_tracked_file_bytes": 339686,
+    "tracked_files_over_1_mib": 0,
+    "tracked_media_or_model_weight_files": 0,
+    "tracked_parquet_files": 1,
+    "tracked_parquet": {
+      "path": "reports/gbif_fast_start/papilio_demoleus_audit_review_queue.parquet",
+      "bytes": 17865,
+      "role": "bounded release-report fixture"
+    },
+    "git_diff_check": "passed",
+    "status": "passed"
+  },
+  "provenance": {
+    "required_records": [
+      "geo-pool-16.2",
+      "geo-pool-16.2.1"
+    ],
+    "githits_calls_made": 0,
+    "githits_status": "skipped_user_directive",
+    "solution_ids": [
+      null,
+      null
+    ],
+    "external_code_contribution": "none"
+  },
+  "live_scientific_execution": {
+    "status": "not_run",
+    "reason": "Task 16.2.1 is a deterministic technical release gate; no release-scoped live corpus, source-bound review set or MPS execution was authorized or supplied",
+    "claims_not_available": [
+      "live biological accuracy",
+      "reviewed precision or subgroup support",
+      "comparable production throughput",
+      "MPS peak memory",
+      "production-default eligibility",
+      "occurrence release"
+    ]
+  },
+  "limitations": [
+    "Focused gates overlap with the full regression by design; their counts are independent release receipts, not additional unique tests.",
+    "Exact-pin schema and database fixtures validate committed contracts but do not execute a live consumer database.",
+    "The local unpublished biominer package cannot be resolved by the public vulnerability service and was skipped by pip-audit.",
+    "Secret scanning is heuristic; all findings and the zero-match high-confidence prefix scan remain explicit.",
+    "User-owned untracked runtime artifacts were preserved and excluded from the tracked release scope."
+  ]
+}
