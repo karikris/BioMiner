@@ -10,16 +10,17 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `fe03e46bf00c9c064d1f52c5d83320730a5f86fa`
-  (`feat(flickr): partition geographic taxon work`)
+  `b372ce18d6be62c1b66025b700d5c4e4a884428c`
+  (`experiment(candidates): add hybrid parallel union`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
   cross-repository contract alignment complete; Phase 2 geographic reference
   indexing complete; Phase 3 canonical Flickr photo, organism, association,
   candidate, scoring-geography and work-partition contracts complete through
-  Task 3.1.3. Phase 4 family-versus-geography strategy ablation is the next
-  implementation boundary.
+  Task 3.1.3. Phase 4 implements all three target-preserving candidate
+  schedules through Task 4.1.3; Task 4.2 metrics, counterfactual evaluation and
+  evidence-bound strategy selection are the next implementation boundary.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -36,6 +37,10 @@ at the start of every task.
   - Task 3.1 canonical Flickr grain gate: 118 passed in 1.01 seconds;
   - Task 3.1 artifact round-trip: five organism assignments across four
     partitions, with one shared model-input reuse and explicit no-geo evidence;
+  - Task 4.1 final full regression: 2,756 passed in 102.92 seconds;
+  - Task 4.1 strategy and target-preservation gate: 82 passed in 1.25 seconds;
+  - Task 4.1 fixture round-trip: all three schedules retained identical
+    five-taxon membership; no strategy is selected or production-defaulted;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
@@ -53,6 +58,13 @@ worktree is authoritative for the active task; the final report distinguishes
 the ending implementation SHA from its self-referential containing commit.
 
 ## Active-goal protocol
+
+For the remainder of the active geography-conditioned dynamic-pooling goal,
+the user has explicitly disabled further GitHits calls. Do not call GitHits.
+Required task and subtask provenance records must use
+`githits_status: "skipped_user_directive"` and `solution_id: null`, must state
+that no call was made, and must not invent repositories, results, or external
+contributions.
 
 Before touching a file:
 
@@ -256,11 +268,11 @@ Provider-asserted GBIF support remains provisional, current quality metrics are
 unavailable, and no live production improvement or scientific release is
 claimed.
 
-For the active dynamic-pooling goal, the next implementation boundary is Phase
-4 family-versus-geography strategy ablation. No candidate-selection strategy
+For the active dynamic-pooling goal, the next implementation boundary is Task
+4.2 candidate-strategy benchmarking and evidence-bound selection. No strategy
 is yet empirically superior, and no live dynamic pool, live score, calibrated
 probability, statistical-support result or new release-ready occurrence is
-claimed by the completed contract and indexing phases.
+claimed by the completed contract, indexing and scheduling phases.
 
 ## Repository map
 

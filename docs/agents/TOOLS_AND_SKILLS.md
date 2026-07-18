@@ -65,6 +65,17 @@ If GitHits is unavailable:
 - mark the status `unavailable`;
 - never fabricate repositories, results, or solution IDs.
 
+### Active dynamic-pooling goal override (2026-07-18)
+
+The user explicitly disabled all further GitHits calls for the remainder of
+the active geography-conditioned dynamic-pooling goal after repeated service
+unavailability. Do not call GitHits again during this goal, including before a
+task or subtask. Where the goal requires a provenance record, append one with
+`githits_status: "skipped_user_directive"`, `solution_id: null`, and an explicit
+statement that no call was made. Do not invent repositories, solutions,
+results, or external contributions; use committed local evidence, official
+primary documentation, and primary literature where needed.
+
 GitHits is precedent, not authority. Do not paste code wholesale. Verify the
 source licence and adapt the pattern to BioMiner's contracts.
 

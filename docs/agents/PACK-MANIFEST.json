@@ -1,5 +1,5 @@
 {
-  "active_goal_note": "Geography-conditioned dynamic pooling Phase 3 and the Task 3.1 gate are complete; Phase 4 family-versus-geography strategy ablation is next.",
+  "active_goal_note": "Geography-conditioned dynamic pooling Task 4.1 and its gate are complete; Task 4.2 evaluation is next. The user disabled all further GitHits calls for the remainder of this goal.",
   "files": [
     {
       "bytes": 6701,
@@ -8,10 +8,10 @@
       "sha256": "e5d9cff662484ad83c729d42e1af48ef578a52d0f3adbfeb3f471c93585c66d5"
     },
     {
-      "bytes": 11020,
-      "lines": 285,
+      "bytes": 11833,
+      "lines": 297,
       "path": "docs/agents/CURRENT_STATE.md",
-      "sha256": "0ac0a0529c9dd258a13f983f3b8483ab2776f1aa4a054a6da34ec006463adddb"
+      "sha256": "4e45cf20b6c33182a08fb26a4b15231a3961125ef6bb2876540dbcde35a2d012"
     },
     {
       "bytes": 5599,
@@ -50,14 +50,14 @@
       "sha256": "d58f36f71894eed3ab63fb26985d1c54d00d9f74ad443f2afdde996148d73b5d"
     },
     {
-      "bytes": 5395,
-      "lines": 172,
+      "bytes": 6049,
+      "lines": 183,
       "path": "docs/agents/TOOLS_AND_SKILLS.md",
-      "sha256": "9b3200df46b4b94292e83005f04939b10a33babbea924050981787307a7f6870"
+      "sha256": "73d33c40909136b10c4fb2c9698786ced5cd70267e4137b6736fc61e7619acc8"
     }
   ],
   "generated_from_uploaded_file": "AGENTS(14).md",
-  "observed_main_commit": "fe03e46bf00c9c064d1f52c5d83320730a5f86fa",
+  "observed_main_commit": "b372ce18d6be62c1b66025b700d5c4e4a884428c",
   "observed_repository": "karikris/BioMiner",
   "pack": "BioMiner token-efficient agent instructions",
   "schema_version": "biominer-agent-pack-v1.0.0"
