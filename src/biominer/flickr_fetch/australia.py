@@ -23,6 +23,8 @@ from biominer.registry.unified import stable_identity
 
 GBIF_OCCURRENCE_URL = "https://api.gbif.org/v1/occurrence/search"
 AUSTRALIA_PLACE_QUERY = "Australia"
+AUSTRALIA_WOE_ID = "23424748"
+AUSTRALIA_FLICKR_BBOX = "112.0,-44.5,154.0,-10.0"
 COMMON_NAME_CLASSES = {"vernacular", "vernacular_alias", "common_name", "common_name_alias"}
 INDIGENOUS_MARKERS = ("indigenous", "aboriginal", "first nations", "first_nations")
 GBIF_REQUEST_INTERVAL_SECONDS = 0.5
@@ -147,10 +149,16 @@ def build_australia_presence(
 
 
 def compile_australia_query_plan(
-    *, registry_dir: str | Path, presence: pl.DataFrame, output_dir: str | Path, place_id: str, cutoff: str
+    *, registry_dir: str | Path, presence: pl.DataFrame, output_dir: str | Path, place_id: str | None = None,
+    woe_id: str | None = None, bbox: str | None = None, cutoff: str
 ) -> tuple[pl.DataFrame, pl.DataFrame, tuple[FlickrQuery, ...]]:
     """Compile globally de-duplicated terms in the required Australia-first order."""
 
+    if not place_id and not woe_id and not bbox:
+        raise ValueError("Australia Flickr plan requires a Flickr place_id, woe_id, or bbox")
+    scope_identity = f"bbox:{bbox}" if bbox else (f"woe:{woe_id}" if woe_id else f"place:{place_id}")
+    effective_place_id = None if bbox else place_id
+    effective_woe_id = None if bbox else woe_id
     registry = Path(registry_dir)
     taxa = pl.read_parquet(registry / "taxa.parquet")
     names = pl.read_parquet(registry / "names.parquet")
@@ -211,7 +219,7 @@ def compile_australia_query_plan(
             seen.add(identity)
             definition = dict(row)
             definition["search_field"] = field
-            definition["logical_query_id"] = stable_identity("flickr-logical-query", row["normalized_match_key"], field, "australia", place_id)
+            definition["logical_query_id"] = stable_identity("flickr-logical-query", row["normalized_match_key"], field, "australia", scope_identity)
             definition["query_definition_id"] = stable_identity("australia-flickr-query", definition["logical_query_id"], cutoff)
             chosen.append(definition)
     definitions = pl.DataFrame(chosen) if chosen else pl.DataFrame()
@@ -224,7 +232,7 @@ def compile_australia_query_plan(
         FlickrQuery(
             term=str(row["source_term"]), normalized_term=str(row["normalized_match_key"]), language=str(row.get("language") or "und"),
             search_field=str(row["search_field"]), lane="bbox_page", page=1, per_page=250, has_geo=1,
-            place_id=place_id, region=f"australia-place:{place_id}", min_upload_date="2004-02-10", max_upload_date=cutoff,
+            place_id=effective_place_id, woe_id=effective_woe_id, bbox=bbox, region=f"australia-{scope_identity}", min_upload_date="2004-02-10", max_upload_date=cutoff,
             logical_query_id=str(row["logical_query_id"]), canonical_keyword_id=str(row.get("canonical_keyword_id") or stable_identity("canonical-keyword", row["normalized_match_key"])),
             keyword_id=str(row.get("keyword_id") or row.get("name_id") or "") or None,
             original_trust_tier=str(row.get("original_trust_tier") or row.get("trust_tier") or "T4"),
@@ -235,7 +243,7 @@ def compile_australia_query_plan(
             query_priority=int(row["search_priority"]),
         ) for row in chosen
     )
-    manifest = {"scope": "Australia", "place_id": place_id, "cutoff": cutoff, "definitions": len(chosen), "associations": len(associations), "created_at": datetime.now(UTC).isoformat()}
+    manifest = {"scope": "Australia", "place_id": place_id, "woe_id": woe_id, "bbox": bbox, "cutoff": cutoff, "definitions": len(chosen), "associations": len(associations), "created_at": datetime.now(UTC).isoformat()}
     (output / "australia_flickr_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return definitions, association_frame, queries
 

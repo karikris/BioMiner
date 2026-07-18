@@ -60,9 +60,9 @@ from biominer.evaluation.xie_style import EVALUATION_PROFILE as XIE_STYLE_EVALUA
 from biominer.evaluation.xie_style import evaluate_xie_style_hierarchical
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_fetch.australia import (
+    AUSTRALIA_FLICKR_BBOX,
     build_australia_presence,
     compile_australia_query_plan,
-    resolve_australia_place_id,
 )
 from biominer.flickr_comments.comment_review import (
     apply_comment_review_decisions_to_parquet,
@@ -472,6 +472,8 @@ def build_parser() -> argparse.ArgumentParser:
     australia_live.add_argument("--evidence-output", default="staging/flickr/australia/evidence.parquet")
     australia_live.add_argument("--api-key-env", default="FLICKR_API_KEY")
     australia_live.add_argument("--place-id")
+    australia_live.add_argument("--woe-id")
+    australia_live.add_argument("--bbox", default=AUSTRALIA_FLICKR_BBOX)
     australia_live.add_argument("--gbif-workers", type=int, default=1, help="must remain 1; GBIF requests are globally paced")
     australia_live.add_argument("--max-api-calls", type=int, default=3400)
     australia_live.add_argument("--run-id")
@@ -1204,12 +1206,14 @@ def _run_australia_live(args: argparse.Namespace) -> int:
     if failed:
         print(json.dumps({"error": "GBIF Australia prescan has retryable failures; rerun after they clear", "failed_species": failed}, indent=2, sort_keys=True))
         return 2
-    place_id = args.place_id or resolve_australia_place_id(api_key=api_key)
+    place_id = args.place_id
     definitions, associations, queries = compile_australia_query_plan(
         registry_dir=args.registry_dir,
         presence=presence,
         output_dir=output_dir,
         place_id=place_id,
+        woe_id=args.woe_id,
+        bbox=args.bbox,
         cutoff=cutoff,
     )
     state = MetadataPollState(args.state_db)
@@ -1229,6 +1233,8 @@ def _run_australia_live(args: argparse.Namespace) -> int:
     payload = {
         "scope": "Australia public geotagged Flickr photos",
         "place_id": place_id,
+        "woe_id": args.woe_id,
+        "bbox": args.bbox,
         "cutoff": cutoff,
         "gbif_species": presence.height,
         "gbif_local_species": int(presence.filter(pl.col("gbif_au_occurrence_count") > 0).height),
