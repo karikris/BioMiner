@@ -6,6 +6,12 @@ from dataclasses import replace
 
 import pytest
 
+from biominer.bioclip.dynamic_pool_fusion import (
+    DYNAMIC_SCORE_COMPONENT_SET_VERSION,
+    DYNAMIC_SCORE_COMPONENT_VERSION,
+    preserve_dynamic_score_components,
+    validate_dynamic_score_components,
+)
 from biominer.bioclip.dynamic_pool_scoring import (
     GlobalReferencePoolInput,
     LocalReferencePoolInput,
@@ -539,6 +545,118 @@ def test_dynamic_pool_disagreement_rejects_identity_or_membership_drift() -> Non
         )
 
 
+def test_preserved_dynamic_components_retain_every_source_row_without_fusion() -> None:
+    family, global_scores, local_scores, disagreement = _component_inputs()
+
+    result = preserve_dynamic_score_components(
+        family,
+        global_scores,
+        local_scores,
+        disagreement,
+    )
+
+    assert result.schema_version == DYNAMIC_SCORE_COMPONENT_SET_VERSION
+    assert result.family_evidence == family
+    assert result.global_evidence_set_fingerprint == global_scores.score_set_fingerprint
+    assert result.local_evidence_set_fingerprint == local_scores.score_set_fingerprint
+    assert result.disagreement_coverage == disagreement
+    assert result.disagreement_coverage_set_fingerprint == (
+        disagreement.evidence_set_fingerprint
+    )
+    assert [candidate.schema_version for candidate in result.candidates] == [
+        DYNAMIC_SCORE_COMPONENT_VERSION,
+        DYNAMIC_SCORE_COMPONENT_VERSION,
+    ]
+    for candidate, global_score, local_score, difference in zip(
+        result.candidates,
+        global_scores.scores,
+        local_scores.scores,
+        disagreement.scores,
+        strict=True,
+    ):
+        assert candidate.global_evidence == global_score
+        assert candidate.local_evidence == local_score
+        assert candidate.disagreement_coverage == difference
+        assert candidate.component_fingerprint.startswith("sha256:")
+        assert not hasattr(candidate, "fused_raw_score")
+    assert result.candidates[1].local_evidence.prototype_similarity is None
+    assert result.candidates[1].disagreement_coverage.local_prototype_rank is None
+    assert result.component_set_fingerprint.startswith("sha256:")
+
+
+def test_preserved_dynamic_components_are_deterministic_and_validate() -> None:
+    evidence = _component_inputs()
+
+    first = preserve_dynamic_score_components(*evidence)
+    second = preserve_dynamic_score_components(*evidence)
+
+    assert first == second
+    validate_dynamic_score_components(first)
+
+
+def test_preserved_dynamic_components_reject_source_or_fingerprint_drift() -> None:
+    family, global_scores, local_scores, disagreement = _component_inputs()
+
+    with pytest.raises(ValueError, match="query fingerprints differ"):
+        preserve_dynamic_score_components(
+            replace(family, query_fingerprint="sha256:" + "7" * 64),
+            global_scores,
+            local_scores,
+            disagreement,
+        )
+    with pytest.raises(ValueError, match="does not match global/local evidence"):
+        preserve_dynamic_score_components(
+            family,
+            global_scores,
+            local_scores,
+            replace(
+                disagreement,
+                global_evidence_set_fingerprint="sha256:" + "8" * 64,
+            ),
+        )
+    tampered_family = replace(
+        family,
+        scores=(
+            replace(family.scores[0], family_name="Tampered family"),
+            *family.scores[1:],
+        ),
+    )
+    with pytest.raises(ValueError, match="score fingerprint mismatch"):
+        preserve_dynamic_score_components(
+            tampered_family,
+            global_scores,
+            local_scores,
+            disagreement,
+        )
+    tampered_global = replace(
+        global_scores,
+        scores=(
+            replace(global_scores.scores[0], query_id="another-query"),
+            *global_scores.scores[1:],
+        ),
+    )
+    with pytest.raises(ValueError, match="row query identities differ"):
+        preserve_dynamic_score_components(
+            family,
+            tampered_global,
+            local_scores,
+            disagreement,
+        )
+
+
+def test_preserved_dynamic_component_validator_rejects_row_tampering() -> None:
+    result = preserve_dynamic_score_components(*_component_inputs())
+    first = replace(
+        result.candidates[0],
+        component_fingerprint="sha256:" + "9" * 64,
+    )
+
+    with pytest.raises(ValueError, match="component row or fingerprint mismatch"):
+        validate_dynamic_score_components(
+            replace(result, candidates=(first, *result.candidates[1:])),
+        )
+
+
 def _query() -> RawScoringQuery:
     return RawScoringQuery(
         query_id="flickr-embedding:query",
@@ -548,6 +666,26 @@ def _query() -> RawScoringQuery:
         model_fingerprint=_MODEL_FINGERPRINT,
         embedding=(1.0, 0.0),
     )
+
+
+def _component_inputs():
+    candidate_matrix, global_pools = _global_inputs()
+    family = score_family_evidence(_query(), _family_matrix())
+    global_scores = score_global_reference_evidence(
+        _query(),
+        candidate_matrix,
+        global_pools,
+    )
+    local_scores = score_local_reference_evidence(
+        _query(),
+        candidate_matrix,
+        _local_inputs(),
+    )
+    disagreement = calculate_dynamic_pool_disagreement_coverage(
+        global_scores,
+        local_scores,
+    )
+    return family, global_scores, local_scores, disagreement
 
 
 def _family_matrix(
