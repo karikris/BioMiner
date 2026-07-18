@@ -10,8 +10,8 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `074e8671c7aac2e6a32705c8aa82b8b07c06b042`
-  (`perf(run): selectively rebuild dynamic pools`)
+  `a04832db6b0f6cd63fcd99c55f349e2eb9f7c906`
+  (`test(run): preserve dynamic pooling review gates`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -57,8 +57,10 @@ at the start of every task.
   dynamic-pool, matrix and individual scoring-record dependencies through Task
   12.1.3. Task 12.2 binds content-addressed reference/Flickr reuse into a
   preflighted selective pool, matrix and record execution DAG through Task
-  12.2.3. Phase 13 Task 13.1 stage-graph integration is next; no fusion method is
-  selected or production-defaulted.
+  12.2.3. Phase 13 Task 13.1 integrates the explicit dynamic-pooling stages,
+  dependency order and non-automatic human gates through Task 13.1.3. Task 13.2
+  configuration and CLI integration is next; no fusion method is selected or
+  production-defaulted.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -185,6 +187,12 @@ at the start of every task.
     6 reused and 1 excluded; executed work covers 2 reference vectors, 1 Flickr
     vector, 1 pool, 1 matrix and 2 exact score records, while runtime savings
     remain `not_instrumented`;
+  - Task 13.1 final full regression: 3,096 passed in 114.13 seconds;
+  - Task 13.1 stage graph gate: 118 passed in 2.89 seconds;
+  - Task 13.1 graph contract: 31 adaptive stages include all 9 requested
+    dynamic boundaries; all active dependencies are topological, legacy/default
+    compatibility sequences are unchanged, and Flickr human verification
+    pauses before risk-controlled audit;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
@@ -413,8 +421,8 @@ unavailable, and no live production improvement or scientific release is
 claimed.
 
 For the active dynamic-pooling goal, the next implementation boundary is Phase
-13 Task 13.1 explicit dynamic-pooling stage vocabulary, dependencies and manual
-review boundaries. The parallel family/geography union remains the
+13 Task 13.2 typed dynamic-pooling configuration, CLI commands, validation and
+dry-run planning. The parallel family/geography union remains the
 intended candidate, but no strategy is selected or production-defaulted
 because only
 implementation-fixture evidence has run. No strategy is empirically superior,
