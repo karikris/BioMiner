@@ -71,6 +71,7 @@ def plan_dynamic_reference_pools(
     global_reference_anchors: pl.DataFrame,
     *,
     policy: DynamicReferencePoolPolicy,
+    burst_group_by_observation: Mapping[str, str] | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Select observations and emit the accepted plan/member/summary contracts."""
 
@@ -105,6 +106,10 @@ def plan_dynamic_reference_pools(
         ): int(row["group_selection_rank"])
         for row in global_reference_anchors.iter_rows(named=True)
     }
+    burst_groups = _normalize_burst_groups(
+        burst_group_by_observation,
+        reference_index=reference_geography_index,
+    )
     plan_rows: list[dict[str, object]] = []
     member_rows: list[dict[str, object]] = []
     for request in normalized_requests:
@@ -114,6 +119,7 @@ def plan_dynamic_reference_pools(
             candidate_group=candidate_group,
             reference_index=reference_geography_index,
             anchor_ranks=anchor_ranks,
+            burst_groups=burst_groups,
             policy=policy,
         )
         if not any(item["pool_scope"] == "global" for item in selections):
@@ -155,16 +161,16 @@ def _select_request_members(
     candidate_group: pl.DataFrame,
     reference_index: pl.DataFrame,
     anchor_ranks: Mapping[tuple[str, str], int],
+    burst_groups: Mapping[str, str],
     policy: DynamicReferencePoolPolicy,
 ) -> list[dict[str, object]]:
-    output: list[dict[str, object]] = []
-    selected_observations: set[str] = set()
-    selected_duplicates: set[str] = set()
-    stage_budget = dict(policy.stage_member_limits)[str(request["scoring_stage"])]
-    remaining = min(stage_budget, policy.maximum_total_reference_members)
+    queues: dict[str, list[dict[str, object]]] = {}
+    candidate_order: list[str] = []
     for candidate in candidate_group.iter_rows(named=True):
-        if remaining <= 0:
-            break
+        candidate_key = str(candidate["candidate_accepted_taxon_key"])
+        candidate_order.append(candidate_key)
+        selected_observations: set[str] = set()
+        selected_duplicates: set[str] = set()
         candidate_index = reference_index.filter(
             (pl.col("accepted_taxon_key") == candidate["candidate_accepted_taxon_key"])
             & (pl.col("route") == request["query_route"])
@@ -177,34 +183,34 @@ def _select_request_members(
             selected_duplicates=selected_duplicates,
             scope="global",
         )
-        selected_global = global_rows[: min(policy.maximum_global_per_candidate, remaining)]
-        for rank, item in enumerate(selected_global, start=1):
-            output.append(
-                {
-                    "candidate": candidate,
-                    "reference": item["reference"],
-                    "pool_scope": "global",
-                    "pool_role": "global_core",
-                    "geographic_scope": "global",
-                    "geographic_distance_status": "not_applicable",
-                    "geographic_distance_reason": "global_pool_has_no_query_distance",
-                    "geographic_distance_km": None,
-                    "fallback_level": 0 if item["anchor_rank"] is not None else 1,
-                    "selection_rank": rank,
-                    "inclusion_reason": (
-                        "global_reference_anchor"
-                        if item["anchor_rank"] is not None
-                        else "global_index_fallback"
-                    ),
-                }
+        selected_global = global_rows[: policy.maximum_global_per_candidate]
+        queue = [
+            _selection_candidate(
+                candidate,
+                item,
+                pool_scope="global",
+                pool_role="global_core",
+                geographic_scope="global",
+                geographic_distance_status="not_applicable",
+                geographic_distance_reason="global_pool_has_no_query_distance",
+                fallback_level=0 if item["anchor_rank"] is not None else 1,
+                inclusion_reason=(
+                    "global_reference_anchor"
+                    if item["anchor_rank"] is not None
+                    else "global_index_fallback"
+                ),
+                burst_groups=burst_groups,
             )
+            for item in selected_global
+        ]
+        for item in selected_global:
             _record_selected(
                 item["reference"],
                 observations=selected_observations,
                 duplicates=selected_duplicates,
             )
-        remaining -= len(selected_global)
-        if remaining <= 0 or not _query_supports_local(request):
+        if not _query_supports_local(request):
+            queues[candidate_key] = queue
             continue
         local_rows = candidate_index.filter(
             pl.col("local_anchor_eligible")
@@ -217,30 +223,29 @@ def _select_request_members(
             selected_duplicates=selected_duplicates,
             scope="local",
         )
-        selected_local = ranked_local[: min(policy.maximum_local_per_candidate, remaining)]
-        for rank, item in enumerate(selected_local, start=1):
-            output.append(
-                {
-                    "candidate": candidate,
-                    "reference": item["reference"],
-                    "pool_scope": "local",
-                    "pool_role": "nearest_local",
-                    "geographic_scope": "exact_local_cell",
-                    "geographic_distance_status": "unavailable",
-                    "geographic_distance_reason": "query_distance_not_materialized",
-                    "geographic_distance_km": None,
-                    "fallback_level": 0,
-                    "selection_rank": rank,
-                    "inclusion_reason": "exact_workload_cluster",
-                }
+        selected_local = ranked_local[: policy.maximum_local_per_candidate]
+        queue.extend(
+            _selection_candidate(
+                candidate,
+                item,
+                pool_scope="local",
+                pool_role="nearest_local",
+                geographic_scope="exact_local_cell",
+                geographic_distance_status="unavailable",
+                geographic_distance_reason="query_distance_not_materialized",
+                fallback_level=0,
+                inclusion_reason="exact_workload_cluster",
+                burst_groups=burst_groups,
             )
-            _record_selected(
-                item["reference"],
-                observations=selected_observations,
-                duplicates=selected_duplicates,
-            )
-        remaining -= len(selected_local)
-    return output
+            for item in selected_local
+        )
+        queues[candidate_key] = queue
+    return _balance_candidate_queues(
+        queues,
+        candidate_order=candidate_order,
+        stage=str(request["scoring_stage"]),
+        policy=policy,
+    )
 
 
 def _rank_reference_rows(
@@ -292,6 +297,176 @@ def _rank_reference_rows(
     return output
 
 
+def _selection_candidate(
+    candidate: Mapping[str, object],
+    ranked: Mapping[str, object],
+    *,
+    pool_scope: str,
+    pool_role: str,
+    geographic_scope: str,
+    geographic_distance_status: str,
+    geographic_distance_reason: str,
+    fallback_level: int,
+    inclusion_reason: str,
+    burst_groups: Mapping[str, str],
+) -> dict[str, object]:
+    reference = ranked["reference"]
+    observation_id = str(reference["reference_observation_id"])
+    return {
+        "candidate": candidate,
+        "reference": reference,
+        "pool_scope": pool_scope,
+        "pool_role": pool_role,
+        "geographic_scope": geographic_scope,
+        "geographic_distance_status": geographic_distance_status,
+        "geographic_distance_reason": geographic_distance_reason,
+        "geographic_distance_km": None,
+        "fallback_level": fallback_level,
+        "selection_rank": 0,
+        "inclusion_reason": inclusion_reason,
+        "independent_observation_group": burst_groups.get(
+            observation_id, observation_id
+        ),
+    }
+
+
+def _balance_candidate_queues(
+    queues: Mapping[str, Sequence[dict[str, object]]],
+    *,
+    candidate_order: Sequence[str],
+    stage: str,
+    policy: DynamicReferencePoolPolicy,
+) -> list[dict[str, object]]:
+    budget = min(
+        dict(policy.stage_member_limits)[stage],
+        policy.maximum_total_reference_members,
+    )
+    positions = {candidate: 0 for candidate in candidate_order}
+    class_counts = {candidate: 0 for candidate in candidate_order}
+    observer_counts: dict[str, int] = {}
+    locality_counts: dict[str, int] = {}
+    seen_observations: set[str] = set()
+    seen_duplicates: set[str] = set()
+    seen_independent_groups: set[str] = set()
+    selected: list[dict[str, object]] = []
+    while len(selected) < budget:
+        progress = False
+        minimum_class_count = min(class_counts.values(), default=0)
+        for candidate in candidate_order:
+            if len(selected) >= budget:
+                break
+            if (
+                class_counts[candidate] + 1
+                > minimum_class_count + policy.maximum_class_count_difference
+            ):
+                continue
+            queue = queues[candidate]
+            while positions[candidate] < len(queue):
+                item = queue[positions[candidate]]
+                positions[candidate] += 1
+                if not _passes_diversity_limits(
+                    item,
+                    policy=policy,
+                    observer_counts=observer_counts,
+                    locality_counts=locality_counts,
+                    seen_observations=seen_observations,
+                    seen_duplicates=seen_duplicates,
+                    seen_independent_groups=seen_independent_groups,
+                ):
+                    continue
+                selected.append(item)
+                class_counts[candidate] += 1
+                _record_diversity_selection(
+                    item,
+                    observer_counts=observer_counts,
+                    locality_counts=locality_counts,
+                    seen_observations=seen_observations,
+                    seen_duplicates=seen_duplicates,
+                    seen_independent_groups=seen_independent_groups,
+                )
+                progress = True
+                break
+        if not progress:
+            break
+    ranks: dict[tuple[str, str, str], int] = {}
+    for item in selected:
+        candidate_key = str(item["candidate"]["candidate_accepted_taxon_key"])
+        rank_key = (candidate_key, str(item["pool_scope"]), str(item["pool_role"]))
+        ranks[rank_key] = ranks.get(rank_key, 0) + 1
+        item["selection_rank"] = ranks[rank_key]
+    return selected
+
+
+def _passes_diversity_limits(
+    item: Mapping[str, object],
+    *,
+    policy: DynamicReferencePoolPolicy,
+    observer_counts: Mapping[str, int],
+    locality_counts: Mapping[str, int],
+    seen_observations: set[str],
+    seen_duplicates: set[str],
+    seen_independent_groups: set[str],
+) -> bool:
+    reference = item["reference"]
+    observation = str(reference["reference_observation_id"])
+    duplicate = str(reference["duplicate_group_id"])
+    independent = str(item["independent_observation_group"])
+    if (
+        observation in seen_observations
+        or duplicate in seen_duplicates
+        or independent in seen_independent_groups
+    ):
+        return False
+    observer = _observer_diversity_key(reference)
+    if observer_counts.get(observer, 0) >= policy.maximum_members_per_observer:
+        return False
+    locality = _locality_diversity_key(reference)
+    return locality_counts.get(locality, 0) < policy.maximum_members_per_locality
+
+
+def _record_diversity_selection(
+    item: Mapping[str, object],
+    *,
+    observer_counts: dict[str, int],
+    locality_counts: dict[str, int],
+    seen_observations: set[str],
+    seen_duplicates: set[str],
+    seen_independent_groups: set[str],
+) -> None:
+    reference = item["reference"]
+    observation = str(reference["reference_observation_id"])
+    seen_observations.add(observation)
+    seen_duplicates.add(str(reference["duplicate_group_id"]))
+    seen_independent_groups.add(str(item["independent_observation_group"]))
+    observer = _observer_diversity_key(reference)
+    observer_counts[observer] = observer_counts.get(observer, 0) + 1
+    locality = _locality_diversity_key(reference)
+    locality_counts[locality] = locality_counts.get(locality, 0) + 1
+
+
+def _observer_diversity_key(reference: Mapping[str, object]) -> str:
+    observer = reference["observer_id_hash"]
+    return (
+        str(observer)
+        if observer is not None
+        else f"observer-unavailable:{reference['reference_observation_id']}"
+    )
+
+
+def _locality_diversity_key(reference: Mapping[str, object]) -> str:
+    for field in (
+        "local_cell_id",
+        "regional_cell_id",
+        "coarse_cell_id",
+        "admin1",
+        "country_code",
+    ):
+        value = reference[field]
+        if value is not None:
+            return f"{field}:{value}"
+    return f"locality-unavailable:{reference['reference_observation_id']}"
+
+
 def _member_row(
     selection: Mapping[str, object],
     *,
@@ -330,7 +505,9 @@ def _member_row(
         "geographic_distance_reason": selection["geographic_distance_reason"],
         "fallback_level": selection["fallback_level"],
         "selection_rank": selection["selection_rank"],
-        "independent_observation_group": reference["reference_observation_id"],
+        "independent_observation_group": selection[
+            "independent_observation_group"
+        ],
         "observer_id_hash": reference["observer_id_hash"],
         "reference_country_code": reference["country_code"],
         "inclusion_reason": selection["inclusion_reason"],
@@ -388,6 +565,28 @@ def _normalize_requests(
     if not output:
         raise ValueError("at least one dynamic pool planning request is required")
     return sorted(output, key=lambda row: tuple(str(row[field]) for field in _REQUEST_SORT))
+
+
+def _normalize_burst_groups(
+    value: Mapping[str, str] | None,
+    *,
+    reference_index: pl.DataFrame,
+) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TypeError("burst_group_by_observation must be a mapping")
+    known = set(str(item) for item in reference_index["reference_observation_id"])
+    output: dict[str, str] = {}
+    for raw_observation, raw_group in value.items():
+        observation = str(raw_observation or "").strip()
+        group = str(raw_group or "").strip()
+        if not observation or observation not in known:
+            raise ValueError("burst-group mapping references an unknown observation")
+        if not group:
+            raise ValueError("burst-group identity must be non-empty")
+        output[observation] = group
+    return output
 
 
 def _validate_shared_inputs(

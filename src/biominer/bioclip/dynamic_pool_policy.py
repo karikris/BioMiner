@@ -150,7 +150,7 @@ class DynamicReferencePoolPolicy:
         )
         for field in positive_fields:
             _positive_int(getattr(self, field), field=field)
-        _nonnegative_int(
+        _positive_int(
             self.maximum_class_count_difference,
             field="maximum_class_count_difference",
         )

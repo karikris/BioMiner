@@ -78,7 +78,7 @@ def test_every_policy_change_changes_fingerprint() -> None:
         replace(policy, selection_seed=policy.selection_seed + 1),
         replace(policy, uncertainty_margin_threshold=0.04),
         replace(policy, maximum_members_per_observer=1),
-        replace(policy, maximum_class_count_difference=0),
+        replace(policy, maximum_class_count_difference=2),
     )
 
     assert all(item.fingerprint != policy.fingerprint for item in variants)
