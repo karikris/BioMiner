@@ -17,6 +17,10 @@ from biominer.detection.pipeline import (
     _with_crop_metadata,
 )
 from biominer.detection.policy import DetectionPolicy
+from biominer.detection.route_contract import (
+    DetectorRouteContract,
+    build_detector_route_contract,
+)
 from biominer.detection.schema import build_detection_rows, empty_detection_frame
 from biominer.storage.cloud import CloudStorage
 from biominer.storage.parquet import DEFAULT_PARQUET_READ_BATCH_SIZE
@@ -44,6 +48,10 @@ class CloudDetectionBatchResult:
     detector_batch_size_initial: int = 16
     detector_batch_size_final: int = 16
     detector_batch_size_min: int = 1
+    detector_route_contract_version: str = ""
+    detector_route_contract_fingerprint: str = ""
+    detector_execution_mode: str = "injected"
+    detector_model_load_count: int = 0
 
 
 def enqueue_detection_work_from_source_shards(
@@ -139,6 +147,15 @@ def run_cloud_detection_batch(
     if min_detector_batch_size > detector_batch_size:
         raise ValueError("min_detector_batch_size must be <= detector_batch_size")
     policy = detection_policy or DetectionPolicy(backend=detector.backend)
+    expected_contracts = {
+        DetectorRouteContract.from_mapping(_work_item_route_contract(item)).fingerprint
+        for item in work_items
+    }
+    if len(expected_contracts) > 1:
+        raise ValueError("cloud detection batch mixes detector route contracts")
+    actual_contract = build_detector_route_contract(detector, policy)
+    if expected_contracts and expected_contracts != {actual_contract.fingerprint}:
+        raise ValueError("cloud detector route contract differs from queued work")
     rows: list[dict[str, Any]] = []
     records_seen = 0
     images_loaded = 0
@@ -209,6 +226,7 @@ def run_cloud_detection_batch(
                 rows.append(enriched)
     frame = pl.DataFrame(rows) if rows else empty_detection_frame()
     detections_written = frame.filter(pl.col("detection_status") == "detected").height if frame.height else 0
+    realized_contract = build_detector_route_contract(detector, policy)
     return CloudDetectionBatchResult(
         frame=frame,
         records_seen=records_seen,
@@ -221,6 +239,10 @@ def run_cloud_detection_batch(
         detector_batch_size_initial=detector_batch_size,
         detector_batch_size_final=current_detector_batch_size,
         detector_batch_size_min=min_detector_batch_size,
+        detector_route_contract_version=realized_contract.contract_version,
+        detector_route_contract_fingerprint=realized_contract.fingerprint,
+        detector_execution_mode=realized_contract.execution_mode,
+        detector_model_load_count=_detector_model_load_count(detector),
     )
 
 
@@ -258,7 +280,8 @@ def detection_work_item(
     active_policy = detection_policy
     if active_policy is None and hasattr(vision_settings, "to_detection_policy"):
         active_policy = vision_settings.to_detection_policy(base_policy)
-    policy_key = _detection_policy_key(active_policy or base_policy)
+    active_policy = active_policy or base_policy
+    policy_key = _detection_policy_key(active_policy)
     runtime_key = _vision_runtime_key(vision_settings)
     detector_identity = {
         "backend": str(detector.get("backend") or ""),
@@ -272,12 +295,37 @@ def detection_work_item(
             detector.get("prompt_set_fingerprint") or ""
         ),
     }
+    contract_detector = dict(detector_identity)
+    if contract_detector["backend"] == "yoloe26":
+        contract_detector.update(
+            {
+                "execution_mode": str(
+                    detector.get("execution_mode") or "persistent_sidecar"
+                ),
+                "transport": str(
+                    detector.get("transport")
+                    or getattr(vision_settings, "yolo_sidecar_transport", "json_b64")
+                ),
+                "imgsz": detector.get("imgsz")
+                or getattr(vision_settings, "yolo_imgsz", None),
+                "conf": detector.get("conf")
+                or getattr(vision_settings, "yolo_conf", None),
+                "iou": detector.get("iou")
+                or getattr(vision_settings, "yolo_iou", None),
+                "max_det": detector.get("max_det")
+                or getattr(vision_settings, "yolo_max_det", None),
+            }
+        )
+    route_contract = build_detector_route_contract(
+        contract_detector, active_policy
+    )
     key_payload = {
         "run_id": run_id,
         "source": source,
         "flickr_photo_id": flickr_photo_id,
         "image_url": image_url,
         "detector": detector_identity,
+        "detector_route_contract": route_contract.to_dict(),
         "detection_policy": policy_key,
         "vision_runtime": runtime_key,
     }
@@ -290,9 +338,26 @@ def detection_work_item(
         "source_shard_uri": source_shard_uri,
         "source_record": _jsonable_record(record),
         "detector": detector_identity,
+        "detector_route_contract": route_contract.to_dict(),
         "detection_policy": policy_key,
         "vision_runtime": runtime_key,
     }
+
+
+def _work_item_route_contract(item: dict[str, Any]) -> dict[str, object]:
+    payload = item.get("payload")
+    source = payload if isinstance(payload, dict) else item
+    contract = source.get("detector_route_contract")
+    if not isinstance(contract, dict):
+        raise ValueError("cloud detection work item lacks detector route contract")
+    return dict(contract)
+
+
+def _detector_model_load_count(detector: ObjectDetector) -> int:
+    value = getattr(detector, "model_load_count", 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("detector model_load_count must be a non-negative integer")
+    return value
 
 
 def source_record_from_detection_work_item(item: dict[str, Any]) -> dict[str, Any]:

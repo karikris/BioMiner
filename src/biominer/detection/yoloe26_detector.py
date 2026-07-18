@@ -112,6 +112,7 @@ def yoloe26_prompt_set_fingerprint(prompt_classes: Sequence[str]) -> str:
 
 class YoloE26ObjectDetector:
     backend = "yoloe26"
+    execution_mode = "in_process"
 
     def __init__(
         self,
@@ -148,6 +149,7 @@ class YoloE26ObjectDetector:
         self.model_version = f"ultralytics:{getattr(ultralytics, '__version__', 'unknown')}"
         self._model = YOLOE(_checkpoint_reference(checkpoint))
         self._model.set_classes(list(self.prompt_classes))
+        self.model_load_count = 1
 
     def detect_batch(self, images: Sequence[DecodedImage]) -> list[list[DetectionCandidate]]:
         if not images:
@@ -169,6 +171,7 @@ class YoloE26ObjectDetector:
 
 class YoloE26SidecarObjectDetector:
     backend = "yoloe26"
+    execution_mode = "persistent_sidecar"
 
     def __init__(
         self,
@@ -284,13 +287,21 @@ class YoloE26SidecarObjectDetector:
             raise RuntimeError(f"YOLOE-26 sidecar detection failed ({error_type}): {response['error']}")
         metadata = response.get("metadata") or response
         if isinstance(metadata, dict):
-            self.model_id = str(metadata.get("model_id") or self.model_id)
+            actual_model_id = str(metadata.get("model_id") or self.model_id)
+            actual_checkpoint = str(metadata.get("checkpoint") or self.checkpoint)
+            if actual_model_id != self.model_id:
+                raise RuntimeError("YOLOE-26 sidecar returned a different model ID")
+            if actual_checkpoint != self.checkpoint:
+                raise RuntimeError("YOLOE-26 sidecar returned a different checkpoint")
             self.model_version = str(metadata.get("model_version") or self.model_version)
-            self.checkpoint = str(metadata.get("checkpoint") or self.checkpoint)
             actual_prompt_fingerprint = metadata.get("prompt_set_fingerprint")
             if actual_prompt_fingerprint is not None and str(actual_prompt_fingerprint) != self.prompt_set_fingerprint:
                 raise RuntimeError("YOLOE-26 sidecar returned a different prompt-set fingerprint")
         return response
+
+    @property
+    def model_load_count(self) -> int:
+        return self.worker_process_starts
 
     def _ensure_process(self) -> subprocess.Popen[str]:
         if self._process is None:

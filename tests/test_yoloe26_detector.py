@@ -264,7 +264,7 @@ def test_yoloe26_sidecar_detector_reuses_one_process_for_multiple_batches(tmp_pa
     assert first[0][0].detector_class_id == 0
     assert first[0][0].detector_prompt_set_fingerprint == "sha256:" + "b" * 64
     assert second[0][0].score == 0.91
-    assert detector.model_id == "fake-yoloe26"
+    assert detector.model_id == "yoloe26:yoloe-26s-seg"
     assert detector.model_version == "ultralytics:fake"
     assert any(json.loads(line).get("shutdown") is True for line in factory.processes[0].writes)
     assert factory.processes[0].returncode == 0
@@ -389,12 +389,12 @@ class _FakeStdin:
                 json.dumps(
                     {
                         "backend": "yoloe26",
-                        "model_id": "fake-yoloe26",
+                        "model_id": "yoloe26:yoloe-26s-seg",
                         "model_version": "ultralytics:fake",
                         "checkpoint": payload["checkpoint"],
                         "metadata": {
                             "backend": "yoloe26",
-                            "model_id": "fake-yoloe26",
+                            "model_id": "yoloe26:yoloe-26s-seg",
                             "model_version": "ultralytics:fake",
                             "checkpoint": payload["checkpoint"],
                         },
