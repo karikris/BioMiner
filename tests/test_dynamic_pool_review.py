@@ -6,14 +6,18 @@ import pytest
 
 from biominer.evaluation.dynamic_pool_review import (
     DYNAMIC_POOL_AUDIT_FRAME_SCHEMA,
+    DYNAMIC_POOL_FAILURE_QUEUE_SCHEMA,
     DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA,
     DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA,
     RAW_SCORE_SEMANTICS,
     DynamicPoolAuditStrataPolicy,
+    FailureDiscoveryPolicy,
     ProbabilityAuditSamplingPolicy,
     build_dynamic_pool_audit_frame,
+    build_failure_discovery_queue,
     build_probability_audit_sample,
     empty_dynamic_pool_audit_frame,
+    validate_failure_discovery_queue,
 )
 
 
@@ -215,3 +219,99 @@ def test_probability_budget_must_cover_configured_stratum_minimum() -> None:
             _probability_frame(),
             policy=ProbabilityAuditSamplingPolicy(review_budget=1),
         )
+
+
+def _failure_frame():
+    low_risk = _candidate(
+        sampling_unit_id="low-risk",
+        source_record_hash=_sha("a"),
+        raw_fusion_score=0.80,
+        raw_competitor_margin=0.20,
+        pool_disagreement=0.02,
+        subject_area_ratio=0.30,
+        duplicate_group_id="duplicate-shared-failure",
+        observation_group_id="observation-low",
+    )
+    high_risk = _candidate(
+        sampling_unit_id="high-risk",
+        source_record_hash=_sha("b"),
+        flickr_photo_id="photo-high",
+        organism_unit_id="organism-high",
+        geographic_cluster_id=None,
+        no_geo=True,
+        raw_fusion_score=0.30,
+        raw_competitor_margin=-0.10,
+        pool_disagreement=0.30,
+        subject_area_ratio=0.01,
+        owner_group_id="owner-high",
+        duplicate_group_id="duplicate-shared-failure",
+        observation_group_id="observation-high",
+    )
+    medium_risk = _candidate(
+        sampling_unit_id="medium-risk",
+        source_record_hash=_sha("c"),
+        flickr_photo_id="photo-medium",
+        organism_unit_id="organism-medium",
+        raw_fusion_score=0.65,
+        raw_competitor_margin=0.02,
+        pool_disagreement=0.20,
+        subject_area_ratio=0.20,
+        owner_group_id="owner-medium",
+        duplicate_group_id="duplicate-medium",
+        observation_group_id="observation-medium",
+    )
+    no_signal = _candidate(
+        sampling_unit_id="no-signal",
+        source_record_hash=_sha("d"),
+        flickr_photo_id="photo-safe",
+        organism_unit_id="organism-safe",
+        raw_fusion_score=0.80,
+        raw_competitor_margin=0.20,
+        pool_disagreement=0.02,
+        subject_area_ratio=0.30,
+        owner_group_id="owner-safe",
+        duplicate_group_id="duplicate-safe",
+        observation_group_id="observation-safe",
+    )
+    return build_dynamic_pool_audit_frame([low_risk, high_risk, medium_risk, no_signal])
+
+
+def test_failure_queue_prioritizes_signals_without_probability_claims() -> None:
+    queue = build_failure_discovery_queue(_failure_frame())
+    first = queue.row(0, named=True)
+
+    assert queue.schema == DYNAMIC_POOL_FAILURE_QUEUE_SCHEMA
+    assert queue.height == 2
+    assert first["sampling_unit_id"] == "high-risk"
+    assert first["targeted_component_member_unit_ids"] == ["high-risk", "low-risk"]
+    assert first["priority_reasons"] == [
+        "nonpositive_competitor_margin",
+        "high_pool_disagreement",
+        "low_raw_score",
+        "small_subject",
+        "no_geo",
+    ]
+    assert queue["inclusion_probability"].null_count() == queue.height
+    assert queue["sampling_weight"].null_count() == queue.height
+    assert not queue["representative_estimation_eligible"].any()
+    assert not queue["release_authorized"].any()
+
+
+def test_failure_queue_limit_and_policy_are_deterministic() -> None:
+    policy = FailureDiscoveryPolicy(max_queue_size=1)
+    first = build_failure_discovery_queue(_failure_frame(), policy=policy)
+    second = build_failure_discovery_queue(_failure_frame().reverse(), policy=policy)
+
+    assert first.to_dicts() == second.to_dicts()
+    assert first.height == 1
+    assert first["failure_policy_fingerprint"].item() == policy.fingerprint
+
+
+def test_failure_queue_validator_rejects_statistical_misrepresentation() -> None:
+    queue = build_failure_discovery_queue(_failure_frame()).with_columns(
+        inclusion_probability=0.5,
+        sampling_weight=2.0,
+    )
+
+    with pytest.raises(ValueError, match="evidence boundary"):
+        validate_failure_discovery_queue(queue)

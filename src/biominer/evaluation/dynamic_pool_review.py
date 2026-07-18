@@ -30,6 +30,8 @@ DYNAMIC_POOL_PROBABILITY_REGISTER_FILE = (
     "dynamic_pool_probability_audit_register.parquet"
 )
 DYNAMIC_POOL_PROBABILITY_SAMPLE_FILE = "dynamic_pool_probability_audit_sample.parquet"
+DYNAMIC_POOL_FAILURE_QUEUE_SCHEMA_VERSION = "dynamic-pool-failure-queue-v1.0.0"
+DYNAMIC_POOL_FAILURE_QUEUE_FILE = "dynamic_pool_failure_discovery_queue.parquet"
 
 QUERY_TIERS = frozenset({"T1", "T2", "T3", "T4", "T5"})
 RAW_SCORE_SEMANTICS = "raw_model_evidence_not_probability"
@@ -144,6 +146,29 @@ DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA: dict[str, pl.DataType] = {
     **_PROBABILITY_DESIGN_FIELDS,
 }
 
+DYNAMIC_POOL_FAILURE_QUEUE_SCHEMA: dict[str, pl.DataType] = {
+    **DYNAMIC_POOL_AUDIT_FRAME_SCHEMA,
+    "failure_queue_schema_version": pl.String,
+    "failure_policy_fingerprint": pl.String,
+    "failure_queue_fingerprint": pl.String,
+    "queue_kind": pl.String,
+    "priority_rank": pl.UInt32,
+    "priority_score": pl.Float64,
+    "priority_score_semantics": pl.String,
+    "priority_reasons": pl.List(pl.String),
+    "targeted_component_member_count": pl.UInt32,
+    "targeted_component_member_unit_ids": pl.List(pl.String),
+    "targeted_component_owner_group_ids": pl.List(pl.String),
+    "targeted_component_duplicate_group_ids": pl.List(pl.String),
+    "targeted_component_observation_group_ids": pl.List(pl.String),
+    "inclusion_probability": pl.Float64,
+    "sampling_weight": pl.Float64,
+    "representative_estimation_eligible": pl.Boolean,
+    "review_status": pl.String,
+    "review_required": pl.Boolean,
+    "release_authorized": pl.Boolean,
+}
+
 
 @dataclass(frozen=True, slots=True)
 class DynamicPoolAuditStrataPolicy:
@@ -230,6 +255,68 @@ class ProbabilityAuditSamplingPolicy:
                 "allocation": (
                     "minimum_then_proportional_largest_remainder_by_analysis_stratum"
                 ),
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FailureDiscoveryPolicy:
+    """Versioned heuristic for targeted review, never a risk model."""
+
+    schema_version: str = "failure-discovery-policy-v1.0.0"
+    near_margin_cutoff: float = 0.05
+    high_disagreement_cutoff: float = 0.15
+    low_score_cutoff: float = 0.50
+    small_subject_cutoff: float = 0.10
+    priority_route_domains: tuple[str, ...] = ()
+    max_queue_size: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "schema_version",
+            _required_text(self.schema_version, field="schema_version"),
+        )
+        for field in (
+            "near_margin_cutoff",
+            "high_disagreement_cutoff",
+            "low_score_cutoff",
+            "small_subject_cutoff",
+        ):
+            value = _finite_float(getattr(self, field), field=field)
+            if field != "low_score_cutoff" and value < 0.0:
+                raise ValueError(f"{field} cannot be negative")
+            object.__setattr__(self, field, value)
+        if not 0.0 <= self.small_subject_cutoff <= 1.0:
+            raise ValueError("small_subject_cutoff must be within [0, 1]")
+        routes = tuple(
+            sorted(
+                {
+                    _required_text(value, field="priority_route_domains")
+                    for value in self.priority_route_domains
+                }
+            )
+        )
+        object.__setattr__(self, "priority_route_domains", routes)
+        if self.max_queue_size is not None and (
+            not isinstance(self.max_queue_size, int)
+            or isinstance(self.max_queue_size, bool)
+            or self.max_queue_size < 1
+        ):
+            raise ValueError("max_queue_size must be a positive integer or null")
+
+    @property
+    def fingerprint(self) -> str:
+        return canonical_semantic_fingerprint(
+            {
+                "schema_version": self.schema_version,
+                "near_margin_cutoff": self.near_margin_cutoff,
+                "high_disagreement_cutoff": self.high_disagreement_cutoff,
+                "low_score_cutoff": self.low_score_cutoff,
+                "small_subject_cutoff": self.small_subject_cutoff,
+                "priority_route_domains": self.priority_route_domains,
+                "max_queue_size": self.max_queue_size,
+                "priority_score_semantics": "heuristic_not_probability",
             }
         )
 
@@ -511,37 +598,182 @@ def validate_probability_audit_selection(
             raise ValueError("probability sample count does not match stratum design")
 
 
+def build_failure_discovery_queue(
+    frame: pl.DataFrame,
+    *,
+    policy: FailureDiscoveryPolicy | None = None,
+) -> pl.DataFrame:
+    """Prioritize explicit failure signals outside the probability sample."""
+
+    validate_dynamic_pool_audit_frame(frame)
+    selected_policy = policy or FailureDiscoveryPolicy()
+    if not isinstance(selected_policy, FailureDiscoveryPolicy):
+        raise TypeError("policy must be a FailureDiscoveryPolicy")
+    if not frame.height:
+        return pl.DataFrame(schema=DYNAMIC_POOL_FAILURE_QUEUE_SCHEMA)
+    queue_rows: list[dict[str, object]] = []
+    components = _connected_identity_components(
+        frame.sort("sampling_unit_id").to_dicts()
+    )
+    for members in components:
+        prioritized = []
+        for row in members:
+            score, reasons = _failure_priority(row, policy=selected_policy)
+            if reasons:
+                prioritized.append((score, reasons, row))
+        if not prioritized:
+            continue
+        prioritized.sort(
+            key=lambda item: (
+                -item[0],
+                -len(item[1]),
+                str(item[2]["audit_unit_fingerprint"]),
+            )
+        )
+        score, reasons, representative = prioritized[0]
+        queue_rows.append(
+            {
+                **representative,
+                "failure_queue_schema_version": (
+                    DYNAMIC_POOL_FAILURE_QUEUE_SCHEMA_VERSION
+                ),
+                "failure_policy_fingerprint": selected_policy.fingerprint,
+                "failure_queue_fingerprint": "",
+                "queue_kind": "targeted_failure_discovery",
+                "priority_rank": 0,
+                "priority_score": score,
+                "priority_score_semantics": "heuristic_not_probability",
+                "priority_reasons": reasons,
+                "targeted_component_member_count": len(members),
+                "targeted_component_member_unit_ids": sorted(
+                    str(row["sampling_unit_id"]) for row in members
+                ),
+                "targeted_component_owner_group_ids": sorted(
+                    {str(row["owner_group_id"]) for row in members}
+                ),
+                "targeted_component_duplicate_group_ids": sorted(
+                    {str(row["duplicate_group_id"]) for row in members}
+                ),
+                "targeted_component_observation_group_ids": sorted(
+                    {str(row["observation_group_id"]) for row in members}
+                ),
+                "inclusion_probability": None,
+                "sampling_weight": None,
+                "representative_estimation_eligible": False,
+                "review_status": "pending",
+                "review_required": True,
+                "release_authorized": False,
+            }
+        )
+    queue_rows.sort(
+        key=lambda row: (
+            -float(row["priority_score"]),
+            -len(row["priority_reasons"]),
+            str(row["audit_unit_fingerprint"]),
+        )
+    )
+    if selected_policy.max_queue_size is not None:
+        queue_rows = queue_rows[: selected_policy.max_queue_size]
+    queue_fingerprint = canonical_semantic_fingerprint(
+        {
+            "schema_version": DYNAMIC_POOL_FAILURE_QUEUE_SCHEMA_VERSION,
+            "failure_policy_fingerprint": selected_policy.fingerprint,
+            "audit_frame_fingerprint": frame["frame_fingerprint"].item(0),
+            "queue_rows": [
+                {
+                    "audit_unit_fingerprint": row["audit_unit_fingerprint"],
+                    "priority_score": row["priority_score"],
+                    "priority_reasons": row["priority_reasons"],
+                    "member_unit_ids": row["targeted_component_member_unit_ids"],
+                }
+                for row in queue_rows
+            ],
+        }
+    )
+    for rank, row in enumerate(queue_rows, start=1):
+        row["failure_queue_fingerprint"] = queue_fingerprint
+        row["priority_rank"] = rank
+    queue = pl.DataFrame(
+        queue_rows,
+        schema=DYNAMIC_POOL_FAILURE_QUEUE_SCHEMA,
+        strict=True,
+    )
+    validate_failure_discovery_queue(queue)
+    return queue
+
+
+def validate_failure_discovery_queue(queue: pl.DataFrame) -> None:
+    """Prevent targeted review from masquerading as representative evidence."""
+
+    if queue.schema != DYNAMIC_POOL_FAILURE_QUEUE_SCHEMA:
+        raise ValueError("failure-discovery queue schema does not match contract")
+    if not queue.height:
+        return
+    if set(queue["failure_queue_schema_version"].to_list()) != {
+        DYNAMIC_POOL_FAILURE_QUEUE_SCHEMA_VERSION
+    }:
+        raise ValueError("unsupported failure-discovery queue schema version")
+    if queue.filter(
+        (pl.col("queue_kind") != "targeted_failure_discovery")
+        | (pl.col("priority_score_semantics") != "heuristic_not_probability")
+        | pl.col("inclusion_probability").is_not_null()
+        | pl.col("sampling_weight").is_not_null()
+        | pl.col("representative_estimation_eligible")
+        | ~pl.col("review_required")
+        | pl.col("release_authorized")
+    ).height:
+        raise ValueError("targeted failure queue crossed its evidence boundary")
+    if queue["audit_unit_fingerprint"].n_unique() != queue.height:
+        raise ValueError("targeted failure queue representatives must be unique")
+    expected_ranks = list(range(1, queue.height + 1))
+    if queue["priority_rank"].to_list() != expected_ranks:
+        raise ValueError("targeted failure queue ranks must be contiguous")
+
+
+def _failure_priority(
+    row: Mapping[str, object],
+    *,
+    policy: FailureDiscoveryPolicy,
+) -> tuple[float, list[str]]:
+    score = 0.0
+    reasons: list[str] = []
+    margin = float(row["raw_competitor_margin"])
+    if margin <= 0.0:
+        reasons.append("nonpositive_competitor_margin")
+        score += 4.0
+    elif margin < policy.near_margin_cutoff:
+        reasons.append("near_competitor_margin")
+        score += 3.0
+    disagreement = row["pool_disagreement"]
+    if disagreement is None:
+        reasons.append("pool_disagreement_unavailable")
+        score += 1.0
+    elif float(disagreement) >= policy.high_disagreement_cutoff:
+        reasons.append("high_pool_disagreement")
+        score += 3.0
+    if float(row["raw_fusion_score"]) < policy.low_score_cutoff:
+        reasons.append("low_raw_score")
+        score += 2.0
+    if float(row["subject_area_ratio"]) < policy.small_subject_cutoff:
+        reasons.append("small_subject")
+        score += 2.0
+    if bool(row["no_geo"]):
+        reasons.append("no_geo")
+        score += 1.0
+    if str(row["route_domain_stratum"]) in policy.priority_route_domains:
+        reasons.append("priority_route_domain")
+        score += 1.0
+    return score, reasons
+
+
 def _build_sampling_population(
     rows: list[dict[str, object]],
     *,
     policy: ProbabilityAuditSamplingPolicy,
 ) -> list[dict[str, object]]:
-    parent = list(range(len(rows)))
-
-    def find(index: int) -> int:
-        while parent[index] != index:
-            parent[index] = parent[parent[index]]
-            index = parent[index]
-        return index
-
-    def union(left: int, right: int) -> None:
-        left_root = find(left)
-        right_root = find(right)
-        if left_root != right_root:
-            parent[max(left_root, right_root)] = min(left_root, right_root)
-
-    identities: dict[tuple[str, str], int] = {}
-    for index, row in enumerate(rows):
-        for field in ("duplicate_group_id", "observation_group_id"):
-            identity = (field, str(row[field]))
-            previous = identities.setdefault(identity, index)
-            union(index, previous)
-    components: dict[int, list[dict[str, object]]] = {}
-    for index, row in enumerate(rows):
-        components.setdefault(find(index), []).append(row)
-
+    components = _connected_identity_components(rows)
     population: list[dict[str, object]] = []
-    for members in components.values():
+    for members in components:
         members.sort(key=lambda row: str(row["sampling_unit_id"]))
         representative = min(
             members,
@@ -613,6 +845,40 @@ def _build_sampling_population(
             }
         )
     return population
+
+
+def _connected_identity_components(
+    rows: list[dict[str, object]],
+) -> list[list[dict[str, object]]]:
+    parent = list(range(len(rows)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+
+    identities: dict[tuple[str, str], int] = {}
+    for index, row in enumerate(rows):
+        for field in ("duplicate_group_id", "observation_group_id"):
+            identity = (field, str(row[field]))
+            previous = identities.setdefault(identity, index)
+            union(index, previous)
+    grouped: dict[int, list[dict[str, object]]] = {}
+    for index, row in enumerate(rows):
+        grouped.setdefault(find(index), []).append(row)
+    components = [
+        sorted(members, key=lambda row: str(row["sampling_unit_id"]))
+        for members in grouped.values()
+    ]
+    components.sort(key=lambda members: str(members[0]["sampling_unit_id"]))
+    return components
 
 
 def _allocate_stratified_sample(
@@ -921,6 +1187,9 @@ __all__ = [
     "DYNAMIC_POOL_AUDIT_FRAME_FILE",
     "DYNAMIC_POOL_AUDIT_FRAME_SCHEMA",
     "DYNAMIC_POOL_AUDIT_FRAME_SCHEMA_VERSION",
+    "DYNAMIC_POOL_FAILURE_QUEUE_FILE",
+    "DYNAMIC_POOL_FAILURE_QUEUE_SCHEMA",
+    "DYNAMIC_POOL_FAILURE_QUEUE_SCHEMA_VERSION",
     "DYNAMIC_POOL_PROBABILITY_REGISTER_FILE",
     "DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA",
     "DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA_VERSION",
@@ -929,11 +1198,14 @@ __all__ = [
     "DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA_VERSION",
     "RAW_SCORE_SEMANTICS",
     "DynamicPoolAuditStrataPolicy",
+    "FailureDiscoveryPolicy",
     "ProbabilityAuditSamplingPolicy",
     "ProbabilityAuditSelection",
     "build_dynamic_pool_audit_frame",
+    "build_failure_discovery_queue",
     "build_probability_audit_sample",
     "empty_dynamic_pool_audit_frame",
     "validate_dynamic_pool_audit_frame",
+    "validate_failure_discovery_queue",
     "validate_probability_audit_selection",
 ]
