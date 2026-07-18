@@ -1,5 +1,9 @@
 # Product pool handoff v1 migration
 
+> Historical scope: this document records the Task 1.2 manifest migration.
+> Task 14.1 later advances the TaxaLens pin and adds the compatible deterministic
+> archive transport described in the architecture handoff audit.
+
 ## Scope
 
 Task 1.2 adds two immutable BioMiner producer manifests:

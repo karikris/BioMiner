@@ -31,7 +31,7 @@ from biominer.integration.taxalens_quality_export import (
     validate_taxalens_quality_sidecar,
     validate_taxalens_review_quality_export,
 )
-from tests.helpers.dynamic_pool_handoff_fixture import (
+from helpers.dynamic_pool_handoff_fixture import (
     build_dynamic_pool_handoff_fixture,
     build_quality_report_fixture,
     build_review_selection_fixture,

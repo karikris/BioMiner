@@ -1,6 +1,7 @@
 # TaxaLens and ButterflyLens pooling handoff audit
 
-Status: Task 0.1.3 audit, updated by Task 1.2 compatibility review, 2026-07-18.
+Status: Task 0.1.3 audit, updated by Task 1.2 and Task 14.1 compatibility
+reviews, 2026-07-18.
 This document defines the
 downstream constraints for BioMiner's geographic dynamic-reference-pooling
 work. It is an interoperability audit, not evidence that a live model run or
@@ -10,13 +11,15 @@ human review occurred.
 
 The goal was written against TaxaLens
 `1440596cf4403af61ba8d57481feacda7c4e3044` and ButterflyLens
-`c8135a0cb0001245215cdc774d063ef49407fb26`. The most recent committed objects
-audited were TaxaLens `c5e87ead4fdb26d5c5624bbb8d8d67e46d8eddbc` and
-ButterflyLens `1cea643623f2f20a2bea72afc754c7b194db3278`. ButterflyLens's previous
-audited pin was `fcee1a76886e37cb2f0d9badbe91b70a18a0e7c3`; Task 1.2 records the
-additive, stricter-review compatibility decision separately. Both sibling
-worktrees were dirty, so the audit used `git show`, `git grep`, and committed
-trees only.
+`c8135a0cb0001245215cdc774d063ef49407fb26`. Task 1.2 audited TaxaLens
+`c5e87ead4fdb26d5c5624bbb8d8d67e46d8eddbc`; Task 14.1 advances that exact
+pin to `e845dd98493979f37b04dbb6538e0d7b8758ca11` after verifying its additive,
+fail-closed content-addressed handoff consumer. The current ButterflyLens pin
+remains `1cea643623f2f20a2bea72afc754c7b194db3278`; its previous audited pin was
+`fcee1a76886e37cb2f0d9badbe91b70a18a0e7c3`. The compatibility decisions are
+recorded separately in the executable pin fixture. The sibling worktrees were
+dirty, so every audit and compatibility test read exact committed Git objects,
+not sibling working-tree files.
 
 The executable compatibility fixture is
 `tests/fixtures/downstream_pooling_contract_pins.json`. A newer sibling commit
@@ -83,6 +86,22 @@ Geographic manifests list every artifact's logical name, path, media type,
 schema version, SHA-256, byte and row counts, snapshot identity, source
 repository and commit, rights identity, availability, and unavailable reason.
 BioMiner's new pool outputs must meet the same immutable-manifest standard.
+
+### Content-addressed archive import
+
+The Task 14.1 TaxaLens pin accepts BioMiner's
+`storage-handoff-inventory-v1.0.0` inventory at
+`.biominer-handoff/inventory.json`. Its committed consumer verifies the
+expected archive SHA-256, safe and unique member paths, the exact inventory
+member set, byte counts, and every member SHA-256 before extraction. The
+BioMiner compatibility gate executes that exact committed consumer against a
+deterministic nine-file reviewed-quality fixture archive.
+
+This archive boundary is transport and integrity evidence only. It does not
+create application records, assign TaxaLens identifiers, supply baseline
+provider-union counts, or authorize an occurrence release. Geographic-impact
+cells therefore remain explicitly unavailable in the BioMiner export until
+TaxaLens materializes them against its owned baseline union.
 
 ## ButterflyLens contract findings
 

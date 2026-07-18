@@ -1,6 +1,6 @@
 {
-  "schema_version": "biominer-downstream-pooling-contract-pins-v1.1.0",
-  "compatibility_status": "compatible_additive_with_stricter_maturity_and_review_semantics",
+  "schema_version": "biominer-downstream-pooling-contract-pins-v1.2.0",
+  "compatibility_status": "compatible_additive_storage_handoff_with_stricter_maturity_and_review_semantics",
   "policy": {
     "consume_committed_objects_only": true,
     "import_sibling_implementation_code": false,
@@ -11,7 +11,9 @@
   "taxalens": {
     "repository": "karikris/taxalens",
     "goal_written_commit": "1440596cf4403af61ba8d57481feacda7c4e3044",
-    "audited_commit": "c5e87ead4fdb26d5c5624bbb8d8d67e46d8eddbc",
+    "previous_audited_commit": "c5e87ead4fdb26d5c5624bbb8d8d67e46d8eddbc",
+    "audited_commit": "e845dd98493979f37b04dbb6538e0d7b8758ca11",
+    "pin_movement_decision": "compatible_additive_storage_handoff_consumer",
     "contracts": {
       "geographic_impact_export": "taxalens-geographic-impact-export:v1.0.0",
       "geographic_impact_cell": "taxalens-geographic-impact-cell:v1.0.0",
@@ -22,9 +24,11 @@
       "quality_snapshot": "taxalens-verification-quality-snapshot:v1.1.0",
       "reviewed_labels": "reviewed-labels-v2",
       "reviewed_labels_filename": "flickr_reviewed_labels_v2.parquet",
-      "reference_review_import": "reference-review-decision-import-v1.0.0"
+      "reference_review_import": "reference-review-decision-import-v1.0.0",
+      "storage_handoff_inventory": "storage-handoff-inventory-v1.0.0",
+      "storage_handoff_inventory_path": ".biominer-handoff/inventory.json"
     },
-    "observed_change": "additive_usability_evidence_and_stricter_release_ready_occurrence_candidate_language"
+    "observed_change": "additive_content_addressed_archive_consumer_with_unchanged_inventory_schema_and_fail_closed_import"
   },
   "butterflylens": {
     "repository": "karikris/ButterflyLens",

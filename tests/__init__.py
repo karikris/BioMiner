@@ -1,1 +1,0 @@
-"""BioMiner test package."""

@@ -13,7 +13,7 @@ from biominer.integration.taxalens_pool_export import (
     validate_taxalens_score_pool_export,
 )
 from biominer.integration.taxalens_pool_handoff import TAXALENS_ROLE_DEFAULTS
-from tests.helpers.dynamic_pool_handoff_fixture import (
+from helpers.dynamic_pool_handoff_fixture import (
     build_dynamic_pool_handoff_fixture,
 )
 

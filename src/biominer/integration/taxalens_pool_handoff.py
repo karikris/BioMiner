@@ -38,7 +38,7 @@ from biominer.integration.product_handoff import (
 TAXALENS_POOL_HANDOFF_SCHEMA_VERSION = "biominer-taxalens-dynamic-pool-handoff-v1.0.0"
 TAXALENS_POOL_HANDOFF_FILE = "taxalens_dynamic_pool_handoff.json"
 TAXALENS_REPOSITORY = "karikris/taxalens"
-TAXALENS_PINNED_COMMIT = "c5e87ead4fdb26d5c5624bbb8d8d67e46d8eddbc"
+TAXALENS_PINNED_COMMIT = "e845dd98493979f37b04dbb6538e0d7b8758ca11"
 TAXALENS_REQUIRED_ARTIFACT_ROLES = (
     "candidate_scores",
     "photo_summaries",
@@ -57,6 +57,8 @@ TAXALENS_TARGET_CONTRACTS = {
     "quality_snapshot": "taxalens-verification-quality-snapshot:v1.1.0",
     "reviewed_labels": "reviewed-labels-v2",
     "reviewed_labels_filename": "flickr_reviewed_labels_v2.parquet",
+    "storage_handoff_inventory": "storage-handoff-inventory-v1.0.0",
+    "storage_handoff_inventory_path": ".biominer-handoff/inventory.json",
 }
 TAXALENS_ROLE_DEFAULTS = {
     "candidate_scores": (
