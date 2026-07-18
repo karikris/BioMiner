@@ -1487,7 +1487,7 @@ def test_poll_once_enqueues_all_reported_pages_when_flickr_returns_250_perpage(t
     assert rows == [(1, 500, "completed"), *((page, 250, "pending") for page in range(2, 15))]
 
 
-def test_poll_once_caps_executable_pages_at_flickr_accessible_window_and_warns(tmp_path) -> None:
+def test_poll_once_splits_an_overflowing_upload_interval_without_page_seventeen(tmp_path) -> None:
     state = MetadataPollState(tmp_path / "poller.sqlite")
     state.enqueue_work_item(
         FlickrQuery(
@@ -1517,13 +1517,15 @@ def test_poll_once_caps_executable_pages_at_flickr_accessible_window_and_warns(t
     )
 
     with sqlite3.connect(state.path) as conn:
-        rows = conn.execute("SELECT page, per_page, status FROM flickr_work_items ORDER BY page").fetchall()
+        rows = conn.execute("SELECT page, per_page, status FROM flickr_work_items ORDER BY min_date, max_date").fetchall()
     page_event = next(event for event in events if event["event"] == "page_completed")
-    assert rows == [(1, 500, "completed"), *((page, 250, "pending") for page in range(2, 17))]
+    assert len(rows) == 3
+    assert rows.count((1, 500, "completed")) == 1
+    assert rows.count((1, 500, "pending")) == 2
     assert page_event["reported_pages"] == 20
     assert page_event["accessible_pages"] == 16
-    assert page_event["known_work_items_for_query"] == 16
-    assert any(event["event"] == "pagination_over_accessible_window" and event["response_pages"] == 20 for event in events)
+    assert page_event["remaining_pages_enqueued"] == 2
+    assert any(event["event"] == "pagination_overflow_split_upload_interval" and event["response_pages"] == 20 for event in events)
 
 
 def test_poll_once_uses_response_pages_not_requested_page_size_calculation(tmp_path) -> None:

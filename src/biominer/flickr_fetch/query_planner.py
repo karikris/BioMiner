@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 import json
 from math import ceil
 from pathlib import Path
@@ -55,6 +55,8 @@ class FlickrQuery:
     per_page: int = COUNT_PROBE_PAGE_SIZE
     has_geo: int = 1
     bbox: str | None = None
+    place_id: str | None = None
+    woe_id: str | None = None
     min_taken_date: str | None = None
     max_taken_date: str | None = None
     min_upload_date: str | None = None
@@ -342,6 +344,8 @@ def flickr_search_params(query: FlickrQuery) -> dict[str, str | int]:
     }
     for key in (
         "bbox",
+        "place_id",
+        "woe_id",
         "min_taken_date",
         "max_taken_date",
         "min_upload_date",
@@ -385,6 +389,8 @@ def _page_query(probe: FlickrQuery, *, page: int, per_page: int, lane: QueryLane
         per_page=per_page,
         has_geo=probe.has_geo,
         bbox=probe.bbox,
+        place_id=probe.place_id,
+        woe_id=probe.woe_id,
         min_taken_date=probe.min_taken_date,
         max_taken_date=probe.max_taken_date,
         min_upload_date=probe.min_upload_date,
@@ -422,6 +428,8 @@ def _query_hash(query: FlickrQuery) -> str:
         "per_page": query.per_page,
         "has_geo": query.has_geo,
         "bbox": query.bbox,
+        "place_id": query.place_id,
+        "woe_id": query.woe_id,
         "min_taken_date": query.min_taken_date,
         "max_taken_date": query.max_taken_date,
         "min_upload_date": query.min_upload_date,
@@ -429,6 +437,52 @@ def _query_hash(query: FlickrQuery) -> str:
     }
     payload = json.dumps(payload_dict, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def split_upload_interval(query: FlickrQuery, *, now: datetime | None = None) -> tuple[FlickrQuery, FlickrQuery] | None:
+    """Bisect an inclusive Flickr upload interval into disjoint UTC-second ranges.
+
+    Flickr exposes only the first 4,000 search results.  This operation is used
+    after a normal page-one response proves a term/time slice is too large; it
+    never performs a separate count request.
+    """
+
+    start = _upload_bound_to_epoch(query.min_upload_date, is_start=True, now=now)
+    end = _upload_bound_to_epoch(query.max_upload_date, is_start=False, now=now)
+    if start >= end:
+        return None
+    midpoint = start + (end - start) // 2
+    if midpoint >= end:
+        return None
+    parent = query_hash(query)
+    common = {
+        "lane": "bbox_page" if query.has_geo or query.bbox or query.place_id or query.woe_id else "normal_page",
+        "page": 1,
+        "per_page": page_size_for_query(query),
+        "min_taken_date": None,
+        "max_taken_date": None,
+        "split_reason": "upload_date",
+        "parent_total": query.parent_total,
+        "parent_query_hash": parent,
+        "split_depth": query.split_depth + 1,
+        "slice_index": None,
+    }
+    return (
+        replace(query, **common, min_upload_date=str(start), max_upload_date=str(midpoint)),
+        replace(query, **common, min_upload_date=str(midpoint + 1), max_upload_date=str(end)),
+    )
+
+
+def _upload_bound_to_epoch(value: str | None, *, is_start: bool, now: datetime | None) -> int:
+    if not value:
+        value = DEFAULT_FIXED_SLICE_START_DATE if is_start else (now or datetime.now(UTC)).date().isoformat()
+    try:
+        return int(value)
+    except ValueError:
+        parsed = datetime.fromisoformat(value).replace(tzinfo=UTC)
+        if len(value) == 10 and not is_start:
+            parsed += timedelta(days=1, seconds=-1)
+        return int(parsed.timestamp())
 
 
 def _int_or_default(value: object, default: int) -> int:

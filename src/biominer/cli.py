@@ -59,6 +59,11 @@ from biominer.evaluation.sampling import (
 from biominer.evaluation.xie_style import EVALUATION_PROFILE as XIE_STYLE_EVALUATION_PROFILE
 from biominer.evaluation.xie_style import evaluate_xie_style_hierarchical
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
+from biominer.flickr_fetch.australia import (
+    AUSTRALIA_FLICKR_BBOX,
+    build_australia_presence,
+    compile_australia_query_plan,
+)
 from biominer.flickr_comments.comment_review import (
     apply_comment_review_decisions_to_parquet,
     build_comment_review_queue_from_parquet,
@@ -458,6 +463,20 @@ def build_parser() -> argparse.ArgumentParser:
     dev_flickr_subparsers = dev_flickr.add_subparsers(dest="flickr_command")
     dev_poll_once = dev_flickr_subparsers.add_parser("poll-once")
     _add_poll_once_args(dev_poll_once)
+    australia_live = dev_flickr_subparsers.add_parser("australia-live")
+    australia_live.add_argument("--registry-dir", default="data/registry/current")
+    australia_live.add_argument("--output-dir", default="data/registry/current")
+    australia_live.add_argument("--presence-state-db", default="data/state/gbif_australia_presence.sqlite")
+    australia_live.add_argument("--state-db", default="data/state/flickr_australia.sqlite")
+    australia_live.add_argument("--raw-root", default="staging/flickr/australia/raw")
+    australia_live.add_argument("--evidence-output", default="staging/flickr/australia/evidence.parquet")
+    australia_live.add_argument("--api-key-env", default="FLICKR_API_KEY")
+    australia_live.add_argument("--place-id")
+    australia_live.add_argument("--woe-id")
+    australia_live.add_argument("--bbox", default=AUSTRALIA_FLICKR_BBOX)
+    australia_live.add_argument("--gbif-workers", type=int, default=1, help="must remain 1; GBIF requests are globally paced")
+    australia_live.add_argument("--max-api-calls", type=int, default=3400)
+    australia_live.add_argument("--run-id")
     storage = subparsers.add_parser("storage")
     storage_subparsers = storage.add_subparsers(dest="storage_command")
     storage_doctor = storage_subparsers.add_parser("doctor")
@@ -1141,6 +1160,8 @@ def _run_dev_comments_command(args: argparse.Namespace) -> int:
 
 
 def _run_dev_flickr_command(args: argparse.Namespace) -> int:
+    if args.flickr_command == "australia-live":
+        return _run_australia_live(args)
     if args.flickr_command != "poll-once":
         return 2
     work_store = None
@@ -1165,6 +1186,68 @@ def _run_dev_flickr_command(args: argparse.Namespace) -> int:
         work_store=work_store,
     )
     print(json.dumps({**result.__dict__, "state_db": str(result.state_db)}, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_australia_live(args: argparse.Namespace) -> int:
+    api_key = os.environ.get(args.api_key_env)
+    if not api_key:
+        print(json.dumps({"error": f"missing Flickr API key in {args.api_key_env}"}, indent=2, sort_keys=True))
+        return 2
+    cutoff = datetime.now(UTC).date().isoformat()
+    output_dir = Path(args.output_dir)
+    presence = build_australia_presence(
+        registry_dir=args.registry_dir,
+        state_db=args.presence_state_db,
+        output_path=output_dir / "australia_species_presence.parquet",
+        workers=args.gbif_workers,
+    )
+    failed = int(presence.filter(pl.col("status") != "complete").height)
+    if failed:
+        print(json.dumps({"error": "GBIF Australia prescan has retryable failures; rerun after they clear", "failed_species": failed}, indent=2, sort_keys=True))
+        return 2
+    place_id = args.place_id
+    definitions, associations, queries = compile_australia_query_plan(
+        registry_dir=args.registry_dir,
+        presence=presence,
+        output_dir=output_dir,
+        place_id=place_id,
+        woe_id=args.woe_id,
+        bbox=args.bbox,
+        cutoff=cutoff,
+    )
+    state = MetadataPollState(args.state_db)
+    registration = state.register_query_definitions(definitions, keyword_associations=associations)
+    enqueued = state.enqueue_initial_work_items(queries)
+    result = poll_once(
+        state_db=args.state_db,
+        raw_root=args.raw_root,
+        evidence_output=args.evidence_output,
+        max_api_calls=args.max_api_calls,
+        api_key=api_key,
+        workers=1,
+        run_id=args.run_id,
+        evidence_stage="flickr_australia_metadata",
+        min_call_interval_seconds=3600 / 3400,
+    )
+    payload = {
+        "scope": "Australia public geotagged Flickr photos",
+        "place_id": place_id,
+        "woe_id": args.woe_id,
+        "bbox": args.bbox,
+        "cutoff": cutoff,
+        "gbif_species": presence.height,
+        "gbif_local_species": int(presence.filter(pl.col("gbif_au_occurrence_count") > 0).height),
+        "query_definitions": definitions.height,
+        "query_associations": associations.height,
+        "work_items_enqueued": enqueued,
+        "registration": registration,
+        "poll": {**result.__dict__, "state_db": str(result.state_db)},
+    }
+    report = Path("reports") / f"flickr_australia_{args.run_id or datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    print(json.dumps({**payload, "report": str(report)}, indent=2, sort_keys=True, default=str))
     return 0
 
 
