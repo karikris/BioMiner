@@ -10,8 +10,8 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `f6be531e01d64be4e7e6f168313e66ecd3b25010`
-  (`feat(reports): report dynamic pooling efficiency`)
+  `c75e51ed39dd49a5667dc32f192dba7eb772a16b`
+  (`feat(evaluation): queue occurrence release review`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -35,8 +35,11 @@ at the start of every task.
   vector scoring, adds memory-aware image batching and bounds shared
   pool-matrix working sets through Task 8.1.3. Task 8.2 reports observed
   embedding and matrix reuse plus plan-derived selective score reuse without
-  guessed savings through Task 8.2.3. Phase 9 human-review sample planning is
-  next; no fusion method is selected or production-defaulted.
+  guessed savings through Task 8.2.3. Phase 9 defines the complete
+  dynamic-pool audit frame, stratified probability sample, separate targeted
+  failure queue and complete fail-closed occurrence-release review queue
+  through Task 9.1.4. Task 9.2 human-review count planning is next; no fusion
+  method is selected or production-defaulted.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -104,6 +107,13 @@ at the start of every task.
     two materializations; seven worker-cache matrix requests plus batch sharing
     produced seven distinct reuse events; one of two score records was marked
     `reuse_prior_score`, with runtime savings left `not_instrumented`;
+  - Task 9.1 final full regression: 2,944 passed in 107.24 seconds;
+  - Task 9.1 sampling/release gate: 55 passed in 1.56 seconds;
+  - Task 9.1 fixture: six candidate rows formed five connected
+    duplicate/observation probability units and three selected reviews with
+    exact inclusion probabilities; targeted failure discovery retained two
+    heuristic rows with null statistical weights; occurrence release retained
+    both final candidates, including a shared duplicate, in a fail-closed queue;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
