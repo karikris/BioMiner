@@ -45,6 +45,8 @@ def test_normalizes_flickr_geography_and_gates_cells_by_source_precision() -> No
     assert street["schema_version"] == FLICKR_GEOGRAPHY_SCHEMA_VERSION
     assert street["coordinate_source"] == "flickr_search_geo"
     assert street["coordinate_quality"] == "flickr_street"
+    assert street["geography_source_quality"] == "provider_accuracy_supported"
+    assert street["supported_cell_resolution"] == 7
     assert street["admin1"] == "Queensland"
     assert street["geotag_available"] is True
     assert street["geography_warnings"] == []
@@ -61,6 +63,7 @@ def test_normalizes_flickr_geography_and_gates_cells_by_source_precision() -> No
     assert city["coarse_cell_id"] is not None
     assert city["regional_cell_id"] is not None
     assert city["local_cell_id"] is None
+    assert city["supported_cell_resolution"] == 5
     assert city["geography_warning"] == "coordinate_precision_limits_cells"
 
     region = rows["3"]
@@ -68,6 +71,7 @@ def test_normalizes_flickr_geography_and_gates_cells_by_source_precision() -> No
     assert region["coarse_cell_id"] is not None
     assert region["regional_cell_id"] is None
     assert region["local_cell_id"] is None
+    assert region["supported_cell_resolution"] == 3
 
     country = rows["4"]
     assert country["coordinate_quality"] == "flickr_country"
@@ -75,6 +79,7 @@ def test_normalizes_flickr_geography_and_gates_cells_by_source_precision() -> No
     assert country["coarse_cell_id"] is None
     assert country["regional_cell_id"] is None
     assert country["local_cell_id"] is None
+    assert country["supported_cell_resolution"] is None
 
 
 def test_invalid_incomplete_and_missing_coordinates_remain_explicit() -> None:
@@ -194,6 +199,38 @@ def test_nested_flickr_location_and_explicit_coordinate_source_are_preserved() -
     assert row["coordinate_source"] == "flickr.photos.geo.getLocation"
     assert row["country_code"] == "AU"
     assert row["admin1"] == "New South Wales"
+
+
+def test_preserves_metric_uncertainty_and_bioregion_without_inference() -> None:
+    frame = build_flickr_geography_frame(
+        [
+            _record(
+                "uncertain",
+                coordinate_uncertainty_m="125.5",
+                coordinate_uncertainty_source="provider_metadata",
+                bioregion="Brigalow Belt South",
+                bioregion_source="source_registry-v3",
+            ),
+            _record(
+                "bad-uncertainty",
+                coordinateUncertaintyInMeters=-1,
+            ),
+        ]
+    )
+    rows = {row["flickr_photo_id"]: row for row in frame.to_dicts()}
+
+    uncertain = rows["uncertain"]
+    assert uncertain["coordinate_uncertainty_m"] == pytest.approx(125.5)
+    assert uncertain["coordinate_uncertainty_source"] == "provider_metadata"
+    assert uncertain["geography_source_quality"] == "metric_uncertainty_available"
+    assert uncertain["bioregion"] == "Brigalow Belt South"
+    assert uncertain["bioregion_source"] == "source_registry-v3"
+    assert uncertain["row_fingerprint"].startswith("sha256:")
+
+    invalid = rows["bad-uncertainty"]
+    assert invalid["coordinate_uncertainty_m"] is None
+    assert invalid["coordinate_uncertainty_source"] is None
+    assert "coordinate_uncertainty_invalid" in invalid["geography_warnings"]
 
 
 def test_fingerprint_tracks_semantic_configuration_and_writer_is_atomic(tmp_path) -> None:

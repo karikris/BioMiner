@@ -653,7 +653,7 @@ def test_materialize_flickr_workload_pins_input_and_retains_query_hits(
     assert manifest["artifact_schema_versions"] == {
         "assignments": "flickr-geo-assignments-v1.1.0",
         "clusters": "flickr-geo-clusters-v1.1.0",
-        "geography": "flickr-geography-v1.0.0",
+            "geography": "flickr-geography-v1.1.0",
         "input_projection": "flickr-workload-input-v1.0.0",
         "workload_report": "flickr-geographic-workload-report-v1.1.0",
     }
