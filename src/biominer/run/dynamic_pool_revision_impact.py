@@ -15,6 +15,8 @@ DYNAMIC_REFERENCE_REVISION_VERSION = "dynamic-reference-revision-v1.0.0"
 DYNAMIC_POOL_DEPENDENCY_VERSION = "dynamic-pool-dependency-v1.0.0"
 DYNAMIC_POOL_REVISION_IMPACT_VERSION = "dynamic-pool-revision-impact-v1.0.0"
 DYNAMIC_POOL_IMPACT_PROJECTION_VERSION = "dynamic-pool-impact-projection-v1.0.0"
+DYNAMIC_MATRIX_DEPENDENCY_VERSION = "dynamic-matrix-dependency-v1.0.0"
+DYNAMIC_MATRIX_REVISION_IMPACT_VERSION = "dynamic-matrix-revision-impact-v1.0.0"
 
 DYNAMIC_POOL_REVISION_IMPACT_SCHEMA: dict[str, pl.DataType] = {
     "schema_version": pl.String,
@@ -40,6 +42,23 @@ DYNAMIC_POOL_REVISION_IMPACT_SCHEMA: dict[str, pl.DataType] = {
     "new_reference_geography_index_fingerprint": pl.String,
 }
 
+DYNAMIC_MATRIX_REVISION_IMPACT_SCHEMA: dict[str, pl.DataType] = {
+    "schema_version": pl.String,
+    "revision_fingerprint": pl.String,
+    "impact_fingerprint": pl.String,
+    "matrix_dependency_fingerprint": pl.String,
+    "matrix_id": pl.String,
+    "matrix_kind": pl.String,
+    "matrix_signature": pl.String,
+    "route": pl.String,
+    "subject_keys": pl.List(pl.String),
+    "impact_status": pl.String,
+    "affected_reference_media_ids": pl.List(pl.String),
+    "affected_plan_ids": pl.List(pl.String),
+    "impact_reasons": pl.List(pl.String),
+    "expected_action": pl.String,
+}
+
 
 @dataclass(frozen=True, slots=True)
 class DynamicReferenceChange:
@@ -47,6 +66,8 @@ class DynamicReferenceChange:
     change_type: str
     old_taxon_key: str | None = None
     new_taxon_key: str | None = None
+    old_family_key: str | None = None
+    new_family_key: str | None = None
     old_route: str | None = None
     new_route: str | None = None
     old_geo_cluster_id: str | None = None
@@ -74,6 +95,8 @@ class DynamicReferenceChange:
             "new_taxon_key",
             "old_route",
             "new_route",
+            "old_family_key",
+            "new_family_key",
             "old_geo_cluster_id",
             "new_geo_cluster_id",
         ):
@@ -91,11 +114,15 @@ class DynamicReferenceChange:
             if not isinstance(getattr(self, field), bool):
                 raise TypeError(f"{field} must be a boolean")
         if change_type == "added" and (
-            self.old_taxon_key is not None or self.old_route is not None
+            self.old_taxon_key is not None
+            or self.old_family_key is not None
+            or self.old_route is not None
         ):
             raise ValueError("added reference cannot carry old selection context")
         if change_type == "removed" and (
-            self.new_taxon_key is not None or self.new_route is not None
+            self.new_taxon_key is not None
+            or self.new_family_key is not None
+            or self.new_route is not None
         ):
             raise ValueError("removed reference cannot carry new selection context")
         if change_type != "removed" and (
@@ -218,6 +245,57 @@ class DynamicPoolDependency:
 
 
 @dataclass(frozen=True, slots=True)
+class DynamicMatrixDependency:
+    matrix_id: str
+    matrix_kind: str
+    matrix_signature: str
+    source_fingerprint: str
+    model_fingerprint: str
+    route: str
+    subject_keys: tuple[str, ...]
+    reference_media_ids: tuple[str, ...]
+    upstream_plan_ids: tuple[str, ...] = ()
+    schema_version: str = DYNAMIC_MATRIX_DEPENDENCY_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != DYNAMIC_MATRIX_DEPENDENCY_VERSION:
+            raise ValueError("unsupported dynamic matrix dependency version")
+        for field in ("matrix_id", "route"):
+            object.__setattr__(
+                self, field, _required_text(getattr(self, field), field=field)
+            )
+        kind = _required_text(self.matrix_kind, field="matrix_kind")
+        if kind not in {
+            "family_prototype",
+            "candidate_prototype",
+            "dynamic_pool_reference",
+        }:
+            raise ValueError(f"unsupported matrix_kind: {kind}")
+        object.__setattr__(self, "matrix_kind", kind)
+        for field in ("matrix_signature", "source_fingerprint", "model_fingerprint"):
+            object.__setattr__(self, field, _sha256(getattr(self, field), field=field))
+        subjects = _canonical_texts(self.subject_keys, field="subject_keys")
+        references = _canonical_texts(
+            self.reference_media_ids,
+            field="reference_media_ids",
+        )
+        plans = _canonical_texts(self.upstream_plan_ids, field="upstream_plan_ids")
+        if not subjects or not references:
+            raise ValueError("matrix dependency requires subjects and reference rows")
+        if kind == "dynamic_pool_reference" and not plans:
+            raise ValueError("pool reference matrix requires upstream plans")
+        if kind != "dynamic_pool_reference" and plans:
+            raise ValueError("only pool reference matrices may depend on pool plans")
+        object.__setattr__(self, "subject_keys", subjects)
+        object.__setattr__(self, "reference_media_ids", references)
+        object.__setattr__(self, "upstream_plan_ids", plans)
+
+    @property
+    def fingerprint(self) -> str:
+        return canonical_semantic_fingerprint(asdict(self))
+
+
+@dataclass(frozen=True, slots=True)
 class DynamicPoolImpactProjection:
     table: pl.DataFrame
     projection_fingerprint: str
@@ -328,6 +406,114 @@ def identify_affected_reference_pools(
     )
 
 
+def identify_affected_candidate_matrices(
+    revision: DynamicReferenceRevision,
+    pool_impacts: pl.DataFrame,
+    dependencies: Sequence[DynamicMatrixDependency],
+) -> pl.DataFrame:
+    """Propagate exact reference and pool impacts into bounded matrices."""
+
+    validate_dynamic_pool_revision_impact(pool_impacts)
+    if pool_impacts["revision_fingerprint"].unique().to_list() != [
+        revision.fingerprint
+    ]:
+        raise ValueError("matrix impact received pool impacts from another revision")
+    matrices = tuple(dependencies)
+    if not matrices or any(
+        not isinstance(item, DynamicMatrixDependency) for item in matrices
+    ):
+        raise ValueError("matrix impact requires typed dependencies")
+    matrices = tuple(sorted(matrices, key=lambda item: item.matrix_id))
+    if len({item.matrix_id for item in matrices}) != len(matrices):
+        raise ValueError("matrix dependencies repeat a matrix ID")
+    affected_pool_ids = set(
+        pool_impacts.filter(pl.col("impact_status") == "affected")["plan_id"]
+    )
+    known_pool_ids = set(pool_impacts["plan_id"])
+    changed_ids = {change.reference_media_id for change in revision.changes}
+    rows = []
+    for matrix in matrices:
+        unknown_plans = sorted(set(matrix.upstream_plan_ids) - known_pool_ids)
+        if unknown_plans:
+            raise ValueError(
+                "matrix dependency references unknown pool plans: "
+                + ", ".join(unknown_plans)
+            )
+        reference_ids = set(matrix.reference_media_ids) & changed_ids
+        for change in revision.changes:
+            if _change_can_alter_matrix_rows(change, matrix):
+                reference_ids.add(change.reference_media_id)
+        plan_ids = set(matrix.upstream_plan_ids) & affected_pool_ids
+        reasons = []
+        if reference_ids:
+            reasons.append("declared_or_newly_eligible_reference_row_changed")
+        if plan_ids:
+            reasons.append("upstream_reference_pool_affected")
+        affected = bool(reference_ids or plan_ids)
+        base = {
+            "revision_fingerprint": revision.fingerprint,
+            "matrix_dependency_fingerprint": matrix.fingerprint,
+            "matrix_id": matrix.matrix_id,
+            "matrix_kind": matrix.matrix_kind,
+            "matrix_signature": matrix.matrix_signature,
+            "route": matrix.route,
+            "subject_keys": list(matrix.subject_keys),
+            "impact_status": "affected" if affected else "reusable_as_is",
+            "affected_reference_media_ids": sorted(reference_ids),
+            "affected_plan_ids": sorted(plan_ids),
+            "impact_reasons": reasons,
+            "expected_action": (
+                "rebuild_matrix" if affected else "reuse_matrix_without_materialization"
+            ),
+        }
+        rows.append(
+            {
+                "schema_version": DYNAMIC_MATRIX_REVISION_IMPACT_VERSION,
+                "impact_fingerprint": canonical_semantic_fingerprint(base),
+                **base,
+            }
+        )
+    table = pl.DataFrame(
+        rows,
+        schema=DYNAMIC_MATRIX_REVISION_IMPACT_SCHEMA,
+        strict=True,
+    ).sort("matrix_id")
+    validate_dynamic_matrix_revision_impact(table)
+    return table
+
+
+def validate_dynamic_matrix_revision_impact(table: pl.DataFrame) -> None:
+    if table.schema != DYNAMIC_MATRIX_REVISION_IMPACT_SCHEMA:
+        raise ValueError(
+            "dynamic matrix revision impact schema does not match contract"
+        )
+    if table.is_empty() or table["matrix_id"].n_unique() != table.height:
+        raise ValueError("dynamic matrix impact identities are invalid")
+    if not table.equals(table.sort("matrix_id")):
+        raise ValueError("dynamic matrix impact is not canonically sorted")
+    for row in table.iter_rows(named=True):
+        affected = row["impact_status"] == "affected"
+        if row["impact_status"] not in {"affected", "reusable_as_is"}:
+            raise ValueError("unsupported dynamic matrix impact status")
+        has_evidence = bool(
+            row["affected_reference_media_ids"] or row["affected_plan_ids"]
+        )
+        if affected != has_evidence:
+            raise ValueError("dynamic matrix impact evidence is inconsistent")
+        if not affected and (
+            row["impact_reasons"]
+            or row["expected_action"] != "reuse_matrix_without_materialization"
+        ):
+            raise ValueError("reusable matrix carries rebuild evidence")
+        base = {
+            field: row[field]
+            for field in DYNAMIC_MATRIX_REVISION_IMPACT_SCHEMA
+            if field not in {"schema_version", "impact_fingerprint"}
+        }
+        if row["impact_fingerprint"] != canonical_semantic_fingerprint(base):
+            raise ValueError("dynamic matrix revision impact fingerprint mismatch")
+
+
 def validate_dynamic_pool_revision_impact(table: pl.DataFrame) -> None:
     if table.schema != DYNAMIC_POOL_REVISION_IMPACT_SCHEMA:
         raise ValueError("dynamic pool revision impact schema does not match contract")
@@ -389,6 +575,22 @@ def _change_can_alter_pool_selection(
     return False
 
 
+def _change_can_alter_matrix_rows(
+    change: DynamicReferenceChange,
+    matrix: DynamicMatrixDependency,
+) -> bool:
+    if change.new_route != matrix.route:
+        return False
+    if not (change.new_global_anchor_eligible or change.new_local_anchor_eligible):
+        return False
+    subject = (
+        change.new_family_key
+        if matrix.matrix_kind == "family_prototype"
+        else change.new_taxon_key
+    )
+    return subject is not None and subject in matrix.subject_keys
+
+
 def _normalized_pools(
     dependencies: Sequence[DynamicPoolDependency],
     *,
@@ -440,6 +642,9 @@ def _sha256(value: object, *, field: str) -> str:
 
 
 __all__ = [
+    "DYNAMIC_MATRIX_DEPENDENCY_VERSION",
+    "DYNAMIC_MATRIX_REVISION_IMPACT_SCHEMA",
+    "DYNAMIC_MATRIX_REVISION_IMPACT_VERSION",
     "DYNAMIC_POOL_DEPENDENCY_VERSION",
     "DYNAMIC_POOL_IMPACT_PROJECTION_VERSION",
     "DYNAMIC_POOL_REVISION_IMPACT_SCHEMA",
@@ -448,8 +653,11 @@ __all__ = [
     "DYNAMIC_REFERENCE_REVISION_VERSION",
     "DynamicPoolDependency",
     "DynamicPoolImpactProjection",
+    "DynamicMatrixDependency",
     "DynamicReferenceChange",
     "DynamicReferenceRevision",
     "identify_affected_reference_pools",
+    "identify_affected_candidate_matrices",
+    "validate_dynamic_matrix_revision_impact",
     "validate_dynamic_pool_revision_impact",
 ]

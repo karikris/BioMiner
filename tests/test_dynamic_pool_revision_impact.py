@@ -8,9 +8,11 @@ import polars as pl
 import pytest
 
 from biominer.run.dynamic_pool_revision_impact import (
+    DynamicMatrixDependency,
     DynamicPoolDependency,
     DynamicReferenceChange,
     DynamicReferenceRevision,
+    identify_affected_candidate_matrices,
     identify_affected_reference_pools,
     validate_dynamic_pool_revision_impact,
 )
@@ -160,3 +162,112 @@ def test_pool_dependency_must_bind_the_prior_revision_artifacts() -> None:
 
     with pytest.raises(ValueError, match="stale reference-bank"):
         identify_affected_reference_pools(_revision(), [stale])
+
+
+def _matrix(
+    index: int,
+    *,
+    kind: str,
+    subjects: tuple[str, ...],
+    references: tuple[str, ...],
+    plans: tuple[str, ...] = (),
+) -> DynamicMatrixDependency:
+    return DynamicMatrixDependency(
+        matrix_id=f"matrix-{index}",
+        matrix_kind=kind,
+        matrix_signature=_sha(index),
+        source_fingerprint=_sha(index + 1),
+        model_fingerprint=_sha(15),
+        route="adult_field",
+        subject_keys=subjects,
+        reference_media_ids=references,
+        upstream_plan_ids=plans,
+    )
+
+
+def test_matrix_impact_combines_reference_rows_and_upstream_pools() -> None:
+    revision = _revision()
+    pool_impacts = identify_affected_reference_pools(
+        revision,
+        [
+            _pool(0, taxa=("species-a",), geo="geo-a"),
+            _pool(2, taxa=("species-c",), geo="geo-c"),
+        ],
+    ).table
+    matrices = [
+        _matrix(
+            0,
+            kind="family_prototype",
+            subjects=("family-a",),
+            references=("reference-member",),
+        ),
+        _matrix(
+            1,
+            kind="candidate_prototype",
+            subjects=("species-c",),
+            references=("reference-stable",),
+        ),
+        _matrix(
+            2,
+            kind="dynamic_pool_reference",
+            subjects=("species-a",),
+            references=("reference-member",),
+            plans=("plan-0",),
+        ),
+        _matrix(
+            3,
+            kind="dynamic_pool_reference",
+            subjects=("species-c",),
+            references=("reference-stable",),
+            plans=("plan-2",),
+        ),
+    ]
+
+    impacts = identify_affected_candidate_matrices(revision, pool_impacts, matrices)
+    by_id = {row["matrix_id"]: row for row in impacts.iter_rows(named=True)}
+
+    assert by_id["matrix-0"]["impact_status"] == "affected"
+    assert by_id["matrix-1"]["impact_status"] == "reusable_as_is"
+    assert by_id["matrix-2"]["affected_plan_ids"] == ["plan-0"]
+    assert by_id["matrix-3"]["expected_action"] == (
+        "reuse_matrix_without_materialization"
+    )
+
+
+def test_newly_eligible_reference_affects_matching_candidate_matrix() -> None:
+    revision = _revision()
+    pool_impacts = identify_affected_reference_pools(
+        revision,
+        [_pool(2, taxa=("species-c",), geo="geo-c")],
+    ).table
+    matrix = _matrix(
+        1,
+        kind="candidate_prototype",
+        subjects=("species-b",),
+        references=("reference-stable",),
+    )
+
+    impact = identify_affected_candidate_matrices(revision, pool_impacts, [matrix]).row(
+        0, named=True
+    )
+
+    assert impact["impact_status"] == "affected"
+    assert impact["affected_reference_media_ids"] == ["reference-new-local"]
+
+
+def test_matrix_impact_rejects_unknown_pool_dependency() -> None:
+    revision = _revision()
+    pool_impacts = identify_affected_reference_pools(
+        revision,
+        [_pool(2, taxa=("species-c",), geo="geo-c")],
+    ).table
+    matrix = _matrix(
+        2,
+        kind="dynamic_pool_reference",
+        subjects=("species-c",),
+        references=("reference-stable",),
+        plans=("plan-missing",),
+    )
+
+    with pytest.raises(ValueError, match="unknown pool plans"):
+        identify_affected_candidate_matrices(revision, pool_impacts, [matrix])
