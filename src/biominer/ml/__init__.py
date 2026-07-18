@@ -89,6 +89,17 @@ from biominer.ml.dynamic_pool_features import (
     validate_dynamic_pool_feature_table,
     write_dynamic_pool_feature_table,
 )
+from biominer.ml.dynamic_pool_thresholds import (
+    AUDITED_SCREENING_THRESHOLD_AUDIT_SCHEMA,
+    AUDITED_SCREENING_THRESHOLD_AUDIT_SCHEMA_VERSION,
+    AUDITED_SCREENING_THRESHOLD_STATUSES,
+    AUDITED_SCREENING_THRESHOLD_VERSION,
+    LOWER_BOUND_METHOD,
+    SCREENING_CANDIDATE_LABEL,
+    AuditedScreeningThresholdPolicy,
+    AuditedScreeningThresholdSelection,
+    select_audited_screening_threshold,
+)
 from biominer.ml.nonparametric import (
     MEAN_CENTERED_NEAREST_CENTROID_METHOD,
     MULTI_PROTOTYPE_NEAREST_CLASS_METHOD,
@@ -169,6 +180,10 @@ from biominer.ml.training_features import (
 )
 
 __all__ = [
+    "AUDITED_SCREENING_THRESHOLD_AUDIT_SCHEMA",
+    "AUDITED_SCREENING_THRESHOLD_AUDIT_SCHEMA_VERSION",
+    "AUDITED_SCREENING_THRESHOLD_STATUSES",
+    "AUDITED_SCREENING_THRESHOLD_VERSION",
     "AUTO_METHOD",
     "CATEGORICAL_MODEL_FEATURE_COLUMNS",
     "CALIBRATION_OUTCOME_LABELS",
@@ -209,6 +224,7 @@ __all__ = [
     "FEW_SHOT_TRAINING_FEATURES_FILE",
     "FEW_SHOT_TRAINING_FEATURES_SCHEMA_VERSION",
     "LABEL_COLUMNS",
+    "LOWER_BOUND_METHOD",
     "MEAN_CENTERED_NEAREST_CENTROID_METHOD",
     "MODEL_FEATURE_COLUMNS",
     "MULTI_PROTOTYPE_NEAREST_CLASS_METHOD",
@@ -257,6 +273,7 @@ __all__ = [
     "NonparametricNeighbor",
     "NonparametricPrediction",
     "RBF_SVC_PILOT_MODEL",
+    "SCREENING_CANDIDATE_LABEL",
     "ReferenceEvidenceFeatures",
     "SelectiveDecision",
     "SelectiveDecisionPolicy",
@@ -268,6 +285,8 @@ __all__ = [
     "TEMPERATURE_METHOD",
     "TrainingLabel",
     "TrainingProvenance",
+    "AuditedScreeningThresholdPolicy",
+    "AuditedScreeningThresholdSelection",
     "build_few_shot_training_features",
     "build_dynamic_pool_feature_table",
     "apply_selective_decision_policy",
@@ -318,4 +337,5 @@ __all__ = [
     "ExplicitNonMatchScore",
     "NonMatchScoringRequest",
     "score_nonmatch_evidence",
+    "select_audited_screening_threshold",
 ]

@@ -23,6 +23,13 @@ from biominer.ml.dynamic_pool_features import (
     DynamicPoolFeatureInput,
     build_dynamic_pool_feature_table,
 )
+from biominer.ml.dynamic_pool_thresholds import (
+    AUDITED_SCREENING_THRESHOLD_AUDIT_SCHEMA,
+    LOWER_BOUND_METHOD,
+    SCREENING_CANDIDATE_LABEL,
+    AuditedScreeningThresholdPolicy,
+    select_audited_screening_threshold,
+)
 
 
 def _sha(index: int) -> str:
@@ -309,3 +316,117 @@ def test_route_without_independent_partitions_fails_closed() -> None:
             table,
             DynamicPoolCalibrationConfig(route="larval"),
         )
+
+
+def test_threshold_selection_uses_only_independent_validation_bounds() -> None:
+    _, _, table = _fixture()
+    fit = fit_dynamic_pool_evidence_calibrator(table, _config())
+    policy = AuditedScreeningThresholdPolicy(
+        minimum_precision_lower_bound=0.50,
+        confidence_level=0.95,
+        minimum_selected_items=2,
+        minimum_selected_components=2,
+    )
+
+    selection = select_audited_screening_threshold(fit, policy)
+
+    assert selection.status == "selected"
+    assert selection.threshold is not None
+    assert selection.audited_precision_lower_bound >= 0.50
+    assert selection.threshold_audit.schema == AUDITED_SCREENING_THRESHOLD_AUDIT_SCHEMA
+    assert set(selection.threshold_audit["evaluation_split"].to_list()) == {
+        "validation"
+    }
+    assert set(selection.threshold_audit["lower_bound_method"].to_list()) == {
+        LOWER_BOUND_METHOD
+    }
+    assert selection.threshold_audit["selected"].sum() == 1
+    selected = selection.threshold_audit.filter(
+        selection.threshold_audit["selected"]
+    ).row(0, named=True)
+    assert selected["threshold"] == selection.threshold
+    assert selected["audited_precision_lower_bound"] == min(
+        selected["weight_adjusted_lower_bound"],
+        selected["component_exact_lower_bound"],
+    )
+    assert selected["precision_lower_bound_passed"] is True
+
+
+def test_threshold_maximizes_coverage_among_passing_candidates() -> None:
+    _, _, table = _fixture()
+    fit = fit_dynamic_pool_evidence_calibrator(table, _config())
+    selection = select_audited_screening_threshold(
+        fit,
+        AuditedScreeningThresholdPolicy(
+            minimum_precision_lower_bound=0.30,
+            minimum_selected_items=2,
+            minimum_selected_components=2,
+        ),
+    )
+    eligible = selection.threshold_audit.filter(
+        selection.threshold_audit["threshold_eligible"]
+    )
+
+    assert selection.weighted_validation_coverage == pytest.approx(
+        eligible["weighted_validation_coverage"].max()
+    )
+
+
+def test_high_precision_policy_fails_closed_with_small_validation_set() -> None:
+    _, _, table = _fixture()
+    fit = fit_dynamic_pool_evidence_calibrator(table, _config())
+
+    selection = select_audited_screening_threshold(
+        fit,
+        AuditedScreeningThresholdPolicy(),
+    )
+
+    assert selection.status == "infeasible"
+    assert selection.status_reason == "insufficient_independent_validation_evidence"
+    assert selection.threshold is None
+    assert selection.threshold_audit["selected"].sum() == 0
+
+    bound_limited = select_audited_screening_threshold(
+        fit,
+        AuditedScreeningThresholdPolicy(
+            minimum_precision_lower_bound=0.70,
+            minimum_selected_items=2,
+            minimum_selected_components=2,
+        ),
+    )
+    assert bound_limited.status_reason == "no_threshold_satisfies_precision_lower_bound"
+
+
+def test_screening_threshold_never_authorizes_occurrence_release() -> None:
+    _, _, table = _fixture()
+    fit = fit_dynamic_pool_evidence_calibrator(table, _config())
+    selection = select_audited_screening_threshold(
+        fit,
+        AuditedScreeningThresholdPolicy(
+            minimum_precision_lower_bound=0.50,
+            minimum_selected_items=2,
+            minimum_selected_components=2,
+        ),
+    )
+
+    assert selection.screening_candidate_label == SCREENING_CANDIDATE_LABEL
+    assert selection.fit_partition == "calibration"
+    assert selection.selection_partition == "validation"
+    assert selection.final_test_prediction_count == 0
+    assert selection.occurrence_release_authorized is False
+
+
+def test_threshold_selection_is_deterministic() -> None:
+    _, _, table = _fixture()
+    fit = fit_dynamic_pool_evidence_calibrator(table, _config())
+    policy = AuditedScreeningThresholdPolicy(
+        minimum_precision_lower_bound=0.50,
+        minimum_selected_items=2,
+        minimum_selected_components=2,
+    )
+
+    first = select_audited_screening_threshold(fit, policy)
+    second = select_audited_screening_threshold(fit, policy)
+
+    assert first.selection_fingerprint == second.selection_fingerprint
+    assert first.threshold_audit.equals(second.threshold_audit)
