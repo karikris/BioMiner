@@ -134,11 +134,22 @@ def test_final_report_matches_release_receipts_and_provenance_ledgers() -> None:
     assert report["githits_impact"]["status_counts"] == dict(
         Counter(row["githits_status"] for row in records)
     )
+    prior_pushes = [row for row in pushes if row["task_id"] != "geo-pool-16.2"]
     assert (
-        len(pushes)
+        len(prior_pushes)
         == report["workflow_scope"]["verified_task_pushes_before_final_task_push"]
         == 32
     )
+    if len(pushes) > len(prior_pushes):
+        assert (
+            len(pushes)
+            == report["workflow_scope"]["verified_task_pushes_after_task_closure"]
+            == 33
+        )
+        final_push = next(row for row in pushes if row["task_id"] == "geo-pool-16.2")
+        assert final_push["verified_remote_sha"] == (
+            "ade7c17741decb8866ce885396b8f0142cdf7eea"
+        )
     assert all(row["status"] == "verified" for row in pushes)
 
 
