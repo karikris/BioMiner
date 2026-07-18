@@ -10,11 +10,11 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `5166cf8408331898694cfd1ab5994c075a62458b`
-  (`test(cli): validate dynamic pooling plans`)
+  `7cad1fe3e3eb7a0b3e650de6885b3a9639e1da1a`
+  (`experiment(pilot): plan dynamic pooling review evidence`)
 - Latest verified dynamic-pooling task report commit:
-  `0e359b89d8329f346bd4484e9061b074c4e2a0f2`
-  (`docs(provenance): record task 13.2 push`)
+  `088bd99cd1b0efafba5c553a6a65a4772ac2012d`
+  (`docs(provenance): record task 14.2 push`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -64,7 +64,12 @@ at the start of every task.
   dependency order and non-automatic human gates through Task 13.1.3. Task 13.2
   adds typed fingerprinted settings, seven plan-first CLI commands, persisted
   plan validation and a fail-closed live-adapter boundary through Task 13.2.3.
-  Phase 14 TaxaLens and ButterflyLens handoffs are next; no fusion method is
+  Phase 14 publishes immutable TaxaLens and ButterflyLens handoffs verified
+  against exact committed consumer contracts. Phase 15 Task 15.1 freezes and
+  executes a seven-case fixture-backed dynamic-pooling pilot across three
+  candidate schedules, global-only and dynamic global/local pools, and four
+  raw fusion methods, then creates separate representative and targeted review
+  work registers. No candidate strategy, pooling variant, or fusion method is
   selected or production-defaulted.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
@@ -203,6 +208,21 @@ at the start of every task.
   - Task 13.2 CLI contract: seven commands declare 22 exact named inputs and 15
     intended outputs; dry-run plans are deterministic and fingerprinted,
     selection readiness remains explicit, and live adapters fail closed;
+  - Task 14.2 final full regression: 3,169 passed in 118.21 seconds;
+  - Task 14.2 ButterflyLens contract gate: 46 passed in 3.70 seconds; the exact
+    pinned consumer parity runner passed 24 schemas, 20 valid cases, 20 invalid
+    cases, 20 version checks and 15 vocabulary checks;
+  - Task 15.1 final full regression: 3,205 passed in 134.18 seconds;
+  - Task 15.1 bounded-pilot gate: 36 passed in 12.63 seconds;
+  - Task 15.1 fixture pilot: seven cases retain complete five-taxon candidate
+    unions under all three schedules; 168 raw score projections reuse 14
+    encoder-free vector work items; six located cases change target raw score
+    under local pooling without changing top candidate, and the no-geography
+    case has exact global-fallback parity;
+  - Task 15.1 review plan: seven fixture items enter both a complete
+    within-fixture probability design and a separate targeted queue, zero enter
+    release review, no reviews are assigned or completed, and the shortfall to
+    the preregistered 86 effective real reviews remains 86;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
@@ -438,13 +458,13 @@ unavailable, and no live production improvement or scientific release is
 claimed.
 
 For the active dynamic-pooling goal, the next implementation boundary is Phase
-14 Task 14.1: publish an immutable TaxaLens evidence handoff and verify it
-against an exact committed TaxaLens contract. The parallel family/geography
-union remains the intended candidate, but no strategy is selected or
-production-defaulted because only implementation-fixture evidence has run. No
-strategy is empirically superior, and no live dynamic pool, live score,
-calibrated probability, statistical-support result or new release-ready
-occurrence is claimed by the completed phases.
+15 Task 15.2: report the frozen pilot ablations and apply the fail-closed
+production-default selection contract. The parallel family/geography union is
+only the current review projection. No strategy is selected or
+production-defaulted because only fixture evidence has run. No strategy is
+empirically superior, and no live dynamic pool, live score, calibrated
+probability, completed human review, statistical-support result or new
+release-ready occurrence is claimed by the completed phases.
 
 ## Repository map
 
