@@ -10,8 +10,8 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `ea85c00e321b21654c0934ee0f8783e468e76f78`
-  (`feat(bioclip): expose dynamic pool disagreement`)
+  `50b7e84fc2964365f947d9749f03f305ff2c893e`
+  (`feat(bioclip): rank dynamic pool candidates`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -29,7 +29,10 @@ at the start of every task.
   candidate and pool matrix indexes and deterministic cache-local work ordering
   through Task 6.2.3. Phase 7 implements complete raw family, global and local
   component evidence plus explicit disagreement, rank movement and coverage
-  through Task 7.1.4. Task 7.2 versioned raw fusion policy is next.
+  through Task 7.1.4. Task 7.2 preserves every component through four
+  versioned provisional fusion methods, complete per-method candidate rankings,
+  ties and alternatives through Task 7.2.3. Phase 8 Task 8.1 dynamic compute
+  batching is next; no fusion method is selected or production-defaulted.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -79,6 +82,12 @@ at the start of every task.
   - Task 7.1 fixture: two candidates retained separate prototype, nearest and
     top-k components; one exact local-unavailable state stayed null, while a
     second fixture exposed a complete global/local rank reversal;
+  - Task 7.2 final full regression: 2,890 passed in 104.98 seconds;
+  - Task 7.2 fusion ablation and exact-semantics gate: 80 passed in 0.58
+    seconds;
+  - Task 7.2 fixture: all four methods retained two complete candidates and
+    explicit alternatives; inverted global/local components produced method
+    disagreement and exact score ties, with method selection left unset;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
