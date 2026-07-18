@@ -201,9 +201,15 @@ def validate_taxalens_score_pool_export(
     if not artifact_directory.is_dir():
         raise ValueError("TaxaLens score/pool artifact directory is unavailable")
     entries = tuple(artifact_directory.iterdir())
-    if any(path.is_symlink() or not path.is_file() for path in entries):
+    if any(
+        path.is_symlink() or not (path.is_file() or path.is_dir()) for path in entries
+    ):
         raise ValueError("TaxaLens score/pool artifact directory has unsafe entries")
-    actual_paths = {path.resolve() for path in entries}
+    if {path.name for path in entries if path.is_dir()} - {"review"}:
+        raise ValueError(
+            "TaxaLens score/pool artifact directory has unknown directories"
+        )
+    actual_paths = {path.resolve() for path in entries if path.is_file()}
     if actual_paths != expected_paths:
         raise ValueError("TaxaLens score/pool artifact file set differs")
     _validate_frames(frames)

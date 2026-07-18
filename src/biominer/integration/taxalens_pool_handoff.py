@@ -412,8 +412,8 @@ def _validate_maturity_artifacts(
     quality_artifact_available = by_role["quality_sidecar"]["availability"] == (
         "available"
     )
-    if quality_artifact_available != quality_estimate_available:
-        raise ValueError("quality sidecar and quality maturity availability differ")
+    if quality_estimate_available and not quality_artifact_available:
+        raise ValueError("available quality estimate requires a quality sidecar")
     if completed_review_count == 0 and quality_artifact_available:
         raise ValueError("quality sidecar cannot be available before human review")
 

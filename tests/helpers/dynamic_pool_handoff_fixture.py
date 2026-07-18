@@ -15,6 +15,17 @@ from biominer.bioclip.dynamic_pool_scores import (
     build_dynamic_pool_photo_summaries,
 )
 from biominer.bioclip.family_geo_candidates import build_family_geo_candidate_sets
+from biominer.evaluation.dynamic_pool_quality import (
+    DynamicPoolQualityObservation,
+    DynamicPoolQualityPolicy,
+    report_overall_pooling_quality,
+)
+from biominer.evaluation.dynamic_pool_review import (
+    ProbabilityAuditSamplingPolicy,
+    ProbabilityAuditSelection,
+    build_dynamic_pool_audit_frame,
+    build_probability_audit_sample,
+)
 from biominer.vision.bioclip_input_contract import (
     DYNAMIC_POOL_VISUAL_MODE,
     bioclip_visual_input_contract,
@@ -371,4 +382,102 @@ def build_dynamic_pool_handoff_fixture() -> dict[str, pl.DataFrame]:
     }
 
 
-__all__ = ["build_dynamic_pool_handoff_fixture"]
+def build_review_selection_fixture() -> tuple[
+    ProbabilityAuditSelection,
+    ProbabilityAuditSamplingPolicy,
+]:
+    """Build a representative sample with geographic and no-geo units."""
+
+    candidates: list[dict[str, object]] = []
+    for index in range(4):
+        no_geo = index == 3
+        candidates.append(
+            {
+                "sampling_unit_id": f"review-unit-{index}",
+                "source_record_hash": _sha(str(index + 1)),
+                "source_artifact_fingerprint": _sha("9"),
+                "flickr_photo_id": f"photo-{index}",
+                "organism_unit_id": f"organism-{index}",
+                "candidate_family_accepted_taxon_key": "col:Papilionidae",
+                "candidate_family_scientific_name": "Papilionidae",
+                "candidate_genus_accepted_taxon_key": "col:Papilio",
+                "candidate_genus_scientific_name": "Papilio",
+                "candidate_species_accepted_taxon_key": "col:Papilio-demoleus",
+                "candidate_species_scientific_name": "Papilio demoleus",
+                "geographic_cluster_id": None if no_geo else f"geo-au-{index % 2}",
+                "no_geo": no_geo,
+                "primary_query_tier": "T2",
+                "raw_fusion_score": 0.72 - index / 20,
+                "raw_competitor_margin": 0.04 + index / 100,
+                "pool_disagreement": None if no_geo else 0.18 - index / 100,
+                "route": "adult_field",
+                "visual_domain": "field_photo",
+                "subject_area_ratio": 0.08,
+                "owner_group_id": f"owner-{index}",
+                "duplicate_group_id": f"duplicate-{index}",
+                "observation_group_id": f"observation-{index}",
+                "final_release_candidate": True,
+            }
+        )
+    policy = ProbabilityAuditSamplingPolicy(review_budget=4, random_seed=17)
+    selection = build_probability_audit_sample(
+        build_dynamic_pool_audit_frame(candidates),
+        policy=policy,
+    )
+    return selection, policy
+
+
+def build_quality_report_fixture(*, sufficient: bool = True) -> pl.DataFrame:
+    """Build a small reviewed-evidence report with permissive fixture floors."""
+
+    observations = [
+        DynamicPoolQualityObservation(
+            item_id=f"item-{index}",
+            source_record_id=f"flickr:{index}",
+            source_image_sha256=_sha(str(index + 1)),
+            independence_component_id=f"component-{index}",
+            family_key="family-papilionidae",
+            family_name="Papilionidae",
+            genus_key="genus-papilio",
+            genus_name="Papilio",
+            species_key="species-papilio-demoleus",
+            scientific_name="Papilio demoleus",
+            sampling_purpose="representative_audit",
+            representative_estimation_eligible=True,
+            sampling_weight=1.0,
+            human_supported=index != 2,
+            screening_selected=index != 3,
+            model_abstained=False,
+            family_routing_correct=True,
+            global_local_disagreed=index % 2 == 0,
+            local_support_available=True,
+            reference_outlier_influenced_error=False,
+            out_of_distribution=False,
+            calibrated_supported_probability=0.8 if index != 2 else 0.3,
+            country_code="AU",
+            admin1="NSW",
+            bioregion="Sydney Basin",
+            geographic_cluster_id=f"geo-{index % 2}",
+        )
+        for index in range(4)
+    ]
+    policy = (
+        DynamicPoolQualityPolicy(
+            minimum_group_items=2,
+            minimum_group_components=2,
+            minimum_group_effective_sample_size=2.0,
+            minimum_metric_denominator_items=1,
+            minimum_metric_denominator_components=1,
+            minimum_metric_effective_sample_size=1.0,
+        )
+        if sufficient
+        else DynamicPoolQualityPolicy()
+    )
+    return report_overall_pooling_quality(observations, policy=policy)
+
+
+__all__ = [
+    "build_dynamic_pool_handoff_fixture",
+    "build_quality_report_fixture",
+    "build_review_selection_fixture",
+]

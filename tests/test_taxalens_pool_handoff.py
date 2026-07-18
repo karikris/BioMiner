@@ -151,6 +151,24 @@ def test_reviewed_quality_can_be_available_without_authorizing_release() -> None
     assert manifest["authority_boundary"]["review_occurrence_is_release"] is False
 
 
+def test_insufficient_reviewed_quality_sidecar_blocks_release() -> None:
+    manifest = _manifest(
+        artifacts=_artifacts(quality_available=True),
+        completed_review_count=4,
+        quality_estimate_available=False,
+        quality_unavailable_reason="representative evidence is insufficient",
+    )
+
+    maturity = manifest["evidence_maturity"]
+    quality = next(
+        row for row in manifest["artifacts"] if row["role"] == "quality_sidecar"
+    )
+    assert quality["availability"] == "available"
+    assert maturity["human_review"]["status"] == "available"
+    assert maturity["quality_estimate"]["status"] == "unavailable"
+    assert maturity["release"]["release_ready"] is False
+
+
 def test_quality_estimate_without_reviews_fails_closed() -> None:
     with pytest.raises(ValueError, match="require completed human reviews"):
         _manifest(
