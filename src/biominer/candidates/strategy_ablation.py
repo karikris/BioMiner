@@ -20,7 +20,11 @@ CANDIDATE_STRATEGY_PLANS_FILE = "candidate_strategy_plans.parquet"
 
 GEOGRAPHY_FIRST_STRATEGY = "geography_first"
 GEOGRAPHY_FIRST_STRATEGY_VERSION = "geography-first-complete-union-v1.0.0"
-CANDIDATE_STRATEGIES = frozenset({GEOGRAPHY_FIRST_STRATEGY})
+FAMILY_FIRST_SAFE_STRATEGY = "family_first_safe"
+FAMILY_FIRST_SAFE_STRATEGY_VERSION = "family-first-safe-complete-union-v1.0.0"
+CANDIDATE_STRATEGIES = frozenset(
+    {GEOGRAPHY_FIRST_STRATEGY, FAMILY_FIRST_SAFE_STRATEGY}
+)
 
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _PLAN_ID_PATTERN = re.compile(r"candidate-strategy-plan:[0-9a-f]{64}\Z")
@@ -199,7 +203,7 @@ def _build_rows(
         group = group_frame.sort(
             "candidate_priority", "candidate_accepted_taxon_key"
         ).to_dicts()
-        scheduled = _schedule_geography_first(group)
+        scheduled = _schedule(group, strategy=strategy)
         schedule_specs = [
             {
                 "candidate_accepted_taxon_key": row[
@@ -328,6 +332,52 @@ def _schedule_geography_first(
     return output
 
 
+def _schedule_family_first_safe(
+    rows: Sequence[Mapping[str, object]],
+) -> list[tuple[Mapping[str, object], str, int]]:
+    stages: dict[str, list[Mapping[str, object]]] = {
+        stage: [] for stage in _stage_order(FAMILY_FIRST_SAFE_STRATEGY)
+    }
+    for row in rows:
+        if (
+            row["family_evidence_status"] == "available"
+            and row["family_priority_match"] is True
+        ):
+            stage = "family_priority_partition"
+        elif (
+            row["target_candidate"]
+            or row["query_associated"]
+            or row["geographic_evidence_status"] == "available"
+            or row["visual_neighbour"]
+            or row["safety_union_membership"]
+        ):
+            stage = "required_safety_union"
+        elif row["family_evidence_status"] == "available":
+            stage = "family_expansion"
+        else:
+            stage = "complete_union_remainder"
+        stages[stage].append(row)
+    output: list[tuple[Mapping[str, object], str, int]] = []
+    for stage in _stage_order(FAMILY_FIRST_SAFE_STRATEGY):
+        ordered = sorted(
+            stages[stage], key=lambda row: _family_first_safe_key(row, stage)
+        )
+        output.extend((row, stage, rank) for rank, row in enumerate(ordered))
+    return output
+
+
+def _schedule(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    strategy: str,
+) -> list[tuple[Mapping[str, object], str, int]]:
+    if strategy == GEOGRAPHY_FIRST_STRATEGY:
+        return _schedule_geography_first(rows)
+    if strategy == FAMILY_FIRST_SAFE_STRATEGY:
+        return _schedule_family_first_safe(rows)
+    raise ValueError(f"unsupported candidate strategy {strategy!r}")
+
+
 def _geography_first_key(
     row: Mapping[str, object],
     stage: str,
@@ -363,6 +413,34 @@ def _geography_first_key(
     return (source_priority, candidate_key)
 
 
+def _family_first_safe_key(
+    row: Mapping[str, object],
+    stage: str,
+) -> tuple[object, ...]:
+    source_priority = int(row["candidate_priority"])
+    candidate_key = str(row["candidate_accepted_taxon_key"])
+    if stage in {"family_priority_partition", "family_expansion"}:
+        rank = row["family_evidence_rank"]
+        score = row["family_evidence_raw_score"]
+        return (
+            int(rank) if rank is not None else 2**32,
+            -(float(score) if score is not None else -1.0),
+            0 if row["target_candidate"] else 1,
+            source_priority,
+            candidate_key,
+        )
+    if stage == "required_safety_union":
+        return (
+            0 if row["target_candidate"] else 1,
+            0 if row["query_associated"] else 1,
+            0 if row["geographic_evidence_status"] == "available" else 1,
+            0 if row["visual_neighbour"] else 1,
+            source_priority,
+            candidate_key,
+        )
+    return (source_priority, candidate_key)
+
+
 def _inclusion_axes(row: Mapping[str, object]) -> list[str]:
     axes: list[str] = []
     if row["target_candidate"]:
@@ -388,12 +466,21 @@ def _stage_order(strategy: str) -> tuple[str, ...]:
             "family_expansion",
             "complete_union_remainder",
         )
+    if strategy == FAMILY_FIRST_SAFE_STRATEGY:
+        return (
+            "family_priority_partition",
+            "required_safety_union",
+            "family_expansion",
+            "complete_union_remainder",
+        )
     raise ValueError(f"unsupported candidate strategy {strategy!r}")
 
 
 def _strategy_version(strategy: str) -> str:
     if strategy == GEOGRAPHY_FIRST_STRATEGY:
         return GEOGRAPHY_FIRST_STRATEGY_VERSION
+    if strategy == FAMILY_FIRST_SAFE_STRATEGY:
+        return FAMILY_FIRST_SAFE_STRATEGY_VERSION
     raise ValueError(f"unsupported candidate strategy {strategy!r}")
 
 
@@ -416,6 +503,8 @@ __all__ = [
     "CANDIDATE_STRATEGIES",
     "CANDIDATE_STRATEGY_PLANS_FILE",
     "CANDIDATE_STRATEGY_PLAN_SCHEMA_VERSION",
+    "FAMILY_FIRST_SAFE_STRATEGY",
+    "FAMILY_FIRST_SAFE_STRATEGY_VERSION",
     "GEOGRAPHY_FIRST_STRATEGY",
     "GEOGRAPHY_FIRST_STRATEGY_VERSION",
     "build_candidate_strategy_plans",

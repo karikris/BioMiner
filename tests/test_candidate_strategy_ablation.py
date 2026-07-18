@@ -8,6 +8,7 @@ import pytest
 from biominer.bioclip.family_geo_candidates import build_family_geo_candidate_sets
 from biominer.candidates.strategy_ablation import (
     CANDIDATE_STRATEGY_PLANS_FILE,
+    FAMILY_FIRST_SAFE_STRATEGY,
     GEOGRAPHY_FIRST_STRATEGY,
     build_candidate_strategy_plans,
     candidate_strategy_plan_schema,
@@ -84,6 +85,72 @@ def test_geography_first_no_geo_keeps_target_and_complete_union() -> None:
     assert set(plan["candidate_accepted_taxon_key"]) == set(
         source["candidate_accepted_taxon_key"]
     )
+
+
+def test_family_first_safe_preserves_wrong_family_target_and_safety_union() -> None:
+    rows = _rows()
+    rows[0]["family_priority_match"] = False
+    rows[1]["family_priority_match"] = False
+    rows.append(
+        _row(
+            key="gbif:family-expansion",
+            name="Papilio expansion",
+            priority=5,
+            family=True,
+            family_match=False,
+        )
+    )
+    source = build_family_geo_candidate_sets(rows)
+
+    plan = build_candidate_strategy_plans(
+        source,
+        strategy=FAMILY_FIRST_SAFE_STRATEGY,
+    )
+
+    target = plan.filter(pl.col("target_candidate")).row(0, named=True)
+    assert target["strategy_stage"] == "required_safety_union"
+    assert target["target_preserved"] is True
+    assert target["complete_union_preserved"] is True
+    assert set(plan["candidate_accepted_taxon_key"]) == set(
+        source["candidate_accepted_taxon_key"]
+    )
+    assert plan["strategy_stage"].to_list() == [
+        "family_priority_partition",
+        "family_priority_partition",
+        "required_safety_union",
+        "required_safety_union",
+        "family_expansion",
+        "complete_union_remainder",
+    ]
+    assert plan["candidate_accepted_taxon_key"].to_list() == [
+        "gbif:visual",
+        "gbif:family",
+        TARGET,
+        "gbif:geographic",
+        "gbif:family-expansion",
+        "gbif:remainder",
+    ]
+    assert not any(plan["family_changed_membership"].to_list())
+
+
+def test_family_first_safe_is_deterministic() -> None:
+    source = build_family_geo_candidate_sets(_rows())
+
+    first = build_candidate_strategy_plans(
+        source,
+        strategy=FAMILY_FIRST_SAFE_STRATEGY,
+    )
+    second = build_candidate_strategy_plans(
+        source,
+        strategy=FAMILY_FIRST_SAFE_STRATEGY,
+    )
+
+    assert first.equals(second)
+    assert first["strategy_plan_id"].n_unique() == 1
+    assert first["strategy_plan_id"][0] != build_candidate_strategy_plans(
+        source,
+        strategy=GEOGRAPHY_FIRST_STRATEGY,
+    )["strategy_plan_id"][0]
 
 
 def test_geography_first_is_deterministic_and_round_trips(tmp_path) -> None:
@@ -183,6 +250,7 @@ def _row(
     target: bool = False,
     geography: bool = False,
     family: bool = False,
+    family_match: bool | None = None,
     query: bool = False,
     visual: bool = False,
     safety_reasons: list[str] | None = None,
@@ -190,6 +258,7 @@ def _row(
     occurrence_support: int = 0,
 ) -> dict[str, object]:
     safety = safety_reasons or []
+    effective_family_match = family if family_match is None else family_match
     return {
         "run_id": "run-strategy",
         "flickr_query_id": "query-target",
@@ -213,7 +282,7 @@ def _row(
         "family_evidence_reason": None if family else "outside_family_priority",
         "family_evidence_rank": priority + 1 if family else None,
         "family_evidence_raw_score": 0.9 - priority / 10 if family else None,
-        "family_priority_match": family if family else None,
+        "family_priority_match": effective_family_match if family else None,
         "family_changed_membership": False,
         "geographic_evidence_status": "available" if geography else "unavailable",
         "geographic_evidence_reason": None if geography else "no_local_support",
