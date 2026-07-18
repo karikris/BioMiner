@@ -1,3 +1,12 @@
+from biominer.vision.bioclip_input_contract import (
+    BIOCLIP_VISUAL_INPUT_CONTRACT_VERSION,
+    DYNAMIC_POOL_VISUAL_MODE,
+    FULL_FRAME_BIOCLIP_VISUAL_INPUT_KINDS,
+    LEGACY_BIOCLIP_VISUAL_INPUT_KINDS,
+    LEGACY_OBJECT_VISUAL_MODE,
+    BioClipVisualInputContract,
+    bioclip_visual_input_contract,
+)
 from biominer.vision.gates import (
     BIOCLIP_GATE_MODE,
     BioClipGatePolicy,
@@ -57,13 +66,18 @@ from biominer.vision.target_full_frame import (
 
 __all__ = [
     "BIOCLIP_SCORE_INPUT_SCHEMA",
+    "BIOCLIP_VISUAL_INPUT_CONTRACT_VERSION",
+    "DYNAMIC_POOL_VISUAL_MODE",
     "FOCUSED_FULL_FRAME_KIND",
     "FULL_FRAME_ATTENTION_EVIDENCE_VERSION",
     "FULL_FRAME_ATTENTION_TRANSFORMATION_VERSION",
     "FULL_FRAME_ATTENTION_UNAVAILABLE_VERSION",
+    "FULL_FRAME_BIOCLIP_VISUAL_INPUT_KINDS",
     "MASKED_FULL_FRAME_KIND",
     "MASK_COVERAGE_BASIS_RASTERIZED_POLYGON",
     "MULTI_OBJECT_FULL_FRAME_KIND",
+    "LEGACY_BIOCLIP_VISUAL_INPUT_KINDS",
+    "LEGACY_OBJECT_VISUAL_MODE",
     "RAW_FULL_IMAGE_KIND",
     "RAW_FULL_IMAGE_TRANSFORMATION_FINGERPRINT",
     "TARGET_AWARE_VISUAL_MODE",
@@ -78,6 +92,7 @@ __all__ = [
     "AttentionRegion",
     "BIOCLIP_GATE_MODE",
     "BioClipGatePolicy",
+    "BioClipVisualInputContract",
     "EmbeddedTargetFullFramePlan",
     "FullFrameAttentionResult",
     "FullFrameAttentionVariant",
@@ -95,6 +110,7 @@ __all__ = [
     "TargetPreprocessingContract",
     "UnavailableAttentionVariant",
     "bioclip_score_input_decision",
+    "bioclip_visual_input_contract",
     "build_target_full_frame_plan",
     "encode_target_full_frame_plan",
     "decoded_image_content_hash",

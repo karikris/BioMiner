@@ -18,6 +18,14 @@ from biominer.bioclip.dynamic_pool_scores import (
     write_dynamic_pool_score_artifacts,
 )
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
+from biominer.vision.bioclip_input_contract import (
+    DYNAMIC_POOL_VISUAL_MODE,
+    bioclip_visual_input_contract,
+)
+from biominer.vision.full_frame_attention import (
+    FULL_FRAME_VISUAL_INPUT_VERSION,
+    RAW_FULL_IMAGE_KIND,
+)
 
 
 TARGET = "gbif:5131359"
@@ -44,12 +52,18 @@ def _row(
     **changes: object,
 ) -> dict[str, object]:
     local_available = local_score is not None
+    input_contract = bioclip_visual_input_contract(DYNAMIC_POOL_VISUAL_MODE)
     row: dict[str, object] = {
         "run_id": "run-20260718",
         "flickr_query_id": "query-papilio-demoleus",
         "flickr_photo_id": "flickr-photo-1",
         "organism_unit_id": "organism-unit-1",
         "visual_input_id": _sha("1"),
+        "visual_input_kind": RAW_FULL_IMAGE_KIND,
+        "visual_input_version": FULL_FRAME_VISUAL_INPUT_VERSION,
+        "visual_input_contract_version": input_contract.contract_version,
+        "visual_input_contract_fingerprint": input_contract.fingerprint,
+        "spatial_crop_applied": False,
         "scoring_stage": "initial",
         "query_route": "adult_field",
         "plan_id": f"dynamic-pool-plan:{'2' * 64}",
@@ -166,6 +180,9 @@ def test_score_schema_preserves_raw_components_and_pool_identities() -> None:
     assert {
         "plan_id",
         "candidate_set_id",
+        "visual_input_kind",
+        "visual_input_contract_fingerprint",
+        "spatial_crop_applied",
         "global_pool_ids",
         "local_pool_ids",
         "global_prototype_similarity",
@@ -260,6 +277,26 @@ def test_rejects_invalid_score_evidence(
 ) -> None:
     rows = _rows()
     rows[1].update(changes)
+    with pytest.raises(ValueError, match=message):
+        build_dynamic_pool_candidate_scores(rows)
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"visual_input_kind": "detector_crop"}, "not allowed"),
+        ({"spatial_crop_applied": True}, "forbids spatial crops"),
+        ({"visual_input_contract_fingerprint": _sha("f")}, "fingerprint mismatch"),
+        ({"visual_input_version": "legacy-crop-v1"}, "requires visual-input version"),
+    ],
+)
+def test_dynamic_pool_scores_fail_closed_on_non_full_frame_inputs(
+    changes: dict[str, object], message: str
+) -> None:
+    rows = _rows()
+    for row in rows:
+        row.update(changes)
+
     with pytest.raises(ValueError, match=message):
         build_dynamic_pool_candidate_scores(rows)
 

@@ -8,6 +8,10 @@ import pytest
 from biominer.vision import target_full_frame
 from biominer.detection.detector_base import DecodedImage
 from biominer.detection.policy import DetectionRunPolicy
+from biominer.vision.bioclip_input_contract import (
+    BIOCLIP_VISUAL_INPUT_CONTRACT_VERSION,
+    bioclip_visual_input_contract,
+)
 from biominer.vision.target_full_frame import (
     RAW_FULL_IMAGE_KIND,
     TARGET_AWARE_VISUAL_MODE,
@@ -109,6 +113,11 @@ def test_full_frame_plan_encodes_adult_and_larval_routes_once() -> None:
     assert TARGET_AWARE_VISUAL_MODE == "whole_image_reference_ensemble"
     assert RAW_FULL_IMAGE_KIND == "raw_full_image"
     assert plan.visual_mode == TARGET_AWARE_VISUAL_MODE
+    assert plan.visual_input_contract_version == BIOCLIP_VISUAL_INPUT_CONTRACT_VERSION
+    assert (
+        plan.visual_input_contract_fingerprint
+        == bioclip_visual_input_contract(TARGET_AWARE_VISUAL_MODE).fingerprint
+    )
     assert loaded_photo_ids == ["photo-1"]
     assert len(plan.visual_inputs) == 1
     assert [unit.route for unit in plan.scoring_units] == ["adult_field", "larval"]
@@ -147,6 +156,16 @@ def test_full_frame_plan_encodes_adult_and_larval_routes_once() -> None:
         "adult_field",
         "larval",
     }
+    with pytest.raises(ValueError, match="contract fingerprint mismatch"):
+        encode_target_full_frame_plan(
+            replace(
+                plan,
+                visual_input_contract_fingerprint="sha256:" + "f" * 64,
+            ),
+            encoder=RecordingEncoder(),
+            model_fingerprint=_MODEL_FINGERPRINT,
+            preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
+        )
     assert (
         len({reference.embedding_id for reference in embedded.scoring_unit_references})
         == 1
@@ -173,9 +192,7 @@ def test_full_frame_plan_reuses_unchanged_embeddings_and_encodes_only_misses() -
             _detection_row("photo-2", "det-2"),
         ],
         image_loader=lambda row: (
-            first_image
-            if row["flickr_photo_id"] == "photo-1"
-            else second_image
+            first_image if row["flickr_photo_id"] == "photo-1" else second_image
         ),
     )
     incremental_encoder = RecordingEncoder()

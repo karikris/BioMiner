@@ -11,7 +11,15 @@ import polars as pl
 
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage
-from biominer.vision.gates import BioClipGatePolicy, ScoreInputDecision, bioclip_score_input_decision
+from biominer.vision.bioclip_input_contract import (
+    LEGACY_OBJECT_VISUAL_MODE,
+    bioclip_visual_input_contract,
+)
+from biominer.vision.gates import (
+    BioClipGatePolicy,
+    ScoreInputDecision,
+    bioclip_score_input_decision,
+)
 
 
 BIOCLIP_SCORE_INPUT_SCHEMA: dict[str, pl.DataType] = {
@@ -65,7 +73,14 @@ def materialize_bioclip_score_inputs(
     crop_target_px: int = 336,
     batch_id: str = "",
     part_id: str = "",
+    visual_mode: str = LEGACY_OBJECT_VISUAL_MODE,
 ) -> MaterializedBioClipScoreInputs:
+    input_contract = bioclip_visual_input_contract(visual_mode)
+    if input_contract.input_family == "full_frame":
+        raise ValueError(
+            "target-aware and dynamic-pool BioCLIP modes must use the canonical "
+            "full-frame planner; the legacy score-input materializer is unavailable"
+        )
     active_gate_policy = gate_policy or BioClipGatePolicy()
     records_by_photo = {
         (str(row.get("source") or ""), str(row.get("flickr_photo_id") or "")): row
@@ -73,7 +88,10 @@ def materialize_bioclip_score_inputs(
     }
     root = Path(temp_dir)
     root.mkdir(parents=True, exist_ok=True)
-    materialized_dir = root / f".bioclip_score_inputs_{_safe_file_stem(batch_id or part_id or 'batch')}"
+    materialized_dir = (
+        root
+        / f".bioclip_score_inputs_{_safe_file_stem(batch_id or part_id or 'batch')}"
+    )
     if materialized_dir.exists():
         rmtree(materialized_dir)
     materialized_dir.mkdir(parents=True, exist_ok=True)
@@ -85,7 +103,10 @@ def materialize_bioclip_score_inputs(
             decision = bioclip_score_input_decision(detection, active_gate_policy)
             if not decision.should_score:
                 continue
-            key = (str(detection.get("source") or ""), str(detection.get("flickr_photo_id") or ""))
+            key = (
+                str(detection.get("source") or ""),
+                str(detection.get("flickr_photo_id") or ""),
+            )
             record = _canonical_record_for_detection(records_by_photo, key=key)
             image = image_by_photo.get(key)
             if image is None:
@@ -102,9 +123,19 @@ def materialize_bioclip_score_inputs(
                     crop_target_px=crop_target_px,
                 )
             elif decision.visual_input_kind == "whole_image":
-                data, width, height, crop_hash = image.data, image.width, image.height, _bytes_hash(image.data)
+                data, width, height, crop_hash = (
+                    image.data,
+                    image.width,
+                    image.height,
+                    _bytes_hash(image.data),
+                )
             else:
                 continue
+            input_contract.validate_input(
+                visual_input_kind=str(decision.visual_input_kind),
+                visual_input_version=None,
+                spatial_crop_applied=(decision.visual_input_kind != "whole_image"),
+            )
             visual_input_id = visual_input_id_for(
                 source=str(detection.get("source") or ""),
                 flickr_photo_id=str(detection.get("flickr_photo_id") or ""),
@@ -112,7 +143,10 @@ def materialize_bioclip_score_inputs(
                 visual_input_kind=str(decision.visual_input_kind),
                 crop_hash=crop_hash,
             )
-            path = materialized_dir / f"{len(rows):06d}_{_safe_file_stem(visual_input_id)}.ppm"
+            path = (
+                materialized_dir
+                / f"{len(rows):06d}_{_safe_file_stem(visual_input_id)}.ppm"
+            )
             path.write_bytes(_ppm_bytes(data, width=width, height=height))
             row = {
                 "source": str(detection.get("source") or ""),
@@ -133,7 +167,11 @@ def materialize_bioclip_score_inputs(
                 {
                     **detection,
                     **record,
-                    **_score_item_gate_fields(decision=decision, visual_input_id=visual_input_id, crop_hash=crop_hash),
+                    **_score_item_gate_fields(
+                        decision=decision,
+                        visual_input_id=visual_input_id,
+                        crop_hash=crop_hash,
+                    ),
                     "ablation_mode": str(decision.visual_input_kind),
                     "crop_hash": crop_hash,
                     "crop_path": path,
@@ -166,9 +204,12 @@ def visual_input_id_for(
         "visual_input_kind": visual_input_kind,
         "crop_hash": crop_hash,
     }
-    return "sha256:" + hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    )
 
 
 def score_item_gate_fields(
@@ -177,7 +218,9 @@ def score_item_gate_fields(
     visual_input_id: str,
     crop_hash: str,
 ) -> dict[str, str | None]:
-    return _score_item_gate_fields(decision=decision, visual_input_id=visual_input_id, crop_hash=crop_hash)
+    return _score_item_gate_fields(
+        decision=decision, visual_input_id=visual_input_id, crop_hash=crop_hash
+    )
 
 
 def _score_item_gate_fields(
@@ -209,7 +252,12 @@ def _detector_crop_bytes(
         padding_ratio=crop_padding_ratio,
         target_px=crop_target_px,
     )
-    return crop.encoded_bytes, crop.crop_width, crop.crop_height, str(detection.get("crop_hash") or crop.crop_hash)
+    return (
+        crop.encoded_bytes,
+        crop.crop_width,
+        crop.crop_height,
+        str(detection.get("crop_hash") or crop.crop_hash),
+    )
 
 
 def _canonical_record_for_detection(
@@ -220,7 +268,9 @@ def _canonical_record_for_detection(
     record = records_by_photo.get(key)
     if record is None:
         source, photo_id = key
-        raise ValueError(f"BioCLIP score input has no canonical source record: source={source!r}, flickr_photo_id={photo_id!r}")
+        raise ValueError(
+            f"BioCLIP score input has no canonical source record: source={source!r}, flickr_photo_id={photo_id!r}"
+        )
     return record
 
 
@@ -228,7 +278,9 @@ def _ensure_score_input_schema(frame: pl.DataFrame) -> pl.DataFrame:
     if frame.is_empty() and not frame.columns:
         return pl.DataFrame(schema=BIOCLIP_SCORE_INPUT_SCHEMA)
     expressions = [
-        pl.col(name).cast(dtype).alias(name) if name in frame.columns else pl.lit(None, dtype=dtype).alias(name)
+        pl.col(name).cast(dtype).alias(name)
+        if name in frame.columns
+        else pl.lit(None, dtype=dtype).alias(name)
         for name, dtype in BIOCLIP_SCORE_INPUT_SCHEMA.items()
     ]
     return frame.with_columns(expressions)
@@ -237,7 +289,9 @@ def _ensure_score_input_schema(frame: pl.DataFrame) -> pl.DataFrame:
 def _ppm_bytes(data: bytes, *, width: int, height: int) -> bytes:
     expected = width * height * 3
     if len(data) != expected:
-        raise ValueError(f"RGB score input bytes length {len(data)} does not match expected {expected}")
+        raise ValueError(
+            f"RGB score input bytes length {len(data)} does not match expected {expected}"
+        )
     return f"P6\n{width} {height}\n255\n".encode("ascii") + data
 
 
@@ -246,7 +300,10 @@ def _bytes_hash(data: bytes) -> str:
 
 
 def _safe_file_stem(value: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)[:96] or "score_input"
+    return (
+        "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)[:96]
+        or "score_input"
+    )
 
 
 __all__ = [
