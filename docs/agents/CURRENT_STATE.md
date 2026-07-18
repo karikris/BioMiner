@@ -10,8 +10,8 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `b1ae26d15e6b3c866ea57c5c8a972444a4860e0d`
-  (`feat(reports): report pool coverage shortfalls`)
+  `d6e03450bd301bba2ae3ea1e6ffcadb05059d8f9`
+  (`feat(bioclip): bound dynamic pool expansion`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -22,8 +22,9 @@ at the start of every task.
   schedules, per-k strategy metrics, hard-family-pruning counterfactual and
   fail-closed selection gate through Task 4.2.3. Phase 5 implements the
   immutable reference-pool policy, deterministic observation planner,
-  diversity/class balancing and coverage shortfalls through Task 5.1.4; Task
-  5.2 bounded uncertainty expansion is the next implementation boundary.
+  diversity/class balancing, coverage shortfalls, raw uncertainty evidence,
+  cached identity expansion and bounded stop decisions through Task 5.2.3.
+  Phase 6 Task 6.1 explicit Flickr detection and embedding is next.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -53,6 +54,11 @@ at the start of every task.
   - Task 5.1 pool policy/planner gate: 82 passed in 1.40 seconds;
   - Task 5.1 fixture round-trip: one plan, three independent members, two pool
     summaries and one complete coverage row with deterministic fingerprints;
+  - Task 5.2 final full regression: 2,816 passed in 106.31 seconds;
+  - Task 5.2 expansion/cache gate: 117 passed in 2.54 seconds;
+  - Task 5.2 fixture round-trip: a two-member initial plan retained both cached
+    identities, added three cached identities, invoked no encoder and stopped
+    at the mandatory rescore boundary;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
@@ -281,7 +287,7 @@ unavailable, and no live production improvement or scientific release is
 claimed.
 
 For the active dynamic-pooling goal, the next implementation boundary is Phase
-5 Task 5.2 bounded uncertainty expansion over cached embeddings. The
+6 Task 6.1 explicit Flickr detection and one-time full-frame embedding. The
 parallel family/geography union remains the intended candidate, but no strategy
 is selected or production-defaulted because only implementation-fixture
 evidence has run. No strategy is empirically superior, and no live dynamic

@@ -14,6 +14,7 @@ TASK_3_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_3_1_completion.json"
 TASK_4_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_4_1_completion.json"
 TASK_4_2_REPORT = ROOT / "reports/geo_dynamic_pooling/task_4_2_completion.json"
 TASK_5_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_5_1_completion.json"
+TASK_5_2_REPORT = ROOT / "reports/geo_dynamic_pooling/task_5_2_completion.json"
 PUSH_LEDGER = ROOT / "provenance/task_pushes.jsonl"
 
 
@@ -47,6 +48,10 @@ def _task_4_2_report() -> dict[str, object]:
 
 def _task_5_1_report() -> dict[str, object]:
     return json.loads(TASK_5_1_REPORT.read_text(encoding="utf-8"))
+
+
+def _task_5_2_report() -> dict[str, object]:
+    return json.loads(TASK_5_2_REPORT.read_text(encoding="utf-8"))
 
 
 def test_task_0_1_completion_records_exact_commits_and_green_gate() -> None:
@@ -428,6 +433,61 @@ def test_task_5_1_report_blocks_live_pool_and_release_claims() -> None:
     assert state["production_default_changed"] is False
     assert any("live dynamic reference pool" in claim for claim in blocked)
     assert any("prove taxon absence" in claim for claim in blocked)
+    assert any("occurrence release or production deployment" in claim for claim in blocked)
+    impact = report["githits_architecture_impact"]
+    assert impact["calls_made_for_task"] == 0
+    assert impact["direct_external_code_contribution"] == "none"
+
+
+def test_task_5_2_completion_records_bounded_cached_expansion() -> None:
+    report = _task_5_2_report()
+
+    assert report["task_id"] == "geo-pool-5.2"
+    assert report["status"] == "completed"
+    assert [item["commit"] for item in report["task_commits"]] == [
+        "fb80aa3bd0aff02149e70d31e3679ff69f67848a",
+        "b6d9af957d27ea0f6bb012e030be089d8435f437",
+        "d6e03450bd301bba2ae3ea1e6ffcadb05059d8f9",
+    ]
+    assert len(report["expansion_evidence"]["signals"]) == 11
+    fixture = report["fixture_round_trip"]
+    assert fixture["initial"]["members"] == 2
+    assert fixture["expanded"]["members"] == 5
+    assert fixture["cache_reuse"]["retained_reference_embeddings"] == 2
+    assert fixture["cache_reuse"]["added_reference_embeddings"] == 3
+    assert fixture["cache_reuse"]["encoder_invocations"] == 0
+    assert fixture["decisions"]["stop_reason"] == (
+        "round_complete_rescore_required"
+    )
+    assert report["gate"]["expansion_cache_suite"]["passed"] == 117
+    assert report["gate"]["full_regression"]["passed"] == 2816
+    assert report["gate"]["provenance"]["jsonl_records"] == 135
+
+
+def test_task_5_2_push_event_matches_report() -> None:
+    report = _task_5_2_report()
+    events = [
+        json.loads(line)
+        for line in PUSH_LEDGER.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    event = next(item for item in events if item["task_id"] == "geo-pool-5.2")
+
+    assert event["verified_remote_sha"] == report["push"]["verified_remote_sha"]
+    assert event["pushed_through_sha"] == report["push"]["pushed_through_sha"]
+    assert event["status"] == report["push"]["status"] == "verified"
+
+
+def test_task_5_2_report_blocks_live_science_and_release_claims() -> None:
+    report = _task_5_2_report()
+    state = report["selection_state"]
+    blocked = report["claims"]["blocked"]
+
+    assert state["live_expansion_executed"] is False
+    assert state["calibrated_probability_available"] is False
+    assert state["production_release_authorized"] is False
+    assert any("live Flickr image" in claim for claim in blocked)
+    assert any("calibrated confidence" in claim for claim in blocked)
     assert any("occurrence release or production deployment" in claim for claim in blocked)
     impact = report["githits_architecture_impact"]
     assert impact["calls_made_for_task"] == 0

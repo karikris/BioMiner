@@ -1,0 +1,221 @@
+{
+  "schema_version": "geo-dynamic-pooling-task-completion-v1.0.0",
+  "task_id": "geo-pool-5.2",
+  "title": "Add bounded dynamic uncertainty expansion over cached embeddings",
+  "status": "completed",
+  "completed_at": "2026-07-18T05:59:11Z",
+  "starting_sha": "5325af3c6e85371b1e77254e519a6e46c100f6e0",
+  "pushed_implementation_sha": "d6e03450bd301bba2ae3ea1e6ffcadb05059d8f9",
+  "task_commits": [
+    {
+      "subtask_id": "geo-pool-5.2.1",
+      "commit": "fb80aa3bd0aff02149e70d31e3679ff69f67848a",
+      "subject": "feat(bioclip): define pool expansion evidence"
+    },
+    {
+      "subtask_id": "geo-pool-5.2.2",
+      "commit": "b6d9af957d27ea0f6bb012e030be089d8435f437",
+      "subject": "perf(bioclip): expand cached reference pools"
+    },
+    {
+      "subtask_id": "geo-pool-5.2.3",
+      "commit": "d6e03450bd301bba2ae3ea1e6ffcadb05059d8f9",
+      "subject": "feat(bioclip): bound dynamic pool expansion"
+    }
+  ],
+  "expansion_evidence": {
+    "schema_version": "dynamic-pool-expansion-evidence-v1.0.0",
+    "signal_policy_schema_version": "dynamic-pool-expansion-signal-policy-v1.0.0",
+    "default_signal_policy_fingerprint": "sha256:a1b3ae1bb1485839859e909b8ac01cbf5f55c25aeaf541ab14e6efdb092887ab",
+    "signals": [
+      "small_family_margin",
+      "small_species_margin",
+      "global_local_disagreement",
+      "prototype_method_disagreement",
+      "visual_input_disagreement",
+      "insufficient_local_support",
+      "low_subject_area",
+      "strong_known_competitor",
+      "no_geo_global_fallback",
+      "out_of_distribution",
+      "route_domain_incompatible"
+    ],
+    "properties": [
+      "raw measurements and thresholds are explicitly uncalibrated",
+      "each absent signal has an exact unavailable reason",
+      "unavailable evidence never triggers expansion by itself",
+      "observed, unavailable and triggered signal sets are complete and canonical",
+      "signal and selection policy species-margin thresholds must agree",
+      "the complete evidence row and policy are semantically fingerprinted"
+    ]
+  },
+  "cached_expansion": {
+    "cache_reuse_schema_version": "dynamic-pool-expansion-cache-reuse-v1.0.0",
+    "semantics": [
+      "the API accepts no encoder and no embedding-vector payload",
+      "query embedding fingerprint remains identical across replacement plans",
+      "every retained and added reference embedding identity exists in the pinned reference geography index",
+      "all prior reference memberships survive immutable replacement",
+      "new membership rounds receive new pool and plan fingerprints",
+      "cache reuse records zero encoder invocations and false vector materialization"
+    ]
+  },
+  "bounded_decisions": {
+    "schema_version": "dynamic-pool-expansion-decision-v1.0.0",
+    "artifact": "dynamic_pool_expansion_decisions.parquet",
+    "controls": [
+      "maximum expansion rounds",
+      "uncertainty-expansion stage member limit",
+      "maximum total reference members",
+      "configured candidate-priority rank limit",
+      "mandatory target and complete safety-union eligibility",
+      "per-candidate per-round addition increment",
+      "deterministic round-robin additions",
+      "mandatory rescore boundary after each applied round"
+    ],
+    "stop_reasons": [
+      "round_complete_rescore_required",
+      "signals_clear",
+      "maximum_rounds_reached",
+      "stage_budget_exhausted",
+      "total_budget_exhausted",
+      "no_cached_reference_additions"
+    ],
+    "properties": [
+      "every decision binds prior and replacement plan identities, evidence and both policies",
+      "added candidate, reference media, observation and embedding identities remain explicit",
+      "candidate counts prove the configured per-candidate increment",
+      "stopped decisions contain no replacement identity or added references",
+      "no expansion decision authorizes production release"
+    ]
+  },
+  "fixture_round_trip": {
+    "evidence_class": "deterministic implementation fixture; not live score, accuracy, throughput or coverage evidence",
+    "selection_policy_fingerprint": "sha256:3f5ec2ff6e510f6f4174b48264a7bac2f7d801ee88f6f793bad76e162faca87a",
+    "signal_policy_fingerprint": "sha256:a1b3ae1bb1485839859e909b8ac01cbf5f55c25aeaf541ab14e6efdb092887ab",
+    "initial": {
+      "plans": 1,
+      "members": 2,
+      "summaries": 2,
+      "fingerprint": "sha256:8483cfec9c50713def5ea10b63f6a97f8677e046ec2b1d4eade569601b979b75"
+    },
+    "evidence": {
+      "rows": 1,
+      "triggered_signals": ["small_species_margin"],
+      "fingerprint": "sha256:e8013d9d20fe030082659f0b64d4a1ec2327049dab23e43fea8d04c834711429"
+    },
+    "expanded": {
+      "plans": 1,
+      "members": 5,
+      "round_0_members": 2,
+      "round_1_members": 3,
+      "summaries": 5,
+      "fingerprint": "sha256:934943fdda9a5ba2caf9dec571169cb45ee20ac5727b41aba58e75a02be07359"
+    },
+    "cache_reuse": {
+      "rows": 1,
+      "retained_reference_embeddings": 2,
+      "added_reference_embeddings": 3,
+      "encoder_invocations": 0,
+      "embedding_vectors_materialized": false,
+      "fingerprint": "sha256:196dea264cf6885096edf8a1c58ba3eb3f306994f3725075fee7bb351ca3b5f6"
+    },
+    "decisions": {
+      "rows": 1,
+      "action": "expand",
+      "stop_reason": "round_complete_rescore_required",
+      "added_references": 3,
+      "fingerprint": "sha256:f4057a93c4ac6dbfd3a529ee8422573af165efbf097aa6476144f16685134efb"
+    },
+    "counterexamples": [
+      "unavailable raw signals produced no automatic expansion",
+      "clear signals stopped without a replacement plan",
+      "round, stage and total budget exhaustion each stopped explicitly",
+      "a fully consumed cached index stopped with no_cached_reference_additions",
+      "candidate-rank one and increment one admitted exactly one added target reference",
+      "a post-budget global-only replacement recomputed local availability and its exact reason",
+      "mismatched signal and selection species-margin thresholds failed closed"
+    ]
+  },
+  "gate": {
+    "expansion_cache_suite": {
+      "command": "uv run pytest -q tests/test_dynamic_pool_expansion.py tests/test_dynamic_pool_planner.py tests/test_dynamic_pool_policy.py tests/test_dynamic_pool_contracts.py tests/test_dynamic_pool_scores.py tests/test_reference_geography_index.py tests/test_global_reference_anchors.py",
+      "result": "passed",
+      "passed": 117,
+      "duration_seconds": 2.54
+    },
+    "full_regression": {
+      "command": "uv run pytest -q",
+      "result": "passed",
+      "passed": 2816,
+      "duration_seconds": 106.31,
+      "tested_implementation_sha": "d6e03450bd301bba2ae3ea1e6ffcadb05059d8f9"
+    },
+    "lint": {
+      "command": "uvx ruff check .",
+      "result": "passed"
+    },
+    "provenance": {
+      "result": "passed",
+      "jsonl_records": 135,
+      "required_records": [
+        "geo-pool-5.2",
+        "geo-pool-5.2.1",
+        "geo-pool-5.2.2",
+        "geo-pool-5.2.3"
+      ],
+      "githits_status": "all_four_skipped_user_directive_with_null_solution_ids_and_no_invented_external_results"
+    },
+    "trailers": {
+      "result": "passed",
+      "commits_checked": 3,
+      "required_field_matches": 12,
+      "origin_chain_verified": true
+    }
+  },
+  "githits_architecture_impact": {
+    "direct_external_code_contribution": "none",
+    "calls_made_for_task": 0,
+    "availability": "The user prohibited further GitHits calls for the remainder of the active goal.",
+    "material_architecture_contribution": "none from GitHits",
+    "first_party_basis": [
+      "Phase 0 immutable dynamic-pooling ADR and artifact contracts",
+      "Task 5.1 policy, deterministic planner and cached embedding identities",
+      "BioMiner raw-score, semantic-fingerprint and fail-closed release conventions"
+    ],
+    "assessment": "Four skipped_user_directive records preserve task/subtask provenance without a call. No GitHits repository, solution, result, code, prose or architecture is claimed."
+  },
+  "selection_state": {
+    "candidate_strategy_selected": null,
+    "production_default_changed": false,
+    "live_expansion_executed": false,
+    "calibrated_probability_available": false,
+    "production_release_authorized": false,
+    "reason": "Only deterministic expansion fixtures ran; no live Flickr or reference-bank score triggered an expansion."
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "d6e03450bd301bba2ae3ea1e6ffcadb05059d8f9",
+    "verified_remote_sha": "d6e03450bd301bba2ae3ea1e6ffcadb05059d8f9",
+    "verified_at": "2026-07-18T05:59:11Z",
+    "status": "verified"
+  },
+  "claims": {
+    "allowed": [
+      "Task 5.2 implements deterministic raw expansion evidence, cached identity selection and bounded stop decisions.",
+      "Tests prove the expansion API has no encoder/vector input and records zero encoder invocations.",
+      "Fixture replacement retained two memberships and added three cached reference identities under explicit budgets.",
+      "The full software regression and repository-wide lint gates pass."
+    ],
+    "blocked": [
+      "The fixture proves live accuracy, calibration, statistical support, throughput, memory savings or reference coverage.",
+      "A live Flickr image or production reference pool was expanded or rescored.",
+      "Raw margin clearance is calibrated confidence or taxonomic verification.",
+      "Missing geography or local support proves taxon absence.",
+      "A candidate strategy is selected or empirically superior.",
+      "Human verification, occurrence release or production deployment is complete."
+    ]
+  },
+  "completion_record_commit": "self"
+}
