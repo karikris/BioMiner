@@ -70,6 +70,13 @@ unavoidable overlap.
   separate.
 - Target-aware modes retain their candidate and full-frame contracts; never
   silently substitute legacy hierarchy pruning or crops.
+- Downstream handoffs are immutable, versioned artifacts. Pin exact TaxaLens
+  and ButterflyLens commits; never consume a dirty sibling worktree or move a
+  compatibility pin silently.
+- Keep candidate evidence, model evidence, human review, quality estimates,
+  and release-ready occurrence-candidate maturity separate. Review alone is
+  not occurrence release, and unavailable or unrun evidence is not false or
+  zero evidence.
 - Missing evidence remains explicit; release fails closed.
 
 Current direction: adaptive GBIF fast-start → provisional scoring → mandatory
