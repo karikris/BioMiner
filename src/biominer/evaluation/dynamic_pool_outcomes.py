@@ -14,11 +14,13 @@ from biominer.evaluation.flickr_release import (
     FlickrReleaseDecision,
     FlickrReleaseState,
 )
+from biominer.ml.dynamic_pool_thresholds import SCREENING_CANDIDATE_LABEL
 
 
 DYNAMIC_POOL_OUTCOME_EVIDENCE_VERSION = "dynamic-pool-outcome-evidence-v1.0.0"
 HUMAN_REVIEWED_RELEASE_SCHEMA_VERSION = "human-reviewed-release-lane-v1.0.0"
 HUMAN_REVIEWED_RELEASE_LABEL = "human_reviewed_release_candidate"
+AUDITED_SCREENING_CANDIDATE_SCHEMA_VERSION = "audited-screening-candidate-lane-v1.0.0"
 SCREENING_THRESHOLD_STATUSES = frozenset({"not_evaluated", "selected", "infeasible"})
 CONFLICT_STATUSES = frozenset({"not_required", "resolved", "pending", "unresolved"})
 HUMAN_REVIEW_DECISIONS = frozenset({"include", "exclude", "uncertain"})
@@ -51,6 +53,46 @@ HUMAN_REVIEWED_RELEASE_SCHEMA: dict[str, pl.DataType] = {
     "calibrator_fingerprint": pl.String,
     "split_fingerprint": pl.String,
     "screening_threshold_selection_fingerprint": pl.String,
+}
+
+AUDITED_SCREENING_CANDIDATE_SCHEMA: dict[str, pl.DataType] = {
+    "schema_version": pl.String,
+    "lane_fingerprint": pl.String,
+    "lane_row_fingerprint": pl.String,
+    "source_evidence_fingerprint": pl.String,
+    "outcome_lane": pl.String,
+    "outcome_label": pl.String,
+    "item_id": pl.String,
+    "source_record_id": pl.String,
+    "candidate_species_key": pl.String,
+    "route": pl.String,
+    "source_image_sha256": pl.String,
+    "human_review_decision": pl.String,
+    "review_source_image_sha256": pl.String,
+    "conflict_status": pl.String,
+    "human_reviewed": pl.Boolean,
+    "human_review_required_before_release": pl.Boolean,
+    "calibrated_supported_probability": pl.Float64,
+    "screening_threshold": pl.Float64,
+    "screening_threshold_status": pl.String,
+    "screening_threshold_selection_fingerprint": pl.String,
+    "route_compatible": pl.Boolean,
+    "reference_coverage_sufficient": pl.Boolean,
+    "geographic_evidence_sufficient": pl.Boolean,
+    "visual_detail_sufficient": pl.Boolean,
+    "domain_negative_absent": pl.Boolean,
+    "out_of_distribution_absent": pl.Boolean,
+    "screening_supported": pl.Boolean,
+    "screening_only": pl.Boolean,
+    "occurrence_claim_supported": pl.Boolean,
+    "eligible_for_final_occurrence_dataset": pl.Boolean,
+    "release_state": pl.String,
+    "release_reasons": pl.List(pl.String),
+    "release_authorized": pl.Boolean,
+    "model_evidence_authorizes_release": pl.Boolean,
+    "evidence_model_fingerprint": pl.String,
+    "calibrator_fingerprint": pl.String,
+    "split_fingerprint": pl.String,
 }
 
 
@@ -338,6 +380,103 @@ def validate_human_reviewed_release_set(table: pl.DataFrame) -> None:
     validate_verified_flickr_export(table)
 
 
+def project_audited_screening_candidates(
+    evidence: Sequence[DynamicPoolOutcomeEvidence],
+) -> DynamicPoolLaneProjection:
+    """Project unreviewed threshold-passing rows as screening candidates only."""
+
+    items = _normalized_evidence(evidence)
+    selected = tuple(item for item in items if _screening_lane_eligible(item))
+    semantic_rows = [_screening_candidate_row_base(item) for item in selected]
+    row_fingerprints = [canonical_semantic_fingerprint(row) for row in semantic_rows]
+    lane_fingerprint = canonical_semantic_fingerprint(
+        {
+            "schema_version": AUDITED_SCREENING_CANDIDATE_SCHEMA_VERSION,
+            "source_evidence_fingerprints": [item.fingerprint for item in items],
+            "projected_row_fingerprints": row_fingerprints,
+            "selection_rule": "unreviewed_audited_threshold_and_quality_gates_passed",
+            "outcome_label": SCREENING_CANDIDATE_LABEL,
+            "occurrence_release_authorized": False,
+        }
+    )
+    rows = [
+        {
+            "schema_version": AUDITED_SCREENING_CANDIDATE_SCHEMA_VERSION,
+            "lane_fingerprint": lane_fingerprint,
+            "lane_row_fingerprint": row_fingerprint,
+            **base,
+        }
+        for base, row_fingerprint in zip(semantic_rows, row_fingerprints, strict=True)
+    ]
+    table = (
+        pl.DataFrame(
+            rows,
+            schema=AUDITED_SCREENING_CANDIDATE_SCHEMA,
+            strict=True,
+        ).sort("item_id")
+        if rows
+        else pl.DataFrame(schema=AUDITED_SCREENING_CANDIDATE_SCHEMA)
+    )
+    validate_audited_screening_candidates(table)
+    return DynamicPoolLaneProjection(
+        table=table,
+        lane_fingerprint=lane_fingerprint,
+        source_item_count=len(items),
+        projected_item_count=table.height,
+    )
+
+
+def validate_audited_screening_candidates(table: pl.DataFrame) -> None:
+    """Reject language or authority drift in the unreviewed screening lane."""
+
+    if not isinstance(table, pl.DataFrame):
+        raise TypeError("screening candidate set must be a Polars DataFrame")
+    if table.schema != AUDITED_SCREENING_CANDIDATE_SCHEMA:
+        raise ValueError("screening candidate schema does not match contract")
+    if not table.height:
+        return
+    if not table.equals(table.sort("item_id")):
+        raise ValueError("screening candidate set is not sorted")
+    if table["item_id"].n_unique() != table.height:
+        raise ValueError("screening candidate item IDs must be unique")
+    if table.filter(
+        (pl.col("schema_version") != AUDITED_SCREENING_CANDIDATE_SCHEMA_VERSION)
+        | (pl.col("outcome_lane") != "statistical_screening")
+        | (pl.col("outcome_label") != SCREENING_CANDIDATE_LABEL)
+        | pl.col("human_review_decision").is_not_null()
+        | pl.col("review_source_image_sha256").is_not_null()
+        | pl.col("human_reviewed")
+        | ~pl.col("human_review_required_before_release")
+        | (pl.col("screening_threshold_status") != "selected")
+        | (pl.col("calibrated_supported_probability") < pl.col("screening_threshold"))
+        | ~pl.col("route_compatible")
+        | ~pl.col("reference_coverage_sufficient")
+        | ~pl.col("geographic_evidence_sufficient")
+        | ~pl.col("visual_detail_sufficient")
+        | ~pl.col("domain_negative_absent")
+        | ~pl.col("out_of_distribution_absent")
+        | ~pl.col("screening_supported")
+        | ~pl.col("screening_only")
+        | pl.col("occurrence_claim_supported")
+        | pl.col("eligible_for_final_occurrence_dataset")
+        | (pl.col("release_state") != "excluded")
+        | pl.col("release_authorized")
+        | pl.col("model_evidence_authorizes_release")
+    ).height:
+        raise ValueError("screening candidate crossed its evidence boundary")
+    for row in table.iter_rows(named=True):
+        base = {
+            field: row[field]
+            for field in AUDITED_SCREENING_CANDIDATE_SCHEMA
+            if field
+            not in {"schema_version", "lane_fingerprint", "lane_row_fingerprint"}
+        }
+        if row["lane_row_fingerprint"] != canonical_semantic_fingerprint(base):
+            raise ValueError("screening candidate row fingerprint mismatch")
+    if table["lane_fingerprint"].n_unique() != 1:
+        raise ValueError("screening candidate set has mixed lane fingerprints")
+
+
 def _human_release_row_base(item: DynamicPoolOutcomeEvidence) -> dict[str, object]:
     assert item.human_review_decision == "include"
     assert item.review_decision_fingerprint is not None
@@ -372,6 +511,56 @@ def _human_release_row_base(item: DynamicPoolOutcomeEvidence) -> dict[str, objec
     }
 
 
+def _screening_candidate_row_base(
+    item: DynamicPoolOutcomeEvidence,
+) -> dict[str, object]:
+    assert item.human_review_decision is None
+    assert item.calibrated_supported_probability is not None
+    assert item.screening_threshold is not None
+    assert item.screening_threshold_selection_fingerprint is not None
+    return {
+        "source_evidence_fingerprint": item.fingerprint,
+        "outcome_lane": "statistical_screening",
+        "outcome_label": SCREENING_CANDIDATE_LABEL,
+        "item_id": item.item_id,
+        "source_record_id": item.source_record_id,
+        "candidate_species_key": item.candidate_species_key,
+        "route": item.route,
+        "source_image_sha256": item.source_image_sha256,
+        "human_review_decision": None,
+        "review_source_image_sha256": None,
+        "conflict_status": item.conflict_status,
+        "human_reviewed": False,
+        "human_review_required_before_release": True,
+        "calibrated_supported_probability": item.calibrated_supported_probability,
+        "screening_threshold": item.screening_threshold,
+        "screening_threshold_status": item.screening_threshold_status,
+        "screening_threshold_selection_fingerprint": (
+            item.screening_threshold_selection_fingerprint
+        ),
+        "route_compatible": item.route_compatible,
+        "reference_coverage_sufficient": item.reference_coverage_sufficient,
+        "geographic_evidence_sufficient": item.geographic_evidence_sufficient,
+        "visual_detail_sufficient": item.visual_detail_sufficient,
+        "domain_negative_absent": item.domain_negative_absent,
+        "out_of_distribution_absent": item.out_of_distribution_absent,
+        "screening_supported": True,
+        "screening_only": True,
+        "occurrence_claim_supported": False,
+        "eligible_for_final_occurrence_dataset": False,
+        "release_state": "excluded",
+        "release_reasons": [
+            "human_review_missing",
+            "screening_only_not_occurrence_release",
+        ],
+        "release_authorized": False,
+        "model_evidence_authorizes_release": False,
+        "evidence_model_fingerprint": item.evidence_model_fingerprint,
+        "calibrator_fingerprint": item.calibrator_fingerprint,
+        "split_fingerprint": item.split_fingerprint,
+    }
+
+
 def _release_lane_eligible(item: DynamicPoolOutcomeEvidence) -> bool:
     return bool(
         item.human_review_decision == "include"
@@ -382,6 +571,28 @@ def _release_lane_eligible(item: DynamicPoolOutcomeEvidence) -> bool:
         and item.release_decision.state is FlickrReleaseState.ELIGIBLE
         and item.release_decision.eligible_for_final_occurrence_dataset
         and not item.release_decision.reasons
+    )
+
+
+def _screening_lane_eligible(item: DynamicPoolOutcomeEvidence) -> bool:
+    return bool(
+        item.human_review_decision is None
+        and item.review_decision_fingerprint is None
+        and item.review_source_image_sha256 is None
+        and item.screening_threshold_status == "selected"
+        and item.screening_threshold_selection_fingerprint is not None
+        and item.screening_threshold is not None
+        and item.calibrated_supported_probability is not None
+        and item.calibrated_supported_probability >= item.screening_threshold
+        and item.route_compatible
+        and item.reference_coverage_sufficient
+        and item.geographic_evidence_sufficient
+        and item.visual_detail_sufficient
+        and item.domain_negative_absent
+        and item.out_of_distribution_absent
+        and not item.occurrence_claim_supported
+        and item.release_decision.state is FlickrReleaseState.EXCLUDED
+        and not item.release_decision.eligible_for_final_occurrence_dataset
     )
 
 
@@ -458,6 +669,8 @@ def _optional_probability(value: object, *, field: str) -> float | None:
 
 
 __all__ = [
+    "AUDITED_SCREENING_CANDIDATE_SCHEMA",
+    "AUDITED_SCREENING_CANDIDATE_SCHEMA_VERSION",
     "CONFLICT_STATUSES",
     "DYNAMIC_POOL_OUTCOME_EVIDENCE_VERSION",
     "HUMAN_REVIEWED_RELEASE_LABEL",
@@ -467,6 +680,8 @@ __all__ = [
     "SCREENING_THRESHOLD_STATUSES",
     "DynamicPoolLaneProjection",
     "DynamicPoolOutcomeEvidence",
+    "project_audited_screening_candidates",
     "project_human_reviewed_release_set",
+    "validate_audited_screening_candidates",
     "validate_human_reviewed_release_set",
 ]
