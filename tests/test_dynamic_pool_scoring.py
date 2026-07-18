@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import inspect
 
 import pytest
 
+from biominer.bioclip import dynamic_pool_compute
+from biominer.bioclip.dynamic_pool_compute import (
+    build_dynamic_vector_scoring_work,
+    execute_dynamic_vector_scoring,
+    validate_dynamic_vector_scoring_result,
+    validate_dynamic_vector_scoring_work,
+)
 from biominer.bioclip.dynamic_pool_fusion import (
     DYNAMIC_SCORE_COMPONENT_SET_VERSION,
     DYNAMIC_SCORE_COMPONENT_VERSION,
@@ -40,6 +48,8 @@ from biominer.bioclip.matrix_cache import (
     FamilyPrototypeVector,
     PoolReferenceVector,
 )
+from biominer.common.semantic_hash import canonical_semantic_fingerprint
+from biominer.vision.target_full_frame import RawFullFrameEmbedding
 
 
 _MODEL_FINGERPRINT = "sha256:" + "a" * 64
@@ -869,6 +879,132 @@ def test_candidate_ranking_is_deterministic_and_validator_rejects_drift() -> Non
         )
 
 
+def test_vector_scoring_stage_consumes_cached_vectors_without_encoder_or_images() -> (
+    None
+):
+    work = _vector_work()
+
+    first = execute_dynamic_vector_scoring(work)
+    second = execute_dynamic_vector_scoring(work)
+
+    assert first == second
+    assert tuple(inspect.signature(execute_dynamic_vector_scoring).parameters) == (
+        "work",
+    )
+    assert not hasattr(work, "encoder")
+    assert not hasattr(work, "image")
+    assert first.encoder_invocations == 0
+    assert first.image_materializations == 0
+    assert first.cached_query_vectors_consumed == 1
+    assert first.source_embedding_id == work.source_embedding.embedding_id
+    assert first.family_evidence.scores[0].raw_similarity == pytest.approx(1.0)
+    assert first.global_evidence.scores[0].prototype_similarity == pytest.approx(1.0)
+    assert len(first.fusion_scores.scores) == 8
+    assert len(first.rankings.method_rankings) == 4
+    assert first.result_fingerprint.startswith("sha256:")
+
+
+def test_vector_scoring_execution_invokes_each_matrix_scorer_once(monkeypatch) -> None:
+    calls = {"family": 0, "global": 0, "local": 0}
+    original_family = dynamic_pool_compute.score_family_evidence
+    original_global = dynamic_pool_compute.score_global_reference_evidence
+    original_local = dynamic_pool_compute.score_local_reference_evidence
+
+    def counted_family(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202 - test spy.
+        calls["family"] += 1
+        return original_family(*args, **kwargs)
+
+    def counted_global(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202 - test spy.
+        calls["global"] += 1
+        return original_global(*args, **kwargs)
+
+    def counted_local(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202 - test spy.
+        calls["local"] += 1
+        return original_local(*args, **kwargs)
+
+    monkeypatch.setattr(dynamic_pool_compute, "score_family_evidence", counted_family)
+    monkeypatch.setattr(
+        dynamic_pool_compute,
+        "score_global_reference_evidence",
+        counted_global,
+    )
+    monkeypatch.setattr(
+        dynamic_pool_compute,
+        "score_local_reference_evidence",
+        counted_local,
+    )
+
+    execute_dynamic_vector_scoring(_vector_work())
+
+    assert calls == {"family": 1, "global": 1, "local": 1}
+
+
+def test_vector_scoring_work_normalizes_cache_vector_and_pool_order() -> None:
+    candidate_matrix, global_pools = _global_inputs()
+    local_pools = _local_inputs()
+
+    first = build_dynamic_vector_scoring_work(
+        _cached_embedding(embedding=(3.0, 4.0)),
+        query_id="cached-query:1",
+        route="adult_field",
+        family_matrix=_family_matrix(),
+        candidate_matrix=candidate_matrix,
+        global_pools=global_pools,
+        local_pools=local_pools,
+        linear_parameters=_linear_parameters(),
+    )
+    second = build_dynamic_vector_scoring_work(
+        _cached_embedding(embedding=(3.0, 4.0)),
+        query_id="cached-query:1",
+        route="adult_field",
+        family_matrix=_family_matrix(),
+        candidate_matrix=candidate_matrix,
+        global_pools=tuple(reversed(global_pools)),
+        local_pools=tuple(reversed(local_pools)),
+        linear_parameters=_linear_parameters(),
+    )
+
+    assert first == second
+    assert first.query.embedding == pytest.approx((0.6, 0.8))
+    assert first.query.query_embedding_fingerprint != (
+        first.source_embedding.embedding_fingerprint
+    )
+    assert first.work_fingerprint.startswith("sha256:")
+    validate_dynamic_vector_scoring_work(first)
+
+
+def test_vector_scoring_boundary_rejects_source_query_and_result_drift() -> None:
+    work = _vector_work()
+
+    with pytest.raises(ValueError, match="cached embedding fingerprint mismatch"):
+        build_dynamic_vector_scoring_work(
+            replace(
+                work.source_embedding,
+                embedding_fingerprint="sha256:" + "f" * 64,
+            ),
+            query_id=work.query.query_id,
+            route=work.query.route,
+            family_matrix=work.family_matrix,
+            candidate_matrix=work.candidate_matrix,
+            global_pools=work.global_pools,
+            local_pools=work.local_pools,
+            linear_parameters=work.linear_parameters,
+        )
+    drifted_query = replace(
+        work.query,
+        embedding=(0.0, 1.0),
+        query_fingerprint=None,
+    )
+    with pytest.raises(ValueError, match="query differs from cached embedding"):
+        validate_dynamic_vector_scoring_work(replace(work, query=drifted_query))
+
+    result = execute_dynamic_vector_scoring(work)
+    with pytest.raises(ValueError, match="result does not match its work"):
+        validate_dynamic_vector_scoring_result(
+            replace(result, encoder_invocations=1),
+        )
+
+
 def _query() -> RawScoringQuery:
     return RawScoringQuery(
         query_id="flickr-embedding:query",
@@ -919,6 +1055,51 @@ def _fusion_scores(
         *_component_inputs(local_inputs=local_inputs)
     )
     return evaluate_raw_fusion_methods(components, _linear_parameters())
+
+
+def _vector_work():
+    candidate_matrix, global_pools = _global_inputs()
+    return build_dynamic_vector_scoring_work(
+        _cached_embedding(),
+        query_id="cached-query:1",
+        route="adult_field",
+        family_matrix=_family_matrix(),
+        candidate_matrix=candidate_matrix,
+        global_pools=global_pools,
+        local_pools=_local_inputs(),
+        linear_parameters=_linear_parameters(),
+    )
+
+
+def _cached_embedding(
+    *,
+    embedding: tuple[float, ...] = (1.0, 0.0),
+) -> RawFullFrameEmbedding:
+    embedding_id = "sha256:" + "1" * 64
+    embedding_version = "target-full-frame-embedding-v3"
+    embedding_fingerprint = canonical_semantic_fingerprint(
+        {
+            "embedding": embedding,
+            "embedding_id": embedding_id,
+            "embedding_version": embedding_version,
+        }
+    )
+    return RawFullFrameEmbedding(
+        embedding_id=embedding_id,
+        embedding_version=embedding_version,
+        embedding_fingerprint=embedding_fingerprint,
+        visual_input_id="sha256:" + "2" * 64,
+        visual_input_kind="focused_full_frame",
+        raw_image_content_hash="sha256:" + "3" * 64,
+        transformation_fingerprint="sha256:" + "4" * 64,
+        model_fingerprint=_MODEL_FINGERPRINT,
+        image_resize_mode="longest",
+        preprocessing_contract_fingerprint="sha256:" + "5" * 64,
+        preprocessing_fingerprint="sha256:" + "6" * 64,
+        embedding_dimension=len(embedding),
+        embedding=embedding,
+        embedding_norm=sum(value * value for value in embedding) ** 0.5,
+    )
 
 
 def _family_matrix(
