@@ -26,6 +26,9 @@ RAW_FAMILY_EVIDENCE_SET_VERSION = "raw-family-evidence-set-v1"
 GLOBAL_REFERENCE_POOL_INPUT_VERSION = "global-reference-pool-input-v1"
 RAW_GLOBAL_REFERENCE_EVIDENCE_VERSION = "raw-global-reference-evidence-v1"
 RAW_GLOBAL_REFERENCE_EVIDENCE_SET_VERSION = "raw-global-reference-evidence-set-v1"
+LOCAL_REFERENCE_POOL_INPUT_VERSION = "local-reference-pool-input-v1"
+RAW_LOCAL_REFERENCE_EVIDENCE_VERSION = "raw-local-reference-evidence-v1"
+RAW_LOCAL_REFERENCE_EVIDENCE_SET_VERSION = "raw-local-reference-evidence-set-v1"
 
 _VISUAL_INPUT_KINDS = frozenset(
     {
@@ -227,6 +230,175 @@ class RawGlobalReferenceEvidenceSet:
     score_set_fingerprint: str
 
 
+@dataclass(frozen=True, slots=True)
+class LocalReferencePoolInput:
+    """Available local pool or exact local-unavailable evidence for one candidate."""
+
+    candidate_accepted_taxon_key: str
+    candidate_scientific_name: str
+    local_pool_status: str
+    local_pool_unavailable_reason: str | None
+    pool_matrix: CachedVectorMatrix | None
+    configured_reference_count: int
+    configured_top_k: int
+    input_fingerprint: str | None = None
+
+    def __post_init__(self) -> None:
+        candidate_key = _required_text(
+            self.candidate_accepted_taxon_key,
+            field="candidate_accepted_taxon_key",
+        )
+        scientific_name = _required_text(
+            self.candidate_scientific_name,
+            field="candidate_scientific_name",
+        )
+        status = _required_text(self.local_pool_status, field="local_pool_status")
+        if status not in {"available", "unavailable"}:
+            raise ValueError("unsupported local_pool_status")
+        reason = _optional_text(
+            self.local_pool_unavailable_reason,
+            field="local_pool_unavailable_reason",
+        )
+        if status == "available":
+            if not isinstance(self.pool_matrix, CachedVectorMatrix):
+                raise ValueError("available local pool requires a matrix")
+            if reason is not None:
+                raise ValueError(
+                    "available local pool cannot have an unavailable reason"
+                )
+            if self.pool_matrix.matrix_kind != "dynamic_reference_pool":
+                raise ValueError("local pool matrix has the wrong matrix kind")
+            if self.pool_matrix.partition in {"global", "not_applicable"}:
+                raise ValueError("available local pool requires a geographic scope")
+            if self.pool_matrix.subject_id != candidate_key:
+                raise ValueError("local pool matrix is bound to another candidate")
+        elif self.pool_matrix is not None or reason is None:
+            raise ValueError(
+                "unavailable local pool requires no matrix and an exact reason"
+            )
+        configured_count = _nonnegative_integer(
+            self.configured_reference_count,
+            field="configured_reference_count",
+        )
+        configured_top_k = _positive_integer(
+            self.configured_top_k,
+            field="configured_top_k",
+        )
+        base = {
+            "schema_version": LOCAL_REFERENCE_POOL_INPUT_VERSION,
+            "candidate_accepted_taxon_key": candidate_key,
+            "candidate_scientific_name": scientific_name,
+            "local_pool_status": status,
+            "local_pool_unavailable_reason": reason,
+            "pool_matrix_signature": (
+                self.pool_matrix.matrix_signature
+                if self.pool_matrix is not None
+                else None
+            ),
+            "pool_membership_fingerprint": (
+                self.pool_matrix.source_fingerprint
+                if self.pool_matrix is not None
+                else None
+            ),
+            "geographic_scope": (
+                self.pool_matrix.partition if self.pool_matrix is not None else None
+            ),
+            "configured_reference_count": configured_count,
+            "configured_top_k": configured_top_k,
+        }
+        fingerprint = canonical_semantic_fingerprint(base)
+        if (
+            self.input_fingerprint is not None
+            and _sha256(
+                self.input_fingerprint,
+                field="input_fingerprint",
+            )
+            != fingerprint
+        ):
+            raise ValueError("input_fingerprint does not match local pool input")
+        object.__setattr__(self, "candidate_accepted_taxon_key", candidate_key)
+        object.__setattr__(self, "candidate_scientific_name", scientific_name)
+        object.__setattr__(self, "local_pool_status", status)
+        object.__setattr__(self, "local_pool_unavailable_reason", reason)
+        object.__setattr__(self, "configured_reference_count", configured_count)
+        object.__setattr__(self, "configured_top_k", configured_top_k)
+        object.__setattr__(self, "input_fingerprint", fingerprint)
+
+
+@dataclass(frozen=True, slots=True)
+class RawLocalReferenceEvidence:
+    """Raw geographic evidence, retaining unavailable state without substitution."""
+
+    schema_version: str
+    query_id: str
+    candidate_accepted_taxon_key: str
+    candidate_scientific_name: str
+    candidate_matrix_signature: str
+    pool_matrix_signature: str | None
+    pool_membership_fingerprint: str | None
+    geographic_scope: str | None
+    score_status: str
+    score_unavailable_reason: str | None
+    prototype_similarity: float | None
+    nearest_reference_similarity: float | None
+    nearest_reference_observation_id: str | None
+    top_k_mean_similarity: float | None
+    configured_k: int
+    effective_k: int
+    configured_reference_count: int
+    reference_count: int
+    independent_observation_count: int
+    reference_shortfall_count: int
+    ranked_reference_observation_ids: tuple[str, ...]
+    top_k_reference_observation_ids: tuple[str, ...]
+    score_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class RawLocalReferenceEvidenceSet:
+    """Complete local evidence, including one explicit state per candidate."""
+
+    schema_version: str
+    query_id: str
+    query_fingerprint: str
+    candidate_matrix_signature: str
+    candidate_set_fingerprint: str
+    scores: tuple[RawLocalReferenceEvidence, ...]
+    score_set_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ReferencePoolComponents:
+    prototype_similarity: float
+    nearest_reference_similarity: float
+    nearest_reference_observation_id: str
+    top_k_mean_similarity: float
+    effective_k: int
+    reference_count: int
+    independent_observation_count: int
+    ranked_reference_observation_ids: tuple[str, ...]
+    top_k_reference_observation_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _LocalEvidenceValues:
+    pool_matrix_signature: str | None
+    pool_membership_fingerprint: str | None
+    geographic_scope: str | None
+    score_status: str
+    score_unavailable_reason: str | None
+    prototype_similarity: float | None
+    nearest_reference_similarity: float | None
+    nearest_reference_observation_id: str | None
+    top_k_mean_similarity: float | None
+    effective_k: int
+    reference_count: int
+    independent_observation_count: int
+    reference_shortfall_count: int
+    ranked_reference_observation_ids: tuple[str, ...]
+    top_k_reference_observation_ids: tuple[str, ...]
+
+
 def score_family_evidence(
     query: RawScoringQuery,
     family_matrix: CachedVectorMatrix,
@@ -343,23 +515,15 @@ def score_global_reference_evidence(
             raise ValueError("global reference evidence requires global pool scope")
         if pool.pool_matrix.subject_id != candidate_key:
             raise ValueError("global reference pool is bound to another candidate")
-        observations = _independent_observation_vectors(pool.pool_matrix)
-        ranked = sorted(
-            (
-                (_raw_cosine(query.embedding, vector), observation_id)
-                for observation_id, vector in observations
-            ),
-            key=lambda item: (-item[0], item[1]),
+        components = _reference_pool_components(
+            query,
+            pool.pool_matrix,
+            configured_top_k=pool.configured_top_k,
         )
-        if not ranked:
-            raise ValueError("global reference pool has no independent observations")
-        effective_k = min(pool.configured_top_k, len(ranked))
-        top_k = tuple(ranked[:effective_k])
         prototype_similarity = _raw_cosine(
             query.embedding,
             candidate_matrix.vector(index),
         )
-        top_k_mean = fsum(similarity for similarity, _ in top_k) / effective_k
         base = {
             "schema_version": RAW_GLOBAL_REFERENCE_EVIDENCE_VERSION,
             "query_id": query.query_id,
@@ -373,20 +537,27 @@ def score_global_reference_evidence(
             "pool_input_fingerprint": pool.input_fingerprint,
             "score_status": "available",
             "prototype_similarity": prototype_similarity,
-            "nearest_reference_similarity": ranked[0][0],
-            "nearest_reference_observation_id": ranked[0][1],
-            "top_k_mean_similarity": top_k_mean,
+            "nearest_reference_similarity": components.nearest_reference_similarity,
+            "nearest_reference_observation_id": (
+                components.nearest_reference_observation_id
+            ),
+            "top_k_mean_similarity": components.top_k_mean_similarity,
             "configured_k": pool.configured_top_k,
-            "effective_k": effective_k,
+            "effective_k": components.effective_k,
             "configured_reference_count": pool.configured_reference_count,
-            "reference_count": pool.pool_matrix.row_count,
-            "independent_observation_count": len(observations),
+            "reference_count": components.reference_count,
+            "independent_observation_count": (components.independent_observation_count),
             "reference_shortfall_count": max(
                 0,
-                pool.configured_reference_count - len(observations),
+                pool.configured_reference_count
+                - components.independent_observation_count,
             ),
-            "ranked_reference_observation_ids": [item[1] for item in ranked],
-            "top_k_reference_observation_ids": [item[1] for item in top_k],
+            "ranked_reference_observation_ids": list(
+                components.ranked_reference_observation_ids
+            ),
+            "top_k_reference_observation_ids": list(
+                components.top_k_reference_observation_ids
+            ),
         }
         output.append(
             RawGlobalReferenceEvidence(
@@ -400,20 +571,29 @@ def score_global_reference_evidence(
                 pool_membership_fingerprint=pool.pool_matrix.source_fingerprint,
                 score_status="available",
                 prototype_similarity=prototype_similarity,
-                nearest_reference_similarity=ranked[0][0],
-                nearest_reference_observation_id=ranked[0][1],
-                top_k_mean_similarity=top_k_mean,
+                nearest_reference_similarity=(components.nearest_reference_similarity),
+                nearest_reference_observation_id=(
+                    components.nearest_reference_observation_id
+                ),
+                top_k_mean_similarity=components.top_k_mean_similarity,
                 configured_k=pool.configured_top_k,
-                effective_k=effective_k,
+                effective_k=components.effective_k,
                 configured_reference_count=pool.configured_reference_count,
-                reference_count=pool.pool_matrix.row_count,
-                independent_observation_count=len(observations),
+                reference_count=components.reference_count,
+                independent_observation_count=(
+                    components.independent_observation_count
+                ),
                 reference_shortfall_count=max(
                     0,
-                    pool.configured_reference_count - len(observations),
+                    pool.configured_reference_count
+                    - components.independent_observation_count,
                 ),
-                ranked_reference_observation_ids=tuple(item[1] for item in ranked),
-                top_k_reference_observation_ids=tuple(item[1] for item in top_k),
+                ranked_reference_observation_ids=(
+                    components.ranked_reference_observation_ids
+                ),
+                top_k_reference_observation_ids=(
+                    components.top_k_reference_observation_ids
+                ),
                 score_fingerprint=canonical_semantic_fingerprint(base),
             )
         )
@@ -427,6 +607,181 @@ def score_global_reference_evidence(
     }
     return RawGlobalReferenceEvidenceSet(
         schema_version=RAW_GLOBAL_REFERENCE_EVIDENCE_SET_VERSION,
+        query_id=query.query_id,
+        query_fingerprint=_required_sha256(query.query_fingerprint),
+        candidate_matrix_signature=candidate_matrix.matrix_signature,
+        candidate_set_fingerprint=candidate_matrix.source_fingerprint,
+        scores=tuple(output),
+        score_set_fingerprint=canonical_semantic_fingerprint(score_set_base),
+    )
+
+
+def score_local_reference_evidence(
+    query: RawScoringQuery,
+    candidate_matrix: CachedVectorMatrix,
+    pools: Sequence[LocalReferencePoolInput],
+) -> RawLocalReferenceEvidenceSet:
+    """Score available local pools and preserve exact unavailable states."""
+
+    _validate_query_matrix(
+        query,
+        candidate_matrix,
+        expected_kind="candidate_prototype",
+    )
+    pool_items = _local_pool_inputs(pools)
+    candidate_keys = tuple(candidate_matrix.row_ids)
+    if set(pool_items) != set(candidate_keys):
+        raise ValueError(
+            "local pool inputs must match the complete candidate matrix membership"
+        )
+    output: list[RawLocalReferenceEvidence] = []
+    for index, candidate_key in enumerate(candidate_keys):
+        scientific_name = candidate_matrix.row_names[index]
+        pool = pool_items[candidate_key]
+        if pool.candidate_scientific_name != scientific_name:
+            raise ValueError(
+                "local pool scientific name differs from candidate prototype"
+            )
+        if pool.local_pool_status == "available":
+            matrix = _required_pool_matrix(pool.pool_matrix)
+            _validate_query_matrix(
+                query,
+                matrix,
+                expected_kind="dynamic_reference_pool",
+            )
+            if matrix.partition in {"global", "not_applicable"}:
+                raise ValueError(
+                    "local reference evidence requires a geographic pool scope"
+                )
+            if matrix.subject_id != candidate_key:
+                raise ValueError("local reference pool is bound to another candidate")
+            components = _reference_pool_components(
+                query,
+                matrix,
+                configured_top_k=pool.configured_top_k,
+            )
+            values = _LocalEvidenceValues(
+                pool_matrix_signature=matrix.matrix_signature,
+                pool_membership_fingerprint=matrix.source_fingerprint,
+                geographic_scope=matrix.partition,
+                score_status="available",
+                score_unavailable_reason=None,
+                prototype_similarity=components.prototype_similarity,
+                nearest_reference_similarity=(components.nearest_reference_similarity),
+                nearest_reference_observation_id=(
+                    components.nearest_reference_observation_id
+                ),
+                top_k_mean_similarity=components.top_k_mean_similarity,
+                effective_k=components.effective_k,
+                reference_count=components.reference_count,
+                independent_observation_count=(
+                    components.independent_observation_count
+                ),
+                reference_shortfall_count=max(
+                    0,
+                    pool.configured_reference_count
+                    - components.independent_observation_count,
+                ),
+                ranked_reference_observation_ids=(
+                    components.ranked_reference_observation_ids
+                ),
+                top_k_reference_observation_ids=(
+                    components.top_k_reference_observation_ids
+                ),
+            )
+        else:
+            values = _LocalEvidenceValues(
+                pool_matrix_signature=None,
+                pool_membership_fingerprint=None,
+                geographic_scope=None,
+                score_status="unavailable",
+                score_unavailable_reason=pool.local_pool_unavailable_reason,
+                prototype_similarity=None,
+                nearest_reference_similarity=None,
+                nearest_reference_observation_id=None,
+                top_k_mean_similarity=None,
+                effective_k=0,
+                reference_count=0,
+                independent_observation_count=0,
+                reference_shortfall_count=pool.configured_reference_count,
+                ranked_reference_observation_ids=(),
+                top_k_reference_observation_ids=(),
+            )
+        base = {
+            "schema_version": RAW_LOCAL_REFERENCE_EVIDENCE_VERSION,
+            "query_id": query.query_id,
+            "query_fingerprint": query.query_fingerprint,
+            "candidate_accepted_taxon_key": candidate_key,
+            "candidate_scientific_name": scientific_name,
+            "candidate_matrix_signature": candidate_matrix.matrix_signature,
+            "pool_input_fingerprint": pool.input_fingerprint,
+            "pool_matrix_signature": values.pool_matrix_signature,
+            "pool_membership_fingerprint": values.pool_membership_fingerprint,
+            "geographic_scope": values.geographic_scope,
+            "score_status": values.score_status,
+            "score_unavailable_reason": values.score_unavailable_reason,
+            "prototype_similarity": values.prototype_similarity,
+            "nearest_reference_similarity": values.nearest_reference_similarity,
+            "nearest_reference_observation_id": (
+                values.nearest_reference_observation_id
+            ),
+            "top_k_mean_similarity": values.top_k_mean_similarity,
+            "configured_k": pool.configured_top_k,
+            "effective_k": values.effective_k,
+            "configured_reference_count": pool.configured_reference_count,
+            "reference_count": values.reference_count,
+            "independent_observation_count": values.independent_observation_count,
+            "reference_shortfall_count": values.reference_shortfall_count,
+            "ranked_reference_observation_ids": list(
+                values.ranked_reference_observation_ids
+            ),
+            "top_k_reference_observation_ids": list(
+                values.top_k_reference_observation_ids
+            ),
+        }
+        output.append(
+            RawLocalReferenceEvidence(
+                schema_version=RAW_LOCAL_REFERENCE_EVIDENCE_VERSION,
+                query_id=query.query_id,
+                candidate_accepted_taxon_key=candidate_key,
+                candidate_scientific_name=scientific_name,
+                candidate_matrix_signature=candidate_matrix.matrix_signature,
+                pool_matrix_signature=values.pool_matrix_signature,
+                pool_membership_fingerprint=values.pool_membership_fingerprint,
+                geographic_scope=values.geographic_scope,
+                score_status=values.score_status,
+                score_unavailable_reason=values.score_unavailable_reason,
+                prototype_similarity=values.prototype_similarity,
+                nearest_reference_similarity=values.nearest_reference_similarity,
+                nearest_reference_observation_id=(
+                    values.nearest_reference_observation_id
+                ),
+                top_k_mean_similarity=values.top_k_mean_similarity,
+                configured_k=pool.configured_top_k,
+                effective_k=values.effective_k,
+                configured_reference_count=pool.configured_reference_count,
+                reference_count=values.reference_count,
+                independent_observation_count=values.independent_observation_count,
+                reference_shortfall_count=values.reference_shortfall_count,
+                ranked_reference_observation_ids=(
+                    values.ranked_reference_observation_ids
+                ),
+                top_k_reference_observation_ids=(
+                    values.top_k_reference_observation_ids
+                ),
+                score_fingerprint=canonical_semantic_fingerprint(base),
+            )
+        )
+    score_set_base = {
+        "schema_version": RAW_LOCAL_REFERENCE_EVIDENCE_SET_VERSION,
+        "query_id": query.query_id,
+        "query_fingerprint": query.query_fingerprint,
+        "candidate_matrix_signature": candidate_matrix.matrix_signature,
+        "candidate_set_fingerprint": candidate_matrix.source_fingerprint,
+        "score_fingerprints": [score.score_fingerprint for score in output],
+    }
+    return RawLocalReferenceEvidenceSet(
+        schema_version=RAW_LOCAL_REFERENCE_EVIDENCE_SET_VERSION,
         query_id=query.query_id,
         query_fingerprint=_required_sha256(query.query_fingerprint),
         candidate_matrix_signature=candidate_matrix.matrix_signature,
@@ -452,6 +807,58 @@ def _global_pool_inputs(
             raise ValueError("global pool inputs repeat a candidate taxon key")
         result[item.candidate_accepted_taxon_key] = item
     return result
+
+
+def _local_pool_inputs(
+    pools: Sequence[LocalReferencePoolInput],
+) -> dict[str, LocalReferencePoolInput]:
+    if isinstance(pools, str | bytes) or not isinstance(pools, Sequence):
+        raise TypeError("local pool inputs must be a sequence")
+    items = tuple(pools)
+    if not items:
+        raise ValueError("local pool inputs must not be empty")
+    if any(not isinstance(item, LocalReferencePoolInput) for item in items):
+        raise TypeError("local pool inputs contain invalid row types")
+    result: dict[str, LocalReferencePoolInput] = {}
+    for item in items:
+        if item.candidate_accepted_taxon_key in result:
+            raise ValueError("local pool inputs repeat a candidate taxon key")
+        result[item.candidate_accepted_taxon_key] = item
+    return result
+
+
+def _reference_pool_components(
+    query: RawScoringQuery,
+    matrix: CachedVectorMatrix,
+    *,
+    configured_top_k: int,
+) -> _ReferencePoolComponents:
+    observations = _independent_observation_vectors(matrix)
+    if not observations:
+        raise ValueError("reference pool has no independent observations")
+    ranked = sorted(
+        (
+            (_raw_cosine(query.embedding, vector), observation_id)
+            for observation_id, vector in observations
+        ),
+        key=lambda item: (-item[0], item[1]),
+    )
+    effective_k = min(configured_top_k, len(ranked))
+    top_k = tuple(ranked[:effective_k])
+    prototype = _normalized_mean(tuple(vector for _, vector in observations))
+    return _ReferencePoolComponents(
+        prototype_similarity=_raw_cosine(query.embedding, prototype),
+        nearest_reference_similarity=ranked[0][0],
+        nearest_reference_observation_id=ranked[0][1],
+        top_k_mean_similarity=(
+            fsum(similarity for similarity, _ in top_k) / effective_k
+        ),
+        effective_k=effective_k,
+        reference_count=matrix.row_count,
+        independent_observation_count=len(observations),
+        ranked_reference_observation_ids=tuple(item[1] for item in ranked),
+        top_k_reference_observation_ids=tuple(item[1] for item in top_k),
+    )
 
 
 def _independent_observation_vectors(
@@ -629,6 +1036,14 @@ def _required_sha256(value: str | None) -> str:
     return value
 
 
+def _required_pool_matrix(
+    value: CachedVectorMatrix | None,
+) -> CachedVectorMatrix:
+    if value is None:
+        raise AssertionError("available local pool unexpectedly has no matrix")
+    return value
+
+
 def _positive_integer(value: object, *, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{field} must be an integer")
@@ -637,19 +1052,40 @@ def _positive_integer(value: object, *, field: str) -> int:
     return value
 
 
+def _nonnegative_integer(value: object, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field} must be an integer")
+    if value < 0:
+        raise ValueError(f"{field} must be nonnegative")
+    return value
+
+
+def _optional_text(value: object, *, field: str) -> str | None:
+    if value is None:
+        return None
+    return _required_text(value, field=field)
+
+
 __all__ = [
     "GLOBAL_REFERENCE_POOL_INPUT_VERSION",
+    "LOCAL_REFERENCE_POOL_INPUT_VERSION",
     "RAW_FAMILY_EVIDENCE_SET_VERSION",
     "RAW_FAMILY_EVIDENCE_VERSION",
     "RAW_GLOBAL_REFERENCE_EVIDENCE_SET_VERSION",
     "RAW_GLOBAL_REFERENCE_EVIDENCE_VERSION",
+    "RAW_LOCAL_REFERENCE_EVIDENCE_SET_VERSION",
+    "RAW_LOCAL_REFERENCE_EVIDENCE_VERSION",
     "RAW_SCORING_QUERY_VERSION",
     "GlobalReferencePoolInput",
+    "LocalReferencePoolInput",
     "RawFamilyEvidence",
     "RawFamilyEvidenceSet",
     "RawGlobalReferenceEvidence",
     "RawGlobalReferenceEvidenceSet",
+    "RawLocalReferenceEvidence",
+    "RawLocalReferenceEvidenceSet",
     "RawScoringQuery",
     "score_family_evidence",
     "score_global_reference_evidence",
+    "score_local_reference_evidence",
 ]

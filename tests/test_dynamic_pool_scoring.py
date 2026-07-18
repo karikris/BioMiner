@@ -8,9 +8,11 @@ import pytest
 
 from biominer.bioclip.dynamic_pool_scoring import (
     GlobalReferencePoolInput,
+    LocalReferencePoolInput,
     RawScoringQuery,
     score_family_evidence,
     score_global_reference_evidence,
+    score_local_reference_evidence,
 )
 from biominer.bioclip.matrix_cache import (
     CandidatePrototypeVector,
@@ -244,6 +246,129 @@ def test_global_pool_input_rejects_candidate_and_scope_drift() -> None:
         )
 
 
+def test_local_evidence_scores_geographic_pool_and_preserves_unavailable_state() -> (
+    None
+):
+    candidate_matrix, _ = _global_inputs()
+    pools = _local_inputs()
+
+    result = score_local_reference_evidence(_query(), candidate_matrix, pools)
+
+    available, unavailable = result.scores
+    assert available.candidate_accepted_taxon_key == "gbif:100"
+    assert available.score_status == "available"
+    assert available.score_unavailable_reason is None
+    assert available.geographic_scope == "exact_local_cell"
+    assert available.prototype_similarity == pytest.approx(3 / 10**0.5)
+    assert available.nearest_reference_similarity == pytest.approx(1.0)
+    assert available.top_k_mean_similarity == pytest.approx(0.9)
+    assert available.configured_k == 3
+    assert available.effective_k == 2
+    assert available.reference_count == 2
+    assert available.independent_observation_count == 2
+    assert available.reference_shortfall_count == 1
+
+    assert unavailable.candidate_accepted_taxon_key == "gbif:200"
+    assert unavailable.score_status == "unavailable"
+    assert unavailable.score_unavailable_reason == "no_local_geographic_evidence"
+    assert unavailable.pool_matrix_signature is None
+    assert unavailable.pool_membership_fingerprint is None
+    assert unavailable.geographic_scope is None
+    assert unavailable.prototype_similarity is None
+    assert unavailable.nearest_reference_similarity is None
+    assert unavailable.top_k_mean_similarity is None
+    assert unavailable.effective_k == 0
+    assert unavailable.reference_count == 0
+    assert unavailable.independent_observation_count == 0
+    assert unavailable.reference_shortfall_count == 2
+    assert unavailable.ranked_reference_observation_ids == ()
+
+
+def test_local_scoring_is_order_independent_and_requires_complete_candidates() -> None:
+    candidate_matrix, _ = _global_inputs()
+    pools = _local_inputs()
+
+    first = score_local_reference_evidence(_query(), candidate_matrix, pools)
+    second = score_local_reference_evidence(
+        _query(),
+        candidate_matrix,
+        tuple(reversed(pools)),
+    )
+    assert first == second
+
+    with pytest.raises(ValueError, match="complete candidate matrix membership"):
+        score_local_reference_evidence(_query(), candidate_matrix, pools[:1])
+    with pytest.raises(ValueError, match="repeat a candidate"):
+        score_local_reference_evidence(
+            _query(),
+            candidate_matrix,
+            (pools[0], pools[0], pools[1]),
+        )
+
+
+def test_local_pool_input_requires_exact_available_or_unavailable_contract() -> None:
+    cache = DynamicPoolMatrixCache()
+    local = _pool_matrix(
+        cache,
+        candidate_key="gbif:100",
+        geographic_scope="exact_local_cell",
+        rows=_reference_rows("local"),
+        fingerprint_digit="d",
+    )
+    global_pool = _pool_matrix(
+        cache,
+        candidate_key="gbif:100",
+        geographic_scope="global",
+        rows=_reference_rows("global"),
+        fingerprint_digit="e",
+    )
+
+    with pytest.raises(ValueError, match="geographic scope"):
+        _local_input(pool_matrix=global_pool)
+    with pytest.raises(ValueError, match="cannot have an unavailable reason"):
+        _local_input(
+            pool_matrix=local,
+            unavailable_reason="conflicting_reason",
+        )
+    with pytest.raises(ValueError, match="no matrix and an exact reason"):
+        _local_input(
+            status="unavailable",
+            pool_matrix=local,
+            unavailable_reason="no_local_geographic_evidence",
+        )
+    with pytest.raises(ValueError, match="no matrix and an exact reason"):
+        _local_input(
+            status="unavailable",
+            pool_matrix=None,
+            unavailable_reason=None,
+        )
+
+
+def test_unavailable_local_evidence_never_substitutes_global_scores() -> None:
+    candidate_matrix, global_pools = _global_inputs()
+    global_scores = score_global_reference_evidence(
+        _query(),
+        candidate_matrix,
+        global_pools,
+    )
+    local_scores = score_local_reference_evidence(
+        _query(),
+        candidate_matrix,
+        _local_inputs(),
+    )
+    global_by_key = {
+        score.candidate_accepted_taxon_key: score for score in global_scores.scores
+    }
+    local_by_key = {
+        score.candidate_accepted_taxon_key: score for score in local_scores.scores
+    }
+
+    assert global_by_key["gbif:200"].prototype_similarity is not None
+    assert local_by_key["gbif:200"].prototype_similarity is None
+    assert local_by_key["gbif:200"].nearest_reference_similarity is None
+    assert local_by_key["gbif:200"].top_k_mean_similarity is None
+
+
 def _query() -> RawScoringQuery:
     return RawScoringQuery(
         query_id="flickr-embedding:query",
@@ -409,4 +534,66 @@ def _reference_rows(prefix: str) -> tuple[PoolReferenceVector, ...]:
             reference_embedding_fingerprint="sha256:" + "c" * 64,
             embedding=(1.0, 0.0),
         ),
+    )
+
+
+def _local_inputs() -> tuple[LocalReferencePoolInput, ...]:
+    cache = DynamicPoolMatrixCache()
+    return (
+        LocalReferencePoolInput(
+            candidate_accepted_taxon_key="gbif:100",
+            candidate_scientific_name="Papilio demoleus",
+            local_pool_status="available",
+            local_pool_unavailable_reason=None,
+            pool_matrix=_pool_matrix(
+                cache,
+                candidate_key="gbif:100",
+                geographic_scope="exact_local_cell",
+                rows=(
+                    PoolReferenceVector(
+                        reference_media_id="reference-media:local-1",
+                        reference_observation_id="reference-observation:local-1",
+                        member_fingerprint="sha256:" + "d" * 64,
+                        reference_embedding_fingerprint="sha256:" + "e" * 64,
+                        embedding=(1.0, 0.0),
+                    ),
+                    PoolReferenceVector(
+                        reference_media_id="reference-media:local-2",
+                        reference_observation_id="reference-observation:local-2",
+                        member_fingerprint="sha256:" + "f" * 64,
+                        reference_embedding_fingerprint="sha256:" + "0" * 64,
+                        embedding=(0.8, 0.6),
+                    ),
+                ),
+                fingerprint_digit="1",
+            ),
+            configured_reference_count=3,
+            configured_top_k=3,
+        ),
+        LocalReferencePoolInput(
+            candidate_accepted_taxon_key="gbif:200",
+            candidate_scientific_name="Papilio machaon",
+            local_pool_status="unavailable",
+            local_pool_unavailable_reason="no_local_geographic_evidence",
+            pool_matrix=None,
+            configured_reference_count=2,
+            configured_top_k=3,
+        ),
+    )
+
+
+def _local_input(
+    *,
+    status: str = "available",
+    pool_matrix=None,
+    unavailable_reason: str | None = None,
+) -> LocalReferencePoolInput:
+    return LocalReferencePoolInput(
+        candidate_accepted_taxon_key="gbif:100",
+        candidate_scientific_name="Papilio demoleus",
+        local_pool_status=status,
+        local_pool_unavailable_reason=unavailable_reason,
+        pool_matrix=pool_matrix,
+        configured_reference_count=3,
+        configured_top_k=3,
     )
