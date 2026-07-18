@@ -9,10 +9,13 @@ import pytest
 
 from biominer.bioclip import dynamic_pool_compute
 from biominer.bioclip.dynamic_pool_compute import (
+    PoolMatrixBatchPolicy,
     build_dynamic_vector_scoring_work,
     execute_dynamic_vector_scoring,
+    execute_dynamic_vector_scoring_batches,
     validate_dynamic_vector_scoring_result,
     validate_dynamic_vector_scoring_work,
+    validate_pool_matrix_batch_result,
 )
 from biominer.bioclip.dynamic_pool_fusion import (
     DYNAMIC_SCORE_COMPONENT_SET_VERSION,
@@ -1005,6 +1008,131 @@ def test_vector_scoring_boundary_rejects_source_query_and_result_drift() -> None
         )
 
 
+def test_pool_matrix_batching_bounds_working_set_and_reports_reuse() -> None:
+    works = tuple(_vector_work(query_id=f"cached-query:{index}") for index in (3, 1, 2))
+    single_work_matrices = {
+        pool.pool_matrix.matrix_signature: pool.pool_matrix
+        for pool in (*works[0].global_pools, *works[0].local_pools)
+        if pool.pool_matrix is not None
+    }
+    unique_bytes = sum(matrix.byte_count for matrix in single_work_matrices.values())
+    unique_rows = sum(matrix.row_count for matrix in single_work_matrices.values())
+    policy = PoolMatrixBatchPolicy(
+        maximum_work_items_per_batch=2,
+        maximum_unique_pool_matrices_per_batch=3,
+        maximum_pool_matrix_bytes_per_batch=unique_bytes,
+    )
+
+    first = execute_dynamic_vector_scoring_batches(works, policy=policy)
+    second = execute_dynamic_vector_scoring_batches(
+        tuple(reversed(works)),
+        policy=policy,
+    )
+
+    assert first == second
+    assert [batch.work_item_count for batch in first.batches] == [2, 1]
+    assert [batch.unique_pool_matrix_count for batch in first.batches] == [3, 3]
+    assert first.metrics.work_items == 3
+    assert first.metrics.execution_batches == 2
+    assert first.metrics.pool_matrix_references == 9
+    assert first.metrics.unique_pool_matrices == 3
+    assert first.metrics.unique_pool_matrix_rows == unique_rows
+    assert first.metrics.unique_pool_matrix_bytes == unique_bytes
+    assert first.metrics.within_batch_matrix_reuses == 3
+    assert first.metrics.cross_batch_matrix_reloads == 3
+    assert first.metrics.maximum_batch_work_items == 2
+    assert first.metrics.maximum_batch_unique_pool_matrices == 3
+    assert first.metrics.maximum_batch_pool_matrix_bytes == unique_bytes
+    assert first.metrics.encoder_invocations == 0
+    assert first.metrics.image_materializations == 0
+    assert tuple(item.work.query.query_id for item in first.canonical_results) == (
+        "cached-query:1",
+        "cached-query:2",
+        "cached-query:3",
+    )
+    validate_pool_matrix_batch_result(first)
+
+
+def test_pool_matrix_batching_rejects_one_work_over_hard_matrix_limits() -> None:
+    work = _vector_work()
+    pool_bytes = sum(
+        pool.pool_matrix.byte_count
+        for pool in (*work.global_pools, *work.local_pools)
+        if pool.pool_matrix is not None
+    )
+
+    with pytest.raises(ValueError, match="unique pool-matrix limit"):
+        execute_dynamic_vector_scoring_batches(
+            (work,),
+            policy=PoolMatrixBatchPolicy(
+                maximum_unique_pool_matrices_per_batch=2,
+            ),
+        )
+    with pytest.raises(ValueError, match="pool-matrix byte limit"):
+        execute_dynamic_vector_scoring_batches(
+            (work,),
+            policy=PoolMatrixBatchPolicy(
+                maximum_pool_matrix_bytes_per_batch=pool_bytes - 1,
+            ),
+        )
+
+
+def test_pool_matrix_batch_validator_rejects_metrics_and_result_drift() -> None:
+    result = execute_dynamic_vector_scoring_batches((_vector_work(),))
+
+    with pytest.raises(ValueError, match="fingerprint or metrics mismatch"):
+        validate_pool_matrix_batch_result(
+            replace(
+                result,
+                metrics=replace(result.metrics, encoder_invocations=1),
+            )
+        )
+    with pytest.raises(ValueError, match="consume one cached query vector"):
+        validate_pool_matrix_batch_result(
+            replace(
+                result,
+                execution_results=(
+                    replace(
+                        result.execution_results[0],
+                        cached_query_vectors_consumed=2,
+                    ),
+                ),
+            )
+        )
+
+
+def test_pool_matrix_batch_validation_does_not_repeat_scoring(monkeypatch) -> None:
+    calls = 0
+    original = dynamic_pool_compute._execute_dynamic_vector_scoring
+
+    def counted(work):  # noqa: ANN001, ANN202 - narrow test spy.
+        nonlocal calls
+        calls += 1
+        return original(work)
+
+    monkeypatch.setattr(
+        dynamic_pool_compute,
+        "_execute_dynamic_vector_scoring",
+        counted,
+    )
+    result = execute_dynamic_vector_scoring_batches(
+        tuple(_vector_work(query_id=f"cached-query:{index}") for index in range(3))
+    )
+
+    validate_pool_matrix_batch_result(result)
+
+    assert calls == 3
+
+
+def test_pool_matrix_batch_policy_rejects_nonpositive_or_boolean_limits() -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        PoolMatrixBatchPolicy(maximum_work_items_per_batch=0)
+    with pytest.raises(ValueError, match="positive integer"):
+        PoolMatrixBatchPolicy(maximum_unique_pool_matrices_per_batch=True)
+    with pytest.raises(ValueError, match="positive integer"):
+        PoolMatrixBatchPolicy(maximum_pool_matrix_bytes_per_batch=-1)
+
+
 def _query() -> RawScoringQuery:
     return RawScoringQuery(
         query_id="flickr-embedding:query",
@@ -1057,11 +1185,11 @@ def _fusion_scores(
     return evaluate_raw_fusion_methods(components, _linear_parameters())
 
 
-def _vector_work():
+def _vector_work(*, query_id: str = "cached-query:1"):
     candidate_matrix, global_pools = _global_inputs()
     return build_dynamic_vector_scoring_work(
         _cached_embedding(),
-        query_id="cached-query:1",
+        query_id=query_id,
         route="adult_field",
         family_matrix=_family_matrix(),
         candidate_matrix=candidate_matrix,
