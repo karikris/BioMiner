@@ -6,10 +6,6 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from biominer.bioclip.dynamic_pool_scores import (
-    DYNAMIC_POOL_CANDIDATE_SCORES_FILE,
-    DYNAMIC_POOL_CANDIDATE_SCORE_SCHEMA_VERSION,
-)
 from biominer.integration.product_handoff import (
     finalize_product_manifest,
     normalize_product_artifacts,
@@ -80,8 +76,8 @@ BUTTERFLYLENS_ROLE_DEFAULTS = {
         "biominer-butterflylens-media-object-v1.0.0",
     ),
     "model_evidence": (
-        DYNAMIC_POOL_CANDIDATE_SCORES_FILE,
-        DYNAMIC_POOL_CANDIDATE_SCORE_SCHEMA_VERSION,
+        "butterflylens_model_evidence.parquet",
+        "biominer-butterflylens-model-evidence-projection-v1.0.0",
     ),
     "geographic_impact": (
         "butterflylens_geographic_impact_cells.parquet",
