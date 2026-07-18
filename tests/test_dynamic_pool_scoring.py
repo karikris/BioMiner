@@ -9,8 +9,18 @@ import pytest
 from biominer.bioclip.dynamic_pool_fusion import (
     DYNAMIC_SCORE_COMPONENT_SET_VERSION,
     DYNAMIC_SCORE_COMPONENT_VERSION,
+    FUSION_COMPONENTS,
+    GLOBAL_FUSION_COMPONENTS,
+    MAXIMUM_SCOPE_EVIDENCE,
+    RAW_FUSION_METHODS,
+    ROBUST_RANK_AGGREGATION,
+    UNWEIGHTED_COMPONENT_MEAN,
+    VALIDATION_FITTED_LINEAR,
+    ValidationLinearFusionParameters,
+    evaluate_raw_fusion_methods,
     preserve_dynamic_score_components,
     validate_dynamic_score_components,
+    validate_raw_fusion_scores,
 )
 from biominer.bioclip.dynamic_pool_scoring import (
     GlobalReferencePoolInput,
@@ -657,6 +667,123 @@ def test_preserved_dynamic_component_validator_rejects_row_tampering() -> None:
         )
 
 
+def test_raw_fusion_methods_have_exact_numeric_and_missing_local_semantics() -> None:
+    components = preserve_dynamic_score_components(*_component_inputs())
+
+    result = evaluate_raw_fusion_methods(components, _linear_parameters())
+    scores = {
+        (score.method, score.candidate_accepted_taxon_key): score
+        for score in result.scores
+    }
+
+    assert result.component_set == components
+    assert result.methods == RAW_FUSION_METHODS
+    assert len(result.scores) == len(RAW_FUSION_METHODS) * 2
+    assert not hasattr(result, "selected_method")
+    first_values = (1.0, 1.0, (1 + 2**-0.5) / 2, 3 / 10**0.5, 1.0, 0.9)
+    assert scores[
+        (UNWEIGHTED_COMPONENT_MEAN, "gbif:100")
+    ].raw_fusion_score == pytest.approx(sum(first_values) / len(first_values))
+    assert scores[
+        (VALIDATION_FITTED_LINEAR, "gbif:100")
+    ].raw_fusion_score == pytest.approx((1 + 3 / 10**0.5) / 2)
+    assert scores[
+        (MAXIMUM_SCOPE_EVIDENCE, "gbif:100")
+    ].raw_fusion_score == pytest.approx((1 + 1 + (1 + 2**-0.5) / 2) / 3)
+    assert scores[
+        (ROBUST_RANK_AGGREGATION, "gbif:100")
+    ].raw_fusion_score == pytest.approx(1.0)
+
+    for method in RAW_FUSION_METHODS:
+        unavailable = scores[(method, "gbif:200")]
+        assert unavailable.local_evidence_status == "unavailable"
+        assert unavailable.component_names_used == GLOBAL_FUSION_COMPONENTS
+    assert scores[
+        (UNWEIGHTED_COMPONENT_MEAN, "gbif:200")
+    ].raw_fusion_score == pytest.approx(-1 / 6)
+    assert scores[
+        (VALIDATION_FITTED_LINEAR, "gbif:200")
+    ].raw_fusion_score == pytest.approx(0.0)
+    assert scores[
+        (MAXIMUM_SCOPE_EVIDENCE, "gbif:200")
+    ].raw_fusion_score == pytest.approx(-1 / 6)
+    assert scores[
+        (ROBUST_RANK_AGGREGATION, "gbif:200")
+    ].raw_fusion_score == pytest.approx(0.0)
+    assert all(score.score_fingerprint.startswith("sha256:") for score in result.scores)
+    assert result.score_set_fingerprint.startswith("sha256:")
+
+
+def test_robust_rank_aggregation_is_tie_aware_across_inverted_components() -> None:
+    components = preserve_dynamic_score_components(
+        *_component_inputs(local_inputs=_all_local_inputs())
+    )
+
+    result = evaluate_raw_fusion_methods(components, _linear_parameters())
+    robust = {
+        score.candidate_accepted_taxon_key: score
+        for score in result.scores
+        if score.method == ROBUST_RANK_AGGREGATION
+    }
+
+    assert robust["gbif:100"].raw_fusion_score == pytest.approx(0.5)
+    assert robust["gbif:200"].raw_fusion_score == pytest.approx(0.5)
+    assert robust["gbif:100"].component_names_used == FUSION_COMPONENTS
+    assert robust["gbif:100"].method_component_values == pytest.approx(
+        (1.0, 1.0, 1.0, 0.0, 0.0, 0.0)
+    )
+    assert robust["gbif:200"].method_component_values == pytest.approx(
+        (0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+    )
+    assert robust["gbif:100"].raw_component_values == pytest.approx(
+        (1.0, 1.0, (1 + 2**-0.5) / 2, 0.0, 0.0, 0.0)
+    )
+
+
+def test_validation_linear_parameters_are_explicit_and_fingerprint_bound() -> None:
+    parameters = _linear_parameters()
+
+    assert parameters.full_weights == pytest.approx((0.5, 0, 0, 0.5, 0, 0))
+    assert parameters.global_only_weights == pytest.approx((1, 0, 0))
+    assert parameters.parameters_fingerprint.startswith("sha256:")
+    with pytest.raises(ValueError, match="exactly 6"):
+        ValidationLinearFusionParameters(
+            validation_artifact_fingerprint="sha256:" + "6" * 64,
+            full_weights=(1.0,),
+            global_only_weights=(1.0, 0.0, 0.0),
+        )
+    with pytest.raises(ValueError, match="at least one nonzero"):
+        ValidationLinearFusionParameters(
+            validation_artifact_fingerprint="sha256:" + "6" * 64,
+            full_weights=(0.0,) * 6,
+            global_only_weights=(1.0, 0.0, 0.0),
+        )
+    with pytest.raises(ValueError, match="parameter fingerprint mismatch"):
+        replace(parameters, parameters_fingerprint="sha256:" + "7" * 64)
+
+
+def test_raw_fusion_validator_rejects_score_or_policy_drift() -> None:
+    components = preserve_dynamic_score_components(*_component_inputs())
+    result = evaluate_raw_fusion_methods(components, _linear_parameters())
+    tampered_score = replace(result.scores[0], raw_fusion_score=-0.25)
+
+    with pytest.raises(ValueError, match="does not match components and policy"):
+        validate_raw_fusion_scores(
+            replace(result, scores=(tampered_score, *result.scores[1:])),
+        )
+
+    changed_parameters = ValidationLinearFusionParameters(
+        validation_artifact_fingerprint="sha256:" + "8" * 64,
+        full_weights=(1 / 6,) * 6,
+        global_only_weights=(1 / 3,) * 3,
+    )
+    changed = evaluate_raw_fusion_methods(components, changed_parameters)
+    assert changed.linear_parameters.parameters_fingerprint != (
+        result.linear_parameters.parameters_fingerprint
+    )
+    assert changed.score_set_fingerprint != result.score_set_fingerprint
+
+
 def _query() -> RawScoringQuery:
     return RawScoringQuery(
         query_id="flickr-embedding:query",
@@ -668,7 +795,10 @@ def _query() -> RawScoringQuery:
     )
 
 
-def _component_inputs():
+def _component_inputs(
+    *,
+    local_inputs: tuple[LocalReferencePoolInput, ...] | None = None,
+):
     candidate_matrix, global_pools = _global_inputs()
     family = score_family_evidence(_query(), _family_matrix())
     global_scores = score_global_reference_evidence(
@@ -679,13 +809,21 @@ def _component_inputs():
     local_scores = score_local_reference_evidence(
         _query(),
         candidate_matrix,
-        _local_inputs(),
+        local_inputs or _local_inputs(),
     )
     disagreement = calculate_dynamic_pool_disagreement_coverage(
         global_scores,
         local_scores,
     )
     return family, global_scores, local_scores, disagreement
+
+
+def _linear_parameters() -> ValidationLinearFusionParameters:
+    return ValidationLinearFusionParameters(
+        validation_artifact_fingerprint="sha256:" + "6" * 64,
+        full_weights=(0.5, 0.0, 0.0, 0.5, 0.0, 0.0),
+        global_only_weights=(1.0, 0.0, 0.0),
+    )
 
 
 def _family_matrix(

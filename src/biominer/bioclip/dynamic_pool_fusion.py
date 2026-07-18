@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
+from math import fsum, isfinite
+import re
+from statistics import median
 
 from biominer.bioclip.dynamic_pool_scoring import (
     RAW_DISAGREEMENT_COVERAGE_VERSION,
@@ -28,6 +30,145 @@ from biominer.common.semantic_hash import canonical_semantic_fingerprint
 
 DYNAMIC_SCORE_COMPONENT_VERSION = "dynamic-score-component-v1"
 DYNAMIC_SCORE_COMPONENT_SET_VERSION = "dynamic-score-component-set-v1"
+VALIDATION_LINEAR_FUSION_PARAMETERS_VERSION = "validation-linear-fusion-v1"
+RAW_FUSION_CANDIDATE_SCORE_VERSION = "raw-fusion-candidate-score-v1"
+RAW_FUSION_SCORE_SET_VERSION = "raw-fusion-score-set-v1"
+
+GLOBAL_FUSION_COMPONENTS = (
+    "global_prototype_similarity",
+    "global_nearest_reference_similarity",
+    "global_top_k_mean_similarity",
+)
+LOCAL_FUSION_COMPONENTS = (
+    "local_prototype_similarity",
+    "local_nearest_reference_similarity",
+    "local_top_k_mean_similarity",
+)
+FUSION_COMPONENTS = (*GLOBAL_FUSION_COMPONENTS, *LOCAL_FUSION_COMPONENTS)
+
+UNWEIGHTED_COMPONENT_MEAN = "unweighted_component_mean"
+VALIDATION_FITTED_LINEAR = "validation_fitted_linear"
+MAXIMUM_SCOPE_EVIDENCE = "maximum_scope_evidence"
+ROBUST_RANK_AGGREGATION = "robust_rank_aggregation"
+RAW_FUSION_METHODS = (
+    UNWEIGHTED_COMPONENT_MEAN,
+    VALIDATION_FITTED_LINEAR,
+    MAXIMUM_SCOPE_EVIDENCE,
+    ROBUST_RANK_AGGREGATION,
+)
+
+_METHOD_VERSIONS = {
+    UNWEIGHTED_COMPONENT_MEAN: "unweighted-component-mean-v1",
+    VALIDATION_FITTED_LINEAR: "validation-fitted-linear-v1",
+    MAXIMUM_SCOPE_EVIDENCE: "maximum-scope-evidence-v1",
+    ROBUST_RANK_AGGREGATION: "robust-rank-aggregation-v1",
+}
+_SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationLinearFusionParameters:
+    """Explicit full/local-missing coefficients fitted on validation evidence."""
+
+    validation_artifact_fingerprint: str
+    full_weights: tuple[float, ...]
+    global_only_weights: tuple[float, ...]
+    full_intercept: float = 0.0
+    global_only_intercept: float = 0.0
+    schema_version: str = VALIDATION_LINEAR_FUSION_PARAMETERS_VERSION
+    parameters_fingerprint: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.schema_version != VALIDATION_LINEAR_FUSION_PARAMETERS_VERSION:
+            raise ValueError("unsupported validation linear fusion parameter version")
+        validation_fingerprint = _sha256(
+            self.validation_artifact_fingerprint,
+            field="validation_artifact_fingerprint",
+        )
+        full_weights = _weights(
+            self.full_weights,
+            expected_count=len(FUSION_COMPONENTS),
+            field="full_weights",
+        )
+        global_only_weights = _weights(
+            self.global_only_weights,
+            expected_count=len(GLOBAL_FUSION_COMPONENTS),
+            field="global_only_weights",
+        )
+        full_intercept = _finite_number(self.full_intercept, field="full_intercept")
+        global_only_intercept = _finite_number(
+            self.global_only_intercept,
+            field="global_only_intercept",
+        )
+        base = {
+            "schema_version": VALIDATION_LINEAR_FUSION_PARAMETERS_VERSION,
+            "validation_artifact_fingerprint": validation_fingerprint,
+            "fit_partition": "validation",
+            "full_component_order": list(FUSION_COMPONENTS),
+            "full_weights": list(full_weights),
+            "full_intercept": full_intercept,
+            "global_only_component_order": list(GLOBAL_FUSION_COMPONENTS),
+            "global_only_weights": list(global_only_weights),
+            "global_only_intercept": global_only_intercept,
+            "missing_local_semantics": "use_explicit_global_only_coefficients",
+        }
+        fingerprint = canonical_semantic_fingerprint(base)
+        if (
+            self.parameters_fingerprint is not None
+            and _sha256(
+                self.parameters_fingerprint,
+                field="parameters_fingerprint",
+            )
+            != fingerprint
+        ):
+            raise ValueError("validation linear fusion parameter fingerprint mismatch")
+        object.__setattr__(
+            self,
+            "validation_artifact_fingerprint",
+            validation_fingerprint,
+        )
+        object.__setattr__(self, "full_weights", full_weights)
+        object.__setattr__(self, "global_only_weights", global_only_weights)
+        object.__setattr__(self, "full_intercept", full_intercept)
+        object.__setattr__(self, "global_only_intercept", global_only_intercept)
+        object.__setattr__(self, "parameters_fingerprint", fingerprint)
+
+
+@dataclass(frozen=True, slots=True)
+class RawFusionCandidateScore:
+    """One provisional method result linked to its complete component row."""
+
+    schema_version: str
+    query_id: str
+    query_fingerprint: str
+    candidate_accepted_taxon_key: str
+    candidate_scientific_name: str
+    component_fingerprint: str
+    method: str
+    method_version: str
+    method_policy_fingerprint: str
+    local_evidence_status: str
+    component_names_used: tuple[str, ...]
+    raw_component_values: tuple[float, ...]
+    method_component_values: tuple[float, ...]
+    raw_fusion_score: float
+    score_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class RawFusionScoreSet:
+    """All provisional methods over one exact preserved component set."""
+
+    schema_version: str
+    query_id: str
+    query_fingerprint: str
+    component_set: DynamicScoreComponentSet
+    component_set_fingerprint: str
+    linear_parameters: ValidationLinearFusionParameters
+    methods: tuple[str, ...]
+    method_policy_fingerprints: tuple[tuple[str, str], ...]
+    scores: tuple[RawFusionCandidateScore, ...]
+    score_set_fingerprint: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +347,280 @@ def validate_dynamic_score_components(components: DynamicScoreComponentSet) -> N
     )
     if components.component_set_fingerprint != canonical_semantic_fingerprint(base):
         raise ValueError("dynamic score component set fingerprint mismatch")
+
+
+def evaluate_raw_fusion_methods(
+    components: DynamicScoreComponentSet,
+    linear_parameters: ValidationLinearFusionParameters,
+) -> RawFusionScoreSet:
+    """Evaluate every required provisional method without selecting one."""
+
+    validate_dynamic_score_components(components)
+    if not isinstance(linear_parameters, ValidationLinearFusionParameters):
+        raise TypeError("linear_parameters must be ValidationLinearFusionParameters")
+    result = _evaluate_raw_fusion_methods(components, linear_parameters)
+    validate_raw_fusion_scores(result)
+    return result
+
+
+def validate_raw_fusion_scores(fusion_scores: RawFusionScoreSet) -> None:
+    """Recompute all provisional method results and reject any drift."""
+
+    if not isinstance(fusion_scores, RawFusionScoreSet):
+        raise TypeError("fusion_scores must be a RawFusionScoreSet")
+    if fusion_scores.schema_version != RAW_FUSION_SCORE_SET_VERSION:
+        raise ValueError("unsupported raw fusion score set version")
+    validate_dynamic_score_components(fusion_scores.component_set)
+    if not isinstance(
+        fusion_scores.linear_parameters,
+        ValidationLinearFusionParameters,
+    ):
+        raise TypeError("raw fusion set has invalid linear parameters")
+    expected = _evaluate_raw_fusion_methods(
+        fusion_scores.component_set,
+        fusion_scores.linear_parameters,
+    )
+    if fusion_scores != expected:
+        raise ValueError("raw fusion score set does not match components and policy")
+
+
+def _evaluate_raw_fusion_methods(
+    components: DynamicScoreComponentSet,
+    linear_parameters: ValidationLinearFusionParameters,
+) -> RawFusionScoreSet:
+    values_by_candidate = {
+        candidate.candidate_accepted_taxon_key: _fusion_component_values(candidate)
+        for candidate in components.candidates
+    }
+    rank_utilities = _rank_utilities(values_by_candidate)
+    method_policies = tuple(
+        (
+            method,
+            _method_policy_fingerprint(method, linear_parameters),
+        )
+        for method in RAW_FUSION_METHODS
+    )
+    scores: list[RawFusionCandidateScore] = []
+    for method, policy_fingerprint in method_policies:
+        for candidate in components.candidates:
+            candidate_key = candidate.candidate_accepted_taxon_key
+            values = values_by_candidate[candidate_key]
+            (
+                component_names,
+                raw_component_values,
+                method_component_values,
+                raw_score,
+            ) = _method_score(
+                method,
+                values=values,
+                rank_utilities=rank_utilities[candidate_key],
+                linear_parameters=linear_parameters,
+            )
+            base = {
+                "schema_version": RAW_FUSION_CANDIDATE_SCORE_VERSION,
+                "query_id": components.query_id,
+                "query_fingerprint": components.query_fingerprint,
+                "candidate_accepted_taxon_key": candidate_key,
+                "candidate_scientific_name": candidate.candidate_scientific_name,
+                "component_fingerprint": candidate.component_fingerprint,
+                "method": method,
+                "method_version": _METHOD_VERSIONS[method],
+                "method_policy_fingerprint": policy_fingerprint,
+                "local_evidence_status": candidate.local_evidence.score_status,
+                "component_names_used": list(component_names),
+                "raw_component_values": list(raw_component_values),
+                "method_component_values": list(method_component_values),
+                "raw_fusion_score": raw_score,
+            }
+            scores.append(
+                RawFusionCandidateScore(
+                    schema_version=RAW_FUSION_CANDIDATE_SCORE_VERSION,
+                    query_id=components.query_id,
+                    query_fingerprint=components.query_fingerprint,
+                    candidate_accepted_taxon_key=candidate_key,
+                    candidate_scientific_name=candidate.candidate_scientific_name,
+                    component_fingerprint=candidate.component_fingerprint,
+                    method=method,
+                    method_version=_METHOD_VERSIONS[method],
+                    method_policy_fingerprint=policy_fingerprint,
+                    local_evidence_status=candidate.local_evidence.score_status,
+                    component_names_used=component_names,
+                    raw_component_values=raw_component_values,
+                    method_component_values=method_component_values,
+                    raw_fusion_score=raw_score,
+                    score_fingerprint=canonical_semantic_fingerprint(base),
+                )
+            )
+    set_base = {
+        "schema_version": RAW_FUSION_SCORE_SET_VERSION,
+        "query_id": components.query_id,
+        "query_fingerprint": components.query_fingerprint,
+        "component_set_fingerprint": components.component_set_fingerprint,
+        "linear_parameters_fingerprint": linear_parameters.parameters_fingerprint,
+        "methods": list(RAW_FUSION_METHODS),
+        "method_policy_fingerprints": [list(item) for item in method_policies],
+        "score_fingerprints": [score.score_fingerprint for score in scores],
+    }
+    return RawFusionScoreSet(
+        schema_version=RAW_FUSION_SCORE_SET_VERSION,
+        query_id=components.query_id,
+        query_fingerprint=components.query_fingerprint,
+        component_set=components,
+        component_set_fingerprint=components.component_set_fingerprint,
+        linear_parameters=linear_parameters,
+        methods=RAW_FUSION_METHODS,
+        method_policy_fingerprints=method_policies,
+        scores=tuple(scores),
+        score_set_fingerprint=canonical_semantic_fingerprint(set_base),
+    )
+
+
+def _fusion_component_values(
+    candidate: DynamicCandidateScoreComponents,
+) -> dict[str, float]:
+    values = {
+        "global_prototype_similarity": candidate.global_evidence.prototype_similarity,
+        "global_nearest_reference_similarity": (
+            candidate.global_evidence.nearest_reference_similarity
+        ),
+        "global_top_k_mean_similarity": (
+            candidate.global_evidence.top_k_mean_similarity
+        ),
+    }
+    if candidate.local_evidence.score_status == "available":
+        local_values = {
+            "local_prototype_similarity": (
+                candidate.local_evidence.prototype_similarity
+            ),
+            "local_nearest_reference_similarity": (
+                candidate.local_evidence.nearest_reference_similarity
+            ),
+            "local_top_k_mean_similarity": (
+                candidate.local_evidence.top_k_mean_similarity
+            ),
+        }
+        if any(value is None for value in local_values.values()):
+            raise ValueError("available local fusion components must not be null")
+        values.update(
+            {
+                name: _finite_number(value, field=name)
+                for name, value in local_values.items()
+            }
+        )
+    elif candidate.local_evidence.score_status != "unavailable":
+        raise ValueError("unsupported local fusion evidence status")
+    return {name: _finite_number(value, field=name) for name, value in values.items()}
+
+
+def _method_score(
+    method: str,
+    *,
+    values: dict[str, float],
+    rank_utilities: dict[str, float],
+    linear_parameters: ValidationLinearFusionParameters,
+) -> tuple[tuple[str, ...], tuple[float, ...], tuple[float, ...], float]:
+    names = tuple(name for name in FUSION_COMPONENTS if name in values)
+    raw_component_values = tuple(values[name] for name in names)
+    method_component_values = raw_component_values
+    if method == UNWEIGHTED_COMPONENT_MEAN:
+        score = fsum(raw_component_values) / len(raw_component_values)
+    elif method == VALIDATION_FITTED_LINEAR:
+        if names == FUSION_COMPONENTS:
+            weights = linear_parameters.full_weights
+            intercept = linear_parameters.full_intercept
+        elif names == GLOBAL_FUSION_COMPONENTS:
+            weights = linear_parameters.global_only_weights
+            intercept = linear_parameters.global_only_intercept
+        else:
+            raise ValueError("linear fusion received an unsupported component subset")
+        score = intercept + fsum(
+            weight * value
+            for weight, value in zip(weights, raw_component_values, strict=True)
+        )
+    elif method == MAXIMUM_SCOPE_EVIDENCE:
+        global_mean = fsum(values[name] for name in GLOBAL_FUSION_COMPONENTS) / len(
+            GLOBAL_FUSION_COMPONENTS
+        )
+        scope_means = [global_mean]
+        if all(name in values for name in LOCAL_FUSION_COMPONENTS):
+            scope_means.append(
+                fsum(values[name] for name in LOCAL_FUSION_COMPONENTS)
+                / len(LOCAL_FUSION_COMPONENTS)
+            )
+        score = max(scope_means)
+    elif method == ROBUST_RANK_AGGREGATION:
+        score = median(rank_utilities[name] for name in names)
+        method_component_values = tuple(rank_utilities[name] for name in names)
+    else:
+        raise ValueError(f"unsupported raw fusion method: {method}")
+    return (
+        names,
+        raw_component_values,
+        method_component_values,
+        _finite_number(score, field=f"{method} score"),
+    )
+
+
+def _rank_utilities(
+    values_by_candidate: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    result = {candidate_key: {} for candidate_key in values_by_candidate}
+    for component_name in FUSION_COMPONENTS:
+        ranked = sorted(
+            (
+                (values[component_name], candidate_key)
+                for candidate_key, values in values_by_candidate.items()
+                if component_name in values
+            ),
+            key=lambda item: (-item[0], item[1]),
+        )
+        if not ranked:
+            continue
+        index = 0
+        while index < len(ranked):
+            end = index + 1
+            while end < len(ranked) and ranked[end][0] == ranked[index][0]:
+                end += 1
+            average_rank = ((index + 1) + end) / 2
+            utility = (
+                1.0
+                if len(ranked) == 1
+                else 1.0 - (average_rank - 1.0) / (len(ranked) - 1.0)
+            )
+            for _, candidate_key in ranked[index:end]:
+                result[candidate_key][component_name] = utility
+            index = end
+    return result
+
+
+def _method_policy_fingerprint(
+    method: str,
+    linear_parameters: ValidationLinearFusionParameters,
+) -> str:
+    base: dict[str, object] = {
+        "method": method,
+        "method_version": _METHOD_VERSIONS[method],
+        "full_component_order": list(FUSION_COMPONENTS),
+        "local_unavailable_semantics": "omit_local_without_imputation",
+    }
+    if method == UNWEIGHTED_COMPONENT_MEAN:
+        base["semantics"] = "arithmetic_mean_of_available_raw_components"
+    elif method == VALIDATION_FITTED_LINEAR:
+        base["semantics"] = "explicit_validation_fitted_linear_combination"
+        base["parameters_fingerprint"] = linear_parameters.parameters_fingerprint
+    elif method == MAXIMUM_SCOPE_EVIDENCE:
+        base["semantics"] = "maximum_of_global_and_available_local_scope_means"
+    elif method == ROBUST_RANK_AGGREGATION:
+        base.update(
+            {
+                "semantics": "median_of_tie_aware_normalized_component_rank_utilities",
+                "rank_ties": "average_rank",
+                "rank_utility": "one_minus_rank_minus_one_over_population_minus_one",
+            }
+        )
+    else:
+        raise ValueError(f"unsupported raw fusion method: {method}")
+    return canonical_semantic_fingerprint(base)
 
 
 def _validate_source_evidence(
@@ -455,11 +870,62 @@ def _component_set_base(
     }
 
 
+def _weights(
+    values: object,
+    *,
+    expected_count: int,
+    field: str,
+) -> tuple[float, ...]:
+    if not isinstance(values, tuple):
+        raise TypeError(f"{field} must be a tuple")
+    weights = tuple(
+        _finite_number(value, field=f"{field}[{index}]")
+        for index, value in enumerate(values)
+    )
+    if len(weights) != expected_count:
+        raise ValueError(f"{field} must contain exactly {expected_count} values")
+    if not any(weight != 0.0 for weight in weights):
+        raise ValueError(f"{field} must contain at least one nonzero value")
+    return weights
+
+
+def _finite_number(value: object, *, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError(f"{field} must be numeric")
+    number = float(value)
+    if not isfinite(number):
+        raise ValueError(f"{field} must be finite")
+    return number
+
+
+def _sha256(value: object, *, field: str) -> str:
+    text = str(value or "").strip()
+    if not _SHA256_PATTERN.fullmatch(text):
+        raise ValueError(f"{field} must be a canonical sha256 fingerprint")
+    return text
+
+
 __all__ = [
     "DYNAMIC_SCORE_COMPONENT_SET_VERSION",
     "DYNAMIC_SCORE_COMPONENT_VERSION",
+    "FUSION_COMPONENTS",
+    "GLOBAL_FUSION_COMPONENTS",
+    "LOCAL_FUSION_COMPONENTS",
+    "MAXIMUM_SCOPE_EVIDENCE",
+    "RAW_FUSION_CANDIDATE_SCORE_VERSION",
+    "RAW_FUSION_METHODS",
+    "RAW_FUSION_SCORE_SET_VERSION",
+    "ROBUST_RANK_AGGREGATION",
+    "UNWEIGHTED_COMPONENT_MEAN",
+    "VALIDATION_FITTED_LINEAR",
+    "VALIDATION_LINEAR_FUSION_PARAMETERS_VERSION",
     "DynamicCandidateScoreComponents",
     "DynamicScoreComponentSet",
+    "RawFusionCandidateScore",
+    "RawFusionScoreSet",
+    "ValidationLinearFusionParameters",
+    "evaluate_raw_fusion_methods",
     "preserve_dynamic_score_components",
     "validate_dynamic_score_components",
+    "validate_raw_fusion_scores",
 ]
