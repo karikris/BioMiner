@@ -7,17 +7,25 @@ from dataclasses import replace
 import pytest
 
 from biominer.bioclip.dynamic_pool_scoring import (
+    GlobalReferencePoolInput,
     RawScoringQuery,
     score_family_evidence,
+    score_global_reference_evidence,
 )
 from biominer.bioclip.matrix_cache import (
+    CandidatePrototypeVector,
+    DynamicPoolMatrixCache,
     FamilyPrototypeMatrixCache,
     FamilyPrototypeVector,
+    PoolReferenceVector,
 )
 
 
 _MODEL_FINGERPRINT = "sha256:" + "a" * 64
 _PROTOTYPE_SET_FINGERPRINT = "sha256:" + "b" * 64
+_CANDIDATE_SET_FINGERPRINT = "sha256:" + "c" * 64
+_REFERENCE_PROTOTYPE_FINGERPRINT = "sha256:" + "d" * 64
+_REFERENCE_EMBEDDING_FINGERPRINT = "sha256:" + "e" * 64
 
 
 def test_family_evidence_scores_every_row_as_raw_cosine() -> None:
@@ -117,6 +125,125 @@ def test_family_scoring_rejects_non_unit_query_and_tampered_matrix() -> None:
         score_family_evidence(_query(), replace(matrix, _float32_bytes=b"bad"))
 
 
+def test_global_evidence_preserves_prototype_nearest_top_k_and_support() -> None:
+    candidate_matrix, pools = _global_inputs()
+
+    result = score_global_reference_evidence(_query(), candidate_matrix, pools)
+
+    assert [score.candidate_accepted_taxon_key for score in result.scores] == [
+        "gbif:100",
+        "gbif:200",
+    ]
+    first, second = result.scores
+    assert first.score_status == "available"
+    assert first.prototype_similarity == pytest.approx(1.0)
+    assert first.nearest_reference_similarity == pytest.approx(1.0)
+    assert first.nearest_reference_observation_id == "reference-observation:1"
+    assert first.top_k_mean_similarity == pytest.approx((1.0 + 2**-0.5) / 2)
+    assert first.configured_k == 5
+    assert first.effective_k == 2
+    assert first.configured_reference_count == 3
+    assert first.reference_count == 3
+    assert first.independent_observation_count == 2
+    assert first.reference_shortfall_count == 1
+    assert first.ranked_reference_observation_ids == (
+        "reference-observation:1",
+        "reference-observation:2",
+    )
+    assert (
+        first.top_k_reference_observation_ids == first.ranked_reference_observation_ids
+    )
+    assert second.prototype_similarity == pytest.approx(0.0)
+    assert second.nearest_reference_similarity == pytest.approx(0.0)
+    assert second.top_k_mean_similarity == pytest.approx(-0.5)
+    assert result.score_set_fingerprint.startswith("sha256:")
+
+
+def test_global_evidence_aggregates_duplicate_media_per_observation() -> None:
+    candidate_matrix, pools = _global_inputs()
+    first = score_global_reference_evidence(_query(), candidate_matrix, pools).scores[0]
+
+    assert first.reference_count == 3
+    assert first.independent_observation_count == 2
+    assert first.effective_k == 2
+    assert len(first.ranked_reference_observation_ids) == 2
+
+
+def test_global_scoring_is_independent_of_pool_input_order() -> None:
+    candidate_matrix, pools = _global_inputs()
+
+    first = score_global_reference_evidence(_query(), candidate_matrix, pools)
+    second = score_global_reference_evidence(
+        _query(),
+        candidate_matrix,
+        tuple(reversed(pools)),
+    )
+
+    assert first == second
+
+
+def test_global_scoring_requires_one_bound_pool_for_every_candidate() -> None:
+    candidate_matrix, pools = _global_inputs()
+
+    with pytest.raises(ValueError, match="complete candidate matrix membership"):
+        score_global_reference_evidence(_query(), candidate_matrix, pools[:1])
+    with pytest.raises(ValueError, match="repeat a candidate"):
+        score_global_reference_evidence(
+            _query(),
+            candidate_matrix,
+            (pools[0], pools[0], pools[1]),
+        )
+    with pytest.raises(ValueError, match="scientific name differs"):
+        score_global_reference_evidence(
+            _query(),
+            candidate_matrix,
+            (
+                replace(
+                    pools[0],
+                    candidate_scientific_name="Conflicting name",
+                    input_fingerprint=None,
+                ),
+                pools[1],
+            ),
+        )
+
+
+def test_global_pool_input_rejects_candidate_and_scope_drift() -> None:
+    cache = DynamicPoolMatrixCache()
+    rows = _reference_rows("one")
+    foreign = _pool_matrix(
+        cache,
+        candidate_key="gbif:200",
+        geographic_scope="global",
+        rows=rows,
+        fingerprint_digit="8",
+    )
+    with pytest.raises(ValueError, match="another candidate"):
+        GlobalReferencePoolInput(
+            candidate_accepted_taxon_key="gbif:100",
+            candidate_scientific_name="Papilio demoleus",
+            pool_matrix=foreign,
+            configured_reference_count=3,
+            configured_top_k=5,
+        )
+
+    local = _pool_matrix(
+        cache,
+        candidate_key="gbif:100",
+        geographic_scope="exact_local_cell",
+        rows=rows,
+        fingerprint_digit="9",
+    )
+    with pytest.raises(ValueError, match="global scope"):
+        GlobalReferencePoolInput(
+            candidate_accepted_taxon_key="gbif:100",
+            candidate_scientific_name="Papilio demoleus",
+            pool_matrix=local,
+            configured_reference_count=3,
+            configured_top_k=5,
+        )
+
+
 def _query() -> RawScoringQuery:
     return RawScoringQuery(
         query_id="flickr-embedding:query",
@@ -155,6 +282,131 @@ def _family_rows() -> tuple[FamilyPrototypeVector, ...]:
             family_key="gbif:9417",
             family_name="Papilionidae",
             prototype_fingerprint="sha256:" + "2" * 64,
+            embedding=(1.0, 0.0),
+        ),
+    )
+
+
+def _global_inputs():
+    cache = DynamicPoolMatrixCache()
+    candidates = cache.get_candidate_matrix(
+        route="adult_field",
+        visual_input_kind="focused_full_frame",
+        family_partition="all-families",
+        model_fingerprint=_MODEL_FINGERPRINT,
+        candidate_set_fingerprint=_CANDIDATE_SET_FINGERPRINT,
+        reference_prototype_artifact_fingerprint=_REFERENCE_PROTOTYPE_FINGERPRINT,
+        candidates=(
+            CandidatePrototypeVector(
+                accepted_taxon_key="gbif:200",
+                scientific_name="Papilio machaon",
+                prototype_fingerprint="sha256:" + "4" * 64,
+                embedding=(0.0, 1.0),
+            ),
+            CandidatePrototypeVector(
+                accepted_taxon_key="gbif:100",
+                scientific_name="Papilio demoleus",
+                prototype_fingerprint="sha256:" + "5" * 64,
+                embedding=(1.0, 0.0),
+            ),
+        ),
+    )
+    pools = (
+        GlobalReferencePoolInput(
+            candidate_accepted_taxon_key="gbif:100",
+            candidate_scientific_name="Papilio demoleus",
+            pool_matrix=_pool_matrix(
+                cache,
+                candidate_key="gbif:100",
+                geographic_scope="global",
+                rows=(
+                    PoolReferenceVector(
+                        reference_media_id="reference-media:1",
+                        reference_observation_id="reference-observation:1",
+                        member_fingerprint="sha256:" + "1" * 64,
+                        reference_embedding_fingerprint="sha256:" + "2" * 64,
+                        embedding=(1.0, 0.0),
+                    ),
+                    PoolReferenceVector(
+                        reference_media_id="reference-media:2a",
+                        reference_observation_id="reference-observation:2",
+                        member_fingerprint="sha256:" + "3" * 64,
+                        reference_embedding_fingerprint="sha256:" + "4" * 64,
+                        embedding=(0.8, 0.6),
+                    ),
+                    PoolReferenceVector(
+                        reference_media_id="reference-media:2b",
+                        reference_observation_id="reference-observation:2",
+                        member_fingerprint="sha256:" + "5" * 64,
+                        reference_embedding_fingerprint="sha256:" + "6" * 64,
+                        embedding=(0.6, 0.8),
+                    ),
+                ),
+                fingerprint_digit="6",
+            ),
+            configured_reference_count=3,
+            configured_top_k=5,
+        ),
+        GlobalReferencePoolInput(
+            candidate_accepted_taxon_key="gbif:200",
+            candidate_scientific_name="Papilio machaon",
+            pool_matrix=_pool_matrix(
+                cache,
+                candidate_key="gbif:200",
+                geographic_scope="global",
+                rows=(
+                    PoolReferenceVector(
+                        reference_media_id="reference-media:3",
+                        reference_observation_id="reference-observation:3",
+                        member_fingerprint="sha256:" + "7" * 64,
+                        reference_embedding_fingerprint="sha256:" + "8" * 64,
+                        embedding=(0.0, 1.0),
+                    ),
+                    PoolReferenceVector(
+                        reference_media_id="reference-media:4",
+                        reference_observation_id="reference-observation:4",
+                        member_fingerprint="sha256:" + "9" * 64,
+                        reference_embedding_fingerprint="sha256:" + "a" * 64,
+                        embedding=(-1.0, 0.0),
+                    ),
+                ),
+                fingerprint_digit="7",
+            ),
+            configured_reference_count=3,
+            configured_top_k=5,
+        ),
+    )
+    return candidates, pools
+
+
+def _pool_matrix(
+    cache: DynamicPoolMatrixCache,
+    *,
+    candidate_key: str,
+    geographic_scope: str,
+    rows: tuple[PoolReferenceVector, ...],
+    fingerprint_digit: str,
+):
+    return cache.get_pool_matrix(
+        route="adult_field",
+        visual_input_kind="focused_full_frame",
+        geographic_scope=geographic_scope,
+        candidate_accepted_taxon_key=candidate_key,
+        model_fingerprint=_MODEL_FINGERPRINT,
+        reference_embedding_artifact_fingerprint=_REFERENCE_EMBEDDING_FINGERPRINT,
+        pool_membership_fingerprint="sha256:" + fingerprint_digit * 64,
+        pool_ids=(f"dynamic-reference-pool:{candidate_key}:{geographic_scope}",),
+        references=rows,
+    )
+
+
+def _reference_rows(prefix: str) -> tuple[PoolReferenceVector, ...]:
+    return (
+        PoolReferenceVector(
+            reference_media_id=f"reference-media:{prefix}",
+            reference_observation_id=f"reference-observation:{prefix}",
+            member_fingerprint="sha256:" + "b" * 64,
+            reference_embedding_fingerprint="sha256:" + "c" * 64,
             embedding=(1.0, 0.0),
         ),
     )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from array import array
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from math import fsum, isfinite, sqrt
@@ -22,6 +23,9 @@ from biominer.vision.full_frame_attention import (
 RAW_SCORING_QUERY_VERSION = "raw-dynamic-pool-query-v1"
 RAW_FAMILY_EVIDENCE_VERSION = "raw-family-evidence-v1"
 RAW_FAMILY_EVIDENCE_SET_VERSION = "raw-family-evidence-set-v1"
+GLOBAL_REFERENCE_POOL_INPUT_VERSION = "global-reference-pool-input-v1"
+RAW_GLOBAL_REFERENCE_EVIDENCE_VERSION = "raw-global-reference-evidence-v1"
+RAW_GLOBAL_REFERENCE_EVIDENCE_SET_VERSION = "raw-global-reference-evidence-set-v1"
 
 _VISUAL_INPUT_KINDS = frozenset(
     {
@@ -120,6 +124,109 @@ class RawFamilyEvidenceSet:
     score_set_fingerprint: str
 
 
+@dataclass(frozen=True, slots=True)
+class GlobalReferencePoolInput:
+    """One candidate-bound global pool and its configured support opportunity."""
+
+    candidate_accepted_taxon_key: str
+    candidate_scientific_name: str
+    pool_matrix: CachedVectorMatrix
+    configured_reference_count: int
+    configured_top_k: int
+    input_fingerprint: str | None = None
+
+    def __post_init__(self) -> None:
+        candidate_key = _required_text(
+            self.candidate_accepted_taxon_key,
+            field="candidate_accepted_taxon_key",
+        )
+        scientific_name = _required_text(
+            self.candidate_scientific_name,
+            field="candidate_scientific_name",
+        )
+        if not isinstance(self.pool_matrix, CachedVectorMatrix):
+            raise TypeError("global pool_matrix must be a CachedVectorMatrix")
+        if self.pool_matrix.matrix_kind != "dynamic_reference_pool":
+            raise ValueError("global pool matrix has the wrong matrix kind")
+        if self.pool_matrix.partition != "global":
+            raise ValueError("global pool matrix must have global scope")
+        if self.pool_matrix.subject_id != candidate_key:
+            raise ValueError("global pool matrix is bound to another candidate")
+        configured_count = _positive_integer(
+            self.configured_reference_count,
+            field="configured_reference_count",
+        )
+        configured_top_k = _positive_integer(
+            self.configured_top_k,
+            field="configured_top_k",
+        )
+        base = {
+            "schema_version": GLOBAL_REFERENCE_POOL_INPUT_VERSION,
+            "candidate_accepted_taxon_key": candidate_key,
+            "candidate_scientific_name": scientific_name,
+            "pool_matrix_signature": self.pool_matrix.matrix_signature,
+            "pool_membership_fingerprint": self.pool_matrix.source_fingerprint,
+            "configured_reference_count": configured_count,
+            "configured_top_k": configured_top_k,
+        }
+        fingerprint = canonical_semantic_fingerprint(base)
+        if (
+            self.input_fingerprint is not None
+            and _sha256(
+                self.input_fingerprint,
+                field="input_fingerprint",
+            )
+            != fingerprint
+        ):
+            raise ValueError("input_fingerprint does not match global pool input")
+        object.__setattr__(self, "candidate_accepted_taxon_key", candidate_key)
+        object.__setattr__(self, "candidate_scientific_name", scientific_name)
+        object.__setattr__(self, "configured_reference_count", configured_count)
+        object.__setattr__(self, "configured_top_k", configured_top_k)
+        object.__setattr__(self, "input_fingerprint", fingerprint)
+
+
+@dataclass(frozen=True, slots=True)
+class RawGlobalReferenceEvidence:
+    """Separate raw global prototype and observation-level similarities."""
+
+    schema_version: str
+    query_id: str
+    candidate_accepted_taxon_key: str
+    candidate_scientific_name: str
+    candidate_matrix_signature: str
+    candidate_prototype_fingerprint: str
+    pool_matrix_signature: str
+    pool_membership_fingerprint: str
+    score_status: str
+    prototype_similarity: float
+    nearest_reference_similarity: float
+    nearest_reference_observation_id: str
+    top_k_mean_similarity: float
+    configured_k: int
+    effective_k: int
+    configured_reference_count: int
+    reference_count: int
+    independent_observation_count: int
+    reference_shortfall_count: int
+    ranked_reference_observation_ids: tuple[str, ...]
+    top_k_reference_observation_ids: tuple[str, ...]
+    score_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class RawGlobalReferenceEvidenceSet:
+    """Complete global evidence for every candidate prototype row."""
+
+    schema_version: str
+    query_id: str
+    query_fingerprint: str
+    candidate_matrix_signature: str
+    candidate_set_fingerprint: str
+    scores: tuple[RawGlobalReferenceEvidence, ...]
+    score_set_fingerprint: str
+
+
 def score_family_evidence(
     query: RawScoringQuery,
     family_matrix: CachedVectorMatrix,
@@ -190,6 +297,200 @@ def score_family_evidence(
         family_partition=family_matrix.partition,
         scores=tuple(scores),
         score_set_fingerprint=canonical_semantic_fingerprint(score_set_base),
+    )
+
+
+def score_global_reference_evidence(
+    query: RawScoringQuery,
+    candidate_matrix: CachedVectorMatrix,
+    pools: Sequence[GlobalReferencePoolInput],
+) -> RawGlobalReferenceEvidenceSet:
+    """Score global prototype and observation evidence for every candidate."""
+
+    _validate_query_matrix(
+        query,
+        candidate_matrix,
+        expected_kind="candidate_prototype",
+    )
+    pool_items = _global_pool_inputs(pools)
+    candidate_keys = tuple(candidate_matrix.row_ids)
+    if set(pool_items) != set(candidate_keys):
+        raise ValueError(
+            "global pool inputs must match the complete candidate matrix membership"
+        )
+    candidate_rows = {
+        candidate_key: (
+            index,
+            candidate_matrix.row_names[index],
+            candidate_matrix.row_fingerprints[index],
+        )
+        for index, candidate_key in enumerate(candidate_keys)
+    }
+    output: list[RawGlobalReferenceEvidence] = []
+    for candidate_key in candidate_keys:
+        index, scientific_name, prototype_fingerprint = candidate_rows[candidate_key]
+        pool = pool_items[candidate_key]
+        if pool.candidate_scientific_name != scientific_name:
+            raise ValueError(
+                "global pool scientific name differs from candidate prototype"
+            )
+        _validate_query_matrix(
+            query,
+            pool.pool_matrix,
+            expected_kind="dynamic_reference_pool",
+        )
+        if pool.pool_matrix.partition != "global":
+            raise ValueError("global reference evidence requires global pool scope")
+        if pool.pool_matrix.subject_id != candidate_key:
+            raise ValueError("global reference pool is bound to another candidate")
+        observations = _independent_observation_vectors(pool.pool_matrix)
+        ranked = sorted(
+            (
+                (_raw_cosine(query.embedding, vector), observation_id)
+                for observation_id, vector in observations
+            ),
+            key=lambda item: (-item[0], item[1]),
+        )
+        if not ranked:
+            raise ValueError("global reference pool has no independent observations")
+        effective_k = min(pool.configured_top_k, len(ranked))
+        top_k = tuple(ranked[:effective_k])
+        prototype_similarity = _raw_cosine(
+            query.embedding,
+            candidate_matrix.vector(index),
+        )
+        top_k_mean = fsum(similarity for similarity, _ in top_k) / effective_k
+        base = {
+            "schema_version": RAW_GLOBAL_REFERENCE_EVIDENCE_VERSION,
+            "query_id": query.query_id,
+            "query_fingerprint": query.query_fingerprint,
+            "candidate_accepted_taxon_key": candidate_key,
+            "candidate_scientific_name": scientific_name,
+            "candidate_matrix_signature": candidate_matrix.matrix_signature,
+            "candidate_prototype_fingerprint": prototype_fingerprint,
+            "pool_matrix_signature": pool.pool_matrix.matrix_signature,
+            "pool_membership_fingerprint": pool.pool_matrix.source_fingerprint,
+            "pool_input_fingerprint": pool.input_fingerprint,
+            "score_status": "available",
+            "prototype_similarity": prototype_similarity,
+            "nearest_reference_similarity": ranked[0][0],
+            "nearest_reference_observation_id": ranked[0][1],
+            "top_k_mean_similarity": top_k_mean,
+            "configured_k": pool.configured_top_k,
+            "effective_k": effective_k,
+            "configured_reference_count": pool.configured_reference_count,
+            "reference_count": pool.pool_matrix.row_count,
+            "independent_observation_count": len(observations),
+            "reference_shortfall_count": max(
+                0,
+                pool.configured_reference_count - len(observations),
+            ),
+            "ranked_reference_observation_ids": [item[1] for item in ranked],
+            "top_k_reference_observation_ids": [item[1] for item in top_k],
+        }
+        output.append(
+            RawGlobalReferenceEvidence(
+                schema_version=RAW_GLOBAL_REFERENCE_EVIDENCE_VERSION,
+                query_id=query.query_id,
+                candidate_accepted_taxon_key=candidate_key,
+                candidate_scientific_name=scientific_name,
+                candidate_matrix_signature=candidate_matrix.matrix_signature,
+                candidate_prototype_fingerprint=prototype_fingerprint,
+                pool_matrix_signature=pool.pool_matrix.matrix_signature,
+                pool_membership_fingerprint=pool.pool_matrix.source_fingerprint,
+                score_status="available",
+                prototype_similarity=prototype_similarity,
+                nearest_reference_similarity=ranked[0][0],
+                nearest_reference_observation_id=ranked[0][1],
+                top_k_mean_similarity=top_k_mean,
+                configured_k=pool.configured_top_k,
+                effective_k=effective_k,
+                configured_reference_count=pool.configured_reference_count,
+                reference_count=pool.pool_matrix.row_count,
+                independent_observation_count=len(observations),
+                reference_shortfall_count=max(
+                    0,
+                    pool.configured_reference_count - len(observations),
+                ),
+                ranked_reference_observation_ids=tuple(item[1] for item in ranked),
+                top_k_reference_observation_ids=tuple(item[1] for item in top_k),
+                score_fingerprint=canonical_semantic_fingerprint(base),
+            )
+        )
+    score_set_base = {
+        "schema_version": RAW_GLOBAL_REFERENCE_EVIDENCE_SET_VERSION,
+        "query_id": query.query_id,
+        "query_fingerprint": query.query_fingerprint,
+        "candidate_matrix_signature": candidate_matrix.matrix_signature,
+        "candidate_set_fingerprint": candidate_matrix.source_fingerprint,
+        "score_fingerprints": [score.score_fingerprint for score in output],
+    }
+    return RawGlobalReferenceEvidenceSet(
+        schema_version=RAW_GLOBAL_REFERENCE_EVIDENCE_SET_VERSION,
+        query_id=query.query_id,
+        query_fingerprint=_required_sha256(query.query_fingerprint),
+        candidate_matrix_signature=candidate_matrix.matrix_signature,
+        candidate_set_fingerprint=candidate_matrix.source_fingerprint,
+        scores=tuple(output),
+        score_set_fingerprint=canonical_semantic_fingerprint(score_set_base),
+    )
+
+
+def _global_pool_inputs(
+    pools: Sequence[GlobalReferencePoolInput],
+) -> dict[str, GlobalReferencePoolInput]:
+    if isinstance(pools, str | bytes) or not isinstance(pools, Sequence):
+        raise TypeError("global pool inputs must be a sequence")
+    items = tuple(pools)
+    if not items:
+        raise ValueError("global pool inputs must not be empty")
+    if any(not isinstance(item, GlobalReferencePoolInput) for item in items):
+        raise TypeError("global pool inputs contain invalid row types")
+    result: dict[str, GlobalReferencePoolInput] = {}
+    for item in items:
+        if item.candidate_accepted_taxon_key in result:
+            raise ValueError("global pool inputs repeat a candidate taxon key")
+        result[item.candidate_accepted_taxon_key] = item
+    return result
+
+
+def _independent_observation_vectors(
+    matrix: CachedVectorMatrix,
+) -> tuple[tuple[str, tuple[float, ...]], ...]:
+    grouped: dict[str, list[tuple[float, ...]]] = defaultdict(list)
+    for index, observation_id in enumerate(matrix.row_names):
+        grouped[observation_id].append(matrix.vector(index))
+    return tuple(
+        (observation_id, _normalized_mean(grouped[observation_id]))
+        for observation_id in sorted(grouped)
+    )
+
+
+def _normalized_mean(vectors: Sequence[Sequence[float]]) -> tuple[float, ...]:
+    if not vectors:
+        raise ValueError("observation aggregation requires at least one vector")
+    dimension = len(vectors[0])
+    if any(len(vector) != dimension for vector in vectors):
+        raise ValueError("observation aggregation has mixed dimensions")
+    mean = tuple(
+        fsum(vector[index] for vector in vectors) / len(vectors)
+        for index in range(dimension)
+    )
+    norm = sqrt(fsum(value * value for value in mean))
+    if not isfinite(norm) or norm <= 0.0:
+        raise ValueError("observation aggregation has no scoring direction")
+    stored = array("f", (value / norm for value in mean))
+    result = tuple(float(value) for value in stored)
+    _require_unit_vector(result, field="observation aggregate")
+    return result
+
+
+def _raw_cosine(left: Sequence[float], right: Sequence[float]) -> float:
+    if len(left) != len(right):
+        raise ValueError("raw cosine vectors have different dimensions")
+    return min(
+        1.0,
+        max(-1.0, fsum(a * b for a, b in zip(left, right, strict=True))),
     )
 
 
@@ -328,12 +629,27 @@ def _required_sha256(value: str | None) -> str:
     return value
 
 
+def _positive_integer(value: object, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field} must be an integer")
+    if value <= 0:
+        raise ValueError(f"{field} must be positive")
+    return value
+
+
 __all__ = [
+    "GLOBAL_REFERENCE_POOL_INPUT_VERSION",
     "RAW_FAMILY_EVIDENCE_SET_VERSION",
     "RAW_FAMILY_EVIDENCE_VERSION",
+    "RAW_GLOBAL_REFERENCE_EVIDENCE_SET_VERSION",
+    "RAW_GLOBAL_REFERENCE_EVIDENCE_VERSION",
     "RAW_SCORING_QUERY_VERSION",
+    "GlobalReferencePoolInput",
     "RawFamilyEvidence",
     "RawFamilyEvidenceSet",
+    "RawGlobalReferenceEvidence",
+    "RawGlobalReferenceEvidenceSet",
     "RawScoringQuery",
     "score_family_evidence",
+    "score_global_reference_evidence",
 ]

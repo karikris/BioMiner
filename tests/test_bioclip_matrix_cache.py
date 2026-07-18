@@ -181,6 +181,7 @@ def test_dynamic_cache_reuses_candidate_and_pool_signatures_independently() -> N
     assert first_candidates.matrix_kind == "candidate_prototype"
     assert first_candidates.row_ids == ("gbif:100", "gbif:200")
     assert first_pool.matrix_kind == "dynamic_reference_pool"
+    assert first_pool.subject_id == "gbif:100"
     assert first_pool.row_ids == ("reference-media:1", "reference-media:2")
     assert first_pool.row_names == (
         "reference-observation:1",

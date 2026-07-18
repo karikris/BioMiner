@@ -166,6 +166,7 @@ class CachedVectorMatrix:
     row_fingerprints: tuple[str, ...]
     embedding_dimension: int
     _float32_bytes: bytes
+    subject_id: str | None = None
 
     @property
     def row_count(self) -> int:
@@ -832,6 +833,7 @@ def _materialize_pool_matrix(request: dict[str, object]) -> CachedVectorMatrix:
         row_fingerprints=tuple(row.reference_embedding_fingerprint for row in rows),
         embedding_dimension=int(request["embedding_dimension"]),
         _float32_bytes=vectors.tobytes(),
+        subject_id=str(request["candidate_accepted_taxon_key"]),
     )
 
 
