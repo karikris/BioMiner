@@ -24,6 +24,13 @@ from biominer.evaluation.candidate_strategies import (
     write_candidate_strategy_metrics,
     write_family_pruning_counterfactual,
 )
+from biominer.evaluation.candidate_strategy_selection import (
+    CANDIDATE_STRATEGY_ABLATION_REPORT_FILE,
+    CANDIDATE_STRATEGY_ABLATION_SUMMARY_FILE,
+    build_candidate_strategy_ablation_report,
+    validate_candidate_strategy_ablation_report,
+    write_candidate_strategy_ablation_report,
+)
 
 
 TARGET = "gbif:target"
@@ -211,6 +218,115 @@ def test_family_pruning_loss_denominator_excludes_species_missing_from_union() -
     assert summary["correct_species_lost_count"] == 1
     assert summary["correct_species_lost_rate"] == 1.0
     assert summary["reviewed_species_missing_from_complete_union_count"] == 1
+
+
+def test_strategy_selection_fails_closed_for_fixture_evidence(tmp_path) -> None:
+    source, plans, labels, measurements = _evaluation_inputs()
+    metrics = build_candidate_strategy_metrics(
+        source,
+        plans,
+        evaluation_run_id="candidate-evaluation-1",
+        labels=labels,
+        measurements=measurements,
+        ks=KS,
+    )
+    counterfactual = build_family_pruning_counterfactual(
+        source,
+        evaluation_run_id="candidate-evaluation-1",
+        labels=labels,
+    )
+
+    report = build_candidate_strategy_ablation_report(
+        metrics,
+        counterfactual,
+        validation_gate=_validation_gate(require_non_fixture_evidence=True),
+    )
+
+    assert report["validation_gate_passed"] is False
+    assert report["selected_strategy"] is None
+    assert report["selection_status"] == "validation_gate_failed"
+    assert report["production_default_eligible"] is False
+    assert report["production_default_changed"] is False
+    assert report["superiority_claimed"] is False
+    non_fixture = next(
+        check
+        for check in report["validation_checks"]
+        if check["name"] == "non_fixture_evidence"
+    )
+    assert non_fixture["passed"] is False
+
+    paths = write_candidate_strategy_ablation_report(report, tmp_path)
+    assert paths["json"].name == CANDIDATE_STRATEGY_ABLATION_REPORT_FILE
+    assert paths["markdown"].name == CANDIDATE_STRATEGY_ABLATION_SUMMARY_FILE
+    assert "Selected strategy: `none`" in paths["markdown"].read_text()
+
+
+def test_strategy_selection_selects_hybrid_only_after_gate_passes() -> None:
+    source, plans, labels, measurements = _evaluation_inputs()
+    production_labels = [dict(row) for row in labels]
+    for row in production_labels:
+        row["label_source"] = "reviewed-campaign-2026-v1"
+    production_measurements = [dict(row) for row in measurements]
+    for row in production_measurements:
+        row["measurement_source"] = "instrumented-benchmark-2026-v1"
+    metrics = build_candidate_strategy_metrics(
+        source,
+        plans,
+        evaluation_run_id="candidate-evaluation-production-1",
+        labels=production_labels,
+        measurements=production_measurements,
+        ks=KS,
+    )
+    counterfactual = build_family_pruning_counterfactual(
+        source,
+        evaluation_run_id="candidate-evaluation-production-1",
+        labels=production_labels,
+    )
+
+    report = build_candidate_strategy_ablation_report(
+        metrics,
+        counterfactual,
+        validation_gate=_validation_gate(require_non_fixture_evidence=True),
+    )
+
+    assert report["validation_gate_passed"] is True
+    assert report["selected_strategy"] == PARALLEL_UNION_STRATEGY
+    assert report["selection_status"] == "selected_for_next_phase"
+    assert report["production_default_eligible"] is True
+    assert report["production_default_changed"] is False
+    assert report["superiority_claimed"] is False
+    assert all(check["passed"] for check in report["validation_checks"])
+    summaries = {
+        row["strategy_name"]: row for row in report["strategy_summaries"]
+    }
+    assert summaries[PARALLEL_UNION_STRATEGY]["species_recall"] == 1.0
+    assert summaries[GEOGRAPHY_FIRST_STRATEGY]["species_recall"] == 1.0
+    assert summaries[FAMILY_FIRST_SAFE_STRATEGY]["species_recall"] == 0.5
+
+    invalid = dict(report)
+    invalid["selected_strategy"] = FAMILY_FIRST_SAFE_STRATEGY
+    with pytest.raises(ValueError, match="inconsistent with the gate"):
+        validate_candidate_strategy_ablation_report(invalid)
+
+
+def _validation_gate(*, require_non_fixture_evidence: bool) -> dict[str, object]:
+    return {
+        "selection_k": 1,
+        "minimum_evaluated_labels": 2,
+        "minimum_target_recall": 1.0,
+        "minimum_species_recall": 1.0,
+        "minimum_family_recall": 1.0,
+        "minimum_no_geo_species_recall": 1.0,
+        "minimum_wrong_family_species_recall": 1.0,
+        "maximum_recall_shortfall": 0.0,
+        "maximum_mean_dot_products": 2.0,
+        "maximum_mean_reference_members": 2.0,
+        "maximum_mean_elapsed_time_ms": 0.1,
+        "maximum_peak_memory_bytes": 1024,
+        "minimum_cache_reuse_fraction": 0.5,
+        "minimum_family_pruning_eligible_labels": 2,
+        "require_non_fixture_evidence": require_non_fixture_evidence,
+    }
 
 
 def _evaluation_inputs() -> tuple[
