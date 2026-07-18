@@ -1,7 +1,7 @@
 # ADR: geography-conditioned dynamic reference pooling
 
-- Status: accepted architecture; implementation and empirical strategy
-  selection remain pending
+- Status: accepted architecture; software and fixture implementation complete
+  through Phase 15; live empirical strategy selection remains pending
 - Date: 2026-07-18
 - Decision owner: Kris Kari
 - Scope: BioMiner target-aware YOLOE-to-BioCLIP classification
@@ -23,6 +23,37 @@ avoid a costly and scientifically unnecessary encoding pass for every query,
 candidate or geographic plan. The detailed baseline and gap register are in
 `current_reference_pooling_audit.md`; downstream maturity and artifact
 constraints are in `taxalens_butterflylens_pooling_handoff.md`.
+
+## Implementation snapshot
+
+The architecture below is implemented through the Phase 15 fixture and
+production-decision boundary. The implementation includes:
+
+- normalized reference geography, immutable index/anchor/neighbour artifacts,
+  exact precision and QA manifests;
+- complete family/geography candidate unions and all three target-preserving
+  scheduling strategies;
+- typed global/local pool plans, members, summaries, bounded uncertainty
+  expansion, cached matrix identities and raw component scoring;
+- four provisional fusion methods that preserve components, ties and
+  alternatives;
+- probability-audit registers, separate targeted failure discovery,
+  fail-closed occurrence review, reviewed-evidence planning, leakage-safe
+  splits, calibration, grouped quality reporting and remediation;
+- exact reference-revision impact, selective reuse/rerun planning, stage graph,
+  settings and seven plan-first CLI operations;
+- immutable TaxaLens and ButterflyLens handoffs validated against exact
+  committed consumer objects; and
+- a complete 24-variant fixture ablation and production-default decision.
+
+The pilot decision is `insufficient_evidence`, not a selected strategy or a
+rejection of measured production performance. It contains zero source-bound
+human labels, leaves the full 86-effective-review shortfall, does not measure
+MPS peak memory or comparable runtime, and leaves runtime settings unchanged.
+The integrated report fingerprint is
+`sha256:ade039c9914c6fc720773eee7fbfb2141ff087f3abf869d9ab56b5f54dfa5d09`.
+Physical artifacts and canonical grains are catalogued in
+`../schemas/geography_conditioned_dynamic_pooling_contracts.md`.
 
 ## Decision
 
@@ -75,8 +106,7 @@ and global safety candidates required by the active policy.
 
 ## First-class identities
 
-Later schema tasks will fix physical columns, but every implementation must
-bind at least these semantic identities:
+The implemented physical schemas bind at least these semantic identities:
 
 - query media, visual-input, transformation, route and embedding identity;
 - candidate-set, accepted-taxon and registry identity;
@@ -103,9 +133,10 @@ target, locally supported, a reviewed competitor and a visual neighbour.
 
 The global safety contribution prevents local geography or an incorrect family
 priority from hiding a plausible competitor. Its candidate policy is
-versioned separately from reference-member quotas. Strategy-selection tasks
-will compare sequential, parallel-union and fused hybrid construction without
-claiming one is superior before held-out evidence exists.
+versioned separately from reference-member quotas. The fixture ablation
+compares geography-first, family-first-safe and parallel-union construction
+without claiming one is superior before eligible held-out reviewed evidence
+exists.
 
 ### Family as a soft accelerator
 
@@ -289,9 +320,13 @@ metrics remain unavailable rather than estimated.
 
 ## Downstream compatibility
 
-TaxaLens receives immutable candidate, review, quality and geographic-impact
+TaxaLens at exact committed pin
+`e845dd98493979f37b04dbb6538e0d7b8758ca11` receives immutable candidate,
+review, quality and geographic-impact
 artifacts without conflating reviewed with release-ready occurrence status.
-ButterflyLens receives model-evidence and classification-maturity artifacts
+ButterflyLens at exact committed pin
+`1cea643623f2f20a2bea72afc754c7b194db3278` receives model-evidence and
+classification-maturity artifacts
 through its import adapter; BioMiner does not bypass RLS or write directly to
 its tables. Both handoffs pin exact contracts and producer commits, preserve
 rights and geographic precision, and publish manifests last.
@@ -330,14 +365,14 @@ would waste model work and make equivalent evidence identities diverge.
 Rejected because raw model evidence is not calibrated and component fusion can
 hide disagreement and support shortfalls.
 
-## Consequences and implementation gates
+## Consequences, completed software gates and remaining evidence
 
 The decision adds explicit index, plan, membership, component-score and
 expansion artifacts. This increases schema surface area and storage metadata,
 but makes every comparison reconstructable, cache-safe, selectively
 invalidatable and auditable.
 
-Implementation is not complete until tests prove:
+Deterministic software and fixture tests now prove:
 
 1. all required candidates survive family and geography optimization;
 2. every candidate has a global result and a local result or exact unavailable
@@ -349,8 +384,16 @@ Implementation is not complete until tests prove:
 7. scores preserve global/local components and avoid probability language;
 8. reference revisions selectively invalidate only affected downstream plans;
 9. downstream fixtures preserve evidence maturity and release boundaries; and
-10. strategy, quality and efficiency claims come from held-out or reviewed
-    evidence rather than this ADR.
+10. strategy, quality and efficiency claims remain unavailable when eligible
+    held-out or reviewed evidence does not exist.
+
+These software gates do not complete a scientific run. Production selection
+still requires source-bound human review, at least 86 effective reviewed
+records under the frozen policy, at least 30 independent records in required
+subgroups, a reviewed-precision lower bound of at least 0.95, comparable
+instrumented computation, and an MPS peak-memory measurement within the
+536,870,912-byte policy limit. No candidate strategy, pool variant, or fusion
+method is a production default until those gates pass together.
 
 ## GitHits provenance
 
