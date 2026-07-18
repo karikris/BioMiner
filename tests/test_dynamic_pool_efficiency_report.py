@@ -12,11 +12,22 @@ from biominer.bioclip.dynamic_pool_expansion import (
     DYNAMIC_POOL_EXPANSION_CACHE_REUSE_SCHEMA_VERSION,
     dynamic_pool_expansion_cache_reuse_schema,
 )
+from biominer.bioclip.dynamic_pool_compute import (
+    POOL_MATRIX_BATCH_METRICS_VERSION,
+    PoolMatrixBatchMetrics,
+)
+from biominer.bioclip.matrix_cache import (
+    DynamicPoolMatrixCacheMetrics,
+    MatrixCacheMetrics,
+)
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.reports.dynamic_pool_efficiency import (
     EMBEDDING_REUSE_METRICS_VERSION,
+    MATRIX_REUSE_METRICS_VERSION,
     measure_embedding_reuse,
+    measure_matrix_reuse,
     validate_embedding_reuse_metrics,
+    validate_matrix_reuse_metrics,
 )
 from biominer.vision.flickr_embeddings import (
     FlickrEmbeddingArtifacts,
@@ -103,6 +114,107 @@ def test_reference_only_observation_does_not_report_a_zero_flickr_rate() -> None
     assert metrics.flickr_cache_hit_rate_status == "unavailable"
 
 
+def test_matrix_reuse_separates_worker_hits_from_batch_sharing() -> None:
+    family = _matrix_cache_metrics(requests=2, hits=1, rows=2, byte_count=16)
+    dynamic = DynamicPoolMatrixCacheMetrics(
+        candidate=_matrix_cache_metrics(
+            requests=2,
+            hits=1,
+            rows=2,
+            byte_count=16,
+        ),
+        pool=_matrix_cache_metrics(
+            requests=3,
+            hits=2,
+            rows=2,
+            byte_count=16,
+        ),
+    )
+
+    metrics = measure_matrix_reuse((family,), (dynamic,), (_pool_batch_metrics(),))
+
+    assert metrics.schema_version == MATRIX_REUSE_METRICS_VERSION
+    assert metrics.family.requests == 2
+    assert metrics.family.hits == 1
+    assert metrics.candidate.requests == 2
+    assert metrics.candidate.hits == 1
+    assert metrics.pool.requests == 3
+    assert metrics.pool.hits == 2
+    assert metrics.worker_cache_requests == 7
+    assert metrics.worker_cache_hits == 4
+    assert metrics.worker_cache_misses == 3
+    assert metrics.worker_cache_materializations == 3
+    assert metrics.worker_cache_rows_materialized == 6
+    assert metrics.worker_cache_bytes_materialized == 48
+    assert metrics.worker_cache_hit_rate == pytest.approx(4 / 7)
+    assert metrics.worker_cache_hit_rate_status == "measured"
+    assert metrics.pool_matrix_batch_runs == 1
+    assert metrics.pool_matrix_batch_work_items == 3
+    assert metrics.pool_matrix_execution_batches == 2
+    assert metrics.pool_matrix_references == 9
+    assert metrics.unique_pool_matrix_observations == 3
+    assert metrics.unique_pool_matrix_row_observations == 7
+    assert metrics.unique_pool_matrix_byte_observations == 56
+    assert metrics.within_batch_matrix_reuses == 3
+    assert metrics.cross_batch_matrix_reloads == 3
+    assert metrics.maximum_batch_work_items == 2
+    assert metrics.maximum_batch_unique_pool_matrices == 3
+    assert metrics.maximum_batch_pool_matrix_bytes == 56
+    assert metrics.observed_matrix_reuse_events == 7
+    assert metrics.avoided_matrix_bytes is None
+    assert metrics.avoided_matrix_bytes_status == "not_instrumented"
+    assert metrics.avoided_matrix_seconds is None
+    assert metrics.avoided_matrix_seconds_status == "not_instrumented"
+    assert len(metrics.source_fingerprints) == 4
+    validate_matrix_reuse_metrics(metrics)
+
+
+def test_matrix_reuse_preserves_unavailable_rate_and_rejects_guessed_savings() -> None:
+    zero = MatrixCacheMetrics(
+        requests=0,
+        hits=0,
+        misses=0,
+        materializations=0,
+        entries=0,
+        rows_materialized=0,
+        bytes_materialized=0,
+        evictions=0,
+    )
+    metrics = measure_matrix_reuse((zero,), (), ())
+
+    assert metrics.worker_cache_hit_rate is None
+    assert metrics.worker_cache_hit_rate_status == "unavailable"
+    with pytest.raises(ValueError, match="must remain not_instrumented"):
+        validate_matrix_reuse_metrics(
+            replace(
+                metrics,
+                avoided_matrix_bytes=16,
+                avoided_matrix_bytes_status="derived",
+            )
+        )
+    with pytest.raises(ValueError, match="at least one observation"):
+        measure_matrix_reuse((), (), ())
+
+
+def test_matrix_reuse_rejects_cache_and_batch_metric_drift() -> None:
+    incomplete = MatrixCacheMetrics(
+        requests=2,
+        hits=0,
+        misses=1,
+        materializations=1,
+        entries=1,
+        rows_materialized=2,
+        bytes_materialized=16,
+        evictions=0,
+    )
+    with pytest.raises(ValueError, match="request accounting"):
+        measure_matrix_reuse((incomplete,), (), ())
+
+    tampered_batch = replace(_pool_batch_metrics(), within_batch_matrix_reuses=4)
+    with pytest.raises(ValueError, match="fingerprint mismatch"):
+        measure_matrix_reuse((), (), (tampered_batch,))
+
+
 def _flickr_result(
     *,
     hits: int,
@@ -174,6 +286,49 @@ def _reference_reuse_frame() -> pl.DataFrame:
 
 def _empty_reference_reuse_frame() -> pl.DataFrame:
     return pl.DataFrame(schema=dynamic_pool_expansion_cache_reuse_schema())
+
+
+def _matrix_cache_metrics(
+    *,
+    requests: int,
+    hits: int,
+    rows: int,
+    byte_count: int,
+) -> MatrixCacheMetrics:
+    misses = requests - hits
+    return MatrixCacheMetrics(
+        requests=requests,
+        hits=hits,
+        misses=misses,
+        materializations=misses,
+        entries=misses,
+        rows_materialized=rows,
+        bytes_materialized=byte_count,
+        evictions=0,
+    )
+
+
+def _pool_batch_metrics() -> PoolMatrixBatchMetrics:
+    values: dict[str, object] = {
+        "schema_version": POOL_MATRIX_BATCH_METRICS_VERSION,
+        "work_items": 3,
+        "execution_batches": 2,
+        "pool_matrix_references": 9,
+        "unique_pool_matrices": 3,
+        "unique_pool_matrix_rows": 7,
+        "unique_pool_matrix_bytes": 56,
+        "within_batch_matrix_reuses": 3,
+        "cross_batch_matrix_reloads": 3,
+        "maximum_batch_work_items": 2,
+        "maximum_batch_unique_pool_matrices": 3,
+        "maximum_batch_pool_matrix_bytes": 56,
+        "encoder_invocations": 0,
+        "image_materializations": 0,
+    }
+    return PoolMatrixBatchMetrics(
+        **values,
+        metrics_fingerprint=canonical_semantic_fingerprint(values),
+    )
 
 
 def _sha(character: str) -> str:
