@@ -33,6 +33,9 @@ DYNAMIC_SCORE_COMPONENT_SET_VERSION = "dynamic-score-component-set-v1"
 VALIDATION_LINEAR_FUSION_PARAMETERS_VERSION = "validation-linear-fusion-v1"
 RAW_FUSION_CANDIDATE_SCORE_VERSION = "raw-fusion-candidate-score-v1"
 RAW_FUSION_SCORE_SET_VERSION = "raw-fusion-score-set-v1"
+RANKED_FUSION_CANDIDATE_VERSION = "ranked-fusion-candidate-v1"
+RAW_FUSION_METHOD_RANKING_VERSION = "raw-fusion-method-ranking-v1"
+RAW_FUSION_RANKING_SET_VERSION = "raw-fusion-ranking-set-v1"
 
 GLOBAL_FUSION_COMPONENTS = (
     "global_prototype_similarity",
@@ -169,6 +172,61 @@ class RawFusionScoreSet:
     method_policy_fingerprints: tuple[tuple[str, str], ...]
     scores: tuple[RawFusionCandidateScore, ...]
     score_set_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class RankedFusionCandidate:
+    """One candidate's deterministic position within one raw fusion method."""
+
+    schema_version: str
+    method: str
+    method_version: str
+    candidate_accepted_taxon_key: str
+    candidate_scientific_name: str
+    candidate_rank: int
+    raw_fusion_score: float
+    margin_to_next_raw: float | None
+    score_tied_with_previous: bool
+    score_tied_with_next: bool
+    source_score_fingerprint: str
+    component_fingerprint: str
+    rank_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class RawFusionMethodRanking:
+    """Complete ranking and explicit alternatives for one provisional method."""
+
+    schema_version: str
+    method: str
+    method_version: str
+    method_policy_fingerprint: str
+    candidate_count: int
+    complete_candidate_set: bool
+    top_candidate_accepted_taxon_key: str
+    top_candidate_scientific_name: str
+    top_raw_fusion_score: float
+    top_margin_raw: float | None
+    alternative_candidate_keys: tuple[str, ...]
+    candidates: tuple[RankedFusionCandidate, ...]
+    ranking_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class RawFusionRankingSet:
+    """All method rankings with agreement state and no selected method."""
+
+    schema_version: str
+    query_id: str
+    query_fingerprint: str
+    fusion_scores: RawFusionScoreSet
+    fusion_score_set_fingerprint: str
+    method_rankings: tuple[RawFusionMethodRanking, ...]
+    top_candidate_keys_by_method: tuple[tuple[str, str], ...]
+    cross_method_top1_agreement: bool
+    agreed_top_candidate_key: str | None
+    method_selection_status: str
+    ranking_set_fingerprint: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,6 +440,195 @@ def validate_raw_fusion_scores(fusion_scores: RawFusionScoreSet) -> None:
     )
     if fusion_scores != expected:
         raise ValueError("raw fusion score set does not match components and policy")
+
+
+def rank_raw_fusion_candidates(
+    fusion_scores: RawFusionScoreSet,
+) -> RawFusionRankingSet:
+    """Rank the complete candidate set independently for every fusion method."""
+
+    validate_raw_fusion_scores(fusion_scores)
+    result = _rank_raw_fusion_candidates(fusion_scores)
+    validate_raw_fusion_rankings(result)
+    return result
+
+
+def validate_raw_fusion_rankings(rankings: RawFusionRankingSet) -> None:
+    """Recompute every method ordering, margin, tie and alternative."""
+
+    if not isinstance(rankings, RawFusionRankingSet):
+        raise TypeError("rankings must be a RawFusionRankingSet")
+    if rankings.schema_version != RAW_FUSION_RANKING_SET_VERSION:
+        raise ValueError("unsupported raw fusion ranking set version")
+    validate_raw_fusion_scores(rankings.fusion_scores)
+    expected = _rank_raw_fusion_candidates(rankings.fusion_scores)
+    if rankings != expected:
+        raise ValueError("raw fusion rankings do not match the fusion score set")
+
+
+def _rank_raw_fusion_candidates(
+    fusion_scores: RawFusionScoreSet,
+) -> RawFusionRankingSet:
+    expected_candidate_keys = tuple(
+        candidate.candidate_accepted_taxon_key
+        for candidate in fusion_scores.component_set.candidates
+    )
+    method_rankings: list[RawFusionMethodRanking] = []
+    for method in RAW_FUSION_METHODS:
+        source_scores = tuple(
+            score for score in fusion_scores.scores if score.method == method
+        )
+        if (
+            tuple(sorted(score.candidate_accepted_taxon_key for score in source_scores))
+            != expected_candidate_keys
+        ):
+            raise ValueError(
+                f"{method} fusion scores do not preserve complete candidate membership"
+            )
+        ordered = sorted(
+            source_scores,
+            key=lambda score: (
+                -score.raw_fusion_score,
+                score.candidate_accepted_taxon_key,
+            ),
+        )
+        ranked_candidates: list[RankedFusionCandidate] = []
+        for index, score in enumerate(ordered):
+            previous = ordered[index - 1] if index > 0 else None
+            following = ordered[index + 1] if index + 1 < len(ordered) else None
+            margin = (
+                score.raw_fusion_score - following.raw_fusion_score
+                if following is not None
+                else None
+            )
+            base = {
+                "schema_version": RANKED_FUSION_CANDIDATE_VERSION,
+                "query_id": fusion_scores.query_id,
+                "query_fingerprint": fusion_scores.query_fingerprint,
+                "method": method,
+                "method_version": score.method_version,
+                "candidate_accepted_taxon_key": (score.candidate_accepted_taxon_key),
+                "candidate_scientific_name": score.candidate_scientific_name,
+                "candidate_rank": index + 1,
+                "raw_fusion_score": score.raw_fusion_score,
+                "margin_to_next_raw": margin,
+                "score_tied_with_previous": (
+                    previous is not None
+                    and previous.raw_fusion_score == score.raw_fusion_score
+                ),
+                "score_tied_with_next": (
+                    following is not None
+                    and following.raw_fusion_score == score.raw_fusion_score
+                ),
+                "source_score_fingerprint": score.score_fingerprint,
+                "component_fingerprint": score.component_fingerprint,
+            }
+            ranked_candidates.append(
+                RankedFusionCandidate(
+                    schema_version=RANKED_FUSION_CANDIDATE_VERSION,
+                    method=method,
+                    method_version=score.method_version,
+                    candidate_accepted_taxon_key=(score.candidate_accepted_taxon_key),
+                    candidate_scientific_name=score.candidate_scientific_name,
+                    candidate_rank=index + 1,
+                    raw_fusion_score=score.raw_fusion_score,
+                    margin_to_next_raw=margin,
+                    score_tied_with_previous=bool(
+                        previous is not None
+                        and previous.raw_fusion_score == score.raw_fusion_score
+                    ),
+                    score_tied_with_next=bool(
+                        following is not None
+                        and following.raw_fusion_score == score.raw_fusion_score
+                    ),
+                    source_score_fingerprint=score.score_fingerprint,
+                    component_fingerprint=score.component_fingerprint,
+                    rank_fingerprint=canonical_semantic_fingerprint(base),
+                )
+            )
+        top = ranked_candidates[0]
+        policy_fingerprint = next(
+            fingerprint
+            for candidate_method, fingerprint in (
+                fusion_scores.method_policy_fingerprints
+            )
+            if candidate_method == method
+        )
+        method_base = {
+            "schema_version": RAW_FUSION_METHOD_RANKING_VERSION,
+            "query_id": fusion_scores.query_id,
+            "query_fingerprint": fusion_scores.query_fingerprint,
+            "fusion_score_set_fingerprint": fusion_scores.score_set_fingerprint,
+            "method": method,
+            "method_version": top.method_version,
+            "method_policy_fingerprint": policy_fingerprint,
+            "candidate_count": len(ranked_candidates),
+            "complete_candidate_set": True,
+            "top_candidate_accepted_taxon_key": (top.candidate_accepted_taxon_key),
+            "top_candidate_scientific_name": top.candidate_scientific_name,
+            "top_raw_fusion_score": top.raw_fusion_score,
+            "top_margin_raw": top.margin_to_next_raw,
+            "alternative_candidate_keys": [
+                candidate.candidate_accepted_taxon_key
+                for candidate in ranked_candidates[1:]
+            ],
+            "rank_fingerprints": [
+                candidate.rank_fingerprint for candidate in ranked_candidates
+            ],
+        }
+        method_rankings.append(
+            RawFusionMethodRanking(
+                schema_version=RAW_FUSION_METHOD_RANKING_VERSION,
+                method=method,
+                method_version=top.method_version,
+                method_policy_fingerprint=policy_fingerprint,
+                candidate_count=len(ranked_candidates),
+                complete_candidate_set=True,
+                top_candidate_accepted_taxon_key=(top.candidate_accepted_taxon_key),
+                top_candidate_scientific_name=top.candidate_scientific_name,
+                top_raw_fusion_score=top.raw_fusion_score,
+                top_margin_raw=top.margin_to_next_raw,
+                alternative_candidate_keys=tuple(
+                    candidate.candidate_accepted_taxon_key
+                    for candidate in ranked_candidates[1:]
+                ),
+                candidates=tuple(ranked_candidates),
+                ranking_fingerprint=canonical_semantic_fingerprint(method_base),
+            )
+        )
+    top_candidates = tuple(
+        (ranking.method, ranking.top_candidate_accepted_taxon_key)
+        for ranking in method_rankings
+    )
+    distinct_top_candidates = {candidate_key for _, candidate_key in top_candidates}
+    agreement = len(distinct_top_candidates) == 1
+    agreed_top = next(iter(distinct_top_candidates)) if agreement else None
+    set_base = {
+        "schema_version": RAW_FUSION_RANKING_SET_VERSION,
+        "query_id": fusion_scores.query_id,
+        "query_fingerprint": fusion_scores.query_fingerprint,
+        "fusion_score_set_fingerprint": fusion_scores.score_set_fingerprint,
+        "method_ranking_fingerprints": [
+            ranking.ranking_fingerprint for ranking in method_rankings
+        ],
+        "top_candidate_keys_by_method": [list(item) for item in top_candidates],
+        "cross_method_top1_agreement": agreement,
+        "agreed_top_candidate_key": agreed_top,
+        "method_selection_status": "not_selected",
+    }
+    return RawFusionRankingSet(
+        schema_version=RAW_FUSION_RANKING_SET_VERSION,
+        query_id=fusion_scores.query_id,
+        query_fingerprint=fusion_scores.query_fingerprint,
+        fusion_scores=fusion_scores,
+        fusion_score_set_fingerprint=fusion_scores.score_set_fingerprint,
+        method_rankings=tuple(method_rankings),
+        top_candidate_keys_by_method=top_candidates,
+        cross_method_top1_agreement=agreement,
+        agreed_top_candidate_key=agreed_top,
+        method_selection_status="not_selected",
+        ranking_set_fingerprint=canonical_semantic_fingerprint(set_base),
+    )
 
 
 def _evaluate_raw_fusion_methods(
@@ -914,7 +1161,10 @@ __all__ = [
     "MAXIMUM_SCOPE_EVIDENCE",
     "RAW_FUSION_CANDIDATE_SCORE_VERSION",
     "RAW_FUSION_METHODS",
+    "RAW_FUSION_METHOD_RANKING_VERSION",
+    "RAW_FUSION_RANKING_SET_VERSION",
     "RAW_FUSION_SCORE_SET_VERSION",
+    "RANKED_FUSION_CANDIDATE_VERSION",
     "ROBUST_RANK_AGGREGATION",
     "UNWEIGHTED_COMPONENT_MEAN",
     "VALIDATION_FITTED_LINEAR",
@@ -922,10 +1172,15 @@ __all__ = [
     "DynamicCandidateScoreComponents",
     "DynamicScoreComponentSet",
     "RawFusionCandidateScore",
+    "RawFusionMethodRanking",
+    "RawFusionRankingSet",
     "RawFusionScoreSet",
+    "RankedFusionCandidate",
     "ValidationLinearFusionParameters",
     "evaluate_raw_fusion_methods",
     "preserve_dynamic_score_components",
+    "rank_raw_fusion_candidates",
     "validate_dynamic_score_components",
+    "validate_raw_fusion_rankings",
     "validate_raw_fusion_scores",
 ]

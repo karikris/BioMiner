@@ -19,7 +19,9 @@ from biominer.bioclip.dynamic_pool_fusion import (
     ValidationLinearFusionParameters,
     evaluate_raw_fusion_methods,
     preserve_dynamic_score_components,
+    rank_raw_fusion_candidates,
     validate_dynamic_score_components,
+    validate_raw_fusion_rankings,
     validate_raw_fusion_scores,
 )
 from biominer.bioclip.dynamic_pool_scoring import (
@@ -784,6 +786,89 @@ def test_raw_fusion_validator_rejects_score_or_policy_drift() -> None:
     assert changed.score_set_fingerprint != result.score_set_fingerprint
 
 
+def test_candidate_rankings_retain_complete_alternatives_for_every_method() -> None:
+    fusion_scores = _fusion_scores()
+
+    result = rank_raw_fusion_candidates(fusion_scores)
+
+    assert result.fusion_scores == fusion_scores
+    assert result.method_selection_status == "not_selected"
+    assert result.cross_method_top1_agreement is True
+    assert result.agreed_top_candidate_key == "gbif:100"
+    assert not hasattr(result, "selected_method")
+    assert [ranking.method for ranking in result.method_rankings] == list(
+        RAW_FUSION_METHODS
+    )
+    for ranking in result.method_rankings:
+        assert ranking.candidate_count == 2
+        assert ranking.complete_candidate_set is True
+        assert ranking.top_candidate_accepted_taxon_key == "gbif:100"
+        assert ranking.alternative_candidate_keys == ("gbif:200",)
+        assert [candidate.candidate_rank for candidate in ranking.candidates] == [1, 2]
+        assert [
+            candidate.candidate_accepted_taxon_key for candidate in ranking.candidates
+        ] == ["gbif:100", "gbif:200"]
+        assert ranking.candidates[0].margin_to_next_raw == pytest.approx(
+            ranking.candidates[0].raw_fusion_score
+            - ranking.candidates[1].raw_fusion_score
+        )
+        assert ranking.candidates[1].margin_to_next_raw is None
+        assert ranking.ranking_fingerprint.startswith("sha256:")
+    assert result.ranking_set_fingerprint.startswith("sha256:")
+
+
+def test_candidate_rankings_expose_method_disagreement_and_score_ties() -> None:
+    fusion_scores = _fusion_scores(local_inputs=_all_local_inputs())
+
+    result = rank_raw_fusion_candidates(fusion_scores)
+    rankings = {ranking.method: ranking for ranking in result.method_rankings}
+
+    assert result.cross_method_top1_agreement is False
+    assert result.agreed_top_candidate_key is None
+    assert rankings[UNWEIGHTED_COMPONENT_MEAN].top_candidate_accepted_taxon_key == (
+        "gbif:100"
+    )
+    assert rankings[VALIDATION_FITTED_LINEAR].top_candidate_accepted_taxon_key == (
+        "gbif:100"
+    )
+    assert rankings[MAXIMUM_SCOPE_EVIDENCE].top_candidate_accepted_taxon_key == (
+        "gbif:200"
+    )
+    assert rankings[ROBUST_RANK_AGGREGATION].top_candidate_accepted_taxon_key == (
+        "gbif:100"
+    )
+    maximum = rankings[MAXIMUM_SCOPE_EVIDENCE]
+    assert maximum.alternative_candidate_keys == ("gbif:100",)
+    linear = rankings[VALIDATION_FITTED_LINEAR]
+    assert linear.top_margin_raw == pytest.approx(0.0)
+    assert linear.candidates[0].score_tied_with_previous is False
+    assert linear.candidates[0].score_tied_with_next is True
+    assert linear.candidates[1].score_tied_with_previous is True
+    assert linear.candidates[1].score_tied_with_next is False
+
+
+def test_candidate_ranking_is_deterministic_and_validator_rejects_drift() -> None:
+    fusion_scores = _fusion_scores()
+
+    first = rank_raw_fusion_candidates(fusion_scores)
+    second = rank_raw_fusion_candidates(fusion_scores)
+
+    assert first == second
+    validate_raw_fusion_rankings(first)
+    first_method = first.method_rankings[0]
+    tampered_candidate = replace(first_method.candidates[0], candidate_rank=2)
+    tampered_method = replace(
+        first_method,
+        candidates=(tampered_candidate, *first_method.candidates[1:]),
+    )
+    with pytest.raises(ValueError, match="do not match the fusion score set"):
+        validate_raw_fusion_rankings(
+            replace(
+                first, method_rankings=(tampered_method, *first.method_rankings[1:])
+            ),
+        )
+
+
 def _query() -> RawScoringQuery:
     return RawScoringQuery(
         query_id="flickr-embedding:query",
@@ -824,6 +909,16 @@ def _linear_parameters() -> ValidationLinearFusionParameters:
         full_weights=(0.5, 0.0, 0.0, 0.5, 0.0, 0.0),
         global_only_weights=(1.0, 0.0, 0.0),
     )
+
+
+def _fusion_scores(
+    *,
+    local_inputs: tuple[LocalReferencePoolInput, ...] | None = None,
+):
+    components = preserve_dynamic_score_components(
+        *_component_inputs(local_inputs=local_inputs)
+    )
+    return evaluate_raw_fusion_methods(components, _linear_parameters())
 
 
 def _family_matrix(
