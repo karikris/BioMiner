@@ -8,9 +8,14 @@ import polars as pl
 import pytest
 
 from biominer.evaluation.dynamic_pool_splits import (
+    DYNAMIC_POOL_EVALUATION_SPLIT_SCHEMA,
+    DYNAMIC_POOL_EVALUATION_SPLITS,
     REVIEWED_FLICKR_COMPONENT_SCHEMA,
+    DynamicPoolEvaluationSplitPolicy,
     ReviewedFlickrSplitItem,
     build_reviewed_flickr_components,
+    build_dynamic_pool_evaluation_splits,
+    validate_dynamic_pool_evaluation_splits,
     validate_reviewed_flickr_components,
 )
 
@@ -116,3 +121,88 @@ def test_component_validator_rejects_tampering() -> None:
 
     with pytest.raises(ValueError, match="component mismatch"):
         validate_reviewed_flickr_components(tampered)
+
+
+def _independent_component_register(count: int = 18) -> pl.DataFrame:
+    return build_reviewed_flickr_components(
+        [_item(index) for index in range(count)]
+    ).register
+
+
+def test_frozen_split_is_deterministic_component_atomic_and_outcome_complete() -> None:
+    register = _independent_component_register()
+    policy = DynamicPoolEvaluationSplitPolicy(
+        split_version="dynamic-pool-reviewed-v1", random_seed=73
+    )
+    first = build_dynamic_pool_evaluation_splits(register, policy)
+    reversed_register = build_reviewed_flickr_components(
+        [_item(index) for index in reversed(range(18))]
+    ).register
+    second = build_dynamic_pool_evaluation_splits(reversed_register, policy)
+
+    assert first.manifest.schema == DYNAMIC_POOL_EVALUATION_SPLIT_SCHEMA
+    assert first.manifest.to_dicts() == second.manifest.to_dicts()
+    assert set(first.manifest["evaluation_split"].to_list()) == set(
+        DYNAMIC_POOL_EVALUATION_SPLITS
+    )
+    assert first.manifest["split_fingerprint"].n_unique() == 1
+    for split in DYNAMIC_POOL_EVALUATION_SPLITS:
+        outcomes = set(
+            first.manifest.filter(pl.col("evaluation_split") == split)[
+                "human_supported"
+            ].to_list()
+        )
+        assert outcomes == {False, True}
+
+
+def test_shared_component_never_crosses_frozen_partitions() -> None:
+    items = [_item(index) for index in range(18)]
+    items[1] = replace(items[1], duplicate_group_id=items[0].duplicate_group_id)
+    register = build_reviewed_flickr_components(items).register
+    manifest = build_dynamic_pool_evaluation_splits(
+        register,
+        DynamicPoolEvaluationSplitPolicy(split_version="atomic-v1"),
+    ).manifest
+    shared = manifest.filter(
+        pl.col("independence_component_id")
+        == manifest.filter(pl.col("item_id") == "item-0")[
+            "independence_component_id"
+        ].item()
+    )
+
+    assert shared.height == 2
+    assert shared["evaluation_split"].n_unique() == 1
+
+
+def test_split_fails_when_outcomes_lack_three_independent_components() -> None:
+    items = [_item(index, human_supported=True) for index in range(8)]
+    items.extend(_item(20 + index, human_supported=False) for index in range(2))
+    register = build_reviewed_flickr_components(items).register
+
+    with pytest.raises(ValueError, match="outcome components cannot cover"):
+        build_dynamic_pool_evaluation_splits(
+            register,
+            DynamicPoolEvaluationSplitPolicy(split_version="sparse-outcome-v1"),
+        )
+
+
+def test_split_validator_rejects_manual_component_movement() -> None:
+    build = build_dynamic_pool_evaluation_splits(
+        _independent_component_register(),
+        DynamicPoolEvaluationSplitPolicy(split_version="tamper-split-v1"),
+    )
+    first = build.manifest.row(0, named=True)
+    replacement = next(
+        split
+        for split in DYNAMIC_POOL_EVALUATION_SPLITS
+        if split != first["evaluation_split"]
+    )
+    tampered = build.manifest.with_columns(
+        pl.when(pl.col("item_id") == first["item_id"])
+        .then(pl.lit(replacement))
+        .otherwise(pl.col("evaluation_split"))
+        .alias("evaluation_split")
+    )
+
+    with pytest.raises(ValueError, match="assignment mismatch"):
+        validate_dynamic_pool_evaluation_splits(tampered)
