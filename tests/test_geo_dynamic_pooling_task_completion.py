@@ -19,6 +19,7 @@ TASK_6_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_6_1_completion.json"
 TASK_6_2_REPORT = ROOT / "reports/geo_dynamic_pooling/task_6_2_completion.json"
 TASK_7_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_7_1_completion.json"
 TASK_7_2_REPORT = ROOT / "reports/geo_dynamic_pooling/task_7_2_completion.json"
+TASK_8_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_8_1_completion.json"
 PUSH_LEDGER = ROOT / "provenance/task_pushes.jsonl"
 
 
@@ -72,6 +73,10 @@ def _task_7_1_report() -> dict[str, object]:
 
 def _task_7_2_report() -> dict[str, object]:
     return json.loads(TASK_7_2_REPORT.read_text(encoding="utf-8"))
+
+
+def _task_8_1_report() -> dict[str, object]:
+    return json.loads(TASK_8_1_REPORT.read_text(encoding="utf-8"))
 
 
 def test_task_0_1_completion_records_exact_commits_and_green_gate() -> None:
@@ -738,6 +743,64 @@ def test_task_7_2_report_blocks_method_selection_and_scientific_claims() -> None
     assert state["production_default_changed"] is False
     assert state["production_release_authorized"] is False
     assert any("empirically superior" in claim for claim in blocked)
+    assert any("Human review" in claim for claim in blocked)
+    impact = report["githits_architecture_impact"]
+    assert impact["calls_made_for_task"] == 0
+    assert impact["direct_external_code_contribution"] == "none"
+
+
+def test_task_8_1_completion_records_batching_metrics_and_green_gate() -> None:
+    report = _task_8_1_report()
+
+    assert report["task_id"] == "geo-pool-8.1"
+    assert report["status"] == "completed"
+    assert [item["commit"] for item in report["task_commits"]] == [
+        "c912cf0b66e03cbed7c3e73948152a3332890597",
+        "7fb36d187d0bab6b4891a4ee3fa6e4ef83a29c3b",
+        "a6d90e8b11a8b1f7439ed1707ef89d9670a8232d",
+    ]
+    fixtures = report["deterministic_fixtures"]
+    assert fixtures["mps_headroom"]["successful_batch_sizes"] == [2, 2, 1]
+    assert fixtures["bounded_memory_retry"]["memory_retries"] == 1
+    assert fixtures["bounded_memory_retry"]["successful_images_reencoded"] == 0
+    matrix = fixtures["pool_matrix_batching"]
+    assert matrix["batch_work_items"] == [2, 1]
+    assert matrix["pool_matrix_references"] == 9
+    assert matrix["unique_pool_matrices"] == 3
+    assert matrix["unique_pool_matrix_bytes"] == 56
+    assert matrix["encoder_invocations"] == 0
+    assert matrix["matrix_scoring_repetitions_during_validation"] == 0
+    assert report["gate"]["mps_memory_matrix_and_worker_suite"]["passed"] == 92
+    assert report["gate"]["full_regression"]["passed"] == 2908
+    assert report["gate"]["provenance"]["jsonl_records"] == 156
+
+
+def test_task_8_1_push_event_matches_report() -> None:
+    report = _task_8_1_report()
+    events = [
+        json.loads(line)
+        for line in PUSH_LEDGER.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    event = next(item for item in events if item["task_id"] == "geo-pool-8.1")
+
+    assert event["verified_remote_sha"] == report["push"]["verified_remote_sha"]
+    assert event["pushed_through_sha"] == report["push"]["pushed_through_sha"]
+    assert event["status"] == report["push"]["status"] == "verified"
+
+
+def test_task_8_1_report_blocks_live_performance_and_scientific_claims() -> None:
+    report = _task_8_1_report()
+    state = report["selection_state"]
+    blocked = report["claims"]["blocked"]
+
+    assert state["memory_aware_image_batching_implemented"] is True
+    assert state["pool_matrix_batching_implemented"] is True
+    assert state["scientific_score_semantics_changed"] is False
+    assert state["live_mps_memory_measured"] is False
+    assert state["live_throughput_benchmarked"] is False
+    assert state["production_release_authorized"] is False
+    assert any("live device measurements" in claim for claim in blocked)
     assert any("Human review" in claim for claim in blocked)
     impact = report["githits_architecture_impact"]
     assert impact["calls_made_for_task"] == 0
