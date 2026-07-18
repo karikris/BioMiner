@@ -50,6 +50,11 @@ another session's work. Avoid active output roots and do not start duplicate
 Flickr, reference, YOLOE, BioCLIP, evaluation, or publication jobs. Stop on
 unavoidable overlap.
 
+For the active multi-phase geography-conditioned pooling goal, treat
+[`CURRENT_STATE.md`](docs/agents/CURRENT_STATE.md) as the resumable handoff
+ledger. Read it before resuming numbered work, update it at task boundaries,
+and verify every recorded SHA and gate against local Git before relying on it.
+
 ## Core scientific invariants
 
 - Registry artifacts and source snapshots define taxonomic identity.

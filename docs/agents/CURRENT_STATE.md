@@ -7,17 +7,22 @@ at the start of every task.
 
 - Repository: `karikris/BioMiner`
 - Default branch: `main`
-- Latest verified dynamic-pooling design commit:
-  `299914548b407b439cd36d1aa99397b41aa827f1`
+- Latest verified dynamic-pooling implementation commit:
+  `fd5a4d6d79f889c16adb78b2227adc05c2cf478b`
+  (`feat(references): normalize reference geography`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
-  cross-repository contract alignment is next.
+  cross-repository contract alignment complete; Phase 2 geographic reference
+  indexing is active. Task 2.1.1 is committed and pushed; Task 2.1.2 global
+  reference-anchor selection is the next numbered subtask.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
   self-identifying report resolved by the commit containing
   `reports/gbif_fast_start/final_report.json`.
 - Current release-boundary evidence:
-  - dynamic-pooling Task 0.1 full regression: 2,541 passed in 108.34 seconds;
+  - dynamic-pooling Task 1.2 full regression: 2,660 passed in 100.67 seconds;
+  - Task 1.2 focused cross-repository contracts: 33 passed in 0.17 seconds;
+  - Task 2.1.1 focused reference-geography checks: 56 passed in 0.41 seconds;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;

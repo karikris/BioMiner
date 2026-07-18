@@ -1,17 +1,17 @@
 {
-  "active_goal_note": "Adaptive GBIF fast-start implementation and release verification complete through Phase 13; live scientific and human-review work remains.",
+  "active_goal_note": "Geography-conditioned dynamic pooling Phase 1 is complete; Phase 2 reference indexing is active at Task 2.1.2.",
   "files": [
     {
-      "bytes": 5969,
-      "lines": 130,
+      "bytes": 6701,
+      "lines": 142,
       "path": "AGENTS.md",
-      "sha256": "b70aed870199cdc8835e15d18af79cfcc8cb7fcdcbb4ba07c685c471866d56e8"
+      "sha256": "e5d9cff662484ad83c729d42e1af48ef578a52d0f3adbfeb3f471c93585c66d5"
     },
     {
-      "bytes": 7801,
-      "lines": 225,
+      "bytes": 10127,
+      "lines": 271,
       "path": "docs/agents/CURRENT_STATE.md",
-      "sha256": "0f145ab559f3829813d3677130e9b26e52e797cf9defb0e40b52a499d36ecfc3"
+      "sha256": "ee6636a277d42d1886e0cb16eae631d6f8c98a4ae1fe457ec72f702a924d5076"
     },
     {
       "bytes": 5599,
@@ -57,7 +57,7 @@
     }
   ],
   "generated_from_uploaded_file": "AGENTS(14).md",
-  "observed_main_commit": "477eaface3d1f5efa51255550f0ef8d6a7740f35",
+  "observed_main_commit": "fd5a4d6d79f889c16adb78b2227adc05c2cf478b",
   "observed_repository": "karikris/BioMiner",
   "pack": "BioMiner token-efficient agent instructions",
   "schema_version": "biominer-agent-pack-v1.0.0"
