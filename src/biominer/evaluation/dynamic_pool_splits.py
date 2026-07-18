@@ -606,17 +606,19 @@ def _assign_split_components(
                 split in uncovered_by_outcome[outcome] for outcome in component.outcomes
             )
             target = total_items * dict(policy.weights)[split] / policy.total_weight
-            item_delta = abs(assigned_items[split] + component.item_count - target)
-            outcome_delta = 0.0
+            projected_item_fill = (
+                assigned_items[split] + component.item_count
+            ) / target
+            projected_outcome_fill = 0.0
             for outcome, count in component.outcome_item_counts:
                 outcome_target = (
                     items_by_outcome[outcome]
                     * dict(policy.weights)[split]
                     / policy.total_weight
                 )
-                outcome_delta += abs(
-                    assigned_outcomes[split][outcome] + count - outcome_target
-                )
+                projected_outcome_fill += (
+                    assigned_outcomes[split][outcome] + count
+                ) / outcome_target
             tie = canonical_semantic_fingerprint(
                 {
                     "random_seed": policy.random_seed,
@@ -624,7 +626,17 @@ def _assign_split_components(
                     "split": split,
                 }
             )
-            candidates.append(((-coverage_gain, outcome_delta, item_delta, tie), split))
+            candidates.append(
+                (
+                    (
+                        -coverage_gain,
+                        projected_item_fill,
+                        projected_outcome_fill,
+                        tie,
+                    ),
+                    split,
+                )
+            )
         if not candidates:
             raise ValueError("unable to allocate components with required coverage")
         _, selected = min(candidates, key=lambda item: item[0])

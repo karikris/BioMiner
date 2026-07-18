@@ -146,6 +146,11 @@ def test_frozen_split_is_deterministic_component_atomic_and_outcome_complete() -
         DYNAMIC_POOL_EVALUATION_SPLITS
     )
     assert first.manifest["split_fingerprint"].n_unique() == 1
+    weight_by_split = dict(policy.weights)
+    count_by_split = dict(first.split_item_counts)
+    for split in DYNAMIC_POOL_EVALUATION_SPLITS:
+        target = register.height * weight_by_split[split] / policy.total_weight
+        assert abs(count_by_split[split] - target) <= 1.0
     for split in DYNAMIC_POOL_EVALUATION_SPLITS:
         outcomes = set(
             first.manifest.filter(pl.col("evaluation_split") == split)[
