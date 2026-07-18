@@ -12,6 +12,7 @@ TASK_1_2_REPORT = ROOT / "reports/geo_dynamic_pooling/task_1_2_completion.json"
 TASK_2_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_2_1_completion.json"
 TASK_3_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_3_1_completion.json"
 TASK_4_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_4_1_completion.json"
+TASK_4_2_REPORT = ROOT / "reports/geo_dynamic_pooling/task_4_2_completion.json"
 PUSH_LEDGER = ROOT / "provenance/task_pushes.jsonl"
 
 
@@ -37,6 +38,10 @@ def _task_3_1_report() -> dict[str, object]:
 
 def _task_4_1_report() -> dict[str, object]:
     return json.loads(TASK_4_1_REPORT.read_text(encoding="utf-8"))
+
+
+def _task_4_2_report() -> dict[str, object]:
+    return json.loads(TASK_4_2_REPORT.read_text(encoding="utf-8"))
 
 
 def test_task_0_1_completion_records_exact_commits_and_green_gate() -> None:
@@ -315,3 +320,60 @@ def test_task_4_1_report_blocks_unearned_strategy_and_release_claims() -> None:
     assert report["githits_architecture_impact"][
         "direct_external_code_contribution"
     ] == "none"
+
+
+def test_task_4_2_completion_records_metrics_counterfactual_and_green_gates() -> None:
+    report = _task_4_2_report()
+
+    assert report["task_id"] == "geo-pool-4.2"
+    assert report["status"] == "completed"
+    assert [item["commit"] for item in report["task_commits"]] == [
+        "79f94b5ce0da3ff740e8511ebf60378633c763df",
+        "c45a2c195093ee3ea684f3d80cd40152db9f4fd7",
+        "4735050bd1a8206d44a22d6032cfbbfa75b40635",
+    ]
+    assert len(report["metrics_contract"]["measures"]) == 9
+    assert report["family_pruning_contract"][
+        "production_candidate_membership_changed"
+    ] is False
+    fixture = report["fixture_ablation"]
+    assert fixture["metric_rows"] == 18
+    assert fixture["family_pruning_counterfactual"][
+        "correct_species_lost_count"
+    ] == 1
+    assert fixture["validation_gate_passed"] is False
+    assert fixture["failed_checks"] == ["non_fixture_evidence"]
+    assert report["gate"]["strategy_evaluation_suite"]["passed"] == 93
+    assert report["gate"]["full_regression"]["passed"] == 2766
+    assert report["gate"]["provenance"]["jsonl_records"] == 126
+
+
+def test_task_4_2_push_event_matches_report() -> None:
+    report = _task_4_2_report()
+    events = [
+        json.loads(line)
+        for line in PUSH_LEDGER.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    event = next(item for item in events if item["task_id"] == "geo-pool-4.2")
+
+    assert event["verified_remote_sha"] == report["push"]["verified_remote_sha"]
+    assert event["pushed_through_sha"] == report["push"]["pushed_through_sha"]
+    assert event["status"] == report["push"]["status"] == "verified"
+
+
+def test_task_4_2_report_blocks_unearned_selection_and_release_claims() -> None:
+    report = _task_4_2_report()
+    state = report["selection_state"]
+    blocked = report["claims"]["blocked"]
+
+    assert state["intended_candidate"] == "parallel_family_geography_union"
+    assert state["selected_strategy"] is None
+    assert state["production_default_changed"] is False
+    assert state["superiority_claimed"] is False
+    assert any("empirically or universally superior" in claim for claim in blocked)
+    assert any("selected or made default" in claim for claim in blocked)
+    assert any("occurrence release or production deployment" in claim for claim in blocked)
+    impact = report["githits_architecture_impact"]
+    assert impact["calls_made_for_task"] == 0
+    assert impact["direct_external_code_contribution"] == "none"

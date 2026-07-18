@@ -1,5 +1,5 @@
 {
-  "active_goal_note": "Geography-conditioned dynamic pooling Task 4.1 and its gate are complete; Task 4.2 evaluation is next. The user disabled all further GitHits calls for the remainder of this goal.",
+  "active_goal_note": "Geography-conditioned dynamic pooling Task 4.2 and its fail-closed evaluation gate are complete; Phase 5 Task 5.1 pool policy and planning are next. No strategy is selected from fixture-only evidence. The user disabled all further GitHits calls for the remainder of this goal.",
   "files": [
     {
       "bytes": 6701,
@@ -8,10 +8,10 @@
       "sha256": "e5d9cff662484ad83c729d42e1af48ef578a52d0f3adbfeb3f471c93585c66d5"
     },
     {
-      "bytes": 11833,
-      "lines": 297,
+      "bytes": 12398,
+      "lines": 305,
       "path": "docs/agents/CURRENT_STATE.md",
-      "sha256": "4e45cf20b6c33182a08fb26a4b15231a3961125ef6bb2876540dbcde35a2d012"
+      "sha256": "ada2648efa7d4dc27e266eee630556ca042b45805dea14839d19e5b28b58885c"
     },
     {
       "bytes": 5599,
@@ -57,7 +57,7 @@
     }
   ],
   "generated_from_uploaded_file": "AGENTS(14).md",
-  "observed_main_commit": "b372ce18d6be62c1b66025b700d5c4e4a884428c",
+  "observed_main_commit": "4735050bd1a8206d44a22d6032cfbbfa75b40635",
   "observed_repository": "karikris/BioMiner",
   "pack": "BioMiner token-efficient agent instructions",
   "schema_version": "biominer-agent-pack-v1.0.0"

@@ -10,8 +10,8 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `b372ce18d6be62c1b66025b700d5c4e4a884428c`
-  (`experiment(candidates): add hybrid parallel union`)
+  `4735050bd1a8206d44a22d6032cfbbfa75b40635`
+  (`experiment(candidates): select hybrid strategy`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -19,8 +19,9 @@ at the start of every task.
   indexing complete; Phase 3 canonical Flickr photo, organism, association,
   candidate, scoring-geography and work-partition contracts complete through
   Task 3.1.3. Phase 4 implements all three target-preserving candidate
-  schedules through Task 4.1.3; Task 4.2 metrics, counterfactual evaluation and
-  evidence-bound strategy selection are the next implementation boundary.
+  schedules, per-k strategy metrics, hard-family-pruning counterfactual and
+  fail-closed selection gate through Task 4.2.3. Phase 5 Task 5.1 dynamic
+  reference-pool policy and planning are the next implementation boundary.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -41,6 +42,11 @@ at the start of every task.
   - Task 4.1 strategy and target-preservation gate: 82 passed in 1.25 seconds;
   - Task 4.1 fixture round-trip: all three schedules retained identical
     five-taxon membership; no strategy is selected or production-defaulted;
+  - Task 4.2 final full regression: 2,766 passed in 104.06 seconds;
+  - Task 4.2 strategy evaluation gate: 93 passed in 7.06 seconds;
+  - Task 4.2 fixture ablation: 18 metric rows across three strategies and three
+    cutoffs; the hard-family counterfactual lost one of two eligible correct
+    species, and selection failed closed on non-fixture evidence;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
@@ -268,11 +274,13 @@ Provider-asserted GBIF support remains provisional, current quality metrics are
 unavailable, and no live production improvement or scientific release is
 claimed.
 
-For the active dynamic-pooling goal, the next implementation boundary is Task
-4.2 candidate-strategy benchmarking and evidence-bound selection. No strategy
-is yet empirically superior, and no live dynamic pool, live score, calibrated
-probability, statistical-support result or new release-ready occurrence is
-claimed by the completed contract, indexing and scheduling phases.
+For the active dynamic-pooling goal, the next implementation boundary is Phase
+5 Task 5.1 dynamic reference-pool policy and deterministic planning. The
+parallel family/geography union remains the intended candidate, but no strategy
+is selected or production-defaulted because only implementation-fixture
+evidence has run. No strategy is empirically superior, and no live dynamic
+pool, live score, calibrated probability, statistical-support result or new
+release-ready occurrence is claimed by the completed phases.
 
 ## Repository map
 
