@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
+import json
 from pathlib import Path
 
 import polars as pl
@@ -22,12 +24,23 @@ from biominer.bioclip.matrix_cache import (
 )
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.reports.dynamic_pool_efficiency import (
+    DYNAMIC_POOLING_EFFICIENCY_REPORT_FILE,
+    DYNAMIC_POOLING_EFFICIENCY_REPORT_VERSION,
+    DYNAMIC_POOLING_EFFICIENCY_SUMMARY_FILE,
     EMBEDDING_REUSE_METRICS_VERSION,
     MATRIX_REUSE_METRICS_VERSION,
+    build_dynamic_pooling_efficiency_report,
     measure_embedding_reuse,
     measure_matrix_reuse,
+    validate_dynamic_pooling_efficiency_report,
     validate_embedding_reuse_metrics,
     validate_matrix_reuse_metrics,
+    write_dynamic_pooling_efficiency_report,
+)
+from biominer.run.flickr_selective_rescore import (
+    FLICKR_RESCORE_EVIDENCE_SCHEMA_VERSION,
+    FLICKR_RESCORE_PLAN_SCHEMA_VERSION,
+    flickr_rescore_plan_schema,
 )
 from biominer.vision.flickr_embeddings import (
     FlickrEmbeddingArtifacts,
@@ -215,6 +228,99 @@ def test_matrix_reuse_rejects_cache_and_batch_metric_drift() -> None:
         measure_matrix_reuse((), (), (tampered_batch,))
 
 
+def test_dynamic_efficiency_report_counts_encoder_and_selective_score_work(
+    tmp_path: Path,
+) -> None:
+    result = build_dynamic_pooling_efficiency_report(
+        _embedding_metrics(),
+        _matrix_metrics(),
+        _selective_rescore_plan(),
+        generated_at=datetime(2026, 7, 18, 9, 0, tzinfo=UTC),
+    )
+
+    assert result.report["schema_version"] == DYNAMIC_POOLING_EFFICIENCY_REPORT_VERSION
+    score = result.report["selective_score_work"]
+    assert score["score_records_considered"] == 2
+    assert score["prior_scores_reused"] == 1
+    assert score["planned_score_executions_avoided"] == 1
+    assert score["records_planned_for_selective_rescore"] == 1
+    assert score["score_reuse_rate"] == pytest.approx(0.5)
+    assert score["execution_evidence_status"] == "plan_only_not_execution_receipt"
+    assert score["score_executions_completed"] is None
+    avoided = result.report["work_avoided"]
+    assert avoided["embedding_vector_computations"]["value"] == 5
+    assert avoided["matrix_reuse_events"]["value"] == 7
+    assert avoided["planned_score_executions"]["value"] == 1
+    unavailable = result.report["unavailable_savings"]
+    assert all(
+        unavailable[field] is None
+        for field in (
+            "encoder_seconds",
+            "score_seconds",
+            "bytes_avoided",
+            "cost",
+            "energy",
+        )
+    )
+    assert result.markdown.startswith("# Dynamic pooling efficiency")
+    validate_dynamic_pooling_efficiency_report(result)
+
+    paths = write_dynamic_pooling_efficiency_report(result, tmp_path)
+    assert paths["json"].name == DYNAMIC_POOLING_EFFICIENCY_REPORT_FILE
+    assert paths["markdown"].name == DYNAMIC_POOLING_EFFICIENCY_SUMMARY_FILE
+    assert json.loads(paths["json"].read_text()) == result.report
+    assert paths["markdown"].read_text() == result.markdown
+
+
+def test_dynamic_efficiency_report_is_deterministic_and_rejects_drift() -> None:
+    timestamp = datetime(2026, 7, 18, 9, 0, tzinfo=UTC)
+    first = build_dynamic_pooling_efficiency_report(
+        _embedding_metrics(),
+        _matrix_metrics(),
+        _selective_rescore_plan(),
+        generated_at=timestamp,
+    )
+    second = build_dynamic_pooling_efficiency_report(
+        _embedding_metrics(),
+        _matrix_metrics(),
+        _selective_rescore_plan(),
+        generated_at=timestamp,
+    )
+
+    assert first == second
+    tampered_report = json.loads(json.dumps(first.report))
+    tampered_report["selective_score_work"]["prior_scores_reused"] = 99
+    with pytest.raises(ValueError, match="payload mismatch"):
+        validate_dynamic_pooling_efficiency_report(
+            replace(first, report=tampered_report)
+        )
+
+    tampered_plan = first.selective_rescore_plan.with_columns(
+        pl.lit("reuse_prior_score").alias("rescore_action")
+    )
+    with pytest.raises(ValueError, match="action mismatch"):
+        build_dynamic_pooling_efficiency_report(
+            first.embedding_metrics,
+            first.matrix_metrics,
+            tampered_plan,
+            generated_at=timestamp,
+        )
+
+
+def test_empty_rescore_plan_keeps_score_reuse_rate_unavailable() -> None:
+    result = build_dynamic_pooling_efficiency_report(
+        _embedding_metrics(),
+        _matrix_metrics(),
+        pl.DataFrame(schema=flickr_rescore_plan_schema()),
+        generated_at=datetime(2026, 7, 18, 9, 0, tzinfo=UTC),
+    )
+
+    score = result.report["selective_score_work"]
+    assert score["score_records_considered"] == 0
+    assert score["score_reuse_rate"] is None
+    assert score["score_reuse_rate_status"] == "unavailable"
+
+
 def _flickr_result(
     *,
     hits: int,
@@ -329,6 +435,97 @@ def _pool_batch_metrics() -> PoolMatrixBatchMetrics:
         **values,
         metrics_fingerprint=canonical_semantic_fingerprint(values),
     )
+
+
+def _embedding_metrics():
+    return measure_embedding_reuse(
+        (
+            _flickr_result(hits=0, misses=2, loads_before=0, loads_after=1),
+            _flickr_result(hits=2, misses=0, loads_before=1, loads_after=1),
+        ),
+        _reference_reuse_frame(),
+    )
+
+
+def _matrix_metrics():
+    return measure_matrix_reuse(
+        (_matrix_cache_metrics(requests=2, hits=1, rows=2, byte_count=16),),
+        (
+            DynamicPoolMatrixCacheMetrics(
+                candidate=_matrix_cache_metrics(
+                    requests=2,
+                    hits=1,
+                    rows=2,
+                    byte_count=16,
+                ),
+                pool=_matrix_cache_metrics(
+                    requests=3,
+                    hits=2,
+                    rows=2,
+                    byte_count=16,
+                ),
+            ),
+        ),
+        (_pool_batch_metrics(),),
+    )
+
+
+def _selective_rescore_plan() -> pl.DataFrame:
+    return pl.DataFrame(
+        [
+            _rescore_plan_row("score:rescore", margin=0.05, rescore=True),
+            _rescore_plan_row("score:reuse", margin=0.5, rescore=False),
+        ],
+        schema=flickr_rescore_plan_schema(),
+        orient="row",
+        strict=True,
+    ).sort("target_score_id")
+
+
+def _rescore_plan_row(
+    score_id: str,
+    *,
+    margin: float,
+    rescore: bool,
+) -> dict[str, object]:
+    evidence: dict[str, object] = {
+        "schema_version": FLICKR_RESCORE_EVIDENCE_SCHEMA_VERSION,
+        "target_score_id": score_id,
+        "source": "flickr",
+        "flickr_photo_id": score_id,
+        "scoring_unit_id": f"scoring-unit:{score_id}",
+        "route": "adult_field",
+        "prior_target_score_fingerprint": _sha("d"),
+        "prior_reference_bank_fingerprint": _sha("e"),
+        "target_accepted_taxon_key": "gbif:1",
+        "best_competitor_accepted_taxon_key": "gbif:2",
+        "candidate_accepted_taxon_keys": ["gbif:1", "gbif:2"],
+        "reference_media_ids": ["reference-media:1"],
+        "reference_dependencies_complete": True,
+        "prior_target_competitor_margin": margin,
+    }
+    evidence["evidence_fingerprint"] = canonical_semantic_fingerprint(evidence)
+    reasons = ["margin_in_impact_band"] if rescore else []
+    row: dict[str, object] = {
+        "schema_version": FLICKR_RESCORE_PLAN_SCHEMA_VERSION,
+        "revision_fingerprint": _sha("f"),
+        **{
+            field: value
+            for field, value in evidence.items()
+            if field != "schema_version"
+        },
+        "margin_impact_band": 0.1,
+        "target_bank_changed": False,
+        "best_competitor_bank_changed": False,
+        "candidate_union_changed": False,
+        "removed_reference_dependency": False,
+        "margin_in_impact_band": rescore,
+        "rescore_required": rescore,
+        "rescore_reasons": reasons,
+        "rescore_action": "selectively_rescore" if rescore else "reuse_prior_score",
+    }
+    row["plan_fingerprint"] = canonical_semantic_fingerprint(row)
+    return row
 
 
 def _sha(character: str) -> str:

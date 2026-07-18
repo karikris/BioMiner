@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, fields
+from datetime import UTC, datetime
+import json
 from math import isclose, isfinite
+from pathlib import Path
 import re
 
 import polars as pl
@@ -21,12 +24,16 @@ from biominer.bioclip.matrix_cache import (
     MatrixCacheMetrics,
 )
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
+from biominer.run.flickr_selective_rescore import validate_flickr_rescore_plan
 from biominer.vision.flickr_embeddings import FlickrEmbeddingPersistenceResult
 
 
 EMBEDDING_REUSE_METRICS_VERSION = "dynamic-embedding-reuse-metrics-v1"
 MATRIX_CACHE_ROLE_METRICS_VERSION = "dynamic-matrix-cache-role-metrics-v1"
 MATRIX_REUSE_METRICS_VERSION = "dynamic-matrix-reuse-metrics-v1"
+DYNAMIC_POOLING_EFFICIENCY_REPORT_VERSION = "dynamic-pooling-efficiency-report-v1"
+DYNAMIC_POOLING_EFFICIENCY_REPORT_FILE = "dynamic_pooling_efficiency_report.json"
+DYNAMIC_POOLING_EFFICIENCY_SUMMARY_FILE = "dynamic_pooling_efficiency_report.md"
 NOT_INSTRUMENTED = "not_instrumented"
 MEASURED = "measured"
 UNAVAILABLE = "unavailable"
@@ -122,6 +129,27 @@ class MatrixReuseMetrics:
     avoided_matrix_seconds_status: str
     source_fingerprints: tuple[str, ...]
     metrics_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class DynamicPoolingEfficiencyReport:
+    """Component metrics, selective-score plan and their rendered report."""
+
+    embedding_metrics: EmbeddingReuseMetrics
+    matrix_metrics: MatrixReuseMetrics
+    selective_rescore_plan: pl.DataFrame
+    report: dict[str, object]
+    markdown: str
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, DynamicPoolingEfficiencyReport)
+            and self.embedding_metrics == other.embedding_metrics
+            and self.matrix_metrics == other.matrix_metrics
+            and self.selective_rescore_plan.equals(other.selective_rescore_plan)
+            and self.report == other.report
+            and self.markdown == other.markdown
+        )
 
 
 def measure_embedding_reuse(
@@ -533,6 +561,208 @@ def validate_matrix_reuse_metrics(metrics: MatrixReuseMetrics) -> None:
         raise ValueError("matrix reuse metrics fingerprint mismatch")
 
 
+def build_dynamic_pooling_efficiency_report(
+    embedding_metrics: EmbeddingReuseMetrics,
+    matrix_metrics: MatrixReuseMetrics,
+    selective_rescore_plan: pl.DataFrame,
+    *,
+    generated_at: datetime | None = None,
+) -> DynamicPoolingEfficiencyReport:
+    """Build an evidence-bounded report over observed reuse and score decisions."""
+
+    validate_embedding_reuse_metrics(embedding_metrics)
+    validate_matrix_reuse_metrics(matrix_metrics)
+    validate_flickr_rescore_plan(selective_rescore_plan)
+    timestamp = _utc_datetime(generated_at or datetime.now(UTC))
+    report = _dynamic_pooling_efficiency_payload(
+        embedding_metrics,
+        matrix_metrics,
+        selective_rescore_plan,
+        generated_at=timestamp,
+    )
+    result = DynamicPoolingEfficiencyReport(
+        embedding_metrics=embedding_metrics,
+        matrix_metrics=matrix_metrics,
+        selective_rescore_plan=selective_rescore_plan,
+        report=report,
+        markdown=_efficiency_markdown(report),
+    )
+    validate_dynamic_pooling_efficiency_report(result)
+    return result
+
+
+def validate_dynamic_pooling_efficiency_report(
+    result: DynamicPoolingEfficiencyReport,
+) -> None:
+    """Rebuild the complete report and reject component or rendering drift."""
+
+    if not isinstance(result, DynamicPoolingEfficiencyReport):
+        raise TypeError("result must be DynamicPoolingEfficiencyReport")
+    validate_embedding_reuse_metrics(result.embedding_metrics)
+    validate_matrix_reuse_metrics(result.matrix_metrics)
+    validate_flickr_rescore_plan(result.selective_rescore_plan)
+    generated_at = _utc_datetime(
+        result.report.get("generated_at"),
+    )
+    expected_report = _dynamic_pooling_efficiency_payload(
+        result.embedding_metrics,
+        result.matrix_metrics,
+        result.selective_rescore_plan,
+        generated_at=generated_at,
+    )
+    if result.report != expected_report:
+        raise ValueError("dynamic pooling efficiency report payload mismatch")
+    if result.markdown != _efficiency_markdown(expected_report):
+        raise ValueError("dynamic pooling efficiency Markdown mismatch")
+
+
+def write_dynamic_pooling_efficiency_report(
+    result: DynamicPoolingEfficiencyReport,
+    output_dir: str | Path,
+) -> dict[str, Path]:
+    """Write the small JSON and Markdown views after full validation."""
+
+    validate_dynamic_pooling_efficiency_report(result)
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "json": destination / DYNAMIC_POOLING_EFFICIENCY_REPORT_FILE,
+        "markdown": destination / DYNAMIC_POOLING_EFFICIENCY_SUMMARY_FILE,
+    }
+    paths["json"].write_text(
+        json.dumps(result.report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    paths["markdown"].write_text(result.markdown, encoding="utf-8")
+    return paths
+
+
+def _dynamic_pooling_efficiency_payload(
+    embedding_metrics: EmbeddingReuseMetrics,
+    matrix_metrics: MatrixReuseMetrics,
+    selective_rescore_plan: pl.DataFrame,
+    *,
+    generated_at: datetime,
+) -> dict[str, object]:
+    total_scores = selective_rescore_plan.height
+    prior_scores_reused = selective_rescore_plan.filter(
+        pl.col("rescore_action") == "reuse_prior_score"
+    ).height
+    selectively_rescored = selective_rescore_plan.filter(
+        pl.col("rescore_action") == "selectively_rescore"
+    ).height
+    if prior_scores_reused + selectively_rescored != total_scores:
+        raise ValueError("selective score actions do not cover the rescore plan")
+    score_reuse_rate = prior_scores_reused / total_scores if total_scores else None
+    score_rate_status = MEASURED if total_scores else UNAVAILABLE
+    plan_fingerprint = _rescore_plan_fingerprint(selective_rescore_plan)
+    report: dict[str, object] = {
+        "schema_version": DYNAMIC_POOLING_EFFICIENCY_REPORT_VERSION,
+        "generated_at": generated_at.isoformat(),
+        "status": "complete",
+        "embedding_reuse": _canonical_metric_value(embedding_metrics),
+        "matrix_reuse": _canonical_metric_value(matrix_metrics),
+        "selective_score_work": {
+            "score_records_considered": total_scores,
+            "prior_scores_reused": prior_scores_reused,
+            "planned_score_executions_avoided": prior_scores_reused,
+            "records_planned_for_selective_rescore": selectively_rescored,
+            "score_reuse_rate": score_reuse_rate,
+            "score_reuse_rate_status": score_rate_status,
+            "execution_evidence_status": "plan_only_not_execution_receipt",
+            "score_executions_completed": None,
+            "score_executions_completed_status": NOT_INSTRUMENTED,
+            "rescore_plan_fingerprint": plan_fingerprint,
+        },
+        "work_avoided": {
+            "embedding_vector_computations": {
+                "value": embedding_metrics.total_embedding_reuse_events,
+                "unit": "embedding_vectors",
+                "evidence_status": MEASURED,
+                "derivation": "observed Flickr cache hits plus validated reference expansion reuse events",
+            },
+            "matrix_reuse_events": {
+                "value": matrix_metrics.observed_matrix_reuse_events,
+                "unit": "matrix_reuse_events",
+                "evidence_status": MEASURED,
+                "worker_cache_hits": matrix_metrics.worker_cache_hits,
+                "within_batch_shared_references": (
+                    matrix_metrics.within_batch_matrix_reuses
+                ),
+                "derivation": "sum of distinct same-unit worker-cache hits and within-batch shared references",
+            },
+            "planned_score_executions": {
+                "value": prior_scores_reused,
+                "unit": "score_records",
+                "evidence_status": "derived_from_validated_plan",
+                "derivation": "validated reuse_prior_score decisions; not a runtime execution receipt",
+            },
+        },
+        "unavailable_savings": {
+            "encoder_seconds": None,
+            "encoder_seconds_status": NOT_INSTRUMENTED,
+            "score_seconds": None,
+            "score_seconds_status": NOT_INSTRUMENTED,
+            "bytes_avoided": None,
+            "bytes_avoided_status": NOT_INSTRUMENTED,
+            "cost": None,
+            "cost_status": NOT_INSTRUMENTED,
+            "energy": None,
+            "energy_status": NOT_INSTRUMENTED,
+        },
+        "provenance": {
+            "embedding_metrics_fingerprint": (embedding_metrics.metrics_fingerprint),
+            "matrix_metrics_fingerprint": matrix_metrics.metrics_fingerprint,
+            "rescore_plan_fingerprint": plan_fingerprint,
+            "aggregation_policy": "sum_only_same_unit_observed_or_explicitly_derived_counts",
+        },
+        "limitations": [
+            "Cache hits and shared matrix references are work events, not elapsed-time, byte, cost or energy measurements.",
+            "Planned prior-score reuse counts avoided score records only if the validated plan is executed; this report is not an execution receipt.",
+            "Records planned for selective rescore are not reported as completed score executions.",
+            "Unavailable and not-instrumented values are null and are never interpreted as zero.",
+            "Fixture observations validate reporting behavior and are not live-corpus performance claims.",
+        ],
+        "report_fingerprint": "",
+    }
+    report["report_fingerprint"] = _fingerprint_without(
+        report,
+        "report_fingerprint",
+    )
+    return report
+
+
+def _efficiency_markdown(report: dict[str, object]) -> str:
+    embedding = report["embedding_reuse"]
+    matrix = report["matrix_reuse"]
+    score = report["selective_score_work"]
+    avoided = report["work_avoided"]
+    if not all(
+        isinstance(value, dict) for value in (embedding, matrix, score, avoided)
+    ):
+        raise TypeError("dynamic pooling efficiency report sections are invalid")
+    return (
+        "# Dynamic pooling efficiency\n\n"
+        f"Generated: `{report['generated_at']}`\n\n"
+        "## Observed reuse\n\n"
+        f"- Embedding requests: {embedding['total_embedding_requests']}; "
+        f"reuse events: {embedding['total_embedding_reuse_events']}; "
+        f"materializations: {embedding['total_embeddings_materialized']}.\n"
+        f"- Matrix cache hits: {matrix['worker_cache_hits']}; within-batch "
+        f"shared references: {matrix['within_batch_matrix_reuses']}; "
+        f"materializations: {matrix['worker_cache_materializations']}.\n"
+        f"- Prior scores reused by the validated plan: {score['prior_scores_reused']}; "
+        f"records planned for rescore: {score['records_planned_for_selective_rescore']}.\n\n"
+        "## Work avoided\n\n"
+        f"- Embedding-vector computations: {avoided['embedding_vector_computations']['value']}.\n"
+        f"- Matrix reuse events: {avoided['matrix_reuse_events']['value']}.\n"
+        f"- Planned score executions: {avoided['planned_score_executions']['value']}.\n\n"
+        "Score avoidance is derived from plan decisions, not a runtime receipt. "
+        "Seconds, bytes, cost and energy remain `not_instrumented`. Fixture "
+        "values are not live-workload performance claims.\n"
+    )
+
+
 def _validate_pool_matrix_batch_metrics(metrics: PoolMatrixBatchMetrics) -> None:
     if not isinstance(metrics, PoolMatrixBatchMetrics):
         raise TypeError("pool batch metrics must be PoolMatrixBatchMetrics")
@@ -757,7 +987,10 @@ def _canonical_metric_values(values: dict[str, object]) -> dict[str, object]:
 
 
 def _canonical_metric_value(value: object) -> object:
-    if isinstance(value, MatrixCacheRoleMetrics):
+    if isinstance(
+        value,
+        EmbeddingReuseMetrics | MatrixCacheRoleMetrics | MatrixReuseMetrics,
+    ):
         return {
             field.name: _canonical_metric_value(getattr(value, field.name))
             for field in fields(value)
@@ -773,6 +1006,37 @@ def _metrics_base(metrics: object) -> dict[str, object]:
         for field in fields(metrics)
         if field.name != "metrics_fingerprint"
     }
+
+
+def _rescore_plan_fingerprint(plan: pl.DataFrame) -> str:
+    return canonical_semantic_fingerprint(
+        {
+            "schema_version": "selective-rescore-plan-observation-v1",
+            "row_count": plan.height,
+            "plan_fingerprints": plan["plan_fingerprint"].to_list(),
+        }
+    )
+
+
+def _fingerprint_without(values: dict[str, object], field: str) -> str:
+    payload = dict(values)
+    payload.pop(field)
+    return canonical_semantic_fingerprint(payload)
+
+
+def _utc_datetime(value: object) -> datetime:
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("generated_at must be an ISO-8601 datetime") from exc
+    elif isinstance(value, datetime):
+        parsed = value
+    else:
+        raise TypeError("generated_at must be a datetime or ISO-8601 string")
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("generated_at must be timezone-aware")
+    return parsed.astimezone(UTC)
 
 
 def _flickr_results(
@@ -863,14 +1127,21 @@ def _sha256(value: object, *, field: str) -> str:
 
 
 __all__ = [
+    "DYNAMIC_POOLING_EFFICIENCY_REPORT_FILE",
+    "DYNAMIC_POOLING_EFFICIENCY_REPORT_VERSION",
+    "DYNAMIC_POOLING_EFFICIENCY_SUMMARY_FILE",
+    "DynamicPoolingEfficiencyReport",
     "EMBEDDING_REUSE_METRICS_VERSION",
     "EmbeddingReuseMetrics",
     "MATRIX_CACHE_ROLE_METRICS_VERSION",
     "MATRIX_REUSE_METRICS_VERSION",
     "MatrixCacheRoleMetrics",
     "MatrixReuseMetrics",
+    "build_dynamic_pooling_efficiency_report",
     "measure_embedding_reuse",
     "measure_matrix_reuse",
     "validate_embedding_reuse_metrics",
     "validate_matrix_reuse_metrics",
+    "validate_dynamic_pooling_efficiency_report",
+    "write_dynamic_pooling_efficiency_report",
 ]
