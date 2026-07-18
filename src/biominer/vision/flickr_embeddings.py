@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from math import hypot, isclose, isfinite
 from pathlib import Path
@@ -22,6 +22,10 @@ from biominer.vision.full_frame_attention import (
     RAW_FULL_IMAGE_TRANSFORMATION_FINGERPRINT,
     TARGET_FULL_FRAME_IMAGE_RESIZE_MODE,
     TARGET_FULL_FRAME_PREPROCESSING,
+)
+from biominer.vision.memory_aware_batching import (
+    MemoryAwareImageBatchPolicy,
+    MpsMemorySnapshot,
 )
 from biominer.vision.target_full_frame import (
     TARGET_FULL_FRAME_EMBEDDING_VERSION,
@@ -120,6 +124,8 @@ def persist_reusable_flickr_embeddings(
     model_fingerprint: str,
     preprocessing_fingerprint: str,
     output_dir: str | Path,
+    image_batch_policy: MemoryAwareImageBatchPolicy | None = None,
+    mps_memory_probe: Callable[[], MpsMemorySnapshot] | None = None,
 ) -> FlickrEmbeddingPersistenceResult:
     """Encode cache misses once, merge them, and atomically persist both grains."""
 
@@ -165,6 +171,8 @@ def persist_reusable_flickr_embeddings(
         model_fingerprint=model_fingerprint,
         preprocessing_fingerprint=preprocessing_fingerprint,
         embedding_cache=cached_embeddings,
+        image_batch_policy=image_batch_policy,
+        mps_memory_probe=mps_memory_probe,
     )
     model_loads_after = _encoder_model_load_count(encoder)
     model_load_delta = model_loads_after - model_loads_before

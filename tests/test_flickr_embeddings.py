@@ -21,6 +21,10 @@ from biominer.vision.full_frame_attention import (
     TARGET_FULL_FRAME_IMAGE_RESIZE_MODE,
     TARGET_FULL_FRAME_PREPROCESSING,
 )
+from biominer.vision.memory_aware_batching import (
+    MemoryAwareImageBatchPolicy,
+    MpsMemorySnapshot,
+)
 from biominer.vision.target_full_frame import build_target_full_frame_plan
 
 
@@ -173,6 +177,77 @@ def test_changed_content_encodes_only_the_new_visual_identity(tmp_path: Path) ->
     assert changed.artifacts.embeddings.height == 3
     assert changed.artifacts.photo_bindings.height == 3
     assert [len(batch) for batch in encoder.batches] == [2, 1]
+
+
+def test_memory_aware_cache_miss_batches_preserve_embedding_artifacts(
+    tmp_path: Path,
+) -> None:
+    plan = _plan({"photo-1": _image(1), "photo-2": _image(2)})
+    snapshot = MpsMemorySnapshot(
+        current_allocated_bytes=600,
+        driver_allocated_bytes=650,
+        recommended_max_bytes=1000,
+    )
+    policy = MemoryAwareImageBatchPolicy(
+        initial_batch_size=4,
+        minimum_batch_size=1,
+        maximum_batch_size=4,
+        target_driver_memory_fraction=0.75,
+        estimated_incremental_bytes_per_image=100,
+    )
+    adaptive_encoder = CountingEncoder()
+
+    adaptive = persist_reusable_flickr_embeddings(
+        plan,
+        encoder=adaptive_encoder,
+        model_id=_MODEL_ID,
+        model_revision=_MODEL_REVISION,
+        model_fingerprint=_MODEL_FINGERPRINT,
+        preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
+        output_dir=tmp_path / "adaptive",
+        image_batch_policy=policy,
+        mps_memory_probe=lambda: snapshot,
+    )
+    fixed_encoder = CountingEncoder()
+    fixed = persist_reusable_flickr_embeddings(
+        plan,
+        encoder=fixed_encoder,
+        model_id=_MODEL_ID,
+        model_revision=_MODEL_REVISION,
+        model_fingerprint=_MODEL_FINGERPRINT,
+        preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
+        output_dir=tmp_path / "fixed",
+    )
+
+    assert [len(batch) for batch in adaptive_encoder.batches] == [1, 1]
+    assert [len(batch) for batch in fixed_encoder.batches] == [2]
+    metrics = adaptive.embedded_plan.image_batch_metrics
+    assert metrics is not None
+    assert metrics.images_encoded == 2
+    assert metrics.successful_batches == 2
+    assert metrics.memory_limited_attempts == 1
+    assert metrics.snapshots_observed == 4
+    assert adaptive.artifacts.embeddings.equals(fixed.artifacts.embeddings)
+    assert adaptive.artifacts.photo_bindings.equals(fixed.artifacts.photo_bindings)
+
+    rerun = persist_reusable_flickr_embeddings(
+        plan,
+        encoder=adaptive_encoder,
+        model_id=_MODEL_ID,
+        model_revision=_MODEL_REVISION,
+        model_fingerprint=_MODEL_FINGERPRINT,
+        preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
+        output_dir=tmp_path / "adaptive",
+        image_batch_policy=policy,
+        mps_memory_probe=lambda: snapshot,
+    )
+    rerun_metrics = rerun.embedded_plan.image_batch_metrics
+    assert rerun.encoder_calls == 0
+    assert rerun_metrics is not None
+    assert rerun_metrics.telemetry_status == "not_observed_no_images"
+    assert rerun_metrics.images_encoded == 0
+    assert rerun_metrics.snapshots_observed == 0
+    assert [len(batch) for batch in adaptive_encoder.batches] == [1, 1]
 
 
 def test_loader_rejects_tampered_vectors_and_binding_foreign_keys(

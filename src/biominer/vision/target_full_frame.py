@@ -21,6 +21,12 @@ from biominer.vision.gates import (
     COMPARISON_ROUTE_BY_DETECTION_ROUTE,
     SUPPORTED_COMPARISON_ROUTES,
 )
+from biominer.vision.memory_aware_batching import (
+    MemoryAwareImageBatchMetrics,
+    MemoryAwareImageBatchPolicy,
+    MpsMemorySnapshot,
+    encode_images_memory_aware,
+)
 from biominer.vision.full_frame_attention import (
     FULL_FRAME_VISUAL_INPUT_VERSION,
     RAW_FULL_IMAGE_KIND,
@@ -167,6 +173,7 @@ class ScoringUnitEmbeddingReference:
 class EmbeddedTargetFullFramePlan:
     embeddings: tuple[RawFullFrameEmbedding, ...]
     scoring_unit_references: tuple[ScoringUnitEmbeddingReference, ...]
+    image_batch_metrics: MemoryAwareImageBatchMetrics | None = None
 
 
 def target_full_frame_detection_run_policy(
@@ -390,6 +397,8 @@ def encode_target_full_frame_plan(
     model_fingerprint: str,
     preprocessing_fingerprint: str,
     embedding_cache: Iterable[RawFullFrameEmbedding] | None = None,
+    image_batch_policy: MemoryAwareImageBatchPolicy | None = None,
+    mps_memory_probe: Callable[[], MpsMemorySnapshot] | None = None,
 ) -> EmbeddedTargetFullFramePlan:
     """Encode missing raw inputs once and fan references out to route units."""
 
@@ -399,6 +408,8 @@ def encode_target_full_frame_plan(
         preprocessing_fingerprint,
         "preprocessing_fingerprint",
     )
+    if mps_memory_probe is not None and image_batch_policy is None:
+        raise ValueError("mps_memory_probe requires an image_batch_policy")
     if (
         getattr(encoder, "image_resize_mode", None)
         != TARGET_FULL_FRAME_IMAGE_RESIZE_MODE
@@ -444,13 +455,26 @@ def encode_target_full_frame_plan(
         )
         embedding_by_visual_input[visual_input.visual_input_id] = cached
 
-    raw_vectors = (
-        tuple(
-            encoder.encode_images(tuple(item.image for item in visual_inputs_to_encode))
+    batch_metrics: MemoryAwareImageBatchMetrics | None = None
+    if image_batch_policy is not None:
+        encoded = encode_images_memory_aware(
+            tuple(item.image for item in visual_inputs_to_encode),
+            encode_batch=encoder.encode_images,
+            policy=image_batch_policy,
+            memory_probe=mps_memory_probe,
         )
-        if visual_inputs_to_encode
-        else ()
-    )
+        raw_vectors = encoded.vectors
+        batch_metrics = encoded.metrics
+    else:
+        raw_vectors = (
+            tuple(
+                encoder.encode_images(
+                    tuple(item.image for item in visual_inputs_to_encode)
+                )
+            )
+            if visual_inputs_to_encode
+            else ()
+        )
     if len(raw_vectors) != len(visual_inputs_to_encode):
         raise ValueError(
             "full-frame encoder returned "
@@ -545,6 +569,7 @@ def encode_target_full_frame_plan(
     return EmbeddedTargetFullFramePlan(
         embeddings=embeddings,
         scoring_unit_references=tuple(references),
+        image_batch_metrics=batch_metrics,
     )
 
 

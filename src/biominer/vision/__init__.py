@@ -40,6 +40,15 @@ from biominer.vision.score_inputs import (
     MaterializedBioClipScoreInputs,
     materialize_bioclip_score_inputs,
 )
+from biominer.vision.memory_aware_batching import (
+    ImageBatchAttempt,
+    MemoryAwareImageBatchMetrics,
+    MemoryAwareImageBatchPolicy,
+    MemoryAwareImageEncodingResult,
+    MpsMemorySnapshot,
+    encode_images_memory_aware,
+    is_image_memory_error,
+)
 from biominer.vision.target_full_frame import (
     RAW_FULL_IMAGE_KIND,
     RAW_FULL_IMAGE_TRANSFORMATION_FINGERPRINT,
@@ -122,6 +131,11 @@ __all__ = [
     "FlickrEmbeddingArtifacts",
     "FlickrEmbeddingPersistenceResult",
     "MaterializedBioClipScoreInputs",
+    "MemoryAwareImageBatchMetrics",
+    "MemoryAwareImageBatchPolicy",
+    "MemoryAwareImageEncodingResult",
+    "MpsMemorySnapshot",
+    "ImageBatchAttempt",
     "RawFullFrameEmbedding",
     "RawFullFrameVisualInput",
     "RoutedDetectionEvidence",
@@ -135,6 +149,7 @@ __all__ = [
     "bioclip_visual_input_contract",
     "build_target_full_frame_plan",
     "encode_target_full_frame_plan",
+    "encode_images_memory_aware",
     "flickr_embedding_binding_schema",
     "flickr_embedding_binding_set_fingerprint",
     "flickr_embedding_cache_fingerprint",
@@ -145,6 +160,7 @@ __all__ = [
     "generate_target_full_frame_attention_variants",
     "materialize_bioclip_score_inputs",
     "load_flickr_embedding_artifacts",
+    "is_image_memory_error",
     "persist_reusable_flickr_embeddings",
     "raw_full_frame_visual_input",
     "raw_full_frame_embeddings_from_cache",
