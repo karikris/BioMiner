@@ -7,11 +7,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 REPORT = ROOT / "reports/geo_dynamic_pooling/task_0_1_completion.json"
+TASK_1_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_1_1_completion.json"
 PUSH_LEDGER = ROOT / "provenance/task_pushes.jsonl"
 
 
 def _report() -> dict[str, object]:
     return json.loads(REPORT.read_text(encoding="utf-8"))
+
+
+def _task_1_1_report() -> dict[str, object]:
+    return json.loads(TASK_1_1_REPORT.read_text(encoding="utf-8"))
 
 
 def test_task_0_1_completion_records_exact_commits_and_green_gate() -> None:
@@ -50,3 +55,42 @@ def test_task_0_1_report_preserves_blocked_scientific_claims() -> None:
 
     assert any("Dynamic global/local pool" in claim for claim in blocked)
     assert any("occurrence release" in claim for claim in blocked)
+
+
+def test_task_1_1_completion_records_contracts_commits_and_green_gates() -> None:
+    report = _task_1_1_report()
+
+    assert report["task_id"] == "geo-pool-1.1"
+    assert report["status"] == "completed"
+    assert [item["commit"] for item in report["task_commits"]] == [
+        "d9e4365af0b65cd147ccc0f44fc543f9b02c96ce",
+        "315e6f3b04dc2a18bb1679c26f92563f5a7f1ade",
+        "387887bb86d7c276d83eca6e29f328ea73b8d676",
+        "5e87aa3171655ae2f8883287a2661f4a41839aac",
+    ]
+    assert len(report["artifacts"]) == 7
+    assert report["gate"]["schema_and_determinism_tests"]["passed"] == 98
+    assert report["gate"]["full_regression"]["passed"] == 2628
+    assert report["gate"]["provenance"]["jsonl_records_validated"] == 105
+
+
+def test_task_1_1_push_event_matches_report() -> None:
+    report = _task_1_1_report()
+    events = [
+        json.loads(line)
+        for line in PUSH_LEDGER.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    event = next(item for item in events if item["task_id"] == "geo-pool-1.1")
+
+    assert event["verified_remote_sha"] == report["push"]["verified_remote_sha"]
+    assert event["pushed_through_sha"] == report["push"]["pushed_through_sha"]
+    assert event["status"] == report["push"]["status"] == "verified"
+
+
+def test_task_1_1_report_blocks_unearned_scientific_claims() -> None:
+    blocked = _task_1_1_report()["claims"]["blocked"]
+
+    assert any("empirically superior" in claim for claim in blocked)
+    assert any("human review" in claim for claim in blocked)
+    assert any("publication" in claim for claim in blocked)
