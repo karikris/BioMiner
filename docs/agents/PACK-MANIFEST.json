@@ -1,5 +1,5 @@
 {
-  "active_goal_note": "Geography-conditioned dynamic pooling is complete through Phase 8 Task 8.1 encoder/vector separation, memory-aware image batches and bounded pool-matrix batches; Task 8.2 work-avoided instrumentation is next. No live performance result, fusion method or strategy is selected from fixture-only evidence. The user disabled all further GitHits calls for the remainder of this goal.",
+  "active_goal_note": "Geography-conditioned dynamic pooling is complete through Phase 8 Task 8.2 measured embedding/matrix reuse and plan-derived selective score reuse with no guessed savings; Phase 9 human-review sample planning is next. No live performance result, fusion method or strategy is selected from fixture-only evidence. The user disabled all further GitHits calls for the remainder of this goal.",
   "files": [
     {
       "bytes": 6701,
@@ -8,10 +8,10 @@
       "sha256": "e5d9cff662484ad83c729d42e1af48ef578a52d0f3adbfeb3f471c93585c66d5"
     },
     {
-      "bytes": 15902,
-      "lines": 355,
+      "bytes": 16486,
+      "lines": 363,
       "path": "docs/agents/CURRENT_STATE.md",
-      "sha256": "ef3059a15840f4743ae878e113f407a562d4c3938a8a90fe988acf7479f05aff"
+      "sha256": "b9237248ebe029cbedadbf8b94a84db4a52d1cae0de89f97b6db2286c459f669"
     },
     {
       "bytes": 5599,
@@ -57,7 +57,7 @@
     }
   ],
   "generated_from_uploaded_file": "AGENTS(14).md",
-  "observed_main_commit": "a6d90e8b11a8b1f7439ed1707ef89d9670a8232d",
+  "observed_main_commit": "f6be531e01d64be4e7e6f168313e66ecd3b25010",
   "observed_repository": "karikris/BioMiner",
   "pack": "BioMiner token-efficient agent instructions",
   "schema_version": "biominer-agent-pack-v1.0.0"

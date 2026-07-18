@@ -1,0 +1,220 @@
+{
+  "schema_version": "geo-dynamic-pooling-task-completion-v1.0.0",
+  "task_id": "geo-pool-8.2",
+  "title": "Instrument work avoided",
+  "status": "completed",
+  "completed_at": "2026-07-18T08:48:48Z",
+  "starting_sha": "c462c848c9e9cb18c4efc86fa22bbae01af05a3b",
+  "pushed_implementation_sha": "f6be531e01d64be4e7e6f168313e66ecd3b25010",
+  "task_commits": [
+    {
+      "subtask_id": "geo-pool-8.2.1",
+      "commit": "2accd6aafee414fce49d17ee0974587f4d312130",
+      "subject": "feat(reports): report embedding reuse"
+    },
+    {
+      "subtask_id": "geo-pool-8.2.2",
+      "commit": "0d04138784560cdcd903680ac50b3934e46ee2e6",
+      "subject": "feat(reports): report matrix reuse"
+    },
+    {
+      "subtask_id": "geo-pool-8.2.3",
+      "commit": "f6be531e01d64be4e7e6f168313e66ecd3b25010",
+      "subject": "feat(reports): report dynamic pooling efficiency"
+    }
+  ],
+  "embedding_reuse_contract": {
+    "version": "dynamic-embedding-reuse-metrics-v1",
+    "observed_inputs": [
+      "FlickrEmbeddingPersistenceResult request, hit, miss, encoded-image, encoder-call and model-load counters",
+      "validated dynamic-pool expansion cache-reuse rows and exact reference embedding fingerprints"
+    ],
+    "properties": [
+      "Flickr and reference roles retain separate requests, reuse events and materializations",
+      "Flickr hits plus misses must exactly equal visual-input requests",
+      "Flickr materializations must exactly equal cache misses",
+      "reference expansion counts each expanded cached embedding use and also reports distinct reused identities",
+      "source observations and aggregate metrics have semantic fingerprints",
+      "an unobserved Flickr rate remains null and unavailable rather than zero"
+    ]
+  },
+  "matrix_reuse_contract": {
+    "versions": {
+      "role": "dynamic-matrix-cache-role-metrics-v1",
+      "aggregate": "dynamic-matrix-reuse-metrics-v1"
+    },
+    "roles": [
+      "family prototype matrix",
+      "candidate prototype matrix",
+      "dynamic reference-pool matrix"
+    ],
+    "properties": [
+      "each role preserves requests, hits, misses, materializations, active entries, rows, bytes and evictions",
+      "one terminal snapshot is supplied per independent worker cache",
+      "worker-cache hits are separate from within-execution shared pool-matrix references",
+      "cross-batch reloads remain separate from reuse events",
+      "aggregate cache reuse sums only same-unit counters",
+      "hit-specific bytes and seconds are not inferred from aggregate materialization counters"
+    ]
+  },
+  "efficiency_report_contract": {
+    "version": "dynamic-pooling-efficiency-report-v1",
+    "files": [
+      "dynamic_pooling_efficiency_report.json",
+      "dynamic_pooling_efficiency_report.md"
+    ],
+    "score_source": "validated Flickr selective-rescore plan",
+    "properties": [
+      "reuse_prior_score rows count planned score-record avoidance",
+      "selectively_rescore rows are reported as planned work and never as completed executions",
+      "matrix-cache hits are never relabeled as avoided score executions",
+      "embedding-vector, matrix-reuse and score-record units remain separate",
+      "seconds, bytes avoided, cost and energy stay null and not_instrumented",
+      "component, plan and final-report fingerprints fail closed on drift"
+    ]
+  },
+  "deterministic_fixture": {
+    "evidence_class": "deterministic cache-counter and selective-plan fixtures; not a live workload or execution receipt",
+    "embedding_reuse": {
+      "flickr_runs": 2,
+      "flickr_embedding_requests": 4,
+      "flickr_cache_hits": 2,
+      "flickr_cache_misses": 2,
+      "flickr_embeddings_materialized": 2,
+      "reference_embedding_requests": 3,
+      "reference_embedding_reuse_events": 3,
+      "unique_reference_embeddings_reused": 3,
+      "reference_embeddings_materialized": 0,
+      "total_embedding_requests": 7,
+      "total_embedding_reuse_events": 5,
+      "total_embeddings_materialized": 2
+    },
+    "matrix_reuse": {
+      "worker_cache_requests": 7,
+      "worker_cache_hits": 4,
+      "worker_cache_misses": 3,
+      "worker_cache_materializations": 3,
+      "worker_cache_rows_materialized": 6,
+      "worker_cache_bytes_materialized": 48,
+      "pool_matrix_references": 9,
+      "unique_pool_matrix_observations": 3,
+      "unique_pool_matrix_rows": 7,
+      "unique_pool_matrix_bytes": 56,
+      "within_batch_matrix_reuses": 3,
+      "cross_batch_matrix_reloads": 3,
+      "observed_matrix_reuse_events": 7
+    },
+    "selective_score_work": {
+      "score_records_considered": 2,
+      "prior_scores_reused": 1,
+      "planned_score_executions_avoided": 1,
+      "records_planned_for_selective_rescore": 1,
+      "score_reuse_rate": 0.5,
+      "execution_evidence_status": "plan_only_not_execution_receipt",
+      "score_executions_completed": null,
+      "score_executions_completed_status": "not_instrumented"
+    },
+    "unavailable_savings": {
+      "encoder_seconds": null,
+      "score_seconds": null,
+      "bytes_avoided": null,
+      "cost": null,
+      "energy": null,
+      "status": "not_instrumented"
+    }
+  },
+  "gate": {
+    "metrics_and_no_guess_suite": {
+      "command": ".venv/bin/pytest -q tests/test_dynamic_pool_efficiency_report.py tests/test_adaptive_workflow_efficiency_report.py tests/test_flickr_embeddings.py tests/test_dynamic_pool_planner.py tests/test_bioclip_matrix_cache.py tests/test_dynamic_pool_scoring.py tests/test_flickr_selective_rescore.py tests/test_incremental_feature_reuse.py",
+      "result": "passed",
+      "passed": 91,
+      "duration_seconds": 3.03
+    },
+    "estimated_value_scan": {
+      "command": "rg over exact estimated/assumed savings field patterns in dynamic_pool_efficiency.py",
+      "result": "passed",
+      "matches": 0
+    },
+    "full_regression": {
+      "command": ".venv/bin/pytest -q",
+      "result": "passed",
+      "passed": 2921,
+      "duration_seconds": 106.61,
+      "tested_implementation_sha": "f6be531e01d64be4e7e6f168313e66ecd3b25010"
+    },
+    "lint": {
+      "command": "uvx ruff check .",
+      "result": "passed"
+    },
+    "changed_file_format": {
+      "command": "uvx ruff format --check src/biominer/reports/dynamic_pool_efficiency.py tests/test_dynamic_pool_efficiency_report.py",
+      "result": "passed"
+    },
+    "provenance": {
+      "result": "passed",
+      "jsonl_records": 160,
+      "required_records": [
+        "geo-pool-8.2",
+        "geo-pool-8.2.1",
+        "geo-pool-8.2.2",
+        "geo-pool-8.2.3"
+      ],
+      "githits_status": "all_four_skipped_user_directive_with_null_solution_ids_and_no_invented_external_results"
+    },
+    "trailers": {
+      "result": "passed",
+      "commits_checked": 3,
+      "required_field_matches": 12,
+      "origin_chain_verified": true
+    }
+  },
+  "githits_architecture_impact": {
+    "direct_external_code_contribution": "none",
+    "calls_made_for_task": 0,
+    "availability": "The user prohibited further GitHits calls for the remainder of the active goal.",
+    "material_architecture_contribution": "none from GitHits",
+    "first_party_basis": [
+      "Phase 5 reference-expansion cache-reuse artifacts",
+      "Phase 6 Flickr persistence and matrix cache counters",
+      "Phase 8.1 encoder-free scoring and pool-matrix batch metrics",
+      "existing selective-rescore plans and evidence-qualified efficiency rules"
+    ],
+    "assessment": "Four skipped_user_directive records preserve task/subtask provenance without a call. No GitHits repository, solution, result, code, prose or architecture is claimed."
+  },
+  "selection_state": {
+    "embedding_reuse_instrumented": true,
+    "matrix_reuse_instrumented": true,
+    "selective_score_reuse_instrumented": true,
+    "guessed_values_reported": false,
+    "live_workload_measured": false,
+    "completed_score_execution_receipt_available": false,
+    "scientific_score_semantics_changed": false,
+    "production_default_changed": false,
+    "scientific_validation_completed": false,
+    "production_release_authorized": false,
+    "reason": "Task 8.2 reports exact cache/work counters and validated plan decisions; it does not execute or benchmark a live workload."
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "f6be531e01d64be4e7e6f168313e66ecd3b25010",
+    "verified_remote_sha": "f6be531e01d64be4e7e6f168313e66ecd3b25010",
+    "verified_at": "2026-07-18T08:48:48Z",
+    "status": "verified"
+  },
+  "claims": {
+    "allowed": [
+      "Task 8.2 reports observed Flickr/reference embedding reuse and family/candidate/pool matrix reuse from exact source counters.",
+      "Worker-cache hits, within-batch sharing, cross-batch reloads and materializations remain distinct.",
+      "Validated reuse_prior_score decisions provide a plan-derived count of score-record work avoided if that plan is executed.",
+      "The exact implementation commit passes 91 focused metrics tests, 2,921 repository tests and repository-wide Ruff lint."
+    ],
+    "blocked": [
+      "Item counts establish elapsed-time, byte, monetary, energy, accelerator-memory or throughput savings.",
+      "Planned selective rescoring or prior-score reuse is a completed execution receipt.",
+      "Fixture metrics establish live-corpus performance, scientific accuracy, calibration or taxonomy.",
+      "Human review, occurrence release, downstream publication or production deployment is complete."
+    ]
+  },
+  "completion_record_commit": "self"
+}
