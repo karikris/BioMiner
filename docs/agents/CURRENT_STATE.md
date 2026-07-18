@@ -10,8 +10,8 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `12aaaae3249dafa9991581b76c7849c82497fdd6`
-  (`fix(evaluation): balance frozen evaluation splits`)
+  `4c38a10012e596b7591945da70821732a0602775`
+  (`feat(ml): select audited screening thresholds`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -43,9 +43,12 @@ at the start of every task.
   inflation, and immutable adaptive milestone evaluation through Task 9.2.3.
   Phase 10 creates transitive reviewed-Flickr source-independence components
   and freezes balanced calibration/validation/final-test assignments through
-  Task 10.1.2 plus its explicit post-push balance correction. Task 10.2
-  calibrated evidence models is next; no fusion method is selected or
-  production-defaulted.
+  Task 10.1.2 plus its explicit post-push balance correction. Task 10.2 builds
+  a 75-dimension raw-evidence feature table, fits grouped-OOF sigmoid-calibrated
+  route models on calibration rows, reports independent validation reliability
+  and selects screening-only thresholds from conservative precision lower
+  bounds through Task 10.2.3. Task 10.3 outcome lanes are next; no fusion method
+  is selected or production-defaulted.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -133,6 +136,15 @@ at the start of every task.
     while unrelated no-geo rows remained independent; 18 independent reviewed
     components froze to calibration/validation/final-test counts 7/5/6 under
     40/30/30 weights, with both supported and error outcomes in every split;
+  - Task 10.2 final full regression: 3,005 passed in 109.62 seconds;
+  - Task 10.2 calibration/reliability/risk-control gate: 76 passed in 5.68
+    seconds;
+  - Task 10.2 fixture: 36 rows and 75 features froze to 14/11/11; grouped OOF
+    fitting used four folds, validation Brier/log-loss/ECE were
+    0.0055986/0.0751940/0.0722312, and a permissive fixture threshold selected
+    six components at a 0.6069622 conservative precision lower bound. These are
+    software-fixture metrics; the default 0.95 objective and 30-item/component
+    floors remain unmet and occurrence release remains unauthorized;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
