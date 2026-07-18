@@ -9,15 +9,19 @@ from biominer.evaluation.dynamic_pool_review import (
     DYNAMIC_POOL_FAILURE_QUEUE_SCHEMA,
     DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA,
     DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA,
+    DYNAMIC_POOL_RELEASE_REVIEW_QUEUE_SCHEMA,
     RAW_SCORE_SEMANTICS,
     DynamicPoolAuditStrataPolicy,
     FailureDiscoveryPolicy,
+    OccurrenceReleaseReviewPolicy,
     ProbabilityAuditSamplingPolicy,
     build_dynamic_pool_audit_frame,
     build_failure_discovery_queue,
+    build_occurrence_release_review_queue,
     build_probability_audit_sample,
     empty_dynamic_pool_audit_frame,
     validate_failure_discovery_queue,
+    validate_occurrence_release_review_queue,
 )
 
 
@@ -315,3 +319,72 @@ def test_failure_queue_validator_rejects_statistical_misrepresentation() -> None
 
     with pytest.raises(ValueError, match="evidence boundary"):
         validate_failure_discovery_queue(queue)
+
+
+def _release_frame():
+    candidates = [
+        _candidate(
+            sampling_unit_id="release-1",
+            source_record_hash=_sha("e"),
+            duplicate_group_id="release-duplicate",
+            observation_group_id="release-observation-1",
+        ),
+        _candidate(
+            sampling_unit_id="release-2",
+            source_record_hash=_sha("f"),
+            flickr_photo_id="release-photo-2",
+            organism_unit_id="release-organism-2",
+            owner_group_id="owner-2",
+            duplicate_group_id="release-duplicate",
+            observation_group_id="release-observation-2",
+        ),
+        _candidate(
+            sampling_unit_id="not-release",
+            source_record_hash=_sha("0"),
+            flickr_photo_id="not-release-photo",
+            organism_unit_id="not-release-organism",
+            owner_group_id="owner-3",
+            duplicate_group_id="not-release-duplicate",
+            observation_group_id="not-release-observation",
+            final_release_candidate=False,
+        ),
+    ]
+    return build_dynamic_pool_audit_frame(candidates)
+
+
+def test_release_queue_keeps_every_candidate_including_duplicates() -> None:
+    frame = _release_frame()
+    queue = build_occurrence_release_review_queue(frame)
+
+    assert queue.schema == DYNAMIC_POOL_RELEASE_REVIEW_QUEUE_SCHEMA
+    assert queue.height == 2
+    assert set(queue["sampling_unit_id"].to_list()) == {"release-1", "release-2"}
+    assert queue["duplicate_group_id"].n_unique() == 1
+    assert queue["reviewable"].all()
+    assert not queue["release_authorized"].any()
+    assert not queue["eligible_for_final_occurrence_dataset"].any()
+    assert queue["review_decision"].null_count() == queue.height
+    assert queue["review_source_record_hash"].null_count() == queue.height
+    assert queue["inclusion_probability"].null_count() == queue.height
+    assert queue["sampling_weight"].null_count() == queue.height
+    assert "human_review_missing" in queue["release_blocking_reasons"].item(0)
+    assert "second_review_incomplete" in queue["release_blocking_reasons"].item(0)
+
+
+def test_release_queue_is_order_independent_and_policy_bound() -> None:
+    frame = _release_frame()
+    policy = OccurrenceReleaseReviewPolicy(require_second_review=False)
+    first = build_occurrence_release_review_queue(frame, policy=policy)
+    second = build_occurrence_release_review_queue(frame.reverse(), policy=policy)
+
+    assert first.to_dicts() == second.to_dicts()
+    assert first["release_review_policy_fingerprint"].item(0) == policy.fingerprint
+    assert "second_review_incomplete" not in first["release_blocking_reasons"].item(0)
+
+
+def test_release_queue_completeness_validator_fails_closed() -> None:
+    frame = _release_frame()
+    incomplete = build_occurrence_release_review_queue(frame).head(1)
+
+    with pytest.raises(ValueError, match="every final-release candidate"):
+        validate_occurrence_release_review_queue(incomplete, source_frame=frame)

@@ -32,6 +32,12 @@ DYNAMIC_POOL_PROBABILITY_REGISTER_FILE = (
 DYNAMIC_POOL_PROBABILITY_SAMPLE_FILE = "dynamic_pool_probability_audit_sample.parquet"
 DYNAMIC_POOL_FAILURE_QUEUE_SCHEMA_VERSION = "dynamic-pool-failure-queue-v1.0.0"
 DYNAMIC_POOL_FAILURE_QUEUE_FILE = "dynamic_pool_failure_discovery_queue.parquet"
+DYNAMIC_POOL_RELEASE_REVIEW_QUEUE_SCHEMA_VERSION = (
+    "dynamic-pool-release-review-queue-v1.0.0"
+)
+DYNAMIC_POOL_RELEASE_REVIEW_QUEUE_FILE = (
+    "dynamic_pool_occurrence_release_review_queue.parquet"
+)
 
 QUERY_TIERS = frozenset({"T1", "T2", "T3", "T4", "T5"})
 RAW_SCORE_SEMANTICS = "raw_model_evidence_not_probability"
@@ -166,6 +172,37 @@ DYNAMIC_POOL_FAILURE_QUEUE_SCHEMA: dict[str, pl.DataType] = {
     "representative_estimation_eligible": pl.Boolean,
     "review_status": pl.String,
     "review_required": pl.Boolean,
+    "release_authorized": pl.Boolean,
+}
+
+DYNAMIC_POOL_RELEASE_REVIEW_QUEUE_SCHEMA: dict[str, pl.DataType] = {
+    **DYNAMIC_POOL_AUDIT_FRAME_SCHEMA,
+    "release_review_queue_schema_version": pl.String,
+    "release_review_policy_fingerprint": pl.String,
+    "release_review_queue_fingerprint": pl.String,
+    "queue_kind": pl.String,
+    "queue_rank": pl.UInt32,
+    "review_batch_id": pl.String,
+    "review_status": pl.String,
+    "review_decision": pl.String,
+    "review_source_record_hash": pl.String,
+    "duplicate_group_resolved": pl.Boolean,
+    "target_identity_supported": pl.Boolean,
+    "visual_domain_suitable": pl.Boolean,
+    "life_stage_suitable": pl.Boolean,
+    "coordinate_requirements_pass": pl.Boolean,
+    "date_requirements_pass": pl.Boolean,
+    "second_review_required": pl.Boolean,
+    "second_review_complete": pl.Boolean,
+    "adjudication_required": pl.Boolean,
+    "adjudication_complete": pl.Boolean,
+    "release_policy_permits": pl.Boolean,
+    "release_blocking_reasons": pl.List(pl.String),
+    "inclusion_probability": pl.Float64,
+    "sampling_weight": pl.Float64,
+    "representative_estimation_eligible": pl.Boolean,
+    "reviewable": pl.Boolean,
+    "eligible_for_final_occurrence_dataset": pl.Boolean,
     "release_authorized": pl.Boolean,
 }
 
@@ -317,6 +354,36 @@ class FailureDiscoveryPolicy:
                 "priority_route_domains": self.priority_route_domains,
                 "max_queue_size": self.max_queue_size,
                 "priority_score_semantics": "heuristic_not_probability",
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class OccurrenceReleaseReviewPolicy:
+    """Fail-closed initial state for occurrence-candidate review."""
+
+    schema_version: str = "occurrence-release-review-policy-v1.0.0"
+    require_second_review: bool = True
+    adjudication_on_conflict: bool = True
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "schema_version",
+            _required_text(self.schema_version, field="schema_version"),
+        )
+        for field in ("require_second_review", "adjudication_on_conflict"):
+            _required_bool(getattr(self, field), field=field)
+
+    @property
+    def fingerprint(self) -> str:
+        return canonical_semantic_fingerprint(
+            {
+                "schema_version": self.schema_version,
+                "require_second_review": self.require_second_review,
+                "adjudication_on_conflict": self.adjudication_on_conflict,
+                "candidate_inclusion": "every_final_release_candidate",
+                "initial_release_state": "excluded_pending_complete_human_evidence",
             }
         )
 
@@ -728,6 +795,156 @@ def validate_failure_discovery_queue(queue: pl.DataFrame) -> None:
     expected_ranks = list(range(1, queue.height + 1))
     if queue["priority_rank"].to_list() != expected_ranks:
         raise ValueError("targeted failure queue ranks must be contiguous")
+
+
+def build_occurrence_release_review_queue(
+    frame: pl.DataFrame,
+    *,
+    policy: OccurrenceReleaseReviewPolicy | None = None,
+) -> pl.DataFrame:
+    """Queue every final-release candidate without granting release authority."""
+
+    validate_dynamic_pool_audit_frame(frame)
+    selected_policy = policy or OccurrenceReleaseReviewPolicy()
+    if not isinstance(selected_policy, OccurrenceReleaseReviewPolicy):
+        raise TypeError("policy must be an OccurrenceReleaseReviewPolicy")
+    candidates = frame.filter(pl.col("final_release_candidate")).sort(
+        [
+            "owner_group_id",
+            "observation_group_id",
+            "duplicate_group_id",
+            "sampling_unit_id",
+        ]
+    )
+    if not candidates.height:
+        return pl.DataFrame(schema=DYNAMIC_POOL_RELEASE_REVIEW_QUEUE_SCHEMA)
+    blocking_reasons = [
+        "human_review_missing",
+        "review_source_hash_mismatch",
+        "duplicate_group_unresolved",
+        "target_identity_unsupported",
+        "visual_domain_unsuitable",
+        "life_stage_unsuitable",
+        "coordinate_requirements_failed",
+        "date_requirements_failed",
+    ]
+    if selected_policy.require_second_review:
+        blocking_reasons.append("second_review_incomplete")
+    blocking_reasons.append("release_policy_denied")
+    queue_rows: list[dict[str, object]] = []
+    for rank, row in enumerate(candidates.to_dicts(), start=1):
+        queue_rows.append(
+            {
+                **row,
+                "release_review_queue_schema_version": (
+                    DYNAMIC_POOL_RELEASE_REVIEW_QUEUE_SCHEMA_VERSION
+                ),
+                "release_review_policy_fingerprint": selected_policy.fingerprint,
+                "release_review_queue_fingerprint": "",
+                "queue_kind": "occurrence_release_review",
+                "queue_rank": rank,
+                "review_batch_id": f"owner:{row['owner_group_id']}",
+                "review_status": "pending",
+                "review_decision": None,
+                "review_source_record_hash": None,
+                "duplicate_group_resolved": False,
+                "target_identity_supported": False,
+                "visual_domain_suitable": False,
+                "life_stage_suitable": False,
+                "coordinate_requirements_pass": False,
+                "date_requirements_pass": False,
+                "second_review_required": selected_policy.require_second_review,
+                "second_review_complete": False,
+                "adjudication_required": False,
+                "adjudication_complete": False,
+                "release_policy_permits": False,
+                "release_blocking_reasons": blocking_reasons,
+                "inclusion_probability": None,
+                "sampling_weight": None,
+                "representative_estimation_eligible": False,
+                "reviewable": True,
+                "eligible_for_final_occurrence_dataset": False,
+                "release_authorized": False,
+            }
+        )
+    queue_fingerprint = canonical_semantic_fingerprint(
+        {
+            "schema_version": DYNAMIC_POOL_RELEASE_REVIEW_QUEUE_SCHEMA_VERSION,
+            "release_review_policy_fingerprint": selected_policy.fingerprint,
+            "audit_frame_fingerprint": frame["frame_fingerprint"].item(0),
+            "candidate_audit_unit_fingerprints": [
+                row["audit_unit_fingerprint"] for row in queue_rows
+            ],
+        }
+    )
+    for row in queue_rows:
+        row["release_review_queue_fingerprint"] = queue_fingerprint
+    queue = pl.DataFrame(
+        queue_rows,
+        schema=DYNAMIC_POOL_RELEASE_REVIEW_QUEUE_SCHEMA,
+        strict=True,
+    )
+    validate_occurrence_release_review_queue(queue, source_frame=frame)
+    return queue
+
+
+def validate_occurrence_release_review_queue(
+    queue: pl.DataFrame,
+    *,
+    source_frame: pl.DataFrame | None = None,
+) -> None:
+    """Verify completeness and fail-closed initial release state."""
+
+    if queue.schema != DYNAMIC_POOL_RELEASE_REVIEW_QUEUE_SCHEMA:
+        raise ValueError(
+            "occurrence release-review queue schema does not match contract"
+        )
+    if source_frame is not None:
+        validate_dynamic_pool_audit_frame(source_frame)
+        expected_ids = set(
+            source_frame.filter(pl.col("final_release_candidate"))[
+                "sampling_unit_id"
+            ].to_list()
+        )
+        queued_ids = set(queue["sampling_unit_id"].to_list())
+        if queued_ids != expected_ids or queue.height != len(expected_ids):
+            raise ValueError("every final-release candidate must remain reviewable")
+    if not queue.height:
+        return
+    if set(queue["release_review_queue_schema_version"].to_list()) != {
+        DYNAMIC_POOL_RELEASE_REVIEW_QUEUE_SCHEMA_VERSION
+    }:
+        raise ValueError("unsupported occurrence release-review queue schema version")
+    if queue["sampling_unit_id"].n_unique() != queue.height:
+        raise ValueError("release-review queue sampling units must be unique")
+    if queue.filter(
+        ~pl.col("final_release_candidate")
+        | (pl.col("queue_kind") != "occurrence_release_review")
+        | (pl.col("review_status") != "pending")
+        | pl.col("review_decision").is_not_null()
+        | pl.col("review_source_record_hash").is_not_null()
+        | pl.col("duplicate_group_resolved")
+        | pl.col("target_identity_supported")
+        | pl.col("visual_domain_suitable")
+        | pl.col("life_stage_suitable")
+        | pl.col("coordinate_requirements_pass")
+        | pl.col("date_requirements_pass")
+        | pl.col("second_review_complete")
+        | pl.col("adjudication_required")
+        | pl.col("adjudication_complete")
+        | pl.col("release_policy_permits")
+        | pl.col("inclusion_probability").is_not_null()
+        | pl.col("sampling_weight").is_not_null()
+        | pl.col("representative_estimation_eligible")
+        | ~pl.col("reviewable")
+        | pl.col("eligible_for_final_occurrence_dataset")
+        | pl.col("release_authorized")
+    ).height:
+        raise ValueError("release-review queue must begin fail closed")
+    if queue["queue_rank"].to_list() != list(range(1, queue.height + 1)):
+        raise ValueError("release-review queue ranks must be contiguous")
+    if queue["release_review_queue_fingerprint"].n_unique() != 1:
+        raise ValueError("release-review queue must have one fingerprint")
 
 
 def _failure_priority(
@@ -1196,16 +1413,22 @@ __all__ = [
     "DYNAMIC_POOL_PROBABILITY_SAMPLE_FILE",
     "DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA",
     "DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA_VERSION",
+    "DYNAMIC_POOL_RELEASE_REVIEW_QUEUE_FILE",
+    "DYNAMIC_POOL_RELEASE_REVIEW_QUEUE_SCHEMA",
+    "DYNAMIC_POOL_RELEASE_REVIEW_QUEUE_SCHEMA_VERSION",
     "RAW_SCORE_SEMANTICS",
     "DynamicPoolAuditStrataPolicy",
     "FailureDiscoveryPolicy",
+    "OccurrenceReleaseReviewPolicy",
     "ProbabilityAuditSamplingPolicy",
     "ProbabilityAuditSelection",
     "build_dynamic_pool_audit_frame",
     "build_failure_discovery_queue",
+    "build_occurrence_release_review_queue",
     "build_probability_audit_sample",
     "empty_dynamic_pool_audit_frame",
     "validate_dynamic_pool_audit_frame",
     "validate_failure_discovery_queue",
+    "validate_occurrence_release_review_queue",
     "validate_probability_audit_selection",
 ]
