@@ -1,0 +1,198 @@
+{
+  "schema_version": "geo-dynamic-pooling-task-completion-v1.0.0",
+  "task_id": "geo-pool-3.1",
+  "title": "Build canonical Flickr work units",
+  "status": "completed",
+  "completed_at": "2026-07-18T04:15:40Z",
+  "starting_sha": "0d64f2ad68a570bf61ad349ac356bb3d41ec67e7",
+  "pushed_implementation_sha": "fe03e46bf00c9c064d1f52c5d83320730a5f86fa",
+  "task_commits": [
+    {
+      "subtask_id": "geo-pool-3.1.1",
+      "commit": "1d212bcbfad04f0644f5c3d525afa7ae39441651",
+      "subject": "feat(flickr): define canonical scoring units"
+    },
+    {
+      "subtask_id": "geo-pool-3.1.2",
+      "commit": "c7110954ed52478c90a44e7eae4474fecf66ff5a",
+      "subject": "feat(flickr): normalize scoring geography"
+    },
+    {
+      "subtask_id": "geo-pool-3.1.3",
+      "commit": "fe03e46bf00c9c064d1f52c5d83320730a5f86fa",
+      "subject": "feat(flickr): partition geographic taxon work"
+    }
+  ],
+  "artifacts": [
+    {
+      "file": "flickr_photo_embedding_units.parquet",
+      "schema_version": "flickr-photo-embedding-unit-v1.0.0",
+      "grain": "one eligible source Flickr photo"
+    },
+    {
+      "file": "flickr_scoring_units.parquet",
+      "schema_version": "flickr-scoring-unit-v1.0.0",
+      "grain": "one eligible Flickr photo and BioCLIP route"
+    },
+    {
+      "file": "flickr_scoring_unit_associations.parquet",
+      "schema_version": "flickr-scoring-association-v1.0.0",
+      "grain": "one routed organism unit and query or target association"
+    },
+    {
+      "file": "flickr_scoring_unit_candidates.parquet",
+      "schema_version": "flickr-scoring-candidate-v1.0.0",
+      "grain": "one routed organism unit and accepted candidate species"
+    },
+    {
+      "file": "flickr_scoring_geography.parquet",
+      "schema_version": "flickr-scoring-geography-v1.0.0",
+      "grain": "one eligible photo embedding unit"
+    },
+    {
+      "file": "flickr_geo_taxon_partitions.parquet",
+      "schema_version": "flickr-geo-taxon-partition-v1.0.0",
+      "grain": "one routed organism unit and deterministic work partition"
+    },
+    {
+      "file": "flickr_partition_summary.parquet",
+      "schema_version": "flickr-partition-summary-v1.0.0",
+      "grain": "one deterministic geography, taxon, route and model-contract partition"
+    }
+  ],
+  "contracts": {
+    "result": "passed",
+    "properties": [
+      "photo embedding, routed organism, query or target association and candidate-species grains are normalized separately",
+      "organism_unit_id reuses the existing target-full-frame scoring-unit identity",
+      "one raw visual input and per-content model-input signature may be referenced by many downstream rows without copying image bytes or embedding vectors",
+      "Flickr provider accuracy levels remain separate from optional metric coordinate uncertainty",
+      "cells are materialized only through the source-supported precision policy",
+      "country, admin region, bioregion and mapping lineage remain explicit",
+      "missing, invalid, withheld and unassigned geography cannot become false local evidence",
+      "family signatures describe batching work and do not remove any candidate species",
+      "partition keys use a content-independent model-input contract while retaining exact content identity for cache reuse",
+      "every eligible organism unit receives exactly one partition assignment and every partition has a deterministic summary"
+    ]
+  },
+  "gate": {
+    "canonical_grain_suite": {
+      "command": "uv run pytest -q tests/test_flickr_scoring_units.py tests/test_flickr_scoring_geography.py tests/test_flickr_scoring_partitions.py tests/test_flickr_geography.py tests/test_flickr_geographic_clustering.py tests/test_flickr_workload_input.py tests/test_target_full_frame.py tests/test_family_geo_candidates.py tests/test_dynamic_pool_contracts.py tests/test_geo_dynamic_pooling_task_completion.py",
+      "result": "passed",
+      "passed": 118,
+      "duration_seconds": 1.01
+    },
+    "artifact_reproducibility": {
+      "command": "bounded five-photo fixture; write and reload partition and summary Parquet artifacts; validate all source, foreign-key, schema and semantic identities",
+      "result": "passed",
+      "artifact_rows": {
+        "photo_embedding_units": 5,
+        "organism_units": 5,
+        "associations": 5,
+        "candidate_species": 11,
+        "scoring_geography": 5,
+        "partition_assignments": 5,
+        "partition_summaries": 4
+      },
+      "unique_visual_inputs": 4,
+      "unique_model_inputs": 4,
+      "model_input_reuse_count": 1,
+      "no_geo_units": 1,
+      "partition_artifact_fingerprint": "sha256:d0a61da81a81eb574d7b66904de2665da12bcdb9dd0c253302e5f76abbb19fad",
+      "physical_sha256": {
+        "flickr_geo_taxon_partitions.parquet": "sha256:93283a8739cb21345fdaf0bd4477cf84cee1744c13cc9fa74273bd003f3d100b",
+        "flickr_partition_summary.parquet": "sha256:3aa2154603e2e3febe35ac7e6e00cdc17ec240fb392c041f351f5068884d7e46"
+      }
+    },
+    "resolved_compatibility_check": {
+      "command": "uv run pytest -q tests/test_flickr_geographic_workload_report.py tests/test_reference_geographic_assignment.py tests/test_target_aware_workflow_cli.py",
+      "result": "failed_resolved",
+      "passed_before_resolution": 48,
+      "failed_before_resolution": 1,
+      "failure": "the CLI workload manifest fixture still expected flickr-geography-v1.0.0 after the intentional v1.1.0 schema evolution",
+      "resolution": "updated the exact manifest compatibility assertion to v1.1.0 and reran the complete Flickr geography and CLI slice",
+      "final_slice_result": "passed",
+      "final_slice_passed": 79,
+      "final_slice_duration_seconds": 2.38
+    },
+    "full_regression": {
+      "command": "uv run pytest -q",
+      "result": "passed",
+      "passed": 2745,
+      "duration_seconds": 104.48,
+      "tested_implementation_sha": "fe03e46bf00c9c064d1f52c5d83320730a5f86fa"
+    },
+    "lint": {
+      "command": "uvx ruff check .",
+      "result": "passed"
+    },
+    "provenance": {
+      "result": "passed",
+      "jsonl_records": 118,
+      "required_records": [
+        "geo-pool-3.1",
+        "geo-pool-3.1.1",
+        "geo-pool-3.1.2",
+        "geo-pool-3.1.3"
+      ],
+      "githits_status": {
+        "geo-pool-3.1": "available",
+        "geo-pool-3.1.1": "unavailable_no_qualified_result",
+        "geo-pool-3.1.2": "unavailable_timeout",
+        "geo-pool-3.1.3": "unavailable_timeout"
+      }
+    },
+    "trailers": {
+      "result": "passed",
+      "commits_checked": 3,
+      "required_field_matches": 12
+    },
+    "secret_and_generated_artifact_inspection": {
+      "task_commit_changed_files": 10,
+      "secret_prefix_scan": "passed",
+      "generated_binary_or_runtime_artifacts_committed": 0,
+      "large_task_files_over_one_megabyte": 0,
+      "user_owned_untracked_files_staged": 0,
+      "result": "passed"
+    }
+  },
+  "githits_architecture_impact": {
+    "direct_external_code_contribution": "none",
+    "task_level_result": "One MIT typed asset/provenance example reinforced stable content identities and reference-based fan-out.",
+    "subtask_results": "No qualifying external implementation was returned for 3.1.1; 3.1.2 and 3.1.3 timed out.",
+    "material_architecture_contribution": [
+      "reinforced stable asset IDs and normalized provenance instead of nested mutable payloads",
+      "reinforced reference-based embedding reuse rather than vector duplication"
+    ],
+    "first_party_decisions_not_attributable_to_githits": [
+      "reuse of BioMiner target-full-frame organism identities",
+      "separation of provider accuracy from metric uncertainty",
+      "precision-gated geography and explicit no-geo states",
+      "content-independent partition keys and family-as-batching semantics",
+      "closed Polars schemas, semantic fingerprints and fail-closed validators"
+    ],
+    "assessment": "GitHits had low direct implementation impact and modest architecture-confirmation impact for Task 3.1; local BioMiner contracts and the accepted ADR determined the production design."
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "fe03e46bf00c9c064d1f52c5d83320730a5f86fa",
+    "verified_remote_sha": "fe03e46bf00c9c064d1f52c5d83320730a5f86fa",
+    "verified_at": "2026-07-18T04:15:40Z",
+    "status": "verified"
+  },
+  "claims": {
+    "allowed": [
+      "Task 3.1 implements deterministic normalized Flickr photo, organism, association, candidate, geography and partition contracts.",
+      "Fixture artifacts prove exact foreign-key lineage, deterministic partitioning and one demonstrated shared model-input reuse.",
+      "The full software regression and repository-wide lint gates pass."
+    ],
+    "blocked": [
+      "A live Flickr workload was detected, encoded, scored or published.",
+      "Fixture reuse counts establish production throughput, accuracy or memory improvement.",
+      "Query associations, geography, family or candidate membership prove taxonomic identity or absence.",
+      "Dynamic reference pools, provisional scores, human review, calibration, statistical support, occurrence release or production deployment are complete."
+    ]
+  },
+  "completion_record_commit": "self"
+}

@@ -10,15 +10,18 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `cd37037a98a9239c2ff4bb5d30c661e9c950ce66`
-  (`test(references): validate geographic reference index`)
+  `fe03e46bf00c9c064d1f52c5d83320730a5f86fa`
+  (`feat(flickr): partition geographic taxon work`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
   cross-repository contract alignment complete; Phase 2 geographic reference
-  indexing implementation complete through Task 2.1.4. The Task 2.1 gate and
-  completion evidence are active; Phase 3 canonical Flickr work units are the
-  next implementation boundary after that gate closes.
+  indexing complete; Phase 3 canonical Flickr photo, organism, association,
+  candidate, scoring-geography and work-partition contracts complete through
+  Task 3.1.3. Phase 4 family-versus-geography strategy ablation is the next
+  implementation boundary.
+- Phase 1 contract alignment remains a completed historical boundary; it is
+  not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
   self-identifying report resolved by the commit containing
   `reports/gbif_fast_start/final_report.json`.
@@ -29,6 +32,10 @@ at the start of every task.
   - Task 2.1 reference/geography gate: 133 passed in 1.77 seconds;
   - Task 2.1 artifact round-trip: four Parquet artifacts and the JSON manifest
     passed semantic fingerprint and complete supplied physical-checksum checks;
+  - Task 3.1 final full regression: 2,745 passed in 104.48 seconds;
+  - Task 3.1 canonical Flickr grain gate: 118 passed in 1.01 seconds;
+  - Task 3.1 artifact round-trip: five organism assignments across four
+    partitions, with one shared model-input reuse and explicit no-geo evidence;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
@@ -250,9 +257,10 @@ unavailable, and no live production improvement or scientific release is
 claimed.
 
 For the active dynamic-pooling goal, the next implementation boundary is Phase
-1 contract alignment. No global/local pool artifact, strategy superiority,
-live dynamic score, calibrated probability, statistical-support result or new
-release-ready occurrence is claimed by the Phase 0 ADRs.
+4 family-versus-geography strategy ablation. No candidate-selection strategy
+is yet empirically superior, and no live dynamic pool, live score, calibrated
+probability, statistical-support result or new release-ready occurrence is
+claimed by the completed contract and indexing phases.
 
 ## Repository map
 

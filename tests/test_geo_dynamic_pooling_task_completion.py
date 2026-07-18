@@ -10,6 +10,7 @@ REPORT = ROOT / "reports/geo_dynamic_pooling/task_0_1_completion.json"
 TASK_1_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_1_1_completion.json"
 TASK_1_2_REPORT = ROOT / "reports/geo_dynamic_pooling/task_1_2_completion.json"
 TASK_2_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_2_1_completion.json"
+TASK_3_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_3_1_completion.json"
 PUSH_LEDGER = ROOT / "provenance/task_pushes.jsonl"
 
 
@@ -27,6 +28,10 @@ def _task_1_2_report() -> dict[str, object]:
 
 def _task_2_1_report() -> dict[str, object]:
     return json.loads(TASK_2_1_REPORT.read_text(encoding="utf-8"))
+
+
+def _task_3_1_report() -> dict[str, object]:
+    return json.loads(TASK_3_1_REPORT.read_text(encoding="utf-8"))
 
 
 def test_task_0_1_completion_records_exact_commits_and_green_gate() -> None:
@@ -203,3 +208,56 @@ def test_task_2_1_report_blocks_live_identity_and_release_claims() -> None:
     assert any(
         "occurrence release or production deployment" in claim for claim in blocked
     )
+
+
+def test_task_3_1_completion_records_artifacts_commits_and_green_gates() -> None:
+    report = _task_3_1_report()
+
+    assert report["task_id"] == "geo-pool-3.1"
+    assert report["status"] == "completed"
+    assert [item["commit"] for item in report["task_commits"]] == [
+        "1d212bcbfad04f0644f5c3d525afa7ae39441651",
+        "c7110954ed52478c90a44e7eae4474fecf66ff5a",
+        "fe03e46bf00c9c064d1f52c5d83320730a5f86fa",
+    ]
+    assert [item["file"] for item in report["artifacts"]] == [
+        "flickr_photo_embedding_units.parquet",
+        "flickr_scoring_units.parquet",
+        "flickr_scoring_unit_associations.parquet",
+        "flickr_scoring_unit_candidates.parquet",
+        "flickr_scoring_geography.parquet",
+        "flickr_geo_taxon_partitions.parquet",
+        "flickr_partition_summary.parquet",
+    ]
+    assert report["gate"]["canonical_grain_suite"]["passed"] == 118
+    assert report["gate"]["artifact_reproducibility"][
+        "model_input_reuse_count"
+    ] == 1
+    assert report["gate"]["full_regression"]["passed"] == 2745
+    assert report["gate"]["provenance"]["jsonl_records"] == 118
+
+
+def test_task_3_1_push_event_matches_report() -> None:
+    report = _task_3_1_report()
+    events = [
+        json.loads(line)
+        for line in PUSH_LEDGER.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    event = next(item for item in events if item["task_id"] == "geo-pool-3.1")
+
+    assert event["verified_remote_sha"] == report["push"]["verified_remote_sha"]
+    assert event["pushed_through_sha"] == report["push"]["pushed_through_sha"]
+    assert event["status"] == report["push"]["status"] == "verified"
+
+
+def test_task_3_1_report_blocks_live_identity_and_release_claims() -> None:
+    report = _task_3_1_report()
+    blocked = report["claims"]["blocked"]
+
+    assert any("live Flickr workload" in claim for claim in blocked)
+    assert any("prove taxonomic identity or absence" in claim for claim in blocked)
+    assert any("occurrence release or production deployment" in claim for claim in blocked)
+    impact = report["githits_architecture_impact"]
+    assert impact["direct_external_code_contribution"] == "none"
+    assert "low direct implementation impact" in impact["assessment"]
