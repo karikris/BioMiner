@@ -10,8 +10,8 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `c75e51ed39dd49a5667dc32f192dba7eb772a16b`
-  (`feat(evaluation): queue occurrence release review`)
+  `7ba61be8ac376a0d8ebac7023384be0600187555`
+  (`feat(evaluation): update review milestones from evidence`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -38,7 +38,10 @@ at the start of every task.
   guessed savings through Task 8.2.3. Phase 9 defines the complete
   dynamic-pool audit frame, stratified probability sample, separate targeted
   failure queue and complete fail-closed occurrence-release review queue
-  through Task 9.1.4. Task 9.2 human-review count planning is next; no fusion
+  through Task 9.1.4. Task 9.2 defines the preregistered review-evidence policy,
+  dynamic exact-binomial reference count with explicit weighted/grouped design
+  inflation, and immutable adaptive milestone evaluation through Task 9.2.3.
+  Phase 10 leakage-safe calibration and risk-control work is next; no fusion
   method is selected or production-defaulted.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
@@ -114,6 +117,13 @@ at the start of every task.
     exact inclusion probabilities; targeted failure discovery retained two
     heuristic rows with null statistical weights; occurrence release retained
     both final candidates, including a shared duplicate, in a fail-closed queue;
+  - Task 9.2 final full regression: 2,970 passed in 106.83 seconds;
+  - Task 9.2 statistical planning/milestone gate: 73 passed in 3.10 seconds;
+  - Task 9.2 references: a one-look, one-sided 95% exact all-success design
+    crosses a 95% lower bound at 59 independent decisive reviews (58 remains
+    below); the default four-look Bonferroni policy requires 86 under the same
+    all-success assumptions; a fixture weight/group/external design effect of
+    2.2032 inflates 59 effective reviews to 130 nominal reviews;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
