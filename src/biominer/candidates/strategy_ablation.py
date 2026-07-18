@@ -22,8 +22,14 @@ GEOGRAPHY_FIRST_STRATEGY = "geography_first"
 GEOGRAPHY_FIRST_STRATEGY_VERSION = "geography-first-complete-union-v1.0.0"
 FAMILY_FIRST_SAFE_STRATEGY = "family_first_safe"
 FAMILY_FIRST_SAFE_STRATEGY_VERSION = "family-first-safe-complete-union-v1.0.0"
+PARALLEL_UNION_STRATEGY = "parallel_family_geography_union"
+PARALLEL_UNION_STRATEGY_VERSION = "parallel-family-geography-union-v1.0.0"
 CANDIDATE_STRATEGIES = frozenset(
-    {GEOGRAPHY_FIRST_STRATEGY, FAMILY_FIRST_SAFE_STRATEGY}
+    {
+        GEOGRAPHY_FIRST_STRATEGY,
+        FAMILY_FIRST_SAFE_STRATEGY,
+        PARALLEL_UNION_STRATEGY,
+    }
 )
 
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -375,7 +381,29 @@ def _schedule(
         return _schedule_geography_first(rows)
     if strategy == FAMILY_FIRST_SAFE_STRATEGY:
         return _schedule_family_first_safe(rows)
+    if strategy == PARALLEL_UNION_STRATEGY:
+        return _schedule_parallel_union(rows)
     raise ValueError(f"unsupported candidate strategy {strategy!r}")
+
+
+def _schedule_parallel_union(
+    rows: Sequence[Mapping[str, object]],
+) -> list[tuple[Mapping[str, object], str, int]]:
+    stages: dict[str, list[Mapping[str, object]]] = {
+        stage: [] for stage in _stage_order(PARALLEL_UNION_STRATEGY)
+    }
+    for row in rows:
+        stage = (
+            "parallel_evidence_union"
+            if _inclusion_axes(row)
+            else "complete_union_remainder"
+        )
+        stages[stage].append(row)
+    output: list[tuple[Mapping[str, object], str, int]] = []
+    for stage in _stage_order(PARALLEL_UNION_STRATEGY):
+        ordered = sorted(stages[stage], key=_parallel_union_key)
+        output.extend((row, stage, rank) for rank, row in enumerate(ordered))
+    return output
 
 
 def _geography_first_key(
@@ -441,6 +469,16 @@ def _family_first_safe_key(
     return (source_priority, candidate_key)
 
 
+def _parallel_union_key(row: Mapping[str, object]) -> tuple[object, ...]:
+    axes = _inclusion_axes(row)
+    return (
+        0 if row["target_candidate"] else 1,
+        -len(axes),
+        int(row["candidate_priority"]),
+        str(row["candidate_accepted_taxon_key"]),
+    )
+
+
 def _inclusion_axes(row: Mapping[str, object]) -> list[str]:
     axes: list[str] = []
     if row["target_candidate"]:
@@ -473,6 +511,8 @@ def _stage_order(strategy: str) -> tuple[str, ...]:
             "family_expansion",
             "complete_union_remainder",
         )
+    if strategy == PARALLEL_UNION_STRATEGY:
+        return ("parallel_evidence_union", "complete_union_remainder")
     raise ValueError(f"unsupported candidate strategy {strategy!r}")
 
 
@@ -481,6 +521,8 @@ def _strategy_version(strategy: str) -> str:
         return GEOGRAPHY_FIRST_STRATEGY_VERSION
     if strategy == FAMILY_FIRST_SAFE_STRATEGY:
         return FAMILY_FIRST_SAFE_STRATEGY_VERSION
+    if strategy == PARALLEL_UNION_STRATEGY:
+        return PARALLEL_UNION_STRATEGY_VERSION
     raise ValueError(f"unsupported candidate strategy {strategy!r}")
 
 
@@ -507,6 +549,8 @@ __all__ = [
     "FAMILY_FIRST_SAFE_STRATEGY_VERSION",
     "GEOGRAPHY_FIRST_STRATEGY",
     "GEOGRAPHY_FIRST_STRATEGY_VERSION",
+    "PARALLEL_UNION_STRATEGY",
+    "PARALLEL_UNION_STRATEGY_VERSION",
     "build_candidate_strategy_plans",
     "candidate_strategy_plan_schema",
     "validate_candidate_strategy_plans",

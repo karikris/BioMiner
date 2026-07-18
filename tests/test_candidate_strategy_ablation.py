@@ -10,6 +10,7 @@ from biominer.candidates.strategy_ablation import (
     CANDIDATE_STRATEGY_PLANS_FILE,
     FAMILY_FIRST_SAFE_STRATEGY,
     GEOGRAPHY_FIRST_STRATEGY,
+    PARALLEL_UNION_STRATEGY,
     build_candidate_strategy_plans,
     candidate_strategy_plan_schema,
     validate_candidate_strategy_plans,
@@ -151,6 +152,79 @@ def test_family_first_safe_is_deterministic() -> None:
         source,
         strategy=GEOGRAPHY_FIRST_STRATEGY,
     )["strategy_plan_id"][0]
+
+
+def test_parallel_union_merges_axes_independently_without_duplicates() -> None:
+    source = build_family_geo_candidate_sets(_rows())
+
+    plan = build_candidate_strategy_plans(
+        source,
+        strategy=PARALLEL_UNION_STRATEGY,
+    )
+
+    assert plan["candidate_accepted_taxon_key"].to_list() == [
+        TARGET,
+        "gbif:visual",
+        "gbif:geographic",
+        "gbif:family",
+        "gbif:remainder",
+    ]
+    assert plan["strategy_stage"].to_list() == [
+        "parallel_evidence_union",
+        "parallel_evidence_union",
+        "parallel_evidence_union",
+        "parallel_evidence_union",
+        "complete_union_remainder",
+    ]
+    assert plan["strategy_stage_rank"].to_list() == [0, 1, 2, 3, 0]
+    assert plan["candidate_accepted_taxon_key"].n_unique() == source.height
+    by_key = {
+        row["candidate_accepted_taxon_key"]: row for row in plan.to_dicts()
+    }
+    assert by_key[TARGET]["inclusion_axes"] == [
+        "family",
+        "geography",
+        "query",
+        "safety",
+        "target",
+    ]
+    assert by_key["gbif:visual"]["inclusion_axes"] == [
+        "family",
+        "safety",
+        "visual",
+    ]
+    assert by_key["gbif:geographic"]["inclusion_axes"] == [
+        "family",
+        "geography",
+    ]
+    assert by_key["gbif:family"]["inclusion_axes"] == ["family"]
+    assert by_key["gbif:remainder"]["inclusion_axes"] == []
+
+
+def test_all_strategies_preserve_identical_complete_union() -> None:
+    source = build_family_geo_candidate_sets(_rows())
+    plans = {
+        strategy: build_candidate_strategy_plans(source, strategy=strategy)
+        for strategy in (
+            GEOGRAPHY_FIRST_STRATEGY,
+            FAMILY_FIRST_SAFE_STRATEGY,
+            PARALLEL_UNION_STRATEGY,
+        )
+    }
+
+    expected = set(source["candidate_accepted_taxon_key"])
+    assert all(
+        set(plan["candidate_accepted_taxon_key"]) == expected
+        for plan in plans.values()
+    )
+    assert all(
+        set(plan["source_candidate_row_fingerprint"])
+        == set(source["candidate_row_fingerprint"])
+        for plan in plans.values()
+    )
+    assert len(
+        {plan["strategy_plan_id"][0] for plan in plans.values()}
+    ) == 3
 
 
 def test_geography_first_is_deterministic_and_round_trips(tmp_path) -> None:
