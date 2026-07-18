@@ -22,6 +22,10 @@ from biominer.storage.parquet import write_parquet
 
 CANDIDATE_STRATEGY_METRIC_SCHEMA_VERSION = "candidate-strategy-metric-v1.0.0"
 CANDIDATE_STRATEGY_METRICS_FILE = "candidate_strategy_metrics.parquet"
+FAMILY_PRUNING_COUNTERFACTUAL_SCHEMA_VERSION = (
+    "family-pruning-counterfactual-v1.0.0"
+)
+FAMILY_PRUNING_COUNTERFACTUAL_FILE = "family_pruning_counterfactual.parquet"
 
 _LABEL_FIELDS = frozenset(
     {
@@ -48,6 +52,9 @@ _MEASUREMENT_FIELDS = frozenset(
 )
 _FINGERPRINT_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _METRIC_ID_PATTERN = re.compile(r"candidate-strategy-metric:[0-9a-f]{64}\Z")
+_COUNTERFACTUAL_ID_PATTERN = re.compile(
+    r"family-pruning-counterfactual:[0-9a-f]{64}\Z"
+)
 _SORT = (
     "evaluation_run_id",
     "strategy_name",
@@ -98,6 +105,40 @@ def candidate_strategy_metric_schema() -> dict[str, pl.DataType]:
         "family_counterfactual_status": pl.String,
         "wrong_family": pl.Boolean,
         "measurement_source": pl.String,
+    }
+
+
+def family_pruning_counterfactual_schema() -> dict[str, pl.DataType]:
+    return {
+        "schema_version": pl.String,
+        "counterfactual_id": pl.String,
+        "counterfactual_fingerprint": pl.String,
+        "evaluation_run_id": pl.String,
+        "source_candidate_set_id": pl.String,
+        "source_candidate_set_fingerprint": pl.String,
+        "run_id": pl.String,
+        "flickr_photo_id": pl.String,
+        "organism_unit_id": pl.String,
+        "scoring_stage": pl.String,
+        "label_status": pl.String,
+        "label_source": pl.String,
+        "reviewed_accepted_taxon_key": pl.String,
+        "reviewed_family_key": pl.String,
+        "reviewed_species_candidate_row_fingerprint": pl.String,
+        "complete_union_size": pl.UInt32,
+        "hard_family_pool_size": pl.UInt32,
+        "hard_family_pool_keys": pl.List(pl.String),
+        "hard_family_keys": pl.List(pl.String),
+        "reviewed_species_in_complete_union": pl.Boolean,
+        "reviewed_species_in_hard_family_pool": pl.Boolean,
+        "correct_species_family_evidence_status": pl.String,
+        "correct_species_family_priority_match": pl.Boolean,
+        "loss_eligible": pl.Boolean,
+        "correct_species_lost": pl.Boolean,
+        "geography_status": pl.String,
+        "no_geo": pl.Boolean,
+        "counterfactual_policy": pl.String,
+        "counterfactual_policy_fingerprint": pl.String,
     }
 
 
@@ -195,6 +236,117 @@ def write_candidate_strategy_metrics(
     destination = Path(output_path)
     if destination.suffix.casefold() != ".parquet":
         destination /= CANDIDATE_STRATEGY_METRICS_FILE
+    return write_parquet(frame, destination)
+
+
+def build_family_pruning_counterfactual(
+    candidate_sets: pl.DataFrame,
+    *,
+    evaluation_run_id: str,
+    labels: Sequence[Mapping[str, object]],
+) -> pl.DataFrame:
+    """Measure reviewed-species loss under a hypothetical hard family gate."""
+
+    validate_family_geo_candidate_sets(candidate_sets)
+    run_id = _required_text(evaluation_run_id, field="evaluation_run_id")
+    label_by_set = _normalize_labels(labels)
+    groups = {
+        str(candidate_set_id): group.sort(
+            "candidate_priority", "candidate_accepted_taxon_key"
+        )
+        for (candidate_set_id,), group in candidate_sets.group_by(
+            "candidate_set_id", maintain_order=True
+        )
+    }
+    if set(label_by_set) != set(groups):
+        raise ValueError("labels must cover every source candidate set exactly once")
+    policy = "hard_family_priority_match_only"
+    policy_fingerprint = canonical_semantic_fingerprint(
+        {
+            "schema_version": FAMILY_PRUNING_COUNTERFACTUAL_SCHEMA_VERSION,
+            "policy": policy,
+            "membership_rule": (
+                "family_evidence_status=available and family_priority_match=true"
+            ),
+            "production_candidate_membership_changed": False,
+        }
+    )
+    rows = [
+        _family_pruning_row(
+            evaluation_run_id=run_id,
+            source=groups[set_id],
+            label=label_by_set[set_id],
+            policy=policy,
+            policy_fingerprint=policy_fingerprint,
+        )
+        for set_id in sorted(groups)
+    ]
+    frame = pl.DataFrame(
+        rows,
+        schema=family_pruning_counterfactual_schema(),
+        orient="row",
+        strict=True,
+    ).sort("evaluation_run_id", "source_candidate_set_id")
+    validate_family_pruning_counterfactual(frame)
+    return frame
+
+
+def validate_family_pruning_counterfactual(frame: pl.DataFrame) -> None:
+    if not isinstance(frame, pl.DataFrame):
+        raise TypeError("family-pruning counterfactual must be a Polars DataFrame")
+    if frame.schema != family_pruning_counterfactual_schema():
+        raise ValueError("family-pruning counterfactual schema mismatch")
+    if not frame.equals(frame.sort("evaluation_run_id", "source_candidate_set_id")):
+        raise ValueError("family-pruning counterfactual is not canonically sorted")
+    if frame.height != frame["counterfactual_id"].n_unique():
+        raise ValueError("family-pruning counterfactual IDs are not unique")
+    for row in frame.to_dicts():
+        _validate_family_pruning_row(row)
+
+
+def summarize_family_pruning_counterfactual(
+    frame: pl.DataFrame,
+) -> dict[str, object]:
+    """Return denominator-explicit aggregate and no-geo loss statistics."""
+
+    validate_family_pruning_counterfactual(frame)
+    eligible = frame.filter(pl.col("loss_eligible"))
+    no_geo = eligible.filter(pl.col("no_geo"))
+    summary: dict[str, object] = {
+        "schema_version": "family-pruning-counterfactual-summary-v1.0.0",
+        "evaluated_label_count": frame.height,
+        "eligible_correct_species_count": eligible.height,
+        "correct_species_lost_count": int(eligible["correct_species_lost"].sum()),
+        "correct_species_lost_rate": _loss_rate(eligible),
+        "wrong_family_evidence_count": frame.filter(
+            pl.col("correct_species_family_priority_match") == False  # noqa: E712
+        ).height,
+        "reviewed_species_missing_from_complete_union_count": frame.filter(
+            ~pl.col("reviewed_species_in_complete_union")
+        ).height,
+        "mean_complete_union_size": _column_mean(frame, "complete_union_size"),
+        "mean_hard_family_pool_size": _column_mean(
+            frame, "hard_family_pool_size"
+        ),
+        "no_geo": {
+            "eligible_correct_species_count": no_geo.height,
+            "correct_species_lost_count": int(no_geo["correct_species_lost"].sum()),
+            "correct_species_lost_rate": _loss_rate(no_geo),
+        },
+        "production_candidate_membership_changed": False,
+    }
+    summary["summary_fingerprint"] = canonical_semantic_fingerprint(summary)
+    return summary
+
+
+def write_family_pruning_counterfactual(
+    frame: pl.DataFrame,
+    output_path: str | Path,
+) -> Path:
+    validate_family_pruning_counterfactual(frame)
+    destination = Path(output_path)
+    if destination.suffix.casefold() != ".parquet":
+        destination /= FAMILY_PRUNING_COUNTERFACTUAL_FILE
     return write_parquet(frame, destination)
 
 
@@ -374,6 +526,83 @@ def _metric_row(
     }
 
 
+def _family_pruning_row(
+    *,
+    evaluation_run_id: str,
+    source: pl.DataFrame,
+    label: Mapping[str, str],
+    policy: str,
+    policy_fingerprint: str,
+) -> dict[str, object]:
+    first = source.row(0, named=True)
+    source_rows = {
+        str(row["candidate_accepted_taxon_key"]): row for row in source.to_dicts()
+    }
+    reviewed_key = label["reviewed_accepted_taxon_key"]
+    reviewed_species = source_rows.get(reviewed_key)
+    hard_pool = source.filter(
+        (pl.col("family_evidence_status") == "available")
+        & pl.col("family_priority_match").fill_null(False)
+    )
+    hard_pool_keys = sorted(str(value) for value in hard_pool["candidate_accepted_taxon_key"])
+    hard_family_keys = sorted(set(str(value) for value in hard_pool["family_key"]))
+    in_complete_union = reviewed_species is not None
+    in_hard_pool = reviewed_key in hard_pool_keys
+    family_match = (
+        reviewed_species["family_priority_match"]
+        if reviewed_species is not None
+        else None
+    )
+    geography_status = _geography_status(source)
+    base: dict[str, object] = {
+        "schema_version": FAMILY_PRUNING_COUNTERFACTUAL_SCHEMA_VERSION,
+        "evaluation_run_id": evaluation_run_id,
+        "source_candidate_set_id": str(first["candidate_set_id"]),
+        "source_candidate_set_fingerprint": str(
+            first["candidate_set_fingerprint"]
+        ),
+        "run_id": str(first["run_id"]),
+        "flickr_photo_id": str(first["flickr_photo_id"]),
+        "organism_unit_id": str(first["organism_unit_id"]),
+        "scoring_stage": str(first["scoring_stage"]),
+        "label_status": label["label_status"],
+        "label_source": label["label_source"],
+        "reviewed_accepted_taxon_key": reviewed_key,
+        "reviewed_family_key": label["reviewed_family_key"],
+        "reviewed_species_candidate_row_fingerprint": (
+            reviewed_species["candidate_row_fingerprint"]
+            if reviewed_species is not None
+            else None
+        ),
+        "complete_union_size": source.height,
+        "hard_family_pool_size": hard_pool.height,
+        "hard_family_pool_keys": hard_pool_keys,
+        "hard_family_keys": hard_family_keys,
+        "reviewed_species_in_complete_union": in_complete_union,
+        "reviewed_species_in_hard_family_pool": in_hard_pool,
+        "correct_species_family_evidence_status": (
+            str(reviewed_species["family_evidence_status"])
+            if reviewed_species is not None
+            else "reviewed_species_not_in_union"
+        ),
+        "correct_species_family_priority_match": family_match,
+        "loss_eligible": in_complete_union,
+        "correct_species_lost": in_complete_union and not in_hard_pool,
+        "geography_status": geography_status,
+        "no_geo": geography_status != "available",
+        "counterfactual_policy": policy,
+        "counterfactual_policy_fingerprint": policy_fingerprint,
+    }
+    fingerprint = canonical_semantic_fingerprint(base)
+    return {
+        **base,
+        "counterfactual_id": _prefixed_id(
+            "family-pruning-counterfactual", fingerprint
+        ),
+        "counterfactual_fingerprint": fingerprint,
+    }
+
+
 def _validate_metric_row(row: Mapping[str, object]) -> None:
     if row["schema_version"] != CANDIDATE_STRATEGY_METRIC_SCHEMA_VERSION:
         raise ValueError("unsupported candidate strategy metric schema version")
@@ -437,6 +666,49 @@ def _validate_metric_row(row: Mapping[str, object]) -> None:
         raise ValueError("candidate strategy metric ID does not match fingerprint")
 
 
+def _validate_family_pruning_row(row: Mapping[str, object]) -> None:
+    if row["schema_version"] != FAMILY_PRUNING_COUNTERFACTUAL_SCHEMA_VERSION:
+        raise ValueError("unsupported family-pruning counterfactual schema")
+    if not _COUNTERFACTUAL_ID_PATTERN.fullmatch(str(row["counterfactual_id"])):
+        raise ValueError("family-pruning counterfactual ID is invalid")
+    if not _FINGERPRINT_PATTERN.fullmatch(
+        str(row["counterfactual_fingerprint"])
+    ):
+        raise ValueError("family-pruning counterfactual fingerprint is invalid")
+    hard_pool_keys = list(row["hard_family_pool_keys"])
+    hard_family_keys = list(row["hard_family_keys"])
+    if hard_pool_keys != sorted(set(hard_pool_keys)):
+        raise ValueError("hard-family pool keys are not canonical")
+    if hard_family_keys != sorted(set(hard_family_keys)):
+        raise ValueError("hard-family keys are not canonical")
+    if int(row["hard_family_pool_size"]) != len(hard_pool_keys):
+        raise ValueError("hard-family pool size does not match its keys")
+    in_complete_union = bool(row["reviewed_species_in_complete_union"])
+    in_hard_pool = bool(row["reviewed_species_in_hard_family_pool"])
+    if in_hard_pool and not in_complete_union:
+        raise ValueError("hard-family membership requires complete-union membership")
+    if bool(row["loss_eligible"]) != in_complete_union:
+        raise ValueError("family-pruning loss eligibility is inconsistent")
+    if bool(row["correct_species_lost"]) != (
+        in_complete_union and not in_hard_pool
+    ):
+        raise ValueError("family-pruning correct-species loss is inconsistent")
+    if bool(row["no_geo"]) != (row["geography_status"] != "available"):
+        raise ValueError("family-pruning no-geo status is inconsistent")
+    payload = {
+        key: value
+        for key, value in row.items()
+        if key not in {"counterfactual_id", "counterfactual_fingerprint"}
+    }
+    fingerprint = canonical_semantic_fingerprint(payload)
+    if row["counterfactual_fingerprint"] != fingerprint:
+        raise ValueError("family-pruning counterfactual fingerprint does not match row")
+    if row["counterfactual_id"] != _prefixed_id(
+        "family-pruning-counterfactual", fingerprint
+    ):
+        raise ValueError("family-pruning counterfactual ID does not match fingerprint")
+
+
 def _family_counterfactual_status(
     reviewed_species: Mapping[str, object] | None,
 ) -> str:
@@ -469,6 +741,17 @@ def _rank(values: Sequence[object], wanted: object) -> int | None:
 
 def _recalled(rank: int | None, k: int) -> float:
     return 1.0 if rank is not None and rank <= k else 0.0
+
+
+def _loss_rate(frame: pl.DataFrame) -> float | None:
+    if frame.is_empty():
+        return None
+    return float(frame["correct_species_lost"].sum()) / frame.height
+
+
+def _column_mean(frame: pl.DataFrame, column: str) -> float | None:
+    value = frame[column].mean() if frame.height else None
+    return float(value) if value is not None else None
 
 
 def _normalize_ks(ks: Sequence[int]) -> tuple[int, ...]:
@@ -525,8 +808,15 @@ def _prefixed_id(prefix: str, fingerprint: str) -> str:
 __all__ = [
     "CANDIDATE_STRATEGY_METRICS_FILE",
     "CANDIDATE_STRATEGY_METRIC_SCHEMA_VERSION",
+    "FAMILY_PRUNING_COUNTERFACTUAL_FILE",
+    "FAMILY_PRUNING_COUNTERFACTUAL_SCHEMA_VERSION",
     "build_candidate_strategy_metrics",
+    "build_family_pruning_counterfactual",
     "candidate_strategy_metric_schema",
+    "family_pruning_counterfactual_schema",
+    "summarize_family_pruning_counterfactual",
     "validate_candidate_strategy_metrics",
+    "validate_family_pruning_counterfactual",
     "write_candidate_strategy_metrics",
+    "write_family_pruning_counterfactual",
 ]

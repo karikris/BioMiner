@@ -14,10 +14,15 @@ from biominer.candidates.strategy_ablation import (
 )
 from biominer.evaluation.candidate_strategies import (
     CANDIDATE_STRATEGY_METRICS_FILE,
+    FAMILY_PRUNING_COUNTERFACTUAL_FILE,
     build_candidate_strategy_metrics,
+    build_family_pruning_counterfactual,
     candidate_strategy_metric_schema,
+    summarize_family_pruning_counterfactual,
     validate_candidate_strategy_metrics,
+    validate_family_pruning_counterfactual,
     write_candidate_strategy_metrics,
+    write_family_pruning_counterfactual,
 )
 
 
@@ -141,6 +146,71 @@ def test_candidate_strategy_metrics_are_deterministic_and_round_trip(
     )
     with pytest.raises(ValueError, match="inconsistent with its rank"):
         validate_candidate_strategy_metrics(tampered)
+
+
+def test_family_pruning_counterfactual_quantifies_correct_species_loss(
+    tmp_path,
+) -> None:
+    source, _plans, labels, _measurements = _evaluation_inputs()
+
+    counterfactual = build_family_pruning_counterfactual(
+        source,
+        evaluation_run_id="candidate-evaluation-1",
+        labels=labels,
+    )
+    summary = summarize_family_pruning_counterfactual(counterfactual)
+
+    assert counterfactual.height == 2
+    assert counterfactual["loss_eligible"].to_list() == [True, True]
+    assert counterfactual["correct_species_lost"].sum() == 1
+    lost = counterfactual.filter(pl.col("correct_species_lost")).row(0, named=True)
+    assert lost["organism_unit_id"] == "organism-no-geo"
+    assert lost["correct_species_family_priority_match"] is False
+    assert lost["reviewed_species_in_complete_union"] is True
+    assert lost["reviewed_species_in_hard_family_pool"] is False
+    assert lost["no_geo"] is True
+    assert summary["evaluated_label_count"] == 2
+    assert summary["eligible_correct_species_count"] == 2
+    assert summary["correct_species_lost_count"] == 1
+    assert summary["correct_species_lost_rate"] == 0.5
+    assert summary["wrong_family_evidence_count"] == 1
+    assert summary["no_geo"] == {
+        "eligible_correct_species_count": 1,
+        "correct_species_lost_count": 1,
+        "correct_species_lost_rate": 1.0,
+    }
+    assert summary["production_candidate_membership_changed"] is False
+
+    path = write_family_pruning_counterfactual(counterfactual, tmp_path)
+    assert path.name == FAMILY_PRUNING_COUNTERFACTUAL_FILE
+    persisted = pl.read_parquet(path)
+    validate_family_pruning_counterfactual(persisted)
+    assert persisted.equals(counterfactual)
+
+
+def test_family_pruning_loss_denominator_excludes_species_missing_from_union() -> None:
+    source, _plans, labels, _measurements = _evaluation_inputs()
+    missing_labels = [dict(row) for row in labels]
+    missing_labels[0]["reviewed_accepted_taxon_key"] = "gbif:not-in-union"
+
+    counterfactual = build_family_pruning_counterfactual(
+        source,
+        evaluation_run_id="candidate-evaluation-1",
+        labels=missing_labels,
+    )
+    summary = summarize_family_pruning_counterfactual(counterfactual)
+
+    missing = counterfactual.filter(
+        pl.col("reviewed_accepted_taxon_key") == "gbif:not-in-union"
+    ).row(0, named=True)
+    assert missing["reviewed_species_in_complete_union"] is False
+    assert missing["loss_eligible"] is False
+    assert missing["correct_species_lost"] is False
+    assert summary["evaluated_label_count"] == 2
+    assert summary["eligible_correct_species_count"] == 1
+    assert summary["correct_species_lost_count"] == 1
+    assert summary["correct_species_lost_rate"] == 1.0
+    assert summary["reviewed_species_missing_from_complete_union_count"] == 1
 
 
 def _evaluation_inputs() -> tuple[
