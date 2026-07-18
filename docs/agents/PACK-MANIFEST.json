@@ -1,5 +1,5 @@
 {
-  "active_goal_note": "Geography-conditioned dynamic pooling Phase 6 is complete through bounded family, candidate and pool matrices plus cache-local work ordering; Phase 7 Task 7.1 raw component scoring is next. No live pool, score, performance result or strategy is selected from fixture-only evidence. The user disabled all further GitHits calls for the remainder of this goal.",
+  "active_goal_note": "Geography-conditioned dynamic pooling Phase 7 is complete through Task 7.1 raw family, global and local components plus explicit disagreement, rank movement and coverage; Task 7.2 versioned raw fusion policy is next. No live score, scientific-performance result, fused ranking or strategy is selected from fixture-only evidence. The user disabled all further GitHits calls for the remainder of this goal.",
   "files": [
     {
       "bytes": 6701,
@@ -8,10 +8,10 @@
       "sha256": "e5d9cff662484ad83c729d42e1af48ef578a52d0f3adbfeb3f471c93585c66d5"
     },
     {
-      "bytes": 14159,
-      "lines": 330,
+      "bytes": 14751,
+      "lines": 338,
       "path": "docs/agents/CURRENT_STATE.md",
-      "sha256": "fd846c635892d4129444294da4af39cd7f3484c1942dea9bdf3685920cb4709e"
+      "sha256": "e2f90808fddc45c52413338b0106ca6c81c6ba6c5f9bfcab9f12de68615e0453"
     },
     {
       "bytes": 5599,
@@ -57,7 +57,7 @@
     }
   ],
   "generated_from_uploaded_file": "AGENTS(14).md",
-  "observed_main_commit": "597f233c7f8cbcb9a3ba032c0033bc322666e3b3",
+  "observed_main_commit": "ea85c00e321b21654c0934ee0f8783e468e76f78",
   "observed_repository": "karikris/BioMiner",
   "pack": "BioMiner token-efficient agent instructions",
   "schema_version": "biominer-agent-pack-v1.0.0"

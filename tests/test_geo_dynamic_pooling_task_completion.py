@@ -17,6 +17,7 @@ TASK_5_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_5_1_completion.json"
 TASK_5_2_REPORT = ROOT / "reports/geo_dynamic_pooling/task_5_2_completion.json"
 TASK_6_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_6_1_completion.json"
 TASK_6_2_REPORT = ROOT / "reports/geo_dynamic_pooling/task_6_2_completion.json"
+TASK_7_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_7_1_completion.json"
 PUSH_LEDGER = ROOT / "provenance/task_pushes.jsonl"
 
 
@@ -62,6 +63,10 @@ def _task_6_1_report() -> dict[str, object]:
 
 def _task_6_2_report() -> dict[str, object]:
     return json.loads(TASK_6_2_REPORT.read_text(encoding="utf-8"))
+
+
+def _task_7_1_report() -> dict[str, object]:
+    return json.loads(TASK_7_1_REPORT.read_text(encoding="utf-8"))
 
 
 def test_task_0_1_completion_records_exact_commits_and_green_gate() -> None:
@@ -610,6 +615,64 @@ def test_task_6_2_report_blocks_live_performance_and_scientific_claims() -> None
     assert state["production_release_authorized"] is False
     assert any("live-corpus throughput" in claim for claim in blocked)
     assert any("Raw family" in claim for claim in blocked)
+    impact = report["githits_architecture_impact"]
+    assert impact["calls_made_for_task"] == 0
+    assert impact["direct_external_code_contribution"] == "none"
+
+
+def test_task_7_1_completion_records_raw_components_and_numeric_gate() -> None:
+    report = _task_7_1_report()
+
+    assert report["task_id"] == "geo-pool-7.1"
+    assert report["status"] == "completed"
+    assert [item["commit"] for item in report["task_commits"]] == [
+        "3dac6fb24a8390d61c641dd58063ffc0e62ae384",
+        "6b22bf3b8c2dc6cc46bbe19d29756f1a2b0ada61",
+        "e0e0ba2d4f3530c806b30108999c26394a556d6a",
+        "ea85c00e321b21654c0934ee0f8783e468e76f78",
+    ]
+    versions = report["raw_scoring_contract"]["versions"]
+    assert versions["family_evidence"] == "raw-family-evidence-v1"
+    assert versions["global_evidence"] == "raw-global-reference-evidence-v1"
+    assert versions["local_evidence"] == "raw-local-reference-evidence-v1"
+    assert versions["disagreement_coverage"] == "raw-disagreement-coverage-v1"
+    fixture = report["numeric_fixture"]
+    assert fixture["candidate_count"] == 2
+    assert fixture["available_local_candidate_count"] == 1
+    assert fixture["unavailable_local_candidate_count"] == 1
+    assert fixture["rank_reversal_fixture"]["prototype_top1_agreement"] is False
+    assert report["gate"]["numeric_and_matrix_suite"]["passed"] == 27
+    assert report["gate"]["adjacent_dynamic_pool_suite"]["passed"] == 269
+    assert report["gate"]["full_regression"]["passed"] == 2876
+    assert report["gate"]["score_language_scan"]["matches"] == 0
+    assert report["gate"]["provenance"]["jsonl_records"] == 148
+
+
+def test_task_7_1_push_event_matches_report() -> None:
+    report = _task_7_1_report()
+    events = [
+        json.loads(line)
+        for line in PUSH_LEDGER.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    event = next(item for item in events if item["task_id"] == "geo-pool-7.1")
+
+    assert event["verified_remote_sha"] == report["push"]["verified_remote_sha"]
+    assert event["pushed_through_sha"] == report["push"]["pushed_through_sha"]
+    assert event["status"] == report["push"]["status"] == "verified"
+
+
+def test_task_7_1_report_blocks_fusion_and_scientific_claims() -> None:
+    report = _task_7_1_report()
+    state = report["selection_state"]
+    blocked = report["claims"]["blocked"]
+
+    assert state["raw_dynamic_scoring_implemented"] is True
+    assert state["versioned_fusion_policy_implemented"] is False
+    assert state["live_bioclip_scoring_executed"] is False
+    assert state["production_release_authorized"] is False
+    assert any("fused" in claim for claim in blocked)
+    assert any("Human review" in claim for claim in blocked)
     impact = report["githits_architecture_impact"]
     assert impact["calls_made_for_task"] == 0
     assert impact["direct_external_code_contribution"] == "none"

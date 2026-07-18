@@ -1,0 +1,216 @@
+{
+  "schema_version": "geo-dynamic-pooling-task-completion-v1.0.0",
+  "task_id": "geo-pool-7.1",
+  "title": "Add raw component scoring",
+  "status": "completed",
+  "completed_at": "2026-07-18T07:30:04Z",
+  "starting_sha": "f80dfb9ece8924e8047273943e323daa6facd35a",
+  "pushed_implementation_sha": "ea85c00e321b21654c0934ee0f8783e468e76f78",
+  "task_commits": [
+    {
+      "subtask_id": "geo-pool-7.1.1",
+      "commit": "3dac6fb24a8390d61c641dd58063ffc0e62ae384",
+      "subject": "feat(bioclip): score family pool evidence"
+    },
+    {
+      "subtask_id": "geo-pool-7.1.2",
+      "commit": "6b22bf3b8c2dc6cc46bbe19d29756f1a2b0ada61",
+      "subject": "feat(bioclip): score global reference evidence"
+    },
+    {
+      "subtask_id": "geo-pool-7.1.3",
+      "commit": "e0e0ba2d4f3530c806b30108999c26394a556d6a",
+      "subject": "feat(bioclip): score geographic reference evidence"
+    },
+    {
+      "subtask_id": "geo-pool-7.1.4",
+      "commit": "ea85c00e321b21654c0934ee0f8783e468e76f78",
+      "subject": "feat(bioclip): expose dynamic pool disagreement"
+    }
+  ],
+  "raw_scoring_contract": {
+    "versions": {
+      "query": "raw-dynamic-pool-query-v1",
+      "family_evidence": "raw-family-evidence-v1",
+      "family_evidence_set": "raw-family-evidence-set-v1",
+      "global_pool_input": "global-reference-pool-input-v1",
+      "global_evidence": "raw-global-reference-evidence-v1",
+      "global_evidence_set": "raw-global-reference-evidence-set-v1",
+      "local_pool_input": "local-reference-pool-input-v1",
+      "local_evidence": "raw-local-reference-evidence-v1",
+      "local_evidence_set": "raw-local-reference-evidence-set-v1",
+      "disagreement_coverage": "raw-disagreement-coverage-v1",
+      "disagreement_coverage_set": "raw-disagreement-coverage-set-v1"
+    },
+    "family_components": [
+      "raw unit-vector cosine for every family matrix row",
+      "deterministic component rank",
+      "raw margin to the next family row"
+    ],
+    "global_components": [
+      "candidate prototype cosine",
+      "nearest independent reference-observation cosine",
+      "effective top-k independent-observation mean cosine",
+      "configured support, media rows, independent observations and shortfall"
+    ],
+    "local_components": [
+      "local independent-observation prototype cosine",
+      "nearest local independent reference-observation cosine",
+      "effective local top-k independent-observation mean cosine",
+      "exact unavailable reason with null local similarities and no global substitution"
+    ],
+    "comparison_components": [
+      "local-minus-global signed component difference",
+      "absolute component disagreement",
+      "local-minus-global rank movement, where positive means a lower local rank",
+      "component top-one agreement",
+      "support, top-k and observation-independence coverage kept as separate fields"
+    ],
+    "invariants": [
+      "query, route, full-frame input kind, model and matrix identities are validated before scoring",
+      "complete candidate membership is required for global and local evidence",
+      "duplicate media from one observation are collapsed before observation-balanced reference scoring",
+      "every component and evidence set has a deterministic semantic fingerprint",
+      "missing geographic evidence remains unavailable and never becomes a zero score",
+      "raw components are retained independently and do not authorize pruning or release"
+    ]
+  },
+  "numeric_fixture": {
+    "evidence_class": "deterministic unit-vector fixture; not live BioCLIP, biological identity or scientific-performance evidence",
+    "candidate_count": 2,
+    "available_local_candidate_count": 1,
+    "unavailable_local_candidate_count": 1,
+    "available_candidate": {
+      "candidate_accepted_taxon_key": "gbif:100",
+      "global_prototype_similarity": 1.0,
+      "local_prototype_similarity": 0.9486832980505138,
+      "prototype_signed_difference": -0.05131670194948623,
+      "global_nearest_reference_similarity": 1.0,
+      "local_nearest_reference_similarity": 1.0,
+      "nearest_signed_difference": 0.0,
+      "global_top_k_mean_similarity": 0.8535533905932737,
+      "local_top_k_mean_similarity": 0.9,
+      "top_k_signed_difference": 0.04644660940672627,
+      "global_support_coverage_fraction": 0.6666666666666666,
+      "local_support_coverage_fraction": 0.6666666666666666,
+      "global_top_k_coverage_fraction": 0.4,
+      "local_top_k_coverage_fraction": 0.6666666666666666,
+      "global_observation_independence_fraction": 0.6666666666666666,
+      "local_observation_independence_fraction": 1.0
+    },
+    "unavailable_candidate": {
+      "candidate_accepted_taxon_key": "gbif:200",
+      "disagreement_status": "unavailable",
+      "disagreement_unavailable_reason": "no_local_geographic_evidence",
+      "local_component_values": null,
+      "local_component_ranks": null,
+      "local_coverage_values": null
+    },
+    "rank_reversal_fixture": {
+      "global_top_candidate": "gbif:100",
+      "local_top_candidate": "gbif:200",
+      "prototype_top1_agreement": false,
+      "nearest_top1_agreement": false,
+      "top_k_top1_agreement": false,
+      "gbif_100_rank_movement": 1,
+      "gbif_200_rank_movement": -1
+    }
+  },
+  "gate": {
+    "numeric_and_matrix_suite": {
+      "command": "uv run pytest -q tests/test_dynamic_pool_scoring.py tests/test_bioclip_matrix_cache.py",
+      "result": "passed",
+      "passed": 27,
+      "duration_seconds": 0.2
+    },
+    "adjacent_dynamic_pool_suite": {
+      "result": "passed",
+      "passed": 269,
+      "duration_seconds": 19.74
+    },
+    "score_language_scan": {
+      "command": "rg over exact disallowed calibrated-score terms in the scoring module and numeric tests",
+      "result": "passed",
+      "matches": 0
+    },
+    "full_regression": {
+      "command": "uv run pytest -q",
+      "result": "passed",
+      "passed": 2876,
+      "duration_seconds": 104.89,
+      "wall_seconds": 105.71,
+      "tested_implementation_sha": "ea85c00e321b21654c0934ee0f8783e468e76f78"
+    },
+    "lint": {
+      "command": "uvx ruff check .",
+      "result": "passed"
+    },
+    "provenance": {
+      "result": "passed",
+      "jsonl_records": 148,
+      "required_records": [
+        "geo-pool-7.1",
+        "geo-pool-7.1.1",
+        "geo-pool-7.1.2",
+        "geo-pool-7.1.3",
+        "geo-pool-7.1.4"
+      ],
+      "githits_status": "all_five_skipped_user_directive_with_null_solution_ids_and_no_invented_external_results"
+    },
+    "trailers": {
+      "result": "passed",
+      "commits_checked": 4,
+      "required_field_matches": 16,
+      "origin_chain_verified": true
+    }
+  },
+  "githits_architecture_impact": {
+    "direct_external_code_contribution": "none",
+    "calls_made_for_task": 0,
+    "availability": "The user prohibited further GitHits calls for the remainder of the active goal.",
+    "material_architecture_contribution": "none from GitHits",
+    "first_party_basis": [
+      "Phase 0 raw-component and geography-evidence architecture",
+      "Phase 5 immutable pool membership and observation-balanced planning",
+      "Phase 6 durable unit embeddings and semantically bound Float32 matrices",
+      "existing BioMiner deterministic ranking and semantic fingerprint conventions"
+    ],
+    "assessment": "Five skipped_user_directive records preserve task/subtask provenance without a call. No GitHits repository, solution, result, code, prose or architecture is claimed."
+  },
+  "selection_state": {
+    "raw_dynamic_scoring_implemented": true,
+    "versioned_fusion_policy_implemented": false,
+    "candidate_strategy_selected": null,
+    "production_default_changed": false,
+    "live_bioclip_scoring_executed": false,
+    "calibration_completed": false,
+    "scientific_validation_completed": false,
+    "production_release_authorized": false,
+    "reason": "Task 7.1 implements deterministic raw components and comparison evidence only; Task 7.2 adds experimental fusion and ranking next."
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "ea85c00e321b21654c0934ee0f8783e468e76f78",
+    "verified_remote_sha": "ea85c00e321b21654c0934ee0f8783e468e76f78",
+    "verified_at": "2026-07-18T07:30:04Z",
+    "status": "verified"
+  },
+  "claims": {
+    "allowed": [
+      "Task 7.1 scores complete family, global and local raw cosine components from validated cached unit-vector matrices.",
+      "Global and local evidence retain prototype, nearest-reference and effective top-k components independently.",
+      "Disagreement records expose signed and absolute component deltas, rank movement, top-one agreement and separate coverage measures.",
+      "Unavailable local evidence remains explicit and null without global substitution.",
+      "The exact implementation commit passes 27 focused numeric/matrix tests, 269 adjacent dynamic-pooling tests, 2,876 repository tests and repository-wide lint."
+    ],
+    "blocked": [
+      "Fixture cosine values establish live-corpus accuracy, calibration, taxonomic verification or biological absence.",
+      "The raw components are fused, calibrated, empirically weighted or a selected production ranking.",
+      "A live BioCLIP model, accelerator or production Flickr workload was used by this task gate.",
+      "A candidate strategy is empirically superior or production-defaulted.",
+      "Human review, occurrence release, downstream publication or production deployment is complete."
+    ]
+  },
+  "completion_record_commit": "self"
+}

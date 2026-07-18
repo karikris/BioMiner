@@ -10,8 +10,8 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `597f233c7f8cbcb9a3ba032c0033bc322666e3b3`
-  (`perf(run): sort geographic scoring work`)
+  `ea85c00e321b21654c0934ee0f8783e468e76f78`
+  (`feat(bioclip): expose dynamic pool disagreement`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -27,7 +27,9 @@ at the start of every task.
   Phase 6 implements the canonical YOLOE route contract, explicit full-frame
   BioCLIP input policy, durable one-time Flickr embeddings, bounded family,
   candidate and pool matrix indexes and deterministic cache-local work ordering
-  through Task 6.2.3. Phase 7 Task 7.1 raw component scoring is next.
+  through Task 6.2.3. Phase 7 implements complete raw family, global and local
+  component evidence plus explicit disagreement, rank movement and coverage
+  through Task 7.1.4. Task 7.2 versioned raw fusion policy is next.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -71,6 +73,12 @@ at the start of every task.
   - Task 6.2 matrix fixture: family, candidate and pool caches each reused one
     matrix on the second request; candidate/pool work signatures formed two
     deterministic locality runs with independent canonical result ordering;
+  - Task 7.1 final full regression: 2,876 passed in 104.89 seconds;
+  - Task 7.1 focused numeric/matrix gate: 27 passed in 0.20 seconds;
+  - Task 7.1 adjacent dynamic-pooling gate: 269 passed in 19.74 seconds;
+  - Task 7.1 fixture: two candidates retained separate prototype, nearest and
+    top-k components; one exact local-unavailable state stayed null, while a
+    second fixture exposed a complete global/local rank reversal;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
