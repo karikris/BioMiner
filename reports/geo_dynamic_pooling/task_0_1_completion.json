@@ -1,0 +1,74 @@
+{
+  "schema_version": "geo-dynamic-pooling-task-completion-v1.0.0",
+  "task_id": "geo-pool-0.1",
+  "title": "Reproduce the current dynamic-pooling baseline",
+  "status": "completed",
+  "completed_at": "2026-07-18T00:59:33Z",
+  "task_commits": [
+    {
+      "subtask_id": "geo-pool-0.1.1",
+      "commit": "bc821bffd11ad32877aa4a704aa2bb7a0d636ab6",
+      "subject": "docs(bioclip): record dynamic-pooling baseline"
+    },
+    {
+      "subtask_id": "geo-pool-0.1.2",
+      "commit": "00f987f6f23acba7135b0b349412a2e7248e933f",
+      "subject": "docs(bioclip): audit current reference pooling"
+    },
+    {
+      "subtask_id": "geo-pool-0.1.3",
+      "commit": "27c93f2745e6e8d869c338623c5becee9323ba47",
+      "subject": "docs(integration): audit downstream evidence contracts"
+    }
+  ],
+  "gate": {
+    "baseline_suite": {
+      "command": "uv run pytest -q",
+      "result": "passed",
+      "passed": 2541,
+      "duration_seconds": 108.34
+    },
+    "report_validation": {
+      "command": "uv run pytest -q tests/test_geo_dynamic_pooling_baseline_report.py tests/test_current_reference_pooling_audit.py tests/test_downstream_pooling_handoff_audit.py",
+      "result": "passed",
+      "passed": 10
+    },
+    "provenance": {
+      "result": "passed",
+      "jsonl_records_validated": 97,
+      "required_records": [
+        "geo-pool-0.1",
+        "geo-pool-0.1.1",
+        "geo-pool-0.1.2",
+        "geo-pool-0.1.3"
+      ]
+    },
+    "lint": {
+      "command": "uvx ruff check and uvx ruff format --check for the three task test modules",
+      "result": "passed"
+    },
+    "secret_and_generated_artifact_inspection": {
+      "scope": "HEAD~3..HEAD",
+      "result": "passed"
+    }
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "27c93f2745e6e8d869c338623c5becee9323ba47",
+    "verified_remote_sha": "27c93f2745e6e8d869c338623c5becee9323ba47",
+    "verified_at": "2026-07-18T00:59:33Z",
+    "status": "verified"
+  },
+  "claims": {
+    "allowed": [
+      "The current code and fixture baseline is documented.",
+      "Fixed-pool limitations and downstream contract boundaries are audited."
+    ],
+    "blocked": [
+      "Dynamic global/local pool implementation is complete.",
+      "Live YOLOE, BioCLIP, human review, statistical support, or occurrence release is complete."
+    ]
+  },
+  "completion_record_commit": "self"
+}
