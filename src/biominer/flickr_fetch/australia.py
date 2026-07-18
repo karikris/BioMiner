@@ -25,7 +25,7 @@ GBIF_OCCURRENCE_URL = "https://api.gbif.org/v1/occurrence/search"
 AUSTRALIA_PLACE_QUERY = "Australia"
 COMMON_NAME_CLASSES = {"vernacular", "vernacular_alias", "common_name", "common_name_alias"}
 INDIGENOUS_MARKERS = ("indigenous", "aboriginal", "first nations", "first_nations")
-GBIF_REQUEST_INTERVAL_SECONDS = 1.0
+GBIF_REQUEST_INTERVAL_SECONDS = 0.5
 GBIF_MAX_ATTEMPTS = 8
 GBIF_MAX_RETRY_DELAY_SECONDS = 3600
 
@@ -256,6 +256,7 @@ def _gbif_australia_count(scientific_name: str) -> int:
         response = httpx.get(
             GBIF_OCCURRENCE_URL,
             params={"scientificName": scientific_name, "country": "AU", "limit": 0},
+            headers={"User-Agent": "BioMiner/1.0 (+https://github.com/karikris/BioMiner)"},
             timeout=30,
         )
         response.raise_for_status()
