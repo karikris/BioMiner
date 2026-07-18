@@ -1,0 +1,142 @@
+{
+  "schema_version": "geo-dynamic-pooling-task-completion-v1.0.0",
+  "task_id": "geo-pool-15.2",
+  "title": "Apply the production-configuration selection policy",
+  "status": "completed",
+  "completed_at": "2026-07-18T15:21:42Z",
+  "starting_sha": "65b98ce4bed1d8b799ef0396fea5515921621e68",
+  "pushed_implementation_sha": "30319fa7b7e9f24256556b293cf2e2db6e6ce2e7",
+  "task_commits": [
+    {
+      "subtask_id": "geo-pool-15.2.1",
+      "commit": "42f101d80a3d9a48cc63ea2efb8974dc64ee63a4",
+      "subject": "experiment(pilot): report dynamic pooling ablations"
+    },
+    {
+      "subtask_id": "geo-pool-15.2.2",
+      "commit": "0874a8b6be5eb256d0756681edf04b15fdcce310",
+      "subject": "feat(run): select validated dynamic pooling default"
+    },
+    {
+      "subtask_id": "geo-pool-15.2.3",
+      "commit": "30319fa7b7e9f24256556b293cf2e2db6e6ce2e7",
+      "subject": "docs(pilot): report geography-conditioned pooling"
+    }
+  ],
+  "selection_ablation": {
+    "candidate_strategy_count": 3,
+    "pool_variant_count": 2,
+    "fusion_method_count": 4,
+    "variant_count": 24,
+    "selection_criterion_count": 9,
+    "eligible_variant_count": 0,
+    "table_fingerprint": "sha256:7368a623b9fbd9a665e2ae135c7da24c2adf9ed3a87b8e36241a3a2f14a676ec",
+    "reviewed_precision_available": false,
+    "family_subgroup_estimates_available": false,
+    "geographic_subgroup_estimates_available": false,
+    "mps_peak_memory_available": false,
+    "target_pruning_regression_count": 0,
+    "unsupported_statistical_claim_count": 0
+  },
+  "production_decision": {
+    "outcome": "insufficient_evidence",
+    "outcome_is_rejection_of_measured_performance": false,
+    "passing_software_or_fixture_gate_count": 3,
+    "blocking_criterion_count": 6,
+    "blocking_criteria": [
+      "target_candidate_recall",
+      "reviewed_precision_and_confidence_bounds",
+      "family_and_geographic_subgroup_behavior",
+      "review_workload",
+      "computation",
+      "mps_memory"
+    ],
+    "selected_candidate_strategy": null,
+    "selected_pool_variant": null,
+    "selected_fusion_method": null,
+    "production_default_authorized": false,
+    "runtime_settings_changed": false,
+    "current_settings_fingerprint": "sha256:0fd197b2650a79d99970cada3dcbabe9980c5a265d9d71f929bbcf6f51e13e7d",
+    "resulting_settings_fingerprint": "sha256:0fd197b2650a79d99970cada3dcbabe9980c5a265d9d71f929bbcf6f51e13e7d",
+    "decision_fingerprint": "sha256:43d034983485e789b8fa7c0428131f13c826d695781a28130b011e13b3bf3fb2"
+  },
+  "integrated_report": {
+    "status": "completed_fixture_pilot_insufficient_production_evidence",
+    "report_fingerprint": "sha256:ade039c9914c6fc720773eee7fbfb2141ff087f3abf869d9ab56b5f54dfa5d09",
+    "current_execution_basis": "deterministic_fixture_vectors",
+    "historical_real_execution_manifests_separate": true,
+    "current_source_bound_real_flickr_item_count": 0,
+    "completed_real_review_count": 0,
+    "effective_real_review_shortfall": 86,
+    "raw_scores_are_probabilities": false,
+    "missing_geography_is_biological_absence": false,
+    "occurrence_release_authorized": false
+  },
+  "gate": {
+    "complete_pilot_evaluation": {
+      "command": ".venv/bin/pytest -q tests/test_dynamic_pool_pilot_plan.py tests/test_dynamic_pool_pilot_ablation.py tests/test_dynamic_pool_pilot_scoring.py tests/test_dynamic_pool_pilot_review.py tests/test_dynamic_pool_pilot_selection_ablation.py tests/test_dynamic_pool_default_selection.py tests/test_dynamic_pool_pilot_final_report.py",
+      "result": "passed",
+      "passed": 56,
+      "duration_seconds": 70.61
+    },
+    "full_regression": {
+      "command": ".venv/bin/pytest -q",
+      "result": "passed",
+      "passed": 3225,
+      "duration_seconds": 164.55,
+      "tested_implementation_sha": "30319fa7b7e9f24256556b293cf2e2db6e6ce2e7"
+    },
+    "lint_and_format": {
+      "commands": [
+        "uvx ruff check on changed Python files",
+        "uvx ruff format --check on changed Python files",
+        "git diff --check"
+      ],
+      "result": "passed"
+    },
+    "provenance": {
+      "result": "passed",
+      "required_records": [
+        "geo-pool-15.2",
+        "geo-pool-15.2.1",
+        "geo-pool-15.2.2",
+        "geo-pool-15.2.3"
+      ],
+      "githits_status": "all_four_skipped_user_directive_with_null_solution_ids_and_no_external_calls"
+    }
+  },
+  "githits_architecture_impact": {
+    "calls_made_for_task": 0,
+    "direct_external_code_contribution": "none",
+    "material_architecture_contribution": "none from GitHits",
+    "first_party_basis": [
+      "BioMiner frozen Task 15.1 pilot evidence and acceptance policy",
+      "BioMiner typed runtime settings and evidence-bound selection controls",
+      "BioMiner scientific maturity and fail-closed reporting contracts"
+    ]
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "30319fa7b7e9f24256556b293cf2e2db6e6ce2e7",
+    "verified_remote_sha": "30319fa7b7e9f24256556b293cf2e2db6e6ce2e7",
+    "verified_at": "2026-07-18T15:21:42Z",
+    "status": "verified"
+  },
+  "claims": {
+    "allowed": [
+      "All 24 frozen variants were evaluated against all nine preregistered selection criteria with unavailable evidence left explicit.",
+      "Embedding/matrix reuse, target preservation, and absence of unsupported report claims pass their software or fixture gates.",
+      "The correct frozen-policy result is insufficient evidence, with zero eligible variants and unchanged runtime settings.",
+      "The integrated report binds candidate, scoring, review, selection and decision evidence to exact semantic fingerprints."
+    ],
+    "blocked": [
+      "The pilot selected or rejected a configuration on measured production performance.",
+      "Fixture target ordering is reviewed accuracy or empirical superiority.",
+      "A candidate strategy, pool variant or fusion method is a production default.",
+      "Reviewed precision, subgroup support, comparable throughput or MPS peak memory was measured.",
+      "Any occurrence is release ready or authorized."
+    ]
+  },
+  "completion_record_commit": "self"
+}

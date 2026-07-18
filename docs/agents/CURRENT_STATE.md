@@ -10,11 +10,11 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `7cad1fe3e3eb7a0b3e650de6885b3a9639e1da1a`
-  (`experiment(pilot): plan dynamic pooling review evidence`)
+  `30319fa7b7e9f24256556b293cf2e2db6e6ce2e7`
+  (`docs(pilot): report geography-conditioned pooling`)
 - Latest verified dynamic-pooling task report commit:
-  `088bd99cd1b0efafba5c553a6a65a4772ac2012d`
-  (`docs(provenance): record task 14.2 push`)
+  `65b98ce4bed1d8b799ef0396fea5515921621e68`
+  (`docs(provenance): record task 15.1 push`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -69,8 +69,10 @@ at the start of every task.
   executes a seven-case fixture-backed dynamic-pooling pilot across three
   candidate schedules, global-only and dynamic global/local pools, and four
   raw fusion methods, then creates separate representative and targeted review
-  work registers. No candidate strategy, pooling variant, or fusion method is
-  selected or production-defaulted.
+  work registers. Task 15.2 publishes a complete 24-variant, nine-criterion
+  selection table and returns `insufficient_evidence`: zero variants are
+  eligible and runtime settings remain unchanged. No candidate strategy,
+  pooling variant, or fusion method is selected or production-defaulted.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -223,6 +225,14 @@ at the start of every task.
     within-fixture probability design and a separate targeted queue, zero enter
     release review, no reviews are assigned or completed, and the shortfall to
     the preregistered 86 effective real reviews remains 86;
+  - Task 15.2 final full regression: 3,225 passed in 164.55 seconds;
+  - Task 15.2 complete pilot evaluation gate: 56 passed in 70.61 seconds;
+  - Task 15.2 selection table: all 24 candidate/pool/fusion variants retain
+    explicit reviewed-precision, subgroup, workload, computation, reuse, MPS,
+    target-pruning and statistical-claim states; no variant is eligible;
+  - Task 15.2 decision: three software/fixture gates pass, six criteria remain
+    blocking, and current/resulting runtime settings retain exact fingerprint
+    `sha256:0fd197b2650a79d99970cada3dcbabe9980c5a265d9d71f929bbcf6f51e13e7d`;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
@@ -458,9 +468,10 @@ unavailable, and no live production improvement or scientific release is
 claimed.
 
 For the active dynamic-pooling goal, the next implementation boundary is Phase
-15 Task 15.2: report the frozen pilot ablations and apply the fail-closed
-production-default selection contract. The parallel family/geography union is
-only the current review projection. No strategy is selected or
+16 Task 16.1: update the README, production guide, architecture/schema docs,
+human decisions and agent topic files to reflect the implemented dynamic-pool
+workflow and its fail-closed pilot result. The parallel family/geography union
+is only the current review projection. No strategy is selected or
 production-defaulted because only fixture evidence has run. No strategy is
 empirically superior, and no live dynamic pool, live score, calibrated
 probability, completed human review, statistical-support result or new
