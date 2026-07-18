@@ -10,8 +10,8 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `7e7ae4d767ca432cab386d5538a01bd15ff31f09`
-  (`feat(evaluation): project unresolved candidate queue`)
+  `c70721b4f4f18531577f8887b0f064bd8332e378`
+  (`feat(evaluation): report geographic pooling quality`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -49,8 +49,10 @@ at the start of every task.
   and selects screening-only thresholds from conservative precision lower
   bounds through Task 10.2.3. Task 10.3 projects a complete, mutually exclusive
   human-reviewed release, screening-only and unresolved partition through Task
-  10.3.3. Phase 11 Task 11.1 hierarchical quality reporting is next; no fusion
-  method is selected or production-defaulted.
+  10.3.3. Phase 11 Task 11.1 reports the same grouped/weighted quality contract
+  overall and by family, genus, species and five explicit geographic levels
+  through Task 11.1.4. Task 11.2 remediation triggers are next; no fusion method
+  is selected or production-defaulted.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -154,6 +156,12 @@ at the start of every task.
     human-reviewed release, exact-label screening-only or explicit unresolved
     lane; screening and unresolved rows have no occurrence-release authority
     and are rejected by the verified Flickr export validator;
+  - Task 11.1 final full regression: 3,048 passed in 109.73 seconds;
+  - Task 11.1 grouped/weighted hierarchy gate: 84 passed in 6.23 seconds;
+  - Task 11.1 quality contract: 13 descriptive metrics use the minimum of
+    row-weight and independence-component effective sample sizes; overall,
+    family, genus, species and five geographic levels retain targeted-exclusion
+    counts and explicit null-estimate insufficient-sample states;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
@@ -382,10 +390,10 @@ unavailable, and no live production improvement or scientific release is
 claimed.
 
 For the active dynamic-pooling goal, the next implementation boundary is Phase
-11 Task 11.1 hierarchical overall, family, species/genus and geography quality
-reporting with weighted/grouped intervals and explicit insufficient-sample
-states. The parallel family/geography union remains the intended candidate, but
-no strategy is selected or production-defaulted because only
+11 Task 11.2 fail-closed escalation policy plus targeted GBIF reference-review
+and additional Flickr audit queues. The parallel family/geography union remains
+the intended candidate, but no strategy is selected or production-defaulted
+because only
 implementation-fixture evidence has run. No strategy is empirically superior,
 and no live dynamic pool, live score, calibrated probability,
 statistical-support result or new release-ready occurrence is claimed by the
