@@ -1,6 +1,7 @@
 # TaxaLens and ButterflyLens pooling handoff audit
 
-Status: Task 0.1.3 architecture audit, 2026-07-18. This document defines the
+Status: Task 0.1.3 audit, updated by Task 1.2 compatibility review, 2026-07-18.
+This document defines the
 downstream constraints for BioMiner's geographic dynamic-reference-pooling
 work. It is an interoperability audit, not evidence that a live model run or
 human review occurred.
@@ -11,8 +12,11 @@ The goal was written against TaxaLens
 `1440596cf4403af61ba8d57481feacda7c4e3044` and ButterflyLens
 `c8135a0cb0001245215cdc774d063ef49407fb26`. The most recent committed objects
 audited were TaxaLens `c5e87ead4fdb26d5c5624bbb8d8d67e46d8eddbc` and
-ButterflyLens `fcee1a76886e37cb2f0d9badbe91b70a18a0e7c3`. Both sibling worktrees were
-dirty, so the audit used `git show`, `git grep`, and committed trees only.
+ButterflyLens `1cea643623f2f20a2bea72afc754c7b194db3278`. ButterflyLens's previous
+audited pin was `fcee1a76886e37cb2f0d9badbe91b70a18a0e7c3`; Task 1.2 records the
+additive, stricter-review compatibility decision separately. Both sibling
+worktrees were dirty, so the audit used `git show`, `git grep`, and committed
+trees only.
 
 The executable compatibility fixture is
 `tests/fixtures/downstream_pooling_contract_pins.json`. A newer sibling commit
@@ -98,6 +102,12 @@ append-only events, consensus, reviewer reliability, and quality snapshots.
 Provider assertions are not human review. BioMiner must preserve these layer
 boundaries when a global/local pool comparison becomes a candidate-score
 artifact.
+
+The current pin further requires at least two repeated independent assignments
+under `repeated-independent-v1`, blind model/peer evidence until decision, and
+append-only authenticated review submission with correction lineage. BioMiner
+may supply assignment inputs, but ButterflyLens assigns reviewers and database
+identities and enforces those controls.
 
 ### Map impact, RLS, and import boundary
 

@@ -1,6 +1,6 @@
 {
-  "schema_version": "biominer-downstream-pooling-contract-pins-v1.0.0",
-  "compatibility_status": "compatible_additive_with_stricter_maturity_semantics",
+  "schema_version": "biominer-downstream-pooling-contract-pins-v1.1.0",
+  "compatibility_status": "compatible_additive_with_stricter_maturity_and_review_semantics",
   "policy": {
     "consume_committed_objects_only": true,
     "import_sibling_implementation_code": false,
@@ -13,9 +13,12 @@
     "goal_written_commit": "1440596cf4403af61ba8d57481feacda7c4e3044",
     "audited_commit": "c5e87ead4fdb26d5c5624bbb8d8d67e46d8eddbc",
     "contracts": {
+      "geographic_impact_export": "taxalens-geographic-impact-export:v1.0.0",
       "geographic_impact_cell": "taxalens-geographic-impact-cell:v1.0.0",
       "geographic_impact_manifest": "taxalens-geographic-impact-manifest:v1.0.0",
       "geographic_impact_summary": "taxalens-geographic-impact-summary:v1.0.0",
+      "verification_campaign": "taxalens-verification-campaign:v1.0.0",
+      "flickr_verification_source": "taxalens-flickr-verification-source:v1.1.0",
       "quality_snapshot": "taxalens-verification-quality-snapshot:v1.1.0",
       "reviewed_labels": "reviewed-labels-v2",
       "reviewed_labels_filename": "flickr_reviewed_labels_v2.parquet",
@@ -26,13 +29,29 @@
   "butterflylens": {
     "repository": "karikris/ButterflyLens",
     "goal_written_commit": "c8135a0cb0001245215cdc774d063ef49407fb26",
-    "audited_commit": "fcee1a76886e37cb2f0d9badbe91b70a18a0e7c3",
+    "previous_audited_commit": "fcee1a76886e37cb2f0d9badbe91b70a18a0e7c3",
+    "audited_commit": "1cea643623f2f20a2bea72afc754c7b194db3278",
+    "pin_movement_decision": "compatible_additive_with_stricter_review_controls",
     "contracts": {
       "taxonomy_pack_manifest": "butterflylens-taxonomy-pack-manifest/v1",
+      "project": "butterflylens-project:v1.0.0",
+      "run": "butterflylens-run:v1.0.0",
       "classification_maturity": "butterflylens-classification-maturity:v1.0.0",
       "evidence_fingerprint": "butterflylens-evidence-fingerprint:v1.1.0",
+      "geographic_impact_cell": "butterflylens-geographic-impact-cell:v1.0.0",
+      "verification_campaign": "butterflylens-verification-campaign:v1.0.0",
+      "verification_assignment": "butterflylens-verification-assignment:v1.0.0",
+      "verification_event": "butterflylens-verification-event:v1.0.0",
+      "verification_consensus": "butterflylens-verification-consensus:v1.0.0",
       "reference_bank_manifest": "butterflylens-reference-bank-manifest/v1"
     },
-    "observed_change": "additive_fingerprinting_artifact_layout_worker_and_classification_maturity_contracts"
+    "review_controls": {
+      "assignment_policy_version": "repeated-independent-v1",
+      "minimum_independent_reviewers": 2,
+      "blind_until_decision": true,
+      "append_only_review_events": true,
+      "database_adapter_owned": true
+    },
+    "observed_change": "additive_reviewer_accounts_repeated_independent_assignments_blind_disclosure_and_append_only_review_submission"
   }
 }

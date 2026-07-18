@@ -19,7 +19,7 @@ def test_downstream_contract_pins_are_exact_and_versioned() -> None:
     pins = _pins()
 
     assert pins["schema_version"] == (
-        "biominer-downstream-pooling-contract-pins-v1.0.0"
+        "biominer-downstream-pooling-contract-pins-v1.1.0"
     )
     assert pins["taxalens"]["goal_written_commit"] == (
         "1440596cf4403af61ba8d57481feacda7c4e3044"
@@ -30,8 +30,14 @@ def test_downstream_contract_pins_are_exact_and_versioned() -> None:
     assert pins["butterflylens"]["goal_written_commit"] == (
         "c8135a0cb0001245215cdc774d063ef49407fb26"
     )
-    assert pins["butterflylens"]["audited_commit"] == (
+    assert pins["butterflylens"]["previous_audited_commit"] == (
         "fcee1a76886e37cb2f0d9badbe91b70a18a0e7c3"
+    )
+    assert pins["butterflylens"]["audited_commit"] == (
+        "1cea643623f2f20a2bea72afc754c7b194db3278"
+    )
+    assert pins["butterflylens"]["pin_movement_decision"] == (
+        "compatible_additive_with_stricter_review_controls"
     )
 
 
