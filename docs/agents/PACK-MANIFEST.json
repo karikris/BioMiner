@@ -1,17 +1,17 @@
 {
-  "active_goal_note": "Geography-conditioned dynamic pooling is complete through Phase 8 Task 8.2 measured embedding/matrix reuse and plan-derived selective score reuse with no guessed savings; Phase 9 human-review sample planning is next. No live performance result, fusion method or strategy is selected from fixture-only evidence. The user disabled all further GitHits calls for the remainder of this goal.",
+  "active_goal_note": "Geography-conditioned dynamic pooling is complete through Phase 16 Task 16.1 documentation and governance; Task 16.2 final release verification is next. No live performance result, fusion method or strategy is selected from fixture-only evidence. The user disabled all further GitHits calls for the remainder of this goal.",
   "files": [
     {
-      "bytes": 6701,
-      "lines": 142,
+      "bytes": 6844,
+      "lines": 144,
       "path": "AGENTS.md",
-      "sha256": "e5d9cff662484ad83c729d42e1af48ef578a52d0f3adbfeb3f471c93585c66d5"
+      "sha256": "248a4fc252cee9755302509f10cae505c0b40887b8bd8e8e3a0d15453d4ee4df"
     },
     {
-      "bytes": 16486,
-      "lines": 363,
+      "bytes": 26660,
+      "lines": 508,
       "path": "docs/agents/CURRENT_STATE.md",
-      "sha256": "b9237248ebe029cbedadbf8b94a84db4a52d1cae0de89f97b6db2286c459f669"
+      "sha256": "9872e73562ac0c512adefaf0675d881b9c8c0a25531e9aeae55fb84cb68ee221"
     },
     {
       "bytes": 5599,
@@ -26,16 +26,16 @@
       "sha256": "943854cc0f3e16640722de1b19df9fff323c28d659d757bcfbce667b7f2e7157"
     },
     {
-      "bytes": 1405,
-      "lines": 28,
+      "bytes": 1471,
+      "lines": 29,
       "path": "docs/agents/README.md",
-      "sha256": "801581e5c454b19f3da51887d0a1ac88e24eae5d15a852329c457ba3b18b3f9f"
+      "sha256": "866e619bbd15afa3d3b127df7030dfc769948fdce439029e3071357fb4614aac"
     },
     {
-      "bytes": 8089,
-      "lines": 304,
+      "bytes": 9665,
+      "lines": 340,
       "path": "docs/agents/SCIENCE_AND_PIPELINE.md",
-      "sha256": "a16656ac38900706476ef0ff6db62c28f4c291880b375987123914d588a74af6"
+      "sha256": "b8fb4c8bcae4f3677fa68a67cb55a8bde98457c328ef54220036ded8ad1727a3"
     },
     {
       "bytes": 1808,
@@ -44,10 +44,10 @@
       "sha256": "fdee1716105402997b0437e6802ade8c8c12383b963ff9f0348c67af9988c4e7"
     },
     {
-      "bytes": 5756,
-      "lines": 210,
+      "bytes": 6916,
+      "lines": 233,
       "path": "docs/agents/TESTING_AND_RELEASE.md",
-      "sha256": "d58f36f71894eed3ab63fb26985d1c54d00d9f74ad443f2afdde996148d73b5d"
+      "sha256": "991d33a033b60cffa32124f823aa2525966b953bda9fb9809dbe1bb1b80820a0"
     },
     {
       "bytes": 6049,
@@ -57,7 +57,7 @@
     }
   ],
   "generated_from_uploaded_file": "AGENTS(14).md",
-  "observed_main_commit": "f6be531e01d64be4e7e6f168313e66ecd3b25010",
+  "observed_main_commit": "845966f0f63c4b38111f3e16468b14c6b674cc09",
   "observed_repository": "karikris/BioMiner",
   "pack": "BioMiner token-efficient agent instructions",
   "schema_version": "biominer-agent-pack-v1.0.0"

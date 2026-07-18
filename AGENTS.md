@@ -98,8 +98,9 @@ human review remain required before scientific release claims.
 ## Task workflow
 
 1. **Discover:** inspect status, current task evidence, code, tests, ADRs, and
-   manifests; use GitHits for non-trivial precedent and Valyu for current
-   authoritative external facts.
+   manifests; use GitHits for non-trivial precedent only when available and
+   permitted by the active goal, and Valyu for current authoritative external
+   facts.
 2. **Plan:** define invariants, schemas, failures, compatibility, tests,
    cleanup, rollback, and active-file ownership.
 3. **Implement:** smallest complete change; tests with behavior; remove old code
@@ -123,7 +124,8 @@ human review remain required before scientific release claims.
 
 ## Tool and Git summary
 
-- GitHits: OSS patterns and dependency internals.
+- GitHits: OSS patterns and dependency internals when available and permitted;
+  follow active-goal overrides in `TOOLS_AND_SKILLS.md`.
 - Valyu: current official docs, primary literature, APIs, terms, provenance.
 - Skills: read the relevant `SKILL.md` before use.
 - Headroom: compress large outputs when available.

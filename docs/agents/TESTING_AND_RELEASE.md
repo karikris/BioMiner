@@ -44,11 +44,12 @@ Do not rerun a large suite repeatedly when focused evidence is sufficient.
 
 ## Current observed baseline
 
-At commit `0ee83f50c780ecb0615548eadb5f50384395ad72`:
+At dynamic-pooling implementation commit
+`30319fa7b7e9f24256556b293cf2e2db6e6ce2e7`:
 
 ```text
-targeted adaptive suite    164 passed
-full regression            2515 passed
+complete pilot evaluation gate    56 passed
+full regression                  3225 passed
 ```
 
 These counts are historical evidence. The next task must use the current local
@@ -205,6 +206,28 @@ Release verification must confirm:
 - rights and attribution are complete;
 - no secret or source media is committed;
 - documentation matches the selected mode.
+
+For geography-conditioned dynamic pooling, release verification must also
+confirm:
+
+- family optimization never catastrophically prunes the target or complete
+  candidate union;
+- geography is evidence, never identity or biological absence;
+- GBIF provider assertions remain provisional;
+- compatible image embeddings are reused rather than recomputed per pool;
+- raw family/global/local/fusion evidence is not labelled probability;
+- calibrated probability, human verification, statistical support,
+  release-readiness and publication maturity remain separate;
+- unreviewed Flickr cannot enter an occurrence export;
+- insufficient strata report estimates unavailable rather than zero;
+- targeted failure-discovery work cannot support unweighted population claims;
+  and
+- TaxaLens and ButterflyLens handoffs preserve their pinned consumer maturity,
+  rights, review, RLS and release boundaries.
+
+Passing these software gates verifies implementation semantics only. It does
+not fill the 86-effective-review shortfall, select a production strategy, claim
+live biological performance, or authorize occurrence release.
 
 Do not merge, tag, publish, or claim completion automatically unless the user
 explicitly requests it.

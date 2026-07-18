@@ -21,8 +21,9 @@ Load topic documents only when relevant.
 4. Commit-bound reports/manifests.
 5. README/general docs.
 
-`README.md` and `docs/production.md` currently retain legacy family-first and
-crop-oriented descriptions. They do not override adaptive-reference contracts.
+`README.md` and `docs/production.md` now describe the adaptive full-frame
+dynamic-pooling route as production direction. Their explicitly labelled
+legacy compatibility sections do not override adaptive-reference contracts.
 
 Update `CURRENT_STATE.md` at major goal/phase boundaries. Keep temporary phase
 detail out of root `AGENTS.md`.

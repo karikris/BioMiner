@@ -9,12 +9,12 @@ at the start of every task.
 - Default branch: `main`
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
-- Latest verified dynamic-pooling implementation commit:
-  `30319fa7b7e9f24256556b293cf2e2db6e6ce2e7`
-  (`docs(pilot): report geography-conditioned pooling`)
+- Latest verified dynamic-pooling workflow/documentation commit:
+  `845966f0f63c4b38111f3e16468b14c6b674cc09`
+  (`docs(architecture): document pooling contracts`)
 - Latest verified dynamic-pooling task report commit:
-  `65b98ce4bed1d8b799ef0396fea5515921621e68`
-  (`docs(provenance): record task 15.1 push`)
+  `0bd997694ea0de59f844fc00009c7fad0e5b5218`
+  (`docs(provenance): record task 15.2 push`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -72,7 +72,10 @@ at the start of every task.
   work registers. Task 15.2 publishes a complete 24-variant, nine-criterion
   selection table and returns `insufficient_evidence`: zero variants are
   eligible and runtime settings remain unchanged. No candidate strategy,
-  pooling variant, or fusion method is selected or production-defaulted.
+  pooling variant, or fusion method is selected or production-defaulted. Phase
+  16 Task 16.1 aligns public/production guidance, architecture, schemas, human
+  governance and agent handoff state with that implemented workflow and
+  fail-closed decision.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -233,6 +236,10 @@ at the start of every task.
   - Task 15.2 decision: three software/fixture gates pass, six criteria remain
     blocking, and current/resulting runtime settings retain exact fingerprint
     `sha256:0fd197b2650a79d99970cada3dcbabe9980c5a265d9d71f929bbcf6f51e13e7d`;
+  - Task 16.1.1 production-documentation gate: 35 passed in 0.51 seconds;
+  - Task 16.1.2 architecture/schema documentation gate: 14 passed in 0.88
+    seconds, including exact consumer pins and implementation-backed schema
+    constants;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
@@ -425,18 +432,19 @@ They establish:
   and downstream-publication authorities; and
 - immutable TaxaLens/ButterflyLens handoffs pinned to committed contracts.
 
-Phase 0 remains architecture evidence only. Implemented behavior through Phase
-13 is recorded in task reports and tests; handoffs, pilot evidence and release
-verification remain work in Phases 14–16.
+Phase 0 remains the architecture-decision boundary. Software and fixture
+behavior is implemented through Phase 15, including exact downstream handoffs
+and a 24-variant pilot decision. Phase 16 documents and release-verifies that
+boundary; it does not replace missing live or human evidence.
 
-## Legacy documentation warning
+## Documentation and legacy compatibility status
 
 At the observed baseline:
 
-- `README.md` still describes the old family-first funnel and 0.90 genus
-  shortcut.
-- `docs/production.md` still describes crop materialization and hierarchical
-  production.
+- `README.md` and `docs/production.md` describe adaptive full-frame,
+  target-preserving dynamic pooling as the production direction;
+- family/genus cascades, the 0.90 shortcut, crops and bucket paths remain
+  explicitly labelled legacy compatibility or diagnostics;
 - `src/biominer/run/orchestrator.py` retains legacy cascade and visual-mode
   compatibility fields alongside adaptive defaults.
 - `src/biominer/run/stages.py` retains legacy, strict reference-first, and
@@ -444,16 +452,17 @@ At the observed baseline:
 
 Therefore:
 
-- do not treat legacy README prose as active-goal authority;
+- do not treat explicitly labelled legacy prose as active-goal authority;
 - do not delete compatibility paths without an explicit migration task;
 - do not let compatibility paths silently control adaptive output;
-- update stale docs only when the active goal reaches its documentation phase
-  or explicitly requests the change.
+- keep public, schema, governance and agent documentation aligned when a
+  versioned contract or accepted default changes.
 
 ## Remaining implementation, live and human work
 
-The implementation, migration/documentation, fixture-backed pilot, and release
-verification phases are complete. This does not complete the scientific run.
+The implementation, downstream handoffs, fixture-backed pilot, and Task 16.1
+documentation/governance work are complete. Final release verification remains
+in Task 16.2. Neither boundary completes the scientific run.
 The authoritative remaining-work ledger is in
 `reports/gbif_fast_start/final_report.json` and currently includes:
 
@@ -467,15 +476,14 @@ Provider-asserted GBIF support remains provisional, current quality metrics are
 unavailable, and no live production improvement or scientific release is
 claimed.
 
-For the active dynamic-pooling goal, the next implementation boundary is Phase
-16 Task 16.1: update the README, production guide, architecture/schema docs,
-human decisions and agent topic files to reflect the implemented dynamic-pool
-workflow and its fail-closed pilot result. The parallel family/geography union
-is only the current review projection. No strategy is selected or
-production-defaulted because only fixture evidence has run. No strategy is
-empirically superior, and no live dynamic pool, live score, calibrated
-probability, completed human review, statistical-support result or new
-release-ready occurrence is claimed by the completed phases.
+For the active dynamic-pooling goal, the next boundary is Phase 16 Task 16.2:
+run the complete technical and scientific release gates, verify exact workflow
+semantics and publish the final JSON/Markdown report. The parallel
+family/geography union is only the current review projection. No strategy is
+selected or production-defaulted because only fixture evidence has run. No
+strategy is empirically superior, and no live dynamic pool, live score,
+calibrated probability, completed human review, statistical-support result or
+new release-ready occurrence is claimed by the completed phases.
 
 ## Repository map
 
