@@ -29,6 +29,8 @@ RAW_GLOBAL_REFERENCE_EVIDENCE_SET_VERSION = "raw-global-reference-evidence-set-v
 LOCAL_REFERENCE_POOL_INPUT_VERSION = "local-reference-pool-input-v1"
 RAW_LOCAL_REFERENCE_EVIDENCE_VERSION = "raw-local-reference-evidence-v1"
 RAW_LOCAL_REFERENCE_EVIDENCE_SET_VERSION = "raw-local-reference-evidence-set-v1"
+RAW_DISAGREEMENT_COVERAGE_VERSION = "raw-disagreement-coverage-v1"
+RAW_DISAGREEMENT_COVERAGE_SET_VERSION = "raw-disagreement-coverage-set-v1"
 
 _VISUAL_INPUT_KINDS = frozenset(
     {
@@ -280,6 +282,10 @@ class LocalReferencePoolInput:
             self.configured_reference_count,
             field="configured_reference_count",
         )
+        if status == "available" and configured_count == 0:
+            raise ValueError(
+                "available local pool requires a positive configured_reference_count"
+            )
         configured_top_k = _positive_integer(
             self.configured_top_k,
             field="configured_top_k",
@@ -365,6 +371,76 @@ class RawLocalReferenceEvidenceSet:
     candidate_set_fingerprint: str
     scores: tuple[RawLocalReferenceEvidence, ...]
     score_set_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class RawCandidateDisagreementCoverage:
+    """Per-candidate local-minus-global deltas, rank movement and coverage."""
+
+    schema_version: str
+    query_id: str
+    candidate_accepted_taxon_key: str
+    candidate_scientific_name: str
+    global_score_fingerprint: str
+    local_score_fingerprint: str
+    disagreement_status: str
+    disagreement_unavailable_reason: str | None
+    global_prototype_similarity: float
+    local_prototype_similarity: float | None
+    prototype_signed_difference: float | None
+    prototype_absolute_disagreement: float | None
+    global_nearest_reference_similarity: float
+    local_nearest_reference_similarity: float | None
+    nearest_signed_difference: float | None
+    nearest_absolute_disagreement: float | None
+    global_top_k_mean_similarity: float
+    local_top_k_mean_similarity: float | None
+    top_k_signed_difference: float | None
+    top_k_absolute_disagreement: float | None
+    global_prototype_rank: int
+    local_prototype_rank: int | None
+    prototype_rank_movement: int | None
+    global_nearest_rank: int
+    local_nearest_rank: int | None
+    nearest_rank_movement: int | None
+    global_top_k_rank: int
+    local_top_k_rank: int | None
+    top_k_rank_movement: int | None
+    global_coverage_status: str
+    local_coverage_status: str
+    global_support_coverage_fraction: float
+    local_support_coverage_fraction: float | None
+    global_top_k_coverage_fraction: float
+    local_top_k_coverage_fraction: float | None
+    global_observation_independence_fraction: float
+    local_observation_independence_fraction: float | None
+    global_support_complete: bool
+    local_support_complete: bool | None
+    evidence_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class RawDisagreementCoverageSet:
+    """Complete disagreement/coverage evidence and component top-one states."""
+
+    schema_version: str
+    query_id: str
+    query_fingerprint: str
+    candidate_matrix_signature: str
+    candidate_set_fingerprint: str
+    global_evidence_set_fingerprint: str
+    local_evidence_set_fingerprint: str
+    global_prototype_top_candidate: str
+    local_prototype_top_candidate: str | None
+    prototype_top1_agreement: bool | None
+    global_nearest_top_candidate: str
+    local_nearest_top_candidate: str | None
+    nearest_top1_agreement: bool | None
+    global_top_k_top_candidate: str
+    local_top_k_top_candidate: str | None
+    top_k_top1_agreement: bool | None
+    scores: tuple[RawCandidateDisagreementCoverage, ...]
+    evidence_set_fingerprint: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -791,6 +867,352 @@ def score_local_reference_evidence(
     )
 
 
+def calculate_dynamic_pool_disagreement_coverage(
+    global_evidence: RawGlobalReferenceEvidenceSet,
+    local_evidence: RawLocalReferenceEvidenceSet,
+) -> RawDisagreementCoverageSet:
+    """Expose local-minus-global score and rank deltas plus support coverage.
+
+    Positive rank movement means the candidate moved down in local ordering.
+    """
+
+    global_scores, local_scores = _validated_global_local_sets(
+        global_evidence,
+        local_evidence,
+    )
+    global_prototype_ranks, global_prototype_top = _component_ranks(
+        global_scores,
+        field="prototype_similarity",
+    )
+    global_nearest_ranks, global_nearest_top = _component_ranks(
+        global_scores,
+        field="nearest_reference_similarity",
+    )
+    global_top_k_ranks, global_top_k_top = _component_ranks(
+        global_scores,
+        field="top_k_mean_similarity",
+    )
+    available_local = tuple(
+        score for score in local_scores.values() if score.score_status == "available"
+    )
+    local_prototype_ranks, local_prototype_top = _component_ranks(
+        available_local,
+        field="prototype_similarity",
+    )
+    local_nearest_ranks, local_nearest_top = _component_ranks(
+        available_local,
+        field="nearest_reference_similarity",
+    )
+    local_top_k_ranks, local_top_k_top = _component_ranks(
+        available_local,
+        field="top_k_mean_similarity",
+    )
+
+    output: list[RawCandidateDisagreementCoverage] = []
+    for global_score in global_scores:
+        candidate_key = global_score.candidate_accepted_taxon_key
+        local_score = local_scores[candidate_key]
+        local_available = local_score.score_status == "available"
+        local_prototype = local_score.prototype_similarity if local_available else None
+        local_nearest = (
+            local_score.nearest_reference_similarity if local_available else None
+        )
+        local_top_k = local_score.top_k_mean_similarity if local_available else None
+        prototype_difference = _optional_difference(
+            local_prototype,
+            global_score.prototype_similarity,
+        )
+        nearest_difference = _optional_difference(
+            local_nearest,
+            global_score.nearest_reference_similarity,
+        )
+        top_k_difference = _optional_difference(
+            local_top_k,
+            global_score.top_k_mean_similarity,
+        )
+        local_prototype_rank = local_prototype_ranks.get(candidate_key)
+        local_nearest_rank = local_nearest_ranks.get(candidate_key)
+        local_top_k_rank = local_top_k_ranks.get(candidate_key)
+        values = {
+            "schema_version": RAW_DISAGREEMENT_COVERAGE_VERSION,
+            "query_id": global_evidence.query_id,
+            "candidate_accepted_taxon_key": candidate_key,
+            "candidate_scientific_name": global_score.candidate_scientific_name,
+            "global_score_fingerprint": global_score.score_fingerprint,
+            "local_score_fingerprint": local_score.score_fingerprint,
+            "disagreement_status": "available" if local_available else "unavailable",
+            "disagreement_unavailable_reason": (
+                None if local_available else local_score.score_unavailable_reason
+            ),
+            "global_prototype_similarity": global_score.prototype_similarity,
+            "local_prototype_similarity": local_prototype,
+            "prototype_signed_difference": prototype_difference,
+            "prototype_absolute_disagreement": _optional_absolute(prototype_difference),
+            "global_nearest_reference_similarity": (
+                global_score.nearest_reference_similarity
+            ),
+            "local_nearest_reference_similarity": local_nearest,
+            "nearest_signed_difference": nearest_difference,
+            "nearest_absolute_disagreement": _optional_absolute(nearest_difference),
+            "global_top_k_mean_similarity": global_score.top_k_mean_similarity,
+            "local_top_k_mean_similarity": local_top_k,
+            "top_k_signed_difference": top_k_difference,
+            "top_k_absolute_disagreement": _optional_absolute(top_k_difference),
+            "global_prototype_rank": global_prototype_ranks[candidate_key],
+            "local_prototype_rank": local_prototype_rank,
+            "prototype_rank_movement": _optional_rank_movement(
+                local_prototype_rank,
+                global_prototype_ranks[candidate_key],
+            ),
+            "global_nearest_rank": global_nearest_ranks[candidate_key],
+            "local_nearest_rank": local_nearest_rank,
+            "nearest_rank_movement": _optional_rank_movement(
+                local_nearest_rank,
+                global_nearest_ranks[candidate_key],
+            ),
+            "global_top_k_rank": global_top_k_ranks[candidate_key],
+            "local_top_k_rank": local_top_k_rank,
+            "top_k_rank_movement": _optional_rank_movement(
+                local_top_k_rank,
+                global_top_k_ranks[candidate_key],
+            ),
+            "global_coverage_status": (
+                "complete"
+                if global_score.reference_shortfall_count == 0
+                else "shortfall"
+            ),
+            "local_coverage_status": (
+                "complete"
+                if local_available and local_score.reference_shortfall_count == 0
+                else "shortfall"
+                if local_available
+                else "unavailable"
+            ),
+            "global_support_coverage_fraction": _coverage_fraction(
+                global_score.independent_observation_count,
+                global_score.configured_reference_count,
+            ),
+            "local_support_coverage_fraction": (
+                _coverage_fraction(
+                    local_score.independent_observation_count,
+                    local_score.configured_reference_count,
+                )
+                if local_available
+                else None
+            ),
+            "global_top_k_coverage_fraction": _coverage_fraction(
+                global_score.effective_k,
+                global_score.configured_k,
+            ),
+            "local_top_k_coverage_fraction": (
+                _coverage_fraction(local_score.effective_k, local_score.configured_k)
+                if local_available
+                else None
+            ),
+            "global_observation_independence_fraction": _independence_fraction(
+                global_score.independent_observation_count,
+                global_score.reference_count,
+            ),
+            "local_observation_independence_fraction": (
+                _independence_fraction(
+                    local_score.independent_observation_count,
+                    local_score.reference_count,
+                )
+                if local_available
+                else None
+            ),
+            "global_support_complete": global_score.reference_shortfall_count == 0,
+            "local_support_complete": (
+                local_score.reference_shortfall_count == 0 if local_available else None
+            ),
+        }
+        output.append(
+            RawCandidateDisagreementCoverage(
+                **values,  # type: ignore[arg-type]
+                evidence_fingerprint=canonical_semantic_fingerprint(values),
+            )
+        )
+    set_values = {
+        "schema_version": RAW_DISAGREEMENT_COVERAGE_SET_VERSION,
+        "query_id": global_evidence.query_id,
+        "query_fingerprint": global_evidence.query_fingerprint,
+        "candidate_matrix_signature": global_evidence.candidate_matrix_signature,
+        "candidate_set_fingerprint": global_evidence.candidate_set_fingerprint,
+        "global_evidence_set_fingerprint": global_evidence.score_set_fingerprint,
+        "local_evidence_set_fingerprint": local_evidence.score_set_fingerprint,
+        "global_prototype_top_candidate": global_prototype_top,
+        "local_prototype_top_candidate": local_prototype_top,
+        "prototype_top1_agreement": _optional_agreement(
+            global_prototype_top,
+            local_prototype_top,
+        ),
+        "global_nearest_top_candidate": global_nearest_top,
+        "local_nearest_top_candidate": local_nearest_top,
+        "nearest_top1_agreement": _optional_agreement(
+            global_nearest_top,
+            local_nearest_top,
+        ),
+        "global_top_k_top_candidate": global_top_k_top,
+        "local_top_k_top_candidate": local_top_k_top,
+        "top_k_top1_agreement": _optional_agreement(
+            global_top_k_top,
+            local_top_k_top,
+        ),
+        "evidence_fingerprints": [item.evidence_fingerprint for item in output],
+    }
+    return RawDisagreementCoverageSet(
+        schema_version=RAW_DISAGREEMENT_COVERAGE_SET_VERSION,
+        query_id=global_evidence.query_id,
+        query_fingerprint=global_evidence.query_fingerprint,
+        candidate_matrix_signature=global_evidence.candidate_matrix_signature,
+        candidate_set_fingerprint=global_evidence.candidate_set_fingerprint,
+        global_evidence_set_fingerprint=global_evidence.score_set_fingerprint,
+        local_evidence_set_fingerprint=local_evidence.score_set_fingerprint,
+        global_prototype_top_candidate=global_prototype_top,
+        local_prototype_top_candidate=local_prototype_top,
+        prototype_top1_agreement=_optional_agreement(
+            global_prototype_top,
+            local_prototype_top,
+        ),
+        global_nearest_top_candidate=global_nearest_top,
+        local_nearest_top_candidate=local_nearest_top,
+        nearest_top1_agreement=_optional_agreement(
+            global_nearest_top,
+            local_nearest_top,
+        ),
+        global_top_k_top_candidate=global_top_k_top,
+        local_top_k_top_candidate=local_top_k_top,
+        top_k_top1_agreement=_optional_agreement(
+            global_top_k_top,
+            local_top_k_top,
+        ),
+        scores=tuple(output),
+        evidence_set_fingerprint=canonical_semantic_fingerprint(set_values),
+    )
+
+
+def _validated_global_local_sets(
+    global_evidence: RawGlobalReferenceEvidenceSet,
+    local_evidence: RawLocalReferenceEvidenceSet,
+) -> tuple[
+    tuple[RawGlobalReferenceEvidence, ...],
+    dict[str, RawLocalReferenceEvidence],
+]:
+    if not isinstance(global_evidence, RawGlobalReferenceEvidenceSet):
+        raise TypeError("global_evidence must be RawGlobalReferenceEvidenceSet")
+    if not isinstance(local_evidence, RawLocalReferenceEvidenceSet):
+        raise TypeError("local_evidence must be RawLocalReferenceEvidenceSet")
+    if global_evidence.schema_version != RAW_GLOBAL_REFERENCE_EVIDENCE_SET_VERSION:
+        raise ValueError("unsupported global evidence set version")
+    if local_evidence.schema_version != RAW_LOCAL_REFERENCE_EVIDENCE_SET_VERSION:
+        raise ValueError("unsupported local evidence set version")
+    for field in (
+        "query_id",
+        "query_fingerprint",
+        "candidate_matrix_signature",
+        "candidate_set_fingerprint",
+    ):
+        if getattr(global_evidence, field) != getattr(local_evidence, field):
+            raise ValueError(f"global/local evidence sets differ on {field}")
+    _sha256(global_evidence.score_set_fingerprint, field="global score set")
+    _sha256(local_evidence.score_set_fingerprint, field="local score set")
+    global_scores = tuple(global_evidence.scores)
+    local_items = tuple(local_evidence.scores)
+    if not global_scores or not local_items:
+        raise ValueError("global/local evidence sets must not be empty")
+    if any(
+        not isinstance(score, RawGlobalReferenceEvidence) for score in global_scores
+    ):
+        raise TypeError("global evidence set contains invalid score rows")
+    if any(not isinstance(score, RawLocalReferenceEvidence) for score in local_items):
+        raise TypeError("local evidence set contains invalid score rows")
+    global_keys = [score.candidate_accepted_taxon_key for score in global_scores]
+    local_keys = [score.candidate_accepted_taxon_key for score in local_items]
+    if global_keys != sorted(global_keys) or local_keys != sorted(local_keys):
+        raise ValueError("global/local evidence scores are not canonically ordered")
+    if len(global_keys) != len(set(global_keys)) or len(local_keys) != len(
+        set(local_keys)
+    ):
+        raise ValueError("global/local evidence scores repeat candidate keys")
+    if set(global_keys) != set(local_keys):
+        raise ValueError("global/local evidence candidate memberships differ")
+    local_scores = {score.candidate_accepted_taxon_key: score for score in local_items}
+    for global_score in global_scores:
+        local_score = local_scores[global_score.candidate_accepted_taxon_key]
+        if global_score.score_status != "available":
+            raise ValueError("global evidence score must be available")
+        if local_score.score_status not in {"available", "unavailable"}:
+            raise ValueError("local evidence score has an invalid status")
+        if (
+            global_score.candidate_scientific_name
+            != local_score.candidate_scientific_name
+        ):
+            raise ValueError("global/local candidate scientific names differ")
+        _sha256(global_score.score_fingerprint, field="global score fingerprint")
+        _sha256(local_score.score_fingerprint, field="local score fingerprint")
+    return global_scores, local_scores
+
+
+def _component_ranks(
+    scores: Sequence[RawGlobalReferenceEvidence | RawLocalReferenceEvidence],
+    *,
+    field: str,
+) -> tuple[dict[str, int], str | None]:
+    ranked = sorted(
+        (
+            (
+                _required_component_value(getattr(score, field), field=field),
+                score.candidate_accepted_taxon_key,
+            )
+            for score in scores
+        ),
+        key=lambda item: (-item[0], item[1]),
+    )
+    return (
+        {candidate_key: index + 1 for index, (_, candidate_key) in enumerate(ranked)},
+        ranked[0][1] if ranked else None,
+    )
+
+
+def _required_component_value(value: object, *, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(f"available {field} must be numeric")
+    number = float(value)
+    if not isfinite(number) or not -1.0 <= number <= 1.0:
+        raise ValueError(f"available {field} must be a finite raw cosine")
+    return number
+
+
+def _optional_difference(local: float | None, global_value: float) -> float | None:
+    return local - global_value if local is not None else None
+
+
+def _optional_absolute(value: float | None) -> float | None:
+    return abs(value) if value is not None else None
+
+
+def _optional_rank_movement(local_rank: int | None, global_rank: int) -> int | None:
+    return local_rank - global_rank if local_rank is not None else None
+
+
+def _coverage_fraction(effective: int, configured: int) -> float:
+    if configured <= 0:
+        raise ValueError("available coverage requires a positive configured count")
+    if effective < 0:
+        raise ValueError("coverage effective count must be nonnegative")
+    return min(1.0, effective / configured)
+
+
+def _independence_fraction(independent: int, reference_count: int) -> float:
+    if reference_count <= 0 or not 0 <= independent <= reference_count:
+        raise ValueError("observation independence counts are invalid")
+    return independent / reference_count
+
+
+def _optional_agreement(global_top: str, local_top: str | None) -> bool | None:
+    return global_top == local_top if local_top is not None else None
+
+
 def _global_pool_inputs(
     pools: Sequence[GlobalReferencePoolInput],
 ) -> dict[str, GlobalReferencePoolInput]:
@@ -1069,6 +1491,8 @@ def _optional_text(value: object, *, field: str) -> str | None:
 __all__ = [
     "GLOBAL_REFERENCE_POOL_INPUT_VERSION",
     "LOCAL_REFERENCE_POOL_INPUT_VERSION",
+    "RAW_DISAGREEMENT_COVERAGE_SET_VERSION",
+    "RAW_DISAGREEMENT_COVERAGE_VERSION",
     "RAW_FAMILY_EVIDENCE_SET_VERSION",
     "RAW_FAMILY_EVIDENCE_VERSION",
     "RAW_GLOBAL_REFERENCE_EVIDENCE_SET_VERSION",
@@ -1078,6 +1502,8 @@ __all__ = [
     "RAW_SCORING_QUERY_VERSION",
     "GlobalReferencePoolInput",
     "LocalReferencePoolInput",
+    "RawCandidateDisagreementCoverage",
+    "RawDisagreementCoverageSet",
     "RawFamilyEvidence",
     "RawFamilyEvidenceSet",
     "RawGlobalReferenceEvidence",
@@ -1085,6 +1511,7 @@ __all__ = [
     "RawLocalReferenceEvidence",
     "RawLocalReferenceEvidenceSet",
     "RawScoringQuery",
+    "calculate_dynamic_pool_disagreement_coverage",
     "score_family_evidence",
     "score_global_reference_evidence",
     "score_local_reference_evidence",

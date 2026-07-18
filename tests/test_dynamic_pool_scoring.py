@@ -10,6 +10,7 @@ from biominer.bioclip.dynamic_pool_scoring import (
     GlobalReferencePoolInput,
     LocalReferencePoolInput,
     RawScoringQuery,
+    calculate_dynamic_pool_disagreement_coverage,
     score_family_evidence,
     score_global_reference_evidence,
     score_local_reference_evidence,
@@ -342,6 +343,12 @@ def test_local_pool_input_requires_exact_available_or_unavailable_contract() -> 
             pool_matrix=None,
             unavailable_reason=None,
         )
+    with pytest.raises(ValueError, match="positive configured_reference_count"):
+        replace(
+            _local_input(pool_matrix=local),
+            configured_reference_count=0,
+            input_fingerprint=None,
+        )
 
 
 def test_unavailable_local_evidence_never_substitutes_global_scores() -> None:
@@ -367,6 +374,169 @@ def test_unavailable_local_evidence_never_substitutes_global_scores() -> None:
     assert local_by_key["gbif:200"].prototype_similarity is None
     assert local_by_key["gbif:200"].nearest_reference_similarity is None
     assert local_by_key["gbif:200"].top_k_mean_similarity is None
+
+
+def test_dynamic_pool_disagreement_exposes_raw_deltas_ranks_and_coverage() -> None:
+    candidate_matrix, global_pools = _global_inputs()
+    global_scores = score_global_reference_evidence(
+        _query(),
+        candidate_matrix,
+        global_pools,
+    )
+    local_scores = score_local_reference_evidence(
+        _query(),
+        candidate_matrix,
+        _local_inputs(),
+    )
+
+    result = calculate_dynamic_pool_disagreement_coverage(
+        global_scores,
+        local_scores,
+    )
+
+    available, unavailable = result.scores
+    assert available.candidate_accepted_taxon_key == "gbif:100"
+    assert available.disagreement_status == "available"
+    assert available.disagreement_unavailable_reason is None
+    assert available.prototype_signed_difference == pytest.approx(3 / 10**0.5 - 1)
+    assert available.prototype_absolute_disagreement == pytest.approx(1 - 3 / 10**0.5)
+    assert available.nearest_signed_difference == pytest.approx(0.0)
+    assert available.nearest_absolute_disagreement == pytest.approx(0.0)
+    assert available.top_k_signed_difference == pytest.approx(0.9 - (1 + 2**-0.5) / 2)
+    assert available.global_prototype_rank == 1
+    assert available.local_prototype_rank == 1
+    assert available.prototype_rank_movement == 0
+    assert available.global_nearest_rank == 1
+    assert available.local_nearest_rank == 1
+    assert available.nearest_rank_movement == 0
+    assert available.global_top_k_rank == 1
+    assert available.local_top_k_rank == 1
+    assert available.top_k_rank_movement == 0
+    assert available.global_coverage_status == "shortfall"
+    assert available.local_coverage_status == "shortfall"
+    assert available.global_support_coverage_fraction == pytest.approx(2 / 3)
+    assert available.local_support_coverage_fraction == pytest.approx(2 / 3)
+    assert available.global_top_k_coverage_fraction == pytest.approx(2 / 5)
+    assert available.local_top_k_coverage_fraction == pytest.approx(2 / 3)
+    assert available.global_observation_independence_fraction == pytest.approx(2 / 3)
+    assert available.local_observation_independence_fraction == pytest.approx(1.0)
+    assert available.global_support_complete is False
+    assert available.local_support_complete is False
+    assert available.evidence_fingerprint.startswith("sha256:")
+
+    assert unavailable.candidate_accepted_taxon_key == "gbif:200"
+    assert unavailable.disagreement_status == "unavailable"
+    assert unavailable.disagreement_unavailable_reason == "no_local_geographic_evidence"
+    assert unavailable.global_prototype_similarity == pytest.approx(0.0)
+    assert unavailable.local_prototype_similarity is None
+    assert unavailable.prototype_signed_difference is None
+    assert unavailable.prototype_absolute_disagreement is None
+    assert unavailable.local_prototype_rank is None
+    assert unavailable.prototype_rank_movement is None
+    assert unavailable.local_coverage_status == "unavailable"
+    assert unavailable.local_support_coverage_fraction is None
+    assert unavailable.local_top_k_coverage_fraction is None
+    assert unavailable.local_observation_independence_fraction is None
+    assert unavailable.local_support_complete is None
+    assert result.global_prototype_top_candidate == "gbif:100"
+    assert result.local_prototype_top_candidate == "gbif:100"
+    assert result.prototype_top1_agreement is True
+    assert result.nearest_top1_agreement is True
+    assert result.top_k_top1_agreement is True
+    assert result.evidence_set_fingerprint.startswith("sha256:")
+
+
+def test_dynamic_pool_disagreement_exposes_rank_reversal() -> None:
+    candidate_matrix, global_pools = _global_inputs()
+    global_scores = score_global_reference_evidence(
+        _query(),
+        candidate_matrix,
+        global_pools,
+    )
+    local_scores = score_local_reference_evidence(
+        _query(),
+        candidate_matrix,
+        _all_local_inputs(),
+    )
+
+    result = calculate_dynamic_pool_disagreement_coverage(
+        global_scores,
+        local_scores,
+    )
+    first, second = result.scores
+
+    assert first.global_prototype_rank == 1
+    assert first.local_prototype_rank == 2
+    assert first.prototype_rank_movement == 1
+    assert first.nearest_rank_movement == 1
+    assert first.top_k_rank_movement == 1
+    assert second.global_prototype_rank == 2
+    assert second.local_prototype_rank == 1
+    assert second.prototype_rank_movement == -1
+    assert second.nearest_rank_movement == -1
+    assert second.top_k_rank_movement == -1
+    assert result.global_prototype_top_candidate == "gbif:100"
+    assert result.local_prototype_top_candidate == "gbif:200"
+    assert result.prototype_top1_agreement is False
+    assert result.nearest_top1_agreement is False
+    assert result.top_k_top1_agreement is False
+
+
+def test_dynamic_pool_disagreement_retains_all_local_unavailable_state() -> None:
+    candidate_matrix, global_pools = _global_inputs()
+    global_scores = score_global_reference_evidence(
+        _query(),
+        candidate_matrix,
+        global_pools,
+    )
+    local_scores = score_local_reference_evidence(
+        _query(),
+        candidate_matrix,
+        _all_local_unavailable_inputs(),
+    )
+
+    result = calculate_dynamic_pool_disagreement_coverage(
+        global_scores,
+        local_scores,
+    )
+
+    assert result.local_prototype_top_candidate is None
+    assert result.local_nearest_top_candidate is None
+    assert result.local_top_k_top_candidate is None
+    assert result.prototype_top1_agreement is None
+    assert result.nearest_top1_agreement is None
+    assert result.top_k_top1_agreement is None
+    assert all(score.disagreement_status == "unavailable" for score in result.scores)
+
+
+def test_dynamic_pool_disagreement_rejects_identity_or_membership_drift() -> None:
+    candidate_matrix, global_pools = _global_inputs()
+    global_scores = score_global_reference_evidence(
+        _query(),
+        candidate_matrix,
+        global_pools,
+    )
+    local_scores = score_local_reference_evidence(
+        _query(),
+        candidate_matrix,
+        _local_inputs(),
+    )
+
+    with pytest.raises(ValueError, match="differ on query_fingerprint"):
+        calculate_dynamic_pool_disagreement_coverage(
+            global_scores,
+            replace(local_scores, query_fingerprint="sha256:" + "7" * 64),
+        )
+    with pytest.raises(ValueError, match="candidate memberships differ"):
+        calculate_dynamic_pool_disagreement_coverage(
+            global_scores,
+            replace(local_scores, scores=local_scores.scores[:1]),
+        )
+    with pytest.raises(ValueError, match="not canonically ordered"):
+        calculate_dynamic_pool_disagreement_coverage(
+            global_scores,
+            replace(local_scores, scores=tuple(reversed(local_scores.scores))),
+        )
 
 
 def _query() -> RawScoringQuery:
@@ -579,6 +749,76 @@ def _local_inputs() -> tuple[LocalReferencePoolInput, ...]:
             configured_reference_count=2,
             configured_top_k=3,
         ),
+    )
+
+
+def _all_local_inputs() -> tuple[LocalReferencePoolInput, ...]:
+    cache = DynamicPoolMatrixCache()
+    return (
+        LocalReferencePoolInput(
+            candidate_accepted_taxon_key="gbif:100",
+            candidate_scientific_name="Papilio demoleus",
+            local_pool_status="available",
+            local_pool_unavailable_reason=None,
+            pool_matrix=_pool_matrix(
+                cache,
+                candidate_key="gbif:100",
+                geographic_scope="exact_local_cell",
+                rows=(
+                    PoolReferenceVector(
+                        reference_media_id="reference-media:local-100",
+                        reference_observation_id="reference-observation:local-100",
+                        member_fingerprint="sha256:" + "1" * 64,
+                        reference_embedding_fingerprint="sha256:" + "2" * 64,
+                        embedding=(0.0, 1.0),
+                    ),
+                ),
+                fingerprint_digit="3",
+            ),
+            configured_reference_count=1,
+            configured_top_k=1,
+        ),
+        LocalReferencePoolInput(
+            candidate_accepted_taxon_key="gbif:200",
+            candidate_scientific_name="Papilio machaon",
+            local_pool_status="available",
+            local_pool_unavailable_reason=None,
+            pool_matrix=_pool_matrix(
+                cache,
+                candidate_key="gbif:200",
+                geographic_scope="exact_local_cell",
+                rows=(
+                    PoolReferenceVector(
+                        reference_media_id="reference-media:local-200",
+                        reference_observation_id="reference-observation:local-200",
+                        member_fingerprint="sha256:" + "4" * 64,
+                        reference_embedding_fingerprint="sha256:" + "5" * 64,
+                        embedding=(1.0, 0.0),
+                    ),
+                ),
+                fingerprint_digit="6",
+            ),
+            configured_reference_count=1,
+            configured_top_k=1,
+        ),
+    )
+
+
+def _all_local_unavailable_inputs() -> tuple[LocalReferencePoolInput, ...]:
+    return tuple(
+        LocalReferencePoolInput(
+            candidate_accepted_taxon_key=candidate_key,
+            candidate_scientific_name=scientific_name,
+            local_pool_status="unavailable",
+            local_pool_unavailable_reason="no_local_geographic_evidence",
+            pool_matrix=None,
+            configured_reference_count=2,
+            configured_top_k=3,
+        )
+        for candidate_key, scientific_name in (
+            ("gbif:100", "Papilio demoleus"),
+            ("gbif:200", "Papilio machaon"),
+        )
     )
 
 
