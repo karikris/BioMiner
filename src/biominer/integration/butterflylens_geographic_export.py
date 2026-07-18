@@ -212,6 +212,80 @@ def validate_butterflylens_geographic_impact(frame: pl.DataFrame) -> None:
         _validate_row(row)
 
 
+def butterflylens_geographic_cell_documents(
+    frame: pl.DataFrame,
+) -> list[dict[str, object]]:
+    """Translate located rows to the exact pinned ButterflyLens cell wire shape."""
+
+    validate_butterflylens_geographic_impact(frame)
+    documents: list[dict[str, object]] = []
+    for row in frame.filter(pl.col("geography_availability") == "h3").iter_rows(
+        named=True
+    ):
+        documents.append(
+            {
+                "schema_version": BUTTERFLYLENS_TARGET_CELL_VERSION,
+                "cell_id": row["cell_id"],
+                "grid": row["grid"],
+                "h3_version": row["h3_version"],
+                "h3_resolution": row["h3_resolution"],
+                "project_id": row["project_id"],
+                "run_id": row["run_id"],
+                "snapshot_mode": row["snapshot_mode"],
+                "accepted_taxon_key": row["accepted_taxon_key"],
+                "ala_snapshot_fingerprint": _wire_sha(row["ala_snapshot_fingerprint"]),
+                "flickr_snapshot_fingerprint": _wire_sha(
+                    row["flickr_snapshot_fingerprint"]
+                ),
+                "provider_union_fingerprint": _wire_sha(
+                    row["provider_union_fingerprint"]
+                ),
+                "review_projection_fingerprint": _wire_sha(
+                    row["review_projection_fingerprint"]
+                ),
+                "quality_snapshot_fingerprint": _wire_sha(
+                    row["quality_snapshot_fingerprint"]
+                ),
+                "counts": {
+                    name: {
+                        "status": row[f"{name}_count_state"],
+                        "value": row[f"{name}_count"],
+                        "reason": row[f"{name}_count_reason"],
+                    }
+                    for name in _COUNT_NAMES
+                },
+                "impact": {
+                    name: {
+                        "status": row[f"{name}_state"],
+                        "value": row[name],
+                        "reason": row[f"{name}_reason"],
+                    }
+                    for name in _IMPACT_NAMES
+                },
+                "nearest_ala_evidence_distance": {
+                    "status": row["nearest_ala_evidence_distance_state"],
+                    "metres": row["nearest_ala_evidence_distance_m"],
+                    "reason": row["nearest_ala_evidence_distance_reason"],
+                },
+                "latest_ala_event_date": row["latest_ala_event_date"],
+                "latest_flickr_event_date": row["latest_flickr_event_date"],
+                "data_deficiency_state": row["data_deficiency_state"],
+                "public_geometry": {
+                    "status": row["public_geometry_status"],
+                    "source_precision_metres": row["source_precision_metres"],
+                    "published_h3_resolution": row["published_h3_resolution"],
+                    "reason": row["public_geometry_reason"],
+                },
+                "evidence_fingerprints": [
+                    _wire_sha(value) for value in row["evidence_fingerprints"]
+                ],
+                "cell_fingerprint": _wire_sha(row["impact_fingerprint"]),
+                "scientific_claim_allowed": False,
+            }
+        )
+    return documents
+
+
 def export_butterflylens_geographic_impact(
     *, frame: pl.DataFrame, output_root: str | Path
 ) -> ButterflyLensGeographicExport:
@@ -757,11 +831,20 @@ def _optional_date(value: object, *, field: str) -> str | None:
     return value
 
 
+def _wire_sha(value: object) -> str | None:
+    return (
+        None
+        if value is None
+        else _sha(value, field="wire_sha256").removeprefix("sha256:")
+    )
+
+
 __all__ = [
     "BUTTERFLYLENS_GEOGRAPHIC_IMPACT_FILE",
     "BUTTERFLYLENS_GEOGRAPHIC_IMPACT_SCHEMA",
     "BUTTERFLYLENS_GEOGRAPHIC_IMPACT_VERSION",
     "ButterflyLensGeographicExport",
+    "butterflylens_geographic_cell_documents",
     "build_butterflylens_geographic_impact",
     "export_butterflylens_geographic_impact",
     "validate_butterflylens_geographic_export",

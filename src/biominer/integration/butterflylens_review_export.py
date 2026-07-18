@@ -267,6 +267,66 @@ def validate_butterflylens_review_layer(layer: ButterflyLensReviewLayer) -> None
         raise ValueError("ButterflyLens release projection lineage differs")
 
 
+def butterflylens_campaign_document(
+    campaign: Mapping[str, object],
+) -> dict[str, object]:
+    """Translate a producer campaign to the exact pinned consumer wire shape."""
+
+    _validate_campaign(campaign)
+    return {
+        "schema_version": TARGET_CAMPAIGN_VERSION,
+        "campaign_id": campaign["campaign_id"],
+        "project_id": campaign["project_id"],
+        "run_id": campaign["run_id"],
+        "kind": campaign["kind"],
+        "status": campaign["status"],
+        "target": campaign["target"],
+        "source_providers": campaign["source_providers"],
+        "question_fingerprint": _wire_sha(campaign["question_fingerprint"]),
+        "manifest_fingerprint": _wire_sha(campaign["manifest_fingerprint"]),
+        "sampling_plan": campaign["sampling_plan"],
+        "review_requirement": campaign["review_requirement"],
+        "blind_policy": campaign["blind_policy"],
+        "public_replay": campaign["public_replay"],
+        "scientific_claim_allowed": False,
+        "created_at": campaign["created_at"],
+        "updated_at": campaign["updated_at"],
+    }
+
+
+def butterflylens_maturity_documents(frame: pl.DataFrame) -> list[dict[str, object]]:
+    """Translate flattened maturity rows to exact pinned consumer documents."""
+
+    _validate_maturity(frame)
+    documents: list[dict[str, object]] = []
+    for row in frame.iter_rows(named=True):
+        maturity = {
+            name: {
+                "status": row[f"{name}_status"],
+                "value": row[f"{name}_value"],
+                "reason": row[f"{name}_reason"],
+                "evidence_fingerprints": [
+                    _wire_sha(value) for value in row[f"{name}_evidence_fingerprints"]
+                ],
+            }
+            for name in _MATURITY_NAMES
+        }
+        documents.append(
+            {
+                "schema_version": TARGET_MATURITY_VERSION,
+                "image_id": row["image_id"],
+                "source_record_fingerprint": _wire_sha(
+                    row["source_record_fingerprint"]
+                ),
+                "observed_at": row["observed_at"],
+                "maturity": maturity,
+                "projection_fingerprint": _wire_sha(row["projection_fingerprint"]),
+                "scientific_claim_allowed": False,
+            }
+        )
+    return documents
+
+
 def export_butterflylens_review_evidence(
     *, layer: ButterflyLensReviewLayer, output_root: str | Path
 ) -> ButterflyLensReviewExport:
@@ -1179,12 +1239,18 @@ def _canonical_utc(value: object, *, field: str) -> str:
     return value
 
 
+def _wire_sha(value: object) -> str:
+    return _sha(value, field="wire_sha256").removeprefix("sha256:")
+
+
 __all__ = [
     "BUTTERFLYLENS_CLASSIFICATION_MATURITY_SCHEMA",
     "BUTTERFLYLENS_REVIEW_ASSIGNMENT_SCHEMA",
     "BUTTERFLYLENS_REVIEW_ROLES",
     "ButterflyLensReviewExport",
     "ButterflyLensReviewLayer",
+    "butterflylens_campaign_document",
+    "butterflylens_maturity_documents",
     "build_butterflylens_review_layer",
     "export_butterflylens_review_evidence",
     "validate_butterflylens_review_export",

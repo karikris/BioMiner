@@ -7,6 +7,12 @@ from biominer.integration.butterflylens_model_export import (
     build_butterflylens_project_projection,
     build_butterflylens_run_projection,
 )
+from biominer.integration.butterflylens_geographic_export import (
+    build_butterflylens_geographic_impact,
+)
+from biominer.integration.butterflylens_review_export import (
+    build_butterflylens_review_layer,
+)
 from biominer.evaluation.dynamic_pool_review import (
     ProbabilityAuditSamplingPolicy,
     build_dynamic_pool_audit_frame,
@@ -141,8 +147,49 @@ def build_butterflylens_review_fixture() -> dict[str, object]:
     return {**fixture, "selection": selection, "sampling_policy": policy}
 
 
+def build_butterflylens_complete_fixture() -> dict[str, object]:
+    """Build all ten role inputs for package and consumer-contract tests."""
+
+    fixture = build_butterflylens_review_fixture()
+    source_id = fixture["layer"].flickr_source_records["flickr_record_id"][0]
+    geographic = build_butterflylens_geographic_impact(
+        model_layer=fixture["layer"],
+        geographic_records=[
+            {
+                "flickr_record_id": source_id,
+                "geography_availability": "h3",
+                "h3_cell": "8928308280fffff",
+                "h3_version": "4.3.0",
+                "h3_resolution": 9,
+                "source_precision_metres": 20.0,
+                "published_h3_resolution": 9,
+                "public_geometry_status": "available",
+                "public_geometry_reason": None,
+                "latest_flickr_event_date": "2026-07-17",
+                "geographic_evidence_fingerprint": sha("1"),
+            }
+        ],
+        source_commit="1" * 40,
+    )
+    review = build_butterflylens_review_layer(
+        project=fixture["project"],
+        run=fixture["run"],
+        model_layer=fixture["layer"],
+        selection=fixture["selection"],
+        sampling_policy=fixture["sampling_policy"],
+        target={
+            "accepted_taxon_key": "gbif:5131359",
+            "scientific_name": "Papilio demoleus",
+            "rank": "species",
+        },
+        observed_at="2026-07-18T12:03:00+10:00",
+    )
+    return {**fixture, "geographic": geographic, "review": review}
+
+
 __all__ = [
     "build_butterflylens_model_fixture",
     "build_butterflylens_review_fixture",
+    "build_butterflylens_complete_fixture",
     "sha",
 ]
