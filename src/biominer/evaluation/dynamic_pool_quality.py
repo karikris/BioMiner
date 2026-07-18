@@ -22,6 +22,13 @@ GROUPED_WEIGHTED_INTERVAL_METHOD = (
 REPRESENTATIVE_AUDIT_PURPOSE = "representative_audit"
 TARGETED_FAILURE_PURPOSE = "targeted_failure_discovery"
 SAMPLING_PURPOSES = frozenset({REPRESENTATIVE_AUDIT_PURPOSE, TARGETED_FAILURE_PURPOSE})
+GEOGRAPHY_QUALITY_LEVELS = (
+    "availability",
+    "country",
+    "admin1",
+    "bioregion",
+    "geographic_cluster",
+)
 
 QUALITY_REPORT_SCHEMA: dict[str, pl.DataType] = {
     "schema_version": pl.String,
@@ -230,6 +237,8 @@ class DynamicPoolQualityObservation:
                 field,
                 _optional_text(getattr(self, field), field=field),
             )
+        if self.country_code is not None:
+            object.__setattr__(self, "country_code", self.country_code.upper())
         if not self.no_geo and self.geographic_cluster_id is None:
             raise ValueError("geocoded evidence requires geographic_cluster_id")
 
@@ -309,6 +318,23 @@ def report_species_pooling_quality(
     )
 
 
+def report_geographic_pooling_quality(
+    observations: Sequence[DynamicPoolQualityObservation],
+    *,
+    policy: DynamicPoolQualityPolicy | None = None,
+) -> pl.DataFrame:
+    """Report complete geographic strata without inferring biological absence."""
+
+    items = _normalized_observations(observations)
+    if not items:
+        raise ValueError("geographic quality report requires source observations")
+    return _build_quality_report(
+        items,
+        groups=_geographic_groups(items),
+        policy=policy or DynamicPoolQualityPolicy(),
+    )
+
+
 def validate_dynamic_pool_quality_report(table: pl.DataFrame) -> None:
     """Reject schema, fingerprint, interval or release-authority drift."""
 
@@ -349,6 +375,41 @@ def validate_dynamic_pool_quality_report(table: pl.DataFrame) -> None:
         (pl.col("metric_status") != "complete") & pl.col("estimate").is_not_null()
     ).height:
         raise ValueError("insufficient quality evidence cannot emit an estimate")
+    geographic = pl.col("hierarchy_level") == "geography"
+    if table.filter(
+        geographic
+        & (
+            pl.col("geography_level").is_null()
+            | ~pl.col("geography_level").is_in(GEOGRAPHY_QUALITY_LEVELS)
+            | pl.col("geography_value").is_null()
+        )
+    ).height:
+        raise ValueError("geographic quality identity is incomplete")
+    if table.filter(
+        ~geographic
+        & (
+            pl.col("geography_level").is_not_null()
+            | pl.col("geography_value").is_not_null()
+            | pl.col("no_geo").is_not_null()
+        )
+    ).height:
+        raise ValueError("non-geographic quality row carries geography identity")
+    availability_or_cluster = pl.col("geography_level").is_in(
+        ["availability", "geographic_cluster"]
+    )
+    if table.filter(
+        geographic
+        & availability_or_cluster
+        & (
+            pl.col("no_geo").is_null()
+            | (pl.col("no_geo") != (pl.col("geography_value") == "no_geo"))
+        )
+    ).height:
+        raise ValueError("no-geo quality identity is inconsistent")
+    if table.filter(
+        geographic & ~availability_or_cluster & pl.col("no_geo").is_not_null()
+    ).height:
+        raise ValueError("geographic field strata cannot imply no-geo status")
     for row in table.iter_rows(named=True):
         base = {
             field: row[field]
@@ -995,6 +1056,48 @@ def _taxonomy_groups(
     return groups
 
 
+def _geographic_groups(
+    items: tuple[DynamicPoolQualityObservation, ...],
+) -> list[tuple[dict[str, object], tuple[DynamicPoolQualityObservation, ...]]]:
+    grouped: dict[tuple[str, str], list[DynamicPoolQualityObservation]] = defaultdict(
+        list
+    )
+    for item in items:
+        values = {
+            "availability": "no_geo" if item.no_geo else "geocoded",
+            "country": item.country_code or "unknown_country",
+            "admin1": item.admin1 or "unknown_admin1",
+            "bioregion": item.bioregion or "unknown_bioregion",
+            "geographic_cluster": (
+                "no_geo" if item.no_geo else str(item.geographic_cluster_id)
+            ),
+        }
+        for level, value in values.items():
+            grouped[(level, value)].append(item)
+    groups = []
+    for level, value in sorted(grouped):
+        group_items = tuple(grouped[(level, value)])
+        no_geo = (
+            value == "no_geo"
+            if level in {"availability", "geographic_cluster"}
+            else None
+        )
+        groups.append(
+            (
+                _identity(
+                    hierarchy_level="geography",
+                    group_id=f"geography:{level}:{value}",
+                    group_label=f"{level}={value}",
+                    geography_level=level,
+                    geography_value=value,
+                    no_geo=no_geo,
+                ),
+                group_items,
+            )
+        )
+    return groups
+
+
 def _required_text(value: object, *, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be nonempty text")
@@ -1040,6 +1143,7 @@ __all__ = [
     "DYNAMIC_POOL_QUALITY_OBSERVATION_VERSION",
     "DYNAMIC_POOL_QUALITY_POLICY_VERSION",
     "DYNAMIC_POOL_QUALITY_REPORT_VERSION",
+    "GEOGRAPHY_QUALITY_LEVELS",
     "GROUPED_WEIGHTED_INTERVAL_METHOD",
     "QUALITY_REPORT_SCHEMA",
     "REPRESENTATIVE_AUDIT_PURPOSE",
@@ -1048,6 +1152,7 @@ __all__ = [
     "DynamicPoolQualityObservation",
     "DynamicPoolQualityPolicy",
     "report_family_pooling_quality",
+    "report_geographic_pooling_quality",
     "report_genus_pooling_quality",
     "report_overall_pooling_quality",
     "report_species_pooling_quality",

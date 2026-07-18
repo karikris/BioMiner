@@ -8,12 +8,14 @@ import polars as pl
 import pytest
 
 from biominer.evaluation.dynamic_pool_quality import (
+    GEOGRAPHY_QUALITY_LEVELS,
     GROUPED_WEIGHTED_INTERVAL_METHOD,
     QUALITY_REPORT_SCHEMA,
     TARGETED_FAILURE_PURPOSE,
     DynamicPoolQualityObservation,
     DynamicPoolQualityPolicy,
     report_family_pooling_quality,
+    report_geographic_pooling_quality,
     report_genus_pooling_quality,
     report_overall_pooling_quality,
     report_species_pooling_quality,
@@ -340,3 +342,97 @@ def test_genus_and_species_quality_are_deterministic() -> None:
         first = reporter(observations, policy=_permissive_policy())
         second = reporter(list(reversed(observations)), policy=_permissive_policy())
         assert first.equals(second)
+
+
+def test_geographic_quality_covers_every_item_at_every_level() -> None:
+    no_geo = replace(
+        _observation(2),
+        country_code=None,
+        admin1=None,
+        bioregion=None,
+        geographic_cluster_id=None,
+        no_geo=True,
+    )
+    new_zealand = replace(
+        _observation(3),
+        country_code="nz",
+        admin1="Auckland",
+        bioregion="Auckland",
+        geographic_cluster_id="geo-nz",
+    )
+    observations = [_observation(0), _observation(1), no_geo, new_zealand]
+    singleton_policy = replace(
+        _permissive_policy(),
+        minimum_group_items=1,
+        minimum_group_components=1,
+        minimum_group_effective_sample_size=1.0,
+    )
+
+    report = report_geographic_pooling_quality(
+        observations,
+        policy=singleton_policy,
+    )
+    coverage_rows = report.filter(pl.col("metric_name") == "model_coverage")
+
+    assert set(coverage_rows["geography_level"]) == set(GEOGRAPHY_QUALITY_LEVELS)
+    source_counts = coverage_rows.group_by("geography_level").agg(
+        pl.col("source_item_count").sum().alias("source_count")
+    )
+    assert set(source_counts["source_count"]) == {4}
+    assert report["family_key"].null_count() == report.height
+    assert not report["authorizes_occurrence_release"].any()
+
+
+def test_no_geo_and_unknown_geography_are_explicit_non_biological_states() -> None:
+    no_geo = replace(
+        _observation(2),
+        country_code=None,
+        admin1=None,
+        bioregion=None,
+        geographic_cluster_id=None,
+        no_geo=True,
+    )
+    report = report_geographic_pooling_quality(
+        [_observation(0), no_geo],
+        policy=replace(
+            _permissive_policy(),
+            minimum_group_items=1,
+            minimum_group_components=1,
+            minimum_group_effective_sample_size=1.0,
+        ),
+    )
+
+    availability = report.filter(
+        (pl.col("geography_level") == "availability")
+        & (pl.col("geography_value") == "no_geo")
+    )
+    unknown_country = report.filter(
+        (pl.col("geography_level") == "country")
+        & (pl.col("geography_value") == "unknown_country")
+    )
+    assert availability["no_geo"].unique().to_list() == [True]
+    assert unknown_country["no_geo"].null_count() == unknown_country.height
+    assert _metric(availability, "model_coverage")["metric_status"] == "complete"
+    assert "absence" not in " ".join(report["group_label"]).casefold()
+
+
+def test_geographic_quality_is_deterministic_and_identity_checked() -> None:
+    observations = [_observation(index) for index in range(6)]
+    first = report_geographic_pooling_quality(
+        observations,
+        policy=_permissive_policy(),
+    )
+    second = report_geographic_pooling_quality(
+        list(reversed(observations)),
+        policy=_permissive_policy(),
+    )
+
+    assert first.equals(second)
+    tampered = first.with_columns(
+        pl.when(pl.col("geography_level") == "availability")
+        .then(pl.lit(None, dtype=pl.Boolean))
+        .otherwise(pl.col("no_geo"))
+        .alias("no_geo")
+    )
+    with pytest.raises(ValueError, match="no-geo quality identity"):
+        validate_dynamic_pool_quality_report(tampered)
