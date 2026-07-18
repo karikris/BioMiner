@@ -10,8 +10,11 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `a04832db6b0f6cd63fcd99c55f349e2eb9f7c906`
-  (`test(run): preserve dynamic pooling review gates`)
+  `5166cf8408331898694cfd1ab5994c075a62458b`
+  (`test(cli): validate dynamic pooling plans`)
+- Latest verified dynamic-pooling task report commit:
+  `0e359b89d8329f346bd4484e9061b074c4e2a0f2`
+  (`docs(provenance): record task 13.2 push`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -59,8 +62,10 @@ at the start of every task.
   preflighted selective pool, matrix and record execution DAG through Task
   12.2.3. Phase 13 Task 13.1 integrates the explicit dynamic-pooling stages,
   dependency order and non-automatic human gates through Task 13.1.3. Task 13.2
-  configuration and CLI integration is next; no fusion method is selected or
-  production-defaulted.
+  adds typed fingerprinted settings, seven plan-first CLI commands, persisted
+  plan validation and a fail-closed live-adapter boundary through Task 13.2.3.
+  Phase 14 TaxaLens and ButterflyLens handoffs are next; no fusion method is
+  selected or production-defaulted.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -193,6 +198,11 @@ at the start of every task.
     dynamic boundaries; all active dependencies are topological, legacy/default
     compatibility sequences are unchanged, and Flickr human verification
     pauses before risk-controlled audit;
+  - Task 13.2 final full regression: 3,123 passed in 115.05 seconds;
+  - Task 13.2 CLI gate: 137 passed in 11.29 seconds;
+  - Task 13.2 CLI contract: seven commands declare 22 exact named inputs and 15
+    intended outputs; dry-run plans are deterministic and fingerprinted,
+    selection readiness remains explicit, and live adapters fail closed;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
@@ -292,15 +302,22 @@ resolve taxon scope
 → compile queries
 → enqueue and poll Flickr
 → Flickr geographic clustering
+→ Flickr detection and embedding
 → regional candidate generation
 → reference metadata and media
 → reference deduplication
 → reference quality routing
 → reference admission
 → reference embeddings
+→ reference geography index
 → reference prototypes
+→ Flickr geo/taxon partitioning
+→ family retrieval routing
+→ dynamic pool planning and scoring
 → provisional Flickr scoring
+→ representative review-sample planning
 → Flickr human verification
+→ risk-controlled audit
 → statistical reference audit
 → targeted reference review
 → affected reference rebuild
@@ -378,9 +395,9 @@ They establish:
   and downstream-publication authorities; and
 - immutable TaxaLens/ButterflyLens handoffs pinned to committed contracts.
 
-Phase 0 is architecture evidence only. Reference indexes, pool/comparison-plan
-schemas, hybrid candidate strategies, scoring, calibration, pilots and release
-verification remain implementation work in Phases 1–16.
+Phase 0 remains architecture evidence only. Implemented behavior through Phase
+13 is recorded in task reports and tests; handoffs, pilot evidence and release
+verification remain work in Phases 14–16.
 
 ## Legacy documentation warning
 
@@ -421,14 +438,13 @@ unavailable, and no live production improvement or scientific release is
 claimed.
 
 For the active dynamic-pooling goal, the next implementation boundary is Phase
-13 Task 13.2 typed dynamic-pooling configuration, CLI commands, validation and
-dry-run planning. The parallel family/geography union remains the
-intended candidate, but no strategy is selected or production-defaulted
-because only
-implementation-fixture evidence has run. No strategy is empirically superior,
-and no live dynamic pool, live score, calibrated probability,
-statistical-support result or new release-ready occurrence is claimed by the
-completed phases.
+14 Task 14.1: publish an immutable TaxaLens evidence handoff and verify it
+against an exact committed TaxaLens contract. The parallel family/geography
+union remains the intended candidate, but no strategy is selected or
+production-defaulted because only implementation-fixture evidence has run. No
+strategy is empirically superior, and no live dynamic pool, live score,
+calibrated probability, statistical-support result or new release-ready
+occurrence is claimed by the completed phases.
 
 ## Repository map
 
