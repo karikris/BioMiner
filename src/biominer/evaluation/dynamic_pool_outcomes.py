@@ -21,6 +21,8 @@ DYNAMIC_POOL_OUTCOME_EVIDENCE_VERSION = "dynamic-pool-outcome-evidence-v1.0.0"
 HUMAN_REVIEWED_RELEASE_SCHEMA_VERSION = "human-reviewed-release-lane-v1.0.0"
 HUMAN_REVIEWED_RELEASE_LABEL = "human_reviewed_release_candidate"
 AUDITED_SCREENING_CANDIDATE_SCHEMA_VERSION = "audited-screening-candidate-lane-v1.0.0"
+UNRESOLVED_CANDIDATE_QUEUE_SCHEMA_VERSION = "unresolved-candidate-queue-lane-v1.0.0"
+DYNAMIC_POOL_OUTCOME_LANES_VERSION = "dynamic-pool-outcome-lanes-v1.0.0"
 SCREENING_THRESHOLD_STATUSES = frozenset({"not_evaluated", "selected", "infeasible"})
 CONFLICT_STATUSES = frozenset({"not_required", "resolved", "pending", "unresolved"})
 HUMAN_REVIEW_DECISIONS = frozenset({"include", "exclude", "uncertain"})
@@ -84,6 +86,50 @@ AUDITED_SCREENING_CANDIDATE_SCHEMA: dict[str, pl.DataType] = {
     "out_of_distribution_absent": pl.Boolean,
     "screening_supported": pl.Boolean,
     "screening_only": pl.Boolean,
+    "occurrence_claim_supported": pl.Boolean,
+    "eligible_for_final_occurrence_dataset": pl.Boolean,
+    "release_state": pl.String,
+    "release_reasons": pl.List(pl.String),
+    "release_authorized": pl.Boolean,
+    "model_evidence_authorizes_release": pl.Boolean,
+    "evidence_model_fingerprint": pl.String,
+    "calibrator_fingerprint": pl.String,
+    "split_fingerprint": pl.String,
+}
+
+UNRESOLVED_CANDIDATE_QUEUE_SCHEMA: dict[str, pl.DataType] = {
+    "schema_version": pl.String,
+    "lane_fingerprint": pl.String,
+    "lane_row_fingerprint": pl.String,
+    "source_evidence_fingerprint": pl.String,
+    "outcome_lane": pl.String,
+    "outcome_label": pl.String,
+    "queue_rank": pl.UInt32,
+    "review_priority": pl.Float64,
+    "item_id": pl.String,
+    "source_record_id": pl.String,
+    "candidate_species_key": pl.String,
+    "route": pl.String,
+    "source_image_sha256": pl.String,
+    "human_review_decision": pl.String,
+    "review_decision_fingerprint": pl.String,
+    "review_source_image_sha256": pl.String,
+    "conflict_status": pl.String,
+    "human_reviewed": pl.Boolean,
+    "review_required": pl.Boolean,
+    "model_abstained": pl.Boolean,
+    "abstention_reasons": pl.List(pl.String),
+    "triage_reasons": pl.List(pl.String),
+    "calibrated_supported_probability": pl.Float64,
+    "screening_threshold": pl.Float64,
+    "screening_threshold_status": pl.String,
+    "screening_threshold_selection_fingerprint": pl.String,
+    "route_compatible": pl.Boolean,
+    "reference_coverage_sufficient": pl.Boolean,
+    "geographic_evidence_sufficient": pl.Boolean,
+    "visual_detail_sufficient": pl.Boolean,
+    "domain_negative_absent": pl.Boolean,
+    "out_of_distribution_absent": pl.Boolean,
     "occurrence_claim_supported": pl.Boolean,
     "eligible_for_final_occurrence_dataset": pl.Boolean,
     "release_state": pl.String,
@@ -293,6 +339,15 @@ class DynamicPoolLaneProjection:
     projected_item_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class DynamicPoolOutcomeLanes:
+    human_reviewed_release: DynamicPoolLaneProjection
+    audited_screening: DynamicPoolLaneProjection
+    unresolved: DynamicPoolLaneProjection
+    source_item_count: int
+    bundle_fingerprint: str
+
+
 def project_human_reviewed_release_set(
     evidence: Sequence[DynamicPoolOutcomeEvidence],
 ) -> DynamicPoolLaneProjection:
@@ -477,6 +532,158 @@ def validate_audited_screening_candidates(table: pl.DataFrame) -> None:
         raise ValueError("screening candidate set has mixed lane fingerprints")
 
 
+def project_unresolved_candidate_queue(
+    evidence: Sequence[DynamicPoolOutcomeEvidence],
+) -> DynamicPoolLaneProjection:
+    """Retain every candidate in neither release nor audited screening."""
+
+    items = _normalized_evidence(evidence)
+    selected = tuple(
+        item
+        for item in items
+        if not _release_lane_eligible(item) and not _screening_lane_eligible(item)
+    )
+    ordered = tuple(
+        sorted(selected, key=lambda item: (-item.review_priority, item.item_id))
+    )
+    semantic_rows = [
+        _unresolved_row_base(item, queue_rank=index)
+        for index, item in enumerate(ordered, start=1)
+    ]
+    row_fingerprints = [canonical_semantic_fingerprint(row) for row in semantic_rows]
+    lane_fingerprint = canonical_semantic_fingerprint(
+        {
+            "schema_version": UNRESOLVED_CANDIDATE_QUEUE_SCHEMA_VERSION,
+            "source_evidence_fingerprints": [item.fingerprint for item in items],
+            "projected_row_fingerprints": row_fingerprints,
+            "selection_rule": "not_human_release_and_not_audited_screening",
+            "occurrence_release_authorized": False,
+        }
+    )
+    rows = [
+        {
+            "schema_version": UNRESOLVED_CANDIDATE_QUEUE_SCHEMA_VERSION,
+            "lane_fingerprint": lane_fingerprint,
+            "lane_row_fingerprint": row_fingerprint,
+            **base,
+        }
+        for base, row_fingerprint in zip(semantic_rows, row_fingerprints, strict=True)
+    ]
+    table = (
+        pl.DataFrame(
+            rows,
+            schema=UNRESOLVED_CANDIDATE_QUEUE_SCHEMA,
+            strict=True,
+        )
+        if rows
+        else pl.DataFrame(schema=UNRESOLVED_CANDIDATE_QUEUE_SCHEMA)
+    )
+    validate_unresolved_candidate_queue(table)
+    return DynamicPoolLaneProjection(
+        table=table,
+        lane_fingerprint=lane_fingerprint,
+        source_item_count=len(items),
+        projected_item_count=table.height,
+    )
+
+
+def validate_unresolved_candidate_queue(table: pl.DataFrame) -> None:
+    """Verify deterministic ranking and fail-closed unresolved authority."""
+
+    if not isinstance(table, pl.DataFrame):
+        raise TypeError("unresolved candidate queue must be a Polars DataFrame")
+    if table.schema != UNRESOLVED_CANDIDATE_QUEUE_SCHEMA:
+        raise ValueError("unresolved candidate queue schema does not match contract")
+    if not table.height:
+        return
+    if table["item_id"].n_unique() != table.height:
+        raise ValueError("unresolved candidate item IDs must be unique")
+    if table["queue_rank"].to_list() != list(range(1, table.height + 1)):
+        raise ValueError("unresolved candidate queue ranks must be contiguous")
+    expected_order = sorted(
+        table.to_dicts(),
+        key=lambda row: (-float(row["review_priority"]), str(row["item_id"])),
+    )
+    if table["item_id"].to_list() != [row["item_id"] for row in expected_order]:
+        raise ValueError("unresolved candidate queue order is invalid")
+    if table.filter(
+        (pl.col("schema_version") != UNRESOLVED_CANDIDATE_QUEUE_SCHEMA_VERSION)
+        | (pl.col("outcome_lane") != "review_required_or_abstained")
+        | ~pl.col("outcome_label").is_in(["review_required", "human_review_excluded"])
+        | ~pl.col("model_abstained")
+        | (pl.col("abstention_reasons").list.len() == 0)
+        | pl.col("eligible_for_final_occurrence_dataset")
+        | (pl.col("release_state") != "excluded")
+        | pl.col("release_authorized")
+        | pl.col("model_evidence_authorizes_release")
+    ).height:
+        raise ValueError("unresolved candidate crossed its evidence boundary")
+    if table.filter(
+        (pl.col("outcome_label") == "human_review_excluded") & pl.col("review_required")
+    ).height:
+        raise ValueError("human review exclusion cannot request identity confirmation")
+    if table.filter(
+        (pl.col("outcome_label") == "review_required") & ~pl.col("review_required")
+    ).height:
+        raise ValueError("review-required outcome must remain reviewable")
+    for row in table.iter_rows(named=True):
+        base = {
+            field: row[field]
+            for field in UNRESOLVED_CANDIDATE_QUEUE_SCHEMA
+            if field
+            not in {"schema_version", "lane_fingerprint", "lane_row_fingerprint"}
+        }
+        if row["lane_row_fingerprint"] != canonical_semantic_fingerprint(base):
+            raise ValueError("unresolved candidate row fingerprint mismatch")
+    if table["lane_fingerprint"].n_unique() != 1:
+        raise ValueError("unresolved candidate queue has mixed lane fingerprints")
+
+
+def project_dynamic_pool_outcome_lanes(
+    evidence: Sequence[DynamicPoolOutcomeEvidence],
+) -> DynamicPoolOutcomeLanes:
+    """Project a complete and mutually exclusive three-lane outcome partition."""
+
+    items = _normalized_evidence(evidence)
+    release = project_human_reviewed_release_set(items)
+    screening = project_audited_screening_candidates(items)
+    unresolved = project_unresolved_candidate_queue(items)
+    source_ids = {item.item_id for item in items}
+    lane_sets = (
+        set(release.table["item_id"].to_list()),
+        set(screening.table["item_id"].to_list()),
+        set(unresolved.table["item_id"].to_list()),
+    )
+    if any(
+        lane_sets[left] & lane_sets[right]
+        for left in range(3)
+        for right in range(left + 1, 3)
+    ):
+        raise AssertionError("dynamic-pool outcome lanes overlap")
+    if set().union(*lane_sets) != source_ids:
+        raise AssertionError("dynamic-pool outcome lanes do not cover source evidence")
+    bundle_fingerprint = canonical_semantic_fingerprint(
+        {
+            "schema_version": DYNAMIC_POOL_OUTCOME_LANES_VERSION,
+            "source_evidence_fingerprints": [item.fingerprint for item in items],
+            "human_reviewed_release_fingerprint": release.lane_fingerprint,
+            "audited_screening_fingerprint": screening.lane_fingerprint,
+            "unresolved_fingerprint": unresolved.lane_fingerprint,
+            "lane_item_ids": [sorted(values) for values in lane_sets],
+            "complete": True,
+            "mutually_exclusive": True,
+            "unreviewed_occurrence_export_count": 0,
+        }
+    )
+    return DynamicPoolOutcomeLanes(
+        human_reviewed_release=release,
+        audited_screening=screening,
+        unresolved=unresolved,
+        source_item_count=len(items),
+        bundle_fingerprint=bundle_fingerprint,
+    )
+
+
 def _human_release_row_base(item: DynamicPoolOutcomeEvidence) -> dict[str, object]:
     assert item.human_review_decision == "include"
     assert item.review_decision_fingerprint is not None
@@ -559,6 +766,97 @@ def _screening_candidate_row_base(
         "calibrator_fingerprint": item.calibrator_fingerprint,
         "split_fingerprint": item.split_fingerprint,
     }
+
+
+def _unresolved_row_base(
+    item: DynamicPoolOutcomeEvidence,
+    *,
+    queue_rank: int,
+) -> dict[str, object]:
+    reasons = _abstention_reasons(item)
+    human_excluded = item.human_review_decision == "exclude"
+    release_reasons = [str(reason) for reason in item.release_decision.reasons]
+    if "not_release_lane_eligible" not in release_reasons:
+        release_reasons.append("not_release_lane_eligible")
+    return {
+        "source_evidence_fingerprint": item.fingerprint,
+        "outcome_lane": "review_required_or_abstained",
+        "outcome_label": (
+            "human_review_excluded" if human_excluded else "review_required"
+        ),
+        "queue_rank": queue_rank,
+        "review_priority": item.review_priority,
+        "item_id": item.item_id,
+        "source_record_id": item.source_record_id,
+        "candidate_species_key": item.candidate_species_key,
+        "route": item.route,
+        "source_image_sha256": item.source_image_sha256,
+        "human_review_decision": item.human_review_decision,
+        "review_decision_fingerprint": item.review_decision_fingerprint,
+        "review_source_image_sha256": item.review_source_image_sha256,
+        "conflict_status": item.conflict_status,
+        "human_reviewed": item.human_review_decision is not None,
+        "review_required": not human_excluded,
+        "model_abstained": True,
+        "abstention_reasons": reasons,
+        "triage_reasons": list(item.triage_reasons),
+        "calibrated_supported_probability": item.calibrated_supported_probability,
+        "screening_threshold": item.screening_threshold,
+        "screening_threshold_status": item.screening_threshold_status,
+        "screening_threshold_selection_fingerprint": (
+            item.screening_threshold_selection_fingerprint
+        ),
+        "route_compatible": item.route_compatible,
+        "reference_coverage_sufficient": item.reference_coverage_sufficient,
+        "geographic_evidence_sufficient": item.geographic_evidence_sufficient,
+        "visual_detail_sufficient": item.visual_detail_sufficient,
+        "domain_negative_absent": item.domain_negative_absent,
+        "out_of_distribution_absent": item.out_of_distribution_absent,
+        "occurrence_claim_supported": item.occurrence_claim_supported,
+        "eligible_for_final_occurrence_dataset": False,
+        "release_state": "excluded",
+        "release_reasons": release_reasons,
+        "release_authorized": False,
+        "model_evidence_authorizes_release": False,
+        "evidence_model_fingerprint": item.evidence_model_fingerprint,
+        "calibrator_fingerprint": item.calibrator_fingerprint,
+        "split_fingerprint": item.split_fingerprint,
+    }
+
+
+def _abstention_reasons(item: DynamicPoolOutcomeEvidence) -> list[str]:
+    reasons = list(item.triage_reasons)
+    if item.human_review_decision is None:
+        reasons.append("human_review_missing")
+    elif item.human_review_decision == "uncertain":
+        reasons.append("human_review_not_decisive")
+    elif item.human_review_decision == "exclude":
+        reasons.append("human_review_excluded")
+    if item.conflict_status not in {"resolved", "not_required"}:
+        reasons.append("review_conflict_unresolved")
+    if item.screening_threshold_status != "selected":
+        reasons.append(f"screening_threshold_{item.screening_threshold_status}")
+    elif item.calibrated_supported_probability is None:
+        reasons.append("calibrated_probability_missing")
+    elif (
+        item.screening_threshold is not None
+        and item.calibrated_supported_probability < item.screening_threshold
+    ):
+        reasons.append("calibrated_probability_below_screening_threshold")
+    for passed, reason in (
+        (item.route_compatible, "route_incompatible"),
+        (item.reference_coverage_sufficient, "reference_coverage_insufficient"),
+        (item.geographic_evidence_sufficient, "geographic_evidence_insufficient"),
+        (item.visual_detail_sufficient, "visual_detail_insufficient"),
+        (item.domain_negative_absent, "domain_negative_detected"),
+        (item.out_of_distribution_absent, "out_of_distribution"),
+    ):
+        if not passed:
+            reasons.append(reason)
+    reasons.extend(str(reason) for reason in item.release_decision.reasons)
+    if not reasons:
+        reasons.append("not_release_or_screening_eligible")
+    return list(dict.fromkeys(reasons))
 
 
 def _release_lane_eligible(item: DynamicPoolOutcomeEvidence) -> bool:
@@ -673,15 +971,22 @@ __all__ = [
     "AUDITED_SCREENING_CANDIDATE_SCHEMA_VERSION",
     "CONFLICT_STATUSES",
     "DYNAMIC_POOL_OUTCOME_EVIDENCE_VERSION",
+    "DYNAMIC_POOL_OUTCOME_LANES_VERSION",
     "HUMAN_REVIEWED_RELEASE_LABEL",
     "HUMAN_REVIEWED_RELEASE_SCHEMA",
     "HUMAN_REVIEWED_RELEASE_SCHEMA_VERSION",
     "HUMAN_REVIEW_DECISIONS",
     "SCREENING_THRESHOLD_STATUSES",
+    "UNRESOLVED_CANDIDATE_QUEUE_SCHEMA",
+    "UNRESOLVED_CANDIDATE_QUEUE_SCHEMA_VERSION",
     "DynamicPoolLaneProjection",
     "DynamicPoolOutcomeEvidence",
+    "DynamicPoolOutcomeLanes",
     "project_audited_screening_candidates",
+    "project_dynamic_pool_outcome_lanes",
     "project_human_reviewed_release_set",
+    "project_unresolved_candidate_queue",
     "validate_audited_screening_candidates",
     "validate_human_reviewed_release_set",
+    "validate_unresolved_candidate_queue",
 ]

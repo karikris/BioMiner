@@ -11,11 +11,15 @@ from biominer.evaluation.dynamic_pool_outcomes import (
     AUDITED_SCREENING_CANDIDATE_SCHEMA,
     HUMAN_REVIEWED_RELEASE_LABEL,
     HUMAN_REVIEWED_RELEASE_SCHEMA,
+    UNRESOLVED_CANDIDATE_QUEUE_SCHEMA,
     DynamicPoolOutcomeEvidence,
     project_audited_screening_candidates,
+    project_dynamic_pool_outcome_lanes,
     project_human_reviewed_release_set,
+    project_unresolved_candidate_queue,
     validate_audited_screening_candidates,
     validate_human_reviewed_release_set,
+    validate_unresolved_candidate_queue,
 )
 from biominer.evaluation.flickr_export import (
     FlickrExportValidationError,
@@ -335,3 +339,213 @@ def test_screening_projection_is_deterministic() -> None:
 
     assert first.lane_fingerprint == second.lane_fingerprint
     assert first.table.equals(second.table)
+
+
+def test_unresolved_queue_retains_every_non_release_non_screening_outcome() -> None:
+    below_threshold = _outcome(
+        1,
+        review_decision=None,
+        release_eligible=False,
+        probability=0.79,
+    )
+    infeasible = _outcome(
+        2,
+        review_decision=None,
+        release_eligible=False,
+        probability=0.99,
+        threshold_status="infeasible",
+    )
+    insufficient_detail = replace(
+        _outcome(
+            3,
+            review_decision=None,
+            release_eligible=False,
+            probability=0.99,
+        ),
+        visual_detail_sufficient=False,
+    )
+    excluded = _outcome(
+        4,
+        review_decision="exclude",
+        release_eligible=False,
+        occurrence_claim_supported=False,
+    )
+
+    projection = project_unresolved_candidate_queue(
+        [below_threshold, infeasible, insufficient_detail, excluded]
+    )
+
+    assert projection.table.schema == UNRESOLVED_CANDIDATE_QUEUE_SCHEMA
+    assert projection.source_item_count == 4
+    assert projection.projected_item_count == 4
+    assert projection.table["item_id"].to_list() == [
+        "item-4",
+        "item-3",
+        "item-2",
+        "item-1",
+    ]
+    assert projection.table["queue_rank"].to_list() == [1, 2, 3, 4]
+
+
+def test_unresolved_queue_explains_abstention_and_human_exclusion() -> None:
+    below_threshold = _outcome(
+        1,
+        review_decision=None,
+        release_eligible=False,
+        probability=0.79,
+    )
+    infeasible = _outcome(
+        2,
+        review_decision=None,
+        release_eligible=False,
+        probability=0.99,
+        threshold_status="infeasible",
+    )
+    insufficient_detail = replace(
+        _outcome(
+            3,
+            review_decision=None,
+            release_eligible=False,
+            probability=0.99,
+        ),
+        visual_detail_sufficient=False,
+    )
+    excluded = _outcome(
+        4,
+        review_decision="exclude",
+        release_eligible=False,
+        occurrence_claim_supported=False,
+    )
+
+    rows = {
+        row["item_id"]: row
+        for row in project_unresolved_candidate_queue(
+            [below_threshold, infeasible, insufficient_detail, excluded]
+        ).table.iter_rows(named=True)
+    }
+
+    assert "human_review_missing" in rows["item-1"]["abstention_reasons"]
+    assert (
+        "calibrated_probability_below_screening_threshold"
+        in rows["item-1"]["abstention_reasons"]
+    )
+    assert "screening_threshold_infeasible" in rows["item-2"]["abstention_reasons"]
+    assert "visual_detail_insufficient" in rows["item-3"]["abstention_reasons"]
+    assert rows["item-4"]["outcome_label"] == "human_review_excluded"
+    assert rows["item-4"]["review_required"] is False
+    assert "human_review_excluded" in rows["item-4"]["abstention_reasons"]
+    assert all(row["model_abstained"] for row in rows.values())
+    assert not any(row["release_authorized"] for row in rows.values())
+
+
+def test_outcome_bundle_is_complete_mutually_exclusive_and_fail_closed() -> None:
+    release = _outcome(0)
+    screening = _outcome(
+        1,
+        review_decision=None,
+        release_eligible=False,
+        probability=0.99,
+    )
+    unresolved = _outcome(
+        2,
+        review_decision=None,
+        release_eligible=False,
+        probability=0.50,
+    )
+    excluded = _outcome(
+        3,
+        review_decision="exclude",
+        release_eligible=False,
+        occurrence_claim_supported=False,
+    )
+
+    bundle = project_dynamic_pool_outcome_lanes(
+        [unresolved, release, excluded, screening]
+    )
+    lane_sets = (
+        set(bundle.human_reviewed_release.table["item_id"]),
+        set(bundle.audited_screening.table["item_id"]),
+        set(bundle.unresolved.table["item_id"]),
+    )
+
+    assert bundle.source_item_count == 4
+    assert [len(values) for values in lane_sets] == [1, 1, 2]
+    assert not lane_sets[0] & lane_sets[1]
+    assert not lane_sets[0] & lane_sets[2]
+    assert not lane_sets[1] & lane_sets[2]
+    assert set().union(*lane_sets) == {"item-0", "item-1", "item-2", "item-3"}
+    assert bundle.human_reviewed_release.table["human_reviewed"].to_list() == [True]
+    assert not bundle.audited_screening.table["release_authorized"].any()
+    assert not bundle.unresolved.table["release_authorized"].any()
+
+
+def test_no_unreviewed_outcome_lane_can_be_exported_as_occurrence_evidence() -> None:
+    screening = _outcome(
+        1,
+        review_decision=None,
+        release_eligible=False,
+        probability=0.99,
+    )
+    unresolved = _outcome(
+        2,
+        review_decision=None,
+        release_eligible=False,
+        probability=0.50,
+    )
+    bundle = project_dynamic_pool_outcome_lanes([_outcome(0), screening, unresolved])
+
+    assert (
+        validate_verified_flickr_export(bundle.human_reviewed_release.table).height == 1
+    )
+    for table in (bundle.audited_screening.table, bundle.unresolved.table):
+        assert not table["release_authorized"].any()
+        assert not table["eligible_for_final_occurrence_dataset"].any()
+        with pytest.raises(FlickrExportValidationError):
+            validate_verified_flickr_export(table)
+
+
+def test_unresolved_validator_rejects_authority_and_rank_tampering() -> None:
+    table = project_unresolved_candidate_queue(
+        [
+            _outcome(
+                1,
+                review_decision=None,
+                release_eligible=False,
+                probability=0.50,
+            ),
+            _outcome(
+                2,
+                review_decision=None,
+                release_eligible=False,
+                probability=0.60,
+            ),
+        ]
+    ).table
+    authorized = table.with_columns(pl.lit(True).alias("release_authorized"))
+    misranked = table.with_columns(pl.lit(1, dtype=pl.UInt32).alias("queue_rank"))
+
+    with pytest.raises(ValueError, match="evidence boundary"):
+        validate_unresolved_candidate_queue(authorized)
+    with pytest.raises(ValueError, match="ranks must be contiguous"):
+        validate_unresolved_candidate_queue(misranked)
+
+
+def test_unresolved_and_bundle_projections_are_deterministic() -> None:
+    items = [
+        _outcome(
+            index,
+            review_decision=None,
+            release_eligible=False,
+            probability=0.50 + index * 0.02,
+        )
+        for index in (1, 2, 3)
+    ]
+
+    first_queue = project_unresolved_candidate_queue(items)
+    second_queue = project_unresolved_candidate_queue(list(reversed(items)))
+    first_bundle = project_dynamic_pool_outcome_lanes(items)
+    second_bundle = project_dynamic_pool_outcome_lanes(list(reversed(items)))
+
+    assert first_queue.lane_fingerprint == second_queue.lane_fingerprint
+    assert first_queue.table.equals(second_queue.table)
+    assert first_bundle.bundle_fingerprint == second_bundle.bundle_fingerprint
