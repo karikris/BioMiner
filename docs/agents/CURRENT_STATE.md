@@ -10,8 +10,8 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `927f670f74ba670d8f0a39427e1b3c715945dc65`
-  (`feat(bioclip): persist reusable Flickr embeddings`)
+  `597f233c7f8cbcb9a3ba032c0033bc322666e3b3`
+  (`perf(run): sort geographic scoring work`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -25,8 +25,9 @@ at the start of every task.
   diversity/class balancing, coverage shortfalls, raw uncertainty evidence,
   cached identity expansion and bounded stop decisions through Task 5.2.3.
   Phase 6 implements the canonical YOLOE route contract, explicit full-frame
-  BioCLIP input policy and durable one-time Flickr embedding artifacts through
-  Task 6.1.3. Task 6.2 family and pool matrix cache indexes are next.
+  BioCLIP input policy, durable one-time Flickr embeddings, bounded family,
+  candidate and pool matrix indexes and deterministic cache-local work ordering
+  through Task 6.2.3. Phase 7 Task 7.1 raw component scoring is next.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -65,6 +66,11 @@ at the start of every task.
   - Task 6.1 route/input/cache gate: 173 passed in 1.19 seconds;
   - Task 6.1 reuse fixture: two Flickr photos and three route units shared one
     persisted embedding; the rerun invoked no encoder and added no model load;
+  - Task 6.2 final full regression: 2,855 passed in 107.26 seconds;
+  - Task 6.2 cache/order gate: 89 passed in 3.97 seconds;
+  - Task 6.2 matrix fixture: family, candidate and pool caches each reused one
+    matrix on the second request; candidate/pool work signatures formed two
+    deterministic locality runs with independent canonical result ordering;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
@@ -293,8 +299,9 @@ unavailable, and no live production improvement or scientific release is
 claimed.
 
 For the active dynamic-pooling goal, the next implementation boundary is Phase
-6 Task 6.2 family and candidate/pool matrix cache indexes and cache-local work
-ordering. The parallel family/geography union remains the intended candidate,
+7 Task 7.1 raw family, global species, local species, disagreement and coverage
+component scoring over the cached matrices. The parallel family/geography
+union remains the intended candidate,
 but no strategy is selected or production-defaulted because only implementation-fixture
 evidence has run. No strategy is empirically superior, and no live dynamic
 pool, live score, calibrated probability, statistical-support result or new
