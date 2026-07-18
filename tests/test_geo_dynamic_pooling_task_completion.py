@@ -15,6 +15,7 @@ TASK_4_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_4_1_completion.json"
 TASK_4_2_REPORT = ROOT / "reports/geo_dynamic_pooling/task_4_2_completion.json"
 TASK_5_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_5_1_completion.json"
 TASK_5_2_REPORT = ROOT / "reports/geo_dynamic_pooling/task_5_2_completion.json"
+TASK_6_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_6_1_completion.json"
 PUSH_LEDGER = ROOT / "provenance/task_pushes.jsonl"
 
 
@@ -52,6 +53,10 @@ def _task_5_1_report() -> dict[str, object]:
 
 def _task_5_2_report() -> dict[str, object]:
     return json.loads(TASK_5_2_REPORT.read_text(encoding="utf-8"))
+
+
+def _task_6_1_report() -> dict[str, object]:
+    return json.loads(TASK_6_1_REPORT.read_text(encoding="utf-8"))
 
 
 def test_task_0_1_completion_records_exact_commits_and_green_gate() -> None:
@@ -489,6 +494,58 @@ def test_task_5_2_report_blocks_live_science_and_release_claims() -> None:
     assert any("live Flickr image" in claim for claim in blocked)
     assert any("calibrated confidence" in claim for claim in blocked)
     assert any("occurrence release or production deployment" in claim for claim in blocked)
+    impact = report["githits_architecture_impact"]
+    assert impact["calls_made_for_task"] == 0
+    assert impact["direct_external_code_contribution"] == "none"
+
+
+def test_task_6_1_completion_records_route_input_and_embedding_reuse() -> None:
+    report = _task_6_1_report()
+
+    assert report["task_id"] == "geo-pool-6.1"
+    assert report["status"] == "completed"
+    assert [item["commit"] for item in report["task_commits"]] == [
+        "17f965f791d2b4819e643cef6e90690ff89f1d64",
+        "ba68b92e6d03aa4e095ab368c77cb457b4126118",
+        "927f670f74ba670d8f0a39427e1b3c715945dc65",
+    ]
+    assert report["visual_input_contract"]["spatial_crop_permitted"] is False
+    reuse = report["flickr_embedding_cache"]["fixture_reuse"]
+    assert reuse["flickr_photos"] == 2
+    assert reuse["routing_units"] == 3
+    assert reuse["persisted_embedding_rows"] == 1
+    assert reuse["rerun_encoder_calls"] == 0
+    assert reuse["rerun_model_load_delta"] == 0
+    assert report["gate"]["route_input_cache_suite"]["passed"] == 173
+    assert report["gate"]["full_regression"]["passed"] == 2838
+    assert report["gate"]["provenance"]["jsonl_records"] == 139
+
+
+def test_task_6_1_push_event_matches_report() -> None:
+    report = _task_6_1_report()
+    events = [
+        json.loads(line)
+        for line in PUSH_LEDGER.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    event = next(item for item in events if item["task_id"] == "geo-pool-6.1")
+
+    assert event["verified_remote_sha"] == report["push"]["verified_remote_sha"]
+    assert event["pushed_through_sha"] == report["push"]["pushed_through_sha"]
+    assert event["status"] == report["push"]["status"] == "verified"
+
+
+def test_task_6_1_report_blocks_live_model_and_scientific_claims() -> None:
+    report = _task_6_1_report()
+    state = report["selection_state"]
+    blocked = report["claims"]["blocked"]
+
+    assert state["live_flickr_detection_executed"] is False
+    assert state["live_flickr_embedding_executed"] is False
+    assert state["live_model_load_measured"] is False
+    assert state["production_release_authorized"] is False
+    assert any("live YOLOE or BioCLIP model" in claim for claim in blocked)
+    assert any("Human verification" in claim for claim in blocked)
     impact = report["githits_architecture_impact"]
     assert impact["calls_made_for_task"] == 0
     assert impact["direct_external_code_contribution"] == "none"

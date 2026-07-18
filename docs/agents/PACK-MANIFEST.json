@@ -1,5 +1,5 @@
 {
-  "active_goal_note": "Geography-conditioned dynamic pooling Phase 5 is complete through bounded cached uncertainty expansion; Phase 6 Task 6.1 explicit Flickr detection and one-time embedding is next. No live pool, score, or strategy is selected from fixture-only evidence. The user disabled all further GitHits calls for the remainder of this goal.",
+  "active_goal_note": "Geography-conditioned dynamic pooling Phase 6 Task 6.1 is complete through canonical YOLOE routing, full-frame input enforcement and durable one-time Flickr embeddings; Task 6.2 family and pool matrix caches are next. No live pool, score, or strategy is selected from fixture-only evidence. The user disabled all further GitHits calls for the remainder of this goal.",
   "files": [
     {
       "bytes": 6701,
@@ -8,10 +8,10 @@
       "sha256": "e5d9cff662484ad83c729d42e1af48ef578a52d0f3adbfeb3f471c93585c66d5"
     },
     {
-      "bytes": 13228,
-      "lines": 317,
+      "bytes": 13700,
+      "lines": 323,
       "path": "docs/agents/CURRENT_STATE.md",
-      "sha256": "e7faed360265c46efa52e4df9db527761516ccbec7aad76423f90aaf833eb9c8"
+      "sha256": "5877303786879dab119124143d4d466b80058dd20790b8efce58bee6e1ea9254"
     },
     {
       "bytes": 5599,
@@ -57,7 +57,7 @@
     }
   ],
   "generated_from_uploaded_file": "AGENTS(14).md",
-  "observed_main_commit": "d6e03450bd301bba2ae3ea1e6ffcadb05059d8f9",
+  "observed_main_commit": "927f670f74ba670d8f0a39427e1b3c715945dc65",
   "observed_repository": "karikris/BioMiner",
   "pack": "BioMiner token-efficient agent instructions",
   "schema_version": "biominer-agent-pack-v1.0.0"

@@ -10,8 +10,8 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `d6e03450bd301bba2ae3ea1e6ffcadb05059d8f9`
-  (`feat(bioclip): bound dynamic pool expansion`)
+  `927f670f74ba670d8f0a39427e1b3c715945dc65`
+  (`feat(bioclip): persist reusable Flickr embeddings`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -24,7 +24,9 @@ at the start of every task.
   immutable reference-pool policy, deterministic observation planner,
   diversity/class balancing, coverage shortfalls, raw uncertainty evidence,
   cached identity expansion and bounded stop decisions through Task 5.2.3.
-  Phase 6 Task 6.1 explicit Flickr detection and embedding is next.
+  Phase 6 implements the canonical YOLOE route contract, explicit full-frame
+  BioCLIP input policy and durable one-time Flickr embedding artifacts through
+  Task 6.1.3. Task 6.2 family and pool matrix cache indexes are next.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -59,6 +61,10 @@ at the start of every task.
   - Task 5.2 fixture round-trip: a two-member initial plan retained both cached
     identities, added three cached identities, invoked no encoder and stopped
     at the mandatory rescore boundary;
+  - Task 6.1 final full regression: 2,838 passed in 104.28 seconds;
+  - Task 6.1 route/input/cache gate: 173 passed in 1.19 seconds;
+  - Task 6.1 reuse fixture: two Flickr photos and three route units shared one
+    persisted embedding; the rerun invoked no encoder and added no model load;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
@@ -287,9 +293,9 @@ unavailable, and no live production improvement or scientific release is
 claimed.
 
 For the active dynamic-pooling goal, the next implementation boundary is Phase
-6 Task 6.1 explicit Flickr detection and one-time full-frame embedding. The
-parallel family/geography union remains the intended candidate, but no strategy
-is selected or production-defaulted because only implementation-fixture
+6 Task 6.2 family and candidate/pool matrix cache indexes and cache-local work
+ordering. The parallel family/geography union remains the intended candidate,
+but no strategy is selected or production-defaulted because only implementation-fixture
 evidence has run. No strategy is empirically superior, and no live dynamic
 pool, live score, calibrated probability, statistical-support result or new
 release-ready occurrence is claimed by the completed phases.
