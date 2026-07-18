@@ -17,6 +17,8 @@ DYNAMIC_POOL_REVISION_IMPACT_VERSION = "dynamic-pool-revision-impact-v1.0.0"
 DYNAMIC_POOL_IMPACT_PROJECTION_VERSION = "dynamic-pool-impact-projection-v1.0.0"
 DYNAMIC_MATRIX_DEPENDENCY_VERSION = "dynamic-matrix-dependency-v1.0.0"
 DYNAMIC_MATRIX_REVISION_IMPACT_VERSION = "dynamic-matrix-revision-impact-v1.0.0"
+DYNAMIC_SCORING_RECORD_DEPENDENCY_VERSION = "dynamic-scoring-record-dependency-v1.0.0"
+DYNAMIC_SCORING_RECORD_IMPACT_VERSION = "dynamic-scoring-record-impact-v1.0.0"
 
 DYNAMIC_POOL_REVISION_IMPACT_SCHEMA: dict[str, pl.DataType] = {
     "schema_version": pl.String,
@@ -57,6 +59,27 @@ DYNAMIC_MATRIX_REVISION_IMPACT_SCHEMA: dict[str, pl.DataType] = {
     "affected_plan_ids": pl.List(pl.String),
     "impact_reasons": pl.List(pl.String),
     "expected_action": pl.String,
+}
+
+DYNAMIC_SCORING_RECORD_IMPACT_SCHEMA: dict[str, pl.DataType] = {
+    "schema_version": pl.String,
+    "revision_fingerprint": pl.String,
+    "impact_fingerprint": pl.String,
+    "record_dependency_fingerprint": pl.String,
+    "scoring_record_id": pl.String,
+    "source_record_id": pl.String,
+    "flickr_photo_id": pl.String,
+    "organism_unit_id": pl.String,
+    "source_image_sha256": pl.String,
+    "flickr_embedding_fingerprint": pl.String,
+    "score_partition_id": pl.String,
+    "score_partition_fingerprint": pl.String,
+    "impact_status": pl.String,
+    "affected_plan_ids": pl.List(pl.String),
+    "affected_matrix_ids": pl.List(pl.String),
+    "impact_reasons": pl.List(pl.String),
+    "expected_action": pl.String,
+    "flickr_embedding_reusable": pl.Boolean,
 }
 
 
@@ -296,6 +319,54 @@ class DynamicMatrixDependency:
 
 
 @dataclass(frozen=True, slots=True)
+class DynamicScoringRecordDependency:
+    scoring_record_id: str
+    source_record_id: str
+    flickr_photo_id: str
+    organism_unit_id: str
+    source_image_sha256: str
+    flickr_embedding_fingerprint: str
+    score_partition_id: str
+    score_partition_fingerprint: str
+    upstream_plan_ids: tuple[str, ...]
+    upstream_matrix_ids: tuple[str, ...]
+    schema_version: str = DYNAMIC_SCORING_RECORD_DEPENDENCY_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != DYNAMIC_SCORING_RECORD_DEPENDENCY_VERSION:
+            raise ValueError("unsupported scoring record dependency version")
+        for field in (
+            "scoring_record_id",
+            "source_record_id",
+            "flickr_photo_id",
+            "organism_unit_id",
+            "score_partition_id",
+        ):
+            object.__setattr__(
+                self, field, _required_text(getattr(self, field), field=field)
+            )
+        for field in (
+            "source_image_sha256",
+            "flickr_embedding_fingerprint",
+            "score_partition_fingerprint",
+        ):
+            object.__setattr__(self, field, _sha256(getattr(self, field), field=field))
+        plans = _canonical_texts(self.upstream_plan_ids, field="upstream_plan_ids")
+        matrices = _canonical_texts(
+            self.upstream_matrix_ids,
+            field="upstream_matrix_ids",
+        )
+        if not plans or not matrices:
+            raise ValueError("scoring record requires plan and matrix dependencies")
+        object.__setattr__(self, "upstream_plan_ids", plans)
+        object.__setattr__(self, "upstream_matrix_ids", matrices)
+
+    @property
+    def fingerprint(self) -> str:
+        return canonical_semantic_fingerprint(asdict(self))
+
+
+@dataclass(frozen=True, slots=True)
 class DynamicPoolImpactProjection:
     table: pl.DataFrame
     projection_fingerprint: str
@@ -514,6 +585,119 @@ def validate_dynamic_matrix_revision_impact(table: pl.DataFrame) -> None:
             raise ValueError("dynamic matrix revision impact fingerprint mismatch")
 
 
+def identify_affected_scoring_records(
+    revision: DynamicReferenceRevision,
+    pool_impacts: pl.DataFrame,
+    matrix_impacts: pl.DataFrame,
+    dependencies: Sequence[DynamicScoringRecordDependency],
+) -> pl.DataFrame:
+    """Identify only Flickr scoring records downstream of affected identities."""
+
+    validate_dynamic_pool_revision_impact(pool_impacts)
+    validate_dynamic_matrix_revision_impact(matrix_impacts)
+    expected_revision = revision.fingerprint
+    for table in (pool_impacts, matrix_impacts):
+        if table["revision_fingerprint"].unique().to_list() != [expected_revision]:
+            raise ValueError("scoring impact received evidence from another revision")
+    records = tuple(dependencies)
+    if not records or any(
+        not isinstance(item, DynamicScoringRecordDependency) for item in records
+    ):
+        raise ValueError("scoring impact requires typed record dependencies")
+    records = tuple(sorted(records, key=lambda item: item.scoring_record_id))
+    if len({item.scoring_record_id for item in records}) != len(records):
+        raise ValueError("scoring dependencies repeat a record ID")
+    known_plans = set(pool_impacts["plan_id"])
+    known_matrices = set(matrix_impacts["matrix_id"])
+    affected_plans = set(
+        pool_impacts.filter(pl.col("impact_status") == "affected")["plan_id"]
+    )
+    affected_matrices = set(
+        matrix_impacts.filter(pl.col("impact_status") == "affected")["matrix_id"]
+    )
+    rows = []
+    for record in records:
+        unknown_plans = sorted(set(record.upstream_plan_ids) - known_plans)
+        unknown_matrices = sorted(set(record.upstream_matrix_ids) - known_matrices)
+        if unknown_plans or unknown_matrices:
+            raise ValueError(
+                "scoring dependency references unknown identities: "
+                + ", ".join([*unknown_plans, *unknown_matrices])
+            )
+        plan_ids = sorted(set(record.upstream_plan_ids) & affected_plans)
+        matrix_ids = sorted(set(record.upstream_matrix_ids) & affected_matrices)
+        reasons = []
+        if plan_ids:
+            reasons.append("upstream_reference_pool_affected")
+        if matrix_ids:
+            reasons.append("upstream_scoring_matrix_affected")
+        affected = bool(plan_ids or matrix_ids)
+        base = {
+            "revision_fingerprint": expected_revision,
+            "record_dependency_fingerprint": record.fingerprint,
+            "scoring_record_id": record.scoring_record_id,
+            "source_record_id": record.source_record_id,
+            "flickr_photo_id": record.flickr_photo_id,
+            "organism_unit_id": record.organism_unit_id,
+            "source_image_sha256": record.source_image_sha256,
+            "flickr_embedding_fingerprint": record.flickr_embedding_fingerprint,
+            "score_partition_id": record.score_partition_id,
+            "score_partition_fingerprint": record.score_partition_fingerprint,
+            "impact_status": "affected" if affected else "reusable_as_is",
+            "affected_plan_ids": plan_ids,
+            "affected_matrix_ids": matrix_ids,
+            "impact_reasons": reasons,
+            "expected_action": (
+                "rescore_record_from_reused_flickr_embedding"
+                if affected
+                else "reuse_scoring_record_without_recomputation"
+            ),
+            "flickr_embedding_reusable": True,
+        }
+        rows.append(
+            {
+                "schema_version": DYNAMIC_SCORING_RECORD_IMPACT_VERSION,
+                "impact_fingerprint": canonical_semantic_fingerprint(base),
+                **base,
+            }
+        )
+    table = pl.DataFrame(
+        rows,
+        schema=DYNAMIC_SCORING_RECORD_IMPACT_SCHEMA,
+        strict=True,
+    ).sort("scoring_record_id")
+    validate_dynamic_scoring_record_impact(table)
+    return table
+
+
+def validate_dynamic_scoring_record_impact(table: pl.DataFrame) -> None:
+    if table.schema != DYNAMIC_SCORING_RECORD_IMPACT_SCHEMA:
+        raise ValueError("dynamic scoring record impact schema does not match contract")
+    if table.is_empty() or table["scoring_record_id"].n_unique() != table.height:
+        raise ValueError("dynamic scoring record impact identities are invalid")
+    if not table.equals(table.sort("scoring_record_id")):
+        raise ValueError("dynamic scoring record impact is not canonically sorted")
+    for row in table.iter_rows(named=True):
+        affected = row["impact_status"] == "affected"
+        if row["impact_status"] not in {"affected", "reusable_as_is"}:
+            raise ValueError("unsupported scoring record impact status")
+        has_evidence = bool(row["affected_plan_ids"] or row["affected_matrix_ids"])
+        if affected != has_evidence or row["flickr_embedding_reusable"] is not True:
+            raise ValueError("scoring record impact evidence is inconsistent")
+        if not affected and (
+            row["impact_reasons"]
+            or row["expected_action"] != "reuse_scoring_record_without_recomputation"
+        ):
+            raise ValueError("reusable scoring record carries rescore evidence")
+        base = {
+            field: row[field]
+            for field in DYNAMIC_SCORING_RECORD_IMPACT_SCHEMA
+            if field not in {"schema_version", "impact_fingerprint"}
+        }
+        if row["impact_fingerprint"] != canonical_semantic_fingerprint(base):
+            raise ValueError("dynamic scoring record impact fingerprint mismatch")
+
+
 def validate_dynamic_pool_revision_impact(table: pl.DataFrame) -> None:
     if table.schema != DYNAMIC_POOL_REVISION_IMPACT_SCHEMA:
         raise ValueError("dynamic pool revision impact schema does not match contract")
@@ -651,13 +835,19 @@ __all__ = [
     "DYNAMIC_POOL_REVISION_IMPACT_VERSION",
     "DYNAMIC_REFERENCE_CHANGE_VERSION",
     "DYNAMIC_REFERENCE_REVISION_VERSION",
+    "DYNAMIC_SCORING_RECORD_DEPENDENCY_VERSION",
+    "DYNAMIC_SCORING_RECORD_IMPACT_SCHEMA",
+    "DYNAMIC_SCORING_RECORD_IMPACT_VERSION",
     "DynamicPoolDependency",
     "DynamicPoolImpactProjection",
     "DynamicMatrixDependency",
     "DynamicReferenceChange",
     "DynamicReferenceRevision",
+    "DynamicScoringRecordDependency",
     "identify_affected_reference_pools",
+    "identify_affected_scoring_records",
     "identify_affected_candidate_matrices",
     "validate_dynamic_matrix_revision_impact",
     "validate_dynamic_pool_revision_impact",
+    "validate_dynamic_scoring_record_impact",
 ]

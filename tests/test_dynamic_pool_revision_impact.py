@@ -12,8 +12,10 @@ from biominer.run.dynamic_pool_revision_impact import (
     DynamicPoolDependency,
     DynamicReferenceChange,
     DynamicReferenceRevision,
+    DynamicScoringRecordDependency,
     identify_affected_candidate_matrices,
     identify_affected_reference_pools,
+    identify_affected_scoring_records,
     validate_dynamic_pool_revision_impact,
 )
 
@@ -271,3 +273,112 @@ def test_matrix_impact_rejects_unknown_pool_dependency() -> None:
 
     with pytest.raises(ValueError, match="unknown pool plans"):
         identify_affected_candidate_matrices(revision, pool_impacts, [matrix])
+
+
+def _record(
+    index: int,
+    *,
+    plan: str,
+    matrix: str,
+) -> DynamicScoringRecordDependency:
+    return DynamicScoringRecordDependency(
+        scoring_record_id=f"score-{index}",
+        source_record_id=f"flickr:{index}",
+        flickr_photo_id=f"photo-{index}",
+        organism_unit_id=f"organism-{index}",
+        source_image_sha256=_sha(index),
+        flickr_embedding_fingerprint=_sha(index + 1),
+        score_partition_id="partition-a",
+        score_partition_fingerprint=_sha(14),
+        upstream_plan_ids=(plan,),
+        upstream_matrix_ids=(matrix,),
+    )
+
+
+def _impact_chain() -> tuple[
+    DynamicReferenceRevision,
+    pl.DataFrame,
+    pl.DataFrame,
+]:
+    revision = _revision()
+    pool_impacts = identify_affected_reference_pools(
+        revision,
+        [
+            _pool(0, taxa=("species-a",), geo="geo-a"),
+            _pool(2, taxa=("species-c",), geo="geo-c"),
+        ],
+    ).table
+    matrix_impacts = identify_affected_candidate_matrices(
+        revision,
+        pool_impacts,
+        [
+            _matrix(
+                0,
+                kind="dynamic_pool_reference",
+                subjects=("species-a",),
+                references=("reference-member",),
+                plans=("plan-0",),
+            ),
+            _matrix(
+                2,
+                kind="dynamic_pool_reference",
+                subjects=("species-c",),
+                references=("reference-stable",),
+                plans=("plan-2",),
+            ),
+        ],
+    )
+    return revision, pool_impacts, matrix_impacts
+
+
+def test_scoring_impact_selects_only_records_with_affected_dependencies() -> None:
+    revision, pools, matrices = _impact_chain()
+
+    impacts = identify_affected_scoring_records(
+        revision,
+        pools,
+        matrices,
+        [
+            _record(0, plan="plan-0", matrix="matrix-0"),
+            _record(1, plan="plan-2", matrix="matrix-2"),
+        ],
+    )
+    by_id = {row["scoring_record_id"]: row for row in impacts.iter_rows(named=True)}
+
+    assert by_id["score-0"]["impact_status"] == "affected"
+    assert by_id["score-0"]["affected_plan_ids"] == ["plan-0"]
+    assert by_id["score-0"]["affected_matrix_ids"] == ["matrix-0"]
+    assert by_id["score-0"]["expected_action"] == (
+        "rescore_record_from_reused_flickr_embedding"
+    )
+    assert by_id["score-1"]["impact_status"] == "reusable_as_is"
+    assert by_id["score-1"]["flickr_embedding_reusable"] is True
+
+
+def test_scoring_impact_is_record_granular_within_one_partition() -> None:
+    revision, pools, matrices = _impact_chain()
+    impacts = identify_affected_scoring_records(
+        revision,
+        pools,
+        matrices,
+        [
+            _record(0, plan="plan-0", matrix="matrix-0"),
+            _record(1, plan="plan-2", matrix="matrix-2"),
+        ],
+    )
+
+    assert impacts["score_partition_id"].unique().to_list() == ["partition-a"]
+    assert impacts.filter(pl.col("impact_status") == "affected").height == 1
+    assert impacts.filter(pl.col("impact_status") == "reusable_as_is").height == 1
+
+
+def test_scoring_impact_rejects_unknown_dependencies() -> None:
+    revision, pools, matrices = _impact_chain()
+
+    with pytest.raises(ValueError, match="unknown identities"):
+        identify_affected_scoring_records(
+            revision,
+            pools,
+            matrices,
+            [_record(0, plan="plan-missing", matrix="matrix-0")],
+        )
