@@ -10,8 +10,8 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `b67fae6f71fabe7290db97d8ff97cf97b66ec1da`
-  (`feat(evaluation): expand underperforming review strata`)
+  `6b91bb2590da68697f9e3f32050a96a5afb809a8`
+  (`feat(run): identify affected scoring records`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -53,8 +53,10 @@ at the start of every task.
   overall and by family, genus, species and five explicit geographic levels
   through Task 11.1.4. Task 11.2 maps audited failures to typed human actions,
   source-bound GBIF review candidates and design-gated Flickr follow-up through
-  Task 11.2.3. Phase 12 Task 12.1 revision impact analysis is next; no fusion
-  method is selected or production-defaulted.
+  Task 11.2.3. Phase 12 Task 12.1 propagates reference changes through exact
+  dynamic-pool, matrix and individual scoring-record dependencies through Task
+  12.1.3. Task 12.2 verified reuse/selective rebuild is next; no fusion method
+  is selected or production-defaulted.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -170,6 +172,11 @@ at the start of every task.
     actions; GBIF targeting preserves `not_assessed` identity and existing
     disposition, while representative Flickr expansion has no weights or
     estimation eligibility before a probability design;
+  - Task 12.1 final full regression: 3,082 passed in 121.48 seconds;
+  - Task 12.1 impact gate: 25 passed in 2.28 seconds;
+  - Task 12.1 impact contract: exact member/new-eligibility pool impact flows to
+    declared matrix and record dependencies; unaffected identities are marked
+    reusable and affected scoring rows retain reusable Flickr embeddings;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
@@ -398,8 +405,9 @@ unavailable, and no live production improvement or scientific release is
 claimed.
 
 For the active dynamic-pooling goal, the next implementation boundary is Phase
-12 Task 12.1 affected geographic-pool, family/candidate-matrix and Flickr-record
-revision impact analysis. The parallel family/geography union remains the
+12 Task 12.2 reuse of unchanged reference/Flickr embeddings and selective
+rebuild of only affected pools and scores. The parallel family/geography union
+remains the
 intended candidate, but no strategy is selected or production-defaulted
 because only
 implementation-fixture evidence has run. No strategy is empirically superior,
