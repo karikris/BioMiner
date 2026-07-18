@@ -14,7 +14,9 @@ from biominer.evaluation.dynamic_pool_quality import (
     DynamicPoolQualityObservation,
     DynamicPoolQualityPolicy,
     report_family_pooling_quality,
+    report_genus_pooling_quality,
     report_overall_pooling_quality,
+    report_species_pooling_quality,
     validate_dynamic_pool_quality_report,
 )
 
@@ -41,10 +43,10 @@ def _observation(
         independence_component_id=component or f"component-{index}",
         family_key=f"family-{index % 2}",
         family_name=f"Family {index % 2}",
-        genus_key=f"genus-{index % 3}",
-        genus_name=f"Genus {index % 3}",
-        species_key=f"species-{index % 4}",
-        scientific_name=f"Species {index % 4}",
+        genus_key=f"genus-{index % 4}",
+        genus_name=f"Genus {index % 4}",
+        species_key=f"species-{index % 8}",
+        scientific_name=f"Species {index % 8}",
         sampling_purpose=(
             TARGETED_FAILURE_PURPOSE if targeted else "representative_audit"
         ),
@@ -289,3 +291,52 @@ def test_family_quality_is_deterministic() -> None:
     )
 
     assert first.equals(second)
+
+
+def test_genus_and_species_quality_preserve_parent_taxonomy() -> None:
+    observations = [_observation(index) for index in range(16)]
+
+    genera = report_genus_pooling_quality(observations, policy=_permissive_policy())
+    species = report_species_pooling_quality(
+        observations,
+        policy=_permissive_policy(),
+    )
+
+    assert genera.height == 4 * 13
+    assert species.height == 8 * 13
+    genus_zero = genera.filter(pl.col("group_id") == "genus:genus-0")
+    species_zero = species.filter(pl.col("group_id") == "species:species-0")
+    assert genus_zero["family_key"].unique().to_list() == ["family-0"]
+    assert genus_zero["genus_name"].unique().to_list() == ["Genus 0"]
+    assert genus_zero["species_key"].null_count() == genus_zero.height
+    assert species_zero["family_key"].unique().to_list() == ["family-0"]
+    assert species_zero["genus_key"].unique().to_list() == ["genus-0"]
+    assert species_zero["scientific_name"].unique().to_list() == ["Species 0"]
+    assert _metric(species_zero, "model_coverage")["metric_status"] == "complete"
+
+
+def test_taxonomic_quality_rejects_parent_drift() -> None:
+    genus_drift = replace(
+        _observation(4),
+        family_key="family-foreign",
+        family_name="Foreign family",
+    )
+    species_drift = replace(
+        _observation(8),
+        genus_key="genus-foreign",
+        genus_name="Foreign genus",
+    )
+
+    with pytest.raises(ValueError, match="conflicting family_key"):
+        report_genus_pooling_quality([_observation(0), genus_drift])
+    with pytest.raises(ValueError, match="conflicting genus_key"):
+        report_species_pooling_quality([_observation(0), species_drift])
+
+
+def test_genus_and_species_quality_are_deterministic() -> None:
+    observations = [_observation(index) for index in range(16)]
+
+    for reporter in (report_genus_pooling_quality, report_species_pooling_quality):
+        first = reporter(observations, policy=_permissive_policy())
+        second = reporter(list(reversed(observations)), policy=_permissive_policy())
+        assert first.equals(second)

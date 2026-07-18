@@ -268,32 +268,43 @@ def report_family_pooling_quality(
     items = _normalized_observations(observations)
     if not items:
         raise ValueError("family quality report requires source observations")
-    grouped: dict[str, list[DynamicPoolQualityObservation]] = defaultdict(list)
-    for item in items:
-        grouped[item.family_key].append(item)
-    groups = []
-    for family_key in sorted(grouped):
-        family_items = tuple(grouped[family_key])
-        family_name = _unique_group_label(
-            family_items,
-            field="family_name",
-            group_id=family_key,
-        )
-        groups.append(
-            (
-                _identity(
-                    hierarchy_level="family",
-                    group_id=f"family:{family_key}",
-                    group_label=family_name,
-                    family_key=family_key,
-                    family_name=family_name,
-                ),
-                family_items,
-            )
-        )
     return _build_quality_report(
         items,
-        groups=groups,
+        groups=_taxonomy_groups(items, hierarchy_level="family"),
+        policy=policy or DynamicPoolQualityPolicy(),
+    )
+
+
+def report_genus_pooling_quality(
+    observations: Sequence[DynamicPoolQualityObservation],
+    *,
+    policy: DynamicPoolQualityPolicy | None = None,
+) -> pl.DataFrame:
+    """Report canonical genera with a consistent family parent."""
+
+    items = _normalized_observations(observations)
+    if not items:
+        raise ValueError("genus quality report requires source observations")
+    return _build_quality_report(
+        items,
+        groups=_taxonomy_groups(items, hierarchy_level="genus"),
+        policy=policy or DynamicPoolQualityPolicy(),
+    )
+
+
+def report_species_pooling_quality(
+    observations: Sequence[DynamicPoolQualityObservation],
+    *,
+    policy: DynamicPoolQualityPolicy | None = None,
+) -> pl.DataFrame:
+    """Report canonical species with consistent genus and family parents."""
+
+    items = _normalized_observations(observations)
+    if not items:
+        raise ValueError("species quality report requires source observations")
+    return _build_quality_report(
+        items,
+        groups=_taxonomy_groups(items, hierarchy_level="species"),
         policy=policy or DynamicPoolQualityPolicy(),
     )
 
@@ -912,6 +923,78 @@ def _unique_group_label(
     return next(iter(values))
 
 
+def _taxonomy_groups(
+    items: tuple[DynamicPoolQualityObservation, ...],
+    *,
+    hierarchy_level: str,
+) -> list[tuple[dict[str, object], tuple[DynamicPoolQualityObservation, ...]]]:
+    key_field = f"{hierarchy_level}_key"
+    grouped: dict[str, list[DynamicPoolQualityObservation]] = defaultdict(list)
+    for item in items:
+        grouped[str(getattr(item, key_field))].append(item)
+    groups = []
+    for taxon_key in sorted(grouped):
+        group_items = tuple(grouped[taxon_key])
+        family_key = _unique_group_label(
+            group_items,
+            field="family_key",
+            group_id=taxon_key,
+        )
+        family_name = _unique_group_label(
+            group_items,
+            field="family_name",
+            group_id=taxon_key,
+        )
+        genus_key = None
+        genus_name = None
+        species_key = None
+        scientific_name = None
+        if hierarchy_level in {"genus", "species"}:
+            genus_key = _unique_group_label(
+                group_items,
+                field="genus_key",
+                group_id=taxon_key,
+            )
+            genus_name = _unique_group_label(
+                group_items,
+                field="genus_name",
+                group_id=taxon_key,
+            )
+        if hierarchy_level == "species":
+            species_key = _unique_group_label(
+                group_items,
+                field="species_key",
+                group_id=taxon_key,
+            )
+            scientific_name = _unique_group_label(
+                group_items,
+                field="scientific_name",
+                group_id=taxon_key,
+            )
+        group_label = {
+            "family": family_name,
+            "genus": genus_name,
+            "species": scientific_name,
+        }[hierarchy_level]
+        groups.append(
+            (
+                _identity(
+                    hierarchy_level=hierarchy_level,
+                    group_id=f"{hierarchy_level}:{taxon_key}",
+                    group_label=str(group_label),
+                    family_key=family_key,
+                    family_name=family_name,
+                    genus_key=genus_key,
+                    genus_name=genus_name,
+                    species_key=species_key,
+                    scientific_name=scientific_name,
+                ),
+                group_items,
+            )
+        )
+    return groups
+
+
 def _required_text(value: object, *, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be nonempty text")
@@ -965,6 +1048,8 @@ __all__ = [
     "DynamicPoolQualityObservation",
     "DynamicPoolQualityPolicy",
     "report_family_pooling_quality",
+    "report_genus_pooling_quality",
     "report_overall_pooling_quality",
+    "report_species_pooling_quality",
     "validate_dynamic_pool_quality_report",
 ]
