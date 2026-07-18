@@ -7,14 +7,18 @@ at the start of every task.
 
 - Repository: `karikris/BioMiner`
 - Default branch: `main`
-- Latest verified implementation/release-gate commit:
-  `477eaface3d1f5efa51255550f0ef8d6a7740f35`
-- Active goal family: adaptive GBIF fast-start references
-- Implementation phases: 0–13 complete, with the final self-identifying report
-  resolved by the commit containing
+- Latest verified dynamic-pooling design commit:
+  `299914548b407b439cd36d1aa99397b41aa827f1`
+- Active goal family: geography-conditioned dynamic global/local reference
+  pooling
+- Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
+  cross-repository contract alignment is next.
+- Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
+  self-identifying report resolved by the commit containing
   `reports/gbif_fast_start/final_report.json`.
 - Current release-boundary evidence:
-  - full regression: 2,531 passed in 109.26 seconds;
+  - dynamic-pooling Task 0.1 full regression: 2,541 passed in 108.34 seconds;
+  - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
   - CLI gate: 143 passed;
@@ -46,8 +50,12 @@ git diff --cached --stat
 Then inspect:
 
 ```text
+reports/geo_dynamic_pooling/
 reports/gbif_fast_start/
 provenance/githits.jsonl
+provenance/task_pushes.jsonl
+docs/architecture/geography_conditioned_dynamic_pooling.md
+docs/architecture/statistical_support_and_human_verification.md
 docs/architecture/adaptive_gbif_reference_admission.md
 the current goal/prompt or phase report
 ```
@@ -165,6 +173,33 @@ src/biominer/reports/
 
 Verify exact filenames locally; the active goal may add or move modules.
 
+## Accepted dynamic-pooling semantics
+
+Phase 0 accepted two additional ADRs:
+
+```text
+docs/architecture/geography_conditioned_dynamic_pooling.md
+docs/architecture/statistical_support_and_human_verification.md
+```
+
+They establish:
+
+- immutable cached embedding identity separate from versioned global/local
+  comparison-plan membership;
+- an explicit, diverse global safety pool and a local pool or exact
+  local-unavailable reason;
+- family evidence as a batching/retrieval accelerator, never a hard gate;
+- geography as candidate/reference evidence, never identity proof or absence;
+- deterministic, bounded uncertainty expansion that reuses embeddings;
+- raw component scores and margins as non-probabilistic evidence;
+- separate human-review, calibration, statistical-support, release-readiness
+  and downstream-publication authorities; and
+- immutable TaxaLens/ButterflyLens handoffs pinned to committed contracts.
+
+Phase 0 is architecture evidence only. Reference indexes, pool/comparison-plan
+schemas, hybrid candidate strategies, scoring, calibration, pilots and release
+verification remain implementation work in Phases 1–16.
+
 ## Legacy documentation warning
 
 At the observed baseline:
@@ -186,7 +221,7 @@ Therefore:
 - update stale docs only when the active goal reaches its documentation phase
   or explicitly requests the change.
 
-## Remaining live and human work
+## Remaining implementation, live and human work
 
 The implementation, migration/documentation, fixture-backed pilot, and release
 verification phases are complete. This does not complete the scientific run.
@@ -202,6 +237,11 @@ The authoritative remaining-work ledger is in
 Provider-asserted GBIF support remains provisional, current quality metrics are
 unavailable, and no live production improvement or scientific release is
 claimed.
+
+For the active dynamic-pooling goal, the next implementation boundary is Phase
+1 contract alignment. No global/local pool artifact, strategy superiority,
+live dynamic score, calibrated probability, statistical-support result or new
+release-ready occurrence is claimed by the Phase 0 ADRs.
 
 ## Repository map
 
@@ -222,4 +262,5 @@ src/biominer/storage/           local/cloud objects, Parquet, handoffs
 src/biominer/reports/           structured stage and scientific reporting
 tests/                          deterministic default suite
 reports/gbif_fast_start/        active-goal evidence and phase reports
+reports/geo_dynamic_pooling/    dynamic-pooling baselines and phase reports
 ```
