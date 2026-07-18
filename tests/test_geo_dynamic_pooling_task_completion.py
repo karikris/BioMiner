@@ -9,6 +9,7 @@ ROOT = Path(__file__).parents[1]
 REPORT = ROOT / "reports/geo_dynamic_pooling/task_0_1_completion.json"
 TASK_1_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_1_1_completion.json"
 TASK_1_2_REPORT = ROOT / "reports/geo_dynamic_pooling/task_1_2_completion.json"
+TASK_2_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_2_1_completion.json"
 PUSH_LEDGER = ROOT / "provenance/task_pushes.jsonl"
 
 
@@ -22,6 +23,10 @@ def _task_1_1_report() -> dict[str, object]:
 
 def _task_1_2_report() -> dict[str, object]:
     return json.loads(TASK_1_2_REPORT.read_text(encoding="utf-8"))
+
+
+def _task_2_1_report() -> dict[str, object]:
+    return json.loads(TASK_2_1_REPORT.read_text(encoding="utf-8"))
 
 
 def test_task_0_1_completion_records_exact_commits_and_green_gate() -> None:
@@ -143,3 +148,58 @@ def test_task_1_2_report_blocks_import_and_release_claims() -> None:
     assert any("reviewer assignment" in claim for claim in blocked)
     assert any("occurrence release" in claim for claim in blocked)
     assert any("production deployment" in claim for claim in blocked)
+
+
+def test_task_2_1_completion_records_artifacts_commits_and_green_gates() -> None:
+    report = _task_2_1_report()
+
+    assert report["task_id"] == "geo-pool-2.1"
+    assert report["status"] == "completed"
+    assert [item["commit"] for item in report["task_commits"]] == [
+        "fd5a4d6d79f889c16adb78b2227adc05c2cf478b",
+        "8165ae1d58db20796eacff718fca5173840a12b9",
+        "e4245a6d652aca8ff20a198d957897d1c91c00fc",
+        "cd37037a98a9239c2ff4bb5d30c661e9c950ce66",
+    ]
+    assert [item["file"] for item in report["artifacts"]] == [
+        "normalized_reference_geography.parquet",
+        "reference_geography_index.parquet",
+        "global_reference_anchors.parquet",
+        "geographic_reference_neighbours.parquet",
+        "reference_geography_index_manifest.json",
+    ]
+    assert report["gate"]["reference_and_geography_suite"]["passed"] == 133
+    assert report["gate"]["artifact_reproducibility"]["qa_status"] == "passed"
+    assert (
+        report["gate"]["artifact_reproducibility"]["physical_checksum_status"]
+        == "complete"
+    )
+    assert report["gate"]["final_full_regression"]["passed"] == 2730
+    assert report["gate"]["provenance"]["jsonl_records_validated"] == 114
+
+
+def test_task_2_1_push_event_matches_report() -> None:
+    report = _task_2_1_report()
+    events = [
+        json.loads(line)
+        for line in PUSH_LEDGER.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    event = next(item for item in events if item["task_id"] == "geo-pool-2.1")
+
+    assert event["verified_remote_sha"] == report["push"]["verified_remote_sha"]
+    assert event["pushed_through_sha"] == report["push"]["pushed_through_sha"]
+    assert event["status"] == report["push"]["status"] == "verified"
+
+
+def test_task_2_1_report_blocks_live_identity_and_release_claims() -> None:
+    blocked = _task_2_1_report()["claims"]["blocked"]
+
+    assert any("live production reference bank" in claim for claim in blocked)
+    assert any("human verified or ground truth" in claim for claim in blocked)
+    assert any(
+        "geographic identity or biological absence" in claim for claim in blocked
+    )
+    assert any(
+        "occurrence release or production deployment" in claim for claim in blocked
+    )

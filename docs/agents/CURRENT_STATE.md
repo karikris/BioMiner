@@ -7,22 +7,28 @@ at the start of every task.
 
 - Repository: `karikris/BioMiner`
 - Default branch: `main`
+- Phase 0 dynamic-pooling design baseline:
+  `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `fd5a4d6d79f889c16adb78b2227adc05c2cf478b`
-  (`feat(references): normalize reference geography`)
+  `cd37037a98a9239c2ff4bb5d30c661e9c950ce66`
+  (`test(references): validate geographic reference index`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
   cross-repository contract alignment complete; Phase 2 geographic reference
-  indexing is active. Task 2.1.1 is committed and pushed; Task 2.1.2 global
-  reference-anchor selection is the next numbered subtask.
+  indexing implementation complete through Task 2.1.4. The Task 2.1 gate and
+  completion evidence are active; Phase 3 canonical Flickr work units are the
+  next implementation boundary after that gate closes.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
   self-identifying report resolved by the commit containing
   `reports/gbif_fast_start/final_report.json`.
 - Current release-boundary evidence:
   - dynamic-pooling Task 1.2 full regression: 2,660 passed in 100.67 seconds;
   - Task 1.2 focused cross-repository contracts: 33 passed in 0.17 seconds;
-  - Task 2.1.1 focused reference-geography checks: 56 passed in 0.41 seconds;
+  - Task 2.1 final full regression: 2,730 passed in 101.37 seconds;
+  - Task 2.1 reference/geography gate: 133 passed in 1.77 seconds;
+  - Task 2.1 artifact round-trip: four Parquet artifacts and the JSON manifest
+    passed semantic fingerprint and complete supplied physical-checksum checks;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;

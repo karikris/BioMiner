@@ -1,5 +1,5 @@
 {
-  "active_goal_note": "Geography-conditioned dynamic pooling Phase 1 is complete; Phase 2 reference indexing is active at Task 2.1.2.",
+  "active_goal_note": "Geography-conditioned dynamic pooling Phase 2 and the Task 2.1 gate are complete; Phase 3 canonical Flickr work units are next.",
   "files": [
     {
       "bytes": 6701,
@@ -8,10 +8,10 @@
       "sha256": "e5d9cff662484ad83c729d42e1af48ef578a52d0f3adbfeb3f471c93585c66d5"
     },
     {
-      "bytes": 10127,
-      "lines": 271,
+      "bytes": 10512,
+      "lines": 277,
       "path": "docs/agents/CURRENT_STATE.md",
-      "sha256": "ee6636a277d42d1886e0cb16eae631d6f8c98a4ae1fe457ec72f702a924d5076"
+      "sha256": "4c20d18a46d522fa8c30563d4e09b034f88558b29868d6f26510bb2dbe42a3a1"
     },
     {
       "bytes": 5599,
@@ -57,7 +57,7 @@
     }
   ],
   "generated_from_uploaded_file": "AGENTS(14).md",
-  "observed_main_commit": "fd5a4d6d79f889c16adb78b2227adc05c2cf478b",
+  "observed_main_commit": "cd37037a98a9239c2ff4bb5d30c661e9c950ce66",
   "observed_repository": "karikris/BioMiner",
   "pack": "BioMiner token-efficient agent instructions",
   "schema_version": "biominer-agent-pack-v1.0.0"
