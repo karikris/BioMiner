@@ -13,6 +13,7 @@ TASK_2_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_2_1_completion.json"
 TASK_3_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_3_1_completion.json"
 TASK_4_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_4_1_completion.json"
 TASK_4_2_REPORT = ROOT / "reports/geo_dynamic_pooling/task_4_2_completion.json"
+TASK_5_1_REPORT = ROOT / "reports/geo_dynamic_pooling/task_5_1_completion.json"
 PUSH_LEDGER = ROOT / "provenance/task_pushes.jsonl"
 
 
@@ -42,6 +43,10 @@ def _task_4_1_report() -> dict[str, object]:
 
 def _task_4_2_report() -> dict[str, object]:
     return json.loads(TASK_4_2_REPORT.read_text(encoding="utf-8"))
+
+
+def _task_5_1_report() -> dict[str, object]:
+    return json.loads(TASK_5_1_REPORT.read_text(encoding="utf-8"))
 
 
 def test_task_0_1_completion_records_exact_commits_and_green_gate() -> None:
@@ -373,6 +378,56 @@ def test_task_4_2_report_blocks_unearned_selection_and_release_claims() -> None:
     assert state["superiority_claimed"] is False
     assert any("empirically or universally superior" in claim for claim in blocked)
     assert any("selected or made default" in claim for claim in blocked)
+    assert any("occurrence release or production deployment" in claim for claim in blocked)
+    impact = report["githits_architecture_impact"]
+    assert impact["calls_made_for_task"] == 0
+    assert impact["direct_external_code_contribution"] == "none"
+
+
+def test_task_5_1_completion_records_policy_planner_and_green_gates() -> None:
+    report = _task_5_1_report()
+
+    assert report["task_id"] == "geo-pool-5.1"
+    assert report["status"] == "completed"
+    assert [item["commit"] for item in report["task_commits"]] == [
+        "8f5b2f9f25565e95868de5d900b45f1cdc663df7",
+        "86cedcf9d01348770eca95a96f46bdf37dd84ba9",
+        "746e5259922c057e0f7864643a861844c8fdf03f",
+        "b1ae26d15e6b3c866ea57c5c8a972444a4860e0d",
+    ]
+    assert len(report["policy"]["controls"]) == 10
+    assert report["fixture_round_trip"]["members"]["rows"] == 3
+    assert report["fixture_round_trip"]["members"]["global"] == 2
+    assert report["fixture_round_trip"]["members"]["local"] == 1
+    assert report["fixture_round_trip"]["coverage"]["complete"] == 1
+    assert report["gate"]["pool_planner_suite"]["passed"] == 82
+    assert report["gate"]["full_regression"]["passed"] == 2796
+    assert report["gate"]["provenance"]["jsonl_records"] == 131
+
+
+def test_task_5_1_push_event_matches_report() -> None:
+    report = _task_5_1_report()
+    events = [
+        json.loads(line)
+        for line in PUSH_LEDGER.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    event = next(item for item in events if item["task_id"] == "geo-pool-5.1")
+
+    assert event["verified_remote_sha"] == report["push"]["verified_remote_sha"]
+    assert event["pushed_through_sha"] == report["push"]["pushed_through_sha"]
+    assert event["status"] == report["push"]["status"] == "verified"
+
+
+def test_task_5_1_report_blocks_live_pool_and_release_claims() -> None:
+    report = _task_5_1_report()
+    state = report["selection_state"]
+    blocked = report["claims"]["blocked"]
+
+    assert state["live_dynamic_pool_planned"] is False
+    assert state["production_default_changed"] is False
+    assert any("live dynamic reference pool" in claim for claim in blocked)
+    assert any("prove taxon absence" in claim for claim in blocked)
     assert any("occurrence release or production deployment" in claim for claim in blocked)
     impact = report["githits_architecture_impact"]
     assert impact["calls_made_for_task"] == 0
