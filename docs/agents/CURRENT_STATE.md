@@ -10,8 +10,8 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `4c38a10012e596b7591945da70821732a0602775`
-  (`feat(ml): select audited screening thresholds`)
+  `7e7ae4d767ca432cab386d5538a01bd15ff31f09`
+  (`feat(evaluation): project unresolved candidate queue`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -47,8 +47,10 @@ at the start of every task.
   a 75-dimension raw-evidence feature table, fits grouped-OOF sigmoid-calibrated
   route models on calibration rows, reports independent validation reliability
   and selects screening-only thresholds from conservative precision lower
-  bounds through Task 10.2.3. Task 10.3 outcome lanes are next; no fusion method
-  is selected or production-defaulted.
+  bounds through Task 10.2.3. Task 10.3 projects a complete, mutually exclusive
+  human-reviewed release, screening-only and unresolved partition through Task
+  10.3.3. Phase 11 Task 11.1 hierarchical quality reporting is next; no fusion
+  method is selected or production-defaulted.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -145,6 +147,13 @@ at the start of every task.
     six components at a 0.6069622 conservative precision lower bound. These are
     software-fixture metrics; the default 0.95 objective and 30-item/component
     floors remain unmet and occurrence release remains unauthorized;
+  - Task 10.3 final full regression: 3,030 passed in 110.65 seconds;
+  - Task 10.3 language/release/calibration/outcome gate: 68 passed in 4.11
+    seconds;
+  - Task 10.3 outcome contract: every source item enters exactly one of a
+    human-reviewed release, exact-label screening-only or explicit unresolved
+    lane; screening and unresolved rows have no occurrence-release authority
+    and are rejected by the verified Flickr export validator;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
@@ -373,13 +382,14 @@ unavailable, and no live production improvement or scientific release is
 claimed.
 
 For the active dynamic-pooling goal, the next implementation boundary is Phase
-7 Task 7.1 raw family, global species, local species, disagreement and coverage
-component scoring over the cached matrices. The parallel family/geography
-union remains the intended candidate,
-but no strategy is selected or production-defaulted because only implementation-fixture
-evidence has run. No strategy is empirically superior, and no live dynamic
-pool, live score, calibrated probability, statistical-support result or new
-release-ready occurrence is claimed by the completed phases.
+11 Task 11.1 hierarchical overall, family, species/genus and geography quality
+reporting with weighted/grouped intervals and explicit insufficient-sample
+states. The parallel family/geography union remains the intended candidate, but
+no strategy is selected or production-defaulted because only
+implementation-fixture evidence has run. No strategy is empirically superior,
+and no live dynamic pool, live score, calibrated probability,
+statistical-support result or new release-ready occurrence is claimed by the
+completed phases.
 
 ## Repository map
 
