@@ -1,0 +1,189 @@
+{
+  "schema_version": "geo-dynamic-pooling-task-completion-v1.0.0",
+  "task_id": "geo-pool-14.2",
+  "title": "Publish ButterflyLens evidence handoff",
+  "status": "completed",
+  "completed_at": "2026-07-18T14:11:08Z",
+  "starting_sha": "55b253aa7253d3001a51271e4bfd62dffa8ae83a",
+  "pushed_implementation_sha": "0bde282d9e6604f4a606f7b52a5e836d6ee45b2a",
+  "task_commits": [
+    {
+      "subtask_id": "geo-pool-14.2.1",
+      "commit": "c4bc52f22af706ada519ea4485a2ef28117492f3",
+      "subject": "feat(handoff): export ButterflyLens model evidence"
+    },
+    {
+      "subtask_id": "geo-pool-14.2.2",
+      "commit": "253481c00725cd5f7ba1b3e2202bf67b2febd9d7",
+      "subject": "feat(handoff): export ButterflyLens geographic evidence"
+    },
+    {
+      "subtask_id": "geo-pool-14.2.3",
+      "commit": "fb3ddf19c33698de977d7b45a424e92d9f8c9a2e",
+      "subject": "feat(handoff): export ButterflyLens review evidence"
+    },
+    {
+      "subtask_id": "geo-pool-14.2.4",
+      "commit": "0bde282d9e6604f4a606f7b52a5e836d6ee45b2a",
+      "subject": "test(handoff): verify ButterflyLens pooling contract"
+    }
+  ],
+  "consumer_pin": {
+    "repository": "karikris/ButterflyLens",
+    "previous_commit": "fcee1a76886e37cb2f0d9badbe91b70a18a0e7c3",
+    "commit": "1cea643623f2f20a2bea72afc754c7b194db3278",
+    "decision": "compatible_additive_with_stricter_review_controls",
+    "working_tree_consumed": false,
+    "committed_git_objects_only": true
+  },
+  "artifact_contract": {
+    "required_role_count": 10,
+    "roles": [
+      "project",
+      "run",
+      "flickr_source_records",
+      "media_objects",
+      "model_evidence",
+      "geographic_impact",
+      "review_campaign_inputs",
+      "review_assignment_inputs",
+      "classification_maturity",
+      "release_state"
+    ],
+    "expected_handoff_id": "butterflylens-pool-handoff:739a34cba523f113fbde5ebdb5df1574346ec1c009d5b2d05667066d48da5907",
+    "expected_manifest_fingerprint": "sha256:a1e58193fd04fb10931a0e5ba4bbebd5b50a522c7329264d70eab1f34e1f26ed",
+    "model_evidence": {
+      "raw_score_is_probability": false,
+      "probability_availability_separate": true,
+      "statistical_support_separate": true,
+      "human_verification_separate": true,
+      "release_authority": false
+    },
+    "geographic_impact": {
+      "located_rows_count_only_flickr_bioclip_candidate_evidence": true,
+      "ala_baseline_owned_by_consumer": true,
+      "human_support_unavailable": true,
+      "release_support_unavailable": true,
+      "no_geo_rows_explicit": true,
+      "missing_geo_is_biological_absence": false,
+      "unavailable_values_encoded_as_zero": false
+    },
+    "review_evidence": {
+      "campaign_state": "draft",
+      "work_items_are_reviewer_assignments": false,
+      "reviewer_identifiers_exported": false,
+      "representative_sampling_preserves_inclusion_probability": true,
+      "representative_sampling_preserves_inverse_probability_weight": true,
+      "representative_and_targeted_review_separate": true,
+      "blind_review": true,
+      "assignment_policy": "repeated-independent-v1",
+      "release_ready": false,
+      "all_release_gates_passed": false
+    }
+  },
+  "publication": {
+    "directory_create_only": true,
+    "all_artifacts_staged_before_manifest": true,
+    "manifest_written_last": true,
+    "directory_validated_before_atomic_publish": true,
+    "semantic_fingerprints_separate_from_physical_sha256": true,
+    "archive_content_addressed": true,
+    "archive_deterministic": true,
+    "fixture_archive_file_count": 11,
+    "exact_pinned_butterflylens_parity_executed": true,
+    "database_writes": false,
+    "release_authority": false
+  },
+  "gate": {
+    "focused_handoff": {
+      "command": ".venv/bin/pytest -q tests/test_butterflylens_model_export.py tests/test_butterflylens_geographic_export.py tests/test_butterflylens_review_export.py tests/test_butterflylens_pool_publish.py tests/test_butterflylens_database_contract_fixture.py tests/test_butterflylens_pool_handoff.py tests/test_product_pool_handoff_compatibility.py",
+      "result": "passed",
+      "passed": 46,
+      "duration_seconds": 3.70,
+      "consumer_commit": "1cea643623f2f20a2bea72afc754c7b194db3278"
+    },
+    "database_fixture_validation": {
+      "result": "passed",
+      "target_documents_schema_validated": 4,
+      "frozen_artifact_roles_compared": 10,
+      "json_schema_source": "git show of the exact committed ButterflyLens object",
+      "database_constraint_source": "exact committed pgTAP fixtures and migrations",
+      "live_database_executed": false
+    },
+    "pinned_contract_parity": {
+      "command": "packages/contracts/tests/check_parity.py from a git archive of the exact consumer commit",
+      "result": "passed",
+      "schemas": 24,
+      "valid_cases": 20,
+      "invalid_cases": 20,
+      "version_checks": 20,
+      "vocabulary_checks": 15,
+      "typescript": "Version 7.0.2",
+      "compiler_installation": "isolated temporary offline npm cache install",
+      "consumer_worktree_modified": false
+    },
+    "full_regression": {
+      "command": ".venv/bin/pytest -q",
+      "result": "passed",
+      "passed": 3169,
+      "duration_seconds": 118.21,
+      "tested_implementation_sha": "0bde282d9e6604f4a606f7b52a5e836d6ee45b2a"
+    },
+    "lint_and_format": {
+      "commands": [
+        "uvx ruff check on changed Python files",
+        "uvx ruff format on changed Python files",
+        "git diff --check",
+        "JSON fixture parsing"
+      ],
+      "result": "passed"
+    },
+    "provenance": {
+      "result": "passed",
+      "required_records": [
+        "geo-pool-14.2",
+        "geo-pool-14.2.1",
+        "geo-pool-14.2.2",
+        "geo-pool-14.2.3",
+        "geo-pool-14.2.4"
+      ],
+      "githits_status": "all_five_skipped_user_directive_with_null_solution_ids_and_no_external_calls"
+    }
+  },
+  "githits_architecture_impact": {
+    "calls_made_for_task": 0,
+    "direct_external_code_contribution": "none",
+    "material_architecture_contribution": "none from GitHits",
+    "first_party_basis": [
+      "BioMiner dynamic score, pool, review-sampling and artifact contracts",
+      "BioMiner deterministic storage-handoff contracts",
+      "exact committed ButterflyLens schemas, database fixtures, migrations and parity runner"
+    ]
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "0bde282d9e6604f4a606f7b52a5e836d6ee45b2a",
+    "verified_remote_sha": "0bde282d9e6604f4a606f7b52a5e836d6ee45b2a",
+    "verified_at": "2026-07-18T14:11:08Z",
+    "status": "verified"
+  },
+  "claims": {
+    "allowed": [
+      "BioMiner can publish a deterministic, content-addressed ButterflyLens handoff containing all ten required model, geographic, review and release-state roles.",
+      "The exact committed ButterflyLens contract representations agree across JSON Schema, Python and TypeScript for their committed parity corpus.",
+      "The exported campaign and maturity documents validate against exact pinned ButterflyLens schemas.",
+      "Raw model scores, probability availability, statistical support, human verification, evidence maturity and release maturity remain separate.",
+      "Missing geography and unavailable provider or human evidence remain explicit unavailable states rather than zero or biological absence.",
+      "The release projection remains blocked with every release gate false."
+    ],
+    "blocked": [
+      "The fixture proves a live model run, production ingestion, live database write, completed reviewer assignment, human review or occurrence release occurred.",
+      "A raw BioCLIP score is a calibrated probability.",
+      "A pre-assignment review work item grants reviewer identity or assignment authority.",
+      "A BioMiner count substitutes for an ALA baseline or completed human-support count.",
+      "An available artifact is scientifically release-ready."
+    ]
+  },
+  "completion_record_commit": "self"
+}
