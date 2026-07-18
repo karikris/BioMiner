@@ -19,6 +19,7 @@ class RunStage(StrEnum):
     REFERENCE_DEDUPLICATION = "reference_deduplication"
     REFERENCE_QUALITY_ROUTING = "reference_quality_routing"
     REFERENCE_ADMISSION = "reference_admission"
+    REFERENCE_GEOGRAPHY_INDEX = "reference_geography_index"
     REFERENCE_REVIEW = "reference_review"
     REFERENCE_EMBEDDINGS = "reference_embeddings"
     REFERENCE_PROTOTYPES = "reference_prototypes"
@@ -27,9 +28,15 @@ class RunStage(StrEnum):
     REFERENCE_READINESS = "reference_readiness"
     FLICKR_DETECTION = "flickr_detection"
     FLICKR_EMBEDDING = "flickr_embedding"
+    FLICKR_GEO_TAXON_PARTITIONING = "flickr_geo_taxon_partitioning"
+    FAMILY_ROUTING = "family_routing"
+    DYNAMIC_POOL_PLANNING = "dynamic_pool_planning"
+    DYNAMIC_POOL_SCORING = "dynamic_pool_scoring"
     TARGET_AWARE_SCORING = "target_aware_scoring"
     PROVISIONAL_FLICKR_SCORING = "provisional_flickr_scoring"
+    REVIEW_SAMPLE_PLANNING = "review_sample_planning"
     FLICKR_HUMAN_VERIFICATION = "flickr_human_verification"
+    RISK_CONTROLLED_AUDIT = "risk_controlled_audit"
     STATISTICAL_REFERENCE_AUDIT = "statistical_reference_audit"
     TARGETED_REFERENCE_REVIEW = "targeted_reference_review"
     AFFECTED_REFERENCE_REBUILD = "affected_reference_rebuild"
@@ -161,9 +168,14 @@ class StageRecord:
             ended_at=payload.get("ended_at"),
             message=payload.get("message"),
             metrics=dict(payload.get("metrics") or {}),
-            outputs={str(key): str(value) for key, value in dict(payload.get("outputs") or {}).items()},
+            outputs={
+                str(key): str(value)
+                for key, value in dict(payload.get("outputs") or {}).items()
+            },
         )
 
 
-def default_stage_records(stages: tuple[RunStage, ...] = DEFAULT_PRODUCTION_STAGES) -> tuple[StageRecord, ...]:
+def default_stage_records(
+    stages: tuple[RunStage, ...] = DEFAULT_PRODUCTION_STAGES,
+) -> tuple[StageRecord, ...]:
     return tuple(StageRecord(stage=stage) for stage in stages)

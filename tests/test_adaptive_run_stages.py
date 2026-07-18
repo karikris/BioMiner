@@ -44,6 +44,33 @@ def test_adaptive_reference_stage_sequence_is_complete_and_pending() -> None:
     )
 
 
+def test_dynamic_pooling_stage_vocabulary_is_explicit() -> None:
+    assert {
+        stage.value
+        for stage in {
+            RunStage.REFERENCE_GEOGRAPHY_INDEX,
+            RunStage.FLICKR_DETECTION,
+            RunStage.FLICKR_EMBEDDING,
+            RunStage.FLICKR_GEO_TAXON_PARTITIONING,
+            RunStage.FAMILY_ROUTING,
+            RunStage.DYNAMIC_POOL_PLANNING,
+            RunStage.DYNAMIC_POOL_SCORING,
+            RunStage.REVIEW_SAMPLE_PLANNING,
+            RunStage.RISK_CONTROLLED_AUDIT,
+        }
+    } == {
+        "reference_geography_index",
+        "flickr_detection",
+        "flickr_embedding",
+        "flickr_geo_taxon_partitioning",
+        "family_routing",
+        "dynamic_pool_planning",
+        "dynamic_pool_scoring",
+        "review_sample_planning",
+        "risk_controlled_audit",
+    }
+
+
 def test_adaptive_human_stages_are_never_automatic() -> None:
     assert {
         RunStage.REFERENCE_REVIEW,
@@ -58,9 +85,10 @@ def test_default_dependencies_score_before_reference_review_but_gate_release() -
     assert graph[RunStage.PROVISIONAL_FLICKR_SCORING].dependencies == (
         RunStage.REFERENCE_PROTOTYPES,
     )
-    assert RunStage.REFERENCE_REVIEW not in graph[
-        RunStage.PROVISIONAL_FLICKR_SCORING
-    ].dependencies
+    assert (
+        RunStage.REFERENCE_REVIEW
+        not in graph[RunStage.PROVISIONAL_FLICKR_SCORING].dependencies
+    )
     assert graph[RunStage.FINAL_QUALITY_GATE].dependencies == (
         RunStage.FLICKR_HUMAN_VERIFICATION,
         RunStage.STATISTICAL_REFERENCE_AUDIT,
@@ -83,12 +111,15 @@ def test_flag_and_revision_activate_only_the_required_remediation_chain() -> Non
     revised_graph = {item.stage: item for item in adaptive_stage_dependencies(revised)}
     assert revised_graph[RunStage.AFFECTED_REFERENCE_REBUILD].active is True
     assert revised_graph[RunStage.AFFECTED_RECORD_RESCORE].active is True
-    assert RunStage.AFFECTED_RECORD_RESCORE in revised_graph[
-        RunStage.FINAL_QUALITY_GATE
-    ].dependencies
+    assert (
+        RunStage.AFFECTED_RECORD_RESCORE
+        in revised_graph[RunStage.FINAL_QUALITY_GATE].dependencies
+    )
 
 
-def test_adaptive_stage_start_fails_closed_on_inactive_or_missing_dependencies() -> None:
+def test_adaptive_stage_start_fails_closed_on_inactive_or_missing_dependencies() -> (
+    None
+):
     with pytest.raises(ValueError, match="inactive"):
         validate_adaptive_stage_start(
             RunStage.TARGETED_REFERENCE_REVIEW,
