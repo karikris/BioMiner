@@ -19,6 +19,15 @@ from biominer.bioclip.reference_geography_index import (
     build_reference_geography_index,
     reference_geography_index_artifact_fingerprint,
 )
+from biominer.reports.dynamic_pool_coverage import (
+    DYNAMIC_POOL_COVERAGE_FILE,
+    DYNAMIC_POOL_COVERAGE_REPORT_FILE,
+    DYNAMIC_POOL_COVERAGE_SUMMARY_FILE,
+    build_dynamic_pool_coverage,
+    summarize_dynamic_pool_coverage,
+    validate_dynamic_pool_coverage,
+    write_dynamic_pool_coverage_report,
+)
 
 
 TARGET = "gbif:1938069"
@@ -233,6 +242,104 @@ def test_planner_never_mixes_reference_routes_or_domains() -> None:
 
     assert set(members["query_route"]) == {"adult_field"}
     assert set(members["reference_route"]) == {"adult_field"}
+
+
+def test_coverage_report_records_complete_pool_and_round_trips(tmp_path) -> None:
+    candidate_sets = _candidate_sets()
+    index = _reference_index()
+    policy = _small_policy()
+    plans, members, _summaries = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        select_global_reference_anchors(index),
+        policy=policy,
+    )
+
+    coverage = build_dynamic_pool_coverage(
+        plans,
+        members,
+        candidate_sets,
+        policy=policy,
+    )
+    summary = summarize_dynamic_pool_coverage(coverage)
+
+    row = coverage.row(0, named=True)
+    assert row["coverage_status"] == "complete"
+    assert row["global_effective"] == 2
+    assert row["local_effective"] == 1
+    assert row["independent_observation_count"] == 3
+    assert row["global_minimum_shortfall"] == 0
+    assert row["local_minimum_shortfall"] == 0
+    assert summary["complete_candidate_count"] == 1
+    assert summary["candidate_with_shortfall_count"] == 0
+    paths = write_dynamic_pool_coverage_report(coverage, tmp_path)
+    assert paths["coverage"].name == DYNAMIC_POOL_COVERAGE_FILE
+    assert paths["report"].name == DYNAMIC_POOL_COVERAGE_REPORT_FILE
+    assert paths["summary"].name == DYNAMIC_POOL_COVERAGE_SUMMARY_FILE
+    persisted = pl.read_parquet(paths["coverage"])
+    validate_dynamic_pool_coverage(persisted)
+    assert persisted.equals(coverage)
+
+
+def test_coverage_report_preserves_no_geo_as_unavailable_not_absence() -> None:
+    candidate_sets = _candidate_sets(local=False)
+    index = _reference_index()
+    policy = _small_policy()
+    plans, members, _summaries = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index, local=False)],
+        candidate_sets,
+        index,
+        select_global_reference_anchors(index),
+        policy=policy,
+    )
+
+    coverage = build_dynamic_pool_coverage(
+        plans,
+        members,
+        candidate_sets,
+        policy=policy,
+    )
+
+    row = coverage.row(0, named=True)
+    assert row["no_geo"] is True
+    assert row["local_pool_status"] == "unavailable"
+    assert row["local_pool_unavailable_reason"] == "no_geo_global_fallback"
+    assert row["local_minimum_shortfall"] == 1
+    assert "local_unavailable:no_geo_global_fallback" in row["fallback_reasons"]
+    assert row["coverage_status"] == "usable_with_shortfalls"
+
+
+def test_coverage_report_materializes_zero_member_candidate_shortfall() -> None:
+    candidate_sets = _candidate_sets_two_taxa()
+    index = _reference_index()
+    policy = _small_policy()
+    plans, members, _summaries = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        select_global_reference_anchors(index),
+        policy=policy,
+    )
+
+    coverage = build_dynamic_pool_coverage(
+        plans,
+        members,
+        candidate_sets,
+        policy=policy,
+    )
+    missing = coverage.filter(
+        pl.col("candidate_accepted_taxon_key") == "gbif:second"
+    ).row(0, named=True)
+    summary = summarize_dynamic_pool_coverage(coverage)
+
+    assert coverage.height == 2
+    assert missing["total_effective"] == 0
+    assert missing["coverage_status"] == "no_reference_support"
+    assert missing["global_minimum_shortfall"] == 1
+    assert "global_minimum_unmet" in missing["shortfall_reasons"]
+    assert summary["zero_reference_candidate_count"] == 1
+    assert summary["production_release_authorized"] is False
 
 
 def _small_policy():
